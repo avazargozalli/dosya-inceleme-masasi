@@ -25,3 +25,18 @@ CI: **bekliyor** (bu commit ile ilk koşu).
 - Kasa başlığı yedekleme paketi F14'te; şu an DB yedeği alınır.
 - `blobs` GC (referanssız artık temizliği) F14'te.
 - Windows'ta SQLCipher derlemesi uzun; ayrı `windows-check` işinde.
+
+## Otomatik kilit (ek)
+
+- `src/lib/autolock.ts`: saf `shouldAutoLock(lastActivity, now, limit)`; varsayılan
+  10 dakika, 30 saniyede bir kontrol.
+- `App.tsx`: `pointerdown`/`keydown`/`wheel` hareketi sayacı sıfırlar; kasa açıkken
+  süre dolunca `lockVault()` çağrılır ve durum yenilenir.
+- Saat geri alınırsa (uyku, manuel değişiklik) güvenli tarafta kalınır: kilitlenir.
+- 5 birim testi (`src/lib/autolock.test.ts`).
+
+## Hâlâ eksik
+
+- OS düzeyinde kilit (ekran kilidi) algılama.
+- Parola değiştirme (anahtar rewrap) akışı.
+- Referanssız blob çöp toplama.

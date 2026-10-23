@@ -28,6 +28,11 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.8.1] — 2026-10-23 — F03 otomatik kilit
+
+- 10 dakika hareketsizlikte kasa kendiliğinden kilitlenir (30 sn kontrol)
+- Saat geri alınması güvenli tarafta ele alınır; 5 birim testi
+
 ## [0.8.0] — 2026-10-23 — F02 worker paketleme
 
 - PyInstaller onedir worker `.app` içine gömülüyor; `bundled_worker_exe()` çift `resources` yolunu arıyor

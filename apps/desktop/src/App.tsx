@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
 import { Exports } from "./screens/Exports";
 import { Precedents } from "./screens/Precedents";
 import { Redaction } from "./screens/Redaction";
 import { Ai } from "./screens/Ai";
+import { AUTO_LOCK_CHECK_MS, shouldAutoLock } from "./lib/autolock";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
@@ -63,6 +64,37 @@ export function App() {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // Hareketsizlik sayacı: kasa açıkken süre dolunca kendiliğinden kilitlenir.
+  const lastActivity = useRef(Date.now());
+  const unlocked = useRef(false);
+  useEffect(() => {
+    unlocked.current = status.unlocked;
+  }, [status.unlocked]);
+
+  useEffect(() => {
+    const bump = () => {
+      lastActivity.current = Date.now();
+    };
+    window.addEventListener("pointerdown", bump);
+    window.addEventListener("keydown", bump);
+    window.addEventListener("wheel", bump, { passive: true });
+    const timer = setInterval(() => {
+      if (!unlocked.current) return;
+      if (!shouldAutoLock(lastActivity.current, Date.now())) return;
+      lastActivity.current = Date.now();
+      void api
+        .lockVault()
+        .then(() => refresh())
+        .catch(() => undefined);
+    }, AUTO_LOCK_CHECK_MS);
+    return () => {
+      window.removeEventListener("pointerdown", bump);
+      window.removeEventListener("keydown", bump);
+      window.removeEventListener("wheel", bump);
+      clearInterval(timer);
+    };
   }, [refresh]);
 
   const locked = !status.unlocked;
