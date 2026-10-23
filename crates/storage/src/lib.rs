@@ -4,8 +4,10 @@
 //! `DatabaseKey` olarak verilir; `Debug` çıktısında görünmez. Açık metin
 //! veritabanı dosyası hiçbir aşamada oluşturulmaz.
 
+mod cases;
 mod error;
 
+pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use error::StorageError;
 
 use std::path::{Path, PathBuf};
@@ -456,6 +458,14 @@ mod tests {
         db.conn().execute_batch(
             "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
              VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Kira sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('p1','v1','c1','pymupdf','1.24','hash','succeeded','2026-01-01T00:00:00Z');
              INSERT INTO text_segments (id,parse_run_id,case_id,raw_text,normalized_text,created_at)
              VALUES ('s1','p1','c1','İtirazın reddine karar verildi','itirazin reddine karar verildi','2026-01-01T00:00:00Z');",
         ).expect("ekle");

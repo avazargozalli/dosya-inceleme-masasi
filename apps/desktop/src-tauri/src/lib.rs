@@ -20,6 +20,13 @@ pub fn run() {
             commands::vault_open_with_recovery,
             commands::vault_lock,
             commands::vault_status,
+            commands::case_create,
+            commands::case_list,
+            commands::case_get,
+            commands::case_update,
+            commands::case_archive,
+            commands::case_restore,
+            commands::case_delete,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

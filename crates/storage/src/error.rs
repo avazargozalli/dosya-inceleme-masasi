@@ -24,6 +24,12 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
+    #[error("kayıt bulunamadı")]
+    NotFound,
+    #[error("kayıt başka bir oturumda değişmiş: beklenen sürüm {expected}, bulunan {actual}")]
+    Conflict { expected: i64, actual: i64 },
+    #[error("kasa kilitli")]
+    VaultLocked,
 }
 
 impl StorageError {
@@ -38,6 +44,9 @@ impl StorageError {
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
             Self::InvalidSetting => "E_DB_SETTING",
+            Self::NotFound => "E_NOT_FOUND",
+            Self::Conflict { .. } => "E_ROW_VERSION",
+            Self::VaultLocked => "E_VAULT_LOCKED",
         }
     }
 }

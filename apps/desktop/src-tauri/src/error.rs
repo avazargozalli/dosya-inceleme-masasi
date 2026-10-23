@@ -19,6 +19,21 @@ impl ApiError {
             retryable: false,
         }
     }
+
+    pub fn vault_locked() -> Self {
+        Self::new("E_VAULT_LOCKED", "Kasa kilitli. Önce kasayı açın.")
+    }
+}
+
+impl From<dim_storage::StorageError> for ApiError {
+    fn from(value: dim_storage::StorageError) -> Self {
+        let retryable = matches!(value, dim_storage::StorageError::Io(_));
+        Self {
+            code: value.code().to_string(),
+            message: value.to_string(),
+            retryable,
+        }
+    }
 }
 
 impl From<VaultError> for ApiError {

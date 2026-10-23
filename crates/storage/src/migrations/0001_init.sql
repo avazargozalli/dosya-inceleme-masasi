@@ -633,12 +633,7 @@ CREATE TABLE settings (
   PRIMARY KEY (scope, key)
 );
 
-CREATE TABLE schema_migrations (
-  version INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  checksum TEXT NOT NULL,
-  applied_at TEXT NOT NULL
-);
+-- schema_migrations tablosu migrate() tarafından önce oluşturulur.
 
 -- Sorgu yolları (06.5)
 CREATE INDEX idx_cases_status ON cases(status, updated_at);

@@ -2,29 +2,71 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type ApiError = { code: string; message: string; retryable: boolean };
 
-export type CreateVaultResult = {
-  vaultPath: string;
-  recoveryKey: string;
-  vaultId: string;
-};
+export type CreateVaultResult = { vaultPath: string; recoveryKey: string; vaultId: string };
 
 export type VaultInfo = {
   vaultPath: string;
   vaultId: string;
   version: number;
-  createdAt: string;
+  createdAtUnix: number;
   locked: boolean;
+  schemaVersion: number;
 };
 
-export type VaultStatus = { unlocked: boolean; vaultPath: string | null; vaultId: string | null };
+export type VaultStatus = {
+  unlocked: boolean;
+  vaultPath: string | null;
+  vaultId: string | null;
+  schemaVersion: number | null;
+};
 
-export function isApiError(value: unknown): value is ApiError {
-  return typeof value === "object" && value !== null && "code" in value && "message" in value;
-}
+export type CaseRow = {
+  id: string;
+  title: string;
+  caseKind: "review" | "reference_archive";
+  referenceCode: string | null;
+  jurisdictionLabel: string | null;
+  practiceArea: string | null;
+  status: "active" | "archived" | "deleted";
+  sensitivity: "normal" | "high" | "client_confidential";
+  defaultAiPolicy: "off" | "local_only" | "cli_allowed" | "api_allowed";
+  archivedAt: string | null;
+  retentionHold: boolean;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
+export type NewCaseInput = {
+  title: string;
+  caseKind: "review" | "reference_archive";
+  referenceCode: string | null;
+  jurisdictionLabel: string | null;
+  practiceArea: string | null;
+  sensitivity: CaseRow["sensitivity"];
+  defaultAiPolicy: CaseRow["defaultAiPolicy"];
+};
+
+export type CasePatchInput = {
+  title?: string;
+  referenceCode?: string;
+  jurisdictionLabel?: string;
+  practiceArea?: string;
+  sensitivity?: CaseRow["sensitivity"];
+  defaultAiPolicy?: CaseRow["defaultAiPolicy"];
+  retentionHold?: boolean;
+};
 
 /** IPC hatalarını tek biçime indirger; ham hata metni arayüze sızmaz. */
 export function toApiError(error: unknown): ApiError {
-  if (isApiError(error)) return error;
+  if (typeof error === "object" && error !== null && "code" in error && "message" in error) {
+    const e = error as { code: unknown; message: unknown; retryable?: unknown };
+    return {
+      code: String(e.code),
+      message: String(e.message),
+      retryable: Boolean(e.retryable),
+    };
+  }
   return { code: "E_UI_UNKNOWN", message: "Beklenmeyen bir hata oluştu.", retryable: false };
 }
 
@@ -36,4 +78,13 @@ export const api = {
     invoke<VaultInfo>("vault_open_with_recovery", { path, recoveryKey }),
   lockVault: () => invoke<void>("vault_lock"),
   status: () => invoke<VaultStatus>("vault_status"),
+
+  caseList: (includeArchived = false) => invoke<CaseRow[]>("case_list", { includeArchived }),
+  caseCreate: (input: NewCaseInput) => invoke<CaseRow>("case_create", { input }),
+  caseGet: (id: string) => invoke<CaseRow | null>("case_get", { id }),
+  caseUpdate: (id: string, patch: CasePatchInput, rowVersion: number) =>
+    invoke<CaseRow>("case_update", { id, patch, rowVersion }),
+  caseArchive: (id: string) => invoke<CaseRow>("case_archive", { id }),
+  caseRestore: (id: string) => invoke<CaseRow>("case_restore", { id }),
+  caseDelete: (id: string) => invoke<void>("case_delete", { id }),
 };
