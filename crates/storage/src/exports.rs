@@ -122,7 +122,13 @@ mod tests {
     fn export_is_recorded_with_hash() {
         let (db, case_id) = db_with_case();
         let row = db
-            .record_export(&case_id, "json", &["d1".into()], "user_selected_path", &"a".repeat(64))
+            .record_export(
+                &case_id,
+                "json",
+                &["d1".into()],
+                "user_selected_path",
+                &"a".repeat(64),
+            )
             .expect("kayıt");
         assert_eq!(row.status, "ready");
         assert_eq!(row.output_hash.as_deref(), Some("a".repeat(64).as_str()));
@@ -132,6 +138,8 @@ mod tests {
     #[test]
     fn unknown_case_rejected() {
         let (db, _) = db_with_case();
-        assert!(db.record_export("yok", "json", &[], "path", &"b".repeat(64)).is_err());
+        assert!(db
+            .record_export("yok", "json", &[], "path", &"b".repeat(64))
+            .is_err());
     }
 }

@@ -1073,7 +1073,9 @@ fn write_export(path: &str, bytes: &[u8]) -> Result<(), ApiError> {
 }
 
 fn case_payload(db: &Database, case_id: &str) -> Result<serde_json::Value, ApiError> {
-    let case = db.get_case(case_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let case = db
+        .get_case(case_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
     let documents = db.list_documents(case_id)?;
     let events = db.list_events(case_id)?;
     let claims = db.list_claims(case_id)?;
@@ -1115,11 +1117,17 @@ pub fn export_json(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let payload = case_payload(db, &case_id)?;
-    let bytes = serde_json::to_vec_pretty(&payload).map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    let bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
     let record = db.record_export(&case_id, "json", &[], "user_selected_path", &sha)?;
-    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+    })
 }
 
 fn csv_escape(value: &str) -> String {
@@ -1161,7 +1169,12 @@ pub fn export_csv(
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
     let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &sha)?;
-    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+    })
 }
 
 #[tauri::command]
@@ -1172,7 +1185,9 @@ pub fn export_docx(
 ) -> Result<ExportView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let case = db.get_case(&case_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let case = db
+        .get_case(&case_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
     let events = db.list_events(&case_id)?;
     let claims = db.list_claims(&case_id)?;
     let documents = db.list_documents(&case_id)?;
@@ -1188,7 +1203,9 @@ pub fn export_docx(
     ])
     .chain(events.iter().map(|e| {
         vec![
-            e.sortable_date.clone().unwrap_or_else(|| "bilinmiyor".into()),
+            e.sortable_date
+                .clone()
+                .unwrap_or_else(|| "bilinmiyor".into()),
             e.date_role.clone(),
             e.title.clone(),
             e.date_precision.clone(),
@@ -1196,15 +1213,26 @@ pub fn export_docx(
         ]
     }))
     .collect();
-    let claim_rows: Vec<Vec<String>> = std::iter::once(vec!["İddia".to_string(), "Tür".to_string()])
-        .chain(claims.iter().map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()]))
-        .collect();
+    let claim_rows: Vec<Vec<String>> =
+        std::iter::once(vec!["İddia".to_string(), "Tür".to_string()])
+            .chain(
+                claims
+                    .iter()
+                    .map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()]),
+            )
+            .collect();
     let document_rows: Vec<Vec<String>> = std::iter::once(vec![
         "Belge".to_string(),
         "Tür".to_string(),
         "Durum".to_string(),
     ])
-    .chain(documents.iter().map(|d| vec![d.display_name.clone(), d.document_type.clone(), d.status.clone()]))
+    .chain(documents.iter().map(|d| {
+        vec![
+            d.display_name.clone(),
+            d.document_type.clone(),
+            d.status.clone(),
+        ]
+    }))
     .collect();
     let task_rows: Vec<Vec<String>> = std::iter::once(vec![
         "Görev".to_string(),
@@ -1244,5 +1272,10 @@ pub fn export_docx(
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
     let record = db.record_export(&case_id, "docx", &[], "user_selected_path", &sha)?;
-    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+    })
 }
