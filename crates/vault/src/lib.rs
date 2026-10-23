@@ -160,7 +160,7 @@ impl VaultFile {
         OsRng.fill_bytes(&mut nonce_pw);
 
         let kek_pw = derive_kek(password.as_bytes(), &salt_pw, DEFAULT_KDF)?;
-        let wrapped_pw = wrap_key(&kek_pw, &nonce_pw, &master, b"dimvault/password-slot/v1")?;
+        let wrapped_pw = wrap_key(&kek_pw, &nonce_pw, &master[..], b"dimvault/password-slot/v1")?;
 
         let recovery = RecoveryKey::generate();
         let mut salt_rec = [0u8; SALT_LEN];
@@ -168,7 +168,7 @@ impl VaultFile {
         OsRng.fill_bytes(&mut salt_rec);
         OsRng.fill_bytes(&mut nonce_rec);
         let kek_rec = derive_kek(recovery.as_bytes(), &salt_rec, DEFAULT_KDF)?;
-        let wrapped_rec = wrap_key(&kek_rec, &nonce_rec, &master, b"dimvault/recovery-slot/v1")?;
+        let wrapped_rec = wrap_key(&kek_rec, &nonce_rec, &master[..], b"dimvault/recovery-slot/v1")?;
 
         let mut header = VaultHeader {
             version: 1,

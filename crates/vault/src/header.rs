@@ -4,7 +4,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroize;
 
-use crate::{constant_time_eq, derive_subkey, VaultError, HEADER_LEN, MASTER_LEN};
+use crate::{constant_time_eq, derive_subkey, VaultError, MASTER_LEN};
 
 const MAGIC: &[u8; 8] = b"DIMVLT01";
 const SLOT_LEN: usize = MASTER_LEN + 16;
@@ -163,7 +163,7 @@ impl VaultHeader {
 
     pub fn compute_mac(&self, master: &[u8; 32]) -> Result<[u8; 32], VaultError> {
         let key = derive_subkey(master, &self.salt_password, MAC_INFO)?;
-        let mut mac = HmacSha256::new_from_slice(&key).map_err(|_| VaultError::Crypto)?;
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&key).map_err(|_| VaultError::Crypto)?;
         mac.update(&self.mac_input());
         Ok(mac.finalize().into_bytes().into())
     }

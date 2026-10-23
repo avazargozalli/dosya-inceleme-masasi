@@ -32,7 +32,7 @@ impl RecoveryKey {
     /// Kullanıcıya bir kez gösterilecek biçim: `XXXX-XXXX-...` (8 grup).
     #[must_use]
     pub fn to_display_string(&self) -> String {
-        format_recovery_key(&self.0)
+        format_recovery_key(&self.0[..])
     }
 }
 
