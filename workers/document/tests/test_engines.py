@@ -11,7 +11,7 @@ import shutil
 
 import pytest
 
-from dim_worker.engines import capabilities, EngineError, capabilities, extract, extract_docx, extract_pdf
+from dim_worker.engines import EngineError, capabilities, extract, extract_docx, extract_pdf
 
 
 def _pdf_with_text(text: str) -> bytes:
