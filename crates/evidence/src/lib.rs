@@ -53,7 +53,10 @@ pub fn verify_quote(
     let q: Vec<char> = quote.chars().collect();
 
     if let Some(start) = start_hint {
-        if start <= scalars.len() && scalars.len() - start >= q.len() && scalars[start..start + q.len()] == q[..] {
+        if start <= scalars.len()
+            && scalars.len() - start >= q.len()
+            && scalars[start..start + q.len()] == q[..]
+        {
             return QuoteMatch::Exact;
         }
     }
@@ -135,7 +138,8 @@ pub fn context_around(segment: &str, start: usize, end: usize, radius: usize) ->
 mod tests {
     use super::*;
 
-    const SEG: &str = "Mahkeme, itirazın reddine karar verdi. Gerekçede ödeme yapılmadığı belirtildi.";
+    const SEG: &str =
+        "Mahkeme, itirazın reddine karar verdi. Gerekçede ödeme yapılmadığı belirtildi.";
 
     #[test]
     fn exact_quote_matches_at_hint() {
@@ -146,30 +150,45 @@ mod tests {
     #[test]
     fn repeated_quote_is_ambiguous() {
         let text = "ödeme yapılmadı. ödeme yapılmadı.";
-        assert_eq!(verify_quote(text, "ödeme yapılmadı", None, None), QuoteMatch::Ambiguous);
+        assert_eq!(
+            verify_quote(text, "ödeme yapılmadı", None, None),
+            QuoteMatch::Ambiguous
+        );
     }
 
     #[test]
     fn missing_quote_is_not_found() {
-        assert_eq!(verify_quote(SEG, "tamamen uydurma bir cümle", None, None), QuoteMatch::NotFound);
+        assert_eq!(
+            verify_quote(SEG, "tamamen uydurma bir cümle", None, None),
+            QuoteMatch::NotFound
+        );
     }
 
     #[test]
     fn hash_mismatch_wins_over_text_match() {
         let quote = "itirazın reddine karar verdi";
-        assert_eq!(verify_quote(SEG, quote, Some(&hash_quote("başka metin")), None), QuoteMatch::HashMismatch);
+        assert_eq!(
+            verify_quote(SEG, quote, Some(&hash_quote("başka metin")), None),
+            QuoteMatch::HashMismatch
+        );
         assert!(verify_quote(SEG, quote, Some(&hash_quote(quote)), None).is_usable());
     }
 
     #[test]
     fn whitespace_and_case_normalization_is_accepted() {
         let text = "ÖDEME   YAPILMADI";
-        assert_eq!(verify_quote(text, "ödeme yapılmadı", None, None), QuoteMatch::Normalized);
+        assert_eq!(
+            verify_quote(text, "ödeme yapılmadı", None, None),
+            QuoteMatch::Normalized
+        );
     }
 
     #[test]
     fn turkish_diacritics_fold_for_search() {
-        assert_eq!(normalize("İtirazın REDDİNE karar"), "itirazin reddine karar");
+        assert_eq!(
+            normalize("İtirazın REDDİNE karar"),
+            "itirazin reddine karar"
+        );
         assert_eq!(normalize("Şişli'deki ğ harfi"), "sisli'deki g harfi");
     }
 

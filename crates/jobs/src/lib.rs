@@ -55,7 +55,10 @@ impl JobState {
         if self.can_transition_to(next) {
             Ok(next)
         } else {
-            Err(JobError::InvalidTransition { from: self, to: next })
+            Err(JobError::InvalidTransition {
+                from: self,
+                to: next,
+            })
         }
     }
 }
@@ -94,7 +97,11 @@ pub struct RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self { max_attempts: 3, base_delay_ms: 2_000, max_delay_ms: 300_000 }
+        Self {
+            max_attempts: 3,
+            base_delay_ms: 2_000,
+            max_delay_ms: 300_000,
+        }
     }
 }
 
@@ -126,7 +133,10 @@ impl Lease {
     #[must_use]
     pub fn acquire(owner: impl Into<String>, now: OffsetDateTime, ttl: Duration) -> Self {
         let until = now + time::Duration::seconds(i64::try_from(ttl.as_secs()).unwrap_or(300));
-        Self { owner: owner.into(), until }
+        Self {
+            owner: owner.into(),
+            until,
+        }
     }
 
     #[must_use]
@@ -135,7 +145,12 @@ impl Lease {
     }
 
     /// Uzatma: sahibi olmayan süreç kirayı yenileyemez.
-    pub fn renew(&mut self, owner: &str, now: OffsetDateTime, ttl: Duration) -> Result<(), JobError> {
+    pub fn renew(
+        &mut self,
+        owner: &str,
+        now: OffsetDateTime,
+        ttl: Duration,
+    ) -> Result<(), JobError> {
         if self.owner != owner {
             return Err(JobError::LeaseOwnerMismatch);
         }
@@ -162,18 +177,27 @@ mod tests {
 
     #[test]
     fn cancel_is_allowed_from_running() {
-        assert_eq!(JobState::Running.transition(JobState::Cancelled).unwrap(), JobState::Cancelled);
+        assert_eq!(
+            JobState::Running.transition(JobState::Cancelled).unwrap(),
+            JobState::Cancelled
+        );
     }
 
     #[test]
     fn succeeded_cannot_be_retried() {
-        let err = JobState::Succeeded.transition(JobState::RetryWait).unwrap_err();
+        let err = JobState::Succeeded
+            .transition(JobState::RetryWait)
+            .unwrap_err();
         assert_eq!(err.code(), "E_JOB_TRANSITION");
     }
 
     #[test]
     fn backoff_grows_and_is_capped() {
-        let policy = RetryPolicy { max_attempts: 5, base_delay_ms: 1_000, max_delay_ms: 8_000 };
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay_ms: 1_000,
+            max_delay_ms: 8_000,
+        };
         assert_eq!(policy.delay_for(1), Duration::from_millis(1_000));
         assert_eq!(policy.delay_for(2), Duration::from_millis(2_000));
         assert_eq!(policy.delay_for(3), Duration::from_millis(4_000));
@@ -188,10 +212,18 @@ mod tests {
         let now = datetime!(2026-01-01 12:00 UTC);
         let mut lease = Lease::acquire("worker-a", now, Duration::from_secs(60));
         assert!(!lease.is_expired(now + time::Duration::seconds(30)));
-        assert!(lease.renew("worker-b", now, Duration::from_secs(60)).is_err());
+        assert!(lease
+            .renew("worker-b", now, Duration::from_secs(60))
+            .is_err());
 
         let later = now + time::Duration::seconds(61);
         assert!(lease.is_expired(later));
-        assert_eq!(lease.renew("worker-a", later, Duration::from_secs(60)).unwrap_err().code(), "E_JOB_LEASE_EXPIRED");
+        assert_eq!(
+            lease
+                .renew("worker-a", later, Duration::from_secs(60))
+                .unwrap_err()
+                .code(),
+            "E_JOB_LEASE_EXPIRED"
+        );
     }
 }

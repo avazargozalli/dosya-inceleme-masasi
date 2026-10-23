@@ -107,35 +107,88 @@ mod tests {
     #[test]
     fn ai_off_blocks_everything() {
         for dest in [Destination::LocalModel, Destination::Cli, Destination::Api] {
-            assert_eq!(evaluate_transfer(AiPolicy::Off, dest, DataSensitivity::Normal, true), TransferDecision::Denied("E_AI_OFF"));
+            assert_eq!(
+                evaluate_transfer(AiPolicy::Off, dest, DataSensitivity::Normal, true),
+                TransferDecision::Denied("E_AI_OFF")
+            );
         }
     }
 
     #[test]
     fn local_model_never_leaves_device() {
         assert_eq!(
-            evaluate_transfer(AiPolicy::LocalOnly, Destination::LocalModel, DataSensitivity::ClientConfidential, false),
+            evaluate_transfer(
+                AiPolicy::LocalOnly,
+                Destination::LocalModel,
+                DataSensitivity::ClientConfidential,
+                false
+            ),
             TransferDecision::LocalOnly
         );
     }
 
     #[test]
     fn local_only_policy_blocks_cli_and_api() {
-        assert_eq!(evaluate_transfer(AiPolicy::LocalOnly, Destination::Cli, DataSensitivity::Normal, true), TransferDecision::Denied("E_AI_POLICY"));
-        assert_eq!(evaluate_transfer(AiPolicy::LocalOnly, Destination::Api, DataSensitivity::Normal, true), TransferDecision::Denied("E_AI_POLICY"));
+        assert_eq!(
+            evaluate_transfer(
+                AiPolicy::LocalOnly,
+                Destination::Cli,
+                DataSensitivity::Normal,
+                true
+            ),
+            TransferDecision::Denied("E_AI_POLICY")
+        );
+        assert_eq!(
+            evaluate_transfer(
+                AiPolicy::LocalOnly,
+                Destination::Api,
+                DataSensitivity::Normal,
+                true
+            ),
+            TransferDecision::Denied("E_AI_POLICY")
+        );
     }
 
     #[test]
     fn cli_policy_does_not_enable_api() {
-        assert_eq!(evaluate_transfer(AiPolicy::CliAllowed, Destination::Api, DataSensitivity::Normal, true), TransferDecision::Denied("E_AI_POLICY"));
-        assert_eq!(evaluate_transfer(AiPolicy::CliAllowed, Destination::Cli, DataSensitivity::Normal, false), TransferDecision::RequiresConsent);
-        assert_eq!(evaluate_transfer(AiPolicy::CliAllowed, Destination::Cli, DataSensitivity::Normal, true), TransferDecision::Allowed);
+        assert_eq!(
+            evaluate_transfer(
+                AiPolicy::CliAllowed,
+                Destination::Api,
+                DataSensitivity::Normal,
+                true
+            ),
+            TransferDecision::Denied("E_AI_POLICY")
+        );
+        assert_eq!(
+            evaluate_transfer(
+                AiPolicy::CliAllowed,
+                Destination::Cli,
+                DataSensitivity::Normal,
+                false
+            ),
+            TransferDecision::RequiresConsent
+        );
+        assert_eq!(
+            evaluate_transfer(
+                AiPolicy::CliAllowed,
+                Destination::Cli,
+                DataSensitivity::Normal,
+                true
+            ),
+            TransferDecision::Allowed
+        );
     }
 
     #[test]
     fn client_confidential_always_requires_consent() {
         assert_eq!(
-            evaluate_transfer(AiPolicy::ApiAllowed, Destination::Api, DataSensitivity::ClientConfidential, true),
+            evaluate_transfer(
+                AiPolicy::ApiAllowed,
+                Destination::Api,
+                DataSensitivity::ClientConfidential,
+                true
+            ),
             TransferDecision::RequiresConsent
         );
     }

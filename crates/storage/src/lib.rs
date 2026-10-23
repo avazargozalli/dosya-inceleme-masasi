@@ -52,8 +52,16 @@ struct Migration {
 }
 
 const MIGRATIONS: &[Migration] = &[
-    Migration { version: 1, name: "0001_init", sql: include_str!("migrations/0001_init.sql") },
-    Migration { version: 2, name: "0002_fts", sql: include_str!("migrations/0002_fts.sql") },
+    Migration {
+        version: 1,
+        name: "0001_init",
+        sql: include_str!("migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "0002_fts",
+        sql: include_str!("migrations/0002_fts.sql"),
+    },
 ];
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
@@ -95,7 +103,11 @@ impl Database {
         )
         .map_err(|_| StorageError::Open)?;
         apply_key_and_pragmas(&conn, key)?;
-        let mut db = Self { conn, path: Some(path.to_path_buf()), schema_version: 0 };
+        let mut db = Self {
+            conn,
+            path: Some(path.to_path_buf()),
+            schema_version: 0,
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -104,7 +116,11 @@ impl Database {
     pub fn open_in_memory(key: &DatabaseKey) -> Result<Self, StorageError> {
         let conn = Connection::open_in_memory().map_err(|_| StorageError::Open)?;
         apply_key_and_pragmas(&conn, key)?;
-        let mut db = Self { conn, path: None, schema_version: 0 };
+        let mut db = Self {
+            conn,
+            path: None,
+            schema_version: 0,
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -148,14 +164,17 @@ impl Database {
 
             match existing {
                 Some((_, stored)) if stored != checksum => {
-                    return Err(StorageError::MigrationChecksum { version: migration.version });
+                    return Err(StorageError::MigrationChecksum {
+                        version: migration.version,
+                    });
                 }
                 Some(_) => continue,
                 None => {
-                    tx.execute_batch(migration.sql).map_err(|source| StorageError::Migration {
-                        version: migration.version,
-                        source,
-                    })?;
+                    tx.execute_batch(migration.sql)
+                        .map_err(|source| StorageError::Migration {
+                            version: migration.version,
+                            source,
+                        })?;
                     tx.execute(
                         "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, ?2, ?3, ?4)",
                         rusqlite::params![
@@ -171,25 +190,37 @@ impl Database {
         }
         tx.commit()?;
 
-        let found: i64 = self
-            .conn
-            .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| r.get(0))?;
+        let found: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )?;
         let found = u32::try_from(found).unwrap_or(u32::MAX);
         if found > CURRENT_SCHEMA_VERSION {
-            return Err(StorageError::SchemaTooNew { found, expected: CURRENT_SCHEMA_VERSION });
+            return Err(StorageError::SchemaTooNew {
+                found,
+                expected: CURRENT_SCHEMA_VERSION,
+            });
         }
         self.schema_version = found;
-        Ok(MigrationOutcome { applied, current: found })
+        Ok(MigrationOutcome {
+            applied,
+            current: found,
+        })
     }
 
     /// SQLCipher sürümünü döndürür; şifreleme gerçekten etkin mi diye kontrol için.
     pub fn cipher_version(&self) -> Result<String, StorageError> {
-        let v: String = self.conn.query_row("PRAGMA cipher_version", [], |r| r.get(0))?;
+        let v: String = self
+            .conn
+            .query_row("PRAGMA cipher_version", [], |r| r.get(0))?;
         Ok(v)
     }
 
     pub fn integrity_check(&self) -> Result<(), StorageError> {
-        let result: String = self.conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        let result: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         if result == "ok" {
             Ok(())
         } else {
@@ -228,7 +259,11 @@ impl Database {
     ) -> Result<String, StorageError> {
         let prior: Option<String> = self
             .conn
-            .query_row("SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .optional()?;
         let id = uuid::Uuid::now_v7().to_string();
         let timestamp = now_iso();
@@ -286,9 +321,21 @@ impl Database {
         let mut prior: Option<String> = None;
         let mut count = 0usize;
         for row in rows {
-            let (id, category, entity_id, operation, actor_label, metadata, prior_hash, event_hash, timestamp) = row?;
+            let (
+                id,
+                category,
+                entity_id,
+                operation,
+                actor_label,
+                metadata,
+                prior_hash,
+                event_hash,
+                timestamp,
+            ) = row?;
             if prior_hash != prior {
-                return Err(StorageError::Integrity(format!("denetim zinciri koptu: {id}")));
+                return Err(StorageError::Integrity(format!(
+                    "denetim zinciri koptu: {id}"
+                )));
             }
             let canonical = serde_json::json!({
                 "id": id.clone(),
@@ -303,7 +350,9 @@ impl Database {
             let mut hasher = Sha256::new();
             hasher.update(canonical.to_string().as_bytes());
             if hex::encode(hasher.finalize()) != event_hash {
-                return Err(StorageError::Integrity(format!("denetim kaydı bozulmuş: {id}")));
+                return Err(StorageError::Integrity(format!(
+                    "denetim kaydı bozulmuş: {id}"
+                )));
             }
             prior = Some(event_hash);
             count += 1;
@@ -327,14 +376,18 @@ fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), Sto
     let _ = conn.execute_batch("PRAGMA journal_mode = WAL;");
 
     // Anahtar doğrulaması: şifreli dosya yanlış anahtarla okunamaz.
-    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
-        .map_err(|_| StorageError::BadKey)?;
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map_err(|_| StorageError::BadKey)?;
     Ok(())
 }
 
 #[must_use]
 pub fn now_iso() -> String {
-    OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 #[cfg(test)]
@@ -364,7 +417,10 @@ mod tests {
     fn sqlcipher_is_active() {
         let db = Database::open_in_memory(&key()).expect("açılır");
         let version = db.cipher_version().expect("sürüm");
-        assert!(version.contains("SQLCipher") || version.starts_with('4'), "cipher_version={version}");
+        assert!(
+            version.contains("SQLCipher") || version.starts_with('4'),
+            "cipher_version={version}"
+        );
     }
 
     #[test]
@@ -404,30 +460,57 @@ mod tests {
              VALUES ('s1','p1','c1','İtirazın reddine karar verildi','itirazin reddine karar verildi','2026-01-01T00:00:00Z');",
         ).expect("ekle");
 
-        let hits: i64 = db.conn().query_row(
-            "SELECT count(*) FROM text_segments_fts WHERE text_segments_fts MATCH 'itiraz*'",
-            [],
-            |r| r.get(0),
-        ).expect("arama");
+        let hits: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM text_segments_fts WHERE text_segments_fts MATCH 'itiraz*'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("arama");
         assert_eq!(hits, 1);
 
-        db.conn().execute("DELETE FROM text_segments WHERE id='s1'", []).expect("sil");
-        let after: i64 = db.conn().query_row(
-            "SELECT count(*) FROM text_segments_fts WHERE text_segments_fts MATCH 'itiraz*'",
-            [],
-            |r| r.get(0),
-        ).expect("arama");
+        db.conn()
+            .execute("DELETE FROM text_segments WHERE id='s1'", [])
+            .expect("sil");
+        let after: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM text_segments_fts WHERE text_segments_fts MATCH 'itiraz*'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("arama");
         assert_eq!(after, 0);
     }
 
     #[test]
     fn audit_chain_detects_tamper() {
         let db = Database::open_in_memory(&key()).expect("açılır");
-        db.append_audit("case", Some("c1"), "create", "local-user", &serde_json::json!({"title":"Kira"})).expect("kayıt");
-        db.append_audit("document", Some("d1"), "import", "local-user", &serde_json::json!({"bytes":10})).expect("kayıt");
+        db.append_audit(
+            "case",
+            Some("c1"),
+            "create",
+            "local-user",
+            &serde_json::json!({"title":"Kira"}),
+        )
+        .expect("kayıt");
+        db.append_audit(
+            "document",
+            Some("d1"),
+            "import",
+            "local-user",
+            &serde_json::json!({"bytes":10}),
+        )
+        .expect("kayıt");
         assert_eq!(db.verify_audit_chain().expect("zincir"), 2);
 
-        db.conn().execute("UPDATE audit_events SET operation='silindi' WHERE sequence=2", []).expect("kurcala");
+        db.conn()
+            .execute(
+                "UPDATE audit_events SET operation='silindi' WHERE sequence=2",
+                [],
+            )
+            .expect("kurcala");
         assert!(db.verify_audit_chain().is_err());
     }
 
@@ -445,10 +528,18 @@ mod tests {
         db.backup_to(&backup).expect("yedek");
 
         let restored = Database::open(&backup, &key()).expect("geri aç");
-        let count: i64 = restored.conn().query_row("SELECT count(*) FROM cases", [], |r| r.get(0)).expect("say");
+        let count: i64 = restored
+            .conn()
+            .query_row("SELECT count(*) FROM cases", [], |r| r.get(0))
+            .expect("say");
         assert_eq!(count, 1);
 
-        assert_eq!(Database::open(&backup, &DatabaseKey::new([1u8; 32])).expect_err("yanlış").code(), "E_DB_KEY");
+        assert_eq!(
+            Database::open(&backup, &DatabaseKey::new([1u8; 32]))
+                .expect_err("yanlış")
+                .code(),
+            "E_DB_KEY"
+        );
     }
 
     #[test]
