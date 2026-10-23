@@ -8,6 +8,7 @@ import {
   type DocumentRow,
   type SearchFilters,
   type SearchHit,
+  type SearchMode,
   type SearchPage,
 } from "../lib/api";
 import { targetFromHit, type ReaderTarget } from "../lib/reader";
@@ -22,6 +23,8 @@ import {
   mergeHits,
   OCR_STATUS_LABELS,
   resultSummary,
+  SEARCH_MODE_LABELS,
+  searchModeHint,
   textOriginLabel,
   toggleValue,
 } from "../lib/search";
@@ -51,6 +54,10 @@ export function Search() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState<string>("");
   const [query, setQuery] = useState<string>("");
+  /** Seçili arama kipi (F07-T02); sunucu `auto`yu çözer. */
+  const [mode, setMode] = useState<SearchMode>("auto");
+  /** Son aramanın kipi; sonuçlar bu kipe ait. */
+  const [searchedMode, setSearchedMode] = useState<SearchMode>("auto");
   /** Son aramanın sorgusu; kullanıcı kutuyu değiştirse de sonuç işaretlemesi
    *  ve okuyucu hedefi gerçekten aranan metne bağlı kalır. */
   const [searchedQuery, setSearchedQuery] = useState<string>("");
@@ -111,15 +118,16 @@ export function Search() {
   }, [caseId]);
 
   const run = useCallback(
-    async (mode: "fresh" | "more" = "fresh") => {
+    async (kind: "fresh" | "more" = "fresh") => {
       if (!caseId) return;
-      const asked = mode === "fresh" ? query : searchedQuery;
+      const asked = kind === "fresh" ? query : searchedQuery;
       if (asked.trim().length === 0) return;
-      const applied = mode === "fresh" ? draftFilters : appliedFilters;
-      const cursor = mode === "more" ? page?.nextCursor ?? null : null;
-      if (mode === "more" && !cursor) return;
+      const applied = kind === "fresh" ? draftFilters : appliedFilters;
+      const askedMode = kind === "fresh" ? mode : searchedMode;
+      const cursor = kind === "more" ? page?.nextCursor ?? null : null;
+      if (kind === "more" && !cursor) return;
 
-      if (mode === "fresh") {
+      if (kind === "fresh") {
         setBusy(true);
       } else {
         setLoadingMore(true);
@@ -129,11 +137,13 @@ export function Search() {
         const next = await api.searchPage(caseId, asked, applied, {
           limit: PAGE_SIZE,
           cursor,
-          includeTotal: mode === "fresh",
+          includeTotal: kind === "fresh",
+          mode: askedMode,
         });
         setAppliedFilters(next.filters);
         setSearchedQuery(asked);
-        if (mode === "more" && page) {
+        setSearchedMode(askedMode);
+        if (kind === "more" && page) {
           const merged = mergeHits(page.hits, next.hits);
           setPage({ ...next, hits: merged, returned: merged.length, total: page.total });
         } else {
@@ -146,7 +156,7 @@ export function Search() {
         setLoadingMore(false);
       }
     },
-    [appliedFilters, caseId, draftFilters, page, query, searchedQuery],
+    [appliedFilters, caseId, draftFilters, mode, page, query, searchedMode, searchedQuery],
   );
 
   /** Sonucu seçilen panelde açar. Hedef, sonucun kendi sürümünü taşır;
@@ -176,6 +186,7 @@ export function Search() {
   const filterLines = describeFilters(appliedFilters);
   const filterCount = activeFilterCount(appliedFilters);
   const stale = page !== null && filtersStale(page, draftFilters);
+  const modeStale = page !== null && searchedMode !== mode;
   const hits = page?.hits ?? null;
 
   function updateFilter(patch: Partial<SearchFilters>) {
@@ -218,8 +229,21 @@ export function Search() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void run("fresh")}
-              placeholder="Örn. ödeme, itiraz, kira"
+              placeholder={'Örn. ödeme, "kira bedeli", 2024/123 E.'}
             />
+          </div>
+          <div className="field" style={{ flex: "0 1 170px" }}>
+            <label htmlFor="search-mode">Arama kipi</label>
+            <select
+              id="search-mode"
+              className="input"
+              value={mode}
+              onChange={(e) => setMode(e.target.value as SearchMode)}
+            >
+              {(Object.keys(SEARCH_MODE_LABELS) as SearchMode[]).map((value) => (
+                <option key={value} value={value}>{SEARCH_MODE_LABELS[value]}</option>
+              ))}
+            </select>
           </div>
           <button
             className="btn primary"
@@ -229,6 +253,10 @@ export function Search() {
             {busy ? "Aranıyor…" : "Ara"}
           </button>
         </div>
+
+        <p className="hint" style={{ marginTop: "var(--space-2)", marginBottom: 0 }}>
+          {searchModeHint(query, mode)}
+        </p>
 
         <div
           style={{
@@ -324,11 +352,12 @@ export function Search() {
         </div>
       </div>
 
-      {stale ? (
+      {stale || modeStale ? (
         <div className="notice" role="status">
-          Filtreler değişti; aşağıdaki sonuçlar <strong>önceki</strong> filtreyle alındı.{" "}
+          {stale ? "Filtreler" : "Arama kipi"} değişti; aşağıdaki sonuçlar{" "}
+          <strong>önceki</strong> ayarlarla alındı.{" "}
           <button className="btn ghost" style={{ height: 26 }} onClick={() => void run("fresh")}>
-            Yeni filtreyle ara
+            Yeni ayarlarla ara
           </button>
         </div>
       ) : null}
@@ -339,7 +368,8 @@ export function Search() {
             <div>
               <h2>Sonuçlar</h2>
               <p className="card-sub">
-                {resultSummary(page)} · kapsam: yalnız bu dosya
+                {resultSummary(page)} · kapsam: yalnız bu dosya · kip:{" "}
+                {SEARCH_MODE_LABELS[page.mode]}
                 {filterCount > 0 ? ` · ${filterCount} filtre` : ""}
               </p>
               {filterLines.length > 0 ? (
@@ -395,7 +425,7 @@ export function Search() {
                   <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
                     <Highlight
                       text={hit.rawText.length > 600 ? `${hit.rawText.slice(0, 600)}…` : hit.rawText}
-                      query={searchedQuery}
+                      query={page.resolvedQuery || searchedQuery}
                     />
                   </p>
                   <span className="muted small" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>

@@ -9,9 +9,13 @@ import {
   EMPTY_SEARCH_FILTERS,
   filtersEqual,
   filtersStale,
+  isDocketQuery,
   isFiltered,
   mergeHits,
+  resolveSearchMode,
   resultSummary,
+  searchModeHint,
+  stripWrappingQuotes,
   textOriginLabel,
   toggleValue,
 } from "./search";
@@ -42,6 +46,8 @@ function page(overrides: Partial<SearchPage> = {}): SearchPage {
   return {
     caseId: "case-1",
     query: "kira",
+    resolvedQuery: "kira",
+    mode: "flexible",
     scope: "case",
     limit: 25,
     returned: 2,
@@ -156,5 +162,36 @@ describe("textOriginLabel", () => {
     expect(textOriginLabel("ocr")).toBe("OCR");
     expect(textOriginLabel("native")).toBe("Yerel metin");
     expect(textOriginLabel(null)).toBe("Kaynak bilinmiyor");
+  });
+});
+
+describe("arama kipi (F07-T02)", () => {
+  it("tırnaklı metni ifade kipine çözer ve tırnakları atar", () => {
+    expect(stripWrappingQuotes('"kira bedeli"')).toBe("kira bedeli");
+    expect(stripWrappingQuotes("“kira bedeli”")).toBe("kira bedeli");
+    expect(stripWrappingQuotes("kira bedeli")).toBeNull();
+    expect(stripWrappingQuotes('"  "')).toBeNull();
+    expect(resolveSearchMode('"kira bedeli"', "auto")).toBe("phrase");
+  });
+
+  it("E./K. numarasını docket kipine çözer", () => {
+    expect(isDocketQuery("2024/123 E.")).toBe(true);
+    expect(isDocketQuery("2024 / 0123")).toBe(true);
+    expect(isDocketQuery("2024/12345")).toBe(true);
+    expect(isDocketQuery("2024-123")).toBe(false);
+    expect(isDocketQuery("kira bedeli")).toBe(false);
+    expect(resolveSearchMode("2024/123 K.", "auto")).toBe("docket");
+  });
+
+  it("kip açıkça seçildiyse auto çözümü uygulanmaz", () => {
+    expect(resolveSearchMode('"kira"', "exact")).toBe("exact");
+    expect(resolveSearchMode("2024/123 E.", "flexible")).toBe("flexible");
+    expect(resolveSearchMode("kira", "auto")).toBe("flexible");
+  });
+
+  it("ipucu sunucunun çözeceği kipi söyler", () => {
+    expect(searchModeHint('"kira bedeli"', "auto")).toContain("İfade");
+    expect(searchModeHint("2024/123 E.", "auto")).toContain("E./K.");
+    expect(searchModeHint("kira", "exact")).toContain("Türkçe karakterler korunur");
   });
 });

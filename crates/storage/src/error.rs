@@ -28,6 +28,8 @@ pub enum StorageError {
     InvalidTag,
     #[error("geçersiz arama filtresi: {0}")]
     SearchFilter(String),
+    #[error("geçersiz arama sorgusu: {0}")]
+    SearchQuery(String),
     #[error("arama imleci geçersiz ya da bu sorguya ait değil")]
     SearchCursor,
     #[error("{0}")]
@@ -64,6 +66,7 @@ impl StorageError {
             Self::InvalidSetting => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
             Self::SearchFilter(_) => "E_SEARCH_FILTER",
+            Self::SearchQuery(_) => "E_SEARCH_QUERY",
             Self::SearchCursor => "E_SEARCH_CURSOR",
             Self::ChecklistRule(_) => "E_CHECKLIST_RULE",
             Self::NotFound => "E_NOT_FOUND",

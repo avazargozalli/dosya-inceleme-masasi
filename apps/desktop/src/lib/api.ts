@@ -549,9 +549,16 @@ export type SearchFilters = {
   ocrStatus: string | null;
 };
 
+/** Arama kipi (F07-T02). `auto` kullanıcının yazımından kipi çıkarır. */
+export type SearchMode = "auto" | "exact" | "flexible" | "phrase" | "docket";
+
 export type SearchPage = {
   caseId: string;
   query: string;
+  /** Tırnaklar atılmış, kipe göre çözümlenmiş metin (alıntı işaretlemesi). */
+  resolvedQuery: string;
+  /** Sunucunun çözümlediği kesin kip; `auto` dönmez. */
+  mode: Exclude<SearchMode, "auto">;
   /** `case` = yalnız bu dosya. */
   scope: string;
   limit: number;
@@ -670,20 +677,28 @@ export const api = {
     invoke<ParseResult>("document_parse", { versionId, ocr, ocrLang, password }),
   searchSegments: (caseId: string, query: string, limit = 50) =>
     invoke<SearchHit[]>("search_segments", { caseId, query, limit }),
-  /** Filtreli + keyset sayfalı arama (F07-T03/T05). */
+  /** Filtreli + keyset sayfalı arama (F07-T03/T05); kip F07-T02. */
   searchPage: (
     caseId: string,
     query: string,
     filters: SearchFilters,
-    options: { limit?: number; cursor?: string | null; includeTotal?: boolean } = {},
+    options: {
+      limit?: number;
+      cursor?: string | null;
+      includeTotal?: boolean;
+      mode?: SearchMode;
+    } = {},
   ) =>
     invoke<SearchPage>("search_segments_page", {
-      caseId,
-      query,
-      filters,
-      limit: options.limit ?? 25,
-      cursor: options.cursor ?? null,
-      includeTotal: options.includeTotal ?? false,
+      input: {
+        caseId,
+        query,
+        filters,
+        limit: options.limit ?? 25,
+        cursor: options.cursor ?? null,
+        includeTotal: options.includeTotal ?? false,
+        mode: options.mode ?? "auto",
+      },
     }),
 
   documentTags: (documentId: string) => invoke<string[]>("document_tags", { documentId }),

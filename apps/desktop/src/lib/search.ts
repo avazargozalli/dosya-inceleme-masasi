@@ -1,4 +1,4 @@
-import type { SearchFilters, SearchHit, SearchPage } from "./api";
+import type { SearchFilters, SearchHit, SearchMode, SearchPage } from "./api";
 
 /**
  * Arama filtresi yardımcıları (F07-T03/T05).
@@ -169,4 +169,59 @@ export function mergeHits(previous: SearchHit[], next: SearchHit[]): SearchHit[]
 export function filtersStale(page: SearchPage | null, draft: SearchFilters): boolean {
   if (!page) return false;
   return !filtersEqual(page.filters, draft);
+}
+
+// ---------------------------------------------------------------------------
+// Arama kipi (F07-T02)
+// ---------------------------------------------------------------------------
+
+export const SEARCH_MODE_LABELS: Record<SearchMode, string> = {
+  auto: "Otomatik",
+  exact: "Tam",
+  flexible: "Esnek",
+  phrase: "İfade",
+  docket: "E./K. numarası",
+};
+
+export const SEARCH_MODE_HINTS: Record<Exclude<SearchMode, "auto">, string> = {
+  exact: "Türkçe karakterler korunur (ı ≠ i, ş ≠ s); kelimeler bitişik geçmeli, son kelime önek olabilir.",
+  flexible: "Türkçe karakterler sadeleşir (ı→i, ş→s); noktalama önemsiz, son kelime önek olabilir.",
+  phrase: "Kelimeler aynı sırada; araya noktalama girebilir, son kelime tam olmalı.",
+  docket: "2024/123 E. biçimi; baştaki sıfırlar yok sayılır, E./K. rolü eşleşir.",
+};
+
+/** Yıl/numara: çekirdeğin `parse_docket` kuralıyla aynı (4 hane yıl, 1–7 hane no). */
+const DOCKET_PATTERN = /(?:^|\D)(\d{4})\s*\/\s*(\d{1,7})(?:\s*([EK])\.?)?/i;
+const QUOTED_PATTERN = /^["“](.+)["”]$/s;
+
+export function isDocketQuery(text: string): boolean {
+  return DOCKET_PATTERN.test(text.trim());
+}
+
+/** Tırnakla sarılmış metni içeriğe çevirir; sarılmamışsa null. */
+export function stripWrappingQuotes(text: string): string | null {
+  const match = QUOTED_PATTERN.exec(text.trim());
+  const inner = match?.[1]?.trim();
+  return inner && inner.length > 0 ? inner : null;
+}
+
+/**
+ * Çekirdeğin `auto` çözümüyle aynı kural: tırnaklı metin → ifade,
+ * E./K. numarası → docket, diğerleri → esnek. Sunucu da aynı sırayı uygular.
+ */
+export function resolveSearchMode(
+  text: string,
+  mode: SearchMode,
+): Exclude<SearchMode, "auto"> {
+  if (mode !== "auto") return mode;
+  if (stripWrappingQuotes(text) !== null) return "phrase";
+  if (isDocketQuery(text)) return "docket";
+  return "flexible";
+}
+
+/** Ne aranacağını önizler; sunucu kararıyla aynı dili kullanır. */
+export function searchModeHint(text: string, mode: SearchMode): string {
+  const resolved = resolveSearchMode(text, mode);
+  const prefix = mode === "auto" ? `Otomatik: ${SEARCH_MODE_LABELS[resolved]} — ` : "";
+  return `${prefix}${SEARCH_MODE_HINTS[resolved]}`;
 }

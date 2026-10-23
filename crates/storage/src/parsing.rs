@@ -2,8 +2,9 @@
 //! Eski çıkarımın üzerine yazılmaz (INV-01, ADR-09); kaynak konumları hangi
 //! koşuya bağlıysa o koşu açılır.
 
+use rusqlite::functions::FunctionFlags;
 use rusqlite::types::Value;
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -414,13 +415,8 @@ impl Database {
             .hits)
     }
 
-    /// Filtreli ve **keyset** sayfalı arama (F07-T03, F07-T05).
-    ///
-    /// Sıralama `bm25` (daha küçük = daha iyi) ve eşitlikte `segment_id`.
-    /// İmleç son dönen sonucun (rank bitleri, segment kimliği) çiftidir; böylece
-    /// araya kayıt girse bile sayfa kaymaz, sonuç tekrarlanmaz veya atlanmaz.
-    /// `include_total` yalnız ilk sayfada istenmeli: ikinci sayfada sayım
-    /// gereksiz maliyettir.
+    /// Filtreli ve **keyset** sayfalı arama (F07-T03, F07-T05). Sorgu kipi
+    /// `auto` kabul edilir; kip seçimi için `search_page`.
     pub fn search_segments_page(
         &self,
         case_id: &str,
@@ -430,9 +426,39 @@ impl Database {
         cursor: Option<&str>,
         include_total: bool,
     ) -> Result<SearchPage, StorageError> {
+        self.search_page(
+            case_id,
+            &SearchQuery::auto(query),
+            filters,
+            limit,
+            cursor,
+            include_total,
+        )
+    }
+
+    /// Kip destekli filtreli ve **keyset** sayfalı arama (F07-T02).
+    ///
+    /// Sıralama `bm25` (daha küçük = daha iyi) ve eşitlikte `segment_id`.
+    /// İmleç son dönen sonucun (rank bitleri, segment kimliği) çiftidir; böylece
+    /// araya kayıt girse bile sayfa kaymaz, sonuç tekrarlanmaz veya atlanmaz.
+    /// `include_total` yalnız ilk sayfada istenmeli: ikinci sayfada sayım
+    /// gereksiz maliyettir.
+    ///
+    /// Kip, adayları FTS'te daraltır; **kesin eşleşme** `dim_search_match`
+    /// doğrulamasıyla kurulur (Türkçe `ı/i`, noktalama, baştaki sıfır). FTS'in
+    /// diakritik sadeleştirmesi tek başına "tam arama" iddiasını taşıyamaz.
+    pub fn search_page(
+        &self,
+        case_id: &str,
+        query: &SearchQuery,
+        filters: &SearchFilters,
+        limit: i64,
+        cursor: Option<&str>,
+        include_total: bool,
+    ) -> Result<SearchPage, StorageError> {
         let filters = filters.normalized()?;
         let limit = limit.clamp(1, MAX_SEARCH_LIMIT);
-        let trimmed = query.trim();
+        let resolved = query.resolve()?;
         let cursor = match cursor {
             Some(token) if !token.trim().is_empty() => {
                 Some(SearchCursor::parse(token.trim()).ok_or(StorageError::SearchCursor)?)
@@ -442,7 +468,9 @@ impl Database {
 
         let mut page = SearchPage {
             case_id: case_id.to_string(),
-            query: trimmed.to_string(),
+            query: query.text.trim().to_string(),
+            resolved_query: resolved.text.clone(),
+            mode: resolved.mode,
             scope: "case".to_string(),
             limit,
             returned: 0,
@@ -452,14 +480,15 @@ impl Database {
             filters: filters.clone(),
             hits: Vec::new(),
         };
-        if trimmed.is_empty() {
+        let expression = fts_expression(&resolved);
+        if resolved.text.is_empty() || expression.is_empty() {
             if include_total {
                 page.total = Some(0);
             }
             return Ok(page);
         }
 
-        let (base_where, base_params) = search_where(case_id, trimmed, &filters);
+        let (base_where, base_params) = search_where(case_id, &resolved, &expression, &filters);
         if include_total {
             let count: i64 = self.conn().query_row(
                 &format!("SELECT count(*) FROM {SEARCH_FROM} {base_where}"),
@@ -579,11 +608,421 @@ impl Database {
     }
 }
 
-/// Aranan ifade FTS5 sözdizimine sokulmadan önce tırnaklanır; kullanıcı
-/// metnindeki `"` boşluğa çevrilir, sorgu **parametre** olarak bağlanır.
-fn match_expression(query: &str) -> String {
-    let escaped = query.trim().replace('"', " ");
-    format!("\"{escaped}\"*")
+// ---------------------------------------------------------------------------
+// Sorgu kipi (F07-T02): Türkçe tam/esnek arama, tırnaklı ifade, E./K. numarası
+// ---------------------------------------------------------------------------
+
+/// Arama kipi. `Auto` kullanıcının yazımından kipi çıkarır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchMode {
+    /// Tırnaklı metin → ifade, `2024/123 E.` → esas/karar no, değilse esnek.
+    #[default]
+    Auto,
+    /// Türkçe karakterler korunur; metin bitişik geçmeli (noktalama araya girmez).
+    /// Son kelime önek olabilir: "itiraz" → "itirazın".
+    Exact,
+    /// Türkçe karakterler sadeleşir (ı→i, ş→s…); kelimeler sırayla, noktalama
+    /// önemsiz, son kelime önek olabilir.
+    Flexible,
+    /// Kelimeler aynı sırada; araya noktalama girebilir, son kelime tam olmalı.
+    Phrase,
+    /// `2024/123 E.` biçimli esas/karar numarası; baştaki sıfırlar yok sayılır.
+    Docket,
+}
+
+impl SearchMode {
+    /// UI'dan gelen metni kipe çevirir; bilinmeyen değer `None`.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Some(Self::Auto),
+            "exact" => Some(Self::Exact),
+            "flexible" => Some(Self::Flexible),
+            "phrase" => Some(Self::Phrase),
+            "docket" => Some(Self::Docket),
+            _ => None,
+        }
+    }
+
+    /// SQL doğrulamasında ve arayüzde kullanılan kararlı etiket.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Exact => "exact",
+            Self::Flexible => "flexible",
+            Self::Phrase => "phrase",
+            Self::Docket => "docket",
+        }
+    }
+}
+
+/// Kullanıcının arama isteği: metin + kip. `mode` verilmezse `auto`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchQuery {
+    pub text: String,
+    #[serde(default)]
+    pub mode: SearchMode,
+}
+
+impl SearchQuery {
+    #[must_use]
+    pub fn auto(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            mode: SearchMode::Auto,
+        }
+    }
+}
+
+/// Aşırı uzun sorgu FTS ifadesini şişirmesin; sınır arayüzde de görünür.
+pub const MAX_SEARCH_QUERY_CHARS: usize = 300;
+
+/// Çözümlenmiş sorgu: kip kesinleşti, tırnaklar atıldı, esas no ayrıştırıldı.
+struct ResolvedQuery {
+    mode: SearchMode,
+    text: String,
+    docket: Option<DocketNumber>,
+}
+
+/// `2024/123 E.` ayrıştırması. Numara baştaki sıfırlardan arındırılır.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DocketNumber {
+    year: String,
+    number: String,
+    role: Option<char>,
+}
+
+impl SearchQuery {
+    fn resolve(&self) -> Result<ResolvedQuery, StorageError> {
+        let raw = self.text.trim();
+        if raw.chars().count() > MAX_SEARCH_QUERY_CHARS {
+            return Err(StorageError::SearchQuery(format!(
+                "arama metni en çok {MAX_SEARCH_QUERY_CHARS} karakter olabilir"
+            )));
+        }
+        let quoted = strip_wrapping_quotes(raw);
+        let (mode, text) = match self.mode {
+            SearchMode::Auto => match quoted {
+                Some(inner) => (SearchMode::Phrase, inner),
+                None => match parse_docket(raw) {
+                    Some(_) => (SearchMode::Docket, raw.to_string()),
+                    None => (SearchMode::Flexible, raw.to_string()),
+                },
+            },
+            // Kip açıkça seçildiyse tırnak yalnız süslemedir; metne katılmaz.
+            SearchMode::Phrase => (
+                SearchMode::Phrase,
+                quoted.unwrap_or_else(|| raw.to_string()),
+            ),
+            SearchMode::Docket => (SearchMode::Docket, raw.to_string()),
+            other => (other, raw.to_string()),
+        };
+        let docket = if mode == SearchMode::Docket {
+            Some(parse_docket(&text).ok_or_else(|| {
+                StorageError::SearchQuery(
+                    "esas/karar numarası çözümlenemedi; örnek: 2024/123 E.".into(),
+                )
+            })?)
+        } else {
+            None
+        };
+        Ok(ResolvedQuery { mode, text, docket })
+    }
+}
+
+/// Tırnakla sarılmış metni içeriğe çevirir: `"kira bedeli"` → `kira bedeli`.
+/// Eşleşmeyen tırnak yok sayılmaz; metin olduğu gibi kalır.
+fn strip_wrapping_quotes(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let count = trimmed.chars().count();
+    if count < 3 {
+        return None;
+    }
+    let first = trimmed.chars().next()?;
+    let last = trimmed.chars().last()?;
+    let pairs = [('"', '"'), ('\u{201c}', '\u{201d}')];
+    for (open, close) in pairs {
+        if first == open && last == close {
+            let inner: String = trimmed.chars().skip(1).take(count - 2).collect();
+            let inner = inner.trim().to_string();
+            if !inner.is_empty() {
+                return Some(inner);
+            }
+        }
+    }
+    None
+}
+
+/// `2024/123 E.` metninden yıl, numara ve varsa E./K. rolünü çıkarır.
+fn parse_docket(text: &str) -> Option<DocketNumber> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i - start != 4 {
+            continue;
+        }
+        let year: String = chars[start..i].iter().collect();
+        let mut j = i;
+        while j < chars.len() && (chars[j].is_whitespace() || chars[j] == '.') {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != '/' {
+            continue;
+        }
+        j += 1;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let number_start = j;
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j == number_start {
+            continue;
+        }
+        let raw_number: String = chars[number_start..j].iter().collect();
+        let trimmed = raw_number.trim_start_matches('0');
+        let number = if trimmed.is_empty() { "0" } else { trimmed };
+        let mut k = j;
+        while k < chars.len()
+            && (chars[k].is_whitespace() || matches!(chars[k], '.' | ',' | '-' | '/'))
+        {
+            k += 1;
+        }
+        let role = if k < chars.len() && chars[k].is_ascii_alphabetic() {
+            let candidate = chars[k].to_ascii_uppercase();
+            (candidate == 'E' || candidate == 'K').then_some(candidate)
+        } else {
+            None
+        };
+        return Some(DocketNumber {
+            year,
+            number: number.to_string(),
+            role,
+        });
+    }
+    None
+}
+
+/// FTS5 sözdizimine gömülecek metin: `"` boşluğa çevrilir, boşluklar sadeleşir.
+/// Sorgu **parametre** olarak bağlanır; kullanıcı metni hiçbir zaman SQL'e
+/// dizge birleştirmesiyle girmez.
+fn escape_fts(text: &str) -> String {
+    text.replace('"', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Kipin FTS aday ifadesi. Adaylar geniştir; kesin eşleşmeyi
+/// `dim_search_match` doğrular (FTS diakritikleri kendiliğinden sadeleştirir).
+fn fts_expression(query: &ResolvedQuery) -> String {
+    match query.mode {
+        // Yıl tek başına aday: `2024/0123` baştaki sıfır yüzünden `123`
+        // belirteciyle eşleşmez; numara doğrulamada kanonikleştirilir.
+        SearchMode::Docket => match query.docket.as_ref() {
+            Some(docket) => format!("raw_text : \"{}\"", escape_fts(&docket.year)),
+            None => String::new(),
+        },
+        SearchMode::Exact => {
+            let needle = escape_fts(&query.text);
+            if needle.is_empty() {
+                String::new()
+            } else {
+                format!("raw_text : \"{needle}\"*")
+            }
+        }
+        SearchMode::Phrase => exact_tokens(&query.text)
+            .iter()
+            .map(|token| format!("raw_text : \"{}\"", escape_fts(token)))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+        SearchMode::Flexible => {
+            let tokens = fold_tokens(&query.text);
+            let Some((last, head)) = tokens.split_last() else {
+                return String::new();
+            };
+            let mut parts: Vec<String> = head
+                .iter()
+                .map(|token| format!("normalized_text : \"{}\"", escape_fts(token)))
+                .collect();
+            parts.push(format!("normalized_text : \"{}\"*", escape_fts(last)));
+            parts.join(" AND ")
+        }
+        SearchMode::Auto => String::new(),
+    }
+}
+
+/// Boşlukları tek boşluğa indirir (karşılaştırma için).
+fn collapse_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Türkçe küçük harf: `İ`→`i`, `I`→`ı`. Tam arama `ı` ile `i`yi ayırır.
+fn turkish_lower(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            'İ' => out.push('i'),
+            'I' => out.push('ı'),
+            _ => out.extend(ch.to_lowercase()),
+        }
+    }
+    out
+}
+
+/// Kelime dizisi: Türkçe tam (`fold=false`) ya da sadeleşmiş (`fold=true`).
+/// Noktalama ayırıcıdır; `normalized_text` sütunuyla aynı sadeleştirme
+/// (`dim_evidence::normalize`) kullanılır ki aday üretimi ile doğrulama
+/// birbirinden kopmasın.
+fn tokens_with(text: &str, fold: bool) -> Vec<String> {
+    let prepared = if fold {
+        dim_evidence::normalize(text)
+    } else {
+        turkish_lower(text)
+    };
+    prepared
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn exact_tokens(text: &str) -> Vec<String> {
+    tokens_with(text, false)
+}
+
+fn fold_tokens(text: &str) -> Vec<String> {
+    tokens_with(text, true)
+}
+
+/// İğne kelimeleri samanlıkta **bitişik** geçiyor mu? `prefix_last` ise son
+/// iğne kelimesi samanlık kelimesinin öneki olabilir (Türkçe ekler).
+fn seq_matches(haystack: &[String], needle: &[String], prefix_last: bool) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle.iter())
+            .enumerate()
+            .all(|(index, (hay, want))| {
+                if prefix_last && index == needle.len() - 1 {
+                    hay.starts_with(want.as_str())
+                } else {
+                    hay == want
+                }
+            })
+    })
+}
+
+/// Metinde `yıl/numara` geçiyor mu? Numara baştaki sıfırlardan arındırılmış
+/// karşılaştırılır; rol (E./K.) verildiyse numaradan sonra o harf aranır.
+fn docket_match(text: &str, docket: &DocketNumber) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let year: String = chars[start..i].iter().collect();
+        if year != docket.year {
+            continue;
+        }
+        let mut j = i;
+        while j < chars.len() && (chars[j].is_whitespace() || chars[j] == '.') {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] != '/' {
+            continue;
+        }
+        j += 1;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let number_start = j;
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j == number_start {
+            continue;
+        }
+        let raw_number: String = chars[number_start..j].iter().collect();
+        let trimmed = raw_number.trim_start_matches('0');
+        let number = if trimmed.is_empty() { "0" } else { trimmed };
+        if number != docket.number {
+            continue;
+        }
+        let Some(expected) = docket.role else {
+            return true;
+        };
+        let mut k = j;
+        while k < chars.len()
+            && (chars[k].is_whitespace() || matches!(chars[k], '.' | ',' | '-' | '/'))
+        {
+            k += 1;
+        }
+        if k < chars.len() && chars[k].to_ascii_uppercase() == expected {
+            return true;
+        }
+    }
+    false
+}
+
+/// SQL doğrulaması: `mode` etiketiyle gelen kipin kesin eşleşme kuralı.
+fn search_match(text: &str, needle: &str, mode: &str) -> bool {
+    match mode {
+        "exact" => {
+            let haystack = turkish_lower(&collapse_ws(text));
+            let wanted = turkish_lower(&collapse_ws(needle));
+            !wanted.is_empty() && haystack.contains(&wanted)
+        }
+        "flexible" => seq_matches(&fold_tokens(text), &fold_tokens(needle), true),
+        "phrase" => seq_matches(&exact_tokens(text), &exact_tokens(needle), false),
+        "docket" => parse_docket(needle).is_some_and(|docket| docket_match(text, &docket)),
+        _ => false,
+    }
+}
+
+/// `dim_search_match(text, needle, mode)` SQL fonksiyonunu bağlar.
+///
+/// Kural tek yerde (Rust) yaşar; sayım ve sayfa aynı doğrulamayı kullansın diye
+/// SQLite'a skaler fonksiyon olarak verilir. Fonksiyon deterministiktir.
+pub(crate) fn register_search_functions(conn: &Connection) -> Result<(), StorageError> {
+    conn.create_scalar_function(
+        "dim_search_match",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: Option<String> = ctx.get(0)?;
+            let needle: Option<String> = ctx.get(1)?;
+            let mode: Option<String> = ctx.get(2)?;
+            Ok(match (text, needle, mode) {
+                (Some(text), Some(needle), Some(mode)) => {
+                    i64::from(search_match(&text, &needle, &mode))
+                }
+                _ => 0,
+            })
+        },
+    )?;
+    Ok(())
 }
 
 /// Arama sorgusunun ortak FROM'u. Segment → koşu → sürüm → belge yolu tek
@@ -595,16 +1034,27 @@ const SEARCH_FROM: &str = "text_segments_fts
      LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
      LEFT JOIN documents d ON d.id = dv.document_id";
 
-/// WHERE'i ve parametrelerini (önce MATCH, sonra `case_id`) üretir.
+/// WHERE'i ve parametrelerini (önce MATCH, sonra `case_id`, kip doğrulaması,
+/// ardından filtreler) üretir.
 ///
 /// Etiket filtresi **VE** semantiği taşır: verilen bütün etiketler aynı belgede
 /// olmalı. Tarih rolü, belgeye *kaynaklı* olayın rolüdür — belgeye bağlanmamış
 /// olay bu belgeyi sonuca sokmaz.
-fn search_where(case_id: &str, query: &str, filters: &SearchFilters) -> (String, Vec<Value>) {
-    let mut sql = String::from(" WHERE text_segments_fts MATCH ? AND s.case_id = ?");
+fn search_where(
+    case_id: &str,
+    query: &ResolvedQuery,
+    expression: &str,
+    filters: &SearchFilters,
+) -> (String, Vec<Value>) {
+    let mut sql = String::from(
+        " WHERE text_segments_fts MATCH ? AND s.case_id = ?
+          AND dim_search_match(s.raw_text, ?, ?) = 1",
+    );
     let mut params: Vec<Value> = vec![
-        Value::Text(match_expression(query)),
+        Value::Text(expression.to_string()),
         Value::Text(case_id.to_string()),
+        Value::Text(query.text.clone()),
+        Value::Text(query.mode.tag().to_string()),
     ];
 
     if !filters.document_types.is_empty() {
@@ -822,8 +1272,14 @@ impl SearchCursor {
 #[serde(rename_all = "camelCase")]
 pub struct SearchPage {
     pub case_id: String,
+    /// Kullanıcının yazdığı metin (kırpılmış hâli).
     pub query: String,
-    /// `case`: yalnız bu dosya. Başka kapsam v1'de yok.
+    /// Çözümlenmiş metin: tırnaklar atılmış, kip `auto` ise kipe göre
+    /// sadeleştirilmiş hâli. Arayüz alıntı işaretlemesini bununla yapar.
+    pub resolved_query: String,
+    /// `auto` çözümlendikten sonraki kesin kip.
+    pub mode: SearchMode,
+    /// `case` = yalnız bu dosya.
     pub scope: String,
     pub limit: i64,
     pub returned: i64,
@@ -1580,5 +2036,201 @@ mod tests {
             .expect("kayıt");
         assert!(geometry.quads.is_empty());
         assert_eq!(geometry.total_blocks, 0);
+    }
+
+    /// Sayfa metinlerini tek koşuda yazar; arama testleri aynı dosyada
+    /// karşılaştırma yapabilsin diye segment kimlikleri dönmez.
+    fn store_texts(db: &Database, case_id: &str, version_id: &str, texts: &[&str]) {
+        let run = db
+            .start_parse_run(version_id, case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        let pages: Vec<NewPage> = texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| NewPage {
+                index: i64::try_from(index).expect("sıra"),
+                text: (*text).to_string(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+                ..Default::default()
+            })
+            .collect();
+        db.store_pages(&run.id, case_id, &pages).expect("sayfalar");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("bitir");
+    }
+
+    fn search_with(db: &Database, case_id: &str, text: &str, mode: SearchMode) -> SearchPage {
+        db.search_page(
+            case_id,
+            &SearchQuery {
+                text: text.into(),
+                mode,
+            },
+            &SearchFilters::default(),
+            20,
+            None,
+            true,
+        )
+        .expect("arama")
+    }
+
+    #[test]
+    fn search_exact_preserves_turkish_letters_flexible_folds_them() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["ıslah beyanı verildi", "islah edilen tutar"],
+        );
+
+        // Tam arama `ı` ile `i`yi ayırır: yalnız gerçekten "ıslah" yazan sayfa.
+        let exact = search_with(&db, &case_id, "ıslah", SearchMode::Exact);
+        assert_eq!(exact.mode, SearchMode::Exact);
+        assert_eq!(exact.total, Some(1));
+        assert_eq!(exact.hits[0].page_index, Some(0));
+
+        // Esnek arama Türkçe karakterleri sadeleştirir: iki sayfa da gelir.
+        let flexible = search_with(&db, &case_id, "islah", SearchMode::Flexible);
+        assert_eq!(flexible.mode, SearchMode::Flexible);
+        assert_eq!(flexible.total, Some(2), "esnek arama ı/i ayrımını kaldırır");
+        assert_eq!(flexible.resolved_query, "islah");
+    }
+
+    #[test]
+    fn search_phrase_allows_punctuation_between_words_exact_does_not() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["kira, sözleşmesi imzalandı", "kira sözleşmesi feshedildi"],
+        );
+
+        let phrase = search_with(&db, &case_id, "kira sözleşmesi", SearchMode::Phrase);
+        assert_eq!(phrase.total, Some(2), "ifade araması noktalamayı yutar");
+        let exact = search_with(&db, &case_id, "kira sözleşmesi", SearchMode::Exact);
+        assert_eq!(exact.total, Some(1), "tam arama bitişik metin ister");
+        assert_eq!(exact.hits[0].page_index, Some(1));
+    }
+
+    #[test]
+    fn search_exact_matches_turkish_suffix_prefix() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["itirazın reddine karar verildi"],
+        );
+        let exact = search_with(&db, &case_id, "itiraz", SearchMode::Exact);
+        assert_eq!(exact.total, Some(1));
+        // "itiraz" öneki "itirazın"ı bulur; ayrı kelime "itirazname" değil.
+        let wrong = search_with(&db, &case_id, "itirazname", SearchMode::Exact);
+        assert_eq!(wrong.total, Some(0));
+    }
+
+    #[test]
+    fn search_auto_treats_quoted_text_as_phrase() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["kira bedeli ödendi", "kira ve bedeli ayrı"],
+        );
+
+        let auto = db
+            .search_segments_page(
+                &case_id,
+                "\"kira bedeli\"",
+                &SearchFilters::default(),
+                20,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(auto.mode, SearchMode::Phrase, "tırnak ifade kipini seçer");
+        assert_eq!(auto.resolved_query, "kira bedeli");
+        assert_eq!(auto.total, Some(1));
+        assert_eq!(auto.hits[0].page_index, Some(0));
+
+        let plain = db
+            .search_segments_page(
+                &case_id,
+                "kira bedeli",
+                &SearchFilters::default(),
+                20,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(plain.mode, SearchMode::Flexible);
+        assert_eq!(plain.total, Some(1), "tırnaksız da bitişik arar");
+    }
+
+    #[test]
+    fn search_docket_matches_leading_zeros_and_role() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                "2024/0123 E. sayılı dosya",
+                "2024/123 K. kararı",
+                "2024/1234 E. başka dosya",
+            ],
+        );
+
+        let esas = db
+            .search_segments_page(
+                &case_id,
+                "2024/123 E.",
+                &SearchFilters::default(),
+                20,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(esas.mode, SearchMode::Docket, "E./K. yazımı tanınır");
+        assert_eq!(esas.total, Some(1), "baştaki sıfır ve rol eşleşmeli");
+        assert_eq!(esas.hits[0].page_index, Some(0));
+
+        let any_role = db
+            .search_segments_page(
+                &case_id,
+                "2024/123",
+                &SearchFilters::default(),
+                20,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(any_role.mode, SearchMode::Docket);
+        assert_eq!(any_role.total, Some(2), "rol verilmezse E. ve K. birlikte");
+    }
+
+    #[test]
+    fn search_docket_mode_rejects_text_without_number() {
+        let (db, case_id, _version_id) = setup();
+        let err = db
+            .search_page(
+                &case_id,
+                &SearchQuery {
+                    text: "esas numarası".into(),
+                    mode: SearchMode::Docket,
+                },
+                &SearchFilters::default(),
+                10,
+                None,
+                false,
+            )
+            .expect_err("numarasız metin reddedilmeli");
+        assert!(matches!(err, StorageError::SearchQuery(_)));
+        assert_eq!(err.code(), "E_SEARCH_QUERY");
     }
 }

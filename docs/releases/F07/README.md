@@ -7,12 +7,45 @@
 | İş | Durum | Kanıt |
 |---|---|---|
 | F07-T01 | ✅ | FTS5 araması; dosya kapsamı zorunlu (`case_id` her sorguda) |
-| F07-T02 | ⏳ | tam/esnek/tırnaklı ifade ve E./K. numarası seçenekleri açık |
+| F07-T02 | ✅ | tam/esnek/tırnaklı ifade ve E./K. numarası kipleri; doğrulama Rust'ta tek yerde |
 | F07-T03 | ✅ | belge türü, tarih rolü, etiket ve OCR durumu filtreleri |
 | F07-T04 | ✅ | sonuç alıntısı `raw_text`ten; vurgu metin düğümüyle (XSS yüzeyi yok) |
 | F07-T05 | ✅ | keyset sayfalama, 200 sonuç sınırı, kapsam görünürlüğü |
 | F07-T06 | ⏳ | PDF okuyucuda döndürme gösterilir; yakınlaştırma ve sayfa etiketi ayrımı açık |
 | F07-T07 | ⏳ | DOCX/UDF yapısal görünüm açık |
+
+## F07-T02 — arama kipleri
+
+`SearchQuery { text, mode }`; `mode`: `auto | exact | flexible | phrase | docket`.
+
+- **auto**: tırnaklı metin → ifade, `2024/123 E.` → esas/karar no, diğerleri → esnek.
+- **exact (Tam)**: Türkçe karakterler korunur (`ı ≠ i`, `ş ≠ s`); metin bitişik
+  geçmeli (noktalama araya giremez); son kelime önek olabilir (`itiraz` →
+  `itirazın`).
+- **flexible (Esnek)**: Türkçe karakterler sadeleşir (`ı→i, ş→s, ğ→g, ü→u,
+  ö→o, ç→c`); noktalama önemsiz; son kelime önek olabilir. Varsayılan kip.
+- **phrase (İfade)**: kelimeler aynı sırada, araya noktalama girebilir; son
+  kelime tam olmalı.
+- **docket**: `2024/123 E.` biçimi; yıl + numara (baştaki sıfırlar yok sayılır)
+  + varsa E./K. rolü. Rol verilmezse ikisi birlikte gelir.
+
+**Neden tokenizer değişmedi:** `unicode61 remove_diacritics 2` `ş→s` gibi
+eşlemeleri zaten yapar ama `ı` ile `i`yi ayırmaz ve tam arama ile esnek aramayı
+aynı davranışa indirger. Bu yüzden aday kümesi FTS'te daraltılır, **kesin
+eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
+(Rust'ta tek yerde) doğrulanır. Sayım ve sayfa aynı doğrulamayı kullanır;
+`total` ile gösterilen sonuç çelişmez.
+
+- Esnek/tam adaylar sırasıyla `normalized_text` / `raw_text` sütunundan üretilir;
+  `normalized_text` indekslenirken `dim_evidence::normalize` kullanıldığı için
+  aday üretimi ile doğrulama aynı sadeleştirmeyi paylaşır.
+- E./K. adayları yalnız **yıl** belirteciyle daraltılır: `2024/0123` baştaki
+  sıfır yüzünden `123` belirteciyle eşleşmez; numara karşılaştırması
+  kanonikleştirilmiş değerle yapılır.
+- Kip/numara çözümlenemezse sessiz boş sonuç yerine `E_SEARCH_QUERY`.
+- Arayüz: Arama ekranında kip seçimi, kip ipucu ("Otomatik: Esnek — …"),
+  sonuç başlığında çözümlenmiş kip; kip değişince "önceki ayarlarla alındı"
+  uyarısı. Vurgulama `resolvedQuery` ile yapılır (tırnaklar atılmış metin).
 
 ## F07-T03 — arama filtreleri
 
@@ -49,17 +82,28 @@
 
 ## Doğrulama
 
-- `cargo test -p dim-storage --lib` → 125 test (8 yeni: 5 arama, 3 etiket).
-- `cargo test --workspace` → storage 125, ingest 12 + E2E 1, vault 15,
-  domain 13, jobs 5, evidence 7, policy 7, providers 5, cli-adapters 7.
-- Web: `pnpm --filter @dim/desktop typecheck` + `vitest` **73** (13 yeni) +
+- `cargo test -p dim-storage --lib` → **131** test (6 yeni: tam/esnek, ifade
+  noktalaması, Türkçe ek öneki, tırnaklı auto, E./K. sıfır+rol, numarasız ret).
+- `cargo test --workspace --all-targets` → storage 131, ingest 12 + E2E 1,
+  vault 15, domain 13, jobs 5, evidence 7, policy 7, providers 5,
+  cli-adapters 7.
+- Web: `pnpm --filter @dim/desktop typecheck` + `vitest` **77** (4 yeni) +
   `vite build`.
-- CI: bu turdaki commit sonrası doğrulanır.
+- `cargo clippy --workspace --all-targets -- -D warnings` ve Tauri clippy
+  temiz; iki manifestte rustfmt temiz.
+- CI: bu commit sonrası `ci.yml` ile doğrulanır.
 
 ## Bilinen sınırlar
 
-- FTS tokenizer `unicode61 remove_diacritics 2`; Türkçe `ı/i` için özel
-  tokenizer F07-T02'de değerlendirilecek.
+- Tam arama **bitişik** metin ister (`kira, bedeli` ≠ `kira bedeli`); noktalama
+  toleransı için İfade kipi kullanılmalı.
+- Esnek/tam kiplerde son kelime önek olabilir; bu, "kelime başı" araması
+  yapıldığı anlamına gelir (ör. `an` çok sonuç getirir). Kısa sorgularda
+  sonuç sayısı bu yüzden yüksek olabilir.
+- E./K. adayları yıl belirteciyle daraltılır; yıl geçmeyen ama numarası geçen
+  bir metin (ör. yalnız `123 E.`) docket kipinde bulunmaz.
+- Kip çözümü `auto` için sunucudadır; arayüz aynı kuralı önizler ama tek
+  doğruluk kaynağı çekirdektir.
 - Tarih **aralığı** filtresi yok; yalnız tarih rolü var (planda rol/aralık
   birlikte anılır, aralık açık iş).
 - Filtre çubuğu belge türünde tek seçim sunar; çekirdek API çoklu türü

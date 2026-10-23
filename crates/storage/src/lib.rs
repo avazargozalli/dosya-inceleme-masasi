@@ -41,7 +41,8 @@ pub use exports::ExportRow;
 pub use notes::{NewNote, NoteRow};
 pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
-    SearchPage, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT, SEARCH_DATE_ROLES,
+    SearchMode, SearchPage, SearchQuery, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT,
+    MAX_SEARCH_QUERY_CHARS, SEARCH_DATE_ROLES,
 };
 pub use precedents::{
     CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, PrecedentNoteRow,
@@ -190,6 +191,7 @@ impl Database {
         )
         .map_err(|_| StorageError::Open)?;
         apply_key_and_pragmas(&conn, key)?;
+        parsing::register_search_functions(&conn)?;
         let mut db = Self {
             conn,
             path: Some(path.to_path_buf()),
@@ -203,6 +205,7 @@ impl Database {
     pub fn open_in_memory(key: &DatabaseKey) -> Result<Self, StorageError> {
         let conn = Connection::open_in_memory().map_err(|_| StorageError::Open)?;
         apply_key_and_pragmas(&conn, key)?;
+        parsing::register_search_functions(&conn)?;
         let mut db = Self {
             conn,
             path: None,

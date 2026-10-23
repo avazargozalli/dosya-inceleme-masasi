@@ -13,7 +13,8 @@ use dim_storage::{
     NewReviewItem, NewTask, NewTransferConsent, NoteRow, OutboxEventRow, PageRow, ParseRun,
     PrecedentNoteRow, PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput,
     ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchPage, SegmentBlock, TaskRow, TransferConsentRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
+    TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -538,29 +539,59 @@ pub fn search_segments(
     Ok(db.search_segments(&case_id, &query, limit.unwrap_or(50).clamp(1, 200))?)
 }
 
+/// `search_segments_page` girdisi. Alanlar tek tek adlandırılmıştır; kip
+/// filtreden ayrıdır (F07-T02) ve IPC yükü açık kalır.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPageInput {
+    pub case_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub filters: Option<SearchFilters>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub include_total: Option<bool>,
+    /// `auto` | `exact` | `flexible` | `phrase` | `docket`.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
 /// Filtreli ve keyset sayfalı arama (F07-T03, F07-T05).
 ///
 /// `filters` verilmezse filtre uygulanmaz. `includeTotal` yalnız ilk sayfada
 /// true olmalı; sonraki sayfalarda tam sayım gereksiz maliyettir.
+/// `mode` (F07-T02) sunucuda çözülür; bilinmeyen kip `E_SEARCH_QUERY` döner.
 #[tauri::command]
 pub fn search_segments_page(
     state: State<'_, AppState>,
-    case_id: String,
-    query: String,
-    filters: Option<SearchFilters>,
-    limit: Option<i64>,
-    cursor: Option<String>,
-    include_total: Option<bool>,
+    input: SearchPageInput,
 ) -> Result<SearchPage, ApiError> {
+    let mode = match input
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        None => SearchMode::Auto,
+        Some(raw) => SearchMode::parse(raw).ok_or_else(|| {
+            ApiError::new("E_SEARCH_QUERY", &format!("bilinmeyen arama kipi: {raw}"))
+        })?,
+    };
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    Ok(db.search_segments_page(
-        &case_id,
-        &query,
-        &filters.unwrap_or_default(),
-        limit.unwrap_or(50),
-        cursor.as_deref(),
-        include_total.unwrap_or(false),
+    Ok(db.search_page(
+        &input.case_id,
+        &SearchQuery {
+            text: input.query,
+            mode,
+        },
+        &input.filters.unwrap_or_default(),
+        input.limit.unwrap_or(50),
+        input.cursor.as_deref(),
+        input.include_total.unwrap_or(false),
     )?)
 }
 
