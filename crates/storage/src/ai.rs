@@ -625,7 +625,7 @@ mod tests {
         .expect("onay")
     }
 
-    fn run(case_id: &str, consent_id: &str) -> NewAiRun {
+    fn run(_case_id: &str, consent_id: &str) -> NewAiRun {
         NewAiRun {
             task_type: "summarize".into(),
             provider_id: "p1".into(),
