@@ -384,9 +384,23 @@ export type TaskRow = {
   dateOrigin: string;
   assigneeLabel: string | null;
   reminderPolicy: string;
+  /** Tarih kullanıcı tarafından açıkça onaylandıysa dolu (F08-T10). */
+  dateConfirmedAt: string | null;
   createdAt: string;
   updatedAt: string;
   rowVersion: number;
+};
+
+export type ReminderRow = {
+  taskId: string;
+  dueDate: string;
+  policy: string;
+  localDay: string;
+};
+
+export type ReminderEnqueueResult = {
+  queued: number;
+  reminders: ReminderRow[];
 };
 
 export type NewTaskInput = {
@@ -569,6 +583,11 @@ export const api = {
     invoke<TaskRow>("task_create", { caseId, input }),
   taskComplete: (id: string) => invoke<TaskRow>("task_complete", { id }),
   taskDelete: (id: string) => invoke<void>("task_delete", { id }),
+  taskConfirmDate: (id: string) => invoke<TaskRow>("task_confirm_date", { id }),
+  taskReminders: (caseId: string, today: string) =>
+    invoke<ReminderRow[]>("task_reminders", { caseId, today }),
+  taskRemindersEnqueue: (caseId: string, today: string) =>
+    invoke<ReminderEnqueueResult>("task_reminders_enqueue", { caseId, today }),
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
   anchorLocate: (anchorId: string) =>

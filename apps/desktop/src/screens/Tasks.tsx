@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, toApiError, type ApiError, type CaseRow, type TaskRow } from "../lib/api";
+import {
+  api,
+  toApiError,
+  type ApiError,
+  type CaseRow,
+  type ReminderRow,
+  type TaskRow,
+} from "../lib/api";
+import { localIsoDay, REMINDER_POLICY_LABEL, REMINDER_TEXT, reminderLabel } from "../lib/reminders";
 
 export function Tasks() {
   const [cases, setCases] = useState<CaseRow[]>([]);
@@ -8,6 +16,9 @@ export function Tasks() {
   const [includeDone, setIncludeDone] = useState(false);
   const [title, setTitle] = useState("");
   const [due, setDue] = useState("");
+  const [policy, setPolicy] = useState("none");
+  const [reminders, setReminders] = useState<ReminderRow[]>([]);
+  const [reminderNote, setReminderNote] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -26,7 +37,12 @@ export function Tasks() {
   const load = useCallback(async (id: string, done: boolean) => {
     if (!id) return;
     try {
-      setRows(await api.taskList(id, done));
+      const [taskRows, reminderRows] = await Promise.all([
+        api.taskList(id, done),
+        api.taskReminders(id, localIsoDay()),
+      ]);
+      setRows(taskRows);
+      setReminders(reminderRows);
     } catch (e) {
       setError(toApiError(e));
     }
@@ -48,10 +64,41 @@ export function Tasks() {
         userDueDate: due || null,
         dateTimezone: "Europe/Istanbul",
         assigneeLabel: null,
-        reminderPolicy: "none",
+        reminderPolicy: policy,
       });
       setTitle("");
       setDue("");
+      setPolicy("none");
+      await load(caseId, includeDone);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Tarih yazmak onay değildir: kullanıcı ayrıca onaylar (F08-T10). */
+  async function confirmDate(id: string) {
+    setBusy(true);
+    try {
+      await api.taskConfirmDate(id);
+      await load(caseId, includeDone);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enqueueReminders() {
+    setBusy(true);
+    try {
+      const result = await api.taskRemindersEnqueue(caseId, localIsoDay());
+      setReminderNote(
+        result.queued === 0
+          ? "Yeni hatırlatıcı yok (bugün için zaten kuyrukta)."
+          : `${result.queued} hatırlatıcı yerel bildirim kuyruğuna yazıldı.`,
+      );
       await load(caseId, includeDone);
     } catch (e) {
       setError(toApiError(e));
@@ -118,6 +165,20 @@ export function Tasks() {
             <label htmlFor="task-due">Tarih (isteğe bağlı)</label>
             <input id="task-due" className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
           </div>
+          <div className="field" style={{ flex: "0 1 170px" }}>
+            <label htmlFor="task-policy">Hatırlatma</label>
+            <select
+              id="task-policy"
+              className="input"
+              value={policy}
+              onChange={(e) => setPolicy(e.target.value)}
+              disabled={!due}
+            >
+              {Object.entries(REMINDER_POLICY_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+          </div>
           <button className="btn primary" disabled={busy} onClick={() => void add()}>Ekle</button>
         </div>
       </div>
@@ -158,11 +219,23 @@ export function Tasks() {
                 <span style={{ textDecoration: task.status === "done" ? "line-through" : "none" }}>
                   {task.title}
                 </span>
-                <span className="muted small">{task.userDueDate ?? "tarih yok"}</span>
+                <span className="muted small">
+                  {task.userDueDate ?? "tarih yok"}
+                  {task.userDueDate ? (
+                    <span className={`badge ${task.dateConfirmedAt ? "ok" : "warn"}`} style={{ marginLeft: 6 }}>
+                      {task.dateConfirmedAt ? "onaylı" : "onay bekliyor"}
+                    </span>
+                  ) : null}
+                </span>
                 <span className={`badge ${task.status === "done" ? "ok" : "plain"}`}>
                   {task.status === "done" ? "tamamlandı" : "açık"}
                 </span>
                 <span style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                  {task.status === "open" && task.userDueDate && !task.dateConfirmedAt ? (
+                    <button className="btn ghost" disabled={busy} onClick={() => void confirmDate(task.id)}>
+                      Tarihi onayla
+                    </button>
+                  ) : null}
                   {task.status === "open" ? (
                     <button className="btn ghost" onClick={() => void complete(task.id)}>Bitti</button>
                   ) : null}
@@ -173,7 +246,56 @@ export function Tasks() {
           </div>
         )}
         <p className="hint" style={{ margin: 0 }}>
-          Yerel bildirim ve hatırlatma kurulumu F14'te açılır; bu fazda tarih yalnız kayıt olarak tutulur.
+          Hatırlatıcı yalnız kullanıcının açıkça onayladığı tarih için kurulur; “Tarihi onayla”
+          denmedikçe bildirim üretilmez.
+        </p>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Yerel hatırlatıcılar</h2>
+            <p className="card-sub">{reminders.length} hatırlatıcı · {localIsoDay()}</p>
+          </div>
+          <button className="btn" disabled={busy || !caseId} onClick={() => void enqueueReminders()}>
+            Bildirim kuyruğuna yaz
+          </button>
+        </div>
+
+        {reminders.length === 0 ? (
+          <div className="empty">
+            <p style={{ margin: 0 }}>
+              Bugün için hatırlatıcı yok. Göreve tarih ve hatırlatma seçilip tarih onaylanmalı.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {reminders.map((r) => {
+              const task = rows.find((t) => t.id === r.taskId);
+              return (
+                <div
+                  key={`${r.taskId}-${r.policy}`}
+                  className="row"
+                  style={{
+                    justifyContent: "space-between",
+                    border: "1px solid var(--line)",
+                    borderRadius: "var(--radius)",
+                    padding: "6px 8px",
+                  }}
+                >
+                  <span className="small">{REMINDER_TEXT}</span>
+                  <span className="muted small">
+                    {reminderLabel(r.policy)} · {r.dueDate} · {task?.title ?? "görev"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {reminderNote ? <p className="hint" style={{ margin: 0 }}>{reminderNote}</p> : null}
+        <p className="hint" style={{ margin: 0 }}>
+          Bildirim metni müvekkil adı, dosya adı veya görev başlığı taşımaz; ayrıntı yalnız kasa
+          açıkken uygulamada görünür.
         </p>
       </div>
     </div>

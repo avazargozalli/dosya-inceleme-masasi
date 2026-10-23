@@ -42,7 +42,7 @@ pub use precedents::{
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{OutboxEventRow, ReviewCommitResult, ReviewTarget};
-pub use tasks::{NewTask, TaskRow};
+pub use tasks::{NewTask, ReminderEnqueueResult, ReminderRow, TaskRow};
 pub use timeline::{EventPatch, EventRow, EventSourceRow, NewEvent};
 
 use std::path::{Path, PathBuf};
@@ -124,9 +124,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0007_contradictions",
         sql: include_str!("migrations/0007_contradictions.sql"),
     },
+    Migration {
+        version: 8,
+        name: "0008_task_date_confirmation",
+        sql: include_str!("migrations/0008_task_date_confirmation.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

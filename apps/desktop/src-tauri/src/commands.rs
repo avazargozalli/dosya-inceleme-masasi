@@ -10,9 +10,9 @@ use dim_storage::{
     NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink,
     NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,
     NewTransferConsent, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
-    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewCommitResult,
-    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchHit, SegmentBlock, TaskRow,
-    TransferConsentRow,
+    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchHit, SegmentBlock,
+    TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -369,6 +369,35 @@ pub fn anchor_locate(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.locate_anchor(&anchor_id)?)
+}
+
+#[tauri::command]
+pub fn task_confirm_date(state: State<'_, AppState>, id: String) -> Result<TaskRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.confirm_task_date(&id)?)
+}
+
+#[tauri::command]
+pub fn task_reminders(
+    state: State<'_, AppState>,
+    case_id: String,
+    today: String,
+) -> Result<Vec<ReminderRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.due_task_reminders(&case_id, &today)?)
+}
+
+#[tauri::command]
+pub fn task_reminders_enqueue(
+    state: State<'_, AppState>,
+    case_id: String,
+    today: String,
+) -> Result<ReminderEnqueueResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.enqueue_task_reminders(&case_id, &today)?)
 }
 
 #[tauri::command]
