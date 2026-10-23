@@ -56,6 +56,7 @@ pub fn run() {
             commands::review_history,
             commands::vault_backup,
             commands::provider_probe,
+            commands::document_redact,
             commands::precedent_create,
             commands::precedent_list,
             commands::precedent_note_create,

@@ -11,10 +11,10 @@ import sys
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .engines import EngineError, capabilities, decode_content, extract
+from .engines import EngineError, capabilities, decode_content, extract, redact_pdf
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
 
-METHODS = {"ping", "capabilities", "extract_text", "shutdown"}
+METHODS = {"ping", "capabilities", "extract_text", "redact", "shutdown"}
 
 
 def _require_version(frame: dict[str, Any]) -> None:
@@ -50,6 +50,25 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         return ok(rid, {"bye": True}), True
 
     data = decode_content(params)
+
+    if method == "redact":
+        terms = params.get("terms")
+        if not isinstance(terms, list) or not terms:
+            raise ProtocolError("E_PARAMS", "terms listesi zorunlu")
+        result = redact_pdf(data, [str(t) for t in terms])
+        import base64 as _b64
+
+        return ok(
+            rid,
+            {
+                "pdfBase64": _b64.b64encode(result.pdf).decode(),
+                "hits": [{"page": h.page, "term": h.term, "rect": h.rect} for h in result.hits],
+                "remaining": result.remaining,
+                "engine": result.engine,
+                "engineVersion": result.engine_version,
+            },
+        ), False
+
     mime = params.get("mime")
     if not isinstance(mime, str) or not mime:
         raise ProtocolError("E_PARAMS", "mime zorunlu")

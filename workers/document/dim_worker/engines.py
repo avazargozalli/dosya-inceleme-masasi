@@ -224,3 +224,80 @@ def capabilities() -> dict[str, Any]:
         },
         "limits": {"maxPages": MAX_PAGES, "maxInputBytes": MAX_INPUT_BYTES},
     }
+
+
+@dataclass
+class RedactionHit:
+    page: int
+    term: str
+    rect: list[float]
+
+
+@dataclass
+class RedactionResult:
+    pdf: bytes
+    hits: list[RedactionHit]
+    remaining: list[str]
+    engine: str
+    engine_version: str
+
+
+def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> RedactionResult:
+    """Terimleri PDF'in **metin katmanından ve görüntüsünden** gerçekten çıkarır.
+
+    Yalnız siyah dikdörtgen çizmek maskeleme sayılmaz: `apply_redactions`
+    içeriği kaldırır, ardından çıktı yeniden açılıp terimlerin kalmadığı
+    bağımsız olarak doğrulanır. Doğrulama başarısızsa sonuç kullanılmaz.
+    """
+    pymupdf = _pymupdf()
+    cleaned = [t for t in (terms or []) if isinstance(t, str) and t.strip()]
+    if not cleaned:
+        raise EngineError("E_REDACT_TERMS", "maskelenecek terim listesi boş")
+
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001
+        raise EngineError("E_PDF_OPEN", "PDF açılamadı (bozuk veya parola korumalı)") from exc
+    if doc.needs_pass:
+        raise EngineError("E_PDF_PASSWORD", "belge parola korumalı; parola desteği henüz yok")
+
+    hits: list[RedactionHit] = []
+    try:
+        for page in doc:
+            for term in cleaned:
+                for rect in page.search_for(term):
+                    page.add_redact_annot(rect, fill=fill)
+                    hits.append(
+                        RedactionHit(
+                            page=page.number,
+                            term=term,
+                            rect=[float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
+                        )
+                    )
+            # Görüntü pikselleri de temizlenir; yalnız vektör kutusu bırakılmaz.
+            page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+        doc.scrub(metadata=True, xml_metadata=True, attached_files=True, hidden_text=True)
+        out = doc.tobytes(garbage=4, deflate=True)
+    finally:
+        doc.close()
+
+    check = pymupdf.open(stream=out, filetype="pdf")
+    remaining: list[str] = []
+    try:
+        for page in check:
+            text = page.get_text("text") or ""
+            for term in cleaned:
+                if term in text or page.search_for(term):
+                    remaining.append(term)
+                    break
+    finally:
+        check.close()
+
+    version = str(getattr(pymupdf, "__version__", "unknown"))
+    return RedactionResult(
+        pdf=out,
+        hits=hits,
+        remaining=sorted(set(remaining)),
+        engine="pymupdf",
+        engine_version=version,
+    )

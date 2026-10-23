@@ -104,6 +104,20 @@ impl Database {
         byte_size: i64,
         mime: &str,
     ) -> Result<DocumentVersion, StorageError> {
+        self.add_version_with_parent(document_id, case_id, blob_id, sha256, byte_size, mime, None)
+    }
+
+    /// Türev sürüm (ör. maskeli kopya) için ebeveyn bağını korur.
+    pub fn add_version_with_parent(
+        &self,
+        document_id: &str,
+        case_id: &str,
+        blob_id: &str,
+        sha256: &str,
+        byte_size: i64,
+        mime: &str,
+        parent_version_id: Option<&str>,
+    ) -> Result<DocumentVersion, StorageError> {
         if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(StorageError::InvalidSetting);
         }
@@ -116,9 +130,21 @@ impl Database {
         let now = now_iso();
         let tx = self.conn().unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO document_versions (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,is_original)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            rusqlite::params![id, document_id, case_id, next, blob_id, sha256, byte_size, mime, now, i64::from(next == 1)],
+            "INSERT INTO document_versions (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,is_original,parent_version_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            rusqlite::params![
+                id,
+                document_id,
+                case_id,
+                next,
+                blob_id,
+                sha256,
+                byte_size,
+                mime,
+                now,
+                i64::from(next == 1),
+                parent_version_id
+            ],
         )?;
         tx.execute(
             "UPDATE documents SET current_version_id=?1, updated_at=?2, row_version=row_version+1 WHERE id=?3",

@@ -6,9 +6,9 @@ use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
     AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow, Database, DatabaseKey, Document,
     DocumentVersion, EventRow, EvidenceLinkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
-    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewReviewItem,
-    NewTask, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ReviewDecisionRow,
-    ReviewItemRow, SearchHit, TaskRow,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
+    NewReviewItem, NewTask, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
+    RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow, SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -934,4 +934,109 @@ pub fn citation_check_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_citation_checks(&version_id)?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactionView {
+    pub document: Document,
+    pub version: DocumentVersion,
+    pub plan: RedactionPlanRow,
+    pub hits: usize,
+    pub remaining: Vec<String>,
+}
+
+/// Terimleri belgeden gerçekten çıkarır, çıktıyı yeni bir sürüm olarak kaydeder.
+/// Worker doğrulaması geçmezse hiçbir çıktı kaydedilmez.
+#[tauri::command]
+pub fn document_redact(
+    state: State<'_, AppState>,
+    version_id: String,
+    terms: Vec<String>,
+) -> Result<RedactionView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db.get_version(&version_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let mut worker = spawn_worker()?;
+    let outcome = worker.redact(&data, &terms)?;
+    worker.shutdown();
+
+    if !outcome.remaining.is_empty() {
+        return Err(ApiError::new(
+            "E_REDACT_VERIFY",
+            "Maskeli çıktıda hâlâ aranan metin var; dosya kaydedilmedi.",
+        ));
+    }
+
+    let out_sha = hex::encode(Sha256::digest(&outcome.pdf));
+    let aad = format!("{}:redacted:{}", version.case_id, out_sha);
+    let out_path = vault.write_blob(
+        &vault_path.parent().unwrap_or_else(|| Path::new(".")).join("blobs"),
+        &outcome.pdf,
+        aad.as_bytes(),
+    )?;
+    let out_size = i64::try_from(std::fs::metadata(&out_path)?.len()).unwrap_or(i64::MAX);
+    let storage_id = out_path.file_stem().and_then(|s| s.to_str()).unwrap_or("blob").to_string();
+    let out_blob_id = db.create_blob_record(&storage_id, out_size, &aad)?;
+
+    let source_doc = db
+        .get_document(&version.document_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge bulunamadı."))?;
+    let new_doc = db.create_document(
+        &version.case_id,
+        &format!("{} (maskeli)", source_doc.display_name),
+        "pdf",
+        None,
+        "unknown",
+    )?;
+    let new_version = db.add_version_with_parent(
+        &new_doc.id,
+        &version.case_id,
+        &out_blob_id,
+        &out_sha,
+        i64::try_from(outcome.pdf.len()).unwrap_or(i64::MAX),
+        "application/pdf",
+        Some(&version_id),
+    )?;
+
+    let plan = db.create_redaction_plan(
+        &version.case_id,
+        &NewRedactionPlan {
+            document_version_id: version_id.clone(),
+            parse_run_id: None,
+            render_hash: version.original_sha256.clone(),
+            output_profile: "share".to_string(),
+        },
+    )?;
+    let regions: Vec<RedactionRegionInput> = outcome
+        .hits
+        .iter()
+        .map(|hit| RedactionRegionInput {
+            page_index: i64::from(hit.page),
+            rect: hit.rect,
+            term_hash: hex::encode(Sha256::digest(hit.term.as_bytes())),
+        })
+        .collect();
+    db.add_redaction_regions(&plan.id, &regions)?;
+
+    Ok(RedactionView {
+        document: new_doc,
+        version: new_version,
+        plan,
+        hits: outcome.hits.len(),
+        remaining: outcome.remaining,
+    })
 }

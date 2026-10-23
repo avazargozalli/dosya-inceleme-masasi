@@ -12,6 +12,7 @@ mod error;
 mod notes;
 mod parsing;
 mod precedents;
+mod redactions;
 mod tasks;
 mod timeline;
 
@@ -25,6 +26,9 @@ pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use notes::{NewNote, NoteRow};
 pub use parsing::{settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchHit};
+pub use redactions::{
+    NewRedactionPlan, RedactionPlanRow, RedactionRegionInput,
+};
 pub use precedents::{
     CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, PrecedentNoteRow,
     PrecedentRow,

@@ -97,6 +97,14 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type RedactionResult = {
+  document: DocumentRow;
+  version: DocumentVersionRow;
+  plan: { id: string; state: string; outputProfile: string };
+  hits: number;
+  remaining: string[];
+};
+
 export type PrecedentRow = {
   id: string;
   court: string;
@@ -385,6 +393,9 @@ export const api = {
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
   providerProbe: () => invoke<AdapterView[]>("provider_probe"),
+
+  documentRedact: (versionId: string, terms: string[]) =>
+    invoke<RedactionResult>("document_redact", { versionId, terms }),
 
   precedentList: () => invoke<PrecedentRow[]>("precedent_list"),
   precedentCreate: (input: {
