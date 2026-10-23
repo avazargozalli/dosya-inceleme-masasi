@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AnchorRow, Case, CasePatch, Document, DocumentVersion, EventRow, NewAnchor, NewCase, NewEvent,
-    NewNote, NewPage, NewTask, NoteRow, PageRow, ParseRun, SearchHit, TaskRow,
+    AnchorRow, Case, CasePatch, Database, DatabaseKey, Document, DocumentVersion, EventRow, NewAnchor,
+    NewCase, NewEvent, NewNote, NewPage, NewTask, NoteRow, PageRow, ParseRun, SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -13,6 +13,8 @@ use zeroize::Zeroizing;
 
 use crate::error::ApiError;
 use crate::state::{open_database, vault_id_from_master, AppState};
+
+use sha2::{Digest, Sha256};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -566,4 +568,149 @@ pub fn document_parse(
         stored_segments: stored,
         warnings: extraction.warnings,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupView {
+    pub path: String,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub manifest_hash: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreView {
+    pub vault_path: String,
+    pub file_count: usize,
+}
+
+fn sha256_file(path: &Path) -> Result<String, ApiError> {
+    let data = std::fs::read(path)?;
+    Ok(hex::encode(Sha256::digest(&data)))
+}
+
+/// Kasa dizinini (başlık + SQLCipher DB + şifreli blob'lar) tutarlı bir
+/// klasöre yedekler. DB `sqlcipher_export` ile alınır; açık metin yazılmaz.
+#[tauri::command]
+pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<BackupView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_id = guard
+        .vault_id
+        .clone()
+        .ok_or_else(|| ApiError::new("E_VAULT_LOCKED", "Kasa kimliği yok."))?;
+
+    let root = PathBuf::from(dest_dir.trim());
+    if dest_dir.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Yedek konumu boş olamaz."));
+    }
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string())
+        .replace([':', '-'], "")
+        .replace('T', "-")
+        .chars()
+        .take(15)
+        .collect::<String>();
+    let backup_dir = root.join(format!("DimYedek-{stamp}"));
+    if backup_dir.exists() {
+        return Err(ApiError::new("E_BACKUP_EXISTS", "Aynı adlı yedek klasörü zaten var."));
+    }
+    std::fs::create_dir_all(backup_dir.join("blobs"))?;
+
+    let key = DatabaseKey::derive_from_master(vault.master_key(), &vault_id)?;
+    let backup_db = backup_dir.join("vault.db");
+    db.backup_to(&backup_db, &key)?;
+    std::fs::copy(vault_path, backup_dir.join("vault.dimvault"))?;
+
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    let mut total: u64 = 0;
+    let blob_src = vault_path.parent().unwrap_or_else(|| Path::new(".")).join("blobs");
+    if blob_src.is_dir() {
+        for entry in std::fs::read_dir(&blob_src)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let dest = backup_dir.join("blobs").join(&name);
+            std::fs::copy(entry.path(), &dest)?;
+            let size = std::fs::metadata(&dest)?.len();
+            total += size;
+            files.push(serde_json::json!({
+                "name": name,
+                "bytes": size,
+                "sha256": sha256_file(&dest)?,
+            }));
+        }
+    }
+    let vault_hash = sha256_file(&backup_dir.join("vault.dimvault"))?;
+    let db_hash = sha256_file(&backup_db)?;
+    let manifest = serde_json::json!({
+        "format": "dim-backup",
+        "version": 1,
+        "createdAt": time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        "vaultSha256": vault_hash,
+        "dbSha256": db_hash,
+        "blobs": files,
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|_| ApiError::new("E_BACKUP", "Manifest üretilemedi."))?;
+    std::fs::write(backup_dir.join("manifest.json"), &manifest_bytes)?;
+
+    // Yedeğin açılabildiğini doğrula: bozuk yedek "başarılı" sayılmaz.
+    {
+        let verify = Database::open(&backup_db, &key)?;
+        verify.integrity_check()?;
+    }
+
+    let manifest_hash = hex::encode(Sha256::digest(&manifest_bytes));
+    let file_count = files.len() + 3;
+    let _ = db.append_audit("backup", None, "create", "local-user", &serde_json::json!({"files": file_count}));
+    Ok(BackupView {
+        path: backup_dir.to_string_lossy().to_string(),
+        file_count,
+        total_bytes: total + std::fs::metadata(&backup_db)?.len() + std::fs::metadata(backup_dir.join("vault.dimvault"))?.len(),
+        manifest_hash,
+    })
+}
+
+/// Yedek klasörünü yeni bir kasa dizinine kopyalar. Hedef boş olmalıdır;
+/// mevcut kasanın üzerine yazılmaz. Açma işlemi kullanıcı parolasıyla yapılır.
+#[tauri::command]
+pub fn vault_restore(backup_dir: String, dest_dir: String) -> Result<RestoreView, ApiError> {
+    let src = PathBuf::from(backup_dir.trim());
+    let dest = PathBuf::from(dest_dir.trim());
+    if backup_dir.trim().is_empty() || dest_dir.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Yedek ve hedef konumu zorunlu."));
+    }
+    for required in ["vault.dimvault", "vault.db", "manifest.json"] {
+        if !src.join(required).is_file() {
+            return Err(ApiError::new("E_RESTORE_INVALID", "Seçilen klasör geçerli bir yedek değil."));
+        }
+    }
+    if dest.join("vault.dimvault").exists() {
+        return Err(ApiError::new("E_RESTORE_DEST_NOT_EMPTY", "Hedef klasörde zaten bir kasa var."));
+    }
+    std::fs::create_dir_all(dest.join("blobs"))?;
+    std::fs::copy(src.join("vault.dimvault"), dest.join("vault.dimvault"))?;
+    std::fs::copy(src.join("vault.db"), dest.join("vault.db"))?;
+    std::fs::copy(src.join("manifest.json"), dest.join("manifest.json"))?;
+    let mut count = 0usize;
+    let blobs = src.join("blobs");
+    if blobs.is_dir() {
+        for entry in std::fs::read_dir(&blobs)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                std::fs::copy(entry.path(), dest.join("blobs").join(entry.file_name()))?;
+                count += 1;
+            }
+        }
+    }
+    Ok(RestoreView { vault_path: dest.to_string_lossy().to_string(), file_count: count + 3 })
 }

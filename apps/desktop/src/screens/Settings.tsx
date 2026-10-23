@@ -1,0 +1,159 @@
+import { useEffect, useState } from "react";
+import { open as openDirectory } from "@tauri-apps/plugin-dialog";
+import { api, toApiError, type ApiError, type BackupResult, type VaultStatus } from "../lib/api";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function Settings() {
+  const [status, setStatus] = useState<VaultStatus | null>(null);
+  const [backup, setBackup] = useState<BackupResult | null>(null);
+  const [restoreDir, setRestoreDir] = useState("");
+  const [destDir, setDestDir] = useState("");
+  const [restored, setRestored] = useState<string | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void api.status().then(setStatus).catch((e) => setError(toApiError(e)));
+  }, []);
+
+  async function runBackup() {
+    const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörünü seç" });
+    if (typeof picked !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      setBackup(await api.vaultBackup(picked));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runRestore() {
+    const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörünü seç" });
+    if (typeof picked !== "string") {
+      return;
+    }
+    setRestoreDir(picked);
+    if (!destDir.trim()) {
+      setError({ code: "E_PATH", message: "Geri yükleme için hedef konum girin.", retryable: false });
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.vaultRestore(picked, destDir.trim());
+      setRestored(result.vaultPath);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="page" style={{ maxWidth: 820 }}>
+      <div className="page-head">
+        <h1>Ayarlar ve yedek</h1>
+        <p className="lead">
+          Yedek, kasa başlığını, SQLCipher veritabanını ve şifreli blob'ları tek klasöre kopyalar.
+          Açık metin üretilmez; yedeği açmak için kasa parolası veya kurtarma anahtarı gerekir.
+        </p>
+      </div>
+
+      {error ? (
+        <div className="notice danger" role="alert">
+          <strong>{error.code}</strong> — {error.message}
+        </div>
+      ) : null}
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Kasa</h2>
+            <p className="card-sub">{status?.unlocked ? "açık" : "kilitli"}</p>
+          </div>
+          <span className={`badge ${status?.unlocked ? "ok" : "warn"}`}>
+            {status?.unlocked ? "kasa açık" : "kasa kilitli"}
+          </span>
+        </div>
+        <dl className="kv">
+          <dt>Kimlik</dt><dd>{status?.vaultId ?? "—"}</dd>
+          <dt>Konum</dt>
+          <dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{status?.vaultPath ?? "—"}</dd>
+          <dt>Şema sürümü</dt><dd>{status?.schemaVersion ?? "—"}</dd>
+          <dt>Sürüm</dt><dd>0.2.0 (pre-alpha)</dd>
+        </dl>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Yedek al</h2>
+            <p className="card-sub">Tutarlı snapshot; yedek açılmadan önce doğrulanır.</p>
+          </div>
+          <button className="btn primary" disabled={busy || !status?.unlocked} onClick={() => void runBackup()}>
+            Yedek klasörü seç
+          </button>
+        </div>
+        {backup ? (
+          <div className="notice ok">
+            Yedek hazır: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{backup.path}</span>
+            <br />
+            {backup.fileCount} dosya · {formatBytes(backup.totalBytes)} · manifest {backup.manifestHash.slice(0, 16)}…
+          </div>
+        ) : (
+          <p className="hint" style={{ margin: 0 }}>
+            Kasa kilitliyken yedek alınamaz. Yedeği kasa dosyasından ayrı bir diskte saklayın.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Yedekten geri yükle</h2>
+            <p className="card-sub">Yeni bir kasaya kopyalar; mevcut kasanın üzerine yazmaz.</p>
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="restore-dest">Yeni kasa konumu</label>
+          <input
+            id="restore-dest"
+            className="input"
+            value={destDir}
+            onChange={(e) => setDestDir(e.target.value)}
+            placeholder="~/Dosyalar/GeriYuklenenKasa"
+          />
+        </div>
+        <div className="row" style={{ justifyContent: "flex-end" }}>
+          <button className="btn" disabled={busy || !destDir.trim()} onClick={() => void runRestore()}>
+            Yedek seç ve geri yükle
+          </button>
+        </div>
+        {restoreDir ? <p className="hint" style={{ margin: 0 }}>Seçilen yedek: {restoreDir}</p> : null}
+        {restored ? (
+          <div className="notice ok">
+            Geri yükleme tamamlandı: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{restored}</span>
+            <br />
+            Şimdi Kasa ekranından bu konumu ve parolanızı girerek açın.
+          </div>
+        ) : null}
+      </div>
+
+      <div className="card tight">
+        <h2>Teşhis</h2>
+        <p className="muted small" style={{ margin: 0 }}>
+          Uygulama belge içeriğini günlüğe yazmaz; yalnız hata kodları ve sürüm bilgisi tutulur.
+          Destek için hata kodu yeterlidir.
+        </p>
+      </div>
+    </div>
+  );
+}

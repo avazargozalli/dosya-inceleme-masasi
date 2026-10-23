@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
 import { Search } from "./screens/Search";
+import { Settings } from "./screens/Settings";
 import { Tasks } from "./screens/Tasks";
 import { Timeline } from "./screens/Timeline";
 import { Unlock } from "./screens/Unlock";
@@ -16,7 +17,7 @@ const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
   { id: "timeline", label: "Kronoloji", phase: "F08" },
   { id: "tasks", label: "Görevler", phase: "F08" },
   { id: "review", label: "İnceleme", phase: "F08" },
-  { id: "settings", label: "Ayarlar", phase: "F15" },
+  { id: "settings", label: "Ayarlar" },
 ];
 
 export function App() {
@@ -126,6 +127,8 @@ export function App() {
             <Timeline />
           ) : screen === "tasks" ? (
             <Tasks />
+          ) : screen === "settings" ? (
+            <Settings />
           ) : (
             <ComingPhase label={NAV.find((n) => n.id === screen)?.label ?? ""} phase={NAV.find((n) => n.id === screen)?.phase ?? ""} />
           )}

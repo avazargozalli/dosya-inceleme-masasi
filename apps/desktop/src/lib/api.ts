@@ -97,6 +97,15 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type BackupResult = {
+  path: string;
+  fileCount: number;
+  totalBytes: number;
+  manifestHash: string;
+};
+
+export type RestoreResult = { vaultPath: string; fileCount: number };
+
 export type AnchorRow = {
   id: string;
   caseId: string;
@@ -240,6 +249,9 @@ export const api = {
   openWithRecovery: (path: string, recoveryKey: string) =>
     invoke<VaultInfo>("vault_open_with_recovery", { path, recoveryKey }),
   lockVault: () => invoke<void>("vault_lock"),
+  vaultBackup: (destDir: string) => invoke<BackupResult>("vault_backup", { destDir }),
+  vaultRestore: (backupDir: string, destDir: string) =>
+    invoke<RestoreResult>("vault_restore", { backupDir, destDir }),
   status: () => invoke<VaultStatus>("vault_status"),
 
   caseList: (includeArchived = false) => invoke<CaseRow[]>("case_list", { includeArchived }),

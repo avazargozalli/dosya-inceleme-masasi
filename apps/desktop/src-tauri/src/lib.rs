@@ -46,6 +46,8 @@ pub fn run() {
             commands::note_delete,
             commands::anchor_create,
             commands::anchor_list,
+            commands::vault_backup,
+            commands::vault_restore,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

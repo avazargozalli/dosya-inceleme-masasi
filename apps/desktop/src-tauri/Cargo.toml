@@ -24,6 +24,7 @@ dim-ingest = { path = "../../../crates/ingest" }
 tauri-plugin-dialog = "2.0.1"
 sha2 = "0.10.8"
 hex = "0.4.3"
+time = { version = "0.3.37", features = ["formatting"] }
 zeroize = { version = "1.8.1", features = ["derive"] }
 
 # Masaüstü kabuğu ana çalışma alanının üyesi değildir: Tauri derlemesi
