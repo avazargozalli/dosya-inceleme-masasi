@@ -40,7 +40,12 @@ pub struct DocumentVersion {
 impl Database {
     /// Blob üst kaydı. Fiziksel dosya çağıran tarafından yazılmıştır; burada
     /// yalnız referans ve bütünlük durumu tutulur.
-    pub fn create_blob_record(&self, storage_id: &str, encrypted_size: i64, aad_ref: &str) -> Result<String, StorageError> {
+    pub fn create_blob_record(
+        &self,
+        storage_id: &str,
+        encrypted_size: i64,
+        aad_ref: &str,
+    ) -> Result<String, StorageError> {
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
             "INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,reference_count,integrity_status,created_at)
@@ -63,9 +68,11 @@ impl Database {
             return Err(StorageError::InvalidSetting);
         }
         // Dosya kapsamı: hedef case gerçekten var mı?
-        let exists: i64 = self
-            .conn()
-            .query_row("SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL", [case_id], |r| r.get(0))?;
+        let exists: i64 = self.conn().query_row(
+            "SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL",
+            [case_id],
+            |r| r.get(0),
+        )?;
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
@@ -76,7 +83,13 @@ impl Database {
              VALUES (?1,?2,?3,?4,?5,?6,'import','active',?7,?7,1)",
             rusqlite::params![id, case_id, name, document_type, declared_document_date, declared_date_precision, now],
         )?;
-        self.append_audit("document", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "document",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_document(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -111,9 +124,18 @@ impl Database {
             "UPDATE documents SET current_version_id=?1, updated_at=?2, row_version=row_version+1 WHERE id=?3",
             rusqlite::params![id, now, document_id],
         )?;
-        tx.execute("UPDATE blobs SET reference_count=reference_count+1 WHERE id=?1", [blob_id])?;
+        tx.execute(
+            "UPDATE blobs SET reference_count=reference_count+1 WHERE id=?1",
+            [blob_id],
+        )?;
         tx.commit()?;
-        self.append_audit("document", Some(document_id), "add_version", "local-user", &serde_json::json!({"version": next}))?;
+        self.append_audit(
+            "document",
+            Some(document_id),
+            "add_version",
+            "local-user",
+            &serde_json::json!({"version": next}),
+        )?;
         self.get_version(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -148,7 +170,11 @@ impl Database {
 
     /// Aynı baytlar daha önce içe alınmış mı? Kapsam **aynı case** ile sınırlıdır;
     /// başka dosyadaki aynı içerik bu dosyaya otomatik bağlanmaz.
-    pub fn find_version_by_sha(&self, case_id: &str, sha256: &str) -> Result<Option<DocumentVersion>, StorageError> {
+    pub fn find_version_by_sha(
+        &self,
+        case_id: &str,
+        sha256: &str,
+    ) -> Result<Option<DocumentVersion>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at
              FROM document_versions WHERE case_id=?1 AND original_sha256=?2 LIMIT 1",
@@ -166,7 +192,11 @@ impl Database {
     ) -> Result<String, StorageError> {
         let existing: Option<String> = self
             .conn()
-            .query_row("SELECT id FROM jobs WHERE idempotency_key=?1", [idempotency_key], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM jobs WHERE idempotency_key=?1",
+                [idempotency_key],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(id) = existing {
             return Ok(id);
@@ -241,29 +271,48 @@ mod tests {
     #[test]
     fn document_and_version_lifecycle() {
         let (db, case_id) = db_with_case();
-        let doc = db.create_document(&case_id, "Kira sözleşmesi", "contract", None, "unknown").expect("belge");
+        let doc = db
+            .create_document(&case_id, "Kira sözleşmesi", "contract", None, "unknown")
+            .expect("belge");
         let b = blob(&db, "s1");
         let sha = "a".repeat(64);
-        let v = db.add_version(&doc.id, &case_id, &b, &sha, 1024, "application/pdf").expect("sürüm");
+        let v = db
+            .add_version(&doc.id, &case_id, &b, &sha, 1024, "application/pdf")
+            .expect("sürüm");
         assert_eq!(v.version_no, 1);
 
         let updated = db.get_document(&doc.id).expect("get").expect("var");
         assert_eq!(updated.current_version_id.as_deref(), Some(v.id.as_str()));
 
         let b2 = blob(&db, "s2");
-        let v2 = db.add_version(&doc.id, &case_id, &b2, &"b".repeat(64), 2048, "application/pdf").expect("sürüm 2");
+        let v2 = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b2,
+                &"b".repeat(64),
+                2048,
+                "application/pdf",
+            )
+            .expect("sürüm 2");
         assert_eq!(v2.version_no, 2);
     }
 
     #[test]
     fn duplicate_content_is_found_only_within_case() {
         let (db, case_id) = db_with_case();
-        let doc = db.create_document(&case_id, "Belge", "unknown", None, "unknown").expect("belge");
+        let doc = db
+            .create_document(&case_id, "Belge", "unknown", None, "unknown")
+            .expect("belge");
         let b = blob(&db, "s1");
         let sha = "c".repeat(64);
-        db.add_version(&doc.id, &case_id, &b, &sha, 10, "text/plain").expect("sürüm");
+        db.add_version(&doc.id, &case_id, &b, &sha, 10, "text/plain")
+            .expect("sürüm");
 
-        assert!(db.find_version_by_sha(&case_id, &sha).expect("ara").is_some());
+        assert!(db
+            .find_version_by_sha(&case_id, &sha)
+            .expect("ara")
+            .is_some());
 
         let other = db
             .create_case(&NewCase {
@@ -276,28 +325,41 @@ mod tests {
                 default_ai_policy: crate::AiPolicy::Off,
             })
             .expect("case");
-        assert!(db.find_version_by_sha(&other.id, &sha).expect("ara").is_none());
+        assert!(db
+            .find_version_by_sha(&other.id, &sha)
+            .expect("ara")
+            .is_none());
     }
 
     #[test]
     fn unknown_case_rejected() {
         let (db, _) = db_with_case();
-        assert!(db.create_document("yok", "Belge", "unknown", None, "unknown").is_err());
+        assert!(db
+            .create_document("yok", "Belge", "unknown", None, "unknown")
+            .is_err());
     }
 
     #[test]
     fn bad_sha_rejected() {
         let (db, case_id) = db_with_case();
-        let doc = db.create_document(&case_id, "Belge", "unknown", None, "unknown").expect("belge");
+        let doc = db
+            .create_document(&case_id, "Belge", "unknown", None, "unknown")
+            .expect("belge");
         let b = blob(&db, "s1");
-        assert!(db.add_version(&doc.id, &case_id, &b, "kisa", 1, "text/plain").is_err());
+        assert!(db
+            .add_version(&doc.id, &case_id, &b, "kisa", 1, "text/plain")
+            .is_err());
     }
 
     #[test]
     fn job_enqueue_is_idempotent() {
         let (db, case_id) = db_with_case();
-        let a = db.enqueue_job("parse_document", Some(&case_id), "fp", "key-1").expect("iş");
-        let b = db.enqueue_job("parse_document", Some(&case_id), "fp", "key-1").expect("iş");
+        let a = db
+            .enqueue_job("parse_document", Some(&case_id), "fp", "key-1")
+            .expect("iş");
+        let b = db
+            .enqueue_job("parse_document", Some(&case_id), "fp", "key-1")
+            .expect("iş");
         assert_eq!(a, b);
     }
 }

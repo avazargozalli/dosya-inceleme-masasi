@@ -74,9 +74,16 @@ impl IngestError {
 
 #[derive(Debug)]
 pub enum ImportResult {
-    Imported { document: Document, version: DocumentVersion },
+    Imported {
+        document: Document,
+        version: DocumentVersion,
+    },
     /// Aynı baytlar bu dosyada zaten var; yeni kayıt oluşturulmadı.
-    Duplicate { document_id: String, version_id: String, display_name: String },
+    Duplicate {
+        document_id: String,
+        version_id: String,
+        display_name: String,
+    },
 }
 
 /// İçerikten tür algılama. Uzantı tek başına yeterli değildir; magic bytes
@@ -143,7 +150,9 @@ pub fn import_path(
 
     if !force_new {
         if let Some(existing) = db.find_version_by_sha(case_id, &sha)? {
-            let document = db.get_document(&existing.document_id)?.ok_or(dim_storage::StorageError::NotFound)?;
+            let document = db
+                .get_document(&existing.document_id)?
+                .ok_or(dim_storage::StorageError::NotFound)?;
             return Ok(ImportResult::Duplicate {
                 document_id: existing.document_id,
                 version_id: existing.id,
@@ -200,7 +209,8 @@ mod tests {
                 default_ai_policy: dim_storage::AiPolicy::Off,
             })
             .expect("case");
-        let (_file, _recovery, vault) = dim_vault::VaultFile::create(&dir.join("v.dimvault"), "parola-uzun-123").expect("kasa");
+        let (_file, _recovery, vault) =
+            dim_vault::VaultFile::create(&dir.join("v.dimvault"), "parola-uzun-123").expect("kasa");
         (db, vault, case.id)
     }
 
@@ -219,7 +229,15 @@ mod tests {
         let file = dir.path().join("sozlesme.pdf");
         std::fs::write(&file, b"%PDF-1.4\nsentetik").expect("yaz");
 
-        let result = import_path(&db, &vault, &dir.path().join("blobs"), &case_id, &file, false).expect("içe al");
+        let result = import_path(
+            &db,
+            &vault,
+            &dir.path().join("blobs"),
+            &case_id,
+            &file,
+            false,
+        )
+        .expect("içe al");
         let (doc, version) = match result {
             ImportResult::Imported { document, version } => (document, version),
             other => panic!("beklenmeyen: {other:?}"),
@@ -229,12 +247,20 @@ mod tests {
         assert_eq!(db.list_documents(&case_id).expect("liste").len(), 1);
 
         // Blob diskte şifreli: düz metin başlığı görünmez.
-        let blobs: Vec<_> = std::fs::read_dir(dir.path().join("blobs")).expect("dizin").filter_map(Result::ok).collect();
+        let blobs: Vec<_> = std::fs::read_dir(dir.path().join("blobs"))
+            .expect("dizin")
+            .filter_map(Result::ok)
+            .collect();
         assert_eq!(blobs.len(), 1);
         let bytes = std::fs::read(blobs[0].path()).expect("oku");
         assert!(!bytes.windows(5).any(|w| w == b"%PDF-"));
 
-        let opened = vault.read_blob(&blobs[0].path(), format!("{case_id}:{}", version.original_sha256).as_bytes()).expect("çöz");
+        let opened = vault
+            .read_blob(
+                &blobs[0].path(),
+                format!("{case_id}:{}", version.original_sha256).as_bytes(),
+            )
+            .expect("çöz");
         assert!(opened.starts_with(b"%PDF-"));
     }
 
@@ -245,12 +271,36 @@ mod tests {
         let file = dir.path().join("a.txt");
         std::fs::write(&file, b"ayni icerik").expect("yaz");
 
-        import_path(&db, &vault, &dir.path().join("blobs"), &case_id, &file, false).expect("ilk");
-        let second = import_path(&db, &vault, &dir.path().join("blobs"), &case_id, &file, false).expect("ikinci");
+        import_path(
+            &db,
+            &vault,
+            &dir.path().join("blobs"),
+            &case_id,
+            &file,
+            false,
+        )
+        .expect("ilk");
+        let second = import_path(
+            &db,
+            &vault,
+            &dir.path().join("blobs"),
+            &case_id,
+            &file,
+            false,
+        )
+        .expect("ikinci");
         assert!(matches!(second, ImportResult::Duplicate { .. }));
         assert_eq!(db.list_documents(&case_id).expect("liste").len(), 1);
 
-        let forced = import_path(&db, &vault, &dir.path().join("blobs"), &case_id, &file, true).expect("zorla");
+        let forced = import_path(
+            &db,
+            &vault,
+            &dir.path().join("blobs"),
+            &case_id,
+            &file,
+            true,
+        )
+        .expect("zorla");
         assert!(matches!(forced, ImportResult::Imported { .. }));
         assert_eq!(db.list_documents(&case_id).expect("liste").len(), 2);
     }
@@ -261,7 +311,15 @@ mod tests {
         let (db, vault, case_id) = setup(dir.path());
         let file = dir.path().join("bilinmeyen.bin");
         std::fs::write(&file, [0u8, 1, 2, 3]).expect("yaz");
-        let err = import_path(&db, &vault, &dir.path().join("blobs"), &case_id, &file, false).unwrap_err();
+        let err = import_path(
+            &db,
+            &vault,
+            &dir.path().join("blobs"),
+            &case_id,
+            &file,
+            false,
+        )
+        .unwrap_err();
         assert_eq!(err.code(), "E_IMPORT_UNSUPPORTED");
     }
 }

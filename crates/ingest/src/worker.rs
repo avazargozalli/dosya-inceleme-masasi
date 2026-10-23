@@ -31,7 +31,11 @@ pub enum WorkerError {
     #[error("worker protokol hatası: {0}")]
     Protocol(String),
     #[error("worker hatası: {code} — {message}")]
-    Remote { code: String, message: String, retryable: bool },
+    Remote {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
     #[error("yanıt şeması beklenen biçimde değil")]
     BadResponse,
 }
@@ -51,7 +55,16 @@ impl WorkerError {
 
     #[must_use]
     pub const fn retryable(&self) -> bool {
-        matches!(self, Self::Timeout | Self::Disconnected | Self::Remote { retryable: true, .. } | Self::Spawn(_))
+        matches!(
+            self,
+            Self::Timeout
+                | Self::Disconnected
+                | Self::Remote {
+                    retryable: true,
+                    ..
+                }
+                | Self::Spawn(_)
+        )
     }
 }
 
@@ -87,7 +100,9 @@ pub struct WorkerClient {
 
 impl std::fmt::Debug for WorkerClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkerClient").field("next_id", &self.next_id).finish()
+        f.debug_struct("WorkerClient")
+            .field("next_id", &self.next_id)
+            .finish()
     }
 }
 
@@ -136,7 +151,13 @@ impl WorkerClient {
             }
         });
 
-        Ok(Self { child, stdin, rx, next_id: 0, timeout: DEFAULT_TIMEOUT })
+        Ok(Self {
+            child,
+            stdin,
+            rx,
+            next_id: 0,
+            timeout: DEFAULT_TIMEOUT,
+        })
     }
 
     #[must_use]
@@ -151,7 +172,9 @@ impl WorkerClient {
         let frame = json!({"v": 1, "id": id, "method": method, "params": params});
         let mut line = serde_json::to_vec(&frame).map_err(|_| WorkerError::BadResponse)?;
         line.push(b'\n');
-        self.stdin.write_all(&line).map_err(|_| WorkerError::Disconnected)?;
+        self.stdin
+            .write_all(&line)
+            .map_err(|_| WorkerError::Disconnected)?;
         self.stdin.flush().map_err(|_| WorkerError::Disconnected)?;
 
         // Yanıtlar sıralıdır; id eşleşmeyen eski çerçeveler atlanır.
@@ -162,7 +185,8 @@ impl WorkerClient {
                 Err(RecvTimeoutError::Timeout) => return Err(WorkerError::Timeout),
                 Err(RecvTimeoutError::Disconnected) => return Err(WorkerError::Disconnected),
             };
-            let value: Value = serde_json::from_slice(&raw).map_err(|_| WorkerError::BadResponse)?;
+            let value: Value =
+                serde_json::from_slice(&raw).map_err(|_| WorkerError::BadResponse)?;
             if value.get("id").and_then(Value::as_str) != Some(id.as_str()) {
                 continue;
             }
@@ -171,9 +195,20 @@ impl WorkerClient {
             }
             let error = value.get("error").cloned().unwrap_or(Value::Null);
             return Err(WorkerError::Remote {
-                code: error.get("code").and_then(Value::as_str).unwrap_or("E_WORKER_REMOTE").to_string(),
-                message: error.get("message").and_then(Value::as_str).unwrap_or("worker hatası").to_string(),
-                retryable: error.get("retryable").and_then(Value::as_bool).unwrap_or(false),
+                code: error
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("E_WORKER_REMOTE")
+                    .to_string(),
+                message: error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("worker hatası")
+                    .to_string(),
+                retryable: error
+                    .get("retryable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             });
         }
         Err(WorkerError::Protocol("yanıt kimliği eşleşmedi".into()))
@@ -186,7 +221,10 @@ impl WorkerClient {
 
     pub fn extract_text(&mut self, data: &[u8], mime: &str) -> Result<Extraction, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-        let result = self.request("extract_text", json!({"contentBase64": encoded, "mime": mime}))?;
+        let result = self.request(
+            "extract_text",
+            json!({"contentBase64": encoded, "mime": mime}),
+        )?;
         serde_json::from_value(result).map_err(|_| WorkerError::BadResponse)
     }
 
@@ -264,11 +302,18 @@ mod tests {
             return;
         };
         let mut client = WorkerClient::spawn_dev(&py, &dir).expect("başlat");
-        let err = client.request("extract_text", json!({"contentBase64": "JVBERi0xLjQK"})).unwrap_err();
+        let err = client
+            .request("extract_text", json!({"contentBase64": "JVBERi0xLjQK"}))
+            .unwrap_err();
         // PyMuPDF kuruluysa E_PDF_OPEN, değilse E_ENGINE_MISSING döner.
         match err {
             WorkerError::Remote { code, .. } => {
-                assert!(code == "E_ENGINE_MISSING" || code == "E_PDF_OPEN" || code == "E_INPUT_TOO_LARGE", "{code}");
+                assert!(
+                    code == "E_ENGINE_MISSING"
+                        || code == "E_PDF_OPEN"
+                        || code == "E_INPUT_TOO_LARGE",
+                    "{code}"
+                );
             }
             other => panic!("beklenmeyen: {other:?}"),
         }
