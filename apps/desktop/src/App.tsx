@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
+import { Precedents } from "./screens/Precedents";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
@@ -10,7 +11,7 @@ import { Timeline } from "./screens/Timeline";
 import { Unlock } from "./screens/Unlock";
 import { Workspace } from "./screens/Workspace";
 
-type Screen = "vault" | "files" | "search" | "timeline" | "tasks" | "review" | "ai" | "settings";
+type Screen = "vault" | "files" | "search" | "timeline" | "tasks" | "review" | "precedents" | "ai" | "settings";
 
 const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
   { id: "vault", label: "Kasa" },
@@ -19,6 +20,7 @@ const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
   { id: "timeline", label: "Kronoloji", phase: "F08" },
   { id: "tasks", label: "Görevler", phase: "F08" },
   { id: "review", label: "İnceleme", phase: "F08" },
+  { id: "precedents", label: "Emsal" },
   { id: "ai", label: "AI bağlantıları" },
   { id: "settings", label: "Ayarlar" },
 ];
@@ -130,6 +132,8 @@ export function App() {
             <Review />
           ) : screen === "ai" ? (
             <Providers />
+          ) : screen === "precedents" ? (
+            <Precedents />
           ) : screen === "timeline" ? (
             <Timeline />
           ) : screen === "tasks" ? (

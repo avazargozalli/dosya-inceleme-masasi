@@ -4,10 +4,11 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AnchorRow, Case, CasePatch, ClaimRow, Database, DatabaseKey, Document, DocumentVersion,
-    EventRow, EvidenceLinkRow, NewAnchor, NewCase, NewClaim, NewEvent, NewEvidenceLink, NewNote,
-    NewPage, NewReviewItem, NewTask, NoteRow, PageRow, ParseRun, ReviewDecisionRow, ReviewItemRow,
-    SearchHit, TaskRow,
+    AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow, Database, DatabaseKey, Document,
+    DocumentVersion, EventRow, EvidenceLinkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewReviewItem,
+    NewTask, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ReviewDecisionRow,
+    ReviewItemRow, SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -875,4 +876,59 @@ pub fn provider_probe() -> Vec<AdapterView> {
             }
         })
         .collect()
+}
+
+#[tauri::command]
+pub fn precedent_create(state: State<'_, AppState>, input: NewPrecedent) -> Result<PrecedentRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_precedent(&input)?)
+}
+
+#[tauri::command]
+pub fn precedent_list(state: State<'_, AppState>) -> Result<Vec<PrecedentRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_precedents()?)
+}
+
+#[tauri::command]
+pub fn precedent_note_create(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: NewPrecedentNote,
+) -> Result<PrecedentNoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_precedent_note(&precedent_id, &input)?)
+}
+
+#[tauri::command]
+pub fn precedent_note_list(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<Vec<PrecedentNoteRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_precedent_notes(&precedent_id)?)
+}
+
+#[tauri::command]
+pub fn citation_check_create(
+    state: State<'_, AppState>,
+    input: NewCitationCheck,
+) -> Result<CitationCheckRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.record_citation_check(&input)?)
+}
+
+#[tauri::command]
+pub fn citation_check_list(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<Vec<CitationCheckRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_citation_checks(&version_id)?)
 }

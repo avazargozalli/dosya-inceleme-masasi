@@ -97,6 +97,45 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type PrecedentRow = {
+  id: string;
+  court: string;
+  chamber: string | null;
+  docketNo: string | null;
+  decisionNo: string | null;
+  applicationNo: string | null;
+  decisionDate: string | null;
+  title: string | null;
+  sourceUrl: string | null;
+  userTags: string[];
+  legalIssue: string | null;
+  completeness: "complete" | "incomplete";
+  createdAt: string;
+};
+
+export type PrecedentNoteRow = {
+  id: string;
+  precedentId: string;
+  caseIdOptional: string | null;
+  usefulPassageAnchor: string | null;
+  similarityNote: string;
+  distinguishingNote: string;
+  userConclusion: string;
+  createdAt: string;
+};
+
+export type CitationCheckRow = {
+  id: string;
+  inputDocumentVersionId: string;
+  extractedCitation: string;
+  candidatePrecedentId: string | null;
+  identityMatch: "match" | "mismatch" | "unknown";
+  quoteMatch: "match" | "mismatch" | "not_checked" | "unknown";
+  meaningReview: string;
+  reasonCodes: string[];
+  createdAt: string;
+};
+
 export type AdapterView = {
   id: string;
   displayName: string;
@@ -346,6 +385,43 @@ export const api = {
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
   providerProbe: () => invoke<AdapterView[]>("provider_probe"),
+
+  precedentList: () => invoke<PrecedentRow[]>("precedent_list"),
+  precedentCreate: (input: {
+    court: string;
+    chamber: string | null;
+    docketNo: string | null;
+    decisionNo: string | null;
+    applicationNo: string | null;
+    decisionDate: string | null;
+    title: string | null;
+    sourceUrl: string | null;
+    userTags: string[];
+    legalIssue: string | null;
+  }) => invoke<PrecedentRow>("precedent_create", { input }),
+  precedentNoteList: (precedentId: string) =>
+    invoke<PrecedentNoteRow[]>("precedent_note_list", { precedentId }),
+  precedentNoteCreate: (
+    precedentId: string,
+    input: {
+      caseIdOptional: string | null;
+      usefulPassageAnchor: string | null;
+      similarityNote: string;
+      distinguishingNote: string;
+      userConclusion: string;
+    },
+  ) => invoke<PrecedentNoteRow>("precedent_note_create", { precedentId, input }),
+  citationCheckList: (versionId: string) =>
+    invoke<CitationCheckRow[]>("citation_check_list", { versionId }),
+  citationCheckCreate: (input: {
+    inputDocumentVersionId: string;
+    extractedCitation: string;
+    candidatePrecedentId: string | null;
+    identityMatch: "match" | "mismatch" | "unknown";
+    quoteMatch: "match" | "mismatch" | "not_checked" | "unknown";
+    meaningReview: string;
+    reasonCodes: string[];
+  }) => invoke<CitationCheckRow>("citation_check_create", { input }),
 
   claimList: (caseId: string) => invoke<ClaimRow[]>("claim_list", { caseId }),
   claimCreate: (
