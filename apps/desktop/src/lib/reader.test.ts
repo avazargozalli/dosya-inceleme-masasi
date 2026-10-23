@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AnchorLocationRow, PageRow, SearchHit } from "./api";
 import {
   offsetSlice,
+  parseWarnings,
   querySlice,
   resolvePageIndex,
   sliceForPage,
@@ -125,6 +126,20 @@ describe("querySlice", () => {
   it("bulunmayan sorguda null döner", () => {
     expect(querySlice("metin", "kira")).toBeNull();
     expect(querySlice("metin", "   ")).toBeNull();
+  });
+});
+
+describe("parseWarnings", () => {
+  it("JSON uyarı dizisini çözer", () => {
+    expect(parseWarnings('["UDF imza: tespit edildi — denetlenmedi"]')).toEqual([
+      "UDF imza: tespit edildi — denetlenmedi",
+    ]);
+  });
+
+  it("bozuk veya dizi olmayan kayıtta boş liste döner", () => {
+    expect(parseWarnings("bozuk")).toEqual([]);
+    expect(parseWarnings('{"a":1}')).toEqual([]);
+    expect(parseWarnings(null)).toEqual([]);
   });
 });
 

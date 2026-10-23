@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 pub enum FileKind {
     Pdf,
     Docx,
+    Udf,
     Text,
     Png,
     Jpeg,
@@ -28,6 +29,7 @@ impl FileKind {
         match self {
             Self::Pdf => "application/pdf",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Udf => "application/udf",
             Self::Text => "text/plain",
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
@@ -40,6 +42,7 @@ impl FileKind {
         match self {
             Self::Pdf => "pdf",
             Self::Docx => "docx",
+            Self::Udf => "udf",
             Self::Text => "text",
             Self::Png | Self::Jpeg | Self::Tiff => "image",
         }
@@ -108,8 +111,15 @@ pub fn detect(data: &[u8], file_name: &str) -> Option<FileKind> {
     if data.starts_with(b"II*\x00") || data.starts_with(b"MM\x00*") {
         return Some(FileKind::Tiff);
     }
-    if data.starts_with(b"PK\x03\x04") && ext.as_deref() == Some("docx") {
-        return Some(FileKind::Docx);
+    if data.starts_with(b"PK\x03\x04") {
+        match ext.as_deref() {
+            Some("docx") => return Some(FileKind::Docx),
+            // UDF, ZIP içinde `content.xml` taşır; uzantı tek başına yetmez.
+            Some("udf") if data.windows(11).any(|window| window == b"content.xml") => {
+                return Some(FileKind::Udf)
+            }
+            _ => {}
+        }
     }
     if matches!(ext.as_deref(), Some("txt" | "md" | "csv")) && std::str::from_utf8(data).is_ok() {
         return Some(FileKind::Text);
@@ -221,6 +231,19 @@ mod tests {
         assert_eq!(detect(b"%PDF-1.7", "x.exe"), Some(FileKind::Pdf));
         assert_eq!(detect(b"merhaba", "not.txt"), Some(FileKind::Text));
         assert_eq!(detect(b"{}\x00", "x.pdf"), None);
+    }
+
+    #[test]
+    fn detects_udf_container_by_content_manifest() {
+        let mut udf = Vec::new();
+        udf.extend_from_slice(b"PK\x03\x04");
+        udf.extend_from_slice(&[0u8; 26]);
+        udf.extend_from_slice(b"content.xml");
+        assert_eq!(detect(&udf, "dilekce.udf"), Some(FileKind::Udf));
+        assert_eq!(FileKind::Udf.mime(), "application/udf");
+        assert_eq!(FileKind::Udf.document_type(), "udf");
+        // `content.xml` yoksa uzantıya rağmen UDF sayılmaz.
+        assert_eq!(detect(b"PK\x03\x04rastgele", "dilekce.udf"), None);
     }
 
     #[test]

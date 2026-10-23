@@ -8,7 +8,7 @@ import {
   type DocumentRow,
   type PageRow,
 } from "../lib/api";
-import { resolvePageIndex, sliceForPage, type ReaderTarget } from "../lib/reader";
+import { parseWarnings, resolvePageIndex, sliceForPage, type ReaderTarget } from "../lib/reader";
 
 /** Tek okuyucu paneli: kendi belge sürümünü, sayfasını ve seçimini tutar.
  *  Bir panelde belge değiştirmek diğerini etkilemez (F07-T08). */
@@ -90,6 +90,7 @@ function ReaderPane({
   // Kullanıcı hedef sayfadan başka sayfaya geçtiyse "bulunamadı" uyarısı
   // yanıltıcı olur; yalnız hedefin sayfasında gösterilir.
   const targetPage = data ? resolvePageIndex(data.pages, paneTarget) : -1;
+  const parseWarningsList = data ? parseWarnings(data.parseRun.warnings) : [];
 
   useEffect(() => {
     if (slice) markRef.current?.scrollIntoView({ block: "center" });
@@ -299,6 +300,24 @@ function ReaderPane({
             <p className="hint" style={{ margin: 0 }}>
               İşaretlenecek alıntı bu sayfada bulunamadı; sayfa numarası yine de kaynaktan geldi.
             </p>
+          ) : null}
+
+          {parseWarningsList.length > 0 ? (
+            <details style={{ fontSize: 12 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
+                {parseWarningsList.length} ayrıştırma uyarısı (imza, bilinmeyen öğe, sayfa…)
+              </summary>
+              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {parseWarningsList.slice(0, 20).map((warning, index) => (
+                  <li key={`${index}-${warning.slice(0, 24)}`}>{warning}</li>
+                ))}
+              </ul>
+              {parseWarningsList.length > 20 ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  +{parseWarningsList.length - 20} uyarı daha var.
+                </p>
+              ) : null}
+            </details>
           ) : null}
 
           {selection ? (

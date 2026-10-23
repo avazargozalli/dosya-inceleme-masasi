@@ -10,8 +10,10 @@ import base64
 import binascii
 import io
 import shutil
-from dataclasses import dataclass, field, field
+from dataclasses import dataclass, field
 from typing import Any
+
+from .udf import UdfError, extract_udf_document
 
 MAX_PAGES = 2000
 MAX_INPUT_BYTES = 250 * 1024 * 1024
@@ -167,6 +169,27 @@ def extract_docx(data: bytes) -> Extraction:
     return Extraction(engine="python-docx", engine_version=version, pages=[page], warnings=warnings)
 
 
+def extract_udf(data: bytes) -> Extraction:
+    """UYAP UDF arşivini güvenli ayrıştırır. Sayfa ayrımı doğrulanmamıştır;
+    kaynak paragraf bazlıdır ve bu durum uyarı olarak taşınır."""
+    try:
+        document = extract_udf_document(data)
+    except UdfError as exc:
+        raise EngineError(exc.code, exc.message) from exc
+
+    warnings = list(document.warnings)
+    warnings.append("UDF: sayfa ayrımı doğrulanmadı; kaynak paragraf bazlıdır")
+    page = Page(index=0, text=document.text, warnings=warnings)
+    return Extraction(engine="uyap-udf", engine_version="1", pages=[page], warnings=warnings)
+
+
+def _looks_like_udf(data: bytes) -> bool:
+    """ZIP merkezi dizininde `content.xml` adı geçiyor mu (ucuz ön kontrol)."""
+    if not data.startswith(b"PK\x03\x04"):
+        return False
+    return b"content.xml" in data[-131072:].lower()
+
+
 def extract_plain(data: bytes, encoding: str = "utf-8") -> Extraction:
     try:
         text = data.decode(encoding)
@@ -191,6 +214,10 @@ def extract(
     için kullanılır; hiçbir yere yazılmaz."""
     if mime == "application/pdf" or data.startswith(b"%PDF-"):
         return extract_pdf(data, ocr=ocr, ocr_lang=ocr_lang, password=password)
+    if mime in {"application/udf", "application/x-udf", "application/x-uyap-udf"}:
+        return extract_udf(data)
+    if mime in {"application/zip", "application/octet-stream"} and _looks_like_udf(data):
+        return extract_udf(data)
     if "wordprocessingml.document" in mime or (data.startswith(b"PK\x03\x04") and mime.endswith("document")):
         return extract_docx(data)
     if mime.startswith("text/") or mime in {"application/json", "text/csv"}:
@@ -232,6 +259,7 @@ def capabilities() -> dict[str, Any]:
         "engines": {
             "pdf": {"available": pdf, "version": pdf_version},
             "docx": {"available": docx_ok, "version": docx_version},
+            "udf": {"available": True, "version": "1"},
             "text": {"available": True},
             "ocr": {"available": bool(ocr_langs), "languages": ocr_langs, "dpi": OCR_DPI},
         },

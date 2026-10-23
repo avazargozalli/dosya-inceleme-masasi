@@ -3,6 +3,14 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.7.1] — 2026-10-23 — F06 UDF
+
+- UDF (UYAP) ZIP/XML güvenli ayrıştırma: DTD/ENTITY reddi, zip-slip/şifreli giriş/boyut sınırları
+- `content.xml` metin havuzundan Unicode scalar offset'lerle metin; paragraf birleştirme
+- Bilinmeyen öğe ve gömülü nesne envanteri uyarı olarak; imza yalnız "tespit edildi — denetlenmedi"
+- İçe aktarma `.udf` dosyasını yalnız ZIP içinde `content.xml` varsa kabul eder; worker MIME `application/udf`
+- Okuyucuda ayrıştırma uyarıları açılır listede gösterilir
+
 ## [0.7.0] — 2026-10-23 — F07 okuyucu
 
 - Arama sonucu kendi belge sürümünü taşır (`documentVersionId`); sonuç "en son sürüm" varsayımıyla açılmaz

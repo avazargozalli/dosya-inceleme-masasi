@@ -104,7 +104,7 @@ export function Cases() {
       multiple: false,
       directory: false,
       filters: [
-        { name: "Belgeler", extensions: ["pdf", "docx", "txt", "md", "csv", "png", "jpg", "jpeg", "tif", "tiff"] },
+        { name: "Belgeler", extensions: ["pdf", "docx", "udf", "txt", "md", "csv", "png", "jpg", "jpeg", "tif", "tiff"] },
       ],
     });
     if (typeof picked !== "string") return;

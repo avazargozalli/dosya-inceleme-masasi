@@ -19,6 +19,19 @@ export type ReaderTarget = {
 
 export type ReaderSlice = { before: string; hit: string; after: string };
 
+/** `parse_runs.warnings` JSON metnini güvenli çözer; bozuk kayıt boş liste olur
+ *  ve arayüz uydurma uyarı göstermez. */
+export function parseWarnings(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
+  }
+}
+
 /** Arama sonucundan hedef üretir. Sürüm kimliği taşınmayan eski sonuç
  *  okuyucuda açılamaz; `null` döner ve arayüz nedenini yazar. */
 export function targetFromHit(hit: SearchHit, query: string): ReaderTarget | null {
