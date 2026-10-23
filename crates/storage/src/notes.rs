@@ -33,9 +33,11 @@ impl Database {
         if new.body.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
-        let exists: i64 = self
-            .conn()
-            .query_row("SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL", [case_id], |r| r.get(0))?;
+        let exists: i64 = self.conn().query_row(
+            "SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL",
+            [case_id],
+            |r| r.get(0),
+        )?;
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
@@ -48,7 +50,13 @@ impl Database {
              VALUES (?1,?2,?3,?4,'user','case_private','[]',?5,?5,1)",
             rusqlite::params![id, case_id, new.title.trim(), body_ast, now],
         )?;
-        self.append_audit("note", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "note",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_note(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -79,7 +87,13 @@ impl Database {
             "UPDATE notes SET deleted_at=?1, updated_at=?1, row_version=row_version+1 WHERE id=?2",
             rusqlite::params![now, id],
         )?;
-        self.append_audit("note", Some(id), "soft_delete", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "note",
+            Some(id),
+            "soft_delete",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         Ok(())
     }
 }
@@ -130,7 +144,13 @@ mod tests {
     fn note_roundtrip_keeps_plain_text() {
         let (db, case_id) = setup();
         let note = db
-            .create_note(&case_id, &NewNote { title: "İlk izlenim".into(), body: "Ödeme yapılmadı.".into() })
+            .create_note(
+                &case_id,
+                &NewNote {
+                    title: "İlk izlenim".into(),
+                    body: "Ödeme yapılmadı.".into(),
+                },
+            )
             .expect("not");
         assert_eq!(note.body, "Ödeme yapılmadı.");
         assert_eq!(note.author_kind, "user");
@@ -141,7 +161,13 @@ mod tests {
     fn html_is_not_interpreted() {
         let (db, case_id) = setup();
         let note = db
-            .create_note(&case_id, &NewNote { title: "X".into(), body: "<img src=x onerror=alert(1)>".into() })
+            .create_note(
+                &case_id,
+                &NewNote {
+                    title: "X".into(),
+                    body: "<img src=x onerror=alert(1)>".into(),
+                },
+            )
             .expect("not");
         assert_eq!(note.body, "<img src=x onerror=alert(1)>");
     }
@@ -149,19 +175,43 @@ mod tests {
     #[test]
     fn empty_body_rejected() {
         let (db, case_id) = setup();
-        assert!(db.create_note(&case_id, &NewNote { title: "X".into(), body: "   ".into() }).is_err());
+        assert!(db
+            .create_note(
+                &case_id,
+                &NewNote {
+                    title: "X".into(),
+                    body: "   ".into()
+                }
+            )
+            .is_err());
     }
 
     #[test]
     fn cross_case_note_rejected() {
         let (db, _) = setup();
-        assert!(db.create_note("yok", &NewNote { title: "X".into(), body: "metin".into() }).is_err());
+        assert!(db
+            .create_note(
+                "yok",
+                &NewNote {
+                    title: "X".into(),
+                    body: "metin".into()
+                }
+            )
+            .is_err());
     }
 
     #[test]
     fn delete_hides_note_and_audits() {
         let (db, case_id) = setup();
-        let note = db.create_note(&case_id, &NewNote { title: "X".into(), body: "metin".into() }).expect("not");
+        let note = db
+            .create_note(
+                &case_id,
+                &NewNote {
+                    title: "X".into(),
+                    body: "metin".into(),
+                },
+            )
+            .expect("not");
         db.delete_note(&note.id).expect("sil");
         assert!(db.list_notes(&case_id).expect("liste").is_empty());
         assert!(db.verify_audit_chain().expect("zincir") >= 2);

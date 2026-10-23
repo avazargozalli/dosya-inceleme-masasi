@@ -345,7 +345,10 @@ pub fn document_pages(
         return Ok(None);
     };
     let pages = db.pages_for_run(&run.id)?;
-    Ok(Some(DocumentPagesView { parse_run: run, pages }))
+    Ok(Some(DocumentPagesView {
+        parse_run: run,
+        pages,
+    }))
 }
 
 #[tauri::command]
