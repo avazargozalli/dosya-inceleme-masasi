@@ -1131,7 +1131,7 @@ pub fn export_json(
 }
 
 fn csv_escape(value: &str) -> String {
-    if value.contains(|c: char| c == ',' || c == '"' || c == '\n') {
+    if value.contains([',', '"', '\n']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()
