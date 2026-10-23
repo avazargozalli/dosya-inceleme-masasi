@@ -5,15 +5,15 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CaseChecklistItemRow, CasePatch,
-    ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow, ClaimRow,
-    ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion,
-    EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase,
-    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
-    NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent,
-    NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ProviderProfileRow,
-    RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
-    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchHit, SegmentBlock, TaskRow,
-    TransferConsentRow,
+    CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow,
+    ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document,
+    DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
+    ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
+    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
+    NewReviewItem, NewTask, NewTransferConsent, NoteRow, OutboxEventRow, PageRow, ParseRun,
+    PrecedentNoteRow, PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput,
+    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchPage, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -536,6 +536,84 @@ pub fn search_segments(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.search_segments(&case_id, &query, limit.unwrap_or(50).clamp(1, 200))?)
+}
+
+/// Filtreli ve keyset sayfalı arama (F07-T03, F07-T05).
+///
+/// `filters` verilmezse filtre uygulanmaz. `includeTotal` yalnız ilk sayfada
+/// true olmalı; sonraki sayfalarda tam sayım gereksiz maliyettir.
+#[tauri::command]
+pub fn search_segments_page(
+    state: State<'_, AppState>,
+    case_id: String,
+    query: String,
+    filters: Option<SearchFilters>,
+    limit: Option<i64>,
+    cursor: Option<String>,
+    include_total: Option<bool>,
+) -> Result<SearchPage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_segments_page(
+        &case_id,
+        &query,
+        &filters.unwrap_or_default(),
+        limit.unwrap_or(50),
+        cursor.as_deref(),
+        include_total.unwrap_or(false),
+    )?)
+}
+
+#[tauri::command]
+pub fn document_tags(
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<Vec<String>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_document_tags(&document_id)?)
+}
+
+#[tauri::command]
+pub fn document_tags_for_case(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<DocumentTagRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_document_tags(&case_id)?)
+}
+
+#[tauri::command]
+pub fn case_tags(state: State<'_, AppState>, case_id: String) -> Result<Vec<CaseTagRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_tags(&case_id)?)
+}
+
+/// Etiket ekler ve belgenin güncel etiket listesini döner.
+#[tauri::command]
+pub fn document_tag_add(
+    state: State<'_, AppState>,
+    document_id: String,
+    tag: String,
+) -> Result<Vec<String>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.add_document_tag(&document_id, &tag)?;
+    Ok(db.list_document_tags(&document_id)?)
+}
+
+#[tauri::command]
+pub fn document_tag_remove(
+    state: State<'_, AppState>,
+    document_id: String,
+    tag: String,
+) -> Result<Vec<String>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.remove_document_tag(&document_id, &tag)?;
+    Ok(db.list_document_tags(&document_id)?)
 }
 
 #[derive(Serialize)]

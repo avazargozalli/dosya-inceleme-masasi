@@ -24,6 +24,12 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
+    #[error("geçersiz etiket: boş, kontrol karakterli veya 40 karakterden uzun")]
+    InvalidTag,
+    #[error("geçersiz arama filtresi: {0}")]
+    SearchFilter(String),
+    #[error("arama imleci geçersiz ya da bu sorguya ait değil")]
+    SearchCursor,
     #[error("{0}")]
     ChecklistRule(String),
     #[error("kayıt bulunamadı")]
@@ -56,6 +62,9 @@ impl StorageError {
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
             Self::InvalidSetting => "E_DB_SETTING",
+            Self::InvalidTag => "E_TAG_INVALID",
+            Self::SearchFilter(_) => "E_SEARCH_FILTER",
+            Self::SearchCursor => "E_SEARCH_CURSOR",
             Self::ChecklistRule(_) => "E_CHECKLIST_RULE",
             Self::NotFound => "E_NOT_FOUND",
             Self::Conflict { .. } => "E_ROW_VERSION",

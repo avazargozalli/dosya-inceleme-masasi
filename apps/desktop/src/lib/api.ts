@@ -527,9 +527,53 @@ export type SearchHit = {
   documentVersionId: string | null;
   documentId: string | null;
   documentName: string | null;
+  /** Kapsam görünürlüğü (F07-T05): belge türü, durumu, metnin kaynağı. */
+  documentType: string | null;
+  documentStatus: string | null;
+  textOrigin: string | null;
+  caseId: string | null;
+  tags: string[];
   rawText: string;
   pageIndex: number | null;
   rank: number;
+};
+
+/** Arama filtreleri (F07-T03). Boş alan = filtre yok. */
+export type SearchFilters = {
+  documentTypes: string[];
+  /** Belgeye kaynaklı olayın tarih rolü (tebliğ, sözleşme…). */
+  dateRole: string | null;
+  /** Belgelerin taşıması gereken **tüm** etiketler. */
+  tags: string[];
+  /** "any" | "ocr" | "native" */
+  ocrStatus: string | null;
+};
+
+export type SearchPage = {
+  caseId: string;
+  query: string;
+  /** `case` = yalnız bu dosya. */
+  scope: string;
+  limit: number;
+  returned: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  /** Yalnız ilk sayfada istenir. */
+  total: number | null;
+  filters: SearchFilters;
+  hits: SearchHit[];
+};
+
+export type CaseTagRow = {
+  tag: string;
+  documentCount: number;
+};
+
+export type DocumentTagRow = {
+  documentId: string;
+  caseId: string;
+  tag: string;
+  createdAt: string;
 };
 
 export type AnchorLocationRow = {
@@ -626,6 +670,30 @@ export const api = {
     invoke<ParseResult>("document_parse", { versionId, ocr, ocrLang, password }),
   searchSegments: (caseId: string, query: string, limit = 50) =>
     invoke<SearchHit[]>("search_segments", { caseId, query, limit }),
+  /** Filtreli + keyset sayfalı arama (F07-T03/T05). */
+  searchPage: (
+    caseId: string,
+    query: string,
+    filters: SearchFilters,
+    options: { limit?: number; cursor?: string | null; includeTotal?: boolean } = {},
+  ) =>
+    invoke<SearchPage>("search_segments_page", {
+      caseId,
+      query,
+      filters,
+      limit: options.limit ?? 25,
+      cursor: options.cursor ?? null,
+      includeTotal: options.includeTotal ?? false,
+    }),
+
+  documentTags: (documentId: string) => invoke<string[]>("document_tags", { documentId }),
+  documentTagsForCase: (caseId: string) =>
+    invoke<DocumentTagRow[]>("document_tags_for_case", { caseId }),
+  caseTags: (caseId: string) => invoke<CaseTagRow[]>("case_tags", { caseId }),
+  documentTagAdd: (documentId: string, tag: string) =>
+    invoke<string[]>("document_tag_add", { documentId, tag }),
+  documentTagRemove: (documentId: string, tag: string) =>
+    invoke<string[]>("document_tag_remove", { documentId, tag }),
 
   eventList: (caseId: string) => invoke<EventRow[]>("event_list", { caseId }),
   eventCreate: (caseId: string, input: NewEventInput) =>

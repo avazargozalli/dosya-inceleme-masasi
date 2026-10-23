@@ -33,6 +33,8 @@ export function Cases() {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [docs, setDocs] = useState<DocumentRow[]>([]);
+  const [tagsByDoc, setTagsByDoc] = useState<Record<string, string[]>>({});
+  const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [reader, setReader] = useState<{ left: ReaderTarget | null; right: ReaderTarget | null } | null>(null);
   const [anchors, setAnchors] = useState<AnchorRow[]>([]);
@@ -63,9 +65,20 @@ export function Cases() {
     if (selected) {
       void loadDocs(selected.id);
       void api.anchorList(selected.id).then(setAnchors).catch((e) => setError(toApiError(e)));
+      void api
+        .documentTagsForCase(selected.id)
+        .then((rows) => {
+          const grouped: Record<string, string[]> = {};
+          for (const row of rows) {
+            (grouped[row.documentId] ??= []).push(row.tag);
+          }
+          setTagsByDoc(grouped);
+        })
+        .catch((e) => setError(toApiError(e)));
     } else {
       setDocs([]);
       setAnchors([]);
+      setTagsByDoc({});
     }
   }, [selected, loadDocs]);
 
@@ -124,6 +137,29 @@ export function Cases() {
       setError(toApiError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Belge etiketi ekler; sunucunun döndürdüğü güncel listeyi yazar.
+   *  Etiket aramada filtre olarak kullanılır (F07-T03). */
+  async function addTag(documentId: string) {
+    const draft = (tagDrafts[documentId] ?? "").trim();
+    if (!draft) return;
+    try {
+      const tags = await api.documentTagAdd(documentId, draft);
+      setTagsByDoc((prev) => ({ ...prev, [documentId]: tags }));
+      setTagDrafts((prev) => ({ ...prev, [documentId]: "" }));
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function removeTag(documentId: string, tag: string) {
+    try {
+      const tags = await api.documentTagRemove(documentId, tag);
+      setTagsByDoc((prev) => ({ ...prev, [documentId]: tags }));
+    } catch (e) {
+      setError(toApiError(e));
     }
   }
 
@@ -446,7 +482,7 @@ export function Cases() {
                     key={doc.id}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1fr 90px 110px 130px 220px",
+                      gridTemplateColumns: "1fr 80px 100px 120px 200px 190px",
                       gap: "var(--space-3)",
                       alignItems: "center",
                       padding: "9px var(--space-3)",
@@ -462,6 +498,41 @@ export function Cases() {
                     <span className="badge plain">{doc.documentType}</span>
                     <span className="muted small">{doc.status}</span>
                     <span className="muted small">{formatTimestamp(doc.updatedAt)}</span>
+                    <span style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {(tagsByDoc[doc.id] ?? []).map((tag) => (
+                          <span
+                            key={tag}
+                            className="badge plain"
+                            style={{ display: "inline-flex", alignItems: "center", gap: 2 }}
+                          >
+                            #{tag}
+                            <button
+                              className="btn ghost"
+                              style={{ height: 16, padding: "0 3px", fontSize: 11, lineHeight: 1 }}
+                              title={`“${tag}” etiketini kaldır`}
+                              onClick={() => void removeTag(doc.id, tag)}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </span>
+                      <input
+                        className="input"
+                        style={{ height: 24, fontSize: 12 }}
+                        placeholder="+ etiket (Enter)"
+                        aria-label={`${doc.displayName} için etiket`}
+                        value={tagDrafts[doc.id] ?? ""}
+                        onChange={(e) => setTagDrafts((prev) => ({ ...prev, [doc.id]: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void addTag(doc.id);
+                          }
+                        }}
+                      />
+                    </span>
                     <span style={{ display: "flex", gap: 4 }}>
                       <button
                         className="btn ghost"

@@ -2,6 +2,7 @@
 //! Eski çıkarımın üzerine yazılmaz (INV-01, ADR-09); kaynak konumları hangi
 //! koşuya bağlıysa o koşu açılır.
 
+use rusqlite::types::Value;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -393,52 +394,259 @@ impl Database {
         }))
     }
 
-    /// Dosya kapsamlı tam metin araması. `case_id` zorunludur; başka dosyanın
-    /// segmenti sonuca sızmaz. Sorgu parametre olarak bağlanır (SQL birleştirme yok).
+    /// Dosya kapsamlı tam metin araması (filtresiz, ilk sayfa). Geriye dönük
+    /// uyumluluk için korunur; filtre/sayfalama `search_segments_page` ile.
     pub fn search_segments(
         &self,
         case_id: &str,
         query: &str,
         limit: i64,
     ) -> Result<Vec<SearchHit>, StorageError> {
+        Ok(self
+            .search_segments_page(
+                case_id,
+                query,
+                &SearchFilters::default(),
+                limit,
+                None,
+                false,
+            )?
+            .hits)
+    }
+
+    /// Filtreli ve **keyset** sayfalı arama (F07-T03, F07-T05).
+    ///
+    /// Sıralama `bm25` (daha küçük = daha iyi) ve eşitlikte `segment_id`.
+    /// İmleç son dönen sonucun (rank bitleri, segment kimliği) çiftidir; böylece
+    /// araya kayıt girse bile sayfa kaymaz, sonuç tekrarlanmaz veya atlanmaz.
+    /// `include_total` yalnız ilk sayfada istenmeli: ikinci sayfada sayım
+    /// gereksiz maliyettir.
+    pub fn search_segments_page(
+        &self,
+        case_id: &str,
+        query: &str,
+        filters: &SearchFilters,
+        limit: i64,
+        cursor: Option<&str>,
+        include_total: bool,
+    ) -> Result<SearchPage, StorageError> {
+        let filters = filters.normalized()?;
+        let limit = limit.clamp(1, MAX_SEARCH_LIMIT);
         let trimmed = query.trim();
+        let cursor = match cursor {
+            Some(token) if !token.trim().is_empty() => {
+                Some(SearchCursor::parse(token.trim()).ok_or(StorageError::SearchCursor)?)
+            }
+            _ => None,
+        };
+
+        let mut page = SearchPage {
+            case_id: case_id.to_string(),
+            query: trimmed.to_string(),
+            scope: "case".to_string(),
+            limit,
+            returned: 0,
+            has_more: false,
+            next_cursor: None,
+            total: None,
+            filters: filters.clone(),
+            hits: Vec::new(),
+        };
         if trimmed.is_empty() {
-            return Ok(Vec::new());
+            if include_total {
+                page.total = Some(0);
+            }
+            return Ok(page);
         }
-        let escaped = trimmed.replace('"', " ");
-        let mut stmt = self.conn().prepare(
+
+        let (base_where, base_params) = search_where(case_id, trimmed, &filters);
+        if include_total {
+            let count: i64 = self.conn().query_row(
+                &format!("SELECT count(*) FROM {SEARCH_FROM} {base_where}"),
+                rusqlite::params_from_iter(base_params.iter()),
+                |row| row.get(0),
+            )?;
+            page.total = Some(count);
+        }
+
+        // Sonuç sınırı: bir fazla satır çekilir, `has_more` gerçek veriden gelir.
+        let mut sql = format!(
             "SELECT s.id, s.page_id, s.raw_text, p.page_index, bm25(text_segments_fts),
-                    pr.document_version_id, dv.document_id, d.display_name
-             FROM text_segments_fts
-             JOIN text_segments s ON s.rowid = text_segments_fts.rowid
-             LEFT JOIN pages p ON p.id = s.page_id
-             LEFT JOIN parse_runs pr ON pr.id = s.parse_run_id
-             LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
-             LEFT JOIN documents d ON d.id = dv.document_id
-             WHERE text_segments_fts MATCH ?1 AND s.case_id = ?2
-             ORDER BY bm25(text_segments_fts) LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(
-            rusqlite::params![format!("\"{escaped}\"*"), case_id, limit],
-            |row| {
-                Ok(SearchHit {
-                    segment_id: row.get(0)?,
-                    page_id: row.get(1)?,
-                    document_version_id: row.get(5)?,
-                    document_id: row.get(6)?,
-                    document_name: row.get(7)?,
-                    raw_text: row.get(2)?,
-                    page_index: row.get(3)?,
-                    rank: row.get(4)?,
-                })
-            },
-        )?;
-        let mut out = Vec::new();
+                    pr.document_version_id, dv.document_id, d.display_name, d.document_type,
+                    d.status, p.text_origin, s.case_id
+             FROM {SEARCH_FROM} {base_where}"
+        );
+        let mut params = base_params;
+        if let Some(cursor) = &cursor {
+            sql.push_str(
+                " AND (bm25(text_segments_fts) > ?
+                       OR (bm25(text_segments_fts) = ? AND s.id > ?))",
+            );
+            let rank = Value::Real(cursor.rank());
+            params.push(rank.clone());
+            params.push(rank);
+            params.push(Value::Text(cursor.segment_id.clone()));
+        }
+        sql.push_str(" ORDER BY bm25(text_segments_fts), s.id LIMIT ?");
+        params.push(Value::Integer(limit + 1));
+
+        let mut stmt = self.conn().prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(SearchHit {
+                segment_id: row.get(0)?,
+                page_id: row.get(1)?,
+                raw_text: row.get(2)?,
+                page_index: row.get(3)?,
+                rank: row.get(4)?,
+                document_version_id: row.get(5)?,
+                document_id: row.get(6)?,
+                document_name: row.get(7)?,
+                document_type: row.get(8)?,
+                document_status: row.get(9)?,
+                text_origin: row.get(10)?,
+                case_id: row.get(11)?,
+                tags: Vec::new(),
+            })
+        })?;
+        let mut hits = Vec::new();
         for row in rows {
-            out.push(row?);
+            hits.push(row?);
+        }
+        if hits.len() as i64 > limit {
+            hits.truncate(limit as usize);
+            page.has_more = true;
+        }
+        if page.has_more {
+            if let Some(last) = hits.last() {
+                page.next_cursor = Some(
+                    SearchCursor {
+                        rank_bits: last.rank.to_bits(),
+                        segment_id: last.segment_id.clone(),
+                    }
+                    .encode(),
+                );
+            }
+        }
+
+        let doc_ids: Vec<String> = {
+            let mut ids: Vec<String> = hits.iter().filter_map(|h| h.document_id.clone()).collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        };
+        if !doc_ids.is_empty() {
+            let mut by_doc = self.tags_for_documents(case_id, &doc_ids)?;
+            for hit in &mut hits {
+                if let Some(doc_id) = &hit.document_id {
+                    if let Some(tags) = by_doc.remove(doc_id) {
+                        hit.tags = tags;
+                    }
+                }
+            }
+        }
+
+        page.returned = hits.len() as i64;
+        page.hits = hits;
+        Ok(page)
+    }
+
+    /// Sonuç sayfasındaki belgelerin etiketleri: tek sorgu, N+1 yok.
+    fn tags_for_documents(
+        &self,
+        case_id: &str,
+        document_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, StorageError> {
+        let placeholders = vec!["?"; document_ids.len()].join(",");
+        let sql = format!(
+            "SELECT document_id, tag FROM document_tags
+             WHERE case_id=? AND document_id IN ({placeholders}) ORDER BY tag"
+        );
+        let mut params: Vec<Value> = vec![Value::Text(case_id.to_string())];
+        for id in document_ids {
+            params.push(Value::Text(id.clone()));
+        }
+        let mut stmt = self.conn().prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (doc_id, tag) = row?;
+            out.entry(doc_id).or_default().push(tag);
         }
         Ok(out)
     }
+}
+
+/// Aranan ifade FTS5 sözdizimine sokulmadan önce tırnaklanır; kullanıcı
+/// metnindeki `"` boşluğa çevrilir, sorgu **parametre** olarak bağlanır.
+fn match_expression(query: &str) -> String {
+    let escaped = query.trim().replace('"', " ");
+    format!("\"{escaped}\"*")
+}
+
+/// Arama sorgusunun ortak FROM'u. Segment → koşu → sürüm → belge yolu tek
+/// yerde; sayaç ve sayfa sorgusu aynı kapsamı kullanır.
+const SEARCH_FROM: &str = "text_segments_fts
+     JOIN text_segments s ON s.rowid = text_segments_fts.rowid
+     LEFT JOIN pages p ON p.id = s.page_id
+     LEFT JOIN parse_runs pr ON pr.id = s.parse_run_id
+     LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
+     LEFT JOIN documents d ON d.id = dv.document_id";
+
+/// WHERE'i ve parametrelerini (önce MATCH, sonra `case_id`) üretir.
+///
+/// Etiket filtresi **VE** semantiği taşır: verilen bütün etiketler aynı belgede
+/// olmalı. Tarih rolü, belgeye *kaynaklı* olayın rolüdür — belgeye bağlanmamış
+/// olay bu belgeyi sonuca sokmaz.
+fn search_where(case_id: &str, query: &str, filters: &SearchFilters) -> (String, Vec<Value>) {
+    let mut sql = String::from(" WHERE text_segments_fts MATCH ? AND s.case_id = ?");
+    let mut params: Vec<Value> = vec![
+        Value::Text(match_expression(query)),
+        Value::Text(case_id.to_string()),
+    ];
+
+    if !filters.document_types.is_empty() {
+        let placeholders = vec!["?"; filters.document_types.len()].join(",");
+        sql.push_str(&format!(" AND d.document_type IN ({placeholders})"));
+        for kind in &filters.document_types {
+            params.push(Value::Text(kind.clone()));
+        }
+    }
+
+    match filters.ocr_status.as_deref() {
+        Some("ocr") => sql.push_str(" AND p.text_origin IN ('ocr','mixed')"),
+        Some("native") => sql.push_str(" AND p.text_origin = 'native'"),
+        _ => {}
+    }
+
+    if !filters.tags.is_empty() {
+        let placeholders = vec!["?"; filters.tags.len()].join(",");
+        sql.push_str(&format!(
+            " AND (SELECT count(*) FROM document_tags t
+                    WHERE t.document_id = d.id AND t.tag IN ({placeholders})) = {}",
+            filters.tags.len()
+        ));
+        for tag in &filters.tags {
+            params.push(Value::Text(tag.clone()));
+        }
+    }
+
+    if let Some(role) = &filters.date_role {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM events e
+                 JOIN event_sources es ON es.event_id = e.id
+                 JOIN source_anchors sa ON sa.id = es.source_anchor_id
+                 JOIN document_versions sdv ON sdv.id = sa.document_version_id
+                 WHERE e.case_id = ? AND e.deleted_at IS NULL AND e.date_role = ?
+                   AND sdv.document_id = d.id)",
+        );
+        params.push(Value::Text(case_id.to_string()));
+        params.push(Value::Text(role.clone()));
+    }
+
+    (sql, params)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -463,16 +671,175 @@ pub struct SearchHit {
     pub document_version_id: Option<String>,
     pub document_id: Option<String>,
     pub document_name: Option<String>,
+    /// Sonucun kapsamını arayüzde görünür kılan üst veri (F07-T05): belge türü,
+    /// durumu ve sayfanın metin kaynağı (OCR mı).
+    pub document_type: Option<String>,
+    pub document_status: Option<String>,
+    pub text_origin: Option<String>,
+    /// Sonucun hangi dosyaya ait olduğu; kapsam dışı dosya sonuca giremez.
+    pub case_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub raw_text: String,
     pub page_index: Option<i64>,
     pub rank: f64,
+}
+
+/// Bir aramanın filtre kümesi (F07-T03). Boş alan = filtre yok.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchFilters {
+    /// `documents.document_type` değerleri; birden fazlaysa **VEYA**.
+    pub document_types: Vec<String>,
+    /// Belgeye kaynaklı olayın `date_role` değeri (tebliğ, sözleşme, duruşma…).
+    pub date_role: Option<String>,
+    /// Belgedeki etiketler; birden fazlaysa **VE** (hepsi aynı belgede).
+    pub tags: Vec<String>,
+    /// `any` | `ocr` | `native`.
+    pub ocr_status: Option<String>,
+}
+
+impl SearchFilters {
+    /// Filtreleri doğrular ve kanonikleştirir. Bilinmeyen değer sessizce
+    /// yok sayılmaz: `E_SEARCH_FILTER` döner, yoksa kullanıcı filtresiz sonuç
+    /// gördüğünü sanır.
+    fn normalized(&self) -> Result<SearchFilters, StorageError> {
+        let mut out = SearchFilters::default();
+        for raw in &self.document_types {
+            let kind = raw.trim();
+            if kind.is_empty() {
+                continue;
+            }
+            if kind.chars().count() > 40 {
+                return Err(StorageError::SearchFilter("belge türü çok uzun".into()));
+            }
+            if !out.document_types.iter().any(|existing| existing == kind) {
+                out.document_types.push(kind.to_string());
+            }
+        }
+        if out.document_types.len() > 20 {
+            return Err(StorageError::SearchFilter(
+                "en çok 20 belge türü seçilebilir".into(),
+            ));
+        }
+
+        let role = self
+            .date_role
+            .as_deref()
+            .map(str::trim)
+            .filter(|role| !role.is_empty());
+        if let Some(role) = role {
+            if !SEARCH_DATE_ROLES.contains(&role) {
+                return Err(StorageError::SearchFilter(format!(
+                    "bilinmeyen tarih rolü: {role}"
+                )));
+            }
+            out.date_role = Some(role.to_string());
+        }
+
+        for raw in &self.tags {
+            let tag = crate::tags::normalize_tag(raw).ok_or_else(|| {
+                StorageError::SearchFilter("geçersiz etiket (boş veya 40 karakterden uzun)".into())
+            })?;
+            if !out.tags.contains(&tag) {
+                out.tags.push(tag);
+            }
+        }
+        if out.tags.len() > crate::tags::MAX_FILTER_TAGS {
+            return Err(StorageError::SearchFilter(format!(
+                "en çok {} etiketle filtre kurulabilir",
+                crate::tags::MAX_FILTER_TAGS
+            )));
+        }
+        // Parametre sırası deterministik olsun: aynı filtre aynı SQL'i üretir.
+        out.tags.sort();
+
+        match self.ocr_status.as_deref().map(str::trim) {
+            None | Some("") | Some("any") => {}
+            Some(value @ ("ocr" | "native")) => out.ocr_status = Some(value.to_string()),
+            Some(other) => {
+                return Err(StorageError::SearchFilter(format!(
+                    "bilinmeyen OCR durumu: {other}"
+                )))
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `events.date_role` ile aynı küme; bilinmeyen rol filtresi reddedilir.
+pub const SEARCH_DATE_ROLES: &[&str] = &[
+    "event",
+    "document",
+    "notification",
+    "contract",
+    "hearing",
+    "deadline_candidate",
+    "unknown",
+];
+
+/// Tek aramada dönebilecek en fazla sonuç (arayüz de aynı sınırı gösterir).
+pub const MAX_SEARCH_LIMIT: i64 = 200;
+
+/// Keyset imleci: son dönen sonucun `bm25` bitleri + segment kimliği.
+///
+/// Rank `f64` olarak karşılaştırılır; ondalık metne çevirmek eşit skorlarda
+/// kayma üretirdi, bu yüzden bit temsili taşınır.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchCursor {
+    pub rank_bits: u64,
+    pub segment_id: String,
+}
+
+impl SearchCursor {
+    pub fn encode(&self) -> String {
+        format!("v1.{:016x}.{}", self.rank_bits, self.segment_id)
+    }
+
+    pub fn parse(token: &str) -> Option<SearchCursor> {
+        let mut parts = token.splitn(3, '.');
+        if parts.next()? != "v1" {
+            return None;
+        }
+        let rank_bits = u64::from_str_radix(parts.next()?, 16).ok()?;
+        let segment_id = parts.next()?;
+        if segment_id.is_empty() || segment_id.len() > 64 {
+            return None;
+        }
+        Some(SearchCursor {
+            rank_bits,
+            segment_id: segment_id.to_string(),
+        })
+    }
+
+    fn rank(&self) -> f64 {
+        f64::from_bits(self.rank_bits)
+    }
+}
+
+/// Bir arama sayfası ve kapsam bilgisi (F07-T05).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPage {
+    pub case_id: String,
+    pub query: String,
+    /// `case`: yalnız bu dosya. Başka kapsam v1'de yok.
+    pub scope: String,
+    pub limit: i64,
+    pub returned: i64,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+    /// Yalnız `include_total` istendiğinde dolar.
+    pub total: Option<i64>,
+    pub filters: SearchFilters,
+    pub hits: Vec<SearchHit>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cases::{CaseKind, NewCase};
-    use crate::DatabaseKey;
+    use crate::{DatabaseKey, NewAnchor, NewEvent};
 
     fn setup() -> (Database, String, String) {
         let db = Database::open_in_memory(&DatabaseKey::new([13u8; 32])).expect("db");
@@ -654,6 +1021,394 @@ mod tests {
             .find(|h| h.document_version_id.as_deref() == Some(second_version.id.as_str()))
             .expect("yeni sürüm sonucu");
         assert!(new.raw_text.contains("yeni sürümde"));
+    }
+
+    /// Yeni belge + sürüm + koşu + tek sayfa. Testler arama filtrelerini bu
+    /// gerçek kayıtlar üzerinde kurar; segment kimliği de döner (anchor için).
+    fn add_document_with_text(
+        db: &Database,
+        case_id: &str,
+        name: &str,
+        document_type: &str,
+        text: &str,
+        origin: &str,
+    ) -> (String, String, String, String) {
+        let tag = uuid::Uuid::now_v7().to_string();
+        let blob = db
+            .create_blob_record(&format!("st-{tag}"), 10, "aad")
+            .expect("blob");
+        let doc = db
+            .create_document(case_id, name, document_type, None, "unknown")
+            .expect("belge");
+        let version = db
+            .add_version(
+                &doc.id,
+                case_id,
+                &blob,
+                &"a".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            case_id,
+            &[NewPage {
+                index: 0,
+                text: text.into(),
+                width: None,
+                height: None,
+                origin: origin.into(),
+                warnings: vec![],
+                ..Default::default()
+            }],
+        )
+        .expect("sayfa");
+        let segment_id = db
+            .pages_for_run(&run.id)
+            .expect("sayfalar")
+            .first()
+            .and_then(|page| page.segment_id.clone())
+            .expect("segment");
+        (doc.id, version.id, run.id, segment_id)
+    }
+
+    #[test]
+    fn search_filters_by_document_type_and_text_origin() {
+        let (db, case_id, _version_id) = setup();
+        let (contract_doc, ..) = add_document_with_text(
+            &db,
+            &case_id,
+            "Kira Sözleşmesi",
+            "contract",
+            "kira ödemesi aylık yapılır",
+            "native",
+        );
+        let (report_doc, ..) = add_document_with_text(
+            &db,
+            &case_id,
+            "Bilirkişi Raporu",
+            "report",
+            "kira ödemesi yapılmamıştır",
+            "ocr",
+        );
+
+        let by_type = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    document_types: vec!["contract".into()],
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("tür filtresi");
+        assert_eq!(by_type.total, Some(1));
+        assert_eq!(by_type.hits.len(), 1);
+        assert_eq!(
+            by_type.hits[0].document_id.as_deref(),
+            Some(contract_doc.as_str())
+        );
+        assert_eq!(by_type.hits[0].document_type.as_deref(), Some("contract"));
+        assert_eq!(by_type.hits[0].text_origin.as_deref(), Some("native"));
+
+        let ocr_only = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    ocr_status: Some("ocr".into()),
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("OCR filtresi");
+        assert_eq!(ocr_only.hits.len(), 1);
+        assert_eq!(
+            ocr_only.hits[0].document_id.as_deref(),
+            Some(report_doc.as_str())
+        );
+        assert_eq!(ocr_only.hits[0].text_origin.as_deref(), Some("ocr"));
+
+        let native_only = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    ocr_status: Some("native".into()),
+                    ..Default::default()
+                },
+                10,
+                None,
+                false,
+            )
+            .expect("yerel metin filtresi");
+        assert_eq!(native_only.hits.len(), 1);
+        assert_eq!(
+            native_only.hits[0].document_id.as_deref(),
+            Some(contract_doc.as_str())
+        );
+
+        let unknown = db.search_segments_page(
+            &case_id,
+            "kira",
+            &SearchFilters {
+                ocr_status: Some("taranmış".into()),
+                ..Default::default()
+            },
+            10,
+            None,
+            false,
+        );
+        assert!(matches!(unknown, Err(StorageError::SearchFilter(_))));
+    }
+
+    #[test]
+    fn search_tag_filter_requires_every_tag() {
+        let (db, case_id, _version_id) = setup();
+        let (both, ..) = add_document_with_text(
+            &db,
+            &case_id,
+            "İhtarname",
+            "notice",
+            "kira bedeli ödenmedi",
+            "native",
+        );
+        let (single, ..) = add_document_with_text(
+            &db,
+            &case_id,
+            "Makbuz",
+            "receipt",
+            "kira bedeli ödendi",
+            "native",
+        );
+        db.add_document_tag(&both, "Kira").expect("etiket");
+        db.add_document_tag(&both, "temerrüt").expect("etiket");
+        db.add_document_tag(&single, "kira").expect("etiket");
+
+        let one = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    tags: vec!["KİRA".into()],
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("tek etiket");
+        assert_eq!(one.total, Some(2));
+
+        let two = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    tags: vec!["kira".into(), "Temerrüt".into()],
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("iki etiket");
+        assert_eq!(two.total, Some(1));
+        assert_eq!(two.hits[0].document_id.as_deref(), Some(both.as_str()));
+        assert_eq!(
+            two.hits[0].tags,
+            vec!["kira".to_string(), "temerrüt".to_string()]
+        );
+
+        let unmatched = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    tags: vec!["kira".into(), "yok".into()],
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("eşleşmeyen");
+        assert_eq!(unmatched.total, Some(0));
+    }
+
+    #[test]
+    fn search_date_role_filter_uses_documents_linked_events() {
+        let (db, case_id, _version_id) = setup();
+        let (notified, version_id, run_id, segment_id) = add_document_with_text(
+            &db,
+            &case_id,
+            "Tebligat",
+            "notice",
+            "kira artışı tebliğ edildi",
+            "native",
+        );
+        let (other, ..) = add_document_with_text(
+            &db,
+            &case_id,
+            "Dilekçe",
+            "petition",
+            "kira artışı itirazı",
+            "native",
+        );
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: version_id,
+                parse_run_id: run_id,
+                segment_id,
+                start_offset: 0,
+                end_offset: "kira artışı".chars().count() as i64,
+                exact_quote: "kira artışı".into(),
+            })
+            .expect("anchor");
+        let event = db
+            .create_event(
+                &case_id,
+                &NewEvent {
+                    event_kind: "notice".into(),
+                    date_value: Some("2026-03-01".into()),
+                    date_precision: "day".into(),
+                    date_role: "notification".into(),
+                    date_raw: Some("01.03.2026".into()),
+                    title: "Tebligat".into(),
+                    description: String::new(),
+                    assertion_kind: "document".into(),
+                },
+            )
+            .expect("olay");
+        db.link_event_source(&event.id, &anchor.id, "states")
+            .expect("bağ");
+
+        let filtered = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    date_role: Some("notification".into()),
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("rol filtresi");
+        assert_eq!(filtered.total, Some(1));
+        assert_eq!(
+            filtered.hits[0].document_id.as_deref(),
+            Some(notified.as_str())
+        );
+
+        // Aynı rol başka bir olayda olsa da belgeye bağlı değilse süzülür.
+        let hearing = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters {
+                    date_role: Some("hearing".into()),
+                    ..Default::default()
+                },
+                10,
+                None,
+                true,
+            )
+            .expect("duruşma rolü");
+        assert_eq!(hearing.total, Some(0));
+
+        // Diğer belge kaynak bağı taşımadığı için sonuçta yok.
+        assert!(!filtered
+            .hits
+            .iter()
+            .any(|hit| hit.document_id.as_deref() == Some(other.as_str())));
+    }
+
+    #[test]
+    fn search_keyset_pages_cover_every_hit_once() {
+        let (db, case_id, _version_id) = setup();
+        for index in 0..5 {
+            add_document_with_text(
+                &db,
+                &case_id,
+                &format!("Belge {index}"),
+                "notice",
+                "kira bedeli ödenmedi",
+                "native",
+            );
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let page = db
+                .search_segments_page(
+                    &case_id,
+                    "kira",
+                    &SearchFilters::default(),
+                    2,
+                    cursor.as_deref(),
+                    pages == 0,
+                )
+                .expect("sayfa");
+            if pages == 0 {
+                assert_eq!(page.total, Some(5), "ilk sayfa toplamı tam olmalı");
+            } else {
+                assert_eq!(page.total, None, "sonraki sayfada sayım istenmez");
+            }
+            assert!(page.returned <= 2);
+            seen.extend(page.hits.iter().map(|hit| hit.segment_id.clone()));
+            pages += 1;
+            match page.next_cursor {
+                Some(next) if page.has_more => cursor = Some(next),
+                _ => break,
+            }
+            assert!(pages < 10, "sayfalama döngüye girdi");
+        }
+        seen.sort();
+        seen.dedup();
+        // Beş belge, her biri tek segment: her sonuç tam bir kez dönmeli.
+        assert_eq!(seen.len(), 5, "her sonuç tam bir kez dönmeli");
+        assert_eq!(pages, 3, "2'şerlik sayfalarda 5 sonuç 3 sayfa");
+    }
+
+    #[test]
+    fn search_rejects_foreign_cursor_and_clamps_limit() {
+        let (db, case_id, _version_id) = setup();
+        let invalid = db.search_segments_page(
+            &case_id,
+            "kira",
+            &SearchFilters::default(),
+            10,
+            Some("v1.zzzz."),
+            false,
+        );
+        assert!(matches!(invalid, Err(StorageError::SearchCursor)));
+
+        let page = db
+            .search_segments_page(
+                &case_id,
+                "kira",
+                &SearchFilters::default(),
+                10_000,
+                None,
+                true,
+            )
+            .expect("sayfa");
+        assert_eq!(page.limit, MAX_SEARCH_LIMIT);
+        assert_eq!(page.scope, "case");
+        assert_eq!(page.case_id, case_id);
     }
 
     #[test]

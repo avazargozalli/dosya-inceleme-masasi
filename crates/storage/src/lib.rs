@@ -17,6 +17,7 @@ mod parsing;
 mod precedents;
 mod redactions;
 mod review_commit;
+mod tags;
 mod tasks;
 mod timeline;
 
@@ -39,7 +40,8 @@ pub use error::StorageError;
 pub use exports::ExportRow;
 pub use notes::{NewNote, NoteRow};
 pub use parsing::{
-    settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchHit, SegmentBlock, SegmentGeometry,
+    settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
+    SearchPage, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT, SEARCH_DATE_ROLES,
 };
 pub use precedents::{
     CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, PrecedentNoteRow,
@@ -49,6 +51,7 @@ pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{
     OutboxEventRow, ReviewCommitResult, ReviewTarget, EVENT_DECISION_COMMITTED, EVENT_ITEM_DECIDED,
 };
+pub use tags::{CaseTagRow, DocumentTagRow, MAX_TAG_CHARS};
 pub use tasks::{NewTask, ReminderEnqueueResult, ReminderRow, TaskRow, EVENT_TASK_REMINDER};
 pub use timeline::{EventPatch, EventRow, EventSourceRow, NewEvent};
 
@@ -141,9 +144,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0009_checklists",
         sql: include_str!("migrations/0009_checklists.sql"),
     },
+    Migration {
+        version: 10,
+        name: "0010_document_tags",
+        sql: include_str!("migrations/0010_document_tags.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
