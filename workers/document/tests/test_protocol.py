@@ -44,6 +44,19 @@ def test_invalid_base64_rejected():
     assert getattr(exc.value, "code", "") == "E_INPUT_BASE64"
 
 
+def test_content_without_mime_is_rejected():
+    import base64
+
+    with pytest.raises(ProtocolError) as exc:
+        handle(
+            frame(
+                method="extract_text",
+                params={"contentBase64": base64.b64encode(b"abc").decode()},
+            )
+        )
+    assert exc.value.code == "E_PARAMS"
+
+
 def test_oversize_frame_rejected():
     stream = io.BytesIO(b"x" * (MAX_FRAME_BYTES + 10) + b"\n")
     with pytest.raises(ProtocolError) as exc:

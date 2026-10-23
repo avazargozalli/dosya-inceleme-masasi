@@ -84,7 +84,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e "workers/document[pdf,dev]"
+      - name: Tesseract (OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+      - run: pip install -e "workers/document[all,dev]"
       - run: python -m pytest workers/document/tests -q
       - name: Uçtan uca duman testi (gerçek worker + sentetik PDF)
         run: python tests/smoke/worker_smoke.py

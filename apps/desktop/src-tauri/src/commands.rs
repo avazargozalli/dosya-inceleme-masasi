@@ -482,6 +482,8 @@ fn spawn_worker() -> Result<WorkerClient, ApiError> {
 pub fn document_parse(
     state: State<'_, AppState>,
     version_id: String,
+    ocr: Option<bool>,
+    ocr_lang: Option<String>,
 ) -> Result<ParseResultView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
@@ -502,7 +504,12 @@ pub fn document_parse(
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
     let mut worker = spawn_worker()?;
-    let extraction = worker.extract_text(&data, &blob.mime)?;
+    let extraction = worker.extract_text(
+        &data,
+        &blob.mime,
+        ocr.unwrap_or(false),
+        &ocr_lang.unwrap_or_else(|| "eng".to_string()),
+    )?;
     worker.shutdown();
 
     let run = db.start_parse_run(

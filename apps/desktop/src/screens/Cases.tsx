@@ -113,11 +113,11 @@ export function Cases() {
     }
   }
 
-  async function parseDocument(versionId: string) {
+  async function parseDocument(versionId: string, ocr = false) {
     setBusy(true);
     setNotice(null);
     try {
-      const result = await api.documentParse(versionId);
+      const result = await api.documentParse(versionId, ocr, "tur+eng");
       setNotice(
         `Ayrıştırma ${result.parseRun.status}: ${result.pages} sayfa, ${result.storedSegments} metin bloğu` +
           (result.warnings.length ? ` · ${result.warnings.length} uyarı` : ""),

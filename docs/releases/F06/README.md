@@ -10,8 +10,8 @@
 | F06-T02 | ✅ | PyMuPDF metin çıkarma (worker), `text_origin` |
 | F06-T03 | ✅ | worker istemcisi: 1 MiB çerçeve, zaman aşımı, süreç ölümü |
 | F06-T04 | ✅ | ayrıştırma durumu (`succeeded`/`partial`), uyarılar |
-| F06-T05 | 🚧 | OCR (Tesseract) henüz bağlanmadı — sayfa uyarısı üretilir |
-| F06-T06 | 🚧 | UDF/DOCX yapı çıkarımı F06 devamında |
+| F06-T05 | ✅ | OCR: Tesseract (`tur+eng`), 300 dpi, dil paketi keşfi; yoksa açık hata |
+| F06-T06 | ✅ | DOCX (python-docx): paragraf, tablo, üst/alt bilgi; UDF hâlâ açık |
 
 ## Doğrulama
 
@@ -20,5 +20,10 @@
 
 ## Bilinen sınırlar
 
-- OCR yok: taranmış PDF'te metin boş kalır ve "OCR gerekli" uyarısı yazılır.
+- OCR isteğe bağlıdır: kullanıcı “OCR” demezse taranmış sayfa boş kalır ve
+  “OCR gerekli” uyarısı yazılır. OCR kalitesi tarama kalitesine bağlıdır; sonuç
+  özgün metnin yerine geçmez.
+- DOCX'te sayfa düzeni doğrulanmaz; kaynak paragraf/tablo bazlıdır ve bu uyarı
+  kayıtta taşınır.
+- UDF (UYAP belge paketi) henüz yok.
 - Kaynak konumu (bbox/quad) üretilmiyor; segment düzeyi var, alıntı anchor'ı F07/F11.

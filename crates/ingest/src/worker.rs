@@ -223,11 +223,22 @@ impl WorkerClient {
         Ok(())
     }
 
-    pub fn extract_text(&mut self, data: &[u8], mime: &str) -> Result<Extraction, WorkerError> {
+    pub fn extract_text(
+        &mut self,
+        data: &[u8],
+        mime: &str,
+        ocr: bool,
+        ocr_lang: &str,
+    ) -> Result<Extraction, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
         let result = self.request(
             "extract_text",
-            json!({"contentBase64": encoded, "mime": mime}),
+            json!({
+                "contentBase64": encoded,
+                "mime": mime,
+                "ocr": ocr,
+                "ocrLang": ocr_lang,
+            }),
         )?;
         serde_json::from_value(result).map_err(|_| WorkerError::BadResponse)
     }

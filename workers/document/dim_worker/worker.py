@@ -11,7 +11,7 @@ import sys
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .engines import EngineError, capabilities, decode_content, extract_pdf
+from .engines import EngineError, capabilities, decode_content, extract
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
 
 METHODS = {"ping", "capabilities", "extract_text", "shutdown"}
@@ -50,7 +50,13 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         return ok(rid, {"bye": True}), True
 
     data = decode_content(params)
-    extraction = extract_pdf(data)
+    mime = params.get("mime")
+    if not isinstance(mime, str) or not mime:
+        raise ProtocolError("E_PARAMS", "mime zorunlu")
+    ocr = bool(params.get("ocr", False))
+    ocr_lang = str(params.get("ocrLang") or "eng")
+    encoding = str(params.get("encoding") or "utf-8")
+    extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding)
     result = {
         "engine": extraction.engine,
         "engineVersion": extraction.engine_version,
