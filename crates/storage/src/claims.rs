@@ -532,7 +532,11 @@ impl Database {
     }
 
     /// İnceleme kararı: geçmiş eklemeli tutulur; karar verilmiş öğe yeniden
-    /// "pending" yapılamaz. Kalıcı domain kaydı bu fonksiyonda oluşturulmaz.
+    /// "pending" yapılamaz. Kalıcı domain kaydı bu fonksiyonda oluşturulmaz
+    /// (hedef kayıt için `commit_review_decision`).
+    ///
+    /// F08-T08: karar satırı, öğe durumu, denetim kaydı ve bildirim outbox
+    /// olayı **aynı işlemde** yazılır; biri düşerse hiçbiri kalmaz.
     pub fn decide_review_item(
         &self,
         item_id: &str,
@@ -554,16 +558,21 @@ impl Database {
         if item.state != "pending" && item.state != "needs_more_evidence" {
             return Err(StorageError::InvalidSetting);
         }
+        if item.superseded_at.is_some() {
+            return Err(StorageError::InvalidSetting);
+        }
         if reviewer.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
         let now = now_iso();
+        let decision_id = uuid::Uuid::now_v7().to_string();
+        let outbox_id = format!("outbox:{decision_id}");
         let tx = self.conn().unchecked_transaction()?;
         tx.execute(
             "INSERT INTO review_decisions (id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7)",
             rusqlite::params![
-                uuid::Uuid::now_v7().to_string(),
+                decision_id,
                 item_id,
                 decision,
                 edited_payload.map(|v| v.to_string()),
@@ -572,18 +581,44 @@ impl Database {
                 now
             ],
         )?;
-        tx.execute(
-            "UPDATE review_items SET state=?1, payload=COALESCE(?2, payload), updated_at=?3, row_version=row_version+1 WHERE id=?4",
+        let changed = tx.execute(
+            "UPDATE review_items SET state=?1, payload=COALESCE(?2, payload), updated_at=?3, row_version=row_version+1
+             WHERE id=?4 AND superseded_at IS NULL AND target_entity_id IS NULL
+               AND state IN ('pending','needs_more_evidence')",
             rusqlite::params![next_state, edited_payload.map(|v| v.to_string()), now, item_id],
         )?;
-        tx.commit()?;
+        if changed == 0 {
+            return Err(StorageError::Conflict {
+                expected: item.row_version,
+                actual: item.row_version,
+            });
+        }
         self.append_audit(
             "review_item",
             Some(item_id),
             decision,
             reviewer,
-            &serde_json::json!({}),
+            &serde_json::json!({ "outboxEventId": outbox_id }),
         )?;
+        // Bildirim olayı: tüketici hazır olana kadar kuyrukta bekler.
+        tx.execute(
+            "INSERT INTO outbox_events (id,aggregate_id,case_id,event_type,payload_version,payload,created_at,delivered_at,attempt_count)
+             VALUES (?1,?2,?3,?4,1,?5,?6,NULL,0)",
+            rusqlite::params![
+                outbox_id,
+                item_id,
+                item.case_id,
+                crate::review_commit::EVENT_ITEM_DECIDED,
+                serde_json::json!({
+                    "itemId": item_id,
+                    "decisionId": decision_id,
+                    "decision": decision,
+                })
+                .to_string(),
+                now
+            ],
+        )?;
+        tx.commit()?;
         self.get_review_item(item_id)?.ok_or(StorageError::NotFound)
     }
 

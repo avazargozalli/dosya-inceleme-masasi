@@ -12,6 +12,12 @@ import {
   type ReviewItemRow,
 } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
+import {
+  buildReviewTarget,
+  itemText,
+  TARGET_KIND_LABEL,
+  type ReviewTargetKind,
+} from "../lib/reviewTarget";
 
 const CLAIM_KIND: Record<string, string> = {
   allegation: "İddia",
@@ -89,6 +95,10 @@ export function Review() {
   const [editJson, setEditJson] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [supersedeTargets, setSupersedeTargets] = useState<Record<string, string>>({});
+  // F08-T08: kabul, seçilen hedef kayıtla birlikte atomik yazılır.
+  const [targetKinds, setTargetKinds] = useState<Record<string, ReviewTargetKind>>({});
+  const [targetClaimKinds, setTargetClaimKinds] = useState<Record<string, string>>({});
+  const [outboxPending, setOutboxPending] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -116,11 +126,15 @@ export function Review() {
       const contradictionIds = itemRows
         .filter((i) => i.itemKind === "contradiction_candidate")
         .map((i) => i.id);
-      const pairs = await Promise.all(
-        contradictionIds.map(
-          async (itemId) => [itemId, await api.contradictionAssessments(itemId)] as const,
+      const [outboxRows, pairs] = await Promise.all([
+        api.reviewOutboxPending(id),
+        Promise.all(
+          contradictionIds.map(
+            async (itemId) => [itemId, await api.contradictionAssessments(itemId)] as const,
+          ),
         ),
-      );
+      ]);
+      setOutboxPending(outboxRows.length);
       setAssessments(Object.fromEntries(pairs));
       setSelectedClaim((prev) => (prev ? claimRows.find((c) => c.id === prev.id) ?? null : null));
     } catch (e) {
@@ -280,6 +294,37 @@ export function Review() {
       await api.reviewDecide(item.id, decision, decision === "edit" ? "kullanıcı düzeltmesi" : "", edited ?? undefined);
       setEditingId(null);
       setEditJson("");
+      await load(caseId);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * F08-T08: kabul, seçilen hedef kayıtla birlikte tek işlemde yazılır.
+   * Kayıt türü (iddiada ayrıca iddia türü) seçilmeden buton açılmaz.
+   */
+  async function commit(item: ReviewItemRow) {
+    const target = buildReviewTarget(
+      targetKinds[item.id] ?? "",
+      itemText(item.payload),
+      targetClaimKinds[item.id] ?? "",
+    );
+    if (!target) {
+      setError({
+        code: "E_FORM",
+        message: "Kabul için kayıt türü seçilmeli; iddiada iddia türü de açıkça seçilir.",
+        retryable: false,
+      });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.reviewCommit(item.id, "accept", target, "kullanıcı onayı");
+      setTargetKinds((prev) => ({ ...prev, [item.id]: "" }));
+      setTargetClaimKinds((prev) => ({ ...prev, [item.id]: "" }));
       await load(caseId);
     } catch (e) {
       setError(toApiError(e));
@@ -505,7 +550,7 @@ export function Review() {
           <div className="card-head">
             <div>
               <h2>İnceleme kuyruğu</h2>
-              <p className="card-sub">{pending.length} bekleyen · {decided.length} karar verilmiş</p>
+              <p className="card-sub">{pending.length} bekleyen · {decided.length} karar verilmiş · {outboxPending} bildirim bekliyor</p>
             </div>
           </div>
 
@@ -650,6 +695,57 @@ export function Review() {
                     />
                   </div>
                 ) : null}
+                {editingId === item.id ? null : (
+                  <div className="row" style={{ alignItems: "flex-end" }}>
+                    <div className="field" style={{ flex: "1 1 170px" }}>
+                      <label htmlFor={`rk-${item.id}`}>Kabulde kayıt türü</label>
+                      <select
+                        id={`rk-${item.id}`}
+                        className="input"
+                        value={targetKinds[item.id] ?? ""}
+                        onChange={(e) =>
+                          setTargetKinds((prev) => ({
+                            ...prev,
+                            [item.id]: e.target.value as ReviewTargetKind,
+                          }))
+                        }
+                      >
+                        <option value="">Seçin…</option>
+                        {(Object.keys(TARGET_KIND_LABEL) as Array<Exclude<ReviewTargetKind, "">>).map(
+                          (k) => (
+                            <option key={k} value={k}>
+                              {TARGET_KIND_LABEL[k]}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    </div>
+                    {targetKinds[item.id] === "claim" ? (
+                      <div className="field" style={{ flex: "1 1 170px" }}>
+                        <label htmlFor={`ck-${item.id}`}>İddia türü</label>
+                        <select
+                          id={`ck-${item.id}`}
+                          className="input"
+                          value={targetClaimKinds[item.id] ?? ""}
+                          onChange={(e) =>
+                            setTargetClaimKinds((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          }
+                        >
+                          <option value="">Seçin…</option>
+                          {Object.entries(CLAIM_KIND).map(([k, v]) => (
+                            <option key={k} value={k}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
+                    <span className="hint" style={{ flex: "2 1 220px", margin: 0 }}>
+                      Karar, hedef kayıt, denetim kaydı ve bildirim tek işlemde yazılır; biri
+                      düşerse hiçbiri kalmaz.
+                    </span>
+                  </div>
+                )}
                 <div className="row" style={{ justifyContent: "flex-end" }}>
                   {editingId === item.id ? (
                     <>
@@ -671,7 +767,17 @@ export function Review() {
                         Delil iste
                       </button>
                       <button className="btn ghost" disabled={busy} onClick={() => void decide(item, "reject")}>Ret</button>
-                      <button className="btn primary" disabled={busy} onClick={() => void decide(item, "accept")}>Kabul</button>
+                      <button
+                        className="btn primary"
+                        disabled={
+                          busy ||
+                          !(targetKinds[item.id] ?? "") ||
+                          (targetKinds[item.id] === "claim" && !(targetClaimKinds[item.id] ?? ""))
+                        }
+                        onClick={() => void commit(item)}
+                      >
+                        Kabul et ve kaydet
+                      </button>
                     </>
                   )}
                 </div>
@@ -714,7 +820,14 @@ export function Review() {
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {decided.map((item) => (
                   <div key={item.id} className="row" style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
-                    <span className="small">{ITEM_KIND[item.itemKind] ?? item.itemKind}</span>
+                    <span className="small">
+                      {ITEM_KIND[item.itemKind] ?? item.itemKind}
+                      {item.targetEntityId ? (
+                        <span className="badge plain" style={{ marginLeft: 8 }}>
+                          kayıt: {item.targetEntityId.slice(0, 8)}
+                        </span>
+                      ) : null}
+                    </span>
                     <span className={`badge ${item.state === "accepted" ? "ok" : item.state === "rejected" ? "danger" : "warn"}`}>
                       {ITEM_STATE[item.state] ?? item.state}
                     </span>

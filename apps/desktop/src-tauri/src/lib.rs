@@ -63,6 +63,8 @@ pub fn run() {
             commands::contradiction_assess,
             commands::contradiction_assessments,
             commands::review_decide,
+            commands::review_commit,
+            commands::review_outbox_pending,
             commands::review_history,
             commands::vault_backup,
             commands::provider_probe,

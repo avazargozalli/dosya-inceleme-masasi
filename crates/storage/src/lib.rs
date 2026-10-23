@@ -15,6 +15,7 @@ mod notes;
 mod parsing;
 mod precedents;
 mod redactions;
+mod review_commit;
 mod tasks;
 mod timeline;
 
@@ -40,6 +41,7 @@ pub use precedents::{
     PrecedentRow,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
+pub use review_commit::{OutboxEventRow, ReviewCommitResult, ReviewTarget};
 pub use tasks::{NewTask, TaskRow};
 pub use timeline::{EventPatch, EventRow, EventSourceRow, NewEvent};
 

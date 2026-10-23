@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import type { ReviewTargetInput } from "./reviewTarget";
+
 export type ApiError = { code: string; message: string; retryable: boolean };
 
 export type CreateVaultResult = { vaultPath: string; recoveryKey: string; vaultId: string };
@@ -308,6 +310,27 @@ export type ReviewDecisionRow = {
   reviewerLabel: string;
   rationale: string;
   decidedAt: string;
+};
+
+/** İnceleme kararının ürettiği hedef kayıt (F08-T08). */
+export type ReviewCommitResult = {
+  item: ReviewItemRow;
+  decisionId: string;
+  targetKind: "claim" | "note" | "task" | "event";
+  targetId: string;
+  outboxEventId: string;
+};
+
+export type OutboxEventRow = {
+  id: string;
+  aggregateId: string;
+  caseId: string | null;
+  eventType: string;
+  payloadVersion: number;
+  payload: unknown;
+  createdAt: string;
+  deliveredAt: string | null;
+  attemptCount: number;
 };
 
 export type BackupResult = {
@@ -652,6 +675,21 @@ export const api = {
     }),
   reviewSupersede: (itemId: string, supersededByItemId: string) =>
     invoke<ReviewItemRow>("review_supersede", { itemId, supersededByItemId }),
+  reviewCommit: (
+    itemId: string,
+    decision: "accept" | "edit",
+    target: ReviewTargetInput,
+    rationale: string,
+  ) =>
+    invoke<ReviewCommitResult>("review_commit", {
+      itemId,
+      decision,
+      target,
+      reviewer: "local-user",
+      rationale,
+    }),
+  reviewOutboxPending: (caseId: string) =>
+    invoke<OutboxEventRow[]>("review_outbox_pending", { caseId }),
   contradictionAssess: (
     caseId: string,
     itemId: string,

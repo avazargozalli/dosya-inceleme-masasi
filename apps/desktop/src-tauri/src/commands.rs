@@ -9,9 +9,10 @@ use dim_storage::{
     Document, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow,
     NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink,
     NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,
-    NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
-    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow,
-    SearchHit, SegmentBlock, TaskRow, TransferConsentRow,
+    NewTransferConsent, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
+    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewCommitResult,
+    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchHit, SegmentBlock, TaskRow,
+    TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -1012,6 +1013,30 @@ pub fn review_decide(
         &reviewer,
         &rationale,
     )?)
+}
+
+#[tauri::command]
+pub fn review_commit(
+    state: State<'_, AppState>,
+    item_id: String,
+    decision: String,
+    target: ReviewTarget,
+    reviewer: String,
+    rationale: String,
+) -> Result<ReviewCommitResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.commit_review_decision(&item_id, &decision, &target, &reviewer, &rationale)?)
+}
+
+#[tauri::command]
+pub fn review_outbox_pending(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<OutboxEventRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_outbox_events(Some(&case_id), true)?)
 }
 
 #[tauri::command]
