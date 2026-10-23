@@ -213,7 +213,6 @@ fn map_event(row: &Row<'_>) -> rusqlite::Result<EventRow> {
     })
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventSourceRow {
@@ -238,12 +237,18 @@ impl Database {
         }
         let event_case: String = self
             .conn()
-            .query_row("SELECT case_id FROM events WHERE id=?1", [event_id], |r| r.get(0))
+            .query_row("SELECT case_id FROM events WHERE id=?1", [event_id], |r| {
+                r.get(0)
+            })
             .optional()?
             .ok_or(StorageError::NotFound)?;
         let anchor_case: String = self
             .conn()
-            .query_row("SELECT case_id FROM source_anchors WHERE id=?1", [anchor_id], |r| r.get(0))
+            .query_row(
+                "SELECT case_id FROM source_anchors WHERE id=?1",
+                [anchor_id],
+                |r| r.get(0),
+            )
             .optional()?
             .ok_or(StorageError::NotFound)?;
         if event_case != anchor_case {
@@ -285,7 +290,10 @@ impl Database {
              FROM event_sources WHERE event_id=?1 AND source_anchor_id=?2 AND relation=?3",
         )?;
         Ok(stmt
-            .query_row(rusqlite::params![event_id, anchor_id, relation], map_event_source)
+            .query_row(
+                rusqlite::params![event_id, anchor_id, relation],
+                map_event_source,
+            )
             .optional()?)
     }
 
@@ -303,11 +311,19 @@ impl Database {
     }
 
     pub fn unlink_event_source(&self, id: &str) -> Result<(), StorageError> {
-        let changed = self.conn().execute("DELETE FROM event_sources WHERE id=?1", [id])?;
+        let changed = self
+            .conn()
+            .execute("DELETE FROM event_sources WHERE id=?1", [id])?;
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("event_source", Some(id), "unlink", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "event_source",
+            Some(id),
+            "unlink",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         Ok(())
     }
 }
@@ -437,7 +453,9 @@ mod source_tests {
     fn invalid_relation_rejected() {
         let (db, _) = setup();
         assert_eq!(
-            db.link_event_source("e1", "a1", "uydurma").unwrap_err().code(),
+            db.link_event_source("e1", "a1", "uydurma")
+                .unwrap_err()
+                .code(),
             "E_DB_SETTING"
         );
     }
@@ -461,7 +479,9 @@ mod source_tests {
             )
             .expect("olay");
         assert_eq!(
-            db.link_event_source(&event.id, "yok", "supports").unwrap_err().code(),
+            db.link_event_source(&event.id, "yok", "supports")
+                .unwrap_err()
+                .code(),
             "E_NOT_FOUND"
         );
     }
