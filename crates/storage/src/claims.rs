@@ -98,25 +98,37 @@ pub struct ReviewDecisionRow {
 }
 
 fn valid_claim_kind(value: &str) -> bool {
-    matches!(value, "allegation" | "defense" | "admission" | "court_finding" | "unknown")
+    matches!(
+        value,
+        "allegation" | "defense" | "admission" | "court_finding" | "unknown"
+    )
 }
 
 fn valid_relation(value: &str) -> bool {
     matches!(
         value,
-        "submitted_for" | "response_to" | "supports_candidate" | "contradicts_candidate" | "context"
+        "submitted_for"
+            | "response_to"
+            | "supports_candidate"
+            | "contradicts_candidate"
+            | "context"
     )
 }
 
 fn valid_review_state(value: &str) -> bool {
-    matches!(value, "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence")
+    matches!(
+        value,
+        "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence"
+    )
 }
 
 impl Database {
     fn case_exists(&self, case_id: &str) -> Result<bool, StorageError> {
-        let count: i64 = self
-            .conn()
-            .query_row("SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL", [case_id], |r| r.get(0))?;
+        let count: i64 = self.conn().query_row(
+            "SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL",
+            [case_id],
+            |r| r.get(0),
+        )?;
         Ok(count > 0)
     }
 
@@ -156,7 +168,13 @@ impl Database {
                 now
             ],
         )?;
-        self.append_audit("claim", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "claim",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_claim(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -181,18 +199,26 @@ impl Database {
         Ok(out)
     }
 
-    pub fn link_evidence(&self, case_id: &str, new: &NewEvidenceLink) -> Result<EvidenceLinkRow, StorageError> {
+    pub fn link_evidence(
+        &self,
+        case_id: &str,
+        new: &NewEvidenceLink,
+    ) -> Result<EvidenceLinkRow, StorageError> {
         if !valid_relation(&new.relation) {
             return Err(StorageError::InvalidSetting);
         }
-        let claim = self.get_claim(&new.claim_id)?.ok_or(StorageError::NotFound)?;
+        let claim = self
+            .get_claim(&new.claim_id)?
+            .ok_or(StorageError::NotFound)?;
         if claim.case_id != case_id {
             return Err(StorageError::NotFound);
         }
         if !self.anchor_in_case(&new.source_anchor_id, case_id)? {
             return Err(StorageError::NotFound);
         }
-        if let Some(existing) = self.find_evidence_link(&new.claim_id, &new.source_anchor_id, &new.relation)? {
+        if let Some(existing) =
+            self.find_evidence_link(&new.claim_id, &new.source_anchor_id, &new.relation)?
+        {
             return Ok(existing);
         }
         let id = uuid::Uuid::now_v7().to_string();
@@ -222,7 +248,9 @@ impl Database {
             "SELECT id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at
              FROM evidence_links WHERE claim_id=?1 AND source_anchor_id=?2 AND relation=?3",
         )?;
-        Ok(stmt.query_row(rusqlite::params![claim_id, anchor_id, relation], map_link).optional()?)
+        Ok(stmt
+            .query_row(rusqlite::params![claim_id, anchor_id, relation], map_link)
+            .optional()?)
     }
 
     pub fn get_evidence_link(&self, id: &str) -> Result<Option<EvidenceLinkRow>, StorageError> {
@@ -233,7 +261,10 @@ impl Database {
         Ok(stmt.query_row([id], map_link).optional()?)
     }
 
-    pub fn list_evidence_links(&self, claim_id: &str) -> Result<Vec<EvidenceLinkRow>, StorageError> {
+    pub fn list_evidence_links(
+        &self,
+        claim_id: &str,
+    ) -> Result<Vec<EvidenceLinkRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at
              FROM evidence_links WHERE claim_id=?1 ORDER BY created_at ASC",
@@ -248,7 +279,11 @@ impl Database {
 
     /// İnceleme kuyruğuna öğe ekler. `source_anchor_ids` boş olamaz: kaynağı
     /// olmayan öneri kuyruğa giremez (INV-02).
-    pub fn create_review_item(&self, case_id: &str, new: &NewReviewItem) -> Result<ReviewItemRow, StorageError> {
+    pub fn create_review_item(
+        &self,
+        case_id: &str,
+        new: &NewReviewItem,
+    ) -> Result<ReviewItemRow, StorageError> {
         if new.source_anchor_ids.is_empty() || !self.case_exists(case_id)? {
             return Err(StorageError::InvalidSetting);
         }
@@ -272,7 +307,13 @@ impl Database {
                 now
             ],
         )?;
-        self.append_audit("review_item", Some(&id), "create", "system", &serde_json::json!({"kind": new.item_kind}))?;
+        self.append_audit(
+            "review_item",
+            Some(&id),
+            "create",
+            "system",
+            &serde_json::json!({"kind": new.item_kind}),
+        )?;
         self.get_review_item(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -284,7 +325,11 @@ impl Database {
         Ok(stmt.query_row([id], map_item).optional()?)
     }
 
-    pub fn list_review_items(&self, case_id: &str, state: Option<&str>) -> Result<Vec<ReviewItemRow>, StorageError> {
+    pub fn list_review_items(
+        &self,
+        case_id: &str,
+        state: Option<&str>,
+    ) -> Result<Vec<ReviewItemRow>, StorageError> {
         let sql = if state.is_some() {
             "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
              FROM review_items WHERE case_id=?1 AND state=?2 ORDER BY created_at ASC"
@@ -326,7 +371,9 @@ impl Database {
             "request_evidence" => "needs_more_evidence",
             _ => return Err(StorageError::InvalidSetting),
         };
-        let item = self.get_review_item(item_id)?.ok_or(StorageError::NotFound)?;
+        let item = self
+            .get_review_item(item_id)?
+            .ok_or(StorageError::NotFound)?;
         if item.state != "pending" && item.state != "needs_more_evidence" {
             return Err(StorageError::InvalidSetting);
         }
@@ -353,7 +400,13 @@ impl Database {
             rusqlite::params![next_state, edited_payload.map(|v| v.to_string()), now, item_id],
         )?;
         tx.commit()?;
-        self.append_audit("review_item", Some(item_id), decision, reviewer, &serde_json::json!({}))?;
+        self.append_audit(
+            "review_item",
+            Some(item_id),
+            decision,
+            reviewer,
+            &serde_json::json!({}),
+        )?;
         self.get_review_item(item_id)?.ok_or(StorageError::NotFound)
     }
 
@@ -456,11 +509,22 @@ mod tests {
             })
             .expect("case");
         let blob = db.create_blob_record("st-claim", 10, "aad").expect("blob");
-        let doc = db.create_document(&case.id, "Belge", "pdf", None, "unknown").expect("doc");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
         let version = db
-            .add_version(&doc.id, &case.id, &blob, &"f".repeat(64), 10, "application/pdf")
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
             .expect("v");
-        let run = db.start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}").expect("run");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("run");
         db.store_pages(
             &run.id,
             &case.id,
@@ -476,7 +540,11 @@ mod tests {
         .expect("pages");
         let segment: String = db
             .conn()
-            .query_row("SELECT id FROM text_segments WHERE parse_run_id=?1", [&run.id], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run.id],
+                |r| r.get(0),
+            )
             .expect("segment");
         let anchor = db
             .create_anchor(&NewAnchor {
@@ -489,7 +557,11 @@ mod tests {
                 exact_quote: "Ödeme yapılmadı.".into(),
             })
             .expect("anchor");
-        Setup { db, case_id: case.id, anchor_id: anchor.id }
+        Setup {
+            db,
+            case_id: case.id,
+            anchor_id: anchor.id,
+        }
     }
 
     fn claim(text: &str) -> NewClaim {
@@ -504,7 +576,9 @@ mod tests {
     #[test]
     fn claim_lifecycle() {
         let s = setup();
-        let c = s.db.create_claim(&s.case_id, &claim("Kira ödenmedi")).expect("claim");
+        let c =
+            s.db.create_claim(&s.case_id, &claim("Kira ödenmedi"))
+                .expect("claim");
         assert_eq!(c.status, "draft");
         assert_eq!(s.db.list_claims(&s.case_id).expect("liste").len(), 1);
     }
@@ -520,7 +594,9 @@ mod tests {
     #[test]
     fn evidence_link_is_idempotent_and_case_scoped() {
         let s = setup();
-        let c = s.db.create_claim(&s.case_id, &claim("Kira ödenmedi")).expect("claim");
+        let c =
+            s.db.create_claim(&s.case_id, &claim("Kira ödenmedi"))
+                .expect("claim");
         let input = NewEvidenceLink {
             claim_id: c.id.clone(),
             source_anchor_id: s.anchor_id.clone(),
@@ -532,9 +608,8 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(s.db.list_evidence_links(&c.id).expect("liste").len(), 1);
 
-        let other = s
-            .db
-            .create_case(&NewCase {
+        let other =
+            s.db.create_case(&NewCase {
                 title: "Başka".into(),
                 case_kind: CaseKind::Review,
                 reference_code: None,
@@ -550,9 +625,8 @@ mod tests {
     #[test]
     fn review_item_requires_source_and_is_decided_once() {
         let s = setup();
-        let item = s
-            .db
-            .create_review_item(
+        let item =
+            s.db.create_review_item(
                 &s.case_id,
                 &NewReviewItem {
                     item_kind: "claim_candidate".into(),
@@ -564,12 +638,14 @@ mod tests {
             .expect("öğe");
         assert_eq!(item.state, "pending");
 
-        let decided = s
-            .db
-            .decide_review_item(&item.id, "accept", None, "avukat", "kaynak yeterli")
-            .expect("karar");
+        let decided =
+            s.db.decide_review_item(&item.id, "accept", None, "avukat", "kaynak yeterli")
+                .expect("karar");
         assert_eq!(decided.state, "accepted");
-        assert!(s.db.decide_review_item(&item.id, "reject", None, "avukat", "").is_err());
+        assert!(s
+            .db
+            .decide_review_item(&item.id, "reject", None, "avukat", "")
+            .is_err());
         assert_eq!(s.db.review_history(&item.id).expect("geçmiş").len(), 1);
         assert!(s.db.verify_audit_chain().expect("zincir") >= 2);
     }
@@ -577,9 +653,8 @@ mod tests {
     #[test]
     fn review_item_without_anchor_rejected() {
         let s = setup();
-        let err = s
-            .db
-            .create_review_item(
+        let err =
+            s.db.create_review_item(
                 &s.case_id,
                 &NewReviewItem {
                     item_kind: "note_candidate".into(),
@@ -595,9 +670,8 @@ mod tests {
     #[test]
     fn edit_decision_replaces_payload() {
         let s = setup();
-        let item = s
-            .db
-            .create_review_item(
+        let item =
+            s.db.create_review_item(
                 &s.case_id,
                 &NewReviewItem {
                     item_kind: "claim_candidate".into(),
@@ -608,9 +682,14 @@ mod tests {
             )
             .expect("öğe");
         let edited = serde_json::json!({"text": "düzeltilmiş"});
-        let result = s
-            .db
-            .decide_review_item(&item.id, "edit", Some(&edited), "avukat", "ifade düzeltildi")
+        let result =
+            s.db.decide_review_item(
+                &item.id,
+                "edit",
+                Some(&edited),
+                "avukat",
+                "ifade düzeltildi",
+            )
             .expect("karar");
         assert_eq!(result.state, "edited");
         assert_eq!(result.payload["text"], "düzeltilmiş");

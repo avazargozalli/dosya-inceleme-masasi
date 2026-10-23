@@ -813,7 +813,13 @@ pub fn review_decide(
 ) -> Result<ReviewItemRow, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    Ok(db.decide_review_item(&item_id, &decision, edited_payload.as_ref(), &reviewer, &rationale)?)
+    Ok(db.decide_review_item(
+        &item_id,
+        &decision,
+        edited_payload.as_ref(),
+        &reviewer,
+        &rationale,
+    )?)
 }
 
 #[tauri::command]
