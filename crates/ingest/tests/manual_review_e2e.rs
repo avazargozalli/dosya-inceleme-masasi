@@ -119,6 +119,8 @@ fn manual_review_runs_end_to_end_with_ai_off() {
                     end: i64::try_from(PAGE_TEXT.chars().count()).expect("uzunluk"),
                     bbox: Some([72.0, 760.0, 500.0, 780.0]),
                     lines: Vec::new(),
+                    path: None,
+                    kind: None,
                 }],
             }],
         )

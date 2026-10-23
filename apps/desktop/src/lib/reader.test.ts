@@ -5,6 +5,7 @@ import {
   blocksForRange,
   clampZoom,
   displayPageSize,
+  entrySlice,
   mapRectForDisplay,
   nextZoom,
   offsetSlice,
@@ -14,6 +15,7 @@ import {
   resolvePageIndex,
   rotateView,
   sliceForPage,
+  structureEntries,
   targetFromAnchor,
   targetFromHit,
 } from "./reader";
@@ -262,5 +264,63 @@ describe("pageLabelInfo", () => {
   it("etiket fiziksel numarayla aynıysa yinelemez", () => {
     expect(pageLabelInfo({ pageIndex: 2, pageLabel: "3" }).showsLabel).toBe(false);
     expect(pageLabelInfo({ pageIndex: 2, pageLabel: "A-3" }).showsLabel).toBe(true);
+  });
+});
+
+const structurePage: PageRow = {
+  id: "p3",
+  segmentId: "s3",
+  pageIndex: 0,
+  text: "Kira Sözleşmesi\n\nÖdeme · p/2",
+  textOrigin: "native",
+  qualityFlags: "[]",
+  width: null,
+  height: null,
+  rotation: 0,
+  coordinateSpace: "structure",
+  pageLabel: null,
+  blocks: [
+    { start: 0, end: 15, path: "Kira Sözleşmesi", kind: "heading" },
+    { start: 17, end: 28, path: "Kira Sözleşmesi · p/2", kind: "paragraph" },
+  ],
+};
+
+describe("structureEntries", () => {
+  it("paragraf aralıklarını ve gerçek yolları verir", () => {
+    const entries = structureEntries(structurePage);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.text).toBe("Kira Sözleşmesi");
+    expect(entries[0]!.heading).toBe(true);
+    expect(entries[1]!.path).toBe("Kira Sözleşmesi · p/2");
+    expect(entries[1]!.heading).toBe(false);
+    expect(entries[0]!.end).toBe(15);
+  });
+
+  it("PDF sayfasında yapı üretmez", () => {
+    expect(structureEntries(pages[0]!)).toEqual([]);
+  });
+
+  it("aralık dışı bloğu kırpar, yol yoksa uydurmaz", () => {
+    const page = { ...structurePage, blocks: [{ start: 0, end: 999 }] };
+    const [entry] = structureEntries(page);
+    expect(entry!.end).toBe(Array.from(structurePage.text).length);
+    expect(entry!.path).toBeNull();
+  });
+});
+
+describe("entrySlice", () => {
+  it("vurgu aralığını paragraf içinde keser", () => {
+    const entries = structureEntries(structurePage);
+    const piece = entrySlice(entries[1]!, { start: 18, end: 23 });
+    expect(piece.before).toBe("Ö");
+    expect(piece.hit).toBe("deme ");
+    expect(piece.after).toBe("· p/2");
+  });
+
+  it("aralık paragrafla kesişmezse tüm metni before verir", () => {
+    const entries = structureEntries(structurePage);
+    const piece = entrySlice(entries[0]!, { start: 17, end: 19 });
+    expect(piece.before).toBe("Kira Sözleşmesi");
+    expect(piece.hit).toBe("");
   });
 });

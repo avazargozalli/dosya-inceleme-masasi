@@ -67,6 +67,43 @@ def test_pdf_without_text_layer_warns_when_ocr_off():
     assert any("OCR gerekli" in w for w in result.warnings)
 
 
+def test_docx_heading_stack_gives_section_paths_not_fabricated():
+    """Başlık yığını gerçek DOCX stillerinden gelir; paragraf yolu p/N ile
+    fiziksel paragraf sırasını (türev sayfadan bağımsız) taşır."""
+    docx = pytest.importorskip("docx")
+    document = docx.Document()
+    document.add_heading("Kira Sözleşmesi", level=1)
+    document.add_paragraph("Birinci paragraf")
+    document.add_heading("Ödeme", level=2)
+    document.add_paragraph("İkinci paragraf")
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    result = extract_docx(buffer.getvalue())
+    blocks = result.pages[0].blocks
+    assert [block.kind for block in blocks] == ["heading", "paragraph", "heading", "paragraph"]
+    assert blocks[0].path == "Kira Sözleşmesi"
+    assert blocks[1].path == "Kira Sözleşmesi · p/2"
+    assert blocks[2].path == "Kira Sözleşmesi › Ödeme"
+    assert blocks[3].path == "Kira Sözleşmesi › Ödeme · p/4"
+    # Metin offsetleri blok sınırlarıyla tutarlı.
+    for block in blocks:
+        assert result.pages[0].text[block.start : block.end].strip()
+
+
+def test_docx_without_heading_style_does_not_invent_section():
+    docx = pytest.importorskip("docx")
+    document = docx.Document()
+    document.add_paragraph("Başlıksız paragraf")
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    result = extract_docx(buffer.getvalue())
+    block = result.pages[0].blocks[0]
+    assert block.path == "p/1"
+    assert block.kind == "paragraph"
+
+
 def test_docx_paragraphs_and_tables():
     docx = pytest.importorskip("docx")
     document = docx.Document()

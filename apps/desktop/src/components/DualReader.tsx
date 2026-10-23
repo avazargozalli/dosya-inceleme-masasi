@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -12,6 +12,7 @@ import {
   blocksForRange,
   clampZoom,
   displayPageSize,
+  entrySlice,
   mapRectForDisplay,
   nextZoom,
   pageLabelInfo,
@@ -20,6 +21,7 @@ import {
   resolvePageIndex,
   rotateView,
   sliceForPage,
+  structureEntries,
   type ReaderTarget,
 } from "../lib/reader";
 
@@ -130,6 +132,7 @@ function ReaderPane({
   const [viewRotation, setViewRotation] = useState(0);
   const textRef = useRef<HTMLDivElement>(null);
   const markRef = useRef<HTMLElement>(null);
+  const entryRefs = useRef<Record<number, HTMLElement | null>>({});
 
   const paneTarget = target && target.versionId === versionId ? target : null;
 
@@ -190,6 +193,22 @@ function ReaderPane({
   const rotation = rotateView(current?.rotation ?? 0, viewRotation);
   const zoomPercent = Math.round(clampZoom(zoom) * 100);
   const currentInfo = current ? pageLabelInfo(current) : null;
+  // Yapısal belge (DOCX/UDF): paragraf/bölüm yolları türev sayfadan ayrı
+  // gösterilir. Paragraflar metnin tamamını kaplamıyorsa tek parça gösterime
+  // dönülür; yoksa seçim offsetleri metinle uyuşmaz.
+  const entries = current ? structureEntries(current) : [];
+  const structureMode = current ? current.coordinateSpace === "structure" : false;
+  const entriesCoverText =
+    current !== undefined &&
+    entries.length > 0 &&
+    entries[entries.length - 1]!.end >= Array.from(current.text).length;
+  const structureText = structureMode && entriesCoverText;
+  const labeledEntries = entries.filter((entry) => entry.path);
+  const pageCaption = currentInfo
+    ? structureMode
+      ? `Türev sayfa ${current?.pageIndex !== undefined ? current.pageIndex + 1 : "?"}`
+      : currentInfo.physical
+    : "Fiziksel sayfa ?";
   const slice = current ? sliceForPage(current.text, paneTarget, current) : null;
   const highlightRange = current ? rangeForPage(current.text, paneTarget, current) : null;
   // Anchor kaydı kendi kutularını taşıyorsa onlar kullanılır; arama sonucunda
@@ -432,8 +451,16 @@ function ReaderPane({
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 6 }}>
             <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               <span className="badge plain">
-                {currentInfo ? currentInfo.physical : "Fiziksel sayfa ?"}/{data.pages.length}
+                {pageCaption}/{data.pages.length}
               </span>
+              {structureMode ? (
+                <span
+                  className="badge plain"
+                  title="DOCX/UDF: sayfa ayrımı doğrulanmadı; kaynak paragraf bazlıdır"
+                >
+                  yapısal belge · paragraf bazlı
+                </span>
+              ) : null}
               {currentInfo?.showsLabel ? (
                 <span
                   className="badge"
@@ -472,6 +499,39 @@ function ReaderPane({
             <PageMap page={current} highlight={highlightQuads} rotation={rotation} />
           ) : null}
 
+          {structureMode && labeledEntries.length > 0 ? (
+            <details style={{ fontSize: 12 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
+                Yapı — {labeledEntries.length} paragraf/bölüm (türev sayfadan ayrı)
+              </summary>
+              <ol style={{ margin: "6px 0 0", paddingLeft: 18, maxHeight: 160, overflow: "auto" }}>
+                {labeledEntries.slice(0, 200).map((entry) => (
+                  <li key={`structure-${entry.index}`}>
+                    <button
+                      className="btn ghost"
+                      style={{
+                        height: "auto",
+                        padding: "1px 4px",
+                        textAlign: "left",
+                        whiteSpace: "normal",
+                      }}
+                      onClick={() => entryRefs.current[entry.index]?.scrollIntoView({ block: "center" })}
+                      title={entry.path ?? undefined}
+                    >
+                      {entry.heading ? <strong>{entry.path}</strong> : entry.path}
+                      {entry.text.trim() ? ` — ${entry.text.trim().slice(0, 60)}` : ""}
+                    </button>
+                  </li>
+                ))}
+              </ol>
+              {labeledEntries.length > 200 ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  +{labeledEntries.length - 200} kayıt daha var; metin içinde gezinin.
+                </p>
+              ) : null}
+            </details>
+          ) : null}
+
           <div
             ref={textRef}
             onMouseUp={readSelection}
@@ -492,7 +552,43 @@ function ReaderPane({
             }}
           >
             {current ? (
-              slice ? (
+              structureText ? (
+                entries.map((entry, index) => {
+                  const piece = entrySlice(entry, highlightRange);
+                  return (
+                    <Fragment key={`entry-${entry.index}`}>
+                      {index > 0 ? "\n\n" : null}
+                      <span
+                        ref={(node) => {
+                          entryRefs.current[entry.index] = node;
+                        }}
+                        title={entry.path ?? undefined}
+                        style={entry.heading ? { fontWeight: 600 } : undefined}
+                      >
+                        {piece.hit ? (
+                          <>
+                            {piece.before}
+                            <mark
+                              ref={markRef}
+                              style={{
+                                background: "var(--accent-soft)",
+                                color: "inherit",
+                                padding: "0 2px",
+                                borderRadius: 2,
+                              }}
+                            >
+                              {piece.hit}
+                            </mark>
+                            {piece.after}
+                          </>
+                        ) : (
+                          entry.text
+                        )}
+                      </span>
+                    </Fragment>
+                  );
+                })
+              ) : slice ? (
                 <>
                   {slice.before}
                   <mark
@@ -610,7 +706,8 @@ export function DualReader({
       <p className="hint" style={{ margin: 0 }}>
         Sayfa düğmeleri <strong>fiziksel sırayı</strong> gösterir. PDF&apos;te{" "}
         <code>/PageLabels</code> tanımlıysa basılı etiket ayrıca yazılır; tanımlı değilse etiket
-        uydurulmaz. Yakınlaştırma ve döndürme yalnız görünümü etkiler; kayıtlı sayfa verisi ve
+        uydurulmaz. DOCX/UDF belgede sayfa <strong>türevdir</strong>; paragraf/bölüm yolu ayrı
+        gösterilir. Yakınlaştırma ve döndürme yalnız görünümü etkiler; kayıtlı sayfa verisi ve
         alıntı offsetleri değişmez. Alıntı segment metninde birebir bulunamazsa kaydedilmez.
       </p>
     </div>

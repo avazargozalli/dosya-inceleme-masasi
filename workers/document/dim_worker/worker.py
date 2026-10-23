@@ -66,6 +66,13 @@ def _page_payload(page: Any) -> dict[str, Any]:
             entry["bbox"] = block.bbox
         if block.lines:
             entry["lines"] = block.lines
+        # Yapısal motorlarda paragraf/bölüm bağlantısı; yoksa alan yazılmaz.
+        path = getattr(block, "path", None)
+        if path:
+            entry["path"] = path
+        kind = getattr(block, "kind", None)
+        if kind:
+            entry["kind"] = kind
         blocks.append(entry)
     payload: dict[str, Any] = {
         "index": page.index,

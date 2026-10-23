@@ -789,6 +789,8 @@ pub fn document_parse(
                     end: i64::from(b.end),
                     bbox: b.bbox,
                     lines: b.lines.clone(),
+                    path: b.path.clone(),
+                    kind: b.kind.clone(),
                 })
                 .collect(),
         })

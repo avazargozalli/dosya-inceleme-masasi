@@ -65,6 +65,13 @@ pub struct SegmentBlock {
     pub bbox: Option<[f64; 4]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lines: Vec<[f64; 4]>,
+    /// Yapısal motorlarda paragraf/bölüm yolu (`Kira › Ödeme · p/4`).
+    /// PDF/görüntüde yoktur; yoksa alan yazılmaz.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// `heading`, `paragraph`, `table`, `header`, `footer`, `annotation`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 pub(crate) fn parse_blocks(raw: Option<String>) -> Vec<SegmentBlock> {
@@ -1469,6 +1476,52 @@ mod tests {
     }
 
     #[test]
+    fn structure_block_paths_survive_the_round_trip() {
+        let (db, case_id, version_id) = setup();
+        let run = db
+            .start_parse_run(&version_id, &case_id, "python-docx", "1.1", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "Kira Sözleşmesi\n\nÖdeme · p/2".into(),
+                origin: "native".into(),
+                coordinate_space: Some("structure".into()),
+                blocks: vec![
+                    SegmentBlock {
+                        start: 0,
+                        end: 16,
+                        path: Some("Kira Sözleşmesi".into()),
+                        kind: Some("heading".into()),
+                        ..Default::default()
+                    },
+                    SegmentBlock {
+                        start: 18,
+                        end: 30,
+                        path: Some("Kira Sözleşmesi · p/2".into()),
+                        kind: Some("paragraph".into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        )
+        .expect("sayfalar");
+
+        let pages = db.pages_for_run(&run.id).expect("sayfalar");
+        let blocks = &pages[0].blocks;
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].path.as_deref(), Some("Kira Sözleşmesi"));
+        assert_eq!(blocks[0].kind.as_deref(), Some("heading"));
+        assert_eq!(blocks[1].path.as_deref(), Some("Kira Sözleşmesi · p/2"));
+        assert_eq!(blocks[1].kind.as_deref(), Some("paragraph"));
+        // Yapısal bloklarda kutu yoktur; olmayan kutu uydurulmaz.
+        assert!(blocks[1].bbox.is_none());
+    }
+
+    #[test]
     fn search_hit_points_at_its_own_version_not_the_latest() {
         let (db, case_id, version_id) = setup();
         let first = db
@@ -2016,12 +2069,16 @@ mod tests {
                         end: 13,
                         bbox: Some(first_bbox),
                         lines: vec![[10.0, 10.0, 200.0, 24.0]],
+                        path: None,
+                        kind: None,
                     },
                     SegmentBlock {
                         start: 13,
                         end: 25,
                         bbox: Some(second_bbox),
                         lines: vec![],
+                        path: None,
+                        kind: None,
                     },
                 ],
             }],

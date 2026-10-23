@@ -88,6 +88,12 @@ pub struct ExtractedBlock {
     /// Satır kutuları; blok kutusunun içindedir.
     #[serde(default)]
     pub lines: Vec<[f64; 4]>,
+    /// Yapısal motorlarda paragraf/bölüm yolu; PDF/görüntüde yok.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// `heading`, `paragraph`, `table`, `header`, `footer`, `annotation`.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -613,7 +619,9 @@ mod tests {
                     "start": 0,
                     "end": 2,
                     "bbox": [1.0, 2.0, 3.0, 4.0],
-                    "lines": [[1.0, 2.0, 3.0, 4.0]]
+                    "lines": [[1.0, 2.0, 3.0, 4.0]],
+                    "path": "Kira Sözleşmesi · p/1",
+                    "kind": "paragraph"
                 }],
                 "warnings": []
             }],
@@ -630,6 +638,14 @@ mod tests {
             Some([1.0, 2.0, 3.0, 4.0])
         );
         assert_eq!(extraction.pages[0].blocks[0].lines.len(), 1);
+        assert_eq!(
+            extraction.pages[0].blocks[0].path.as_deref(),
+            Some("Kira Sözleşmesi · p/1")
+        );
+        assert_eq!(
+            extraction.pages[0].blocks[0].kind.as_deref(),
+            Some("paragraph")
+        );
         assert_eq!(extraction.pages[0].page_label.as_deref(), Some("iv"));
 
         // Geometri alanlarını göndermeyen eski worker yanıtı da okunur; kutular

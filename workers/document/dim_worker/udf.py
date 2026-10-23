@@ -73,6 +73,9 @@ class UdfDocument:
     images: int = 0
     signature_status: str | None = None
     embedded: list[str] = field(default_factory=list)
+    # Metnin üretildiği paragraf blokları; `text` bunların `_join_blocks` ile
+    # birleşimidir. Paragraf yolu (p/N) bu sıradan gelir, uydurulmaz.
+    blocks: list[str] = field(default_factory=list)
 
 
 def _local(tag: str) -> str:
@@ -271,4 +274,5 @@ def extract_udf_document(data: bytes) -> UdfDocument:
         images=images,
         signature_status=signature_status,
         embedded=embedded,
+        blocks=blocks,
     )

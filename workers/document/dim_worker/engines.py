@@ -10,6 +10,7 @@ import base64
 import binascii
 import io
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -60,6 +61,12 @@ class TextBlock:
     end: int
     bbox: list[float] | None = None
     lines: list[list[float]] = field(default_factory=list)
+    # Yapısal motorlarda (DOCX/UDF) paragraf/bölüm bağlantısı. PDF/görüntüde
+    # yoktur: uydurulmaz. `path` başlık yığını + paragraf konumudur.
+    path: str | None = None
+    # "heading" | "paragraph" | "table" | "header" | "footer" | "annotation";
+    # yalnız yapısal motorlarda dolaşır.
+    kind: str | None = None
 
 
 def _rounded_box(values: Any) -> list[float]:
@@ -374,12 +381,17 @@ def extract_pdf(
     return Extraction(engine="pymupdf", engine_version=version, pages=pages, warnings=warnings)
 
 
-def _structure_text(parts: list[str], separator: str = "\n\n") -> tuple[str, list[TextBlock]]:
+def _structure_text(
+    parts: list[str],
+    separator: str = "\n\n",
+    labels: list[tuple[str | None, str | None]] | None = None,
+) -> tuple[str, list[TextBlock]]:
     """Parça listesinden metin ve **kutusuz** blok aralıkları üretir.
 
     Yapısal motorlarda (DOCX/UDF/plain) sayfa koordinatı yoktur; yine de
     paragraf sınırları kaydedilir, böylece kaynak konumu blok düzeyinde
-    gösterilebilir.
+    gösterilebilir. `labels` verilirse her parçanın (yol, tür) bilgisi bloğa
+    taşınır; verilmezse blok yolsuz kalır (uydurulmaz).
     """
     pieces: list[str] = []
     blocks: list[TextBlock] = []
@@ -388,7 +400,8 @@ def _structure_text(parts: list[str], separator: str = "\n\n") -> tuple[str, lis
         if index:
             pieces.append(separator)
             cursor += len(separator)
-        blocks.append(TextBlock(start=cursor, end=cursor + len(text)))
+        path, kind = labels[index] if labels and index < len(labels) else (None, None)
+        blocks.append(TextBlock(start=cursor, end=cursor + len(text), path=path, kind=kind))
         pieces.append(text)
         cursor += len(text)
     return "".join(pieces), blocks
@@ -551,6 +564,25 @@ def _docx_annotations(data: bytes) -> tuple[list[str], dict[str, int], list[str]
     return sections, counts, warnings
 
 
+_DOCX_HEADING = re.compile(r"^(heading|başlık|baslik)\s*([1-9])$", re.IGNORECASE)
+
+
+def _docx_heading(paragraph: Any) -> tuple[int, str] | None:
+    """Paragraf başlık mı? Yerleşik stil adı/kimliği (`Heading 1`, `Başlık 2`,
+    `Heading1`) tanınır. Başka stil adı başlık sayılmaz: bölüm yolu uydurulmaz.
+    """
+    text = (getattr(paragraph, "text", "") or "").strip()
+    if not text:
+        return None
+    style = getattr(paragraph, "style", None)
+    for attr in ("name", "style_id"):
+        raw = getattr(style, attr, "") or ""
+        match = _DOCX_HEADING.match(str(raw).strip())
+        if match:
+            return int(match.group(2)), text
+    return None
+
+
 def extract_docx(data: bytes) -> Extraction:
     try:
         import docx  # type: ignore
@@ -562,24 +594,51 @@ def extract_docx(data: bytes) -> Extraction:
     except Exception as exc:  # noqa: BLE001
         raise EngineError("E_DOCX_OPEN", "DOCX açılamadı (bozuk veya desteklenmeyen biçim)") from exc
 
-    blocks: list[str] = [p.text for p in document.paragraphs if p.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
+    # Her paragraf kendi yolu ve türüyle taşınır: başlık yığını bölüm
+    # bağlantısını verir, `p/N` fiziksel paragraf sırasını (türev sayfadan
+    # bağımsız) verir. Stil tanınmazsa başlık uydurulmaz, yol yalnız p/N olur.
+    entries: list[tuple[str, str | None, str | None]] = []
+    heading_stack: list[tuple[int, str]] = []
+    paragraph_no = 0
+    for paragraph in document.paragraphs:
+        if not paragraph.text.strip():
+            continue
+        paragraph_no += 1
+        heading = _docx_heading(paragraph)
+        if heading:
+            level, title = heading
+            heading_stack = [(lvl, name) for lvl, name in heading_stack if lvl < level]
+            heading_stack.append((level, title))
+            trail = " › ".join(name for _, name in heading_stack)
+            entries.append((paragraph.text, trail, "heading"))
+            continue
+        trail = " › ".join(name for _, name in heading_stack)
+        path = f"{trail} · p/{paragraph_no}" if trail else f"p/{paragraph_no}"
+        entries.append((paragraph.text, path, "paragraph"))
+
+    for table_no, table in enumerate(document.tables, start=1):
+        for row_no, row in enumerate(table.rows, start=1):
             cells = [c.text.strip() for c in row.cells if c.text.strip()]
             if cells:
-                blocks.append(" | ".join(cells))
+                entries.append((" | ".join(cells), f"Tablo {table_no} · satır {row_no}", "table"))
+
     for section in document.sections:
-        for header in (section.header, section.footer):
-            for p in header.paragraphs:
+        for area, area_kind in ((section.header, "header"), (section.footer, "footer")):
+            for p in area.paragraphs:
                 if p.text.strip():
-                    blocks.append(p.text)
+                    label = "Üstbilgi" if area_kind == "header" else "Altbilgi"
+                    entries.append((p.text, label, area_kind))
 
     # Gövde dışındaki içerik (dipnot/sonnot/yorum/izlenen değişiklik) ayrı
     # bloklar olarak eklenir; python-docx bunları gövde metnine katmaz.
     annotations, _counts, inventory_warnings = _docx_annotations(data)
-    blocks.extend(annotations)
+    for index, annotation in enumerate(annotations, start=1):
+        entries.append((annotation, f"Ek içerik · {index}", "annotation"))
 
-    text, geometry = _structure_text(blocks)
+    text, geometry = _structure_text(
+        [entry[0] for entry in entries],
+        labels=[(entry[1], entry[2]) for entry in entries],
+    )
     warnings = ["DOCX sayfa düzeni doğrulanmadı; kaynak paragraf bazlıdır", *inventory_warnings]
     if not text.strip():
         warnings.append("belgede metin bulunamadı")
@@ -604,7 +663,26 @@ def extract_udf(data: bytes) -> Extraction:
 
     warnings = list(document.warnings)
     warnings.append("UDF: sayfa ayrımı doğrulanmadı; kaynak paragraf bazlıdır")
-    text, geometry = _structure_text(document.text.split("\n\n"))
+    # UDF'te doğrulanmış başlık/bölüm kaynağı yok: yol yalnız paragraf sırasıdır
+    # (p/N). Bölüm adı uydurulmaz. Blok sınırları `_join_blocks` kuralıyla
+    # yeniden kurulur; metin birebir aynı kalır, offsetler kaymaz.
+    pieces: list[str] = []
+    geometry: list[TextBlock] = []
+    cursor = 0
+    for index, block in enumerate(document.blocks, start=1):
+        if not block:
+            continue
+        if cursor and pieces and not pieces[-1].endswith("\n") and not block.startswith("\n"):
+            pieces.append("\n")
+            cursor += 1
+        geometry.append(
+            TextBlock(start=cursor, end=cursor + len(block), path=f"p/{index}", kind="paragraph")
+        )
+        pieces.append(block)
+        cursor += len(block)
+    text = "".join(pieces) if pieces else document.text
+    if not geometry and text:
+        geometry.append(TextBlock(start=0, end=len(text), path="p/1", kind="paragraph"))
     page = Page(
         index=0,
         text=text,

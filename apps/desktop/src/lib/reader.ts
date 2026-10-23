@@ -231,6 +231,57 @@ export function pageLabelInfo(page: {
   };
 }
 
+/** Yapısal belgede (DOCX/UDF) bir paragraf/bölüm girdisi. Aralıklar worker'ın
+ *  gerçek bloklarından gelir; başlık bilgisi `kind` alanındandır, tahmin
+ *  edilmez. `path` yoksa etiket uydurulmaz. */
+export type StructureEntry = {
+  index: number;
+  start: number;
+  end: number;
+  text: string;
+  path: string | null;
+  kind: string | null;
+  heading: boolean;
+};
+
+/** Yapısal sayfanın paragraf listesi. PDF/görüntü sayfasında boş döner:
+ *  türev sayfa ile paragraf yapısı karıştırılmaz. */
+export function structureEntries(page: PageRow): StructureEntry[] {
+  if (page.coordinateSpace !== "structure") return [];
+  const chars = Array.from(page.text);
+  return page.blocks.map((block, index) => {
+    const start = Math.max(0, Math.min(block.start, chars.length));
+    const end = Math.max(start, Math.min(block.end, chars.length));
+    return {
+      index,
+      start,
+      end,
+      text: chars.slice(start, end).join(""),
+      path: block.path ?? null,
+      kind: block.kind ?? null,
+      heading: block.kind === "heading",
+    };
+  });
+}
+
+/** Yapısal girdi içinde vurgulanacak aralığı (girdiye göre) keser. Aralık
+ *  girdiyle kesişmiyorsa tüm metin `before` olarak döner. */
+export function entrySlice(
+  entry: StructureEntry,
+  range: OffsetRange | null,
+): { before: string; hit: string; after: string } {
+  const chars = Array.from(entry.text);
+  if (!range) return { before: entry.text, hit: "", after: "" };
+  const start = Math.max(range.start, entry.start);
+  const end = Math.min(range.end, entry.end);
+  if (end <= start) return { before: entry.text, hit: "", after: "" };
+  return {
+    before: chars.slice(0, start - entry.start).join(""),
+    hit: chars.slice(start - entry.start, end - entry.start).join(""),
+    after: chars.slice(end - entry.start).join(""),
+  };
+}
+
 /** Döndürme öncesi uzaydaki kutuyu görünen (döndürülmüş) uzaya çevirir.
  *  PyMuPDF `rotation_matrix` ile aynı yön: saat yönünde. */
 export function mapRectForDisplay(

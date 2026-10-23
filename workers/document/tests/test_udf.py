@@ -49,6 +49,8 @@ def test_udf_text_uses_scalar_offsets_with_turkish_and_emoji():
 
     assert result.engine == "uyap-udf"
     assert result.pages[0].text == "\n".join(paragraphs)
+    assert [block.path for block in result.pages[0].blocks] == ["p/1", "p/2", "p/3"]
+    assert all(block.kind == "paragraph" for block in result.pages[0].blocks)
     assert any("sayfa ayrımı doğrulanmadı" in warning for warning in result.warnings)
 
 

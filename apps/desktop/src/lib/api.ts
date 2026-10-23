@@ -79,6 +79,10 @@ export type PageBlock = {
   end: number;
   bbox?: [number, number, number, number] | null;
   lines?: [number, number, number, number][];
+  /** Yapısal motorlarda paragraf/bölüm yolu (`Kira › Ödeme · p/4`). */
+  path?: string | null;
+  /** `heading`, `paragraph`, `table`, `header`, `footer`, `annotation`. */
+  kind?: string | null;
 };
 
 export type PageRow = {

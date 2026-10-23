@@ -12,7 +12,7 @@
 | F07-T04 | ✅ | sonuç alıntısı `raw_text`ten; vurgu metin düğümüyle (XSS yüzeyi yok) |
 | F07-T05 | ✅ | keyset sayfalama, 200 sonuç sınırı, kapsam görünürlüğü |
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
-| F07-T07 | ⏳ | DOCX/UDF yapısal görünüm açık |
+| F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
 
 ## F07-T02 — arama kipleri
 
@@ -116,19 +116,50 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   rozeti yalnız etiket tanımlıysa ve fiziksel numarayla aynı değilse çıkar.
   Sayfa düğmelerinin erişilebilir adı fiziksel sayfa + etikettir.
 
-## Doğrulama (F07-T06)
+## F07-T07 — DOCX/UDF yapısal görünüm
 
-- `cargo test --workspace --all-targets` → storage **132** (1 yeni: etiket
-  aynen saklanır, boş/olmayan etiket `NULL` kalır), ingest 12 + E2E 1, vault 15,
-  domain 13, jobs 5, evidence 7, policy 7, providers 5, cli-adapters 7.
+- **Kaynak**: DOCX paragrafları python-docx stillerinden okunur. `Heading N` /
+  `Başlık N` / `HeadingN` (yerelleşmiş `Başlık`) **gerçek** başlık sayılır ve
+  yığın kurulur (`Kira › Ödeme`); başka stil adı başlık sayılmaz, bölüm adı
+  uydurulmaz. Paragraf yolu `… · p/N` ile **fiziksel paragraf sırasını** taşır
+  (türev sayfa numarasından bağımsız). Tablo satırları `Tablo N · satır M`,
+  üstbilgi/altbilgi ve gövde dışı içerik (dipnot/sonnot/yorum) ayrı türlerdir.
+- **UDF**: doğrulanmış başlık kaynağı yok; blok yolu yalnız `p/N`. Metin
+  `_join_blocks` kuralıyla birebir aynı kalacak şekilde yeniden kurulur, böylece
+  paragraf offsetleri kaymaz (eski tek blok davranışının yerini gerçek paragraf
+  blokları alır).
+- **Protokol/depolama**: blok alanları `path` + `kind` (`heading`, `paragraph`,
+  `table`, `header`, `footer`, `annotation`). Worker yalnız dolu alanları taşır;
+  Rust `ExtractedBlock`/`SegmentBlock` `Option` + `#[serde(default)]` (eski
+  yanıt uyumlu), `bbox_list` JSON'unda saklanır, `PageRow.blocks` ile döner.
+- **Arayüz**: yapısal belgede sayfa rozeti **"Türev sayfa N"** olur ve
+  "yapısal belge · paragraf bazlı" rozeti eklenir. "Yapı" paneli gerçek
+  yolları listeler (başlıklar kalın); tıklanınca ilgili paragrafa kaydırılır.
+  Metin paragraf paragraf gösterilir; paragraflar arasında `\n\n` metin düğümü
+  korunur, böylece `textContent` belge metniyle birebir kalır ve seçim/anchor
+  offsetleri bozulmaz. Paragraflar metnin tamamını kaplamıyorsa tek parça
+  gösterime dönülür (offset uyuşmazlığı riski alınmaz).
+- Alıntı vurgusu paragraf içinde yerel aralığa çevrilir (`entrySlice`); PDF
+  sayfalarında yapı üretilmez (`structureEntries` boş döner).
+
+## Doğrulama (F07-T06/T07)
+
+- `cargo test --workspace --all-targets` → **205** test: storage **133** (2 yeni:
+  etiket aynen saklanır/boş etiket `NULL`; yapı bloğu yolu+türü geri okunur),
+  ingest 12 + E2E 1, vault 15, domain 13, jobs 5, evidence 7, policy 7,
+  providers 5, cli-adapters 7.
 - Rust: `cargo clippy --workspace --all-targets -- -D warnings` ve Tauri clippy
   temiz; rustfmt iki manifestte temiz.
-- Web: `tsc` + `vitest` **82** (4 yeni: zoom kademe/kırpma, döndürme toplamı,
-  etiket ayrımı ve yinelememe) + `vite build` yeşil.
-- Python: worker **69 test** (2 yeni motor testi `/PageLabels` var/yok, 1 yeni
-  çerçeve testi `pageLabel` yalnız tanımlıysa).
-- Gerçek worker IPC (elle): `/PageLabels` `Ek-1…Ek-3` tanımlı PDF →
-  `pageLabel` alanları `["Ek-1", "Ek-2", "Ek-3"]`; etiketsiz PDF'te alan yok.
+- Web: `tsc` + `vitest` **87** (9 yeni: zoom kademe/kırpma, döndürme toplamı,
+  etiket ayrımı/yinelememe, yapı paragraf aralığı, PDF'te yapı üretmeme, aralık
+  kırpma, paragraf içi vurgu) + `vite build` yeşil.
+- Python: worker **71 passed, 1 skipped** (2 yeni DOCX başlık yolu testi + UDF
+  `p/N` yol kontrolü; `/PageLabels` var/yok testleri).
+- Gerçek worker IPC (elle): `/PageLabels` `Ek-1…Ek-3` PDF → `pageLabel`
+  `["Ek-1","Ek-2","Ek-3"]`; başlıklı DOCX → bloklar
+  `heading | Kira Sözleşmesi`, `paragraph | Kira Sözleşmesi · p/2`,
+  `heading | Kira Sözleşmesi › Ödeme`, `paragraph | … · p/4`. Offsetler metinle
+  birebir eşleşiyor.
 - CI: `98d757a` → `ci.yml` **40034456417**, **7/7 yeşil** (SBOM dahil).
 
 ## Bilinen sınırlar
@@ -143,6 +174,12 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   dönerse etiket gösterilmez.
 - Döndürme yalnız gösterimdir; kayıtlı `pages.rotation` ve metin offsetleri
   değişmez, yeniden ayrıştırma gerekmez.
+- Yapısal görünümde başlık yalnız DOCX yerleşik stillerinden gelir
+  (`Heading N`/`Başlık N`); özel stilli veya numarayla biçimlendirilmiş başlıklar
+  bölüm yolu üretmez — uydurulmaz. UDF'te başlık kaynağı yoktur, yol `p/N`.
+- Yapı paneli ilk 200 kaydı listeler; fazlası için metin içinde gezinilir.
+- Yapısal görünüm ve paragraf kaydırma gerçek Tauri penceresinde tıklanarak
+  doğrulanmadı; typecheck + birim testleri + üretim derlemesi kanıtı var.
 
 ## Bilinen sınırlar (önceki işler)
 
