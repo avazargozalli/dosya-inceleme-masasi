@@ -59,12 +59,24 @@ mod tests {
 
     #[test]
     fn accepted_cannot_return_to_pending_silently() {
-        assert!(ReviewState::Accepted.transition(ReviewState::Pending).is_err());
-        assert_eq!(ReviewState::Accepted.transition(ReviewState::Edited).unwrap(), ReviewState::Edited);
+        assert!(ReviewState::Accepted
+            .transition(ReviewState::Pending)
+            .is_err());
+        assert_eq!(
+            ReviewState::Accepted
+                .transition(ReviewState::Edited)
+                .unwrap(),
+            ReviewState::Edited
+        );
     }
 
     #[test]
     fn pending_can_be_accepted() {
-        assert_eq!(ReviewState::Pending.transition(ReviewState::Accepted).unwrap(), ReviewState::Accepted);
+        assert_eq!(
+            ReviewState::Pending
+                .transition(ReviewState::Accepted)
+                .unwrap(),
+            ReviewState::Accepted
+        );
     }
 }

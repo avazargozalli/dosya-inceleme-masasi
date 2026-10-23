@@ -47,7 +47,11 @@ fn resolve_vault_path(input: &str) -> Result<PathBuf, ApiError> {
     } else {
         PathBuf::from(trimmed)
     };
-    let absolute = if expanded.is_absolute() { expanded } else { home_dir()?.join(expanded) };
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        home_dir()?.join(expanded)
+    };
     if absolute.extension().and_then(|e| e.to_str()) == Some("dimvault") {
         Ok(absolute)
     } else {
@@ -70,7 +74,11 @@ fn ensure_parent(path: &Path) -> Result<(), ApiError> {
 }
 
 #[tauri::command]
-pub fn vault_create(state: State<'_, AppState>, path: String, password: String) -> Result<CreateVaultResult, ApiError> {
+pub fn vault_create(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<CreateVaultResult, ApiError> {
     let password = Zeroizing::new(password);
     let vault_path = resolve_vault_path(&path)?;
     ensure_parent(&vault_path)?;
@@ -94,7 +102,11 @@ pub fn vault_create(state: State<'_, AppState>, path: String, password: String) 
 }
 
 #[tauri::command]
-pub fn vault_open(state: State<'_, AppState>, path: String, password: String) -> Result<VaultInfo, ApiError> {
+pub fn vault_open(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<VaultInfo, ApiError> {
     let password = Zeroizing::new(password);
     let vault_path = resolve_vault_path(&path)?;
     let unlocked = VaultFile::open(&vault_path, &password)?;
@@ -113,7 +125,11 @@ pub fn vault_open_with_recovery(
     remember(state, vault_path, unlocked)
 }
 
-fn remember(state: State<'_, AppState>, path: PathBuf, unlocked: UnlockedVault) -> Result<VaultInfo, ApiError> {
+fn remember(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    unlocked: UnlockedVault,
+) -> Result<VaultInfo, ApiError> {
     let master = *unlocked.master_key();
     let vault_id = vault_id_from_master(&master);
     drop(master);
@@ -159,7 +175,11 @@ pub struct SystemInfo {
 /// Teşhis: sürüm ve platform dışında bilgi dönmez (REQ-033).
 #[tauri::command]
 pub fn system_info() -> SystemInfo {
-    SystemInfo { app_version: env!("CARGO_PKG_VERSION"), protocol_version: 1, platform: std::env::consts::OS }
+    SystemInfo {
+        app_version: env!("CARGO_PKG_VERSION"),
+        protocol_version: 1,
+        platform: std::env::consts::OS,
+    }
 }
 
 #[cfg(test)]

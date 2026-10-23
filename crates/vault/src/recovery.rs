@@ -37,7 +37,9 @@ impl RecoveryKey {
 }
 
 pub fn format_recovery_key(bytes: &[u8]) -> String {
-    let encoded = data_encoding::BASE32_NOPAD.encode(bytes).to_ascii_uppercase();
+    let encoded = data_encoding::BASE32_NOPAD
+        .encode(bytes)
+        .to_ascii_uppercase();
     encoded
         .as_bytes()
         .chunks(4)
@@ -58,7 +60,9 @@ pub fn normalize_recovery_key(input: &str) -> Option<String> {
     if cleaned.len() != 52 {
         return None;
     }
-    let decoded = data_encoding::BASE32_NOPAD.decode(cleaned.as_bytes()).ok()?;
+    let decoded = data_encoding::BASE32_NOPAD
+        .decode(cleaned.as_bytes())
+        .ok()?;
     if decoded.len() != KEY_LEN {
         return None;
     }

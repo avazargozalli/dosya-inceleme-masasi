@@ -82,7 +82,10 @@ impl SourceRef {
         exact_quote: String,
     ) -> Self {
         let quote_hash = hash_quote(&exact_quote);
-        let text_range = TextRange { start, end: start + exact_quote.chars().count() };
+        let text_range = TextRange {
+            start,
+            end: start + exact_quote.chars().count(),
+        };
         Self {
             case_id,
             document_version_id,
@@ -104,11 +107,17 @@ impl SourceRef {
         }
         let chars = self.exact_quote.chars().count();
         if self.text_range.len() != chars {
-            return Err(DomainError::TextRangeMismatch { expected: chars, actual: self.text_range.len() });
+            return Err(DomainError::TextRangeMismatch {
+                expected: chars,
+                actual: self.text_range.len(),
+            });
         }
         match &self.location {
             Location::Pdf { quads, .. } => {
-                if quads.iter().any(|q| q.iter().any(|v| !v.is_finite() || *v < 0.0)) {
+                if quads
+                    .iter()
+                    .any(|q| q.iter().any(|v| !v.is_finite() || *v < 0.0))
+                {
                     return Err(DomainError::InvalidLocation("pdf_quad"));
                 }
             }

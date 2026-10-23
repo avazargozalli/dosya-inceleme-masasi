@@ -37,21 +37,40 @@ impl BlobHeader {
         if &buf[0..8] != MAGIC || buf[8] != 1 {
             return Err(VaultError::Corrupt("blob_header"));
         }
-        let chunk_size = u32::from_le_bytes(buf[9..13].try_into().map_err(|_| VaultError::Corrupt("chunk_size"))?);
+        let chunk_size = u32::from_le_bytes(
+            buf[9..13]
+                .try_into()
+                .map_err(|_| VaultError::Corrupt("chunk_size"))?,
+        );
         if chunk_size == 0 || chunk_size > 4 * 1024 * 1024 {
             return Err(VaultError::Corrupt("chunk_size"));
         }
         let mut nonce_prefix = [0u8; 8];
         nonce_prefix.copy_from_slice(&buf[13..21]);
-        let plain_len = u64::from_le_bytes(buf[21..29].try_into().map_err(|_| VaultError::Corrupt("plain_len"))?);
-        let chunk_count = u32::from_le_bytes(buf[29..33].try_into().map_err(|_| VaultError::Corrupt("chunk_count"))?);
-        Ok(Self { chunk_size, nonce_prefix, plain_len, chunk_count })
+        let plain_len = u64::from_le_bytes(
+            buf[21..29]
+                .try_into()
+                .map_err(|_| VaultError::Corrupt("plain_len"))?,
+        );
+        let chunk_count = u32::from_le_bytes(
+            buf[29..33]
+                .try_into()
+                .map_err(|_| VaultError::Corrupt("chunk_count"))?,
+        );
+        Ok(Self {
+            chunk_size,
+            nonce_prefix,
+            plain_len,
+            chunk_count,
+        })
     }
 }
 
 fn parse_header<R: Read>(reader: &mut R) -> Result<BlobHeader, VaultError> {
     let mut buf = [0u8; BLOB_HEADER_LEN];
-    reader.read_exact(&mut buf).map_err(|_| VaultError::Corrupt("short_header"))?;
+    reader
+        .read_exact(&mut buf)
+        .map_err(|_| VaultError::Corrupt("short_header"))?;
     BlobHeader::from_bytes(&buf)
 }
 
@@ -65,15 +84,26 @@ pub fn expected_blob_len(plain_len: u64, chunk_size: usize) -> u64 {
 /// Girdiyi parçalara bölerek şifreler. Her parça sabit boyutludur; son parça
 /// sıfırla doldurulur ve gerçek uzunluk başlıkta taşınır. Böylece dosya boyutu
 /// kesilme saldırısını açık eder.
-pub fn encrypt_blob<W: Write>(plain: &[u8], writer: &mut W, master: &[u8; 32], aad: &[u8]) -> Result<(), VaultError> {
+pub fn encrypt_blob<W: Write>(
+    plain: &[u8],
+    writer: &mut W,
+    master: &[u8; 32],
+    aad: &[u8],
+) -> Result<(), VaultError> {
     let mut nonce_prefix = [0u8; 8];
     OsRng.fill_bytes(&mut nonce_prefix);
     let chunk_size = BLOB_CHUNK_SIZE;
     let plain_len = plain.len() as u64;
     let chunk_count_u64 = plain_len.div_ceil(chunk_size as u64);
-    let chunk_count = u32::try_from(chunk_count_u64).map_err(|_| VaultError::Corrupt("too_large"))?;
+    let chunk_count =
+        u32::try_from(chunk_count_u64).map_err(|_| VaultError::Corrupt("too_large"))?;
 
-    let header = BlobHeader { chunk_size: chunk_size as u32, nonce_prefix, plain_len, chunk_count };
+    let header = BlobHeader {
+        chunk_size: chunk_size as u32,
+        nonce_prefix,
+        plain_len,
+        chunk_count,
+    };
     let header_bytes = header.to_bytes();
     writer.write_all(&header_bytes)?;
 
@@ -90,7 +120,10 @@ pub fn encrypt_blob<W: Write>(plain: &[u8], writer: &mut W, master: &[u8; 32], a
         let ct = cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
-                Payload { msg: &block, aad: &chunk_aad(aad, &header_bytes, index) },
+                Payload {
+                    msg: &block,
+                    aad: &chunk_aad(aad, &header_bytes, index),
+                },
             )
             .map_err(|_| VaultError::Crypto)?;
         if ct.len() != chunk_size + TAG_LEN {
@@ -104,7 +137,11 @@ pub fn encrypt_blob<W: Write>(plain: &[u8], writer: &mut W, master: &[u8; 32], a
 
 /// Şifreli blob'u çözer. Süreç: başlık doğrula → beklenen boyut → parça AEAD.
 /// Herhangi bir parça bozuksa hiçbir çıktı kullanılmaz (çağıran `Vec` alır).
-pub fn decrypt_blob<R: Read + Seek>(reader: &mut R, master: &[u8; 32], aad: &[u8]) -> Result<Vec<u8>, VaultError> {
+pub fn decrypt_blob<R: Read + Seek>(
+    reader: &mut R,
+    master: &[u8; 32],
+    aad: &[u8],
+) -> Result<Vec<u8>, VaultError> {
     let header = parse_header(reader)?;
     let chunk_size = header.chunk_size as usize;
     let expected = chunk_size
@@ -120,7 +157,11 @@ pub fn decrypt_blob<R: Read + Seek>(reader: &mut R, master: &[u8; 32], aad: &[u8
         end
     };
     if actual != expected as u64 {
-        return Err(VaultError::Corrupt(if actual < expected as u64 { "truncated" } else { "trailing_data" }));
+        return Err(VaultError::Corrupt(if actual < expected as u64 {
+            "truncated"
+        } else {
+            "trailing_data"
+        }));
     }
     if (header.plain_len as usize) > chunk_size.saturating_mul(header.chunk_count as usize) {
         return Err(VaultError::Corrupt("plain_len"));
@@ -133,18 +174,26 @@ pub fn decrypt_blob<R: Read + Seek>(reader: &mut R, master: &[u8; 32], aad: &[u8
     let mut out = Vec::with_capacity(usize::min(header.plain_len as usize, 64 * 1024 * 1024));
     for index in 0..header.chunk_count {
         let mut buf = vec![0u8; chunk_size + TAG_LEN];
-        reader.read_exact(&mut buf).map_err(|_| VaultError::Corrupt("short_chunk"))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| VaultError::Corrupt("short_chunk"))?;
         let nonce = chunk_nonce(&header.nonce_prefix, index);
         let pt = cipher
             .decrypt(
                 Nonce::from_slice(&nonce),
-                Payload { msg: &buf, aad: &chunk_aad(aad, &header_bytes, index) },
+                Payload {
+                    msg: &buf,
+                    aad: &chunk_aad(aad, &header_bytes, index),
+                },
             )
             .map_err(|_| VaultError::Corrupt("aead_tag"))?;
         if pt.len() != chunk_size {
             return Err(VaultError::Corrupt("chunk_len"));
         }
-        let take = usize::min(chunk_size, (header.plain_len as usize).saturating_sub(out.len()));
+        let take = usize::min(
+            chunk_size,
+            (header.plain_len as usize).saturating_sub(out.len()),
+        );
         out.extend_from_slice(&pt[..take]);
     }
     if out.len() != header.plain_len as usize {
@@ -178,7 +227,10 @@ mod tests {
         let key = [7u8; 32];
         let mut sealed = Vec::new();
         encrypt_blob(data, &mut sealed, &key, aad).expect("şifrele");
-        assert_eq!(sealed.len() as u64, expected_blob_len(data.len() as u64, BLOB_CHUNK_SIZE));
+        assert_eq!(
+            sealed.len() as u64,
+            expected_blob_len(data.len() as u64, BLOB_CHUNK_SIZE)
+        );
         let opened = decrypt_blob(&mut Cursor::new(&sealed), &key, aad).expect("çöz");
         assert_eq!(opened, data);
     }

@@ -29,7 +29,10 @@ pub enum DomainError {
     CrossCaseReference,
 
     #[error("durum geçişi geçersiz: {from} -> {to}")]
-    InvalidTransition { from: &'static str, to: &'static str },
+    InvalidTransition {
+        from: &'static str,
+        to: &'static str,
+    },
 }
 
 impl DomainError {

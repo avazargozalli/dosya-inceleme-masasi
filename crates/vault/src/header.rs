@@ -118,19 +118,30 @@ impl VaultHeader {
         let mut wrapped_recovery = [0u8; SLOT_LEN];
         wrapped_recovery.copy_from_slice(&buf[o..o + SLOT_LEN]);
         o += SLOT_LEN;
-        let created_at_unix = i64::from_le_bytes(buf[o..o + 8].try_into().map_err(|_| VaultError::BadHeader)?);
+        let created_at_unix = i64::from_le_bytes(
+            buf[o..o + 8]
+                .try_into()
+                .map_err(|_| VaultError::BadHeader)?,
+        );
         o += 8;
         let mut header_mac = [0u8; 32];
         header_mac.copy_from_slice(&buf[o..o + 32]);
 
         // KDF sınırları: bozuk başlıkla bellek tükenmesi engellenir.
-        if !(8_192..=1_048_576).contains(&m_cost_kib) || !(1..=10).contains(&t_cost) || !(1..=8).contains(&p_cost) {
+        if !(8_192..=1_048_576).contains(&m_cost_kib)
+            || !(1..=10).contains(&t_cost)
+            || !(1..=8).contains(&p_cost)
+        {
             return Err(VaultError::BadHeader);
         }
 
         Ok(Self {
             version,
-            kdf: KdfParams { m_cost_kib, t_cost, p_cost },
+            kdf: KdfParams {
+                m_cost_kib,
+                t_cost,
+                p_cost,
+            },
             salt_password,
             nonce_password,
             wrapped_password,
@@ -167,12 +178,19 @@ impl VaultHeader {
     }
 
     /// Parola değişiminde yalnız parola yuvası yeniden sarılır; ana anahtar korunur.
-    pub fn rewrap_password_slot(&mut self, master: &[u8; 32], kek: &[u8; 32]) -> Result<(), VaultError> {
+    pub fn rewrap_password_slot(
+        &mut self,
+        master: &[u8; 32],
+        kek: &[u8; 32],
+    ) -> Result<(), VaultError> {
         let cipher = Aes256Gcm::new_from_slice(kek).map_err(|_| VaultError::Crypto)?;
         let wrapped = cipher
             .encrypt(
                 Nonce::from_slice(&self.nonce_password),
-                Payload { msg: master, aad: b"dimvault/password-slot/v1" },
+                Payload {
+                    msg: master,
+                    aad: b"dimvault/password-slot/v1",
+                },
             )
             .map_err(|_| VaultError::Crypto)?;
         if wrapped.len() != SLOT_LEN {
@@ -185,7 +203,11 @@ impl VaultHeader {
 }
 
 fn read_u32(buf: &[u8], o: &mut usize) -> Result<u32, VaultError> {
-    let v = u32::from_le_bytes(buf[*o..*o + 4].try_into().map_err(|_| VaultError::BadHeader)?);
+    let v = u32::from_le_bytes(
+        buf[*o..*o + 4]
+            .try_into()
+            .map_err(|_| VaultError::BadHeader)?,
+    );
     *o += 4;
     Ok(v)
 }
@@ -197,7 +219,11 @@ mod tests {
     fn header() -> VaultHeader {
         VaultHeader {
             version: 1,
-            kdf: KdfParams { m_cost_kib: 65_536, t_cost: 3, p_cost: 1 },
+            kdf: KdfParams {
+                m_cost_kib: 65_536,
+                t_cost: 3,
+                p_cost: 1,
+            },
             salt_password: [1u8; 16],
             nonce_password: [2u8; 12],
             wrapped_password: [3u8; SLOT_LEN],
@@ -222,7 +248,10 @@ mod tests {
     fn bad_magic_rejected() {
         let mut bytes = header().to_bytes();
         bytes[0] = b'X';
-        assert_eq!(VaultHeader::from_bytes(&bytes).unwrap_err().code(), "E_VAULT_HEADER");
+        assert_eq!(
+            VaultHeader::from_bytes(&bytes).unwrap_err().code(),
+            "E_VAULT_HEADER"
+        );
     }
 
     #[test]
@@ -240,6 +269,9 @@ mod tests {
         h.header_mac = h.compute_mac(&master).expect("mac");
         h.verify_mac(&master).expect("doğru");
         h.created_at_unix += 1;
-        assert_eq!(h.verify_mac(&master).unwrap_err().code(), "E_VAULT_CREDENTIALS");
+        assert_eq!(
+            h.verify_mac(&master).unwrap_err().code(),
+            "E_VAULT_CREDENTIALS"
+        );
     }
 }

@@ -65,8 +65,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
-      - name: Tauri kabuğunu derle (paketleme yok)
-        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Tauri biçimi
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+      - name: Tauri clippy + derleme
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 
   python:
     name: belge worker'ı (pytest + duman)

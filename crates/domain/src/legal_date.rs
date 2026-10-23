@@ -83,7 +83,9 @@ mod tests {
 
     #[test]
     fn date_only_keeps_calendar_day() {
-        let d = LegalDate::DateOnly { value: date!(2024 - 03 - 31) };
+        let d = LegalDate::DateOnly {
+            value: date!(2024 - 03 - 31),
+        };
         assert_eq!(d.sortable_date(), Some(date!(2024 - 03 - 31)));
         assert_eq!(d.precision(), DatePrecision::Day);
     }
@@ -96,7 +98,10 @@ mod tests {
 
     #[test]
     fn reversed_range_rejected() {
-        let d = LegalDate::Range { from: date!(2025 - 01 - 02), to: date!(2025 - 01 - 01) };
+        let d = LegalDate::Range {
+            from: date!(2025 - 01 - 02),
+            to: date!(2025 - 01 - 01),
+        };
         assert_eq!(d.validate().unwrap_err().code(), "E_DATE_RANGE_REVERSED");
     }
 }
