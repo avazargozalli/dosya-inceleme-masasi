@@ -25,6 +25,16 @@ impl ApiError {
     }
 }
 
+impl From<dim_ingest::IngestError> for ApiError {
+    fn from(value: dim_ingest::IngestError) -> Self {
+        Self {
+            code: value.code().to_string(),
+            message: value.to_string(),
+            retryable: matches!(value, dim_ingest::IngestError::Io(_)),
+        }
+    }
+}
+
 impl From<dim_storage::StorageError> for ApiError {
     fn from(value: dim_storage::StorageError) -> Self {
         let retryable = matches!(value, dim_storage::StorageError::Io(_));

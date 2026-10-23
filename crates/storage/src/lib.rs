@@ -5,9 +5,11 @@
 //! veritabanı dosyası hiçbir aşamada oluşturulmaz.
 
 mod cases;
+mod documents;
 mod error;
 
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
+pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 
 use std::path::{Path, PathBuf};

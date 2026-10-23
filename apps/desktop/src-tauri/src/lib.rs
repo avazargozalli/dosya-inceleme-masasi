@@ -8,6 +8,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Kasa durumu süreç ömrü boyunca tek örnektir; ikinci pencere ayrı
             // DB yazıcısı açmaz (ADR-02, 06.5).
@@ -27,6 +28,8 @@ pub fn run() {
             commands::case_archive,
             commands::case_restore,
             commands::case_delete,
+            commands::document_import,
+            commands::document_list,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

@@ -47,6 +47,35 @@ export type NewCaseInput = {
   defaultAiPolicy: CaseRow["defaultAiPolicy"];
 };
 
+export type DocumentRow = {
+  id: string;
+  caseId: string;
+  displayName: string;
+  documentType: string;
+  status: string;
+  currentVersionId: string | null;
+  declaredDocumentDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
+export type DocumentVersionRow = {
+  id: string;
+  documentId: string;
+  caseId: string;
+  versionNo: number;
+  blobId: string;
+  originalSha256: string;
+  byteSize: number;
+  detectedMime: string;
+  importedAt: string;
+};
+
+export type ImportOutcome =
+  | { kind: "imported"; document: DocumentRow; version: DocumentVersionRow }
+  | { kind: "duplicate"; documentId: string; versionId: string; displayName: string };
+
 export type CasePatchInput = {
   title?: string;
   referenceCode?: string;
@@ -87,4 +116,8 @@ export const api = {
   caseArchive: (id: string) => invoke<CaseRow>("case_archive", { id }),
   caseRestore: (id: string) => invoke<CaseRow>("case_restore", { id }),
   caseDelete: (id: string) => invoke<void>("case_delete", { id }),
+
+  documentList: (caseId: string) => invoke<DocumentRow[]>("document_list", { caseId }),
+  documentImport: (caseId: string, path: string) =>
+    invoke<ImportOutcome>("document_import", { caseId, path }),
 };

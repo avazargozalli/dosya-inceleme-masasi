@@ -17,7 +17,12 @@ const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("vault");
-  const [status, setStatus] = useState<VaultStatus>({ unlocked: false, vaultPath: null, vaultId: null });
+  const [status, setStatus] = useState<VaultStatus>({
+    unlocked: false,
+    vaultPath: null,
+    vaultId: null,
+    schemaVersion: null,
+  });
   const [error, setError] = useState<ApiError | null>(null);
 
   const refresh = useCallback(async () => {
@@ -80,7 +85,7 @@ export function App() {
               onClick={async () => {
                 try {
                   await api.lockVault();
-                  setStatus({ unlocked: false, vaultPath: status.vaultPath, vaultId: null });
+                  await refresh();
                 } catch (e) {
                   setError(toApiError(e));
                 }

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use dim_storage::{Case, CasePatch, NewCase};
+use dim_ingest::{import_path, ImportResult};
+use dim_storage::{Case, Document, DocumentVersion, NewCase};
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
 use tauri::State;
@@ -263,4 +264,35 @@ mod tests {
         let p = resolve_vault_path("~/DimTest/ozel.dimvault").expect("yol");
         assert!(p.ends_with("ozel.dimvault"));
     }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ImportView {
+    Imported { document: Document, version: DocumentVersion },
+    Duplicate { document_id: String, version_id: String, display_name: String },
+}
+
+#[tauri::command]
+pub fn document_import(state: State<'_, AppState>, case_id: String, path: String) -> Result<ImportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let blob_dir = vault_path.parent().unwrap_or_else(|| Path::new(".")).join("blobs");
+
+    let result = import_path(db, vault, &blob_dir, &case_id, Path::new(&path), false)?;
+    Ok(match result {
+        ImportResult::Imported { document, version } => ImportView::Imported { document, version },
+        ImportResult::Duplicate { document_id, version_id, display_name } => {
+            ImportView::Duplicate { document_id, version_id, display_name }
+        }
+    })
+}
+
+#[tauri::command]
+pub fn document_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<Document>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_documents(&case_id)?)
 }

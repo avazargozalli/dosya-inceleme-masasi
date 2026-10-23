@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, toApiError, type ApiError, type CaseRow, type NewCaseInput } from "../lib/api";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import {
+  api,
+  toApiError,
+  type ApiError,
+  type CaseRow,
+  type DocumentRow,
+  type NewCaseInput,
+} from "../lib/api";
 import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
 
 const EMPTY_FORM: NewCaseInput = {
@@ -20,6 +28,8 @@ export function Cases() {
   const [form, setForm] = useState<NewCaseInput>(EMPTY_FORM);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  const [docs, setDocs] = useState<DocumentRow[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -33,6 +43,19 @@ export function Cases() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadDocs = useCallback(async (caseId: string) => {
+    try {
+      setDocs(await api.documentList(caseId));
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selected) void loadDocs(selected.id);
+    else setDocs([]);
+  }, [selected, loadDocs]);
 
   async function create() {
     if (form.title.trim().length === 0) {
@@ -51,6 +74,35 @@ export function Cases() {
       setForm(EMPTY_FORM);
       await load();
       setSelected(created);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addDocument() {
+    if (!selected) return;
+    const picked = await openFileDialog({
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: "Belgeler", extensions: ["pdf", "docx", "txt", "md", "csv", "png", "jpg", "jpeg", "tif", "tiff"] },
+      ],
+    });
+    if (typeof picked !== "string") return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const outcome = await api.documentImport(selected.id, picked);
+      if (outcome.kind === "duplicate") {
+        setNotice(
+          `Bu dosyada aynı içerik zaten var: “${outcome.displayName}”. Yeni kayıt oluşturulmadı.`,
+        );
+      } else {
+        setNotice(`“${outcome.document.displayName}” içe alındı (sürüm ${outcome.version.versionNo}).`);
+      }
+      await loadDocs(selected.id);
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -238,9 +290,54 @@ export function Cases() {
             )}
             <button className="btn" disabled={busy} onClick={() => void mutate("delete")}>Sil (geri dönüşümlü)</button>
           </div>
-          <p className="hint" style={{ margin: 0 }}>
-            Belge ekleme F05'te açılır. Bu ekran yalnız dosya kaydını yönetir.
-          </p>
+          {notice ? <div className="notice ok">{notice}</div> : null}
+
+          <div className="card tight" style={{ background: "var(--surface)" }}>
+            <div className="card-head">
+              <div>
+                <h2>Belgeler</h2>
+                <p className="card-sub">{docs.length} belge · özgün baytlar şifreli saklanır</p>
+              </div>
+              <button className="btn" disabled={busy} onClick={() => void addDocument()}>
+                Belge ekle
+              </button>
+            </div>
+            {docs.length === 0 ? (
+              <div className="empty" style={{ padding: "var(--space-4)" }}>
+                <p style={{ margin: 0 }}>Henüz belge yok. PDF, DOCX, TXT veya görüntü ekleyin.</p>
+              </div>
+            ) : (
+              <div style={{ border: "1px solid var(--line)", borderRadius: "var(--radius)", background: "var(--bg)" }}>
+                {docs.map((doc, index) => (
+                  <div
+                    key={doc.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 90px 110px 150px",
+                      gap: "var(--space-3)",
+                      alignItems: "center",
+                      padding: "9px var(--space-3)",
+                      borderTop: index === 0 ? 0 : "1px solid var(--line)",
+                    }}
+                  >
+                    <span>
+                      <span style={{ fontWeight: 500 }}>{doc.displayName}</span>
+                      <span className="muted small" style={{ display: "block", fontFamily: "var(--mono)", fontSize: 11 }}>
+                        {doc.currentVersionId?.slice(0, 8) ?? "sürüm yok"}
+                      </span>
+                    </span>
+                    <span className="badge plain">{doc.documentType}</span>
+                    <span className="muted small">{doc.status}</span>
+                    <span className="muted small">{formatTimestamp(doc.updatedAt)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="hint" style={{ margin: 0 }}>
+              Aynı içerik ikinci kez eklenirse yeni belge oluşturulmaz; mevcut kayıt gösterilir.
+              Ayrıştırma (metin/OCR) F06'da çalışır.
+            </p>
+          </div>
         </div>
       ) : null}
     </div>
