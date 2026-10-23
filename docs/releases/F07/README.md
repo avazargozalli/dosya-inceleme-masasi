@@ -9,6 +9,8 @@
 | F07-T01 | ✅ | FTS5 araması, dosya kapsamı zorunlu (`case_id`) |
 | F07-T02 | ✅ | sonuçta sayfa numarası + ham metin; HTML çalıştırılmaz |
 | F07-T03 | ✅ | vurgulama metin düğümüyle yapılır (XSS yüzeyi yok) |
+| F07-T05 | ✅ | seçim → Unicode scalar offset → doğrulanmış `source_anchor` |
+| F07-T06 | ✅ | anchor, prefix/suffix bağlamı ve quote hash taşır |
 | F07-T04 | ✅ | belge okuyucu: sayfa seçici, metin, OCR uyarısı |
 
 ## Doğrulama

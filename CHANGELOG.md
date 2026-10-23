@@ -3,6 +3,24 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.3.0] — 2026-10-23 — F06/F07: OCR, DOCX ve kaynak zinciri
+
+### Eklendi
+
+- OCR: Tesseract, `tur+eng`, 300 dpi; dil paketi keşfi, motor yoksa açık hata
+- DOCX: paragraf, tablo, üst/alt bilgi; sayfa düzeni uyarısı
+- Düz metin (UTF-8) çıkarımı ve MIME dağıtımı
+- Kaynak anchor: okuyucuda seçim → Unicode scalar offset → segmentte birebir
+  doğrulama → hash + prefix/suffix ile kayıt
+- Not ↔ kaynak alıntı bağı; not oluştururken anchor seçimi
+- Yedek al / yedekten geri yükle: `sqlcipher_export`, manifest, açıp doğrulama
+- Ayarlar ekranı: kasa bilgisi, yedek akışı, teşhis notu
+
+### Düzeltildi
+
+- Tauri NPM paketleri Rust crate minor'larıyla hizalandı (2.1.1 / 2.0.1)
+- Ölü `macos-13` runner'ı kaldırıldı; x86_64 hedefi `macos-14` üzerinde
+
 ## [0.2.0] — 2026-10-23 — F02/F03 çekirdeği
 
 ### Eklendi

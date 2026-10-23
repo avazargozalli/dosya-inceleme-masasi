@@ -10,7 +10,8 @@
 | F08-T02 | ✅ | bilinmeyen tarih sıralamaya sokulmaz, ayrı grupta |
 | F08-T03 | ✅ | onay (`draft → confirmed`) ve denetim kaydı |
 | F08-T04 | 🚧 | iddia–belge matrisi ve inceleme kuyruğu devam ediyor |
-| F08-T05 | 🚧 | görevler ve yerel hatırlatma devam ediyor |
+| F08-T05 | ✅ | görevler: kullanıcı tarihi, tamamlama, silme |
+| F08-T06 | ✅ | not ↔ kaynak alıntı bağı (`source_anchor_ids`) |
 
 ## Doğrulama
 
