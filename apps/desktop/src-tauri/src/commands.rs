@@ -596,8 +596,8 @@ fn zip_dir(src: &Path, dest: &Path) -> Result<(), ApiError> {
 
     let file = std::fs::File::create(dest)?;
     let mut writer = zip::ZipWriter::new(file);
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     let mut stack = vec![src.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
