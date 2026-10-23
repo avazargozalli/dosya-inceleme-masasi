@@ -318,7 +318,10 @@ mod tests {
         };
         let mut client = WorkerClient::spawn_dev(&py, &dir).expect("başlat");
         let err = client
-            .request("extract_text", json!({"contentBase64": "JVBERi0xLjQK"}))
+            .request(
+                "extract_text",
+                json!({"contentBase64": "JVBERi0xLjQK", "mime": "application/pdf"}),
+            )
             .unwrap_err();
         // PyMuPDF kuruluysa E_PDF_OPEN, değilse E_ENGINE_MISSING döner.
         match err {
