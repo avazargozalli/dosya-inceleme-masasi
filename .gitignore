@@ -50,7 +50,8 @@ Thumbs.db
 .tmp-iconset/
 
 # Paketlenmiş worker (build çıktısı)
-apps/desktop/src-tauri/resources/worker/
+apps/desktop/src-tauri/resources/worker/*
 !apps/desktop/src-tauri/resources/worker/.gitkeep
+!apps/desktop/src-tauri/resources/worker/README.md
 .worker-venv/
 workers/document/dist/
