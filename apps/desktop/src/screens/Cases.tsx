@@ -4,6 +4,7 @@ import {
   api,
   toApiError,
   type ApiError,
+  type AnchorRow,
   type CaseRow,
   type DocumentRow,
   type NewCaseInput,
@@ -33,6 +34,7 @@ export function Cases() {
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [reading, setReading] = useState<{ versionId: string; title: string } | null>(null);
+  const [anchors, setAnchors] = useState<AnchorRow[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -56,8 +58,13 @@ export function Cases() {
   }, []);
 
   useEffect(() => {
-    if (selected) void loadDocs(selected.id);
-    else setDocs([]);
+    if (selected) {
+      void loadDocs(selected.id);
+      void api.anchorList(selected.id).then(setAnchors).catch((e) => setError(toApiError(e)));
+    } else {
+      setDocs([]);
+      setAnchors([]);
+    }
   }, [selected, loadDocs]);
 
   async function create() {
@@ -312,7 +319,16 @@ export function Cases() {
           {notice ? <div className="notice ok">{notice}</div> : null}
 
           {reading ? (
-            <Reader versionId={reading.versionId} title={reading.title} onClose={() => setReading(null)} />
+            <Reader
+              caseId={selected.id}
+              versionId={reading.versionId}
+              title={reading.title}
+              onClose={() => setReading(null)}
+              onAnchor={(anchor) => {
+                setAnchors((prev) => [anchor, ...prev]);
+                setNotice(`Kaynak kaydedildi: “${anchor.exactQuote.slice(0, 60)}”`);
+              }}
+            />
           ) : null}
 
           <div className="card tight" style={{ background: "var(--surface)" }}>
@@ -362,7 +378,7 @@ export function Cases() {
             </p>
           </div>
 
-          <Notes caseId={selected.id} />
+          <Notes caseId={selected.id} anchors={anchors} />
         </div>
       ) : null}
     </div>

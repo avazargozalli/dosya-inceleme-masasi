@@ -15,6 +15,7 @@ pub struct NoteRow {
     pub body: String,
     pub author_kind: String,
     pub visibility_label: String,
+    pub source_anchor_ids: Vec<String>,
     pub approved_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -26,6 +27,8 @@ pub struct NoteRow {
 pub struct NewNote {
     pub title: String,
     pub body: String,
+    #[serde(default)]
+    pub source_anchor_ids: Vec<String>,
 }
 
 impl Database {
@@ -47,8 +50,15 @@ impl Database {
         let body_ast = serde_json::json!({"v": 1, "text": new.body.trim()}).to_string();
         self.conn().execute(
             "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at,row_version)
-             VALUES (?1,?2,?3,?4,'user','case_private','[]',?5,?5,1)",
-            rusqlite::params![id, case_id, new.title.trim(), body_ast, now],
+             VALUES (?1,?2,?3,?4,'user','case_private',?5,?6,?6,1)",
+            rusqlite::params![
+                id,
+                case_id,
+                new.title.trim(),
+                body_ast,
+                serde_json::to_string(&new.source_anchor_ids).unwrap_or_else(|_| "[]".into()),
+                now
+            ],
         )?;
         self.append_audit(
             "note",
@@ -62,7 +72,7 @@ impl Database {
 
     pub fn get_note(&self, id: &str) -> Result<Option<NoteRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,case_id,title,body_ast,author_kind,visibility_label,approved_at,created_at,updated_at,row_version
+            "SELECT id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,approved_at,created_at,updated_at,row_version
              FROM notes WHERE id=?1 AND deleted_at IS NULL",
         )?;
         Ok(stmt.query_row([id], map_note).optional()?)
@@ -70,7 +80,7 @@ impl Database {
 
     pub fn list_notes(&self, case_id: &str) -> Result<Vec<NoteRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,case_id,title,body_ast,author_kind,visibility_label,approved_at,created_at,updated_at,row_version
+            "SELECT id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,approved_at,created_at,updated_at,row_version
              FROM notes WHERE case_id=?1 AND deleted_at IS NULL ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([case_id], map_note)?;
@@ -111,10 +121,11 @@ fn map_note(row: &Row<'_>) -> rusqlite::Result<NoteRow> {
         body,
         author_kind: row.get(4)?,
         visibility_label: row.get(5)?,
-        approved_at: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
-        row_version: row.get(9)?,
+        source_anchor_ids: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(6)?).unwrap_or_default(),
+        approved_at: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        row_version: row.get(10)?,
     })
 }
 

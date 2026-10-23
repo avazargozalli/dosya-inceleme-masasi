@@ -29,6 +29,7 @@ pub struct ParseRun {
 #[serde(rename_all = "camelCase")]
 pub struct PageRow {
     pub id: String,
+    pub segment_id: Option<String>,
     pub page_index: i64,
     pub text: String,
     pub text_origin: String,
@@ -240,7 +241,9 @@ impl Database {
 
     pub fn pages_for_run(&self, parse_run_id: &str) -> Result<Vec<PageRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT p.id,p.page_index,
+            "SELECT p.id,
+                    (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS segment_id,
+                    p.page_index,
                     COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'') AS text,
                     p.text_origin,p.quality_flags,p.width,p.height
              FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index",
@@ -248,12 +251,13 @@ impl Database {
         let rows = stmt.query_map([parse_run_id], |row| {
             Ok(PageRow {
                 id: row.get(0)?,
-                page_index: row.get(1)?,
-                text: row.get(2)?,
-                text_origin: row.get(3)?,
-                quality_flags: row.get(4)?,
-                width: row.get(5)?,
-                height: row.get(6)?,
+                segment_id: row.get(1)?,
+                page_index: row.get(2)?,
+                text: row.get(3)?,
+                text_origin: row.get(4)?,
+                quality_flags: row.get(5)?,
+                width: row.get(6)?,
+                height: row.get(7)?,
             })
         })?;
         let mut out = Vec::new();

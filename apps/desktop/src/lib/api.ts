@@ -74,6 +74,7 @@ export type DocumentVersionRow = {
 
 export type PageRow = {
   id: string;
+  segmentId: string | null;
   pageIndex: number;
   text: string;
   textOrigin: string;
@@ -96,6 +97,23 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type AnchorRow = {
+  id: string;
+  caseId: string;
+  documentVersionId: string;
+  parseRunId: string;
+  pageId: string | null;
+  segmentId: string;
+  startOffset: number;
+  endOffset: number;
+  exactQuote: string;
+  prefix: string;
+  suffix: string;
+  quoteHash: string;
+  anchorStatus: string;
+  createdAt: string;
+};
+
 export type NoteRow = {
   id: string;
   caseId: string;
@@ -103,6 +121,7 @@ export type NoteRow = {
   body: string;
   authorKind: string;
   visibilityLabel: string;
+  sourceAnchorIds: string[];
   approvedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -253,10 +272,21 @@ export const api = {
   taskComplete: (id: string) => invoke<TaskRow>("task_complete", { id }),
   taskDelete: (id: string) => invoke<void>("task_delete", { id }),
 
+  anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
+  anchorCreate: (input: {
+    caseId: string;
+    documentVersionId: string;
+    parseRunId: string;
+    segmentId: string;
+    startOffset: number;
+    endOffset: number;
+    exactQuote: string;
+  }) => invoke<AnchorRow>("anchor_create", { input }),
+
   documentPages: (versionId: string) =>
     invoke<DocumentPages | null>("document_pages", { versionId }),
   noteList: (caseId: string) => invoke<NoteRow[]>("note_list", { caseId }),
-  noteCreate: (caseId: string, input: { title: string; body: string }) =>
+  noteCreate: (caseId: string, input: { title: string; body: string; sourceAnchorIds: string[] }) =>
     invoke<NoteRow>("note_create", { caseId, input }),
   noteDelete: (id: string) => invoke<void>("note_delete", { id }),
 };

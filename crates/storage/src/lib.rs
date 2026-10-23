@@ -4,6 +4,7 @@
 //! `DatabaseKey` olarak verilir; `Debug` çıktısında görünmez. Açık metin
 //! veritabanı dosyası hiçbir aşamada oluşturulmaz.
 
+mod anchors;
 mod cases;
 mod documents;
 mod error;
@@ -12,6 +13,7 @@ mod parsing;
 mod tasks;
 mod timeline;
 
+pub use anchors::{AnchorRow, NewAnchor};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;

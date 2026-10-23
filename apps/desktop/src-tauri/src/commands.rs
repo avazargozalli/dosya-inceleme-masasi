@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewNote, NewPage,
-    NewTask, NoteRow, PageRow, ParseRun, SearchHit, TaskRow,
+    AnchorRow, Case, CasePatch, Document, DocumentVersion, EventRow, NewAnchor, NewCase, NewEvent,
+    NewNote, NewPage, NewTask, NoteRow, PageRow, ParseRun, SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -333,6 +333,20 @@ pub struct DocumentPagesView {
 }
 
 /// Bir sürümün en güncel ayrıştırma koşusunu ve sayfalarını döndürür.
+#[tauri::command]
+pub fn anchor_create(state: State<'_, AppState>, input: NewAnchor) -> Result<AnchorRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_anchor(&input)?)
+}
+
+#[tauri::command]
+pub fn anchor_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<AnchorRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_anchors(&case_id)?)
+}
+
 #[tauri::command]
 pub fn document_pages(
     state: State<'_, AppState>,

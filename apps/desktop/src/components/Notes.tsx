@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, toApiError, type ApiError, type NoteRow } from "../lib/api";
+import { api, toApiError, type AnchorRow, type ApiError, type NoteRow } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
 
-export function Notes({ caseId }: { caseId: string }) {
+export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[] }) {
   const [rows, setRows] = useState<NoteRow[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -28,9 +29,14 @@ export function Notes({ caseId }: { caseId: string }) {
     }
     setBusy(true);
     try {
-      await api.noteCreate(caseId, { title: title.trim(), body: body.trim() });
+      await api.noteCreate(caseId, {
+        title: title.trim(),
+        body: body.trim(),
+        sourceAnchorIds: picked,
+      });
       setTitle("");
       setBody("");
+      setPicked([]);
       await load();
     } catch (e) {
       setError(toApiError(e));
@@ -67,6 +73,34 @@ export function Notes({ caseId }: { caseId: string }) {
         <label htmlFor="note-title">Başlık (isteğe bağlı)</label>
         <input id="note-title" className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
+      {anchors.length > 0 ? (
+        <div className="field">
+          <label>Kaynak alıntılar</label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {anchors.map((anchor) => (
+              <label key={anchor.id} className="row" style={{ alignItems: "flex-start", gap: 8, padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)", background: "var(--bg)" }}>
+                <input
+                  type="checkbox"
+                  checked={picked.includes(anchor.id)}
+                  onChange={(e) =>
+                    setPicked((prev) => (e.target.checked ? [...prev, anchor.id] : prev.filter((id) => id !== anchor.id)))
+                  }
+                  style={{ width: 15, height: 15, marginTop: 2 }}
+                />
+                <span>
+                  <span style={{ display: "block", fontSize: 13 }}>“{anchor.exactQuote.slice(0, 140)}”</span>
+                  <span className="muted small">{anchor.prefix.slice(-24)} … {anchor.suffix.slice(0, 24)}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="hint" style={{ margin: 0 }}>
+          Kaynak alıntı yok. Okuyucuda metin seçip “Seçimi kaynak olarak kaydet” deyin.
+        </p>
+      )}
+
       <div className="field">
         <label htmlFor="note-body">Not</label>
         <textarea
