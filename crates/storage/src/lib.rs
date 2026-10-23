@@ -382,6 +382,14 @@ fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), Sto
     // `PRAGMA key` parametre kabul etmez; anahtar hex olarak verilir (alfabe sabit).
     conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key.hex()))
         .map_err(|_| StorageError::Open)?;
+    // Anahtar doğrulaması **ilk** okumada yapılır. Pragma'lar önce çalışırsa
+    // yanlış anahtar `E_DB_SQL` olarak sızabilir; kullanıcıya "anahtar yanlış"
+    // demek için bu sıra korunmalıdır.
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map_err(|_| StorageError::BadKey)?;
+
     // `cipher_memory_security` tüm SQLCipher build'lerinde yok; eksikse
     // bağlantıyı düşürmemeli, yalnız bu sertleştirme atlanır.
     let _ = conn.execute_batch("PRAGMA cipher_memory_security = ON;");
@@ -393,12 +401,6 @@ fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), Sto
          PRAGMA busy_timeout = 5000;",
     )?;
     let _ = conn.execute_batch("PRAGMA journal_mode = WAL;");
-
-    // Anahtar doğrulaması: şifreli dosya yanlış anahtarla okunamaz.
-    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
-        r.get::<_, i64>(0)
-    })
-    .map_err(|_| StorageError::BadKey)?;
     Ok(())
 }
 
