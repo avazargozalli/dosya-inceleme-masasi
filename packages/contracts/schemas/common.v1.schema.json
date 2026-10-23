@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dim.local/schemas/common.v1.schema.json",
+  "title": "Common",
+  "description": "Sürümlü ortak tipler. v1: kaynak konumu ve kimlik biçimleri.",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUIDv7; sıralanabilir, anlam taşımayan kimlik."
+    },
+    "IsoTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC ISO-8601 teknik zaman."
+    },
+    "TextRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "description": "Unicode scalar aralığı; bayt veya UTF-16 değil."
+    },
+    "Location": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "pageIndex",
+            "quads",
+            "coordinateSpace"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pdf"
+            },
+            "pageIndex": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pageLabel": {
+              "type": "string"
+            },
+            "quads": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 4,
+                "maxItems": 4
+              }
+            },
+            "coordinateSpace": {
+              "enum": [
+                "unrotated_page_points"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "part",
+            "elementPath"
+          ],
+          "properties": {
+            "kind": {
+              "const": "structure"
+            },
+            "part": {
+              "type": "string",
+              "minLength": 1
+            },
+            "elementPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "paragraphIndex": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "frameIndex",
+            "quads"
+          ],
+          "properties": {
+            "kind": {
+              "const": "image"
+            },
+            "frameIndex": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "quads": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 4,
+                "maxItems": 4
+              }
+            }
+          }
+        }
+      ]
+    },
+    "SourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caseId",
+        "documentVersionId",
+        "parseRunId",
+        "segmentId",
+        "location",
+        "textRange",
+        "exactQuote",
+        "quoteHash",
+        "prefix",
+        "suffix"
+      ],
+      "properties": {
+        "caseId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "documentVersionId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "parseRunId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "segmentId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "location": {
+          "$ref": "#/$defs/Location"
+        },
+        "textRange": {
+          "$ref": "#/$defs/TextRange"
+        },
+        "exactQuote": {
+          "type": "string"
+        },
+        "quoteHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "suffix": {
+          "type": "string"
+        }
+      },
+      "description": "Alıntının sürüm, konum ve metin bağı. Çekirdek doğrulamadan kabul edilmez."
+    }
+  }
+}

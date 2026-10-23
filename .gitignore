@@ -1,0 +1,47 @@
+# Node
+node_modules/
+.pnpm-store/
+dist/
+out/
+*.tsbuildinfo
+.vite/
+
+# Rust
+target/
+**/target/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+
+# Kasa / veri — asla commit edilmez
+*.dimvault
+*.dimbackup
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+fixtures/generated/
+fixtures/real/
+.tmp/
+
+# OS / editör
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Sırlar
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision

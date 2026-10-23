@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dim.local/schemas/review-item.v1.schema.json",
+  "title": "ReviewItem",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "caseId",
+    "itemKind",
+    "payloadSchemaVersion",
+    "payload",
+    "sourceAnchorIds",
+    "state",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "common.v1.schema.json#/$defs/Uuid"
+    },
+    "caseId": {
+      "$ref": "common.v1.schema.json#/$defs/Uuid"
+    },
+    "itemKind": {
+      "enum": [
+        "event_candidate",
+        "claim_candidate",
+        "note_candidate",
+        "task_candidate"
+      ]
+    },
+    "payloadSchemaVersion": {
+      "const": 1
+    },
+    "payload": {
+      "type": "object"
+    },
+    "sourceAnchorIds": {
+      "type": "array",
+      "items": {
+        "$ref": "common.v1.schema.json#/$defs/Uuid"
+      },
+      "minItems": 1
+    },
+    "aiRunId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "enum": [
+        "pending",
+        "accepted",
+        "rejected",
+        "edited",
+        "needs_more_evidence"
+      ]
+    },
+    "targetEntityId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "createdAt": {
+      "$ref": "common.v1.schema.json#/$defs/IsoTimestamp"
+    }
+  },
+  "description": "AI/otomatik öneri. Kalıcı hukuk kaydına doğrudan dönüşmez."
+}

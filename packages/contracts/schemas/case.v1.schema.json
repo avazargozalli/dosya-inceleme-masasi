@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dim.local/schemas/case.v1.schema.json",
+  "title": "Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "caseKind",
+    "status",
+    "sensitivity",
+    "defaultAiPolicy",
+    "createdAt",
+    "updatedAt",
+    "rowVersion"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "common.v1.schema.json#/$defs/Uuid"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "caseKind": {
+      "enum": [
+        "review",
+        "reference_archive"
+      ]
+    },
+    "referenceCode": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 120,
+      "description": "Esas numarası dosyanın tek kimliği değildir."
+    },
+    "jurisdictionLabel": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 120
+    },
+    "practiceArea": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 80
+    },
+    "status": {
+      "enum": [
+        "active",
+        "archived",
+        "deleted"
+      ]
+    },
+    "sensitivity": {
+      "enum": [
+        "normal",
+        "high",
+        "client_confidential"
+      ]
+    },
+    "defaultAiPolicy": {
+      "enum": [
+        "off",
+        "local_only",
+        "cli_allowed",
+        "api_allowed"
+      ]
+    },
+    "archivedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "retentionHold": {
+      "type": "boolean"
+    },
+    "createdAt": {
+      "$ref": "common.v1.schema.json#/$defs/IsoTimestamp"
+    },
+    "updatedAt": {
+      "$ref": "common.v1.schema.json#/$defs/IsoTimestamp"
+    },
+    "rowVersion": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

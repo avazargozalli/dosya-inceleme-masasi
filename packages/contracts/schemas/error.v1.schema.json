@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dim.local/schemas/error.v1.schema.json",
+  "title": "ErrorBody",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "message",
+    "retryable"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^E_[A-Z0-9_]{2,48}$",
+      "description": "Kararlı hata kodu; ham hata metni yerine bu kullanılır."
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Kullanıcıya gösterilebilir, gizli veri içermeyen açıklama."
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "details": {
+      "type": "object",
+      "description": "Allowlist'e tabi yapısal ayrıntı; belge metni içermez."
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@dim/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "generate": "node scripts/generate.mjs --write",
+    "check": "node scripts/generate.mjs --check"
+  },
+  "devDependencies": {}
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dim.local/schemas/worker-frame.v1.schema.json",
+  "title": "WorkerFrame",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "id",
+        "method"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "method": {
+          "enum": [
+            "ping",
+            "capabilities",
+            "extract_text",
+            "shutdown"
+          ]
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "description": "Çekirdek → worker isteği (NDJSON, tek satır, en fazla 1 MiB)."
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "id",
+        "ok"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {
+          "type": "object"
+        },
+        "error": {
+          "$ref": "error.v1.schema.json"
+        }
+      },
+      "description": "Worker → çekirdek yanıtı."
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+[package]
+name = "dim-vault"
+description = "Dosya İnceleme Masası — şifreli kasa ve blob AEAD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+aes-gcm.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+hmac = "0.12.1"
+rand.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true
+data-encoding.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+tempfile = "3.14.0"
+
+[lints]
+workspace = true

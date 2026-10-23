@@ -1,0 +1,41 @@
+name: desktop-build
+
+# Ağır Tauri derlemesi yalnız elle veya etiketle tetiklenir; her push'ta
+# çalıştırılmaz. Paket imzalama F16'da devreye girer.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dim/desktop build
+      - name: İmzasız paket üret (imzalama sırları yoksa)
+        run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --no-bundle

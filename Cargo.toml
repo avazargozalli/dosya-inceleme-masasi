@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/avazargozalli/dosya-inceleme-masasi"
+authors = ["Av. Azar Gozalli and contributors"]
+
+[workspace.dependencies]
+serde = { version = "1.0.216", features = ["derive"] }
+serde_json = "1.0.133"
+thiserror = "2.0.4"
+uuid = { version = "1.11.0", features = ["v4", "v7", "serde"] }
+time = { version = "0.3.37", features = ["serde", "formatting", "parsing", "macros"] }
+sha2 = "0.10.8"
+hex = "0.4.3"
+argon2 = { version = "0.5.3", features = ["std"] }
+aes-gcm = "0.10.3"
+hkdf = "0.12.4"
+hmac = "0.12.1"
+rand = "0.8.5"
+zeroize = { version = "1.8.1", features = ["derive"] }
+base64 = "0.22.1"
+data-encoding = "2.6.0"
+subtle = "2.6.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
