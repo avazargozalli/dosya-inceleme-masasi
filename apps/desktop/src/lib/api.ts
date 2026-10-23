@@ -97,6 +97,17 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type AdapterView = {
+  id: string;
+  displayName: string;
+  command: string;
+  state: "installed" | "not_installed" | "unverified";
+  version: string | null;
+  authMode: "subscription" | "api_key" | "interactive_only";
+  batchForbidden: boolean;
+  allowedArgs: string[];
+};
+
 export type ClaimRow = {
   id: string;
   caseId: string;
@@ -334,6 +345,7 @@ export const api = {
   taskDelete: (id: string) => invoke<void>("task_delete", { id }),
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
+  providerProbe: () => invoke<AdapterView[]>("provider_probe"),
 
   claimList: (caseId: string) => invoke<ClaimRow[]>("claim_list", { caseId }),
   claimCreate: (

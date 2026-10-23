@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
@@ -830,4 +831,48 @@ pub fn review_history(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.review_history(&item_id)?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterView {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+    pub state: &'static str,
+    pub version: Option<String>,
+    pub auth_mode: &'static str,
+    pub batch_forbidden: bool,
+    pub allowed_args: &'static [&'static str],
+}
+
+/// CLI adaptörlerini yoklar: yalnız `--version` çalıştırılır. Kimlik dosyası
+/// okunmaz, oturum açılmaz, istek gönderilmez.
+#[tauri::command]
+pub fn provider_probe() -> Vec<AdapterView> {
+    SPECS
+        .iter()
+        .map(|spec| {
+            let discovery = discover(spec);
+            let (state, version) = match discovery.state {
+                DiscoveryState::Installed { version, .. } => ("installed", Some(version)),
+                DiscoveryState::Unverified { .. } => ("unverified", None),
+                DiscoveryState::NotInstalled => ("not_installed", None),
+            };
+            AdapterView {
+                id: spec.id,
+                display_name: spec.display_name,
+                command: spec.command,
+                state,
+                version,
+                auth_mode: match spec.auth_mode {
+                    dim_cli_adapters::AuthMode::Subscription => "subscription",
+                    dim_cli_adapters::AuthMode::ApiKey => "api_key",
+                    dim_cli_adapters::AuthMode::InteractiveOnly => "interactive_only",
+                },
+                batch_forbidden: spec.batch_forbidden,
+                allowed_args: spec.allowed_args,
+            }
+        })
+        .collect()
 }

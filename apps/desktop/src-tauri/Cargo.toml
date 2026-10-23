@@ -21,6 +21,7 @@ serde_json = "1.0.133"
 dim-vault = { path = "../../../crates/vault" }
 dim-storage = { path = "../../../crates/storage" }
 dim-ingest = { path = "../../../crates/ingest" }
+dim-cli-adapters = { path = "../../../crates/cli-adapters" }
 tauri-plugin-dialog = "2.0.1"
 sha2 = "0.10.8"
 hex = "0.4.3"

@@ -4,7 +4,12 @@
 //! (INV-11). Gerçek yürütme F10'da, kullanıcının kurduğu resmî araçlar
 //! üzerinden ve yalnız burada tanımlı izinli argümanlarla yapılacaktır.
 
+// Süreç yalnız `--version` yoklaması için ve yalnız burada başlatılır; kimlik
+// dosyası okunmaz, token kopyalanmaz (ADR-05, INV-11).
+#![allow(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
@@ -87,6 +92,10 @@ pub enum AdapterError {
     DisallowedArgument(String),
     #[error("toplu/otomatik kullanım bu sağlayıcıda engelli")]
     BatchForbidden,
+    #[error("araç kurulu değil")]
+    NotInstalled,
+    #[error("sürüm yoklaması başarısız")]
+    ProbeFailed,
 }
 
 impl AdapterError {
@@ -95,6 +104,8 @@ impl AdapterError {
             Self::UnknownAdapter(_) => "E_CLI_UNKNOWN",
             Self::DisallowedArgument(_) => "E_CLI_ARGUMENT",
             Self::BatchForbidden => "E_CLI_BATCH_FORBIDDEN",
+            Self::NotInstalled => "E_CLI_NOT_INSTALLED",
+            Self::ProbeFailed => "E_CLI_PROBE",
         }
     }
 }
@@ -107,10 +118,13 @@ pub fn spec(id: &str) -> Option<&'static AdapterSpec> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryState {
     NotInstalled,
+    /// Yürütülebilir bulundu ve `--version` yanıt verdi. Yetenek/izin kapıları
+    /// ayrıca geçilmeden bağlantı "hazır" sayılmaz.
     Installed {
         path: PathBuf,
+        version: String,
     },
-    /// Dosya var ama sürüm/uyumluluk doğrulanmadı; bağlantı "sınırlı" gösterilir.
+    /// Dosya var ama sürüm okunamadı; bağlantı "sınırlı" gösterilir.
     Unverified {
         path: PathBuf,
         reason: &'static str,
@@ -123,23 +137,60 @@ pub struct Discovery {
     pub state: DiscoveryState,
 }
 
-/// PATH üzerinde yürütülebilir dosyayı arar. Süreç çalıştırmaz, `--version`
-/// çağırmaz; bu yüzden "kurulu" sonucu tek başına güvenli kabul değildir.
+/// PATH üzerinde aracı arar ve **yalnız** `--version` çalıştırır. Sürüm
+/// okunamazsa "kurulu" denmez; `Unverified` döner.
 #[must_use]
 pub fn discover(spec: &AdapterSpec) -> Discovery {
-    match find_on_path(spec.command) {
-        Some(path) => Discovery {
+    let Some(path) = find_on_path(spec.command) else {
+        return Discovery {
+            adapter_id: spec.id,
+            state: DiscoveryState::NotInstalled,
+        };
+    };
+    match probe_version(&path, spec) {
+        Ok(version) => Discovery {
+            adapter_id: spec.id,
+            state: DiscoveryState::Installed { path, version },
+        },
+        Err(_) => Discovery {
             adapter_id: spec.id,
             state: DiscoveryState::Unverified {
                 path,
-                reason: "version_not_probed",
+                reason: "version_probe_failed",
             },
         },
-        None => Discovery {
-            adapter_id: spec.id,
-            state: DiscoveryState::NotInstalled,
-        },
     }
+}
+
+/// `--version` çıktısından sürümü ayıklar; kontrol karakterleri temizlenir ve
+/// ilk 80 karakterle sınırlanır.
+#[must_use]
+pub fn parse_version_output(output: &str) -> Option<String> {
+    let line = output.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let cleaned: String = line.chars().filter(|c| !c.is_control()).take(80).collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn probe_version(path: &Path, spec: &AdapterSpec) -> Result<String, AdapterError> {
+    let flag = spec.version_args.first().copied().unwrap_or("--version");
+    let output = Command::new(path)
+        .arg(flag)
+        .output()
+        .map_err(|_| AdapterError::ProbeFailed)?;
+    if !output.status.success() {
+        return Err(AdapterError::ProbeFailed);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    } else {
+        stdout.to_string()
+    };
+    parse_version_output(&text).ok_or(AdapterError::ProbeFailed)
 }
 
 #[must_use]
@@ -252,7 +303,25 @@ mod tests {
         let d = discover(spec);
         assert!(matches!(
             d.state,
-            DiscoveryState::NotInstalled | DiscoveryState::Unverified { .. }
+            DiscoveryState::NotInstalled
+                | DiscoveryState::Installed { .. }
+                | DiscoveryState::Unverified { .. }
         ));
+        if let DiscoveryState::Installed { version, .. } = d.state {
+            assert!(!version.is_empty());
+        }
+    }
+
+    #[test]
+    fn version_output_is_cleaned_and_truncated() {
+        assert_eq!(
+            parse_version_output("  codex-cli 0.9.1\n").as_deref(),
+            Some("codex-cli 0.9.1")
+        );
+        assert_eq!(parse_version_output("\n\n"), None);
+        let noisy = format!("v{}\u{0007}", "1".repeat(200));
+        let parsed = parse_version_output(&noisy).expect("sürüm");
+        assert!(!parsed.contains('\u{0007}'));
+        assert!(parsed.chars().count() <= 80);
     }
 }

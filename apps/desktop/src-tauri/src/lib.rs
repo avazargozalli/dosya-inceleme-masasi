@@ -55,6 +55,7 @@ pub fn run() {
             commands::review_decide,
             commands::review_history,
             commands::vault_backup,
+            commands::provider_probe,
             commands::vault_restore,
             commands::system_info,
         ])
