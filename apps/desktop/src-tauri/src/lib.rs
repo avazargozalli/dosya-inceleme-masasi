@@ -36,6 +36,10 @@ pub fn run() {
             commands::event_list,
             commands::event_confirm,
             commands::event_delete,
+            commands::task_create,
+            commands::task_list,
+            commands::task_complete,
+            commands::task_delete,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

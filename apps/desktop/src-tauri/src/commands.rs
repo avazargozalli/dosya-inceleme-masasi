@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewPage, ParseRun,
-    SearchHit,
+    Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewPage, NewTask,
+    ParseRun, SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -272,6 +272,7 @@ mod tests {
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
+#[allow(clippy::large_enum_variant)] // IPC yanıtı; kutu serde çıktısını değiştirmez ama gereksiz karmaşıklık
 pub enum ImportView {
     Imported {
         document: Document,
@@ -322,6 +323,42 @@ pub fn document_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_documents(&case_id)?)
+}
+
+#[tauri::command]
+pub fn task_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewTask,
+) -> Result<TaskRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_task(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn task_list(
+    state: State<'_, AppState>,
+    case_id: String,
+    include_done: Option<bool>,
+) -> Result<Vec<TaskRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_tasks(&case_id, include_done.unwrap_or(false))?)
+}
+
+#[tauri::command]
+pub fn task_complete(state: State<'_, AppState>, id: String) -> Result<TaskRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.complete_task(&id)?)
+}
+
+#[tauri::command]
+pub fn task_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.soft_delete_task(&id)?)
 }
 
 #[tauri::command]

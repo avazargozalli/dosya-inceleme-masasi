@@ -2,17 +2,19 @@ import { useCallback, useEffect, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
 import { Search } from "./screens/Search";
+import { Tasks } from "./screens/Tasks";
 import { Timeline } from "./screens/Timeline";
 import { Unlock } from "./screens/Unlock";
 import { Workspace } from "./screens/Workspace";
 
-type Screen = "vault" | "files" | "search" | "timeline" | "review" | "settings";
+type Screen = "vault" | "files" | "search" | "timeline" | "tasks" | "review" | "settings";
 
 const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
   { id: "vault", label: "Kasa" },
   { id: "files", label: "Dosyalar", phase: "F04" },
   { id: "search", label: "Arama", phase: "F07" },
   { id: "timeline", label: "Kronoloji", phase: "F08" },
+  { id: "tasks", label: "Görevler", phase: "F08" },
   { id: "review", label: "İnceleme", phase: "F08" },
   { id: "settings", label: "Ayarlar", phase: "F15" },
 ];
@@ -122,6 +124,8 @@ export function App() {
             <Search />
           ) : screen === "timeline" ? (
             <Timeline />
+          ) : screen === "tasks" ? (
+            <Tasks />
           ) : (
             <ComingPhase label={NAV.find((n) => n.id === screen)?.label ?? ""} phase={NAV.find((n) => n.id === screen)?.phase ?? ""} />
           )}

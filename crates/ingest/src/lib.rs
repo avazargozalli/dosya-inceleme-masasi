@@ -73,6 +73,7 @@ impl IngestError {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // kısa ömürlü sonuç; kutu eklemek çağrı yerlerini bozar
 pub enum ImportResult {
     Imported {
         document: Document,

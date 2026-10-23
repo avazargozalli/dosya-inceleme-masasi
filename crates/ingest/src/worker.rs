@@ -5,6 +5,10 @@
 //! Yanıt boyutu, çerçeve boyutu ve süre sınırlıdır; süreç ölürse çağıran
 //! taraf hata alır, yarım sonuç tamamlanmış sayılmaz.
 
+// Süreç başlatma bilinçli olarak yalnız burada ve `crates/cli-adapters` içinde
+// yapılır: ADR-05 gereği worker/CLI denetimli zarf olmadan çalıştırılmaz.
+#![allow(clippy::disallowed_methods)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};

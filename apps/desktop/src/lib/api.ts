@@ -72,6 +72,29 @@ export type DocumentVersionRow = {
   importedAt: string;
 };
 
+export type TaskRow = {
+  id: string;
+  caseId: string;
+  title: string;
+  status: string;
+  userDueDate: string | null;
+  dateTimezone: string | null;
+  dateOrigin: string;
+  assigneeLabel: string | null;
+  reminderPolicy: string;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
+export type NewTaskInput = {
+  title: string;
+  userDueDate: string | null;
+  dateTimezone: string | null;
+  assigneeLabel: string | null;
+  reminderPolicy: string;
+};
+
 export type EventRow = {
   id: string;
   caseId: string;
@@ -184,4 +207,11 @@ export const api = {
     invoke<EventRow>("event_create", { caseId, input }),
   eventConfirm: (id: string) => invoke<EventRow>("event_confirm", { id }),
   eventDelete: (id: string) => invoke<void>("event_delete", { id }),
+
+  taskList: (caseId: string, includeDone = false) =>
+    invoke<TaskRow[]>("task_list", { caseId, includeDone }),
+  taskCreate: (caseId: string, input: NewTaskInput) =>
+    invoke<TaskRow>("task_create", { caseId, input }),
+  taskComplete: (id: string) => invoke<TaskRow>("task_complete", { id }),
+  taskDelete: (id: string) => invoke<void>("task_delete", { id }),
 };

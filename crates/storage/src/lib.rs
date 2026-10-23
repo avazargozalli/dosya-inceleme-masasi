@@ -8,12 +8,14 @@ mod cases;
 mod documents;
 mod error;
 mod parsing;
+mod tasks;
 mod timeline;
 
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use parsing::{settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchHit};
+pub use tasks::{NewTask, TaskRow};
 pub use timeline::{EventRow, NewEvent};
 
 use std::path::{Path, PathBuf};
