@@ -17,6 +17,8 @@ from .udf import UdfError, extract_udf_document
 
 MAX_PAGES = 2000
 MAX_INPUT_BYTES = 250 * 1024 * 1024
+MAX_IMAGE_FRAMES = 100
+MAX_IMAGE_PIXELS = 50_000_000
 OCR_DPI = 300
 
 
@@ -190,6 +192,99 @@ def _looks_like_udf(data: bytes) -> bool:
     return b"content.xml" in data[-131072:].lower()
 
 
+def _pillow():
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError as exc:  # pragma: no cover - paket yoksa
+        raise EngineError("E_IMAGE_MISSING", "Pillow bu worker paketinde yok") from exc
+    return Image
+
+
+def _check_pixel_budget(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise EngineError("E_IMAGE_INVALID", "görüntü boyutu geçersiz")
+    if width * height > MAX_IMAGE_PIXELS:
+        raise EngineError(
+            "E_IMAGE_TOO_LARGE",
+            f"görüntü {MAX_IMAGE_PIXELS // 1_000_000} megapiksel sınırını aşıyor",
+        )
+
+
+def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extraction:
+    """PNG/JPEG/TIFF görüntüsünü sayfalara ayırır. OCR kapalıysa metin
+    uydurulmaz: sayfa "metin katmanı yok" uyarısıyla boş döner. Çok kareli
+    TIFF'te her kare ayrı fiziksel sayfadır; piksel bütçesi kare başına uygulanır."""
+    Image = _pillow()
+    try:
+        image = Image.open(io.BytesIO(data))
+    except Exception as exc:  # noqa: BLE001 - bozuk görüntü normalize edilir
+        raise EngineError("E_IMAGE_OPEN", "görüntü açılamadı (bozuk veya desteklenmeyen biçim)") from exc
+
+    frames = int(getattr(image, "n_frames", 1) or 1)
+    if frames > MAX_IMAGE_FRAMES:
+        raise EngineError("E_IMAGE_TOO_LARGE", f"görüntü {MAX_IMAGE_FRAMES} kare sınırını aşıyor")
+    if ocr and not _tesseract_available():
+        raise EngineError("E_OCR_MISSING", "Tesseract bulunamadı; OCR çalıştırılamadı")
+
+    pages: list[Page] = []
+    warnings: list[str] = []
+    try:
+        for index in range(frames):
+            image.seek(index)
+            frame = image.convert("RGB")
+            _check_pixel_budget(*frame.size)
+            page_warnings: list[str] = []
+            text = ""
+            if ocr:
+                try:
+                    import pytesseract  # type: ignore
+
+                    text = pytesseract.image_to_string(frame, lang=ocr_lang) or ""
+                except Exception as exc:  # noqa: BLE001
+                    raise EngineError(
+                        "E_OCR_FAILED", "görüntü OCR'ı çalıştırılamadı (dil paketi eksik olabilir)"
+                    ) from exc
+                if text.strip():
+                    page_warnings.append(f"sayfa {index + 1}: OCR ile okundu ({ocr_lang})")
+                else:
+                    page_warnings.append(f"sayfa {index + 1}: OCR sonuç vermedi")
+            else:
+                page_warnings.append(f"sayfa {index + 1}: metin katmanı yok (OCR gerekli)")
+            warnings.extend(page_warnings)
+            pages.append(
+                Page(
+                    index=index,
+                    text=text,
+                    width=float(frame.size[0]),
+                    height=float(frame.size[1]),
+                    warnings=page_warnings,
+                )
+            )
+    finally:
+        image.close()
+
+    warnings.append("görüntü koordinatları piksel cinsindendir; basılı sayfa ölçüsü değildir")
+    version = "1"
+    if ocr:
+        try:
+            import pytesseract  # type: ignore
+
+            version = str(pytesseract.get_tesseract_version())
+        except Exception:  # noqa: BLE001
+            version = "unknown"
+    engine = "tesseract-image" if ocr else "image"
+    return Extraction(engine=engine, engine_version=version, pages=pages, warnings=warnings)
+
+
+def _looks_like_image(data: bytes) -> bool:
+    return (
+        data.startswith(b"\x89PNG\r\n\x1a\n")
+        or data.startswith(b"\xff\xd8\xff")
+        or data.startswith(b"II*\x00")
+        or data.startswith(b"MM\x00*")
+    )
+
+
 def extract_plain(data: bytes, encoding: str = "utf-8") -> Extraction:
     try:
         text = data.decode(encoding)
@@ -214,6 +309,8 @@ def extract(
     için kullanılır; hiçbir yere yazılmaz."""
     if mime == "application/pdf" or data.startswith(b"%PDF-"):
         return extract_pdf(data, ocr=ocr, ocr_lang=ocr_lang, password=password)
+    if mime in {"image/png", "image/jpeg", "image/tiff", "image/tif"} or _looks_like_image(data):
+        return extract_image(data, ocr=ocr, ocr_lang=ocr_lang)
     if mime in {"application/udf", "application/x-udf", "application/x-uyap-udf"}:
         return extract_udf(data)
     if mime in {"application/zip", "application/octet-stream"} and _looks_like_udf(data):
@@ -254,12 +351,28 @@ def capabilities() -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             ocr_langs = []
 
+    image_ok = False
+    image_version = None
+    try:
+        import PIL  # type: ignore
+
+        image_ok = True
+        image_version = str(PIL.__version__)
+    except ImportError:
+        pass
+
     return {
         "protocolVersion": 1,
         "engines": {
             "pdf": {"available": pdf, "version": pdf_version},
             "docx": {"available": docx_ok, "version": docx_version},
             "udf": {"available": True, "version": "1"},
+            "image": {
+                "available": image_ok,
+                "version": image_version,
+                "maxPixels": MAX_IMAGE_PIXELS,
+                "maxFrames": MAX_IMAGE_FRAMES,
+            },
             "text": {"available": True},
             "ocr": {"available": bool(ocr_langs), "languages": ocr_langs, "dpi": OCR_DPI},
         },
