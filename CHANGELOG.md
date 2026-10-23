@@ -3,6 +3,16 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.4.0] — 2026-10-23 — F08/F10/F12/F13
+
+### Eklendi
+
+- İddia–delil matrisi, inceleme kuyruğu, kabul/ret/düzelt geçmişi
+- CLI keşfi: yalnız `--version` yoklaması; kimlik okunmaz, token kopyalanmaz
+- Emsal kütüphanesi, kullanım notu, boyutları ayrı atıf kontrolü
+- Gerçek karartma: `apply_redactions` + çıktı doğrulaması; başarısızsa kayıt yok
+- Maskeli kopya yeni sürüm olarak bağlanır (`parent_version_id`)
+
 ## [0.3.0] — 2026-10-23 — F06/F07: OCR, DOCX ve kaynak zinciri
 
 ### Eklendi

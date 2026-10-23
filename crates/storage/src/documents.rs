@@ -108,6 +108,7 @@ impl Database {
     }
 
     /// Türev sürüm (ör. maskeli kopya) için ebeveyn bağını korur.
+    #[allow(clippy::too_many_arguments)] // alanlar tek tek anlamlı; struct sarmak çağrıyı gizler
     pub fn add_version_with_parent(
         &self,
         document_id: &str,
