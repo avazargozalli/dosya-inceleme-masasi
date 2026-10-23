@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { AnchorLocationRow, PageRow, SearchHit } from "./api";
 import {
+  ZOOM_STEPS,
   blocksForRange,
+  clampZoom,
   displayPageSize,
   mapRectForDisplay,
+  nextZoom,
   offsetSlice,
+  pageLabelInfo,
   parseWarnings,
   querySlice,
   resolvePageIndex,
+  rotateView,
   sliceForPage,
   targetFromAnchor,
   targetFromHit,
@@ -25,6 +30,7 @@ const pages: PageRow[] = [
     height: null,
     rotation: 0,
     coordinateSpace: "structure",
+    pageLabel: null,
     blocks: [],
   },
   {
@@ -38,6 +44,7 @@ const pages: PageRow[] = [
     height: 400,
     rotation: 90,
     coordinateSpace: "unrotated_cropbox_points",
+    pageLabel: "iv",
     blocks: [
       { start: 0, end: 15, bbox: [10, 10, 200, 24], lines: [] },
       { start: 15, end: 47, bbox: [10, 40, 180, 54], lines: [[10, 40, 180, 54]] },
@@ -209,5 +216,51 @@ describe("blocksForRange", () => {
 
   it("kutusu olmayan blok için konum uydurmaz", () => {
     expect(blocksForRange([{ start: 0, end: 5 }], null)).toEqual([]);
+  });
+});
+
+describe("yakınlaştırma", () => {
+  it("kademeler arasında ilerler ve uçta taşmaz", () => {
+    expect(nextZoom(1, 1)).toBe(1.25);
+    expect(nextZoom(1, -1)).toBe(0.75);
+    expect(nextZoom(2, 1)).toBe(2);
+    expect(nextZoom(0.75, -1)).toBe(0.75);
+  });
+
+  it("aralık dışı değeri kırpar, sayı olmayanda %100 döner", () => {
+    expect(clampZoom(9)).toBe(2);
+    expect(clampZoom(0.1)).toBe(0.75);
+    expect(clampZoom(Number.NaN)).toBe(1);
+    expect(ZOOM_STEPS).toContain(1);
+  });
+});
+
+describe("rotateView", () => {
+  it("belge ve görünüm döndürmesini toplar, 360'ta sıfırlar", () => {
+    expect(rotateView(90, 90)).toBe(180);
+    expect(rotateView(270, 90)).toBe(0);
+    expect(rotateView(0, -90)).toBe(270);
+    expect(rotateView(0, 0)).toBe(0);
+  });
+});
+
+describe("pageLabelInfo", () => {
+  it("fiziksel numarayı her zaman verir, etiketi yalnız tanımlıysa gösterir", () => {
+    expect(pageLabelInfo({ pageIndex: 3, pageLabel: "iv" })).toEqual({
+      label: "iv",
+      physical: "Fiziksel sayfa 4",
+      showsLabel: true,
+    });
+    expect(pageLabelInfo({ pageIndex: 0, pageLabel: null })).toEqual({
+      label: null,
+      physical: "Fiziksel sayfa 1",
+      showsLabel: false,
+    });
+    expect(pageLabelInfo({ pageIndex: 0, pageLabel: "   " }).label).toBeNull();
+  });
+
+  it("etiket fiziksel numarayla aynıysa yinelemez", () => {
+    expect(pageLabelInfo({ pageIndex: 2, pageLabel: "3" }).showsLabel).toBe(false);
+    expect(pageLabelInfo({ pageIndex: 2, pageLabel: "A-3" }).showsLabel).toBe(true);
   });
 });

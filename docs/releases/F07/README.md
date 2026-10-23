@@ -11,7 +11,7 @@
 | F07-T03 | ✅ | belge türü, tarih rolü, etiket ve OCR durumu filtreleri |
 | F07-T04 | ✅ | sonuç alıntısı `raw_text`ten; vurgu metin düğümüyle (XSS yüzeyi yok) |
 | F07-T05 | ✅ | keyset sayfalama, 200 sonuç sınırı, kapsam görünürlüğü |
-| F07-T06 | ⏳ | PDF okuyucuda döndürme gösterilir; yakınlaştırma ve sayfa etiketi ayrımı açık |
+| F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
 | F07-T07 | ⏳ | DOCX/UDF yapısal görünüm açık |
 
 ## F07-T02 — arama kipleri
@@ -93,7 +93,57 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   temiz; iki manifestte rustfmt temiz.
 - CI: `cf00acd` → `ci.yml` **40028597232**, **7/7 yeşil** (SBOM dahil).
 
+## F07-T06 — okuyucuda yakınlaştırma, döndürme ve sayfa etiketi
+
+- **Yakınlaştırma**: kademeli (%75, %100, %125, %150, %200) — `ZOOM_STEPS`,
+  `clampZoom`, `nextZoom`. `−`/`+` düğmeleri uçlarda pasif, `%100` sıfırlar;
+  metin puntosu ölçeklenir, seçim/offset hesabı değişmez (DOM ölçümü değil,
+  metin düğümü kullanılır).
+- **Döndürme**: belgenin kendi döndürmesi (`pages.rotation`) + panelin görünüm
+  döndürmesi `rotateView` ile toplanır; 90° adımlarla sola/sağa ve sıfırlama
+  var. Kayıtlı veri değişmez; konum haritası ve vurgu kutuları aynı toplamla
+  döner (`mapRectForDisplay`). Belge değişince görünüm ayarı sıfırlanır.
+- **Sayfa etiketi**: PDF `/PageLabels` ağacı **gerçekten tanımlıysa** PyMuPDF
+  `page.get_label()` ile okunur (`iv`, `Ek-1`); ağaç yoksa `None`. PyMuPDF
+  ağaç yokken fiziksel numarayı döndürdüğü için önce `doc.get_page_labels()`
+  varlığına bakılır — böylece etiket uydurulmaz. Etiket kırpılır, boş etiket
+  `NULL` olur, 60 karakterle sınırlanır.
+- **Protokol/depolama**: worker `pageLabel` alanını yalnız tanımlıysa taşır;
+  `ExtractedPage.page_label` `Option` + `#[serde(default)]` (eski worker
+  yanıtı uyumlu). `pages.page_label` şema v1'de vardı; artık yazılıyor ve
+  `PageRow.pageLabel` olarak okunuyor.
+- **Arayüz**: "Fiziksel sayfa N" her zaman gösterilir; "basılı etiket “iv”"
+  rozeti yalnız etiket tanımlıysa ve fiziksel numarayla aynı değilse çıkar.
+  Sayfa düğmelerinin erişilebilir adı fiziksel sayfa + etikettir.
+
+## Doğrulama (F07-T06)
+
+- `cargo test --workspace --all-targets` → storage **132** (1 yeni: etiket
+  aynen saklanır, boş/olmayan etiket `NULL` kalır), ingest 12 + E2E 1, vault 15,
+  domain 13, jobs 5, evidence 7, policy 7, providers 5, cli-adapters 7.
+- Rust: `cargo clippy --workspace --all-targets -- -D warnings` ve Tauri clippy
+  temiz; rustfmt iki manifestte temiz.
+- Web: `tsc` + `vitest` **82** (4 yeni: zoom kademe/kırpma, döndürme toplamı,
+  etiket ayrımı ve yinelememe) + `vite build` yeşil.
+- Python: worker **69 test** (2 yeni motor testi `/PageLabels` var/yok, 1 yeni
+  çerçeve testi `pageLabel` yalnız tanımlıysa).
+- Gerçek worker IPC (elle): `/PageLabels` `Ek-1…Ek-3` tanımlı PDF →
+  `pageLabel` alanları `["Ek-1", "Ek-2", "Ek-3"]`; etiketsiz PDF'te alan yok.
+
 ## Bilinen sınırlar
+
+- Tauri penceresi bu ortamda açılmadı: yakınlaştırma/döndürme düğmeleri ve
+  etiket rozeti typecheck + birim testleri + üretim derlemesiyle doğrulandı —
+  gerçek tıklama ve görsel QA yok.
+- Yakınlaştırma metin puntosunu ölçekler; konum haritası sabit boyutlu küçük
+  önizleme olarak kalır (kutular haritada ayrıca büyümez).
+- Basılı etiket yalnız PDF `/PageLabels` ağacından gelir; DOCX/UDF/görüntüde
+  kaynak yok, arayüz fiziksel sayfa der. Ağaç tanımlı ama `get_label()` boş
+  dönerse etiket gösterilmez.
+- Döndürme yalnız gösterimdir; kayıtlı `pages.rotation` ve metin offsetleri
+  değişmez, yeniden ayrıştırma gerekmez.
+
+## Bilinen sınırlar (önceki işler)
 
 - Tam arama **bitişik** metin ister (`kira, bedeli` ≠ `kira bedeli`); noktalama
   toleransı için İfade kipi kullanılmalı.

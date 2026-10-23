@@ -113,6 +113,7 @@ fn manual_review_runs_end_to_end_with_ai_off() {
                 warnings: Vec::new(),
                 rotation: 0,
                 coordinate_space: Some("pdf_points".into()),
+                page_label: Some("1".into()),
                 blocks: vec![SegmentBlock {
                     start: 0,
                     end: i64::try_from(PAGE_TEXT.chars().count()).expect("uzunluk"),

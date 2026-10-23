@@ -780,6 +780,7 @@ pub fn document_parse(
             warnings: p.warnings.clone(),
             rotation: i64::from(p.rotation % 360),
             coordinate_space: p.coordinate_space.clone(),
+            page_label: p.page_label.clone(),
             blocks: p
                 .blocks
                 .iter()

@@ -34,6 +34,8 @@ COORDINATE_SPACE_STRUCTURE = "structure"
 # sınırsız kutu yanıtı büyütüp ayrıştırmayı düşürür.
 MAX_BLOCKS_PER_PAGE = 300
 MAX_LINES_PER_BLOCK = 60
+# Basılı etiket kısa olur (iv, A-12, Ek-3); aşırı uzun değer kırpılır.
+MAX_PAGE_LABEL_CHARS = 60
 
 
 class EngineError(Exception):
@@ -76,6 +78,9 @@ class Page:
     rotation: int = 0
     coordinate_space: str = COORDINATE_SPACE_STRUCTURE
     blocks: list[TextBlock] = field(default_factory=list)
+    # PDF `/PageLabels` ağacından gelen basılı sayfa etiketi. Ağaç tanımlı
+    # değilse `None`: fiziksel numaradan etiket **türetilmez** (uydurulmaz).
+    label: str | None = None
 
 
 @dataclass
@@ -278,6 +283,27 @@ def _pdf_page_text_and_blocks(page) -> tuple[str, list[TextBlock]]:
     return "".join(parts), blocks
 
 
+def _page_label(page: Any, *, defined: bool) -> str | None:
+    """PDF `/PageLabels` ağacı tanımlıysa sayfanın basılı etiketini verir.
+
+    Ağaç yoksa `None` döner: PyMuPDF `get_label()` bu durumda fiziksel sayfa
+    numarasını verir; onu etiket diye göstermek uydurma olur. Okunamayan,
+    boş veya metin olmayan değer de etiket sayılmaz.
+    """
+    if not defined:
+        return None
+    try:
+        raw = page.get_label()
+    except Exception:  # noqa: BLE001 - etiket okunamazsa etiket yok
+        return None
+    if not isinstance(raw, str):
+        return None
+    label = raw.strip()
+    if not label:
+        return None
+    return label[:MAX_PAGE_LABEL_CHARS]
+
+
 def extract_pdf(
     data: bytes, ocr: bool = False, ocr_lang: str = "eng", password: str | None = None
 ) -> Extraction:
@@ -299,6 +325,13 @@ def extract_pdf(
         count = doc.page_count
         if count > MAX_PAGES:
             raise EngineError("E_PDF_TOO_MANY_PAGES", f"belge {MAX_PAGES} sayfa sınırını aşıyor")
+        # `/PageLabels` yalnız belgede gerçekten tanımlıysa okunur. PyMuPDF
+        # `get_label()` ağaç yokken fiziksel numarayı döndürür; bu etiket gibi
+        # gösterilirse uydurma olur. Bu yüzden önce ağacın varlığına bakılır.
+        try:
+            page_labels = list(doc.get_page_labels() or [])
+        except Exception:  # noqa: BLE001 - etiket okunamazsa etiket yok sayılır
+            page_labels = []
         for index in range(count):
             page = doc.load_page(index)
             text, blocks = _pdf_page_text_and_blocks(page)
@@ -331,6 +364,7 @@ def extract_pdf(
                     rotation=mupdf_rotation,
                     coordinate_space=coordinate_space,
                     blocks=blocks,
+                    label=_page_label(page, defined=bool(page_labels)),
                 )
             )
     finally:

@@ -34,6 +34,27 @@ def test_pdf_text_layer_is_extracted():
     assert result.pages[0].warnings == []
 
 
+def test_pdf_page_labels_are_read_from_page_labels_tree():
+    """`/PageLabels` ağacı varsa basılı etiket okunur (iv, A-1…)."""
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    for _ in range(3):
+        doc.new_page()
+    doc.set_page_labels([{"startpage": 0, "prefix": "", "style": "r", "firstpagenum": 1}])
+    data = doc.tobytes()
+    doc.close()
+
+    result = extract_pdf(data)
+    assert [page.label for page in result.pages] == ["i", "ii", "iii"]
+
+
+def test_pdf_without_page_labels_has_no_label():
+    """Ağaç yoksa etiket `None`: fiziksel numara etiket diye uydurulmaz."""
+    data = _pdf_with_text("Etiketsiz belge")
+    result = extract_pdf(data)
+    assert result.pages[0].label is None
+
+
 def test_pdf_without_text_layer_warns_when_ocr_off():
     pymupdf = pytest.importorskip("pymupdf")
     doc = pymupdf.open()

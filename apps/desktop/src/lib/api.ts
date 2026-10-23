@@ -94,6 +94,8 @@ export type PageRow = {
   rotation: number;
   /** `unrotated_cropbox_points`, `image_pixels`, `structure` veya null. */
   coordinateSpace: string | null;
+  /** PDF `/PageLabels` basılı etiketi (`iv`, `A-12`); tanımsızsa null. */
+  pageLabel: string | null;
   /** Blok aralıkları ve kutuları; kutu yoksa boş dizi. */
   blocks: PageBlock[];
 };

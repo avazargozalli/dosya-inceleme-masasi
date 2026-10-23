@@ -67,7 +67,7 @@ def _page_payload(page: Any) -> dict[str, Any]:
         if block.lines:
             entry["lines"] = block.lines
         blocks.append(entry)
-    return {
+    payload: dict[str, Any] = {
         "index": page.index,
         "text": page.text,
         "width": page.width,
@@ -77,6 +77,12 @@ def _page_payload(page: Any) -> dict[str, Any]:
         "blocks": blocks,
         "warnings": page.warnings,
     }
+    # Etiket yalnız PDF'te gerçekten tanımlıysa taşınır; yoksa alan yazılmaz
+    # (istemci `null` ile aynı şeyi anlar, arayüz etiket uydurmaz).
+    label = getattr(page, "label", None)
+    if label:
+        payload["pageLabel"] = label
+    return payload
 
 
 def _encoded_size(payload: dict[str, Any]) -> int:

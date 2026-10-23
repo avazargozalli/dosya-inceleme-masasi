@@ -44,6 +44,19 @@ def test_small_response_stays_in_one_frame():
     assert [page["index"] for page in result["pages"]] == [0, 1]
 
 
+def test_page_label_is_carried_only_when_defined():
+    """Etiket alanı yalnız gerçekten tanımlıysa taşınır; boş sayfa etiket
+    uydurmaz (arayüz "fiziksel sayfa" demek zorunda kalır)."""
+    labeled = _extraction(page_count=1, chars_per_page=100)
+    labeled.pages[0].label = "iv"
+    plain = _extraction(page_count=1, chars_per_page=100)
+
+    labeled_page = _extract_frames("r3", labeled)[0]["result"]["pages"][0]
+    plain_page = _extract_frames("r4", plain)[0]["result"]["pages"][0]
+    assert labeled_page["pageLabel"] == "iv"
+    assert "pageLabel" not in plain_page
+
+
 def test_large_response_is_split_without_losing_pages():
     extraction = _extraction(page_count=400, chars_per_page=4000)
     frames = _extract_frames("r2", extraction)

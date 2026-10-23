@@ -44,6 +44,9 @@ pub struct PageRow {
     /// Koordinat uzayı adı (`unrotated_cropbox_points`, `image_pixels`,
     /// `structure`). Bilinmiyorsa `null`: kutu yok demektir, tahmin edilmez.
     pub coordinate_space: Option<String>,
+    /// PDF `/PageLabels` ağacından gelen basılı etiket (`iv`, `A-12`).
+    /// Tanımsızsa `null`; fiziksel numaradan etiket türetilmez.
+    pub page_label: Option<String>,
     /// Blok karakter aralıkları ve kutuları; metinle aynı çıkarımdan gelir.
     pub blocks: Vec<SegmentBlock>,
 }
@@ -119,6 +122,10 @@ pub struct NewPage {
     /// Gösterim döndürmesi (0/90/180/270); koordinatlar döndürme öncesidir.
     pub rotation: i64,
     pub coordinate_space: Option<String>,
+    /// PDF `/PageLabels` ağacından gelen basılı sayfa etiketi. Tanımsızsa
+    /// `None`: fiziksel numaradan etiket türetilmez, arayüz "fiziksel sayfa"
+    /// der.
+    pub page_label: Option<String>,
     pub blocks: Vec<SegmentBlock>,
 }
 
@@ -214,13 +221,21 @@ impl Database {
         for page in pages {
             let page_id = uuid::Uuid::now_v7().to_string();
             let flags = serde_json::to_string(&page.warnings).unwrap_or_else(|_| "[]".into());
+            // Etiket kırpılır; boş etiket `NULL` olur — fiziksel numaradan
+            // etiket türetilmez (uydurma etiket yazılmaz).
+            let page_label = page
+                .page_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
             tx.execute(
-                "INSERT INTO pages (id,parse_run_id,page_index,width,height,rotation,coordinate_space,text_origin,quality_flags)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                "INSERT INTO pages (id,parse_run_id,page_index,page_label,width,height,rotation,coordinate_space,text_origin,quality_flags)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 rusqlite::params![
                     page_id,
                     parse_run_id,
                     page.index,
+                    page_label,
                     page.width,
                     page.height,
                     page.rotation,
@@ -320,12 +335,12 @@ impl Database {
                     (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS segment_id,
                     p.page_index,
                     COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'') AS text,
-                    p.text_origin,p.quality_flags,p.width,p.height,p.rotation,p.coordinate_space,
+                    p.text_origin,p.quality_flags,p.width,p.height,p.rotation,p.coordinate_space,p.page_label,
                     (SELECT s.bbox_list FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS bbox_list
              FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index",
         )?;
         let rows = stmt.query_map([parse_run_id], |row| {
-            let raw_blocks: Option<String> = row.get(10)?;
+            let raw_blocks: Option<String> = row.get(11)?;
             Ok(PageRow {
                 id: row.get(0)?,
                 segment_id: row.get(1)?,
@@ -337,6 +352,7 @@ impl Database {
                 height: row.get(7)?,
                 rotation: row.get(8)?,
                 coordinate_space: row.get(9)?,
+                page_label: row.get(10)?,
                 blocks: parse_blocks(raw_blocks),
             })
         })?;
@@ -1407,6 +1423,52 @@ mod tests {
     }
 
     #[test]
+    fn page_labels_are_stored_verbatim_and_never_invented() {
+        let (db, case_id, version_id) = setup();
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[
+                NewPage {
+                    index: 0,
+                    text: "Kapak sayfası".into(),
+                    origin: "native".into(),
+                    page_label: Some(" iv ".into()),
+                    ..Default::default()
+                },
+                NewPage {
+                    index: 1,
+                    text: "Boş etiketli sayfa".into(),
+                    origin: "native".into(),
+                    page_label: Some("   ".into()),
+                    ..Default::default()
+                },
+                NewPage {
+                    index: 2,
+                    text: "Etiketsiz sayfa".into(),
+                    origin: "native".into(),
+                    ..Default::default()
+                },
+            ],
+        )
+        .expect("sayfalar");
+
+        let pages = db.pages_for_run(&run.id).expect("sayfalar");
+        assert_eq!(pages[0].page_label.as_deref(), Some("iv"));
+        assert!(
+            pages[1].page_label.is_none(),
+            "boşluktan oluşan etiket NULL olmalı"
+        );
+        assert!(
+            pages[2].page_label.is_none(),
+            "etiket yoksa fiziksel numaradan üretilmemeli"
+        );
+    }
+
+    #[test]
     fn search_hit_points_at_its_own_version_not_the_latest() {
         let (db, case_id, version_id) = setup();
         let first = db
@@ -1947,6 +2009,7 @@ mod tests {
                 warnings: vec![],
                 rotation: 90,
                 coordinate_space: Some("unrotated_cropbox_points".into()),
+                page_label: None,
                 blocks: vec![
                     SegmentBlock {
                         start: 0,

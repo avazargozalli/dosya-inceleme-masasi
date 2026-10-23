@@ -10,29 +10,43 @@ import {
 } from "../lib/api";
 import {
   blocksForRange,
+  clampZoom,
   displayPageSize,
   mapRectForDisplay,
+  nextZoom,
+  pageLabelInfo,
   parseWarnings,
   rangeForPage,
   resolvePageIndex,
+  rotateView,
   sliceForPage,
   type ReaderTarget,
 } from "../lib/reader";
 
 /** Sayfa haritası: ayrıştırıcının **gerçekten ürettiği** blok kutuları.
- *  Sayfanın görüntüsü değildir; kutu yoksa hiç çizilmez (konum uydurulmaz). */
-function PageMap({ page, highlight }: { page: PageRow; highlight: [number, number, number, number][] }) {
+ *  Sayfanın görüntüsü değildir; kutu yoksa hiç çizilmez (konum uydurulmaz).
+ *  `rotation` belgenin kendi döndürmesi ile görünüm döndürmesinin toplamıdır. */
+function PageMap({
+  page,
+  highlight,
+  rotation,
+}: {
+  page: PageRow;
+  highlight: [number, number, number, number][];
+  rotation: number;
+}) {
   const width = page.width ?? 0;
   const height = page.height ?? 0;
   if (width <= 0 || height <= 0) return null;
-  const display = displayPageSize(width, height, page.rotation);
+  const display = displayPageSize(width, height, rotation);
   const unit = page.coordinateSpace === "image_pixels" ? "piksel" : "punto";
+  const label = pageLabelInfo(page);
   return (
     <figure style={{ margin: 0 }}>
       <svg
         viewBox={`0 0 ${display.width} ${display.height}`}
         role="img"
-        aria-label={`sayfa ${page.pageIndex + 1} konum haritası: ${page.blocks.length} metin bloğu`}
+        aria-label={`${label.physical} konum haritası: ${page.blocks.length} metin bloğu`}
         style={{
           display: "block",
           width: "100%",
@@ -45,7 +59,7 @@ function PageMap({ page, highlight }: { page: PageRow; highlight: [number, numbe
       >
         {page.blocks.map((block, index) => {
           if (!block.bbox) return null;
-          const [x0, y0, x1, y1] = mapRectForDisplay(block.bbox, width, height, page.rotation);
+          const [x0, y0, x1, y1] = mapRectForDisplay(block.bbox, width, height, rotation);
           return (
             <rect
               key={`block-${index}`}
@@ -61,7 +75,7 @@ function PageMap({ page, highlight }: { page: PageRow; highlight: [number, numbe
           );
         })}
         {highlight.map((rect, index) => {
-          const [x0, y0, x1, y1] = mapRectForDisplay(rect, width, height, page.rotation);
+          const [x0, y0, x1, y1] = mapRectForDisplay(rect, width, height, rotation);
           return (
             <rect
               key={`hit-${index}`}
@@ -79,7 +93,7 @@ function PageMap({ page, highlight }: { page: PageRow; highlight: [number, numbe
       </svg>
       <figcaption className="hint" style={{ marginTop: 4 }}>
         konum haritası (sayfa görüntüsü değil) · {Math.round(width)}×{Math.round(height)} {unit}
-        {page.rotation ? ` · ${page.rotation}° döndürülmüş` : ""} · {page.blocks.length} blok
+        {rotation ? ` · ${rotation}° döndürülmüş` : ""} · {page.blocks.length} blok
       </figcaption>
     </figure>
   );
@@ -110,6 +124,10 @@ function ReaderPane({
   const [loading, setLoading] = useState(false);
   const [selection, setSelection] = useState<{ quote: string; start: number; end: number } | null>(null);
   const [savedQuote, setSavedQuote] = useState<string | null>(null);
+  // F07-T06: yakınlaştırma ve görünüm döndürmesi yalnız bu panelin
+  // gösterimini etkiler; `pages.rotation` ve metin offsetleri değişmez.
+  const [zoom, setZoom] = useState(1);
+  const [viewRotation, setViewRotation] = useState(0);
   const textRef = useRef<HTMLDivElement>(null);
   const markRef = useRef<HTMLElement>(null);
 
@@ -160,7 +178,18 @@ function ReaderPane({
     setSavedQuote(null);
   }, [page, versionId]);
 
+  // Belge değişince yakınlaştırma/döndürme sıfırlanır: önceki belgenin
+  // görünüm ayarı yeni belgeye sessizce taşınmaz.
+  useEffect(() => {
+    setZoom(1);
+    setViewRotation(0);
+  }, [versionId]);
+
   const current: PageRow | undefined = data?.pages[page];
+  // Toplam döndürme: belgenin kendi değeri + kullanıcının görünüm ayarı.
+  const rotation = rotateView(current?.rotation ?? 0, viewRotation);
+  const zoomPercent = Math.round(clampZoom(zoom) * 100);
+  const currentInfo = current ? pageLabelInfo(current) : null;
   const slice = current ? sliceForPage(current.text, paneTarget, current) : null;
   const highlightRange = current ? rangeForPage(current.text, paneTarget, current) : null;
   // Anchor kaydı kendi kutularını taşıyorsa onlar kullanılır; arama sonucunda
@@ -304,33 +333,127 @@ function ReaderPane({
       ) : (
         <>
           <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-            {data.pages.map((p, index) => (
-              <button
-                key={p.id}
-                className={index === page ? "btn primary" : "btn"}
-                style={{ height: 26, minWidth: 34, padding: "0 7px" }}
-                onClick={() => setPage(index)}
-                title={p.textOrigin === "none" ? "metin katmanı yok" : "metin var"}
-              >
-                {p.pageIndex + 1}
-              </button>
-            ))}
+            {data.pages.map((p, index) => {
+              const info = pageLabelInfo(p);
+              return (
+                <button
+                  key={p.id}
+                  className={index === page ? "btn primary" : "btn"}
+                  style={{ height: 26, minWidth: 34, padding: "0 7px" }}
+                  onClick={() => setPage(index)}
+                  aria-label={info.showsLabel ? `${info.physical} (${info.label})` : info.physical}
+                  title={
+                    info.showsLabel
+                      ? `${info.label} · ${p.textOrigin === "none" ? "metin katmanı yok" : "metin var"}`
+                      : p.textOrigin === "none"
+                        ? "metin katmanı yok"
+                        : "metin var"
+                  }
+                >
+                  {p.pageIndex + 1}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span className="hint" style={{ margin: 0 }}>
+              Görünüm:
+            </span>
+            <button
+              className="btn"
+              style={{ height: 26, minWidth: 26, padding: "0 6px" }}
+              aria-label={`${label}: uzaklaştır`}
+              title="Uzaklaştır"
+              disabled={nextZoom(zoom, -1) === clampZoom(zoom)}
+              onClick={() => setZoom(nextZoom(zoom, -1))}
+            >
+              −
+            </button>
+            <span
+              className="badge plain"
+              aria-live="polite"
+              style={{ minWidth: 48, justifyContent: "center" }}
+            >
+              {zoomPercent}%
+            </span>
+            <button
+              className="btn"
+              style={{ height: 26, minWidth: 26, padding: "0 6px" }}
+              aria-label={`${label}: yakınlaştır`}
+              title="Yakınlaştır"
+              disabled={nextZoom(zoom, 1) === clampZoom(zoom)}
+              onClick={() => setZoom(nextZoom(zoom, 1))}
+            >
+              +
+            </button>
+            <button
+              className="btn ghost"
+              style={{ height: 26 }}
+              disabled={zoom === 1}
+              onClick={() => setZoom(1)}
+              title="Yakınlaştırmayı %100'e döndür"
+            >
+              %100
+            </button>
+            <span
+              aria-hidden
+              style={{ width: 1, height: 18, background: "var(--line)", margin: "0 2px" }}
+            />
+            <button
+              className="btn"
+              style={{ height: 26, minWidth: 26, padding: "0 6px" }}
+              aria-label={`${label}: sola döndür`}
+              title="Sola döndür (90°)"
+              onClick={() => setViewRotation(rotateView(viewRotation, -90))}
+            >
+              ⟲
+            </button>
+            <button
+              className="btn"
+              style={{ height: 26, minWidth: 26, padding: "0 6px" }}
+              aria-label={`${label}: sağa döndür`}
+              title="Sağa döndür (90°)"
+              onClick={() => setViewRotation(rotateView(viewRotation, 90))}
+            >
+              ⟳
+            </button>
+            <button
+              className="btn ghost"
+              style={{ height: 26 }}
+              disabled={viewRotation === 0}
+              onClick={() => setViewRotation(0)}
+              title="Görünüm döndürmesini sıfırla (belgenin kendi döndürmesi kalır)"
+            >
+              Döndürmeyi sıfırla
+            </button>
           </div>
 
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 6 }}>
             <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               <span className="badge plain">
-                sayfa {current ? current.pageIndex + 1 : "?"}/{data.pages.length}
+                {currentInfo ? currentInfo.physical : "Fiziksel sayfa ?"}/{data.pages.length}
               </span>
+              {currentInfo?.showsLabel ? (
+                <span
+                  className="badge"
+                  title="PDF /PageLabels ağacından gelen basılı etiket; fiziksel sıradan ayrıdır"
+                >
+                  basılı etiket “{currentInfo.label}”
+                </span>
+              ) : null}
               {data.parseRun.status === "succeeded" ? null : (
                 <span className="badge warn">kısmi ayrıştırma · {data.parseRun.status}</span>
               )}
               {current && current.textOrigin !== "native" ? (
                 <span className="badge warn">metin yok / OCR</span>
               ) : null}
-              {current && current.rotation ? (
-                <span className="badge plain" title="koordinatlar döndürme öncesi uzaydadır">
-                  sayfa {current.rotation}° döndürülmüş
+              {current && rotation ? (
+                <span
+                  className="badge plain"
+                  title={`belge ${current.rotation}° + görünüm ${viewRotation}°; koordinatlar döndürme öncesi uzaydadır`}
+                >
+                  görünüm {rotation}° döndürülmüş
                 </span>
               ) : null}
             </span>
@@ -346,7 +469,7 @@ function ReaderPane({
           </div>
 
           {current && current.coordinateSpace && current.coordinateSpace !== "structure" && current.blocks.length > 0 ? (
-            <PageMap page={current} highlight={highlightQuads} />
+            <PageMap page={current} highlight={highlightQuads} rotation={rotation} />
           ) : null}
 
           <div
@@ -354,6 +477,7 @@ function ReaderPane({
             onMouseUp={readSelection}
             onKeyUp={readSelection}
             tabIndex={0}
+            aria-label={currentInfo ? `${currentInfo.physical} metni` : "sayfa metni"}
             style={{
               background: "var(--surface)",
               border: "1px solid var(--line)",
@@ -361,7 +485,7 @@ function ReaderPane({
               padding: "var(--space-3)",
               whiteSpace: "pre-wrap",
               fontFamily: "var(--mono)",
-              fontSize: 12.5,
+              fontSize: `${(12.5 * clampZoom(zoom)).toFixed(2)}px`,
               lineHeight: 1.7,
               height: 340,
               overflow: "auto",
@@ -484,8 +608,10 @@ export function DualReader({
         />
       </div>
       <p className="hint" style={{ margin: 0 }}>
-        Sayfa numarası fiziksel sayfa sırasıdır; belgenin basılı numarası farklı olabilir.
-        Alıntı segment metninde birebir bulunamazsa kaydedilmez.
+        Sayfa düğmeleri <strong>fiziksel sırayı</strong> gösterir. PDF&apos;te{" "}
+        <code>/PageLabels</code> tanımlıysa basılı etiket ayrıca yazılır; tanımlı değilse etiket
+        uydurulmaz. Yakınlaştırma ve döndürme yalnız görünümü etkiler; kayıtlı sayfa verisi ve
+        alıntı offsetleri değişmez. Alıntı segment metninde birebir bulunamazsa kaydedilmez.
       </p>
     </div>
   );

@@ -453,6 +453,7 @@ mod tests {
                 warnings: vec![],
                 rotation: 90,
                 coordinate_space: Some("unrotated_cropbox_points".into()),
+                page_label: None,
                 blocks: vec![
                     crate::SegmentBlock {
                         start: 0,

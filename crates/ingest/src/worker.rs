@@ -104,6 +104,10 @@ pub struct ExtractedPage {
     /// `unrotated_cropbox_points`, `image_pixels` veya `structure`.
     #[serde(default)]
     pub coordinate_space: Option<String>,
+    /// PDF `/PageLabels` ağacından gelen basılı sayfa etiketi (`iv`, `A-12`).
+    /// Ağaç tanımlı değilse `None`: fiziksel numaradan etiket türetilmez.
+    #[serde(default)]
+    pub page_label: Option<String>,
     #[serde(default)]
     pub blocks: Vec<ExtractedBlock>,
     #[serde(default)]
@@ -604,6 +608,7 @@ mod tests {
                 "height": 400.0,
                 "rotation": 90,
                 "coordinateSpace": "unrotated_cropbox_points",
+                "pageLabel": "iv",
                 "blocks": [{
                     "start": 0,
                     "end": 2,
@@ -625,6 +630,7 @@ mod tests {
             Some([1.0, 2.0, 3.0, 4.0])
         );
         assert_eq!(extraction.pages[0].blocks[0].lines.len(), 1);
+        assert_eq!(extraction.pages[0].page_label.as_deref(), Some("iv"));
 
         // Geometri alanlarını göndermeyen eski worker yanıtı da okunur; kutular
         // boş kalır, konum uydurulmaz.
@@ -637,6 +643,7 @@ mod tests {
         let old: Extraction = serde_json::from_value(legacy).expect("eski şema");
         assert_eq!(old.pages[0].rotation, 0);
         assert!(old.pages[0].coordinate_space.is_none());
+        assert!(old.pages[0].page_label.is_none());
         assert!(old.pages[0].blocks.is_empty());
     }
 

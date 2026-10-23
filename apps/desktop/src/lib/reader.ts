@@ -184,6 +184,53 @@ export function normalizeRotation(rotation: number): number {
   return ((rounded % 360) + 360) % 360;
 }
 
+/** Okuyucu yakınlaştırma kademeleri. Serbest oran yok: iki uç arasında
+ *  adımlarla ilerlenir, metin okunabilir kalır. */
+export const ZOOM_STEPS: readonly number[] = [0.75, 1, 1.25, 1.5, 2];
+
+/** Yakınlaştırmayı geçerli aralığa kırpar; sayı değilse %100. */
+export function clampZoom(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  const first = ZOOM_STEPS[0]!;
+  const last = ZOOM_STEPS[ZOOM_STEPS.length - 1]!;
+  return Math.min(Math.max(value, first), last);
+}
+
+/** Bir üst/alt kademeye geçer. Uçtaysa aynı değeri döndürür; arayüz düğmeyi
+ *  pasif gösterir, sessizce taşmaz. */
+export function nextZoom(zoom: number, direction: 1 | -1): number {
+  const current = clampZoom(zoom);
+  let index = 0;
+  for (let i = 0; i < ZOOM_STEPS.length; i += 1) {
+    if (Math.abs(ZOOM_STEPS[i]! - current) < Math.abs(ZOOM_STEPS[index]! - current)) index = i;
+  }
+  const target = index + direction;
+  if (target < 0 || target >= ZOOM_STEPS.length) return ZOOM_STEPS[index]!;
+  return ZOOM_STEPS[target]!;
+}
+
+/** Belgenin kendi döndürmesi ile kullanıcının görünüm döndürmesini toplar.
+ *  Kayıtlı veri değişmez; toplam yalnız gösterimi etkiler. */
+export function rotateView(pageRotation: number, viewRotation: number): number {
+  return normalizeRotation(normalizeRotation(pageRotation) + normalizeRotation(viewRotation));
+}
+
+/** Sayfa etiketini fiziksel numaradan ayırır. Etiket yalnız PDF'te gerçekten
+ *  tanımlıysa gösterilir; fiziksel numarayla aynıysa yinelenmez. */
+export function pageLabelInfo(page: {
+  pageIndex: number;
+  pageLabel?: string | null;
+}): { label: string | null; physical: string; showsLabel: boolean } {
+  const raw = (page.pageLabel ?? "").trim();
+  const physical = `Fiziksel sayfa ${page.pageIndex + 1}`;
+  const label = raw.length > 0 ? raw : null;
+  return {
+    label,
+    physical,
+    showsLabel: label !== null && label !== String(page.pageIndex + 1),
+  };
+}
+
 /** Döndürme öncesi uzaydaki kutuyu görünen (döndürülmüş) uzaya çevirir.
  *  PyMuPDF `rotation_matrix` ile aynı yön: saat yönünde. */
 export function mapRectForDisplay(
