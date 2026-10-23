@@ -89,7 +89,10 @@ pub struct NewAiContextItem {
 }
 
 impl Database {
-    pub fn create_transfer_consent(&self, new: &NewTransferConsent) -> Result<TransferConsentRow, StorageError> {
+    pub fn create_transfer_consent(
+        &self,
+        new: &NewTransferConsent,
+    ) -> Result<TransferConsentRow, StorageError> {
         if new.provider_snapshot.trim().is_empty()
             || new.case_scope.trim().is_empty()
             || new.purpose.trim().is_empty()
@@ -127,10 +130,14 @@ impl Database {
             "local-user",
             &serde_json::json!({"provider": new.provider_snapshot, "documents": new.selected_document_ids.len()}),
         )?;
-        self.get_transfer_consent(&id)?.ok_or(StorageError::NotFound)
+        self.get_transfer_consent(&id)?
+            .ok_or(StorageError::NotFound)
     }
 
-    pub fn get_transfer_consent(&self, id: &str) -> Result<Option<TransferConsentRow>, StorageError> {
+    pub fn get_transfer_consent(
+        &self,
+        id: &str,
+    ) -> Result<Option<TransferConsentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at,revoked_at
              FROM transfer_consents WHERE id=?1",
@@ -146,13 +153,21 @@ impl Database {
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("transfer_consent", Some(id), "revoke", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "transfer_consent",
+            Some(id),
+            "revoke",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         Ok(())
     }
 
     /// Onay geçerli mi? İptal edilmiş veya süresi dolmuş onay yeni çalıştırma açamaz.
     pub fn consent_is_active(&self, id: &str) -> Result<bool, StorageError> {
-        let consent = self.get_transfer_consent(id)?.ok_or(StorageError::NotFound)?;
+        let consent = self
+            .get_transfer_consent(id)?
+            .ok_or(StorageError::NotFound)?;
         if consent.revoked_at.is_some() {
             return Ok(false);
         }
@@ -168,7 +183,9 @@ impl Database {
         if !self.consent_is_active(&new.consent_id)? {
             return Err(StorageError::AiConsent);
         }
-        let consent = self.get_transfer_consent(&new.consent_id)?.ok_or(StorageError::NotFound)?;
+        let consent = self
+            .get_transfer_consent(&new.consent_id)?
+            .ok_or(StorageError::NotFound)?;
         if consent.case_scope != case_id {
             return Err(StorageError::AiConsent);
         }
@@ -197,7 +214,13 @@ impl Database {
                 now_iso()
             ],
         )?;
-        self.append_audit("ai_run", Some(&id), "start", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "ai_run",
+            Some(&id),
+            "start",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_ai_run(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -276,7 +299,12 @@ impl Database {
         Ok(out)
     }
 
-    pub fn finish_ai_run(&self, run_id: &str, status: &str, usage_report: &str) -> Result<(), StorageError> {
+    pub fn finish_ai_run(
+        &self,
+        run_id: &str,
+        status: &str,
+        usage_report: &str,
+    ) -> Result<(), StorageError> {
         if !matches!(status, "succeeded" | "failed" | "cancelled" | "partial") {
             return Err(StorageError::InvalidSetting);
         }
@@ -287,7 +315,13 @@ impl Database {
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("ai_run", Some(run_id), status, "local-system", &serde_json::json!({}))?;
+        self.append_audit(
+            "ai_run",
+            Some(run_id),
+            status,
+            "local-system",
+            &serde_json::json!({}),
+        )?;
         Ok(())
     }
 
@@ -308,7 +342,13 @@ impl Database {
              VALUES (?1,?2,?3,?4,?5,?6,'dispatched',?7)",
             rusqlite::params![id, run_id, destination_label, outbound_hash, item_count, byte_count, now_iso()],
         )?;
-        self.append_audit("transfer_receipt", Some(&id), "dispatch", "local-system", &serde_json::json!({"destination": destination_label}))?;
+        self.append_audit(
+            "transfer_receipt",
+            Some(&id),
+            "dispatch",
+            "local-system",
+            &serde_json::json!({"destination": destination_label}),
+        )?;
         Ok(id)
     }
 }
@@ -405,14 +445,25 @@ impl Database {
 
     /// Adayı inceleme kuyruğuna taşır. Aday doğrudan hukuki kayda dönüşmez;
     /// avukat kabul edene kadar `review_items` içinde `pending` kalır.
-    pub fn promote_candidate(&self, candidate_id: &str, case_id: &str) -> Result<String, StorageError> {
+    pub fn promote_candidate(
+        &self,
+        candidate_id: &str,
+        case_id: &str,
+    ) -> Result<String, StorageError> {
         let row = self
             .conn()
             .query_row(
                 "SELECT c.type,c.structured_payload,c.ai_run_id,r.case_id
                  FROM ai_candidates c JOIN ai_runs r ON r.id=c.ai_run_id WHERE c.id=?1",
                 [candidate_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
             )
             .optional()?;
         let (kind, payload, run_id, run_case) = row.ok_or(StorageError::NotFound)?;
@@ -426,7 +477,13 @@ impl Database {
              VALUES (?1,?2,?3,1,?4,'[]',?5,'pending',?6,?6,1)",
             rusqlite::params![id, case_id, kind, payload, run_id, now],
         )?;
-        self.append_audit("review_item", Some(&id), "promote", "local-user", &serde_json::json!({"candidateId": candidate_id}))?;
+        self.append_audit(
+            "review_item",
+            Some(&id),
+            "promote",
+            "local-user",
+            &serde_json::json!({"candidateId": candidate_id}),
+        )?;
         Ok(id)
     }
 
@@ -453,7 +510,11 @@ impl Database {
 
     /// `off` profili yoksa oluşturur; AI varsayılan olarak kapalıdır.
     pub fn ensure_off_provider(&self) -> Result<ProviderProfileRow, StorageError> {
-        if let Some(row) = self.list_provider_profiles()?.into_iter().find(|p| p.provider_type == "off") {
+        if let Some(row) = self
+            .list_provider_profiles()?
+            .into_iter()
+            .find(|p| p.provider_type == "off")
+        {
             return Ok(row);
         }
         let id = uuid::Uuid::now_v7().to_string();
@@ -580,11 +641,15 @@ mod tests {
     fn run_requires_active_consent() {
         let (db, case_id, _) = setup();
         let c = consent(&db, &case_id);
-        let started = db.start_ai_run(&case_id, &run(&case_id, &c.id)).expect("çalıştır");
+        let started = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
         assert_eq!(started.status, "running");
 
         db.revoke_transfer_consent(&c.id).expect("iptal");
-        let err = db.start_ai_run(&case_id, &run(&case_id, &c.id)).unwrap_err();
+        let err = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .unwrap_err();
         assert_eq!(err.code(), "E_AI_CONSENT");
     }
 
@@ -603,7 +668,12 @@ mod tests {
                 consent_text_version: "1".into(),
             })
             .expect("onay");
-        assert_eq!(db.start_ai_run(&case_id, &run(&case_id, &row.id)).unwrap_err().code(), "E_AI_CONSENT");
+        assert_eq!(
+            db.start_ai_run(&case_id, &run(&case_id, &row.id))
+                .unwrap_err()
+                .code(),
+            "E_AI_CONSENT"
+        );
     }
 
     #[test]
@@ -621,7 +691,12 @@ mod tests {
                 default_ai_policy: crate::AiPolicy::Off,
             })
             .expect("case");
-        assert_eq!(db.start_ai_run(&other.id, &run(&other.id, &c.id)).unwrap_err().code(), "E_AI_CONSENT");
+        assert_eq!(
+            db.start_ai_run(&other.id, &run(&other.id, &c.id))
+                .unwrap_err()
+                .code(),
+            "E_AI_CONSENT"
+        );
     }
 
     #[test]
@@ -630,19 +705,32 @@ mod tests {
         let c = consent(&db, &case_id);
         let mut r = run(&case_id, &c.id);
         r.provider_id = "yok".into();
-        assert_eq!(db.start_ai_run(&case_id, &r).unwrap_err().code(), "E_AI_PROVIDER");
+        assert_eq!(
+            db.start_ai_run(&case_id, &r).unwrap_err().code(),
+            "E_AI_PROVIDER"
+        );
     }
 
     #[test]
     fn candidate_promotes_to_pending_review_item() {
         let (db, case_id, _) = setup();
         let c = consent(&db, &case_id);
-        let r = db.start_ai_run(&case_id, &run(&case_id, &c.id)).expect("çalıştır");
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
         let candidate = db
-            .record_ai_candidate(&r.id, "event_candidate", "{\"title\":\"Ödeme\"}", "valid", "[]")
+            .record_ai_candidate(
+                &r.id,
+                "event_candidate",
+                "{\"title\":\"Ödeme\"}",
+                "valid",
+                "[]",
+            )
             .expect("aday");
         assert_eq!(db.list_ai_candidates(&r.id).expect("liste").len(), 1);
-        let review_id = db.promote_candidate(&candidate.id, &case_id).expect("terfi");
+        let review_id = db
+            .promote_candidate(&candidate.id, &case_id)
+            .expect("terfi");
         let item = db.get_review_item(&review_id).expect("get").expect("var");
         assert_eq!(item.state, "pending");
         assert_eq!(item.item_kind, "event_candidate");
@@ -660,7 +748,9 @@ mod tests {
     fn context_items_and_receipt_are_recorded() {
         let (db, case_id, _) = setup();
         let c = consent(&db, &case_id);
-        let r = db.start_ai_run(&case_id, &run(&case_id, &c.id)).expect("çalıştır");
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
         let items = vec![NewAiContextItem {
             document_version_id: "v1".into(),
             source_anchor_id: None,
@@ -669,8 +759,10 @@ mod tests {
         }];
         assert_eq!(db.record_context_items(&r.id, &items).expect("bağlam"), 1);
         assert_eq!(db.list_context_items(&r.id).expect("liste").len(), 1);
-        db.record_transfer_receipt(&r.id, "claude-code", &"a".repeat(64), 1, 42).expect("makbuz");
-        db.finish_ai_run(&r.id, "succeeded", "{\"billing\":\"unknown\"}").expect("bitir");
+        db.record_transfer_receipt(&r.id, "claude-code", &"a".repeat(64), 1, 42)
+            .expect("makbuz");
+        db.finish_ai_run(&r.id, "succeeded", "{\"billing\":\"unknown\"}")
+            .expect("bitir");
         let finished = db.get_ai_run(&r.id).expect("get").expect("var");
         assert_eq!(finished.status, "succeeded");
     }

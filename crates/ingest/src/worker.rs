@@ -316,7 +316,10 @@ impl WorkerClient {
     }
 
     /// PDF rapor üretir (HTML kaçışlanmış, Story ile sayfalanmış).
-    pub fn render_report_pdf(&mut self, payload: &serde_json::Value) -> Result<Vec<u8>, WorkerError> {
+    pub fn render_report_pdf(
+        &mut self,
+        payload: &serde_json::Value,
+    ) -> Result<Vec<u8>, WorkerError> {
         let result = self.request("render_report_pdf", json!({"payload": payload}))?;
         let encoded = result
             .get("pdfBase64")

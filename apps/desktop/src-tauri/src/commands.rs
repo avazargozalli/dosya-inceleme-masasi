@@ -4,12 +4,13 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow, CoverageReport,
-    Database, DatabaseKey, Document, DocumentVersion, EventRow, EvidenceLinkRow, ExportRow,
-    NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent, NewEvidenceLink, NewNote, NewPage,
-    NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent,
-    NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ProviderProfileRow, RedactionPlanRow,
-    RedactionRegionInput, ReviewDecisionRow, ReviewItemRow, SearchHit, TaskRow, TransferConsentRow,
+    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow,
+    CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow, EvidenceLinkRow,
+    ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent, NewEvidenceLink, NewNote,
+    NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,
+    NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
+    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow,
+    SearchHit, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -1288,7 +1289,9 @@ pub fn export_pdf(
 ) -> Result<ExportView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let case = db.get_case(&case_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let case = db
+        .get_case(&case_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
     let events = db.list_events(&case_id)?;
     let claims = db.list_claims(&case_id)?;
     let documents = db.list_documents(&case_id)?;
@@ -1319,7 +1322,12 @@ pub fn export_pdf(
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
     let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &sha)?;
-    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+    })
 }
 
 #[derive(Serialize)]
@@ -1354,11 +1362,15 @@ pub fn export_package(
         .collect::<String>();
     let dir = PathBuf::from(dest_dir.trim()).join(format!("DimDevir-{stamp}"));
     if dir.exists() {
-        return Err(ApiError::new("E_PACKAGE_EXISTS", "Aynı adlı paket klasörü var."));
+        return Err(ApiError::new(
+            "E_PACKAGE_EXISTS",
+            "Aynı adlı paket klasörü var.",
+        ));
     }
     std::fs::create_dir_all(&dir)?;
 
-    let case_bytes = serde_json::to_vec_pretty(&payload).map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    let case_bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
     std::fs::write(dir.join("case.json"), &case_bytes)?;
     let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json) ve manifest'i taşır.\nBelge baytları kasa dışına otomatik çıkarılmaz; paylaşılacak belgeler için\nMaskeleme ekranından maskeli kopya üretip bu klasöre ekleyin.\n\nPaket açık metindir; şifreli taşıma F16 kapsamındadır.\n";
     std::fs::write(dir.join("README.txt"), readme)?;
@@ -1373,11 +1385,17 @@ pub fn export_package(
         "createdAt": dim_storage::now_iso(),
         "files": files.iter().map(|(name, hash)| serde_json::json!({"name": name, "sha256": hash})).collect::<Vec<_>>(),
     });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|_| ApiError::new("E_EXPORT", "Manifest üretilemedi."))?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| ApiError::new("E_EXPORT", "Manifest üretilemedi."))?;
     std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
     let sha = hex::encode(Sha256::digest(&manifest_bytes));
     let record = db.record_export(&case_id, "package", &[], "user_selected_path", &sha)?;
-    Ok(PackageView { path: dir.to_string_lossy().to_string(), files: 3, sha256: sha, record })
+    Ok(PackageView {
+        path: dir.to_string_lossy().to_string(),
+        files: 3,
+        sha256: sha,
+        record,
+    })
 }
 
 #[derive(Serialize)]
