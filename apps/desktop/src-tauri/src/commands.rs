@@ -4,13 +4,13 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    EventSourceRow,    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow,
-    CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow, EvidenceLinkRow,
-    ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent, NewEvidenceLink, NewNote,
-    NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,
-    NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
-    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow,
-    SearchHit, TaskRow, TransferConsentRow,
+    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow,
+    CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow, EventSourceRow,
+    EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent,
+    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
+    NewReviewItem, NewTask, NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow,
+    PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow,
+    ReviewItemRow, SearchHit, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
