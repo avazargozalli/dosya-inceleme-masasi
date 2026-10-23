@@ -129,8 +129,14 @@ impl Database {
         if new.court.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
-        let complete = new.docket_no.as_deref().is_some_and(|v| !v.trim().is_empty())
-            && new.decision_no.as_deref().is_some_and(|v| !v.trim().is_empty());
+        let complete = new
+            .docket_no
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
+            && new
+                .decision_no
+                .as_deref()
+                .is_some_and(|v| !v.trim().is_empty());
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         self.conn().execute(
@@ -152,7 +158,13 @@ impl Database {
                 now
             ],
         )?;
-        self.append_audit("precedent", Some(&id), "create", "local-user", &serde_json::json!({"court": new.court}))?;
+        self.append_audit(
+            "precedent",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"court": new.court}),
+        )?;
         self.get_precedent(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -220,22 +232,26 @@ impl Database {
             "SELECT id,precedent_id,case_id_optional,useful_passage_anchor,similarity_note,distinguishing_note,user_conclusion,created_at
              FROM precedent_notes WHERE id=?1",
         )?;
-        Ok(stmt.query_row([id], |row| {
-            Ok(PrecedentNoteRow {
-                id: row.get(0)?,
-                precedent_id: row.get(1)?,
-                case_id_optional: row.get(2)?,
-                useful_passage_anchor: row.get(3)?,
-                similarity_note: row.get(4)?,
-                distinguishing_note: row.get(5)?,
-                user_conclusion: row.get(6)?,
-                created_at: row.get(7)?,
+        Ok(stmt
+            .query_row([id], |row| {
+                Ok(PrecedentNoteRow {
+                    id: row.get(0)?,
+                    precedent_id: row.get(1)?,
+                    case_id_optional: row.get(2)?,
+                    useful_passage_anchor: row.get(3)?,
+                    similarity_note: row.get(4)?,
+                    distinguishing_note: row.get(5)?,
+                    user_conclusion: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
             })
-        })
-        .optional()?)
+            .optional()?)
     }
 
-    pub fn list_precedent_notes(&self, precedent_id: &str) -> Result<Vec<PrecedentNoteRow>, StorageError> {
+    pub fn list_precedent_notes(
+        &self,
+        precedent_id: &str,
+    ) -> Result<Vec<PrecedentNoteRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,precedent_id,case_id_optional,useful_passage_anchor,similarity_note,distinguishing_note,user_conclusion,created_at
              FROM precedent_notes WHERE precedent_id=?1 ORDER BY created_at DESC",
@@ -261,7 +277,10 @@ impl Database {
 
     /// Atıf kontrolü kaydı. `identity_match`/`quote_match` ayrı boyutlardır;
     /// hiçbiri tek başına “sahte” hükmü üretmez.
-    pub fn record_citation_check(&self, new: &NewCitationCheck) -> Result<CitationCheckRow, StorageError> {
+    pub fn record_citation_check(
+        &self,
+        new: &NewCitationCheck,
+    ) -> Result<CitationCheckRow, StorageError> {
         if new.extracted_citation.trim().is_empty()
             || !valid_identity(&new.identity_match)
             || !valid_quote(&new.quote_match)
@@ -307,7 +326,10 @@ impl Database {
         Ok(stmt.query_row([id], map_check).optional()?)
     }
 
-    pub fn list_citation_checks(&self, version_id: &str) -> Result<Vec<CitationCheckRow>, StorageError> {
+    pub fn list_citation_checks(
+        &self,
+        version_id: &str,
+    ) -> Result<Vec<CitationCheckRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,reason_codes,created_at
              FROM citation_checks WHERE input_document_version_id=?1 ORDER BY created_at DESC",
@@ -383,11 +405,15 @@ mod tests {
     #[test]
     fn completeness_depends_on_docket_and_decision() {
         let db = db();
-        let complete = db.create_precedent(&precedent("Yargıtay", Some("2024/123"), Some("2025/456"))).expect("emsal");
+        let complete = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/123"), Some("2025/456")))
+            .expect("emsal");
         assert_eq!(complete.completeness, "complete");
         assert_eq!(complete.user_tags.len(), 2);
 
-        let incomplete = db.create_precedent(&precedent("Yargıtay", Some("2024/123"), None)).expect("emsal");
+        let incomplete = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/123"), None))
+            .expect("emsal");
         assert_eq!(incomplete.completeness, "incomplete");
     }
 
@@ -400,7 +426,9 @@ mod tests {
     #[test]
     fn case_specific_note_requires_existing_case() {
         let db = db();
-        let p = db.create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2"))).expect("emsal");
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
         let note = db
             .create_precedent_note(
                 &p.id,
@@ -432,7 +460,9 @@ mod tests {
     #[test]
     fn citation_check_keeps_dimensions_separate() {
         let db = db();
-        let p = db.create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2"))).expect("emsal");
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
         let check = db
             .record_citation_check(&NewCitationCheck {
                 input_document_version_id: "version-1".into(),
@@ -447,7 +477,10 @@ mod tests {
         assert_eq!(check.identity_match, "unknown");
         assert_eq!(check.quote_match, "not_checked");
         assert_ne!(check.identity_match, "mismatch");
-        assert_eq!(db.list_citation_checks("version-1").expect("liste").len(), 1);
+        assert_eq!(
+            db.list_citation_checks("version-1").expect("liste").len(),
+            1
+        );
     }
 
     #[test]
@@ -482,7 +515,9 @@ mod tests {
                 default_ai_policy: crate::AiPolicy::Off,
             })
             .expect("case");
-        let p = db.create_precedent(&precedent("Yargıtay", Some("2024/9"), Some("2025/9"))).expect("emsal");
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/9"), Some("2025/9")))
+            .expect("emsal");
         let note = db
             .create_precedent_note(
                 &p.id,

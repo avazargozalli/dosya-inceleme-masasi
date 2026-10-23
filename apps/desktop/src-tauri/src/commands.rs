@@ -879,7 +879,10 @@ pub fn provider_probe() -> Vec<AdapterView> {
 }
 
 #[tauri::command]
-pub fn precedent_create(state: State<'_, AppState>, input: NewPrecedent) -> Result<PrecedentRow, ApiError> {
+pub fn precedent_create(
+    state: State<'_, AppState>,
+    input: NewPrecedent,
+) -> Result<PrecedentRow, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.create_precedent(&input)?)
