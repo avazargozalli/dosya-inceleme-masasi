@@ -437,7 +437,7 @@ mod tests {
     fn fresh_database_migrates_to_current() {
         let db = Database::open_in_memory(&key()).expect("açılır");
         assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
-        assert_eq!(MIGRATIONS.len(), 2);
+        assert_eq!(MIGRATIONS.len(), usize::try_from(CURRENT_SCHEMA_VERSION).unwrap_or(0));
     }
 
     #[test]
