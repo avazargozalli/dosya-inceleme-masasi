@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
+use dim_preview::{PreviewKey, PreviewStore};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CaseChecklistItemRow, CasePatch,
     CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow,
@@ -171,6 +173,9 @@ pub fn vault_lock(state: State<'_, AppState>) -> Result<(), ApiError> {
     let mut guard = state.lock();
     guard.unlocked = None;
     guard.db = None;
+    // K0: kilitte çözülmüş önizlemeler bellekten düşer. Diskteki kayıtlar
+    // kasa anahtarıyla şifreli kalır, düz metin bırakılmaz.
+    state.preview_lock().clear();
     Ok(())
 }
 
@@ -418,6 +423,106 @@ pub fn document_pages(
         parse_run: run,
         pages,
     }))
+}
+
+/// Önizleme PNG üst sınırı: diskte ve bellekte tek kayıt için.
+const PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagePreviewView {
+    pub version_id: String,
+    pub page_index: u32,
+    pub dpi: u32,
+    pub png_base64: String,
+    pub byte_size: usize,
+    /// `true` ise görüntü kasadaki şifreli önbellekten geldi.
+    pub cached: bool,
+}
+
+/// Sayfa görüntüsü önizlemesi (F07-T11): fiziksel sayfa, PDF.
+///
+/// Sıra: bellek önbelleği → kasadaki şifreli önbellek → worker'da yeniden
+/// üretim. Üretilen görüntü kasa anahtarıyla şifrelenip diske yazılır; düz PNG
+/// kasa dışında bırakılmaz. Kasa kilitliyse komut çalışmaz.
+#[tauri::command]
+pub fn document_page_preview(
+    state: State<'_, AppState>,
+    version_id: String,
+    page_index: u32,
+    dpi: Option<u32>,
+) -> Result<PagePreviewView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let dpi = dpi.unwrap_or(96).clamp(48, 200);
+    let key = PreviewKey::new(version_id.clone(), page_index, dpi);
+    let store = PreviewStore::new(
+        vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("preview-cache"),
+    );
+
+    let view = |bytes: &[u8], cached: bool| PagePreviewView {
+        version_id: version_id.clone(),
+        page_index,
+        dpi,
+        png_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        byte_size: bytes.len(),
+        cached,
+    };
+
+    let mut memory = state.preview_lock();
+    if let Some(bytes) = memory.get(&key) {
+        return Ok(view(&bytes, true));
+    }
+    match store.load(vault, &key) {
+        Ok(Some(bytes)) => {
+            memory.put(&key, bytes.clone());
+            return Ok(view(&bytes, true));
+        }
+        Ok(None) => {}
+        // Bozuk/anahtarı uyuşmayan kayıt sessizce "yok" sayılmaz: atılır ve
+        // görüntü yeniden üretilir; önbellek doğruluk kaynağı değildir.
+        Err(_) => {
+            let _ = store.purge_version(&version_id);
+        }
+    }
+    drop(memory);
+
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    if blob.mime != "application/pdf" {
+        return Err(ApiError::new(
+            "E_PREVIEW_UNSUPPORTED",
+            "Sayfa görüntüsü yalnız PDF için üretilir; DOCX/UDF yapısal görünüm kullanır.",
+        ));
+    }
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let mut worker = spawn_worker()?;
+    let rendered = worker.render_page(&data, page_index, dpi);
+    worker.shutdown();
+    let rendered = rendered?;
+    if rendered.png.len() > PREVIEW_MAX_BYTES {
+        return Err(ApiError::new(
+            "E_PREVIEW_TOO_LARGE",
+            "Önizleme 8 MiB sınırını aşıyor; daha düşük çözünürlük deneyin.",
+        ));
+    }
+    // Önbellek yazımı başarısız olsa bile görüntü döner; kalıcı kayıt zorunlu
+    // değildir, ama başarı iddiası yalnız gerçekten yazıldıysa "cached" olur.
+    let _ = store.store(vault, &key, &rendered.png);
+    state.preview_lock().put(&key, rendered.png.clone());
+    Ok(view(&rendered.png, false))
 }
 
 #[tauri::command]

@@ -17,6 +17,8 @@ import {
   nextZoom,
   pageLabelInfo,
   parseWarnings,
+  previewCaption,
+  previewDataUrl,
   rangeForPage,
   resolvePageIndex,
   rotateView,
@@ -130,6 +132,16 @@ function ReaderPane({
   // gösterimini etkiler; `pages.rotation` ve metin offsetleri değişmez.
   const [zoom, setZoom] = useState(1);
   const [viewRotation, setViewRotation] = useState(0);
+  // F07-T11: sayfa görüntüsü kasadaki şifreli önbellekten gelir; kasa
+  // kilitlenince çekirdek belleği temizler ve bu panel görüntüyü bırakır.
+  const [previewOn, setPreviewOn] = useState(false);
+  const [preview, setPreview] = useState<{
+    pageIndex: number;
+    dataUrl: string;
+    meta: { cached: boolean; byteSize: number; dpi: number };
+  } | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<ApiError | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const markRef = useRef<HTMLElement>(null);
   const entryRefs = useRef<Record<number, HTMLElement | null>>({});
@@ -180,6 +192,36 @@ function ReaderPane({
     setSelection(null);
     setSavedQuote(null);
   }, [page, versionId]);
+
+  // Görüntü isteği yalnız kullanıcı açtığında ve gerçek sayfa için yapılır.
+  useEffect(() => {
+    setPreview(null);
+    setPreviewError(null);
+    if (!previewOn || !versionId) {
+      setPreviewBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setPreviewBusy(true);
+    void (async () => {
+      try {
+        const result = await api.documentPagePreview(versionId, page, 96);
+        if (cancelled) return;
+        setPreview({
+          pageIndex: page,
+          dataUrl: previewDataUrl(result.pngBase64),
+          meta: { cached: result.cached, byteSize: result.byteSize, dpi: result.dpi },
+        });
+      } catch (e) {
+        if (!cancelled) setPreviewError(toApiError(e));
+      } finally {
+        if (!cancelled) setPreviewBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [previewOn, versionId, page]);
 
   // Belge değişince yakınlaştırma/döndürme sıfırlanır: önceki belgenin
   // görünüm ayarı yeni belgeye sessizce taşınmaz.
@@ -375,6 +417,40 @@ function ReaderPane({
             })}
           </div>
 
+          {previewOn ? (
+            <figure style={{ margin: 0 }}>
+              {previewError ? (
+                <div className="notice danger" role="alert">
+                  <strong>{previewError.code}</strong> — {previewError.message}
+                </div>
+              ) : null}
+              {previewBusy && !preview ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  Sayfa görüntüsü hazırlanıyor…
+                </p>
+              ) : null}
+              {preview && preview.pageIndex === page ? (
+                <>
+                  <img
+                    src={preview.dataUrl}
+                    alt={`${label}: fiziksel sayfa ${page + 1} görüntüsü`}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      maxWidth: 640,
+                      border: "1px solid var(--line)",
+                      borderRadius: "var(--radius)",
+                      background: "var(--surface)",
+                    }}
+                  />
+                  <figcaption className="hint" style={{ marginTop: 4 }}>
+                    {previewCaption(preview.meta)}
+                  </figcaption>
+                </>
+              ) : null}
+            </figure>
+          ) : null}
+
           <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <span className="hint" style={{ margin: 0 }}>
               Görünüm:
@@ -445,6 +521,19 @@ function ReaderPane({
               title="Görünüm döndürmesini sıfırla (belgenin kendi döndürmesi kalır)"
             >
               Döndürmeyi sıfırla
+            </button>
+            <span
+              aria-hidden
+              style={{ width: 1, height: 18, background: "var(--line)", margin: "0 2px" }}
+            />
+            <button
+              className={previewOn ? "btn primary" : "btn"}
+              style={{ height: 26 }}
+              aria-pressed={previewOn}
+              title="Sayfanın gerçek görüntüsünü göster (yalnız PDF; önbellek şifreli tutulur)"
+              onClick={() => setPreviewOn((value) => !value)}
+            >
+              {previewOn ? "Görüntü açık" : "Sayfa görüntüsü"}
             </button>
           </div>
 

@@ -111,6 +111,45 @@ def decode_content(params: dict[str, Any]) -> bytes:
     return data
 
 
+# Önizleme çizimi: düşük DPI'da PNG. Sınırlar dışındaki istek kırpılmaz,
+# reddedilir; var olmayan sayfa için boş görüntü üretilmez.
+PREVIEW_MIN_DPI = 48
+PREVIEW_MAX_DPI = 200
+MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+
+
+def render_page_png(data: bytes, page_index: int, dpi: int = 96) -> tuple[bytes, int]:
+    """PDF sayfasını PNG olarak çizer; `(png, page_count)` döner.
+
+    Sayfa numarası **fiziksel sıradır** (0 tabanlı). Basılı `/PageLabels`
+    etiketi kullanılmaz: önizleme fiziksel sayfayı gösterir.
+    """
+    pymupdf = _pymupdf()
+    if isinstance(page_index, bool) or not isinstance(page_index, int):
+        raise EngineError("E_PAGE_RANGE", "pageIndex tam sayı olmalı")
+    if isinstance(dpi, bool) or not isinstance(dpi, int):
+        raise EngineError("E_PAGE_RANGE", "dpi tam sayı olmalı")
+    effective_dpi = max(PREVIEW_MIN_DPI, min(PREVIEW_MAX_DPI, dpi))
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001 - bozuk PDF
+        raise EngineError("E_PARSE", "PDF açılamadı") from exc
+    try:
+        if doc.needs_pass:
+            raise EngineError("E_PDF_PASSWORD", "parola korumalı PDF: önizleme için parola gerekir")
+        total = int(doc.page_count)
+        if page_index < 0 or page_index >= total:
+            raise EngineError("E_PAGE_RANGE", f"sayfa aralık dışında: {page_index} / {total}")
+        page = doc.load_page(page_index)
+        pix = page.get_pixmap(dpi=effective_dpi, alpha=False)
+        png = pix.tobytes("png")
+        if len(png) > MAX_PREVIEW_BYTES:
+            raise EngineError("E_PREVIEW_TOO_LARGE", "önizleme 8 MiB sınırını aşıyor")
+        return png, total
+    finally:
+        doc.close()
+
+
 def _pymupdf():
     try:
         import pymupdf  # type: ignore

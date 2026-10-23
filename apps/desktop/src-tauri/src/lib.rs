@@ -54,6 +54,7 @@ pub fn run() {
             commands::task_reminders,
             commands::task_reminders_enqueue,
             commands::document_pages,
+            commands::document_page_preview,
             commands::note_create,
             commands::note_list,
             commands::note_delete,

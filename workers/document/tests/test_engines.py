@@ -11,7 +11,14 @@ import shutil
 
 import pytest
 
-from dim_worker.engines import EngineError, capabilities, extract, extract_docx, extract_pdf
+from dim_worker.engines import (
+    EngineError,
+    capabilities,
+    extract,
+    extract_docx,
+    extract_pdf,
+    render_page_png,
+)
 
 
 def _pdf_with_text(text: str) -> bytes:
@@ -255,3 +262,45 @@ def test_capabilities_reports_tessdata_fingerprint_honestly():
         assert len(digest) == 64
         int(digest, 16)
     assert isinstance(caps["ocr"]["langs"], list)
+
+
+def test_render_page_png_returns_png_and_page_count():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Ek-1 kira sozlesmesi")
+    doc.new_page().insert_text((72, 72), "Ek-2 odeme plani")
+    data = doc.tobytes()
+    doc.close()
+
+    png, total = render_page_png(data, 0, 72)
+    assert total == 2
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(png) > 100
+
+
+def test_render_page_rejects_out_of_range_page():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "tek sayfa")
+    data = doc.tobytes()
+    doc.close()
+    with pytest.raises(EngineError) as error:
+        render_page_png(data, 1, 72)
+    assert error.value.code == "E_PAGE_RANGE"
+
+
+def test_render_page_clamps_dpi_and_keeps_physical_index():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    first = doc.new_page()
+    first.insert_text((72, 72), "birinci")
+    second = doc.new_page()
+    second.insert_text((72, 72), "ikinci")
+    data = doc.tobytes()
+    doc.close()
+
+    low, _ = render_page_png(data, 1, 1)
+    high, _ = render_page_png(data, 1, 900)
+    # DPI alt/üst sınıra kırpılır: 48 ve 200.
+    assert low.startswith(b"\x89PNG")
+    assert len(high) > len(low)

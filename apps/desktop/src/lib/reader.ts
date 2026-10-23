@@ -317,3 +317,20 @@ export function blocksForRange(
   }
   return quads;
 }
+
+/** Önizleme görüntüsü için data URL: baytlar zaten çekirdekten base64 gelir. */
+export function previewDataUrl(pngBase64: string): string {
+  return `data:image/png;base64,${pngBase64}`;
+}
+
+export type PreviewMeta = { cached: boolean; byteSize: number; dpi: number };
+
+/** Önizleme alt yazısı: kaynağı (şifreli önbellek/yeni) ve boyutu dürüstçe yazar. */
+export function previewCaption(meta: PreviewMeta): string {
+  const size =
+    meta.byteSize >= 1024 * 1024
+      ? `${(meta.byteSize / (1024 * 1024)).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(meta.byteSize / 1024))} KB`;
+  const source = meta.cached ? "şifreli önbellekten" : "yeni üretildi";
+  return `${source} · ${size} · ${meta.dpi} dpi`;
+}

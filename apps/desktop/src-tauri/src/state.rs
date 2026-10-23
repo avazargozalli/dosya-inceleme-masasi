@@ -18,9 +18,24 @@ pub struct VaultState {
 #[derive(Default)]
 pub struct AppState {
     pub vault: Mutex<VaultState>,
+    /// Çözülmüş sayfa önizlemeleri; yalnız kilit açıkken tutulur (F07-T11).
+    pub preview: Mutex<dim_preview::PreviewMemory>,
 }
 
 impl AppState {
+    /// Önizleme belleği. Kasa kilidinde `clear()` çağrılır; çözülmüş PNG
+    /// baytları bellekte kalmaz.
+    pub fn preview_lock(&self) -> std::sync::MutexGuard<'_, dim_preview::PreviewMemory> {
+        match self.preview.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.clear();
+                guard
+            }
+        }
+    }
+
     pub fn lock(&self) -> std::sync::MutexGuard<'_, VaultState> {
         match self.vault.lock() {
             Ok(guard) => guard,

@@ -88,3 +88,40 @@ def test_serve_shutdown_closes_cleanly():
 def test_write_frame_rejects_oversize():
     with pytest.raises(ProtocolError):
         write_frame(io.BytesIO(), {"x": "y" * (MAX_FRAME_BYTES + 1)})
+
+
+def _two_page_pdf() -> str:
+    import base64
+
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Ek-1")
+    doc.new_page().insert_text((72, 72), "Ek-2")
+    data = doc.tobytes()
+    doc.close()
+    return base64.b64encode(data).decode()
+
+
+def test_render_page_returns_png_over_protocol():
+    import base64
+
+    response, close = handle(
+        frame(method="render_page", params={"contentBase64": _two_page_pdf(), "pageIndex": 1, "dpi": 72})
+    )
+    assert close is False
+    assert response["ok"] is True
+    assert response["result"]["pageCount"] == 2
+    png = base64.b64decode(response["result"]["pngBase64"])
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_render_page_requires_integer_page_index():
+    with pytest.raises(ProtocolError) as exc:
+        handle(frame(method="render_page", params={"contentBase64": _two_page_pdf(), "pageIndex": "0"}))
+    assert exc.value.code == "E_PARAMS"
+
+
+def test_render_page_out_of_range_is_engine_error():
+    with pytest.raises(Exception) as exc:
+        handle(frame(method="render_page", params={"contentBase64": _two_page_pdf(), "pageIndex": 5}))
+    assert getattr(exc.value, "code", "") == "E_PAGE_RANGE"

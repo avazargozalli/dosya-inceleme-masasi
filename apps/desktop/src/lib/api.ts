@@ -383,6 +383,15 @@ export type NoteRow = {
   canRedo: boolean;
 };
 
+export type PagePreviewView = {
+  versionId: string;
+  pageIndex: number;
+  dpi: number;
+  pngBase64: string;
+  byteSize: number;
+  cached: boolean;
+};
+
 export type NoteRevisionRow = {
   noteId: string;
   revisionNo: number;
@@ -933,6 +942,8 @@ export const api = {
 
   documentPages: (versionId: string) =>
     invoke<DocumentPages | null>("document_pages", { versionId }),
+  documentPagePreview: (versionId: string, pageIndex: number, dpi = 96) =>
+    invoke<PagePreviewView>("document_page_preview", { versionId, pageIndex, dpi }),
   noteList: (caseId: string) => invoke<NoteRow[]>("note_list", { caseId }),
   noteCreate: (caseId: string, input: { title: string; body: string; sourceAnchorIds: string[] }) =>
     invoke<NoteRow>("note_create", { caseId, input }),

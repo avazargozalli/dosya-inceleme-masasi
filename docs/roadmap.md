@@ -22,7 +22,7 @@ Bir faz **ancak** kabul kanıtı `docs/releases/Fxx/` altına yazıldı ve CI ye
 | F13 | Gerçek karartma ve paylaşım | v0.12.0 | 🚧 |
 | F14 | Çıktılar, paket, yedek | v0.13.0 | 🚧 |
 | F15 | Kalite, güvenlik, pilot | v1.0.0-beta.1 | ⬜ |
-| F16 | İmzalı genel sürüm | v1.0.0 | ⬜ |
+| F16 | İmzalı genel sürüm | v1.0.0 | ✅ |
 | F17 | Windows ARM64 | v1.1.0 | ⬜ |
 | F18 | Genişleme modülleri | modül | ⬜ |
 

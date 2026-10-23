@@ -11,6 +11,8 @@ import {
   offsetSlice,
   pageLabelInfo,
   parseWarnings,
+  previewCaption,
+  previewDataUrl,
   querySlice,
   resolvePageIndex,
   rotateView,
@@ -322,5 +324,28 @@ describe("entrySlice", () => {
     const piece = entrySlice(entries[0]!, { start: 17, end: 19 });
     expect(piece.before).toBe("Kira Sözleşmesi");
     expect(piece.hit).toBe("");
+  });
+});
+
+describe("sayfa önizlemesi (F07-T11)", () => {
+  it("base64 PNG'yi data URL'e çevirir", () => {
+    expect(previewDataUrl("iVBORw0KGgo=")).toBe("data:image/png;base64,iVBORw0KGgo=");
+  });
+
+  it("önbellekten gelen görüntüyü kaynağıyla yazar", () => {
+    expect(previewCaption({ cached: true, byteSize: 2048, dpi: 96 })).toBe(
+      "şifreli önbellekten · 2 KB · 96 dpi",
+    );
+  });
+
+  it("yeni üretilen görüntüyü önbellek diye sunmaz", () => {
+    const caption = previewCaption({ cached: false, byteSize: 1536 * 1024, dpi: 200 });
+    expect(caption).toContain("yeni üretildi");
+    expect(caption).not.toContain("önbellek");
+    expect(caption).toContain("1.5 MB");
+  });
+
+  it("küçük görüntüde 1 KB'dan aşağı yazmaz", () => {
+    expect(previewCaption({ cached: true, byteSize: 20, dpi: 48 })).toContain("1 KB");
   });
 });

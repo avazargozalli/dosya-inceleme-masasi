@@ -223,6 +223,13 @@ fn merge_extraction_parts(parts: &[Value]) -> Result<Extraction, WorkerError> {
     })
 }
 
+/// Çizilmiş sayfa önizlemesi: PNG baytları + belgenin toplam sayfa sayısı.
+#[derive(Debug, Clone)]
+pub struct PagePreview {
+    pub png: Vec<u8>,
+    pub page_count: u32,
+}
+
 /// Worker süreci. `Drop` süreci kapatır; yarım kalan iş yok sayılır.
 pub struct WorkerClient {
     child: Child,
@@ -458,6 +465,36 @@ impl WorkerClient {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_string(),
+        })
+    }
+
+    /// Bir PDF sayfasını PNG önizleme olarak çizer (F07-T11). Sayfa numarası
+    /// fiziksel sıradır; dpi worker'da 48–200 aralığına kırpılır.
+    pub fn render_page(
+        &mut self,
+        data: &[u8],
+        page_index: u32,
+        dpi: u32,
+    ) -> Result<PagePreview, WorkerError> {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+        let result = self.request(
+            "render_page",
+            json!({"contentBase64": encoded, "pageIndex": page_index, "dpi": dpi}),
+        )?;
+        let png = result
+            .get("pngBase64")
+            .and_then(Value::as_str)
+            .ok_or(WorkerError::BadResponse)?;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .map_err(|_| WorkerError::BadResponse)?;
+        let page_count = result
+            .get("pageCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Ok(PagePreview {
+            png,
+            page_count: u32::try_from(page_count).unwrap_or(0),
         })
     }
 

@@ -24,12 +24,13 @@ from .engines import (
     decode_content,
     extract,
     redact_pdf,
+    render_page_png,
     render_report,
     render_report_pdf,
 )
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
 
-METHODS = {"ping", "capabilities", "extract_text", "redact", "render_report", "render_report_pdf", "shutdown"}
+METHODS = {"ping", "capabilities", "extract_text", "redact", "render_report", "render_report_pdf", "render_page", "shutdown"}
 
 # Geometri (blok/satır kutuları) çerçevenin bir parçasıdır. 1 MiB sert sınırına
 # yaklaşmamak için bütçe ayrılır; aşılırsa kutular kademeli atılır ve durum
@@ -201,6 +202,25 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
         return ok(rid, {"bye": True}), True
 
     data = decode_content(params)
+
+    if method == "render_page":
+        page_index = params.get("pageIndex")
+        dpi = params.get("dpi", 96)
+        if isinstance(page_index, bool) or not isinstance(page_index, int):
+            raise ProtocolError("E_PARAMS", "pageIndex tam sayı olmalı")
+        if isinstance(dpi, bool) or not isinstance(dpi, int):
+            raise ProtocolError("E_PARAMS", "dpi tam sayı olmalı")
+        png, total = render_page_png(data, page_index, dpi)
+        import base64 as _b64
+
+        return ok(
+            rid,
+            {
+                "pngBase64": _b64.b64encode(png).decode(),
+                "pageCount": total,
+                "bytes": len(png),
+            },
+        ), False
 
     if method == "render_report":
         payload = params.get("payload")

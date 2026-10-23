@@ -82,6 +82,12 @@ Gerçek müvekkil belgesi, kişisel veri veya meslek sırrı içeren dosya **asl
 PR veya test fixture'ı olarak eklenemez. Yalnız `fixtures/synthetic/` altındaki kurgu
 veriler kullanılır.
 
+## Dağıtım ve imza
+
+Paketler **imzasız** dağıtılır (ADR-0012). macOS Gatekeeper / Windows Defender
+uyarısı normaldir. Kaynak açık olduğu için isteyen kendi sertifikasıyla imzalar;
+güncelleme akışı varsayılan kapalıdır.
+
 ## Lisans
 
 AGPL-3.0-or-later. Ayrıntı: `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`.

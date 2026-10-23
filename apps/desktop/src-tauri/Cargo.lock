@@ -709,8 +709,10 @@ dependencies = [
 name = "dim-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dim-cli-adapters",
  "dim-ingest",
+ "dim-preview",
  "dim-storage",
  "dim-vault",
  "hex",
@@ -745,6 +747,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "dim-preview"
+version = "0.1.0"
+dependencies = [
+ "dim-vault",
+ "serde",
  "thiserror 2.0.21",
 ]
 
