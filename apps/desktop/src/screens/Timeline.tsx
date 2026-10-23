@@ -234,7 +234,10 @@ export function Timeline() {
             {event.status === "draft" ? (
               <button className="btn ghost" onClick={() => void confirm(event.id)}>Onayla</button>
             ) : null}
-            <button className="btn ghost" onClick={() => startEdit(event)}>
+            <button
+              className="btn ghost"
+              onClick={() => (editing?.id === event.id ? setEditing(null) : startEdit(event))}
+            >
               {editing?.id === event.id ? "Düzenlemeyi kapat" : "Düzenle"}
             </button>
             <button className="btn ghost" onClick={() => void openLink(event.id)}>
