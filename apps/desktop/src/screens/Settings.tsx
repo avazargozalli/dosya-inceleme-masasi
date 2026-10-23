@@ -107,6 +107,12 @@ export function Settings() {
             Yedek hazır: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{backup.path}</span>
             <br />
             {backup.fileCount} dosya · {formatBytes(backup.totalBytes)} · manifest {backup.manifestHash.slice(0, 16)}…
+            {backup.archivePath ? (
+              <>
+                <br />
+                Tek dosya: <code>{backup.archivePath}</code>
+              </>
+            ) : null}
           </div>
         ) : (
           <p className="hint" style={{ margin: 0 }}>

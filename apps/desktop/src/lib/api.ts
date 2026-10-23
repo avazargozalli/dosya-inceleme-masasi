@@ -280,6 +280,7 @@ export type BackupResult = {
   fileCount: number;
   totalBytes: number;
   manifestHash: string;
+  archivePath: string | null;
 };
 
 export type RestoreResult = { vaultPath: string; fileCount: number };

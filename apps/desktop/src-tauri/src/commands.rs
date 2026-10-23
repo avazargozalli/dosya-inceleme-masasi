@@ -585,6 +585,42 @@ pub struct BackupView {
     pub file_count: usize,
     pub total_bytes: u64,
     pub manifest_hash: String,
+    /// Tek dosyalık `.dimbak` arşivi (içerik zaten şifreli).
+    pub archive_path: Option<String>,
+}
+
+/// Klasörü tek dosyalık arşive paketler. Arşiv şifrelemez; içindeki DB ve
+/// blob'lar zaten kasa anahtarıyla şifreli olduğu için açık metin sızmaz.
+fn zip_dir(src: &Path, dest: &Path) -> Result<(), ApiError> {
+    use std::io::Write as _;
+
+    let file = std::fs::File::create(dest)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path
+                .strip_prefix(src)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            writer
+                .start_file(name, options)
+                .map_err(|e| ApiError::new("E_BACKUP_ZIP", &e.to_string()))?;
+            writer.write_all(&std::fs::read(&path)?)?;
+        }
+    }
+    writer
+        .finish()
+        .map_err(|e| ApiError::new("E_BACKUP_ZIP", &e.to_string()))?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -693,6 +729,8 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         "local-user",
         &serde_json::json!({"files": file_count}),
     );
+    let archive = root.join(format!("DimYedek-{stamp}.dimbak"));
+    zip_dir(&backup_dir, &archive)?;
     Ok(BackupView {
         path: backup_dir.to_string_lossy().to_string(),
         file_count,
@@ -700,6 +738,7 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
             + std::fs::metadata(&backup_db)?.len()
             + std::fs::metadata(backup_dir.join("vault.dimvault"))?.len(),
         manifest_hash,
+        archive_path: Some(archive.to_string_lossy().to_string()),
     })
 }
 
