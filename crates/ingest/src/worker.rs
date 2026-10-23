@@ -444,6 +444,11 @@ impl WorkerClient {
         })
     }
 
+    /// Worker yetenekleri: motor sürümleri, OCR dilleri, tessdata parmak izi.
+    pub fn capabilities(&mut self) -> Result<serde_json::Value, WorkerError> {
+        self.request("capabilities", json!({}))
+    }
+
     /// DOCX rapor üretir. Girdi çekirdekte hazırlanır; worker DB görmez.
     pub fn render_report(&mut self, payload: &serde_json::Value) -> Result<Vec<u8>, WorkerError> {
         let result = self.request("render_report", json!({"payload": payload}))?;

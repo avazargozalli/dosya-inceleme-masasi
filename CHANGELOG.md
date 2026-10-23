@@ -28,6 +28,12 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.7.0] — 2026-10-23 — F06 kalanları
+
+- DOCX dipnot/sonnot/yorum/izlenen değişiklik envanteri metne eklenir
+- Karma PDF'te yalnız metinsiz sayfa OCR edilir (kanıtlı test)
+- `settings_hash` MIME + OCR + dil + motor + tessdata parmak izi taşır
+
 ## [0.6.1] — 2026-10-23 — F05 parolalı PDF
 
 - `document_parse` isteğe bağlı parola ile parola korumalı PDF açar; parola saklanmaz

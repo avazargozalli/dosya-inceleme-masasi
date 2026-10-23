@@ -9,7 +9,9 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import os
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -358,6 +360,163 @@ def _structure_text(parts: list[str], separator: str = "\n\n") -> tuple[str, lis
     return "".join(pieces), blocks
 
 
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+MAX_DOCX_PART_BYTES = 20 * 1024 * 1024
+MAX_DOCX_ANNOTATIONS = 500
+
+
+def _docx_part(zf: Any, name: str) -> bytes | None:
+    try:
+        info = zf.getinfo(name)
+    except KeyError:
+        return None
+    if info.file_size > MAX_DOCX_PART_BYTES:
+        raise EngineError("E_DOCX_PART_TOO_LARGE", f"{name} 20 MiB sınırını aşıyor")
+    return zf.read(name)
+
+
+def _xml_root(blob: bytes, name: str) -> Any:
+    """DOCX XML parçasını ayrıştırır.
+
+    DTD reddedilir: ElementTree varlık genişletmesini sınırlamaz ("billion
+    laughs"), dış varlık yüklemez ama iç varlık patlaması belleği tüketir.
+    Word bu parçalarda DTD yazmaz; DTD gören belge açık hatayla döner.
+    """
+    import xml.etree.ElementTree as ET
+
+    if b"<!doctype" in blob[:4096].lower():
+        raise EngineError("E_DOCX_XML", f"{name} DTD bildirimi içeriyor; reddedildi")
+    try:
+        return ET.fromstring(blob)
+    except ET.ParseError as exc:
+        raise EngineError("E_DOCX_XML", f"{name} geçerli XML değil") from exc
+
+
+def _node_text(node: Any, tag: str = "t") -> str:
+    return "".join(item.text or "" for item in node.iter(f"{_W_NS}{tag}")).strip()
+
+
+def _docx_annotations(data: bytes) -> tuple[list[str], dict[str, int], list[str]]:
+    """DOCX dipnot/sonnot/yorum ve izlenen değişiklik envanteri.
+
+    python-docx bu içerikleri **gövde metnine katmaz**: izlenen ekleme/silme
+    metni ve yorum/dipnot metni ayrı XML parçalarındadır. Burada güvenli biçimde
+    (dış varlık yok, boyut sınırlı) okunur ve ayrı blok olarak metne eklenir;
+    böylece arama ve alıntı bu içeriği görür, kaybolmaz.
+
+    Dönen: (bloklar, sayımlar, uyarılar).
+    """
+    import zipfile
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise EngineError("E_DOCX_OPEN", "DOCX arşivi açılamadı") from exc
+
+    roots: dict[str, Any] = {}
+    try:
+        for name in (
+            "word/document.xml",
+            "word/footnotes.xml",
+            "word/endnotes.xml",
+            "word/comments.xml",
+        ):
+            blob = _docx_part(zf, name)
+            if blob is not None:
+                roots[name] = _xml_root(blob, name)
+    finally:
+        zf.close()
+
+    if "word/document.xml" not in roots:
+        raise EngineError("E_DOCX_XML", "DOCX gövdesi (document.xml) bulunamadı")
+
+    sections: list[str] = []
+    counts = {"footnotes": 0, "endnotes": 0, "comments": 0, "insertions": 0, "deletions": 0}
+    authors: list[str] = []
+    truncated = False
+
+    def add(section: str) -> None:
+        nonlocal truncated
+        if len(sections) >= MAX_DOCX_ANNOTATIONS:
+            truncated = True
+            return
+        sections.append(section)
+
+    def note_author(node: Any) -> str:
+        author = (node.get(f"{_W_NS}author") or "").strip()
+        if author and author not in authors:
+            authors.append(author)
+        return author
+
+    footnotes = roots.get("word/footnotes.xml")
+    if footnotes is not None:
+        for note in footnotes.iter(f"{_W_NS}footnote"):
+            # -1/0 ayırıcı kayıtlardır; içerik taşımaz.
+            if (note.get(f"{_W_NS}id") or "") in {"-1", "0"}:
+                continue
+            text = _node_text(note)
+            counts["footnotes"] += 1
+            if text:
+                add(f"[dipnot {note.get(f'{_W_NS}id')}] {text}")
+
+    endnotes = roots.get("word/endnotes.xml")
+    if endnotes is not None:
+        for note in endnotes.iter(f"{_W_NS}endnote"):
+            if (note.get(f"{_W_NS}id") or "") in {"-1", "0"}:
+                continue
+            text = _node_text(note)
+            counts["endnotes"] += 1
+            if text:
+                add(f"[sonnot {note.get(f'{_W_NS}id')}] {text}")
+
+    comments = roots.get("word/comments.xml")
+    if comments is not None:
+        for comment in comments.iter(f"{_W_NS}comment"):
+            text = _node_text(comment)
+            counts["comments"] += 1
+            if text:
+                author = note_author(comment)
+                add(f"[yorum {comment.get(f'{_W_NS}id')}{f' — {author}' if author else ''}] {text}")
+
+    body = roots["word/document.xml"]
+    for change in body.iter(f"{_W_NS}ins"):
+        text = _node_text(change)
+        counts["insertions"] += 1
+        if text:
+            author = note_author(change)
+            date = (change.get(f"{_W_NS}date") or "").strip()
+            label = ", ".join(part for part in (author, date) if part)
+            add(f"[değişiklik ekleme{f' — {label}' if label else ''}] {text}")
+    for change in body.iter(f"{_W_NS}del"):
+        text = _node_text(change, "delText")
+        counts["deletions"] += 1
+        if text:
+            author = note_author(change)
+            date = (change.get(f"{_W_NS}date") or "").strip()
+            label = ", ".join(part for part in (author, date) if part)
+            add(f"[değişiklik silme{f' — {label}' if label else ''}] {text}")
+
+    warnings: list[str] = []
+    total = sum(counts.values())
+    if total:
+        summary = (
+            f"DOCX envanteri: {counts['footnotes']} dipnot, {counts['endnotes']} sonnot, "
+            f"{counts['comments']} yorum, {counts['insertions']} ekleme, {counts['deletions']} silme"
+        )
+        if authors:
+            summary += " (yazarlar: " + ", ".join(authors[:5]) + ")"
+        warnings.append(summary)
+        warnings.append(
+            "DOCX varsayılan metin: gövde paragrafları; izlenen ekleme/silme gövdeye uygulanmadı "
+            "(Word görünümüyle birebir eşdeğer değil). Dipnot/sonnot/yorum ve değişiklik metni "
+            "ayrı bloklardadır; silinen metin güncel belge metni sayılmaz"
+        )
+    if truncated:
+        warnings.append(f"DOCX envanteri ilk {MAX_DOCX_ANNOTATIONS} öğe ile sınırlandı")
+
+    return sections, counts, warnings
+
+
 def extract_docx(data: bytes) -> Extraction:
     try:
         import docx  # type: ignore
@@ -381,9 +540,14 @@ def extract_docx(data: bytes) -> Extraction:
                 if p.text.strip():
                     blocks.append(p.text)
 
+    # Gövde dışındaki içerik (dipnot/sonnot/yorum/izlenen değişiklik) ayrı
+    # bloklar olarak eklenir; python-docx bunları gövde metnine katmaz.
+    annotations, _counts, inventory_warnings = _docx_annotations(data)
+    blocks.extend(annotations)
+
     text, geometry = _structure_text(blocks)
-    warnings = ["DOCX sayfa düzeni doğrulanmadı; kaynak paragraf bazlıdır"]
-    if not blocks:
+    warnings = ["DOCX sayfa düzeni doğrulanmadı; kaynak paragraf bazlıdır", *inventory_warnings]
+    if not text.strip():
         warnings.append("belgede metin bulunamadı")
     version = str(getattr(docx, "__version__", "unknown"))
     page = Page(
@@ -559,6 +723,62 @@ def extract(
     raise EngineError("E_MIME_UNSUPPORTED", f"desteklenmeyen MIME: {mime}")
 
 
+def _tessdata_dir() -> str | None:
+    """Tesseract 5 `--print-tessdata-dir` verir; Tesseract 4 vermez. İkinci yol
+    `--list-langs` başlığındaki dizindir. Bulunamazsa `None` döner."""
+    try:
+        out = subprocess.run(
+            ["tesseract", "--print-tessdata-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if out.returncode == 0 and (out.stdout or "").strip():
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        listed = subprocess.run(
+            ["tesseract", "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    import re
+
+    match = re.search(r"in (.+?) \(\d+\)", listed.stderr or listed.stdout or "")
+    if match:
+        # Tesseract 4 dizini tırnak içinde yazar: in "/path/tessdata/" (2)
+        return match.group(1).strip().strip('"')
+    prefix = os.environ.get("TESSDATA_PREFIX")
+    return prefix.strip() if prefix else None
+
+
+def tessdata_fingerprint() -> str | None:
+    """Kurulu `*.traineddata` dosyalarının birleşik sha256'sı. Dil paketi
+    değişince ayrıştırma ayarı da değişmiş sayılır; uydurma sürüm yazılmaz."""
+    directory = _tessdata_dir()
+    if not directory:
+        return None
+    import glob
+    import hashlib
+
+    files = sorted(glob.glob(os.path.join(directory, "*.traineddata")))
+    if not files:
+        return None
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(os.path.basename(path).encode("utf-8"))
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def capabilities() -> dict[str, Any]:
     pdf = False
     pdf_version = None
@@ -600,6 +820,7 @@ def capabilities() -> dict[str, Any]:
 
     return {
         "protocolVersion": 1,
+        "ocr": {"langs": ocr_langs, "tessdataHash": tessdata_fingerprint()},
         "engines": {
             "pdf": {"available": pdf, "version": pdf_version},
             "docx": {"available": docx_ok, "version": docx_version},

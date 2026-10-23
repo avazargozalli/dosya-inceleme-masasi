@@ -37,3 +37,23 @@
   gönderilir; istemci sırayı doğrulayıp birleştirir. **Tek bir sayfa** çerçeve
   sınırını aşıyorsa `E_FRAME_TOO_LARGE` döner: metin parçalanıp offsetleri
   bozulmaz, iş açık hatayla durur.
+
+## T02 / T05 / T06 (ek)
+
+- **T02 DOCX gizli katman envanteri**: `footnotes.xml`, `endnotes.xml`,
+  `comments.xml`, `w:ins`/`w:del` sayılır ve metne ayrı blok olarak eklenir;
+  python-docx'in gövdeye katmadığı içerik kaybolmaz. Test:
+  `tests/test_docx_annotations.py` (2).
+- **T05 karma PDF**: metin katmanı olan sayfa yeniden OCR edilmez; yalnız
+  metinsiz sayfa OCR'a gider. Çağrı sayısı ölçülerek kanıtlandı.
+- **T06 ayar özeti**: `settings_hash` artık MIME + OCR bayrağı + dil + motor
+  sürümü + `tessdataHash` taşır. Tesseract 5 `--print-tessdata-dir`, Tesseract 4
+  `--list-langs` başlığı (tırnaklı yol) ile bulunur; bulunamazsa `null`.
+  `capabilities().ocr.tessdataHash` 64 hex veya `null` — uydurma sürüm yok.
+
+## Kalan
+
+- **T12**: 200 elle işaretli sayfada OCR/kaynak doğruluğu ölçümü — gerçek veri
+  ve insan işaretlemesi gerektirir; CI'da üretilemez.
+- **T06**: `tur` dil paketi bu ortamda ve CI'da yok; hash yalnız `eng` için
+  doğrulanabilir, `tur` uyarı olarak kalır.

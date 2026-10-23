@@ -11,7 +11,7 @@ import shutil
 
 import pytest
 
-from dim_worker.engines import EngineError, capabilities, extract, extract_docx, extract_pdf
+from dim_worker.engines import capabilities, EngineError, capabilities, extract, extract_docx, extract_pdf
 
 
 def _pdf_with_text(text: str) -> bytes:
@@ -153,3 +153,47 @@ def test_password_protected_pdf_needs_correct_password():
     result = extract(protected, "application/pdf", password="acil")
     text = "\n".join(page.text for page in result.pages)
     assert "gizli icerik" in text
+
+
+def test_mixed_pdf_ocrs_only_pages_without_text_layer(monkeypatch):
+    """Karma PDF'te metin katmanı olan sayfa yeniden OCR edilmez; yalnız
+    görüntüden oluşan sayfa OCR'a gider. Çağrı sayısı ölçülür."""
+    pymupdf = pytest.importorskip("pymupdf")
+    pytest.importorskip("pytesseract")
+    import shutil
+
+    if shutil.which("tesseract") is None:
+        pytest.skip("tesseract yok")
+
+    doc = pymupdf.open()
+    first = doc.new_page()
+    first.insert_text((72, 72), "metin katmani burada")
+    doc.new_page()  # metin katmanı yok: OCR'a gitmeli
+    data = doc.tobytes()
+    doc.close()
+
+    import dim_worker.engines as engines
+
+    calls: list[int] = []
+    real = engines._ocr_page
+
+    def counting(page, lang):
+        calls.append(int(page.number))
+        return real(page, lang)
+
+    monkeypatch.setattr(engines, "_ocr_page", counting)
+    result = engines.extract_pdf(data, ocr=True, ocr_lang="eng")
+
+    assert calls == [1], f"yalnız metinsiz sayfa OCR edilmeliydi, çağrılar: {calls}"
+    assert "metin katmani burada" in result.pages[0].text
+    assert result.pages[0].coordinate_space == "unrotated_cropbox_points"
+
+
+def test_capabilities_reports_tessdata_fingerprint_honestly():
+    """Dil paketi parmak izi varsa 64 hex; yoksa None. Uydurma sürüm yok."""
+    caps = capabilities()
+    digest = caps["ocr"]["tessdataHash"]
+    if digest is not None:
+        assert len(digest) == 64
+        int(digest, 16)
+    assert isinstance(caps["ocr"]["langs"], list)
