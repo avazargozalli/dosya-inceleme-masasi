@@ -30,6 +30,12 @@ pub fn run() {
             commands::case_delete,
             commands::document_import,
             commands::document_list,
+            commands::document_parse,
+            commands::search_segments,
+            commands::event_create,
+            commands::event_list,
+            commands::event_confirm,
+            commands::event_delete,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

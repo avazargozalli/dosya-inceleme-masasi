@@ -1,0 +1,26 @@
+name: windows-check
+
+# Windows derlemesi SQLCipher/OpenSSL nedeniyle uzun sürer; her push'ta ana
+# hattı bloke etmemesi için ayrı ve elle tetiklenen iş olarak koşar. F16
+# paketleme kapısında zorunlu hale gelir.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Derleme
+        run: cargo check --workspace --all-targets
+      - name: Testler
+        run: cargo test --workspace --all-targets

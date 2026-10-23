@@ -30,16 +30,6 @@ pub enum CaseStatus {
     Deleted,
 }
 
-impl CaseStatus {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Archived => "archived",
-            Self::Deleted => "deleted",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sensitivity {

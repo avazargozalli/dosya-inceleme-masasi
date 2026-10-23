@@ -9,12 +9,12 @@ Bir faz **ancak** kabul kanıtı `docs/releases/Fxx/` altına yazıldı ve CI ye
 | F00 | Kapsam, lisans, pilot protokolü | v0.0.0-plan | ✅ |
 | F01 | Teknik doğrulamalar ve ADR'ler | v0.0.1-spike | 🚧 |
 | F02 | Repo, derleme, masaüstü iskeleti | v0.1.0 | 🚧 |
-| F03 | Kasa, veritabanı, yedek temeli | v0.2.0 | ⬜ |
-| F04 | UX ve dosya çalışma alanları | v0.3.0 | ⬜ |
-| F05 | İçe aktarma ve belge sürümleri | v0.4.0 | ⬜ |
-| F06 | Metin, OCR, UDF, kaynak konumları | v0.5.0 | ⬜ |
-| F07 | Arama ve belge okuyucu | v0.6.0 | ⬜ |
-| F08 | Kronoloji, iddia, inceleme, görev | v0.7.0 | ⬜ |
+| F03 | Kasa, veritabanı, yedek temeli | v0.2.0 | 🚧 |
+| F04 | UX ve dosya çalışma alanları | v0.3.0 | 🚧 |
+| F05 | İçe aktarma ve belge sürümleri | v0.4.0 | 🚧 |
+| F06 | Metin, OCR, UDF, kaynak konumları | v0.5.0 | 🚧 |
+| F07 | Arama ve belge okuyucu | v0.6.0 | 🚧 |
+| F08 | Kronoloji, iddia, inceleme, görev | v0.7.0 | 🚧 |
 | F09 | AI sağlayıcı çerçevesi | v0.8.0 | ⬜ |
 | F10 | Dört CLI adaptörü | v0.9.0 | ⬜ |
 | F11 | Kaynaklı AI inceleme araçları | v0.10.0 | ⬜ |

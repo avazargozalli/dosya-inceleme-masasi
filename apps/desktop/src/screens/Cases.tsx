@@ -110,6 +110,22 @@ export function Cases() {
     }
   }
 
+  async function parseDocument(versionId: string) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await api.documentParse(versionId);
+      setNotice(
+        `Ayrıştırma ${result.parseRun.status}: ${result.pages} sayfa, ${result.storedSegments} metin bloğu` +
+          (result.warnings.length ? ` · ${result.warnings.length} uyarı` : ""),
+      );
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function mutate(action: "archive" | "restore" | "delete") {
     if (!selected) return;
     setBusy(true);

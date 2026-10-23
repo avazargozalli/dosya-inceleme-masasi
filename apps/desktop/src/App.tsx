@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
+import { Search } from "./screens/Search";
+import { Timeline } from "./screens/Timeline";
 import { Unlock } from "./screens/Unlock";
 import { Workspace } from "./screens/Workspace";
 
@@ -116,6 +118,10 @@ export function App() {
             )
           ) : screen === "files" ? (
             <Cases />
+          ) : screen === "search" ? (
+            <Search />
+          ) : screen === "timeline" ? (
+            <Timeline />
           ) : (
             <ComingPhase label={NAV.find((n) => n.id === screen)?.label ?? ""} phase={NAV.find((n) => n.id === screen)?.phase ?? ""} />
           )}

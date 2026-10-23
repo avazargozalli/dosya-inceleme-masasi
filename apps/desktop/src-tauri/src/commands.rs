@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
-use dim_storage::{Case, Document, DocumentVersion, NewCase};
+use dim_storage::{Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewPage, ParseRun, SearchHit};
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
 use tauri::State;
@@ -318,4 +319,109 @@ pub fn document_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_documents(&case_id)?)
+}
+
+#[tauri::command]
+pub fn event_create(state: State<'_, AppState>, case_id: String, input: NewEvent) -> Result<EventRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_event(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn event_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<EventRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_events(&case_id)?)
+}
+
+#[tauri::command]
+pub fn event_confirm(state: State<'_, AppState>, id: String) -> Result<EventRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.confirm_event(&id)?)
+}
+
+#[tauri::command]
+pub fn event_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.soft_delete_event(&id)?)
+}
+
+#[tauri::command]
+pub fn search_segments(
+    state: State<'_, AppState>,
+    case_id: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<SearchHit>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_segments(&case_id, &query, limit.unwrap_or(50).clamp(1, 200))?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseResultView {
+    pub parse_run: ParseRun,
+    pub pages: usize,
+    pub stored_segments: usize,
+    pub warnings: Vec<String>,
+}
+
+fn spawn_worker() -> Result<WorkerClient, ApiError> {
+    let dir = dev_worker_dir()
+        .ok_or_else(|| ApiError::new("E_WORKER_MISSING", "Belge worker'ı bulunamadı (workers/document)."))?;
+    let python = std::env::var("DIM_WORKER_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    WorkerClient::spawn_dev(Path::new(&python), &dir).map_err(Into::into)
+}
+
+/// Belge sürümünü yerel worker'da ayrıştırır. Özgün blob çözülür, metin
+/// çıkarılır, sürümlü `parse_run` + sayfa + segment kayıtları yazılır.
+#[tauri::command]
+pub fn document_parse(state: State<'_, AppState>, version_id: String) -> Result<ParseResultView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db.get_version(&version_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let mut worker = spawn_worker()?;
+    let extraction = worker.extract_text(&data, &blob.mime)?;
+    worker.shutdown();
+
+    let run = db.start_parse_run(&version_id, &version.case_id, &extraction.engine, &extraction.engine_version, &blob.mime)?;
+    let pages: Vec<NewPage> = extraction
+        .pages
+        .iter()
+        .map(|p| NewPage {
+            index: i64::from(p.index),
+            text: p.text.clone(),
+            width: Some(p.width),
+            height: Some(p.height),
+            origin: if p.text.trim().is_empty() { "none".to_string() } else { "native".to_string() },
+            warnings: p.warnings.clone(),
+        })
+        .collect();
+    let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
+    let status = if extraction.warnings.is_empty() { "succeeded" } else { "partial" };
+    db.finish_parse_run(&run.id, status, &extraction.warnings)?;
+
+    Ok(ParseResultView {
+        parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
+        pages: pages.len(),
+        stored_segments: stored,
+        warnings: extraction.warnings,
+    })
 }

@@ -72,6 +72,61 @@ export type DocumentVersionRow = {
   importedAt: string;
 };
 
+export type EventRow = {
+  id: string;
+  caseId: string;
+  eventKind: string;
+  dateValue: string | null;
+  datePrecision: string;
+  dateRole: string;
+  dateRaw: string | null;
+  sortableDate: string | null;
+  title: string;
+  description: string;
+  assertionKind: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
+export type NewEventInput = {
+  eventKind: string;
+  dateValue: string | null;
+  datePrecision: string;
+  dateRole: string;
+  dateRaw: string | null;
+  title: string;
+  description: string;
+  assertionKind: string;
+};
+
+export type SearchHit = {
+  segmentId: string;
+  pageId: string | null;
+  rawText: string;
+  pageIndex: number | null;
+  rank: number;
+};
+
+export type ParseResult = {
+  parseRun: {
+    id: string;
+    documentVersionId: string;
+    caseId: string;
+    engine: string;
+    engineVersion: string;
+    status: string;
+    pagesExpected: number | null;
+    pagesProcessed: number;
+    warnings: string;
+    createdAt: string;
+  };
+  pages: number;
+  storedSegments: number;
+  warnings: string[];
+};
+
 export type ImportOutcome =
   | { kind: "imported"; document: DocumentRow; version: DocumentVersionRow }
   | { kind: "duplicate"; documentId: string; versionId: string; displayName: string };
@@ -120,4 +175,13 @@ export const api = {
   documentList: (caseId: string) => invoke<DocumentRow[]>("document_list", { caseId }),
   documentImport: (caseId: string, path: string) =>
     invoke<ImportOutcome>("document_import", { caseId, path }),
+  documentParse: (versionId: string) => invoke<ParseResult>("document_parse", { versionId }),
+  searchSegments: (caseId: string, query: string, limit = 50) =>
+    invoke<SearchHit[]>("search_segments", { caseId, query, limit }),
+
+  eventList: (caseId: string) => invoke<EventRow[]>("event_list", { caseId }),
+  eventCreate: (caseId: string, input: NewEventInput) =>
+    invoke<EventRow>("event_create", { caseId, input }),
+  eventConfirm: (id: string) => invoke<EventRow>("event_confirm", { id }),
+  eventDelete: (id: string) => invoke<void>("event_delete", { id }),
 };
