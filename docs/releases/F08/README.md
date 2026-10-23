@@ -22,3 +22,11 @@
 - Olay kaynakları (`event_sources`) tablosu var; olay–kaynak bağlama UI'sı açık.
 - İnceleme kabulü kalıcı domain kaydı (olay/iddia/not) üretmez; domain komutu F11'de.
 - Hukuki süre hesabı yok (ADR-0008).
+
+## Olay–kaynak bağlama (ek)
+
+- `event_sources` üzerinden olay → kaynak anchor bağı: `states`, `supports`,
+  `contradicts`, `context`.
+- Aynı bağ ikinci kez eklenmez; farklı dosyadaki anchor reddedilir.
+- Kronoloji ekranında her olay için kaynak paneli: alıntı seç, ilişki seç, bağla/kaldır.
+- Bağ `user_confirmed=1` ile yazılır; otomatik bağlama yok.

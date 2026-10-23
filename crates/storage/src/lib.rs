@@ -39,7 +39,7 @@ pub use precedents::{
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use tasks::{NewTask, TaskRow};
-pub use timeline::{EventRow, NewEvent};
+pub use timeline::{EventRow, EventSourceRow, NewEvent};
 
 use std::path::{Path, PathBuf};
 

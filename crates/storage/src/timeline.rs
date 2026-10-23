@@ -213,6 +213,115 @@ fn map_event(row: &Row<'_>) -> rusqlite::Result<EventRow> {
     })
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventSourceRow {
+    pub id: String,
+    pub event_id: String,
+    pub source_anchor_id: String,
+    pub relation: String,
+    pub user_confirmed: bool,
+}
+
+impl Database {
+    /// Olayı bir kaynak anchor'ına bağlar. Anchor ve olay aynı dosyada olmalı;
+    /// aynı bağ ikinci kez eklenmez (şema UNIQUE kısıtı).
+    pub fn link_event_source(
+        &self,
+        event_id: &str,
+        anchor_id: &str,
+        relation: &str,
+    ) -> Result<EventSourceRow, StorageError> {
+        if !matches!(relation, "states" | "supports" | "contradicts" | "context") {
+            return Err(StorageError::InvalidSetting);
+        }
+        let event_case: String = self
+            .conn()
+            .query_row("SELECT case_id FROM events WHERE id=?1", [event_id], |r| r.get(0))
+            .optional()?
+            .ok_or(StorageError::NotFound)?;
+        let anchor_case: String = self
+            .conn()
+            .query_row("SELECT case_id FROM source_anchors WHERE id=?1", [anchor_id], |r| r.get(0))
+            .optional()?
+            .ok_or(StorageError::NotFound)?;
+        if event_case != anchor_case {
+            return Err(StorageError::NotFound);
+        }
+        if let Some(existing) = self.get_event_source_by_pair(event_id, anchor_id, relation)? {
+            return Ok(existing);
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        self.conn().execute(
+            "INSERT INTO event_sources (id,event_id,source_anchor_id,relation,user_confirmed)
+             VALUES (?1,?2,?3,?4,1)",
+            rusqlite::params![id, event_id, anchor_id, relation],
+        )?;
+        self.append_audit(
+            "event_source",
+            Some(&id),
+            "link",
+            "local-user",
+            &serde_json::json!({"eventId": event_id, "anchorId": anchor_id, "relation": relation}),
+        )?;
+        Ok(EventSourceRow {
+            id,
+            event_id: event_id.to_string(),
+            source_anchor_id: anchor_id.to_string(),
+            relation: relation.to_string(),
+            user_confirmed: true,
+        })
+    }
+
+    pub fn get_event_source_by_pair(
+        &self,
+        event_id: &str,
+        anchor_id: &str,
+        relation: &str,
+    ) -> Result<Option<EventSourceRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,event_id,source_anchor_id,relation,user_confirmed
+             FROM event_sources WHERE event_id=?1 AND source_anchor_id=?2 AND relation=?3",
+        )?;
+        Ok(stmt
+            .query_row(rusqlite::params![event_id, anchor_id, relation], map_event_source)
+            .optional()?)
+    }
+
+    pub fn list_event_sources(&self, event_id: &str) -> Result<Vec<EventSourceRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,event_id,source_anchor_id,relation,user_confirmed
+             FROM event_sources WHERE event_id=?1 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([event_id], map_event_source)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn unlink_event_source(&self, id: &str) -> Result<(), StorageError> {
+        let changed = self.conn().execute("DELETE FROM event_sources WHERE id=?1", [id])?;
+        if changed == 0 {
+            return Err(StorageError::NotFound);
+        }
+        self.append_audit("event_source", Some(id), "unlink", "local-user", &serde_json::json!({}))?;
+        Ok(())
+    }
+}
+
+fn map_event_source(row: &Row<'_>) -> rusqlite::Result<EventSourceRow> {
+    Ok(EventSourceRow {
+        id: row.get(0)?,
+        event_id: row.get(1)?,
+        source_anchor_id: row.get(2)?,
+        relation: row.get(3)?,
+        user_confirmed: row.get::<_, i64>(4)? == 1,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +408,61 @@ mod tests {
         assert!(db
             .create_event("olmayan-dosya", &event("X", None, "unknown"))
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use crate::cases::{CaseKind, NewCase};
+    use crate::DatabaseKey;
+
+    fn setup() -> (Database, String) {
+        let db = Database::open_in_memory(&DatabaseKey::new([53u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        (db, case.id)
+    }
+
+    #[test]
+    fn invalid_relation_rejected() {
+        let (db, _) = setup();
+        assert_eq!(
+            db.link_event_source("e1", "a1", "uydurma").unwrap_err().code(),
+            "E_DB_SETTING"
+        );
+    }
+
+    #[test]
+    fn missing_anchor_is_not_found() {
+        let (db, case_id) = setup();
+        let event = db
+            .create_event(
+                &case_id,
+                &NewEvent {
+                    event_kind: "event".into(),
+                    date_value: Some("2026-01-01".into()),
+                    date_precision: "day".into(),
+                    date_role: "event".into(),
+                    date_raw: None,
+                    title: "Ödeme yapılmadı".into(),
+                    description: String::new(),
+                    assertion_kind: "fact".into(),
+                },
+            )
+            .expect("olay");
+        assert_eq!(
+            db.link_event_source(&event.id, "yok", "supports").unwrap_err().code(),
+            "E_NOT_FOUND"
+        );
     }
 }

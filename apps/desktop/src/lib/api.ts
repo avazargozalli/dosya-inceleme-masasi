@@ -338,6 +338,14 @@ export type NewTaskInput = {
   reminderPolicy: string;
 };
 
+export type EventSourceRow = {
+  id: string;
+  eventId: string;
+  sourceAnchorId: string;
+  relation: string;
+  userConfirmed: boolean;
+};
+
 export type EventRow = {
   id: string;
   caseId: string;
@@ -454,6 +462,10 @@ export const api = {
     invoke<EventRow>("event_create", { caseId, input }),
   eventConfirm: (id: string) => invoke<EventRow>("event_confirm", { id }),
   eventDelete: (id: string) => invoke<void>("event_delete", { id }),
+  eventSources: (eventId: string) => invoke<EventSourceRow[]>("event_sources", { eventId }),
+  eventLinkSource: (eventId: string, anchorId: string, relation: string) =>
+    invoke<EventSourceRow>("event_link_source", { eventId, anchorId, relation }),
+  eventUnlinkSource: (id: string) => invoke<void>("event_unlink_source", { id }),
 
   taskList: (caseId: string, includeDone = false) =>
     invoke<TaskRow[]>("task_list", { caseId, includeDone }),

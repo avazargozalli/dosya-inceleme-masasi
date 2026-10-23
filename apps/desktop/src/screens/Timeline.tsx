@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, toApiError, type ApiError, type CaseRow, type EventRow } from "../lib/api";
+import {
+  api,
+  toApiError,
+  type AnchorRow,
+  type ApiError,
+  type CaseRow,
+  type EventRow,
+  type EventSourceRow,
+} from "../lib/api";
 
 
 const DATE_ROLE_LABEL: Record<string, string> = {
@@ -43,6 +51,11 @@ export function Timeline() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [linkFor, setLinkFor] = useState<string | null>(null);
+  const [anchors, setAnchors] = useState<AnchorRow[]>([]);
+  const [links, setLinks] = useState<EventSourceRow[]>([]);
+  const [linkAnchor, setLinkAnchor] = useState("");
+  const [linkRelation, setLinkRelation] = useState("states");
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -119,6 +132,40 @@ export function Timeline() {
     }
   }
 
+  async function openLink(eventId: string) {
+    setLinkFor((prev) => (prev === eventId ? null : eventId));
+    try {
+      const [anchorRows, linkRows] = await Promise.all([
+        api.anchorList(caseId),
+        api.eventSources(eventId),
+      ]);
+      setAnchors(anchorRows);
+      setLinks(linkRows);
+      setLinkAnchor(anchorRows[0]?.id ?? "");
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function attach(eventId: string) {
+    if (!linkAnchor) return;
+    try {
+      await api.eventLinkSource(eventId, linkAnchor, linkRelation);
+      setLinks(await api.eventSources(eventId));
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function detach(id: string, eventId: string) {
+    try {
+      await api.eventUnlinkSource(id);
+      setLinks(await api.eventSources(eventId));
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
   function row(event: EventRow) {
     return (
       <div key={event.id} className="card tight" style={{ background: "var(--surface)" }}>
@@ -141,9 +188,63 @@ export function Timeline() {
             {event.status === "draft" ? (
               <button className="btn ghost" onClick={() => void confirm(event.id)}>Onayla</button>
             ) : null}
+            <button className="btn ghost" onClick={() => void openLink(event.id)}>
+              {linkFor === event.id ? "Kaynakları kapat" : "Kaynaklar"}
+            </button>
             <button className="btn ghost" onClick={() => void remove(event.id)}>Sil</button>
           </div>
         </div>
+
+        {linkFor === event.id ? (
+          <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+            {links.length > 0 ? (
+              <ul style={{ listStyle: "none", padding: 0, margin: "0 0 8px", display: "grid", gap: 4 }}>
+                {links.map((link) => (
+                  <li key={link.id} className="muted small" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span className="badge plain">{link.relation}</span>
+                    <code style={{ fontSize: 11 }}>{link.sourceAnchorId.slice(0, 8)}…</code>
+                    <button className="btn ghost" onClick={() => void detach(link.id, event.id)}>Kaldır</button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="hint" style={{ margin: "0 0 8px" }}>Bu olaya bağlı kaynak yok.</p>
+            )}
+            <div className="row" style={{ gap: 6, alignItems: "flex-end" }}>
+              <div className="field" style={{ flex: "1 1 260px" }}>
+                <label htmlFor={`src-${event.id}`}>Kaynak alıntı</label>
+                <select
+                  id={`src-${event.id}`}
+                  className="input"
+                  value={linkAnchor}
+                  onChange={(e) => setLinkAnchor(e.target.value)}
+                >
+                  {anchors.length === 0 ? <option value="">Anchor yok — okuyucuda alıntı oluşturun</option> : null}
+                  {anchors.map((anchor) => (
+                    <option key={anchor.id} value={anchor.id}>
+                      {anchor.exactQuote.slice(0, 60)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field" style={{ flex: "0 0 160px" }}>
+                <label htmlFor={`rel-${event.id}`}>İlişki</label>
+                <select
+                  id={`rel-${event.id}`}
+                  className="input"
+                  value={linkRelation}
+                  onChange={(e) => setLinkRelation(e.target.value)}
+                >
+                  <option value="states">belirtir</option>
+                  <option value="supports">destekler</option>
+                  <option value="contradicts">çelişir</option>
+                  <option value="context">bağlam</option>
+                </select>
+              </div>
+              <button className="btn" disabled={!linkAnchor} onClick={() => void attach(event.id)}>Bağla</button>
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   }

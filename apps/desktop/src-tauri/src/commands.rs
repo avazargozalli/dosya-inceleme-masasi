@@ -1505,3 +1505,33 @@ pub fn ai_candidate_promote(
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.promote_candidate(&candidate_id, &case_id)?)
 }
+
+#[tauri::command]
+pub fn event_sources(
+    state: State<'_, AppState>,
+    event_id: String,
+) -> Result<Vec<EventSourceRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_event_sources(&event_id)?)
+}
+
+#[tauri::command]
+pub fn event_link_source(
+    state: State<'_, AppState>,
+    event_id: String,
+    anchor_id: String,
+    relation: String,
+) -> Result<EventSourceRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.link_event_source(&event_id, &anchor_id, &relation)?)
+}
+
+#[tauri::command]
+pub fn event_unlink_source(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.unlink_event_source(&id)?;
+    Ok(())
+}
