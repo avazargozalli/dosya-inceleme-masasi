@@ -5,13 +5,13 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CasePatch, CitationCheckRow,
-    ClaimRelationRow, ClaimRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion,
-    EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase,
-    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
-    NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent,
-    NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ProviderProfileRow,
-    RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow, SearchHit,
-    SegmentBlock, TaskRow, TransferConsentRow,
+    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey,
+    Document, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow,
+    NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink,
+    NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,
+    NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
+    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow,
+    SearchHit, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -946,6 +946,30 @@ pub fn review_supersede(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.supersede_review_item(&item_id, &superseded_by_item_id)?)
+}
+
+#[tauri::command]
+pub fn contradiction_assess(
+    state: State<'_, AppState>,
+    case_id: String,
+    item_id: String,
+    verdict: String,
+    rationale: String,
+    reviewer: String,
+) -> Result<ContradictionAssessmentRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.assess_contradiction(&case_id, &item_id, &verdict, &rationale, &reviewer)?)
+}
+
+#[tauri::command]
+pub fn contradiction_assessments(
+    state: State<'_, AppState>,
+    item_id: String,
+) -> Result<Vec<ContradictionAssessmentRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_contradiction_assessments(&item_id)?)
 }
 
 #[tauri::command]

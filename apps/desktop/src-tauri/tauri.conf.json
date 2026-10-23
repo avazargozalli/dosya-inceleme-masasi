@@ -43,5 +43,13 @@
     "resources": [
       "resources/worker/**/*"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": false,
+      "pubkey": "",
+      "endpoints": [],
+      "dialog": false
+    }
   }
 }

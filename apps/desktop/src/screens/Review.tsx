@@ -7,6 +7,7 @@ import {
   type CaseRow,
   type ClaimRelationRow,
   type ClaimRow,
+  type ContradictionAssessmentRow,
   type EvidenceLinkRow,
   type ReviewItemRow,
 } from "../lib/api";
@@ -39,6 +40,14 @@ const ITEM_KIND: Record<string, string> = {
   event_candidate: "Olay adayı",
   note_candidate: "Not adayı",
   task_candidate: "Görev adayı",
+  contradiction_candidate: "Çelişki adayı",
+};
+
+const VERDICT: Record<string, string> = {
+  conflict: "Çelişki var",
+  explained: "Açıklanabilir fark",
+  not_conflict: "Çelişki yok",
+  needs_more_evidence: "Delil gerekiyor",
 };
 
 const ITEM_STATE: Record<string, string> = {
@@ -72,7 +81,11 @@ export function Review() {
   const [relationNote, setRelationNote] = useState("");
   const [draftKind, setDraftKind] = useState("note_candidate");
   const [draftAnchor, setDraftAnchor] = useState("");
+  const [draftAnchor2, setDraftAnchor2] = useState("");
   const [draftText, setDraftText] = useState("");
+  const [assessments, setAssessments] = useState<Record<string, ContradictionAssessmentRow[]>>({});
+  const [assessmentVerdicts, setAssessmentVerdicts] = useState<Record<string, string>>({});
+  const [assessmentNotes, setAssessmentNotes] = useState<Record<string, string>>({});
   const [editJson, setEditJson] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [supersedeTargets, setSupersedeTargets] = useState<Record<string, string>>({});
@@ -100,6 +113,15 @@ export function Review() {
       setClaims(claimRows);
       setItems(itemRows);
       setAnchors(anchorRows);
+      const contradictionIds = itemRows
+        .filter((i) => i.itemKind === "contradiction_candidate")
+        .map((i) => i.id);
+      const pairs = await Promise.all(
+        contradictionIds.map(
+          async (itemId) => [itemId, await api.contradictionAssessments(itemId)] as const,
+        ),
+      );
+      setAssessments(Object.fromEntries(pairs));
       setSelectedClaim((prev) => (prev ? claimRows.find((c) => c.id === prev.id) ?? null : null));
     } catch (e) {
       setError(toApiError(e));
@@ -188,17 +210,53 @@ export function Review() {
   }
 
   async function addCandidate() {
-    if (!draftAnchor || draftText.trim().length === 0) return;
+    const anchorIds =
+      draftKind === "contradiction_candidate"
+        ? [draftAnchor, draftAnchor2].filter((id) => id !== "")
+        : [draftAnchor];
+    if (anchorIds.length === 0 || draftText.trim().length === 0) return;
+    if (draftKind === "contradiction_candidate" && (anchorIds.length !== 2 || draftAnchor === draftAnchor2)) {
+      setError({
+        code: "E_FORM",
+        message: "Çelişki için iki farklı kaynak alıntı seçilmeli.",
+        retryable: false,
+      });
+      return;
+    }
     setBusy(true);
     try {
       await api.reviewItemCreate(caseId, {
         itemKind: draftKind,
         payload: { text: draftText.trim() },
-        sourceAnchorIds: [draftAnchor],
+        sourceAnchorIds: anchorIds,
         aiRunId: null,
       });
       setDraftText("");
+      setDraftAnchor2("");
       await load(caseId);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function assess(item: ReviewItemRow) {
+    const verdict = assessmentVerdicts[item.id];
+    if (!verdict) return;
+    setBusy(true);
+    try {
+      await api.contradictionAssess(
+        caseId,
+        item.id,
+        verdict,
+        (assessmentNotes[item.id] ?? "").trim(),
+        "local-user",
+      );
+      const rows = await api.contradictionAssessments(item.id);
+      setAssessments((prev) => ({ ...prev, [item.id]: rows }));
+      setAssessmentVerdicts((prev) => ({ ...prev, [item.id]: "" }));
+      setAssessmentNotes((prev) => ({ ...prev, [item.id]: "" }));
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -469,13 +527,26 @@ export function Review() {
                   ))}
                 </select>
               </div>
+              {draftKind === "contradiction_candidate" ? (
+                <div className="field" style={{ flex: "2 1 180px" }}>
+                  <label htmlFor="rv-danchor2">İkinci kaynak</label>
+                  <select id="rv-danchor2" className="input" value={draftAnchor2} onChange={(e) => setDraftAnchor2(e.target.value)}>
+                    <option value="">Seçin…</option>
+                    {anchors
+                      .filter((a) => a.id !== draftAnchor)
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>“{a.exactQuote.slice(0, 60)}”</option>
+                      ))}
+                  </select>
+                </div>
+              ) : null}
             </div>
             <div className="field">
               <label htmlFor="rv-dtext">Aday metni</label>
               <input id="rv-dtext" className="input" value={draftText} onChange={(e) => setDraftText(e.target.value)} />
             </div>
             <div className="row" style={{ justifyContent: "flex-end" }}>
-              <button className="btn" disabled={busy || !draftAnchor || draftText.trim().length === 0} onClick={() => void addCandidate()}>
+              <button className="btn" disabled={busy || !draftAnchor || draftText.trim().length === 0 || (draftKind === "contradiction_candidate" && (!draftAnchor2 || draftAnchor2 === draftAnchor))} onClick={() => void addCandidate()}>
                 Kuyruğa ekle
               </button>
             </div>
@@ -497,6 +568,76 @@ export function Review() {
                   {JSON.stringify(item.payload, null, 2)}
                 </pre>
                 <div className="muted small">{item.sourceAnchorIds.length} kaynak alıntı</div>
+                {item.itemKind === "contradiction_candidate" ? (
+                  <div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {item.sourceAnchorIds.slice(0, 2).map((anchorId, idx) => {
+                        const anchor = anchors.find((a) => a.id === anchorId);
+                        return (
+                          <div key={anchorId} className="card tight" style={{ background: "var(--bg)", margin: 0 }}>
+                            <span className="badge plain">{idx === 0 ? "Kaynak 1" : "Kaynak 2"}</span>
+                            <p className="small" style={{ margin: 0 }}>
+                              “{anchor?.exactQuote ?? "alıntı bulunamadı"}”
+                            </p>
+                            <span className="muted small">
+                              {anchor ? `${anchor.startOffset}–${anchor.endOffset}` : ""}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {(() => {
+                      const list = assessments[item.id] ?? [];
+                      const latest = list[list.length - 1];
+                      return latest ? (
+                        <p className="small" style={{ margin: 0 }}>
+                          Son değerlendirme: <strong>{VERDICT[latest.verdict] ?? latest.verdict}</strong>
+                          {latest.rationale ? ` — ${latest.rationale}` : ""}
+                        </p>
+                      ) : (
+                        <p className="hint" style={{ margin: 0 }}>
+                          İki kaynak yan yana; henüz değerlendirme kaydedilmedi.
+                        </p>
+                      );
+                    })()}
+                    <div className="row">
+                      <div className="field" style={{ flex: "0 1 200px" }}>
+                        <label htmlFor={`verdict-${item.id}`}>Değerlendirme</label>
+                        <select
+                          id={`verdict-${item.id}`}
+                          className="input"
+                          value={assessmentVerdicts[item.id] ?? ""}
+                          onChange={(e) =>
+                            setAssessmentVerdicts((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          }
+                        >
+                          <option value="">Seçin…</option>
+                          {Object.entries(VERDICT).map(([k, v]) => (
+                            <option key={k} value={k}>{v}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="field" style={{ flex: "2 1 180px" }}>
+                        <label htmlFor={`verdict-note-${item.id}`}>Gerekçe</label>
+                        <input
+                          id={`verdict-note-${item.id}`}
+                          className="input"
+                          value={assessmentNotes[item.id] ?? ""}
+                          onChange={(e) =>
+                            setAssessmentNotes((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          }
+                        />
+                      </div>
+                      <button
+                        className="btn"
+                        disabled={busy || !assessmentVerdicts[item.id]}
+                        onClick={() => void assess(item)}
+                      >
+                        Değerlendir
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 {editingId === item.id ? (
                   <div className="field">
                     <label htmlFor={`edit-${item.id}`}>Düzeltilmiş JSON</label>

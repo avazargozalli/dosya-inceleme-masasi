@@ -262,6 +262,16 @@ export type ClaimRelationRow = {
   createdAt: string;
 };
 
+export type ContradictionAssessmentRow = {
+  id: string;
+  caseId: string;
+  reviewItemId: string;
+  verdict: string;
+  rationale: string;
+  reviewerLabel: string;
+  assessedAt: string;
+};
+
 export type EvidenceLinkRow = {
   id: string;
   caseId: string;
@@ -642,6 +652,22 @@ export const api = {
     }),
   reviewSupersede: (itemId: string, supersededByItemId: string) =>
     invoke<ReviewItemRow>("review_supersede", { itemId, supersededByItemId }),
+  contradictionAssess: (
+    caseId: string,
+    itemId: string,
+    verdict: string,
+    rationale: string,
+    reviewer: string,
+  ) =>
+    invoke<ContradictionAssessmentRow>("contradiction_assess", {
+      caseId,
+      itemId,
+      verdict,
+      rationale,
+      reviewer,
+    }),
+  contradictionAssessments: (itemId: string) =>
+    invoke<ContradictionAssessmentRow[]>("contradiction_assessments", { itemId }),
   reviewHistory: (itemId: string) => invoke<ReviewDecisionRow[]>("review_history", { itemId }),
   anchorCreate: (input: {
     caseId: string;

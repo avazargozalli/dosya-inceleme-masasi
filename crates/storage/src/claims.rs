@@ -122,6 +122,18 @@ pub struct ReviewDecisionRow {
     pub decided_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContradictionAssessmentRow {
+    pub id: String,
+    pub case_id: String,
+    pub review_item_id: String,
+    pub verdict: String,
+    pub rationale: String,
+    pub reviewer_label: String,
+    pub assessed_at: String,
+}
+
 fn valid_claim_kind(value: &str) -> bool {
     matches!(
         value,
@@ -433,6 +445,14 @@ impl Database {
         if new.source_anchor_ids.is_empty() || !self.case_exists(case_id)? {
             return Err(StorageError::InvalidSetting);
         }
+        if new.item_kind == "contradiction_candidate" {
+            let mut anchors = new.source_anchor_ids.clone();
+            anchors.sort();
+            anchors.dedup();
+            if anchors.len() != 2 {
+                return Err(StorageError::InvalidSetting);
+            }
+        }
         for anchor in &new.source_anchor_ids {
             if !self.anchor_in_case(anchor, case_id)? {
                 return Err(StorageError::NotFound);
@@ -623,6 +643,94 @@ impl Database {
         self.get_review_item(item_id)?.ok_or(StorageError::NotFound)
     }
 
+    /// Çelişki incelemesinde kullanıcının değerlendirmesini kaydeder. İki
+    /// kaynağı olmayan öğe değerlendirilemez; değerlendirme inceleme kararından
+    /// ayrıdır ve eklemelidir (en yenisi gösterilir).
+    pub fn assess_contradiction(
+        &self,
+        case_id: &str,
+        item_id: &str,
+        verdict: &str,
+        rationale: &str,
+        reviewer: &str,
+    ) -> Result<ContradictionAssessmentRow, StorageError> {
+        if !matches!(
+            verdict,
+            "conflict" | "explained" | "not_conflict" | "needs_more_evidence"
+        ) || reviewer.trim().is_empty()
+        {
+            return Err(StorageError::InvalidSetting);
+        }
+        let item = self
+            .get_review_item(item_id)?
+            .ok_or(StorageError::NotFound)?;
+        if item.case_id != case_id {
+            return Err(StorageError::NotFound);
+        }
+        if item.item_kind != "contradiction_candidate" {
+            return Err(StorageError::InvalidSetting);
+        }
+        let mut anchors = item.source_anchor_ids.clone();
+        anchors.sort();
+        anchors.dedup();
+        if anchors.len() != 2 {
+            return Err(StorageError::InvalidSetting);
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        self.conn().execute(
+            "INSERT INTO contradiction_assessments (id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                id,
+                case_id,
+                item_id,
+                verdict,
+                rationale.trim(),
+                reviewer.trim(),
+                now
+            ],
+        )?;
+        self.append_audit(
+            "review_item",
+            Some(item_id),
+            "contradiction_assess",
+            reviewer,
+            &serde_json::json!({ "verdict": verdict }),
+        )?;
+        self.get_contradiction_assessment(&id)?
+            .ok_or(StorageError::NotFound)
+    }
+
+    pub fn get_contradiction_assessment(
+        &self,
+        id: &str,
+    ) -> Result<Option<ContradictionAssessmentRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at
+             FROM contradiction_assessments WHERE id=?1",
+        )?;
+        Ok(stmt
+            .query_row([id], map_contradiction_assessment)
+            .optional()?)
+    }
+
+    pub fn list_contradiction_assessments(
+        &self,
+        item_id: &str,
+    ) -> Result<Vec<ContradictionAssessmentRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at
+             FROM contradiction_assessments WHERE review_item_id=?1 ORDER BY assessed_at ASC",
+        )?;
+        let rows = stmt.query_map([item_id], map_contradiction_assessment)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn review_history(&self, item_id: &str) -> Result<Vec<ReviewDecisionRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at
@@ -715,6 +823,18 @@ fn map_item(row: &Row<'_>) -> rusqlite::Result<ReviewItemRow> {
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
         row_version: row.get(13)?,
+    })
+}
+
+fn map_contradiction_assessment(row: &Row<'_>) -> rusqlite::Result<ContradictionAssessmentRow> {
+    Ok(ContradictionAssessmentRow {
+        id: row.get(0)?,
+        case_id: row.get(1)?,
+        review_item_id: row.get(2)?,
+        verdict: row.get(3)?,
+        rationale: row.get(4)?,
+        reviewer_label: row.get(5)?,
+        assessed_at: row.get(6)?,
     })
 }
 
@@ -1223,5 +1343,125 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code(), "E_DB_SETTING");
+    }
+
+    fn second_anchor(s: &Setup) -> crate::AnchorRow {
+        let (segment, run, version) = s
+            .db
+            .conn()
+            .query_row(
+                "SELECT segment_id, parse_run_id, document_version_id FROM source_anchors WHERE id=?1",
+                [&s.anchor_id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("anchor");
+        s.db.create_anchor(&NewAnchor {
+            case_id: s.case_id.clone(),
+            document_version_id: version,
+            parse_run_id: run,
+            segment_id: segment,
+            start_offset: 0,
+            end_offset: 6,
+            exact_quote: "Ödeme ".into(),
+        })
+        .expect("ikinci anchor")
+    }
+
+    #[test]
+    fn contradiction_requires_two_distinct_anchors() {
+        let s = setup();
+        let err =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "contradiction_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_DB_SETTING");
+
+        let dup =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "contradiction_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone(), s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(dup.code(), "E_DB_SETTING", "aynı anchor iki kez sayılmaz");
+    }
+
+    #[test]
+    fn contradiction_assessment_records_verdict() {
+        let s = setup();
+        let other = second_anchor(&s);
+        let item =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "contradiction_candidate".into(),
+                    payload: serde_json::json!({"note": "iki ifade farklı"}),
+                    source_anchor_ids: vec![s.anchor_id.clone(), other.id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("çelişki");
+        assert_eq!(item.source_anchor_ids.len(), 2);
+
+        let first =
+            s.db.assess_contradiction(&s.case_id, &item.id, "explained", "farklı tarih", "avukat")
+                .expect("değerlendirme");
+        assert_eq!(first.verdict, "explained");
+        let second =
+            s.db.assess_contradiction(
+                &s.case_id,
+                &item.id,
+                "conflict",
+                "çelişki sürüyor",
+                "avukat",
+            )
+            .expect("ikinci");
+        let list =
+            s.db.list_contradiction_assessments(&item.id)
+                .expect("liste");
+        assert_eq!(list.len(), 2, "değerlendirmeler eklemeli");
+        assert_eq!(list[1].id, second.id);
+
+        let invalid =
+            s.db.assess_contradiction(&s.case_id, &item.id, "belki", "", "avukat")
+                .unwrap_err();
+        assert_eq!(invalid.code(), "E_DB_SETTING");
+
+        let note_item =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "note_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("not");
+        assert_eq!(
+            s.db.assess_contradiction(&s.case_id, &note_item.id, "conflict", "", "avukat")
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING",
+            "yalnız çelişki öğesi değerlendirilir"
+        );
+        assert!(s.db.verify_audit_chain().expect("zincir") >= 4);
     }
 }

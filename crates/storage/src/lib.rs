@@ -25,8 +25,8 @@ pub use ai::{
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use claims::{
-    ClaimRelationRow, ClaimRow, EvidenceLinkRow, NewClaim, NewClaimRelation, NewEvidenceLink,
-    NewReviewItem, ReviewDecisionRow, ReviewItemRow,
+    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, EvidenceLinkRow, NewClaim,
+    NewClaimRelation, NewEvidenceLink, NewReviewItem, ReviewDecisionRow, ReviewItemRow,
 };
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
@@ -117,9 +117,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0006_review_superseded",
         sql: include_str!("migrations/0006_review_superseded.sql"),
     },
+    Migration {
+        version: 7,
+        name: "0007_contradictions",
+        sql: include_str!("migrations/0007_contradictions.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

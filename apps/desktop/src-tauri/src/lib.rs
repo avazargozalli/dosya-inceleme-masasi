@@ -60,6 +60,8 @@ pub fn run() {
             commands::review_item_create,
             commands::review_item_list,
             commands::review_supersede,
+            commands::contradiction_assess,
+            commands::contradiction_assessments,
             commands::review_decide,
             commands::review_history,
             commands::vault_backup,

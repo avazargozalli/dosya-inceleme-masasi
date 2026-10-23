@@ -92,3 +92,30 @@ jobs:
       - run: python -m pytest workers/document/tests -q
       - name: Uçtan uca duman testi (gerçek worker + sentetik PDF)
         run: python tests/smoke/worker_smoke.py
+
+  sbom:
+    name: SBOM (Rust/Node/Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pnpm install --frozen-lockfile
+      - name: Malzeme listesi üret
+        run: bash scripts/sbom.sh
+      - name: SBOM boş olamaz
+        run: python3 -c "import json;d=json.load(open('sbom.json'));assert d['counts']['rust']>0 and d['counts']['node']>0 and d['counts']['python']>0,d['counts']"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          if-no-files-found: error
