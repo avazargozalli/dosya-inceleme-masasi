@@ -1,4 +1,6 @@
 [toolchain]
-channel = "1.83.0"
+# Tauri 2 ekosistemi (icu_provider vb.) edition 2024 bekleyen crate'ler çekiyor;
+# bu yüzden CI stable ile derler. MSRV ayrıca Cargo.toml'da bildirilir.
+channel = "stable"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

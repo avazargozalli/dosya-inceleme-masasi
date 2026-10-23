@@ -1,0 +1,25 @@
+name: format-fix
+
+# Yalnız biçimlendirme diff'i üretir. Kod değiştirmez, commit atmaz.
+# Kullanım: Actions → format-fix → Run workflow; artifact indirilip `git apply`.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo fmt --all
+      - run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Diff üret
+        run: git diff > rustfmt.diff; wc -l rustfmt.diff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rustfmt-diff
+          path: rustfmt.diff
+          if-no-files-found: error
