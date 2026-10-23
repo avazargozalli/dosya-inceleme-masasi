@@ -545,7 +545,7 @@ impl Database {
             ocr_pages: q("SELECT count(*) FROM pages p JOIN parse_runs r ON r.id=p.parse_run_id WHERE r.case_id=?1 AND p.text_origin IN ('ocr','mixed')")?,
             segments: q("SELECT count(*) FROM text_segments s JOIN pages p ON p.id=s.page_id JOIN parse_runs r ON r.id=p.parse_run_id WHERE r.case_id=?1")?,
             empty_pages: q("SELECT count(*) FROM pages p JOIN parse_runs r ON r.id=p.parse_run_id LEFT JOIN text_segments s ON s.page_id=p.id WHERE r.case_id=?1 AND s.id IS NULL")?,
-            unparsed_documents: q("SELECT count(*) FROM documents d WHERE d.case_id=?1 AND d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM parse_runs r WHERE r.document_id=d.id)")?,
+            unparsed_documents: q("SELECT count(*) FROM documents d WHERE d.case_id=?1 AND d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM parse_runs r JOIN document_versions v ON v.id=r.document_version_id WHERE v.document_id=d.id)")?,
             failed_parse_runs: q("SELECT count(*) FROM parse_runs WHERE case_id=?1 AND status='failed'")?,
         })
     }
