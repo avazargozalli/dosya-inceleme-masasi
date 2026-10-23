@@ -3,6 +3,12 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.6.1] — 2026-10-23 — F05 parolalı PDF
+
+- `document_parse` isteğe bağlı parola ile parola korumalı PDF açar; parola saklanmaz
+- Eksik/yanlış parola `E_PDF_PASSWORD`; belge açılmış sayılmaz
+- Belgeler ekranında parola alanı + Ayrıştır/OCR düğmeleri
+
 ## [0.6.0] — 2026-10-23 — F08 olay–kaynak
 
 - Olay → kaynak anchor bağı (`event_sources`): belirtir/destekler/çelişir/bağlam

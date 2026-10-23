@@ -35,6 +35,7 @@ export function Cases() {
   const [notice, setNotice] = useState<string | null>(null);
   const [reading, setReading] = useState<{ versionId: string; title: string } | null>(null);
   const [anchors, setAnchors] = useState<AnchorRow[]>([]);
+  const [pdfPassword, setPdfPassword] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -124,7 +125,12 @@ export function Cases() {
     setBusy(true);
     setNotice(null);
     try {
-      const result = await api.documentParse(versionId, ocr, "tur+eng");
+      const result = await api.documentParse(
+        versionId,
+        ocr,
+        "tur+eng",
+        pdfPassword.trim() === "" ? undefined : pdfPassword,
+      );
       setNotice(
         `Ayrıştırma ${result.parseRun.status}: ${result.pages} sayfa, ${result.storedSegments} metin bloğu` +
           (result.warnings.length ? ` · ${result.warnings.length} uyarı` : ""),
@@ -352,7 +358,7 @@ export function Cases() {
                     key={doc.id}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1fr 90px 110px 150px",
+                      gridTemplateColumns: "1fr 90px 110px 130px 150px",
                       gap: "var(--space-3)",
                       alignItems: "center",
                       padding: "9px var(--space-3)",
@@ -368,13 +374,43 @@ export function Cases() {
                     <span className="badge plain">{doc.documentType}</span>
                     <span className="muted small">{doc.status}</span>
                     <span className="muted small">{formatTimestamp(doc.updatedAt)}</span>
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button
+                        className="btn ghost"
+                        disabled={!doc.currentVersionId || busy}
+                        onClick={() => void parseDocument(doc.currentVersionId!, false)}
+                      >
+                        Ayrıştır
+                      </button>
+                      <button
+                        className="btn ghost"
+                        disabled={!doc.currentVersionId || busy}
+                        onClick={() => void parseDocument(doc.currentVersionId!, true)}
+                        title="Taranmış sayfalar için OCR"
+                      >
+                        OCR
+                      </button>
+                    </span>
                   </div>
                 ))}
               </div>
             )}
+            <div className="field" style={{ maxWidth: 320, marginTop: 8 }}>
+              <label htmlFor="pdf-password">Parolalı PDF parolası (yalnız bu oturum için)</label>
+              <input
+                id="pdf-password"
+                className="input"
+                type="password"
+                autoComplete="off"
+                value={pdfPassword}
+                onChange={(e) => setPdfPassword(e.target.value)}
+                placeholder="Parola gerekmiyorsa boş bırakın"
+              />
+            </div>
             <p className="hint" style={{ margin: 0 }}>
               Aynı içerik ikinci kez eklenirse yeni belge oluşturulmaz; mevcut kayıt gösterilir.
-              Ayrıştırma yerel worker'da çalışır; taranmış sayfalar için OCR henüz yok.
+              Parola kaydedilmez, yalnız ayrıştırma isteğinde worker'a iletilir. OCR taranmış
+              sayfalar için çalışır ve dil paketi gerektirir.
             </p>
           </div>
 

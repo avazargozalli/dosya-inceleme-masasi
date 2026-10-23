@@ -452,8 +452,8 @@ export const api = {
   documentList: (caseId: string) => invoke<DocumentRow[]>("document_list", { caseId }),
   documentImport: (caseId: string, path: string) =>
     invoke<ImportOutcome>("document_import", { caseId, path }),
-  documentParse: (versionId: string, ocr = false, ocrLang = "eng") =>
-    invoke<ParseResult>("document_parse", { versionId, ocr, ocrLang }),
+  documentParse: (versionId: string, ocr = false, ocrLang = "eng", password?: string) =>
+    invoke<ParseResult>("document_parse", { versionId, ocr, ocrLang, password }),
   searchSegments: (caseId: string, query: string, limit = 50) =>
     invoke<SearchHit[]>("search_segments", { caseId, query, limit }),
 

@@ -94,8 +94,11 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         raise ProtocolError("E_PARAMS", "mime zorunlu")
     ocr = bool(params.get("ocr", False))
     ocr_lang = str(params.get("ocrLang") or "eng")
+    password = params.get("password")
+    if password is not None and not isinstance(password, str):
+        raise ProtocolError("E_PARAMS", "password metin olmalı")
     encoding = str(params.get("encoding") or "utf-8")
-    extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding)
+    extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding, password=password)
     result = {
         "engine": extraction.engine,
         "engineVersion": extraction.engine_version,

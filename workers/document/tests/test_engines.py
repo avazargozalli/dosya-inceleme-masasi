@@ -132,3 +132,24 @@ def test_ocr_reads_image_only_pdf_when_tesseract_available():
     assert any("OCR ile okundu" in w for w in result.pages[0].warnings)
     # Tanıma kalitesi motora bağlı; burada yalnız okunabilir metin üretildiği doğrulanır.
     assert len(text) >= 3
+
+
+def test_password_protected_pdf_needs_correct_password():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "gizli icerik")
+    protected = doc.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256, owner_pw="sahip", user_pw="acil")
+    doc.close()
+
+    with pytest.raises(EngineError) as missing:
+        extract(protected, "application/pdf")
+    assert missing.value.code == "E_PDF_PASSWORD"
+
+    with pytest.raises(EngineError) as wrong:
+        extract(protected, "application/pdf", password="yanlis")
+    assert wrong.value.code == "E_PDF_PASSWORD"
+
+    result = extract(protected, "application/pdf", password="acil")
+    text = "\n".join(page.text for page in result.pages)
+    assert "gizli icerik" in text

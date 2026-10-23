@@ -509,6 +509,7 @@ pub fn document_parse(
     version_id: String,
     ocr: Option<bool>,
     ocr_lang: Option<String>,
+    password: Option<String>,
 ) -> Result<ParseResultView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
@@ -534,6 +535,7 @@ pub fn document_parse(
         &blob.mime,
         ocr.unwrap_or(false),
         &ocr_lang.unwrap_or_else(|| "eng".to_string()),
+        password.as_deref(),
     )?;
     worker.shutdown();
 

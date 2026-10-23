@@ -21,3 +21,11 @@ tekrar tespiti, desteklenmeyen dosya. CI: **bekliyor**.
 
 - Parola korumalı PDF algılanır ama parola girişi F06'da.
 - `original_filename_encrypted` şu an boş; görünen ad `documents.display_name`.
+
+## Parola korumalı PDF (ek)
+
+- `document_parse` artık isteğe bağlı `password` alır; parola **kaydedilmez**,
+  yalnız worker isteğinde taşınır ve DB'ye/denetime yazılmaz.
+- Yanlış veya eksik parola `E_PDF_PASSWORD` döner; belge açılmış sayılmaz.
+- Belgeler ekranında parola alanı ve "Ayrıştır"/"OCR" düğmeleri.
+- Test: eksik parola, yanlış parola, doğru parola (AES-256 örnek PDF).

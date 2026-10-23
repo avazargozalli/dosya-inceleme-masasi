@@ -89,7 +89,9 @@ def _ocr_page(page, lang: str) -> str:
         raise EngineError("E_OCR_FAILED", "OCR çalıştırılamadı (dil paketi eksik olabilir)") from exc
 
 
-def extract_pdf(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extraction:
+def extract_pdf(
+    data: bytes, ocr: bool = False, ocr_lang: str = "eng", password: str | None = None
+) -> Extraction:
     pymupdf = _pymupdf()
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
@@ -97,7 +99,10 @@ def extract_pdf(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extrac
         raise EngineError("E_PDF_OPEN", "PDF açılamadı (bozuk veya parola korumalı)") from exc
 
     if doc.needs_pass:
-        raise EngineError("E_PDF_PASSWORD", "belge parola korumalı; parola desteği henüz yok")
+        if not password:
+            raise EngineError("E_PDF_PASSWORD", "belge parola korumalı; parola gerekli")
+        if not doc.authenticate(password):
+            raise EngineError("E_PDF_PASSWORD", "parola yanlış; belge açılmadı")
 
     pages: list[Page] = []
     warnings: list[str] = []
@@ -174,10 +179,18 @@ def extract_plain(data: bytes, encoding: str = "utf-8") -> Extraction:
     return Extraction(engine="plain", engine_version="1", pages=[page], warnings=warnings)
 
 
-def extract(data: bytes, mime: str, ocr: bool = False, ocr_lang: str = "eng", encoding: str = "utf-8") -> Extraction:
-    """MIME ve içerik imzasına göre doğru motoru seçer."""
+def extract(
+    data: bytes,
+    mime: str,
+    ocr: bool = False,
+    ocr_lang: str = "eng",
+    encoding: str = "utf-8",
+    password: str | None = None,
+) -> Extraction:
+    """MIME ve içerik imzasına göre doğru motoru seçer. Parola yalnız bu çağrı
+    için kullanılır; hiçbir yere yazılmaz."""
     if mime == "application/pdf" or data.startswith(b"%PDF-"):
-        return extract_pdf(data, ocr=ocr, ocr_lang=ocr_lang)
+        return extract_pdf(data, ocr=ocr, ocr_lang=ocr_lang, password=password)
     if "wordprocessingml.document" in mime or (data.startswith(b"PK\x03\x04") and mime.endswith("document")):
         return extract_docx(data)
     if mime.startswith("text/") or mime in {"application/json", "text/csv"}:

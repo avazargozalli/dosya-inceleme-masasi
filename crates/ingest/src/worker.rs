@@ -250,17 +250,20 @@ impl WorkerClient {
         mime: &str,
         ocr: bool,
         ocr_lang: &str,
+        password: Option<&str>,
     ) -> Result<Extraction, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-        let result = self.request(
-            "extract_text",
-            json!({
-                "contentBase64": encoded,
-                "mime": mime,
-                "ocr": ocr,
-                "ocrLang": ocr_lang,
-            }),
-        )?;
+        let mut payload = json!({
+            "contentBase64": encoded,
+            "mime": mime,
+            "ocr": ocr,
+            "ocrLang": ocr_lang,
+        });
+        // Parola yalnız bu istek için taşınır; kayda geçmez.
+        if let Some(secret) = password.filter(|p| !p.is_empty()) {
+            payload["password"] = json!(secret);
+        }
+        let result = self.request("extract_text", payload)?;
         serde_json::from_value(result).map_err(|_| WorkerError::BadResponse)
     }
 
