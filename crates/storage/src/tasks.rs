@@ -43,12 +43,17 @@ impl Database {
         if new.title.trim().is_empty() || new.title.chars().count() > 300 {
             return Err(StorageError::InvalidSetting);
         }
-        if !matches!(new.reminder_policy.as_str(), "none" | "on_day" | "day_before") {
+        if !matches!(
+            new.reminder_policy.as_str(),
+            "none" | "on_day" | "day_before"
+        ) {
             return Err(StorageError::InvalidSetting);
         }
-        let exists: i64 = self
-            .conn()
-            .query_row("SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL", [case_id], |r| r.get(0))?;
+        let exists: i64 = self.conn().query_row(
+            "SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL",
+            [case_id],
+            |r| r.get(0),
+        )?;
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
@@ -68,7 +73,13 @@ impl Database {
                 now
             ],
         )?;
-        self.append_audit("task", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "task",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_task(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -81,7 +92,11 @@ impl Database {
     }
 
     /// Açık görevler tarih sırasında; tarihsizler sonda.
-    pub fn list_tasks(&self, case_id: &str, include_done: bool) -> Result<Vec<TaskRow>, StorageError> {
+    pub fn list_tasks(
+        &self,
+        case_id: &str,
+        include_done: bool,
+    ) -> Result<Vec<TaskRow>, StorageError> {
         let sql = if include_done {
             "SELECT id,case_id,title,status,user_due_date,date_timezone,date_origin,assignee_label,reminder_policy,created_at,updated_at,row_version
              FROM tasks WHERE case_id=?1 AND deleted_at IS NULL
@@ -109,7 +124,13 @@ impl Database {
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("task", Some(id), "complete", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "task",
+            Some(id),
+            "complete",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         self.get_task(id)?.ok_or(StorageError::NotFound)
     }
 
@@ -175,9 +196,12 @@ mod tests {
     #[test]
     fn tasks_sort_by_user_date() {
         let (db, case_id) = setup();
-        db.create_task(&case_id, &task("Sonra", Some("2026-06-01"))).expect("t1");
-        db.create_task(&case_id, &task("Tarihsiz", None)).expect("t2");
-        db.create_task(&case_id, &task("Önce", Some("2026-01-01"))).expect("t3");
+        db.create_task(&case_id, &task("Sonra", Some("2026-06-01")))
+            .expect("t1");
+        db.create_task(&case_id, &task("Tarihsiz", None))
+            .expect("t2");
+        db.create_task(&case_id, &task("Önce", Some("2026-01-01")))
+            .expect("t3");
         let rows = db.list_tasks(&case_id, false).expect("liste");
         let titles: Vec<_> = rows.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, vec!["Önce", "Sonra", "Tarihsiz"]);
@@ -187,7 +211,9 @@ mod tests {
     #[test]
     fn completing_task_removes_from_open_list() {
         let (db, case_id) = setup();
-        let t = db.create_task(&case_id, &task("Tebliğ kontrolü", None)).expect("görev");
+        let t = db
+            .create_task(&case_id, &task("Tebliğ kontrolü", None))
+            .expect("görev");
         db.complete_task(&t.id).expect("tamamla");
         assert!(db.list_tasks(&case_id, false).expect("liste").is_empty());
         assert_eq!(db.list_tasks(&case_id, true).expect("liste").len(), 1);
