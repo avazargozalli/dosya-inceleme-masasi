@@ -238,23 +238,28 @@ impl Database {
         }
     }
 
-    /// Tutarlı, şifreli yedek üretir. Hedef dosyanın üzerine yazmaz.
-    pub fn backup_to(&self, dest: &Path) -> Result<(), StorageError> {
+    /// Tutarlı, şifreli yedek üretir. SQLCipher'ın `backup` API'si şifreli
+    /// veritabanlarını desteklemediği için `sqlcipher_export` kullanılır; hedef
+    /// dosya aynı anahtarla şifreli olarak oluşur ve düz metin yazılmaz.
+    pub fn backup_to(&self, dest: &Path, key: &DatabaseKey) -> Result<(), StorageError> {
         if dest.exists() {
             return Err(StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 "yedek hedefi zaten var",
             )));
         }
-        if let Some(parent) = dest.parent() {
+        if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        let mut target = Connection::open(dest)?;
-        {
-            let backup = rusqlite::backup::Backup::new(&self.conn, &mut target)?;
-            backup.run_to_completion(64, std::time::Duration::from_millis(10), None)?;
-        }
-        target.close().map_err(|(_, e)| StorageError::Sql(e))?;
+        let path_literal = dest.to_string_lossy().replace('\'', "''");
+        self.conn.execute_batch(&format!(
+            "ATTACH DATABASE '{path_literal}' AS dim_backup KEY \"x'{}'\";",
+            key.hex()
+        ))?;
+        let export = self.conn.execute_batch("SELECT sqlcipher_export('dim_backup');");
+        let detach = self.conn.execute_batch("DETACH DATABASE dim_backup;");
+        export?;
+        detach?;
         Ok(())
     }
 
@@ -375,9 +380,11 @@ fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), Sto
     // `PRAGMA key` parametre kabul etmez; anahtar hex olarak verilir (alfabe sabit).
     conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key.hex()))
         .map_err(|_| StorageError::Open)?;
+    // `cipher_memory_security` tüm SQLCipher build'lerinde yok; eksikse
+    // bağlantıyı düşürmemeli, yalnız bu sertleştirme atlanır.
+    let _ = conn.execute_batch("PRAGMA cipher_memory_security = ON;");
     conn.execute_batch(
-        "PRAGMA cipher_memory_security = ON;
-         PRAGMA foreign_keys = ON;
+        "PRAGMA foreign_keys = ON;
          PRAGMA secure_delete = ON;
          PRAGMA temp_store = MEMORY;
          PRAGMA synchronous = NORMAL;
@@ -543,7 +550,7 @@ mod tests {
              VALUES ('c1','Yedek','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
             [],
         ).expect("ekle");
-        db.backup_to(&backup).expect("yedek");
+        db.backup_to(&backup, &key()).expect("yedek");
 
         let restored = Database::open(&backup, &key()).expect("geri aç");
         let count: i64 = restored

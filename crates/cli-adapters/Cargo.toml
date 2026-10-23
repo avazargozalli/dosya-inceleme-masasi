@@ -1,0 +1,14 @@
+[package]
+name = "dim-cli-adapters"
+description = "Dosya İnceleme Masası — resmî CLI adaptör sicili"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
