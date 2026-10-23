@@ -541,16 +541,13 @@ pub fn document_parse(
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
     let mut worker = spawn_worker()?;
-    let caps = worker.capabilities().unwrap_or_else(|_| serde_json::json!({}));
+    let caps = worker
+        .capabilities()
+        .unwrap_or_else(|_| serde_json::json!({}));
     let ocr_enabled = ocr.unwrap_or(false);
     let lang = ocr_lang.unwrap_or_else(|| "eng".to_string());
-    let extraction = worker.extract_text(
-        &data,
-        &blob.mime,
-        ocr_enabled,
-        &lang,
-        password.as_deref(),
-    )?;
+    let extraction =
+        worker.extract_text(&data, &blob.mime, ocr_enabled, &lang, password.as_deref())?;
     worker.shutdown();
 
     // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü
@@ -561,10 +558,7 @@ pub fn document_parse(
         .unwrap_or("unknown");
     let settings = format!(
         "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}",
-        blob.mime,
-        ocr_enabled,
-        lang,
-        extraction.engine_version
+        blob.mime, ocr_enabled, lang, extraction.engine_version
     );
     let settings_hash = hex::encode(Sha256::digest(settings.as_bytes()));
     let run = db.start_parse_run(
