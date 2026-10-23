@@ -59,6 +59,7 @@ pub fn run() {
             commands::claim_relation_list,
             commands::review_item_create,
             commands::review_item_list,
+            commands::review_supersede,
             commands::review_decide,
             commands::review_history,
             commands::vault_backup,

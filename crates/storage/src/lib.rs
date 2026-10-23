@@ -112,9 +112,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0005_claim_relations",
         sql: include_str!("migrations/0005_claim_relations.sql"),
     },
+    Migration {
+        version: 6,
+        name: "0006_review_superseded",
+        sql: include_str!("migrations/0006_review_superseded.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -467,6 +472,51 @@ mod tests {
             MIGRATIONS.len(),
             usize::try_from(CURRENT_SCHEMA_VERSION).unwrap_or(0)
         );
+    }
+
+    #[test]
+    fn migration_0006_preserves_review_decisions() {
+        let conn = rusqlite::Connection::open_in_memory().expect("bağlantı");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("pragma");
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= 5) {
+            conn.execute_batch(migration.sql).expect("v5 şeması");
+        }
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO review_items (id,case_id,item_kind,payload,source_anchor_ids,state,created_at,updated_at)
+             VALUES ('i1','c1','note_candidate','{}','[]','accepted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO review_decisions (id,review_item_id,decision,reviewer_label,rationale,decided_at)
+             VALUES ('d1','i1','accept','avukat','kabul','2026-01-01T00:00:00Z');",
+        )
+        .expect("v5 verisi");
+
+        let m6 = MIGRATIONS
+            .iter()
+            .find(|m| m.version == 6)
+            .expect("0006 var");
+        conn.execute_batch(m6.sql).expect("0006 uygulanır");
+
+        let items: i64 = conn
+            .query_row("SELECT count(*) FROM review_items", [], |r| r.get(0))
+            .expect("öğe");
+        let decisions: i64 = conn
+            .query_row("SELECT count(*) FROM review_decisions", [], |r| r.get(0))
+            .expect("karar");
+        assert_eq!(items, 1, "öğe korunmalı");
+        assert_eq!(decisions, 1, "karar cascade ile silinmemeli");
+
+        conn.execute(
+            "UPDATE review_items SET superseded_by_item_id=NULL, superseded_at='2026-01-02T00:00:00Z' WHERE id='i1'",
+            [],
+        )
+        .expect("superseded işareti yazılmalı");
+        let mut stmt = conn
+            .prepare("PRAGMA foreign_key_check")
+            .expect("fk sorgusu");
+        let violations = stmt.query_map([], |_| Ok(())).expect("fk tarama").count();
+        assert_eq!(violations, 0);
     }
 
     #[test]

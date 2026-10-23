@@ -28,3 +28,34 @@ GitHub Actions `ci`: 6/6 iş yeşil (sözleşme, arayüz, rust ×2, masaüstü, 
 
 - Kurulum/kaldırma deneyimi ve WebView2 yolu F16'ya bağlı.
 - Windows testleri ayrı `windows-check` işinde; her push'ta koşmaz.
+
+## Worker'ın pakete gömülmesi (F02-T07)
+
+- `scripts/build-worker.sh`: PyInstaller **onedir** (`dim-worker.spec`), `workers/document[all]`
+  bağımlılıkları venv'e kurulur, çıktı `apps/desktop/src-tauri/resources/worker/` altına kopyalanır.
+- `tauri.conf.json` `bundle.resources: ["resources/worker/**/*"]` — macOS'ta
+  `Contents/Resources/resources/worker/` altına düşer.
+- `bundled_worker_exe()` bu çift `resources` yolunu da arar (önceki hâlde yalnız
+  `Contents/Resources/worker` aranıyordu → paketli uygulamada `E_WORKER_MISSING`).
+- NPM paketleri yayınlanan sürümlere sabitlendi (`@tauri-apps/api|cli 2.12.4`,
+  `plugin-dialog 2.8.3`); `pnpm-lock.yaml` manifest ile eşitlendi.
+
+### Gerçek doğrulama (macOS arm64, imzasız paket)
+
+`dim-aarch64-apple-darwin.zip` indirildi, `.app` açıldı, paket içindeki ikili
+doğrudan NDJSON ile konuşturuldu:
+
+```
+$ printf '{"v":1,"id":"1","method":"ping","params":{}}\n' | .../worker/dim-worker
+{"v":1,"id":"1","ok":true,"result":{"pong":true,"workerVersion":"0.1.0"}}
+
+$ ... capabilities
+pdf 1.24.14 · docx 1.1.2 · udf 1 · image 10.4.0 · ocr eng+osd · maxPages 2000
+```
+
+### Kalan
+
+- **Tesseract ikilisi pakete gömülmedi**; OCR için sistemde kurulu olmalı, yoksa
+  `E_OCR_MISSING`. Dil verisi (`tur`) de paketlenmiyor.
+- Windows paketi (`windows-binary`) kurucu üretmiyor; F16 kapsamında.
+- `.app` imzasız; Gatekeeper uyarısı F16'da çözülecek.

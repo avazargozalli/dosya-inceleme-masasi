@@ -93,6 +93,8 @@ pub struct ReviewItemRow {
     pub ai_run_id: Option<String>,
     pub state: String,
     pub target_entity_id: Option<String>,
+    pub superseded_by_item_id: Option<String>,
+    pub superseded_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub row_version: i64,
@@ -147,7 +149,7 @@ fn valid_claim_relation(value: &str) -> bool {
 fn valid_review_state(value: &str) -> bool {
     matches!(
         value,
-        "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence"
+        "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence" | "superseded"
     )
 }
 
@@ -463,7 +465,7 @@ impl Database {
 
     pub fn get_review_item(&self, id: &str) -> Result<Option<ReviewItemRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
+            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,superseded_by_item_id,superseded_at,created_at,updated_at,row_version
              FROM review_items WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_item).optional()?)
@@ -474,21 +476,32 @@ impl Database {
         case_id: &str,
         state: Option<&str>,
     ) -> Result<Vec<ReviewItemRow>, StorageError> {
-        let sql = if state.is_some() {
-            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
-             FROM review_items WHERE case_id=?1 AND state=?2 ORDER BY created_at ASC"
-        } else {
-            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
-             FROM review_items WHERE case_id=?1 ORDER BY created_at ASC"
+        let base = "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,superseded_by_item_id,superseded_at,created_at,updated_at,row_version FROM review_items WHERE case_id=?1";
+        let (sql, only_superseded) = match state {
+            Some("superseded") => (
+                format!("{base} AND superseded_at IS NOT NULL ORDER BY created_at ASC"),
+                true,
+            ),
+            Some(_) => (
+                format!("{base} AND state=?2 AND superseded_at IS NULL ORDER BY created_at ASC"),
+                false,
+            ),
+            None => (format!("{base} ORDER BY created_at ASC"), false),
         };
-        let mut stmt = self.conn().prepare(sql)?;
+        let mut stmt = self.conn().prepare(&sql)?;
         let mut out = Vec::new();
         if let Some(state) = state {
             if !valid_review_state(state) {
                 return Err(StorageError::InvalidSetting);
             }
-            for row in stmt.query_map(rusqlite::params![case_id, state], map_item)? {
-                out.push(row?);
+            if only_superseded {
+                for row in stmt.query_map([case_id], map_item)? {
+                    out.push(row?);
+                }
+            } else {
+                for row in stmt.query_map(rusqlite::params![case_id, state], map_item)? {
+                    out.push(row?);
+                }
             }
         } else {
             for row in stmt.query_map([case_id], map_item)? {
@@ -550,6 +563,62 @@ impl Database {
             decision,
             reviewer,
             &serde_json::json!({}),
+        )?;
+        self.get_review_item(item_id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// Bir inceleme öğesini daha yeni bir adayla değiştirir. Eski öğe silinmez,
+    /// `superseded` olarak işaretlenir ve yerine geçen öğe kimliği saklanır;
+    /// kabul/ret kararı geçmişi olduğu gibi kalır. Zaten karara bağlanmış
+    /// (kabul/düzeltme) kayıt da yeni adayla değiştirilebilir; ret edilmiş ya da
+    /// daha önce değiştirilmiş kayıt değiştirilemez.
+    pub fn supersede_review_item(
+        &self,
+        item_id: &str,
+        superseded_by_item_id: &str,
+    ) -> Result<ReviewItemRow, StorageError> {
+        if item_id == superseded_by_item_id {
+            return Err(StorageError::InvalidSetting);
+        }
+        let item = self
+            .get_review_item(item_id)?
+            .ok_or(StorageError::NotFound)?;
+        let replacement = self
+            .get_review_item(superseded_by_item_id)?
+            .ok_or(StorageError::NotFound)?;
+        if item.case_id != replacement.case_id {
+            return Err(StorageError::NotFound);
+        }
+        if !matches!(
+            item.state.as_str(),
+            "pending" | "needs_more_evidence" | "accepted" | "edited"
+        ) {
+            return Err(StorageError::InvalidSetting);
+        }
+        if !matches!(replacement.state.as_str(), "pending" | "accepted") {
+            return Err(StorageError::InvalidSetting);
+        }
+        let now = now_iso();
+        self.conn().execute(
+            "UPDATE review_items SET superseded_by_item_id=?1, superseded_at=?2, updated_at=?2, row_version=row_version+1
+             WHERE id=?3 AND superseded_at IS NULL",
+            rusqlite::params![superseded_by_item_id, now, item_id],
+        )?;
+        let updated = self
+            .get_review_item(item_id)?
+            .ok_or(StorageError::NotFound)?;
+        if updated.superseded_at.is_none() {
+            return Err(StorageError::Conflict {
+                expected: item.row_version,
+                actual: updated.row_version,
+            });
+        }
+        self.append_audit(
+            "review_item",
+            Some(item_id),
+            "supersede",
+            "local-user",
+            &serde_json::json!({ "supersededBy": superseded_by_item_id }),
         )?;
         self.get_review_item(item_id)?.ok_or(StorageError::NotFound)
     }
@@ -623,6 +692,14 @@ fn map_claim_relation(row: &Row<'_>) -> rusqlite::Result<ClaimRelationRow> {
 fn map_item(row: &Row<'_>) -> rusqlite::Result<ReviewItemRow> {
     let payload: String = row.get(4)?;
     let anchors: String = row.get(5)?;
+    let stored_state: String = row.get(7)?;
+    let superseded_by_item_id: Option<String> = row.get(9)?;
+    let superseded_at: Option<String> = row.get(10)?;
+    let state = if superseded_at.is_some() {
+        "superseded".to_string()
+    } else {
+        stored_state
+    };
     Ok(ReviewItemRow {
         id: row.get(0)?,
         case_id: row.get(1)?,
@@ -631,11 +708,13 @@ fn map_item(row: &Row<'_>) -> rusqlite::Result<ReviewItemRow> {
         payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
         source_anchor_ids: serde_json::from_str(&anchors).unwrap_or_default(),
         ai_run_id: row.get(6)?,
-        state: row.get(7)?,
+        state,
         target_entity_id: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
-        row_version: row.get(11)?,
+        superseded_by_item_id,
+        superseded_at,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        row_version: row.get(13)?,
     })
 }
 
@@ -996,6 +1075,134 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code(), "E_DB_SETTING");
+    }
+
+    #[test]
+    fn supersede_marks_item_and_keeps_decision_history() {
+        let s = setup();
+        let old =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "claim_candidate".into(),
+                    payload: serde_json::json!({"text": "eski"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("eski");
+        s.db.decide_review_item(&old.id, "accept", None, "avukat", "kabul")
+            .expect("karar");
+        let new =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "claim_candidate".into(),
+                    payload: serde_json::json!({"text": "yeni"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("yeni");
+
+        let before = s.db.get_review_item(&old.id).expect("oku").expect("var");
+        let result =
+            s.db.supersede_review_item(&old.id, &new.id)
+                .expect("değiştir");
+        assert_eq!(result.state, "superseded");
+        assert_eq!(
+            result.superseded_by_item_id.as_deref(),
+            Some(new.id.as_str())
+        );
+        assert_eq!(result.row_version, before.row_version + 1);
+        assert_eq!(
+            s.db.review_history(&old.id).expect("geçmiş").len(),
+            1,
+            "kabul kararı korunmalı"
+        );
+        assert!(s
+            .db
+            .decide_review_item(&old.id, "reject", None, "avukat", "")
+            .is_err());
+        let superseded =
+            s.db.list_review_items(&s.case_id, Some("superseded"))
+                .expect("liste");
+        assert_eq!(superseded.len(), 1);
+        assert_eq!(superseded[0].id, old.id);
+        assert!(s.db.verify_audit_chain().expect("zincir") >= 4);
+    }
+
+    #[test]
+    fn supersede_rejects_self_cross_case_and_rejected() {
+        let s = setup();
+        let a =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "note_candidate".into(),
+                    payload: serde_json::json!({"text": "a"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("a");
+        assert_eq!(
+            s.db.supersede_review_item(&a.id, &a.id).unwrap_err().code(),
+            "E_DB_SETTING"
+        );
+
+        let other_case =
+            s.db.create_case(&NewCase {
+                title: "Başka".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let foreign = s.db.create_review_item(
+            &other_case.id,
+            &NewReviewItem {
+                item_kind: "note_candidate".into(),
+                payload: serde_json::json!({}),
+                source_anchor_ids: vec![s.anchor_id.clone()],
+                ai_run_id: None,
+            },
+        );
+        assert!(foreign.is_err(), "başka dosyanın anchor'ı reddedilmeli");
+
+        let rejected =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "note_candidate".into(),
+                    payload: serde_json::json!({"text": "ret"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("ret");
+        s.db.decide_review_item(&rejected.id, "reject", None, "avukat", "")
+            .expect("ret kararı");
+        let target =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "note_candidate".into(),
+                    payload: serde_json::json!({"text": "aday"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("aday");
+        assert_eq!(
+            s.db.supersede_review_item(&rejected.id, &target.id)
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
     }
 
     #[test]

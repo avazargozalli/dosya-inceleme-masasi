@@ -535,7 +535,19 @@ fn bundled_worker_exe() -> Option<PathBuf> {
     [
         dir.join("worker").join(name),
         dir.join("..").join("Resources").join("worker").join(name),
+        // Tauri `resources/worker/**` ifadesini macOS'ta
+        // Contents/Resources/resources/worker altına kopyalar; Windows'ta
+        // aynı yapı resources\\resources\\worker olur.
+        dir.join("..")
+            .join("Resources")
+            .join("resources")
+            .join("worker")
+            .join(name),
         dir.join("resources").join("worker").join(name),
+        dir.join("resources")
+            .join("resources")
+            .join("worker")
+            .join(name),
     ]
     .into_iter()
     .find(|candidate| candidate.is_file())
@@ -923,6 +935,17 @@ pub fn claim_relation_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_claim_relations(&claim_id)?)
+}
+
+#[tauri::command]
+pub fn review_supersede(
+    state: State<'_, AppState>,
+    item_id: String,
+    superseded_by_item_id: String,
+) -> Result<ReviewItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.supersede_review_item(&item_id, &superseded_by_item_id)?)
 }
 
 #[tauri::command]

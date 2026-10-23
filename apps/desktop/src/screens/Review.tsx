@@ -41,6 +41,15 @@ const ITEM_KIND: Record<string, string> = {
   task_candidate: "Görev adayı",
 };
 
+const ITEM_STATE: Record<string, string> = {
+  pending: "Bekliyor",
+  accepted: "Kabul",
+  rejected: "Ret",
+  edited: "Düzeltildi",
+  needs_more_evidence: "Delil bekliyor",
+  superseded: "Yerine geçildi",
+};
+
 export function Review() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -66,6 +75,7 @@ export function Review() {
   const [draftText, setDraftText] = useState("");
   const [editJson, setEditJson] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [supersedeTargets, setSupersedeTargets] = useState<Record<string, string>>({});
 
   useEffect(() => {
     (async () => {
@@ -222,6 +232,21 @@ export function Review() {
 
   const pending = items.filter((i) => i.state === "pending" || i.state === "needs_more_evidence");
   const decided = items.filter((i) => !(i.state === "pending" || i.state === "needs_more_evidence"));
+  const replaceable = decided.filter((i) => i.state === "accepted" || i.state === "edited");
+
+  async function supersede(item: ReviewItemRow, oldItemId: string) {
+    if (!oldItemId) return;
+    setBusy(true);
+    try {
+      await api.reviewSupersede(oldItemId, item.id);
+      setSupersedeTargets((prev) => ({ ...prev, [item.id]: "" }));
+      await load(caseId);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="page" style={{ maxWidth: 1020 }}>
@@ -509,6 +534,35 @@ export function Review() {
                     </>
                   )}
                 </div>
+                {replaceable.length > 0 ? (
+                  <div className="row" style={{ justifyContent: "flex-end" }}>
+                    <div className="field" style={{ flex: "2 1 220px" }}>
+                      <label htmlFor={`sup-${item.id}`}>Yerine geçeceği kayıt</label>
+                      <select
+                        id={`sup-${item.id}`}
+                        className="input"
+                        value={supersedeTargets[item.id] ?? ""}
+                        onChange={(e) =>
+                          setSupersedeTargets((prev) => ({ ...prev, [item.id]: e.target.value }))
+                        }
+                      >
+                        <option value="">Kayıt seçin…</option>
+                        {replaceable.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {ITEM_STATE[d.state] ?? d.state} · {ITEM_KIND[d.itemKind] ?? d.itemKind} · {formatTimestamp(d.createdAt)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      className="btn ghost"
+                      disabled={busy || !supersedeTargets[item.id]}
+                      onClick={() => void supersede(item, supersedeTargets[item.id] ?? "")}
+                    >
+                      Yerine geç
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ))
           )}
@@ -521,7 +575,7 @@ export function Review() {
                   <div key={item.id} className="row" style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
                     <span className="small">{ITEM_KIND[item.itemKind] ?? item.itemKind}</span>
                     <span className={`badge ${item.state === "accepted" ? "ok" : item.state === "rejected" ? "danger" : "warn"}`}>
-                      {item.state}
+                      {ITEM_STATE[item.state] ?? item.state}
                     </span>
                   </div>
                 ))}

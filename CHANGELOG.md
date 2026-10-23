@@ -28,6 +28,12 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.8.0] — 2026-10-23 — F02 worker paketleme
+
+- PyInstaller onedir worker `.app` içine gömülüyor; `bundled_worker_exe()` çift `resources` yolunu arıyor
+- Tauri NPM paketleri yayınlanan sürümlere sabitlendi, lockfile eşitlendi
+- Paketlenmiş ikili macOS arm64'te ping/capabilities ile doğrulandı (PyMuPDF 1.24.14, DOCX, UDF, OCR)
+
 ## [0.7.0] — 2026-10-23 — F06 kalanları
 
 - DOCX dipnot/sonnot/yorum/izlenen değişiklik envanteri metne eklenir

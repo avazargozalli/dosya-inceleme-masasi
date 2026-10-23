@@ -281,8 +281,10 @@ export type ReviewItemRow = {
   payload: unknown;
   sourceAnchorIds: string[];
   aiRunId: string | null;
-  state: "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence";
+  state: "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence" | "superseded";
   targetEntityId: string | null;
+  supersededByItemId: string | null;
+  supersededAt: string | null;
   createdAt: string;
   updatedAt: string;
   rowVersion: number;
@@ -638,6 +640,8 @@ export const api = {
       reviewer: "local-user",
       rationale,
     }),
+  reviewSupersede: (itemId: string, supersededByItemId: string) =>
+    invoke<ReviewItemRow>("review_supersede", { itemId, supersededByItemId }),
   reviewHistory: (itemId: string) => invoke<ReviewDecisionRow[]>("review_history", { itemId }),
   anchorCreate: (input: {
     caseId: string;
