@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AnchorRow, Case, CasePatch, Database, DatabaseKey, Document, DocumentVersion, EventRow, NewAnchor,
-    NewCase, NewEvent, NewNote, NewPage, NewTask, NoteRow, PageRow, ParseRun, SearchHit, TaskRow,
+    AnchorRow, Case, CasePatch, Database, DatabaseKey, Document, DocumentVersion, EventRow,
+    NewAnchor, NewCase, NewEvent, NewNote, NewPage, NewTask, NoteRow, PageRow, ParseRun, SearchHit,
+    TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -618,7 +619,10 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         .collect::<String>();
     let backup_dir = root.join(format!("DimYedek-{stamp}"));
     if backup_dir.exists() {
-        return Err(ApiError::new("E_BACKUP_EXISTS", "Aynı adlı yedek klasörü zaten var."));
+        return Err(ApiError::new(
+            "E_BACKUP_EXISTS",
+            "Aynı adlı yedek klasörü zaten var.",
+        ));
     }
     std::fs::create_dir_all(backup_dir.join("blobs"))?;
 
@@ -629,7 +633,10 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
 
     let mut files: Vec<serde_json::Value> = Vec::new();
     let mut total: u64 = 0;
-    let blob_src = vault_path.parent().unwrap_or_else(|| Path::new(".")).join("blobs");
+    let blob_src = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs");
     if blob_src.is_dir() {
         for entry in std::fs::read_dir(&blob_src)? {
             let entry = entry?;
@@ -660,7 +667,8 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         "dbSha256": db_hash,
         "blobs": files,
     });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|_| ApiError::new("E_BACKUP", "Manifest üretilemedi."))?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| ApiError::new("E_BACKUP", "Manifest üretilemedi."))?;
     std::fs::write(backup_dir.join("manifest.json"), &manifest_bytes)?;
 
     // Yedeğin açılabildiğini doğrula: bozuk yedek "başarılı" sayılmaz.
@@ -671,11 +679,19 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
 
     let manifest_hash = hex::encode(Sha256::digest(&manifest_bytes));
     let file_count = files.len() + 3;
-    let _ = db.append_audit("backup", None, "create", "local-user", &serde_json::json!({"files": file_count}));
+    let _ = db.append_audit(
+        "backup",
+        None,
+        "create",
+        "local-user",
+        &serde_json::json!({"files": file_count}),
+    );
     Ok(BackupView {
         path: backup_dir.to_string_lossy().to_string(),
         file_count,
-        total_bytes: total + std::fs::metadata(&backup_db)?.len() + std::fs::metadata(backup_dir.join("vault.dimvault"))?.len(),
+        total_bytes: total
+            + std::fs::metadata(&backup_db)?.len()
+            + std::fs::metadata(backup_dir.join("vault.dimvault"))?.len(),
         manifest_hash,
     })
 }
@@ -691,11 +707,17 @@ pub fn vault_restore(backup_dir: String, dest_dir: String) -> Result<RestoreView
     }
     for required in ["vault.dimvault", "vault.db", "manifest.json"] {
         if !src.join(required).is_file() {
-            return Err(ApiError::new("E_RESTORE_INVALID", "Seçilen klasör geçerli bir yedek değil."));
+            return Err(ApiError::new(
+                "E_RESTORE_INVALID",
+                "Seçilen klasör geçerli bir yedek değil.",
+            ));
         }
     }
     if dest.join("vault.dimvault").exists() {
-        return Err(ApiError::new("E_RESTORE_DEST_NOT_EMPTY", "Hedef klasörde zaten bir kasa var."));
+        return Err(ApiError::new(
+            "E_RESTORE_DEST_NOT_EMPTY",
+            "Hedef klasörde zaten bir kasa var.",
+        ));
     }
     std::fs::create_dir_all(dest.join("blobs"))?;
     std::fs::copy(src.join("vault.dimvault"), dest.join("vault.dimvault"))?;
@@ -712,5 +734,8 @@ pub fn vault_restore(backup_dir: String, dest_dir: String) -> Result<RestoreView
             }
         }
     }
-    Ok(RestoreView { vault_path: dest.to_string_lossy().to_string(), file_count: count + 3 })
+    Ok(RestoreView {
+        vault_path: dest.to_string_lossy().to_string(),
+        file_count: count + 3,
+    })
 }
