@@ -262,29 +262,39 @@ impl WorkerClient {
 
     /// Terimleri PDF'ten gerçekten çıkarır. `remaining` boş değilse çağıran
     /// taraf çıktıyı kullanmamalıdır; bu kontrol worker'ın kendi doğrulamasıdır.
-    pub fn redact(&mut self, data: &[u8], terms: &[String]) -> Result<RedactionOutcome, WorkerError> {
+    pub fn redact(
+        &mut self,
+        data: &[u8],
+        terms: &[String],
+    ) -> Result<RedactionOutcome, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-        let result = self.request(
-            "redact",
-            json!({"contentBase64": encoded, "terms": terms}),
-        )?;
-        let pdf_b64 = result.get("pdfBase64").and_then(Value::as_str).ok_or(WorkerError::BadResponse)?;
+        let result = self.request("redact", json!({"contentBase64": encoded, "terms": terms}))?;
+        let pdf_b64 = result
+            .get("pdfBase64")
+            .and_then(Value::as_str)
+            .ok_or(WorkerError::BadResponse)?;
         let pdf = base64::engine::general_purpose::STANDARD
             .decode(pdf_b64)
             .map_err(|_| WorkerError::BadResponse)?;
-        let hits: Vec<RedactionHit> = serde_json::from_value(
-            result.get("hits").cloned().unwrap_or_else(|| json!([])),
-        )
-        .map_err(|_| WorkerError::BadResponse)?;
+        let hits: Vec<RedactionHit> =
+            serde_json::from_value(result.get("hits").cloned().unwrap_or_else(|| json!([])))
+                .map_err(|_| WorkerError::BadResponse)?;
         let remaining: Vec<String> = serde_json::from_value(
-            result.get("remaining").cloned().unwrap_or_else(|| json!([])),
+            result
+                .get("remaining")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
         )
         .map_err(|_| WorkerError::BadResponse)?;
         Ok(RedactionOutcome {
             pdf,
             hits,
             remaining,
-            engine: result.get("engine").and_then(Value::as_str).unwrap_or("pymupdf").to_string(),
+            engine: result
+                .get("engine")
+                .and_then(Value::as_str)
+                .unwrap_or("pymupdf")
+                .to_string(),
             engine_version: result
                 .get("engineVersion")
                 .and_then(Value::as_str)

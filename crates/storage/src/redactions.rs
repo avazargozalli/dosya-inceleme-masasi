@@ -46,7 +46,9 @@ impl Database {
         case_id: &str,
         new: &NewRedactionPlan,
     ) -> Result<RedactionPlanRow, StorageError> {
-        let version = self.get_version(&new.document_version_id)?.ok_or(StorageError::NotFound)?;
+        let version = self
+            .get_version(&new.document_version_id)?
+            .ok_or(StorageError::NotFound)?;
         if version.case_id != case_id {
             return Err(StorageError::NotFound);
         }
@@ -65,7 +67,13 @@ impl Database {
                 now
             ],
         )?;
-        self.append_audit("redaction_plan", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "redaction_plan",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_redaction_plan(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -114,7 +122,10 @@ impl Database {
         Ok(stmt.query_row([id], map_plan).optional()?)
     }
 
-    pub fn list_redaction_plans(&self, case_id: &str) -> Result<Vec<RedactionPlanRow>, StorageError> {
+    pub fn list_redaction_plans(
+        &self,
+        case_id: &str,
+    ) -> Result<Vec<RedactionPlanRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,plan_version,state,reviewer,output_profile,created_at,updated_at
              FROM redaction_plans WHERE case_id=?1 ORDER BY created_at DESC",
@@ -165,9 +176,18 @@ mod tests {
             })
             .expect("case");
         let blob = db.create_blob_record("st-redact", 10, "aad").expect("blob");
-        let doc = db.create_document(&case.id, "Belge", "pdf", None, "unknown").expect("doc");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
         let version = db
-            .add_version(&doc.id, &case.id, &blob, &"a".repeat(64), 10, "application/pdf")
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"a".repeat(64),
+                10,
+                "application/pdf",
+            )
             .expect("v");
         (db, case.id, version.id)
     }
@@ -189,10 +209,21 @@ mod tests {
         assert_eq!(plan.state, "draft");
 
         let regions = vec![
-            RedactionRegionInput { page_index: 0, rect: [1.0, 2.0, 3.0, 4.0], term_hash: "h1".into() },
-            RedactionRegionInput { page_index: 1, rect: [5.0, 6.0, 7.0, 8.0], term_hash: "h2".into() },
+            RedactionRegionInput {
+                page_index: 0,
+                rect: [1.0, 2.0, 3.0, 4.0],
+                term_hash: "h1".into(),
+            },
+            RedactionRegionInput {
+                page_index: 1,
+                rect: [5.0, 6.0, 7.0, 8.0],
+                term_hash: "h2".into(),
+            },
         ];
-        assert_eq!(db.add_redaction_regions(&plan.id, &regions).expect("bölge"), 2);
+        assert_eq!(
+            db.add_redaction_regions(&plan.id, &regions).expect("bölge"),
+            2
+        );
         let applied = db.get_redaction_plan(&plan.id).expect("get").expect("var");
         assert_eq!(applied.state, "applied");
         assert_eq!(db.list_redaction_plans(&case_id).expect("liste").len(), 1);
