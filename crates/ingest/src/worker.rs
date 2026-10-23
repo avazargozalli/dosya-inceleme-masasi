@@ -303,6 +303,18 @@ impl WorkerClient {
         })
     }
 
+    /// DOCX rapor üretir. Girdi çekirdekte hazırlanır; worker DB görmez.
+    pub fn render_report(&mut self, payload: &serde_json::Value) -> Result<Vec<u8>, WorkerError> {
+        let result = self.request("render_report", json!({"payload": payload}))?;
+        let encoded = result
+            .get("docxBase64")
+            .and_then(Value::as_str)
+            .ok_or(WorkerError::BadResponse)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| WorkerError::BadResponse)
+    }
+
     pub fn shutdown(mut self) {
         let _ = self.request("shutdown", json!({}));
         let _ = self.child.wait();

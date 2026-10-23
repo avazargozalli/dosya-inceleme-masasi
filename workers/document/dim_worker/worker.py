@@ -11,10 +11,10 @@ import sys
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .engines import EngineError, capabilities, decode_content, extract, redact_pdf
+from .engines import EngineError, capabilities, decode_content, extract, redact_pdf, render_report
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
 
-METHODS = {"ping", "capabilities", "extract_text", "redact", "shutdown"}
+METHODS = {"ping", "capabilities", "extract_text", "redact", "render_report", "shutdown"}
 
 
 def _require_version(frame: dict[str, Any]) -> None:
@@ -50,6 +50,15 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         return ok(rid, {"bye": True}), True
 
     data = decode_content(params)
+
+    if method == "render_report":
+        payload = params.get("payload")
+        if not isinstance(payload, dict):
+            raise ProtocolError("E_PARAMS", "payload nesnesi zorunlu")
+        data = render_report(payload)
+        import base64 as _b64
+
+        return ok(rid, {"docxBase64": _b64.b64encode(data).decode(), "bytes": len(data)}), False
 
     if method == "redact":
         terms = params.get("terms")

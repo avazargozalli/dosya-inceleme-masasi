@@ -97,6 +97,13 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type ExportResult = {
+  path: string;
+  bytes: number;
+  sha256: string;
+  record: { id: string; exportType: string; status: string; outputHash: string | null; createdAt: string };
+};
+
 export type RedactionResult = {
   document: DocumentRow;
   version: DocumentVersionRow;
@@ -396,6 +403,12 @@ export const api = {
 
   documentRedact: (versionId: string, terms: string[]) =>
     invoke<RedactionResult>("document_redact", { versionId, terms }),
+  exportJson: (caseId: string, destPath: string) =>
+    invoke<ExportResult>("export_json", { caseId, destPath }),
+  exportCsv: (caseId: string, destPath: string) =>
+    invoke<ExportResult>("export_csv", { caseId, destPath }),
+  exportDocx: (caseId: string, destPath: string) =>
+    invoke<ExportResult>("export_docx", { caseId, destPath }),
 
   precedentList: () => invoke<PrecedentRow[]>("precedent_list"),
   precedentCreate: (input: {

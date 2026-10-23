@@ -301,3 +301,48 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
         engine="pymupdf",
         engine_version=version,
     )
+
+
+def render_report(payload: dict[str, Any]) -> bytes:
+    """Duruşma/devir raporunu DOCX olarak üretir. Girdi çağıran çekirdekten gelir;
+    worker veritabanına erişmez. İçerik düz metindir, HTML çalıştırılmaz."""
+    try:
+        import docx  # type: ignore
+        from docx.shared import Pt  # type: ignore
+    except ImportError as exc:
+        raise EngineError("E_DOCX_MISSING", "python-docx bu worker paketinde yok") from exc
+
+    document = docx.Document()
+    document.add_heading(str(payload.get("title") or "Dosya raporu"), 0)
+    meta = payload.get("meta") or {}
+    if isinstance(meta, dict):
+        for key, value in meta.items():
+            if value not in (None, ""):
+                p = document.add_paragraph()
+                p.add_run(f"{key}: ").bold = True
+                p.add_run(str(value))
+
+    for section in payload.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        document.add_heading(str(section.get("heading") or ""), level=1)
+        rows = section.get("rows") or []
+        if rows and isinstance(rows[0], list):
+            table = document.add_table(rows=1, cols=len(rows[0]))
+            table.style = "Light Grid Accent 1"
+            header = table.rows[0].cells
+            for index, value in enumerate(rows[0]):
+                header[index].text = str(value)
+            for row in rows[1:]:
+                cells = table.add_row().cells
+                for index, value in enumerate(row[: len(cells)]):
+                    cells[index].text = str(value)
+        for line in section.get("lines") or []:
+            document.add_paragraph(str(line))
+
+    footer = document.add_paragraph()
+    run = footer.add_run("Bu rapor Dosya İnceleme Masası tarafından üretildi; hukuki sonuç değildir.")
+    run.font.size = Pt(8)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()

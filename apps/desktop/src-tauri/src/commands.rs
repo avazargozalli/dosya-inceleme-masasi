@@ -5,10 +5,11 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
     AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow, Database, DatabaseKey, Document,
-    DocumentVersion, EventRow, EvidenceLinkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
-    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
-    NewReviewItem, NewTask, NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
-    RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow, SearchHit, TaskRow,
+    DocumentVersion, EventRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck,
+    NewClaim, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
+    NewRedactionPlan, NewReviewItem, NewTask, NoteRow, PageRow, ParseRun, PrecedentNoteRow,
+    PrecedentRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow,
+    SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -1048,4 +1049,200 @@ pub fn document_redact(
         hits: outcome.hits.len(),
         remaining: outcome.remaining,
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportView {
+    pub path: String,
+    pub bytes: usize,
+    pub sha256: String,
+    pub record: ExportRow,
+}
+
+fn write_export(path: &str, bytes: &[u8]) -> Result<(), ApiError> {
+    let target = PathBuf::from(path.trim());
+    if path.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Çıktı konumu boş olamaz."));
+    }
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&target, bytes)?;
+    Ok(())
+}
+
+fn case_payload(db: &Database, case_id: &str) -> Result<serde_json::Value, ApiError> {
+    let case = db.get_case(case_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let documents = db.list_documents(case_id)?;
+    let events = db.list_events(case_id)?;
+    let claims = db.list_claims(case_id)?;
+    let notes = db.list_notes(case_id)?;
+    let tasks = db.list_tasks(case_id, true)?;
+    let anchors = db.list_anchors(case_id)?;
+    let mut evidence = Vec::new();
+    for claim in &claims {
+        for link in db.list_evidence_links(&claim.id)? {
+            evidence.push(serde_json::json!({
+                "claimId": link.claim_id,
+                "anchorId": link.source_anchor_id,
+                "relation": link.relation,
+                "rationale": link.rationale,
+            }));
+        }
+    }
+    Ok(serde_json::json!({
+        "format": "dim-case-export",
+        "version": 1,
+        "exportedAt": dim_storage::now_iso(),
+        "case": case,
+        "documents": documents,
+        "events": events,
+        "claims": claims,
+        "evidenceLinks": evidence,
+        "notes": notes,
+        "tasks": tasks,
+        "anchors": anchors,
+    }))
+}
+
+#[tauri::command]
+pub fn export_json(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let payload = case_payload(db, &case_id)?;
+    let bytes = serde_json::to_vec_pretty(&payload).map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "json", &[], "user_selected_path", &sha)?;
+    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains(|c: char| c == ',' || c == '"' || c == '\n') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+#[tauri::command]
+pub fn export_csv(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let mut out = String::from("kayit,tarih,tur,baslik,durum\n");
+    for event in db.list_events(&case_id)? {
+        out.push_str(&format!(
+            "olay,{},{},{},{}\n",
+            csv_escape(event.sortable_date.as_deref().unwrap_or("")),
+            csv_escape(&event.date_role),
+            csv_escape(&event.title),
+            csv_escape(&event.status)
+        ));
+    }
+    for task in db.list_tasks(&case_id, true)? {
+        out.push_str(&format!(
+            "gorev,{},{},{},{}\n",
+            csv_escape(task.user_due_date.as_deref().unwrap_or("")),
+            csv_escape("gorev"),
+            csv_escape(&task.title),
+            csv_escape(&task.status)
+        ));
+    }
+    let bytes = out.into_bytes();
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &sha)?;
+    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+}
+
+#[tauri::command]
+pub fn export_docx(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let case = db.get_case(&case_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let events = db.list_events(&case_id)?;
+    let claims = db.list_claims(&case_id)?;
+    let documents = db.list_documents(&case_id)?;
+    let notes = db.list_notes(&case_id)?;
+    let tasks = db.list_tasks(&case_id, true)?;
+
+    let event_rows: Vec<Vec<String>> = std::iter::once(vec![
+        "Tarih".to_string(),
+        "Tür".to_string(),
+        "Başlık".to_string(),
+        "Kesinlik".to_string(),
+        "Durum".to_string(),
+    ])
+    .chain(events.iter().map(|e| {
+        vec![
+            e.sortable_date.clone().unwrap_or_else(|| "bilinmiyor".into()),
+            e.date_role.clone(),
+            e.title.clone(),
+            e.date_precision.clone(),
+            e.status.clone(),
+        ]
+    }))
+    .collect();
+    let claim_rows: Vec<Vec<String>> = std::iter::once(vec!["İddia".to_string(), "Tür".to_string()])
+        .chain(claims.iter().map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()]))
+        .collect();
+    let document_rows: Vec<Vec<String>> = std::iter::once(vec![
+        "Belge".to_string(),
+        "Tür".to_string(),
+        "Durum".to_string(),
+    ])
+    .chain(documents.iter().map(|d| vec![d.display_name.clone(), d.document_type.clone(), d.status.clone()]))
+    .collect();
+    let task_rows: Vec<Vec<String>> = std::iter::once(vec![
+        "Görev".to_string(),
+        "Tarih".to_string(),
+        "Durum".to_string(),
+    ])
+    .chain(tasks.iter().map(|t| {
+        vec![
+            t.title.clone(),
+            t.user_due_date.clone().unwrap_or_default(),
+            t.status.clone(),
+        ]
+    }))
+    .collect();
+
+    let payload = serde_json::json!({
+        "title": format!("{} — dosya raporu", case.title),
+        "meta": {
+            "Dosya": case.title,
+            "Esas/referans": case.reference_code.clone().unwrap_or_default(),
+            "Tür": case.case_kind,
+            "Hassasiyet": case.sensitivity,
+            "Oluşturma": case.created_at,
+        },
+        "sections": [
+            {"heading": "Kronoloji", "rows": event_rows},
+            {"heading": "İddialar", "rows": claim_rows},
+            {"heading": "Belge dizini", "rows": document_rows},
+            {"heading": "Görevler", "rows": task_rows},
+            {"heading": "Notlar", "lines": notes.iter().map(|n| format!("{}: {}", if n.title.is_empty() { "Not" } else { &n.title }, n.body)).collect::<Vec<_>>()},
+        ],
+    });
+
+    let mut worker = spawn_worker()?;
+    let bytes = worker.render_report(&payload)?;
+    worker.shutdown();
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "docx", &[], "user_selected_path", &sha)?;
+    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
 }
