@@ -15,8 +15,8 @@ Bir faz **ancak** kabul kanıtı `docs/releases/Fxx/` altına yazıldı ve CI ye
 | F06 | Metin, OCR, UDF, kaynak konumları | v0.5.0 | 🚧 |
 | F07 | Arama ve belge okuyucu | v0.6.0 | 🚧 |
 | F08 | Kronoloji, iddia, inceleme, görev | v0.7.0 | 🚧 |
-| F09 | AI sağlayıcı çerçevesi | v0.8.0 | ⬜ |
-| F10 | Dört CLI adaptörü | v0.9.0 | ⬜ |
+| F09 | AI sağlayıcı çerçevesi | v0.8.0 | 🚧 |
+| F10 | Dört CLI adaptörü | v0.9.0 | 🚧 |
 | F11 | Kaynaklı AI inceleme araçları | v0.10.0 | ⬜ |
 | F12 | Emsal ve atıf kontrolü | v0.11.0 | ⬜ |
 | F13 | Gerçek karartma ve paylaşım | v0.12.0 | ⬜ |

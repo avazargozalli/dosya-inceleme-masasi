@@ -4,9 +4,31 @@ Türkiye'deki avukatlar için **yerel, şifreli ve kaynak izlenebilir** dosya in
 Belgeler cihazdan çıkmadan okunur; her otomatik bulgu bir belge sürümüne ve kaynak konumuna
 bağlanır; yapay zekâ öneri üretir, hukuki kaydı yalnız avukat onayıyla oluşturur.
 
-> **Durum: pre-alpha (F02 — iskelet).** Bu depo çalışan bir ürün değildir. Fazlar
-> `docs/roadmap.md` içinde izlenir; bir faz ancak kabul kanıtı ve yeşil CI ile
-> tamamlanmış sayılır.
+> **Durum: pre-alpha (F02–F10 arası, kısmi).** Bu depo çalışan bir ürün değildir.
+> Fazlar `docs/roadmap.md` içinde izlenir; bir faz ancak kabul kanıtı ve yeşil CI
+> ile tamamlanmış sayılır.
+
+## Şu an gerçekten ne çalışıyor?
+
+| Yetenek | Durum | Nerede |
+|---|---|---|
+| Şifreli kasa oluşturma/açma (Argon2id + AES-256-GCM) | ✅ gerçek | `crates/vault` |
+| Kurtarma anahtarı (32 bayt, base32, tek gösterim) | ✅ gerçek | `crates/vault` |
+| SQLCipher veritabanı, 47 tablo, migrasyon checksum | ✅ gerçek | `crates/storage` |
+| Dosya (case) oluşturma, arşiv, geri dönüşümlü silme | ✅ gerçek | `crates/storage`, Dosyalar ekranı |
+| Belge içe aktarma: SHA-256, şifreli blob, sürüm | ✅ gerçek | `crates/ingest` |
+| PDF metin çıkarma (PyMuPDF worker) | ✅ gerçek (motor kuruluysa) | `workers/document` |
+| Tam metin arama (FTS5, dosya kapsamlı) | ✅ gerçek | Arama ekranı |
+| Kronoloji: tarih türü/kesinliği, bilinmeyen tarih | ✅ gerçek | Kronoloji ekranı |
+| Görevler (kullanıcı tarihli) | ✅ gerçek | Görevler ekranı |
+| OCR (Tesseract) | ❌ yok | F06 devamı |
+| Belge okuyucu / sayfaya atlama | ❌ yok | F07 devamı |
+| AI sağlayıcı bağlantısı | ❌ yok (`OffProvider`) | F09–F11 |
+| CLI adaptör yürütme | ❌ yok (yalnız sicil) | F10 |
+| Maskeleme, rapor, yedek paketi | ❌ yok | F13–F14 |
+
+“Buton var, iş yok” durumu bilinçli olarak engellenir: hazır olmayan ekranlar
+`Fxx` etiketiyle “hazır değil” der, sahte veri göstermez.
 
 ## Neden
 

@@ -16,24 +16,13 @@ pub enum ProviderType {
     Api,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     pub structured_output: bool,
     pub streaming: bool,
     pub tool_use: bool,
     pub max_context_tokens: Option<u32>,
-}
-
-impl Default for Capabilities {
-    fn default() -> Self {
-        Self {
-            structured_output: false,
-            streaming: false,
-            tool_use: false,
-            max_context_tokens: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
