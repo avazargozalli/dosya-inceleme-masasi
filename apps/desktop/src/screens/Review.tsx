@@ -53,10 +53,14 @@ export function Review() {
   const [busy, setBusy] = useState(false);
 
   const [claimText, setClaimText] = useState("");
-  const [claimKind, setClaimKind] = useState("allegation");
+  const [claimKind, setClaimKind] = useState("");
   const [linkAnchor, setLinkAnchor] = useState("");
-  const [linkRelation, setLinkRelation] = useState("supports_candidate");
+  const [linkRelation, setLinkRelation] = useState("");
   const [linkRationale, setLinkRationale] = useState("");
+  const [relations, setRelations] = useState<ClaimRelationRow[]>([]);
+  const [relationTarget, setRelationTarget] = useState("");
+  const [relationKind, setRelationKind] = useState("");
+  const [relationNote, setRelationNote] = useState("");
   const [draftKind, setDraftKind] = useState("note_candidate");
   const [draftAnchor, setDraftAnchor] = useState("");
   const [draftText, setDraftText] = useState("");
@@ -99,16 +103,22 @@ export function Review() {
   useEffect(() => {
     if (!selectedClaim) {
       setLinks([]);
+      setRelations([]);
       return;
     }
-    void api
-      .evidenceLinkList(selectedClaim.id)
-      .then(setLinks)
+    void Promise.all([
+      api.evidenceLinkList(selectedClaim.id),
+      api.claimRelationList(selectedClaim.id),
+    ])
+      .then(([linkRows, relationRows]) => {
+        setLinks(linkRows);
+        setRelations(relationRows);
+      })
       .catch((e) => setError(toApiError(e)));
   }, [selectedClaim]);
 
   async function addClaim() {
-    if (!caseId || claimText.trim().length === 0) return;
+    if (!caseId || claimText.trim().length === 0 || claimKind === "") return;
     setBusy(true);
     try {
       await api.claimCreate(caseId, {
@@ -118,6 +128,7 @@ export function Review() {
         sourceAnchorId: null,
       });
       setClaimText("");
+      setClaimKind("");
       await load(caseId);
     } catch (e) {
       setError(toApiError(e));
@@ -127,7 +138,7 @@ export function Review() {
   }
 
   async function addLink() {
-    if (!selectedClaim || !linkAnchor) return;
+    if (!selectedClaim || !linkAnchor || linkRelation === "") return;
     setBusy(true);
     try {
       await api.evidenceLinkCreate(caseId, {
@@ -138,6 +149,27 @@ export function Review() {
       });
       setLinkRationale("");
       setLinks(await api.evidenceLinkList(selectedClaim.id));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addClaimRelation() {
+    if (!selectedClaim || relationTarget === "" || relationKind === "") return;
+    setBusy(true);
+    try {
+      await api.claimRelationCreate(caseId, selectedClaim.id, {
+        relatedClaimId: relationTarget,
+        relation: relationKind,
+        rationale: relationNote.trim(),
+      });
+      setRelationTarget("");
+      setRelationKind("");
+      setRelationNote("");
+      setRelations(await api.claimRelationList(selectedClaim.id));
+      await load(caseId);
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -230,10 +262,11 @@ export function Review() {
           <div className="field" style={{ flex: "0 1 170px" }}>
             <label htmlFor="rv-kind">Tür</label>
             <select id="rv-kind" className="input" value={claimKind} onChange={(e) => setClaimKind(e.target.value)}>
+              <option value="">Tür seçin…</option>
               {Object.entries(CLAIM_KIND).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
-          <button className="btn primary" disabled={busy} onClick={() => void addClaim()}>Ekle</button>
+          <button className="btn primary" disabled={busy || claimKind === "" || claimText.trim().length === 0} onClick={() => void addClaim()}>Ekle</button>
         </div>
       </div>
 
@@ -300,6 +333,7 @@ export function Review() {
                 <div className="field">
                   <label htmlFor="rv-rel">İlişki</label>
                   <select id="rv-rel" className="input" value={linkRelation} onChange={(e) => setLinkRelation(e.target.value)}>
+                    <option value="">İlişki seçin…</option>
                     {Object.entries(RELATION).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
                 </div>
@@ -307,8 +341,79 @@ export function Review() {
                   <label htmlFor="rv-rat">Gerekçe</label>
                   <input id="rv-rat" className="input" value={linkRationale} onChange={(e) => setLinkRationale(e.target.value)} />
                 </div>
-                <button className="btn" disabled={busy || !linkAnchor} onClick={() => void addLink()}>Bağla</button>
+                <button className="btn" disabled={busy || !linkAnchor || linkRelation === ""} onClick={() => void addLink()}>Bağla</button>
               </div>
+
+              <h2 style={{ marginTop: 12 }}>İddia ilişkileri</h2>
+              {relations.length === 0 ? (
+                <p className="hint" style={{ margin: 0 }}>Bu iddiaya bağlı ilişki yok.</p>
+              ) : (
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {relations.map((rel) => {
+                    const outgoing = rel.claimId === selectedClaim.id;
+                    const otherId = outgoing ? rel.relatedClaimId : rel.claimId;
+                    const other = claims.find((c) => c.id === otherId);
+                    return (
+                      <li key={rel.id} className="small">
+                        {outgoing ? "→" : "←"} {CLAIM_RELATION[rel.relation] ?? rel.relation} ·{" "}
+                        {other?.claimText ?? "iddia"}
+                        {rel.rationale ? ` · ${rel.rationale}` : ""}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <div className="row">
+                <div className="field" style={{ flex: "1 1 180px" }}>
+                  <label htmlFor="rv-reltarget">İlgili iddia</label>
+                  <select
+                    id="rv-reltarget"
+                    className="input"
+                    value={relationTarget}
+                    onChange={(e) => setRelationTarget(e.target.value)}
+                  >
+                    <option value="">İddia seçin…</option>
+                    {claims
+                      .filter((c) => c.id !== selectedClaim.id)
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>{c.claimText}</option>
+                      ))}
+                  </select>
+                </div>
+                <div className="field" style={{ flex: "0 1 190px" }}>
+                  <label htmlFor="rv-relkind">İlişki türü</label>
+                  <select
+                    id="rv-relkind"
+                    className="input"
+                    value={relationKind}
+                    onChange={(e) => setRelationKind(e.target.value)}
+                  >
+                    <option value="">Tür seçin…</option>
+                    {Object.entries(CLAIM_RELATION).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field" style={{ flex: "2 1 160px" }}>
+                  <label htmlFor="rv-relnote">Gerekçe</label>
+                  <input
+                    id="rv-relnote"
+                    className="input"
+                    value={relationNote}
+                    onChange={(e) => setRelationNote(e.target.value)}
+                  />
+                </div>
+                <button
+                  className="btn"
+                  disabled={busy || relationTarget === "" || relationKind === ""}
+                  onClick={() => void addClaimRelation()}
+                >
+                  İlişkilendir
+                </button>
+              </div>
+              <p className="hint" style={{ margin: 0 }}>
+                Yanıt belgeye değil yanıtlanan iddiaya bağlanır; ilişki türü açıkça seçilir.
+              </p>
             </div>
           ) : null}
         </div>

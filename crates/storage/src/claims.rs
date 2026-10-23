@@ -864,18 +864,15 @@ mod tests {
     #[test]
     fn claim_relation_requires_explicit_type() {
         let s = setup();
-        let a = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
-            .expect("a");
-        let b = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Ödedim", "defense"))
-            .expect("b");
+        let a =
+            s.db.create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+                .expect("a");
+        let b =
+            s.db.create_claim(&s.case_id, &claim_of("Ödedim", "defense"))
+                .expect("b");
         for relation in ["", "response", "supports_candidate"] {
-            let err = s
-                .db
-                .link_claim_relation(
+            let err =
+                s.db.link_claim_relation(
                     &s.case_id,
                     &b.id,
                     &NewClaimRelation {
@@ -885,7 +882,11 @@ mod tests {
                     },
                 )
                 .unwrap_err();
-            assert_eq!(err.code(), "E_DB_SETTING", "ilişki {relation:?} reddedilmeli");
+            assert_eq!(
+                err.code(),
+                "E_DB_SETTING",
+                "ilişki {relation:?} reddedilmeli"
+            );
         }
         assert!(s.db.list_claim_relations(&a.id).expect("liste").is_empty());
     }
@@ -893,13 +894,11 @@ mod tests {
     #[test]
     fn claim_relation_rejects_self_and_cross_case() {
         let s = setup();
-        let a = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
-            .expect("a");
-        let self_link = s
-            .db
-            .link_claim_relation(
+        let a =
+            s.db.create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+                .expect("a");
+        let self_link =
+            s.db.link_claim_relation(
                 &s.case_id,
                 &a.id,
                 &NewClaimRelation {
@@ -911,9 +910,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(self_link.code(), "E_DB_SETTING");
 
-        let other_case = s
-            .db
-            .create_case(&NewCase {
+        let other_case =
+            s.db.create_case(&NewCase {
                 title: "Başka".into(),
                 case_kind: CaseKind::Review,
                 reference_code: None,
@@ -923,13 +921,14 @@ mod tests {
                 default_ai_policy: crate::AiPolicy::Off,
             })
             .expect("case");
-        let foreign = s
-            .db
-            .create_claim(&other_case.id, &claim_of("Başka dosya iddiası", "allegation"))
+        let foreign =
+            s.db.create_claim(
+                &other_case.id,
+                &claim_of("Başka dosya iddiası", "allegation"),
+            )
             .expect("foreign");
-        let cross = s
-            .db
-            .link_claim_relation(
+        let cross =
+            s.db.link_claim_relation(
                 &s.case_id,
                 &a.id,
                 &NewClaimRelation {
@@ -945,14 +944,12 @@ mod tests {
     #[test]
     fn response_to_marks_original_and_is_idempotent() {
         let s = setup();
-        let allegation = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
-            .expect("allegation");
-        let defense = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Kira ödendi", "defense"))
-            .expect("defense");
+        let allegation =
+            s.db.create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+                .expect("allegation");
+        let defense =
+            s.db.create_claim(&s.case_id, &claim_of("Kira ödendi", "defense"))
+                .expect("defense");
         assert_eq!(allegation.status, "draft");
 
         let input = NewClaimRelation {
@@ -960,14 +957,12 @@ mod tests {
             relation: "response_to".into(),
             rationale: "banka dekontu".into(),
         };
-        let first = s
-            .db
-            .link_claim_relation(&s.case_id, &defense.id, &input)
-            .expect("bağ");
-        let second = s
-            .db
-            .link_claim_relation(&s.case_id, &defense.id, &input)
-            .expect("tekrar");
+        let first =
+            s.db.link_claim_relation(&s.case_id, &defense.id, &input)
+                .expect("bağ");
+        let second =
+            s.db.link_claim_relation(&s.case_id, &defense.id, &input)
+                .expect("tekrar");
         assert_eq!(first.id, second.id);
 
         let updated = s.db.get_claim(&allegation.id).expect("oku").expect("var");
@@ -983,17 +978,14 @@ mod tests {
     #[test]
     fn response_to_requires_allegation_target() {
         let s = setup();
-        let first_defense = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Ödedim", "defense"))
-            .expect("defense");
-        let second_defense = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Yine ödedim", "defense"))
-            .expect("defense2");
-        let err = s
-            .db
-            .link_claim_relation(
+        let first_defense =
+            s.db.create_claim(&s.case_id, &claim_of("Ödedim", "defense"))
+                .expect("defense");
+        let second_defense =
+            s.db.create_claim(&s.case_id, &claim_of("Yine ödedim", "defense"))
+                .expect("defense2");
+        let err =
+            s.db.link_claim_relation(
                 &s.case_id,
                 &second_defense.id,
                 &NewClaimRelation {
@@ -1009,13 +1001,11 @@ mod tests {
     #[test]
     fn evidence_link_rejects_response_relation() {
         let s = setup();
-        let c = s
-            .db
-            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
-            .expect("claim");
-        let err = s
-            .db
-            .link_evidence(
+        let c =
+            s.db.create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+                .expect("claim");
+        let err =
+            s.db.link_evidence(
                 &s.case_id,
                 &NewEvidenceLink {
                     claim_id: c.id,
