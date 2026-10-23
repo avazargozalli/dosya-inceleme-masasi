@@ -591,13 +591,14 @@ pub fn document_parse(
         "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}",
         blob.mime, ocr_enabled, lang, extraction.engine_version
     );
-    let settings_hash = hex::encode(Sha256::digest(settings.as_bytes()));
+    // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
+    // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
     let run = db.start_parse_run(
         &version_id,
         &version.case_id,
         &extraction.engine,
         &extraction.engine_version,
-        &settings_hash,
+        &settings,
     )?;
     let pages: Vec<NewPage> = extraction
         .pages

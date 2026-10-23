@@ -505,6 +505,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_run_settings_hash_is_canonical_and_not_double_hashed() {
+        let (db, case_id, version_id) = setup();
+        let settings = "application/pdf|ocr=false|lang=eng|tessdata=unknown";
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", settings)
+            .expect("koşu");
+        let stored: String = db
+            .conn()
+            .query_row(
+                "SELECT settings_hash FROM parse_runs WHERE id = ?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .expect("ayar özeti");
+        let expected = settings_hash("pymupdf", "1.24", settings);
+        assert_eq!(
+            stored, expected,
+            "ayar özeti engine|sürüm|ayarlar üzerinden hesaplanmalı"
+        );
+        assert_ne!(
+            stored,
+            settings_hash("pymupdf", "1.24", &expected),
+            "ayar özeti ikinci kez hash'lenmemeli"
+        );
+    }
+
+    #[test]
     fn parse_run_stores_pages_and_search_finds_them() {
         let (db, case_id, version_id) = setup();
         let run = db
