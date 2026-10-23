@@ -4,6 +4,7 @@
 //! `DatabaseKey` olarak verilir; `Debug` çıktısında görünmez. Açık metin
 //! veritabanı dosyası hiçbir aşamada oluşturulmaz.
 
+mod ai;
 mod anchors;
 mod cases;
 mod claims;
@@ -17,6 +18,10 @@ mod redactions;
 mod tasks;
 mod timeline;
 
+pub use ai::{
+    AiCandidateRow, AiContextItemRow, AiRunRow, CoverageReport, NewAiContextItem, NewAiRun,
+    NewTransferConsent, ProviderProfileRow, TransferConsentRow,
+};
 pub use anchors::{AnchorRow, NewAnchor};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use claims::{

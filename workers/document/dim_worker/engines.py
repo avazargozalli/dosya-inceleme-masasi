@@ -346,3 +346,60 @@ def render_report(payload: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def _report_html(payload: dict[str, Any]) -> str:
+    import html as _html
+
+    esc = _html.escape
+    parts = [f"<h1>{esc(str(payload.get('title') or 'Dosya raporu'))}</h1>"]
+    meta = payload.get("meta") or {}
+    if isinstance(meta, dict):
+        parts.append("<p>")
+        for key, value in meta.items():
+            if value not in (None, ""):
+                parts.append(f"<b>{esc(str(key))}:</b> {esc(str(value))}<br/>")
+        parts.append("</p>")
+
+    for section in payload.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        parts.append(f"<h2>{esc(str(section.get('heading') or ''))}</h2>")
+        rows = section.get("rows") or []
+        if rows and isinstance(rows[0], list):
+            parts.append('<table border="1" cellspacing="0" cellpadding="4">')
+            header = rows[0]
+            parts.append("<tr>" + "".join(f"<th>{esc(str(c))}</th>" for c in header) + "</tr>")
+            for row in rows[1:]:
+                parts.append("<tr>" + "".join(f"<td>{esc(str(c))}</td>" for c in row) + "</tr>")
+            parts.append("</table>")
+        for line in section.get("lines") or []:
+            parts.append(f"<p>{esc(str(line))}</p>")
+    parts.append(
+        "<p><i>Bu rapor Dosya İnceleme Masası tarafından üretildi; hukuki sonuç değildir.</i></p>"
+    )
+    return "".join(parts)
+
+
+def render_report_pdf(payload: dict[str, Any]) -> bytes:
+    """Raporu PDF olarak üretir. HTML kaçışlanır; kullanıcı verisi HTML olarak
+    çalıştırılmaz. Uzun içerik `Story` ile sayfalara akıtılır."""
+    pymupdf = _pymupdf()
+    html = _report_html(payload)
+    story = pymupdf.Story(html=html)
+    buffer = io.BytesIO()
+    writer = pymupdf.DocumentWriter(buffer)
+    rect = pymupdf.paper_rect("a4")
+    where = rect + (36, 36, -36, -36)
+    more = True
+    pages = 0
+    while more:
+        device = writer.begin_page(rect)
+        more, _ = story.place(where)
+        story.draw(device)
+        writer.end_page()
+        pages += 1
+        if pages > 200:
+            break
+    writer.close()
+    return buffer.getvalue()

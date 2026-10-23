@@ -4,12 +4,12 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow, Database, DatabaseKey, Document,
-    DocumentVersion, EventRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck,
-    NewClaim, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
-    NewRedactionPlan, NewReviewItem, NewTask, NoteRow, PageRow, ParseRun, PrecedentNoteRow,
-    PrecedentRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow,
-    SearchHit, TaskRow,
+    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow, CoverageReport,
+    Database, DatabaseKey, Document, DocumentVersion, EventRow, EvidenceLinkRow, ExportRow,
+    NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent, NewEvidenceLink, NewNote, NewPage,
+    NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent,
+    NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ProviderProfileRow, RedactionPlanRow,
+    RedactionRegionInput, ReviewDecisionRow, ReviewItemRow, SearchHit, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -1278,4 +1278,208 @@ pub fn export_docx(
         sha256: sha,
         record,
     })
+}
+
+#[tauri::command]
+pub fn export_pdf(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let case = db.get_case(&case_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let events = db.list_events(&case_id)?;
+    let claims = db.list_claims(&case_id)?;
+    let documents = db.list_documents(&case_id)?;
+    let notes = db.list_notes(&case_id)?;
+    let tasks = db.list_tasks(&case_id, true)?;
+
+    let payload = serde_json::json!({
+        "title": format!("{} — dosya raporu", case.title),
+        "meta": {
+            "Dosya": case.title,
+            "Esas/referans": case.reference_code.clone().unwrap_or_default(),
+            "Tür": case.case_kind,
+            "Hassasiyet": case.sensitivity,
+            "Oluşturma": case.created_at,
+        },
+        "sections": [
+            {"heading": "Kronoloji", "rows": std::iter::once(vec!["Tarih".to_string(),"Tür".to_string(),"Başlık".to_string(),"Kesinlik".to_string(),"Durum".to_string()]).chain(events.iter().map(|e| vec![e.sortable_date.clone().unwrap_or_else(|| "bilinmiyor".into()), e.date_role.clone(), e.title.clone(), e.date_precision.clone(), e.status.clone()])).collect::<Vec<_>>()},
+            {"heading": "İddialar", "rows": std::iter::once(vec!["İddia".to_string(),"Tür".to_string()]).chain(claims.iter().map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()])).collect::<Vec<_>>()},
+            {"heading": "Belge dizini", "rows": std::iter::once(vec!["Belge".to_string(),"Tür".to_string(),"Durum".to_string()]).chain(documents.iter().map(|d| vec![d.display_name.clone(), d.document_type.clone(), d.status.clone()])).collect::<Vec<_>>()},
+            {"heading": "Görevler", "rows": std::iter::once(vec!["Görev".to_string(),"Tarih".to_string(),"Durum".to_string()]).chain(tasks.iter().map(|t| vec![t.title.clone(), t.user_due_date.clone().unwrap_or_default(), t.status.clone()])).collect::<Vec<_>>()},
+            {"heading": "Notlar", "lines": notes.iter().map(|n| format!("{}: {}", if n.title.is_empty() { "Not" } else { &n.title }, n.body)).collect::<Vec<_>>()},
+        ],
+    });
+
+    let mut worker = spawn_worker()?;
+    let bytes = worker.render_report_pdf(&payload)?;
+    worker.shutdown();
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &sha)?;
+    Ok(ExportView { path: dest_path, bytes: bytes.len(), sha256: sha, record })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageView {
+    pub path: String,
+    pub files: usize,
+    pub sha256: String,
+    pub record: ExportRow,
+}
+
+/// Devir paketi: dosya metadatası + rapor iskeleti + manifest. Belge baytları
+/// pakete otomatik konmaz; kullanıcı maskeli kopyaları ayrıca ekler.
+#[tauri::command]
+pub fn export_package(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_dir: String,
+) -> Result<PackageView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    if dest_dir.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Paket konumu boş olamaz."));
+    }
+    let payload = case_payload(db, &case_id)?;
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+        .replace([':', '-'], "")
+        .chars()
+        .take(13)
+        .collect::<String>();
+    let dir = PathBuf::from(dest_dir.trim()).join(format!("DimDevir-{stamp}"));
+    if dir.exists() {
+        return Err(ApiError::new("E_PACKAGE_EXISTS", "Aynı adlı paket klasörü var."));
+    }
+    std::fs::create_dir_all(&dir)?;
+
+    let case_bytes = serde_json::to_vec_pretty(&payload).map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    std::fs::write(dir.join("case.json"), &case_bytes)?;
+    let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json) ve manifest'i taşır.\nBelge baytları kasa dışına otomatik çıkarılmaz; paylaşılacak belgeler için\nMaskeleme ekranından maskeli kopya üretip bu klasöre ekleyin.\n\nPaket açık metindir; şifreli taşıma F16 kapsamındadır.\n";
+    std::fs::write(dir.join("README.txt"), readme)?;
+
+    let files = [
+        ("case.json", sha256_file(&dir.join("case.json"))?),
+        ("README.txt", sha256_file(&dir.join("README.txt"))?),
+    ];
+    let manifest = serde_json::json!({
+        "format": "dim-handoff",
+        "version": 1,
+        "createdAt": dim_storage::now_iso(),
+        "files": files.iter().map(|(name, hash)| serde_json::json!({"name": name, "sha256": hash})).collect::<Vec<_>>(),
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|_| ApiError::new("E_EXPORT", "Manifest üretilemedi."))?;
+    std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
+    let sha = hex::encode(Sha256::digest(&manifest_bytes));
+    let record = db.record_export(&case_id, "package", &[], "user_selected_path", &sha)?;
+    Ok(PackageView { path: dir.to_string_lossy().to_string(), files: 3, sha256: sha, record })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiOverview {
+    pub providers: Vec<ProviderProfileRow>,
+    pub runs: Vec<AiRunRow>,
+    pub coverage: CoverageReport,
+}
+
+#[tauri::command]
+pub fn ai_overview(state: State<'_, AppState>, case_id: String) -> Result<AiOverview, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.ensure_off_provider()?;
+    Ok(AiOverview {
+        providers: db.list_provider_profiles()?,
+        runs: db.list_ai_runs(&case_id)?,
+        coverage: db.coverage_report(&case_id)?,
+    })
+}
+
+#[tauri::command]
+pub fn ai_consent_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    provider_snapshot: String,
+    purpose: String,
+    document_ids: Vec<String>,
+) -> Result<TransferConsentRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_transfer_consent(&NewTransferConsent {
+        provider_snapshot,
+        case_scope: case_id,
+        purpose,
+        selected_document_ids: document_ids,
+        expires_at: None,
+        consent_text_version: "1".into(),
+    })?)
+}
+
+#[tauri::command]
+pub fn ai_consent_revoke(state: State<'_, AppState>, consent_id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.revoke_transfer_consent(&consent_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn ai_run_start(
+    state: State<'_, AppState>,
+    case_id: String,
+    provider_id: String,
+    consent_id: String,
+    task_type: String,
+) -> Result<AiRunRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let profile = db
+        .list_provider_profiles()?
+        .into_iter()
+        .find(|p| p.id == provider_id)
+        .ok_or_else(|| ApiError::new("E_AI_PROVIDER", "Sağlayıcı profili bulunamadı."))?;
+    if profile.provider_type == "off" {
+        return Err(ApiError::new(
+            "E_AI_OFF",
+            "AI kapalı. Sağlayıcı bağlanmadan hiçbir içerik cihazdan çıkmaz.",
+        ));
+    }
+    Ok(db.start_ai_run(
+        &case_id,
+        &dim_storage::NewAiRun {
+            task_type,
+            provider_id,
+            model_snapshot: "unknown".into(),
+            input_manifest_hash: "pending".into(),
+            prompt_version: "1".into(),
+            output_schema_version: "1".into(),
+            consent_id,
+        },
+    )?)
+}
+
+#[tauri::command]
+pub fn ai_candidates_list(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AiCandidateRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_ai_candidates(&run_id)?)
+}
+
+#[tauri::command]
+pub fn ai_candidate_promote(
+    state: State<'_, AppState>,
+    candidate_id: String,
+    case_id: String,
+) -> Result<String, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.promote_candidate(&candidate_id, &case_id)?)
 }

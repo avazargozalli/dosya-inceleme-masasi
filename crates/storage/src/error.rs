@@ -36,6 +36,10 @@ pub enum StorageError {
     QuoteAmbiguous,
     #[error("alıntı hash'i içerikle uyuşmuyor")]
     QuoteHashMismatch,
+    #[error("geçerli aktarım onayı yok")]
+    AiConsent,
+    #[error("sağlayıcı profili bulunamadı")]
+    AiProvider,
 }
 
 impl StorageError {
@@ -56,6 +60,8 @@ impl StorageError {
             Self::QuoteNotFound => "E_QUOTE_NOT_FOUND",
             Self::QuoteAmbiguous => "E_QUOTE_AMBIGUOUS",
             Self::QuoteHashMismatch => "E_QUOTE_HASH",
+            Self::AiConsent => "E_AI_CONSENT",
+            Self::AiProvider => "E_AI_PROVIDER",
         }
     }
 }

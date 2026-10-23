@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
+import { Exports } from "./screens/Exports";
 import { Precedents } from "./screens/Precedents";
 import { Redaction } from "./screens/Redaction";
+import { Ai } from "./screens/Ai";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
@@ -21,7 +23,9 @@ type Screen =
   | "review"
   | "precedents"
   | "redaction"
+  | "exports"
   | "ai"
+  | "ai-review"
   | "settings";
 
 const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
@@ -33,7 +37,9 @@ const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
   { id: "review", label: "İnceleme", phase: "F08" },
   { id: "precedents", label: "Emsal" },
   { id: "redaction", label: "Maskeleme" },
+  { id: "exports", label: "Çıktılar" },
   { id: "ai", label: "AI bağlantıları" },
+  { id: "ai-review", label: "AI inceleme" },
   { id: "settings", label: "Ayarlar" },
 ];
 
@@ -144,10 +150,14 @@ export function App() {
             <Review />
           ) : screen === "ai" ? (
             <Providers />
+          ) : screen === "ai-review" ? (
+            <Ai />
           ) : screen === "precedents" ? (
             <Precedents />
           ) : screen === "redaction" ? (
             <Redaction />
+          ) : screen === "exports" ? (
+            <Exports />
           ) : screen === "timeline" ? (
             <Timeline />
           ) : screen === "tasks" ? (

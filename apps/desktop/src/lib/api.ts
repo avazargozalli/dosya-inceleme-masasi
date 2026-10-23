@@ -97,6 +97,68 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type CoverageReport = {
+  documents: number;
+  versions: number;
+  parseRuns: number;
+  pages: number;
+  ocrPages: number;
+  segments: number;
+  emptyPages: number;
+  unparsedDocuments: number;
+  failedParseRuns: number;
+};
+
+export type ProviderProfileRow = {
+  id: string;
+  providerType: string;
+  adapterId: string;
+  executionEnvironment: string;
+  policyVersion: string;
+};
+
+export type AiRunRow = {
+  id: string;
+  caseId: string;
+  taskType: string;
+  providerId: string | null;
+  modelSnapshot: string;
+  status: string;
+  usageReport: string;
+  createdAt: string;
+  completedAt: string | null;
+};
+
+export type TransferConsentRow = {
+  id: string;
+  providerSnapshot: string;
+  caseScope: string;
+  purpose: string;
+  selectedDocumentIds: string[];
+  expiresAt: string | null;
+  consentTextVersion: string;
+  approvedAt: string;
+  revokedAt: string | null;
+};
+
+export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
+
+export type AiCandidateRow = {
+  id: string;
+  aiRunId: string;
+  candidateType: string;
+  structuredPayload: string;
+  validationState: string;
+  validationErrors: string;
+};
+
+export type PackageResult = {
+  path: string;
+  files: number;
+  sha256: string;
+  record: { id: string; exportType: string; status: string; createdAt: string };
+};
+
 export type ExportResult = {
   path: string;
   bytes: number;
@@ -409,6 +471,20 @@ export const api = {
     invoke<ExportResult>("export_csv", { caseId, destPath }),
   exportDocx: (caseId: string, destPath: string) =>
     invoke<ExportResult>("export_docx", { caseId, destPath }),
+  exportPdf: (caseId: string, destPath: string) =>
+    invoke<ExportResult>("export_pdf", { caseId, destPath }),
+  exportPackage: (caseId: string, destDir: string) =>
+    invoke<PackageResult>("export_package", { caseId, destDir }),
+
+  aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
+  aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
+    invoke<TransferConsentRow>("ai_consent_create", { caseId, providerSnapshot, purpose, documentIds }),
+  aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
+  aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
+    invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),
+  aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),
+  aiCandidatePromote: (candidateId: string, caseId: string) =>
+    invoke<string>("ai_candidate_promote", { candidateId, caseId }),
 
   precedentList: () => invoke<PrecedentRow[]>("precedent_list"),
   precedentCreate: (input: {

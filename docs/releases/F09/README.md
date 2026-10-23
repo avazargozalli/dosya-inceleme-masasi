@@ -1,24 +1,22 @@
-# F09 — AI sağlayıcı çerçevesi, yerel model ve API
+# F09 — AI sağlayıcı çerçevesi
 
-- **Sürüm etiketi:** `v0.8.0` (hedef)
-- **Durum:** İskelet — gerçek sağlayıcı bağlantısı yok
+- **Sürüm etiketi:** `v0.8.0`
+- **Durum:** Kısmi
 - **Tarih:** 2026-10-23
 
 | İş | Durum | Kanıt |
 |---|---|---|
-| F09-T01 | ✅ | `crates/providers`: tek `Provider` sözleşmesi, `OffProvider` |
-| F09-T02 | ✅ | yetenek kapısı (`structured_output`, `context_limit`) |
-| F09-T03 | 🚧 | `ai_runs`/`transfer_*` tabloları hazır; kayıt akışı F09 devamında |
-| F09-T04 | ⬜ | yerel model indirme/doğrulama |
-| F09-T05 | ⬜ | doğrudan API profili |
+| F09-T01 tek `Provider` sözleşmesi | ✅ | `crates/providers` |
+| F09-T02 `OffProvider` | ✅ | her istek `E_AI_OFF` |
+| F09-T03 aktarım onayı | ✅ | `transfer_consents`, iptal/süre/kapsam kontrolü |
+| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` |
+| F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT` (5 test) |
+| F09-T06 yerel model indirme/doğrulama | ⬜ | — |
+| F09-T07 API profili | ⬜ | — |
+| F09-T08 gönderim önizlemesi (tam) | 🚧 | onay formu var; bayt düzeyi önizleme yok |
 
 ## Dürüst durum
 
-Bu fazda **hiçbir sağlayıcıya istek gönderilmez**. `OffProvider` her isteği
-`E_AI_OFF` ile reddeder. Yerel model ve API seçenekleri arayüzde bağlantı
-kartı olarak görünmez; "çalışıyor" izlenimi verilmez.
-
-## Doğrulama
-
-`cargo test -p dim-providers` — 5 test: kapalı sağlayıcı, yetenek kapısı,
-bağlam sınırı, bayt sayımı, kararlı hata kodları. CI: **bekliyor**.
+AI **varsayılan olarak kapalıdır**. Kayıtlı tek profil `off` ise arayüz `E_AI_OFF`
+gösterir ve çalıştırma başlatılamaz. Gerçek sağlayıcı bağlanmadı; `ai_run_start`
+sağlayıcı `off` değilse kayıt açar, ancak gerçek yürütücü F11 kapsamındadır.

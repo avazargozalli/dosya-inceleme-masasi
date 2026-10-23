@@ -3,6 +3,18 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.5.0] — 2026-10-23 — F09/F11/F14
+
+### Eklendi
+
+- Aktarım onayı (`transfer_consents`): dosya kapsamlı, süreli, iptal edilebilir; onaysız çalıştırma `E_AI_CONSENT`
+- AI çalıştırma sicili: `ai_runs`, `ai_context_items`, `transfer_receipts`
+- Aday kaydı ve inceleme kuyruğuna terfi; aday hukuki kayıt sayılmaz
+- Kapsamlılık raporu: belge, sayfa, OCR, boş sayfa, ayrıştırılmamış belge
+- PDF rapor çıktısı (HTML kaçışlı, `Story` ile sayfalama)
+- Devir paketi: `case.json` + `manifest.json` + `README.txt`
+- Çıktılar ve AI inceleme ekranları
+
 ## [0.4.0] — 2026-10-23 — F08/F10/F12/F13
 
 ### Eklendi

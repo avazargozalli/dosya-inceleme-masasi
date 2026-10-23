@@ -1,0 +1,150 @@
+import { useEffect, useState } from "react";
+import { open as openDirectory, save as saveFile } from "@tauri-apps/plugin-dialog";
+import { api, toApiError, type ApiError, type CaseRow, type ExportResult, type PackageResult } from "../lib/api";
+
+const FORMATS: Array<{
+  id: "json" | "csv" | "docx" | "pdf";
+  title: string;
+  description: string;
+  ext: string;
+}> = [
+  { id: "json", title: "JSON", description: "Tam metadata: dosya, belgeler, olaylar, iddialar, notlar, görevler, anchor'lar", ext: "json" },
+  { id: "csv", title: "CSV", description: "Kronoloji ve görevler; tablo programlarında açılır", ext: "csv" },
+  { id: "docx", title: "DOCX", description: "Duruşma/devir raporu; düzenlenebilir belge", ext: "docx" },
+  { id: "pdf", title: "PDF", description: "Aynı raporun salt-okunur çıktısı", ext: "pdf" },
+];
+
+export function Exports() {
+  const [cases, setCases] = useState<CaseRow[]>([]);
+  const [caseId, setCaseId] = useState("");
+  const [result, setResult] = useState<ExportResult | null>(null);
+  const [pkg, setPkg] = useState<PackageResult | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await api.caseList(false);
+        setCases(rows);
+        if (rows.length > 0) setCaseId((prev) => prev || rows[0]!.id);
+      } catch (e) {
+        setError(toApiError(e));
+      }
+    })();
+  }, []);
+
+  async function run(format: "json" | "csv" | "docx" | "pdf") {
+    const selected = cases.find((c) => c.id === caseId);
+    if (!selected) return;
+    const target = await saveFile({
+      title: "Çıktıyı kaydet",
+      defaultPath: `${selected.title.replace(/[^\w\- ığüşöçİĞÜŞÖÇ]+/g, "_")}.${format}`,
+      filters: [{ name: format.toUpperCase(), extensions: [format] }],
+    });
+    if (typeof target !== "string") return;
+    setBusy(format);
+    setError(null);
+    setResult(null);
+    try {
+      const fn =
+        format === "json" ? api.exportJson : format === "csv" ? api.exportCsv : format === "docx" ? api.exportDocx : api.exportPdf;
+      setResult(await fn(caseId, target));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runPackage() {
+    if (!caseId) return;
+    const dir = await openDirectory({ directory: true, multiple: false, title: "Devir paketi klasörünü seç" });
+    if (typeof dir !== "string") return;
+    setBusy("package");
+    setError(null);
+    setPkg(null);
+    try {
+      setPkg(await api.exportPackage(caseId, dir));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="page" style={{ maxWidth: 900 }}>
+      <div className="page-head">
+        <h1>Çıktılar</h1>
+        <p className="lead">
+          Her dışa aktarma kasa içinde kayda alınır: tür, hedef ve çıktı hash'i. Belge baytları
+          yalnız açıkça seçilen formatta ve yalnız kullanıcı seçtiği yola yazılır.
+        </p>
+      </div>
+
+      {error ? (
+        <div className="notice danger" role="alert">
+          <strong>{error.code}</strong> — {error.message}
+        </div>
+      ) : null}
+
+      <div className="card">
+        <div className="field" style={{ maxWidth: 420 }}>
+          <label htmlFor="ex-case">Dosya</label>
+          <select id="ex-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
+            {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+            {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
+          </select>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
+          {FORMATS.map((format) => (
+            <div key={format.id} className="card tight" style={{ background: "var(--surface)" }}>
+              <div className="card-head">
+                <div>
+                  <h2>{format.title}</h2>
+                  <p className="card-sub">{format.description}</p>
+                </div>
+                <button className="btn" disabled={!caseId || busy !== null} onClick={() => void run(format.id)}>
+                  {busy === format.id ? "Yazılıyor…" : "Kaydet"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {result ? (
+          <div className="notice ok">
+            <strong>{result.record.exportType.toUpperCase()}</strong> yazıldı: {result.path}
+            <br />
+            {result.bytes} bayt · sha256 {result.sha256.slice(0, 16)}…
+          </div>
+        ) : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Devir paketi</h2>
+            <p className="card-sub">case.json + manifest + README; belge baytları otomatik eklenmez</p>
+          </div>
+          <button className="btn" disabled={!caseId || busy !== null} onClick={() => void runPackage()}>
+            {busy === "package" ? "Oluşturuluyor…" : "Paket oluştur"}
+          </button>
+        </div>
+        <p className="hint" style={{ margin: 0 }}>
+          Paylaşılacak belgeler için önce Maskeleme ekranından maskeli kopya üretin; paket açık
+          metindir, şifreli taşıma F16 kapsamındadır.
+        </p>
+        {pkg ? (
+          <div className="notice ok">
+            Paket hazır: {pkg.path}
+            <br />
+            {pkg.files} dosya · manifest {pkg.sha256.slice(0, 16)}…
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}

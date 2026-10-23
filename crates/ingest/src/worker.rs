@@ -315,6 +315,18 @@ impl WorkerClient {
             .map_err(|_| WorkerError::BadResponse)
     }
 
+    /// PDF rapor üretir (HTML kaçışlanmış, Story ile sayfalanmış).
+    pub fn render_report_pdf(&mut self, payload: &serde_json::Value) -> Result<Vec<u8>, WorkerError> {
+        let result = self.request("render_report_pdf", json!({"payload": payload}))?;
+        let encoded = result
+            .get("pdfBase64")
+            .and_then(Value::as_str)
+            .ok_or(WorkerError::BadResponse)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| WorkerError::BadResponse)
+    }
+
     pub fn shutdown(mut self) {
         let _ = self.request("shutdown", json!({}));
         let _ = self.child.wait();
