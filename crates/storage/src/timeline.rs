@@ -48,28 +48,48 @@ fn default_assertion() -> String {
 }
 
 fn valid_precision(value: &str) -> bool {
-    matches!(value, "day" | "month" | "year" | "range" | "approximate" | "unknown")
+    matches!(
+        value,
+        "day" | "month" | "year" | "range" | "approximate" | "unknown"
+    )
 }
 
 fn valid_role(value: &str) -> bool {
-    matches!(value, "event" | "document" | "notification" | "contract" | "hearing" | "deadline_candidate" | "unknown")
+    matches!(
+        value,
+        "event"
+            | "document"
+            | "notification"
+            | "contract"
+            | "hearing"
+            | "deadline_candidate"
+            | "unknown"
+    )
 }
 
 fn valid_assertion(value: &str) -> bool {
-    matches!(value, "user" | "party_claim" | "document" | "system_inference")
+    matches!(
+        value,
+        "user" | "party_claim" | "document" | "system_inference"
+    )
 }
 
 impl Database {
     pub fn create_event(&self, case_id: &str, new: &NewEvent) -> Result<EventRow, StorageError> {
-        if !valid_precision(&new.date_precision) || !valid_role(&new.date_role) || !valid_assertion(&new.assertion_kind) {
+        if !valid_precision(&new.date_precision)
+            || !valid_role(&new.date_role)
+            || !valid_assertion(&new.assertion_kind)
+        {
             return Err(StorageError::InvalidSetting);
         }
         if new.title.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
-        let exists: i64 = self
-            .conn()
-            .query_row("SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL", [case_id], |r| r.get(0))?;
+        let exists: i64 = self.conn().query_row(
+            "SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL",
+            [case_id],
+            |r| r.get(0),
+        )?;
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
@@ -77,7 +97,10 @@ impl Database {
         let sortable = if new.date_precision == "unknown" {
             None
         } else {
-            new.date_value.as_deref().map(str::trim).filter(|v| !v.is_empty())
+            new.date_value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
         };
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
@@ -99,7 +122,13 @@ impl Database {
                 now
             ],
         )?;
-        self.append_audit("event", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.append_audit(
+            "event",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"caseId": case_id}),
+        )?;
         self.get_event(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -137,7 +166,13 @@ impl Database {
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("event", Some(id), "confirm", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "event",
+            Some(id),
+            "confirm",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         self.get_event(id)?.ok_or(StorageError::NotFound)
     }
 
@@ -147,7 +182,13 @@ impl Database {
             "UPDATE events SET deleted_at=?1, updated_at=?1, row_version=row_version+1 WHERE id=?2",
             rusqlite::params![now, id],
         )?;
-        self.append_audit("event", Some(id), "soft_delete", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "event",
+            Some(id),
+            "soft_delete",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         Ok(())
     }
 }
@@ -210,9 +251,12 @@ mod tests {
     #[test]
     fn events_sort_by_date_and_unknown_last() {
         let (db, case_id) = setup();
-        db.create_event(&case_id, &event("Sonra", Some("2026-05-01"), "day")).expect("e1");
-        db.create_event(&case_id, &event("Bilinmeyen", None, "unknown")).expect("e2");
-        db.create_event(&case_id, &event("Önce", Some("2026-01-15"), "day")).expect("e3");
+        db.create_event(&case_id, &event("Sonra", Some("2026-05-01"), "day"))
+            .expect("e1");
+        db.create_event(&case_id, &event("Bilinmeyen", None, "unknown"))
+            .expect("e2");
+        db.create_event(&case_id, &event("Önce", Some("2026-01-15"), "day"))
+            .expect("e3");
 
         let rows = db.list_events(&case_id).expect("liste");
         let titles: Vec<_> = rows.iter().map(|r| r.title.as_str()).collect();
@@ -232,13 +276,17 @@ mod tests {
     #[test]
     fn invalid_precision_rejected() {
         let (db, case_id) = setup();
-        assert!(db.create_event(&case_id, &event("X", Some("2026-01-01"), "gun")).is_err());
+        assert!(db
+            .create_event(&case_id, &event("X", Some("2026-01-01"), "gun"))
+            .is_err());
     }
 
     #[test]
     fn confirm_is_idempotent_and_audited() {
         let (db, case_id) = setup();
-        let created = db.create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day")).expect("olay");
+        let created = db
+            .create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day"))
+            .expect("olay");
         let confirmed = db.confirm_event(&created.id).expect("onayla");
         assert_eq!(confirmed.status, "confirmed");
         assert!(db.confirm_event(&created.id).is_err());
@@ -248,6 +296,8 @@ mod tests {
     #[test]
     fn cross_case_event_creation_rejected() {
         let (db, _) = setup();
-        assert!(db.create_event("olmayan-dosya", &event("X", None, "unknown")).is_err());
+        assert!(db
+            .create_event("olmayan-dosya", &event("X", None, "unknown"))
+            .is_err());
     }
 }

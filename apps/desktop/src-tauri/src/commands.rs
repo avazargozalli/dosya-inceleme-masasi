@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
-use dim_storage::{Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewPage, ParseRun, SearchHit};
+use dim_storage::{
+    Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewPage, ParseRun,
+    SearchHit,
+};
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
 use tauri::State;
@@ -322,7 +325,11 @@ pub fn document_list(
 }
 
 #[tauri::command]
-pub fn event_create(state: State<'_, AppState>, case_id: String, input: NewEvent) -> Result<EventRow, ApiError> {
+pub fn event_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewEvent,
+) -> Result<EventRow, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.create_event(&case_id, &input)?)
@@ -371,8 +378,12 @@ pub struct ParseResultView {
 }
 
 fn spawn_worker() -> Result<WorkerClient, ApiError> {
-    let dir = dev_worker_dir()
-        .ok_or_else(|| ApiError::new("E_WORKER_MISSING", "Belge worker'ı bulunamadı (workers/document)."))?;
+    let dir = dev_worker_dir().ok_or_else(|| {
+        ApiError::new(
+            "E_WORKER_MISSING",
+            "Belge worker'ı bulunamadı (workers/document).",
+        )
+    })?;
     let python = std::env::var("DIM_WORKER_PYTHON").unwrap_or_else(|_| "python3".to_string());
     WorkerClient::spawn_dev(Path::new(&python), &dir).map_err(Into::into)
 }
@@ -380,13 +391,18 @@ fn spawn_worker() -> Result<WorkerClient, ApiError> {
 /// Belge sürümünü yerel worker'da ayrıştırır. Özgün blob çözülür, metin
 /// çıkarılır, sürümlü `parse_run` + sayfa + segment kayıtları yazılır.
 #[tauri::command]
-pub fn document_parse(state: State<'_, AppState>, version_id: String) -> Result<ParseResultView, ApiError> {
+pub fn document_parse(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<ParseResultView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
 
-    let version = db.get_version(&version_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let version = db
+        .get_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
     let blob = db
         .blob_for_version(&version_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
@@ -401,7 +417,13 @@ pub fn document_parse(state: State<'_, AppState>, version_id: String) -> Result<
     let extraction = worker.extract_text(&data, &blob.mime)?;
     worker.shutdown();
 
-    let run = db.start_parse_run(&version_id, &version.case_id, &extraction.engine, &extraction.engine_version, &blob.mime)?;
+    let run = db.start_parse_run(
+        &version_id,
+        &version.case_id,
+        &extraction.engine,
+        &extraction.engine_version,
+        &blob.mime,
+    )?;
     let pages: Vec<NewPage> = extraction
         .pages
         .iter()
@@ -410,12 +432,20 @@ pub fn document_parse(state: State<'_, AppState>, version_id: String) -> Result<
             text: p.text.clone(),
             width: Some(p.width),
             height: Some(p.height),
-            origin: if p.text.trim().is_empty() { "none".to_string() } else { "native".to_string() },
+            origin: if p.text.trim().is_empty() {
+                "none".to_string()
+            } else {
+                "native".to_string()
+            },
             warnings: p.warnings.clone(),
         })
         .collect();
     let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
-    let status = if extraction.warnings.is_empty() { "succeeded" } else { "partial" };
+    let status = if extraction.warnings.is_empty() {
+        "succeeded"
+    } else {
+        "partial"
+    };
     db.finish_parse_run(&run.id, status, &extraction.warnings)?;
 
     Ok(ParseResultView {

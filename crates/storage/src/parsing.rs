@@ -138,7 +138,12 @@ impl Database {
     /// Sayfaları ve metin segmentlerini tek transaction'da yazar. Çökme
     /// durumunda yarım ayrıştırma "tamamlandı" görünmez: koşu `running` kalır
     /// ve yeniden denenir.
-    pub fn store_pages(&self, parse_run_id: &str, case_id: &str, pages: &[NewPage]) -> Result<usize, StorageError> {
+    pub fn store_pages(
+        &self,
+        parse_run_id: &str,
+        case_id: &str,
+        pages: &[NewPage],
+    ) -> Result<usize, StorageError> {
         let tx = self.conn().unchecked_transaction()?;
         let now = now_iso();
         let mut stored = 0usize;
@@ -176,7 +181,12 @@ impl Database {
         Ok(stored)
     }
 
-    pub fn finish_parse_run(&self, parse_run_id: &str, status: &str, warnings: &[String]) -> Result<(), StorageError> {
+    pub fn finish_parse_run(
+        &self,
+        parse_run_id: &str,
+        status: &str,
+        warnings: &[String],
+    ) -> Result<(), StorageError> {
         if !matches!(status, "succeeded" | "partial" | "failed" | "cancelled") {
             return Err(StorageError::InvalidSetting);
         }
@@ -190,7 +200,13 @@ impl Database {
                 parse_run_id
             ],
         )?;
-        self.append_audit("parse_run", Some(parse_run_id), status, "local-worker", &serde_json::json!({"warnings": warnings.len()}))?;
+        self.append_audit(
+            "parse_run",
+            Some(parse_run_id),
+            status,
+            "local-worker",
+            &serde_json::json!({"warnings": warnings.len()}),
+        )?;
         Ok(())
     }
 
@@ -249,7 +265,12 @@ impl Database {
 
     /// Dosya kapsamlı tam metin araması. `case_id` zorunludur; başka dosyanın
     /// segmenti sonuca sızmaz. Sorgu parametre olarak bağlanır (SQL birleştirme yok).
-    pub fn search_segments(&self, case_id: &str, query: &str, limit: i64) -> Result<Vec<SearchHit>, StorageError> {
+    pub fn search_segments(
+        &self,
+        case_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>, StorageError> {
         let trimmed = query.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
@@ -263,15 +284,18 @@ impl Database {
              WHERE text_segments_fts MATCH ?1 AND s.case_id = ?2
              ORDER BY bm25(text_segments_fts) LIMIT ?3",
         )?;
-        let rows = stmt.query_map(rusqlite::params![format!("\"{escaped}\"*"), case_id, limit], |row| {
-            Ok(SearchHit {
-                segment_id: row.get(0)?,
-                page_id: row.get(1)?,
-                raw_text: row.get(2)?,
-                page_index: row.get(3)?,
-                rank: row.get(4)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![format!("\"{escaped}\"*"), case_id, limit],
+            |row| {
+                Ok(SearchHit {
+                    segment_id: row.get(0)?,
+                    page_id: row.get(1)?,
+                    raw_text: row.get(2)?,
+                    page_index: row.get(3)?,
+                    rank: row.get(4)?,
+                })
+            },
+        )?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -310,27 +334,55 @@ mod tests {
             })
             .expect("case");
         let blob = db.create_blob_record("st1", 10, "aad").expect("blob");
-        let doc = db.create_document(&case.id, "Belge", "pdf", None, "unknown").expect("doc");
-        let version = db.add_version(&doc.id, &case.id, &blob, &"d".repeat(64), 10, "application/pdf").expect("v");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"d".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
         (db, case.id, version.id)
     }
 
     #[test]
     fn parse_run_stores_pages_and_search_finds_them() {
         let (db, case_id, version_id) = setup();
-        let run = db.start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}").expect("koşu");
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
         let stored = db
             .store_pages(
                 &run.id,
                 &case_id,
                 &[
-                    NewPage { index: 0, text: "İtirazın reddine karar verildi".into(), width: Some(595.0), height: Some(842.0), origin: "native".into(), warnings: vec![] },
-                    NewPage { index: 1, text: "   ".into(), width: Some(595.0), height: Some(842.0), origin: "none".into(), warnings: vec!["metin katmanı yok".into()] },
+                    NewPage {
+                        index: 0,
+                        text: "İtirazın reddine karar verildi".into(),
+                        width: Some(595.0),
+                        height: Some(842.0),
+                        origin: "native".into(),
+                        warnings: vec![],
+                    },
+                    NewPage {
+                        index: 1,
+                        text: "   ".into(),
+                        width: Some(595.0),
+                        height: Some(842.0),
+                        origin: "none".into(),
+                        warnings: vec!["metin katmanı yok".into()],
+                    },
                 ],
             )
             .expect("sayfalar");
         assert_eq!(stored, 1);
-        db.finish_parse_run(&run.id, "partial", &["sayfa 2: metin yok".into()]).expect("bitir");
+        db.finish_parse_run(&run.id, "partial", &["sayfa 2: metin yok".into()])
+            .expect("bitir");
 
         let pages = db.pages_for_run(&run.id).expect("sayfalar");
         assert_eq!(pages.len(), 2);
@@ -344,8 +396,22 @@ mod tests {
     #[test]
     fn search_never_crosses_case_boundary() {
         let (db, case_id, version_id) = setup();
-        let run = db.start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}").expect("koşu");
-        db.store_pages(&run.id, &case_id, &[NewPage { index: 0, text: "gizli kira metni".into(), width: None, height: None, origin: "native".into(), warnings: vec![] }]).expect("sayfa");
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "gizli kira metni".into(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+            }],
+        )
+        .expect("sayfa");
 
         let other = db
             .create_case(&NewCase {
@@ -358,13 +424,19 @@ mod tests {
                 default_ai_policy: crate::AiPolicy::Off,
             })
             .expect("case");
-        assert!(db.search_segments(&other.id, "kira", 10).expect("arama").is_empty());
+        assert!(db
+            .search_segments(&other.id, "kira", 10)
+            .expect("arama")
+            .is_empty());
     }
 
     #[test]
     fn blob_reference_resolves_aad() {
         let (db, _case_id, version_id) = setup();
-        let blob = db.blob_for_version(&version_id).expect("blob").expect("var");
+        let blob = db
+            .blob_for_version(&version_id)
+            .expect("blob")
+            .expect("var");
         assert_eq!(blob.storage_id, "st1");
         assert_eq!(blob.aad_ref, "aad");
         assert_eq!(blob.mime, "application/pdf");
@@ -373,7 +445,9 @@ mod tests {
     #[test]
     fn invalid_finish_status_rejected() {
         let (db, case_id, version_id) = setup();
-        let run = db.start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}").expect("koşu");
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
         assert!(db.finish_parse_run(&run.id, "bitti", &[]).is_err());
     }
 }
