@@ -129,6 +129,7 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   çerçeve testi `pageLabel` yalnız tanımlıysa).
 - Gerçek worker IPC (elle): `/PageLabels` `Ek-1…Ek-3` tanımlı PDF →
   `pageLabel` alanları `["Ek-1", "Ek-2", "Ek-3"]`; etiketsiz PDF'te alan yok.
+- CI: `98d757a` → `ci.yml` **40034456417**, **7/7 yeşil** (SBOM dahil).
 
 ## Bilinen sınırlar
 
