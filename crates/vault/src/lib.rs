@@ -13,9 +13,9 @@ mod blob;
 mod header;
 mod recovery;
 
-pub use blob::{decrypt_blob, encrypt_blob, BLOB_CHUNK_SIZE, BLOB_HEADER_LEN};
+pub use blob::{decrypt_blob, encrypt_blob, expected_blob_len, BLOB_CHUNK_SIZE, BLOB_HEADER_LEN};
 pub use header::{KdfParams, VaultHeader, HEADER_LEN};
-pub use recovery::{format_recovery_key, normalize_recovery_key, RecoveryKey};
+pub use recovery::{format_recovery_key, normalize_recovery_key, parse_recovery_key, RecoveryKey};
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};

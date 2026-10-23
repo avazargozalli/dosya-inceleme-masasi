@@ -84,9 +84,7 @@ pub fn vault_create(
     ensure_parent(&vault_path)?;
 
     let (file, recovery, unlocked) = VaultFile::create(&vault_path, &password)?;
-    let master = *unlocked.master_key();
-    let vault_id = vault_id_from_master(&master);
-    drop(master);
+    let vault_id = vault_id_from_master(unlocked.master_key());
 
     let mut guard = state.lock();
     guard.unlocked = Some(unlocked);
@@ -130,9 +128,7 @@ fn remember(
     path: PathBuf,
     unlocked: UnlockedVault,
 ) -> Result<VaultInfo, ApiError> {
-    let master = *unlocked.master_key();
-    let vault_id = vault_id_from_master(&master);
-    drop(master);
+    let vault_id = vault_id_from_master(unlocked.master_key());
     let info = VaultInfo {
         vault_path: path.to_string_lossy().to_string(),
         vault_id: vault_id.clone(),

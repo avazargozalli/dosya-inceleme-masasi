@@ -37,6 +37,6 @@ impl AppState {
 /// Kasa kimliği: ana anahtarın SHA-256 özetinin ilk 16 baytı. Kimlikte dosya adı,
 /// taraf veya esas numarası yoktur; yalnız kasayı tanıtır.
 pub fn vault_id_from_master(master: &[u8; 32]) -> String {
-    let digest = Sha256::digest(master);
+    let digest = Sha256::digest(master.as_slice());
     hex::encode(&digest[..16])
 }

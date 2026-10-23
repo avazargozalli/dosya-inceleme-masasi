@@ -19,10 +19,6 @@ impl ApiError {
             retryable: false,
         }
     }
-
-    pub fn internal() -> Self {
-        Self::new("E_CORE_INTERNAL", "Çekirdekte beklenmeyen bir hata oluştu.")
-    }
 }
 
 impl From<VaultError> for ApiError {
