@@ -51,5 +51,6 @@ Thumbs.db
 
 # Paketlenmiş worker (build çıktısı)
 apps/desktop/src-tauri/resources/worker/
+!apps/desktop/src-tauri/resources/worker/.gitkeep
 .worker-venv/
 workers/document/dist/
