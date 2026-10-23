@@ -314,7 +314,7 @@ impl Database {
 
 fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), StorageError> {
     // `PRAGMA key` parametre kabul etmez; anahtar hex olarak verilir (alfabe sabit).
-    conn.execute_batch(&format!("PRAGMA key = "x'{}'";", key.hex()))
+    conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key.hex()))
         .map_err(|_| StorageError::Open)?;
     conn.execute_batch(
         "PRAGMA cipher_memory_security = ON;
