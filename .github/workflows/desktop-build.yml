@@ -1,7 +1,8 @@
 name: desktop-build
 
 # Ağır Tauri derlemesi yalnız elle veya etiketle tetiklenir; her push'ta
-# çalıştırılmaz. Paket imzalama F16'da devreye girer.
+# çalıştırılmaz. Paket **imzasızdır**: F16'da Apple notarizasyonu ve Windows
+# kod imzası devreye girer. Bu iş artefakt üretir, sürüm yayımlamaz.
 on:
   workflow_dispatch:
   push:
@@ -20,8 +21,6 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-13
             target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +34,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/desktop/src-tauri -> target"
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @dim/desktop build
-      - name: İmzasız paket üret (imzalama sırları yoksa)
-        run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --no-bundle
+      - name: İmzasız .app üret
+        run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --bundles app
+      - name: Artefaktı sıkıştır
+        run: |
+          cd "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          ditto -c -k --sequesterRsrc --keepParent *.app "$RUNNER_TEMP/dim-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dim-macos-${{ matrix.target }}
+          path: ${{ runner.temp }}/dim-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  windows-binary:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/desktop/src-tauri -> target"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dim/desktop build
+      - name: İmzasız ikili üret (kurucu F16'da)
+        run: pnpm --filter @dim/desktop exec tauri build --no-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dim-windows-x64
+          path: apps/desktop/src-tauri/target/release/*.exe
+          if-no-files-found: ignore

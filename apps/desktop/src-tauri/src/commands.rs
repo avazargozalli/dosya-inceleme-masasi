@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewPage, NewTask,
-    ParseRun, SearchHit, TaskRow,
+    Case, CasePatch, Document, DocumentVersion, EventRow, NewCase, NewEvent, NewNote, NewPage,
+    NewTask, NoteRow, PageRow, ParseRun, SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -323,6 +323,54 @@ pub fn document_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_documents(&case_id)?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentPagesView {
+    pub parse_run: ParseRun,
+    pub pages: Vec<PageRow>,
+}
+
+/// Bir sürümün en güncel ayrıştırma koşusunu ve sayfalarını döndürür.
+#[tauri::command]
+pub fn document_pages(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<Option<DocumentPagesView>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let runs = db.list_parse_runs(&version_id)?;
+    let Some(run) = runs.into_iter().next() else {
+        return Ok(None);
+    };
+    let pages = db.pages_for_run(&run.id)?;
+    Ok(Some(DocumentPagesView { parse_run: run, pages }))
+}
+
+#[tauri::command]
+pub fn note_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewNote,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_note(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn note_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<NoteRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_notes(&case_id)?)
+}
+
+#[tauri::command]
+pub fn note_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.delete_note(&id)?)
 }
 
 #[tauri::command]

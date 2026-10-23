@@ -72,6 +72,43 @@ export type DocumentVersionRow = {
   importedAt: string;
 };
 
+export type PageRow = {
+  id: string;
+  pageIndex: number;
+  text: string;
+  textOrigin: string;
+  qualityFlags: string;
+  width: number | null;
+  height: number | null;
+};
+
+export type DocumentPages = {
+  parseRun: {
+    id: string;
+    documentVersionId: string;
+    status: string;
+    engine: string;
+    engineVersion: string;
+    pagesProcessed: number;
+    warnings: string;
+    createdAt: string;
+  };
+  pages: PageRow[];
+};
+
+export type NoteRow = {
+  id: string;
+  caseId: string;
+  title: string;
+  body: string;
+  authorKind: string;
+  visibilityLabel: string;
+  approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
 export type TaskRow = {
   id: string;
   caseId: string;
@@ -214,4 +251,11 @@ export const api = {
     invoke<TaskRow>("task_create", { caseId, input }),
   taskComplete: (id: string) => invoke<TaskRow>("task_complete", { id }),
   taskDelete: (id: string) => invoke<void>("task_delete", { id }),
+
+  documentPages: (versionId: string) =>
+    invoke<DocumentPages | null>("document_pages", { versionId }),
+  noteList: (caseId: string) => invoke<NoteRow[]>("note_list", { caseId }),
+  noteCreate: (caseId: string, input: { title: string; body: string }) =>
+    invoke<NoteRow>("note_create", { caseId, input }),
+  noteDelete: (id: string) => invoke<void>("note_delete", { id }),
 };

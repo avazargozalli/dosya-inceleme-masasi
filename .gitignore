@@ -45,3 +45,6 @@ Thumbs.db
 *.pem
 *.p12
 *.mobileprovision
+
+# yerel ikon üretim ara klasörü
+.tmp-iconset/

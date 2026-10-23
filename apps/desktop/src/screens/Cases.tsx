@@ -9,6 +9,8 @@ import {
   type NewCaseInput,
 } from "../lib/api";
 import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
+import { Notes } from "../components/Notes";
+import { Reader } from "../components/Reader";
 
 const EMPTY_FORM: NewCaseInput = {
   title: "",
@@ -30,6 +32,7 @@ export function Cases() {
   const [busy, setBusy] = useState(false);
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [reading, setReading] = useState<{ versionId: string; title: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -308,6 +311,10 @@ export function Cases() {
           </div>
           {notice ? <div className="notice ok">{notice}</div> : null}
 
+          {reading ? (
+            <Reader versionId={reading.versionId} title={reading.title} onClose={() => setReading(null)} />
+          ) : null}
+
           <div className="card tight" style={{ background: "var(--surface)" }}>
             <div className="card-head">
               <div>
@@ -351,9 +358,11 @@ export function Cases() {
             )}
             <p className="hint" style={{ margin: 0 }}>
               Aynı içerik ikinci kez eklenirse yeni belge oluşturulmaz; mevcut kayıt gösterilir.
-              Ayrıştırma (metin/OCR) F06'da çalışır.
+              Ayrıştırma yerel worker'da çalışır; taranmış sayfalar için OCR henüz yok.
             </p>
           </div>
+
+          <Notes caseId={selected.id} />
         </div>
       ) : null}
     </div>

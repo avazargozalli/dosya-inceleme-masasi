@@ -40,6 +40,10 @@ pub fn run() {
             commands::task_list,
             commands::task_complete,
             commands::task_delete,
+            commands::document_pages,
+            commands::note_create,
+            commands::note_list,
+            commands::note_delete,
             commands::system_info,
         ])
         .run(tauri::generate_context!())
