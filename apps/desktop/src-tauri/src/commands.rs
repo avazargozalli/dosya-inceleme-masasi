@@ -341,7 +341,10 @@ pub fn anchor_create(state: State<'_, AppState>, input: NewAnchor) -> Result<Anc
 }
 
 #[tauri::command]
-pub fn anchor_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<AnchorRow>, ApiError> {
+pub fn anchor_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<AnchorRow>, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_anchors(&case_id)?)

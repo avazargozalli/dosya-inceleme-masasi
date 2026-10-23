@@ -121,7 +121,8 @@ fn map_note(row: &Row<'_>) -> rusqlite::Result<NoteRow> {
         body,
         author_kind: row.get(4)?,
         visibility_label: row.get(5)?,
-        source_anchor_ids: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(6)?).unwrap_or_default(),
+        source_anchor_ids: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(6)?)
+            .unwrap_or_default(),
         approved_at: row.get(7)?,
         created_at: row.get(8)?,
         updated_at: row.get(9)?,

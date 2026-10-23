@@ -50,7 +50,8 @@ impl Database {
         if quote.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
-        let start = usize::try_from(input.start_offset).map_err(|_| StorageError::InvalidSetting)?;
+        let start =
+            usize::try_from(input.start_offset).map_err(|_| StorageError::InvalidSetting)?;
         let end = usize::try_from(input.end_offset).map_err(|_| StorageError::InvalidSetting)?;
         if end < start {
             return Err(StorageError::InvalidSetting);
@@ -80,7 +81,9 @@ impl Database {
         match verify_quote(&raw, quote, Some(&hash), Some(start)) {
             QuoteMatch::Exact => {}
             QuoteMatch::Ambiguous => return Err(StorageError::QuoteAmbiguous),
-            QuoteMatch::NotFound | QuoteMatch::Normalized => return Err(StorageError::QuoteNotFound),
+            QuoteMatch::NotFound | QuoteMatch::Normalized => {
+                return Err(StorageError::QuoteNotFound)
+            }
             QuoteMatch::HashMismatch => return Err(StorageError::QuoteHashMismatch),
         }
 
@@ -177,9 +180,22 @@ mod tests {
             })
             .expect("case");
         let blob = db.create_blob_record("st-anchor", 10, "aad").expect("blob");
-        let doc = db.create_document(&case.id, "Belge", "pdf", None, "unknown").expect("doc");
-        let version = db.add_version(&doc.id, &case.id, &blob, &"e".repeat(64), 10, "application/pdf").expect("v");
-        let run = db.start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}").expect("run");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"e".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("run");
         db.store_pages(
             &run.id,
             &case.id,
@@ -195,7 +211,11 @@ mod tests {
         .expect("pages");
         let segment: String = db
             .conn()
-            .query_row("SELECT id FROM text_segments WHERE parse_run_id=?1", [&run.id], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run.id],
+                |r| r.get(0),
+            )
             .expect("segment");
         (db, case.id, version.id, run.id, segment)
     }
