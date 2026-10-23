@@ -74,7 +74,11 @@ fn ensure_parent(path: &Path) -> Result<(), ApiError> {
 }
 
 #[tauri::command]
-pub fn vault_create(state: State<'_, AppState>, path: String, password: String) -> Result<CreateVaultResult, ApiError> {
+pub fn vault_create(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<CreateVaultResult, ApiError> {
     let password = Zeroizing::new(password);
     let vault_path = resolve_vault_path(&path)?;
     ensure_parent(&vault_path)?;
@@ -98,7 +102,11 @@ pub fn vault_create(state: State<'_, AppState>, path: String, password: String) 
 }
 
 #[tauri::command]
-pub fn vault_open(state: State<'_, AppState>, path: String, password: String) -> Result<VaultInfo, ApiError> {
+pub fn vault_open(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<VaultInfo, ApiError> {
     let password = Zeroizing::new(password);
     let vault_path = resolve_vault_path(&path)?;
     let unlocked = VaultFile::open(&vault_path, &password)?;
@@ -106,14 +114,22 @@ pub fn vault_open(state: State<'_, AppState>, path: String, password: String) ->
 }
 
 #[tauri::command]
-pub fn vault_open_with_recovery(state: State<'_, AppState>, path: String, recovery_key: String) -> Result<VaultInfo, ApiError> {
+pub fn vault_open_with_recovery(
+    state: State<'_, AppState>,
+    path: String,
+    recovery_key: String,
+) -> Result<VaultInfo, ApiError> {
     let recovery_key = Zeroizing::new(recovery_key);
     let vault_path = resolve_vault_path(&path)?;
     let unlocked = VaultFile::open_with_recovery(&vault_path, &recovery_key)?;
     remember(state, vault_path, unlocked)
 }
 
-fn remember(state: State<'_, AppState>, path: PathBuf, unlocked: UnlockedVault) -> Result<VaultInfo, ApiError> {
+fn remember(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    unlocked: UnlockedVault,
+) -> Result<VaultInfo, ApiError> {
     let vault_id = vault_id_from_master(unlocked.master_key());
     let db = open_database(&path, &unlocked, &vault_id)?;
     let schema_version = db.schema_version();
@@ -160,7 +176,10 @@ pub fn case_create(state: State<'_, AppState>, input: NewCase) -> Result<Case, A
 }
 
 #[tauri::command]
-pub fn case_list(state: State<'_, AppState>, include_archived: Option<bool>) -> Result<Vec<Case>, ApiError> {
+pub fn case_list(
+    state: State<'_, AppState>,
+    include_archived: Option<bool>,
+) -> Result<Vec<Case>, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_cases(include_archived.unwrap_or(false))?)
@@ -174,7 +193,12 @@ pub fn case_get(state: State<'_, AppState>, id: String) -> Result<Option<Case>, 
 }
 
 #[tauri::command]
-pub fn case_update(state: State<'_, AppState>, id: String, patch: CasePatch, row_version: i64) -> Result<Case, ApiError> {
+pub fn case_update(
+    state: State<'_, AppState>,
+    id: String,
+    patch: CasePatch,
+    row_version: i64,
+) -> Result<Case, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.update_case(&id, &patch, row_version)?)
@@ -212,7 +236,11 @@ pub struct SystemInfo {
 /// Teşhis: sürüm ve platform dışında bilgi dönmez (REQ-033).
 #[tauri::command]
 pub fn system_info() -> SystemInfo {
-    SystemInfo { app_version: env!("CARGO_PKG_VERSION"), protocol_version: 1, platform: std::env::consts::OS }
+    SystemInfo {
+        app_version: env!("CARGO_PKG_VERSION"),
+        protocol_version: 1,
+        platform: std::env::consts::OS,
+    }
 }
 
 #[cfg(test)]

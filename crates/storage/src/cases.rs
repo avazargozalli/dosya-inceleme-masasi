@@ -164,7 +164,13 @@ impl Database {
                 now,
             ],
         )?;
-        self.append_audit("case", Some(&id), "create", "local-user", &serde_json::json!({"kind": new.case_kind.as_str()}))?;
+        self.append_audit(
+            "case",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"kind": new.case_kind.as_str()}),
+        )?;
         self.get_case(&id)?.ok_or(StorageError::NotFound)
     }
 
@@ -195,10 +201,18 @@ impl Database {
 
     /// İyimser eşzamanlılık: `expected_row_version` uyuşmazsa `Conflict` döner,
     /// eski görünüm yeni kaydın üzerine yazılmaz (13.3).
-    pub fn update_case(&self, id: &str, patch: &CasePatch, expected_row_version: i64) -> Result<Case, StorageError> {
+    pub fn update_case(
+        &self,
+        id: &str,
+        patch: &CasePatch,
+        expected_row_version: i64,
+    ) -> Result<Case, StorageError> {
         let mut current = self.get_case(id)?.ok_or(StorageError::NotFound)?;
         if current.row_version != expected_row_version {
-            return Err(StorageError::Conflict { expected: expected_row_version, actual: current.row_version });
+            return Err(StorageError::Conflict {
+                expected: expected_row_version,
+                actual: current.row_version,
+            });
         }
         if let Some(title) = &patch.title {
             let trimmed = title.trim();
@@ -247,9 +261,18 @@ impl Database {
             ],
         )?;
         if changed == 0 {
-            return Err(StorageError::Conflict { expected: expected_row_version, actual: -1 });
+            return Err(StorageError::Conflict {
+                expected: expected_row_version,
+                actual: -1,
+            });
         }
-        self.append_audit("case", Some(id), "update", "local-user", &serde_json::json!({"rowVersion": current.row_version}))?;
+        self.append_audit(
+            "case",
+            Some(id),
+            "update",
+            "local-user",
+            &serde_json::json!({"rowVersion": current.row_version}),
+        )?;
         Ok(current)
     }
 
@@ -263,7 +286,13 @@ impl Database {
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("case", Some(id), "archive", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "case",
+            Some(id),
+            "archive",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         self.get_case(id)?.ok_or(StorageError::NotFound)
     }
 
@@ -279,7 +308,13 @@ impl Database {
             "UPDATE cases SET status='deleted', deleted_at=?1, updated_at=?1, row_version=row_version+1 WHERE id=?2",
             rusqlite::params![now, id],
         )?;
-        self.append_audit("case", Some(id), "soft_delete", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "case",
+            Some(id),
+            "soft_delete",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         Ok(())
     }
 
@@ -293,7 +328,13 @@ impl Database {
         if changed == 0 {
             return Err(StorageError::NotFound);
         }
-        self.append_audit("case", Some(id), "restore", "local-user", &serde_json::json!({}))?;
+        self.append_audit(
+            "case",
+            Some(id),
+            "restore",
+            "local-user",
+            &serde_json::json!({}),
+        )?;
         self.get_case(id)?.ok_or(StorageError::NotFound)
     }
 }
@@ -360,7 +401,10 @@ mod tests {
     fn stale_row_version_is_conflict() {
         let db = db();
         let case = db.create_case(&new_case("Kira")).expect("oluştur");
-        let patch = CasePatch { title: Some("Kira II".into()), ..Default::default() };
+        let patch = CasePatch {
+            title: Some("Kira II".into()),
+            ..Default::default()
+        };
         let updated = db.update_case(&case.id, &patch, 1).expect("güncelle");
         assert_eq!(updated.row_version, 2);
 
@@ -375,7 +419,10 @@ mod tests {
         db.archive_case(&case.id).expect("arşivle");
         assert!(db.list_cases(false).expect("liste").is_empty());
         assert_eq!(db.list_cases(true).expect("liste").len(), 1);
-        assert_eq!(db.get_case(&case.id).expect("get").expect("var").status, "archived");
+        assert_eq!(
+            db.get_case(&case.id).expect("get").expect("var").status,
+            "archived"
+        );
     }
 
     #[test]
@@ -392,7 +439,15 @@ mod tests {
     fn retention_hold_blocks_delete() {
         let db = db();
         let case = db.create_case(&new_case("Saklama")).expect("oluştur");
-        db.update_case(&case.id, &CasePatch { retention_hold: Some(true), ..Default::default() }, 1).expect("güncelle");
+        db.update_case(
+            &case.id,
+            &CasePatch {
+                retention_hold: Some(true),
+                ..Default::default()
+            },
+            1,
+        )
+        .expect("güncelle");
         assert!(db.soft_delete_case(&case.id).is_err());
     }
 
