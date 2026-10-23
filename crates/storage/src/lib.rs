@@ -32,7 +32,9 @@ pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use exports::ExportRow;
 pub use notes::{NewNote, NoteRow};
-pub use parsing::{settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchHit};
+pub use parsing::{
+    settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchHit, SegmentBlock, SegmentGeometry,
+};
 pub use precedents::{
     CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, PrecedentNoteRow,
     PrecedentRow,
@@ -100,9 +102,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0003_constraints",
         sql: include_str!("migrations/0003_constraints.sql"),
     },
+    Migration {
+        version: 4,
+        name: "0004_page_geometry",
+        sql: include_str!("migrations/0004_page_geometry.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

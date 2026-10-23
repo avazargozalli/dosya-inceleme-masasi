@@ -535,6 +535,7 @@ mod tests {
                 height: None,
                 origin: "native".into(),
                 warnings: vec![],
+                ..Default::default()
             }],
         )
         .expect("pages");

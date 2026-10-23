@@ -15,3 +15,4 @@ eski kayıt silinmez, `Superseded by ADR-xxxx` notu düşülür.
 | ADR-0008 | UYAP ve imza otomasyonu kapsam dışıdır | Kabul (F01 doğrulaması bekliyor) |
 | ADR-0009 | OCR, arama normalizasyonu ve AI çıktısı özgün metnin yerine geçmez | Kabul (F01 doğrulaması bekliyor) |
 | ADR-0010 | AI kalıcı hukuk kaydına doğrudan yazmaz | Kabul (F01 doğrulaması bekliyor) |
+| ADR-0011 | Kaynak konumu tek koordinat uzayında taşınır | Kabul (F06-T08) |

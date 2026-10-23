@@ -8,7 +8,82 @@ import {
   type DocumentRow,
   type PageRow,
 } from "../lib/api";
-import { parseWarnings, resolvePageIndex, sliceForPage, type ReaderTarget } from "../lib/reader";
+import {
+  blocksForRange,
+  displayPageSize,
+  mapRectForDisplay,
+  parseWarnings,
+  rangeForPage,
+  resolvePageIndex,
+  sliceForPage,
+  type ReaderTarget,
+} from "../lib/reader";
+
+/** Sayfa haritası: ayrıştırıcının **gerçekten ürettiği** blok kutuları.
+ *  Sayfanın görüntüsü değildir; kutu yoksa hiç çizilmez (konum uydurulmaz). */
+function PageMap({ page, highlight }: { page: PageRow; highlight: [number, number, number, number][] }) {
+  const width = page.width ?? 0;
+  const height = page.height ?? 0;
+  if (width <= 0 || height <= 0) return null;
+  const display = displayPageSize(width, height, page.rotation);
+  const unit = page.coordinateSpace === "image_pixels" ? "piksel" : "punto";
+  return (
+    <figure style={{ margin: 0 }}>
+      <svg
+        viewBox={`0 0 ${display.width} ${display.height}`}
+        role="img"
+        aria-label={`sayfa ${page.pageIndex + 1} konum haritası: ${page.blocks.length} metin bloğu`}
+        style={{
+          display: "block",
+          width: "100%",
+          maxWidth: 300,
+          maxHeight: 150,
+          background: "var(--surface)",
+          border: "1px solid var(--line)",
+          borderRadius: "var(--radius)",
+        }}
+      >
+        {page.blocks.map((block, index) => {
+          if (!block.bbox) return null;
+          const [x0, y0, x1, y1] = mapRectForDisplay(block.bbox, width, height, page.rotation);
+          return (
+            <rect
+              key={`block-${index}`}
+              x={x0}
+              y={y0}
+              width={Math.max(x1 - x0, 0.5)}
+              height={Math.max(y1 - y0, 0.5)}
+              fill="none"
+              stroke="var(--line-strong)"
+              strokeWidth={0.6}
+              vectorEffect="non-scaling-stroke"
+            />
+          );
+        })}
+        {highlight.map((rect, index) => {
+          const [x0, y0, x1, y1] = mapRectForDisplay(rect, width, height, page.rotation);
+          return (
+            <rect
+              key={`hit-${index}`}
+              x={x0}
+              y={y0}
+              width={Math.max(x1 - x0, 0.5)}
+              height={Math.max(y1 - y0, 0.5)}
+              fill="var(--accent-soft)"
+              stroke="var(--accent)"
+              strokeWidth={0.8}
+              vectorEffect="non-scaling-stroke"
+            />
+          );
+        })}
+      </svg>
+      <figcaption className="hint" style={{ marginTop: 4 }}>
+        konum haritası (sayfa görüntüsü değil) · {Math.round(width)}×{Math.round(height)} {unit}
+        {page.rotation ? ` · ${page.rotation}° döndürülmüş` : ""} · {page.blocks.length} blok
+      </figcaption>
+    </figure>
+  );
+}
 
 /** Tek okuyucu paneli: kendi belge sürümünü, sayfasını ve seçimini tutar.
  *  Bir panelde belge değiştirmek diğerini etkilemez (F07-T08). */
@@ -87,6 +162,11 @@ function ReaderPane({
 
   const current: PageRow | undefined = data?.pages[page];
   const slice = current ? sliceForPage(current.text, paneTarget, current) : null;
+  const highlightRange = current ? rangeForPage(current.text, paneTarget, current) : null;
+  // Anchor kaydı kendi kutularını taşıyorsa onlar kullanılır; arama sonucunda
+  // bloklardan hesaplanır. Kutu yoksa harita vurgusuz kalır.
+  const highlightQuads =
+    paneTarget?.quads.length ? paneTarget.quads : current ? blocksForRange(current.blocks, highlightRange) : [];
   // Kullanıcı hedef sayfadan başka sayfaya geçtiyse "bulunamadı" uyarısı
   // yanıltıcı olur; yalnız hedefin sayfasında gösterilir.
   const targetPage = data ? resolvePageIndex(data.pages, paneTarget) : -1;
@@ -248,6 +328,11 @@ function ReaderPane({
               {current && current.textOrigin !== "native" ? (
                 <span className="badge warn">metin yok / OCR</span>
               ) : null}
+              {current && current.rotation ? (
+                <span className="badge plain" title="koordinatlar döndürme öncesi uzaydadır">
+                  sayfa {current.rotation}° döndürülmüş
+                </span>
+              ) : null}
             </span>
             <button
               className="btn ghost"
@@ -259,6 +344,10 @@ function ReaderPane({
               Seçimi kaynağa bağla
             </button>
           </div>
+
+          {current && current.coordinateSpace && current.coordinateSpace !== "structure" && current.blocks.length > 0 ? (
+            <PageMap page={current} highlight={highlightQuads} />
+          ) : null}
 
           <div
             ref={textRef}

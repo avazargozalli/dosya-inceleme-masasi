@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AnchorLocationRow, PageRow, SearchHit } from "./api";
 import {
+  blocksForRange,
+  displayPageSize,
+  mapRectForDisplay,
   offsetSlice,
   parseWarnings,
   querySlice,
@@ -20,6 +23,9 @@ const pages: PageRow[] = [
     qualityFlags: "[]",
     width: null,
     height: null,
+    rotation: 0,
+    coordinateSpace: "structure",
+    blocks: [],
   },
   {
     id: "p2",
@@ -28,8 +34,14 @@ const pages: PageRow[] = [
     text: "İkinci sayfa: İTİRAZIN reddine karar verildi.",
     textOrigin: "ocr",
     qualityFlags: "[]",
-    width: null,
-    height: null,
+    width: 300,
+    height: 400,
+    rotation: 90,
+    coordinateSpace: "unrotated_cropbox_points",
+    blocks: [
+      { start: 0, end: 15, bbox: [10, 10, 200, 24], lines: [] },
+      { start: 15, end: 47, bbox: [10, 40, 180, 54], lines: [[10, 40, 180, 54]] },
+    ],
   },
 ];
 
@@ -59,6 +71,9 @@ const anchor: AnchorLocationRow = {
   exactQuote: "İTİRAZIN reddine",
   anchorStatus: "active",
   quoteIntact: true,
+  quads: [[10, 40, 180, 54]],
+  coordinateSpace: "unrotated_cropbox_points",
+  pageRotation: 90,
 };
 
 describe("targetFromHit", () => {
@@ -80,6 +95,7 @@ describe("targetFromAnchor", () => {
     expect(target.versionId).toBe("v-old");
     expect(target.startOffset).toBe(14);
     expect(target.quoteIntact).toBe(true);
+    expect(target.quads).toEqual([[10, 40, 180, 54]]);
     expect(target.anchorId).toBe("a1");
   });
 });
@@ -153,5 +169,40 @@ describe("sliceForPage", () => {
   it("offset yoksa sorgu geçişini işaretler", () => {
     const target = targetFromHit(hit, "reddine");
     expect(sliceForPage(pages[1]!.text, target, pages[1]!)?.hit).toBe("reddine");
+  });
+});
+
+describe("displayPageSize", () => {
+  it("90/270'te eksenleri değiştirir", () => {
+    expect(displayPageSize(300, 400, 0)).toEqual({ width: 300, height: 400 });
+    expect(displayPageSize(300, 400, 90)).toEqual({ width: 400, height: 300 });
+    expect(displayPageSize(300, 400, 180)).toEqual({ width: 300, height: 400 });
+    expect(displayPageSize(300, 400, 270)).toEqual({ width: 400, height: 300 });
+    expect(displayPageSize(300, 400, -90)).toEqual({ width: 400, height: 300 });
+  });
+});
+
+describe("mapRectForDisplay", () => {
+  it("90 derece döndürmede kutuyu görünen uzaya taşır", () => {
+    // PyMuPDF: (50,100,120,115) * rotation_matrix(90) = (285,50,300,120)
+    expect(mapRectForDisplay([50, 100, 120, 115], 300, 400, 90)).toEqual([285, 50, 300, 120]);
+  });
+
+  it("180 ve 270 derecede kutuyu sayfa içinde tutar", () => {
+    expect(mapRectForDisplay([10, 20, 30, 40], 300, 400, 180)).toEqual([270, 360, 290, 380]);
+    expect(mapRectForDisplay([10, 20, 30, 40], 300, 400, 270)).toEqual([20, 270, 40, 290]);
+    expect(mapRectForDisplay([10, 20, 30, 40], 300, 400, 0)).toEqual([10, 20, 30, 40]);
+  });
+});
+
+describe("blocksForRange", () => {
+  it("yalnız aralıkla kesişen blokların kutusunu döndürür", () => {
+    expect(blocksForRange(pages[1]!.blocks, { start: 15, end: 20 })).toEqual([[10, 40, 180, 54]]);
+    expect(blocksForRange(pages[1]!.blocks, { start: 0, end: 1 })).toEqual([[10, 10, 200, 24]]);
+    expect(blocksForRange(pages[1]!.blocks, null)).toHaveLength(2);
+  });
+
+  it("kutusu olmayan blok için konum uydurmaz", () => {
+    expect(blocksForRange([{ start: 0, end: 5 }], null)).toEqual([]);
   });
 });

@@ -63,6 +63,12 @@ pub struct AnchorLocation {
     pub anchor_status: String,
     /// Segment metni anchor kaydıyla hâlâ birebir eşleşiyor mu (INV-02).
     pub quote_intact: bool,
+    /// Alıntının düştüğü blokların kutuları (segmentin koordinat uzayında).
+    /// Kutu üretilmemişse boş: konum uydurulmaz.
+    pub quads: Vec<[f64; 4]>,
+    pub coordinate_space: Option<String>,
+    /// Sayfanın gösterim döndürmesi; kutular döndürme öncesi uzaydadır.
+    pub page_rotation: i64,
 }
 
 impl Database {
@@ -174,7 +180,7 @@ impl Database {
                 "SELECT a.id, a.case_id, a.document_version_id, dv.document_id, d.display_name,
                         a.parse_run_id, a.page_id, p.page_index, a.segment_id,
                         a.start_offset, a.end_offset, a.exact_quote, a.anchor_status,
-                        a.quote_hash, s.raw_text
+                        a.quote_hash, s.raw_text, s.bbox_list, p.rotation, p.coordinate_space
                  FROM source_anchors a
                  LEFT JOIN document_versions dv ON dv.id = a.document_version_id
                  LEFT JOIN documents d ON d.id = dv.document_id
@@ -194,6 +200,9 @@ impl Database {
                                 == QuoteMatch::Exact
                         })
                     });
+                    let blocks = crate::parsing::parse_blocks(row.get(15)?);
+                    let quads =
+                        crate::parsing::block_quads(&blocks, Some(start_offset), Some(end_offset));
                     Ok(AnchorLocation {
                         anchor_id: row.get(0)?,
                         case_id: row.get(1)?,
@@ -209,6 +218,9 @@ impl Database {
                         exact_quote,
                         anchor_status: row.get(12)?,
                         quote_intact,
+                        quads,
+                        coordinate_space: row.get(17)?,
+                        page_rotation: row.get::<_, Option<i64>>(16)?.unwrap_or(0),
                     })
                 },
             )
@@ -282,6 +294,7 @@ mod tests {
                 height: None,
                 origin: "native".into(),
                 warnings: vec![],
+                ..Default::default()
             }],
         )
         .expect("pages");
@@ -395,6 +408,98 @@ mod tests {
             .locate_anchor("yok-boyle-anchor")
             .expect("konum")
             .is_none());
+    }
+
+    #[test]
+    fn locate_anchor_returns_quote_quads_in_segment_space() {
+        let db = Database::open_in_memory(&DatabaseKey::new([31u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Konum".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db.create_blob_record("st-quad", 10, "aad").expect("blob");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("run");
+        db.store_pages(
+            &run.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: "Birinci blok\nİkinci blok\n".into(),
+                width: Some(300.0),
+                height: Some(400.0),
+                origin: "native".into(),
+                warnings: vec![],
+                rotation: 90,
+                coordinate_space: Some("unrotated_cropbox_points".into()),
+                blocks: vec![
+                    crate::SegmentBlock {
+                        start: 0,
+                        end: 13,
+                        bbox: Some([10.0, 10.0, 200.0, 24.0]),
+                        lines: vec![],
+                    },
+                    crate::SegmentBlock {
+                        start: 13,
+                        end: 25,
+                        bbox: Some([10.0, 40.0, 180.0, 54.0]),
+                        lines: vec![],
+                    },
+                ],
+            }],
+        )
+        .expect("pages");
+        let segment: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run.id],
+                |r| r.get(0),
+            )
+            .expect("segment");
+
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id.clone(),
+                document_version_id: version.id.clone(),
+                parse_run_id: run.id.clone(),
+                segment_id: segment,
+                start_offset: 13,
+                end_offset: 24,
+                exact_quote: "İkinci blok".into(),
+            })
+            .expect("anchor");
+
+        let location = db.locate_anchor(&anchor.id).expect("konum").expect("kayıt");
+        assert!(location.quote_intact);
+        assert_eq!(location.page_rotation, 90);
+        assert_eq!(
+            location.coordinate_space.as_deref(),
+            Some("unrotated_cropbox_points")
+        );
+        // Alıntı yalnız ikinci blokta; kutu o bloğun kutusudur, uydurulmaz.
+        assert_eq!(location.quads, vec![[10.0, 40.0, 180.0, 54.0]]);
     }
 
     #[test]

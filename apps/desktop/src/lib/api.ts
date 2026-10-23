@@ -72,6 +72,13 @@ export type DocumentVersionRow = {
   importedAt: string;
 };
 
+export type PageBlock = {
+  start: number;
+  end: number;
+  bbox?: [number, number, number, number] | null;
+  lines?: [number, number, number, number][];
+};
+
 export type PageRow = {
   id: string;
   segmentId: string | null;
@@ -81,6 +88,12 @@ export type PageRow = {
   qualityFlags: string;
   width: number | null;
   height: number | null;
+  /** Gösterim döndürmesi; koordinatlar döndürme öncesi uzaydadır. */
+  rotation: number;
+  /** `unrotated_cropbox_points`, `image_pixels`, `structure` veya null. */
+  coordinateSpace: string | null;
+  /** Blok aralıkları ve kutuları; kutu yoksa boş dizi. */
+  blocks: PageBlock[];
 };
 
 export type DocumentPages = {
@@ -403,6 +416,10 @@ export type AnchorLocationRow = {
   exactQuote: string;
   anchorStatus: string;
   quoteIntact: boolean;
+  /** Alıntının blok kutuları (segmentin koordinat uzayında). */
+  quads: [number, number, number, number][];
+  coordinateSpace: string | null;
+  pageRotation: number;
 };
 
 export type ParseResult = {

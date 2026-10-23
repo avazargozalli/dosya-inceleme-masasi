@@ -36,6 +36,63 @@ pub struct PageRow {
     pub quality_flags: String,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    /// Sayfanın gösterim döndürmesi (0/90/180/270). Koordinatlar döndürme
+    /// **öncesi** uzaydadır; görüntülemek için bu değer uygulanır.
+    pub rotation: i64,
+    /// Koordinat uzayı adı (`unrotated_cropbox_points`, `image_pixels`,
+    /// `structure`). Bilinmiyorsa `null`: kutu yok demektir, tahmin edilmez.
+    pub coordinate_space: Option<String>,
+    /// Blok karakter aralıkları ve kutuları; metinle aynı çıkarımdan gelir.
+    pub blocks: Vec<SegmentBlock>,
+}
+
+/// `text_segments.bbox_list` kaydı: `raw_text` içindeki `start..end` aralığı ve
+/// o aralığın koordinatları (`bbox` blok, `lines` satır kutuları).
+///
+/// Offsetler Unicode scalar birimidir ve segmentin **kendi** metnine göredir;
+/// ayrı bir çıkarımdan gelen kutu ile metin karıştırılmaz.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentBlock {
+    pub start: i64,
+    pub end: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bbox: Option<[f64; 4]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<[f64; 4]>,
+}
+
+pub(crate) fn parse_blocks(raw: Option<String>) -> Vec<SegmentBlock> {
+    raw.and_then(|text| serde_json::from_str::<Vec<SegmentBlock>>(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Verilen karakter aralığıyla kesişen blokların kutuları.
+///
+/// Blok sınırları karakter aralığı taşıdığı için alıntının hangi bloklara
+/// düştüğü kesin bilinir; satır düzeyinde bölme yapılmaz (satır offsetleri
+/// kayıtlı değildir) ve bu sınır çağırana `covered_blocks` ile bildirilir.
+pub(crate) fn block_quads(
+    blocks: &[SegmentBlock],
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Vec<[f64; 4]> {
+    let mut quads = Vec::new();
+    for block in blocks {
+        let overlaps = match (start, end) {
+            (Some(range_start), Some(range_end)) => {
+                block.end > range_start && block.start < range_end
+            }
+            _ => true,
+        };
+        if !overlaps {
+            continue;
+        }
+        if let Some(bbox) = block.bbox {
+            quads.push(bbox);
+        }
+    }
+    quads
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +106,7 @@ pub struct BlobRef {
     pub byte_size: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NewPage {
     pub index: i64,
     pub text: String,
@@ -57,6 +114,10 @@ pub struct NewPage {
     pub height: Option<f64>,
     pub origin: String,
     pub warnings: Vec<String>,
+    /// Gösterim döndürmesi (0/90/180/270); koordinatlar döndürme öncesidir.
+    pub rotation: i64,
+    pub coordinate_space: Option<String>,
+    pub blocks: Vec<SegmentBlock>,
 }
 
 #[must_use]
@@ -152,14 +213,25 @@ impl Database {
             let page_id = uuid::Uuid::now_v7().to_string();
             let flags = serde_json::to_string(&page.warnings).unwrap_or_else(|_| "[]".into());
             tx.execute(
-                "INSERT INTO pages (id,parse_run_id,page_index,width,height,rotation,text_origin,quality_flags)
-                 VALUES (?1,?2,?3,?4,?5,0,?6,?7)",
-                rusqlite::params![page_id, parse_run_id, page.index, page.width, page.height, page.origin, flags],
+                "INSERT INTO pages (id,parse_run_id,page_index,width,height,rotation,coordinate_space,text_origin,quality_flags)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                rusqlite::params![
+                    page_id,
+                    parse_run_id,
+                    page.index,
+                    page.width,
+                    page.height,
+                    page.rotation,
+                    page.coordinate_space,
+                    page.origin,
+                    flags
+                ],
             )?;
             if !page.text.trim().is_empty() {
+                let geometry = serde_json::to_string(&page.blocks).unwrap_or_else(|_| "[]".into());
                 tx.execute(
                     "INSERT INTO text_segments (id,parse_run_id,page_id,case_id,structural_path,raw_text,normalized_text,offset_map,bbox_list,created_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,'[]','[]',?8)",
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,'[]',?8,?9)",
                     rusqlite::params![
                         uuid::Uuid::now_v7().to_string(),
                         parse_run_id,
@@ -168,6 +240,7 @@ impl Database {
                         format!("page/{}", page.index),
                         page.text,
                         dim_evidence::normalize(&page.text),
+                        geometry,
                         now,
                     ],
                 )?;
@@ -245,10 +318,12 @@ impl Database {
                     (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS segment_id,
                     p.page_index,
                     COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'') AS text,
-                    p.text_origin,p.quality_flags,p.width,p.height
+                    p.text_origin,p.quality_flags,p.width,p.height,p.rotation,p.coordinate_space,
+                    (SELECT s.bbox_list FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS bbox_list
              FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index",
         )?;
         let rows = stmt.query_map([parse_run_id], |row| {
+            let raw_blocks: Option<String> = row.get(10)?;
             Ok(PageRow {
                 id: row.get(0)?,
                 segment_id: row.get(1)?,
@@ -258,6 +333,9 @@ impl Database {
                 quality_flags: row.get(5)?,
                 width: row.get(6)?,
                 height: row.get(7)?,
+                rotation: row.get(8)?,
+                coordinate_space: row.get(9)?,
+                blocks: parse_blocks(raw_blocks),
             })
         })?;
         let mut out = Vec::new();
@@ -265,6 +343,54 @@ impl Database {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Segmentin koordinat geometrisi: hangi uzayda, hangi kutular.
+    ///
+    /// `start`/`end` verilirse yalnız kesişen bloklar döner; böylece alıntının
+    /// sayfadaki yeri blok düzeyinde gösterilebilir (F06-T08). Kutu yoksa
+    /// `quads` boş kalır — konum uydurulmaz.
+    pub fn segment_geometry(
+        &self,
+        segment_id: &str,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> Result<Option<SegmentGeometry>, StorageError> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT s.id, s.bbox_list, p.rotation, p.coordinate_space, p.width, p.height
+                 FROM text_segments s LEFT JOIN pages p ON p.id = s.page_id
+                 WHERE s.id = ?1",
+                [segment_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, Option<f64>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, raw_blocks, rotation, coordinate_space, width, height)) = row else {
+            return Ok(None);
+        };
+        let blocks = parse_blocks(raw_blocks);
+        let total_blocks = blocks.len();
+        let quads = block_quads(&blocks, start, end);
+        Ok(Some(SegmentGeometry {
+            segment_id: id,
+            coordinate_space,
+            page_rotation: rotation.unwrap_or(0),
+            page_width: width,
+            page_height: height,
+            covered_blocks: quads.len(),
+            total_blocks,
+            quads,
+        }))
     }
 
     /// Dosya kapsamlı tam metin araması. `case_id` zorunludur; başka dosyanın
@@ -313,6 +439,19 @@ impl Database {
         }
         Ok(out)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentGeometry {
+    pub segment_id: String,
+    pub coordinate_space: Option<String>,
+    pub page_rotation: i64,
+    pub page_width: Option<f64>,
+    pub page_height: Option<f64>,
+    pub quads: Vec<[f64; 4]>,
+    pub covered_blocks: usize,
+    pub total_blocks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +522,7 @@ mod tests {
                         height: Some(842.0),
                         origin: "native".into(),
                         warnings: vec![],
+                        ..Default::default()
                     },
                     NewPage {
                         index: 1,
@@ -391,6 +531,7 @@ mod tests {
                         height: Some(842.0),
                         origin: "none".into(),
                         warnings: vec!["metin katmanı yok".into()],
+                        ..Default::default()
                     },
                 ],
             )
@@ -431,6 +572,7 @@ mod tests {
                 height: None,
                 origin: "native".into(),
                 warnings: vec![],
+                ..Default::default()
             }],
         )
         .expect("sayfa");
@@ -468,6 +610,7 @@ mod tests {
                 height: None,
                 origin: "native".into(),
                 warnings: vec![],
+                ..Default::default()
             }],
         )
         .expect("sayfa");
@@ -502,6 +645,7 @@ mod tests {
                 height: None,
                 origin: "native".into(),
                 warnings: vec![],
+                ..Default::default()
             }],
         )
         .expect("sayfa");
@@ -542,5 +686,117 @@ mod tests {
             .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
             .expect("koşu");
         assert!(db.finish_parse_run(&run.id, "bitti", &[]).is_err());
+    }
+
+    #[test]
+    fn page_geometry_roundtrips_and_range_selects_overlapping_blocks() {
+        let (db, case_id, version_id) = setup();
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        let text = "Birinci blok\nİkinci blok\n";
+        let first_bbox = [10.0, 10.0, 200.0, 24.0];
+        let second_bbox = [10.0, 40.0, 180.0, 54.0];
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: text.into(),
+                width: Some(300.0),
+                height: Some(400.0),
+                origin: "native".into(),
+                warnings: vec![],
+                rotation: 90,
+                coordinate_space: Some("unrotated_cropbox_points".into()),
+                blocks: vec![
+                    SegmentBlock {
+                        start: 0,
+                        end: 13,
+                        bbox: Some(first_bbox),
+                        lines: vec![[10.0, 10.0, 200.0, 24.0]],
+                    },
+                    SegmentBlock {
+                        start: 13,
+                        end: 25,
+                        bbox: Some(second_bbox),
+                        lines: vec![],
+                    },
+                ],
+            }],
+        )
+        .expect("sayfa");
+
+        let pages = db.pages_for_run(&run.id).expect("sayfalar");
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].rotation, 90);
+        assert_eq!(
+            pages[0].coordinate_space.as_deref(),
+            Some("unrotated_cropbox_points")
+        );
+        assert_eq!(pages[0].blocks.len(), 2);
+        assert_eq!(pages[0].blocks[1].bbox, Some(second_bbox));
+        // Blok aralıkları segment metniyle birebir aynı yerleri gösterir.
+        let chars: Vec<char> = text.chars().collect();
+        let block_text: String = chars[13..25].iter().collect();
+        assert_eq!(block_text, "İkinci blok\n");
+
+        let segment_id = pages[0].segment_id.clone().expect("segment");
+        let geometry = db
+            .segment_geometry(&segment_id, Some(13), Some(25))
+            .expect("geometri")
+            .expect("kayıt");
+        assert_eq!(geometry.total_blocks, 2);
+        assert_eq!(geometry.covered_blocks, 1);
+        assert_eq!(geometry.quads, vec![second_bbox]);
+        assert_eq!(geometry.page_rotation, 90);
+        assert_eq!(geometry.page_width, Some(300.0));
+
+        let all = db
+            .segment_geometry(&segment_id, None, None)
+            .expect("hepsi")
+            .expect("kayıt");
+        assert_eq!(all.quads.len(), 2);
+        assert!(db
+            .segment_geometry("olmayan-segment", None, None)
+            .expect("arama")
+            .is_none());
+    }
+
+    #[test]
+    fn malformed_geometry_record_does_not_crash_and_is_not_invented() {
+        let (db, case_id, version_id) = setup();
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "Metin".into(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+                ..Default::default()
+            }],
+        )
+        .expect("sayfa");
+        db.conn()
+            .execute(
+                "UPDATE text_segments SET bbox_list='bozuk-json' WHERE parse_run_id=?1",
+                [&run.id],
+            )
+            .expect("güncelle");
+
+        let pages = db.pages_for_run(&run.id).expect("sayfalar");
+        assert!(pages[0].blocks.is_empty());
+        let geometry = db
+            .segment_geometry(pages[0].segment_id.as_deref().unwrap(), None, None)
+            .expect("geometri")
+            .expect("kayıt");
+        assert!(geometry.quads.is_empty());
+        assert_eq!(geometry.total_blocks, 0);
     }
 }

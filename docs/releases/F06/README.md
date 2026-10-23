@@ -12,6 +12,7 @@
 | F06-T04 | ✅ | ayrıştırma durumu (`succeeded`/`partial`), uyarılar |
 | F06-T05 | ✅ | OCR: Tesseract (`tur+eng`), 300 dpi, dil paketi keşfi; yoksa açık hata |
 | F06-T06 | ✅ | DOCX (python-docx): paragraf, tablo, üst/alt bilgi; UDF hâlâ açık |
+| F06-T08 | ✅ | blok/satır kutuları, ortak koordinat uzayı, döndürme + kırpma kutusu, okuyucuda konum haritası |
 
 ## Doğrulama
 
@@ -25,5 +26,10 @@
   özgün metnin yerine geçmez.
 - DOCX'te sayfa düzeni doğrulanmaz; kaynak paragraf/tablo bazlıdır ve bu uyarı
   kayıtta taşınır.
-- UDF (UYAP belge paketi) henüz yok.
-- Kaynak konumu (bbox/quad) üretilmiyor; segment düzeyi var, alıntı anchor'ı F07/F11.
+- UDF (UYAP belge paketi) sayfa ayrımı doğrulanmamıştır; kaynak paragraf bazlıdır.
+- Kaynak konumu **blok düzeyindedir**: kutu, alıntının düştüğü metin bloğudur;
+  satır/kelime offsetleri saklanmadığı için daha ince vurgu yapılmaz. Kutu
+  üretilmeyen belgelerde (DOCX/UDF/plain) konum haritası çizilmez.
+- Sayfa başına 300 blok, blok başına 60 satır kutusu saklanır. Worker yanıtı
+  700 KiB geometri bütçesini aşarsa önce satır kutuları, sonra blok kutuları
+  düşer ve durum `warnings` + `partial` olarak raporlanır (sessiz kayıp yok).

@@ -1,4 +1,4 @@
-import type { AnchorLocationRow, PageRow, SearchHit } from "./api";
+import type { AnchorLocationRow, PageBlock, PageRow, SearchHit } from "./api";
 
 /** Okuyucunun açılacağı yer. `versionId` zorunludur: sonuç/bağ, doğru
  *  sürümü açar; "en son sürüm" tahmini yapılmaz (F07 kabul testi). */
@@ -15,9 +15,15 @@ export type ReaderTarget = {
   query: string | null;
   anchorId: string | null;
   quoteIntact: boolean | null;
+  /** Anchor kaydından gelen blok kutuları; arama sonucunda boştur. */
+  quads: [number, number, number, number][];
 };
 
 export type ReaderSlice = { before: string; hit: string; after: string };
+
+/** Unicode scalar aralığı. Backend offsetleri de scalardır; UTF-16 dilimlemesi
+ *  emoji/aksanda kaymaz. */
+export type OffsetRange = { start: number; end: number };
 
 /** `parse_runs.warnings` JSON metnini güvenli çözer; bozuk kayıt boş liste olur
  *  ve arayüz uydurma uyarı göstermez. */
@@ -48,6 +54,7 @@ export function targetFromHit(hit: SearchHit, query: string): ReaderTarget | nul
     query: query.trim() || null,
     anchorId: null,
     quoteIntact: null,
+    quads: [],
   };
 }
 
@@ -65,6 +72,7 @@ export function targetFromAnchor(location: AnchorLocationRow): ReaderTarget {
     query: null,
     anchorId: location.anchorId,
     quoteIntact: location.quoteIntact,
+    quads: location.quads ?? [],
   };
 }
 
@@ -104,7 +112,7 @@ export function offsetSlice(text: string, start: number | null, end: number | nu
 
 /** Sayfadaki sorgu geçişini işaretler. Önce birebir, bulunamazsa Türkçe
  *  küçük harfe çevrilmiş metinde arar; uzunluk değişirse işaretleme yapmaz. */
-export function querySlice(text: string, query: string | null): ReaderSlice | null {
+export function queryRange(text: string, query: string | null): OffsetRange | null {
   const needle = (query ?? "").trim();
   if (!needle) return null;
   let index = text.indexOf(needle);
@@ -117,19 +125,97 @@ export function querySlice(text: string, query: string | null): ReaderSlice | nu
   }
   if (index < 0) return null;
   const start = Array.from(text.slice(0, index)).length;
-  return offsetSlice(text, start, start + Array.from(needle).length);
+  return { start, end: start + Array.from(needle).length };
 }
 
-/** Hedefin bu sayfada işaretlenecek parçası. Anchor offset'i sayfa ile
- *  eşleşmiyorsa uygulanmaz; böylece yanlış sayfada yanlış alıntı boyanmaz. */
-export function sliceForPage(text: string, target: ReaderTarget | null, page: PageRow): ReaderSlice | null {
+export function querySlice(text: string, query: string | null): ReaderSlice | null {
+  const range = queryRange(text, query);
+  return range ? offsetSlice(text, range.start, range.end) : null;
+}
+
+/** Hedefin bu sayfadaki işaretlenecek aralığı (Unicode scalar). Anchor
+ *  offset'i sayfa ile eşleşmiyorsa uygulanmaz; böylece yanlış sayfada yanlış
+ *  alıntı boyanmaz. */
+export function rangeForPage(
+  text: string,
+  target: ReaderTarget | null,
+  page: PageRow,
+): OffsetRange | null {
   if (!target) return null;
   if (target.startOffset !== null && target.endOffset !== null) {
     const samePage =
       (target.pageId !== null && target.pageId === page.id) ||
       (target.segmentId !== null && target.segmentId === page.segmentId);
     if (!samePage) return null;
-    return offsetSlice(text, target.startOffset, target.endOffset);
+    if (!Number.isInteger(target.startOffset) || !Number.isInteger(target.endOffset)) return null;
+    if (target.startOffset < 0 || target.endOffset < target.startOffset) return null;
+    if (target.endOffset > Array.from(text).length) return null;
+    return { start: target.startOffset, end: target.endOffset };
   }
-  return querySlice(text, target.query);
+  return queryRange(text, target.query);
+}
+
+/** Hedefin bu sayfada işaretlenecek parçası. */
+export function sliceForPage(
+  text: string,
+  target: ReaderTarget | null,
+  page: PageRow,
+): ReaderSlice | null {
+  const range = rangeForPage(text, target, page);
+  return range ? offsetSlice(text, range.start, range.end) : null;
+}
+
+/** Döndürme uygulandığında sayfanın görünen boyutu (90/270'te eksenler yer
+ *  değiştirir). Koordinatlar döndürme öncesi uzaydadır. */
+export function displayPageSize(
+  width: number,
+  height: number,
+  rotation: number,
+): { width: number; height: number } {
+  const normalized = normalizeRotation(rotation);
+  return normalized === 90 || normalized === 270
+    ? { width: height, height: width }
+    : { width, height };
+}
+
+export function normalizeRotation(rotation: number): number {
+  if (!Number.isFinite(rotation)) return 0;
+  const rounded = Math.round(rotation / 90) * 90;
+  return ((rounded % 360) + 360) % 360;
+}
+
+/** Döndürme öncesi uzaydaki kutuyu görünen (döndürülmüş) uzaya çevirir.
+ *  PyMuPDF `rotation_matrix` ile aynı yön: saat yönünde. */
+export function mapRectForDisplay(
+  rect: [number, number, number, number],
+  pageWidth: number,
+  pageHeight: number,
+  rotation: number,
+): [number, number, number, number] {
+  const [x0, y0, x1, y1] = rect;
+  switch (normalizeRotation(rotation)) {
+    case 90:
+      return [pageHeight - y1, x0, pageHeight - y0, x1];
+    case 180:
+      return [pageWidth - x1, pageHeight - y1, pageWidth - x0, pageHeight - y0];
+    case 270:
+      return [y0, pageWidth - x1, y1, pageWidth - x0];
+    default:
+      return [x0, y0, x1, y1];
+  }
+}
+
+/** Aralıkla kesişen blokların kutuları. Blok sınırları karakter aralığı
+ *  taşır; satır düzeyinde bölme yapılmaz (satır offsetleri kayıtlı değil). */
+export function blocksForRange(
+  blocks: PageBlock[],
+  range: OffsetRange | null,
+): [number, number, number, number][] {
+  const quads: [number, number, number, number][] = [];
+  for (const block of blocks) {
+    if (!block.bbox) continue;
+    if (range && !(block.end > range.start && block.start < range.end)) continue;
+    quads.push(block.bbox);
+  }
+  return quads;
 }

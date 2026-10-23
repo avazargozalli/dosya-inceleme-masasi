@@ -10,7 +10,7 @@ use dim_storage::{
     NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
     NewReviewItem, NewTask, NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow,
     PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow,
-    ReviewItemRow, SearchHit, TaskRow, TransferConsentRow,
+    ReviewItemRow, SearchHit, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -571,6 +571,18 @@ pub fn document_parse(
                 "native".to_string()
             },
             warnings: p.warnings.clone(),
+            rotation: i64::from(p.rotation % 360),
+            coordinate_space: p.coordinate_space.clone(),
+            blocks: p
+                .blocks
+                .iter()
+                .map(|b| SegmentBlock {
+                    start: i64::from(b.start),
+                    end: i64::from(b.end),
+                    bbox: b.bbox,
+                    lines: b.lines.clone(),
+                })
+                .collect(),
         })
         .collect();
     let stored = db.store_pages(&run.id, &version.case_id, &pages)?;

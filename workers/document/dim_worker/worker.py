@@ -7,14 +7,29 @@ Yöntemler: ping, capabilities, extract_text, shutdown.
 from __future__ import annotations
 
 import base64
+import json
 import sys
 from typing import Any
 
 from . import PROTOCOL_VERSION
-from .engines import EngineError, capabilities, decode_content, extract, redact_pdf, render_report, render_report_pdf
+from .engines import (
+    MAX_BLOCKS_PER_PAGE,
+    EngineError,
+    capabilities,
+    decode_content,
+    extract,
+    redact_pdf,
+    render_report,
+    render_report_pdf,
+)
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
 
 METHODS = {"ping", "capabilities", "extract_text", "redact", "render_report", "render_report_pdf", "shutdown"}
+
+# Geometri (blok/satır kutuları) çerçevenin bir parçasıdır. 1 MiB sert sınırına
+# yaklaşmamak için bütçe ayrılır; aşılırsa kutular kademeli atılır ve durum
+# `warnings` içinde açıkça yazılır — sessiz öğe kaybı olmaz.
+GEOMETRY_FRAME_BUDGET = 700 * 1024
 
 
 def _require_version(frame: dict[str, Any]) -> None:
@@ -29,6 +44,58 @@ def _request_id(frame: dict[str, Any]) -> str | None:
     if not isinstance(rid, str) or not rid or len(rid) > 64:
         raise ProtocolError("E_REQUEST_ID", "id 1-64 karakter metin olmalı")
     return rid
+
+
+def _page_payload(page: Any) -> dict[str, Any]:
+    """Sayfayı protokole çevirir. Geometri kutuları `start`/`end` (Unicode
+    scalar) ile birlikte taşınır; kutu yoksa alan yazılmaz."""
+    blocks: list[dict[str, Any]] = []
+    for block in page.blocks[:MAX_BLOCKS_PER_PAGE]:
+        entry: dict[str, Any] = {"start": block.start, "end": block.end}
+        if block.bbox:
+            entry["bbox"] = block.bbox
+        if block.lines:
+            entry["lines"] = block.lines
+        blocks.append(entry)
+    return {
+        "index": page.index,
+        "text": page.text,
+        "width": page.width,
+        "height": page.height,
+        "rotation": page.rotation,
+        "coordinateSpace": page.coordinate_space,
+        "blocks": blocks,
+        "warnings": page.warnings,
+    }
+
+
+def _encoded_size(payload: dict[str, Any]) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _shrink_geometry(result: dict[str, Any]) -> None:
+    """Çerçeve sınırı için geometriyi kademeli küçültür.
+
+    Sessizce atmaz: her adım `warnings` listesine yazılır, ayrıştırma durumu
+    `partial` olur. Önce satır kutuları, sonra blok kutuları düşer; metin ve
+    offsetler korunur.
+    """
+    if _encoded_size(result) <= GEOMETRY_FRAME_BUDGET:
+        return
+    pages = [page for page in result["pages"] if page.get("blocks")]
+    for page in pages:
+        for block in page["blocks"]:
+            block.pop("lines", None)
+    if _encoded_size(result) <= GEOMETRY_FRAME_BUDGET:
+        result["warnings"].append(
+            "geometri: satır kutuları çerçeve sınırı için atıldı (blok kutuları korundu)"
+        )
+        return
+    for page in pages:
+        page["blocks"] = []
+    result["warnings"].append(
+        f"geometri: {len(pages)} sayfada blok kutuları çerçeve sınırı için atıldı; metin korundu"
+    )
 
 
 def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -99,21 +166,18 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         raise ProtocolError("E_PARAMS", "password metin olmalı")
     encoding = str(params.get("encoding") or "utf-8")
     extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding, password=password)
-    result = {
+    result: dict[str, Any] = {
         "engine": extraction.engine,
         "engineVersion": extraction.engine_version,
-        "pages": [
-            {
-                "index": p.index,
-                "text": p.text,
-                "width": p.width,
-                "height": p.height,
-                "warnings": p.warnings,
-            }
-            for p in extraction.pages
-        ],
-        "warnings": extraction.warnings,
+        "pages": [_page_payload(page) for page in extraction.pages],
+        "warnings": list(extraction.warnings),
     }
+    for page in extraction.pages:
+        if len(page.blocks) > MAX_BLOCKS_PER_PAGE:
+            result["warnings"].append(
+                f"geometri: sayfa {page.index + 1} ilk {MAX_BLOCKS_PER_PAGE} blokla sınırlandı"
+            )
+    _shrink_geometry(result)
     return ok(rid, result), False
 
 

@@ -22,6 +22,17 @@ MAX_IMAGE_PIXELS = 50_000_000
 OCR_DPI = 300
 OCR_MIN_CONFIDENCE = 60.0
 
+# Ortak koordinat uzayları. Okuyucu, kırmızı çizim ve redaksiyon aynı uzayı
+# kullanır; uzay adı kayıtla birlikte taşınır (F06-T08).
+COORDINATE_SPACE_PDF = "unrotated_cropbox_points"
+COORDINATE_SPACE_IMAGE = "image_pixels"
+COORDINATE_SPACE_STRUCTURE = "structure"
+
+# Sayfa başına blok ve blok başına satır kutusu sınırı: çerçeve 1 MiB'tir,
+# sınırsız kutu yanıtı büyütüp ayrıştırmayı düşürür.
+MAX_BLOCKS_PER_PAGE = 300
+MAX_LINES_PER_BLOCK = 60
+
 
 class EngineError(Exception):
     def __init__(self, code: str, message: str, retryable: bool = False) -> None:
@@ -32,12 +43,37 @@ class EngineError(Exception):
 
 
 @dataclass
+class TextBlock:
+    """Sayfa metninin bir bloğu: karakter aralığı + koordinatlar.
+
+    `start`/`end` **Unicode scalar** (Python kod noktası) offsetleridir ve
+    `Page.text` içine göredir. `bbox`/`lines` koordinatları sayfanın
+    `coordinate_space` uzayındadır; yapısal motorlarda (DOCX/UDF/plain) kutu
+    yoktur, yalnız offset aralığı taşınır.
+    """
+
+    start: int
+    end: int
+    bbox: list[float] | None = None
+    lines: list[list[float]] = field(default_factory=list)
+
+
+def _rounded_box(values: Any) -> list[float]:
+    """Kutuyu 0.01 birim duyarlığa yuvarlar; JSON boyutu küçülür, konum korunur."""
+    return [round(float(value), 2) for value in values]
+
+
+@dataclass
 class Page:
     index: int
     text: str
     width: float = 0.0
     height: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    # Döndürme yalnız gösterimi etkiler; koordinatlar döndürme öncesi uzaydadır.
+    rotation: int = 0
+    coordinate_space: str = COORDINATE_SPACE_STRUCTURE
+    blocks: list[TextBlock] = field(default_factory=list)
 
 
 @dataclass
@@ -77,9 +113,16 @@ def _tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
-def _ocr_text_and_confidence(image, lang: str) -> tuple[str, float | None]:
-    """Görüntüyü bir kez OCR eder; satır metnini ve ortalama kelime güvenini
-    (0–100) döndürür. Güven okunamazsa `None` döner, uydurma skor üretilmez."""
+def _ocr_text_confidence_and_blocks(
+    image, lang: str, scale: float = 1.0
+) -> tuple[str, float | None, list[TextBlock]]:
+    """Görüntüyü bir kez OCR eder; satır metnini, ortalama kelime güvenini
+    (0–100) ve satır kutularını döndürür. Güven okunamazsa `None` döner,
+    uydurma skor üretilmez.
+
+    Kutu koordinatları `scale` ile çarpılır: PDF'te piksel → punto
+    (72 / dpi), görüntüde 1.0 (piksel uzayı).
+    """
     try:
         import pytesseract  # type: ignore
     except ImportError as exc:
@@ -95,6 +138,7 @@ def _ocr_text_and_confidence(image, lang: str) -> tuple[str, float | None]:
     words = data.get("text") or []
     confidences = data.get("conf") or []
     lines: dict[tuple[int, int, int], list[str]] = {}
+    boxes: dict[tuple[int, int, int], list[float]] = {}
     scores: list[float] = []
     for index, raw_word in enumerate(words):
         word = (raw_word or "").strip()
@@ -107,15 +151,47 @@ def _ocr_text_and_confidence(image, lang: str) -> tuple[str, float | None]:
         )
         lines.setdefault(key, []).append(word)
         try:
+            left = float(data["left"][index]) * scale
+            top = float(data["top"][index]) * scale
+            width = float(data["width"][index]) * scale
+            height = float(data["height"][index]) * scale
+            merged = boxes.get(key)
+            if merged is None:
+                boxes[key] = [left, top, left + width, top + height]
+            else:
+                merged[0] = min(merged[0], left)
+                merged[1] = min(merged[1], top)
+                merged[2] = max(merged[2], left + width)
+                merged[3] = max(merged[3], top + height)
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+        try:
             score = float(confidences[index])
         except (IndexError, TypeError, ValueError):
             continue
         if score >= 0:
             scores.append(score)
 
-    text = "\n".join(" ".join(parts) for _, parts in sorted(lines.items()))
+    parts: list[str] = []
+    blocks: list[TextBlock] = []
+    cursor = 0
+    for key in sorted(lines):
+        line_text = " ".join(lines[key])
+        parts.append(line_text)
+        parts.append("\n")
+        box = boxes.get(key)
+        blocks.append(
+            TextBlock(
+                start=cursor,
+                end=cursor + len(line_text) + 1,
+                bbox=_rounded_box(box) if box else None,
+                lines=[],
+            )
+        )
+        cursor += len(line_text) + 1
+    text = "".join(parts)
     mean = round(sum(scores) / len(scores), 1) if scores else None
-    return text, mean
+    return text, mean, blocks
 
 
 def _ocr_confidence_note(confidence: float | None) -> str:
@@ -127,7 +203,22 @@ def _ocr_confidence_note(confidence: float | None) -> str:
     return f"; güven skoru {confidence:.0f}/100"
 
 
-def _ocr_page(page, lang: str) -> tuple[str, float | None]:
+def _transform_box(box: list[float], matrix: Any) -> list[float]:
+    """Kutunun dört köşesini matrisle dönüştürüp eksen hizalı zarfını döndürür."""
+    x0, y0, x1, y1 = box
+    xs: list[float] = []
+    ys: list[float] = []
+    for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+        xs.append(matrix.a * x + matrix.c * y + matrix.e)
+        ys.append(matrix.b * x + matrix.d * y + matrix.f)
+    return _rounded_box([min(xs), min(ys), max(xs), max(ys)])
+
+
+def _ocr_page(page, lang: str) -> tuple[str, float | None, list[TextBlock]]:
+    """Sayfayı 300 dpi'de OCR eder ve kutuları **ortak koordinat uzayına**
+    (döndürme öncesi cropbox puntoları) çevirir. Görüntü, sayfanın
+    döndürülmüş görünümüdür; bu yüzden `derotation_matrix` uygulanır.
+    """
     try:
         from PIL import Image  # type: ignore
     except ImportError as exc:
@@ -135,7 +226,54 @@ def _ocr_page(page, lang: str) -> tuple[str, float | None]:
 
     pix = page.get_pixmap(dpi=OCR_DPI, alpha=False)
     image = Image.open(io.BytesIO(pix.tobytes("png")))
-    return _ocr_text_and_confidence(image, lang)
+    text, confidence, blocks = _ocr_text_confidence_and_blocks(image, lang, scale=72.0 / OCR_DPI)
+    matrix = page.derotation_matrix
+    for block in blocks:
+        if block.bbox:
+            block.bbox = _transform_box(block.bbox, matrix)
+        block.lines = [_transform_box(line, matrix) for line in block.lines]
+    return text, confidence, blocks
+
+
+def _pdf_page_text_and_blocks(page) -> tuple[str, list[TextBlock]]:
+    """Metni blok/satır kutularıyla **aynı** çıkarımdan üretir.
+
+    `get_text("dict")` koordinatları döndürme uygulanmamış kırpma kutusu
+    uzayındadır (origin cropbox sol-üstü, y aşağı, punto). Metin bu bloklardan
+    kurulduğu için `start`/`end` offsetleri ile kutular aynı kaynağa dayanır;
+    ayrı bir `get_text("text")` çağrısıyla kayma olmaz.
+    """
+    payload = page.get_text("dict")
+    parts: list[str] = []
+    blocks: list[TextBlock] = []
+    cursor = 0
+    for raw_block in payload.get("blocks", []):
+        if raw_block.get("type") != 0:
+            continue
+        block_start = cursor
+        line_boxes: list[list[float]] = []
+        for line in raw_block.get("lines") or []:
+            text = "".join(str(span.get("text") or "") for span in (line.get("spans") or []))
+            if not text:
+                continue
+            box = line.get("bbox") or raw_block.get("bbox")
+            if box and len(line_boxes) < MAX_LINES_PER_BLOCK:
+                line_boxes.append(_rounded_box(box))
+            parts.append(text)
+            parts.append("\n")
+            cursor += len(text) + 1
+        if cursor == block_start:
+            continue
+        block_box = raw_block.get("bbox")
+        blocks.append(
+            TextBlock(
+                start=block_start,
+                end=cursor,
+                bbox=_rounded_box(block_box) if block_box else None,
+                lines=line_boxes,
+            )
+        )
+    return "".join(parts), blocks
 
 
 def extract_pdf(
@@ -161,11 +299,12 @@ def extract_pdf(
             raise EngineError("E_PDF_TOO_MANY_PAGES", f"belge {MAX_PAGES} sayfa sınırını aşıyor")
         for index in range(count):
             page = doc.load_page(index)
-            text = page.get_text("text") or ""
+            text, blocks = _pdf_page_text_and_blocks(page)
+            coordinate_space = COORDINATE_SPACE_PDF
             page_warnings: list[str] = []
             if not text.strip():
                 if ocr:
-                    text, confidence = _ocr_page(page, ocr_lang)
+                    text, confidence, blocks = _ocr_page(page, ocr_lang)
                     if text.strip():
                         page_warnings.append(
                             f"sayfa {index + 1}: OCR ile okundu ({ocr_lang}){_ocr_confidence_note(confidence)}"
@@ -175,15 +314,48 @@ def extract_pdf(
                 else:
                     page_warnings.append(f"sayfa {index + 1}: metin katmanı yok (OCR gerekli)")
                 warnings.extend(page_warnings)
-            rect = page.rect
+            # Koordinat uzayı döndürme öncesidir; genişlik/yükseklik kırpma
+            # kutusunun boyutudur. Döndürme ayrı alanda taşınır (90/270'te
+            # görünen boyut bunun tersidir).
+            crop = page.cropbox
+            mupdf_rotation = int(getattr(page, "rotation", 0) or 0) % 360
             pages.append(
-                Page(index=index, text=text, width=float(rect.width), height=float(rect.height), warnings=page_warnings)
+                Page(
+                    index=index,
+                    text=text,
+                    width=float(crop.width),
+                    height=float(crop.height),
+                    warnings=page_warnings,
+                    rotation=mupdf_rotation,
+                    coordinate_space=coordinate_space,
+                    blocks=blocks,
+                )
             )
     finally:
         doc.close()
 
     version = str(getattr(pymupdf, "__version__", "unknown"))
     return Extraction(engine="pymupdf", engine_version=version, pages=pages, warnings=warnings)
+
+
+def _structure_text(parts: list[str], separator: str = "\n\n") -> tuple[str, list[TextBlock]]:
+    """Parça listesinden metin ve **kutusuz** blok aralıkları üretir.
+
+    Yapısal motorlarda (DOCX/UDF/plain) sayfa koordinatı yoktur; yine de
+    paragraf sınırları kaydedilir, böylece kaynak konumu blok düzeyinde
+    gösterilebilir.
+    """
+    pieces: list[str] = []
+    blocks: list[TextBlock] = []
+    cursor = 0
+    for index, text in enumerate(parts):
+        if index:
+            pieces.append(separator)
+            cursor += len(separator)
+        blocks.append(TextBlock(start=cursor, end=cursor + len(text)))
+        pieces.append(text)
+        cursor += len(text)
+    return "".join(pieces), blocks
 
 
 def extract_docx(data: bytes) -> Extraction:
@@ -209,12 +381,18 @@ def extract_docx(data: bytes) -> Extraction:
                 if p.text.strip():
                     blocks.append(p.text)
 
-    text = "\n\n".join(blocks)
+    text, geometry = _structure_text(blocks)
     warnings = ["DOCX sayfa düzeni doğrulanmadı; kaynak paragraf bazlıdır"]
     if not blocks:
         warnings.append("belgede metin bulunamadı")
     version = str(getattr(docx, "__version__", "unknown"))
-    page = Page(index=0, text=text, warnings=warnings)
+    page = Page(
+        index=0,
+        text=text,
+        warnings=warnings,
+        coordinate_space=COORDINATE_SPACE_STRUCTURE,
+        blocks=geometry,
+    )
     return Extraction(engine="python-docx", engine_version=version, pages=[page], warnings=warnings)
 
 
@@ -228,7 +406,14 @@ def extract_udf(data: bytes) -> Extraction:
 
     warnings = list(document.warnings)
     warnings.append("UDF: sayfa ayrımı doğrulanmadı; kaynak paragraf bazlıdır")
-    page = Page(index=0, text=document.text, warnings=warnings)
+    text, geometry = _structure_text(document.text.split("\n\n"))
+    page = Page(
+        index=0,
+        text=text,
+        warnings=warnings,
+        coordinate_space=COORDINATE_SPACE_STRUCTURE,
+        blocks=geometry,
+    )
     return Extraction(engine="uyap-udf", engine_version="1", pages=[page], warnings=warnings)
 
 
@@ -282,8 +467,9 @@ def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extr
             _check_pixel_budget(*frame.size)
             page_warnings: list[str] = []
             text = ""
+            blocks: list[TextBlock] = []
             if ocr:
-                text, confidence = _ocr_text_and_confidence(frame, ocr_lang)
+                text, confidence, blocks = _ocr_text_confidence_and_blocks(frame, ocr_lang, scale=1.0)
                 if text.strip():
                     page_warnings.append(
                         f"sayfa {index + 1}: OCR ile okundu ({ocr_lang}){_ocr_confidence_note(confidence)}"
@@ -300,6 +486,8 @@ def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extr
                     width=float(frame.size[0]),
                     height=float(frame.size[1]),
                     warnings=page_warnings,
+                    coordinate_space=COORDINATE_SPACE_IMAGE,
+                    blocks=blocks,
                 )
             )
     finally:
@@ -335,7 +523,14 @@ def extract_plain(data: bytes, encoding: str = "utf-8") -> Extraction:
     warnings: list[str] = []
     if not text.strip():
         warnings.append("belgede metin yok")
-    page = Page(index=0, text=text, warnings=warnings)
+    geometry: list[TextBlock] = [TextBlock(start=0, end=len(text))] if text else []
+    page = Page(
+        index=0,
+        text=text,
+        warnings=warnings,
+        coordinate_space=COORDINATE_SPACE_STRUCTURE,
+        blocks=geometry,
+    )
     return Extraction(engine="plain", engine_version="1", pages=[page], warnings=warnings)
 
 

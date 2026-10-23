@@ -164,6 +164,7 @@ export function Cases() {
         query: null,
         anchorId: null,
         quoteIntact: null,
+        quads: [],
       },
       right: prev?.right ?? null,
     }));

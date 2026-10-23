@@ -74,11 +74,34 @@ impl WorkerError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExtractedBlock {
+    /// Unicode scalar aralığı; `ExtractedPage::text` içine göredir.
+    pub start: u32,
+    pub end: u32,
+    /// Blok kutusu `[x0, y0, x1, y1]`; yapısal motorlarda yoktur.
+    #[serde(default)]
+    pub bbox: Option<[f64; 4]>,
+    /// Satır kutuları; blok kutusunun içindedir.
+    #[serde(default)]
+    pub lines: Vec<[f64; 4]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtractedPage {
     pub index: u32,
     pub text: String,
+    /// Koordinat uzayının genişliği/yüksekliği (döndürme öncesi).
     pub width: f64,
     pub height: f64,
+    /// Gösterim döndürmesi (0/90/180/270); worker yoksa 0.
+    #[serde(default)]
+    pub rotation: u32,
+    /// `unrotated_cropbox_points`, `image_pixels` veya `structure`.
+    #[serde(default)]
+    pub coordinate_space: Option<String>,
+    #[serde(default)]
+    pub blocks: Vec<ExtractedBlock>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -389,6 +412,54 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn extraction_deserializes_geometry_and_tolerates_old_workers() {
+        let payload = json!({
+            "engine": "pymupdf",
+            "engineVersion": "2.0",
+            "pages": [{
+                "index": 0,
+                "text": "A\n",
+                "width": 300.0,
+                "height": 400.0,
+                "rotation": 90,
+                "coordinateSpace": "unrotated_cropbox_points",
+                "blocks": [{
+                    "start": 0,
+                    "end": 2,
+                    "bbox": [1.0, 2.0, 3.0, 4.0],
+                    "lines": [[1.0, 2.0, 3.0, 4.0]]
+                }],
+                "warnings": []
+            }],
+            "warnings": []
+        });
+        let extraction: Extraction = serde_json::from_value(payload).expect("şema");
+        assert_eq!(extraction.pages[0].rotation, 90);
+        assert_eq!(
+            extraction.pages[0].coordinate_space.as_deref(),
+            Some("unrotated_cropbox_points")
+        );
+        assert_eq!(
+            extraction.pages[0].blocks[0].bbox,
+            Some([1.0, 2.0, 3.0, 4.0])
+        );
+        assert_eq!(extraction.pages[0].blocks[0].lines.len(), 1);
+
+        // Geometri alanlarını göndermeyen eski worker yanıtı da okunur; kutular
+        // boş kalır, konum uydurulmaz.
+        let legacy = json!({
+            "engine": "plain",
+            "engineVersion": "1",
+            "pages": [{"index": 0, "text": "metin", "width": 0.0, "height": 0.0, "warnings": []}],
+            "warnings": []
+        });
+        let old: Extraction = serde_json::from_value(legacy).expect("eski şema");
+        assert_eq!(old.pages[0].rotation, 0);
+        assert!(old.pages[0].coordinate_space.is_none());
+        assert!(old.pages[0].blocks.is_empty());
     }
 
     #[test]
