@@ -8,7 +8,7 @@
 |---|---|---|
 | F06-T01 | ✅ | sürümlü `parse_run`, sayfa ve metin segmentleri |
 | F06-T02 | ✅ | PyMuPDF metin çıkarma (worker), `text_origin` |
-| F06-T03 | ✅ | worker istemcisi: 1 MiB çerçeve, zaman aşımı, süreç ölümü |
+| F06-T03 | ✅ | worker istemcisi: 1 MiB çerçeve, parçalı yanıt (`part`/`parts`) birleştirme, zaman aşımı, süreç ölümü |
 | F06-T04 | ✅ | ayrıştırma durumu (`succeeded`/`partial`), uyarılar |
 | F06-T05 | ✅ | OCR: Tesseract (`tur+eng`), 300 dpi, dil paketi keşfi; yoksa açık hata |
 | F06-T06 | ✅ | DOCX (python-docx): paragraf, tablo, üst/alt bilgi; UDF hâlâ açık |
@@ -33,3 +33,7 @@
 - Sayfa başına 300 blok, blok başına 60 satır kutusu saklanır. Worker yanıtı
   700 KiB geometri bütçesini aşarsa önce satır kutuları, sonra blok kutuları
   düşer ve durum `warnings` + `partial` olarak raporlanır (sessiz kayıp yok).
+- Metin yanıtı 900 KiB'ı aşarsa sayfalar birden çok çerçevede (`part`/`parts`)
+  gönderilir; istemci sırayı doğrulayıp birleştirir. **Tek bir sayfa** çerçeve
+  sınırını aşıyorsa `E_FRAME_TOO_LARGE` döner: metin parçalanıp offsetleri
+  bozulmaz, iş açık hatayla durur.

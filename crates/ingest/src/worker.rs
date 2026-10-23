@@ -3,7 +3,9 @@
 //! Güvenlik sınırı: worker'a kasa anahtarı, veritabanı veya klasör yolu
 //! verilmez; yalnız iş için gereken belge baytları gönderilir (ADR-03).
 //! Yanıt boyutu, çerçeve boyutu ve süre sınırlıdır; süreç ölürse çağıran
-//! taraf hata alır, yarım sonuç tamamlanmış sayılmaz.
+//! taraf hata alır, yarım sonuç tamamlanmış sayılmaz. Metin yanıtı 1 MiB'ı
+//! aşarsa worker sayfaları `part`/`parts` ile böler; istemci parçaları sırayla
+//! birleştirir, eksik/sırasız parçayı reddeder.
 
 // Süreç başlatma bilinçli olarak yalnız burada ve `crates/cli-adapters` içinde
 // yapılır: ADR-05 gereği worker/CLI denetimli zarf olmadan çalıştırılmaz.
@@ -21,6 +23,8 @@ use serde_json::{json, Value};
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Parçalı yanıtta kabul edilen en fazla çerçeve sayısı; sınırsız döngü yok.
+pub const MAX_RESPONSE_PARTS: usize = 5000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
@@ -137,6 +141,78 @@ pub struct Extraction {
     pub warnings: Vec<String>,
 }
 
+/// Parçalı `extract_text` yanıtlarını tek çıkarıma birleştirir.
+///
+/// Worker büyük yanıtı sayfalara bölerek birden çok çerçevede gönderir; sıra
+/// ve parça sayısı tutmazsa birleştirme yapılmaz (yarım metin tam sayılmaz).
+/// Uyarılar her parçada tekrarlandığı için tekilleştirilir, sayfa sırası
+/// korunur.
+fn merge_extraction_parts(parts: &[Value]) -> Result<Extraction, WorkerError> {
+    let mut pages: Vec<ExtractedPage> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut engine: Option<String> = None;
+    let mut engine_version: Option<String> = None;
+    let mut declared: Option<usize> = None;
+
+    for (index, part) in parts.iter().enumerate() {
+        if let Some(total) = part.get("parts").and_then(Value::as_u64) {
+            let total = usize::try_from(total).unwrap_or(usize::MAX);
+            match declared {
+                None => declared = Some(total),
+                Some(existing) if existing != total => {
+                    return Err(WorkerError::Protocol("parça sayısı tutarsız".into()));
+                }
+                Some(_) => {}
+            }
+            let part_no = part.get("part").and_then(Value::as_u64).unwrap_or(0);
+            if part_no != index as u64 + 1 {
+                return Err(WorkerError::Protocol("parça sırası bozuk".into()));
+            }
+        }
+        if engine.is_none() {
+            engine = part
+                .get("engine")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if engine_version.is_none() {
+            engine_version = part
+                .get("engineVersion")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        let chunk: Vec<ExtractedPage> = serde_json::from_value(
+            part.get("pages")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        )
+        .map_err(|_| WorkerError::BadResponse)?;
+        pages.extend(chunk);
+        if let Some(items) = part.get("warnings").and_then(Value::as_array) {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    if !warnings.iter().any(|existing| existing == text) {
+                        warnings.push(text.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(total) = declared {
+        if total != parts.len() {
+            return Err(WorkerError::Protocol("eksik parça".into()));
+        }
+    }
+
+    Ok(Extraction {
+        engine: engine.unwrap_or_else(|| "unknown".to_string()),
+        engine_version: engine_version.unwrap_or_else(|| "unknown".to_string()),
+        pages,
+        warnings,
+    })
+}
+
 /// Worker süreci. `Drop` süreci kapatır; yarım kalan iş yok sayılır.
 pub struct WorkerClient {
     child: Child,
@@ -214,7 +290,9 @@ impl WorkerClient {
         self
     }
 
-    pub fn request(&mut self, method: &str, params: Value) -> Result<Value, WorkerError> {
+    /// İsteği yazar ve kimliğini döndürür. Yanıt okuma ayrı adımdır: parçalı
+    /// yanıtta aynı kimlikle birden çok çerçeve gelebilir.
+    fn send_request(&mut self, method: &str, params: Value) -> Result<String, WorkerError> {
         self.next_id += 1;
         let id = format!("req-{}", self.next_id);
         let frame = json!({"v": 1, "id": id, "method": method, "params": params});
@@ -224,7 +302,11 @@ impl WorkerClient {
             .write_all(&line)
             .map_err(|_| WorkerError::Disconnected)?;
         self.stdin.flush().map_err(|_| WorkerError::Disconnected)?;
+        Ok(id)
+    }
 
+    /// Verilen kimliğe ait ilk yanıtı okur.
+    fn read_response(&mut self, id: &str) -> Result<Value, WorkerError> {
         // Yanıtlar sıralıdır; id eşleşmeyen eski çerçeveler atlanır.
         for _ in 0..8 {
             let raw = match self.rx.recv_timeout(self.timeout) {
@@ -235,7 +317,7 @@ impl WorkerClient {
             };
             let value: Value =
                 serde_json::from_slice(&raw).map_err(|_| WorkerError::BadResponse)?;
-            if value.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            if value.get("id").and_then(Value::as_str) != Some(id) {
                 continue;
             }
             if value.get("ok").and_then(Value::as_bool) == Some(true) {
@@ -262,6 +344,11 @@ impl WorkerClient {
         Err(WorkerError::Protocol("yanıt kimliği eşleşmedi".into()))
     }
 
+    pub fn request(&mut self, method: &str, params: Value) -> Result<Value, WorkerError> {
+        let id = self.send_request(method, params)?;
+        self.read_response(&id)
+    }
+
     pub fn ping(&mut self) -> Result<(), WorkerError> {
         self.request("ping", json!({}))?;
         Ok(())
@@ -286,8 +373,24 @@ impl WorkerClient {
         if let Some(secret) = password.filter(|p| !p.is_empty()) {
             payload["password"] = json!(secret);
         }
-        let result = self.request("extract_text", payload)?;
-        serde_json::from_value(result).map_err(|_| WorkerError::BadResponse)
+        let id = self.send_request("extract_text", payload)?;
+        let mut parts: Vec<Value> = Vec::new();
+        loop {
+            let result = self.read_response(&id)?;
+            let declared = result.get("parts").and_then(Value::as_u64);
+            parts.push(result);
+            match declared {
+                Some(total) if (parts.len() as u64) < total => {
+                    if parts.len() > MAX_RESPONSE_PARTS {
+                        return Err(WorkerError::Protocol(
+                            "yanıt çok fazla parçaya bölündü".into(),
+                        ));
+                    }
+                }
+                _ => break,
+            }
+        }
+        merge_extraction_parts(&parts)
     }
 
     /// Terimleri PDF'ten gerçekten çıkarır. `remaining` boş değilse çağıran
@@ -412,6 +515,69 @@ mod tests {
             }
         }
         None
+    }
+
+    fn extraction_part(index: u64, total: u64, page_index: u64) -> Value {
+        json!({
+            "engine": "pymupdf",
+            "engineVersion": "2.0",
+            "warnings": ["ortak uyarı"],
+            "part": index,
+            "parts": total,
+            "pages": [{
+                "index": page_index,
+                "text": format!("sayfa {page_index}"),
+                "width": 595.0,
+                "height": 842.0
+            }]
+        })
+    }
+
+    #[test]
+    fn merge_parts_keeps_page_order_and_dedupes_warnings() {
+        let parts = vec![
+            extraction_part(1, 3, 0),
+            extraction_part(2, 3, 1),
+            extraction_part(3, 3, 2),
+        ];
+        let extraction = merge_extraction_parts(&parts).expect("birleşim");
+        assert_eq!(extraction.engine, "pymupdf");
+        assert_eq!(extraction.engine_version, "2.0");
+        assert_eq!(extraction.pages.len(), 3);
+        assert_eq!(
+            extraction
+                .pages
+                .iter()
+                .map(|page| page.index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(extraction.warnings, vec!["ortak uyarı"]);
+    }
+
+    #[test]
+    fn single_frame_extraction_merges_without_part_fields() {
+        let single = json!({
+            "engine": "plain",
+            "engineVersion": "1",
+            "pages": [{"index": 0, "text": "metin", "width": 0.0, "height": 0.0}],
+            "warnings": []
+        });
+        let extraction = merge_extraction_parts(&[single]).expect("tek çerçeve");
+        assert_eq!(extraction.pages.len(), 1);
+        assert!(extraction.warnings.is_empty());
+    }
+
+    #[test]
+    fn merge_parts_rejects_missing_or_misordered_parts() {
+        let missing = merge_extraction_parts(&[extraction_part(1, 3, 0), extraction_part(2, 3, 1)])
+            .unwrap_err();
+        assert!(matches!(missing, WorkerError::Protocol(_)));
+
+        let misordered =
+            merge_extraction_parts(&[extraction_part(2, 2, 0), extraction_part(1, 2, 1)])
+                .unwrap_err();
+        assert!(matches!(misordered, WorkerError::Protocol(_)));
     }
 
     #[test]

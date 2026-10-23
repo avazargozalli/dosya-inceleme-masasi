@@ -1,7 +1,12 @@
 """Worker giriş noktası: `python -m dim_worker.worker`.
 
 Protokol: NDJSON, tek satır = tek çerçeve, en fazla 1 MiB.
-Yöntemler: ping, capabilities, extract_text, shutdown.
+Yöntemler: ping, capabilities, extract_text, redact, shutdown.
+
+`extract_text` yanıtı 900 KiB bütçesini aşarsa sayfalar `part`/`parts`
+alanlarıyla birden çok çerçevede gönderilir; istemci sırayı doğrulayıp
+birleştirir. Tek bir sayfa bile sığmıyorsa `E_FRAME_TOO_LARGE` döner, metin
+sessizce kırpılmaz.
 """
 
 from __future__ import annotations
@@ -30,6 +35,11 @@ METHODS = {"ping", "capabilities", "extract_text", "redact", "render_report", "r
 # yaklaşmamak için bütçe ayrılır; aşılırsa kutular kademeli atılır ve durum
 # `warnings` içinde açıkça yazılır — sessiz öğe kaybı olmaz.
 GEOMETRY_FRAME_BUDGET = 700 * 1024
+
+# Metin yanıtı tek çerçeveye sığmazsa sayfalar parçalara bölünür. Sert sınır
+# 1 MiB'tir; zarf ve JSON kaçışları için pay bırakılır.
+RESPONSE_FRAME_BUDGET = 900 * 1024
+MAX_RESPONSE_PARTS = 5000
 
 
 def _require_version(frame: dict[str, Any]) -> None:
@@ -98,7 +108,68 @@ def _shrink_geometry(result: dict[str, Any]) -> None:
     )
 
 
-def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def _geometry_warnings(extraction: Any, warnings: list[str]) -> None:
+    for page in extraction.pages:
+        if len(page.blocks) > MAX_BLOCKS_PER_PAGE:
+            warnings.append(
+                f"geometri: sayfa {page.index + 1} ilk {MAX_BLOCKS_PER_PAGE} blokla sınırlandı"
+            )
+
+
+def _split_pages(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Sayfaları çerçeve bütçesine sığacak parçalara böler.
+
+    Zarf (motor, sürüm, uyarılar) her parçada tekrarlanır; sayfa sırası korunur.
+    Tek bir sayfa bütçeyi aşıyorsa parçalamak offsetsiz metin üretirdi: açık
+    hata döner, sessiz kırpma yapılmaz.
+    """
+    envelope = {key: value for key, value in result.items() if key != "pages"}
+    base_size = _encoded_size(dict(envelope, pages=[]))
+    pages = result["pages"]
+    parts: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    used = base_size
+    for page in pages:
+        size = _encoded_size(page) + 1  # ayırıcı virgül
+        if base_size + size > RESPONSE_FRAME_BUDGET:
+            raise ProtocolError(
+                "E_FRAME_TOO_LARGE",
+                f"sayfa {page.get('index', '?')} tek çerçeve sınırını aşıyor",
+            )
+        if current and used + size > RESPONSE_FRAME_BUDGET:
+            parts.append(current)
+            current = []
+            used = base_size
+        current.append(page)
+        used += size
+    if current:
+        parts.append(current)
+    if len(parts) > MAX_RESPONSE_PARTS:
+        raise ProtocolError("E_FRAME_TOO_MANY_PARTS", "yanıt çok fazla parçaya bölündü")
+    return [
+        dict(result, pages=chunk, part=index, parts=len(parts))
+        for index, chunk in enumerate(parts, start=1)
+    ]
+
+
+def _extract_frames(rid: str | None, extraction: Any) -> list[dict[str, Any]]:
+    """Metin çıkarımını çerçevelere çevirir. Sığarsa tek çerçeve; sığmazsa
+    sayfalar `part`/`parts` alanlarıyla bölünür (istemci birleştirir)."""
+    warnings = list(extraction.warnings)
+    _geometry_warnings(extraction, warnings)
+    result: dict[str, Any] = {
+        "engine": extraction.engine,
+        "engineVersion": extraction.engine_version,
+        "pages": [_page_payload(page) for page in extraction.pages],
+        "warnings": warnings,
+    }
+    _shrink_geometry(result)
+    if _encoded_size(result) <= RESPONSE_FRAME_BUDGET:
+        return [ok(rid, result)]
+    return [ok(rid, chunk) for chunk in _split_pages(result)]
+
+
+def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]], bool]:
     """Tek isteği işler. (yanıt, kapanmalı_mı) döner."""
     rid = _request_id(frame)
     _require_version(frame)
@@ -166,19 +237,7 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         raise ProtocolError("E_PARAMS", "password metin olmalı")
     encoding = str(params.get("encoding") or "utf-8")
     extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding, password=password)
-    result: dict[str, Any] = {
-        "engine": extraction.engine,
-        "engineVersion": extraction.engine_version,
-        "pages": [_page_payload(page) for page in extraction.pages],
-        "warnings": list(extraction.warnings),
-    }
-    for page in extraction.pages:
-        if len(page.blocks) > MAX_BLOCKS_PER_PAGE:
-            result["warnings"].append(
-                f"geometri: sayfa {page.index + 1} ilk {MAX_BLOCKS_PER_PAGE} blokla sınırlandı"
-            )
-    _shrink_geometry(result)
-    return ok(rid, result), False
+    return _extract_frames(rid, extraction), False
 
 
 def serve(stdin, stdout) -> int:
@@ -199,8 +258,11 @@ def serve(stdin, stdout) -> int:
             response, should_close = err(rid, exc.code, exc.message, exc.retryable), False
         except Exception:  # noqa: BLE001 - iç hata ayrıntısı sızdırılmaz
             response, should_close = err(rid, "E_WORKER_INTERNAL", "worker iç hatası"), False
+        # Tek yanıt veya parçalı yanıt: sıra korunur, her çerçeve 1 MiB altındadır.
+        frames = response if isinstance(response, list) else [response]
         try:
-            write_frame(stdout, response)
+            for item in frames:
+                write_frame(stdout, item)
         except ProtocolError as exc:
             write_frame(stdout, err(rid, exc.code, exc.message))
             return 3
