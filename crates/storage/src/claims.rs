@@ -1,0 +1,618 @@
+//! İddia–delil matrisi ve inceleme kuyruğu.
+//!
+//! İki kural: (1) iddianın doğruluğu sistemce kesinleştirilmez, yalnız ilişki
+//! kaydedilir; (2) inceleme öğesi kullanıcı kararı olmadan kalıcı kayda dönüşmez.
+
+use rusqlite::{OptionalExtension, Row};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::{now_iso, Database, StorageError};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimRow {
+    pub id: String,
+    pub case_id: String,
+    pub claimant_actor_id: Option<String>,
+    pub claim_text: String,
+    pub claim_kind: String,
+    pub status: String,
+    pub source_anchor_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub row_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewClaim {
+    #[serde(default)]
+    pub claimant_actor_id: Option<String>,
+    pub claim_text: String,
+    pub claim_kind: String,
+    #[serde(default)]
+    pub source_anchor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceLinkRow {
+    pub id: String,
+    pub case_id: String,
+    pub claim_id: String,
+    pub source_anchor_id: String,
+    pub relation: String,
+    pub rationale: String,
+    pub review_state: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewEvidenceLink {
+    pub claim_id: String,
+    pub source_anchor_id: String,
+    pub relation: String,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewItemRow {
+    pub id: String,
+    pub case_id: String,
+    pub item_kind: String,
+    pub payload_schema_version: i64,
+    pub payload: Value,
+    pub source_anchor_ids: Vec<String>,
+    pub ai_run_id: Option<String>,
+    pub state: String,
+    pub target_entity_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub row_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewReviewItem {
+    pub item_kind: String,
+    pub payload: Value,
+    pub source_anchor_ids: Vec<String>,
+    #[serde(default)]
+    pub ai_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDecisionRow {
+    pub id: String,
+    pub review_item_id: String,
+    pub decision: String,
+    pub edited_payload: Option<Value>,
+    pub reviewer_label: String,
+    pub rationale: String,
+    pub decided_at: String,
+}
+
+fn valid_claim_kind(value: &str) -> bool {
+    matches!(value, "allegation" | "defense" | "admission" | "court_finding" | "unknown")
+}
+
+fn valid_relation(value: &str) -> bool {
+    matches!(
+        value,
+        "submitted_for" | "response_to" | "supports_candidate" | "contradicts_candidate" | "context"
+    )
+}
+
+fn valid_review_state(value: &str) -> bool {
+    matches!(value, "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence")
+}
+
+impl Database {
+    fn case_exists(&self, case_id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self
+            .conn()
+            .query_row("SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL", [case_id], |r| r.get(0))?;
+        Ok(count > 0)
+    }
+
+    fn anchor_in_case(&self, anchor_id: &str, case_id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn().query_row(
+            "SELECT count(*) FROM source_anchors WHERE id=?1 AND case_id=?2 AND anchor_status='active'",
+            rusqlite::params![anchor_id, case_id],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn create_claim(&self, case_id: &str, new: &NewClaim) -> Result<ClaimRow, StorageError> {
+        if new.claim_text.trim().is_empty() || !valid_claim_kind(&new.claim_kind) {
+            return Err(StorageError::InvalidSetting);
+        }
+        if !self.case_exists(case_id)? {
+            return Err(StorageError::NotFound);
+        }
+        if let Some(anchor) = &new.source_anchor_id {
+            if !self.anchor_in_case(anchor, case_id)? {
+                return Err(StorageError::NotFound);
+            }
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        self.conn().execute(
+            "INSERT INTO claims (id,case_id,claimant_actor_id,claim_text,claim_kind,status,source_anchor_id,created_at,updated_at,row_version)
+             VALUES (?1,?2,?3,?4,?5,'draft',?6,?7,?7,1)",
+            rusqlite::params![
+                id,
+                case_id,
+                new.claimant_actor_id,
+                new.claim_text.trim(),
+                new.claim_kind,
+                new.source_anchor_id,
+                now
+            ],
+        )?;
+        self.append_audit("claim", Some(&id), "create", "local-user", &serde_json::json!({"caseId": case_id}))?;
+        self.get_claim(&id)?.ok_or(StorageError::NotFound)
+    }
+
+    pub fn get_claim(&self, id: &str) -> Result<Option<ClaimRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claimant_actor_id,claim_text,claim_kind,status,source_anchor_id,created_at,updated_at,row_version
+             FROM claims WHERE id=?1 AND deleted_at IS NULL",
+        )?;
+        Ok(stmt.query_row([id], map_claim).optional()?)
+    }
+
+    pub fn list_claims(&self, case_id: &str) -> Result<Vec<ClaimRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claimant_actor_id,claim_text,claim_kind,status,source_anchor_id,created_at,updated_at,row_version
+             FROM claims WHERE case_id=?1 AND deleted_at IS NULL ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([case_id], map_claim)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn link_evidence(&self, case_id: &str, new: &NewEvidenceLink) -> Result<EvidenceLinkRow, StorageError> {
+        if !valid_relation(&new.relation) {
+            return Err(StorageError::InvalidSetting);
+        }
+        let claim = self.get_claim(&new.claim_id)?.ok_or(StorageError::NotFound)?;
+        if claim.case_id != case_id {
+            return Err(StorageError::NotFound);
+        }
+        if !self.anchor_in_case(&new.source_anchor_id, case_id)? {
+            return Err(StorageError::NotFound);
+        }
+        if let Some(existing) = self.find_evidence_link(&new.claim_id, &new.source_anchor_id, &new.relation)? {
+            return Ok(existing);
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        self.conn().execute(
+            "INSERT INTO evidence_links (id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,'accepted',?7,?7)",
+            rusqlite::params![id, case_id, new.claim_id, new.source_anchor_id, new.relation, new.rationale.trim(), now],
+        )?;
+        self.append_audit(
+            "evidence_link",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({"claimId": new.claim_id, "relation": new.relation}),
+        )?;
+        self.get_evidence_link(&id)?.ok_or(StorageError::NotFound)
+    }
+
+    pub fn find_evidence_link(
+        &self,
+        claim_id: &str,
+        anchor_id: &str,
+        relation: &str,
+    ) -> Result<Option<EvidenceLinkRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at
+             FROM evidence_links WHERE claim_id=?1 AND source_anchor_id=?2 AND relation=?3",
+        )?;
+        Ok(stmt.query_row(rusqlite::params![claim_id, anchor_id, relation], map_link).optional()?)
+    }
+
+    pub fn get_evidence_link(&self, id: &str) -> Result<Option<EvidenceLinkRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at
+             FROM evidence_links WHERE id=?1",
+        )?;
+        Ok(stmt.query_row([id], map_link).optional()?)
+    }
+
+    pub fn list_evidence_links(&self, claim_id: &str) -> Result<Vec<EvidenceLinkRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at
+             FROM evidence_links WHERE claim_id=?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([claim_id], map_link)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// İnceleme kuyruğuna öğe ekler. `source_anchor_ids` boş olamaz: kaynağı
+    /// olmayan öneri kuyruğa giremez (INV-02).
+    pub fn create_review_item(&self, case_id: &str, new: &NewReviewItem) -> Result<ReviewItemRow, StorageError> {
+        if new.source_anchor_ids.is_empty() || !self.case_exists(case_id)? {
+            return Err(StorageError::InvalidSetting);
+        }
+        for anchor in &new.source_anchor_ids {
+            if !self.anchor_in_case(anchor, case_id)? {
+                return Err(StorageError::NotFound);
+            }
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        self.conn().execute(
+            "INSERT INTO review_items (id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,created_at,updated_at,row_version)
+             VALUES (?1,?2,?3,1,?4,?5,?6,'pending',?7,?7,1)",
+            rusqlite::params![
+                id,
+                case_id,
+                new.item_kind,
+                serde_json::to_string(&new.payload).unwrap_or_else(|_| "{}".into()),
+                serde_json::to_string(&new.source_anchor_ids).unwrap_or_else(|_| "[]".into()),
+                new.ai_run_id,
+                now
+            ],
+        )?;
+        self.append_audit("review_item", Some(&id), "create", "system", &serde_json::json!({"kind": new.item_kind}))?;
+        self.get_review_item(&id)?.ok_or(StorageError::NotFound)
+    }
+
+    pub fn get_review_item(&self, id: &str) -> Result<Option<ReviewItemRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
+             FROM review_items WHERE id=?1",
+        )?;
+        Ok(stmt.query_row([id], map_item).optional()?)
+    }
+
+    pub fn list_review_items(&self, case_id: &str, state: Option<&str>) -> Result<Vec<ReviewItemRow>, StorageError> {
+        let sql = if state.is_some() {
+            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
+             FROM review_items WHERE case_id=?1 AND state=?2 ORDER BY created_at ASC"
+        } else {
+            "SELECT id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,target_entity_id,created_at,updated_at,row_version
+             FROM review_items WHERE case_id=?1 ORDER BY created_at ASC"
+        };
+        let mut stmt = self.conn().prepare(sql)?;
+        let mut out = Vec::new();
+        if let Some(state) = state {
+            if !valid_review_state(state) {
+                return Err(StorageError::InvalidSetting);
+            }
+            for row in stmt.query_map(rusqlite::params![case_id, state], map_item)? {
+                out.push(row?);
+            }
+        } else {
+            for row in stmt.query_map([case_id], map_item)? {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// İnceleme kararı: geçmiş eklemeli tutulur; karar verilmiş öğe yeniden
+    /// "pending" yapılamaz. Kalıcı domain kaydı bu fonksiyonda oluşturulmaz.
+    pub fn decide_review_item(
+        &self,
+        item_id: &str,
+        decision: &str,
+        edited_payload: Option<&Value>,
+        reviewer: &str,
+        rationale: &str,
+    ) -> Result<ReviewItemRow, StorageError> {
+        let next_state = match decision {
+            "accept" => "accepted",
+            "reject" => "rejected",
+            "edit" => "edited",
+            "request_evidence" => "needs_more_evidence",
+            _ => return Err(StorageError::InvalidSetting),
+        };
+        let item = self.get_review_item(item_id)?.ok_or(StorageError::NotFound)?;
+        if item.state != "pending" && item.state != "needs_more_evidence" {
+            return Err(StorageError::InvalidSetting);
+        }
+        if reviewer.trim().is_empty() {
+            return Err(StorageError::InvalidSetting);
+        }
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO review_decisions (id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                item_id,
+                decision,
+                edited_payload.map(|v| v.to_string()),
+                reviewer.trim(),
+                rationale.trim(),
+                now
+            ],
+        )?;
+        tx.execute(
+            "UPDATE review_items SET state=?1, payload=COALESCE(?2, payload), updated_at=?3, row_version=row_version+1 WHERE id=?4",
+            rusqlite::params![next_state, edited_payload.map(|v| v.to_string()), now, item_id],
+        )?;
+        tx.commit()?;
+        self.append_audit("review_item", Some(item_id), decision, reviewer, &serde_json::json!({}))?;
+        self.get_review_item(item_id)?.ok_or(StorageError::NotFound)
+    }
+
+    pub fn review_history(&self, item_id: &str) -> Result<Vec<ReviewDecisionRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at
+             FROM review_decisions WHERE review_item_id=?1 ORDER BY decided_at ASC",
+        )?;
+        let rows = stmt.query_map([item_id], |row| {
+            Ok(ReviewDecisionRow {
+                id: row.get(0)?,
+                review_item_id: row.get(1)?,
+                decision: row.get(2)?,
+                edited_payload: row
+                    .get::<_, Option<String>>(3)?
+                    .and_then(|s| serde_json::from_str(&s).ok()),
+                reviewer_label: row.get(4)?,
+                rationale: row.get(5)?,
+                decided_at: row.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+fn map_claim(row: &Row<'_>) -> rusqlite::Result<ClaimRow> {
+    Ok(ClaimRow {
+        id: row.get(0)?,
+        case_id: row.get(1)?,
+        claimant_actor_id: row.get(2)?,
+        claim_text: row.get(3)?,
+        claim_kind: row.get(4)?,
+        status: row.get(5)?,
+        source_anchor_id: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+        row_version: row.get(9)?,
+    })
+}
+
+fn map_link(row: &Row<'_>) -> rusqlite::Result<EvidenceLinkRow> {
+    Ok(EvidenceLinkRow {
+        id: row.get(0)?,
+        case_id: row.get(1)?,
+        claim_id: row.get(2)?,
+        source_anchor_id: row.get(3)?,
+        relation: row.get(4)?,
+        rationale: row.get(5)?,
+        review_state: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+fn map_item(row: &Row<'_>) -> rusqlite::Result<ReviewItemRow> {
+    let payload: String = row.get(4)?;
+    let anchors: String = row.get(5)?;
+    Ok(ReviewItemRow {
+        id: row.get(0)?,
+        case_id: row.get(1)?,
+        item_kind: row.get(2)?,
+        payload_schema_version: row.get(3)?,
+        payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
+        source_anchor_ids: serde_json::from_str(&anchors).unwrap_or_default(),
+        ai_run_id: row.get(6)?,
+        state: row.get(7)?,
+        target_entity_id: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        row_version: row.get(11)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cases::{CaseKind, NewCase};
+    use crate::{DatabaseKey, NewAnchor, NewPage};
+
+    struct Setup {
+        db: Database,
+        case_id: String,
+        anchor_id: String,
+    }
+
+    fn setup() -> Setup {
+        let db = Database::open_in_memory(&DatabaseKey::new([31u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db.create_blob_record("st-claim", 10, "aad").expect("blob");
+        let doc = db.create_document(&case.id, "Belge", "pdf", None, "unknown").expect("doc");
+        let version = db
+            .add_version(&doc.id, &case.id, &blob, &"f".repeat(64), 10, "application/pdf")
+            .expect("v");
+        let run = db.start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}").expect("run");
+        db.store_pages(
+            &run.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: "Ödeme yapılmadı.".into(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+            }],
+        )
+        .expect("pages");
+        let segment: String = db
+            .conn()
+            .query_row("SELECT id FROM text_segments WHERE parse_run_id=?1", [&run.id], |r| r.get(0))
+            .expect("segment");
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id.clone(),
+                document_version_id: version.id,
+                parse_run_id: run.id,
+                segment_id: segment,
+                start_offset: 0,
+                end_offset: 16,
+                exact_quote: "Ödeme yapılmadı.".into(),
+            })
+            .expect("anchor");
+        Setup { db, case_id: case.id, anchor_id: anchor.id }
+    }
+
+    fn claim(text: &str) -> NewClaim {
+        NewClaim {
+            claimant_actor_id: None,
+            claim_text: text.into(),
+            claim_kind: "allegation".into(),
+            source_anchor_id: None,
+        }
+    }
+
+    #[test]
+    fn claim_lifecycle() {
+        let s = setup();
+        let c = s.db.create_claim(&s.case_id, &claim("Kira ödenmedi")).expect("claim");
+        assert_eq!(c.status, "draft");
+        assert_eq!(s.db.list_claims(&s.case_id).expect("liste").len(), 1);
+    }
+
+    #[test]
+    fn invalid_claim_kind_rejected() {
+        let s = setup();
+        let mut c = claim("X");
+        c.claim_kind = "kesin_hukum".into();
+        assert!(s.db.create_claim(&s.case_id, &c).is_err());
+    }
+
+    #[test]
+    fn evidence_link_is_idempotent_and_case_scoped() {
+        let s = setup();
+        let c = s.db.create_claim(&s.case_id, &claim("Kira ödenmedi")).expect("claim");
+        let input = NewEvidenceLink {
+            claim_id: c.id.clone(),
+            source_anchor_id: s.anchor_id.clone(),
+            relation: "supports_candidate".into(),
+            rationale: "makbuz yok".into(),
+        };
+        let first = s.db.link_evidence(&s.case_id, &input).expect("bağ");
+        let second = s.db.link_evidence(&s.case_id, &input).expect("tekrar");
+        assert_eq!(first.id, second.id);
+        assert_eq!(s.db.list_evidence_links(&c.id).expect("liste").len(), 1);
+
+        let other = s
+            .db
+            .create_case(&NewCase {
+                title: "Başka".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        assert!(s.db.link_evidence(&other.id, &input).is_err());
+    }
+
+    #[test]
+    fn review_item_requires_source_and_is_decided_once() {
+        let s = setup();
+        let item = s
+            .db
+            .create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "claim_candidate".into(),
+                    payload: serde_json::json!({"text": "Kira ödenmedi"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("öğe");
+        assert_eq!(item.state, "pending");
+
+        let decided = s
+            .db
+            .decide_review_item(&item.id, "accept", None, "avukat", "kaynak yeterli")
+            .expect("karar");
+        assert_eq!(decided.state, "accepted");
+        assert!(s.db.decide_review_item(&item.id, "reject", None, "avukat", "").is_err());
+        assert_eq!(s.db.review_history(&item.id).expect("geçmiş").len(), 1);
+        assert!(s.db.verify_audit_chain().expect("zincir") >= 2);
+    }
+
+    #[test]
+    fn review_item_without_anchor_rejected() {
+        let s = setup();
+        let err = s
+            .db
+            .create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "note_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![],
+                    ai_run_id: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_DB_SETTING");
+    }
+
+    #[test]
+    fn edit_decision_replaces_payload() {
+        let s = setup();
+        let item = s
+            .db
+            .create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "claim_candidate".into(),
+                    payload: serde_json::json!({"text": "eski"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("öğe");
+        let edited = serde_json::json!({"text": "düzeltilmiş"});
+        let result = s
+            .db
+            .decide_review_item(&item.id, "edit", Some(&edited), "avukat", "ifade düzeltildi")
+            .expect("karar");
+        assert_eq!(result.state, "edited");
+        assert_eq!(result.payload["text"], "düzeltilmiş");
+    }
+}

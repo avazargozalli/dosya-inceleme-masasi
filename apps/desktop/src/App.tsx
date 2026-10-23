@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
+import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
 import { Settings } from "./screens/Settings";
 import { Tasks } from "./screens/Tasks";
@@ -123,6 +124,8 @@ export function App() {
             <Cases />
           ) : screen === "search" ? (
             <Search />
+          ) : screen === "review" ? (
+            <Review />
           ) : screen === "timeline" ? (
             <Timeline />
           ) : screen === "tasks" ? (

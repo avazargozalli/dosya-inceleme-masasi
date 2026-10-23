@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AnchorRow, Case, CasePatch, Database, DatabaseKey, Document, DocumentVersion, EventRow,
-    NewAnchor, NewCase, NewEvent, NewNote, NewPage, NewTask, NoteRow, PageRow, ParseRun, SearchHit,
-    TaskRow,
+    AnchorRow, Case, CasePatch, ClaimRow, Database, DatabaseKey, Document, DocumentVersion,
+    EventRow, EvidenceLinkRow, NewAnchor, NewCase, NewClaim, NewEvent, NewEvidenceLink, NewNote,
+    NewPage, NewReviewItem, NewTask, NoteRow, PageRow, ParseRun, ReviewDecisionRow, ReviewItemRow,
+    SearchHit, TaskRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -738,4 +739,89 @@ pub fn vault_restore(backup_dir: String, dest_dir: String) -> Result<RestoreView
         vault_path: dest.to_string_lossy().to_string(),
         file_count: count + 3,
     })
+}
+
+#[tauri::command]
+pub fn claim_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewClaim,
+) -> Result<ClaimRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_claim(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn claim_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<ClaimRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_claims(&case_id)?)
+}
+
+#[tauri::command]
+pub fn evidence_link_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewEvidenceLink,
+) -> Result<EvidenceLinkRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.link_evidence(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn evidence_link_list(
+    state: State<'_, AppState>,
+    claim_id: String,
+) -> Result<Vec<EvidenceLinkRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_evidence_links(&claim_id)?)
+}
+
+#[tauri::command]
+pub fn review_item_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewReviewItem,
+) -> Result<ReviewItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_review_item(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn review_item_list(
+    state: State<'_, AppState>,
+    case_id: String,
+    review_state: Option<String>,
+) -> Result<Vec<ReviewItemRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_review_items(&case_id, review_state.as_deref())?)
+}
+
+#[tauri::command]
+pub fn review_decide(
+    state: State<'_, AppState>,
+    item_id: String,
+    decision: String,
+    edited_payload: Option<serde_json::Value>,
+    reviewer: String,
+    rationale: String,
+) -> Result<ReviewItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.decide_review_item(&item_id, &decision, edited_payload.as_ref(), &reviewer, &rationale)?)
+}
+
+#[tauri::command]
+pub fn review_history(
+    state: State<'_, AppState>,
+    item_id: String,
+) -> Result<Vec<ReviewDecisionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.review_history(&item_id)?)
 }

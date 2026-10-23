@@ -97,6 +97,55 @@ export type DocumentPages = {
   pages: PageRow[];
 };
 
+export type ClaimRow = {
+  id: string;
+  caseId: string;
+  claimantActorId: string | null;
+  claimText: string;
+  claimKind: string;
+  status: string;
+  sourceAnchorId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
+export type EvidenceLinkRow = {
+  id: string;
+  caseId: string;
+  claimId: string;
+  sourceAnchorId: string;
+  relation: string;
+  rationale: string;
+  reviewState: string;
+  createdAt: string;
+};
+
+export type ReviewItemRow = {
+  id: string;
+  caseId: string;
+  itemKind: string;
+  payloadSchemaVersion: number;
+  payload: unknown;
+  sourceAnchorIds: string[];
+  aiRunId: string | null;
+  state: "pending" | "accepted" | "rejected" | "edited" | "needs_more_evidence";
+  targetEntityId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+};
+
+export type ReviewDecisionRow = {
+  id: string;
+  reviewItemId: string;
+  decision: string;
+  editedPayload: unknown;
+  reviewerLabel: string;
+  rationale: string;
+  decidedAt: string;
+};
+
 export type BackupResult = {
   path: string;
   fileCount: number;
@@ -285,6 +334,38 @@ export const api = {
   taskDelete: (id: string) => invoke<void>("task_delete", { id }),
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
+
+  claimList: (caseId: string) => invoke<ClaimRow[]>("claim_list", { caseId }),
+  claimCreate: (
+    caseId: string,
+    input: { claimantActorId: string | null; claimText: string; claimKind: string; sourceAnchorId: string | null },
+  ) => invoke<ClaimRow>("claim_create", { caseId, input }),
+  evidenceLinkList: (claimId: string) => invoke<EvidenceLinkRow[]>("evidence_link_list", { claimId }),
+  evidenceLinkCreate: (
+    caseId: string,
+    input: { claimId: string; sourceAnchorId: string; relation: string; rationale: string },
+  ) => invoke<EvidenceLinkRow>("evidence_link_create", { caseId, input }),
+
+  reviewItemList: (caseId: string, reviewState?: string) =>
+    invoke<ReviewItemRow[]>("review_item_list", { caseId, reviewState: reviewState ?? null }),
+  reviewItemCreate: (
+    caseId: string,
+    input: { itemKind: string; payload: unknown; sourceAnchorIds: string[]; aiRunId: string | null },
+  ) => invoke<ReviewItemRow>("review_item_create", { caseId, input }),
+  reviewDecide: (
+    itemId: string,
+    decision: "accept" | "reject" | "edit" | "request_evidence",
+    rationale: string,
+    editedPayload?: unknown,
+  ) =>
+    invoke<ReviewItemRow>("review_decide", {
+      itemId,
+      decision,
+      editedPayload: editedPayload ?? null,
+      reviewer: "local-user",
+      rationale,
+    }),
+  reviewHistory: (itemId: string) => invoke<ReviewDecisionRow[]>("review_history", { itemId }),
   anchorCreate: (input: {
     caseId: string;
     documentVersionId: string;

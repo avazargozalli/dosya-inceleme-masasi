@@ -6,6 +6,7 @@
 
 mod anchors;
 mod cases;
+mod claims;
 mod documents;
 mod error;
 mod notes;
@@ -15,6 +16,10 @@ mod timeline;
 
 pub use anchors::{AnchorRow, NewAnchor};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
+pub use claims::{
+    ClaimRow, EvidenceLinkRow, NewClaim, NewEvidenceLink, NewReviewItem, ReviewDecisionRow,
+    ReviewItemRow,
+};
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use notes::{NewNote, NoteRow};
@@ -76,9 +81,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0002_fts",
         sql: include_str!("migrations/0002_fts.sql"),
     },
+    Migration {
+        version: 3,
+        name: "0003_constraints",
+        sql: include_str!("migrations/0003_constraints.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
