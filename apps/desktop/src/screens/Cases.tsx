@@ -11,7 +11,8 @@ import {
 } from "../lib/api";
 import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
 import { Notes } from "../components/Notes";
-import { Reader } from "../components/Reader";
+import { DualReader } from "../components/DualReader";
+import { targetFromAnchor, type ReaderTarget } from "../lib/reader";
 
 const EMPTY_FORM: NewCaseInput = {
   title: "",
@@ -33,7 +34,7 @@ export function Cases() {
   const [busy, setBusy] = useState(false);
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [reading, setReading] = useState<{ versionId: string; title: string } | null>(null);
+  const [reader, setReader] = useState<{ left: ReaderTarget | null; right: ReaderTarget | null } | null>(null);
   const [anchors, setAnchors] = useState<AnchorRow[]>([]);
   const [pdfPassword, setPdfPassword] = useState("");
 
@@ -67,6 +68,11 @@ export function Cases() {
       setAnchors([]);
     }
   }, [selected, loadDocs]);
+
+  // Dosya değişince önceki dosyanın okuyucu hedefleri taşınmaz.
+  useEffect(() => {
+    setReader(null);
+  }, [selected?.id]);
 
   async function create() {
     if (form.title.trim().length === 0) {
@@ -139,6 +145,47 @@ export function Cases() {
       setError(toApiError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Belgeyi sol panelde açar; sağ paneldeki belge korunur (F07-T08). */
+  function openDocument(doc: DocumentRow) {
+    if (!doc.currentVersionId) return;
+    setReader((prev) => ({
+      left: {
+        versionId: doc.currentVersionId!,
+        documentName: doc.displayName,
+        pageId: null,
+        segmentId: null,
+        pageIndex: null,
+        startOffset: null,
+        endOffset: null,
+        quote: null,
+        query: null,
+        anchorId: null,
+        quoteIntact: null,
+      },
+      right: prev?.right ?? null,
+    }));
+  }
+
+  /** Kaynağa geri dönüş: anchor'ın sayfasını ve alıntısını okuyucuda açar.
+   *  Alıntı segmentten kopmuşsa okuyucu bunu "kopmuş kaynak" olarak gösterir. */
+  async function openAnchor(anchorId: string) {
+    try {
+      const location = await api.anchorLocate(anchorId);
+      if (!location) {
+        setError({
+          code: "E_ANCHOR_MISSING",
+          message: "Kaynak kaydı bulunamadı; silinmiş olabilir.",
+          retryable: false,
+        });
+        return;
+      }
+      setError(null);
+      setReader((prev) => ({ left: targetFromAnchor(location), right: prev?.right ?? null }));
+    } catch (e) {
+      setError(toApiError(e));
     }
   }
 
@@ -324,18 +371,58 @@ export function Cases() {
           </div>
           {notice ? <div className="notice ok">{notice}</div> : null}
 
-          {reading ? (
-            <Reader
+          {reader ? (
+            <DualReader
               caseId={selected.id}
-              versionId={reading.versionId}
-              title={reading.title}
-              onClose={() => setReading(null)}
+              documents={docs}
+              left={reader.left}
+              right={reader.right}
+              onClose={() => setReader(null)}
               onAnchor={(anchor) => {
                 setAnchors((prev) => [anchor, ...prev]);
                 setNotice(`Kaynak kaydedildi: “${anchor.exactQuote.slice(0, 60)}”`);
               }}
             />
           ) : null}
+
+          <div className="card tight" style={{ background: "var(--surface)" }}>
+            <div className="card-head">
+              <div>
+                <h2>Kaynak alıntılar</h2>
+                <p className="card-sub">{anchors.length} bağ · alıntı segmentte doğrulanarak kaydedilir</p>
+              </div>
+            </div>
+            {anchors.length === 0 ? (
+              <p className="hint" style={{ margin: 0 }}>
+                Henüz kaynak yok. Okuyucuda metin seçip “Seçimi kaynağa bağla” deyin.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {anchors.map((anchor) => (
+                  <div
+                    key={anchor.id}
+                    className="row"
+                    style={{ justifyContent: "space-between", alignItems: "center", gap: 8 }}
+                  >
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 13 }}>“{anchor.exactQuote.slice(0, 140)}”</span>
+                      <span className="muted small">
+                        {formatTimestamp(anchor.createdAt)} · karakter {anchor.startOffset}–{anchor.endOffset}
+                      </span>
+                    </span>
+                    <button
+                      className="btn ghost"
+                      style={{ height: 26 }}
+                      onClick={() => void openAnchor(anchor.id)}
+                      title="Alıntının sayfasını okuyucuda aç"
+                    >
+                      Okuyucuda aç
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="card tight" style={{ background: "var(--surface)" }}>
             <div className="card-head">
@@ -358,7 +445,7 @@ export function Cases() {
                     key={doc.id}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1fr 90px 110px 130px 150px",
+                      gridTemplateColumns: "1fr 90px 110px 130px 220px",
                       gap: "var(--space-3)",
                       alignItems: "center",
                       padding: "9px var(--space-3)",
@@ -375,6 +462,14 @@ export function Cases() {
                     <span className="muted small">{doc.status}</span>
                     <span className="muted small">{formatTimestamp(doc.updatedAt)}</span>
                     <span style={{ display: "flex", gap: 4 }}>
+                      <button
+                        className="btn ghost"
+                        disabled={!doc.currentVersionId || busy}
+                        onClick={() => openDocument(doc)}
+                        title="Belgeyi okuyucuda aç"
+                      >
+                        Oku
+                      </button>
                       <button
                         className="btn ghost"
                         disabled={!doc.currentVersionId || busy}

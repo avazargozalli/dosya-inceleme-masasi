@@ -43,6 +43,28 @@ pub struct NewAnchor {
     pub exact_quote: String,
 }
 
+/// Bir anchor'ın okuyucuda açılacağı yer: belge sürümü, fiziksel sayfa ve
+/// alıntının segmentte hâlâ birebir durup durmadığı (F07 "kaynağa git").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchorLocation {
+    pub anchor_id: String,
+    pub case_id: String,
+    pub document_version_id: String,
+    pub document_id: Option<String>,
+    pub document_name: Option<String>,
+    pub parse_run_id: String,
+    pub page_id: Option<String>,
+    pub page_index: Option<i64>,
+    pub segment_id: String,
+    pub start_offset: i64,
+    pub end_offset: i64,
+    pub exact_quote: String,
+    pub anchor_status: String,
+    /// Segment metni anchor kaydıyla hâlâ birebir eşleşiyor mu (INV-02).
+    pub quote_intact: bool,
+}
+
 impl Database {
     /// Alıntıyı segment üzerinde doğrular ve anchor kaydı oluşturur.
     pub fn create_anchor(&self, input: &NewAnchor) -> Result<AnchorRow, StorageError> {
@@ -138,6 +160,60 @@ impl Database {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Anchor'ı okuyucuda açılacak yere çözer: fiziksel sayfa indeksi, belge
+    /// sürümü ve alıntının segmentte hâlâ birebir durduğu bilgisi.
+    ///
+    /// Anchor kaydı yoksa `None` döner. Alıntı artık segmentte bulunamıyorsa
+    /// kayıt silinmez; `quote_intact=false` ile "kopmuş kaynak" olarak bildirilir.
+    pub fn locate_anchor(&self, anchor_id: &str) -> Result<Option<AnchorLocation>, StorageError> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT a.id, a.case_id, a.document_version_id, dv.document_id, d.display_name,
+                        a.parse_run_id, a.page_id, p.page_index, a.segment_id,
+                        a.start_offset, a.end_offset, a.exact_quote, a.anchor_status,
+                        a.quote_hash, s.raw_text
+                 FROM source_anchors a
+                 LEFT JOIN document_versions dv ON dv.id = a.document_version_id
+                 LEFT JOIN documents d ON d.id = dv.document_id
+                 LEFT JOIN pages p ON p.id = a.page_id
+                 LEFT JOIN text_segments s ON s.id = a.segment_id
+                 WHERE a.id = ?1",
+                [anchor_id],
+                |row| {
+                    let start_offset: i64 = row.get(9)?;
+                    let end_offset: i64 = row.get(10)?;
+                    let exact_quote: String = row.get(11)?;
+                    let quote_hash: String = row.get(13)?;
+                    let raw: Option<String> = row.get(14)?;
+                    let quote_intact = raw.as_deref().is_some_and(|text| {
+                        usize::try_from(start_offset).is_ok_and(|start| {
+                            verify_quote(text, &exact_quote, Some(&quote_hash), Some(start))
+                                == QuoteMatch::Exact
+                        })
+                    });
+                    Ok(AnchorLocation {
+                        anchor_id: row.get(0)?,
+                        case_id: row.get(1)?,
+                        document_version_id: row.get(2)?,
+                        document_id: row.get(3)?,
+                        document_name: row.get(4)?,
+                        parse_run_id: row.get(5)?,
+                        page_id: row.get(6)?,
+                        page_index: row.get(7)?,
+                        segment_id: row.get(8)?,
+                        start_offset,
+                        end_offset,
+                        exact_quote,
+                        anchor_status: row.get(12)?,
+                        quote_intact,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
     }
 }
 
@@ -274,6 +350,51 @@ mod tests {
             .unwrap_err();
         // Uzunluk uyuşmazlığı önce yakalanır.
         assert_eq!(err.code(), "E_DB_SETTING");
+    }
+
+    #[test]
+    fn locate_anchor_returns_page_and_intact_quote() {
+        let (db, case_id, version_id, run_id, segment_id) = setup();
+        let quote = "itirazın reddine";
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id,
+                document_version_id: version_id.clone(),
+                parse_run_id: run_id,
+                segment_id: segment_id.clone(),
+                start_offset: 8,
+                end_offset: 8 + i64::try_from(quote.chars().count()).unwrap(),
+                exact_quote: quote.into(),
+            })
+            .expect("anchor");
+
+        let location = db.locate_anchor(&anchor.id).expect("konum").expect("kayıt");
+        assert_eq!(location.document_version_id, version_id);
+        assert_eq!(location.document_name.as_deref(), Some("Belge"));
+        assert_eq!(location.page_index, Some(0));
+        assert_eq!(location.segment_id, segment_id);
+        assert_eq!(location.start_offset, 8);
+        assert!(location.quote_intact);
+        assert_eq!(location.anchor_status, "active");
+
+        // Segment metni anchor kaydından koparsa kaynak "kopmuş" bildirilir.
+        db.conn()
+            .execute(
+                "UPDATE text_segments SET raw_text='Mahkeme tamamen farklı bir metin yazdı.' WHERE id=?1",
+                [&segment_id],
+            )
+            .expect("güncelle");
+        let drifted = db.locate_anchor(&anchor.id).expect("konum").expect("kayıt");
+        assert!(!drifted.quote_intact);
+    }
+
+    #[test]
+    fn locate_missing_anchor_returns_none() {
+        let (db, _case_id, _version_id, _run_id, _segment_id) = setup();
+        assert!(db
+            .locate_anchor("yok-boyle-anchor")
+            .expect("konum")
+            .is_none());
     }
 
     #[test]

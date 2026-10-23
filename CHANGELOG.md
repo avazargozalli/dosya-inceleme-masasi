@@ -3,6 +3,15 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.7.0] — 2026-10-23 — F07 okuyucu
+
+- Arama sonucu kendi belge sürümünü taşır (`documentVersionId`); sonuç "en son sürüm" varsayımıyla açılmaz
+- `anchor_locate`: anchor → belge sürümü, fiziksel sayfa indeksi ve alıntının segmentte hâlâ birebir durduğu bilgisi
+- Yan yana iki belge okuyucusu; her panel kendi sürümünü, sayfasını ve metin seçimini korur
+- Arama sonucundan "Solda aç / Sağda aç" ile doğru sürüm ve sayfaya atlama, sorgu vurgusu
+- Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
+- Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
+
 ## [0.6.1] — 2026-10-23 — F05 parolalı PDF
 
 - `document_parse` isteğe bağlı parola ile parola korumalı PDF açar; parola saklanmaz

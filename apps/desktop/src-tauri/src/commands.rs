@@ -4,10 +4,10 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow,
-    CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow, EventSourceRow,
-    EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent,
-    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
+    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CasePatch, CitationCheckRow,
+    ClaimRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow,
+    EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
     NewReviewItem, NewTask, NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow,
     PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow,
     ReviewItemRow, SearchHit, TaskRow, TransferConsentRow,
@@ -356,6 +356,17 @@ pub fn anchor_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_anchors(&case_id)?)
+}
+
+/// Anchor'ı okuyucuda açılacak sayfaya çözer (F07 "kaynağa git").
+#[tauri::command]
+pub fn anchor_locate(
+    state: State<'_, AppState>,
+    anchor_id: String,
+) -> Result<Option<AnchorLocation>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.locate_anchor(&anchor_id)?)
 }
 
 #[tauri::command]

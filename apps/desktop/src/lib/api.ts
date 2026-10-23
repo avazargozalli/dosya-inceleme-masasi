@@ -379,9 +379,30 @@ export type NewEventInput = {
 export type SearchHit = {
   segmentId: string;
   pageId: string | null;
+  /** Sonucun ait olduğu belge sürümü; okuyucu bunu açar (F07 kabul testi). */
+  documentVersionId: string | null;
+  documentId: string | null;
+  documentName: string | null;
   rawText: string;
   pageIndex: number | null;
   rank: number;
+};
+
+export type AnchorLocationRow = {
+  anchorId: string;
+  caseId: string;
+  documentVersionId: string;
+  documentId: string | null;
+  documentName: string | null;
+  parseRunId: string;
+  pageId: string | null;
+  pageIndex: number | null;
+  segmentId: string;
+  startOffset: number;
+  endOffset: number;
+  exactQuote: string;
+  anchorStatus: string;
+  quoteIntact: boolean;
 };
 
 export type ParseResult = {
@@ -476,6 +497,8 @@ export const api = {
   taskDelete: (id: string) => invoke<void>("task_delete", { id }),
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
+  anchorLocate: (anchorId: string) =>
+    invoke<AnchorLocationRow | null>("anchor_locate", { anchorId }),
   providerProbe: () => invoke<AdapterView[]>("provider_probe"),
 
   documentRedact: (versionId: string, terms: string[]) =>

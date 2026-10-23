@@ -281,10 +281,14 @@ impl Database {
         }
         let escaped = trimmed.replace('"', " ");
         let mut stmt = self.conn().prepare(
-            "SELECT s.id, s.page_id, s.raw_text, p.page_index, bm25(text_segments_fts)
+            "SELECT s.id, s.page_id, s.raw_text, p.page_index, bm25(text_segments_fts),
+                    pr.document_version_id, dv.document_id, d.display_name
              FROM text_segments_fts
              JOIN text_segments s ON s.rowid = text_segments_fts.rowid
              LEFT JOIN pages p ON p.id = s.page_id
+             LEFT JOIN parse_runs pr ON pr.id = s.parse_run_id
+             LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
+             LEFT JOIN documents d ON d.id = dv.document_id
              WHERE text_segments_fts MATCH ?1 AND s.case_id = ?2
              ORDER BY bm25(text_segments_fts) LIMIT ?3",
         )?;
@@ -294,6 +298,9 @@ impl Database {
                 Ok(SearchHit {
                     segment_id: row.get(0)?,
                     page_id: row.get(1)?,
+                    document_version_id: row.get(5)?,
+                    document_id: row.get(6)?,
+                    document_name: row.get(7)?,
                     raw_text: row.get(2)?,
                     page_index: row.get(3)?,
                     rank: row.get(4)?,
@@ -313,6 +320,10 @@ impl Database {
 pub struct SearchHit {
     pub segment_id: String,
     pub page_id: Option<String>,
+    /// Sonucun hangi belge sürümünden geldiği; okuyucu bu sürümü açar (F07).
+    pub document_version_id: Option<String>,
+    pub document_id: Option<String>,
+    pub document_name: Option<String>,
     pub raw_text: String,
     pub page_index: Option<i64>,
     pub rank: f64,
@@ -395,6 +406,84 @@ mod tests {
         let hits = db.search_segments(&case_id, "itiraz", 10).expect("arama");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].page_index, Some(0));
+        // Sonuç, doğru sürümü açabilmek için belge kimliğini taşır (F07 kabul testi).
+        assert_eq!(
+            hits[0].document_version_id.as_deref(),
+            Some(version_id.as_str())
+        );
+        assert_eq!(hits[0].document_name.as_deref(), Some("Belge"));
+        assert!(hits[0].document_id.is_some());
+    }
+
+    #[test]
+    fn search_hit_points_at_its_own_version_not_the_latest() {
+        let (db, case_id, version_id) = setup();
+        let first = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &first.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "eski sürümde kira kaydı".into(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+            }],
+        )
+        .expect("sayfa");
+        db.finish_parse_run(&first.id, "succeeded", &[])
+            .expect("bitir");
+
+        let doc_id = db
+            .list_documents(&case_id)
+            .expect("belgeler")
+            .into_iter()
+            .next()
+            .expect("belge")
+            .id;
+        let blob = db.create_blob_record("st-v2", 20, "aad-v2").expect("blob");
+        let second_version = db
+            .add_version(
+                &doc_id,
+                &case_id,
+                &blob,
+                &"f".repeat(64),
+                20,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        let second = db
+            .start_parse_run(&second_version.id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &second.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "yeni sürümde kira kaydı".into(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+            }],
+        )
+        .expect("sayfa");
+
+        let hits = db.search_segments(&case_id, "kira", 10).expect("arama");
+        assert_eq!(hits.len(), 2);
+        let old = hits
+            .iter()
+            .find(|h| h.document_version_id.as_deref() == Some(first.document_version_id.as_str()))
+            .expect("eski sürüm sonucu");
+        assert!(old.raw_text.contains("eski sürümde"));
+        let new = hits
+            .iter()
+            .find(|h| h.document_version_id.as_deref() == Some(second_version.id.as_str()))
+            .expect("yeni sürüm sonucu");
+        assert!(new.raw_text.contains("yeni sürümde"));
     }
 
     #[test]

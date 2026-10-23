@@ -49,6 +49,7 @@ pub fn run() {
             commands::note_delete,
             commands::anchor_create,
             commands::anchor_list,
+            commands::anchor_locate,
             commands::claim_create,
             commands::claim_list,
             commands::evidence_link_create,
