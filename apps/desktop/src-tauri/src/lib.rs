@@ -55,6 +55,8 @@ pub fn run() {
             commands::claim_list,
             commands::evidence_link_create,
             commands::evidence_link_list,
+            commands::claim_relation_create,
+            commands::claim_relation_list,
             commands::review_item_create,
             commands::review_item_list,
             commands::review_decide,

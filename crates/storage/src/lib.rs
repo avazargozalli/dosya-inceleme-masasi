@@ -25,8 +25,8 @@ pub use ai::{
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use claims::{
-    ClaimRow, EvidenceLinkRow, NewClaim, NewEvidenceLink, NewReviewItem, ReviewDecisionRow,
-    ReviewItemRow,
+    ClaimRelationRow, ClaimRow, EvidenceLinkRow, NewClaim, NewClaimRelation, NewEvidenceLink,
+    NewReviewItem, ReviewDecisionRow, ReviewItemRow,
 };
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
@@ -107,9 +107,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0004_page_geometry",
         sql: include_str!("migrations/0004_page_geometry.sql"),
     },
+    Migration {
+        version: 5,
+        name: "0005_claim_relations",
+        sql: include_str!("migrations/0005_claim_relations.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

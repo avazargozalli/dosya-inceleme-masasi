@@ -5,12 +5,13 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CasePatch, CitationCheckRow,
-    ClaimRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventPatch,
-    EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck,
-    NewClaim, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
-    NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent, NoteRow, PageRow, ParseRun,
-    PrecedentNoteRow, PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput,
-    ReviewDecisionRow, ReviewItemRow, SearchHit, SegmentBlock, TaskRow, TransferConsentRow,
+    ClaimRelationRow, ClaimRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion,
+    EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase,
+    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
+    NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent,
+    NoteRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ProviderProfileRow,
+    RedactionPlanRow, RedactionRegionInput, ReviewDecisionRow, ReviewItemRow, SearchHit,
+    SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -900,6 +901,28 @@ pub fn evidence_link_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_evidence_links(&claim_id)?)
+}
+
+#[tauri::command]
+pub fn claim_relation_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    claim_id: String,
+    input: NewClaimRelation,
+) -> Result<ClaimRelationRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.link_claim_relation(&case_id, &claim_id, &input)?)
+}
+
+#[tauri::command]
+pub fn claim_relation_list(
+    state: State<'_, AppState>,
+    claim_id: String,
+) -> Result<Vec<ClaimRelationRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_claim_relations(&claim_id)?)
 }
 
 #[tauri::command]

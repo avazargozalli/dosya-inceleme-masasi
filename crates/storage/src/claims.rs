@@ -60,6 +60,29 @@ pub struct NewEvidenceLink {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClaimRelationRow {
+    pub id: String,
+    pub case_id: String,
+    pub claim_id: String,
+    pub related_claim_id: String,
+    pub relation: String,
+    pub rationale: String,
+    pub created_at: String,
+}
+
+/// İki iddia arasındaki ilişki. Tür **zorunlu** ve açık seçilir; boş bırakılırsa
+/// kayıt oluşmaz (F08-T05). Yanıt ilişkisi belgeye değil iddiaya bağlanır.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewClaimRelation {
+    pub related_claim_id: String,
+    pub relation: String,
+    #[serde(default)]
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewItemRow {
     pub id: String,
     pub case_id: String,
@@ -104,14 +127,20 @@ fn valid_claim_kind(value: &str) -> bool {
     )
 }
 
-fn valid_relation(value: &str) -> bool {
+/// Belge bağı ilişkisi. `response_to` burada **yok**: yanıt, belgeye değil
+/// yanıtlanan iddiaya bağlanır (`claim_relations`). Böylece belge bağlantısında
+/// anlamsız "yanıt" seçimi engellenir.
+fn valid_document_relation(value: &str) -> bool {
     matches!(
         value,
-        "submitted_for"
-            | "response_to"
-            | "supports_candidate"
-            | "contradicts_candidate"
-            | "context"
+        "submitted_for" | "supports_candidate" | "contradicts_candidate" | "context"
+    )
+}
+
+fn valid_claim_relation(value: &str) -> bool {
+    matches!(
+        value,
+        "response_to" | "supports" | "contradicts" | "context"
     )
 }
 
@@ -204,7 +233,7 @@ impl Database {
         case_id: &str,
         new: &NewEvidenceLink,
     ) -> Result<EvidenceLinkRow, StorageError> {
-        if !valid_relation(&new.relation) {
+        if !valid_document_relation(&new.relation) {
             return Err(StorageError::InvalidSetting);
         }
         let claim = self
@@ -270,6 +299,121 @@ impl Database {
              FROM evidence_links WHERE claim_id=?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([claim_id], map_link)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// İki iddia arasında ilişki kurar. İlişki türü whitelist'te olmalıdır;
+    /// kendine bağ kurulamaz; iki iddia da aynı dosyada ve silinmemiş olmalıdır.
+    /// `response_to` yalnız bir iddia/karar tespitine yanıt olarak kurulur ve
+    /// yanıtlanan iddianın durumunu `responded` yapar.
+    pub fn link_claim_relation(
+        &self,
+        case_id: &str,
+        claim_id: &str,
+        new: &NewClaimRelation,
+    ) -> Result<ClaimRelationRow, StorageError> {
+        if !valid_claim_relation(&new.relation) {
+            return Err(StorageError::InvalidSetting);
+        }
+        if claim_id == new.related_claim_id {
+            return Err(StorageError::InvalidSetting);
+        }
+        let claim = self.get_claim(claim_id)?.ok_or(StorageError::NotFound)?;
+        let related = self
+            .get_claim(&new.related_claim_id)?
+            .ok_or(StorageError::NotFound)?;
+        if claim.case_id != case_id || related.case_id != case_id {
+            return Err(StorageError::NotFound);
+        }
+        if new.relation == "response_to"
+            && !matches!(related.claim_kind.as_str(), "allegation" | "court_finding")
+        {
+            return Err(StorageError::InvalidSetting);
+        }
+        if let Some(existing) =
+            self.find_claim_relation(claim_id, &new.related_claim_id, &new.relation)?
+        {
+            return Ok(existing);
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO claim_relations (id,case_id,claim_id,related_claim_id,relation,rationale,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
+            rusqlite::params![
+                id,
+                case_id,
+                claim_id,
+                new.related_claim_id,
+                new.relation,
+                new.rationale.trim(),
+                now
+            ],
+        )?;
+        if new.relation == "response_to" {
+            tx.execute(
+                "UPDATE claims SET status='responded', updated_at=?1, row_version=row_version+1
+                 WHERE id=?2 AND status IN ('draft','asserted')",
+                rusqlite::params![now, new.related_claim_id],
+            )?;
+        }
+        tx.commit()?;
+        self.append_audit(
+            "claim_relation",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({
+                "claimId": claim_id,
+                "relatedClaimId": new.related_claim_id,
+                "relation": new.relation
+            }),
+        )?;
+        self.get_claim_relation(&id)?.ok_or(StorageError::NotFound)
+    }
+
+    pub fn find_claim_relation(
+        &self,
+        claim_id: &str,
+        related_claim_id: &str,
+        relation: &str,
+    ) -> Result<Option<ClaimRelationRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claim_id,related_claim_id,relation,rationale,created_at
+             FROM claim_relations WHERE claim_id=?1 AND related_claim_id=?2 AND relation=?3",
+        )?;
+        Ok(stmt
+            .query_row(
+                rusqlite::params![claim_id, related_claim_id, relation],
+                map_claim_relation,
+            )
+            .optional()?)
+    }
+
+    pub fn get_claim_relation(&self, id: &str) -> Result<Option<ClaimRelationRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claim_id,related_claim_id,relation,rationale,created_at
+             FROM claim_relations WHERE id=?1",
+        )?;
+        Ok(stmt.query_row([id], map_claim_relation).optional()?)
+    }
+
+    /// Verilen iddiaya **her iki yönde** bağlı ilişkiler (giden + gelen).
+    pub fn list_claim_relations(
+        &self,
+        claim_id: &str,
+    ) -> Result<Vec<ClaimRelationRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,case_id,claim_id,related_claim_id,relation,rationale,created_at
+             FROM claim_relations WHERE claim_id=?1 OR related_claim_id=?1
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([claim_id], map_claim_relation)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -461,6 +605,18 @@ fn map_link(row: &Row<'_>) -> rusqlite::Result<EvidenceLinkRow> {
         rationale: row.get(5)?,
         review_state: row.get(6)?,
         created_at: row.get(7)?,
+    })
+}
+
+fn map_claim_relation(row: &Row<'_>) -> rusqlite::Result<ClaimRelationRow> {
+    Ok(ClaimRelationRow {
+        id: row.get(0)?,
+        case_id: row.get(1)?,
+        claim_id: row.get(2)?,
+        related_claim_id: row.get(3)?,
+        relation: row.get(4)?,
+        rationale: row.get(5)?,
+        created_at: row.get(6)?,
     })
 }
 
@@ -694,5 +850,181 @@ mod tests {
             .expect("karar");
         assert_eq!(result.state, "edited");
         assert_eq!(result.payload["text"], "düzeltilmiş");
+    }
+
+    fn claim_of(text: &str, kind: &str) -> NewClaim {
+        NewClaim {
+            claimant_actor_id: None,
+            claim_text: text.into(),
+            claim_kind: kind.into(),
+            source_anchor_id: None,
+        }
+    }
+
+    #[test]
+    fn claim_relation_requires_explicit_type() {
+        let s = setup();
+        let a = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+            .expect("a");
+        let b = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Ödedim", "defense"))
+            .expect("b");
+        for relation in ["", "response", "supports_candidate"] {
+            let err = s
+                .db
+                .link_claim_relation(
+                    &s.case_id,
+                    &b.id,
+                    &NewClaimRelation {
+                        related_claim_id: a.id.clone(),
+                        relation: relation.into(),
+                        rationale: String::new(),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(err.code(), "E_DB_SETTING", "ilişki {relation:?} reddedilmeli");
+        }
+        assert!(s.db.list_claim_relations(&a.id).expect("liste").is_empty());
+    }
+
+    #[test]
+    fn claim_relation_rejects_self_and_cross_case() {
+        let s = setup();
+        let a = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+            .expect("a");
+        let self_link = s
+            .db
+            .link_claim_relation(
+                &s.case_id,
+                &a.id,
+                &NewClaimRelation {
+                    related_claim_id: a.id.clone(),
+                    relation: "supports".into(),
+                    rationale: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(self_link.code(), "E_DB_SETTING");
+
+        let other_case = s
+            .db
+            .create_case(&NewCase {
+                title: "Başka".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let foreign = s
+            .db
+            .create_claim(&other_case.id, &claim_of("Başka dosya iddiası", "allegation"))
+            .expect("foreign");
+        let cross = s
+            .db
+            .link_claim_relation(
+                &s.case_id,
+                &a.id,
+                &NewClaimRelation {
+                    related_claim_id: foreign.id,
+                    relation: "supports".into(),
+                    rationale: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(cross.code(), "E_NOT_FOUND");
+    }
+
+    #[test]
+    fn response_to_marks_original_and_is_idempotent() {
+        let s = setup();
+        let allegation = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+            .expect("allegation");
+        let defense = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Kira ödendi", "defense"))
+            .expect("defense");
+        assert_eq!(allegation.status, "draft");
+
+        let input = NewClaimRelation {
+            related_claim_id: allegation.id.clone(),
+            relation: "response_to".into(),
+            rationale: "banka dekontu".into(),
+        };
+        let first = s
+            .db
+            .link_claim_relation(&s.case_id, &defense.id, &input)
+            .expect("bağ");
+        let second = s
+            .db
+            .link_claim_relation(&s.case_id, &defense.id, &input)
+            .expect("tekrar");
+        assert_eq!(first.id, second.id);
+
+        let updated = s.db.get_claim(&allegation.id).expect("oku").expect("var");
+        assert_eq!(updated.status, "responded");
+        assert_eq!(updated.row_version, allegation.row_version + 1);
+
+        let both = s.db.list_claim_relations(&allegation.id).expect("liste");
+        assert_eq!(both.len(), 1, "gelen ilişki de görünmeli");
+        assert_eq!(both[0].claim_id, defense.id);
+        assert!(s.db.verify_audit_chain().expect("zincir") >= 3);
+    }
+
+    #[test]
+    fn response_to_requires_allegation_target() {
+        let s = setup();
+        let first_defense = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Ödedim", "defense"))
+            .expect("defense");
+        let second_defense = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Yine ödedim", "defense"))
+            .expect("defense2");
+        let err = s
+            .db
+            .link_claim_relation(
+                &s.case_id,
+                &second_defense.id,
+                &NewClaimRelation {
+                    related_claim_id: first_defense.id,
+                    relation: "response_to".into(),
+                    rationale: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_DB_SETTING");
+    }
+
+    #[test]
+    fn evidence_link_rejects_response_relation() {
+        let s = setup();
+        let c = s
+            .db
+            .create_claim(&s.case_id, &claim_of("Kira ödenmedi", "allegation"))
+            .expect("claim");
+        let err = s
+            .db
+            .link_evidence(
+                &s.case_id,
+                &NewEvidenceLink {
+                    claim_id: c.id,
+                    source_anchor_id: s.anchor_id.clone(),
+                    relation: "response_to".into(),
+                    rationale: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_DB_SETTING");
     }
 }

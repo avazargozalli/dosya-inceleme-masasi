@@ -5,6 +5,7 @@ import {
   type AnchorRow,
   type ApiError,
   type CaseRow,
+  type ClaimRelationRow,
   type ClaimRow,
   type EvidenceLinkRow,
   type ReviewItemRow,
@@ -21,9 +22,15 @@ const CLAIM_KIND: Record<string, string> = {
 
 const RELATION: Record<string, string> = {
   submitted_for: "Sunuldu",
-  response_to: "Yanıt",
   supports_candidate: "Destekliyor (aday)",
   contradicts_candidate: "Çelişiyor (aday)",
+  context: "Bağlam",
+};
+
+const CLAIM_RELATION: Record<string, string> = {
+  response_to: "Yanıt (yanıtlanan iddia)",
+  supports: "Destekliyor",
+  contradicts: "Çelişiyor",
   context: "Bağlam",
 };
 

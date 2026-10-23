@@ -252,6 +252,16 @@ export type ClaimRow = {
   rowVersion: number;
 };
 
+export type ClaimRelationRow = {
+  id: string;
+  caseId: string;
+  claimId: string;
+  relatedClaimId: string;
+  relation: string;
+  rationale: string;
+  createdAt: string;
+};
+
 export type EvidenceLinkRow = {
   id: string;
   caseId: string;
@@ -600,6 +610,14 @@ export const api = {
     caseId: string,
     input: { claimId: string; sourceAnchorId: string; relation: string; rationale: string },
   ) => invoke<EvidenceLinkRow>("evidence_link_create", { caseId, input }),
+
+  claimRelationList: (claimId: string) =>
+    invoke<ClaimRelationRow[]>("claim_relation_list", { claimId }),
+  claimRelationCreate: (
+    caseId: string,
+    claimId: string,
+    input: { relatedClaimId: string; relation: string; rationale: string },
+  ) => invoke<ClaimRelationRow>("claim_relation_create", { caseId, claimId, input }),
 
   reviewItemList: (caseId: string, reviewState?: string) =>
     invoke<ReviewItemRow[]>("review_item_list", { caseId, reviewState: reviewState ?? null }),
