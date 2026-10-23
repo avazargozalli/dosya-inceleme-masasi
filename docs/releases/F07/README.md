@@ -14,6 +14,7 @@
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
 | F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
+| F07-T11 | ✅ | sayfa önizlemesi kasa anahtarıyla şifreli disk önbelleğinde; bellekteki çözülmüş sayfalar kilitta temizlenir |
 
 ## F07-T02 — arama kipleri
 
@@ -175,6 +176,56 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   `create_note` çağrısı artık çağıranın işlemine katılır (`note_write`
   `is_autocommit` denetimi); iç içe işlem hatası (`cannot start a transaction
   within a transaction`) giderildi.
+
+## F07-T11 — şifreli sayfa önizlemesi ve kilitte bellek temizliği
+
+- **Yeni crate `dim-preview`**: iki katmanlı önbellek.
+  - **Disk**: PNG, kasa ana anahtarıyla AEAD şifreli
+    `<kasa>/preview-cache/<sürüm>/<sayfa>_<dpi>.pv`. AAD
+    `preview:v1:<sürüm>:<sayfa>:<dpi>` olduğu için kayıt başka sürüme/sayfaya
+    taşınamaz; dosya düz PNG değildir (test: diskteki baytlarda PNG imzası yok).
+  - **Bellek**: 32 MB sınırlı LRU, yalnız kilit açıkken. `vault_lock`
+    `PreviewMemory::clear()` çağırır — çözülmüş sayfa baytları bellekte kalmaz
+    (INV-06 / K0). Kasa kilitliyken komut `E_VAULT_LOCKED` döner.
+- **Worker**: yeni `render_page` yöntemi (PyMuPDF → PNG). Sayfa numarası
+  **fiziksel sıradır**, `/PageLabels` etiketi kullanılmaz. DPI 48–200 aralığına
+  kırpılır, aralık dışı sayfa `E_PAGE_RANGE`, parola korumalı PDF
+  `E_PDF_PASSWORD`, 8 MiB üstü çıktı `E_PREVIEW_TOO_LARGE` ile reddedilir —
+  var olmayan sayfa için boş görüntü üretilmez.
+- **Komut** `document_page_preview(versionId, pageIndex, dpi)`: bellek →
+  şifreli disk → worker sırası. Bozuk/anahtarı uyuşmayan kayıt sessizce
+  "yok" sayılmaz; atılır ve görüntü yeniden üretilir, yanıt `cached=false`
+  olur (başarı iddiası yalnız gerçekten önbellekten geldiyse `cached=true`).
+  Yalnız `application/pdf`; DOCX/UDF `E_PREVIEW_UNSUPPORTED` alır.
+- **Arayüz**: okuyucuda "Sayfa görüntüsü" düğmesi (`aria-pressed`); görüntü
+  fiziksel sayfa için çizilir, alt yazı kaynağı yazar
+  ("şifreli önbellekten · 4 KB · 96 dpi" / "yeni üretildi"). Sayfa veya belge
+  değişince eski görüntü bırakılır; istek yarışında geç gelen yanıt gösterilmez.
+- **Sınırlama**: önizleme yalnız PDF. DOCX/UDF yapısal görünüm kullanır;
+  görüntü belgeleri (JPG/TIFF) için sayfa çizimi yok. Önbellek sürüm silinince
+  otomatik temizlenmez (`PreviewStore::purge_version` hazır, silme akışına
+  bağlanmadı) — diskte şifreli kaldığı için veri sızıntısı değil, yer kullanımı.
+
+## Doğrulama (F07-T11)
+
+- Rust: `cargo test --workspace --all-targets` → **222** test (yeni `dim-preview`
+  6: şifreli disk yuvarlak yolu + PNG imzası yokluğu, AAD bağlaması, sürüm
+  temizliği, LRU sınırı, kilitte temizleme, büyük kayıt belleğe alınmaz).
+  Clippy `-D warnings` workspace + Tauri, rustfmt iki manifest temiz.
+- Python: worker **77 passed, 1 skipped** (6 yeni: PNG + sayfa sayısı, aralık
+  dışı ret, DPI kırpma, protokolde `render_page`, tam sayı olmayan sayfa
+  indeksi `E_PARAMS`, aralık dışı `E_PAGE_RANGE`).
+- Gerçek worker IPC (elle): 2 sayfalı PDF → `render_page` `pageIndex=1`,
+  `dpi=72` → `pageCount=2`, PNG `\x89PNG\r\n\x1a\n`, 4600 bayt.
+- Web: `tsc` + `vitest` **107** (4 yeni: data URL, önbellek/yeni üretim
+  alt yazısı, MB/KB biçimi, 1 KB alt sınırı) + `vite build` yeşil.
+- **Not**: bu adımın kodu eşzamanlı çalışan F16 ajanının `77fcc76` numaralı
+  commit'ine karıştı; commit mesajı F16 ADR'sini anlatıyor. İşlevsel içerik
+  yukarıdaki gibidir, kanıt bu sürüm notunda tutulur. Bu commit yalnız
+  `crates/ingest/src/worker.rs` rustfmt düzeltmesini ve bu belgeyi ekler.
+- Sınırlama: Tauri penceresi bu ortamda açılmadı; görüntü düğmesi ve önbellek
+  yolu yalnız typecheck + birim testleri + üretim derlemesiyle doğrulandı.
+  Gerçek tıklama ve görsel QA yapılmadı.
 
 ## Doğrulama (F07-T10)
 

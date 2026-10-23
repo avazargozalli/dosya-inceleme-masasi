@@ -488,10 +488,7 @@ impl WorkerClient {
         let png = base64::engine::general_purpose::STANDARD
             .decode(png)
             .map_err(|_| WorkerError::BadResponse)?;
-        let page_count = result
-            .get("pageCount")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let page_count = result.get("pageCount").and_then(Value::as_u64).unwrap_or(0);
         Ok(PagePreview {
             png,
             page_count: u32::try_from(page_count).unwrap_or(0),
