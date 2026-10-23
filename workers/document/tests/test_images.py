@@ -10,6 +10,7 @@ from dim_worker.engines import (
     MAX_IMAGE_PIXELS,
     EngineError,
     _check_pixel_budget,
+    _ocr_confidence_note,
     extract,
     extract_image,
 )
@@ -61,6 +62,44 @@ def test_pixel_budget_rejects_oversized_frame():
     with pytest.raises(EngineError) as exc:
         _check_pixel_budget(0, 10)
     assert exc.value.code == "E_IMAGE_INVALID"
+
+
+def test_confidence_note_is_measured_or_absent():
+    assert _ocr_confidence_note(None) == ""
+    assert "güven skoru düşük" in _ocr_confidence_note(41.2)
+    assert "88/100" in _ocr_confidence_note(88.0)
+
+
+def test_ocr_image_reports_measured_confidence_when_available():
+    import shutil
+
+    if shutil.which("tesseract") is None:
+        pytest.skip("tesseract kurulu değil")
+    pytest.importorskip("pytesseract")
+    from PIL import ImageDraw, ImageFont
+
+    font = None
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(path, 64)
+            break
+        except OSError:
+            continue
+    if font is None:
+        pytest.skip("uygun yazı tipi bulunamadı")
+
+    image = Image.new("RGB", (900, 220), "white")
+    ImageDraw.Draw(image).text((40, 70), "KIRA ODEMESI", fill="black", font=font)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+
+    result = extract_image(buffer.getvalue(), ocr=True, ocr_lang="eng")
+    warning = result.pages[0].warnings[0]
+    assert "OCR ile okundu" in warning
+    assert "güven skoru" in warning
 
 
 def test_ocr_request_without_tesseract_is_error_not_silent_text():

@@ -8,6 +8,7 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - PNG/JPEG/TIFF artık ayrıştırılır; çok kareli TIFF'te her kare ayrı fiziksel sayfa
 - OCR kapalıyken metin uydurulmaz; sayfa "metin katmanı yok (OCR gerekli)" uyarısıyla boş döner
 - Kare başına 50 MP ve 100 kare sınırı; aşım `E_IMAGE_TOO_LARGE`
+- OCR güven skoru tek geçişte `image_to_data` ile ölçülür; düşük skor (<60) uyarıda açıkça yazılır
 - Görüntü koordinatlarının piksel olduğu açıkça uyarılır; basılı sayfa ölçüsü sayılmaz
 
 ## [0.7.1] — 2026-10-23 — F06 UDF

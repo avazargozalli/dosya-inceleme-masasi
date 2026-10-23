@@ -20,6 +20,7 @@ MAX_INPUT_BYTES = 250 * 1024 * 1024
 MAX_IMAGE_FRAMES = 100
 MAX_IMAGE_PIXELS = 50_000_000
 OCR_DPI = 300
+OCR_MIN_CONFIDENCE = 60.0
 
 
 class EngineError(Exception):
@@ -76,21 +77,65 @@ def _tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
-def _ocr_page(page, lang: str) -> str:
+def _ocr_text_and_confidence(image, lang: str) -> tuple[str, float | None]:
+    """Görüntüyü bir kez OCR eder; satır metnini ve ortalama kelime güvenini
+    (0–100) döndürür. Güven okunamazsa `None` döner, uydurma skor üretilmez."""
     try:
         import pytesseract  # type: ignore
-        from PIL import Image  # type: ignore
     except ImportError as exc:
         raise EngineError("E_OCR_MISSING", "OCR bağımlılıkları (pytesseract/Pillow) kurulu değil") from exc
     if shutil.which("tesseract") is None:
         raise EngineError("E_OCR_MISSING", "Tesseract yürütülebilir dosyası bulunamadı")
 
-    pix = page.get_pixmap(dpi=OCR_DPI, alpha=False)
-    image = Image.open(io.BytesIO(pix.tobytes("png")))
     try:
-        return pytesseract.image_to_string(image, lang=lang) or ""
+        data = pytesseract.image_to_data(image, lang=lang, output_type=pytesseract.Output.DICT)
     except Exception as exc:  # noqa: BLE001 - motor hatası normalize edilir
         raise EngineError("E_OCR_FAILED", "OCR çalıştırılamadı (dil paketi eksik olabilir)") from exc
+
+    words = data.get("text") or []
+    confidences = data.get("conf") or []
+    lines: dict[tuple[int, int, int], list[str]] = {}
+    scores: list[float] = []
+    for index, raw_word in enumerate(words):
+        word = (raw_word or "").strip()
+        if not word:
+            continue
+        key = (
+            int(data.get("block_num", [0] * len(words))[index] or 0),
+            int(data.get("par_num", [0] * len(words))[index] or 0),
+            int(data.get("line_num", [0] * len(words))[index] or 0),
+        )
+        lines.setdefault(key, []).append(word)
+        try:
+            score = float(confidences[index])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if score >= 0:
+            scores.append(score)
+
+    text = "\n".join(" ".join(parts) for _, parts in sorted(lines.items()))
+    mean = round(sum(scores) / len(scores), 1) if scores else None
+    return text, mean
+
+
+def _ocr_confidence_note(confidence: float | None) -> str:
+    """Uyarı metnine eklenen ölçülmüş güven notu. Skor yoksa hiçbir şey eklenmez."""
+    if confidence is None:
+        return ""
+    if confidence < OCR_MIN_CONFIDENCE:
+        return f"; güven skoru düşük (ortalama {confidence:.0f}/100)"
+    return f"; güven skoru {confidence:.0f}/100"
+
+
+def _ocr_page(page, lang: str) -> tuple[str, float | None]:
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError as exc:
+        raise EngineError("E_OCR_MISSING", "OCR bağımlılıkları (pytesseract/Pillow) kurulu değil") from exc
+
+    pix = page.get_pixmap(dpi=OCR_DPI, alpha=False)
+    image = Image.open(io.BytesIO(pix.tobytes("png")))
+    return _ocr_text_and_confidence(image, lang)
 
 
 def extract_pdf(
@@ -120,9 +165,11 @@ def extract_pdf(
             page_warnings: list[str] = []
             if not text.strip():
                 if ocr:
-                    text = _ocr_page(page, ocr_lang)
+                    text, confidence = _ocr_page(page, ocr_lang)
                     if text.strip():
-                        page_warnings.append(f"sayfa {index + 1}: OCR ile okundu ({ocr_lang})")
+                        page_warnings.append(
+                            f"sayfa {index + 1}: OCR ile okundu ({ocr_lang}){_ocr_confidence_note(confidence)}"
+                        )
                     else:
                         page_warnings.append(f"sayfa {index + 1}: OCR sonuç vermedi")
                 else:
@@ -236,16 +283,11 @@ def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extr
             page_warnings: list[str] = []
             text = ""
             if ocr:
-                try:
-                    import pytesseract  # type: ignore
-
-                    text = pytesseract.image_to_string(frame, lang=ocr_lang) or ""
-                except Exception as exc:  # noqa: BLE001
-                    raise EngineError(
-                        "E_OCR_FAILED", "görüntü OCR'ı çalıştırılamadı (dil paketi eksik olabilir)"
-                    ) from exc
+                text, confidence = _ocr_text_and_confidence(frame, ocr_lang)
                 if text.strip():
-                    page_warnings.append(f"sayfa {index + 1}: OCR ile okundu ({ocr_lang})")
+                    page_warnings.append(
+                        f"sayfa {index + 1}: OCR ile okundu ({ocr_lang}){_ocr_confidence_note(confidence)}"
+                    )
                 else:
                     page_warnings.append(f"sayfa {index + 1}: OCR sonuç vermedi")
             else:
