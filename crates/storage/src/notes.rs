@@ -161,6 +161,7 @@ mod tests {
                 &NewNote {
                     title: "İlk izlenim".into(),
                     body: "Ödeme yapılmadı.".into(),
+                    source_anchor_ids: vec![],
                 },
             )
             .expect("not");
@@ -178,6 +179,7 @@ mod tests {
                 &NewNote {
                     title: "X".into(),
                     body: "<img src=x onerror=alert(1)>".into(),
+                    source_anchor_ids: vec![],
                 },
             )
             .expect("not");
@@ -192,7 +194,8 @@ mod tests {
                 &case_id,
                 &NewNote {
                     title: "X".into(),
-                    body: "   ".into()
+                    body: "   ".into(),
+                    source_anchor_ids: vec![],
                 }
             )
             .is_err());
@@ -206,7 +209,8 @@ mod tests {
                 "yok",
                 &NewNote {
                     title: "X".into(),
-                    body: "metin".into()
+                    body: "metin".into(),
+                    source_anchor_ids: vec![],
                 }
             )
             .is_err());
@@ -221,6 +225,7 @@ mod tests {
                 &NewNote {
                     title: "X".into(),
                     body: "metin".into(),
+                    source_anchor_ids: vec![],
                 },
             )
             .expect("not");
