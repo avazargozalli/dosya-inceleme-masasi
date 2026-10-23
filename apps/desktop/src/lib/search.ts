@@ -49,7 +49,14 @@ export function textOriginLabel(origin: string | null): string {
 }
 
 function normalizeTag(tag: string): string {
-  return tag.split(/\s+/).filter(Boolean).join(" ").toLocaleLowerCase("tr");
+  // Çekirdekteki `normalize_tag` ile aynı: boşluk sadeleşir, Unicode küçük
+  // harfe iner, `İ` küçültmesinin bıraktığı birleşik nokta atılır.
+  return tag
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/\u0307/g, "");
 }
 
 /**
