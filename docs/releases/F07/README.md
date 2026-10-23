@@ -91,7 +91,7 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   `vite build`.
 - `cargo clippy --workspace --all-targets -- -D warnings` ve Tauri clippy
   temiz; iki manifestte rustfmt temiz.
-- CI: bu commit sonrası `ci.yml` ile doğrulanır.
+- CI: `cf00acd` → `ci.yml` **40028597232**, **7/7 yeşil** (SBOM dahil).
 
 ## Bilinen sınırlar
 
