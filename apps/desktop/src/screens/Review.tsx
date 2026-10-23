@@ -335,7 +335,11 @@ export function Review() {
 
   const pending = items.filter((i) => i.state === "pending" || i.state === "needs_more_evidence");
   const decided = items.filter((i) => !(i.state === "pending" || i.state === "needs_more_evidence"));
-  const replaceable = decided.filter((i) => i.state === "accepted" || i.state === "edited");
+  // F08-T09: hedef kaydı üretilmiş öğe "yerine geç" listesine girmez; onaylı
+  // kayıt sessizce değiştirilemez (backend de reddeder).
+  const replaceable = decided.filter(
+    (i) => (i.state === "accepted" || i.state === "edited") && !i.targetEntityId,
+  );
 
   async function supersede(item: ReviewItemRow, oldItemId: string) {
     if (!oldItemId) return;
@@ -364,6 +368,18 @@ export function Review() {
       {error ? (
         <div className="notice danger" role="alert">
           <strong>{error.code}</strong> — {error.message}
+          {error.code === "E_ROW_VERSION" ? (
+            <button
+              className="btn ghost"
+              style={{ marginLeft: 8 }}
+              onClick={() => {
+                setError(null);
+                void load(caseId);
+              }}
+            >
+              Güncel kaydı yükle
+            </button>
+          ) : null}
         </div>
       ) : null}
 

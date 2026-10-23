@@ -774,6 +774,24 @@ mod tests {
         assert_eq!(s.db.list_notes(&s.case_id).expect("notlar").len(), 0);
     }
 
+    /// F08-T09: onaylı (hedef kaydı üretilmiş) öğe yeni adayla sessizce
+    /// değiştirilemez; aksi hâlde ikinci bir kayıt doğardı.
+    #[test]
+    fn committed_item_cannot_be_superseded() {
+        let s = setup();
+        let item_id = pending_item(&s, "claim_candidate", vec![s.anchor_id.clone()]);
+        s.db.commit_review_decision(&item_id, "accept", &claim_target(), "avukat", "")
+            .expect("commit");
+        let newer = pending_item(&s, "claim_candidate", vec![s.anchor_id.clone()]);
+        let err =
+            s.db.supersede_review_item(&item_id, &newer)
+                .expect_err("onaylı öğe değiştirilememeli");
+        assert!(matches!(err, StorageError::InvalidSetting));
+        let item = s.db.get_review_item(&item_id).expect("öğe").expect("var");
+        assert!(item.superseded_at.is_none());
+        assert_eq!(s.db.list_claims(&s.case_id).expect("iddialar").len(), 1);
+    }
+
     #[test]
     fn review_target_exists_reports_created_record() {
         let s = setup();

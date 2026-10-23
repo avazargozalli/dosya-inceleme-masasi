@@ -644,6 +644,12 @@ impl Database {
         if item.case_id != replacement.case_id {
             return Err(StorageError::NotFound);
         }
+        // F08-T09: onaylı kayıt korunur. Hedef kaydı üretilmiş (kabul/düzeltme
+        // ile kalıcılaşmış) öğe yeni adayla sessizce değiştirilemez; aksi hâlde
+        // dosyada izi sürülemeyen ikinci bir kayıt doğardı.
+        if item.target_entity_id.is_some() {
+            return Err(StorageError::InvalidSetting);
+        }
         if !matches!(
             item.state.as_str(),
             "pending" | "needs_more_evidence" | "accepted" | "edited"
