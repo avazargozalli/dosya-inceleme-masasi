@@ -378,6 +378,29 @@ export type NoteRow = {
   createdAt: string;
   updatedAt: string;
   rowVersion: number;
+  revisionNo: number;
+  canUndo: boolean;
+  canRedo: boolean;
+};
+
+export type NoteRevisionRow = {
+  noteId: string;
+  revisionNo: number;
+  title: string;
+  body: string;
+  sourceAnchorIds: string[];
+  origin: string;
+  createdAt: string;
+};
+
+export type NoteDraftRow = {
+  caseId: string;
+  noteId: string | null;
+  title: string;
+  body: string;
+  sourceAnchorIds: string[];
+  baseRowVersion: number | null;
+  updatedAt: string;
 };
 
 export type TaskRow = {
@@ -914,4 +937,24 @@ export const api = {
   noteCreate: (caseId: string, input: { title: string; body: string; sourceAnchorIds: string[] }) =>
     invoke<NoteRow>("note_create", { caseId, input }),
   noteDelete: (id: string) => invoke<void>("note_delete", { id }),
+  noteGet: (id: string) => invoke<NoteRow | null>("note_get", { id }),
+  noteUpdate: (
+    id: string,
+    expectedRowVersion: number,
+    input: { title: string; body: string; sourceAnchorIds: string[] },
+  ) => invoke<NoteRow>("note_update", { id, expectedRowVersion, input }),
+  noteUndo: (id: string, expectedRowVersion: number) =>
+    invoke<NoteRow>("note_undo", { id, expectedRowVersion }),
+  noteRedo: (id: string, expectedRowVersion: number) =>
+    invoke<NoteRow>("note_redo", { id, expectedRowVersion }),
+  noteRevisions: (id: string) => invoke<NoteRevisionRow[]>("note_revisions", { id }),
+  noteDraftSave: (
+    caseId: string,
+    noteId: string | null,
+    input: { title: string; body: string; sourceAnchorIds: string[]; baseRowVersion: number | null },
+  ) => invoke<NoteDraftRow>("note_draft_save", { caseId, noteId, input }),
+  noteDraftGet: (caseId: string, noteId: string | null) =>
+    invoke<NoteDraftRow | null>("note_draft_get", { caseId, noteId }),
+  noteDraftClear: (caseId: string, noteId: string | null) =>
+    invoke<boolean>("note_draft_clear", { caseId, noteId }),
 };

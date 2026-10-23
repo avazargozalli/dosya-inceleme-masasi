@@ -38,7 +38,7 @@ pub use claims::{
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use exports::ExportRow;
-pub use notes::{NewNote, NoteRow};
+pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
 pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
     SearchMode, SearchPage, SearchQuery, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT,
@@ -150,9 +150,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0010_document_tags",
         sql: include_str!("migrations/0010_document_tags.sql"),
     },
+    Migration {
+        version: 11,
+        name: "0011_note_history",
+        sql: include_str!("migrations/0011_note_history.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

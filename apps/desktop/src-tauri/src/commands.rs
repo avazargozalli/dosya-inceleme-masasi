@@ -10,11 +10,11 @@ use dim_storage::{
     DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
     ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
     NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
-    NewReviewItem, NewTask, NewTransferConsent, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    PrecedentNoteRow, PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput,
-    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
-    TaskRow, TransferConsentRow,
+    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
+    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
+    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -436,6 +436,93 @@ pub fn note_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<Note
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_notes(&case_id)?)
+}
+
+/// Notun güncel hâli. Sürüm çakışmasında arayüz farkı göstermek için buradan
+/// okur; çakışma mesajındaki sürüm numarasına güvenip içerik uydurulmaz.
+#[tauri::command]
+pub fn note_get(state: State<'_, AppState>, id: String) -> Result<Option<NoteRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.get_note(&id)?)
+}
+
+#[tauri::command]
+pub fn note_update(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+    input: NoteEdit,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.update_note(&id, expected_row_version, &input)?)
+}
+
+#[tauri::command]
+pub fn note_undo(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.undo_note(&id, expected_row_version)?)
+}
+
+#[tauri::command]
+pub fn note_redo(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.redo_note(&id, expected_row_version)?)
+}
+
+#[tauri::command]
+pub fn note_revisions(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<NoteRevisionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_note_revisions(&id)?)
+}
+
+#[tauri::command]
+pub fn note_draft_save(
+    state: State<'_, AppState>,
+    case_id: String,
+    note_id: Option<String>,
+    input: NoteDraftInput,
+) -> Result<NoteDraftRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.save_note_draft(&case_id, note_id.as_deref(), &input)?)
+}
+
+#[tauri::command]
+pub fn note_draft_get(
+    state: State<'_, AppState>,
+    case_id: String,
+    note_id: Option<String>,
+) -> Result<Option<NoteDraftRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.get_note_draft(&case_id, note_id.as_deref())?)
+}
+
+#[tauri::command]
+pub fn note_draft_clear(
+    state: State<'_, AppState>,
+    case_id: String,
+    note_id: Option<String>,
+) -> Result<bool, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.clear_note_draft(&case_id, note_id.as_deref())?)
 }
 
 #[tauri::command]

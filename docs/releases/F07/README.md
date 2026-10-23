@@ -13,6 +13,7 @@
 | F07-T05 | ✅ | keyset sayfalama, 200 sonuç sınırı, kapsam görünürlüğü |
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
+| F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
 
 ## F07-T02 — arama kipleri
 
@@ -141,6 +142,59 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   gösterime dönülür (offset uyuşmazlığı riski alınmaz).
 - Alıntı vurgusu paragraf içinde yerel aralığa çevrilir (`entrySlice`); PDF
   sayfalarında yapı üretilmez (`structureEntries` boş döner).
+
+## F07-T10 — not taslağı, geri/ileri al ve sürüm çakışması
+
+- **Şema v11** (`0011_note_history.sql`): `notes.undo_stack` / `notes.redo_stack`
+  (JSON kimlik listeleri, en çok 50), `note_revisions` (kalıcı sürüm geçmişi) ve
+  `note_drafts` (kasa içi taslak). Göç, var olan notlar için 1. revizyonu
+  `INSERT … SELECT` ile geriye dönük doldurur; eski notlarda geçmiş boş kalmaz.
+- **Taslak**: 900 ms sonra `note_draft_save` ile **açık kasaya** yazılır
+  (`note_drafts`, anahtar `(case_id, note_id)`, `note_id = ''` yeni not).
+  `localStorage` kullanılmaz; kasa kilitliyse durum **"Taslak kaydedilemedi"**
+  olur ve arayüz başarı iddia etmez. Taslak boş gövdeyi de saklar (kullanıcının
+  sildiği metin geri gelmez); asıl nota dönüşürken boş gövde yine reddedilir.
+- **Geri/ileri al**: `note_undo` / `note_redo` yığındaki **gerçek** revizyonu
+  uygular ve yeni bir revizyon yazar (`origin = undo | redo`); geçmiş silinmez.
+  Yığın boşsa `E_NOTE_HISTORY` döner, metin uydurulmaz. Yeni düzenleme ileri al
+  dalını temizler (klasik geri/ileri al davranışı). Yığınlar kasa içinde olduğu
+  için uygulama yeniden açıldığında geçmiş korunur (test:
+  `history_survives_reopen_of_the_vault`).
+- **Sürüm çakışması**: `note_update` `expected_row_version` ile yazar. Araya
+  başka bir yazma girdiyse **yazmaz**, `E_ROW_VERSION` döner; arayüz
+  `note_get` ile güncel kaydı okur, satır bazlı LCS farkını gösterir ve
+  "Benim metnimi kaydet" / "Güncel metni koru" seçimini kullanıcıya bırakır.
+  Eski görünüm sessizce üzerine yazılmaz.
+- **Arayüz**: not başına "Düzenle" paneli; sürüm/revizyon bilgisi, taslak
+  durumu, Geri al / İleri al (kaydedilmemiş değişiklik varken pasif —
+  kullanıcının yazdığı metin sessizce kaybolmaz), Sürüm geçmişi listesi,
+  kasadaki farklı taslağı "yükle / sil" şeridi. Çakışma açıkken düzenleme
+  alanları kilitlenir; çakışan anlık görüntü ile yazılan metin birbirinden
+  ayrışmaz.
+- **İç içe işlem**: inceleme kararından (`commit_review_decision` → not) gelen
+  `create_note` çağrısı artık çağıranın işlemine katılır (`note_write`
+  `is_autocommit` denetimi); iç içe işlem hatası (`cannot start a transaction
+  within a transaction`) giderildi.
+
+## Doğrulama (F07-T10)
+
+- Rust: `cargo test --workspace --all-targets` → **216** test (storage **144**;
+  not modülü 16, 11 yeni: taslak yuvarlak yol/temizleme, yabancı dosya notuna
+  taslak reddi, sürüm artışı + revizyon, bayat yazmanın reddi, boş gövde,
+  geri/ileri al, boş yığın `E_NOTE_HISTORY`, geri aldıktan sonra düzenlemenin
+  ileri dalı temizlemesi, iki adım geri, yeniden açılışta geçmiş, göç
+  doldurma ifadesi). Clippy `-D warnings` (workspace + Tauri) ve rustfmt iki
+  manifestte temiz.
+- Web: `tsc` + `vitest` **103** (16 yeni: taslak durum etiketleri, bayat taslak,
+  revizyon kaynağı etiketleri, LCS farkı/silme/ekleme/Türkçe karakter/boş
+  metin/uzun metin sınırı, kaydedilmemiş değişiklik) + `vite build` yeşil.
+- Sınırlama: Tauri penceresi bu ortamda açılmadı; düzenleme paneli, geri/ileri
+  al düğmeleri ve çakışma ekranı yalnız typecheck + birim testleri + üretim
+  derlemesiyle doğrulandı. Gerçek tıklama ve görsel QA yapılmadı.
+- Sınırlama: geri/ileri al kayıt düzeyinde çalışır (son kayıt ↔ önceki kayıt);
+  tuş vuruşu düzeyinde metin geçmişi tarayıcı textarea davranışına bırakılmıştır.
+  Taslak otomatik kaydı 900 ms gecikmelidir; uygulama bu süre içinde kapanırsa
+  son değişiklikler taslağa yazılmamış olabilir.
 
 ## Doğrulama (F07-T06/T07)
 

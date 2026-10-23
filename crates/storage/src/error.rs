@@ -40,6 +40,8 @@ pub enum StorageError {
     Conflict { expected: i64, actual: i64 },
     #[error("kasa kilitli")]
     VaultLocked,
+    #[error("not geçmişi: {0}")]
+    NoteHistory(String),
     #[error("alıntı segment metninde bulunamadı")]
     QuoteNotFound,
     #[error("alıntı birden fazla yerde geçiyor; konum belirsiz")]
@@ -72,6 +74,7 @@ impl StorageError {
             Self::NotFound => "E_NOT_FOUND",
             Self::Conflict { .. } => "E_ROW_VERSION",
             Self::VaultLocked => "E_VAULT_LOCKED",
+            Self::NoteHistory(_) => "E_NOTE_HISTORY",
             Self::QuoteNotFound => "E_QUOTE_NOT_FOUND",
             Self::QuoteAmbiguous => "E_QUOTE_AMBIGUOUS",
             Self::QuoteHashMismatch => "E_QUOTE_HASH",
