@@ -46,8 +46,10 @@ pub use precedents::{
     PrecedentRow,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
-pub use review_commit::{OutboxEventRow, ReviewCommitResult, ReviewTarget};
-pub use tasks::{NewTask, ReminderEnqueueResult, ReminderRow, TaskRow};
+pub use review_commit::{
+    OutboxEventRow, ReviewCommitResult, ReviewTarget, EVENT_DECISION_COMMITTED, EVENT_ITEM_DECIDED,
+};
+pub use tasks::{NewTask, ReminderEnqueueResult, ReminderRow, TaskRow, EVENT_TASK_REMINDER};
 pub use timeline::{EventPatch, EventRow, EventSourceRow, NewEvent};
 
 use std::path::{Path, PathBuf};
