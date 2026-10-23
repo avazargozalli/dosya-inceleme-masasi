@@ -36,6 +36,7 @@ pub fn run() {
             commands::event_list,
             commands::event_confirm,
             commands::event_delete,
+            commands::event_update,
             commands::event_sources,
             commands::event_link_source,
             commands::event_unlink_source,

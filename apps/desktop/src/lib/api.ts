@@ -389,6 +389,16 @@ export type NewEventInput = {
   assertionKind: string;
 };
 
+export type EventPatchInput = {
+  eventKind: string;
+  dateValue: string | null;
+  datePrecision: string;
+  dateRole: string;
+  dateRaw: string | null;
+  title: string;
+  description: string;
+};
+
 export type SearchHit = {
   segmentId: string;
   pageId: string | null;
@@ -500,6 +510,8 @@ export const api = {
   eventCreate: (caseId: string, input: NewEventInput) =>
     invoke<EventRow>("event_create", { caseId, input }),
   eventConfirm: (id: string) => invoke<EventRow>("event_confirm", { id }),
+  eventUpdate: (id: string, expectedRowVersion: number, input: EventPatchInput) =>
+    invoke<EventRow>("event_update", { id, expectedRowVersion, input }),
   eventDelete: (id: string) => invoke<void>("event_delete", { id }),
   eventSources: (eventId: string) => invoke<EventSourceRow[]>("event_sources", { eventId }),
   eventLinkSource: (eventId: string, anchorId: string, relation: string) =>

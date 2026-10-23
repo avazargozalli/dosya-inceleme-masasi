@@ -57,6 +57,8 @@ export function Timeline() {
   const [linkAnchor, setLinkAnchor] = useState("");
   const [linkRelation, setLinkRelation] = useState("states");
   const [draft, setDraft] = useState<Draft>(EMPTY);
+  // Düzenleme, kaydın okunduğu sürümü taşır: eski sürümle yazma reddedilir.
+  const [editing, setEditing] = useState<{ id: string; rowVersion: number; draft: Draft } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -108,6 +110,50 @@ export function Timeline() {
       setDraft(EMPTY);
       await load(caseId);
     } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit(event: EventRow) {
+    setEditing({
+      id: event.id,
+      rowVersion: event.rowVersion,
+      draft: {
+        title: event.title,
+        date: event.dateValue ?? "",
+        precision: event.datePrecision,
+        role: event.dateRole,
+        kind: event.eventKind,
+        description: event.description,
+      },
+    });
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    if (editing.draft.title.trim().length === 0) {
+      setError({ code: "E_TITLE", message: "Olay başlığı zorunlu.", retryable: false });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.eventUpdate(editing.id, editing.rowVersion, {
+        eventKind: editing.draft.kind,
+        dateValue: editing.draft.precision === "unknown" ? null : editing.draft.date || null,
+        datePrecision: editing.draft.precision,
+        dateRole: editing.draft.role,
+        dateRaw: editing.draft.date || null,
+        title: editing.draft.title.trim(),
+        description: editing.draft.description.trim(),
+      });
+      setEditing(null);
+      await load(caseId);
+    } catch (e) {
+      // Çatışmada kayıt ezilmedi: taze sürümü yükle, kullanıcı yeniden düzenlesin.
+      setEditing(null);
+      await load(caseId);
       setError(toApiError(e));
     } finally {
       setBusy(false);
@@ -188,12 +234,106 @@ export function Timeline() {
             {event.status === "draft" ? (
               <button className="btn ghost" onClick={() => void confirm(event.id)}>Onayla</button>
             ) : null}
+            <button className="btn ghost" onClick={() => startEdit(event)}>
+              {editing?.id === event.id ? "Düzenlemeyi kapat" : "Düzenle"}
+            </button>
             <button className="btn ghost" onClick={() => void openLink(event.id)}>
               {linkFor === event.id ? "Kaynakları kapat" : "Kaynaklar"}
             </button>
             <button className="btn ghost" onClick={() => void remove(event.id)}>Sil</button>
           </div>
         </div>
+
+        {editing?.id === event.id ? (
+          <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+            <div className="row">
+              <div className="field" style={{ flex: "2 1 240px" }}>
+                <label htmlFor={`edit-title-${event.id}`}>Başlık</label>
+                <input
+                  id={`edit-title-${event.id}`}
+                  className="input"
+                  value={editing.draft.title}
+                  onChange={(e) =>
+                    setEditing({ ...editing, draft: { ...editing.draft, title: e.target.value } })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor={`edit-date-${event.id}`}>Tarih</label>
+                <input
+                  id={`edit-date-${event.id}`}
+                  className="input"
+                  type="date"
+                  value={editing.draft.date}
+                  disabled={editing.draft.precision === "unknown"}
+                  onChange={(e) =>
+                    setEditing({ ...editing, draft: { ...editing.draft, date: e.target.value } })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor={`edit-precision-${event.id}`}>Kesinlik</label>
+                <select
+                  id={`edit-precision-${event.id}`}
+                  className="input"
+                  value={editing.draft.precision}
+                  onChange={(e) =>
+                    setEditing({ ...editing, draft: { ...editing.draft, precision: e.target.value } })
+                  }
+                >
+                  {Object.entries(PRECISION_LABEL).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor={`edit-role-${event.id}`}>Tarih türü</label>
+                <select
+                  id={`edit-role-${event.id}`}
+                  className="input"
+                  value={editing.draft.role}
+                  onChange={(e) =>
+                    setEditing({ ...editing, draft: { ...editing.draft, role: e.target.value } })
+                  }
+                >
+                  {Object.entries(DATE_ROLE_LABEL).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="row">
+              <div className="field" style={{ flex: "1 1 320px" }}>
+                <label htmlFor={`edit-desc-${event.id}`}>Açıklama</label>
+                <input
+                  id={`edit-desc-${event.id}`}
+                  className="input"
+                  value={editing.draft.description}
+                  onChange={(e) =>
+                    setEditing({
+                      ...editing,
+                      draft: { ...editing.draft, description: e.target.value },
+                    })
+                  }
+                />
+              </div>
+              <button className="btn primary" disabled={busy} onClick={() => void saveEdit()}>
+                Kaydet
+              </button>
+              <button className="btn ghost" onClick={() => setEditing(null)}>
+                Vazgeç
+              </button>
+            </div>
+            <p className="hint" style={{ margin: 0 }}>
+              Kayıt sürümü {editing.rowVersion}. Kayıt başka bir pencerede değiştiyse kaydetme
+              reddedilir, güncel sürüm yüklenir; eski veri sessizce ezilmez.
+            </p>
+          </div>
+        ) : null}
 
         {linkFor === event.id ? (
           <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>

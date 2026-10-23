@@ -47,6 +47,23 @@ fn default_assertion() -> String {
     "user".to_string()
 }
 
+/// Kullanıcı düzenlemesinde değişebilen alanlar. `assertion_kind` bilinçli
+/// olarak dışarıda: kaydın kaynağı (kullanıcı/belge/iddia) düzenlemeyle
+/// değişmez, yoksa kaynak izlenebilirliği bozulur.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPatch {
+    pub event_kind: String,
+    pub date_value: Option<String>,
+    pub date_precision: String,
+    pub date_role: String,
+    #[serde(default)]
+    pub date_raw: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 fn valid_precision(value: &str) -> bool {
     matches!(
         value,
@@ -190,6 +207,90 @@ impl Database {
             &serde_json::json!({}),
         )?;
         Ok(())
+    }
+
+    /// Kullanıcı düzenlemesi (F08-T04). `expected_row_version` kaydın okunduğu
+    /// andaki sürümüdür; başka bir yazma araya girdiyse **yazmaz** ve
+    /// `Conflict` döner (F08-T09). Böylece eski sürümle ezme sessizce olmaz.
+    ///
+    /// Onaylanmış olay da kullanıcı tarafından düzenlenebilir; INV-04 yalnız
+    /// AI'ın onaylı kaydı sessizce değiştirmesini yasaklar.
+    pub fn update_event(
+        &self,
+        id: &str,
+        expected_row_version: i64,
+        patch: &EventPatch,
+    ) -> Result<EventRow, StorageError> {
+        if !valid_precision(&patch.date_precision) || !valid_role(&patch.date_role) {
+            return Err(StorageError::InvalidSetting);
+        }
+        if patch.title.trim().is_empty() {
+            return Err(StorageError::InvalidSetting);
+        }
+        let current = self.get_event(id)?.ok_or(StorageError::NotFound)?;
+        let deleted: bool = self.conn().query_row(
+            "SELECT deleted_at IS NOT NULL FROM events WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        if deleted {
+            return Err(StorageError::NotFound);
+        }
+        if current.row_version != expected_row_version {
+            return Err(StorageError::Conflict {
+                expected: expected_row_version,
+                actual: current.row_version,
+            });
+        }
+        // Bilinmeyen tarihte sıralama değeri NULL kalır (create ile aynı kural).
+        let sortable = if patch.date_precision == "unknown" {
+            None
+        } else {
+            patch
+                .date_value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        let now = now_iso();
+        let changed = self.conn().execute(
+            "UPDATE events SET event_kind=?1, date_value=?2, date_precision=?3, date_role=?4,
+                 date_raw=?5, sortable_date=?6, title=?7, description=?8, updated_at=?9,
+                 row_version=row_version+1
+             WHERE id=?10 AND row_version=?11 AND deleted_at IS NULL",
+            rusqlite::params![
+                patch.event_kind.trim(),
+                patch.date_value,
+                patch.date_precision,
+                patch.date_role,
+                patch.date_raw,
+                sortable,
+                patch.title.trim(),
+                patch.description.trim(),
+                now,
+                id,
+                expected_row_version
+            ],
+        )?;
+        if changed == 0 {
+            // Okuma ile yazma arasında başka bir yazma oldu: gerçek sürümü bildir.
+            let actual = self
+                .get_event(id)?
+                .map(|row| row.row_version)
+                .ok_or(StorageError::NotFound)?;
+            return Err(StorageError::Conflict {
+                expected: expected_row_version,
+                actual,
+            });
+        }
+        self.append_audit(
+            "event",
+            Some(id),
+            "update",
+            "local-user",
+            &serde_json::json!({"rowVersion": expected_row_version.saturating_add(1)}),
+        )?;
+        self.get_event(id)?.ok_or(StorageError::NotFound)
     }
 }
 
@@ -424,6 +525,148 @@ mod tests {
         assert!(db
             .create_event("olmayan-dosya", &event("X", None, "unknown"))
             .is_err());
+    }
+
+    fn patch(title: &str, precision: &str, role: &str, date: Option<&str>) -> EventPatch {
+        EventPatch {
+            event_kind: "payment".into(),
+            date_value: date.map(str::to_string),
+            date_precision: precision.into(),
+            date_role: role.into(),
+            date_raw: date.map(str::to_string),
+            title: title.into(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn update_event_writes_fields_and_bumps_row_version() {
+        let (db, case_id) = setup();
+        let created = db
+            .create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day"))
+            .expect("olay");
+        assert_eq!(created.row_version, 1);
+
+        let updated = db
+            .update_event(
+                &created.id,
+                created.row_version,
+                &patch("Tebliğ", "day", "notification", Some("2026-03-03")),
+            )
+            .expect("güncelle");
+
+        assert_eq!(updated.title, "Tebliğ");
+        assert_eq!(updated.date_role, "notification");
+        assert_eq!(updated.sortable_date.as_deref(), Some("2026-03-03"));
+        assert_eq!(updated.row_version, 2);
+        assert_eq!(
+            updated.assertion_kind, created.assertion_kind,
+            "kaynak türü değişmemeli"
+        );
+        assert!(db.verify_audit_chain().expect("zincir") >= 2);
+    }
+
+    #[test]
+    fn update_event_with_stale_version_conflicts_and_keeps_row() {
+        let (db, case_id) = setup();
+        let created = db
+            .create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day"))
+            .expect("olay");
+        db.update_event(&created.id, 1, &patch("Yeni başlık", "day", "event", None))
+            .expect("ilk yazma");
+
+        let error = db
+            .update_event(
+                &created.id,
+                1,
+                &patch("Eski sürümle ezme", "day", "event", None),
+            )
+            .expect_err("eski sürüm kabul edilmemeli");
+
+        match error {
+            StorageError::Conflict { expected, actual } => {
+                assert_eq!(expected, 1);
+                assert_eq!(actual, 2);
+            }
+            other => panic!("çatışma bekleniyordu: {other:?}"),
+        }
+        let stored = db.get_event(&created.id).expect("oku").expect("var");
+        assert_eq!(stored.title, "Yeni başlık", "eski sürüm yazmamalı");
+        assert_eq!(stored.row_version, 2);
+    }
+
+    #[test]
+    fn update_event_to_unknown_precision_clears_sortable_date() {
+        let (db, case_id) = setup();
+        let created = db
+            .create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day"))
+            .expect("olay");
+        let updated = db
+            .update_event(
+                &created.id,
+                1,
+                &patch("Tarih belirsiz", "unknown", "event", Some("2026-02-02")),
+            )
+            .expect("güncelle");
+        assert_eq!(updated.sortable_date, None);
+        assert_eq!(updated.date_precision, "unknown");
+        // Bilinmeyen tarih sıralamada sona düşer.
+        let rows = db.list_events(&case_id).expect("liste");
+        assert_eq!(
+            rows.last().map(|row| row.id.as_str()),
+            Some(created.id.as_str())
+        );
+    }
+
+    #[test]
+    fn update_event_rejects_invalid_input() {
+        let (db, case_id) = setup();
+        let created = db
+            .create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day"))
+            .expect("olay");
+        assert_eq!(
+            db.update_event(&created.id, 1, &patch("  ", "day", "event", None))
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        assert_eq!(
+            db.update_event(&created.id, 1, &patch("X", "gun", "event", None))
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        assert_eq!(
+            db.update_event(&created.id, 1, &patch("X", "day", "uydurma", None))
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        assert_eq!(
+            db.update_event("olmayan-olay", 1, &patch("X", "day", "event", None))
+                .unwrap_err()
+                .code(),
+            "E_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn update_event_on_deleted_row_is_not_found() {
+        let (db, case_id) = setup();
+        let created = db
+            .create_event(&case_id, &event("Ödeme", Some("2026-02-02"), "day"))
+            .expect("olay");
+        db.soft_delete_event(&created.id).expect("sil");
+        assert_eq!(
+            db.update_event(
+                &created.id,
+                created.row_version,
+                &patch("X", "day", "event", None)
+            )
+            .unwrap_err()
+            .code(),
+            "E_NOT_FOUND"
+        );
     }
 }
 

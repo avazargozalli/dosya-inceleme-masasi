@@ -5,7 +5,7 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CasePatch, CitationCheckRow,
-    ClaimRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow,
+    ClaimRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventPatch, EventRow,
     EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
     NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
     NewReviewItem, NewTask, NewTransferConsent, NoteRow, PageRow, ParseRun, PrecedentNoteRow,
@@ -480,6 +480,20 @@ pub fn event_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiErr
     Ok(db.soft_delete_event(&id)?)
 }
 
+/// Kullanıcı düzenlemesi. `expectedRowVersion` arayüzün okuduğu sürümdür;
+/// bu arada başka yazma olduysa `E_ROW_VERSION` döner, kayıt ezilmez (F08-T09).
+#[tauri::command]
+pub fn event_update(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+    input: EventPatch,
+) -> Result<EventRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.update_event(&id, expected_row_version, &input)?)
+}
+
 #[tauri::command]
 pub fn search_segments(
     state: State<'_, AppState>,
@@ -517,16 +531,13 @@ fn bundled_worker_exe() -> Option<PathBuf> {
     } else {
         "dim-worker"
     };
-    for candidate in [
+    [
         dir.join("worker").join(name),
         dir.join("..").join("Resources").join("worker").join(name),
         dir.join("resources").join("worker").join(name),
-    ] {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
 }
 
 fn spawn_worker() -> Result<WorkerClient, ApiError> {
