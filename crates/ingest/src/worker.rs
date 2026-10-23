@@ -294,7 +294,10 @@ impl WorkerClient {
             pdf,
             hits,
             remaining,
-            ocr_verified: result.get("ocrVerified").and_then(Value::as_bool).unwrap_or(false),
+            ocr_verified: result
+                .get("ocrVerified")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             engines: serde_json::from_value(
                 result.get("engines").cloned().unwrap_or_else(|| json!([])),
             )
