@@ -501,11 +501,42 @@ pub struct ParseResultView {
     pub warnings: Vec<String>,
 }
 
+/// Paketlenmiş worker ikilisini arar. Sıra: `DIM_WORKER_EXE`, uygulama yanındaki
+/// `worker/`, macOS `.app/Contents/Resources/worker/`, Windows `resources/worker/`.
+fn bundled_worker_exe() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("DIM_WORKER_EXE") {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) {
+        "dim-worker.exe"
+    } else {
+        "dim-worker"
+    };
+    for candidate in [
+        dir.join("worker").join(name),
+        dir.join("..").join("Resources").join("worker").join(name),
+        dir.join("resources").join("worker").join(name),
+    ] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn spawn_worker() -> Result<WorkerClient, ApiError> {
+    if let Some(exe) = bundled_worker_exe() {
+        return WorkerClient::spawn_bundled(&exe).map_err(Into::into);
+    }
     let dir = dev_worker_dir().ok_or_else(|| {
         ApiError::new(
             "E_WORKER_MISSING",
-            "Belge worker'ı bulunamadı (workers/document).",
+            "Belge worker'ı bulunamadı: paket içinde worker yok, geliştirme dizini de yok.",
         )
     })?;
     let python = std::env::var("DIM_WORKER_PYTHON").unwrap_or_else(|_| "python3".to_string());

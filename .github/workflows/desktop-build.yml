@@ -39,6 +39,13 @@ jobs:
           workspaces: "apps/desktop/src-tauri -> target"
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @dim/desktop build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Belge worker'ını paketle
+        run: bash scripts/build-worker.sh
+      - name: Paket içinde worker var mı
+        run: test -x apps/desktop/src-tauri/resources/worker/dim-worker
       - name: İmzasız .app üret
         run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --bundles app
       - name: Artefaktı sıkıştır

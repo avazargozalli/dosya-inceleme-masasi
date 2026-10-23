@@ -237,6 +237,13 @@ impl WorkerClient {
         Self::spawn(python, &["-m", "dim_worker.worker"], working_dir)
     }
 
+    /// Paketlenmiş (PyInstaller onedir) worker ikilisini çalıştırır. Protokol
+    /// aynıdır: NDJSON, stdin/stdout. Python kurulu olması gerekmez.
+    pub fn spawn_bundled(exe: &Path) -> Result<Self, WorkerError> {
+        let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+        Self::spawn(exe, &[], dir)
+    }
+
     pub fn spawn(program: &Path, args: &[&str], working_dir: &Path) -> Result<Self, WorkerError> {
         let mut child = Command::new(program)
             .args(args)

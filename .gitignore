@@ -48,3 +48,8 @@ Thumbs.db
 
 # yerel ikon üretim ara klasörü
 .tmp-iconset/
+
+# Paketlenmiş worker (build çıktısı)
+apps/desktop/src-tauri/resources/worker/
+.worker-venv/
+workers/document/dist/

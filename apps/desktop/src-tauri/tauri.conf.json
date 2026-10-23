@@ -39,6 +39,9 @@
     ],
     "category": "Productivity",
     "shortDescription": "Yerel, şifreli dosya inceleme masası",
-    "longDescription": "Avukatlar için kaynak izlenebilir, yerel ve şifreli dosya inceleme uygulaması."
+    "longDescription": "Avukatlar için kaynak izlenebilir, yerel ve şifreli dosya inceleme uygulaması.",
+    "resources": [
+      "resources/worker/**/*"
+    ]
   }
 }
