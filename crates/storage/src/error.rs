@@ -24,6 +24,8 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
+    #[error("{0}")]
+    ChecklistRule(String),
     #[error("kayıt bulunamadı")]
     NotFound,
     #[error("kayıt başka bir oturumda değişmiş: beklenen sürüm {expected}, bulunan {actual}")]
@@ -54,6 +56,7 @@ impl StorageError {
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
             Self::InvalidSetting => "E_DB_SETTING",
+            Self::ChecklistRule(_) => "E_CHECKLIST_RULE",
             Self::NotFound => "E_NOT_FOUND",
             Self::Conflict { .. } => "E_ROW_VERSION",
             Self::VaultLocked => "E_VAULT_LOCKED",

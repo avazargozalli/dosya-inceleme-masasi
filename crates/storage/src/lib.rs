@@ -7,6 +7,7 @@
 mod ai;
 mod anchors;
 mod cases;
+mod checklists;
 mod claims;
 mod documents;
 mod error;
@@ -25,6 +26,10 @@ pub use ai::{
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
+pub use checklists::{
+    CaseChecklistItemRow, ChecklistCopyResult, ChecklistTemplateRef, ChecklistTemplateRow,
+    LinkedDocumentRow,
+};
 pub use claims::{
     ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, EvidenceLinkRow, NewClaim,
     NewClaimRelation, NewEvidenceLink, NewReviewItem, ReviewDecisionRow, ReviewItemRow,
@@ -129,9 +134,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0008_task_date_confirmation",
         sql: include_str!("migrations/0008_task_date_confirmation.sql"),
     },
+    Migration {
+        version: 9,
+        name: "0009_checklists",
+        sql: include_str!("migrations/0009_checklists.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

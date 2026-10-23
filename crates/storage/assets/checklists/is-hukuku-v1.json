@@ -1,0 +1,60 @@
+{
+  "id": "tpl:is-hukuku:v1",
+  "title": "İş Hukuku — İşe İade Dosyası Kontrol Listesi",
+  "practiceArea": "İş Hukuku",
+  "version": 1,
+  "author": "Dosya İnceleme Masası içerik ekibi",
+  "reviewDate": "2026-10-01",
+  "licenseId": "CC-BY-4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "sourceUrl": "https://github.com/avazargozalli/dosya-inceleme-masasi/blob/main/crates/storage/assets/checklists/is-hukuku-v1.json",
+  "isCommunity": false,
+  "contentSha256": "6cb47e3be87bd3583e9198dad84b4cdbe5f5bb0ab8d770a0dd8a935eeb2010a4",
+  "items": [
+    {
+      "category": "Sözleşme",
+      "text": "İş sözleşmesi ve varsa ekleri dosyada mı?",
+      "required": true
+    },
+    {
+      "category": "Fesih",
+      "text": "Fesih bildirimi ve tebliğ tarihi belgelenmiş mi?",
+      "required": true
+    },
+    {
+      "category": "Fesih",
+      "text": "Fesih gerekçesi yazılı olarak gösterilmiş mi?",
+      "required": true
+    },
+    {
+      "category": "Usul",
+      "text": "İşe iade başvurusu ve arabuluculuk tutanağı dosyada mı?",
+      "required": true
+    },
+    {
+      "category": "Ücret",
+      "text": "Ücret bordroları ve SGK hizmet dökümü dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Kayıt",
+      "text": "İşyeri kayıtları (giriş-çıkış, izin, devam) dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Savunma",
+      "text": "Savunma istem yazısı ve işçinin savunması dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Tanık",
+      "text": "Tanık bilgileri ve yazılı beyanlar dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Süre",
+      "text": "Başvuru ve dava sürelerine ilişkin tarihler kullanıcı tarafından ayrıca işaretlendi mi?",
+      "required": false
+    }
+  ]
+}

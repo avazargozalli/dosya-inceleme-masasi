@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
 import { Cases } from "./screens/Cases";
+import { Checklists } from "./screens/Checklists";
 import { Exports } from "./screens/Exports";
 import { Precedents } from "./screens/Precedents";
 import { Redaction } from "./screens/Redaction";
@@ -21,6 +22,7 @@ type Screen =
   | "search"
   | "timeline"
   | "tasks"
+  | "checklists"
   | "review"
   | "precedents"
   | "redaction"
@@ -35,6 +37,7 @@ const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
   { id: "search", label: "Arama", phase: "F07" },
   { id: "timeline", label: "Kronoloji", phase: "F08" },
   { id: "tasks", label: "Görevler", phase: "F08" },
+  { id: "checklists", label: "Kontrol listesi", phase: "F08" },
   { id: "review", label: "İnceleme", phase: "F08" },
   { id: "precedents", label: "Emsal" },
   { id: "redaction", label: "Maskeleme" },
@@ -194,6 +197,8 @@ export function App() {
             <Timeline />
           ) : screen === "tasks" ? (
             <Tasks />
+          ) : screen === "checklists" ? (
+            <Checklists />
           ) : screen === "settings" ? (
             <Settings />
           ) : (

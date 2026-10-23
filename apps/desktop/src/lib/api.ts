@@ -411,6 +411,68 @@ export type NewTaskInput = {
   reminderPolicy: string;
 };
 
+/** Lisanslı kontrol listesi şablonu (F08-T11); künye dosyaya birlikte kopyalanır. */
+export type ChecklistTemplateRow = {
+  id: string;
+  title: string;
+  practiceArea: string | null;
+  version: number;
+  author: string;
+  reviewDate: string | null;
+  licenseId: string | null;
+  licenseUrl: string | null;
+  sourceUrl: string | null;
+  contentHash: string;
+  isCommunity: boolean;
+  itemCount: number;
+  copiedItemCount: number;
+};
+
+export type ChecklistTemplateRef = {
+  id: string;
+  title: string;
+  version: number;
+  licenseId: string | null;
+  licenseUrl: string | null;
+  author: string;
+  reviewDate: string | null;
+  contentHash: string;
+};
+
+export type LinkedDocumentRow = {
+  id: string;
+  displayName: string | null;
+};
+
+export type ChecklistItemState = "open" | "present" | "missing" | "not_applicable";
+
+export type CaseChecklistItemRow = {
+  id: string;
+  caseId: string;
+  templateVersionId: string | null;
+  itemText: string;
+  state: string;
+  linkedDocumentIds: string[];
+  linkedDocuments: LinkedDocumentRow[];
+  note: string;
+  ordinal: number;
+  category: string;
+  createdAt: string;
+  updatedAt: string;
+  rowVersion: number;
+  template: ChecklistTemplateRef | null;
+};
+
+export type ChecklistCopyResult = {
+  created: boolean;
+  itemCount: number;
+  templateId: string;
+  templateTitle: string;
+  templateVersion: number;
+  licenseId: string | null;
+  contentHash: string;
+};
+
 export type EventSourceRow = {
   id: string;
   eventId: string;
@@ -726,6 +788,27 @@ export const api = {
   contradictionAssessments: (itemId: string) =>
     invoke<ContradictionAssessmentRow[]>("contradiction_assessments", { itemId }),
   reviewHistory: (itemId: string) => invoke<ReviewDecisionRow[]>("review_history", { itemId }),
+
+  checklistTemplates: (caseId: string) =>
+    invoke<ChecklistTemplateRow[]>("checklist_templates", { caseId }),
+  checklistCopy: (caseId: string, templateId: string) =>
+    invoke<ChecklistCopyResult>("checklist_copy", { caseId, templateId }),
+  checklistItems: (caseId: string) =>
+    invoke<CaseChecklistItemRow[]>("checklist_items", { caseId }),
+  checklistItemState: (
+    itemId: string,
+    newState: ChecklistItemState,
+    linkedDocumentIds: string[],
+    note: string,
+    expectedRowVersion: number,
+  ) =>
+    invoke<CaseChecklistItemRow>("checklist_item_state", {
+      itemId,
+      newState,
+      linkedDocumentIds,
+      note,
+      expectedRowVersion,
+    }),
   anchorCreate: (input: {
     caseId: string;
     documentVersionId: string;

@@ -4,15 +4,16 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CasePatch, CitationCheckRow,
-    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey,
-    Document, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow,
-    NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink,
-    NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,
-    NewTransferConsent, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
-    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchHit, SegmentBlock,
-    TaskRow, TransferConsentRow,
+    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CaseChecklistItemRow, CasePatch,
+    ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow, ClaimRow,
+    ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document, DocumentVersion,
+    EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, NewAnchor, NewCase,
+    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
+    NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask, NewTransferConsent,
+    NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow, ProviderProfileRow,
+    RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
+    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchHit, SegmentBlock, TaskRow,
+    TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::Serialize;
@@ -1076,6 +1077,61 @@ pub fn review_history(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.review_history(&item_id)?)
+}
+
+/// Katalogdaki lisanslı kontrol listeleri (F08-T11).
+#[tauri::command]
+pub fn checklist_templates(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<ChecklistTemplateRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_checklist_templates(&case_id)?)
+}
+
+/// Şablonu sürüm ve lisans künyesiyle dosyaya kopyalar (idempotent).
+#[tauri::command]
+pub fn checklist_copy(
+    state: State<'_, AppState>,
+    case_id: String,
+    template_id: String,
+) -> Result<ChecklistCopyResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.copy_checklist_to_case(&case_id, &template_id)?)
+}
+
+#[tauri::command]
+pub fn checklist_items(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<CaseChecklistItemRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_checklist(&case_id)?)
+}
+
+/// Öğe durumu: `present` belge bağı, `missing`/`not_applicable` gerekçe ister;
+/// yazma `expected_row_version` ile korunur.
+#[tauri::command]
+pub fn checklist_item_state(
+    state: State<'_, AppState>,
+    item_id: String,
+    new_state: String,
+    linked_document_ids: Vec<String>,
+    note: String,
+    expected_row_version: i64,
+) -> Result<CaseChecklistItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.set_case_checklist_state(
+        &item_id,
+        &new_state,
+        &linked_document_ids,
+        &note,
+        expected_row_version,
+    )?)
 }
 
 #[derive(Serialize)]

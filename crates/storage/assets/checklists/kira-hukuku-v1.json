@@ -1,0 +1,65 @@
+{
+  "id": "tpl:kira-hukuku:v1",
+  "title": "Kira Hukuku — Dosya İnceleme Kontrol Listesi",
+  "practiceArea": "Kira Hukuku",
+  "version": 1,
+  "author": "Dosya İnceleme Masası içerik ekibi",
+  "reviewDate": "2026-10-01",
+  "licenseId": "CC-BY-4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "sourceUrl": "https://github.com/avazargozalli/dosya-inceleme-masasi/blob/main/crates/storage/assets/checklists/kira-hukuku-v1.json",
+  "isCommunity": false,
+  "contentSha256": "9e97d99a3d729cef11081e9e62e8df6deb4dddec35e6d42d43b944267c62a812",
+  "items": [
+    {
+      "category": "Sözleşme",
+      "text": "Kira sözleşmesi ve varsa ek protokoller dosyada mı?",
+      "required": true
+    },
+    {
+      "category": "Sözleşme",
+      "text": "Kira bedeli, ödeme dönemi ve artış kuralı sözleşmeden doğrulanabiliyor mu?",
+      "required": true
+    },
+    {
+      "category": "Ödeme",
+      "text": "Ödeme kayıtları (dekont, banka ekstresi, makbuz) dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Ödeme",
+      "text": "Ödenmeyen dönemler ve tutarlar belgeden izlenebiliyor mu?",
+      "required": false
+    },
+    {
+      "category": "Bildirim",
+      "text": "İhtar, uyarı veya tahliye bildirimi dosyada mı?",
+      "required": true
+    },
+    {
+      "category": "Bildirim",
+      "text": "Bildirimin tebliğ tarihi ve şekli belgelenmiş mi?",
+      "required": true
+    },
+    {
+      "category": "Mülkiyet",
+      "text": "Tapu kaydı veya mülkiyet durumunu gösteren belge dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Taraf",
+      "text": "Taraf kimlik bilgileri ve varsa vekâletname dosyada mı?",
+      "required": true
+    },
+    {
+      "category": "Yazışma",
+      "text": "Dava veya icra öncesi yazışmalar dosyada mı?",
+      "required": false
+    },
+    {
+      "category": "Süre",
+      "text": "Süre ve zamanaşımına ilişkin tarihler kullanıcı tarafından ayrıca işaretlendi mi?",
+      "required": false
+    }
+  ]
+}
