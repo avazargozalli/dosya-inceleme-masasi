@@ -84,6 +84,8 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any], bool]:
                 "remaining": result.remaining,
                 "engine": result.engine,
                 "engineVersion": result.engine_version,
+                "ocrVerified": result.ocr_verified,
+                "engines": result.engines,
             },
         ), False
 

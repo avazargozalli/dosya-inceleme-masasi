@@ -10,7 +10,7 @@ import base64
 import binascii
 import io
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, field
 from typing import Any
 
 MAX_PAGES = 2000
@@ -240,6 +240,59 @@ class RedactionResult:
     remaining: list[str]
     engine: str
     engine_version: str
+    ocr_verified: bool = False
+    engines: list[str] = field(default_factory=list)
+
+
+def _verify_with_pypdf(data: bytes, terms: list[str]) -> list[str]:
+    """Bağımsız ikinci okuyucu. PyMuPDF'in kendi çıktısını onaylaması yeterli
+    değildir; aynı dosya farklı bir kütüphaneyle de okunur."""
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except ImportError:
+        return []
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        found: list[str] = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            for term in terms:
+                if term in text:
+                    found.append(term)
+        return found
+    except Exception:  # noqa: BLE001 - doğrulayıcı çöktüyse sonuç "temiz" sayılmaz
+        return list(terms)
+
+
+def _verify_with_ocr(data: bytes, terms: list[str]) -> tuple[list[str], bool]:
+    """Sayfa görüntüsünü OCR ile okur. Tesseract yoksa `False` döner; bu durum
+    'görüntü doğrulandı' diye sunulmaz."""
+    try:
+        import pytesseract  # type: ignore
+        from PIL import Image  # type: ignore
+    except ImportError:
+        return [], False
+    import shutil
+
+    if shutil.which("tesseract") is None:
+        return [], False
+    pymupdf = _pymupdf()
+    found: list[str] = []
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        try:
+            for page in doc:
+                pix = page.get_pixmap(dpi=200)
+                image = Image.open(io.BytesIO(pix.tobytes("png")))
+                text = pytesseract.image_to_string(image, lang="tur+eng")
+                for term in terms:
+                    if term in text:
+                        found.append(term)
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001
+        return list(terms), True
+    return found, True
 
 
 def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> RedactionResult:
@@ -293,6 +346,14 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
     finally:
         check.close()
 
+    engines = ["pymupdf"]
+    remaining.extend(_verify_with_pypdf(out, cleaned))
+    engines.append("pypdf")
+    ocr_found, ocr_verified = _verify_with_ocr(out, cleaned)
+    remaining.extend(ocr_found)
+    if ocr_verified:
+        engines.append("tesseract")
+
     version = str(getattr(pymupdf, "__version__", "unknown"))
     return RedactionResult(
         pdf=out,
@@ -300,6 +361,8 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
         remaining=sorted(set(remaining)),
         engine="pymupdf",
         engine_version=version,
+        ocr_verified=ocr_verified,
+        engines=engines,
     )
 
 

@@ -172,6 +172,8 @@ export type RedactionResult = {
   plan: { id: string; state: string; outputProfile: string };
   hits: number;
   remaining: string[];
+  ocrVerified: boolean;
+  engines: string[];
 };
 
 export type PrecedentRow = {

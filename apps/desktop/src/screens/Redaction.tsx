@@ -122,6 +122,9 @@ export function Redaction() {
             <dt>Sürüm</dt><dd>{result.version.versionNo}</dd>
             <dt>Maskelenen bölge</dt><dd>{result.hits}</dd>
             <dt>Kalan terim</dt><dd>{result.remaining.length === 0 ? "yok" : result.remaining.join(", ")}</dd>
+            <dt>Doğrulayan motorlar</dt><dd>{result.engines.join(", ")}</dd>
+            <dt>Görüntü (OCR) doğrulaması</dt>
+            <dd>{result.ocrVerified ? "evet" : "hayır — tesseract yok, yalnız metin katmanı doğrulandı"}</dd>
             <dt>Plan</dt><dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{result.plan.id}</dd>
           </dl>
           <p className="hint" style={{ margin: 0 }}>

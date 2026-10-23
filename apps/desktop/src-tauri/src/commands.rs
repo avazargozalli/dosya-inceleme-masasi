@@ -946,6 +946,8 @@ pub struct RedactionView {
     pub plan: RedactionPlanRow,
     pub hits: usize,
     pub remaining: Vec<String>,
+    pub ocr_verified: bool,
+    pub engines: Vec<String>,
 }
 
 /// Terimleri belgeden gerçekten çıkarır, çıktıyı yeni bir sürüm olarak kaydeder.
@@ -1049,6 +1051,8 @@ pub fn document_redact(
         plan,
         hits: outcome.hits.len(),
         remaining: outcome.remaining,
+        ocr_verified: outcome.ocr_verified,
+        engines: outcome.engines,
     })
 }
 

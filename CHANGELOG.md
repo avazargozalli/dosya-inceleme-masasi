@@ -3,6 +3,12 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.5.1] — 2026-10-23 — F13 ikinci doğrulayıcı
+
+- Karartma çıktısı pypdf ile bağımsız okunur; terim kaldıysa sonuç reddedilir
+- OCR sızıntı kontrolü (tesseract varsa) ve dürüst `ocrVerified` bayrağı
+- Arayüzde doğrulayan motorlar ve OCR durumu gösterilir
+
 ## [0.5.0] — 2026-10-23 — F09/F11/F14
 
 ### Eklendi

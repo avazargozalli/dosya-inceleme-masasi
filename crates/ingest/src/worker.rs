@@ -98,6 +98,10 @@ pub struct RedactionOutcome {
     pub remaining: Vec<String>,
     pub engine: String,
     pub engine_version: String,
+    /// Sayfa görüntüsü OCR ile de okundu mu? Tesseract yoksa `false`.
+    pub ocr_verified: bool,
+    /// Çıktıyı doğrulayan motorlar (pymupdf, pypdf, tesseract).
+    pub engines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +294,11 @@ impl WorkerClient {
             pdf,
             hits,
             remaining,
+            ocr_verified: result.get("ocrVerified").and_then(Value::as_bool).unwrap_or(false),
+            engines: serde_json::from_value(
+                result.get("engines").cloned().unwrap_or_else(|| json!([])),
+            )
+            .unwrap_or_default(),
             engine: result
                 .get("engine")
                 .and_then(Value::as_str)

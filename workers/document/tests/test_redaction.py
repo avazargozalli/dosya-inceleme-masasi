@@ -50,3 +50,42 @@ def test_redaction_reports_missing_term_as_no_hit():
     result = redact_pdf(data, ["Bu metin yok"])
     assert result.hits == []
     assert result.remaining == []
+
+
+def test_independent_reader_confirms_removal():
+    """Çıktı, üreten kütüphaneden başka bir okuyucuyla da temiz görünmeli."""
+    pypdf = pytest.importorskip("pypdf")
+    pymupdf = pytest.importorskip("pymupdf")
+    import io as _io
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Ahmet Yilmaz 00000000000")
+    source = doc.tobytes()
+    doc.close()
+
+    result = redact_pdf(source, ["Ahmet Yilmaz"])
+    assert "pypdf" in result.engines
+    reader = pypdf.PdfReader(_io.BytesIO(result.pdf))
+    text = "".join((p.extract_text() or "") for p in reader.pages)
+    assert "Ahmet Yilmaz" not in text
+
+
+def test_ocr_verification_flag_is_honest():
+    """Tesseract yoksa 'görüntü doğrulandı' denmez."""
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "gizli metin")
+    source = doc.tobytes()
+    doc.close()
+
+    result = redact_pdf(source, ["gizli"])
+    import shutil
+
+    if shutil.which("tesseract") is None:
+        assert result.ocr_verified is False
+        assert "tesseract" not in result.engines
+    else:
+        assert result.ocr_verified is True
+        assert "tesseract" in result.engines
