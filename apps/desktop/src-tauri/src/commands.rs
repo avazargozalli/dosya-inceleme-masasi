@@ -4,7 +4,7 @@ use dim_cli_adapters::{discover, DiscoveryState, SPECS};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow,
+    EventSourceRow,    AiCandidateRow, AiRunRow, AnchorRow, Case, CasePatch, CitationCheckRow, ClaimRow,
     CoverageReport, Database, DatabaseKey, Document, DocumentVersion, EventRow, EvidenceLinkRow,
     ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewEvent, NewEvidenceLink, NewNote,
     NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan, NewReviewItem, NewTask,

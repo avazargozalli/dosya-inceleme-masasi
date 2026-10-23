@@ -474,7 +474,7 @@ mod source_tests {
                     date_raw: None,
                     title: "Ödeme yapılmadı".into(),
                     description: String::new(),
-                    assertion_kind: "fact".into(),
+                    assertion_kind: "user".into(),
                 },
             )
             .expect("olay");
