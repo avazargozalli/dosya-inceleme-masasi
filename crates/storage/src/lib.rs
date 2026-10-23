@@ -256,7 +256,9 @@ impl Database {
             "ATTACH DATABASE '{path_literal}' AS dim_backup KEY \"x'{}'\";",
             key.hex()
         ))?;
-        let export = self.conn.execute_batch("SELECT sqlcipher_export('dim_backup');");
+        let export = self
+            .conn
+            .execute_batch("SELECT sqlcipher_export('dim_backup');");
         let detach = self.conn.execute_batch("DETACH DATABASE dim_backup;");
         export?;
         detach?;

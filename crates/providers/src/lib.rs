@@ -27,7 +27,12 @@ pub struct Capabilities {
 
 impl Default for Capabilities {
     fn default() -> Self {
-        Self { structured_output: false, streaming: false, tool_use: false, max_context_tokens: None }
+        Self {
+            structured_output: false,
+            streaming: false,
+            tool_use: false,
+            max_context_tokens: None,
+        }
     }
 }
 
@@ -168,7 +173,11 @@ impl Provider for OffProvider {
 }
 
 /// Sağlayıcı yetenek kapısı: istek, profilini aşan bir şey istiyorsa gönderilmez.
-pub fn ensure_capability(profile: &ProviderProfile, request: &AiRequest, require_structured: bool) -> Result<(), ProviderError> {
+pub fn ensure_capability(
+    profile: &ProviderProfile,
+    request: &AiRequest,
+    require_structured: bool,
+) -> Result<(), ProviderError> {
     if profile.provider_type == ProviderType::Off {
         return Err(ProviderError::Disabled);
     }
@@ -195,7 +204,11 @@ mod tests {
             task_type: "summarize".into(),
             prompt_version: "p1".into(),
             output_schema_version: "1".into(),
-            segments: vec![ContextSegment { segment_id: "s1".into(), text: "kira".into(), source_ref_json: None }],
+            segments: vec![ContextSegment {
+                segment_id: "s1".into(),
+                text: "kira".into(),
+                source_ref_json: None,
+            }],
         }
     }
 
@@ -232,12 +245,20 @@ mod tests {
             adapter_id: "api".into(),
             version_range: None,
             auth_mode_verified: None,
-            capabilities: Capabilities { structured_output: true, streaming: false, tool_use: false, max_context_tokens: Some(1) },
+            capabilities: Capabilities {
+                structured_output: true,
+                streaming: false,
+                tool_use: false,
+                max_context_tokens: Some(1),
+            },
             policy_version: "1".into(),
         };
         let mut req = request();
         req.segments[0].text = "x".repeat(100);
-        assert_eq!(ensure_capability(&profile, &req, true).unwrap_err(), ProviderError::Unsupported("context_limit"));
+        assert_eq!(
+            ensure_capability(&profile, &req, true).unwrap_err(),
+            ProviderError::Unsupported("context_limit")
+        );
     }
 
     #[test]

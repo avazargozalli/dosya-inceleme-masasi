@@ -48,7 +48,13 @@ pub const SPECS: &[AdapterSpec] = &[
         display_name: "Codex CLI",
         command: "codex",
         version_args: COMMON,
-        allowed_args: &["exec", "--json", "--model", "--sandbox", "--skip-git-repo-check"],
+        allowed_args: &[
+            "exec",
+            "--json",
+            "--model",
+            "--sandbox",
+            "--skip-git-repo-check",
+        ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
     },
@@ -101,9 +107,14 @@ pub fn spec(id: &str) -> Option<&'static AdapterSpec> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryState {
     NotInstalled,
-    Installed { path: PathBuf },
+    Installed {
+        path: PathBuf,
+    },
     /// Dosya var ama sürüm/uyumluluk doğrulanmadı; bağlantı "sınırlı" gösterilir.
-    Unverified { path: PathBuf, reason: &'static str },
+    Unverified {
+        path: PathBuf,
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,8 +128,17 @@ pub struct Discovery {
 #[must_use]
 pub fn discover(spec: &AdapterSpec) -> Discovery {
     match find_on_path(spec.command) {
-        Some(path) => Discovery { adapter_id: spec.id, state: DiscoveryState::Unverified { path, reason: "version_not_probed" } },
-        None => Discovery { adapter_id: spec.id, state: DiscoveryState::NotInstalled },
+        Some(path) => Discovery {
+            adapter_id: spec.id,
+            state: DiscoveryState::Unverified {
+                path,
+                reason: "version_not_probed",
+            },
+        },
+        None => Discovery {
+            adapter_id: spec.id,
+            state: DiscoveryState::NotInstalled,
+        },
     }
 }
 
@@ -150,7 +170,9 @@ fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        path.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        path.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {
@@ -161,7 +183,8 @@ fn is_executable(path: &Path) -> bool {
 /// İzinli argüman kapısı. `--flag=value` biçimi de kabul edilir; bayrak adı
 /// listede yoksa istek reddedilir (INV-10).
 pub fn build_args(adapter_id: &str, extra: &[String]) -> Result<Vec<String>, AdapterError> {
-    let spec = spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
+    let spec =
+        spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
     let mut out = Vec::with_capacity(extra.len());
     for arg in extra {
         let flag = arg.split('=').next().unwrap_or(arg);
@@ -175,7 +198,8 @@ pub fn build_args(adapter_id: &str, extra: &[String]) -> Result<Vec<String>, Ada
 
 /// Toplu iş kapısı: etkileşimli-only sağlayıcıda batch çağrısı yapılamaz.
 pub fn ensure_batch_allowed(adapter_id: &str) -> Result<(), AdapterError> {
-    let spec = spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
+    let spec =
+        spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
     if spec.batch_forbidden && spec.auth_mode == AuthMode::InteractiveOnly {
         return Err(AdapterError::BatchForbidden);
     }
@@ -196,13 +220,15 @@ mod tests {
 
     #[test]
     fn disallowed_flag_is_rejected() {
-        let err = build_args("claude-code", &["--dangerously-skip-permissions".into()]).unwrap_err();
+        let err =
+            build_args("claude-code", &["--dangerously-skip-permissions".into()]).unwrap_err();
         assert_eq!(err.code(), "E_CLI_ARGUMENT");
     }
 
     #[test]
     fn allowed_flag_with_value_is_accepted() {
-        let args = build_args("codex-cli", &["--model=gpt-x".into(), "--json".into()]).expect("izinli");
+        let args =
+            build_args("codex-cli", &["--model=gpt-x".into(), "--json".into()]).expect("izinli");
         assert_eq!(args.len(), 2);
     }
 
@@ -213,7 +239,10 @@ mod tests {
 
     #[test]
     fn kimi_batch_is_blocked() {
-        assert_eq!(ensure_batch_allowed("kimi-cli").unwrap_err().code(), "E_CLI_BATCH_FORBIDDEN");
+        assert_eq!(
+            ensure_batch_allowed("kimi-cli").unwrap_err().code(),
+            "E_CLI_BATCH_FORBIDDEN"
+        );
         assert!(ensure_batch_allowed("claude-code").is_ok());
     }
 
@@ -221,6 +250,9 @@ mod tests {
     fn discovery_never_claims_installed_without_probe() {
         let spec = spec("kimi-cli").expect("spec");
         let d = discover(spec);
-        assert!(matches!(d.state, DiscoveryState::NotInstalled | DiscoveryState::Unverified { .. }));
+        assert!(matches!(
+            d.state,
+            DiscoveryState::NotInstalled | DiscoveryState::Unverified { .. }
+        ));
     }
 }
