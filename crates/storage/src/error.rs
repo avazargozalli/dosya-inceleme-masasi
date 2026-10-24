@@ -16,6 +16,8 @@ pub enum StorageError {
     },
     #[error("şema sürümü beklenenden yeni: {found} > {expected}")]
     SchemaTooNew { found: u32, expected: u32 },
+    #[error("güncelleme öncesi yedek alınamadı veya doğrulanamadı: {reason}")]
+    MigrationBackup { reason: String },
     #[error("bütünlük kontrolü başarısız: {0}")]
     Integrity(String),
     #[error("SQL hatası: {0}")]
@@ -62,6 +64,7 @@ impl StorageError {
             Self::MigrationChecksum { .. } => "E_DB_MIGRATION_CHECKSUM",
             Self::Migration { .. } => "E_DB_MIGRATION",
             Self::SchemaTooNew { .. } => "E_DB_SCHEMA_NEWER",
+            Self::MigrationBackup { .. } => "E_DB_MIGRATION_BACKUP",
             Self::Integrity(_) => "E_DB_INTEGRITY",
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",

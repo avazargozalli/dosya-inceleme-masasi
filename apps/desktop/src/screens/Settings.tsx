@@ -129,6 +129,15 @@ export function Settings() {
           <dt>Şema sürümü</dt><dd>{status?.schemaVersion ?? "—"}</dd>
           <dt>Sürüm</dt><dd>0.2.0 (pre-alpha)</dd>
         </dl>
+        {status?.preUpdateBackup ? (
+          <div className="notice ok">
+            <strong>Güncelleme öncesi yedek alındı.</strong> Bu kasa yeni şemaya
+            geçirilmeden önce doğrulanmış bir kopya yazıldı:{" "}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{status.preUpdateBackup}</span>
+            . Güncelleme yarıda kalırsa bu dosya geri konur; uygulama yedek
+            alınamadıysa güncellemeyi başlatmaz.
+          </div>
+        ) : null}
       </div>
 
       <div className="card">

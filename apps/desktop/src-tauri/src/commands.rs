@@ -55,6 +55,8 @@ pub struct VaultStatus {
     pub vault_path: Option<String>,
     pub vault_id: Option<String>,
     pub schema_version: Option<u32>,
+    /// Bu açılışta güncelleme öncesi alınan yedek (varsa).
+    pub pre_update_backup: Option<String>,
 }
 
 fn resolve_vault_path(input: &str) -> Result<PathBuf, ApiError> {
@@ -188,6 +190,10 @@ pub fn vault_status(state: State<'_, AppState>) -> VaultStatus {
         vault_path: guard.path.as_ref().map(|p| p.to_string_lossy().to_string()),
         vault_id: guard.vault_id.clone(),
         schema_version: guard.db.as_ref().map(dim_storage::Database::schema_version),
+        pre_update_backup: guard.db.as_ref().and_then(|db| {
+            db.pre_migration_backup()
+                .map(|path| path.to_string_lossy().to_string())
+        }),
     }
 }
 

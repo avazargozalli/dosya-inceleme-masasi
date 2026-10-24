@@ -185,6 +185,7 @@ pub struct Database {
     conn: Connection,
     path: Option<PathBuf>,
     schema_version: u32,
+    pre_migration_backup: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Database {
@@ -215,8 +216,9 @@ impl Database {
             conn,
             path: Some(path.to_path_buf()),
             schema_version: 0,
+            pre_migration_backup: None,
         };
-        db.migrate()?;
+        db.upgrade_with_backup(key)?;
         Ok(db)
     }
 
@@ -229,6 +231,7 @@ impl Database {
             conn,
             path: None,
             schema_version: 0,
+            pre_migration_backup: None,
         };
         db.migrate()?;
         Ok(db)
@@ -245,6 +248,111 @@ impl Database {
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
         self.schema_version
+    }
+
+    /// Bu açılışta migrasyondan **önce** alınan doğrulanmış yedeğin yolu.
+    /// Güncelleme yoksa `None`.
+    #[must_use]
+    pub fn pre_migration_backup(&self) -> Option<&Path> {
+        self.pre_migration_backup.as_deref()
+    }
+
+    /// Dosyada kayıtlı şema sürümü; tablo yoksa (yeni dosya) 0.
+    fn recorded_version(conn: &Connection) -> Result<u32, StorageError> {
+        let exists: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Ok(0);
+        }
+        let found: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(u32::try_from(found).unwrap_or(u32::MAX))
+    }
+
+    /// Yeni şemayı **hiçbir yazma yapmadan** reddeder (F16-T08). Eski uygulama
+    /// yeni veritabanını açıp üzerine yazmamalıdır.
+    fn reject_newer_schema(&self) -> Result<u32, StorageError> {
+        let found = Self::recorded_version(&self.conn)?;
+        if found > CURRENT_SCHEMA_VERSION {
+            return Err(StorageError::SchemaTooNew {
+                found,
+                expected: CURRENT_SCHEMA_VERSION,
+            });
+        }
+        Ok(found)
+    }
+
+    /// Güncelleme zarfı: bekleyen migrasyon varsa **önce** doğrulanmış yedek
+    /// alır, sonra migrasyonu uygular. Yedek alınamaz veya açılıp
+    /// doğrulanamazsa güncelleme hiç başlamaz (`E_DB_MIGRATION_BACKUP`).
+    fn upgrade_with_backup(&mut self, key: &DatabaseKey) -> Result<MigrationOutcome, StorageError> {
+        let before = self.reject_newer_schema()?;
+        let pending = MIGRATIONS.iter().any(|m| m.version > before);
+        let Some(path) = self.path.clone().filter(|_| before > 0 && pending) else {
+            return self.migrate();
+        };
+
+        let backup = pre_migration_backup_path(&path, before);
+        if backup.exists() {
+            // Önceki denemede alınmış yedek korunur; üzerine yazılmaz.
+            Self::verify_backup(&backup, key, before)?;
+        } else {
+            self.backup_to(&backup, key)
+                .map_err(|err| StorageError::MigrationBackup {
+                    reason: err.to_string(),
+                })?;
+            Self::verify_backup(&backup, key, before)?;
+        }
+        self.pre_migration_backup = Some(backup);
+
+        let outcome = self.migrate()?;
+        let _ = self.append_audit(
+            "vault_upgrade",
+            None,
+            "migrate",
+            "system",
+            &serde_json::json!({"from": before, "to": outcome.current, "backup": true}),
+        );
+        Ok(outcome)
+    }
+
+    /// Kapalı bir kasa dosyasını açar, bütünlüğünü doğrular ve şema sürümünü
+    /// döndürür. Migrasyon uygulamaz; yedek doğrulaması için kullanılır.
+    fn verify_database_file(path: &Path, key: &DatabaseKey) -> Result<u32, StorageError> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|err| StorageError::MigrationBackup {
+            reason: format!("dosya açılamadı: {err}"),
+        })?;
+        apply_key_and_pragmas(&conn, key).map_err(|err| StorageError::MigrationBackup {
+            reason: format!("anahtar/bütünlük: {err}"),
+        })?;
+        let version = Self::recorded_version(&conn)?;
+        let check: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if check != "ok" {
+            return Err(StorageError::Integrity(check));
+        }
+        Ok(version)
+    }
+
+    fn verify_backup(backup: &Path, key: &DatabaseKey, expected: u32) -> Result<(), StorageError> {
+        let found = Self::verify_database_file(backup, key)?;
+        if found != expected {
+            return Err(StorageError::MigrationBackup {
+                reason: format!("yedek şema sürümü {found}, beklenen {expected}"),
+            });
+        }
+        Ok(())
     }
 
     /// Bekleyen migrasyonları sırayla uygular. Uygulanmış bir migrasyonun
@@ -503,6 +611,115 @@ fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), Sto
     Ok(())
 }
 
+/// Güncelleme öncesi yedeğin yolu: `<kasa dosyası>.v<eski sürüm>-pre-update.bak`.
+fn pre_migration_backup_path(path: &Path, from_version: u32) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "vault.db".to_string());
+    path.with_file_name(format!("{name}.v{from_version}-pre-update.bak"))
+}
+
+/// Geri dönüş tatbikatının sonucu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackOutcome {
+    /// Yedeğin taşıdığı şema sürümü.
+    pub restored_version: u32,
+    /// Geri dönüşten önceki dosyanın saklandığı güvenlik kopyası.
+    pub safety_copy: PathBuf,
+}
+
+/// Kapalı bir kasa dosyasını, doğrulanmış güncelleme yedeğine geri döndürür.
+///
+/// Sıra: yedeği aç ve bütünlüğünü doğrula → mevcut dosyayı (varsa `-wal`/`-shm`
+/// yan dosyalarıyla) güvenlik kopyasına taşı → yedeği yerine koy → yerleşen
+/// dosyayı yeniden doğrula. Son doğrulama başarısız olursa güvenlik kopyası
+/// geri konur; yani geri dönüş de kendi içinde atomiktir.
+pub fn rollback_vault(
+    path: &Path,
+    backup: &Path,
+    key: &DatabaseKey,
+) -> Result<RollbackOutcome, StorageError> {
+    if !path.is_file() {
+        return Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "kasa dosyası bulunamadı",
+        )));
+    }
+    if !backup.is_file() {
+        return Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "güncelleme yedeği bulunamadı",
+        )));
+    }
+    let backup_version = Database::verify_database_file(backup, key)?;
+    if backup_version > CURRENT_SCHEMA_VERSION {
+        return Err(StorageError::SchemaTooNew {
+            found: backup_version,
+            expected: CURRENT_SCHEMA_VERSION,
+        });
+    }
+
+    let stamp = OffsetDateTime::now_utc().unix_timestamp();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "vault.db".to_string());
+    let safety_copy = path.with_file_name(format!("{name}.rollback-{stamp}.safety"));
+
+    // Yan dosyalar taşınmazsa eski `-wal` yeni dosyaya uygulanır ve kasa bozulur.
+    let sidecars: Vec<(PathBuf, PathBuf)> = ["-wal", "-shm"]
+        .into_iter()
+        .map(|suffix| {
+            let from = path.with_file_name(format!("{name}{suffix}"));
+            let to = safety_copy.with_file_name(format!(
+                "{}{suffix}",
+                safety_copy
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            ));
+            (from, to)
+        })
+        .collect();
+
+    std::fs::rename(path, &safety_copy)?;
+    for (from, to) in &sidecars {
+        if from.exists() {
+            std::fs::rename(from, to)?;
+        }
+    }
+
+    let restored = std::fs::copy(backup, path).and_then(|_| {
+        Database::verify_database_file(path, key)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
+    });
+
+    match restored {
+        Ok(version) if version == backup_version => Ok(RollbackOutcome {
+            restored_version: version,
+            safety_copy,
+        }),
+        other => {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::rename(&safety_copy, path);
+            for (from, to) in sidecars.iter().rev() {
+                if to.exists() {
+                    let _ = std::fs::rename(to, from);
+                }
+            }
+            Err(match other {
+                Ok(version) => StorageError::MigrationBackup {
+                    reason: format!(
+                        "geri yüklenen kasa sürümü {version}, yedek sürümü {backup_version}"
+                    ),
+                },
+                Err(err) => StorageError::Io(err),
+            })
+        }
+    }
+}
+
 #[must_use]
 pub fn now_iso() -> String {
     OffsetDateTime::now_utc()
@@ -727,3 +944,6 @@ mod tests {
         assert_ne!(a.hex(), c.hex());
     }
 }
+
+#[cfg(test)]
+mod upgrade_tests;

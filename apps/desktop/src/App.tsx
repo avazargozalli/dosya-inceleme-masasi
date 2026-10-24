@@ -54,6 +54,7 @@ export function App() {
     vaultPath: null,
     vaultId: null,
     schemaVersion: null,
+    preUpdateBackup: null,
   });
   const [error, setError] = useState<ApiError | null>(null);
 

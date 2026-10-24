@@ -20,6 +20,7 @@ export type VaultStatus = {
   vaultPath: string | null;
   vaultId: string | null;
   schemaVersion: number | null;
+  preUpdateBackup: string | null;
 };
 
 export type CaseRow = {

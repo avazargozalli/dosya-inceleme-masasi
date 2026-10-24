@@ -7,10 +7,13 @@
 |---|---|---|
 | F16-T01 SBOM | ✅ | `scripts/sbom.sh`, CI `sbom` job'u, artefakt |
 | F16-T02 güncelleme imza doğrulama | 🚧 | mekanizma var, anahtar yok; `plugins.updater.active=false` |
-| F16-T03 atomik migrasyon geri dönüş | 🚧 | `vault_restore` var; tatbikat kaydı yok |
+| F16-T03 atomik migrasyon geri dönüş | ✅ | `rollback_vault` + yedeksiz güncelleme kapısı; `ROLLBACK-DRILL.md` (6 test) |
 | F16-T04 Apple Developer ID + notarization | ➖ | **kapsam dışı** (ADR-0012) |
 | F16-T05 Windows kod imzası | ➖ | **kapsam dışı** (ADR-0012) |
 | F16-T06 imzalı `.dmg` / `.msi` | ➖ | **kapsam dışı**; imzasız paket üretiliyor |
+| F16-T07 güncelleme öncesi yedek + işlemli migrasyon | ✅ | `upgrade_with_backup`: yedek doğrulanmadan migrasyon başlamaz |
+| F16-T08 eski uygulama yeni şemayı bozmasın | ✅ | `E_DB_SCHEMA_NEWER`, yazmadan reddeder (testli) |
+| F16-T09 hatalı güncellemeyi reddet | 🚧 | bozuk yedek reddedilir; kesilen indirme/yanlış mimari denenmedi (updater kapalı) |
 
 ## Dürüst durum
 
