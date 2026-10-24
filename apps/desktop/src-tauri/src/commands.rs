@@ -10,13 +10,14 @@ use dim_storage::{
     CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow,
     ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document,
     DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
-    ExportRow, GcReport, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
+    ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
     NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
-    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
-    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
-    ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
+    NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow,
+    NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow,
+    PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput,
+    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
+    TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -376,6 +377,77 @@ pub fn anchor_locate(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.locate_anchor(&anchor_id)?)
+}
+
+/// F07-T09: metin seçiminden kalıcı işaret. Alıntı segmentte birebir
+/// doğrulanmazsa anchor da işaret de oluşmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkSelectionResult {
+    pub anchor: AnchorRow,
+    pub mark: MarkRow,
+}
+
+/// F07-T09: metin seçiminden kaynaklı not. Notun kaynak listesi oluşan
+/// anchor'dan gelir; çağıranın verdiği kimlikler yazılmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSelectionResult {
+    pub anchor: AnchorRow,
+    pub note: NoteRow,
+}
+
+#[tauri::command]
+pub fn mark_create_from_selection(
+    state: State<'_, AppState>,
+    input: NewAnchor,
+    label: String,
+) -> Result<MarkSelectionResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let (anchor, mark) = db.mark_from_selection(&input, &label)?;
+    Ok(MarkSelectionResult { anchor, mark })
+}
+
+#[tauri::command]
+pub fn note_create_from_selection(
+    state: State<'_, AppState>,
+    input: NewAnchor,
+    note: NewNote,
+) -> Result<NoteSelectionResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let (anchor, note) = db.note_from_selection(&input, &note)?;
+    Ok(NoteSelectionResult { anchor, note })
+}
+
+/// Sayfa bölgesinden işaret (görsel seçim). Dikdörtgenler sayfa uzayındadır.
+#[tauri::command]
+pub fn mark_create_region(
+    state: State<'_, AppState>,
+    input: NewRegionMark,
+) -> Result<MarkRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_region_mark(&input)?)
+}
+
+#[tauri::command]
+pub fn marks_for_version(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<Vec<MarkRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.marks_for_version(&version_id)?)
+}
+
+#[tauri::command]
+pub fn mark_delete(state: State<'_, AppState>, mark_id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.delete_mark(&mark_id)?;
+    Ok(())
 }
 
 #[tauri::command]

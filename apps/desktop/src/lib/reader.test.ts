@@ -10,6 +10,7 @@ import {
   mapRectForDisplay,
   nextZoom,
   offsetSlice,
+  markRangesForPage,
   pageForKey,
   pageLabelInfo,
   parseWarnings,
@@ -18,6 +19,7 @@ import {
   previewDataUrl,
   querySlice,
   recallView,
+  rectFromDisplay,
   rememberView,
   resolvePageIndex,
   rotateView,
@@ -25,6 +27,8 @@ import {
   structureEntries,
   targetFromAnchor,
   targetFromHit,
+  textSegments,
+  unmapPointFromDisplay,
   validSelection,
 } from "./reader";
 
@@ -475,5 +479,82 @@ describe("boş panelde açılacak belge (F07-T08)", () => {
     expect(pickInitialVersion([doc("d1", null)], null)).toBeNull();
     expect(pickInitialVersion([], null)).toBeNull();
     expect(pickInitialVersion([doc("d1", null), doc("d2", "v2")], null)).toBe("v2");
+  });
+});
+
+describe("işaret parçalama (F07-T09)", () => {
+  const text = "Mahkeme itirazın reddine karar verdi.";
+
+  it("parçalar birleşince metnin tamamı elde edilir", () => {
+    const parts = textSegments(text, [{ start: 8, end: 16 }], null);
+    expect(parts.map((part) => part.text).join("")).toBe(text);
+    expect(parts.filter((part) => part.marked).map((part) => part.text).join("")).toBe("itirazın");
+  });
+
+  it("kesişen işaretleri birleştirir, hedef aralığa öncelik verir", () => {
+    const parts = textSegments(
+      text,
+      [
+        { start: 8, end: 16 },
+        { start: 12, end: 24 },
+      ],
+      { start: 8, end: 16 },
+    );
+    const marked = parts.filter((part) => part.marked).map((part) => part.text).join("");
+    expect(marked).toBe("itirazın reddine");
+    expect(parts.filter((part) => part.targeted).map((part) => part.text).join("")).toBe("itirazın");
+    expect(parts.map((part) => part.text).join("")).toBe(text);
+  });
+
+  it("aralık dışı ve boş aralıkları kırpar, metni bozmaz", () => {
+    const parts = textSegments(text, [{ start: 30, end: 999 }], { start: -5, end: 3 });
+    expect(parts.map((part) => part.text).join("")).toBe(text);
+    expect(parts.some((part) => part.targeted)).toBe(true);
+  });
+
+  it("işaret ve hedef yoksa tek parça döner", () => {
+    expect(textSegments(text, [], null)).toEqual([{ text, marked: false, targeted: false }]);
+  });
+
+  it("yalnız bu sayfaya ait metin işaretlerini verir", () => {
+    const ranges = markRangesForPage(
+      [
+        { markKind: "text", pageId: "p2", startOffset: 0, endOffset: 4 },
+        { markKind: "text", pageId: "p1", startOffset: 2, endOffset: 6 },
+        { markKind: "region", pageId: "p2", startOffset: null, endOffset: null },
+        { markKind: "text", pageId: "p2", startOffset: 5, endOffset: 5 },
+      ],
+      { id: "p2" },
+    );
+    expect(ranges).toEqual([{ start: 0, end: 4 }]);
+  });
+});
+
+describe("bölge koordinat dönüşümü (F07-T09)", () => {
+  it("mapRectForDisplay'in tersidir", () => {
+    const page = { w: 600, h: 800 };
+    for (const rotation of [0, 90, 180, 270]) {
+      const point = unmapPointFromDisplay(120, 90, page.w, page.h, rotation);
+      // Nokta, döndürülmüş uzayda aynı yere geri düşmeli.
+      const back = mapRectForDisplay(
+        [point.x, point.y, point.x, point.y],
+        page.w,
+        page.h,
+        rotation,
+      );
+      expect(back[0]).toBeCloseTo(120, 6);
+      expect(back[1]).toBeCloseTo(90, 6);
+    }
+  });
+
+  it("döndürülmüş dikdörtgeni sayfa uzayına min/max ile çevirir", () => {
+    const rect = rectFromDisplay([100, 50, 300, 150], 600, 800, 90);
+    expect(rect[0]).toBeLessThan(rect[2]);
+    expect(rect[1]).toBeLessThan(rect[3]);
+    expect(rect).toEqual([50, 800 - 300, 150, 800 - 100]);
+  });
+
+  it("rotasyonsuz dönüşümde dikdörtgen aynen kalır", () => {
+    expect(rectFromDisplay([10, 20, 30, 40], 600, 800, 0)).toEqual([10, 20, 30, 40]);
   });
 });

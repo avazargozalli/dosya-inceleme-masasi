@@ -13,6 +13,7 @@ mod documents;
 mod error;
 mod exports;
 mod gc;
+mod marks;
 mod notes;
 mod parsing;
 mod precedents;
@@ -40,6 +41,7 @@ pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use exports::ExportRow;
 pub use gc::{GcBlobRow, GcReport};
+pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
 pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
@@ -157,9 +159,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0011_note_history",
         sql: include_str!("migrations/0011_note_history.sql"),
     },
+    Migration {
+        version: 12,
+        name: "0012_source_marks",
+        sql: include_str!("migrations/0012_source_marks.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 11;
+pub const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

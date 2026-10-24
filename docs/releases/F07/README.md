@@ -14,6 +14,7 @@
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
 | F07-T08 | ✅ | yan yana iki panel kendi sürümünü, sayfasını, yakınlaştırmasını ve seçimini korur; sürüm başına görünüm belleği |
+| F07-T09 | ✅ | metin seçimi doğrulanmış anchor'a bağlı kalıcı işaret ve kaynaklı not üretir; bölge işareti sayfa koordinatında saklanır |
 | F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
 | F07-T11 | ✅ | sayfa önizlemesi kasa anahtarıyla şifreli disk önbelleğinde; bellekteki çözülmüş sayfalar kilitta temizlenir |
 
@@ -170,6 +171,41 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   panel "etkin panel" rozeti ve vurgulu çerçeveyle işaretlenir; diğer panelin
   sayfası ve seçimi değişmez.
 
+## F07-T09 — metin/görsel seçiminden kaynaklı not ve kalıcı işaret
+
+- **Şema v12** (`0012_source_marks.sql`): `source_marks`. `mark_kind` `text` |
+  `region`. Metin işareti **doğrulanmış** `source_anchors` kaydına bağlanır;
+  aynı anchor'da tek aktif işaret vardır (kısmi tekil indeks), silme yumuşaktır
+  (`deleted_at`, satır kalır).
+- **Atomik yazım**: `mark_from_selection` ve `note_from_selection` anchor ile
+  işaret/notu **tek işlemde** yazar (`write_atomically`; çağıran açık işlem
+  içindeyse ona katılır). Alıntı segmentte birebir bulunamazsa hiçbir kayıt
+  oluşmaz — ne anchor ne işaret (test: `mark_is_not_created_when_quote_does_not_match`).
+- **Notun kaynağı**: notun `source_anchor_ids` listesi çağıranın gönderdiği
+  kimliklerden değil, oluşan anchor'dan gelir; doğrulanmamış kaynak kimliği
+  notta kalmaz.
+- **Bölge işareti**: `create_region_mark` sayfa geometrisine karşı doğrular —
+  sayfa aynı sürümün ayrıştırmasına ait olmalı (`E_NOT_FOUND`), dikdörtgen sayfa
+  içinde ve sonlu olmalı (`E_DB_SETTING`), 1–20 kutu. Geometri yoksa işaret
+  oluşmaz; konum uydurulmaz.
+- **Arayüz (okuyucu)**:
+  - Seçim çubuğu: "Seçimi kaynağa bağla" · "İşaretle" · "Seçimden not".
+  - "İşaretle": seçim çekirdekte doğrulanır, sayfada sarı zeminle kalıcı işaret
+    çizilir; "kalıcı işaret" listesi sayfa etiketi, sayfaya git ve sil verir.
+  - "Seçimden not": başlık + gövde formu; "Notu kaydet" `note_create_from_selection`
+    çağırır, not Notes ekranında kaynak kimliğiyle listelenir.
+  - **Görsel seçim**: sayfa görüntüsü (F07-T11) üzerinde sürüklenen bölge
+    görünen uzayda 0–1 oranıyla tutulur, kayda geçerken `rectFromDisplay` ile
+    **sayfa koordinat uzayına** çevrilir. İşaretler görüntüde ve konum
+    haritasında kesikli çerçeveyle gösterilir; yakınlaştırma/döndürme koordinatı
+    kaydırmaz.
+  - Metin işaretleri `textSegments` ile parçalanır: parçalar birleşince sayfa
+    metni birebir elde edilir (seçim offsetleri kaymaz); arama/bağ hedefi vurgusu
+    işaretten önceliklidir.
+- **Sınırlama**: yapısal (DOCX/UDF) görünümde işaretler metin üzerinde çizilmez,
+  listeden sayfaya gidilir; bölge seçimi yalnız sayfa görüntüsü açıkken yapılır.
+  Tauri penceresi bu ortamda açılmadı → gerçek sürükleme/tıklama ve görsel QA yok.
+
 ## F07-T10 — not taslağı, geri/ileri al ve sürüm çakışması
 
 - **Şema v11** (`0011_note_history.sql`): `notes.undo_stack` / `notes.redo_stack`
@@ -231,6 +267,20 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   görüntü belgeleri (JPG/TIFF) için sayfa çizimi yok. Önbellek sürüm silinince
   otomatik temizlenmez (`PreviewStore::purge_version` hazır, silme akışına
   bağlanmadı) — diskte şifreli kaldığı için veri sızıntısı değil, yer kullanımı.
+
+## Doğrulama (F07-T09)
+
+- Rust: `cargo test --workspace --all-targets` → storage **155** (8 yeni: doğrulanmış
+  anchor'dan işaret, uydurma alıntıda hiç kayıt yok, aynı anchor tek işaret, bölge
+  geometri doğrulaması (içeride/dışarıda/boş), yabancı sayfa `E_NOT_FOUND`, yumuşak
+  silme, notun kaynağı anchor'dan gelir, boş gövde anchor yazmaz). Clippy
+  `-D warnings` (workspace + Tauri) ve rustfmt iki manifestte temiz.
+- Web: `tsc` + `vitest` **131** (8 yeni: işaret parçalama/birleştirme/hedef önceliği/
+  kırpma, sayfa filtresi, `mapRectForDisplay` tersi (0/90/180/270), döndürülmüş
+  dikdörtgen, rotasyonsuz dönüşüm) + `vite build` yeşil.
+- Python worker değişmedi (bu adımda yeni worker yöntemi yok).
+- **Sınırlama**: gerçek Tauri penceresinde sürükleme, tıklama ve görsel QA
+  yapılmadı; kanıt birim testleri + typecheck + üretim derlemesi.
 
 ## Doğrulama (F07-T08)
 

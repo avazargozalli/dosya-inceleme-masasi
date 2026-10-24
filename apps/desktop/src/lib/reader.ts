@@ -432,6 +432,69 @@ export function pageForKey(
   }
 }
 
+/** Sayfa metnini işaret ve hedef aralıklarına göre parçalar. Dönen parçalar
+ *  birleştirildiğinde metnin **tamamı** elde edilir (seçim offsetleri kaymaz).
+ *  Kesişen aralıklar birleşir; hedef aralık işaretten önceliklidir. */
+export type TextSegment = { text: string; marked: boolean; targeted: boolean };
+
+export function textSegments(
+  text: string,
+  marks: OffsetRange[],
+  target: OffsetRange | null,
+): TextSegment[] {
+  const chars = Array.from(text);
+  const length = chars.length;
+  const bounds = new Set<number>([0, length]);
+  const clamp = (range: OffsetRange): OffsetRange | null => {
+    const start = Math.max(0, Math.min(range.start, length));
+    const end = Math.max(0, Math.min(range.end, length));
+    return end > start ? { start, end } : null;
+  };
+  const cleanMarks = marks.map(clamp).filter((range): range is OffsetRange => range !== null);
+  const cleanTarget = target ? clamp(target) : null;
+  for (const range of cleanMarks) {
+    bounds.add(range.start);
+    bounds.add(range.end);
+  }
+  if (cleanTarget) {
+    bounds.add(cleanTarget.start);
+    bounds.add(cleanTarget.end);
+  }
+  const points = [...bounds].sort((a, b) => a - b);
+  const out: TextSegment[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const start = points[i]!;
+    const end = points[i + 1]!;
+    if (end === start) continue;
+    const inTarget = cleanTarget ? start >= cleanTarget.start && end <= cleanTarget.end : false;
+    const inMark = cleanMarks.some((range) => start >= range.start && end <= range.end);
+    out.push({
+      text: chars.slice(start, end).join(""),
+      marked: inMark,
+      targeted: inTarget,
+    });
+  }
+  if (out.length === 0) return [{ text, marked: false, targeted: false }];
+  return out;
+}
+
+/** Bu sayfaya ait işaretlerin metin aralıkları. Bölge işaretleri metne
+ *  uygulanmaz; sayfaya ait olmayan metin işareti sessizce taşınmaz. */
+export function markRangesForPage(
+  marks: { markKind: string; pageId: string | null; startOffset: number | null; endOffset: number | null }[],
+  page: { id: string },
+): OffsetRange[] {
+  const out: OffsetRange[] = [];
+  for (const mark of marks) {
+    if (mark.markKind !== "text") continue;
+    if (mark.pageId !== null && mark.pageId !== page.id) continue;
+    if (mark.startOffset === null || mark.endOffset === null) continue;
+    if (mark.endOffset <= mark.startOffset) continue;
+    out.push({ start: mark.startOffset, end: mark.endOffset });
+  }
+  return out;
+}
+
 /** Panel boşken açılacak belge: diğer panelde açık sürüm **seçilmez**, böylece
  *  yan yana iki farklı belge açılır. Başka belge yoksa tek belgeye döner. */
 export function pickInitialVersion(
@@ -444,4 +507,44 @@ export function pickInitialVersion(
   if (withVersion.length === 0) return null;
   const other = withVersion.find((doc) => doc.currentVersionId !== excludeVersionId);
   return (other ?? withVersion[0]!).currentVersionId;
+}
+
+/** Görünen (döndürülmüş) uzaydaki noktayı döndürme öncesi sayfa uzayına
+ *  çevirir: `mapRectForDisplay`in tersi. */
+export function unmapPointFromDisplay(
+  x: number,
+  y: number,
+  pageWidth: number,
+  pageHeight: number,
+  rotation: number,
+): { x: number; y: number } {
+  switch (normalizeRotation(rotation)) {
+    case 90:
+      return { x: y, y: pageHeight - x };
+    case 180:
+      return { x: pageWidth - x, y: pageHeight - y };
+    case 270:
+      return { x: pageWidth - y, y: x };
+    default:
+      return { x, y };
+  }
+}
+
+/** Görünen uzaydaki dikdörtgeni sayfa uzayına çevirir (bölge işareti için).
+ *  Köşeler tek tek çevrilip min/max alınır; sıra döndürmede bozulmaz. */
+export function rectFromDisplay(
+  rect: [number, number, number, number],
+  pageWidth: number,
+  pageHeight: number,
+  rotation: number,
+): [number, number, number, number] {
+  const [x0, y0, x1, y1] = rect;
+  const a = unmapPointFromDisplay(x0, y0, pageWidth, pageHeight, rotation);
+  const b = unmapPointFromDisplay(x1, y1, pageWidth, pageHeight, rotation);
+  return [
+    Math.min(a.x, b.x),
+    Math.min(a.y, b.y),
+    Math.max(a.x, b.x),
+    Math.max(a.y, b.y),
+  ];
 }

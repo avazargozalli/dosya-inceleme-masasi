@@ -6,6 +6,8 @@ import {
   type ApiError,
   type DocumentPages,
   type DocumentRow,
+  type MarkRow,
+  type NoteRow,
   type PageRow,
 } from "../lib/api";
 import {
@@ -15,6 +17,7 @@ import {
   displayPageSize,
   entrySlice,
   mapRectForDisplay,
+  markRangesForPage,
   nextZoom,
   pageForKey,
   pageLabelInfo,
@@ -24,11 +27,13 @@ import {
   previewDataUrl,
   rangeForPage,
   recallView,
+  rectFromDisplay,
   rememberView,
   resolvePageIndex,
   rotateView,
   sliceForPage,
   structureEntries,
+  textSegments,
   validSelection,
   type ReaderTarget,
   type ReaderView,
@@ -41,10 +46,13 @@ import {
 function PageMap({
   page,
   highlight,
+  regions,
   rotation,
 }: {
   page: PageRow;
   highlight: [number, number, number, number][];
+  /** Kalıcı bölge işaretleri (sayfa koordinat uzayında). */
+  regions: [number, number, number, number][];
   rotation: number;
 }) {
   const width = page.width ?? 0;
@@ -86,6 +94,23 @@ function PageMap({
             />
           );
         })}
+        {regions.map((rect, index) => {
+          const [x0, y0, x1, y1] = mapRectForDisplay(rect, width, height, rotation);
+          return (
+            <rect
+              key={`region-${index}`}
+              x={x0}
+              y={y0}
+              width={Math.max(x1 - x0, 0.5)}
+              height={Math.max(y1 - y0, 0.5)}
+              fill="none"
+              stroke="var(--warn)"
+              strokeDasharray="3 2"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+          );
+        })}
         {highlight.map((rect, index) => {
           const [x0, y0, x1, y1] = mapRectForDisplay(rect, width, height, rotation);
           return (
@@ -122,6 +147,7 @@ function ReaderPane({
   otherVersionId,
   onPickVersion,
   onAnchor,
+  onNote,
 }: {
   caseId: string;
   label: string;
@@ -132,6 +158,7 @@ function ReaderPane({
   otherVersionId: string | null;
   onPickVersion: (versionId: string) => void;
   onAnchor?: ((anchor: AnchorRow) => void) | undefined;
+  onNote?: ((note: NoteRow) => void) | undefined;
 }) {
   const [data, setData] = useState<DocumentPages | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -143,6 +170,20 @@ function ReaderPane({
   const [view, setView] = useState<ReaderView>(EMPTY_VIEW);
   const [savedQuote, setSavedQuote] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
+  // F07-T09: bu belgedeki kalıcı işaretler sunucudan okunur (panel kopyası
+  // türetilmez); işaret/not oluşturma çekirdek komutlarıyla yapılır.
+  const [marks, setMarks] = useState<MarkRow[]>([]);
+  const [markBusy, setMarkBusy] = useState(false);
+  const [markInfo, setMarkInfo] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState<{ title: string; body: string } | null>(null);
+  const [noteBusy, setNoteBusy] = useState(false);
+  const [noteInfo, setNoteInfo] = useState<string | null>(null);
+  // F07-T09 görsel seçim: sayfa görüntüsü üzerinde sürüklenen bölge,
+  // görünen uzayda 0–1 oranıyla tutulur; kayda geçerken sayfa uzayına çevrilir.
+  const [dragRegion, setDragRegion] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
+    null,
+  );
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
   const viewMemory = useRef<ViewMemory>([]);
   const previousVersion = useRef<string | null>(null);
   const restoredFromMemory = useRef(false);
@@ -166,6 +207,8 @@ function ReaderPane({
   const entryRefs = useRef<Record<number, HTMLElement | null>>({});
 
   const paneTarget = target && target.versionId === versionId ? target : null;
+  // İki panel aynı anda açıkken form alanı kimlikleri çakışmasın.
+  const paneKey = label === "Sol belge" ? "sol" : "sag";
 
   // Boş panel kendiliğinden bir belge açar; diğer panelde açık sürümü seçmez,
   // böylece yan yana iki farklı belge gelir (tek belge varsa ona döner).
@@ -205,6 +248,27 @@ function ReaderPane({
   function dropSelection() {
     setView((state) => (state.selection ? { ...state, selection: null } : state));
   }
+
+  // İşaretler sürümden okunur; panelde türetilmiş kopya tutulmaz.
+  useEffect(() => {
+    setMarks([]);
+    setMarkInfo(null);
+    setNoteInfo(null);
+    setNoteDraft(null);
+    if (!versionId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await api.marksForVersion(versionId);
+        if (!cancelled) setMarks(rows);
+      } catch (e) {
+        if (!cancelled) setError(toApiError(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [versionId]);
 
   useEffect(() => {
     if (!versionId) {
@@ -310,6 +374,40 @@ function ReaderPane({
     : "Fiziksel sayfa ?";
   const slice = current ? sliceForPage(current.text, paneTarget, current) : null;
   const highlightRange = current ? rangeForPage(current.text, paneTarget, current) : null;
+  // F07-T09: bu sayfadaki metin işaretleri ve hedef aralık tek geçişte
+  // parçalanır; parçalar birleşince sayfa metni birebir elde edilir.
+  const pageMarkRanges = current ? markRangesForPage(marks, current) : [];
+  const segments =
+    current && (pageMarkRanges.length > 0 || highlightRange)
+      ? textSegments(current.text, pageMarkRanges, highlightRange)
+      : [];
+  const pageRegionMarks = current
+    ? marks.filter((mark) => mark.markKind === "region" && mark.pageId === current.id)
+    : [];
+  // Görüntü üzerindeki bölge işaretleri: sayfa uzayından görünen uzaya çevrilip
+  // yüzdeye dönüştürülür (görüntü ölçeklense de konum kaymaz).
+  const previewBox = current
+    ? displayPageSize(current.width ?? 0, current.height ?? 0, rotation)
+    : null;
+  const previewRegions =
+    current && previewBox && previewBox.width > 0 && previewBox.height > 0
+      ? pageRegionMarks
+          .flatMap((mark) => mark.rects)
+          .map((rect) => {
+            const box = mapRectForDisplay(
+              rect,
+              current.width ?? 0,
+              current.height ?? 0,
+              rotation,
+            );
+            return {
+              left: (box[0] / previewBox.width) * 100,
+              top: (box[1] / previewBox.height) * 100,
+              width: ((box[2] - box[0]) / previewBox.width) * 100,
+              height: ((box[3] - box[1]) / previewBox.height) * 100,
+            };
+          })
+      : [];
   // Anchor kaydı kendi kutularını taşıyorsa onlar kullanılır; arama sonucunda
   // bloklardan hesaplanır. Kutu yoksa harita vurgusuz kalır.
   const highlightQuads =
@@ -393,6 +491,162 @@ function ReaderPane({
       dropSelection();
     } catch (e) {
       setError(toApiError(e));
+    }
+  }
+
+  /** Seçimden çekirdeğe gidecek anchor girdisi; kaynak doğrulaması çekirdekte. */
+  function selectionAnchor() {
+    if (!selection || !current?.segmentId || !data) return null;
+    return {
+      caseId,
+      documentVersionId: data.parseRun.documentVersionId,
+      parseRunId: data.parseRun.id,
+      segmentId: current.segmentId,
+      startOffset: selection.start,
+      endOffset: selection.end,
+      exactQuote: selection.quote,
+    };
+  }
+
+  /** Seçimi kalıcı işarete çevirir: çekirdek anchor'ı doğrular, işaret aynı
+   *  işlemde yazılır. Doğrulanamayan alıntı için işaret oluşmaz. */
+  async function createMark() {
+    const input = selectionAnchor();
+    if (!input) return;
+    setMarkBusy(true);
+    setMarkInfo(null);
+    try {
+      const created = await api.markCreateFromSelection(input, "");
+      setMarks((prev) => (prev.some((mark) => mark.id === created.mark.id) ? prev : [...prev, created.mark]));
+      setMarkInfo("İşaret kaydedildi.");
+      window.getSelection()?.removeAllRanges();
+      dropSelection();
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setMarkBusy(false);
+    }
+  }
+
+  /** Seçimden not taslağı açar; not yalnız “Notu kaydet” ile yazılır. */
+  function startNoteFromSelection() {
+    if (!selection) return;
+    setNoteDraft({
+      title: `${currentInfo?.physical ?? "Sayfa"} notu`,
+      body: selection.quote,
+    });
+    setNoteInfo(null);
+  }
+
+  async function saveNoteFromSelection() {
+    const input = selectionAnchor();
+    if (!input || !noteDraft) return;
+    setNoteBusy(true);
+    try {
+      const saved = await api.noteCreateFromSelection(input, {
+        title: noteDraft.title,
+        body: noteDraft.body,
+      });
+      setNoteDraft(null);
+      setNoteInfo(`Not oluşturuldu: “${saved.note.title || saved.note.body.slice(0, 40)}”`);
+      window.getSelection()?.removeAllRanges();
+      dropSelection();
+      onNote?.(saved.note);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setNoteBusy(false);
+    }
+  }
+
+  async function removeMark(markId: string) {
+    try {
+      await api.markDelete(markId);
+      setMarks((prev) => prev.filter((mark) => mark.id !== markId));
+      setMarkInfo("İşaret silindi.");
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  /** İşaretin sayfasını açar; sayfa yoksa hiçbir şey yapmaz (uydurma yok). */
+  function jumpToMark(mark: MarkRow) {
+    if (!data || !mark.pageId) return;
+    const index = data.pages.findIndex((p) => p.id === mark.pageId);
+    if (index >= 0) goToPage(index);
+  }
+
+  /** Görüntü üzerindeki imleç konumunu 0–1 oranına çevirir. */
+  function regionPoint(event: React.PointerEvent<HTMLDivElement>) {
+    const box = event.currentTarget.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return null;
+    return {
+      x: Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1),
+      y: Math.min(Math.max((event.clientY - box.top) / box.height, 0), 1),
+    };
+  }
+
+  function startRegion(event: React.PointerEvent<HTMLDivElement>) {
+    const point = regionPoint(event);
+    if (!point) return;
+    dragStart.current = point;
+    setDragRegion({ x0: point.x, y0: point.y, x1: point.x, y1: point.y });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveRegion(event: React.PointerEvent<HTMLDivElement>) {
+    const start = dragStart.current;
+    if (!start) return;
+    const point = regionPoint(event);
+    if (!point) return;
+    setDragRegion({
+      x0: Math.min(start.x, point.x),
+      y0: Math.min(start.y, point.y),
+      x1: Math.max(start.x, point.x),
+      y1: Math.max(start.y, point.y),
+    });
+  }
+
+  function endRegion(event: React.PointerEvent<HTMLDivElement>) {
+    if (!dragStart.current) return;
+    dragStart.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  /** Sürüklenen bölgeyi sayfa uzayına çevirip kalıcı işaret yazar. */
+  async function createRegionMark() {
+    if (!dragRegion || !current || !versionId) return;
+    const width = current.width ?? 0;
+    const height = current.height ?? 0;
+    if (width <= 0 || height <= 0) return;
+    if (dragRegion.x1 - dragRegion.x0 < 0.01 || dragRegion.y1 - dragRegion.y0 < 0.01) return;
+    const display = displayPageSize(width, height, rotation);
+    const displayRect: [number, number, number, number] = [
+      dragRegion.x0 * display.width,
+      dragRegion.y0 * display.height,
+      dragRegion.x1 * display.width,
+      dragRegion.y1 * display.height,
+    ];
+    const pageRect = rectFromDisplay(displayRect, width, height, rotation);
+    setMarkBusy(true);
+    setMarkInfo(null);
+    try {
+      const mark = await api.markCreateRegion({
+        caseId,
+        documentVersionId: versionId,
+        pageId: current.id,
+        rects: [pageRect],
+        label: "",
+      });
+      setMarks((prev) => [...prev, mark]);
+      setDragRegion(null);
+      setMarkInfo("Bölge işareti kaydedildi.");
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setMarkBusy(false);
     }
   }
 
@@ -516,18 +770,94 @@ function ReaderPane({
               ) : null}
               {preview && preview.pageIndex === page ? (
                 <>
-                  <img
-                    src={preview.dataUrl}
-                    alt={`${label}: fiziksel sayfa ${page + 1} görüntüsü`}
+                  <div
+                    role="group"
+                    aria-label={`${label}: sayfa görüntüsü üzerinde bölge seçimi`}
                     style={{
-                      display: "block",
-                      width: "100%",
-                      maxWidth: 640,
-                      border: "1px solid var(--line)",
-                      borderRadius: "var(--radius)",
-                      background: "var(--surface)",
+                      position: "relative",
+                      display: "inline-block",
+                      maxWidth: "100%",
+                      touchAction: "none",
+                      cursor: "crosshair",
+                      userSelect: "none",
                     }}
-                  />
+                    onPointerDown={startRegion}
+                    onPointerMove={moveRegion}
+                    onPointerUp={endRegion}
+                    onPointerCancel={endRegion}
+                  >
+                    <img
+                      src={preview.dataUrl}
+                      alt={`${label}: fiziksel sayfa ${page + 1} görüntüsü`}
+                      draggable={false}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        maxWidth: 640,
+                        border: "1px solid var(--line)",
+                        borderRadius: "var(--radius)",
+                        background: "var(--surface)",
+                      }}
+                    />
+                    {previewRegions.map((box, index) => (
+                      <div
+                        key={`region-${index}`}
+                        aria-hidden
+                        style={{
+                          position: "absolute",
+                          left: `${box.left}%`,
+                          top: `${box.top}%`,
+                          width: `${box.width}%`,
+                          height: `${box.height}%`,
+                          border: "1.5px dashed var(--warn)",
+                          background: "rgba(180, 130, 40, 0.12)",
+                          pointerEvents: "none",
+                        }}
+                      />
+                    ))}
+                    {dragRegion ? (
+                      <div
+                        aria-hidden
+                        style={{
+                          position: "absolute",
+                          left: `${dragRegion.x0 * 100}%`,
+                          top: `${dragRegion.y0 * 100}%`,
+                          width: `${(dragRegion.x1 - dragRegion.x0) * 100}%`,
+                          height: `${(dragRegion.y1 - dragRegion.y0) * 100}%`,
+                          border: "1.5px solid var(--accent)",
+                          background: "var(--accent-soft)",
+                          pointerEvents: "none",
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                  <div className="row" style={{ gap: 6, alignItems: "center", marginTop: 4 }}>
+                    <button
+                      className="btn"
+                      style={{ height: 26 }}
+                      disabled={
+                        markBusy ||
+                        !dragRegion ||
+                        dragRegion.x1 - dragRegion.x0 < 0.01 ||
+                        dragRegion.y1 - dragRegion.y0 < 0.01
+                      }
+                      onClick={() => void createRegionMark()}
+                      title="Görüntü üzerinde sürüklediğiniz bölgeyi sayfa koordinatında işaret olarak sakla"
+                    >
+                      {markBusy ? "İşaretleniyor…" : "Seçili bölgeyi işaretle"}
+                    </button>
+                    <button
+                      className="btn ghost"
+                      style={{ height: 26 }}
+                      disabled={!dragRegion}
+                      onClick={() => setDragRegion(null)}
+                    >
+                      Bölge seçimini temizle
+                    </button>
+                    <span className="hint" style={{ margin: 0 }}>
+                      İşaretler sayfa koordinatında saklanır; yakınlaştırma/döndürme konumu kaydırmaz.
+                    </span>
+                  </div>
                   <figcaption className="hint" style={{ marginTop: 4 }}>
                     {previewCaption(preview.meta)}
                   </figcaption>
@@ -658,16 +988,84 @@ function ReaderPane({
                 </span>
               ) : null}
             </span>
-            <button
-              className="btn ghost"
-              style={{ height: 26 }}
-              disabled={!selection || !current?.segmentId}
-              onClick={() => void saveAnchor()}
-              title={current?.segmentId ? "Seçili metni kaynak olarak kaydet" : "bu sayfada metin segmenti yok"}
-            >
-              Seçimi kaynağa bağla
-            </button>
+            <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button
+                className="btn ghost"
+                style={{ height: 26 }}
+                disabled={!selection || !current?.segmentId}
+                onClick={() => void saveAnchor()}
+                title={current?.segmentId ? "Seçili metni kaynak olarak kaydet" : "bu sayfada metin segmenti yok"}
+              >
+                Seçimi kaynağa bağla
+              </button>
+              <button
+                className="btn"
+                style={{ height: 26 }}
+                disabled={!selection || !current?.segmentId || markBusy}
+                onClick={() => void createMark()}
+                title="Seçili metni bu belgede kalıcı işaret olarak sakla (alıntı çekirdekte doğrulanır)"
+              >
+                {markBusy ? "İşaretleniyor…" : "İşaretle"}
+              </button>
+              <button
+                className="btn"
+                style={{ height: 26 }}
+                disabled={!selection || !current?.segmentId || noteBusy}
+                onClick={startNoteFromSelection}
+                title="Seçili metinden kaynaklı not oluştur"
+              >
+                Seçimden not
+              </button>
+            </span>
           </div>
+
+          {noteDraft ? (
+            <div className="card tight" style={{ background: "var(--surface)" }}>
+              <div className="card-head">
+                <div>
+                  <h2 style={{ fontSize: 14 }}>Seçimden not</h2>
+                  <p className="card-sub">
+                    Kaynak: {currentInfo?.physical ?? "sayfa"} · alıntı {selection?.start}–{selection?.end}
+                  </p>
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor={`note-title-${paneKey}`}>Başlık</label>
+                <input
+                  id={`note-title-${paneKey}`}
+                  className="input"
+                  value={noteDraft.title}
+                  maxLength={200}
+                  onChange={(e) => setNoteDraft((draft) => (draft ? { ...draft, title: e.target.value } : draft))}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor={`note-body-${paneKey}`}>Not</label>
+                <textarea
+                  id={`note-body-${paneKey}`}
+                  className="input"
+                  rows={4}
+                  value={noteDraft.body}
+                  onChange={(e) => setNoteDraft((draft) => (draft ? { ...draft, body: e.target.value } : draft))}
+                />
+              </div>
+              <div className="row" style={{ justifyContent: "flex-end" }}>
+                <button className="btn ghost" onClick={() => setNoteDraft(null)}>
+                  Vazgeç
+                </button>
+                <button
+                  className="btn primary"
+                  disabled={noteBusy || !noteDraft.body.trim()}
+                  onClick={() => void saveNoteFromSelection()}
+                >
+                  {noteBusy ? "Kaydediliyor…" : "Notu kaydet"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {markInfo ? <div className="notice ok">{markInfo}</div> : null}
+          {noteInfo ? <div className="notice ok">{noteInfo}</div> : null}
 
           <p className="hint" style={{ margin: 0 }}>
             Bu panelin görünümü: sayfa {view.page + 1}/{data.pages.length} · %{zoomPercent}
@@ -679,7 +1077,12 @@ function ReaderPane({
           </p>
 
           {current && current.coordinateSpace && current.coordinateSpace !== "structure" && current.blocks.length > 0 ? (
-            <PageMap page={current} highlight={highlightQuads} rotation={rotation} />
+            <PageMap
+            page={current}
+            highlight={highlightQuads}
+            regions={pageRegionMarks.flatMap((mark) => mark.rects)}
+            rotation={rotation}
+          />
           ) : null}
 
           {structureMode && labeledEntries.length > 0 ? (
@@ -771,17 +1174,28 @@ function ReaderPane({
                     </Fragment>
                   );
                 })
-              ) : slice ? (
-                <>
-                  {slice.before}
-                  <mark
-                    ref={markRef}
-                    style={{ background: "var(--accent-soft)", color: "inherit", padding: "0 2px", borderRadius: 2 }}
-                  >
-                    {slice.hit}
-                  </mark>
-                  {slice.after}
-                </>
+              ) : segments.length > 0 ? (
+                segments.map((segment, index) =>
+                  segment.targeted ? (
+                    <mark
+                      key={`seg-${index}`}
+                      ref={markRef}
+                      style={{ background: "var(--accent-soft)", color: "inherit", padding: "0 2px", borderRadius: 2 }}
+                    >
+                      {segment.text}
+                    </mark>
+                  ) : segment.marked ? (
+                    <span
+                      key={`seg-${index}`}
+                      style={{ background: "var(--warn-soft)", borderRadius: 2 }}
+                      title="kalıcı işaret"
+                    >
+                      {segment.text}
+                    </span>
+                  ) : (
+                    <Fragment key={`seg-${index}`}>{segment.text}</Fragment>
+                  ),
+                )
               ) : (
                 current.text.trim() || "(bu sayfada metin katmanı yok)"
               )
@@ -809,6 +1223,46 @@ function ReaderPane({
                   +{parseWarningsList.length - 20} uyarı daha var.
                 </p>
               ) : null}
+            </details>
+          ) : null}
+
+          {marks.length > 0 ? (
+            <details style={{ fontSize: 12 }}>
+              <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
+                {marks.length} kalıcı işaret (bu belgede)
+              </summary>
+              <ul style={{ margin: "6px 0 0", paddingLeft: 18, maxHeight: 160, overflow: "auto" }}>
+                {marks.map((mark) => {
+                  const markPage = data.pages.find((p) => p.id === mark.pageId);
+                  const caption = markPage ? pageLabelInfo(markPage).physical : "sayfa bilinmiyor";
+                  return (
+                    <li key={mark.id} style={{ marginBottom: 4 }}>
+                      <span className="muted small">
+                        {caption} · {mark.markKind === "text" ? "metin" : "bölge"}
+                      </span>{" "}
+                      <button
+                        className="btn ghost"
+                        style={{ height: "auto", padding: "0 6px" }}
+                        disabled={!markPage}
+                        onClick={() => jumpToMark(mark)}
+                        title={mark.markKind === "text" ? mark.quotedText : "bölge işaretini göster"}
+                      >
+                        {mark.markKind === "text"
+                          ? `“${mark.quotedText.slice(0, 50)}${mark.quotedText.length > 50 ? "…" : ""}”`
+                          : `bölge · ${mark.rects.length} kutu`}
+                      </button>
+                      <button
+                        className="btn ghost"
+                        style={{ height: 22, padding: "0 6px" }}
+                        aria-label="işareti sil"
+                        onClick={() => void removeMark(mark.id)}
+                      >
+                        Sil
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             </details>
           ) : null}
 
@@ -841,6 +1295,7 @@ export function DualReader({
   right,
   onClose,
   onAnchor,
+  onNote,
 }: {
   caseId: string;
   documents: DocumentRow[];
@@ -848,6 +1303,7 @@ export function DualReader({
   right: ReaderTarget | null;
   onClose: () => void;
   onAnchor?: (anchor: AnchorRow) => void;
+  onNote?: (note: NoteRow) => void;
 }) {
   const [leftVersion, setLeftVersion] = useState<string | null>(left?.versionId ?? null);
   const [rightVersion, setRightVersion] = useState<string | null>(right?.versionId ?? null);
@@ -883,6 +1339,7 @@ export function DualReader({
           otherVersionId={rightVersion}
           onPickVersion={setLeftVersion}
           onAnchor={onAnchor}
+          onNote={onNote}
         />
         <ReaderPane
           caseId={caseId}
@@ -893,6 +1350,7 @@ export function DualReader({
           otherVersionId={leftVersion}
           onPickVersion={setRightVersion}
           onAnchor={onAnchor}
+          onNote={onNote}
         />
       </div>
       <p className="hint" style={{ margin: 0 }}>

@@ -377,6 +377,24 @@ export type AnchorRow = {
   createdAt: string;
 };
 
+/** F07-T09: kalıcı işaret. `text` işareti doğrulanmış anchor'a, `region`
+ *  işareti sayfanın kendi koordinat uzayındaki dikdörtgenlere bağlıdır. */
+export type MarkRow = {
+  id: string;
+  caseId: string;
+  documentVersionId: string;
+  parseRunId: string | null;
+  anchorId: string | null;
+  pageId: string | null;
+  markKind: "text" | "region";
+  startOffset: number | null;
+  endOffset: number | null;
+  quotedText: string;
+  rects: [number, number, number, number][];
+  label: string;
+  createdAt: string;
+};
+
 export type NoteRow = {
   id: string;
   caseId: string;
@@ -956,6 +974,39 @@ export const api = {
     exactQuote: string;
   }) => invoke<AnchorRow>("anchor_create", { input }),
 
+  markCreateFromSelection: (
+    input: {
+      caseId: string;
+      documentVersionId: string;
+      parseRunId: string;
+      segmentId: string;
+      startOffset: number;
+      endOffset: number;
+      exactQuote: string;
+    },
+    label: string,
+  ) => invoke<{ anchor: AnchorRow; mark: MarkRow }>("mark_create_from_selection", { input, label }),
+  noteCreateFromSelection: (
+    input: {
+      caseId: string;
+      documentVersionId: string;
+      parseRunId: string;
+      segmentId: string;
+      startOffset: number;
+      endOffset: number;
+      exactQuote: string;
+    },
+    note: { title: string; body: string },
+  ) => invoke<{ anchor: AnchorRow; note: NoteRow }>("note_create_from_selection", { input, note }),
+  markCreateRegion: (input: {
+    caseId: string;
+    documentVersionId: string;
+    pageId: string;
+    rects: [number, number, number, number][];
+    label: string;
+  }) => invoke<MarkRow>("mark_create_region", { input }),
+  marksForVersion: (versionId: string) => invoke<MarkRow[]>("marks_for_version", { versionId }),
+  markDelete: (markId: string) => invoke<void>("mark_delete", { markId }),
   documentPages: (versionId: string) =>
     invoke<DocumentPages | null>("document_pages", { versionId }),
   documentPagePreview: (versionId: string, pageIndex: number, dpi = 96) =>

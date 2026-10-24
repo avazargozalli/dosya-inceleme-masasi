@@ -444,6 +444,9 @@ export function Cases() {
                 setAnchors((prev) => [anchor, ...prev]);
                 setNotice(`Kaynak kaydedildi: “${anchor.exactQuote.slice(0, 60)}”`);
               }}
+              onNote={(note) => {
+                setNotice(`Kaynaklı not oluşturuldu: “${note.title || note.body.slice(0, 40)}”`);
+              }}
             />
           ) : null}
 

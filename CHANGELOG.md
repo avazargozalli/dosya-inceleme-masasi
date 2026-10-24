@@ -3,6 +3,14 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.7.4] — 2026-10-24 — F07 işaretleme ve seçimden not
+
+- Şema v12: `source_marks`; metin işareti doğrulanmış anchor'a bağlı, aynı anchor'da tek aktif işaret
+- Seçimden işaret ve kaynaklı not tek işlemde yazılır; alıntı doğrulanamazsa hiçbir kayıt kalmaz
+- Notun kaynak listesi oluşan anchor'dan gelir; doğrulanmamış kaynak kimliği yazılmaz
+- Bölge işareti sayfa geometrisine karşı doğrulanır; sayfa görüntüsü üzerinde sürükleyerek seçilir
+- Okuyucuda kalıcı metin işaretleri sarı zeminle, bölgeler kesikli çerçeveyle; liste sayfaya götürür ve siler
+
 ## [0.7.3] — 2026-10-24 — F07 yan yana okuyucu
 
 - Her okuyucu paneli kendi belge sürümünü, sayfasını, yakınlaştırmasını, döndürmesini ve metin seçimini korur
