@@ -754,22 +754,24 @@ impl SearchQuery {
 pub const MAX_SEARCH_QUERY_CHARS: usize = 300;
 
 /// Çözümlenmiş sorgu: kip kesinleşti, tırnaklar atıldı, esas no ayrıştırıldı.
-struct ResolvedQuery {
-    mode: SearchMode,
-    text: String,
-    docket: Option<DocketNumber>,
+pub(crate) struct ResolvedQuery {
+    pub(crate) mode: SearchMode,
+    pub(crate) text: String,
+    pub(crate) docket: Option<DocketNumber>,
 }
 
 /// `2024/123 E.` ayrıştırması. Numara baştaki sıfırlardan arındırılır.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DocketNumber {
-    year: String,
-    number: String,
-    role: Option<char>,
+pub(crate) struct DocketNumber {
+    pub(crate) year: String,
+    pub(crate) number: String,
+    pub(crate) role: Option<char>,
 }
 
 impl SearchQuery {
-    fn resolve(&self) -> Result<ResolvedQuery, StorageError> {
+    /// Emsal kütüphanesi araması da **aynı** çözümlemeyi kullanır (F12-T10);
+    /// kip ve tırnak kuralı iki yerde ayrışmasın.
+    pub(crate) fn resolve(&self) -> Result<ResolvedQuery, StorageError> {
         let raw = self.text.trim();
         if raw.chars().count() > MAX_SEARCH_QUERY_CHARS {
             return Err(StorageError::SearchQuery(format!(
@@ -1028,7 +1030,7 @@ fn seq_matches(haystack: &[String], needle: &[String], prefix_last: bool) -> boo
 
 /// Metinde `yıl/numara` geçiyor mu? Numara baştaki sıfırlardan arındırılmış
 /// karşılaştırılır; rol (E./K.) verildiyse numaradan sonra o harf aranır.
-fn docket_match(text: &str, docket: &DocketNumber) -> bool {
+pub(crate) fn docket_match(text: &str, docket: &DocketNumber) -> bool {
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -1298,7 +1300,7 @@ pub(crate) struct SearchMatcher {
 }
 
 impl SearchMatcher {
-    fn new(text: &str, mode: SearchMode, docket: Option<DocketNumber>) -> Self {
+    pub(crate) fn new(text: &str, mode: SearchMode, docket: Option<DocketNumber>) -> Self {
         Self {
             mode,
             exact: turkish_lower(&collapse_ws(text)),
@@ -1314,7 +1316,7 @@ impl SearchMatcher {
         self.mode == SearchMode::Flexible
     }
 
-    fn matches(
+    pub(crate) fn matches(
         &self,
         raw: Option<&str>,
         normalized: Option<&str>,

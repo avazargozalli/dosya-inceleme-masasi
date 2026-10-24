@@ -18,11 +18,11 @@ use dim_storage::{
     NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
     NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent,
     NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow,
-    ParseRun, PrecedentBibliography, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow,
-    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
-    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
-    SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
+    ParseRun, PrecedentBibliography, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentVersionRow, ProviderProfileRow, QuoteVerification,
+    RebindSuggestion, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -1867,6 +1867,18 @@ pub fn precedent_bibliography(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.precedent_bibliography(&precedent_id)?)
+}
+
+/// Emsal kütüphanesi araması (F12-T10). Kapsam yalnız kütüphanedir; aktif
+/// dosyanın belge segmentleri bu komutta hiç okunmaz.
+#[tauri::command]
+pub fn precedent_search(
+    state: State<'_, AppState>,
+    input: PrecedentSearchQuery,
+) -> Result<PrecedentSearchPage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_precedents(&input)?)
 }
 
 /// Tek turda içe alınabilecek dosya sayısı. Daha büyük seçim sessizce

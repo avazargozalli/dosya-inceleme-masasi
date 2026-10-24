@@ -385,6 +385,11 @@ export function Precedents() {
           Künye eksikse karar “incomplete” işaretlenir. “Bulunamadı” ile “uydurulmuş” aynı şey
           değildir; hiçbir kontrol tek başına sahte hükmü üretmez.
         </p>
+        <p className="hint">
+          Bu ekran yalnız <strong>emsal kütüphanesini</strong> yönetir; dosya belgelerinde arama
+          “Arama” ekranındaki <em>Dosya belgeleri</em> kapsamındadır. Kütüphane araması da ayrı
+          kapsamdır (<em>Emsal kütüphanesi</em>); sonuçlar dosyaya delil olarak eklenmez.
+        </p>
       </div>
 
       {error ? (

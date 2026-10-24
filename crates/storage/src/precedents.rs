@@ -8,7 +8,8 @@ use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{now_iso, Database, StorageError};
+use crate::parsing::{docket_match, DocketNumber, MatchScratch, SearchMatcher, SearchQuery};
+use crate::{now_iso, Database, SearchMode, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +126,68 @@ pub struct PrecedentBibliography {
     /// `record` = künye kaydının oluşturulma zamanı.
     pub access_basis: String,
     pub has_full_text: bool,
+}
+
+/// Emsal kütüphanesi araması (F12-T10). Kapsam **açıkça** kütüphanedir; aktif
+/// dosyanın belge araması bu sorguya girmez ve sonuçlar oraya karışmaz.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentSearchQuery {
+    /// Aranan metin; dosya aramasıyla **aynı** kip/tırnak kuralına tabidir.
+    pub text: String,
+    #[serde(default)]
+    pub mode: SearchMode,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentSearchHit {
+    pub precedent_id: String,
+    pub court: String,
+    pub chamber: Option<String>,
+    pub docket_no: Option<String>,
+    pub decision_no: Option<String>,
+    pub decision_date: Option<String>,
+    pub title: Option<String>,
+    /// Eşleşmenin bulunduğu tam metin sürümü; metin gövdesi dönmez.
+    pub version_id: String,
+    pub acquired_at: String,
+    pub source_kind: String,
+    /// Eşleşme çevresinden pencere (en çok 240 karakter, “…” ile kırpılır).
+    pub snippet: String,
+    /// Pencerenin tam metindeki başlangıç karakteri.
+    pub snippet_start: i64,
+    /// Eşleşmenin tam metindeki karakter konumu; yalnız birebir/boşluk/katlama
+    /// ile bulunabildiyse dolar. Bulunamazsa `None` — konum uydurulmaz.
+    pub match_start: Option<i64>,
+    pub match_length: Option<i64>,
+    /// `full_text` = eşleşme kararın tam metninde, `metadata` = yalnız künye
+    /// numaralarında (esas/karar/başvuru no).
+    pub match_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentSearchPage {
+    /// Her zaman `"precedent_library"`; arayüz kapsamı bununla yazar.
+    pub scope: String,
+    /// Çözümlenmiş kip (`auto` dönmez).
+    pub mode: String,
+    pub query: String,
+    /// Tırnaklar atılmış, kipe göre çözümlenmiş metin.
+    pub resolved_query: String,
+    pub hits: Vec<PrecedentSearchHit>,
+    /// Taranan tam metin sayısı.
+    pub scanned: i64,
+    /// Eşleşen emsal sayısı (gösterilenden fazla olabilir).
+    pub matched: i64,
+    /// Tam metni olmadığı için **aranamayan** emsal sayısı.
+    pub without_text: i64,
+    pub limit: u32,
+    pub truncated: bool,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -905,6 +968,245 @@ impl Database {
             has_full_text: with_text > 0,
         })
     }
+
+    /// Emsal kütüphanesi araması (F12-T10).
+    ///
+    /// **Kapsam ayrımı:** yalnız emsal kayıtlarının en yeni tam metni ve künye
+    /// numaraları taranır. Aktif dosyanın belge segmentleri (`text_segments`)
+    /// bu sorguya hiç girmez; dönen `scope` her zaman `precedent_library` olur.
+    /// Metin gövdesi dışarı çıkmaz — yalnız eşleşme çevresinden pencere.
+    pub fn search_precedents(
+        &self,
+        query: &PrecedentSearchQuery,
+    ) -> Result<PrecedentSearchPage, StorageError> {
+        let resolved = SearchQuery {
+            text: query.text.clone(),
+            mode: query.mode,
+        }
+        .resolve()?;
+        if resolved.text.trim().is_empty() {
+            return Err(StorageError::SearchQuery("arama metni boş".into()));
+        }
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_PRECEDENT_SEARCH_LIMIT)
+            .clamp(1, MAX_PRECEDENT_SEARCH_LIMIT);
+        let matcher = SearchMatcher::new(&resolved.text, resolved.mode, resolved.docket.clone());
+        // Künye alanı rolü adıyla belli eder (esas/karar/başvuru); metadata
+        // karşılaştırmasında E./K. rolü aranmaz — yalnız yıl + numara.
+        let metadata_docket = resolved.docket.as_ref().map(|docket| DocketNumber {
+            year: docket.year.clone(),
+            number: docket.number.clone(),
+            role: None,
+        });
+        // Tam metni olmayan kayıt **sessizce atlanmaz**; sayısı ayrıca bildirilir.
+        let without_text: i64 = self.conn().query_row(
+            "SELECT count(*) FROM precedents p
+              WHERE NOT EXISTS (
+                    SELECT 1 FROM precedent_versions v
+                     WHERE v.precedent_id=p.id
+                       AND v.full_text IS NOT NULL AND length(trim(v.full_text))>0)",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut stmt = self.conn().prepare(
+            "SELECT p.id,p.court,p.chamber,p.docket_no,p.decision_no,p.application_no,
+                    p.decision_date,p.title,v.id,v.acquired_at,v.source_kind,v.full_text
+               FROM precedents p
+               JOIN precedent_versions v ON v.id = (
+                    SELECT id FROM precedent_versions
+                     WHERE precedent_id=p.id
+                       AND full_text IS NOT NULL AND length(trim(full_text))>0
+                     ORDER BY acquired_at DESC, id DESC LIMIT 1)
+              ORDER BY p.court, p.chamber, p.decision_date DESC, p.id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                PrecedentSearchSeed {
+                    precedent_id: row.get(0)?,
+                    court: row.get(1)?,
+                    chamber: row.get(2)?,
+                    docket_no: row.get(3)?,
+                    decision_no: row.get(4)?,
+                    application_no: row.get(5)?,
+                    decision_date: row.get(6)?,
+                    title: row.get(7)?,
+                    version_id: row.get(8)?,
+                    acquired_at: row.get(9)?,
+                    source_kind: row.get(10)?,
+                },
+                row.get::<_, String>(11)?,
+            ))
+        })?;
+        let mut hits: Vec<PrecedentSearchHit> = Vec::new();
+        let mut scanned = 0i64;
+        let mut matched = 0i64;
+        let mut scratch = MatchScratch::default();
+        for row in rows {
+            let (seed, full_text) = row?;
+            scanned += 1;
+            let normalized = dim_evidence::normalize(&full_text);
+            let text_match = matcher.matches(Some(&full_text), Some(&normalized), &mut scratch);
+            let metadata_match = resolved.mode == SearchMode::Docket
+                && metadata_docket.as_ref().is_some_and(|docket| {
+                    [
+                        seed.docket_no.as_deref(),
+                        seed.decision_no.as_deref(),
+                        seed.application_no.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|value| docket_match(value, docket))
+                });
+            if !(text_match || metadata_match) {
+                continue;
+            }
+            matched += 1;
+            if hits.len() >= usize::try_from(limit).unwrap_or(usize::MAX) {
+                continue;
+            }
+            let position = if text_match {
+                locate_in_text(&full_text, &resolved.text)
+            } else {
+                None
+            };
+            let (snippet, snippet_start) =
+                snippet_window(&full_text, position.map(|(start, _)| start));
+            hits.push(PrecedentSearchHit {
+                precedent_id: seed.precedent_id,
+                court: seed.court,
+                chamber: seed.chamber,
+                docket_no: seed.docket_no,
+                decision_no: seed.decision_no,
+                decision_date: seed.decision_date,
+                title: seed.title,
+                version_id: seed.version_id,
+                acquired_at: seed.acquired_at,
+                source_kind: seed.source_kind,
+                snippet,
+                snippet_start,
+                match_start: position.map(|(start, _)| start),
+                match_length: position.map(|(_, length)| length),
+                match_source: if text_match { "full_text" } else { "metadata" }.into(),
+            });
+        }
+        let truncated = matched > i64::from(limit);
+        let mut notes = vec![
+            "Kapsam yalnız emsal kütüphanesidir; aktif dosyanın belgeleri bu aramada taranmaz."
+                .to_string(),
+        ];
+        if without_text > 0 {
+            notes.push(format!(
+                "{without_text} emsalin tam metni yok; bu kayıtlar metin aramasında taranmadı. \
+                 Esas/karar numarasıyla arayın."
+            ));
+        }
+        if truncated {
+            notes.push(format!(
+                "{matched} eşleşmeden ilk {limit} tanesi gösteriliyor."
+            ));
+        }
+        if matched == 0 {
+            notes.push(
+                "Emsal kütüphanesinde eşleşme yok. Bu bir “karar yok” hükmü değildir; \
+                 dosya belgelerinde aramak için kapsamı değiştirin."
+                    .into(),
+            );
+        }
+        Ok(PrecedentSearchPage {
+            scope: PRECEDENT_SEARCH_SCOPE.to_string(),
+            mode: resolved.mode.tag().to_string(),
+            query: query.text.trim().to_string(),
+            resolved_query: resolved.text.clone(),
+            hits,
+            scanned,
+            matched,
+            without_text,
+            limit,
+            truncated,
+            notes,
+        })
+    }
+}
+
+/// Kütüphane aramasının kapsam etiketi; arayüz ve testler bunu kullanır.
+pub const PRECEDENT_SEARCH_SCOPE: &str = "precedent_library";
+pub const MAX_PRECEDENT_SEARCH_LIMIT: u32 = 50;
+const DEFAULT_PRECEDENT_SEARCH_LIMIT: u32 = 25;
+/// Eşleşme penceresi: 240 karakter, eşleşmeden önce en çok 60 karakter bağlam.
+const SNIPPET_WINDOW: usize = 240;
+const SNIPPET_LEAD: usize = 60;
+
+struct PrecedentSearchSeed {
+    precedent_id: String,
+    court: String,
+    chamber: Option<String>,
+    docket_no: Option<String>,
+    decision_no: Option<String>,
+    application_no: Option<String>,
+    decision_date: Option<String>,
+    title: Option<String>,
+    version_id: String,
+    acquired_at: String,
+    source_kind: String,
+}
+
+/// Eşleşmenin metindeki yerini bulur: birebir → boşluk sadeleştirmesi →
+/// Türkçe katlama. Bulunamazsa `None`; **konum uydurulmaz**.
+fn locate_in_text(text: &str, needle: &str) -> Option<(i64, i64)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let length = i64::try_from(needle.chars().count()).unwrap_or(i64::MAX);
+    if let Some(byte) = text.find(needle) {
+        return Some((char_offset(text, byte), length));
+    }
+    let haystack = collapse_ws_with_map(text);
+    let wanted = collapse_ws_with_map(needle);
+    if !wanted.text.is_empty() {
+        if let Some(at) = haystack.text.find(&wanted.text) {
+            if let Some(start) = mapped_start(&haystack, at) {
+                return Some((
+                    start,
+                    i64::try_from(wanted.text.chars().count()).unwrap_or(length),
+                ));
+            }
+        }
+    }
+    let haystack = normalize_with_map(text);
+    let wanted = normalize_with_map(needle);
+    if !wanted.text.is_empty() {
+        if let Some(at) = haystack.text.find(&wanted.text) {
+            if let Some(start) = mapped_start(&haystack, at) {
+                return Some((
+                    start,
+                    i64::try_from(wanted.text.chars().count()).unwrap_or(length),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Eşleşme çevresinden pencere. Metnin tamamı arayüze gönderilmez.
+fn snippet_window(text: &str, start: Option<i64>) -> (String, i64) {
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    let position = start
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value < total);
+    let from = position.map_or(0, |pos| pos.saturating_sub(SNIPPET_LEAD));
+    let to = (from + SNIPPET_WINDOW).min(total);
+    let mut out = String::new();
+    if from > 0 {
+        out.push('…');
+    }
+    out.extend(chars[from..to].iter());
+    if to < total {
+        out.push('…');
+    }
+    (out, i64::try_from(from).unwrap_or(0))
 }
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
@@ -983,7 +1285,7 @@ fn map_version(row: &Row<'_>) -> rusqlite::Result<PrecedentVersionRow> {
 mod tests {
     use super::*;
     use crate::cases::{CaseKind, NewCase};
-    use crate::DatabaseKey;
+    use crate::{DatabaseKey, SearchFilters};
 
     fn db() -> Database {
         Database::open_in_memory(&DatabaseKey::new([37u8; 32])).expect("db")
@@ -1549,5 +1851,225 @@ mod tests {
         assert!(iso_to_tr_date("01.06.2025").is_none());
         assert!(iso_to_tr_date("2025-6-1").is_none());
         assert!(iso_to_tr_date("").is_none());
+    }
+
+    fn library_query(text: &str, mode: SearchMode, limit: Option<u32>) -> PrecedentSearchQuery {
+        PrecedentSearchQuery {
+            text: text.into(),
+            mode,
+            limit,
+        }
+    }
+
+    fn case_for_search(db: &Database) -> String {
+        db.create_case(&NewCase {
+            title: "Kira".into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: crate::Sensitivity::Normal,
+            default_ai_policy: crate::AiPolicy::Off,
+        })
+        .expect("dosya")
+        .id
+    }
+
+    /// F12-T10 kabul testi: kütüphane araması **yalnız** emsalleri tarar;
+    /// aynı belirteç dosya belgelerinde bulunmaz ve emsal metni segment
+    /// tablosuna hiç yazılmaz.
+    #[test]
+    fn library_search_is_scoped_and_never_reads_case_documents() {
+        let db = db();
+        let kira = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/123"), Some("2025/456")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &kira.id,
+            &text_of("Gerekçede ÖZEL-BELİRTEÇ-9137 geçer ve kira bedeli tartışılır."),
+        )
+        .expect("metin");
+        let idari = db
+            .create_precedent(&precedent("Danıştay", Some("2024/9"), Some("2025/9")))
+            .expect("emsal");
+        db.add_precedent_text(&idari.id, &text_of("İdari işlemin iptaline karar verildi."))
+            .expect("metin");
+
+        let page = db
+            .search_precedents(&library_query("ÖZEL-BELİRTEÇ-9137", SearchMode::Auto, None))
+            .expect("kütüphane araması");
+        assert_eq!(page.scope, PRECEDENT_SEARCH_SCOPE);
+        assert_eq!(page.scope, "precedent_library");
+        assert_eq!(page.scanned, 2);
+        assert_eq!(page.matched, 1);
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(page.hits[0].precedent_id, kira.id);
+        assert_eq!(page.hits[0].match_source, "full_text");
+        assert!(page.hits[0].snippet.contains("ÖZEL-BELİRTEÇ-9137"));
+        assert!(page.hits[0].match_start.is_some());
+        // Snippet tam metni taşımaz: kararın tamamı değil, pencere döner.
+        assert!(page.hits[0].snippet.chars().count() <= 242);
+
+        let case_id = case_for_search(&db);
+        let documents = db
+            .search_page(
+                &case_id,
+                &SearchQuery::auto("ÖZEL-BELİRTEÇ-9137"),
+                &SearchFilters::default(),
+                20,
+                None,
+                true,
+            )
+            .expect("dosya araması");
+        assert_eq!(documents.scope, "case");
+        assert_eq!(documents.hits.len(), 0);
+        let leaked: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM text_segments WHERE raw_text LIKE '%ÖZEL-BELİRTEÇ-9137%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sayım");
+        assert_eq!(leaked, 0, "emsal metni dosya aramasına sızmamalı");
+    }
+
+    /// Tam metni olmayan kayıt sessizce atlanmaz; sayısı ve nedeni bildirilir.
+    #[test]
+    fn library_search_reports_records_without_full_text() {
+        let db = db();
+        let with_text = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
+        db.add_precedent_text(&with_text.id, &text_of("Kira bedeli ödenmedi."))
+            .expect("metin");
+        db.create_precedent(&precedent("Yargıtay", Some("2024/55"), Some("2025/55")))
+            .expect("metinsiz emsal");
+
+        let page = db
+            .search_precedents(&library_query("2024/55", SearchMode::Docket, None))
+            .expect("arama");
+        assert_eq!(page.mode, "docket");
+        assert_eq!(page.scanned, 1, "yalnız tam metni olan kayıt taranır");
+        assert_eq!(page.without_text, 1);
+        assert_eq!(page.matched, 0);
+        assert!(page.notes.iter().any(|n| n.contains("tam metni yok")));
+        assert!(page
+            .notes
+            .iter()
+            .any(|n| n.contains("yönünde") || n.contains("hükmü değildir")));
+    }
+
+    /// Türkçe katlama ile eşleşme + eşleşme çevresinden pencere.
+    #[test]
+    fn library_search_folds_turkish_and_keeps_context_window() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/3"), Some("2025/4")))
+            .expect("emsal");
+        let mut body = String::new();
+        for _ in 0..40 {
+            body.push_str("dolgu metni ");
+        }
+        body.push_str("İtirazın reddine karar verildi.");
+        for _ in 0..40 {
+            body.push_str(" sonrası");
+        }
+        db.add_precedent_text(&p.id, &text_of(&body))
+            .expect("metin");
+
+        let folded = db
+            .search_precedents(&library_query(
+                "itirazin reddine",
+                SearchMode::Flexible,
+                None,
+            ))
+            .expect("katlamalı arama");
+        assert_eq!(folded.hits.len(), 1);
+        let hit = &folded.hits[0];
+        assert!(hit.snippet.contains("İtirazın reddine"));
+        assert!(hit.snippet.starts_with('…'), "pencere metnin ortasından");
+        let start = hit.match_start.expect("konum") as usize;
+        assert!(start > 0);
+        // Konum gerçekten eşleşmenin başını gösteriyor.
+        let at: String = body.chars().skip(start).take(8).collect();
+        assert!(at.starts_with("İtirazın"));
+
+        // Birebir arama Türkçe karakterle de aynı yeri bulur.
+        let exact = db
+            .search_precedents(&library_query("İtirazın reddine", SearchMode::Exact, None))
+            .expect("birebir arama");
+        assert_eq!(exact.hits.len(), 1);
+    }
+
+    /// Esas/karar numarası künyeden de bulunur; metinde numara geçmese bile
+    /// sonuç `metadata` olarak işaretlenir ve konum uydurulmaz.
+    #[test]
+    fn library_search_docket_mode_matches_metadata_only() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/777"), Some("2025/888")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &p.id,
+            &text_of("Metinde numara geçmiyor; yalnız gerekçe var."),
+        )
+        .expect("metin");
+
+        let page = db
+            .search_precedents(&library_query("2024/777 E.", SearchMode::Docket, None))
+            .expect("arama");
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(page.hits[0].match_source, "metadata");
+        assert!(page.hits[0].match_start.is_none());
+
+        let other_year = db
+            .search_precedents(&library_query("2023/777 E.", SearchMode::Docket, None))
+            .expect("arama");
+        assert_eq!(other_year.matched, 0);
+    }
+
+    #[test]
+    fn library_search_limits_results_but_reports_total_matches() {
+        let db = db();
+        for index in 0..4 {
+            let p = db
+                .create_precedent(&precedent(
+                    "Yargıtay",
+                    Some(&format!("2024/{index}")),
+                    Some(&format!("2025/{index}")),
+                ))
+                .expect("emsal");
+            db.add_precedent_text(
+                &p.id,
+                &text_of(&format!("Karar {index} ORTAKKELIME içerir.")),
+            )
+            .expect("metin");
+        }
+        let page = db
+            .search_precedents(&library_query("ORTAKKELIME", SearchMode::Auto, Some(2)))
+            .expect("arama");
+        assert_eq!(page.matched, 4);
+        assert_eq!(page.hits.len(), 2);
+        assert!(page.truncated);
+        assert!(page.notes.iter().any(|n| n.contains("ilk 2")));
+
+        let clamped = db
+            .search_precedents(&library_query("ORTAKKELIME", SearchMode::Auto, Some(9_999)))
+            .expect("arama");
+        assert_eq!(clamped.limit, MAX_PRECEDENT_SEARCH_LIMIT);
+        assert_eq!(clamped.hits.len(), 4);
+        assert!(!clamped.truncated);
+    }
+
+    #[test]
+    fn library_search_rejects_empty_query() {
+        let db = db();
+        assert_eq!(
+            db.search_precedents(&library_query("   ", SearchMode::Auto, None))
+                .unwrap_err()
+                .code(),
+            "E_SEARCH_QUERY"
+        );
     }
 }

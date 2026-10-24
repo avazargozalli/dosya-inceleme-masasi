@@ -155,3 +155,47 @@ Künye doğruluğu, alıntının birebir bulunması ve **anlamın kararı yansı
 Künye biçimi tek bir TR hukuk geleneğine göre sabittir; dipnot/atıf stili
 seçimi (örn. makale stili, kısaltmalar) yoktur. Erişim tarihi kasadaki edinim
 kaydıdır — kaynağın bugün hâlâ erişilebilir olduğu doğrulanmaz.
+
+## F12-T10 — Emsal kütüphanesi kapsamının dosya aramasından ayrılması
+
+- **Ayrı çekirdek:** `Database::search_precedents(PrecedentSearchQuery { text, mode, limit })`
+  → `PrecedentSearchPage`. Kapsam alanı **her zaman** `precedent_library`;
+  dosya araması (`search_page`) `scope="case"` döndürmeye devam eder. İki
+  arama aynı sonuç listesini paylaşmaz, birbirinin sonucunu filtrelemez.
+- **Ne taranır:** her emsal için **en yeni tam metin** sürümü
+  (`precedent_versions.full_text`) ve docket kipinde künye numaraları
+  (esas/karar/başvuru). Metin gövdesi arayüze çıkmaz; yalnız eşleşme
+  çevresinden en çok 240 karakterlik pencere (+ en çok 60 karakter ön bağlam).
+- **Kip/tırnak kuralı tek yerde:** kütüphane araması da dosya aramasının
+  `SearchQuery::resolve` + `SearchMatcher` yolunu kullanır (auto → tırnaklı
+  metin ifade, `2024/123 E.` docket, diğerleri esnek). `dim_evidence::normalize`
+  ile Türkçe katlama aynı.
+- **Kapsam sızıntısı testi:** kütüphaneye yazılan belirteç dosya aramasında
+  (`search_page`) **0** sonuç verir ve `text_segments` tablosunda hiç
+  bulunmaz; emsal metni segment indeksine yazılmaz.
+- **Eksik bilgi gizlenmez:** tam metni olmayan emsal sayısı `withoutText` ve
+  `notes` ile bildirilir; bu kayıtlar metin aramasında taranmaz. Eşleşme yoksa
+  not “karar yok hükmü değildir” der.
+- **Eşleşme kaynağı ayrı:** `matchSource=full_text|metadata`; künye
+  eşleşmesinde karakter konumu (`matchStart`) **uydurulmaz**, `null` kalır.
+  Konum yalnız birebir → boşluk sadeleştirmesi → Türkçe katlama ile
+  bulunabildiğinde dolar.
+- **Arayüz:** Arama ekranında iki düğmeli kapsam seçici (`aria-pressed`),
+  kalıcı kapsam uyarısı, kütüphane kapsamında dosya seçimi ve belge
+  filtrelerinin gizlenmesi + nedeni; sonuç kartında künye, eşleşme kaynağı,
+  pencere ve “Alıntıyı kopyala” (pano reddederse açık hata). Emsal ekranı da
+  kendi kapsamını yazar. Kapsam değişince öteki kapsamın sonuçları temizlenir.
+- Test: 6 yeni storage testi (kapsam+sızıntı, metinsiz kayıt sayımı, Türkçe
+  katlama + pencere/konum, docket künye eşleşmesi, limit/toplam, boş sorgu);
+  5 yeni web testi (kapsam etiketleri, künye, eşleşme etiketi, özet, kopya
+  metni).
+
+### Dürüst sınırlama
+
+Kütüphane araması **sayfalanmaz**: tek turda en çok 50 sonuç döner
+(`truncated`, `matched` ile toplam bildirilir); imleç yok. Arama, tam metinleri
+Rust tarafında tek tek tarar (emsal sayısı binlerle sınırlıyken hızlı, on
+binlerde doğrusal) — FTS indeksi yok. Pencere konumu yalnız üç yöntemle
+bulunur; noktalama araya girdiği ifade eşleşmelerinde konum `null` kalabilir
+(snippet baştan gösterilir). Kütüphane sonucu dosyaya delil olarak eklenmez;
+bunu yapan bir düğme bilinçli olarak yok.

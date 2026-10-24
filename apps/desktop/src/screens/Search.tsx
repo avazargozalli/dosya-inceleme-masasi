@@ -6,6 +6,8 @@ import {
   type CaseRow,
   type CaseTagRow,
   type DocumentRow,
+  type PrecedentSearchHit,
+  type PrecedentSearchPage,
   type SearchFilters,
   type SearchHit,
   type SearchMode,
@@ -28,6 +30,15 @@ import {
   textOriginLabel,
   toggleValue,
 } from "../lib/search";
+import {
+  precedentCitation,
+  precedentMatchLabel,
+  precedentSearchSummary,
+  precedentSnippetForCopy,
+  scopeNotice,
+  SEARCH_SCOPE_LABELS,
+  type SearchScope,
+} from "../lib/search-scope";
 
 const PAGE_SIZE = 25;
 
@@ -53,6 +64,8 @@ function Highlight({ text, query }: { text: string; query: string }) {
 export function Search() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState<string>("");
+  /** Arama kapsamı (F12-T10): dosya belgeleri ↔ emsal kütüphanesi. */
+  const [scope, setScope] = useState<SearchScope>("case_documents");
   const [query, setQuery] = useState<string>("");
   /** Seçili arama kipi (F07-T02); sunucu `auto`yu çözer. */
   const [mode, setMode] = useState<SearchMode>("auto");
@@ -65,6 +78,9 @@ export function Search() {
   const [appliedFilters, setAppliedFilters] = useState<SearchFilters>(EMPTY_SEARCH_FILTERS);
   const [draftFilters, setDraftFilters] = useState<SearchFilters>(EMPTY_SEARCH_FILTERS);
   const [page, setPage] = useState<SearchPage | null>(null);
+  /** Kütüphane kapsamının sonucu; dosya sonuçlarıyla **aynı listede tutulmaz**. */
+  const [libraryPage, setLibraryPage] = useState<PrecedentSearchPage | null>(null);
+  const [copiedHit, setCopiedHit] = useState<string>("");
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [caseTags, setCaseTags] = useState<CaseTagRow[]>([]);
   const [reader, setReader] = useState<{ left: ReaderTarget | null; right: ReaderTarget | null } | null>(null);
@@ -117,13 +133,42 @@ export function Search() {
     setSearchedQuery("");
   }, [caseId]);
 
+  // Kapsam değişince öteki kapsamın sonuçları ekranda kalmaz: her sonuç
+  // kendi kapsamıyla etiketlidir, karışık liste gösterilmez.
+  useEffect(() => {
+    setPage(null);
+    setLibraryPage(null);
+    setSearchedQuery("");
+    setCopiedHit("");
+  }, [scope]);
+
   const run = useCallback(
     async (kind: "fresh" | "more" = "fresh") => {
-      if (!caseId) return;
       const asked = kind === "fresh" ? query : searchedQuery;
       if (asked.trim().length === 0) return;
-      const applied = kind === "fresh" ? draftFilters : appliedFilters;
       const askedMode = kind === "fresh" ? mode : searchedMode;
+      setError(null);
+      if (scope === "precedent_library") {
+        if (kind === "more") return;
+        setBusy(true);
+        try {
+          const library = await api.precedentSearch({
+            text: asked,
+            mode: askedMode,
+            limit: PAGE_SIZE,
+          });
+          setSearchedQuery(asked);
+          setSearchedMode(askedMode);
+          setLibraryPage(library);
+        } catch (e) {
+          setError(toApiError(e));
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+      if (!caseId) return;
+      const applied = kind === "fresh" ? draftFilters : appliedFilters;
       const cursor = kind === "more" ? page?.nextCursor ?? null : null;
       if (kind === "more" && !cursor) return;
 
@@ -156,7 +201,7 @@ export function Search() {
         setLoadingMore(false);
       }
     },
-    [appliedFilters, caseId, draftFilters, mode, page, query, searchedMode, searchedQuery],
+    [appliedFilters, caseId, draftFilters, mode, page, query, scope, searchedMode, searchedQuery],
   );
 
   /** Sonucu seçilen panelde açar. Hedef, sonucun kendi sürümünü taşır;
@@ -176,6 +221,21 @@ export function Search() {
       left: side === "left" ? target : (prev?.left ?? null),
       right: side === "right" ? target : (prev?.right ?? null),
     }));
+  }
+
+  /** Kütüphane sonucundan alıntı kopyalama; pano reddederse sessiz kalmaz. */
+  async function copySnippet(hit: PrecedentSearchHit) {
+    try {
+      await navigator.clipboard.writeText(precedentSnippetForCopy(hit));
+      setCopiedHit(hit.versionId);
+      setError(null);
+    } catch {
+      setError({
+        code: "E_CLIPBOARD",
+        message: "Panoya kopyalama izni yok; metni seçip elle kopyalayın.",
+        retryable: false,
+      });
+    }
   }
 
   const selectedCase = useMemo(() => cases.find((c) => c.id === caseId), [cases, caseId]);
@@ -198,9 +258,9 @@ export function Search() {
       <div className="page-head">
         <h1>Arama</h1>
         <p className="lead">
-          Arama yalnız seçili dosyanın metinleri üzerinde çalışır; başka dosyanın içeriği sonuca
-          eklenmez. Sonuç, kaynak sayfası ve metniyle birlikte gösterilir; tek tıkla okuyucuda
-          doğru sürüm ve sayfa açılır.
+          İki kapsam vardır ve <strong>karışmaz</strong>: dosya belgeleri (yalnız seçili dosya) ve emsal
+          kütüphanesi (yalnız emsal kayıtlarının tam metinleri). Her sonuç kendi kapsamıyla etiketlenir;
+          emsal sonucu dosyaya delil olarak eklenmez.
         </p>
       </div>
 
@@ -210,17 +270,42 @@ export function Search() {
         </div>
       ) : null}
 
+      <div
+        className="row"
+        role="group"
+        aria-label="Arama kapsamı"
+        style={{ gap: 6, alignItems: "center", marginBottom: "var(--space-2)" }}
+      >
+        {(Object.keys(SEARCH_SCOPE_LABELS) as SearchScope[]).map((value) => (
+          <button
+            key={value}
+            className={scope === value ? "btn primary" : "btn ghost"}
+            aria-pressed={scope === value}
+            onClick={() => setScope(value)}
+            title={scopeNotice(value)}
+          >
+            {SEARCH_SCOPE_LABELS[value]}
+          </button>
+        ))}
+      </div>
+
+      <div className="notice" role="status" data-scope={scope}>
+        <strong>{SEARCH_SCOPE_LABELS[scope]}</strong> — {scopeNotice(scope)}
+      </div>
+
       <div className="card">
         <div className="row">
-          <div className="field" style={{ flex: "1 1 240px" }}>
-            <label htmlFor="search-case">Dosya</label>
-            <select id="search-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
-              {cases.length === 0 ? <option value="">Dosya yok</option> : null}
-              {cases.map((c) => (
-                <option key={c.id} value={c.id}>{c.title}</option>
-              ))}
-            </select>
-          </div>
+          {scope === "case_documents" ? (
+            <div className="field" style={{ flex: "1 1 240px" }}>
+              <label htmlFor="search-case">Dosya</label>
+              <select id="search-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
+                {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+                {cases.map((c) => (
+                  <option key={c.id} value={c.id}>{c.title}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <div className="field" style={{ flex: "2 1 320px" }}>
             <label htmlFor="search-q">Aranan metin</label>
             <input
@@ -247,7 +332,7 @@ export function Search() {
           </div>
           <button
             className="btn primary"
-            disabled={busy || !caseId || query.trim().length === 0}
+            disabled={busy || (scope === "case_documents" && !caseId) || query.trim().length === 0}
             onClick={() => void run("fresh")}
           >
             {busy ? "Aranıyor…" : "Ara"}
@@ -258,6 +343,8 @@ export function Search() {
           {searchModeHint(query, mode)}
         </p>
 
+        {scope === "case_documents" ? (
+          <>
         <div
           style={{
             display: "grid",
@@ -350,6 +437,14 @@ export function Search() {
             Filtreleri temizle
           </button>
         </div>
+          </>
+        ) : (
+          <p className="hint" style={{ marginTop: "var(--space-2)", marginBottom: 0 }}>
+            Emsal kütüphanesi kapsamında dosya seçimi ve belge filtreleri (tür, etiket, metin kaynağı,
+            tarih rolü) uygulanmaz. Kütüphane yalnız emsal kayıtlarının tam metnini ve künye numaralarını
+            tarar; sayfa başına {PAGE_SIZE} sonuç gelir.
+          </p>
+        )}
       </div>
 
       {stale || modeStale ? (
@@ -368,7 +463,7 @@ export function Search() {
             <div>
               <h2>Sonuçlar</h2>
               <p className="card-sub">
-                {resultSummary(page)} · kapsam: yalnız bu dosya · kip:{" "}
+                {resultSummary(page)} · kapsam: yalnız bu dosya (emsal kütüphanesi hariç) · kip:{" "}
                 {SEARCH_MODE_LABELS[page.mode]}
                 {filterCount > 0 ? ` · ${filterCount} filtre` : ""}
               </p>
@@ -449,6 +544,71 @@ export function Search() {
           <p className="hint" style={{ margin: 0 }}>
             “Solda aç / Sağda aç” sonucun kaydedildiği sürümü açar; iki sonucu yan yana koyup
             karşılaştırabilirsiniz.
+          </p>
+        </div>
+      ) : null}
+
+      {scope === "precedent_library" && libraryPage !== null ? (
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Emsal kütüphanesi sonuçları</h2>
+              <p className="card-sub">
+                {precedentSearchSummary(libraryPage)} · kapsam: <strong>emsal kütüphanesi</strong> · kip:{" "}
+                {SEARCH_MODE_LABELS[libraryPage.mode]}
+              </p>
+              <p className="hint" style={{ margin: 0 }}>Sorgu: “{libraryPage.resolvedQuery}”</p>
+            </div>
+          </div>
+          {libraryPage.notes.length > 0 ? (
+            <ul className="hint" style={{ margin: 0, paddingLeft: 18 }}>
+              {libraryPage.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          ) : null}
+          {libraryPage.hits.length === 0 ? (
+            <div className="empty">
+              <p style={{ margin: 0 }}>
+                Emsal kütüphanesinde eşleşme yok. Bu sonuç “karar yok” hükmü değildir; künyeyi
+                esas/karar numarasıyla da arayabilirsiniz.
+              </p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              {libraryPage.hits.map((hit) => (
+                <div key={hit.versionId} className="card tight" style={{ background: "var(--surface)" }}>
+                  <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span className="badge plain">emsal</span>
+                      <span className="badge plain">{precedentCitation(hit)}</span>
+                      <span className="badge plain">eşleşme: {precedentMatchLabel(hit)}</span>
+                      {hit.title ? <span className="badge plain">{hit.title}</span> : null}
+                    </span>
+                    <button
+                      className="btn ghost"
+                      style={{ height: 26 }}
+                      onClick={() => void copySnippet(hit)}
+                    >
+                      {copiedHit === hit.versionId ? "Kopyalandı" : "Alıntıyı kopyala"}
+                    </button>
+                  </div>
+                  <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                    <Highlight text={hit.snippet} query={libraryPage.resolvedQuery} />
+                  </p>
+                  <span className="muted small" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+                    sürüm {hit.versionId.slice(0, 8)} · edinim {hit.acquiredAt.slice(0, 10)}
+                    {hit.matchStart !== null
+                      ? ` · konum ${hit.matchStart}`
+                      : " · konum yok (künye eşleşmesi)"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="hint" style={{ margin: 0 }}>
+            Bu sonuçlar aktif dosyaya delil olarak eklenmez. Alıntı, emsal kaydındaki tam metinle
+            doğrulanmalıdır; tam metni olmayan kayıtlar metin aramasında taranmaz.
           </p>
         </div>
       ) : null}

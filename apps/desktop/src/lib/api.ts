@@ -278,6 +278,44 @@ export type PrecedentBibliography = {
   hasFullText: boolean;
 };
 
+/**
+ * Emsal kütüphanesi araması (F12-T10). `scope` her zaman `precedent_library`:
+ * bu sonuçlar aktif dosyanın belgelerinden **gelmez** ve dosya aramasına
+ * karışmaz.
+ */
+export type PrecedentSearchHit = {
+  precedentId: string;
+  court: string;
+  chamber: string | null;
+  docketNo: string | null;
+  decisionNo: string | null;
+  decisionDate: string | null;
+  title: string | null;
+  versionId: string;
+  acquiredAt: string;
+  sourceKind: string;
+  snippet: string;
+  snippetStart: number;
+  matchStart: number | null;
+  matchLength: number | null;
+  /** `full_text` = kararın tam metninde, `metadata` = yalnız künye numaralarında. */
+  matchSource: "full_text" | "metadata";
+};
+
+export type PrecedentSearchPage = {
+  scope: "precedent_library";
+  mode: Exclude<SearchMode, "auto">;
+  query: string;
+  resolvedQuery: string;
+  hits: PrecedentSearchHit[];
+  scanned: number;
+  matched: number;
+  withoutText: number;
+  limit: number;
+  truncated: boolean;
+  notes: string[];
+};
+
 /** Toplu içe almanın dosya başına sonucu (F12-T06). */
 export type BulkImportItem = {
   fileName: string;
@@ -1028,6 +1066,9 @@ export const api = {
   /** Bibliyografik künye (F12-T12): künye, kaynak bağlantısı, erişim tarihi. */
   precedentBibliography: (precedentId: string) =>
     invoke<PrecedentBibliography>("precedent_bibliography", { precedentId }),
+  /** Emsal kütüphanesi araması (F12-T10); kapsam dosya aramasından ayrıdır. */
+  precedentSearch: (input: { text: string; mode: SearchMode; limit?: number }) =>
+    invoke<PrecedentSearchPage>("precedent_search", { input }),
   /** Toplu içe alma (F12-T06): seçilen dosyalar + isteğe bağlı CSV künye listesi. */
   precedentBulkImport: (input: {
     files: string[];
