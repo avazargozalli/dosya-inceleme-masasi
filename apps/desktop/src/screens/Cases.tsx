@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   api,
   toApiError,
@@ -112,7 +113,6 @@ export function Cases() {
   }
 
   async function addDocument() {
-    if (!selected) return;
     const picked = await openFileDialog({
       multiple: false,
       directory: false,
@@ -121,10 +121,15 @@ export function Cases() {
       ],
     });
     if (typeof picked !== "string") return;
+    await importFromPath(picked);
+  }
+
+  async function importFromPath(path: string) {
+    if (!selected) return;
     setBusy(true);
     setNotice(null);
     try {
-      const outcome = await api.documentImport(selected.id, picked);
+      const outcome = await api.documentImport(selected.id, path);
       if (outcome.kind === "duplicate") {
         setNotice(
           `Bu dosyada aynı içerik zaten var: “${outcome.displayName}”. Yeni kayıt oluşturulmadı.`,
@@ -225,6 +230,26 @@ export function Cases() {
       setError(toApiError(e));
     }
   }
+
+  // Dosya sürükle-bırak: Tauri pencere olayı yol verir, HTML5 drop vermez.
+  useEffect(() => {
+    if (!selected) return;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") return;
+        const path = event.payload.paths[0];
+        if (path) void importFromPath(path);
+      })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
 
   async function mutate(action: "archive" | "restore" | "delete") {
     if (!selected) return;

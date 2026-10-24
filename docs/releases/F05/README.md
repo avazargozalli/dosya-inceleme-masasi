@@ -29,3 +29,11 @@ tekrar tespiti, desteklenmeyen dosya. CI: **bekliyor**.
 - Yanlış veya eksik parola `E_PDF_PASSWORD` döner; belge açılmış sayılmaz.
 - Belgeler ekranında parola alanı ve "Ayrıştır"/"OCR" düğmeleri.
 - Test: eksik parola, yanlış parola, doğru parola (AES-256 örnek PDF).
+
+## Sürükle-bırak (ek)
+
+- Dosya pencereye bırakıldığında Tauri `onDragDropEvent` yol verir; `importFromPath`
+  aynı içe aktarma hattını (SHA-256, magic-byte, 250 MiB, şifreli blob) kullanır.
+- HTML5 `drop` olayı Tauri'de dosya yolu vermediği için bilinçli olarak kullanılmadı.
+- Seçili dosya yokken bırakma yok sayılır; kullanıcıya sessizce yanlış dosyaya
+  yazılmaz.

@@ -28,6 +28,11 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.10.2] — 2026-10-24 — F05 sürükle-bırak
+
+- Pencereye bırakılan dosya aynı içe aktarma hattından geçer (Tauri drag-drop olayı)
+- Seçili dosya yoksa bırakma yok sayılır
+
 ## [0.10.1] — 2026-10-24 — F14 şifreli devir paketi
 
 - `vault::package` seal/open: Argon2id + AES-256-GCM, `DIMPAK1` başlığı
