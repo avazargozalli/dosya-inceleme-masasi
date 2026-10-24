@@ -140,6 +140,8 @@ kasadan gelen sayılar.
 - **Test:** storage **239** (+8 `export_coverage`), Tauri komut testi
   `case_payload_embeds_coverage_block`, Web **273** (+14
   `export-coverage.test.ts`); `tsc --noEmit` + `vite build` yeşil.
+- **Commit/CI:** `14d5994` → run `40138828188` **7/7 yeşil** (arayüz, SBOM,
+  masaüstü kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
 
 ### Sınırlamalar (F11-T06)
 
