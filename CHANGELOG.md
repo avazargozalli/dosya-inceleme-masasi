@@ -3,6 +3,14 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.7.3] — 2026-10-24 — F07 yan yana okuyucu
+
+- Her okuyucu paneli kendi belge sürümünü, sayfasını, yakınlaştırmasını, döndürmesini ve metin seçimini korur
+- Sürüm başına görünüm belleği (en çok 8 sürüm): belge değiştirip dönünce konum ve seçim geri yüklenir; disk veya localStorage kullanılmaz
+- Geri yüklenen seçim sayfa metnine karşı doğrulanır; kaymış alıntı işaretlenmez ve neden yazılır
+- Boş panel diğer panelde açık belgeyi ikinci kez açmaz
+- Odaklı panelde Alt+ok/PageUp/PageDown/Home/End ile sayfa gezinme; "etkin panel" rozeti
+
 ## [0.7.2] — 2026-10-23 — F06 görüntü/TIFF
 
 - PNG/JPEG/TIFF artık ayrıştırılır; çok kareli TIFF'te her kare ayrı fiziksel sayfa

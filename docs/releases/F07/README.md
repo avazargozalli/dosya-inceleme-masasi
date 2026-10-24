@@ -13,6 +13,7 @@
 | F07-T05 | ✅ | keyset sayfalama, 200 sonuç sınırı, kapsam görünürlüğü |
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
+| F07-T08 | ✅ | yan yana iki panel kendi sürümünü, sayfasını, yakınlaştırmasını ve seçimini korur; sürüm başına görünüm belleği |
 | F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
 | F07-T11 | ✅ | sayfa önizlemesi kasa anahtarıyla şifreli disk önbelleğinde; bellekteki çözülmüş sayfalar kilitta temizlenir |
 
@@ -144,6 +145,31 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
 - Alıntı vurgusu paragraf içinde yerel aralığa çevrilir (`entrySlice`); PDF
   sayfalarında yapı üretilmez (`structureEntries` boş döner).
 
+## F07-T08 — yan yana iki belge; panel başına kaynak ve seçim
+
+- **Panel durumu**: `ReaderView { page, zoom, rotation, selection }`. Her panel
+  kendi görünümünü tutar; bir panelde belge, sayfa, yakınlaştırma veya döndürme
+  değişimi diğerini etkilemez (ayrı durum, ayrı bellek).
+- **Sürüm belleği**: panel açtığı her belge sürümünün son görünümünü hatırlar
+  (`rememberView` / `recallView`, en çok 8 sürüm; sınır aşılınca en eski düşer).
+  Belge değiştirip geri dönüldüğünde sayfa, yakınlaştırma, döndürme ve metin
+  seçimi geri yüklenir. Bellek **yalnız panel oturumundadır**; diske veya
+  `localStorage`a yazılmaz (seçim metni kasa dışına çıkmaz).
+- **Seçim doğrulaması**: geri yüklenen seçim sayfa metnine karşı doğrulanır
+  (`validSelection`). Alıntı kaydedildiği offset'te birebir durmuyorsa (yeniden
+  ayrıştırma metni kaydırmış olabilir) seçim geri yüklenmez, arayüz nedenini
+  yazar; yanlış alıntı işaretlenmez.
+- **Hedef ile hatıra çatışması**: arama sonucu/bağ hedefi yeni tıklandığında
+  ilgili sayfa açılır; sürüm hatırlanan görünümle geri yüklendiyse hedef
+  zıplaması yapılmaz, kullanıcının bıraktığı yer korunur.
+- **Boş panel**: kendiliğinden bir belge açar ama **diğer panelde açık sürümü
+  seçmez** (`pickInitialVersion`); ikinci belge yoksa tek belgeye döner.
+- **Klavye**: odak hangi paneldeyse `Alt`+`←`/`→`, `Alt`+`PageUp`/`PageDown`,
+  `Alt`+`Home`/`End` o panelin sayfasını değiştirir (`pageForKey`). Düz ok ve
+  PageDown/PageUp tuşları metin alanının kendi kaydırmasında kalır. Odaklanan
+  panel "etkin panel" rozeti ve vurgulu çerçeveyle işaretlenir; diğer panelin
+  sayfası ve seçimi değişmez.
+
 ## F07-T10 — not taslağı, geri/ileri al ve sürüm çakışması
 
 - **Şema v11** (`0011_note_history.sql`): `notes.undo_stack` / `notes.redo_stack`
@@ -205,6 +231,20 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   görüntü belgeleri (JPG/TIFF) için sayfa çizimi yok. Önbellek sürüm silinince
   otomatik temizlenmez (`PreviewStore::purge_version` hazır, silme akışına
   bağlanmadı) — diskte şifreli kaldığı için veri sızıntısı değil, yer kullanımı.
+
+## Doğrulama (F07-T08)
+
+- Web: `tsc` + `vitest` **123** (16 yeni) + `vite build` yeşil. Yeni testler:
+  görünüm belleği (kaydet/geri ver, aynı sürümü güncelleme, sınır, boş kimlik,
+  kopya izolasyonu), seçim doğrulama (eşleşme, kaymış offset, aralık dışı/ters/
+  tam sayı olmayan), klavye gezinme (Alt ile ileri-geri, uçlarda durma,
+  Home/End, değiştirici reddi, boş belge), boş panelde belge seçimi (diğer
+  panelin sürümünü atlama, tek belgeye dönme, sürümsüz belge).
+- Rust ve Python değişmedi: bu adım yalnız arayüz görünüm durumunu ele alır;
+  çekirdek komut, şema veya worker protokolü değişmedi.
+- **Sınırlama**: Tauri penceresi bu ortamda açılmadı. Panel belleği, seçim geri
+  yükleme ve klavye gezinmesi saf fonksiyon testleri + typecheck + üretim
+  derlemesiyle doğrulandı; gerçek tıklama, odak sırası ve görsel QA yapılmadı.
 
 ## Doğrulama (F07-T11)
 
