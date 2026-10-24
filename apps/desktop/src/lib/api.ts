@@ -234,8 +234,20 @@ export type CitationCheckRow = {
   identityMatch: "match" | "mismatch" | "unknown";
   quoteMatch: "match" | "mismatch" | "not_checked" | "unknown";
   meaningReview: string;
+  meaningNote: string;
+  meaningReviewedAt: string | null;
   reasonCodes: string[];
   createdAt: string;
+};
+
+export type CitationContext = {
+  found: boolean;
+  before: string;
+  quote: string;
+  after: string;
+  charPosition: number | null;
+  state: string;
+  reason: string | null;
 };
 
 /** Kararın tam metin sürümü (F12-T05). Metnin kendisi arayüze gelmez. */
@@ -1017,6 +1029,10 @@ export const api = {
   precedentConnectorList: () => invoke<ConnectorCatalog>("precedent_connector_list"),
   citationCheckList: (versionId: string) =>
     invoke<CitationCheckRow[]>("citation_check_list", { versionId }),
+  citationMeaningReview: (checkId: string, review: string, note: string) =>
+    invoke<CitationCheckRow>("citation_meaning_review", { checkId, review, note }),
+  citationContext: (checkId: string, radius = 120) =>
+    invoke<CitationContext>("citation_context", { checkId, radius }),
   citationCheckCreate: (input: {
     inputDocumentVersionId: string;
     extractedCitation: string;

@@ -11,17 +11,18 @@ use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CaseChecklistItemRow, CasePatch,
-    CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow,
-    ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document,
-    DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
-    ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
-    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
-    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
-    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, ProviderProfileRow, QuoteVerification,
-    RebindSuggestion, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
+    CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, CitationContext,
+    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey,
+    Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
+    EvidenceLinkRow, ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
+    NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
+    NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent,
+    NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow,
+    ParseRun, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
+    TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -2996,4 +2997,28 @@ pub fn document_redact_regions(
         ocr_verified: outcome.ocr_verified,
         engines: outcome.engines,
     })
+}
+
+#[tauri::command]
+pub fn citation_meaning_review(
+    state: State<'_, AppState>,
+    check_id: String,
+    review: String,
+    note: String,
+) -> Result<CitationCheckRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.review_citation_meaning(&check_id, &review, &note)?)
+}
+
+#[tauri::command]
+pub fn citation_context(
+    state: State<'_, AppState>,
+    check_id: String,
+    radius: Option<u32>,
+) -> Result<CitationContext, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let radius = radius.unwrap_or(120).clamp(10, 500);
+    Ok(db.citation_context(&check_id, radius as usize)?)
 }

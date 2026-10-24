@@ -58,8 +58,8 @@ pub use precedent_import::{
     MANIFEST_MAX_BYTES,
 };
 pub use precedents::{
-    CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, NewPrecedentText,
-    PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, QuoteVerification,
+    CitationCheckRow, CitationContext, NewCitationCheck, NewPrecedent, NewPrecedentNote,
+    NewPrecedentText, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, QuoteVerification,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{
@@ -179,13 +179,18 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("migrations/0013_precedent_text.sql"),
     },
     Migration {
+        version: 15,
+        name: "0015_citation_meaning",
+        sql: include_str!("migrations/0015_citation_meaning.sql"),
+    },
+    Migration {
         version: 14,
         name: "0014_precedent_conflict",
         sql: include_str!("migrations/0014_precedent_conflict.sql"),
     },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 14;
+pub const CURRENT_SCHEMA_VERSION: u32 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

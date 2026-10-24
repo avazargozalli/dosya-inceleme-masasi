@@ -90,8 +90,23 @@ pub struct CitationCheckRow {
     pub identity_match: String,
     pub quote_match: String,
     pub meaning_review: String,
+    pub meaning_note: String,
+    pub meaning_reviewed_at: Option<String>,
     pub reason_codes: Vec<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationContext {
+    pub found: bool,
+    pub before: String,
+    pub quote: String,
+    pub after: String,
+    /// Alıntının tam metindeki karakter konumu (bulunamadıysa `None`).
+    pub char_position: Option<i64>,
+    pub state: String,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -487,7 +502,7 @@ impl Database {
 
     pub fn get_citation_check(&self, id: &str) -> Result<Option<CitationCheckRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,reason_codes,created_at
+            "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,reason_codes,created_at
              FROM citation_checks WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_check).optional()?)
@@ -498,7 +513,7 @@ impl Database {
         version_id: &str,
     ) -> Result<Vec<CitationCheckRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,reason_codes,created_at
+            "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,reason_codes,created_at
              FROM citation_checks WHERE input_document_version_id=?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([version_id], map_check)?;
@@ -507,6 +522,101 @@ impl Database {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Alıntının anlamını avukat değerlendirir. Künye ve birebir eşleşme
+    /// ayrı boyutlardır; burada yalnız "kararın anlamını yansıtıyor mu?"
+    /// sorusu kaydedilir. `misleading`/`off_context` için gerekçe zorunludur —
+    /// gerekçesiz "yanlış" damgası basılamaz.
+    pub fn review_citation_meaning(
+        &self,
+        id: &str,
+        review: &str,
+        note: &str,
+    ) -> Result<CitationCheckRow, StorageError> {
+        if !matches!(review, "accurate" | "misleading" | "off_context") {
+            return Err(StorageError::InvalidSetting);
+        }
+        let note = note.trim();
+        if review != "accurate" && note.is_empty() {
+            return Err(StorageError::InvalidSetting);
+        }
+        let changed = self.conn().execute(
+            "UPDATE citation_checks SET meaning_review=?1, meaning_note=?2, meaning_reviewed_at=?3 WHERE id=?4",
+            rusqlite::params![review, note, now_iso(), id],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::NotFound);
+        }
+        self.append_audit(
+            "citation_check",
+            Some(id),
+            "meaning_review",
+            "local-user",
+            &serde_json::json!({"review": review}),
+        )?;
+        self.get_citation_check(id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// Alıntının tam metindeki çevresini döndürür: önce birebir doğrulama
+    /// yapılır, sonra `radius` karakter öncesi/sonrası alınır. Metin yoksa
+    /// `found=false` ve neden döner; uydurma bağlam üretilmez.
+    pub fn citation_context(
+        &self,
+        check_id: &str,
+        radius: usize,
+    ) -> Result<CitationContext, StorageError> {
+        let check = self
+            .get_citation_check(check_id)?
+            .ok_or(StorageError::NotFound)?;
+        let mut context = CitationContext {
+            found: false,
+            before: String::new(),
+            quote: check.extracted_citation.clone(),
+            after: String::new(),
+            char_position: None,
+            state: "not_checked".into(),
+            reason: None,
+        };
+        let Some(precedent_id) = check.candidate_precedent_id else {
+            context.reason = Some("no_candidate".into());
+            return Ok(context);
+        };
+        let verification = self.verify_precedent_quote(&precedent_id, &check.extracted_citation)?;
+        context.state = verification.state.clone();
+        context.reason = verification.reason.clone();
+        let (Some(version_id), Some(start)) =
+            (verification.version_id.clone(), verification.matched_start)
+        else {
+            return Ok(context);
+        };
+        let text: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT full_text FROM precedent_versions WHERE id=?1",
+                [&version_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(text) = text else {
+            context.reason = Some("no_full_text".into());
+            return Ok(context);
+        };
+        let start = usize::try_from(start).unwrap_or(0);
+        let chars: Vec<char> = text.chars().collect();
+        if start > chars.len() {
+            return Ok(context);
+        }
+        let quote_len = check.extracted_citation.chars().count();
+        let before_start = start.saturating_sub(radius.max(1));
+        let after_end = (start + quote_len + radius.max(1)).min(chars.len());
+        context.found = true;
+        context.char_position = Some(i64::try_from(start).unwrap_or(i64::MAX));
+        context.before = chars[before_start..start].iter().collect();
+        context.after = chars[(start + quote_len).min(chars.len())..after_end]
+            .iter()
+            .collect();
+        Ok(context)
     }
 
     /// Karar **tam metnini** kasaya kaydeder (F12-T05). Metin şifreli
@@ -694,7 +804,7 @@ fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
 }
 
 fn map_check(row: &Row<'_>) -> rusqlite::Result<CitationCheckRow> {
-    let reasons: String = row.get(7)?;
+    let reasons: String = row.get(9)?;
     Ok(CitationCheckRow {
         id: row.get(0)?,
         input_document_version_id: row.get(1)?,
@@ -703,8 +813,10 @@ fn map_check(row: &Row<'_>) -> rusqlite::Result<CitationCheckRow> {
         identity_match: row.get(4)?,
         quote_match: row.get(5)?,
         meaning_review: row.get(6)?,
+        meaning_note: row.get(7)?,
+        meaning_reviewed_at: row.get(8)?,
         reason_codes: serde_json::from_str(&reasons).unwrap_or_default(),
-        created_at: row.get(8)?,
+        created_at: row.get(10)?,
     })
 }
 
@@ -828,6 +940,123 @@ mod tests {
             db.list_citation_checks("version-1").expect("liste").len(),
             1
         );
+    }
+
+    #[test]
+    fn meaning_review_requires_note_for_negative_verdicts() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/9"), Some("2025/9")))
+            .expect("emsal");
+        let check = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v-meaning".into(),
+                extracted_citation: "Yargıtay 1. HD 2024/9".into(),
+                candidate_precedent_id: Some(p.id.clone()),
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+
+        assert_eq!(
+            db.review_citation_meaning(&check.id, "misleading", "   ")
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        assert_eq!(
+            db.review_citation_meaning(&check.id, "sahte", "not")
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+
+        let accurate = db
+            .review_citation_meaning(&check.id, "accurate", "")
+            .expect("doğru");
+        assert_eq!(accurate.meaning_review, "accurate");
+        assert!(accurate.meaning_reviewed_at.is_some());
+
+        let misleading = db
+            .review_citation_meaning(&check.id, "misleading", "Kararın sonucu tersine çevrilmiş.")
+            .expect("yanıltıcı");
+        assert_eq!(misleading.meaning_note, "Kararın sonucu tersine çevrilmiş.");
+    }
+
+    #[test]
+    fn citation_context_returns_quote_surroundings() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/7"), Some("2025/8")))
+            .expect("emsal");
+        let quote = "kiracı temerrüde düşmedikçe tahliye istenemez";
+        let body = format!("Öncesi metin. {quote} Sonrası metin.");
+        db.add_precedent_text(
+            &p.id,
+            &NewPrecedentText {
+                source_kind: "paste".into(),
+                text: body,
+                document_version_id: None,
+            },
+        )
+        .expect("metin");
+        let check = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v-context".into(),
+                extracted_citation: quote.into(),
+                candidate_precedent_id: Some(p.id.clone()),
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+
+        let context = db.citation_context(&check.id, 12).expect("bağlam");
+        assert!(context.found, "{context:?}");
+        assert_eq!(context.quote, quote);
+        assert!(context.before.ends_with("metin. "), "{context:?}");
+        assert!(context.after.starts_with(" Sonrası"), "{context:?}");
+        assert_eq!(context.state, "match");
+    }
+
+    #[test]
+    fn citation_context_is_honest_without_full_text_or_candidate() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/3"), None))
+            .expect("emsal");
+        let no_text = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v".into(),
+                extracted_citation: "uzun bir alıntı metni burada".into(),
+                candidate_precedent_id: Some(p.id),
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+        let context = db.citation_context(&no_text.id, 10).expect("bağlam");
+        assert!(!context.found);
+        assert_eq!(context.state, "not_checked");
+
+        let no_candidate = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v2".into(),
+                extracted_citation: "başka alıntı".into(),
+                candidate_precedent_id: None,
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+        let context = db.citation_context(&no_candidate.id, 10).expect("bağlam");
+        assert!(!context.found);
+        assert_eq!(context.reason.as_deref(), Some("no_candidate"));
     }
 
     #[test]

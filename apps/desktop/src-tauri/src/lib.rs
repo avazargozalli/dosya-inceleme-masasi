@@ -123,6 +123,8 @@ pub fn run() {
             commands::precedent_connector_list,
             commands::citation_check_create,
             commands::citation_check_list,
+            commands::citation_meaning_review,
+            commands::citation_context,
             commands::vault_restore,
             commands::vault_gc,
             commands::vault_change_password,

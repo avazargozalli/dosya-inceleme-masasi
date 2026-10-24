@@ -7,6 +7,7 @@ import {
   type BulkImportReport,
   type CaseRow,
   type CitationCheckRow,
+  type CitationContext,
   type ConnectorCatalog,
   type DocumentRow,
   type PrecedentNoteRow,
@@ -52,6 +53,13 @@ const EMPTY: Draft = {
   legalIssue: "",
 };
 
+const MEANING_LABEL: Record<string, string> = {
+  not_reviewed: "incelenmedi",
+  accurate: "kararı yansıtıyor",
+  misleading: "yanıltıcı",
+  off_context: "bağlam dışı",
+};
+
 export function Precedents() {
   const [rows, setRows] = useState<PrecedentRow[]>([]);
   const [selected, setSelected] = useState<PrecedentRow | null>(null);
@@ -72,6 +80,9 @@ export function Precedents() {
   const [identity, setIdentity] = useState<"match" | "mismatch" | "unknown">("unknown");
   const [quoteMatch, setQuoteMatch] = useState<"match" | "mismatch" | "not_checked" | "unknown">("not_checked");
   const [checks, setChecks] = useState<CitationCheckRow[]>([]);
+  const [meaningFor, setMeaningFor] = useState<string | null>(null);
+  const [meaningContext, setMeaningContext] = useState<CitationContext | null>(null);
+  const [meaningNote, setMeaningNote] = useState("");
 
   const [versions, setVersions] = useState<PrecedentVersionRow[]>([]);
   const [fullText, setFullText] = useState("");
@@ -287,6 +298,29 @@ export function Precedents() {
       setError(toApiError(e));
     } finally {
       setBulkBusy(false);
+    }
+  }
+
+  async function openMeaning(id: string) {
+    setMeaningFor((prev) => (prev === id ? null : id));
+    setMeaningNote("");
+    setMeaningContext(null);
+    try {
+      setMeaningContext(await api.citationContext(id));
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function reviewMeaning(id: string, review: string) {
+    try {
+      await api.citationMeaningReview(id, review, meaningNote);
+      setChecks(await api.citationCheckList(versionId));
+      setMeaningFor(null);
+      setMeaningContext(null);
+      setMeaningNote("");
+    } catch (e) {
+      setError(toApiError(e));
     }
   }
 
@@ -647,12 +681,55 @@ export function Precedents() {
         {checks.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {checks.map((check) => (
-              <div key={check.id} className="row" style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
-                <span className="small">{check.extractedCitation}</span>
-                <span style={{ display: "flex", gap: 6 }}>
-                  <span className="badge plain">künye: {check.identityMatch}</span>
-                  <span className="badge plain">alıntı: {check.quoteMatch}</span>
-                </span>
+              <div key={check.id} style={{ padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <span className="small">{check.extractedCitation}</span>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span className="badge plain">künye: {check.identityMatch}</span>
+                    <span className="badge plain">alıntı: {check.quoteMatch}</span>
+                    <span className={`badge ${check.meaningReview === "accurate" ? "ok" : check.meaningReview === "not_reviewed" ? "plain" : "warn"}`}>
+                      anlam: {MEANING_LABEL[check.meaningReview] ?? check.meaningReview}
+                    </span>
+                    <button className="btn ghost" onClick={() => void openMeaning(check.id)}>
+                      {meaningFor === check.id ? "Kapat" : "Anlam"}
+                    </button>
+                  </span>
+                </div>
+                {meaningFor === check.id ? (
+                  <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 8 }}>
+                    {meaningContext ? (
+                      meaningContext.found ? (
+                        <p className="small" style={{ margin: "0 0 6px" }}>
+                          …{meaningContext.before}
+                          <mark>{meaningContext.quote}</mark>
+                          {meaningContext.after}…
+                        </p>
+                      ) : (
+                        <p className="hint" style={{ margin: "0 0 6px" }}>
+                          Tam metin/bağlam yok ({meaningContext.reason ?? meaningContext.state}); uydurma bağlam
+                          gösterilmez.
+                        </p>
+                      )
+                    ) : (
+                      <p className="hint" style={{ margin: "0 0 6px" }}>Bağlam yükleniyor…</p>
+                    )}
+                    <div className="field">
+                      <label htmlFor={`mn-${check.id}`}>Gerekçe (yanıltıcı/bağlam dışı için zorunlu)</label>
+                      <input
+                        id={`mn-${check.id}`}
+                        className="input"
+                        value={meaningNote}
+                        onChange={(e) => setMeaningNote(e.target.value)}
+                        placeholder="Örn. kararın sonucu tersine çevrilmiş"
+                      />
+                    </div>
+                    <div className="row" style={{ gap: 6 }}>
+                      <button className="btn" onClick={() => void reviewMeaning(check.id, "accurate")}>Anlam doğru</button>
+                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "misleading")}>Yanıltıcı</button>
+                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "off_context")}>Bağlam dışı</button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>

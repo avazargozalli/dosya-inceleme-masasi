@@ -105,3 +105,20 @@ değerlendirmesidir; sistem hükmü değildir.
   workspace + tauri `-D warnings`; rustfmt iki manifest.
 - Web: `pnpm typecheck`, `pnpm test` → **146** (11 yeni), `pnpm build` yeşil.
 - CI: bu commit ile doğrulanacak (aşağıdaki kayıt güncellenir).
+
+## F12-T07 — Alıntı çevresi ve anlam incelemesi (ek)
+
+- **Şema v15** (`0015_citation_meaning.sql`): `meaning_note`, `meaning_reviewed_at`.
+- `review_citation_meaning`: `accurate | misleading | off_context`; olumsuz
+  hükümde **gerekçe zorunlu** (gerekçesiz "yanıltıcı" damgası basılamaz), denetim
+  kaydı yazılır.
+- `citation_context`: alıntıyı mevcut `verify_precedent_quote` ile birebir doğrular,
+  sonra tam metinden `radius` karakter öncesi/sonrası döndürür. Metin yoksa
+  `found=false` + neden (`no_full_text` / `no_candidate`) — uydurma bağlam yok.
+- Arayüz: atıf kontrolü satırında anlam rozeti; panelde alıntı çevresi (vurgulu)
+  ve üç karar + gerekçe alanı.
+- Test: 3 yeni storage testi (gerekçe zorunluluğu, bağlam çevresi, dürüst
+  "metin yok" durumu).
+
+Künye doğruluğu, alıntının birebir bulunması ve **anlamın kararı yansıtması**
+üç ayrı boyuttur; biri diğerinin yerine geçmez.

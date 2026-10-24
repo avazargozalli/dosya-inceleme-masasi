@@ -59,6 +59,12 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.11.0] — 2026-10-24 — F12-T07 alıntı anlamı
+
+- Anlam incelemesi (doğru/yanıltıcı/bağlam dışı) + zorunlu gerekçe, şema v15
+- `citation_context`: doğrulanmış alıntının tam metindeki çevresi; metin yoksa dürüst `found=false`
+- Arayüzde vurgulu bağlam paneli + karar düğmeleri; 3 storage testi
+
 ## [0.10.3] — 2026-10-24 — F01 SQLCipher açık metin kanıtı
 
 - `crates/storage/tests/plaintext.rs`: dosyada SQLite başlığı, dosya adı ve şema adı düz metin değil
