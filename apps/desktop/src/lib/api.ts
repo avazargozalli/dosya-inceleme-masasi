@@ -213,6 +213,56 @@ export type PrecedentRow = {
   legalIssue: string | null;
   completeness: "complete" | "incomplete";
   createdAt: string;
+  /** F12-T11 — kullanım dayanağı; `unknown` "izin var" demek değildir. */
+  usageBasis: UsageBasis;
+  redistribution: Redistribution;
+  /** Koşul kaydının alındığı zaman; `null` = hiç kaydedilmedi. */
+  termsRecordedAt: string | null;
+};
+
+export type UsageBasis =
+  | "official_public"
+  | "licence"
+  | "permission"
+  | "internal_only"
+  | "unknown";
+
+export type Redistribution = "allowed" | "not_allowed" | "unknown";
+
+/** F12-T11 — kaynak kullanım koşulu kaydı. */
+export type PrecedentUsageTerms = {
+  precedentId: string;
+  usageBasis: UsageBasis;
+  redistribution: Redistribution;
+  termsUrl: string | null;
+  termsNote: string;
+  termsRecordedAt: string | null;
+};
+
+export type CorpusExcluded = {
+  precedentId: string;
+  court: string;
+  docketNo: string | null;
+  reason: "redistribution_not_allowed" | "redistribution_unknown";
+};
+
+export type CorpusCoverage = {
+  total: number;
+  withText: number;
+  allowed: number;
+  notAllowed: number;
+  unknown: number;
+  blockedTotal: number;
+  blocked: CorpusExcluded[];
+};
+
+export type CorpusExportResult = {
+  path: string;
+  bytes: number;
+  sha256: string;
+  exported: number;
+  excluded: number;
+  contentHash: string;
 };
 
 export type PrecedentNoteRow = {
@@ -1069,6 +1119,24 @@ export const api = {
   /** Emsal kütüphanesi araması (F12-T10); kapsam dosya aramasından ayrıdır. */
   precedentSearch: (input: { text: string; mode: SearchMode; limit?: number }) =>
     invoke<PrecedentSearchPage>("precedent_search", { input }),
+  /** Kaynak kullanım koşulu (F12-T11). */
+  precedentTermsGet: (precedentId: string) =>
+    invoke<PrecedentUsageTerms>("precedent_terms_get", { precedentId }),
+  precedentTermsSet: (
+    precedentId: string,
+    input: {
+      usageBasis: UsageBasis;
+      redistribution: Redistribution;
+      termsUrl: string | null;
+      termsNote: string;
+    },
+  ) => invoke<PrecedentUsageTerms>("precedent_terms_set", { precedentId, input }),
+  /** Dağıtım kapısı özeti: kaç kayıt izinli, kaçı değil. */
+  precedentCorpusCoverage: () =>
+    invoke<CorpusCoverage>("precedent_corpus_coverage"),
+  /** Korpus dışa aktarımı; izinsiz metin dosyaya yazılmaz. */
+  precedentCorpusExport: (mode: "permitted_only" | "all", destPath: string) =>
+    invoke<CorpusExportResult>("precedent_corpus_export", { mode, destPath }),
   /** Toplu içe alma (F12-T06): seçilen dosyalar + isteğe bağlı CSV künye listesi. */
   precedentBulkImport: (input: {
     files: string[];

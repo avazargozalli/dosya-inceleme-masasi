@@ -56,6 +56,10 @@ pub enum StorageError {
     AiProvider,
     #[error("künye listesi: {0}")]
     Manifest(String),
+    #[error("kaynak kullanım koşulu: {0}")]
+    Terms(String),
+    #[error("izinsiz toplu karar korpusu dağıtılmaz: {0}")]
+    CorpusNotPermitted(String),
 }
 
 impl StorageError {
@@ -86,6 +90,8 @@ impl StorageError {
             Self::AiConsent => "E_AI_CONSENT",
             Self::AiProvider => "E_AI_PROVIDER",
             Self::Manifest(_) => "E_MANIFEST",
+            Self::Terms(_) => "E_TERMS",
+            Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",
         }
     }
 }

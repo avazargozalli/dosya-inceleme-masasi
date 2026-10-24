@@ -27,6 +27,12 @@ pub struct PrecedentRow {
     pub legal_issue: Option<String>,
     pub completeness: String,
     pub created_at: String,
+    /// F12-T11 — kullanım dayanağı (`official_public|licence|permission|internal_only|unknown`).
+    pub usage_basis: String,
+    /// F12-T11 — yeniden dağıtım izni (`allowed|not_allowed|unknown`).
+    pub redistribution: String,
+    /// Koşul kaydının alındığı zaman; yoksa `None` (kayıt yok).
+    pub terms_recorded_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -433,7 +439,7 @@ impl Database {
 
     pub fn get_precedent(&self, id: &str) -> Result<Option<PrecedentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at
+            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at,usage_basis,redistribution,terms_recorded_at
              FROM precedents WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_precedent).optional()?)
@@ -441,7 +447,7 @@ impl Database {
 
     pub fn list_precedents(&self) -> Result<Vec<PrecedentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at
+            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at,usage_basis,redistribution,terms_recorded_at
              FROM precedents ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], map_precedent)?;
@@ -1245,6 +1251,9 @@ fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
         legal_issue: row.get(10)?,
         completeness: row.get(11)?,
         created_at: row.get(12)?,
+        usage_basis: row.get(13)?,
+        redistribution: row.get(14)?,
+        terms_recorded_at: row.get(15)?,
     })
 }
 

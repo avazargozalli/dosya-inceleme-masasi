@@ -13,7 +13,34 @@
 | F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama |
 | F12-T06 | ✅ | toplu içe alma (CSV künye listesi, çakışma işareti) + dış bağlayıcı sicili (etkin değil) |
 | F12-T07 | ✅ | alıntı çevresi + anlam incelemesi (şema v15; gerekçesiz olumsuz hüküm yok) |
+| F12-T10 | ✅ | kütüphane araması dosya aramasından ayrı (şema değişikliği yok; sızıntı testi) |
+| F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
+
+## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
+
+**Şema v16** (`0016_precedent_usage_terms.sql`): `precedents.usage_basis`,
+`redistribution`, `terms_url`, `terms_note`, `terms_recorded_at` +
+`redistribution` indeksi. Varsayılan **`unknown`**; kayıt yokluğu izin sayılmaz.
+
+- `set_precedent_usage_terms` — dayanak ve izin **ayrı** kaydedilir. `allowed`
+  yalnız `official_public` / `licence` / `permission` dayanağıyla ve yazılı
+  dayanakla (bağlantı veya not) işaretlenebilir; aksi hâlde `E_TERMS`, kayıt
+  yazılmaz. Bağlantı http(s) olmalı; not/bağlantı denetime **yazılmaz**.
+- `precedent_corpus_coverage` — toplam, tam metinli, izinli, izinsiz,
+  bilinmiyor, engelli liste (en çok 100 + toplam).
+- `build_precedent_corpus(mode)` — `permitted_only` yalnız izinlileri alır ve
+  dışarıda kalanları gerekçesiyle raporlar; `all` tek izinsiz metinde
+  `E_CORPUS_NOT_PERMITTED` verir ve **hiçbir metin** seçmez. `contentHash`
+  kanonik `items` JSON'u üzerinden SHA-256; sıra kimliğe göre sabit.
+- Tauri `precedent_terms_get`, `precedent_terms_set`, `precedent_corpus_coverage`,
+  `precedent_corpus_export` (kaydetme iletişim kutusu → dosya → sha256 →
+  denetim; ret denemesi `export_denied`, boş korpus `E_CORPUS_EMPTY`).
+- Arayüz: listede izin rozeti; **Kaynak kullanım koşulu** kartı; **Toplu korpus
+  dağıtımı** kartı (sayılar, engelli kayıtlar, kip, sonuç).
+- Ayrıntı ve dürüst sınırlamalar: `docs/releases/F12/USAGE-TERMS.md`.
+- **Test:** storage **212** (9 yeni), Web **175** (10 yeni); clippy storage +
+  tauri `-D warnings`; rustfmt iki manifest.
 
 ## F12-T06 — toplu içe alma ve dış bağlayıcı sicili
 

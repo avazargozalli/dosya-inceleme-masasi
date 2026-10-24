@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { open as openFiles } from "@tauri-apps/plugin-dialog";
+import { open as openFiles, save as saveFile } from "@tauri-apps/plugin-dialog";
 import {
   api,
   toApiError,
@@ -9,12 +9,17 @@ import {
   type CitationCheckRow,
   type CitationContext,
   type ConnectorCatalog,
+  type CorpusCoverage,
+  type CorpusExportResult,
   type DocumentRow,
   type PrecedentBibliography,
   type PrecedentNoteRow,
   type PrecedentRow,
+  type PrecedentUsageTerms,
   type PrecedentVersionRow,
   type QuoteVerificationRow,
+  type Redistribution,
+  type UsageBasis,
 } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
 import {
@@ -31,6 +36,18 @@ import {
   versionSourceLabel,
   versionStateText,
 } from "../lib/precedents";
+import {
+  corpusGateOpen,
+  corpusGateText,
+  corpusResultText,
+  coverageText,
+  exclusionReasonLabel,
+  needsWrittenBasis,
+  redistributionLabel,
+  termsBadge,
+  termsRecordedText,
+  usageBasisLabel,
+} from "../lib/precedent-terms";
 
 type Draft = {
   court: string;
@@ -107,6 +124,15 @@ export function Precedents() {
   const [bulkReport, setBulkReport] = useState<BulkImportReport | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
+  const [terms, setTerms] = useState<PrecedentUsageTerms | null>(null);
+  const [termsBasis, setTermsBasis] = useState<UsageBasis>("unknown");
+  const [termsRedistribution, setTermsRedistribution] = useState<Redistribution>("unknown");
+  const [termsUrl, setTermsUrl] = useState("");
+  const [termsNote, setTermsNote] = useState("");
+  const [coverage, setCoverage] = useState<CorpusCoverage | null>(null);
+  const [corpusMode, setCorpusMode] = useState<"permitted_only" | "all">("permitted_only");
+  const [corpusResult, setCorpusResult] = useState<CorpusExportResult | null>(null);
+  const [corpusBusy, setCorpusBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -116,8 +142,17 @@ export function Precedents() {
     }
   }, []);
 
+  const loadCoverage = useCallback(async () => {
+    try {
+      setCoverage(await api.precedentCorpusCoverage());
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }, []);
+
   useEffect(() => {
     void load();
+    void loadCoverage();
     void api
       .precedentConnectorList()
       .then(setConnectors)
@@ -126,7 +161,7 @@ export function Precedents() {
       setCases(r);
       if (r.length > 0) setCaseId((prev) => prev || r[0]!.id);
     }).catch((e) => setError(toApiError(e)));
-  }, [load]);
+  }, [load, loadCoverage]);
 
   useEffect(() => {
     if (selected) {
@@ -139,10 +174,21 @@ export function Precedents() {
         .precedentBibliography(selected.id)
         .then(setBibliography)
         .catch((e) => setError(toApiError(e)));
+      void api
+        .precedentTermsGet(selected.id)
+        .then((loaded) => {
+          setTerms(loaded);
+          setTermsBasis(loaded.usageBasis);
+          setTermsRedistribution(loaded.redistribution);
+          setTermsUrl(loaded.termsUrl ?? "");
+          setTermsNote(loaded.termsNote);
+        })
+        .catch((e) => setError(toApiError(e)));
     } else {
       setNotes([]);
       setVersions([]);
       setBibliography(null);
+      setTerms(null);
     }
     setCopied(false);
     setVerification(null);
@@ -233,10 +279,57 @@ export function Precedents() {
       setBibliography(await api.precedentBibliography(selected.id));
       // Metin değişti: önceki doğrulama bu sürüme ait değil.
       setVerification(null);
+      // Yeni tam metin dağıtım kapısının sayılarını değiştirir.
+      await loadCoverage();
     } catch (e) {
       setError(toApiError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveTerms() {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await api.precedentTermsSet(selected.id, {
+        usageBasis: termsBasis,
+        redistribution: termsRedistribution,
+        termsUrl: termsUrl.trim() || null,
+        termsNote: termsNote.trim(),
+      });
+      setTerms(saved);
+      setTermsBasis(saved.usageBasis);
+      setTermsRedistribution(saved.redistribution);
+      setTermsUrl(saved.termsUrl ?? "");
+      setTermsNote(saved.termsNote);
+      await Promise.all([load(), loadCoverage()]);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportCorpus() {
+    const target = await saveFile({
+      title: "Karar korpusunu kaydet",
+      defaultPath: "emsal-korpusu.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (typeof target !== "string") return;
+    setCorpusBusy(true);
+    setError(null);
+    setCorpusResult(null);
+    try {
+      const result = await api.precedentCorpusExport(corpusMode, target);
+      setCorpusResult(result);
+      await loadCoverage();
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setCorpusBusy(false);
     }
   }
 
@@ -440,7 +533,10 @@ export function Precedents() {
                   <strong style={{ fontWeight: 500 }}>
                     {row.court} {row.chamber ?? ""} {row.docketNo ?? ""} {row.decisionNo ? `K.${row.decisionNo}` : ""}
                   </strong>
-                  <span className={`badge ${row.completeness === "complete" ? "ok" : "warn"}`}>{row.completeness}</span>
+                  <span style={{ display: "flex", gap: 4 }}>
+                    <span className={`badge ${termsBadge(row).tone}`}>{termsBadge(row).text}</span>
+                    <span className={`badge ${row.completeness === "complete" ? "ok" : "warn"}`}>{row.completeness}</span>
+                  </span>
                 </span>
                 <span className="muted small">{row.title ?? "başlıksız"} · {row.decisionDate ?? "tarih yok"}</span>
               </button>
@@ -528,8 +624,171 @@ export function Precedents() {
         ) : null}
       </div>
 
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Toplu korpus dağıtımı</h2>
+            <p className="card-sub">
+              Yalnız yeniden dağıtım izni kayıtlı tam metinler · ağ isteği yok, dosya seçilen konuma yazılır
+            </p>
+          </div>
+          {coverage ? (
+            <span className={`badge ${corpusGateOpen(coverage) ? "ok" : "warn"}`}>
+              {corpusGateOpen(coverage) ? "tümü açık" : "yalnız izinliler"}
+            </span>
+          ) : null}
+        </div>
+        {coverage ? (
+          <>
+            <p className="small" style={{ margin: "0 0 4px" }}>{coverageText(coverage)}</p>
+            <p className="hint" style={{ margin: "0 0 8px" }}>{corpusGateText(coverage)}</p>
+            {coverage.blocked.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+                {coverage.blocked.map((blocked) => (
+                  <div
+                    key={blocked.precedentId}
+                    className="row"
+                    style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}
+                  >
+                    <span className="small">{blocked.court} {blocked.docketNo ?? ""}</span>
+                    <span className="badge warn">{exclusionReasonLabel(blocked.reason)}</span>
+                  </div>
+                ))}
+                {coverage.blockedTotal > coverage.blocked.length ? (
+                  <p className="hint" style={{ margin: 0 }}>
+                    {coverage.blockedTotal - coverage.blocked.length} kayıt daha listede gösterilmiyor.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="row">
+              <div className="field">
+                <label htmlFor="corpus-mode">Kip</label>
+                <select
+                  id="corpus-mode"
+                  className="input"
+                  value={corpusMode}
+                  onChange={(e) => setCorpusMode(e.target.value as "permitted_only" | "all")}
+                >
+                  <option value="permitted_only">Yalnız izinli kararlar</option>
+                  <option value="all">Tümü (hepsi izinliyse)</option>
+                </select>
+              </div>
+              <button
+                className="btn primary"
+                disabled={corpusBusy || coverage.allowed === 0}
+                onClick={() => void exportCorpus()}
+              >
+                {corpusBusy ? "Aktarılıyor…" : "Korpusu dışa aktar…"}
+              </button>
+            </div>
+            {corpusMode === "all" && !corpusGateOpen(coverage) ? (
+              <p className="hint" style={{ margin: 0 }}>
+                “Tümü” kipi kapalı: {coverage.blockedTotal} tam metinli kayıt için izin kaydı yok.
+                İzin kaydı olmadan hiçbir metin dosyaya yazılmaz.
+              </p>
+            ) : null}
+            {corpusResult ? (
+              <div className="notice ok" role="status">
+                {corpusResultText(corpusResult)}
+                <div className="hint" style={{ marginTop: 4 }}>
+                  {corpusResult.path} · {corpusResult.bytes.toLocaleString("tr-TR")} bayt
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="hint" style={{ margin: 0 }}>kapsam yükleniyor…</p>
+        )}
+      </div>
+
       {selected ? (
         <>
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Kaynak kullanım koşulu</h2>
+              <p className="card-sub">
+                Kullanım dayanağı ve yeniden dağıtım izni ayrı kaydedilir · kayıt yokluğu izin sayılmaz
+              </p>
+            </div>
+            <span className={`badge ${terms ? termsBadge(terms).tone : "warn"}`}>
+              {terms ? termsBadge(terms).text : "kayıt yok"}
+            </span>
+          </div>
+          <div className="row">
+            <div className="field">
+              <label htmlFor="t-basis">Kullanım dayanağı</label>
+              <select
+                id="t-basis"
+                className="input"
+                value={termsBasis}
+                onChange={(e) => setTermsBasis(e.target.value as UsageBasis)}
+              >
+                <option value="unknown">Bilinmiyor</option>
+                <option value="official_public">Resmî yayın (kamuya açık)</option>
+                <option value="licence">Açık lisans</option>
+                <option value="permission">Yazılı izin</option>
+                <option value="internal_only">Yalnız iç kullanım</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="t-redistribution">Yeniden dağıtım</label>
+              <select
+                id="t-redistribution"
+                className="input"
+                value={termsRedistribution}
+                onChange={(e) => setTermsRedistribution(e.target.value as Redistribution)}
+              >
+                <option value="unknown">İzin bilinmiyor</option>
+                <option value="allowed">İzinli</option>
+                <option value="not_allowed">İzinsiz</option>
+              </select>
+            </div>
+            <div className="field" style={{ flex: "2 1 300px" }}>
+              <label htmlFor="t-url">Koşul bağlantısı</label>
+              <input
+                id="t-url"
+                className="input"
+                value={termsUrl}
+                onChange={(e) => setTermsUrl(e.target.value)}
+                placeholder="https://…"
+              />
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="t-note">Yazılı dayanak notu</label>
+            <textarea
+              id="t-note"
+              className="input"
+              rows={3}
+              style={{ height: "auto", minHeight: 70, padding: "8px 10px", resize: "vertical" }}
+              value={termsNote}
+              onChange={(e) => setTermsNote(e.target.value)}
+              placeholder="Örn. Resmî Gazete 12.05.2025; kurumdan yazılı izin 03.06.2026"
+            />
+          </div>
+          <div className="row">
+            <button className="btn primary" disabled={busy} onClick={() => void saveTerms()}>
+              Koşulu kaydet
+            </button>
+            <span className="hint" style={{ flex: "1 1 280px", margin: 0 }}>
+              {terms ? termsRecordedText(terms) : "koşul kaydı yok — izin varsayılmaz"}
+              {terms ? ` · ${usageBasisLabel(terms.usageBasis)} · ${redistributionLabel(terms.redistribution)}` : ""}
+            </span>
+          </div>
+          {needsWrittenBasis(termsRedistribution) && !termsUrl.trim() && !termsNote.trim() ? (
+            <p className="hint" style={{ margin: 0 }}>
+              “İzinli” işaretlemek için kaynak bağlantısı veya not gerekir; aksi hâlde kayıt{" "}
+              <code>E_TERMS</code> ile reddedilir ve izin bilinmiyor kalır.
+            </p>
+          ) : null}
+          <p className="hint" style={{ margin: 0 }}>
+            Bu kayıt hukuki görüş değildir; hangi dayanakla kütüphaneye alındığını belgeler. “İzinli”
+            yalnız resmî yayın, açık lisans veya yazılı izinle işaretlenebilir; iç kullanım kararı dağıtılamaz.
+          </p>
+        </div>
+
         <div className="card">
           <div className="card-head">
             <div>

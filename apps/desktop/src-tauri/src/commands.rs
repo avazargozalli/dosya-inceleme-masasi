@@ -12,17 +12,18 @@ use dim_preview::{PreviewKey, PreviewStore};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CaseChecklistItemRow, CasePatch,
     CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, CitationContext,
-    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey,
-    Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
-    EvidenceLinkRow, ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim,
-    NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
-    NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent,
-    NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow,
-    ParseRun, PrecedentBibliography, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentVersionRow, ProviderProfileRow, QuoteVerification,
-    RebindSuggestion, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
+    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, CorpusCoverage, CorpusMode,
+    CoverageReport, Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch,
+    EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, GcReport, MarkRow, NewAnchor, NewCase,
+    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
+    NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
+    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
+    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
+    PrecedentNoteRow, PrecedentRow, PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms,
+    PrecedentVersionRow, ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
+    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
+    SearchPage, SearchQuery, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -1879,6 +1880,124 @@ pub fn precedent_search(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.search_precedents(&input)?)
+}
+
+/// Kaynak kullanım koşulu (F12-T11). Kayıt yoksa `unknown` döner; bu "izin
+/// var" demek değildir.
+#[tauri::command]
+pub fn precedent_terms_get(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<PrecedentUsageTerms, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_usage_terms(&precedent_id)?)
+}
+
+/// Kullanım koşulunu kaydeder. `allowed` için yazılı dayanak zorunlu; kapı
+/// Rust tarafında (`E_TERMS`), arayüzde gizlenen bir kontrol değil.
+#[tauri::command]
+pub fn precedent_terms_set(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: SetUsageTermsInput,
+) -> Result<PrecedentUsageTerms, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.set_precedent_usage_terms(&precedent_id, &input)?)
+}
+
+/// Dağıtım kapısının gördüğü tablo: toplam, metinli, izinli, izinsiz,
+/// bilinmiyor. Arayüz bu sayıları gizlemeden gösterir.
+#[tauri::command]
+pub fn precedent_corpus_coverage(state: State<'_, AppState>) -> Result<CorpusCoverage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_corpus_coverage()?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorpusExportView {
+    pub path: String,
+    pub bytes: usize,
+    pub sha256: String,
+    pub exported: usize,
+    pub excluded: usize,
+    pub content_hash: String,
+}
+
+/// Toplu karar korpusu dışa aktarımı (F12-T11). İzin kaydı olmayan metin
+/// dosyaya **yazılmaz**; `all` kipinde tek izinsiz kayıt varsa istek reddedilir
+/// ve ret denemesi denetime düşer. Ağ isteği yok; dosya kullanıcının seçtiği
+/// konuma yazılır.
+#[tauri::command]
+pub fn precedent_corpus_export(
+    state: State<'_, AppState>,
+    mode: String,
+    dest_path: String,
+) -> Result<CorpusExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let mode = CorpusMode::parse(&mode)?;
+    let export = match db.build_precedent_corpus(mode) {
+        Ok(export) => export,
+        Err(error) => {
+            if matches!(error, dim_storage::StorageError::CorpusNotPermitted(_)) {
+                let _ = db.append_audit(
+                    "precedent_corpus",
+                    None,
+                    "export_denied",
+                    "local-user",
+                    &serde_json::json!({
+                        "mode": mode.as_str(),
+                        "reason": error.to_string(),
+                    }),
+                );
+            }
+            return Err(error.into());
+        }
+    };
+    if export.items.is_empty() {
+        return Err(ApiError::new(
+            "E_CORPUS_EMPTY",
+            "Dışa aktarılacak izinli tam metin yok; dosya yazılmadı.",
+        ));
+    }
+    let payload = serde_json::json!({
+        "format": "dim-precedent-corpus",
+        "version": 1,
+        "createdAt": dim_storage::now_iso(),
+        "mode": mode.as_str(),
+        "contentHash": export.content_hash,
+        "coverage": export.coverage,
+        "notes": export.notes,
+        "items": export.items,
+    });
+    let bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    db.append_audit(
+        "precedent_corpus",
+        None,
+        "export",
+        "local-user",
+        &serde_json::json!({
+            "mode": mode.as_str(),
+            "exported": export.exported,
+            "excluded": export.excluded,
+            "sha256": sha,
+        }),
+    )?;
+    Ok(CorpusExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        exported: export.exported,
+        excluded: export.excluded,
+        content_hash: export.content_hash,
+    })
 }
 
 /// Tek turda içe alınabilecek dosya sayısı. Daha büyük seçim sessizce

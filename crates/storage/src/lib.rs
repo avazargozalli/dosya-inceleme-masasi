@@ -18,6 +18,7 @@ mod marks;
 mod notes;
 mod parsing;
 mod precedent_import;
+mod precedent_terms;
 mod precedents;
 mod redactions;
 mod review_commit;
@@ -56,6 +57,10 @@ pub use parsing::{
 pub use precedent_import::{
     parse_manifest, Manifest, ManifestRow, PrecedentCopyInput, PrecedentCopyOutcome,
     MANIFEST_MAX_BYTES,
+};
+pub use precedent_terms::{
+    CorpusCoverage, CorpusExcluded, CorpusExport, CorpusItem, CorpusMode, PrecedentUsageTerms,
+    SetUsageTermsInput, REDISTRIBUTION_VALUES, USAGE_BASES,
 };
 pub use precedents::{
     CitationCheckRow, CitationContext, NewCitationCheck, NewPrecedent, NewPrecedentNote,
@@ -190,9 +195,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0014_precedent_conflict",
         sql: include_str!("migrations/0014_precedent_conflict.sql"),
     },
+    Migration {
+        version: 16,
+        name: "0016_precedent_usage_terms",
+        sql: include_str!("migrations/0016_precedent_usage_terms.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 15;
+pub const CURRENT_SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
