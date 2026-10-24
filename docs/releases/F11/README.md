@@ -11,7 +11,7 @@
 | F11-T03 kapsamlılık raporu | ✅ | belge/sayfa/OCR/boş sayfa/ayrıştırılmamış sayıları |
 | F11-T04 gerçek model çağrısı | ⬜ | sağlayıcı yok |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, şema v17, `ai_candidate_validate` |
-| F11-T06 kapsamlılık raporunun rapora gömülmesi | ⬜ | — |
+| F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
 
 ## Dürüst durum
 
@@ -98,3 +98,59 @@ yolu yoktur.
   temiz; rustfmt iki manifest temiz.
 - Commit `323a662` → CI run `40132668277` **7/7 yeşil** (arayüz, SBOM, masaüstü
   kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
+
+## F11-T06 — kapsamlılık raporunun çıktıya gömülmesi (2026-10-25)
+
+Rapor kasadan çıktıktan sonra “her şey incelendi” sanılmamalı. Kapsam artık
+**her dışa aktarma çıktısının içinde** yazılı; arayüzün kendi cümlesi değil,
+kasadan gelen sayılar.
+
+- **Yeni çekirdek modül `crates/storage/src/export_coverage.rs`:** `ExportCoverage`
+  (`documents`, `versions`, `parseRuns`, `pages`, `textPages`, `ocrPages`,
+  `segments`, `emptyPages`, `unparsedDocuments`, `failedParseRuns`, `complete`,
+  `warnings[]`, `statement`, `generatedAt`). Sayılar `Database::coverage_report`
+  çıktısından **olduğu gibi** taşınır; modül yalnız okunur biçime çevirir.
+- **Tek dil, dört çıktı.** Uyarı cümleleri tek yerde üretilir:
+  - ayrıştırılmamış belge, metinsiz (boş) sayfa, başarısız ayrıştırma koşusu,
+    OCR ile okunan sayfa ve belgesiz dosya için ayrı uyarı;
+  - sabit sınır cümlesi `COVERAGE_STATEMENT` = “İncelenmedi ≠ temiz: …”;
+  - `complete` yalnız “her belge ayrıştırıldı, her sayfada metin var” demektir;
+    OCR kullanımı kapsamı eksik yapmaz, güvenilirlik uyarısı üretir.
+- **JSON (`export_json`)** — üst düzeyde `coverage` bloğu. **Devir paketi** —
+  `case.json` içinde aynı blok, ayrıca `KAPSAM.md` (sayım tablosu + uyarılar +
+  sınır + sayım yöntemi notu) ve `manifest.json` içinde `coverage`; `KAPSAM.md`
+  manifest dosya listesinde sha256 ile yer alır. README “KAPSAM.md zorunlu
+  okumadır” der.
+- **DOCX/PDF** — “İncelenen kapsam” bölümü **ilk** sırada (okuyucu içeriğe
+  geçmeden sınırı görür): ölçü/değer tablosu + uyarı ve sınır satırları; künye
+  meta satırına tek satırlık kapsam özeti eklenir.
+- **CSV** — tablo satırlarına karışmasın diye başta `#` yorum bloğu (özet,
+  kapsam durumu, üretim zamanı, uyarılar, sınır). `#` satırlarını yorum sayan
+  okuyucular (pandas `comment='#'`) tabloyu temiz okur.
+- **Tauri:** yeni `case_coverage(caseId)` komutu (dışa aktarmadan önce arayüz
+  kapsamı gösterir). `ExportView` ve `PackageView` artık **yazılan** kapsam
+  bloğunu döner — arayüz “gömüldü” iddiasını yanıttan gösterir, local state’ten
+  değil. `PackageView.files` manifest dosya sayısından hesaplanır (önceden sabit
+  `3` yazıyordu, gerçekte 2 dosya vardı).
+- **Arayüz (Çıktılar):** “İncelenen kapsam” kartı — durum rozeti (tam/kısmi/
+  kapsam yok), tek satır özet, on ölçü kutusu (boş sayfa/OCR/ayrıştırılmamış
+  kırmızı), uyarı listesi, sınır cümlesi, “Kapsamı tazele”. Dışa aktarma
+  sonucunda “Kapsam çıktıya gömüldü (…): N belge · …” satırı; devir paketinde
+  `KAPSAM.md` satırı.
+- **Test:** storage **239** (+8 `export_coverage`), Tauri komut testi
+  `case_payload_embeds_coverage_block`, Web **273** (+14
+  `export-coverage.test.ts`); `tsc --noEmit` + `vite build` yeşil.
+
+### Sınırlamalar (F11-T06)
+
+- Sayımlar **ayrıştırma koşusu satırları** üzerinden alınır: aynı belge iki kez
+  ayrıştırıldıysa sayfa sayısı iki katına çıkar. Belge sayısı silinmemiş
+  kayıtları sayar. Bu, `KAPSAM.md` içinde yöntem notu olarak yazılıdır.
+- Kapsam **kasadaki ayrıştırılmış metnin** kapsamıdır; OCR kalitesi, yanlış
+  eşleme veya eksik sayfa tespiti yapılmaz. “Tam kapsam” hukuki bütünlük
+  kanıtı değildir.
+- CSV’de kapsam **yorum satırıdır**; yorumları atmayan bir okuyucu bu satırları
+  veri sanabilir. Bu bilinçli: sessizce gizlemek yerine görünür kılındı.
+- DOCX/PDF kapsam bölümü worker’ın `sections` şemasıyla üretilir; Tauri
+  penceresi açılmadı → **görsel QA yok**, yalnız birim testleri + üretim
+  derlemesi.

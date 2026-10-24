@@ -110,6 +110,7 @@ pub fn run() {
             commands::document_redact,
             commands::document_redact_regions,
             commands::export_json,
+            commands::case_coverage,
             commands::export_csv,
             commands::export_docx,
             commands::export_pdf,

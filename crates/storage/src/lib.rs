@@ -13,6 +13,7 @@ mod claims;
 mod connectors;
 mod documents;
 mod error;
+mod export_coverage;
 mod exports;
 mod gc;
 mod marks;
@@ -49,6 +50,7 @@ pub use connectors::{
 };
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
+pub use export_coverage::{ExportCoverage, COVERAGE_COUNTING_NOTE, COVERAGE_STATEMENT};
 pub use exports::ExportRow;
 pub use gc::{GcBlobRow, GcReport};
 pub use marks::{MarkRow, NewRegionMark, NewTextMark};

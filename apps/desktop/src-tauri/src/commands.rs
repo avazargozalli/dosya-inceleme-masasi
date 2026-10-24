@@ -15,9 +15,9 @@ use dim_storage::{
     CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow,
     CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow, ContradictionAssessmentRow,
     CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey, Document, DocumentTagRow,
-    DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, GcReport,
-    MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
-    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
+    DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportCoverage,
+    ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
     NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
     NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
     PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
@@ -299,6 +299,56 @@ mod tests {
     fn explicit_extension_is_kept() {
         let p = resolve_vault_path("~/DimTest/ozel.dimvault").expect("yol");
         assert!(p.ends_with("ozel.dimvault"));
+    }
+
+    #[test]
+    fn case_payload_embeds_coverage_block() {
+        use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+        let db = Database::open_in_memory(&DatabaseKey::new([90u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kapsam".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: Sensitivity::Normal,
+                default_ai_policy: AiPolicy::Off,
+            })
+            .expect("case");
+        let coverage = ExportCoverage::from_report(&db.coverage_report(&case.id).expect("rapor"));
+        let payload = case_payload(&db, &case.id, &coverage).expect("yük");
+        assert_eq!(
+            payload["coverage"]["statement"],
+            dim_storage::COVERAGE_STATEMENT
+        );
+        assert_eq!(payload["coverage"]["documents"], 0);
+        assert_eq!(payload["coverage"]["complete"], false);
+        assert_eq!(payload["coverage"]["textPages"], 0);
+        // Rapor bölümü tablo başlığıyla başlar ve tüm sayımları taşır.
+        let section = coverage_section(&coverage);
+        assert_eq!(section["heading"], "İncelenen kapsam");
+        assert_eq!(section["rows"][0][0], "Ölçü");
+        assert_eq!(
+            section["rows"].as_array().map(Vec::len),
+            Some(coverage.rows().len() + 1)
+        );
+        assert_eq!(
+            section["lines"].as_array().map(Vec::len),
+            Some(coverage.warnings.len() + 1)
+        );
+        assert_eq!(
+            section["lines"]
+                .as_array()
+                .and_then(|lines| lines.last())
+                .cloned(),
+            Some(serde_json::json!(dim_storage::COVERAGE_STATEMENT))
+        );
+        // CSV yorumları tablo başlığını kirletmez.
+        assert!(coverage
+            .csv_comment_block()
+            .lines()
+            .all(|l| l.starts_with('#')));
     }
 }
 
@@ -3632,6 +3682,9 @@ pub struct ExportView {
     pub bytes: usize,
     pub sha256: String,
     pub record: ExportRow,
+    /// Çıktının içine gömülen kapsam bloğu (F11-T06). Arayüz "ne yazıldı"
+    /// iddiasını buradan gösterir; ölçüm kasadan gelir.
+    pub coverage: ExportCoverage,
 }
 
 fn write_export(path: &str, bytes: &[u8]) -> Result<(), ApiError> {
@@ -3646,7 +3699,11 @@ fn write_export(path: &str, bytes: &[u8]) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn case_payload(db: &Database, case_id: &str) -> Result<serde_json::Value, ApiError> {
+fn case_payload(
+    db: &Database,
+    case_id: &str,
+    coverage: &ExportCoverage,
+) -> Result<serde_json::Value, ApiError> {
     let case = db
         .get_case(case_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
@@ -3672,6 +3729,8 @@ fn case_payload(db: &Database, case_id: &str) -> Result<serde_json::Value, ApiEr
         "version": 1,
         "exportedAt": dim_storage::now_iso(),
         "case": case,
+        // Kapsam her çıktıda taşınır: "incelenmedi ≠ temiz".
+        "coverage": coverage,
         "documents": documents,
         "events": events,
         "claims": claims,
@@ -3682,6 +3741,17 @@ fn case_payload(db: &Database, case_id: &str) -> Result<serde_json::Value, ApiEr
     }))
 }
 
+/// Dosyanın o anki kapsam raporu (dışa aktarmadan önce arayüzde göstermek için).
+#[tauri::command]
+pub fn case_coverage(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<ExportCoverage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(ExportCoverage::from_report(&db.coverage_report(&case_id)?))
+}
+
 #[tauri::command]
 pub fn export_json(
     state: State<'_, AppState>,
@@ -3690,7 +3760,8 @@ pub fn export_json(
 ) -> Result<ExportView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let payload = case_payload(db, &case_id)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    let payload = case_payload(db, &case_id, &coverage)?;
     let bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
     write_export(&dest_path, &bytes)?;
@@ -3701,6 +3772,7 @@ pub fn export_json(
         bytes: bytes.len(),
         sha256: sha,
         record,
+        coverage,
     })
 }
 
@@ -3720,7 +3792,11 @@ pub fn export_csv(
 ) -> Result<ExportView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let mut out = String::from("kayit,tarih,tur,baslik,durum\n");
+    // Kapsam bloğu tablo satırlarına karışmasın diye `#` yorum satırı olarak
+    // başa yazılır; sayılar kasadan gelir.
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    let mut out = coverage.csv_comment_block();
+    out.push_str("kayit,tarih,tur,baslik,durum\n");
     for event in db.list_events(&case_id)? {
         out.push_str(&format!(
             "olay,{},{},{},{}\n",
@@ -3748,6 +3824,22 @@ pub fn export_csv(
         bytes: bytes.len(),
         sha256: sha,
         record,
+        coverage,
+    })
+}
+
+/// DOCX/PDF raporuna eklenen kapsam bölümü: sayım tablosu + uyarı/sınır
+/// satırları. Bölüm **ilk** sırada yer alır ki okuyucu içeriğe geçmeden
+/// kapsamın sınırını görsün.
+fn coverage_section(coverage: &ExportCoverage) -> serde_json::Value {
+    let mut rows: Vec<Vec<String>> = vec![vec!["Ölçü".to_string(), "Değer".to_string()]];
+    for (label, value) in coverage.rows() {
+        rows.push(vec![label.to_string(), value.to_string()]);
+    }
+    serde_json::json!({
+        "heading": "İncelenen kapsam",
+        "rows": rows,
+        "lines": coverage.lines(),
     })
 }
 
@@ -3767,6 +3859,7 @@ pub fn export_docx(
     let documents = db.list_documents(&case_id)?;
     let notes = db.list_notes(&case_id)?;
     let tasks = db.list_tasks(&case_id, true)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
 
     let event_rows: Vec<Vec<String>> = std::iter::once(vec![
         "Tarih".to_string(),
@@ -3830,8 +3923,10 @@ pub fn export_docx(
             "Tür": case.case_kind,
             "Hassasiyet": case.sensitivity,
             "Oluşturma": case.created_at,
+            "Kapsam": coverage.headline(),
         },
         "sections": [
+            coverage_section(&coverage),
             {"heading": "Kronoloji", "rows": event_rows},
             {"heading": "İddialar", "rows": claim_rows},
             {"heading": "Belge dizini", "rows": document_rows},
@@ -3851,6 +3946,7 @@ pub fn export_docx(
         bytes: bytes.len(),
         sha256: sha,
         record,
+        coverage,
     })
 }
 
@@ -3870,6 +3966,7 @@ pub fn export_pdf(
     let documents = db.list_documents(&case_id)?;
     let notes = db.list_notes(&case_id)?;
     let tasks = db.list_tasks(&case_id, true)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
 
     let payload = serde_json::json!({
         "title": format!("{} — dosya raporu", case.title),
@@ -3879,8 +3976,10 @@ pub fn export_pdf(
             "Tür": case.case_kind,
             "Hassasiyet": case.sensitivity,
             "Oluşturma": case.created_at,
+            "Kapsam": coverage.headline(),
         },
         "sections": [
+            coverage_section(&coverage),
             {"heading": "Kronoloji", "rows": std::iter::once(vec!["Tarih".to_string(),"Tür".to_string(),"Başlık".to_string(),"Kesinlik".to_string(),"Durum".to_string()]).chain(events.iter().map(|e| vec![e.sortable_date.clone().unwrap_or_else(|| "bilinmiyor".into()), e.date_role.clone(), e.title.clone(), e.date_precision.clone(), e.status.clone()])).collect::<Vec<_>>()},
             {"heading": "İddialar", "rows": std::iter::once(vec!["İddia".to_string(),"Tür".to_string()]).chain(claims.iter().map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()])).collect::<Vec<_>>()},
             {"heading": "Belge dizini", "rows": std::iter::once(vec!["Belge".to_string(),"Tür".to_string(),"Durum".to_string()]).chain(documents.iter().map(|d| vec![d.display_name.clone(), d.document_type.clone(), d.status.clone()])).collect::<Vec<_>>()},
@@ -3900,6 +3999,7 @@ pub fn export_pdf(
         bytes: bytes.len(),
         sha256: sha,
         record,
+        coverage,
     })
 }
 
@@ -3912,6 +4012,8 @@ pub struct PackageView {
     pub record: ExportRow,
     /// Parola verildiyse üretilen şifreli `.dimpak` dosyası.
     pub sealed_path: Option<String>,
+    /// Pakete gömülen kapsam bloğu (F11-T06).
+    pub coverage: ExportCoverage,
 }
 
 /// Devir paketi: dosya metadatası + rapor iskeleti + manifest. Belge baytları
@@ -3928,7 +4030,8 @@ pub fn export_package(
     if dest_dir.trim().is_empty() {
         return Err(ApiError::new("E_PATH", "Paket konumu boş olamaz."));
     }
-    let payload = case_payload(db, &case_id)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    let payload = case_payload(db, &case_id, &coverage)?;
     let stamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
@@ -3948,17 +4051,23 @@ pub fn export_package(
     let case_bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
     std::fs::write(dir.join("case.json"), &case_bytes)?;
-    let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json) ve manifest'i taşır.\nBelge baytları kasa dışına otomatik çıkarılmaz; paylaşılacak belgeler için\nMaskeleme ekranından maskeli kopya üretip bu klasöre ekleyin.\n\nPaket açık metindir; şifreli taşıma F16 kapsamındadır.\n";
+    // Kapsam manifesti: paketin hangi belge/sayfa kapsamıyla üretildiğini yazar
+    // (okunabilir markdown). "İncelenmedi ≠ temiz" cümlesi paketin içinde kalır.
+    let coverage_md = coverage.markdown(payload["case"]["title"].as_str().unwrap_or("Dosya"));
+    std::fs::write(dir.join("KAPSAM.md"), coverage_md.as_bytes())?;
+    let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json), inceleme kapsamını (KAPSAM.md)\nve manifest'i taşır. Belge baytları kasa dışına otomatik çıkarılmaz;\npaylaşılacak belgeler için Maskeleme ekranından maskeli kopya üretip bu\nklasöre ekleyin.\n\nKAPSAM.md zorunlu okumadır: hangi belge ve sayfaların gerçekten\nayrıştırıldığını, kaç sayfanın OCR ile okunduğunu ve kaç belgenin hiç\nincelenmediğini yazar. Kapsam dışı içerik \"temiz\" sayılmaz.\n\nPaket açık metindir; şifreli taşıma F16 kapsamındadır.\n";
     std::fs::write(dir.join("README.txt"), readme)?;
 
     let files = [
         ("case.json", sha256_file(&dir.join("case.json"))?),
+        ("KAPSAM.md", sha256_file(&dir.join("KAPSAM.md"))?),
         ("README.txt", sha256_file(&dir.join("README.txt"))?),
     ];
     let manifest = serde_json::json!({
         "format": "dim-handoff",
         "version": 1,
         "createdAt": dim_storage::now_iso(),
+        "coverage": coverage,
         "files": files.iter().map(|(name, hash)| serde_json::json!({"name": name, "sha256": hash})).collect::<Vec<_>>(),
     });
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -3984,10 +4093,11 @@ pub fn export_package(
 
     Ok(PackageView {
         path: dir.to_string_lossy().to_string(),
-        files: 3,
+        files: files.len(),
         sha256: sha,
         record,
         sealed_path,
+        coverage,
     })
 }
 

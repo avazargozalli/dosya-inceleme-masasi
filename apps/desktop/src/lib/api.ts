@@ -131,6 +131,25 @@ export type CoverageReport = {
   failedParseRuns: number;
 };
 
+/// Dışa aktarma çıktısına gömülen kapsam bloğu (F11-T06). Sayılar çekirdekten
+/// gelir; arayüz yeniden hesaplamaz.
+export type ExportCoverage = {
+  documents: number;
+  versions: number;
+  parseRuns: number;
+  pages: number;
+  textPages: number;
+  ocrPages: number;
+  segments: number;
+  emptyPages: number;
+  unparsedDocuments: number;
+  failedParseRuns: number;
+  complete: boolean;
+  warnings: string[];
+  statement: string;
+  generatedAt: string;
+};
+
 export type ProviderProfileRow = {
   id: string;
   providerType: string;
@@ -221,6 +240,7 @@ export type PackageResult = {
   sha256: string;
   sealedPath: string | null;
   record: { id: string; exportType: string; status: string; createdAt: string };
+  coverage: ExportCoverage;
 };
 
 export type ExportResult = {
@@ -228,6 +248,7 @@ export type ExportResult = {
   bytes: number;
   sha256: string;
   record: { id: string; exportType: string; status: string; outputHash: string | null; createdAt: string };
+  coverage: ExportCoverage;
 };
 
 export type RedactionResult = {
@@ -1375,6 +1396,7 @@ export const api = {
     invoke<ExportResult>("export_pdf", { caseId, destPath }),
   exportPackage: (caseId: string, destDir: string, password?: string) =>
     invoke<PackageResult>("export_package", { caseId, destDir, password }),
+  caseCoverage: (caseId: string) => invoke<ExportCoverage>("case_coverage", { caseId }),
 
   aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
   aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
