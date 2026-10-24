@@ -1,4 +1,4 @@
-import type { AnchorLocationRow, PageBlock, PageRow, SearchHit } from "./api";
+import type { AnchorLocationRow, DocumentRow, PageBlock, PageRow, SearchHit } from "./api";
 
 /** Okuyucunun açılacağı yer. `versionId` zorunludur: sonuç/bağ, doğru
  *  sürümü açar; "en son sürüm" tahmini yapılmaz (F07 kabul testi). */
@@ -325,7 +325,7 @@ export function previewDataUrl(pngBase64: string): string {
 
 export type PreviewMeta = { cached: boolean; byteSize: number; dpi: number };
 
-/** Önizleme alt yazısı: kaynağı (şifreli önbellek/yeni) ve boyutu dürüstçe yazar. */
+/** Önizleme alt yazısı: kaynağı (şifreli önbellek/yeni) ve boyutunu dürüstçe yazar. */
 export function previewCaption(meta: PreviewMeta): string {
   const size =
     meta.byteSize >= 1024 * 1024
@@ -333,4 +333,115 @@ export function previewCaption(meta: PreviewMeta): string {
       : `${Math.max(1, Math.round(meta.byteSize / 1024))} KB`;
   const source = meta.cached ? "şifreli önbellekten" : "yeni üretildi";
   return `${source} · ${size} · ${meta.dpi} dpi`;
+}
+
+/** Paneldeki metin seçimi: sayfa metnine göre Unicode scalar aralığı. */
+export type TextSelection = { quote: string; start: number; end: number };
+
+/** Bir okuyucu panelinin görünüm durumu. Yalnız gösterimi etkiler; kayıtlı
+ *  sayfa verisi, `pages.rotation` ve alıntı offsetleri değişmez. */
+export type ReaderView = {
+  page: number;
+  zoom: number;
+  rotation: number;
+  selection: TextSelection | null;
+};
+
+export const EMPTY_VIEW: ReaderView = { page: 0, zoom: 1, rotation: 0, selection: null };
+
+/** Panel başına hatırlanan belge sürümü sayısı. Sınır, uzun incelemede
+ *  belleğin sınırsız büyümesini engeller. */
+export const VIEW_MEMORY_LIMIT = 8;
+
+/** Panelin sürüm başına görünüm belleği; sıra eskiden yeniye doğrudur. */
+export type ViewMemory = ReadonlyArray<{ versionId: string; view: ReaderView }>;
+
+function cloneView(view: ReaderView): ReaderView {
+  return {
+    page: view.page,
+    zoom: view.zoom,
+    rotation: view.rotation,
+    selection: view.selection ? { ...view.selection } : null,
+  };
+}
+
+/** Sürümün görünümünü hatırlar. Aynı sürüm yeniden kaydedilirse kayıt
+ *  güncellenir ve sona taşınır; sınır aşılırsa en eski kayıt düşer. */
+export function rememberView(
+  memory: ViewMemory,
+  versionId: string,
+  view: ReaderView,
+  limit: number = VIEW_MEMORY_LIMIT,
+): ViewMemory {
+  if (!versionId) return memory;
+  const bounded = Math.max(1, Math.floor(limit));
+  const rest = memory.filter((entry) => entry.versionId !== versionId);
+  const next = [...rest, { versionId, view: cloneView(view) }];
+  return next.length > bounded ? next.slice(next.length - bounded) : next;
+}
+
+/** Sürümün hatırlanan görünümü; yoksa `null` (uydurma konum üretilmez). */
+export function recallView(memory: ViewMemory, versionId: string | null): ReaderView | null {
+  if (!versionId) return null;
+  const found = memory.find((entry) => entry.versionId === versionId);
+  return found ? cloneView(found.view) : null;
+}
+
+/** Kayıtlı seçimi sayfa metnine karşı doğrular. Alıntı, kaydedildiği
+ *  offset'te birebir durmuyorsa seçim geri yüklenmez: yeniden ayrıştırma
+ *  metni kaydırmışsa yanlış alıntı işaretlenmez. */
+export function validSelection(text: string, selection: TextSelection | null): TextSelection | null {
+  if (!selection) return null;
+  const { quote, start, end } = selection;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  if (start < 0 || end <= start) return null;
+  const chars = Array.from(text);
+  if (end > chars.length) return null;
+  const actual = chars.slice(start, end).join("");
+  return actual === quote ? { quote, start, end } : null;
+}
+
+/** Panelde sayfa gezinme tuşları. Yalnız **Alt** ile çalışır: düz PageUp/
+ *  PageDown ve ok tuşları metin alanının kendi kaydırmasını bozmaz. Değişiklik
+ *  yoksa `null` döner ve tuş yutulmaz. */
+export function pageForKey(
+  key: string,
+  modifiers: { alt?: boolean; ctrl?: boolean; meta?: boolean; shift?: boolean },
+  page: number,
+  pageCount: number,
+): number | null {
+  if (pageCount <= 0) return null;
+  if (!modifiers.alt || modifiers.ctrl || modifiers.meta || modifiers.shift) return null;
+  const current = Math.min(Math.max(page, 0), pageCount - 1);
+  const last = pageCount - 1;
+  switch (key) {
+    case "PageDown":
+    case "ArrowRight":
+    case "ArrowDown":
+      return current >= last ? null : current + 1;
+    case "PageUp":
+    case "ArrowLeft":
+    case "ArrowUp":
+      return current <= 0 ? null : current - 1;
+    case "Home":
+      return current === 0 ? null : 0;
+    case "End":
+      return current === last ? null : last;
+    default:
+      return null;
+  }
+}
+
+/** Panel boşken açılacak belge: diğer panelde açık sürüm **seçilmez**, böylece
+ *  yan yana iki farklı belge açılır. Başka belge yoksa tek belgeye döner. */
+export function pickInitialVersion(
+  documents: DocumentRow[],
+  excludeVersionId: string | null,
+): string | null {
+  const withVersion = documents.filter(
+    (doc): doc is DocumentRow & { currentVersionId: string } => Boolean(doc.currentVersionId),
+  );
+  if (withVersion.length === 0) return null;
+  const other = withVersion.find((doc) => doc.currentVersionId !== excludeVersionId);
+  return (other ?? withVersion[0]!).currentVersionId;
 }

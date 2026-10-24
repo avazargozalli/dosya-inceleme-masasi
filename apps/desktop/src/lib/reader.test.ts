@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { AnchorLocationRow, PageRow, SearchHit } from "./api";
+import type { AnchorLocationRow, DocumentRow, PageRow, SearchHit } from "./api";
 import {
+  EMPTY_VIEW,
   ZOOM_STEPS,
   blocksForRange,
   clampZoom,
@@ -9,17 +10,22 @@ import {
   mapRectForDisplay,
   nextZoom,
   offsetSlice,
+  pageForKey,
   pageLabelInfo,
   parseWarnings,
+  pickInitialVersion,
   previewCaption,
   previewDataUrl,
   querySlice,
+  recallView,
+  rememberView,
   resolvePageIndex,
   rotateView,
   sliceForPage,
   structureEntries,
   targetFromAnchor,
   targetFromHit,
+  validSelection,
 } from "./reader";
 
 const pages: PageRow[] = [
@@ -347,5 +353,127 @@ describe("sayfa önizlemesi (F07-T11)", () => {
 
   it("küçük görüntüde 1 KB'dan aşağı yazmaz", () => {
     expect(previewCaption({ cached: true, byteSize: 20, dpi: 48 })).toContain("1 KB");
+  });
+});
+
+describe("panel görünüm belleği (F07-T08)", () => {
+  const view = { page: 3, zoom: 1.5, rotation: 90, selection: null };
+
+  it("sürümün görünümünü hatırlar ve geri verir", () => {
+    const memory = rememberView([], "v1", view);
+    expect(recallView(memory, "v1")).toEqual(view);
+    expect(recallView(memory, "v2")).toBeNull();
+    expect(recallView(memory, null)).toBeNull();
+  });
+
+  it("aynı sürüm yeniden kaydedilince kaydı günceller, çoğaltmaz", () => {
+    let memory = rememberView([], "v1", view);
+    memory = rememberView(memory, "v1", { ...view, page: 7 });
+    expect(memory).toHaveLength(1);
+    expect(recallView(memory, "v1")?.page).toBe(7);
+  });
+
+  it("sınırı aşınca en eski kaydı düşürür", () => {
+    let memory = rememberView([], "v1", view, 2);
+    memory = rememberView(memory, "v2", view, 2);
+    memory = rememberView(memory, "v3", view, 2);
+    expect(memory.map((entry) => entry.versionId)).toEqual(["v2", "v3"]);
+  });
+
+  it("boş sürüm kimliğini kaydetmez", () => {
+    expect(rememberView([], "", view)).toHaveLength(0);
+  });
+
+  it("kaydı panelin dışına taşırmaz: döndürülen kopya değiştirilebilir", () => {
+    const selection = { quote: "kira", start: 0, end: 4 };
+    const memory = rememberView([], "v1", { ...view, selection });
+    selection.quote = "değişti";
+    expect(recallView(memory, "v1")?.selection?.quote).toBe("kira");
+  });
+});
+
+describe("seçim doğrulama (F07-T08)", () => {
+  const text = "İTİRAZIN reddine karar verildi.";
+
+  it("alıntı kaydedildiği offset'te duruyorsa seçimi geri verir", () => {
+    const start = Array.from(text.slice(0, text.indexOf("reddine"))).length;
+    expect(validSelection(text, { quote: "reddine", start, end: start + 7 })).toEqual({
+      quote: "reddine",
+      start,
+      end: start + 7,
+    });
+  });
+
+  it("offset kaydıysa seçimi geri yüklemez", () => {
+    expect(validSelection(text, { quote: "reddine", start: 11, end: 18 })).toBeNull();
+  });
+
+  it("aralık dışı, ters ve tam sayı olmayan aralığı reddeder", () => {
+    expect(validSelection(text, { quote: "x", start: 0, end: 999 })).toBeNull();
+    expect(validSelection(text, { quote: "x", start: 5, end: 5 })).toBeNull();
+    expect(validSelection(text, { quote: "x", start: 0.5, end: 2 })).toBeNull();
+  });
+
+  it("seçim yoksa null döner", () => {
+    expect(validSelection(text, null)).toBeNull();
+  });
+});
+
+describe("panel klavye gezinmesi (F07-T08)", () => {
+  it("Alt ile sayfa değiştirir, uçlarda durur", () => {
+    expect(pageForKey("PageDown", { alt: true }, 0, 3)).toBe(1);
+    expect(pageForKey("ArrowRight", { alt: true }, 1, 3)).toBe(2);
+    expect(pageForKey("PageDown", { alt: true }, 2, 3)).toBeNull();
+    expect(pageForKey("ArrowLeft", { alt: true }, 0, 3)).toBeNull();
+  });
+
+  it("Alt+Home/End ilk ve son sayfaya gider", () => {
+    expect(pageForKey("Home", { alt: true }, 2, 4)).toBe(0);
+    expect(pageForKey("End", { alt: true }, 1, 4)).toBe(3);
+    expect(pageForKey("Home", { alt: true }, 0, 4)).toBeNull();
+    expect(pageForKey("End", { alt: true }, 3, 4)).toBeNull();
+  });
+
+  it("Alt yoksa tuşu yutmaz (metin kaydırması bozulmaz)", () => {
+    expect(pageForKey("PageDown", {}, 0, 3)).toBeNull();
+    expect(pageForKey("ArrowDown", { alt: false }, 0, 3)).toBeNull();
+  });
+
+  it("başka değiştiriciyle veya boş belgede gezinmez", () => {
+    expect(pageForKey("PageDown", { alt: true, ctrl: true }, 0, 3)).toBeNull();
+    expect(pageForKey("PageDown", { alt: true, meta: true }, 0, 3)).toBeNull();
+    expect(pageForKey("PageDown", { alt: true, shift: true }, 0, 3)).toBeNull();
+    expect(pageForKey("PageDown", { alt: true }, 0, 0)).toBeNull();
+    expect(pageForKey("x", { alt: true }, 0, 3)).toBeNull();
+  });
+});
+
+describe("boş panelde açılacak belge (F07-T08)", () => {
+  const doc = (id: string, versionId: string | null): DocumentRow => ({
+    id,
+    caseId: "c1",
+    displayName: `${id}.pdf`,
+    documentType: "petition",
+    status: "active",
+    currentVersionId: versionId,
+    declaredDocumentDate: null,
+    createdAt: "2026-10-24T00:00:00Z",
+    updatedAt: "2026-10-24T00:00:00Z",
+    rowVersion: 1,
+  });
+
+  it("diğer panelde açık sürümü seçmez", () => {
+    const documents = [doc("d1", "v1"), doc("d2", "v2")];
+    expect(pickInitialVersion(documents, "v1")).toBe("v2");
+  });
+
+  it("başka belge yoksa tek belgeye döner (panel boş kalmaz)", () => {
+    expect(pickInitialVersion([doc("d1", "v1")], "v1")).toBe("v1");
+  });
+
+  it("sürümü olmayan belgeyi ve boş listeyi atlar", () => {
+    expect(pickInitialVersion([doc("d1", null)], null)).toBeNull();
+    expect(pickInitialVersion([], null)).toBeNull();
+    expect(pickInitialVersion([doc("d1", null), doc("d2", "v2")], null)).toBe("v2");
   });
 });

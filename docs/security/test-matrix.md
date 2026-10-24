@@ -7,7 +7,7 @@ Her tehdit, onu **gerçekten** sınayan test ya da kanıtla eşleşir. Boş hüc
 |---|---|---|---|---|
 | T1 | Cihaz kaybı, kasa dosyasının kopyalanması | `crates/vault` | Argon2id 64 MiB/3 tur, AES-256-GCM; yanlış parola `E_DB_KEY` (vault testleri) | ✅ |
 | T2 | Kurcalanmış başlık/blob | `header.rs`, `blob.rs` | AEAD tag + başlık MAC; truncation/tamper testleri | ✅ |
-| T3 | DB'de açık metin kalması | `crates/storage` | SQLCipher `PRAGMA key`; yanlış anahtarla `sqlite_master` okunamaz | ✅ |
+| T3 | DB'de açık metin kalması | `crates/storage` | `tests/plaintext.rs`: dosyada SQLite başlığı, dosya adı ve `sqlite_master` düz metin yok; yanlış anahtar açmaz | ✅ |
 | T4 | Yedekten sızıntı | `vault_backup` | `sqlcipher_export` + şifreli blob kopyası; manifest hash | ✅ |
 | T5 | Arayüzün veri katmanına doğrudan erişimi | `apps/desktop` | Yalnız Tauri komutları; her komut `case_id` kapsamı doğrular | ✅ |
 | T6 | Worker'ın dosya sistemine/ağa erişimi | `crates/ingest` | Worker'a dosya yolu değil bayt verilir; NDJSON protokolü | ✅ |

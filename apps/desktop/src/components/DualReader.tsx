@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   api,
   toApiError,
@@ -9,22 +9,30 @@ import {
   type PageRow,
 } from "../lib/api";
 import {
+  EMPTY_VIEW,
   blocksForRange,
   clampZoom,
   displayPageSize,
   entrySlice,
   mapRectForDisplay,
   nextZoom,
+  pageForKey,
   pageLabelInfo,
   parseWarnings,
+  pickInitialVersion,
   previewCaption,
   previewDataUrl,
   rangeForPage,
+  recallView,
+  rememberView,
   resolvePageIndex,
   rotateView,
   sliceForPage,
   structureEntries,
+  validSelection,
   type ReaderTarget,
+  type ReaderView,
+  type ViewMemory,
 } from "../lib/reader";
 
 /** Sayfa haritası: ayrıştırıcının **gerçekten ürettiği** blok kutuları.
@@ -111,6 +119,7 @@ function ReaderPane({
   documents,
   versionId,
   target,
+  otherVersionId,
   onPickVersion,
   onAnchor,
 }: {
@@ -119,19 +128,29 @@ function ReaderPane({
   documents: DocumentRow[];
   versionId: string | null;
   target: ReaderTarget | null;
+  /** Diğer panelde açık sürüm: boş panel aynı belgeyi ikinci kez açmaz. */
+  otherVersionId: string | null;
   onPickVersion: (versionId: string) => void;
   onAnchor?: ((anchor: AnchorRow) => void) | undefined;
 }) {
   const [data, setData] = useState<DocumentPages | null>(null);
-  const [page, setPage] = useState(0);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
-  const [selection, setSelection] = useState<{ quote: string; start: number; end: number } | null>(null);
+  // F07-T08: sayfa, yakınlaştırma, döndürme ve metin seçimi tek bir panel
+  // görünümüdür. Sürüm başına hatırlanır: belge değiştirip geri dönüldüğünde
+  // eski konum ve seçim korunur. Bellek yalnız bu panelin oturumundadır;
+  // diske/localStorage'a yazılmaz (seçim metni kasa dışına çıkmaz).
+  const [view, setView] = useState<ReaderView>(EMPTY_VIEW);
   const [savedQuote, setSavedQuote] = useState<string | null>(null);
-  // F07-T06: yakınlaştırma ve görünüm döndürmesi yalnız bu panelin
-  // gösterimini etkiler; `pages.rotation` ve metin offsetleri değişmez.
-  const [zoom, setZoom] = useState(1);
-  const [viewRotation, setViewRotation] = useState(0);
+  const [focused, setFocused] = useState(false);
+  const viewMemory = useRef<ViewMemory>([]);
+  const previousVersion = useRef<string | null>(null);
+  const restoredFromMemory = useRef(false);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const page = view.page;
+  const zoom = view.zoom;
+  const viewRotation = view.rotation;
   // F07-T11: sayfa görüntüsü kasadaki şifreli önbellekten gelir; kasa
   // kilitlenince çekirdek belleği temizler ve bu panel görüntüyü bırakır.
   const [previewOn, setPreviewOn] = useState(false);
@@ -148,11 +167,44 @@ function ReaderPane({
 
   const paneTarget = target && target.versionId === versionId ? target : null;
 
+  // Boş panel kendiliğinden bir belge açar; diğer panelde açık sürümü seçmez,
+  // böylece yan yana iki farklı belge gelir (tek belge varsa ona döner).
   useEffect(() => {
     if (versionId) return;
-    const first = documents.find((doc) => doc.currentVersionId);
-    if (first?.currentVersionId) onPickVersion(first.currentVersionId);
-  }, [versionId, documents, onPickVersion]);
+    const initial = pickInitialVersion(documents, otherVersionId);
+    if (initial) onPickVersion(initial);
+  }, [versionId, documents, otherVersionId, onPickVersion]);
+
+  // Sürüm değişiminde bu panelin önceki görünümü hatırlanır, yeni sürümün
+  // hatırlanan görünümü geri yüklenir. Hatıra yoksa temiz görünüm başlar;
+  // başka panelin görünümü buraya taşınmaz.
+  useEffect(() => {
+    const previous = previousVersion.current;
+    if (previous && previous !== versionId) {
+      viewMemory.current = rememberView(viewMemory.current, previous, viewRef.current);
+    }
+    previousVersion.current = versionId ?? null;
+    const remembered = recallView(viewMemory.current, versionId);
+    // Hatırlanan konum varsa hedef (arama/bağ) sayfasına geri zıplanmaz:
+    // kullanıcının bıraktığı yer korunur. Yeni bir hedef tıklaması yine açar.
+    restoredFromMemory.current = remembered !== null;
+    setView(remembered ?? EMPTY_VIEW);
+    setSavedQuote(null);
+  }, [versionId]);
+
+  /** Sayfa değişimi seçimi bırakır: seçim offsetleri sayfaya göredir, başka
+   *  sayfaya taşınmaz. Aynı sayfaya dönüşte seçim korunur. */
+  function goToPage(index: number) {
+    setSavedQuote(null);
+    setView((state) =>
+      state.page === index ? state : { ...state, page: index, selection: null },
+    );
+  }
+
+  /** Panelin seçim kaydını bırakır (DOM seçimine dokunmaz). */
+  function dropSelection() {
+    setView((state) => (state.selection ? { ...state, selection: null } : state));
+  }
 
   useEffect(() => {
     if (!versionId) {
@@ -163,7 +215,6 @@ function ReaderPane({
     // Sürüm değişince önceki belgenin sayfaları gösterilmez; hedef yeni
     // belgenin sayfaları yüklenince çözülür.
     setData(null);
-    setPage(0);
     setLoading(true);
     setError(null);
     (async () => {
@@ -181,17 +232,25 @@ function ReaderPane({
     };
   }, [versionId]);
 
-  // Hedef (arama sonucu veya kaynak bağ) geldiğinde doğru sayfayı aç.
+  // Hedef (arama sonucu veya kaynak bağ) geldiğinde doğru sayfayı aç. Sürüm
+  // hatırlanan görünümle geri yüklendiyse hedef zıplaması yapılmaz; hedef yoksa
+  // hatırlanan sayfa korunur, sıfıra zorlanmaz.
   useEffect(() => {
     if (!data) return;
+    const skip = restoredFromMemory.current;
+    restoredFromMemory.current = false;
+    if (skip || !paneTarget) return;
     const index = resolvePageIndex(data.pages, paneTarget);
-    if (index >= 0) setPage(index);
+    if (index >= 0) goToPage(index);
   }, [data, paneTarget]);
 
+  // Hatırlanan sayfa yeni sürümde yoksa (daha az sayfalı) son sayfaya çekilir.
   useEffect(() => {
-    setSelection(null);
-    setSavedQuote(null);
-  }, [page, versionId]);
+    if (!data) return;
+    if (data.pages.length > 0 && view.page >= data.pages.length) {
+      goToPage(data.pages.length - 1);
+    }
+  }, [data, view.page]);
 
   // Görüntü isteği yalnız kullanıcı açtığında ve gerçek sayfa için yapılır.
   useEffect(() => {
@@ -223,14 +282,12 @@ function ReaderPane({
     };
   }, [previewOn, versionId, page]);
 
-  // Belge değişince yakınlaştırma/döndürme sıfırlanır: önceki belgenin
-  // görünüm ayarı yeni belgeye sessizce taşınmaz.
-  useEffect(() => {
-    setZoom(1);
-    setViewRotation(0);
-  }, [versionId]);
-
+  // Seçim sayfa metnine karşı doğrulanır: yeniden ayrıştırma metni kaydırdıysa
+  // eski offset'teki alıntı işaretlenmez ve kullanıcıya sebep yazılır.
+  const storedSelection = view.selection;
   const current: PageRow | undefined = data?.pages[page];
+  const selection = current ? validSelection(current.text, storedSelection) : null;
+  const selectionDropped = Boolean(storedSelection) && selection === null;
   // Toplam döndürme: belgenin kendi değeri + kullanıcının görünüm ayarı.
   const rotation = rotateView(current?.rotation ?? 0, viewRotation);
   const zoomPercent = Math.round(clampZoom(zoom) * 100);
@@ -272,14 +329,14 @@ function ReaderPane({
     const node = textRef.current;
     const sel = window.getSelection();
     if (!node || !sel || sel.isCollapsed || sel.rangeCount === 0) {
-      setSelection(null);
+      dropSelection();
       return;
     }
     const range = sel.getRangeAt(0);
     const quote = sel.toString();
     const full = node.textContent ?? "";
     if (!quote.trim() || !node.contains(range.startContainer)) {
-      setSelection(null);
+      dropSelection();
       return;
     }
     let utf16Start: number;
@@ -291,16 +348,31 @@ function ReaderPane({
       pre.setEnd(range.startContainer, range.startOffset);
       utf16Start = pre.toString().length;
     } catch {
-      setSelection(null);
+      dropSelection();
       return;
     }
     if (full.slice(utf16Start, utf16Start + quote.length) !== quote) {
-      setSelection(null);
+      dropSelection();
       return;
     }
     const start = Array.from(full.slice(0, utf16Start)).length;
     const end = start + Array.from(quote).length;
-    setSelection({ quote, start, end });
+    setView((state) => ({ ...state, selection: { quote, start, end } }));
+  }
+
+  /** Klavye gezinmesi yalnız bu panelde çalışır (odak buradaysa). Yalnız
+   *  Alt ile: düz PageUp/PageDown metin alanının kaydırmasını bozmaz. */
+  function onPaneKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (!data) return;
+    const next = pageForKey(
+      event.key,
+      { alt: event.altKey, ctrl: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey },
+      view.page,
+      data.pages.length,
+    );
+    if (next === null) return;
+    event.preventDefault();
+    goToPage(next);
   }
 
   async function saveAnchor() {
@@ -318,7 +390,7 @@ function ReaderPane({
       setSavedQuote(anchor.exactQuote);
       onAnchor?.(anchor);
       window.getSelection()?.removeAllRanges();
-      setSelection(null);
+      dropSelection();
     } catch (e) {
       setError(toApiError(e));
     }
@@ -340,12 +412,17 @@ function ReaderPane({
   return (
     <section
       aria-label={label}
+      onKeyDown={onPaneKeyDown}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
+      }}
       style={{
         minWidth: 0,
         display: "flex",
         flexDirection: "column",
         gap: "var(--space-2)",
-        border: "1px solid var(--line)",
+        border: `1px solid ${focused ? "var(--accent)" : "var(--line)"}`,
         borderRadius: "var(--radius)",
         padding: "var(--space-3)",
         background: "var(--bg)",
@@ -353,6 +430,14 @@ function ReaderPane({
     >
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <span className="badge plain">{label}</span>
+        {focused ? (
+          <span
+            className="badge ok"
+            title="Klavye gezinmesi bu panelde; diğer panelin sayfası ve seçimi değişmez"
+          >
+            etkin panel
+          </span>
+        ) : null}
         <select
           className="input"
           aria-label={`${label} belgesi`}
@@ -401,7 +486,7 @@ function ReaderPane({
                   key={p.id}
                   className={index === page ? "btn primary" : "btn"}
                   style={{ height: 26, minWidth: 34, padding: "0 7px" }}
-                  onClick={() => setPage(index)}
+                  onClick={() => goToPage(index)}
                   aria-label={info.showsLabel ? `${info.physical} (${info.label})` : info.physical}
                   title={
                     info.showsLabel
@@ -461,7 +546,7 @@ function ReaderPane({
               aria-label={`${label}: uzaklaştır`}
               title="Uzaklaştır"
               disabled={nextZoom(zoom, -1) === clampZoom(zoom)}
-              onClick={() => setZoom(nextZoom(zoom, -1))}
+              onClick={() => setView((state) => ({ ...state, zoom: nextZoom(state.zoom, -1) }))}
             >
               −
             </button>
@@ -478,7 +563,7 @@ function ReaderPane({
               aria-label={`${label}: yakınlaştır`}
               title="Yakınlaştır"
               disabled={nextZoom(zoom, 1) === clampZoom(zoom)}
-              onClick={() => setZoom(nextZoom(zoom, 1))}
+              onClick={() => setView((state) => ({ ...state, zoom: nextZoom(state.zoom, 1) }))}
             >
               +
             </button>
@@ -486,7 +571,7 @@ function ReaderPane({
               className="btn ghost"
               style={{ height: 26 }}
               disabled={zoom === 1}
-              onClick={() => setZoom(1)}
+              onClick={() => setView((state) => ({ ...state, zoom: 1 }))}
               title="Yakınlaştırmayı %100'e döndür"
             >
               %100
@@ -500,7 +585,7 @@ function ReaderPane({
               style={{ height: 26, minWidth: 26, padding: "0 6px" }}
               aria-label={`${label}: sola döndür`}
               title="Sola döndür (90°)"
-              onClick={() => setViewRotation(rotateView(viewRotation, -90))}
+              onClick={() => setView((state) => ({ ...state, rotation: rotateView(state.rotation, -90) }))}
             >
               ⟲
             </button>
@@ -509,7 +594,7 @@ function ReaderPane({
               style={{ height: 26, minWidth: 26, padding: "0 6px" }}
               aria-label={`${label}: sağa döndür`}
               title="Sağa döndür (90°)"
-              onClick={() => setViewRotation(rotateView(viewRotation, 90))}
+              onClick={() => setView((state) => ({ ...state, rotation: rotateView(state.rotation, 90) }))}
             >
               ⟳
             </button>
@@ -517,7 +602,7 @@ function ReaderPane({
               className="btn ghost"
               style={{ height: 26 }}
               disabled={viewRotation === 0}
-              onClick={() => setViewRotation(0)}
+              onClick={() => setView((state) => ({ ...state, rotation: 0 }))}
               title="Görünüm döndürmesini sıfırla (belgenin kendi döndürmesi kalır)"
             >
               Döndürmeyi sıfırla
@@ -583,6 +668,15 @@ function ReaderPane({
               Seçimi kaynağa bağla
             </button>
           </div>
+
+          <p className="hint" style={{ margin: 0 }}>
+            Bu panelin görünümü: sayfa {view.page + 1}/{data.pages.length} · %{zoomPercent}
+            {view.rotation ? ` · ${view.rotation}° döndürülmüş` : ""}. Belge değiştirip geri
+            dönerseniz bu konum ve seçim geri yüklenir; diğer panelin görünümü değişmez. Klavye:
+            <code>Alt</code>+<code>←</code>/<code>→</code> veya <code>Alt</code>+<code>PageUp</code>/
+            <code>PageDown</code> sayfa değiştirir, <code>Alt</code>+<code>Home</code>/<code>End</code>{" "}
+            ilk/son sayfaya gider.
+          </p>
 
           {current && current.coordinateSpace && current.coordinateSpace !== "structure" && current.blocks.length > 0 ? (
             <PageMap page={current} highlight={highlightQuads} rotation={rotation} />
@@ -718,6 +812,12 @@ function ReaderPane({
             </details>
           ) : null}
 
+          {selectionDropped ? (
+            <p className="hint" style={{ margin: 0 }}>
+              Önceki seçim bu sayfada doğrulanamadı (metin değişmiş olabilir); seçim geri
+              yüklenmedi, yanlış alıntı işaretlenmez.
+            </p>
+          ) : null}
           {selection ? (
             <div className="notice">
               Seçim: “{selection.quote.length > 90 ? `${selection.quote.slice(0, 90)}…` : selection.quote}”
@@ -766,7 +866,8 @@ export function DualReader({
         <div>
           <h2>Okuyucu — yan yana</h2>
           <p className="card-sub">
-            Her panel kendi belgesini ve sayfasını korur. Alıntı seçip kaynağa bağlayabilirsiniz.
+            Her panel kendi belgesini, sayfasını, yakınlaştırmasını ve metin seçimini korur.
+            Bir panelde belge değiştirmek diğerini etkilemez; alıntı seçip kaynağa bağlayabilirsiniz.
           </p>
         </div>
         <button className="btn ghost" onClick={onClose}>Kapat</button>
@@ -779,6 +880,7 @@ export function DualReader({
           documents={documents}
           versionId={leftVersion}
           target={left}
+          otherVersionId={rightVersion}
           onPickVersion={setLeftVersion}
           onAnchor={onAnchor}
         />
@@ -788,6 +890,7 @@ export function DualReader({
           documents={documents}
           versionId={rightVersion}
           target={right}
+          otherVersionId={leftVersion}
           onPickVersion={setRightVersion}
           onAnchor={onAnchor}
         />

@@ -28,6 +28,11 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.10.3] — 2026-10-24 — F01 SQLCipher açık metin kanıtı
+
+- `crates/storage/tests/plaintext.rs`: dosyada SQLite başlığı, dosya adı ve şema adı düz metin değil
+- Yanlış anahtar veritabanını açamıyor; T3 iddiası teste bağlandı
+
 ## [0.10.2] — 2026-10-24 — F05 sürükle-bırak
 
 - Pencereye bırakılan dosya aynı içe aktarma hattından geçer (Tauri drag-drop olayı)
