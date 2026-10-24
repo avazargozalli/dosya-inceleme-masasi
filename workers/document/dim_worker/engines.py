@@ -1058,6 +1058,86 @@ def _verify_with_ocr(data: bytes, terms: list[str]) -> tuple[list[str], bool]:
     return found, True
 
 
+def redact_pdf_regions(
+    data: bytes,
+    regions: list[dict[str, Any]],
+    fill: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> RedactionResult:
+    """Kullanıcının seçtiği dikdörtgenleri gerçekten kaldırır.
+
+    `regions`: `{"page": int, "rect": [x0,y0,x1,y1]}` — punto, **döndürme öncesi
+    cropbox** uzayı. Metin katmanı ve görüntü pikselleri birlikte silinir; ardından
+    her bölge yeniden okunur ve içinde metin kaldıysa sonuç reddedilir.
+    """
+    pymupdf = _pymupdf()
+    if not regions:
+        raise EngineError("E_REDACT_REGIONS", "maskelenecek bölge yok")
+
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001
+        raise EngineError("E_PDF_OPEN", "PDF açılamadı (bozuk veya parola korumalı)") from exc
+    if doc.needs_pass:
+        raise EngineError("E_PDF_PASSWORD", "belge parola korumalı; önce parolayla açın")
+
+    parsed: list[tuple[int, Any, list[float]]] = []
+    for item in regions:
+        try:
+            page_index = int(item["page"])
+            raw = [float(v) for v in item["rect"]]
+        except (KeyError, TypeError, ValueError):
+            raise EngineError("E_REDACT_REGIONS", "bölge biçimi geçersiz") from None
+        if page_index < 0 or page_index >= doc.page_count:
+            raise EngineError("E_REDACT_REGIONS", f"sayfa aralık dışı: {page_index}")
+        if len(raw) != 4:
+            raise EngineError("E_REDACT_REGIONS", "rect dört değer olmalı")
+        cleaned = [min(raw[0], raw[2]), min(raw[1], raw[3]), max(raw[0], raw[2]), max(raw[1], raw[3])]
+        if cleaned[2] - cleaned[0] < 1.0 or cleaned[3] - cleaned[1] < 1.0:
+            raise EngineError("E_REDACT_REGIONS", "bölge çok küçük")
+        parsed.append((page_index, pymupdf.Rect(*cleaned), cleaned))
+
+    hits: list[RedactionHit] = []
+    try:
+        for page_index, rect, cleaned in parsed:
+            page = doc.load_page(page_index)
+            page.add_redact_annot(rect, fill=fill)
+            hits.append(
+                RedactionHit(
+                    page=page_index,
+                    term="(seçili bölge)",
+                    rect=cleaned,
+                )
+            )
+        for page_index in sorted({item[0] for item in parsed}):
+            doc.load_page(page_index).apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+        doc.scrub(metadata=True, xml_metadata=True, attached_files=True, hidden_text=True)
+        out = doc.tobytes(garbage=4, deflate=True)
+    finally:
+        doc.close()
+
+    check = pymupdf.open(stream=out, filetype="pdf")
+    remaining: list[str] = []
+    try:
+        for page_index, _rect, cleaned in parsed:
+            page = check.load_page(page_index)
+            leftover = (page.get_text("text", clip=pymupdf.Rect(*cleaned)) or "").strip()
+            if leftover:
+                remaining.append(f"sayfa {page_index + 1}: bölgede metin kaldı")
+    finally:
+        check.close()
+
+    version = str(getattr(pymupdf, "__version__", "unknown"))
+    return RedactionResult(
+        pdf=out,
+        hits=hits,
+        remaining=sorted(set(remaining)),
+        engine="pymupdf",
+        engine_version=version,
+        ocr_verified=False,
+        engines=["pymupdf"],
+    )
+
+
 def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> RedactionResult:
     """Terimleri PDF'in **metin katmanından ve görüntüsünden** gerçekten çıkarır.
 

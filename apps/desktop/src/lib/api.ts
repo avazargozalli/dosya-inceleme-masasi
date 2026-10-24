@@ -792,6 +792,8 @@ export const api = {
 
   documentRedact: (versionId: string, terms: string[]) =>
     invoke<RedactionResult>("document_redact", { versionId, terms }),
+  documentRedactRegions: (versionId: string, regions: Array<{ pageIndex: number; rect: [number, number, number, number] }>) =>
+    invoke<RedactionResult>("document_redact_regions", { versionId, regions }),
   exportJson: (caseId: string, destPath: string) =>
     invoke<ExportResult>("export_json", { caseId, destPath }),
   exportCsv: (caseId: string, destPath: string) =>

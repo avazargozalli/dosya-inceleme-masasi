@@ -512,6 +512,63 @@ impl WorkerClient {
             .map_err(|_| WorkerError::BadResponse)
     }
 
+    /// Kullanıcının seçtiği sayfa bölgelerini gerçekten kaldırır.
+    pub fn redact_regions(
+        &mut self,
+        data: &[u8],
+        regions: &[(u32, [f64; 4])],
+    ) -> Result<RedactionOutcome, WorkerError> {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+        let items: Vec<serde_json::Value> = regions
+            .iter()
+            .map(|(page, rect)| json!({"page": page, "rect": rect}))
+            .collect();
+        let result = self.request(
+            "redact_regions",
+            json!({"contentBase64": encoded, "regions": items}),
+        )?;
+        let pdf_b64 = result
+            .get("pdfBase64")
+            .and_then(Value::as_str)
+            .ok_or(WorkerError::BadResponse)?;
+        let pdf = base64::engine::general_purpose::STANDARD
+            .decode(pdf_b64)
+            .map_err(|_| WorkerError::BadResponse)?;
+        let hits: Vec<RedactionHit> =
+            serde_json::from_value(result.get("hits").cloned().unwrap_or_else(|| json!([])))
+                .map_err(|_| WorkerError::BadResponse)?;
+        let remaining: Vec<String> = serde_json::from_value(
+            result
+                .get("remaining")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|_| WorkerError::BadResponse)?;
+        Ok(RedactionOutcome {
+            pdf,
+            hits,
+            remaining,
+            ocr_verified: result
+                .get("ocrVerified")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            engines: serde_json::from_value(
+                result.get("engines").cloned().unwrap_or_else(|| json!([])),
+            )
+            .unwrap_or_default(),
+            engine: result
+                .get("engine")
+                .and_then(Value::as_str)
+                .unwrap_or("pymupdf")
+                .to_string(),
+            engine_version: result
+                .get("engineVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+        })
+    }
+
     /// PDF rapor üretir (HTML kaçışlanmış, Story ile sayfalanmış).
     pub fn render_report_pdf(
         &mut self,

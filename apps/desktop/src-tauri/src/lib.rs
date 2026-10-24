@@ -91,6 +91,7 @@ pub fn run() {
             commands::vault_backup,
             commands::provider_probe,
             commands::document_redact,
+            commands::document_redact_regions,
             commands::export_json,
             commands::export_csv,
             commands::export_docx,

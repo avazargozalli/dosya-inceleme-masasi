@@ -28,6 +28,13 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.10.0] — 2026-10-23 — F13 elle bölge maskeleme
+
+- Sayfa önizlemesi üzerinde dikdörtgen seçimi; piksel → punto (72/dpi) çevrimi
+- `redact_pdf_regions`: bölge doğrulaması, çok sayfa, küçük/geçersiz bölge reddi
+- Seçili bölgede metin kalırsa `E_REDACT_VERIFY`, dosya yazılmaz
+- 2 yeni Python testi; bölge modunda OCR doğrulaması yok (dürüst bayrak)
+
 ## [0.9.1] — 2026-10-23 — F03 parola değiştirme + kurtarma düzeltmesi
 
 - `VaultFile::change_password` (atomik başlık yazımı, DB anahtarı değişmez)

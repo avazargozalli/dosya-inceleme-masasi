@@ -30,7 +30,7 @@ from .engines import (
 )
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
 
-METHODS = {"ping", "capabilities", "extract_text", "redact", "render_report", "render_report_pdf", "render_page", "shutdown"}
+METHODS = {"ping", "capabilities", "extract_text", "redact", "redact_regions", "render_report", "render_report_pdf", "render_page", "shutdown"}
 
 # Geometri (blok/satır kutuları) çerçevenin bir parçasıdır. 1 MiB sert sınırına
 # yaklaşmamak için bütçe ayrılır; aşılırsa kutular kademeli atılır ve durum
@@ -239,6 +239,26 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
         import base64 as _b64
 
         return ok(rid, {"pdfBase64": _b64.b64encode(data).decode(), "bytes": len(data)}), False
+
+    if method == "redact_regions":
+        regions = params.get("regions")
+        if not isinstance(regions, list) or not regions:
+            raise ProtocolError("E_PARAMS", "regions listesi zorunlu")
+        result = redact_pdf_regions(data, regions)
+        import base64 as _b64
+
+        return ok(
+            rid,
+            {
+                "pdfBase64": _b64.b64encode(result.pdf).decode(),
+                "hits": [{"page": h.page, "term": h.term, "rect": h.rect} for h in result.hits],
+                "remaining": result.remaining,
+                "engine": result.engine,
+                "engineVersion": result.engine_version,
+                "ocrVerified": result.ocr_verified,
+                "engines": result.engines,
+            },
+        ), False
 
     if method == "redact":
         terms = params.get("terms")

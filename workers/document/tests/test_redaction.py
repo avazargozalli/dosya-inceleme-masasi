@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from dim_worker import engines
+
 from dim_worker.engines import EngineError, redact_pdf
 
 
@@ -89,3 +91,41 @@ def test_ocr_verification_flag_is_honest():
     else:
         assert result.ocr_verified is True
         assert "tesseract" in result.engines
+
+
+def test_region_redaction_removes_selected_area():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Gizli Isim 12345678901")
+    data = doc.tobytes()
+    doc.close()
+
+    result = engines.redact_pdf_regions(data, [{"page": 0, "rect": [60, 55, 240, 95]}])
+    assert result.hits
+    assert result.remaining == []
+    check = pymupdf.open(stream=result.pdf, filetype="pdf")
+    try:
+        assert "Gizli Isim" not in check[0].get_text("text")
+    finally:
+        check.close()
+
+
+def test_region_redaction_rejects_bad_input():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+
+    with pytest.raises(EngineError) as tiny:
+        engines.redact_pdf_regions(data, [{"page": 0, "rect": [10, 10, 10.5, 10.5]}])
+    assert tiny.value.code == "E_REDACT_REGIONS"
+
+    with pytest.raises(EngineError) as outside:
+        engines.redact_pdf_regions(data, [{"page": 3, "rect": [10, 10, 100, 100]}])
+    assert outside.value.code == "E_REDACT_REGIONS"
+
+    with pytest.raises(EngineError) as empty:
+        engines.redact_pdf_regions(data, [])
+    assert empty.value.code == "E_REDACT_REGIONS"

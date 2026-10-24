@@ -19,7 +19,7 @@ use dim_storage::{
     SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use zeroize::Zeroizing;
 
@@ -2196,4 +2196,114 @@ pub fn vault_change_password(
     let path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
     VaultFile::change_password(path, &old_password, &new_password)?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactRegionInput {
+    pub page_index: u32,
+    pub rect: [f64; 4],
+}
+
+/// Kullanıcının sayfa üzerinde seçtiği bölgeleri gerçekten kaldırır ve yeni
+/// sürüm olarak kaydeder. Doğrulama geçmezse hiçbir çıktı yazılmaz.
+#[tauri::command]
+pub fn document_redact_regions(
+    state: State<'_, AppState>,
+    version_id: String,
+    regions: Vec<RedactRegionInput>,
+) -> Result<RedactionView, ApiError> {
+    if regions.is_empty() {
+        return Err(ApiError::new("E_REDACT_REGIONS", "En az bir bölge seçin."));
+    }
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db.get_version(&version_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let pairs: Vec<(u32, [f64; 4])> = regions.iter().map(|r| (r.page_index, r.rect)).collect();
+    let mut worker = spawn_worker()?;
+    let outcome = worker.redact_regions(&data, &pairs)?;
+    worker.shutdown();
+
+    if !outcome.remaining.is_empty() {
+        return Err(ApiError::new(
+            "E_REDACT_VERIFY",
+            "Seçilen bölgede metin kaldı; dosya kaydedilmedi.",
+        ));
+    }
+
+    let out_sha = hex::encode(Sha256::digest(&outcome.pdf));
+    let aad = format!("{}:redacted:{}", version.case_id, out_sha);
+    let out_path = vault.write_blob(
+        &vault_path.parent().unwrap_or_else(|| Path::new(".")).join("blobs"),
+        &outcome.pdf,
+        aad.as_bytes(),
+    )?;
+    let out_size = i64::try_from(std::fs::metadata(&out_path)?.len()).unwrap_or(i64::MAX);
+    let storage_id = out_path.file_stem().and_then(|s| s.to_str()).unwrap_or("blob").to_string();
+    let out_blob_id = db.create_blob_record(&storage_id, out_size, &aad)?;
+
+    let source_doc = db
+        .get_document(&version.document_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge bulunamadı."))?;
+    let new_doc = db.create_document(
+        &version.case_id,
+        &format!("{} (bölge maskeli)", source_doc.display_name),
+        "pdf",
+        None,
+        "unknown",
+    )?;
+    let new_version = db.add_version_with_parent(
+        &new_doc.id,
+        &version.case_id,
+        &out_blob_id,
+        &out_sha,
+        i64::try_from(outcome.pdf.len()).unwrap_or(i64::MAX),
+        "application/pdf",
+        Some(&version_id),
+    )?;
+
+    let plan = db.create_redaction_plan(
+        &version.case_id,
+        &dim_storage::NewRedactionPlan {
+            document_version_id: version_id.clone(),
+            parse_run_id: None,
+            render_hash: version.original_sha256.clone(),
+            output_profile: "share".to_string(),
+        },
+    )?;
+    let inputs: Vec<dim_storage::RedactionRegionInput> = outcome
+        .hits
+        .iter()
+        .map(|hit| dim_storage::RedactionRegionInput {
+            page_index: i64::from(hit.page),
+            rect: hit.rect,
+            term_hash: hex::encode(Sha256::digest(
+                format!("region:{}:{:?}", hit.page, hit.rect).as_bytes(),
+            )),
+        })
+        .collect();
+    db.add_redaction_regions(&plan.id, &inputs)?;
+
+    Ok(RedactionView {
+        document: new_doc,
+        version: new_version,
+        plan,
+        hits: outcome.hits.len(),
+        remaining: outcome.remaining,
+        ocr_verified: outcome.ocr_verified,
+        engines: outcome.engines,
+    })
 }
