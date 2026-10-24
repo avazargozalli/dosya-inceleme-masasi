@@ -603,6 +603,22 @@ impl Drop for WorkerClient {
     }
 }
 
+/// Geliştirme ortamında Python yorumlayıcısını bulur (`python3`, sonra `python`).
+///
+/// Süreç başlatma bu modülde merkezîdir (ADR-05); worker'ı sınayan testler de
+/// yorumlayıcıyı bu yardımcıyla arar, kendi `Command` çağrısını yazmaz.
+#[must_use]
+pub fn dev_python() -> Option<PathBuf> {
+    for candidate in ["python3", "python"] {
+        if let Ok(out) = Command::new(candidate).arg("--version").output() {
+            if out.status.success() {
+                return Some(PathBuf::from(candidate));
+            }
+        }
+    }
+    None
+}
+
 /// Geliştirme ortamında worker klasörünü bulur: depo kökündeki
 /// `workers/document`. Paketlenmiş sürümde çağıran açık yol verir.
 #[must_use]
@@ -626,14 +642,7 @@ mod tests {
     use super::*;
 
     fn python() -> Option<PathBuf> {
-        for candidate in ["python3", "python"] {
-            if let Ok(out) = Command::new(candidate).arg("--version").output() {
-                if out.status.success() {
-                    return Some(PathBuf::from(candidate));
-                }
-            }
-        }
-        None
+        dev_python()
     }
 
     fn extraction_part(index: u64, total: u64, page_index: u64) -> Value {
