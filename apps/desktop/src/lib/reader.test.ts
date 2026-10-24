@@ -32,6 +32,7 @@ import {
   validSelection,
   versionBadge,
   rebindStatusText,
+  runBadge,
 } from "./reader";
 
 const pages: PageRow[] = [
@@ -103,6 +104,7 @@ const anchor: AnchorLocationRow = {
   coordinateSpace: "unrotated_cropbox_points",
   pageRotation: 90,
   isCurrentVersion: true,
+  isCurrentRun: true,
   currentVersionId: "v-old",
   versionNo: 1,
   currentVersionNo: 1,
@@ -580,9 +582,27 @@ describe("eski sürüm rozeti (F07-T12)", () => {
   });
 
   it("yeniden bağlama durumunu eşleşme sayısıyla yazar", () => {
-    expect(rebindStatusText({ status: "current", candidates: [] })).toContain("zaten güncel");
-    expect(rebindStatusText({ status: "exact", candidates: [{}] })).toContain("tek eşleşme");
-    expect(rebindStatusText({ status: "ambiguous", candidates: [{}, {}, {}] })).toContain("3 eşleşme");
-    expect(rebindStatusText({ status: "unresolved", candidates: [] })).toContain("bulunamadı");
+    expect(rebindStatusText({ status: "current", candidates: [], isCurrentRun: true })).toContain(
+      "zaten güncel",
+    );
+    expect(rebindStatusText({ status: "exact", candidates: [{}], isCurrentRun: true })).toContain(
+      "Güncel sürümde tek eşleşme",
+    );
+    expect(
+      rebindStatusText({ status: "exact", candidates: [{}], isCurrentRun: false }),
+    ).toContain("Güncel ayrıştırmada tek eşleşme");
+    expect(
+      rebindStatusText({ status: "ambiguous", candidates: [{}, {}, {}], isCurrentRun: true }),
+    ).toContain("3 eşleşme");
+    expect(
+      rebindStatusText({ status: "unresolved", candidates: [], isCurrentRun: false }),
+    ).toContain("bulunamadı");
+  });
+
+  it("ayrıştırma eskidiğinde rozeti yalnız sürüm güncelken gösterir", () => {
+    expect(runBadge({ isCurrentVersion: true, isCurrentRun: false })).toBe("eski ayrıştırma");
+    expect(runBadge({ isCurrentVersion: true, isCurrentRun: true })).toBeNull();
+    // Sürüm eskiyse "eski sürüm" rozeti yeterli; iki rozet üst üste binmez.
+    expect(runBadge({ isCurrentVersion: false, isCurrentRun: false })).toBeNull();
   });
 });

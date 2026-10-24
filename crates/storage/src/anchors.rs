@@ -77,6 +77,10 @@ pub struct AnchorLocation {
     pub version_no: Option<i64>,
     /// Belgenin güncel sürüm numarası.
     pub current_version_no: Option<i64>,
+    /// Anchor, sürümün **en son** başarılı/kısmi ayrıştırmasına mı bağlı
+    /// (F06-T10). Aynı sürüm yeniden ayrıştırıldıysa `false` olur: anchor
+    /// eski `parse_run`da kalır ve yeniden bağlama önerilir.
+    pub is_current_run: bool,
 }
 
 /// Güncel sürümde alıntının bulunduğu aday konum (yeniden bağlama önerisi).
@@ -98,6 +102,8 @@ struct AnchorVersionInfo {
     current_version_id: Option<String>,
     version_no: Option<i64>,
     current_version_no: Option<i64>,
+    anchor_run_id: String,
+    latest_run_id: Option<String>,
 }
 
 /// Kopmuş/eski bağlantı için yeniden bağlama önerisi. `status`:
@@ -111,6 +117,9 @@ pub struct RebindSuggestion {
     pub current_version_id: Option<String>,
     pub version_no: Option<i64>,
     pub current_version_no: Option<i64>,
+    /// Anchor sürümün en son ayrıştırmasına mı bağlı; `false` ise aynı sürüm
+    /// yeniden ayrıştırılmıştır ve öneri güncel ayrıştırmayı hedefler.
+    pub is_current_run: bool,
     pub status: String,
     pub candidates: Vec<RebindCandidate>,
 }
@@ -225,7 +234,12 @@ impl Database {
                         a.parse_run_id, a.page_id, p.page_index, a.segment_id,
                         a.start_offset, a.end_offset, a.exact_quote, a.anchor_status,
                         a.quote_hash, s.raw_text, s.bbox_list, p.rotation, p.coordinate_space,
-                        d.current_version_id, dv.version_no, cv.version_no
+                        d.current_version_id, dv.version_no, cv.version_no,
+                        (SELECT pr.id FROM parse_runs pr
+                          WHERE pr.document_version_id = a.document_version_id
+                            AND pr.status IN ('succeeded','partial')
+                          ORDER BY COALESCE(pr.completed_at, pr.created_at) DESC, pr.id DESC
+                          LIMIT 1)
                  FROM source_anchors a
                  LEFT JOIN document_versions dv ON dv.id = a.document_version_id
                  LEFT JOIN documents d ON d.id = dv.document_id
@@ -240,6 +254,8 @@ impl Database {
                     let exact_quote: String = row.get(11)?;
                     let quote_hash: String = row.get(13)?;
                     let raw: Option<String> = row.get(14)?;
+                    let parse_run_id: String = row.get(5)?;
+                    let latest_run_id: Option<String> = row.get(21)?;
                     let quote_intact = raw.as_deref().is_some_and(|text| {
                         usize::try_from(start_offset).is_ok_and(|start| {
                             verify_quote(text, &exact_quote, Some(&quote_hash), Some(start))
@@ -255,7 +271,7 @@ impl Database {
                         document_version_id: row.get(2)?,
                         document_id: row.get(3)?,
                         document_name: row.get(4)?,
-                        parse_run_id: row.get(5)?,
+                        parse_run_id: parse_run_id.clone(),
                         page_id: row.get(6)?,
                         page_index: row.get(7)?,
                         segment_id: row.get(8)?,
@@ -272,6 +288,10 @@ impl Database {
                         current_version_no: row.get(20)?,
                         is_current_version: row.get::<_, Option<String>>(18)?
                             == Some(row.get::<_, String>(2)?),
+                        // Henüz tamamlanmış ayrıştırma yoksa "eski" denmez.
+                        is_current_run: latest_run_id
+                            .as_deref()
+                            .is_none_or(|latest| latest == parse_run_id),
                     })
                 },
             )
@@ -287,7 +307,12 @@ impl Database {
             .conn()
             .query_row(
                 "SELECT a.case_id, a.document_version_id, a.exact_quote,
-                        d.current_version_id, dv.version_no, cv.version_no
+                        d.current_version_id, dv.version_no, cv.version_no, a.parse_run_id,
+                        (SELECT pr.id FROM parse_runs pr
+                          WHERE pr.document_version_id = a.document_version_id
+                            AND pr.status IN ('succeeded','partial')
+                          ORDER BY COALESCE(pr.completed_at, pr.created_at) DESC, pr.id DESC
+                          LIMIT 1)
                  FROM source_anchors a
                  JOIN document_versions dv ON dv.id = a.document_version_id
                  JOIN documents d ON d.id = dv.document_id
@@ -302,24 +327,33 @@ impl Database {
                         current_version_id: row.get(3)?,
                         version_no: row.get(4)?,
                         current_version_no: row.get(5)?,
+                        anchor_run_id: row.get(6)?,
+                        latest_run_id: row.get(7)?,
                     })
                 },
             )
             .optional()?;
         let info = row.ok_or(StorageError::NotFound)?;
+        let is_current_run = info
+            .latest_run_id
+            .as_deref()
+            .is_none_or(|latest| latest == info.anchor_run_id);
         let mut suggestion = RebindSuggestion {
             anchor_id: anchor_id.to_string(),
             quote: info.quote.clone(),
             current_version_id: info.current_version_id.clone(),
             version_no: info.version_no,
             current_version_no: info.current_version_no,
+            is_current_run,
             status: "unresolved".into(),
             candidates: Vec::new(),
         };
         let Some(current_version_id) = info.current_version_id.clone() else {
             return Ok(suggestion);
         };
-        if current_version_id == info.anchor_version_id {
+        // "Güncel" ancak hem sürüm hem de ayrıştırma güncelse söylenir; aynı
+        // sürümün yeniden ayrıştırması anchor'ı eski run'da bırakır (F06-T10).
+        if current_version_id == info.anchor_version_id && is_current_run {
             suggestion.status = "current".into();
             return Ok(suggestion);
         }
@@ -988,5 +1022,119 @@ mod tests {
         assert_eq!(err.code(), "E_QUOTE_NOT_FOUND");
         let located = db.locate_anchor(&anchor_id).expect("konum").expect("var");
         assert!(!located.is_current_version);
+    }
+
+    /// Aynı sürüm yeniden ayrıştırılınca anchor eski `parse_run`da kalır: konum
+    /// "güncel sürüm" görünse de "güncel ayrıştırma" değildir ve yeniden
+    /// bağlama önerilir (F06-T10).
+    #[test]
+    fn reparse_same_version_marks_anchor_stale_and_rebinds() {
+        let db = Database::open_in_memory(&DatabaseKey::new([41u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db.create_blob_record("st-r1", 10, "aad").expect("blob");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let v1 = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"c".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v1");
+        let run1 = db
+            .start_parse_run(&v1.id, &case.id, "pymupdf", "1.24", "{\"v\":1}")
+            .expect("run1");
+        db.store_pages(
+            &run1.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: "Mahkeme itirazın reddine karar verdi.".into(),
+                origin: "native".into(),
+                ..Default::default()
+            }],
+        )
+        .expect("pages1");
+        db.finish_parse_run(&run1.id, "succeeded", &[])
+            .expect("finish1");
+        let segment1: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run1.id],
+                |r| r.get(0),
+            )
+            .expect("segment1");
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id.clone(),
+                document_version_id: v1.id.clone(),
+                parse_run_id: run1.id.clone(),
+                segment_id: segment1,
+                start_offset: 8,
+                end_offset: 8 + i64::try_from("itirazın reddine".chars().count()).unwrap(),
+                exact_quote: "itirazın reddine".into(),
+            })
+            .expect("anchor");
+        let before = db.locate_anchor(&anchor.id).expect("konum").expect("var");
+        assert!(before.is_current_version);
+        assert!(before.is_current_run);
+
+        // Aynı sürüm, yeni ayrıştırma: alıntı öne eklenen metin yüzünden kaydı.
+        let run2 = db
+            .start_parse_run(&v1.id, &case.id, "pymupdf", "1.24.1", "{\"v\":2}")
+            .expect("run2");
+        db.store_pages(
+            &run2.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: "Karar: Mahkeme, itirazın reddine karar verdi.".into(),
+                origin: "native".into(),
+                ..Default::default()
+            }],
+        )
+        .expect("pages2");
+        db.finish_parse_run(&run2.id, "succeeded", &[])
+            .expect("finish2");
+
+        let stale = db.locate_anchor(&anchor.id).expect("konum").expect("var");
+        assert!(stale.is_current_version, "sürüm hâlâ güncel");
+        assert!(!stale.is_current_run, "ayrıştırma eskidi");
+        assert_eq!(stale.parse_run_id, run1.id);
+
+        let suggestion = db.rebind_suggestion(&anchor.id).expect("öneri");
+        assert!(!suggestion.is_current_run);
+        assert_eq!(suggestion.status, "exact");
+        assert_eq!(suggestion.candidates.len(), 1);
+        let candidate = suggestion.candidates[0].clone();
+        assert_eq!(
+            candidate.start_offset,
+            i64::try_from("Karar: Mahkeme, ".chars().count()).unwrap()
+        );
+
+        db.rebind_anchor(&anchor.id, &candidate.segment_id, candidate.start_offset)
+            .expect("rebind");
+        let fresh = db.locate_anchor(&anchor.id).expect("konum").expect("var");
+        assert!(fresh.is_current_run);
+        assert_eq!(fresh.parse_run_id, run2.id);
+        assert_eq!(
+            db.rebind_suggestion(&anchor.id).expect("öneri").status,
+            "current"
+        );
     }
 }

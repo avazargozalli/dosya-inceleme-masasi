@@ -674,6 +674,8 @@ export type AnchorLocationRow = {
   currentVersionId: string | null;
   versionNo: number | null;
   currentVersionNo: number | null;
+  /** Anchor sürümün en son ayrıştırmasına mı bağlı (F06-T10). */
+  isCurrentRun: boolean;
 };
 
 export type RebindCandidate = {
@@ -692,6 +694,8 @@ export type RebindSuggestion = {
   currentVersionId: string | null;
   versionNo: number | null;
   currentVersionNo: number | null;
+  /** Anchor sürümün en son ayrıştırmasına mı bağlı (F06-T10). */
+  isCurrentRun: boolean;
   status: "current" | "exact" | "ambiguous" | "unresolved";
   candidates: RebindCandidate[];
 };

@@ -562,20 +562,33 @@ export function versionBadge(location: {
   return `eski sürüm ${from} · güncel ${to}`;
 }
 
-/** Yeniden bağlama önerisinin durum metni. Sayı uydurulmaz; eşleşme sayısı
- *  gerçek aday listesinden gelir. */
+/** Yeniden bağlama durum metni. Sayı uydurulmaz; eşleşme sayısı
+ *  gerçek aday listesinden gelir. Aynı sürüm yeniden ayrıştırıldıysa
+ *  (`isCurrentRun === false`) metin "sürüm" değil "ayrıştırma" der. */
 export function rebindStatusText(suggestion: {
   status: string;
   candidates: unknown[];
+  isCurrentRun: boolean;
 }): string {
+  const scope = suggestion.isCurrentRun ? "Güncel sürümde" : "Güncel ayrıştırmada";
   switch (suggestion.status) {
     case "current":
-      return "Kaynak zaten güncel sürümde.";
+      return "Kaynak zaten güncel ayrıştırmada.";
     case "exact":
-      return "Güncel sürümde tek eşleşme bulundu; bağlanabilir.";
+      return `${scope} tek eşleşme bulundu; bağlanabilir.`;
     case "ambiguous":
-      return `Güncel sürümde ${suggestion.candidates.length} eşleşme var (belirsiz); birini seçin.`;
+      return `${scope} ${suggestion.candidates.length} eşleşme var (belirsiz); birini seçin.`;
     default:
-      return "Güncel sürümde bulunamadı (çözümlenemedi); eski konum korunuyor.";
+      return `${scope} bulunamadı (çözümlenemedi); eski konum korunuyor.`;
   }
+}
+
+/** Sürüm güncel ama ayrıştırma eskiyse rozet metni; sürüm eskiyse `null`
+ *  döner (o durumu `versionBadge` anlatır). */
+export function runBadge(location: {
+  isCurrentVersion: boolean;
+  isCurrentRun: boolean;
+}): string | null {
+  if (!location.isCurrentVersion || location.isCurrentRun) return null;
+  return "eski ayrıştırma";
 }

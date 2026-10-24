@@ -35,6 +35,7 @@ import {
   rememberView,
   resolvePageIndex,
   rotateView,
+  runBadge,
   sliceForPage,
   structureEntries,
   targetFromAnchor,
@@ -807,7 +808,15 @@ function ReaderPane({
                 {versionBadge(anchorInfo)}
               </span>
             ) : null}
-            {!anchorInfo.quoteIntact || versionBadge(anchorInfo) ? (
+            {runBadge(anchorInfo) ? (
+              <span
+                className="badge warn"
+                title="Belge yeniden ayrıştırıldı; kaynak eski ayrıştırmaya bağlı. Güncel ayrıştırmada yeniden aranabilir."
+              >
+                {runBadge(anchorInfo)}
+              </span>
+            ) : null}
+            {!anchorInfo.quoteIntact || versionBadge(anchorInfo) || runBadge(anchorInfo) ? (
               <button
                 className="btn ghost"
                 style={{ height: 24 }}
