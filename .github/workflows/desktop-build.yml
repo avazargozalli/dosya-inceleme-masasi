@@ -75,8 +75,12 @@ jobs:
           workspaces: "apps/desktop/src-tauri -> target"
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @dim/desktop build
-      - name: İmzasız ikili üret (kurucu F16'da)
-        run: pnpm --filter @dim/desktop exec tauri build --no-bundle
+      - name: İmzasız MSI üret (kod imzası kapsam dışı — ADR-0012)
+        run: pnpm --filter @dim/desktop exec tauri build --bundles msi
+      - name: MSI gerçekten üretildi mi
+        shell: bash
+        run: |
+          ls apps/desktop/src-tauri/target/release/bundle/msi/*.msi
       - uses: actions/upload-artifact@v4
         with:
           name: dim-windows-x64
