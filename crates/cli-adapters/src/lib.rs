@@ -1,15 +1,21 @@
-//! Resmî CLI adaptörlerinin **sicili** ve argüman kapısı.
+//! Resmî CLI adaptörlerinin **sicili**, argüman kapısı ve izinli yürütme.
 //!
-//! Bu crate süreç çalıştırmaz. Kimlik dosyası okumaz, token kopyalamaz
-//! (INV-11). Gerçek yürütme F10'da, kullanıcının kurduğu resmî araçlar
-//! üzerinden ve yalnız burada tanımlı izinli argümanlarla yapılacaktır.
+//! Kimlik dosyası okunmaz, token kopyalanmaz (INV-11). Yürütme yalnız burada
+//! tanımlı izinli argümanlarla, mutlak yürütülebilir yoluyla, allowlist ortamla,
+//! süre sınırı ve iptal desteğiyle yapılır (`exec` modülü).
 
-// Süreç yalnız `--version` yoklaması için ve yalnız burada başlatılır; kimlik
-// dosyası okunmaz, token kopyalanmaz (ADR-05, INV-11).
+// Süreç yalnız `--version` yoklaması ve izinli CLI yürütmesi için başlatılır;
+// kimlik dosyası okunmaz, token kopyalanmaz (ADR-05, INV-11).
 #![allow(clippy::disallowed_methods)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+pub mod exec;
+pub use exec::{
+    clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
+    RunOutcome, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
