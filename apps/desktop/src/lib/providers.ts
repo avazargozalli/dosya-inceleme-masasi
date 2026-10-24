@@ -67,3 +67,63 @@ export function probeCanRun(
 ): boolean {
   return row.state === "installed" && !row.batchForbidden && running === null;
 }
+
+/** Bayt → okunur boyut (Türkçe ondalık virgül). */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0).replace(".", ",")} KiB`;
+  return `${(kib / 1024).toFixed(1).replace(".", ",")} MiB`;
+}
+
+/**
+ * Kapsam kanıtı satırları: iş dizini izni, `HOME`/`TMPDIR` politikası, stdin
+ * boyutu ve alt sürecin bıraktığı dosyalar. Değerler çekirdekten gelir; ekran
+ * bunları olduğu gibi gösterir.
+ */
+export function probeScopeLines(
+  view: Pick<CliProbeView, "sandbox">,
+): Array<{ label: string; value: string }> {
+  const box = view.sandbox;
+  const files =
+    box.files.length === 0
+      ? "yok"
+      : `${box.files.length} dosya · ${formatBytes(box.totalBytes)}`;
+  return [
+    {
+      label: "İzin",
+      value: box.workdirMode === null ? "doğrulanamadı (Unix dışı)" : `${box.workdirMode} yalnız kullanıcı`,
+    },
+    {
+      label: "HOME / TMPDIR",
+      value: box.homeIsolation === "sandbox" ? "kum havuzunda" : "kullanıcı ev dizini (açık seçim)",
+    },
+    { label: "stdin", value: `${formatBytes(box.stdinBytes)} / ${formatBytes(box.stdinLimitBytes)}` },
+    { label: "Bırakılan dosya", value: files },
+  ];
+}
+
+/** Kapsam sınırı aşıldıysa ya da politika zayıfsa kullanıcıya söylenir. */
+export function probeScopeWarnings(view: Pick<CliProbeView, "sandbox">): string[] {
+  const box = view.sandbox;
+  const out: string[] = [];
+  if (box.sizeLimitBytes > 0 && box.totalBytes > box.sizeLimitBytes) {
+    out.push(
+      `Kum havuzunda ${formatBytes(box.totalBytes)} dosya var; ${formatBytes(box.sizeLimitBytes)} sınırı aşıldı. Sınır sonradan ölçülür, süreç durdurulmadı.`,
+    );
+  }
+  if (box.filesTruncated) {
+    out.push(
+      `Dosya listesi ${box.entryLimit} girdide kesildi; toplam bayt yalnız listelenen dosyaları kapsar.`,
+    );
+  }
+  if (box.homeIsolation === "user_home") {
+    out.push(
+      "HOME/TMPDIR kullanıcı ev dizininde: alt süreç varsayılan yollarda kişisel yapılandırmayı görebilir.",
+    );
+  }
+  if (box.workdirMode === null) {
+    out.push("İş dizini izni bu platformda doğrulanamadı.");
+  }
+  return out;
+}

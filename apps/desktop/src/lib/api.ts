@@ -451,6 +451,27 @@ export type AdapterView = {
   allowedArgs: string[];
 };
 
+export type CliProbeSandboxFile = {
+  name: string;
+  bytes: number;
+};
+
+/** Alt sürecin kapsam kanıtı: izin, `HOME`/`TMPDIR` politikası, stdin boyutu. */
+export type CliProbeSandbox = {
+  workdir: string;
+  workdirMode: string | null;
+  home: string | null;
+  tmp: string | null;
+  homeIsolation: "sandbox" | "user_home";
+  stdinBytes: number;
+  stdinLimitBytes: number;
+  files: CliProbeSandboxFile[];
+  filesTruncated: boolean;
+  totalBytes: number;
+  sizeLimitBytes: number;
+  entryLimit: number;
+};
+
 export type CliProbeView = {
   adapterId: string;
   displayName: string;
@@ -466,6 +487,7 @@ export type CliProbeView = {
   stderrHead: string;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  sandbox: CliProbeSandbox;
 };
 
 export type ClaimRow = {

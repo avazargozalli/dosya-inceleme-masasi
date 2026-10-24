@@ -1,9 +1,12 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useState, type CSSProperties } from "react";
 import { api, toApiError, type AdapterView, type ApiError, type CliProbeView } from "../lib/api";
 import {
+  formatBytes,
   probeArgv,
   probeCanRun,
   probeOutputs,
+  probeScopeLines,
+  probeScopeWarnings,
   probeStatusLabel,
   probeSummary,
   probeWarnings,
@@ -126,7 +129,9 @@ export function Providers() {
             const result = results[row.id];
             const runError = runErrors[row.id];
             const status = result ? probeStatusLabel(result) : null;
-            const warnings = result ? probeWarnings(result) : [];
+            const warnings = result
+              ? [...probeWarnings(result), ...probeScopeWarnings(result)]
+              : [];
             const outputs = result ? probeOutputs(result) : [];
             return (
               <div key={row.id} className="card tight" style={{ background: "var(--surface)" }}>
@@ -182,7 +187,7 @@ export function Providers() {
                       İptal
                     </button>
                   ) : null}
-                  <span className="muted small">gerçek süreç · boş geçici dizin · 15 sn</span>
+                  <span className="muted small">gerçek süreç · 0700 kum havuzu · stdin ≤ 1 MiB · 15 sn</span>
                 </div>
 
                 {runError ? (
@@ -206,11 +211,32 @@ export function Providers() {
                     <dl className="kv" style={{ gridTemplateColumns: "88px 1fr", marginTop: "var(--space-2)" }}>
                       <dt>Komut</dt><dd style={MONO}>{probeArgv(result)}</dd>
                       <dt>Ortam</dt><dd style={MONO}>{result.envKeys.join(", ") || "—"}</dd>
+                      {probeScopeLines(result).map((line) => (
+                        <Fragment key={line.label}>
+                          <dt>{line.label}</dt>
+                          <dd>{line.value}</dd>
+                        </Fragment>
+                      ))}
                       <dt>İş dizini</dt>
                       <dd style={MONO}>
                         {result.workdir} <span className="muted">(boş; çalıştırmadan sonra silindi)</span>
                       </dd>
                     </dl>
+                    {result.sandbox.files.length > 0 ? (
+                      <details style={{ marginTop: "var(--space-2)" }}>
+                        <summary className="muted small" style={{ cursor: "pointer" }}>
+                          Çalıştırma sırasında kum havuzuna yazılan {result.sandbox.files.length} dosya
+                          {result.sandbox.filesTruncated ? " (liste kesik)" : ""}
+                        </summary>
+                        <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                          {result.sandbox.files.map((file) => (
+                            <li key={file.name} style={MONO}>
+                              {file.name} · {formatBytes(file.bytes)}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
                     {warnings.map((warning) => (
                       <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
                         {warning}

@@ -1635,6 +1635,32 @@ pub struct CliProbeInput {
     pub adapter_id: String,
 }
 
+/// Kapsam kanıtı: iş dizini izni, `HOME`/`TMPDIR` politikası, stdin boyutu ve
+/// alt sürecin kum havuzunda bıraktığı dosyalar. **Dosya içeriği taşınmaz.**
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeSandboxView {
+    pub workdir: String,
+    pub workdir_mode: Option<String>,
+    pub home: Option<String>,
+    pub tmp: Option<String>,
+    pub home_isolation: &'static str,
+    pub stdin_bytes: usize,
+    pub stdin_limit_bytes: usize,
+    pub files: Vec<CliProbeSandboxFile>,
+    pub files_truncated: bool,
+    pub total_bytes: u64,
+    pub size_limit_bytes: u64,
+    pub entry_limit: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeSandboxFile {
+    pub name: String,
+    pub bytes: u64,
+}
+
 /// Arayüzdeki "Bağlantıyı sına" düğmesinin gördüğü sonuç. Hangi argv ile,
 /// hangi ortam anahtarlarıyla, nerede ve ne kadar süre çalıştığı açıkça yazılır.
 #[derive(Serialize)]
@@ -1654,6 +1680,7 @@ pub struct CliProbeView {
     pub stderr_head: String,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub sandbox: CliProbeSandboxView,
 }
 
 fn probe_status_label(status: &RunStatus) -> &'static str {
@@ -1726,6 +1753,28 @@ pub async fn provider_probe_run(
         RunStatus::Exited(code) => Some(code),
         _ => None,
     };
+    let scope = &report.outcome.scope;
+    let sandbox = CliProbeSandboxView {
+        workdir: scope.workdir.to_string_lossy().to_string(),
+        workdir_mode: scope.workdir_mode.map(|mode| format!("{mode:04o}")),
+        home: scope.home.as_ref().map(|p| p.to_string_lossy().to_string()),
+        tmp: scope.tmp.as_ref().map(|p| p.to_string_lossy().to_string()),
+        home_isolation: scope.home_isolation.as_str(),
+        stdin_bytes: scope.stdin_bytes,
+        stdin_limit_bytes: scope.stdin_limit,
+        files: scope
+            .inventory
+            .iter()
+            .map(|entry| CliProbeSandboxFile {
+                name: entry.name.clone(),
+                bytes: entry.bytes,
+            })
+            .collect(),
+        files_truncated: scope.inventory_truncated,
+        total_bytes: scope.inventory_total_bytes,
+        size_limit_bytes: scope.sandbox_size_limit,
+        entry_limit: scope.inventory_limit_entries,
+    };
     let view = CliProbeView {
         adapter_id: spec.id.to_string(),
         display_name: spec.display_name.to_string(),
@@ -1741,9 +1790,11 @@ pub async fn provider_probe_run(
         stderr_head: report.outcome.stderr_head.clone(),
         stdout_truncated: report.outcome.stdout_truncated,
         stderr_truncated: report.outcome.stderr_truncated,
+        sandbox,
     };
 
-    // Kasa açıksa sınama denetime yazılır; **çıktı metni denetime yazılmaz**.
+    // Kasa açıksa sınama denetime yazılır; **çıktı metni ve dosya adları
+    // denetime yazılmaz** (yalnız izin, politika ve sayılar).
     {
         let guard = state.lock();
         if let Some(db) = guard.db.as_ref() {
@@ -1756,6 +1807,13 @@ pub async fn provider_probe_run(
                 "durationMs": view.duration_ms,
                 "stdoutTruncated": view.stdout_truncated,
                 "stderrTruncated": view.stderr_truncated,
+                "workdirMode": view.sandbox.workdir_mode,
+                "homeIsolation": view.sandbox.home_isolation,
+                "stdinBytes": view.sandbox.stdin_bytes,
+                "stdinLimitBytes": view.sandbox.stdin_limit_bytes,
+                "sandboxFileCount": view.sandbox.files.len(),
+                "sandboxTotalBytes": view.sandbox.total_bytes,
+                "sandboxFilesTruncated": view.sandbox.files_truncated,
             });
             db.append_audit("cli_probe", None, "run", "local-user", &metadata)?;
         }

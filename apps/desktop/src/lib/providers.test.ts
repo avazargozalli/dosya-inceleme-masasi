@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { CliProbeView } from "./api";
 import {
+  formatBytes,
   probeArgv,
   probeCanRun,
   probeOutputs,
+  probeScopeLines,
+  probeScopeWarnings,
   probeStatusLabel,
   probeSummary,
   probeWarnings,
@@ -26,6 +29,20 @@ function view(overrides: Partial<CliProbeView> = {}): CliProbeView {
     stderrHead: "",
     stdoutTruncated: false,
     stderrTruncated: false,
+    sandbox: {
+      workdir: "/var/folders/x/dim-cli-sandbox-1-0",
+      workdirMode: "0700",
+      home: "/var/folders/x/dim-cli-sandbox-1-0/home",
+      tmp: "/var/folders/x/dim-cli-sandbox-1-0/tmp",
+      homeIsolation: "sandbox",
+      stdinBytes: 0,
+      stdinLimitBytes: 1048576,
+      files: [],
+      filesTruncated: false,
+      totalBytes: 0,
+      sizeLimitBytes: 67108864,
+      entryLimit: 200,
+    },
     ...overrides,
   };
 }
@@ -81,5 +98,49 @@ describe("bağlantı sınaması sunumu", () => {
     expect(probeCanRun({ state: "installed", batchForbidden: false }, "codex-cli")).toBe(false);
     expect(probeCanRun({ state: "not_installed", batchForbidden: false }, null)).toBe(false);
     expect(probeCanRun({ state: "installed", batchForbidden: true }, null)).toBe(false);
+  });
+
+  it("bayt biçimi Türkçe ondalıkla okunur", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(1023)).toBe("1023 B");
+    expect(formatBytes(1024)).toBe("1,0 KiB");
+    expect(formatBytes(20480)).toBe("20 KiB");
+    expect(formatBytes(1048576)).toBe("1,0 MiB");
+  });
+
+  it("kapsam satırları izin, HOME politikası, stdin ve dosya sayısını yazar", () => {
+    const lines = probeScopeLines(view());
+    expect(lines.map((l) => l.label)).toEqual(["İzin", "HOME / TMPDIR", "stdin", "Bırakılan dosya"]);
+    expect(lines[0]?.value).toBe("0700 yalnız kullanıcı");
+    expect(lines[1]?.value).toBe("kum havuzunda");
+    expect(lines[2]?.value).toBe("0 B / 1,0 MiB");
+    expect(lines[3]?.value).toBe("yok");
+
+    const withFiles = view({
+      sandbox: { ...view().sandbox, files: [{ name: "home/a.json", bytes: 12 }], totalBytes: 12 },
+    });
+    expect(probeScopeLines(withFiles)[3]?.value).toBe("1 dosya · 12 B");
+
+    const userHome = view({ sandbox: { ...view().sandbox, homeIsolation: "user_home", home: null } });
+    expect(probeScopeLines(userHome)[1]?.value).toBe("kullanıcı ev dizini (açık seçim)");
+
+    const unverified = view({ sandbox: { ...view().sandbox, workdirMode: null } });
+    expect(probeScopeLines(unverified)[0]?.value).toBe("doğrulanamadı (Unix dışı)");
+  });
+
+  it("kapsam uyarıları yalnız gerçek sorunda üretilir", () => {
+    expect(probeScopeWarnings(view())).toEqual([]);
+    expect(
+      probeScopeWarnings(view({ sandbox: { ...view().sandbox, filesTruncated: true } })),
+    ).toHaveLength(1);
+    expect(
+      probeScopeWarnings(
+        view({
+          sandbox: { ...view().sandbox, totalBytes: 70 * 1024 * 1024 },
+        }),
+      ),
+    ).toHaveLength(1);
+    expect(probeScopeWarnings(view({ sandbox: { ...view().sandbox, homeIsolation: "user_home" } }))).toHaveLength(1);
+    expect(probeScopeWarnings(view({ sandbox: { ...view().sandbox, workdirMode: null } }))).toHaveLength(1);
   });
 });

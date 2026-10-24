@@ -13,11 +13,16 @@ use std::process::Command;
 
 pub mod exec;
 pub mod probe;
+pub mod sandbox;
 pub use exec::{
     clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
-    RunOutcome, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
+    RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
 };
-pub use probe::{probe_request, run_probe, ProbeReport, ProbeWorkdir, PROBE_TIMEOUT};
+pub use probe::{probe_request, run_probe, ProbeReport, PROBE_TIMEOUT};
+pub use sandbox::{
+    check_workdir, HomeIsolation, RunSandbox, SandboxEntry, SandboxInventory, WorkdirCheck,
+    MAX_INVENTORY_ENTRIES, MAX_SANDBOX_BYTES, MAX_STDIN_BYTES, SANDBOX_DIR_MODE,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {

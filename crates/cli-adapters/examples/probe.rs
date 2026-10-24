@@ -35,8 +35,41 @@ fn main() {
     let cancel = Arc::new(AtomicBool::new(false));
     match run_probe(adapter, executable, &cancel) {
         Ok(report) => {
+            let scope = &report.outcome.scope;
             println!("ortam       : {}", report.env_keys.join(", "));
-            println!("iş dizini   : {} (boş)", report.workdir.display());
+            println!(
+                "iş dizini   : {} (boş, izin {:04o})",
+                report.workdir.display(),
+                scope.workdir_mode.unwrap_or(0)
+            );
+            println!(
+                "kapsam      : HOME={} ({}) · TMPDIR={}",
+                scope
+                    .home
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "kullanıcı ev dizini".into()),
+                scope.home_isolation.as_str(),
+                scope
+                    .tmp
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "kullanıcı TMPDIR".into())
+            );
+            println!(
+                "stdin       : {} bayt / {} bayt sınır",
+                scope.stdin_bytes, scope.stdin_limit
+            );
+            println!(
+                "kalan dosya : {} ({} bayt){}",
+                scope.inventory.len(),
+                scope.inventory_total_bytes,
+                if scope.inventory_truncated {
+                    " · liste kesik"
+                } else {
+                    ""
+                }
+            );
             println!("sınır       : {:?}", report.timeout);
             println!("durum       : {:?}", report.outcome.status);
             println!("süre        : {} ms", report.outcome.duration_ms);

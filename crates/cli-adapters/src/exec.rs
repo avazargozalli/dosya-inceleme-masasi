@@ -6,10 +6,17 @@
 //! - Ortam **allowlist** ile kurulur; `Command::env_clear()` sonrası yalnız
 //!   verilen değişkenler aktarılır. Anahtar/token/cookie gibi görünen adlar
 //!   allowlist'e yazılsa bile reddedilir.
-//! - İş dizini var olan bir dizin olmalı; stdin metin olarak verilir.
+//! - İş dizini **kapsamlı** olmalı (`sandbox::check_workdir`): mutlak, sembolik
+//!   bağ değil, boş, ev dizini ya da üstü değil, Unix'te `0700`.
+//! - `HOME`/`TMPDIR` varsayılan olarak kum havuzunun içine yönlendirilir
+//!   (`HomeIsolation::Sandbox`).
+//! - stdin metni `MAX_STDIN_BYTES` ile sınırlıdır; aşan istek süreç başlamadan
+//!   reddedilir. Yazım parçalı ve iptal duyarlıdır.
 //! - Süre sınırı ve iptal bayrağı birlikte uygulanır; süre dolunca/iptalde alt
 //!   süreç **öldürülür**, kısmi çıktı raporlanır.
 //! - Çıktı en çok 64 KiB baş kısmıyla döner; kesildiği ayrıca işaretlenir.
+//! - Çalıştırmadan sonra kum havuzunda kalan dosyalar **sayılır** (ad + bayt);
+//!   içerik okunmaz, denetime yazılmaz.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +25,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::sandbox::{
+    check_workdir, HomeIsolation, SandboxEntry, MAX_INVENTORY_ENTRIES, MAX_SANDBOX_BYTES,
+    MAX_STDIN_BYTES,
+};
 use crate::{build_args, ensure_batch_allowed, AdapterError};
 
 /// Alt süreçten geri getirilen en çok bayt (baş kısmı).
@@ -45,6 +56,37 @@ pub struct RunOutcome {
     pub duration_ms: u64,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    /// Kapsam kanıtı: iş dizini izni, `HOME`/`TMPDIR` politikası, stdin
+    /// boyutu ve alt sürecin bıraktığı dosyaların sayımı.
+    pub scope: RunScope,
+}
+
+/// Yürütmenin **kapsam** kanıtı. İçerik taşımaz: yalnız izin, yol, sayı.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunScope {
+    pub workdir: PathBuf,
+    /// Unix izni (ör. `0o700`); Unix dışında `None`.
+    pub workdir_mode: Option<u32>,
+    /// `HomeIsolation::Sandbox` ise kum havuzundaki `HOME`.
+    pub home: Option<PathBuf>,
+    /// `HomeIsolation::Sandbox` ise kum havuzundaki `TMPDIR`.
+    pub tmp: Option<PathBuf>,
+    pub home_isolation: HomeIsolation,
+    pub stdin_bytes: usize,
+    pub stdin_limit: usize,
+    pub inventory: Vec<SandboxEntry>,
+    pub inventory_total_bytes: u64,
+    pub inventory_truncated: bool,
+    pub inventory_limit_entries: usize,
+    pub sandbox_size_limit: u64,
+}
+
+impl RunScope {
+    /// Kum havuzu boyut sınırı aşıldı mı? (Sonradan ölçülür, sert sınır yok.)
+    #[must_use]
+    pub const fn size_limit_exceeded(&self) -> bool {
+        self.inventory_total_bytes > self.sandbox_size_limit
+    }
 }
 
 impl RunOutcome {
@@ -64,6 +106,14 @@ pub enum RunError {
     ExecutableUnavailable,
     #[error("iş dizini yok veya dizin değil")]
     InvalidWorkdir,
+    #[error("iş dizini kapsam dışı (ev dizini ya da üstü): {0}")]
+    WorkdirNotScoped(PathBuf),
+    #[error("iş dizini boş değil: {0}")]
+    WorkdirNotEmpty(PathBuf),
+    #[error("iş dizini izni çok geniş: {0:o}")]
+    WorkdirPermissive(u32),
+    #[error("stdin çok büyük: {bytes} bayt (sınır {limit})")]
+    StdinTooLarge { bytes: usize, limit: usize },
     #[error("geçici iş dizini hazırlanamadı: {0}")]
     WorkdirUnavailable(String),
     #[error("ortam değişkeni reddedildi: {0}")]
@@ -80,6 +130,10 @@ impl RunError {
             Self::RelativeExecutable => "E_CLI_EXEC_PATH",
             Self::ExecutableUnavailable => "E_CLI_EXEC_MISSING",
             Self::InvalidWorkdir => "E_CLI_EXEC_WORKDIR",
+            Self::WorkdirNotScoped(_) => "E_CLI_WORKDIR_SCOPE",
+            Self::WorkdirNotEmpty(_) => "E_CLI_WORKDIR_NOT_EMPTY",
+            Self::WorkdirPermissive(_) => "E_CLI_WORKDIR_PERM",
+            Self::StdinTooLarge { .. } => "E_CLI_STDIN",
             Self::WorkdirUnavailable(_) => "E_CLI_EXEC_WORKDIR",
             Self::EnvRejected(_) => "E_CLI_EXEC_ENV",
             Self::SpawnFailed(_) => "E_CLI_EXEC_SPAWN",
@@ -97,6 +151,10 @@ pub struct CliRunRequest {
     pub workdir: PathBuf,
     pub timeout: Duration,
     pub env: Vec<(String, String)>,
+    /// `HOME`/`TMPDIR` politikası. Varsayılan çağrı yerleri
+    /// `HomeIsolation::Sandbox` seçer; `UserHome` **açık** seçimdir ve raporda
+    /// görünür.
+    pub home_isolation: HomeIsolation,
 }
 
 /// Varsayılan ortam allowlist'i: yalnız süreç çalışması için gerekenler.
@@ -233,16 +291,48 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     if !executable_ok(&req.executable) {
         return Err(RunError::ExecutableUnavailable);
     }
-    if !req.workdir.is_dir() {
-        return Err(RunError::InvalidWorkdir);
+    // İş dizini kapsamı: boş, özel, ev dizini/üstü değil, sembolik bağ değil.
+    let workdir = check_workdir(&req.workdir)?;
+    // stdin sınırı **süreç başlamadan** uygulanır.
+    if req.stdin_text.len() > MAX_STDIN_BYTES {
+        return Err(RunError::StdinTooLarge {
+            bytes: req.stdin_text.len(),
+            limit: MAX_STDIN_BYTES,
+        });
     }
-    let env = sanitize_env(&req.env)?;
+    let mut env = sanitize_env(&req.env)?;
+    let mut home = None;
+    let mut tmp = None;
+    if req.home_isolation == HomeIsolation::Sandbox {
+        // Kum havuzu içinde özel HOME/TMPDIR: alt süreç varsayılan konumlarda
+        // kullanıcı yapılandırmasını görmez.
+        let home_dir = workdir.path.join(crate::sandbox::HOME_DIR_NAME);
+        let tmp_dir = workdir.path.join(crate::sandbox::TMP_DIR_NAME);
+        for dir in [&home_dir, &tmp_dir] {
+            std::fs::create_dir_all(dir)
+                .map_err(|err| RunError::WorkdirUnavailable(err.to_string()))?;
+            crate::sandbox::set_private_mode(dir)?;
+        }
+        let home_canonical = home_dir.canonicalize().unwrap_or(home_dir);
+        let tmp_canonical = tmp_dir.canonicalize().unwrap_or(tmp_dir);
+        env.retain(|(key, _)| key != "HOME" && key != "TMPDIR");
+        env.push((
+            "HOME".to_string(),
+            home_canonical.to_string_lossy().to_string(),
+        ));
+        env.push((
+            "TMPDIR".to_string(),
+            tmp_canonical.to_string_lossy().to_string(),
+        ));
+        home = Some(home_canonical);
+        tmp = Some(tmp_canonical);
+    }
     let timeout = clamp_timeout(req.timeout);
 
     let mut command = Command::new(&req.executable);
     command
         .args(&args)
-        .current_dir(&req.workdir)
+        .current_dir(&workdir.path)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -255,11 +345,21 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     let mut child = spawn_with_retry(&mut command)?;
 
     // stdin ayrı iş parçacığında yazılır: boru dolarsa süreç kilitlenmesin.
+    // Yazım parçalıdır (8 KiB) ve parçalar arasında iptal bayrağına bakar.
     let stdin_payload = req.stdin_text.clone();
+    let stdin_bytes = stdin_payload.len();
+    let stdin_cancel = Arc::clone(cancel);
     let mut stdin_handle = child.stdin.take();
     let writer = std::thread::spawn(move || {
         if let Some(mut pipe) = stdin_handle.take() {
-            let _ = pipe.write_all(stdin_payload.as_bytes());
+            for chunk in stdin_payload.as_bytes().chunks(8192) {
+                if stdin_cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                if pipe.write_all(chunk).is_err() {
+                    break;
+                }
+            }
             let _ = pipe.flush();
         }
     });
@@ -367,6 +467,9 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
         stderr_truncated = true;
     }
 
+    // Kum havuzunda kalan dosyalar sayılır (içerik okunmaz).
+    let inventory = crate::sandbox::inventory_of(&workdir.path);
+
     Ok(RunOutcome {
         status: status.unwrap_or(RunStatus::Signaled),
         stdout_head,
@@ -374,6 +477,20 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         stdout_truncated,
         stderr_truncated,
+        scope: RunScope {
+            workdir: workdir.path.clone(),
+            workdir_mode: workdir.mode,
+            home,
+            tmp,
+            home_isolation: req.home_isolation,
+            stdin_bytes,
+            stdin_limit: MAX_STDIN_BYTES,
+            inventory_total_bytes: inventory.total_bytes,
+            inventory_truncated: inventory.truncated,
+            inventory_limit_entries: MAX_INVENTORY_ENTRIES,
+            sandbox_size_limit: MAX_SANDBOX_BYTES,
+            inventory: inventory.entries,
+        },
     })
 }
 
@@ -392,22 +509,52 @@ mod tests {
         path
     }
 
-    fn request(
+    /// Boş, `0700` bir alt dizin: iş dizini kapsam kurallarına uyar.
+    fn isolated(root: &Path) -> PathBuf {
+        let work = root.join("iso");
+        if !work.is_dir() {
+            std::fs::create_dir(&work).expect("iso dizin");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        }
+        work
+    }
+
+    fn request_at(
         exe: PathBuf,
-        dir: &Path,
+        workdir: PathBuf,
         args: &[&str],
         stdin: &str,
         timeout: Duration,
+        home_isolation: HomeIsolation,
     ) -> CliRunRequest {
         CliRunRequest {
             adapter_id: "claude-code".into(),
             executable: exe,
             args: args.iter().map(|a| (*a).to_string()).collect(),
             stdin_text: stdin.into(),
-            workdir: dir.to_path_buf(),
+            workdir,
             timeout,
             env: vec![("DIM_TEST_MARK".into(), "evet".into())],
+            home_isolation,
         }
+    }
+
+    fn request(
+        exe: PathBuf,
+        root: &Path,
+        args: &[&str],
+        stdin: &str,
+        timeout: Duration,
+    ) -> CliRunRequest {
+        request_at(
+            exe,
+            isolated(root),
+            args,
+            stdin,
+            timeout,
+            HomeIsolation::Sandbox,
+        )
     }
 
     #[test]
@@ -455,24 +602,28 @@ mod tests {
     fn timeout_kills_child_and_reports_partial_output() {
         let tmp = tempfile::tempdir().expect("tmp");
         // `exec`: shell kendini sleep ile değiştirir; öldürülen süreç gerçekten
-        // çalışan süreçtir (torun değil).
-        let exe = script(tmp.path(), "slow.sh", "echo başladı\nexec sleep 5");
+        // çalışan süreçtir (torun değil). 30 sn uyku + 5 sn sınır: yük altında
+        // bile "önce çıktı, sonra öldürme" sırası garanti.
+        let exe = script(tmp.path(), "slow.sh", "echo başladı; exec sleep 30");
         let cancel = Arc::new(AtomicBool::new(false));
         let outcome = run_cli(
-            &request(
-                exe,
-                tmp.path(),
-                &["--print"],
-                "",
-                Duration::from_millis(400),
-            ),
+            &request(exe, tmp.path(), &["--print"], "", Duration::from_secs(5)),
             &cancel,
         )
         .expect("çalıştı");
         assert_eq!(outcome.status, RunStatus::TimedOut);
-        assert!(outcome.stdout_head.contains("başladı"));
-        // Öldürme çalışmasaydı `wait` 5 sn sürerdi.
-        assert!(outcome.duration_ms < 3000, "süre: {}", outcome.duration_ms);
+        assert!(
+            outcome.stdout_head.contains("başladı"),
+            "stdout: {:?} stderr: {:?}",
+            outcome.stdout_head,
+            outcome.stderr_head
+        );
+        // Öldürme çalışmasaydı `wait` 30 sn sürerdi.
+        assert!(
+            outcome.duration_ms < 15_000,
+            "süre: {}",
+            outcome.duration_ms
+        );
     }
 
     #[test]
@@ -529,17 +680,190 @@ mod tests {
             "E_CLI_EXEC_PATH"
         );
         let exe = script(tmp.path(), "cat.sh", "cat");
-        req = request(
+        req = request_at(
             exe,
-            &tmp.path().join("yok"),
+            tmp.path().join("yok"),
             &[],
             "",
             Duration::from_secs(5),
+            HomeIsolation::Sandbox,
         );
         assert_eq!(
             run_cli(&req, &cancel).expect_err("dizin").code(),
             "E_CLI_EXEC_WORKDIR"
         );
+    }
+
+    #[test]
+    fn workdir_scope_rules_are_enforced_before_spawn() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let exe = script(tmp.path(), "cat.sh", "cat");
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        // 1) Grup/diğer erişimi olan dizin reddedilir.
+        let open = tmp.path().join("acik");
+        std::fs::create_dir(&open).expect("dizin");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        }
+        let req = request_at(
+            exe.clone(),
+            open,
+            &["--print"],
+            "",
+            Duration::from_secs(5),
+            HomeIsolation::Sandbox,
+        );
+        assert_eq!(
+            run_cli(&req, &cancel).expect_err("izin").code(),
+            "E_CLI_WORKDIR_PERM"
+        );
+
+        // 2) Boş olmayan dizin (proje talimatı/hook dosyası) reddedilir.
+        let dirty = tmp.path().join("kirli");
+        std::fs::create_dir(&dirty).expect("dizin");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dirty, std::fs::Permissions::from_mode(0o700)).expect("mode");
+        }
+        std::fs::write(dirty.join("AGENTS.md"), "talimat").expect("dosya");
+        let req = request_at(
+            exe,
+            dirty,
+            &["--print"],
+            "",
+            Duration::from_secs(5),
+            HomeIsolation::Sandbox,
+        );
+        assert_eq!(
+            run_cli(&req, &cancel).expect_err("boş değil").code(),
+            "E_CLI_WORKDIR_NOT_EMPTY"
+        );
+
+        // 3) Ev dizini iş dizini olamaz.
+        let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+        let req = request_at(
+            PathBuf::from("/bin/echo"),
+            home,
+            &["--print"],
+            "",
+            Duration::from_secs(5),
+            HomeIsolation::Sandbox,
+        );
+        assert_eq!(
+            run_cli(&req, &cancel).expect_err("ev").code(),
+            "E_CLI_WORKDIR_SCOPE"
+        );
+    }
+
+    #[test]
+    fn stdin_over_limit_is_rejected_before_spawn() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        // Süreç başlarsa bu dosya oluşur; oluşmaması "başlamadı" kanıtıdır.
+        let exe = script(tmp.path(), "ran.sh", "echo x > ran.txt");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let too_big = "a".repeat(MAX_STDIN_BYTES + 1);
+        let req = request(
+            exe,
+            tmp.path(),
+            &["--print"],
+            &too_big,
+            Duration::from_secs(5),
+        );
+        let work = req.workdir.clone();
+        assert_eq!(
+            run_cli(&req, &cancel).expect_err("stdin").code(),
+            "E_CLI_STDIN"
+        );
+        assert!(!work.join("ran.txt").exists(), "süreç başlamamalıydı");
+        assert!(
+            !work.join("home").exists(),
+            "stdin kapısı kum havuzu dizinlerinden önce çalışır"
+        );
+    }
+
+    #[test]
+    fn stdin_at_limit_is_delivered_completely() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let exe = script(tmp.path(), "wc.sh", "wc -c");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let payload = "b".repeat(MAX_STDIN_BYTES);
+        let outcome = run_cli(
+            &request(
+                exe,
+                tmp.path(),
+                &["--print"],
+                &payload,
+                Duration::from_secs(20),
+            ),
+            &cancel,
+        )
+        .expect("çalıştı");
+        assert_eq!(outcome.status, RunStatus::Exited(0));
+        assert_eq!(
+            outcome.stdout_head.trim().parse::<usize>().expect("sayı"),
+            MAX_STDIN_BYTES
+        );
+        assert_eq!(outcome.scope.stdin_bytes, MAX_STDIN_BYTES);
+        assert_eq!(outcome.scope.stdin_limit, MAX_STDIN_BYTES);
+    }
+
+    #[test]
+    fn home_and_tmp_are_redirected_and_inventoried() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let exe = script(
+            tmp.path(),
+            "scope.sh",
+            "printf '%s\\n%s\\n' \"$HOME\" \"$TMPDIR\"\n\
+             printf '{\"a\":1}' > \"$HOME/ayar.json\"\n\
+             printf 'abc' > \"$TMPDIR/gecici\"",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let outcome = run_cli(
+            &request(exe, tmp.path(), &["--print"], "", Duration::from_secs(10)),
+            &cancel,
+        )
+        .expect("çalıştı");
+        let scope = &outcome.scope;
+        assert_eq!(scope.home_isolation, HomeIsolation::Sandbox);
+        let home = scope.home.clone().expect("HOME kum havuzunda");
+        let tmpdir = scope.tmp.clone().expect("TMPDIR kum havuzunda");
+        assert!(home.starts_with(&scope.workdir));
+        assert!(tmpdir.starts_with(&scope.workdir));
+        // Çocuğun gördüğü HOME/TMPDIR gerçekten kum havuzu.
+        let printed: Vec<&str> = outcome.stdout_head.lines().collect();
+        assert_eq!(printed[0], home.to_string_lossy());
+        assert_eq!(printed[1], tmpdir.to_string_lossy());
+        // Bıraktığı dosyalar ad + bayt olarak sayıldı, içerik okunmadı.
+        let names: Vec<&str> = scope.inventory.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"home/ayar.json"), "{names:?}");
+        assert!(names.contains(&"tmp/gecici"), "{names:?}");
+        assert_eq!(scope.inventory_total_bytes, 7 + 3);
+        assert!(!scope.inventory_truncated);
+        assert!(!scope.size_limit_exceeded());
+        assert_eq!(scope.workdir_mode, Some(0o700));
+    }
+
+    #[test]
+    fn user_home_isolation_is_explicit_and_reported() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let exe = script(tmp.path(), "home.sh", "printf '%s' \"$HOME\"");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut req = request_at(
+            exe,
+            isolated(tmp.path()),
+            &["--print"],
+            "",
+            Duration::from_secs(10),
+            HomeIsolation::UserHome,
+        );
+        req.env = vec![("HOME".into(), "/tmp/kullanici-evi".into())];
+        let outcome = run_cli(&req, &cancel).expect("çalıştı");
+        assert_eq!(outcome.stdout_head, "/tmp/kullanici-evi");
+        assert_eq!(outcome.scope.home_isolation, HomeIsolation::UserHome);
+        assert_eq!(outcome.scope.home, None);
+        assert!(outcome.scope.inventory.is_empty());
     }
 
     #[test]
