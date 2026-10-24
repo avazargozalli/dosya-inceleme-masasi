@@ -30,6 +30,8 @@ import {
   textSegments,
   unmapPointFromDisplay,
   validSelection,
+  versionBadge,
+  rebindStatusText,
 } from "./reader";
 
 const pages: PageRow[] = [
@@ -100,6 +102,10 @@ const anchor: AnchorLocationRow = {
   quads: [[10, 40, 180, 54]],
   coordinateSpace: "unrotated_cropbox_points",
   pageRotation: 90,
+  isCurrentVersion: true,
+  currentVersionId: "v-old",
+  versionNo: 1,
+  currentVersionNo: 1,
 };
 
 describe("targetFromHit", () => {
@@ -556,5 +562,27 @@ describe("bölge koordinat dönüşümü (F07-T09)", () => {
 
   it("rotasyonsuz dönüşümde dikdörtgen aynen kalır", () => {
     expect(rectFromDisplay([10, 20, 30, 40], 600, 800, 0)).toEqual([10, 20, 30, 40]);
+  });
+});
+
+describe("eski sürüm rozeti (F07-T12)", () => {
+  it("güncel sürümde rozet göstermez", () => {
+    expect(versionBadge({ isCurrentVersion: true, versionNo: 2, currentVersionNo: 2 })).toBeNull();
+  });
+
+  it("eski sürümde iki sürüm numarasını da yazar, bilinmeyeni uydurmaz", () => {
+    expect(versionBadge({ isCurrentVersion: false, versionNo: 1, currentVersionNo: 3 })).toBe(
+      "eski sürüm v1 · güncel v3",
+    );
+    expect(versionBadge({ isCurrentVersion: false, versionNo: null, currentVersionNo: null })).toBe(
+      "eski sürüm bilinmeyen · güncel bilinmeyen",
+    );
+  });
+
+  it("yeniden bağlama durumunu eşleşme sayısıyla yazar", () => {
+    expect(rebindStatusText({ status: "current", candidates: [] })).toContain("zaten güncel");
+    expect(rebindStatusText({ status: "exact", candidates: [{}] })).toContain("tek eşleşme");
+    expect(rebindStatusText({ status: "ambiguous", candidates: [{}, {}, {}] })).toContain("3 eşleşme");
+    expect(rebindStatusText({ status: "unresolved", candidates: [] })).toContain("bulunamadı");
   });
 });

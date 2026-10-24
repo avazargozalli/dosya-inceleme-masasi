@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeybo
 import {
   api,
   toApiError,
+  type AnchorLocationRow,
   type AnchorRow,
   type ApiError,
   type DocumentPages,
@@ -9,6 +10,8 @@ import {
   type MarkRow,
   type NoteRow,
   type PageRow,
+  type RebindCandidate,
+  type RebindSuggestion,
 } from "../lib/api";
 import {
   EMPTY_VIEW,
@@ -26,6 +29,7 @@ import {
   previewCaption,
   previewDataUrl,
   rangeForPage,
+  rebindStatusText,
   recallView,
   rectFromDisplay,
   rememberView,
@@ -33,8 +37,10 @@ import {
   rotateView,
   sliceForPage,
   structureEntries,
+  targetFromAnchor,
   textSegments,
   validSelection,
+  versionBadge,
   type ReaderTarget,
   type ReaderView,
   type ViewMemory,
@@ -147,6 +153,7 @@ function ReaderPane({
   otherVersionId,
   onPickVersion,
   onAnchor,
+  onAnchorRebound,
   onNote,
 }: {
   caseId: string;
@@ -158,6 +165,7 @@ function ReaderPane({
   otherVersionId: string | null;
   onPickVersion: (versionId: string) => void;
   onAnchor?: ((anchor: AnchorRow) => void) | undefined;
+  onAnchorRebound?: ((location: AnchorLocationRow) => void) | undefined;
   onNote?: ((note: NoteRow) => void) | undefined;
 }) {
   const [data, setData] = useState<DocumentPages | null>(null);
@@ -178,6 +186,13 @@ function ReaderPane({
   const [noteDraft, setNoteDraft] = useState<{ title: string; body: string } | null>(null);
   const [noteBusy, setNoteBusy] = useState(false);
   const [noteInfo, setNoteInfo] = useState<string | null>(null);
+  // F07-T12: hedef bir anchor ise güncel sürüm bilgisi ve yeniden bağlama
+  // önerisi çekirdekten okunur; panel kendi kararını uydurmaz.
+  const [anchorInfo, setAnchorInfo] = useState<AnchorLocationRow | null>(null);
+  const [rebindSuggestion, setRebindSuggestion] = useState<RebindSuggestion | null>(null);
+  const [rebindBusy, setRebindBusy] = useState(false);
+  const [rebindNotice, setRebindNotice] = useState<string | null>(null);
+  const [reboundTarget, setReboundTarget] = useState<ReaderTarget | null>(null);
   // F07-T09 görsel seçim: sayfa görüntüsü üzerinde sürüklenen bölge,
   // görünen uzayda 0–1 oranıyla tutulur; kayda geçerken sayfa uzayına çevrilir.
   const [dragRegion, setDragRegion] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
@@ -206,7 +221,14 @@ function ReaderPane({
   const markRef = useRef<HTMLElement>(null);
   const entryRefs = useRef<Record<number, HTMLElement | null>>({});
 
-  const paneTarget = target && target.versionId === versionId ? target : null;
+  // Yeniden bağlanan kaynak yeni sürüme taşınır; panel o sürümü açtığında
+  // hedef yeniden bağlanan konumdur (eski hedef sessizce korunmaz).
+  const paneTarget =
+    reboundTarget && reboundTarget.versionId === versionId
+      ? reboundTarget
+      : target && target.versionId === versionId
+        ? target
+        : null;
   // İki panel aynı anda açıkken form alanı kimlikleri çakışmasın.
   const paneKey = label === "Sol belge" ? "sol" : "sag";
 
@@ -269,6 +291,28 @@ function ReaderPane({
       cancelled = true;
     };
   }, [versionId]);
+
+  // Hedef anchor ise konumu (güncel sürüm mü, alıntı duruyor mu) çekirdekten
+  // okunur; eski hedef bilgisiyle rozet gösterilmez.
+  useEffect(() => {
+    setAnchorInfo(null);
+    setRebindSuggestion(null);
+    setRebindNotice(null);
+    const anchorId = paneTarget?.anchorId ?? null;
+    if (!anchorId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const location = await api.anchorLocate(anchorId);
+        if (!cancelled) setAnchorInfo(location);
+      } catch (e) {
+        if (!cancelled) setError(toApiError(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paneTarget?.anchorId]);
 
   useEffect(() => {
     if (!versionId) {
@@ -569,6 +613,41 @@ function ReaderPane({
     }
   }
 
+  /** Güncel sürümde alıntıyı arar; sonuç çekirdekten gelir (uydurulmaz). */
+  async function loadRebindSuggestion(anchorId: string) {
+    setRebindBusy(true);
+    setRebindNotice(null);
+    try {
+      setRebindSuggestion(await api.anchorRebindSuggestion(anchorId));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setRebindBusy(false);
+    }
+  }
+
+  /** Seçilen adaya bağlar; çekirdek alıntıyı o offset'te birebir doğrular. */
+  async function rebindTo(candidate: RebindCandidate) {
+    if (!anchorInfo) return;
+    setRebindBusy(true);
+    try {
+      await api.anchorRebind(anchorInfo.anchorId, candidate.segmentId, candidate.startOffset);
+      const location = await api.anchorLocate(anchorInfo.anchorId);
+      setRebindSuggestion(null);
+      if (location) {
+        setAnchorInfo(location);
+        setReboundTarget(targetFromAnchor(location));
+        onPickVersion(location.documentVersionId);
+        setRebindNotice("Kaynak güncel sürüme bağlandı; sayfa yeni konumdan açıldı.");
+      }
+      onAnchorRebound?.(location ?? anchorInfo);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setRebindBusy(false);
+    }
+  }
+
   /** İşaretin sayfasını açar; sayfa yoksa hiçbir şey yapmaz (uydurma yok). */
   function jumpToMark(mark: MarkRow) {
     if (!data || !mark.pageId) return;
@@ -714,11 +793,67 @@ function ReaderPane({
         </div>
       ) : null}
 
-      {paneTarget?.anchorId && paneTarget.quoteIntact === false ? (
-        <div className="notice warn" role="status">
-          Kaynak kopmuş: alıntı segmentte birebir bulunamadı. Anchor silinmedi; sayfa yine açıldı.
+      {anchorInfo ? (
+        <div className={anchorInfo.quoteIntact ? "notice" : "notice warn"} role="status">
+          <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            {!anchorInfo.quoteIntact ? (
+              <span>
+                Kaynak kopmuş: alıntı segmentte birebir bulunamadı. Anchor silinmedi; sayfa yine
+                açıldı.
+              </span>
+            ) : null}
+            {versionBadge(anchorInfo) ? (
+              <span className="badge warn" title="Kaynak eski sürüme bağlı; güncel sürümde yeniden aranabilir">
+                {versionBadge(anchorInfo)}
+              </span>
+            ) : null}
+            {!anchorInfo.quoteIntact || versionBadge(anchorInfo) ? (
+              <button
+                className="btn ghost"
+                style={{ height: 24 }}
+                disabled={rebindBusy}
+                onClick={() => void loadRebindSuggestion(anchorInfo.anchorId)}
+                title="Güncel sürümde alıntıyı ara; öneri kullanıcı onayıyla uygulanır"
+              >
+                {rebindBusy ? "Aranıyor…" : "Güncel sürümde ara"}
+              </button>
+            ) : null}
+          </span>
         </div>
       ) : null}
+
+      {rebindSuggestion ? (
+        <div className="card tight" style={{ background: "var(--surface)" }}>
+          <p className="hint" style={{ margin: 0 }}>
+            {rebindStatusText(rebindSuggestion)} · alıntı “{rebindSuggestion.quote.slice(0, 60)}”
+          </p>
+          {rebindSuggestion.candidates.length > 0 ? (
+            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+              {rebindSuggestion.candidates.map((candidate) => (
+                <button
+                  key={`${candidate.segmentId}-${candidate.startOffset}`}
+                  className="btn"
+                  style={{ height: 26 }}
+                  disabled={rebindBusy}
+                  onClick={() => void rebindTo(candidate)}
+                  title={`segment ${candidate.segmentId.slice(0, 8)} · karakter ${candidate.startOffset}`}
+                >
+                  {candidate.pageIndex !== null
+                    ? `Fiziksel sayfa ${candidate.pageIndex + 1}`
+                    : "sayfa bilinmiyor"}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="row" style={{ justifyContent: "flex-end", marginTop: 6 }}>
+            <button className="btn ghost" onClick={() => setRebindSuggestion(null)}>
+              Kapat
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {rebindNotice ? <div className="notice ok">{rebindNotice}</div> : null}
 
       {!versionId ? (
         <div className="empty" style={{ padding: "var(--space-4)" }}>
@@ -1295,6 +1430,7 @@ export function DualReader({
   right,
   onClose,
   onAnchor,
+  onAnchorRebound,
   onNote,
 }: {
   caseId: string;
@@ -1303,6 +1439,7 @@ export function DualReader({
   right: ReaderTarget | null;
   onClose: () => void;
   onAnchor?: (anchor: AnchorRow) => void;
+  onAnchorRebound?: (location: AnchorLocationRow) => void;
   onNote?: (note: NoteRow) => void;
 }) {
   const [leftVersion, setLeftVersion] = useState<string | null>(left?.versionId ?? null);
@@ -1339,6 +1476,7 @@ export function DualReader({
           otherVersionId={rightVersion}
           onPickVersion={setLeftVersion}
           onAnchor={onAnchor}
+          onAnchorRebound={onAnchorRebound}
           onNote={onNote}
         />
         <ReaderPane
@@ -1350,6 +1488,7 @@ export function DualReader({
           otherVersionId={leftVersion}
           onPickVersion={setRightVersion}
           onAnchor={onAnchor}
+          onAnchorRebound={onAnchorRebound}
           onNote={onNote}
         />
       </div>

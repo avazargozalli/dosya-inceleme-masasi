@@ -15,6 +15,7 @@
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
 | F07-T08 | ✅ | yan yana iki panel kendi sürümünü, sayfasını, yakınlaştırmasını ve seçimini korur; sürüm başına görünüm belleği |
 | F07-T09 | ✅ | metin seçimi doğrulanmış anchor'a bağlı kalıcı işaret ve kaynaklı not üretir; bölge işareti sayfa koordinatında saklanır |
+| F07-T12 | ✅ | kısmi ayrıştırma rozeti; kopmuş/eski kaynak bağlantısı görünür, güncel sürümde yeniden bağlama önerisi kullanıcı onayıyla uygulanır |
 | F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
 | F07-T11 | ✅ | sayfa önizlemesi kasa anahtarıyla şifreli disk önbelleğinde; bellekteki çözülmüş sayfalar kilitta temizlenir |
 
@@ -206,6 +207,33 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   listeden sayfaya gidilir; bölge seçimi yalnız sayfa görüntüsü açıkken yapılır.
   Tauri penceresi bu ortamda açılmadı → gerçek sürükleme/tıklama ve görsel QA yok.
 
+## F07-T12 — kısmi ayrıştırma ve kopmuş/eski kaynak bağlantısı
+
+- **Kısmi ayrıştırma rozeti**: `parseRun.status !== 'succeeded'` olan belgede
+  "kısmi ayrıştırma · <durum>" rozeti zaten gösteriliyordu; artık kaynak
+  bağlantısıyla birlikte aynı panelde okunur.
+- **Eski sürüm bağlantısı**: `locate_anchor` artık `isCurrentVersion`,
+  `currentVersionId`, `versionNo`, `currentVersionNo` alanlarını döndürür.
+  Anchor belgenin güncel sürümünde değilse okuyucu "eski sürüm v1 · güncel v2"
+  rozetini gösterir; **eski konum korunur** (anchor kendiliğinden taşınmaz).
+- **Yeniden bağlama önerisi** (`rebind_suggestion`): güncel sürümün en son
+  başarılı/kısmi ayrıştırmasında alıntı birebir aranır. Durumlar:
+  `current` (zaten güncel), `exact` (tek eşleşme), `ambiguous` (birden fazla →
+  "belirsiz", adaylar sayfa numarasıyla listelenir), `unresolved` (yok →
+  "çözümlenemedi", eski konum korunur). Öneri **kullanıcı onayı olmadan
+  uygulanmaz**.
+- **Bağlama** (`rebind_anchor`): alıntı verilen segment/offset'te birebir
+  durmuyorsa `E_QUOTE_NOT_FOUND` döner ve bağ değişmez. `verify_quote` başlangıç
+  ipucunu yalnız öneri olarak kullandığı için konum ayrıca karakter karakter
+  doğrulanır. Başarılı bağ `anchor_status='rebound'` yazar, denetim kaydı
+  bırakır ve anchor dosya listesinde görünür kalır.
+- **Arayüz**: kopmuş alıntı veya eski sürüm varsa "Güncel sürümde ara" düğmesi;
+  sonuç panelinde durum metni + aday sayfaları; seçilen aday bağlanınca okuyucu
+  **yeni sürümü ve yeni sayfayı** açar, üst ekran kaynak listesini tazeler.
+- **Sınırlama**: yeniden bağlama yalnız metin alıntısı içindir; görüntü/OCR
+  sayfasında alıntı yoksa öneri "çözümlenemedi" kalır. Otomatik toplu yeniden
+  bağlama yoktur (kullanıcı eylemi gerekir).
+
 ## F07-T10 — not taslağı, geri/ileri al ve sürüm çakışması
 
 - **Şema v11** (`0011_note_history.sql`): `notes.undo_stack` / `notes.redo_stack`
@@ -267,6 +295,18 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   görüntü belgeleri (JPG/TIFF) için sayfa çizimi yok. Önbellek sürüm silinince
   otomatik temizlenmez (`PreviewStore::purge_version` hazır, silme akışına
   bağlanmadı) — diskte şifreli kaldığı için veri sızıntısı değil, yer kullanımı.
+
+## Doğrulama (F07-T12)
+
+- Rust: `cargo test --workspace --all-targets` → storage **160** (5 yeni: güncel
+  sürümde tek eşleşme + sürüm numaraları, belirsiz/çözümlenemedi, zaten güncel,
+  doğrulanmış yeniden bağlama (durum `rebound`, `locate` güncel+intact, listede
+  kalır), yanlış offset reddi (`E_QUOTE_NOT_FOUND`, eski bağ korunur)). Clippy
+  `-D warnings` (workspace + Tauri) ve rustfmt iki manifestte temiz.
+- Web: `tsc` + `vitest` **134** (3 yeni: eski sürüm rozeti güncel/eski/bilinmeyen,
+  yeniden bağlama durum metinleri) + `vite build` yeşil.
+- **Sınırlama**: gerçek Tauri penceresinde tıklama ve görsel QA yapılmadı; kanıt
+  birim testleri + typecheck + üretim derlemesi.
 
 ## Doğrulama (F07-T09)
 

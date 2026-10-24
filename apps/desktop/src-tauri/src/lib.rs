@@ -69,6 +69,8 @@ pub fn run() {
             commands::anchor_create,
             commands::anchor_list,
             commands::anchor_locate,
+            commands::anchor_rebind_suggestion,
+            commands::anchor_rebind,
             commands::mark_create_from_selection,
             commands::note_create_from_selection,
             commands::mark_create_region,

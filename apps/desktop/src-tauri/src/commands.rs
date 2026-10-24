@@ -14,7 +14,7 @@ use dim_storage::{
     NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
     NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow,
     NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow,
-    PrecedentRow, ProviderProfileRow, RedactionPlanRow, RedactionRegionInput,
+    PrecedentRow, ProviderProfileRow, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
     ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
     ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
     TaskRow, TransferConsentRow,
@@ -369,6 +369,33 @@ pub fn anchor_list(
 }
 
 /// Anchor'ı okuyucuda açılacak sayfaya çözer (F07 "kaynağa git").
+/// F07-T12: kopmuş/eski bağlantı için güncel sürümde yeniden bağlama önerisi.
+/// Eşleşme yoksa `unresolved`, birden fazlaysa `ambiguous` döner; öneri
+/// kullanıcı onayı olmadan anchor'ı taşımaz.
+#[tauri::command]
+pub fn anchor_rebind_suggestion(
+    state: State<'_, AppState>,
+    anchor_id: String,
+) -> Result<RebindSuggestion, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.rebind_suggestion(&anchor_id)?)
+}
+
+/// Anchor'ı güncel sürümdeki **doğrulanmış** konuma taşır. Alıntı verilen
+/// offset'te birebir durmuyorsa bağ değişmez.
+#[tauri::command]
+pub fn anchor_rebind(
+    state: State<'_, AppState>,
+    anchor_id: String,
+    segment_id: String,
+    start_offset: i64,
+) -> Result<AnchorRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.rebind_anchor(&anchor_id, &segment_id, start_offset)?)
+}
+
 #[tauri::command]
 pub fn anchor_locate(
     state: State<'_, AppState>,

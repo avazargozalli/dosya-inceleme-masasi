@@ -669,6 +669,31 @@ export type AnchorLocationRow = {
   quads: [number, number, number, number][];
   coordinateSpace: string | null;
   pageRotation: number;
+  /** Anchor belgenin güncel sürümüne mi bağlı (F07-T12). */
+  isCurrentVersion: boolean;
+  currentVersionId: string | null;
+  versionNo: number | null;
+  currentVersionNo: number | null;
+};
+
+export type RebindCandidate = {
+  segmentId: string;
+  pageId: string | null;
+  pageIndex: number | null;
+  startOffset: number;
+  endOffset: number;
+};
+
+/** Kopmuş/eski bağlantı için yeniden bağlama önerisi; öneri kendiliğinden
+ *  uygulanmaz, kullanıcı onayı gerekir. */
+export type RebindSuggestion = {
+  anchorId: string;
+  quote: string;
+  currentVersionId: string | null;
+  versionNo: number | null;
+  currentVersionNo: number | null;
+  status: "current" | "exact" | "ambiguous" | "unresolved";
+  candidates: RebindCandidate[];
 };
 
 export type ParseResult = {
@@ -964,6 +989,10 @@ export const api = {
       note,
       expectedRowVersion,
     }),
+  anchorRebindSuggestion: (anchorId: string) =>
+    invoke<RebindSuggestion>("anchor_rebind_suggestion", { anchorId }),
+  anchorRebind: (anchorId: string, segmentId: string, startOffset: number) =>
+    invoke<AnchorRow>("anchor_rebind", { anchorId, segmentId, startOffset }),
   anchorCreate: (input: {
     caseId: string;
     documentVersionId: string;

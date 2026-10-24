@@ -548,3 +548,34 @@ export function rectFromDisplay(
     Math.max(a.y, b.y),
   ];
 }
+
+/** Eski sürüme bağlı kaynağın rozet metni. Anchor güncel sürümdeyse `null`
+ *  döner: güncel bağ için "eski sürüm" etiketi gösterilmez. */
+export function versionBadge(location: {
+  isCurrentVersion: boolean;
+  versionNo: number | null;
+  currentVersionNo: number | null;
+}): string | null {
+  if (location.isCurrentVersion) return null;
+  const from = location.versionNo !== null ? `v${location.versionNo}` : "bilinmeyen";
+  const to = location.currentVersionNo !== null ? `v${location.currentVersionNo}` : "bilinmeyen";
+  return `eski sürüm ${from} · güncel ${to}`;
+}
+
+/** Yeniden bağlama önerisinin durum metni. Sayı uydurulmaz; eşleşme sayısı
+ *  gerçek aday listesinden gelir. */
+export function rebindStatusText(suggestion: {
+  status: string;
+  candidates: unknown[];
+}): string {
+  switch (suggestion.status) {
+    case "current":
+      return "Kaynak zaten güncel sürümde.";
+    case "exact":
+      return "Güncel sürümde tek eşleşme bulundu; bağlanabilir.";
+    case "ambiguous":
+      return `Güncel sürümde ${suggestion.candidates.length} eşleşme var (belirsiz); birini seçin.`;
+    default:
+      return "Güncel sürümde bulunamadı (çözümlenemedi); eski konum korunuyor.";
+  }
+}

@@ -444,6 +444,14 @@ export function Cases() {
                 setAnchors((prev) => [anchor, ...prev]);
                 setNotice(`Kaynak kaydedildi: “${anchor.exactQuote.slice(0, 60)}”`);
               }}
+              onAnchorRebound={() => {
+                // Anchor güncel sürüme taşındı: liste çekirdekten tazelenir.
+                void api
+                  .anchorList(selected.id)
+                  .then(setAnchors)
+                  .catch(() => undefined);
+                setNotice("Kaynak güncel sürüme bağlandı.");
+              }}
               onNote={(note) => {
                 setNotice(`Kaynaklı not oluşturuldu: “${note.title || note.body.slice(0, 40)}”`);
               }}

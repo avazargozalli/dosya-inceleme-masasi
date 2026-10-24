@@ -3,6 +3,14 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.7.5] — 2026-10-24 — F07 kopmuş/eski kaynak bağlantısı
+
+- Anchor konumu güncel sürüm bilgisini taşır; okuyucu "eski sürüm v1 · güncel v2" rozetini gösterir ve eski konumu korur
+- Güncel sürümde yeniden bağlama önerisi: tek eşleşme / belirsiz / çözümlenemedi; öneri kullanıcı onayıyla uygulanır
+- Yeniden bağlama alıntıyı seçilen offset'te birebir doğrular; yanlış offset bağı değiştirmez
+- Bağlanan anchor `rebound` durumuna geçer, denetim kaydı bırakır ve dosya kaynak listesinde kalır
+- Kısmi ayrıştırma rozeti kaynak durumuyla aynı panelde
+
 ## [0.7.4] — 2026-10-24 — F07 işaretleme ve seçimden not
 
 - Şema v12: `source_marks`; metin işareti doğrulanmış anchor'a bağlı, aynı anchor'da tek aktif işaret

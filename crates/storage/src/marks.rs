@@ -347,7 +347,7 @@ impl Database {
 
     /// Çağıran açık bir işlem içindeyse ona katılır; yoksa kendi işlemini açar.
     /// (Aynı desen `notes::note_write` içinde; iç içe işlem SQLite'ta hata verir.)
-    fn write_atomically<F>(&self, run: F) -> Result<(), StorageError>
+    pub(crate) fn write_atomically<F>(&self, run: F) -> Result<(), StorageError>
     where
         F: FnOnce() -> Result<(), StorageError>,
     {

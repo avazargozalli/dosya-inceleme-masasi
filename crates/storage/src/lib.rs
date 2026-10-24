@@ -27,7 +27,7 @@ pub use ai::{
     AiCandidateRow, AiContextItemRow, AiRunRow, CoverageReport, NewAiContextItem, NewAiRun,
     NewTransferConsent, ProviderProfileRow, TransferConsentRow,
 };
-pub use anchors::{AnchorLocation, AnchorRow, NewAnchor};
+pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use checklists::{
     CaseChecklistItemRow, ChecklistCopyResult, ChecklistTemplateRef, ChecklistTemplateRow,
