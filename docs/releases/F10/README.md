@@ -42,6 +42,9 @@
 - **Çıktı**: stdout/stderr baş kısmı en çok **64 KiB**; kesildiği
   `stdoutTruncated`/`stderrTruncated` ile işaretlenir. Okuyucu boru kapanmazsa
   en çok 2 sn beklenir ve çıktı **tam sayılmaz**.
+- **Başlatma**: yeni yazılmış dosyayı hemen çalıştırmak Linux'ta `ETXTBSY`
+  verebildiği için spawn 6 kez (50 ms arayla) denenir; son hata metni
+  `E_CLI_EXEC_SPAWN` ile raporlanır.
 
 ## Dürüst durum
 

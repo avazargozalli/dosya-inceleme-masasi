@@ -66,8 +66,8 @@ pub enum RunError {
     InvalidWorkdir,
     #[error("ortam değişkeni reddedildi: {0}")]
     EnvRejected(String),
-    #[error("süreç başlatılamadı")]
-    SpawnFailed,
+    #[error("süreç başlatılamadı: {0}")]
+    SpawnFailed(String),
 }
 
 impl RunError {
@@ -79,7 +79,7 @@ impl RunError {
             Self::ExecutableUnavailable => "E_CLI_EXEC_MISSING",
             Self::InvalidWorkdir => "E_CLI_EXEC_WORKDIR",
             Self::EnvRejected(_) => "E_CLI_EXEC_ENV",
-            Self::SpawnFailed => "E_CLI_EXEC_SPAWN",
+            Self::SpawnFailed(_) => "E_CLI_EXEC_SPAWN",
         }
     }
 }
@@ -198,6 +198,25 @@ fn read_limited<R: Read>(mut reader: R) -> (String, bool) {
     (String::from_utf8_lossy(&buf).to_string(), truncated)
 }
 
+/// Yeni yazılmış bir dosyayı hemen yürütmek Linux'ta `ETXTBSY` ("text file
+/// busy") verebilir: başka bir iş parçacığının `fork`'u yazma tanıtıcısını bir an
+/// taşır. Kısa aralıklarla yeniden denenir; son hata metni korunur.
+fn spawn_with_retry(command: &mut Command) -> Result<std::process::Child, RunError> {
+    let mut last = String::new();
+    for attempt in 0..6 {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(err) => {
+                last = err.to_string();
+                if attempt < 5 {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    }
+    Err(RunError::SpawnFailed(last))
+}
+
 /// CLI'yi çalıştırır. `cancel` işaretlenirse süreç öldürülür ve `Cancelled`
 /// döner; süre aşılırsa `TimedOut`. Kısmi çıktı her iki durumda da raporlanır.
 pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutcome, RunError> {
@@ -230,7 +249,7 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     }
 
     let started = Instant::now();
-    let mut child = command.spawn().map_err(|_| RunError::SpawnFailed)?;
+    let mut child = spawn_with_retry(&mut command)?;
 
     // stdin ayrı iş parçacığında yazılır: boru dolarsa süreç kilitlenmesin.
     let stdin_payload = req.stdin_text.clone();
