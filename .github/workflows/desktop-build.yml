@@ -65,8 +65,16 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             arch: x64
+            experimental: false
+          # ARM64 **deneysel**: SQLCipher'ın vendored OpenSSL'i
+          # (openssl-src) aarch64-pc-windows-msvc için derlenmiyor
+          # (`nmake`/`cl` C1083). Upstream çözülene kadar bu iş kırmızı
+          # sayılmaz ama ARM64 MSI de üretilmez — dürüst durum
+          # docs/releases/F17/README.md içinde.
           - target: aarch64-pc-windows-msvc
             arch: arm64
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

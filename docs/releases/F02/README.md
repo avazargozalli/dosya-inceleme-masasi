@@ -19,10 +19,29 @@
 | F02-T11 | ✅ | `CONTRIBUTING.md`, `SECURITY.md`, `docs/dev-setup.md`, `AGENTS.md` |
 | F02-T12 | ✅ | `tests/smoke/worker_smoke.py` gerçek PDF ile |
 
+## Windows MSI (imzasız) — F02-T08/T09
+
+`desktop-build` → `windows-binary (x86_64-pc-windows-msvc, x64)` **gerçek üretim**
+ile doğrulandı (run `40058501597`, commit `08d82c3`):
+
+- Dosya: `Dosya İnceleme Masası_0.1.0_x64_tr-TR.msi`
+- Boyut: **6.537.216** bayt
+- SHA-256: `46504e297900ae942265782d38942eaa0e5f6e0f0cc948e4492c96e62c002b0b`
+- Artefakt: `dim-windows-x64` (MSI + `.exe`), iş **success**.
+
+Türkçe ürün adı/açıklaması WiX'in varsayılan kod sayfasında (1252) hata
+veriyordu (`LGHT0311`); `bundle.windows.wix.language = "tr-TR"` ile kod sayfası
+1254 yapıldı.
+
+**Sınırlamalar:** paket **imzasız** (ADR-0012). WebView2 kurulum modu Tauri
+varsayılanında (`downloadBootstrapper`); çevrimdışı kurulum ve kullanıcı düzeyi
+kaldırma denenmedi. ARM64 paket üretilemiyor → `docs/releases/F17/README.md`.
+
 ## Doğrulama
 
 GitHub Actions `ci`: 6/6 iş yeşil (sözleşme, arayüz, rust ×2, masaüstü, python).
-`desktop-build` imzasız `.app` artefaktı üretir (F16'da imzalanacak).
+`desktop-build` imzasız `.app` artefaktı üretir (F16'da imzalanacak) ve Windows
+x64 MSI'yi yukarıdaki kanıtla üretir.
 
 ## Açık
 
