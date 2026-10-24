@@ -59,7 +59,8 @@ pub use precedent_import::{
 };
 pub use precedents::{
     CitationCheckRow, CitationContext, NewCitationCheck, NewPrecedent, NewPrecedentNote,
-    NewPrecedentText, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, QuoteVerification,
+    NewPrecedentText, PrecedentBibliography, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow,
+    QuoteVerification,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{

@@ -3,6 +3,13 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.11.1] — 2026-10-24 — F12-T12 bibliyografik künye
+
+- `precedent_bibliography`: künye metni + kaynak bağlantısı + erişim tarihi; eksik alanlar `missing` listesinde, hiçbiri tahmin edilmez
+- Erişim tarihi en yeni tam metnin edinim zamanından; tam metin yoksa künye kaydının oluşturulma zamanından gelir ve `access_basis` ile söylenir
+- ISO olmayan tarih olduğu gibi yazılır ve uyarı üretir (`GG.AA.YYYY`'ye çevrilmez)
+- Arayüzde kopyalanabilir künye kartı: eksik alan rozeti, erişim tarihi, tam metin durumu
+
 ## [0.7.6] — 2026-10-24 — F06 düz metin kodlaması (T07)
 
 - Düz metin otomatik kodlama: BOM (UTF-32/16/8) → katı UTF-8 → Türkçe tek baytlık adaylar (Windows-1254, ISO-8859-9, Windows-1252, Latin-1) arasında bozulma puanıyla seçim

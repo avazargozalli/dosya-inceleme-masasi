@@ -266,6 +266,18 @@ export type PrecedentVersionRow = {
   conflictWithVersionId: string | null;
 };
 
+/** Bibliyografik künye (F12-T12). Eksik alanlar `missing` içinde; tahmin yok. */
+export type PrecedentBibliography = {
+  precedentId: string;
+  text: string;
+  missing: string[];
+  warnings: string[];
+  sourceUrl: string | null;
+  accessedAt: string;
+  accessBasis: "version" | "record";
+  hasFullText: boolean;
+};
+
 /** Toplu içe almanın dosya başına sonucu (F12-T06). */
 export type BulkImportItem = {
   fileName: string;
@@ -1013,6 +1025,9 @@ export const api = {
     invoke<PrecedentVersionRow[]>("precedent_version_list", { precedentId }),
   precedentQuoteVerify: (precedentId: string, quote: string) =>
     invoke<QuoteVerificationRow>("precedent_quote_verify", { precedentId, quote }),
+  /** Bibliyografik künye (F12-T12): künye, kaynak bağlantısı, erişim tarihi. */
+  precedentBibliography: (precedentId: string) =>
+    invoke<PrecedentBibliography>("precedent_bibliography", { precedentId }),
   /** Toplu içe alma (F12-T06): seçilen dosyalar + isteğe bağlı CSV künye listesi. */
   precedentBulkImport: (input: {
     files: string[];

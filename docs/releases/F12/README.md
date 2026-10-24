@@ -12,6 +12,8 @@
 | F12-T04 | ✅ | “bulunamadı” ile “uydurulmuş” ayrımı korunur; sahte hükmü yok |
 | F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama |
 | F12-T06 | ✅ | toplu içe alma (CSV künye listesi, çakışma işareti) + dış bağlayıcı sicili (etkin değil) |
+| F12-T07 | ✅ | alıntı çevresi + anlam incelemesi (şema v15; gerekçesiz olumsuz hüküm yok) |
+| F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 
 ## F12-T06 — toplu içe alma ve dış bağlayıcı sicili
 
@@ -122,3 +124,34 @@ değerlendirmesidir; sistem hükmü değildir.
 
 Künye doğruluğu, alıntının birebir bulunması ve **anlamın kararı yansıtması**
 üç ayrı boyuttur; biri diğerinin yerine geçmez.
+
+## F12-T12 — Bibliyografik künye, kaynak bağlantısı ve erişim tarihi
+
+- `precedent_bibliography(precedent_id)` → `PrecedentBibliography`:
+  `text`, `missing[]`, `warnings[]`, `sourceUrl`, `accessedAt`, `accessBasis`,
+  `hasFullText`. Şema değişikliği yok; veri mevcut alanlardan okunur.
+- **Biçim:** `{mahkeme} {daire}, {GG.AA.YYYY}, E. {esas}, K. {karar}, B. No: {başvuru}, “{başlık}”.
+  Kaynak: {url} (erişim: {GG.AA.YYYY})` — yalnız **var olan** alanlar yazılır.
+- **Eksik alan tahmin edilmez:** tarih/esas/karar/başlık/kaynak yoksa
+  `missing` listesine girer ve uyarı üretilir; künye metnine yer tutucu
+  (`-`, `[tarih]`) konmaz. Mahkeme her zaman zorunlu alandır.
+- **Erişim tarihi:** en yeni **tam metin** sürümünün `acquired_at` değeri
+  (`access_basis=version`); tam metin yoksa künye kaydının oluşturulma zamanı
+  (`access_basis=record`) ve bu durum arayüzde açıkça yazılır. Kaynak siteye
+  yeniden erişilmez; tarih kasadaki kayıttan gelir.
+- **Tarih biçimi:** yalnız `YYYY-AA-GG` (saat kısmı varsa ilk 10 karakter)
+  `GG.AA.YYYY`'ye çevrilir. Başka biçim olduğu gibi yazılır ve uyarı verir;
+  geçersiz ay/gün (`2025-13-01`) çevrilmez.
+- Tauri `precedent_bibliography`; arayüzde seçili emsalde “Bibliyografik künye”
+  kartı: kopyalanabilir metin, eksik alan rozeti, erişim tarihi ve kaynağı,
+  tam metin durumu, “Künyeyi kopyala”. Pano izni yoksa metni seçip elle
+  kopyalama önerilir (sessiz başarısızlık yok).
+- Test: 5 yeni storage testi (tam künye + sürüm erişim tarihi, eksik alan
+  listesi, ISO olmayan tarih, bulunmayan emsal, tarih ayrıştırıcı sınırları);
+  2 yeni web testi (eksik alan metni, erişim tarihi kaynağı).
+
+### Dürüst sınırlama
+
+Künye biçimi tek bir TR hukuk geleneğine göre sabittir; dipnot/atıf stili
+seçimi (örn. makale stili, kısaltmalar) yoktur. Erişim tarihi kasadaki edinim
+kaydıdır — kaynağın bugün hâlâ erişilebilir olduğu doğrulanmaz.

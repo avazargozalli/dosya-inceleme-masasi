@@ -18,11 +18,11 @@ use dim_storage::{
     NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote,
     NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent,
     NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow,
-    ParseRun, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
-    TaskRow, TransferConsentRow,
+    ParseRun, PrecedentBibliography, PrecedentNoteRow, PrecedentRow, PrecedentVersionRow,
+    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
+    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
+    SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -1855,6 +1855,18 @@ pub fn precedent_quote_verify(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.verify_precedent_quote(&precedent_id, &quote)?)
+}
+
+/// Bibliyografik künye (F12-T12): künye, kaynak bağlantısı ve erişim tarihi.
+/// Eksik alanlar `missing` listesinde döner; hiçbir alan tahmin edilmez.
+#[tauri::command]
+pub fn precedent_bibliography(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<PrecedentBibliography, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_bibliography(&precedent_id)?)
 }
 
 /// Tek turda içe alınabilecek dosya sayısı. Daha büyük seçim sessizce

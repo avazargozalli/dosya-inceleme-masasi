@@ -132,3 +132,18 @@ export function versionConflictText(version: {
     ? "aynı künye, farklı metin — iki nüshayı karşılaştırın"
     : null;
 }
+
+/** Eksik künye alanları tek satırda; eksik yoksa "künye tam". */
+export function bibliographyMissingText(missing: string[]): string {
+  return missing.length === 0 ? "künye tam" : `eksik: ${missing.join(", ")}`;
+}
+
+/**
+ * Erişim tarihinin nereden geldiğini söyler. Tam metin varsa edinim zamanı,
+ * yoksa künye kaydının oluşturulma zamanı kullanılır — bu ayrım gizlenmez.
+ */
+export function accessBasisLabel(basis: string): string {
+  return basis === "version"
+    ? "erişim tarihi: en yeni tam metnin edinimi"
+    : "erişim tarihi: künye kaydının oluşturulması (tam metin edinimi yok)";
+}

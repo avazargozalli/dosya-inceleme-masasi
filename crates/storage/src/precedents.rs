@@ -109,6 +109,24 @@ pub struct CitationContext {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentBibliography {
+    pub precedent_id: String,
+    /// Kopyalanabilir bibliyografik künye metni.
+    pub text: String,
+    /// Bulunmayan künye alanları (etiket). Eksik alan **tahmin edilmez**.
+    pub missing: Vec<String>,
+    pub warnings: Vec<String>,
+    pub source_url: Option<String>,
+    /// `dd.mm.yyyy` biçiminde erişim/edinim tarihi.
+    pub accessed_at: String,
+    /// `version` = en yeni tam metin sürümünün edinim zamanı,
+    /// `record` = künye kaydının oluşturulma zamanı.
+    pub access_basis: String,
+    pub has_full_text: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCitationCheck {
@@ -782,6 +800,131 @@ impl Database {
         result.reason = Some("not_found".into());
         Ok(result)
     }
+
+    /// Bibliyografik künye (F12-T12): künye alanları, kaynak bağlantısı ve
+    /// erişim tarihi. Eksik alan **tahmin edilmez**; `missing` listesinde
+    /// görünür. Erişim tarihi varsa en yeni tam metin sürümünün edinim
+    /// zamanından, yoksa künye kaydının oluşturulma zamanından alınır ve
+    /// hangisinin kullanıldığı `access_basis` ile söylenir.
+    pub fn precedent_bibliography(
+        &self,
+        precedent_id: &str,
+    ) -> Result<PrecedentBibliography, StorageError> {
+        let precedent = self
+            .get_precedent(precedent_id)?
+            .ok_or(StorageError::NotFound)?;
+        let mut missing: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
+
+        let mut head = precedent.court.trim().to_string();
+        if let Some(chamber) = non_empty(precedent.chamber.as_deref()) {
+            head = format!("{head} {chamber}");
+        }
+        let mut parts = vec![head];
+
+        match non_empty(precedent.decision_date.as_deref()) {
+            Some(raw) => match iso_to_tr_date(raw) {
+                Some(short) => parts.push(short),
+                None => {
+                    parts.push(raw.to_string());
+                    warnings.push(format!(
+                        "Tarih ISO (YYYY-AA-GG) biçiminde değil: “{raw}” olduğu gibi yazıldı."
+                    ));
+                }
+            },
+            None => missing.push("karar tarihi".into()),
+        }
+        match non_empty(precedent.docket_no.as_deref()) {
+            Some(docket) => parts.push(format!("E. {docket}")),
+            None => missing.push("esas numarası".into()),
+        }
+        match non_empty(precedent.decision_no.as_deref()) {
+            Some(decision) => parts.push(format!("K. {decision}")),
+            None => missing.push("karar numarası".into()),
+        }
+        if let Some(application) = non_empty(precedent.application_no.as_deref()) {
+            parts.push(format!("B. No: {application}"));
+        }
+        match non_empty(precedent.title.as_deref()) {
+            Some(title) => parts.push(format!("“{title}”")),
+            None => missing.push("başlık".into()),
+        }
+
+        let (accessed_raw, access_basis) = match self
+            .conn()
+            .query_row(
+                "SELECT acquired_at FROM precedent_versions
+                  WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0
+                  ORDER BY acquired_at DESC, id DESC LIMIT 1",
+                [precedent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Some(stamp) => (stamp, "version"),
+            None => (precedent.created_at.clone(), "record"),
+        };
+        let accessed_at = iso_to_tr_date(&accessed_raw)
+            .unwrap_or_else(|| accessed_raw.chars().take(10).collect::<String>());
+        if access_basis == "record" {
+            warnings.push(
+                "Tam metin edinimi yok; erişim tarihi olarak künye kaydının oluşturulma zamanı kullanıldı."
+                    .into(),
+            );
+        }
+
+        let source_url = non_empty(precedent.source_url.as_deref()).map(str::to_string);
+        let mut text = parts.join(", ");
+        match &source_url {
+            Some(url) => text.push_str(&format!(". Kaynak: {url} (erişim: {accessed_at})")),
+            None => missing.push("kaynak bağlantısı".into()),
+        }
+        if !missing.is_empty() {
+            warnings.insert(
+                0,
+                format!(
+                    "Künye eksik: {}. Eksik alan tahmin edilmedi.",
+                    missing.join(", ")
+                ),
+            );
+        }
+        let with_text: i64 = self.conn().query_row(
+            "SELECT count(*) FROM precedent_versions
+              WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0",
+            [precedent_id],
+            |row| row.get(0),
+        )?;
+        Ok(PrecedentBibliography {
+            precedent_id: precedent.id,
+            text,
+            missing,
+            warnings,
+            source_url,
+            accessed_at,
+            access_basis: access_basis.into(),
+            has_full_text: with_text > 0,
+        })
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// `YYYY-AA-GG` → `GG.AA.YYYY`. Biçim tutmuyorsa `None` — tarih uydurulmaz.
+fn iso_to_tr_date(raw: &str) -> Option<String> {
+    let date = raw.trim().get(0..10)?;
+    let bytes = date.as_bytes();
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let year: u32 = date.get(0..4)?.parse().ok()?;
+    let month: u32 = date.get(5..7)?.parse().ok()?;
+    let day: u32 = date.get(8..10)?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(format!("{day:02}.{month:02}.{year:04}"))
 }
 
 fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
@@ -1294,5 +1437,117 @@ mod tests {
         let mapped = normalize_with_map("AB cd");
         assert_eq!(mapped.map.len(), mapped.text.chars().count());
         assert_eq!(mapped.text, "ab cd");
+    }
+
+    #[test]
+    fn bibliography_formats_complete_record_with_version_access_date() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/123"), Some("2025/456")))
+            .expect("emsal");
+        db.add_precedent_text(&p.id, &text_of("Karar metni burada."))
+            .expect("metin");
+
+        let bib = db.precedent_bibliography(&p.id).expect("künye");
+        assert!(bib.missing.is_empty(), "eksik: {:?}", bib.missing);
+        assert!(bib.warnings.is_empty(), "uyarı: {:?}", bib.warnings);
+        assert!(
+            bib.text.starts_with(
+                "Yargıtay 1. Hukuk Dairesi, 01.06.2025, E. 2024/123, K. 2025/456, “Kira alacağı”. \
+             Kaynak: https://example.invalid/karar (erişim: "
+            ),
+            "metin: {}",
+            bib.text
+        );
+        assert_eq!(bib.access_basis, "version");
+        assert!(bib.has_full_text);
+        assert_eq!(
+            bib.source_url.as_deref(),
+            Some("https://example.invalid/karar")
+        );
+        // Erişim tarihi tam metnin edinim zamanından gelir (bugün, GG.AA.YYYY).
+        assert_eq!(bib.accessed_at.len(), 10);
+        assert_eq!(&bib.accessed_at[2..3], ".");
+        assert_eq!(&bib.accessed_at[5..6], ".");
+    }
+
+    #[test]
+    fn bibliography_lists_missing_fields_without_inventing() {
+        let db = db();
+        let bare = NewPrecedent {
+            court: "Danıştay".into(),
+            chamber: None,
+            docket_no: None,
+            decision_no: None,
+            application_no: None,
+            decision_date: None,
+            title: None,
+            source_url: None,
+            user_tags: vec![],
+            legal_issue: None,
+        };
+        let p = db.create_precedent(&bare).expect("emsal");
+
+        let bib = db.precedent_bibliography(&p.id).expect("künye");
+        assert_eq!(bib.text, "Danıştay");
+        assert_eq!(
+            bib.missing,
+            vec![
+                "karar tarihi",
+                "esas numarası",
+                "karar numarası",
+                "başlık",
+                "kaynak bağlantısı",
+            ]
+        );
+        assert_eq!(bib.access_basis, "record");
+        assert!(!bib.has_full_text);
+        assert!(bib.warnings[0].starts_with("Künye eksik: "));
+        assert!(bib
+            .warnings
+            .iter()
+            .any(|w| w.contains("Tam metin edinimi yok")));
+        // Tarih/numara uydurulmadı.
+        assert!(!bib.text.contains("E. "));
+        assert!(!bib.text.contains("Kaynak:"));
+    }
+
+    #[test]
+    fn bibliography_keeps_non_iso_date_verbatim_and_warns() {
+        let db = db();
+        let mut input = precedent("Yargıtay", Some("2024/9"), Some("2025/9"));
+        input.decision_date = Some("01.06.2025".into());
+        let p = db.create_precedent(&input).expect("emsal");
+
+        let bib = db.precedent_bibliography(&p.id).expect("künye");
+        assert!(bib
+            .text
+            .starts_with("Yargıtay 1. Hukuk Dairesi, 01.06.2025, E. 2024/9"));
+        assert!(bib.warnings.iter().any(|w| w.contains("ISO (YYYY-AA-GG)")));
+    }
+
+    #[test]
+    fn bibliography_unknown_precedent_is_not_found() {
+        let db = db();
+        assert_eq!(
+            db.precedent_bibliography("yok-boyle-emsal")
+                .unwrap_err()
+                .code(),
+            "E_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn iso_to_tr_date_rejects_malformed_values() {
+        assert_eq!(iso_to_tr_date("2025-06-01").as_deref(), Some("01.06.2025"));
+        assert_eq!(
+            iso_to_tr_date("2025-06-01T10:00:00Z").as_deref(),
+            Some("01.06.2025")
+        );
+        assert!(iso_to_tr_date("2025-13-01").is_none());
+        assert!(iso_to_tr_date("2025-06-32").is_none());
+        assert!(iso_to_tr_date("01.06.2025").is_none());
+        assert!(iso_to_tr_date("2025-6-1").is_none());
+        assert!(iso_to_tr_date("").is_none());
     }
 }

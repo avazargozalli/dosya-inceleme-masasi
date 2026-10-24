@@ -10,6 +10,7 @@ import {
   type CitationContext,
   type ConnectorCatalog,
   type DocumentRow,
+  type PrecedentBibliography,
   type PrecedentNoteRow,
   type PrecedentRow,
   type PrecedentVersionRow,
@@ -17,6 +18,8 @@ import {
 } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
 import {
+  accessBasisLabel,
+  bibliographyMissingText,
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
@@ -90,6 +93,10 @@ export function Precedents() {
   const [verification, setVerification] = useState<QuoteVerificationRow | null>(null);
   const versionSummary = summarizeVersions(versions);
 
+  // Bibliyografik künye (F12-T12)
+  const [bibliography, setBibliography] = useState<PrecedentBibliography | null>(null);
+  const [copied, setCopied] = useState(false);
+
   // Toplu içe alma (F12-T06)
   const [bulkFiles, setBulkFiles] = useState<string[]>([]);
   const [manifestPath, setManifestPath] = useState<string | null>(null);
@@ -128,10 +135,16 @@ export function Precedents() {
         .precedentVersionList(selected.id)
         .then(setVersions)
         .catch((e) => setError(toApiError(e)));
+      void api
+        .precedentBibliography(selected.id)
+        .then(setBibliography)
+        .catch((e) => setError(toApiError(e)));
     } else {
       setNotes([]);
       setVersions([]);
+      setBibliography(null);
     }
+    setCopied(false);
     setVerification(null);
     setQuoteInput("");
   }, [selected]);
@@ -217,6 +230,7 @@ export function Precedents() {
       });
       setFullText("");
       setVersions(await api.precedentVersionList(selected.id));
+      setBibliography(await api.precedentBibliography(selected.id));
       // Metin değişti: önceki doğrulama bu sürüme ait değil.
       setVerification(null);
     } catch (e) {
@@ -239,6 +253,20 @@ export function Precedents() {
       setError(toApiError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyBibliography() {
+    if (!bibliography) return;
+    try {
+      await navigator.clipboard.writeText(bibliography.text);
+      setCopied(true);
+    } catch {
+      setError({
+        code: "E_CLIPBOARD",
+        message: "Metin panoya kopyalanamadı; künyeyi seçip elle kopyalayabilirsiniz.",
+        retryable: false,
+      });
     }
   }
 
@@ -497,6 +525,63 @@ export function Precedents() {
 
       {selected ? (
         <>
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Bibliyografik künye</h2>
+              <p className="card-sub">
+                Dilekçeye kopyalanabilir künye · kaynak bağlantısı ve erişim tarihi
+              </p>
+            </div>
+            {bibliography ? (
+              <button className="btn ghost" onClick={() => void copyBibliography()}>
+                {copied ? "Kopyalandı" : "Künyeyi kopyala"}
+              </button>
+            ) : null}
+          </div>
+          {bibliography ? (
+            <>
+              <p
+                className="small"
+                style={{
+                  margin: "0 0 6px",
+                  padding: "8px 10px",
+                  border: "1px solid var(--line)",
+                  borderRadius: "var(--radius)",
+                  background: "var(--surface)",
+                  userSelect: "text",
+                }}
+              >
+                {bibliography.text}
+              </p>
+              <div className="row" style={{ gap: 6 }}>
+                <span className={`badge ${bibliography.missing.length === 0 ? "ok" : "warn"}`}>
+                  {bibliographyMissingText(bibliography.missing)}
+                </span>
+                <span className="badge plain">erişim: {bibliography.accessedAt}</span>
+                <span className={`badge ${bibliography.hasFullText ? "ok" : "warn"}`}>
+                  {bibliography.hasFullText ? "tam metin var" : "tam metin yok"}
+                </span>
+              </div>
+              <p className="hint" style={{ margin: "6px 0 0" }}>
+                {accessBasisLabel(bibliography.accessBasis)}
+              </p>
+              {bibliography.warnings.map((warning) => (
+                <p key={warning} className="hint" style={{ margin: 0 }}>{warning}</p>
+              ))}
+              {bibliography.sourceUrl ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  <a href={bibliography.sourceUrl} target="_blank" rel="noreferrer">
+                    Kaynak bağlantısını aç
+                  </a>
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="hint" style={{ margin: 0 }}>Künye yükleniyor…</p>
+          )}
+        </div>
+
         <div className="card">
           <div className="card-head">
             <div>

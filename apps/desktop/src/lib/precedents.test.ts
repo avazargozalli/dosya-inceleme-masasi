@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { PrecedentVersionRow, QuoteVerificationRow } from "./api";
 import {
+  accessBasisLabel,
+  bibliographyMissingText,
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
@@ -177,5 +179,17 @@ describe("toplu içe alma etiketleri (F12-T06)", () => {
   it("çakışma metni yalnız gerçek çakışmada döner", () => {
     expect(versionConflictText({ identityConflict: true })).toContain("farklı metin");
     expect(versionConflictText({ identityConflict: false })).toBeNull();
+  });
+
+  it("bibliyografya eksik alanları listeler, eksik yoksa künye tam der", () => {
+    expect(bibliographyMissingText([])).toBe("künye tam");
+    expect(bibliographyMissingText(["karar tarihi", "kaynak bağlantısı"])).toBe(
+      "eksik: karar tarihi, kaynak bağlantısı",
+    );
+  });
+
+  it("erişim tarihinin kaynağını gizlemez", () => {
+    expect(accessBasisLabel("version")).toContain("tam metnin edinimi");
+    expect(accessBasisLabel("record")).toContain("tam metin edinimi yok");
   });
 });

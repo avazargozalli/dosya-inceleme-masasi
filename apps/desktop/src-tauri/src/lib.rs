@@ -119,6 +119,7 @@ pub fn run() {
             commands::precedent_text_add,
             commands::precedent_version_list,
             commands::precedent_quote_verify,
+            commands::precedent_bibliography,
             commands::precedent_bulk_import,
             commands::precedent_connector_list,
             commands::citation_check_create,
