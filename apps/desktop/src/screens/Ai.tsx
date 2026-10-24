@@ -5,9 +5,27 @@ import {
   type AiCandidateRow,
   type AiOverview,
   type ApiError,
+  type CandidateReport,
   type CaseRow,
   type TransferConsentRow,
 } from "../lib/api";
+import {
+  CANDIDATE_KINDS,
+  candidateKindLabel,
+  candidateStateLabel,
+  candidateStateTone,
+  draftJsonError,
+  errorCount,
+  parseIssues,
+  promoteBlockedReason,
+  quoteLineStateLabel,
+  quoteLineTone,
+  quotePositionLabel,
+  quoteStateLabel,
+  quoteStateTone,
+  quoteSummary,
+  warningCount,
+} from "../lib/candidate";
 
 export function Ai() {
   const [cases, setCases] = useState<CaseRow[]>([]);
@@ -18,6 +36,15 @@ export function Ai() {
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // F11-T05 — aday doğrulama paneli
+  const [runId, setRunId] = useState("");
+  const [kind, setKind] = useState("claim_candidate");
+  const [draft, setDraft] = useState(
+    CANDIDATE_KINDS.find((option) => option.value === "claim_candidate")!.template,
+  );
+  const [report, setReport] = useState<CandidateReport | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -41,6 +68,8 @@ export function Ai() {
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
   const offOnly = overview !== null && overview.providers.every((p) => p.providerType === "off");
+  const selectedKind = CANDIDATE_KINDS.find((option) => option.value === kind) ?? CANDIDATE_KINDS[0]!;
+  const draftError = draftJsonError(draft);
 
   async function approve() {
     if (!provider) return;
@@ -71,16 +100,75 @@ export function Ai() {
     }
   }
 
-  async function loadCandidates(runId: string) {
+  async function loadCandidates(id: string) {
     try {
-      setCandidates(await api.aiCandidatesList(runId));
+      setCandidates(await api.aiCandidatesList(id));
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function selectRun(id: string) {
+    setRunId(id);
+    setReport(null);
+    setNotice(null);
+    await loadCandidates(id);
+  }
+
+  async function validateDraft(persist: boolean) {
+    if (!runId || draftError) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.aiCandidateValidate(runId, kind, draft);
+      setReport(result);
+      if (persist) {
+        await api.aiCandidateRecord(runId, kind, draft);
+        await loadCandidates(runId);
+        setNotice(
+          result.state === "valid"
+            ? "Aday doğrulandı ve kaydedildi (geçerli)."
+            : result.state === "partial"
+              ? "Aday kaydedildi; kısmi — kaynakları eksik veya alıntılar tam doğrulanmadı."
+              : "Aday kaydedildi ama geçersiz; incelemeye gönderilemez.",
+        );
+      }
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revalidate(candidateId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const refreshed = await api.aiCandidateRevalidate(candidateId);
+      setCandidates((rows) =>
+        rows.map((row) => (row.id === refreshed.id ? refreshed : row)),
+      );
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function promote(candidateId: string) {
+    setError(null);
+    setNotice(null);
+    try {
+      await api.aiCandidatePromote(candidateId, caseId);
+      setNotice("Aday inceleme kuyruğuna gönderildi; kabul edilene kadar hukuki kayıt değil.");
     } catch (e) {
       setError(toApiError(e));
     }
   }
 
   return (
-    <div className="page" style={{ maxWidth: 900 }}>
+    <div className="page" style={{ maxWidth: 1000 }}>
       <div className="page-head">
         <h1>AI inceleme</h1>
         <p className="lead">
@@ -94,6 +182,8 @@ export function Ai() {
           <strong>{error.code}</strong> — {error.message}
         </div>
       ) : null}
+
+      {notice ? <div className="notice ok">{notice}</div> : null}
 
       <div className="card">
         <div className="field" style={{ maxWidth: 420 }}>
@@ -165,7 +255,7 @@ export function Ai() {
         <div className="card-head">
           <div>
             <h2>Çalıştırmalar</h2>
-            <p className="card-sub">Durum, sağlayıcı ve kullanım raporu</p>
+            <p className="card-sub">Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada</p>
           </div>
         </div>
         {overview && overview.runs.length > 0 ? (
@@ -180,7 +270,9 @@ export function Ai() {
                   <td><span className={`badge ${run.status === "succeeded" ? "ok" : ""}`}>{run.status}</span></td>
                   <td>{new Date(run.createdAt).toLocaleString("tr-TR")}</td>
                   <td>
-                    <button className="btn ghost" onClick={() => void loadCandidates(run.id)}>Adayları gör</button>
+                    <button className="btn ghost" onClick={() => void selectRun(run.id)}>
+                      {runId === run.id ? "Seçili · adayları yenile" : "Seç ve adayları gör"}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -189,6 +281,158 @@ export function Ai() {
         ) : (
           <p className="hint" style={{ margin: 0 }}>Henüz çalıştırma yok. Sağlayıcı bağlanınca burada görünür.</p>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Aday doğrula ve kaydet</h2>
+            <p className="card-sub">
+              Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum
+              hesaplanır — elle “geçerli” yazılamaz.
+            </p>
+          </div>
+        </div>
+
+        {runId ? (
+          <p className="hint" style={{ marginTop: 0 }}>
+            Seçili çalıştırma: <code>{runId.slice(0, 8)}…</code>
+          </p>
+        ) : (
+          <div className="notice warn">
+            Önce yukarıdaki tablodan bir çalıştırma seçin; aday o çalıştırmaya bağlanır.
+          </div>
+        )}
+
+        <div className="row">
+          <div className="field" style={{ maxWidth: 260 }}>
+            <label htmlFor="ai-kind">Aday türü</label>
+            <select
+              id="ai-kind"
+              className="input"
+              value={kind}
+              onChange={(e) => {
+                const next = e.target.value;
+                setKind(next);
+                setReport(null);
+                const option = CANDIDATE_KINDS.find((item) => item.value === next);
+                if (option) setDraft(option.template);
+              }}
+            >
+              {CANDIDATE_KINDS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <p className="hint" style={{ alignSelf: "flex-end", margin: 0 }}>{selectedKind.hint}</p>
+        </div>
+
+        <div className="field">
+          <label htmlFor="ai-draft">Aday yükü (JSON)</label>
+          <textarea
+            id="ai-draft"
+            className="input"
+            style={{ minHeight: 180, fontFamily: "var(--mono)", fontSize: 12 }}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+        </div>
+
+        {draftError ? <p className="hint" style={{ color: "var(--danger)" }}>{draftError}</p> : null}
+
+        <div className="row">
+          <button
+            className="btn"
+            disabled={!runId || busy || draftError !== null}
+            onClick={() => void validateDraft(false)}
+          >
+            Doğrula
+          </button>
+          <button
+            className="btn primary"
+            disabled={!runId || busy || draftError !== null}
+            onClick={() => void validateDraft(true)}
+          >
+            Doğrula ve kaydet
+          </button>
+        </div>
+
+        {report ? (
+          <div style={{ marginTop: "var(--space-3)" }}>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <span className={`badge ${candidateStateTone(report.state)}`}>
+                {candidateStateLabel(report.state)}
+              </span>
+              <span className={`badge ${quoteStateTone(report.quoteState)}`}>
+                {quoteStateLabel(report.quoteState)}
+              </span>
+              <span className="badge plain">{quoteSummary(report)}</span>
+              {errorCount(report.issues) > 0 ? (
+                <span className="badge danger">{errorCount(report.issues)} hata</span>
+              ) : null}
+              {warningCount(report.issues) > 0 ? (
+                <span className="badge warn">{warningCount(report.issues)} uyarı</span>
+              ) : null}
+            </div>
+
+            {report.quotes.length > 0 ? (
+              <table className="table" style={{ marginTop: "var(--space-2)" }}>
+                <thead>
+                  <tr><th>#</th><th>Alıntı</th><th>Durum</th><th>Konum</th><th>Tekrar</th><th>Metin</th></tr>
+                </thead>
+                <tbody>
+                  {report.quotes.map((quote) => (
+                    <tr key={`${quote.documentVersionId}-${quote.index}`}>
+                      <td>{quote.index + 1}</td>
+                      <td style={{ maxWidth: 320 }}>“{quote.quote.slice(0, 120)}”</td>
+                      <td>
+                        <span className={`badge ${quoteLineTone(quote.state)}`}>
+                          {quoteLineStateLabel(quote)}
+                        </span>
+                      </td>
+                      <td>{quotePositionLabel(quote)}</td>
+                      <td>{quote.occurrences}</td>
+                      <td>
+                        {quote.textOrigin ?? "—"}
+                        {quote.claimedPageIndex !== null && quote.pageIndex !== null
+                          && quote.claimedPageIndex !== quote.pageIndex ? (
+                          <span className="hint" style={{ display: "block" }}>
+                            model sayfa {quote.claimedPageIndex + 1} dedi
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+
+            {report.issues.length > 0 ? (
+              <details style={{ marginTop: "var(--space-2)" }} open>
+                <summary>Doğrulama sorunları ({report.issues.length})</summary>
+                <ul className="hint" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                  {report.issues.map((issue, index) => (
+                    <li key={`${issue.code}-${issue.field}-${index}`}>
+                      <code>{issue.field}</code> · {issue.code} — {issue.detail}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+
+            {report.notes.length > 0 ? (
+              <ul className="hint" style={{ margin: "var(--space-2) 0 0", paddingLeft: 18 }}>
+                {report.notes.map((note, index) => <li key={index}>{note}</li>)}
+              </ul>
+            ) : null}
+
+            <p className="hint" style={{ marginBottom: 0 }}>
+              Doğrulamanın sınırları: yalnız kasada ayrıştırılmış metin aranır; OCR yazım hatası
+              eşleşmeyi etkileyebilir, maskeli bağlamın özgün kaynağa geri eşlenmesi bu adımda
+              yapılmaz. Aday metni modelin ürettiği hâliyle saklanır.
+            </p>
+          </div>
+        ) : null}
       </div>
 
       {candidates.length > 0 ? (
@@ -200,28 +444,85 @@ export function Ai() {
             </div>
           </div>
           <table className="table">
-            <thead><tr><th>Tür</th><th>Doğrulama</th><th>İçerik</th><th /></tr></thead>
+            <thead>
+              <tr><th>Tür</th><th>Şema</th><th>Alıntı</th><th>İçerik</th><th /></tr>
+            </thead>
             <tbody>
-              {candidates.map((candidate) => (
-                <tr key={candidate.id}>
-                  <td>{candidate.candidateType}</td>
-                  <td><span className={`badge ${candidate.validationState === "valid" ? "ok" : "warn"}`}>{candidate.validationState}</span></td>
-                  <td style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{candidate.structuredPayload.slice(0, 80)}</td>
-                  <td>
-                    <button
-                      className="btn ghost"
-                      onClick={() =>
-                        void api
-                          .aiCandidatePromote(candidate.id, caseId)
-                          .then(() => setError(null))
-                          .catch((e) => setError(toApiError(e)))
-                      }
-                    >
-                      İncelemeye gönder
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {candidates.map((candidate) => {
+                const blocked = promoteBlockedReason(candidate);
+                const issues = parseIssues(candidate.validationErrors);
+                return (
+                  <tr key={candidate.id}>
+                    <td>
+                      {candidateKindLabel(candidate.candidateType)}
+                      <span className="hint" style={{ display: "block" }}>
+                        {candidate.checkedAt
+                          ? new Date(candidate.checkedAt).toLocaleString("tr-TR")
+                          : "denetlenmemiş"}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`badge ${candidateStateTone(candidate.schemaState)}`}>
+                        {candidateStateLabel(candidate.schemaState)}
+                      </span>
+                      <span className={`badge ${candidateStateTone(candidate.validationState)}`} style={{ marginLeft: 4 }}>
+                        aday: {candidateStateLabel(candidate.validationState)}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`badge ${quoteStateTone(candidate.quoteState)}`}>
+                        {quoteStateLabel(candidate.quoteState)}
+                      </span>
+                      {candidate.quoteReport.length > 0 ? (
+                        <details style={{ marginTop: 4 }}>
+                          <summary className="hint">{candidate.quoteReport.length} alıntı</summary>
+                          <ul className="hint" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+                            {candidate.quoteReport.map((quote) => (
+                              <li key={`${quote.documentVersionId}-${quote.index}`}>
+                                <span className={`badge ${quoteLineTone(quote.state)}`}>
+                                  {quoteLineStateLabel(quote)}
+                                </span>{" "}
+                                {quotePositionLabel(quote)} · “{quote.quote.slice(0, 48)}”
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
+                    </td>
+                    <td style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+                      {candidate.structuredPayload.slice(0, 80)}
+                      {issues.length > 0 ? (
+                        <details style={{ marginTop: 4 }}>
+                          <summary className="hint">{issues.length} sorun</summary>
+                          <ul className="hint" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+                            {issues.map((issue, index) => (
+                              <li key={`${issue.code}-${index}`}>
+                                <code>{issue.field}</code> · {issue.code}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
+                    </td>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        <button className="btn ghost" disabled={busy} onClick={() => void revalidate(candidate.id)}>
+                          Yeniden doğrula
+                        </button>
+                        <button
+                          className="btn ghost"
+                          disabled={busy || blocked !== null}
+                          title={blocked ?? "İnceleme kuyruğuna gönder"}
+                          onClick={() => void promote(candidate.id)}
+                        >
+                          İncelemeye gönder
+                        </button>
+                      </div>
+                      {blocked ? <span className="hint">{blocked}</span> : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

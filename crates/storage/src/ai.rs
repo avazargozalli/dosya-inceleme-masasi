@@ -8,7 +8,7 @@
 use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
-use crate::{now_iso, Database, StorageError};
+use crate::{now_iso, Database, NewAnchor, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -372,6 +372,13 @@ pub struct AiCandidateRow {
     pub structured_payload: String,
     pub validation_state: String,
     pub validation_errors: String,
+    /// Şema doğrulamasının sonucu: `valid` | `partial` | `invalid` | `legacy`.
+    pub schema_state: String,
+    /// Alıntı eşleştirmesinin sonucu: `verified` | `partial` | `failed` |
+    /// `no_quotes` | `not_checked` | `legacy`.
+    pub quote_state: String,
+    pub quote_report: Vec<crate::ai_candidate::QuoteMatchReport>,
+    pub checked_at: Option<String>,
 }
 
 /// Kapsamlılık raporu: hangi belge gerçekten ayrıştırıldı, hangi sayfa boş,
@@ -391,51 +398,13 @@ pub struct CoverageReport {
 }
 
 impl Database {
-    pub fn record_ai_candidate(
-        &self,
-        run_id: &str,
-        candidate_type: &str,
-        structured_payload: &str,
-        validation_state: &str,
-        validation_errors: &str,
-    ) -> Result<AiCandidateRow, StorageError> {
-        if !matches!(validation_state, "valid" | "invalid" | "partial") {
-            return Err(StorageError::InvalidSetting);
-        }
-        if self.get_ai_run(run_id)?.is_none() {
-            return Err(StorageError::NotFound);
-        }
-        let id = uuid::Uuid::now_v7().to_string();
-        self.conn().execute(
-            "INSERT INTO ai_candidates (id,ai_run_id,type,structured_payload,validation_state,validation_errors)
-             VALUES (?1,?2,?3,?4,?5,?6)",
-            rusqlite::params![id, run_id, candidate_type, structured_payload, validation_state, validation_errors],
-        )?;
-        Ok(AiCandidateRow {
-            id,
-            ai_run_id: run_id.to_string(),
-            candidate_type: candidate_type.to_string(),
-            structured_payload: structured_payload.to_string(),
-            validation_state: validation_state.to_string(),
-            validation_errors: validation_errors.to_string(),
-        })
-    }
-
     pub fn list_ai_candidates(&self, run_id: &str) -> Result<Vec<AiCandidateRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,ai_run_id,type,structured_payload,validation_state,validation_errors
+            "SELECT id,ai_run_id,type,structured_payload,validation_state,validation_errors,
+                    schema_state,quote_state,quote_report,checked_at
              FROM ai_candidates WHERE ai_run_id=?1 ORDER BY rowid",
         )?;
-        let rows = stmt.query_map([run_id], |row| {
-            Ok(AiCandidateRow {
-                id: row.get(0)?,
-                ai_run_id: row.get(1)?,
-                candidate_type: row.get(2)?,
-                structured_payload: row.get(3)?,
-                validation_state: row.get(4)?,
-                validation_errors: row.get(5)?,
-            })
-        })?;
+        let rows = stmt.query_map([run_id], map_candidate)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -445,6 +414,11 @@ impl Database {
 
     /// Adayı inceleme kuyruğuna taşır. Aday doğrudan hukuki kayda dönüşmez;
     /// avukat kabul edene kadar `review_items` içinde `pending` kalır.
+    ///
+    /// Kapı: şeması geçersiz aday (`E_AI_SCHEMA`) ve metinde bulunmayan alıntı
+    /// taşıyan aday (`E_AI_QUOTE`) kuyruğa alınmaz — uydurma alıntı kaynak
+    /// sayılmaz (INV-02). Birebir doğrulanmış alıntılar için `source_anchors`
+    /// kaydı oluşturulur ve `source_anchor_ids` bu kimliklerle yazılır.
     pub fn promote_candidate(
         &self,
         candidate_id: &str,
@@ -453,7 +427,7 @@ impl Database {
         let row = self
             .conn()
             .query_row(
-                "SELECT c.type,c.structured_payload,c.ai_run_id,r.case_id
+                "SELECT c.type,c.structured_payload,c.ai_run_id,r.case_id,c.validation_state,c.quote_state,c.quote_report,c.schema_state
                  FROM ai_candidates c JOIN ai_runs r ON r.id=c.ai_run_id WHERE c.id=?1",
                 [candidate_id],
                 |r| {
@@ -462,29 +436,119 @@ impl Database {
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, String>(6)?,
+                        r.get::<_, String>(7)?,
                     ))
                 },
             )
             .optional()?;
-        let (kind, payload, run_id, run_case) = row.ok_or(StorageError::NotFound)?;
+        let (
+            kind,
+            payload,
+            run_id,
+            run_case,
+            validation_state,
+            quote_state,
+            quote_report,
+            schema_state,
+        ) = row.ok_or(StorageError::NotFound)?;
         if run_case != case_id {
             return Err(StorageError::NotFound);
         }
+        // Bu sürümden önce yazılmış aday doğrulanmamıştır: önce yeniden doğrula.
+        if quote_state == "legacy" || schema_state == "legacy" {
+            return Err(StorageError::AiSchema(
+                "Aday bu sürümde doğrulanmamış; önce yeniden doğrulayın.".into(),
+            ));
+        }
+        if quote_state == "failed" {
+            return Err(StorageError::AiQuote(
+                "Adaydaki alıntı belge metninde bulunamadı; kaynak olarak kullanılamaz.".into(),
+            ));
+        }
+        if validation_state == "invalid" {
+            return Err(StorageError::AiSchema(
+                "Aday şeması geçersiz; incelemeye gönderilmez.".into(),
+            ));
+        }
+
+        let quotes: Vec<crate::ai_candidate::QuoteMatchReport> =
+            serde_json::from_str(&quote_report).unwrap_or_default();
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
-        self.conn().execute(
-            "INSERT INTO review_items (id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,created_at,updated_at,row_version)
-             VALUES (?1,?2,?3,1,?4,'[]',?5,'pending',?6,?6,1)",
-            rusqlite::params![id, case_id, kind, payload, run_id, now],
-        )?;
+        let mut anchor_ids: Vec<String> = Vec::new();
+        self.write_atomically(|| {
+            for quote in &quotes {
+                if let Some(anchor_id) = self.ensure_anchor(case_id, quote)? {
+                    anchor_ids.push(anchor_id);
+                }
+            }
+            let anchors = serde_json::to_string(&anchor_ids).unwrap_or_else(|_| "[]".into());
+            self.conn().execute(
+                "INSERT INTO review_items (id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,created_at,updated_at,row_version)
+                 VALUES (?1,?2,?3,1,?4,?5,?6,'pending',?7,?7,1)",
+                rusqlite::params![id, case_id, kind, payload, anchors, run_id, now],
+            )?;
+            Ok(())
+        })?;
         self.append_audit(
             "review_item",
             Some(&id),
             "promote",
             "local-user",
-            &serde_json::json!({"candidateId": candidate_id}),
+            &serde_json::json!({
+                "candidateId": candidate_id,
+                "anchors": anchor_ids.len(),
+            }),
         )?;
         Ok(id)
+    }
+
+    /// Aynı alıntı için zaten aktif bir anchor varsa onu kullanır; böylece aynı
+    /// adayın yeniden terfisi kaynak kaydını çoğaltmaz. Rapor `exact` değilse ya
+    /// da konum alanları eksikse anchor oluşturulmaz (`None`).
+    fn ensure_anchor(
+        &self,
+        case_id: &str,
+        quote: &crate::ai_candidate::QuoteMatchReport,
+    ) -> Result<Option<String>, StorageError> {
+        if quote.state != "exact" {
+            return Ok(None);
+        }
+        let (Some(parse_run_id), Some(segment_id), Some(char_start)) = (
+            quote.parse_run_id.as_deref(),
+            quote.segment_id.as_deref(),
+            quote.char_start,
+        ) else {
+            return Ok(None);
+        };
+        let length = i64::try_from(quote.quote.chars().count()).unwrap_or(0);
+        let end_offset = char_start.saturating_add(length);
+        let existing: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT id FROM source_anchors
+                 WHERE segment_id=?1 AND start_offset=?2 AND end_offset=?3 AND exact_quote=?4
+                   AND anchor_status IN ('active','rebound') LIMIT 1",
+                rusqlite::params![segment_id, char_start, end_offset, quote.quote],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(Some(id));
+        }
+        let anchor = self.create_anchor(&NewAnchor {
+            case_id: case_id.to_string(),
+            document_version_id: quote.document_version_id.clone(),
+            parse_run_id: parse_run_id.to_string(),
+            segment_id: segment_id.to_string(),
+            start_offset: char_start,
+            end_offset,
+            exact_quote: quote.quote.clone(),
+        })?;
+        Ok(Some(anchor.id))
     }
 
     pub fn list_provider_profiles(&self) -> Result<Vec<ProviderProfileRow>, StorageError> {
@@ -566,6 +630,22 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<AiRunRow> {
         usage_report: row.get(10)?,
         created_at: row.get(11)?,
         completed_at: row.get(12)?,
+    })
+}
+
+pub(crate) fn map_candidate(row: &Row<'_>) -> rusqlite::Result<AiCandidateRow> {
+    let raw_quotes: String = row.get(8)?;
+    Ok(AiCandidateRow {
+        id: row.get(0)?,
+        ai_run_id: row.get(1)?,
+        candidate_type: row.get(2)?,
+        structured_payload: row.get(3)?,
+        validation_state: row.get(4)?,
+        validation_errors: row.get(5)?,
+        schema_state: row.get(6)?,
+        quote_state: row.get(7)?,
+        quote_report: serde_json::from_str(&raw_quotes).unwrap_or_default(),
+        checked_at: row.get(9)?,
     })
 }
 
@@ -722,11 +802,12 @@ mod tests {
             .record_ai_candidate(
                 &r.id,
                 "event_candidate",
-                "{\"title\":\"Ödeme\"}",
-                "valid",
-                "[]",
+                "{\"schemaVersion\":1,\"title\":\"Ödeme\"}",
             )
             .expect("aday");
+        assert_eq!(candidate.validation_state, "partial");
+        assert_eq!(candidate.schema_state, "valid");
+        assert_eq!(candidate.quote_state, "no_quotes");
         assert_eq!(db.list_ai_candidates(&r.id).expect("liste").len(), 1);
         let review_id = db
             .promote_candidate(&candidate.id, &case_id)

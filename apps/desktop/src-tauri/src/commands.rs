@@ -11,21 +11,21 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, Case, CaseChecklistItemRow, CasePatch,
-    CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, CitationContext,
-    ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, CorpusCoverage, CorpusMode,
-    CoverageReport, Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch,
-    EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, GcReport, MarkRow, NewAnchor, NewCase,
-    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
-    NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
-    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
-    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
-    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
-    SetUsageTermsInput, TaskRow, TransferConsentRow,
+    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, CandidateReport, Case,
+    CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow,
+    CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow, ContradictionAssessmentRow,
+    CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey, Document, DocumentTagRow,
+    DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportRow, GcReport,
+    MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
+    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
+    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
+    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
+    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
+    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
+    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
+    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
+    SearchPage, SearchQuery, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -4093,6 +4093,45 @@ pub fn ai_candidate_promote(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.promote_candidate(&candidate_id, &case_id)?)
+}
+
+/// Adayı **yazmadan** doğrular (şema + alıntı eşleştirmesi). Denetime yalnız
+/// sayı ve durum yazılır; aday metni ve alıntı içeriği yazılmaz.
+#[tauri::command]
+pub fn ai_candidate_validate(
+    state: State<'_, AppState>,
+    run_id: String,
+    candidate_type: String,
+    payload: String,
+) -> Result<CandidateReport, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.validate_ai_candidate(&run_id, &candidate_type, &payload)?)
+}
+
+/// Adayı doğrular ve **hesaplanan** durumla kaydeder. Çağıran `valid`
+/// yazdıramaz.
+#[tauri::command]
+pub fn ai_candidate_record(
+    state: State<'_, AppState>,
+    run_id: String,
+    candidate_type: String,
+    payload: String,
+) -> Result<AiCandidateRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.record_ai_candidate(&run_id, &candidate_type, &payload)?)
+}
+
+/// Belge yeniden ayrıştırıldıysa adayı güncel metne göre yeniden doğrular.
+#[tauri::command]
+pub fn ai_candidate_revalidate(
+    state: State<'_, AppState>,
+    candidate_id: String,
+) -> Result<AiCandidateRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.revalidate_ai_candidate(&candidate_id)?)
 }
 
 #[tauri::command]

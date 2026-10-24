@@ -62,6 +62,10 @@ pub enum StorageError {
     CorpusNotPermitted(String),
     #[error("emsal tam metni kaynaktan üretilemedi: {0}")]
     PrecedentSource(String),
+    #[error("aday şeması geçersiz: {0}")]
+    AiSchema(String),
+    #[error("adaydaki alıntı kaynak olarak kullanılamaz: {0}")]
+    AiQuote(String),
 }
 
 impl StorageError {
@@ -95,6 +99,8 @@ impl StorageError {
             Self::Terms(_) => "E_TERMS",
             Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",
             Self::PrecedentSource(_) => "E_PRECEDENT_SOURCE",
+            Self::AiSchema(_) => "E_AI_SCHEMA",
+            Self::AiQuote(_) => "E_AI_QUOTE",
         }
     }
 }

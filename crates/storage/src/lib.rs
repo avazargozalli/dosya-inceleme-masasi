@@ -5,6 +5,7 @@
 //! veritabanı dosyası hiçbir aşamada oluşturulmaz.
 
 mod ai;
+mod ai_candidate;
 mod anchors;
 mod cases;
 mod checklists;
@@ -29,6 +30,9 @@ mod timeline;
 pub use ai::{
     AiCandidateRow, AiContextItemRow, AiRunRow, CoverageReport, NewAiContextItem, NewAiRun,
     NewTransferConsent, ProviderProfileRow, TransferConsentRow,
+};
+pub use ai_candidate::{
+    CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
@@ -201,9 +205,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0016_precedent_usage_terms",
         sql: include_str!("migrations/0016_precedent_usage_terms.sql"),
     },
+    Migration {
+        version: 17,
+        name: "0017_ai_candidate_quotes",
+        sql: include_str!("migrations/0017_ai_candidate_quotes.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 16;
+pub const CURRENT_SCHEMA_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

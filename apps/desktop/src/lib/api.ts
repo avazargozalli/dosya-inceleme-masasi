@@ -165,6 +165,43 @@ export type TransferConsentRow = {
 
 export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
 
+export type ValidationIssue = {
+  code: string;
+  severity: string;
+  field: string;
+  detail: string;
+};
+
+export type QuotePosition = { pageIndex: number; charStart: number };
+
+export type QuoteMatchReport = {
+  index: number;
+  documentVersionId: string;
+  quote: string;
+  label: string | null;
+  state: string;
+  reason: string | null;
+  claimedPageIndex: number | null;
+  pageIndex: number | null;
+  charStart: number | null;
+  occurrences: number;
+  candidates: QuotePosition[];
+  textOrigin: string | null;
+  parseRunId: string | null;
+  segmentId: string | null;
+};
+
+export type CandidateReport = {
+  kind: string;
+  state: string;
+  schemaState: string;
+  quoteState: string;
+  issues: ValidationIssue[];
+  quotes: QuoteMatchReport[];
+  notes: string[];
+  checkedAt: string;
+};
+
 export type AiCandidateRow = {
   id: string;
   aiRunId: string;
@@ -172,6 +209,10 @@ export type AiCandidateRow = {
   structuredPayload: string;
   validationState: string;
   validationErrors: string;
+  schemaState: string;
+  quoteState: string;
+  quoteReport: QuoteMatchReport[];
+  checkedAt: string | null;
 };
 
 export type PackageResult = {
@@ -1344,6 +1385,12 @@ export const api = {
   aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
+  aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>
+    invoke<CandidateReport>("ai_candidate_validate", { runId, candidateType, payload }),
+  aiCandidateRecord: (runId: string, candidateType: string, payload: string) =>
+    invoke<AiCandidateRow>("ai_candidate_record", { runId, candidateType, payload }),
+  aiCandidateRevalidate: (candidateId: string) =>
+    invoke<AiCandidateRow>("ai_candidate_revalidate", { candidateId }),
 
   precedentList: () => invoke<PrecedentRow[]>("precedent_list"),
   precedentCreate: (input: {
