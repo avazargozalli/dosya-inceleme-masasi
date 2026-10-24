@@ -10,8 +10,8 @@ use dim_storage::{
     CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow,
     ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document,
     DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
-    ExportRow, GcReport, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
-    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
+    ExportRow, GcReport, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
     NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
     NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
     ProviderProfileRow, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
@@ -2151,10 +2151,7 @@ pub struct VaultGcView {
 /// Referanssız blob kayıtlarını (isteğe bağlı olarak dosyalarıyla) temizler.
 /// Önce kuru çalıştırma yapılması önerilir; arayüz iki adımlı akış sunar.
 #[tauri::command]
-pub fn vault_gc(
-    state: State<'_, AppState>,
-    dry_run: bool,
-) -> Result<VaultGcView, ApiError> {
+pub fn vault_gc(state: State<'_, AppState>, dry_run: bool) -> Result<VaultGcView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
