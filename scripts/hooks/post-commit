@@ -7,6 +7,6 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 if [ -x "$ROOT/scripts/disk-guard.sh" ]; then
-  nohup bash "$ROOT/scripts/disk-guard.sh" --quiet >>"$ROOT/.git/disk-guard.log" 2>&1 &
+  nohup bash "$ROOT/scripts/disk-guard.sh" >>"$ROOT/.git/disk-guard.log" 2>&1 &
 fi
 exit 0
