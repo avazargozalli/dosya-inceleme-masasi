@@ -11,13 +11,13 @@ use dim_storage::{
     ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document,
     DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
     ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
-    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
-    NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow,
-    NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow,
-    PrecedentRow, ProviderProfileRow, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
-    TaskRow, TransferConsentRow,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
+    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
+    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
+    PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, ProviderProfileRow, QuoteVerification,
+    RebindSuggestion, RedactionPlanRow, RedactionRegionInput, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SegmentBlock, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -1659,6 +1659,42 @@ pub fn citation_check_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_citation_checks(&version_id)?)
+}
+
+/// Karar tam metnini kasaya kaydeder (F12-T05). Metin şifreli veritabanında
+/// kalır; arayüze yalnız hash ve karakter sayısı döner.
+#[tauri::command]
+pub fn precedent_text_add(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: NewPrecedentText,
+) -> Result<PrecedentVersionRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.add_precedent_text(&precedent_id, &input)?)
+}
+
+#[tauri::command]
+pub fn precedent_version_list(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<Vec<PrecedentVersionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_versions(&precedent_id)?)
+}
+
+/// Metin içi alıntıyı emsalin en yeni tam metninde doğrular. Sonuç
+/// `match`/`mismatch`/`not_checked`; hiçbiri "uydurulmuş" hükmü değildir.
+#[tauri::command]
+pub fn precedent_quote_verify(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    quote: String,
+) -> Result<QuoteVerification, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.verify_precedent_quote(&precedent_id, &quote)?)
 }
 
 #[derive(Serialize)]

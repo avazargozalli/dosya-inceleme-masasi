@@ -237,6 +237,33 @@ export type CitationCheckRow = {
   createdAt: string;
 };
 
+/** Kararın tam metin sürümü (F12-T05). Metnin kendisi arayüze gelmez. */
+export type PrecedentVersionRow = {
+  id: string;
+  precedentId: string;
+  documentVersionId: string | null;
+  acquiredAt: string;
+  sourceKind: "paste" | "document" | "file";
+  bodyHash: string;
+  verificationState: "unverified" | "metadata_verified" | "text_verified" | "failed";
+  charCount: number;
+  hasText: boolean;
+};
+
+/** Metin içi alıntı doğrulaması. `not_checked` "uydurulmuş" demek değildir. */
+export type QuoteVerificationRow = {
+  precedentId: string;
+  versionId: string | null;
+  state: "match" | "mismatch" | "not_checked";
+  method: "exact" | "whitespace" | "turkish_fold" | null;
+  matchedStart: number | null;
+  matchedLength: number | null;
+  occurrences: number;
+  reason: "no_full_text" | "quote_too_short" | "not_found" | null;
+  quote: string;
+  checkedAt: string;
+};
+
 export type AdapterView = {
   id: string;
   displayName: string;
@@ -894,6 +921,18 @@ export const api = {
       userConclusion: string;
     },
   ) => invoke<PrecedentNoteRow>("precedent_note_create", { precedentId, input }),
+  precedentTextAdd: (
+    precedentId: string,
+    input: {
+      sourceKind: "paste" | "document" | "file";
+      text: string;
+      documentVersionId: string | null;
+    },
+  ) => invoke<PrecedentVersionRow>("precedent_text_add", { precedentId, input }),
+  precedentVersionList: (precedentId: string) =>
+    invoke<PrecedentVersionRow[]>("precedent_version_list", { precedentId }),
+  precedentQuoteVerify: (precedentId: string, quote: string) =>
+    invoke<QuoteVerificationRow>("precedent_quote_verify", { precedentId, quote }),
   citationCheckList: (versionId: string) =>
     invoke<CitationCheckRow[]>("citation_check_list", { versionId }),
   citationCheckCreate: (input: {

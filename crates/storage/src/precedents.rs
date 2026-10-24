@@ -6,6 +6,7 @@
 
 use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{now_iso, Database, StorageError};
 
@@ -115,6 +116,167 @@ fn match_unknown() -> String {
 }
 fn meaning_unreviewed() -> String {
     "not_reviewed".to_string()
+}
+
+/// Kararın **tam metin** sürümü (F12-T05). Metnin kendisi UI'ya gönderilmez;
+/// yalnız hash ve karakter sayısı taşınır.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentVersionRow {
+    pub id: String,
+    pub precedent_id: String,
+    pub document_version_id: Option<String>,
+    pub acquired_at: String,
+    pub source_kind: String,
+    pub body_hash: String,
+    /// `text_verified` = tam metin elimizde ve hash'i kayıtlı. Künye
+    /// doğruluğu ayrı boyuttur; bu durum künyenin doğru olduğunu söylemez.
+    pub verification_state: String,
+    pub char_count: i64,
+    /// Tam metin elde mi. `false` ise alıntı doğrulaması yapılamaz.
+    pub has_text: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewPrecedentText {
+    /// `paste` (kullanıcı yapıştırdı), `document` (kasadaki belge sürümü) veya
+    /// `file` (dosyadan okundu).
+    pub source_kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub document_version_id: Option<String>,
+}
+
+/// Metin içi alıntı doğrulaması (F12-T05). `state`:
+/// - `match`: alıntı metinde bulundu; `method` farkın türünü söyler.
+/// - `mismatch`: tam metin elimizde ama alıntı bulunamadı.
+/// - `not_checked`: metin yok ya da alıntı anlamlı doğrulama için çok kısa.
+///
+/// Hiçbir durum tek başına “uydurulmuş” hükmü değildir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuoteVerification {
+    pub precedent_id: String,
+    pub version_id: Option<String>,
+    pub state: String,
+    /// `exact` | `whitespace` | `turkish_fold`
+    pub method: Option<String>,
+    /// Alıntının **kaynak metindeki** karakter konumu (0 tabanlı).
+    pub matched_start: Option<i64>,
+    pub matched_length: Option<i64>,
+    pub occurrences: i64,
+    /// `no_full_text` | `quote_too_short` | `not_found`
+    pub reason: Option<String>,
+    pub quote: String,
+    pub checked_at: String,
+}
+
+/// Alıntı doğrulaması için en kısa anlamlı alıntı. Daha kısa alıntı yanlış
+/// kesinlik üretir: “reddine” gibi tek kelime hemen her kararda geçer.
+const MIN_QUOTE_CHARS: usize = 8;
+
+struct MappedText {
+    text: String,
+    /// `text` içindeki karakter indeksinin kaynak metindeki karakter indeksi.
+    map: Vec<usize>,
+}
+
+fn fold_char(ch: char) -> char {
+    match ch {
+        'İ' | 'I' => 'i',
+        'ı' => 'i',
+        'Ş' | 'ş' => 's',
+        'Ğ' | 'ğ' => 'g',
+        'Ü' | 'ü' => 'u',
+        'Ö' | 'ö' => 'o',
+        'Ç' | 'ç' => 'c',
+        'Â' | 'â' => 'a',
+        'Î' | 'î' => 'i',
+        'Û' | 'û' => 'u',
+        c => c.to_lowercase().next().unwrap_or(c),
+    }
+}
+
+/// `dim_evidence::normalize` ile **aynı** sadeleştirme, ama konum eşlemesiyle.
+/// İkisi ayrışırsa `fold_matches_evidence_normalize` testi kırılır.
+fn normalize_with_map(input: &str) -> MappedText {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    let mut last_space = false;
+    for (index, ch) in input.chars().enumerate() {
+        let mapped = fold_char(ch);
+        if mapped.is_whitespace() {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+                map.push(index);
+            }
+            last_space = true;
+        } else {
+            out.push(mapped);
+            map.push(index);
+            last_space = false;
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+        map.pop();
+    }
+    MappedText { text: out, map }
+}
+
+/// Yalnız boşluk sadeleştirmesi; harfler **korunur** (birebir olmayan ama
+/// yalnız satır/biçim farkından kaynaklanan eşleşme için).
+fn collapse_ws_with_map(input: &str) -> MappedText {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    let mut last_space = false;
+    for (index, ch) in input.chars().enumerate() {
+        if ch.is_whitespace() {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+                map.push(index);
+            }
+            last_space = true;
+        } else {
+            out.push(ch);
+            map.push(index);
+            last_space = false;
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+        map.pop();
+    }
+    MappedText { text: out, map }
+}
+
+fn char_offset(text: &str, byte: usize) -> i64 {
+    i64::try_from(text[..byte].chars().count()).unwrap_or(i64::MAX)
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> i64 {
+    if needle.is_empty() {
+        return 0;
+    }
+    let mut count = 0i64;
+    let mut start = 0usize;
+    while let Some(pos) = haystack[start..].find(needle) {
+        count += 1;
+        start += pos + needle.len();
+        if start >= haystack.len() {
+            break;
+        }
+    }
+    count
+}
+
+fn mapped_start(mapped: &MappedText, at_byte: usize) -> Option<i64> {
+    let index = mapped.text[..at_byte].chars().count();
+    mapped
+        .map
+        .get(index)
+        .map(|i| i64::try_from(*i).unwrap_or(i64::MAX))
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -341,6 +503,189 @@ impl Database {
         }
         Ok(out)
     }
+
+    /// Karar **tam metnini** kasaya kaydeder (F12-T05). Metin şifreli
+    /// veritabanında kalır; dışarıya yalnız hash ve karakter sayısı çıkar.
+    /// Kaynak türü ve varsa kasadaki belge sürümü denetlenir.
+    pub fn add_precedent_text(
+        &self,
+        precedent_id: &str,
+        new: &NewPrecedentText,
+    ) -> Result<PrecedentVersionRow, StorageError> {
+        if self.get_precedent(precedent_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let text = new.text.trim();
+        if text.is_empty() {
+            return Err(StorageError::InvalidSetting);
+        }
+        let source_kind = new.source_kind.trim();
+        if !matches!(source_kind, "paste" | "document" | "file") {
+            return Err(StorageError::InvalidSetting);
+        }
+        let document_version_id = new
+            .document_version_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        if let Some(version_id) = document_version_id {
+            let count: i64 = self.conn().query_row(
+                "SELECT count(*) FROM document_versions WHERE id=?1",
+                [version_id],
+                |r| r.get(0),
+            )?;
+            if count == 0 {
+                return Err(StorageError::NotFound);
+            }
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        let body_hash = hex::encode(hasher.finalize());
+        let char_count = i64::try_from(text.chars().count()).unwrap_or(i64::MAX);
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        self.conn().execute(
+            "INSERT INTO precedent_versions (id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,verification_state,full_text,text_char_count)
+             VALUES (?1,?2,?3,?4,?5,?6,'text_verified',?7,?8)",
+            rusqlite::params![
+                id,
+                precedent_id,
+                document_version_id,
+                now,
+                source_kind,
+                body_hash,
+                text,
+                char_count
+            ],
+        )?;
+        // Denetime metnin kendisi yazılmaz; yalnız hash ve boyut.
+        self.append_audit(
+            "precedent_version",
+            Some(&id),
+            "create",
+            "local-user",
+            &serde_json::json!({
+                "sourceKind": source_kind,
+                "charCount": char_count,
+                "bodyHash": body_hash,
+            }),
+        )?;
+        self.get_precedent_version(&id)?
+            .ok_or(StorageError::NotFound)
+    }
+
+    pub fn get_precedent_version(
+        &self,
+        id: &str,
+    ) -> Result<Option<PrecedentVersionRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,verification_state,text_char_count,
+                    (full_text IS NOT NULL AND length(full_text)>0)
+             FROM precedent_versions WHERE id=?1",
+        )?;
+        Ok(stmt.query_row([id], map_version).optional()?)
+    }
+
+    /// Emsalin tam metin sürümleri; en yeni önce. Metin gövdesi dönmez.
+    pub fn precedent_versions(
+        &self,
+        precedent_id: &str,
+    ) -> Result<Vec<PrecedentVersionRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,verification_state,text_char_count,
+                    (full_text IS NOT NULL AND length(full_text)>0)
+             FROM precedent_versions WHERE precedent_id=?1
+             ORDER BY acquired_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([precedent_id], map_version)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Metin içi alıntıyı emsalin **en yeni tam metninde** doğrular
+    /// (F12-T05). Yalnız okuma yapar; sonuç kaydı ayrı atıf kontrolüdür.
+    /// Tam metin yoksa `not_checked` döner — bu “uydurulmuş” demek değildir.
+    pub fn verify_precedent_quote(
+        &self,
+        precedent_id: &str,
+        quote: &str,
+    ) -> Result<QuoteVerification, StorageError> {
+        if self.get_precedent(precedent_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let quote = quote.trim();
+        let quote_chars = quote.chars().count();
+        let mut result = QuoteVerification {
+            precedent_id: precedent_id.to_string(),
+            version_id: None,
+            state: "not_checked".into(),
+            method: None,
+            matched_start: None,
+            matched_length: None,
+            occurrences: 0,
+            reason: None,
+            quote: quote.to_string(),
+            checked_at: now_iso(),
+        };
+        if quote_chars < MIN_QUOTE_CHARS {
+            result.reason = Some("quote_too_short".into());
+            return Ok(result);
+        }
+        let latest: Option<(String, String)> = self
+            .conn()
+            .query_row(
+                "SELECT id, full_text FROM precedent_versions
+                  WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0
+                  ORDER BY acquired_at DESC, id DESC LIMIT 1",
+                [precedent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((version_id, text)) = latest else {
+            result.reason = Some("no_full_text".into());
+            return Ok(result);
+        };
+        result.version_id = Some(version_id);
+        let length = i64::try_from(quote_chars).unwrap_or(i64::MAX);
+        if let Some(byte) = text.find(quote) {
+            result.state = "match".into();
+            result.method = Some("exact".into());
+            result.matched_start = Some(char_offset(&text, byte));
+            result.matched_length = Some(length);
+            result.occurrences = count_occurrences(&text, quote);
+            return Ok(result);
+        }
+        let haystack = collapse_ws_with_map(&text);
+        let needle = collapse_ws_with_map(quote);
+        if !needle.text.is_empty() {
+            if let Some(at) = haystack.text.find(&needle.text) {
+                result.state = "match".into();
+                result.method = Some("whitespace".into());
+                result.matched_start = mapped_start(&haystack, at);
+                result.matched_length = Some(length);
+                result.occurrences = count_occurrences(&haystack.text, &needle.text);
+                return Ok(result);
+            }
+        }
+        let haystack = normalize_with_map(&text);
+        let needle = normalize_with_map(quote);
+        if !needle.text.is_empty() {
+            if let Some(at) = haystack.text.find(&needle.text) {
+                result.state = "match".into();
+                result.method = Some("turkish_fold".into());
+                result.matched_start = mapped_start(&haystack, at);
+                result.matched_length = Some(length);
+                result.occurrences = count_occurrences(&haystack.text, &needle.text);
+                return Ok(result);
+            }
+        }
+        result.state = "mismatch".into();
+        result.reason = Some("not_found".into());
+        Ok(result)
+    }
 }
 
 fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
@@ -374,6 +719,20 @@ fn map_check(row: &Row<'_>) -> rusqlite::Result<CitationCheckRow> {
         meaning_review: row.get(6)?,
         reason_codes: serde_json::from_str(&reasons).unwrap_or_default(),
         created_at: row.get(8)?,
+    })
+}
+
+fn map_version(row: &Row<'_>) -> rusqlite::Result<PrecedentVersionRow> {
+    Ok(PrecedentVersionRow {
+        id: row.get(0)?,
+        precedent_id: row.get(1)?,
+        document_version_id: row.get(2)?,
+        acquired_at: row.get(3)?,
+        source_kind: row.get(4)?,
+        body_hash: row.get(5)?,
+        verification_state: row.get(6)?,
+        char_count: row.get(7)?,
+        has_text: row.get::<_, i64>(8)? != 0,
     })
 }
 
@@ -531,5 +890,192 @@ mod tests {
             )
             .expect("not");
         assert_eq!(note.case_id_optional.as_deref(), Some(case.id.as_str()));
+    }
+
+    // ---- F12-T05: tam metin ve metin içi alıntı doğrulama ----
+
+    const KARAR: &str = "Yargıtay 1. Hukuk Dairesi\n\nMahkeme, itirazın reddine karar verdi.\nGerekçede ödeme yapılmadığı belirtildi.";
+
+    fn text_of(text: &str) -> NewPrecedentText {
+        NewPrecedentText {
+            source_kind: "paste".into(),
+            text: text.into(),
+            document_version_id: None,
+        }
+    }
+
+    #[test]
+    fn text_acquisition_records_hash_and_char_count() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
+        let version = db
+            .add_precedent_text(&p.id, &text_of(KARAR))
+            .expect("metin");
+        assert_eq!(version.verification_state, "text_verified");
+        assert!(version.has_text);
+        assert_eq!(
+            version.char_count,
+            i64::try_from(KARAR.chars().count()).unwrap()
+        );
+        assert_eq!(version.body_hash.len(), 64);
+        assert_eq!(version.source_kind, "paste");
+
+        let listed = db.precedent_versions(&p.id).expect("sürümler");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, version.id);
+
+        // Boş metin ve bilinmeyen kaynak türü reddedilir.
+        assert!(db.add_precedent_text(&p.id, &text_of("   ")).is_err());
+        let mut bad = text_of("kısa metin");
+        bad.source_kind = "clipboard".into();
+        assert!(db.add_precedent_text(&p.id, &bad).is_err());
+    }
+
+    #[test]
+    fn quote_without_full_text_is_not_checked() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/2"), Some("2025/3")))
+            .expect("emsal");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verdi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "not_checked");
+        assert_eq!(result.reason.as_deref(), Some("no_full_text"));
+        assert!(result.version_id.is_none());
+        // "Doğrulanamadı" hiçbir zaman "uydu" hükmü üretmez.
+        assert_ne!(result.state, "mismatch");
+    }
+
+    #[test]
+    fn exact_quote_reports_position_in_original_text() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/3"), Some("2025/4")))
+            .expect("emsal");
+        db.add_precedent_text(&p.id, &text_of(KARAR))
+            .expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verdi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("exact"));
+        let expected = KARAR.find("itirazın reddine karar verdi").unwrap();
+        assert_eq!(result.matched_start, Some(char_offset(KARAR, expected)));
+        assert_eq!(result.occurrences, 1);
+    }
+
+    #[test]
+    fn line_break_difference_matches_loosely_with_method() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/4"), Some("2025/5")))
+            .expect("emsal");
+        db.add_precedent_text(&p.id, &text_of(KARAR))
+            .expect("metin");
+        // Alıntı kısa: yanlış kesinlik üretmemek için doğrulanmaz.
+        let result = db
+            .verify_precedent_quote(&p.id, "reddine")
+            .expect("doğrulama");
+        assert_eq!(result.state, "not_checked");
+        assert_eq!(result.reason.as_deref(), Some("quote_too_short"));
+
+        // Birebir geçen alıntı.
+        let result = db
+            .verify_precedent_quote(&p.id, "Gerekçede ödeme yapılmadığı belirtildi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("exact"));
+
+        let spaced = "itirazın reddine karar\nverdi. Gerekçede";
+        let result = db.verify_precedent_quote(&p.id, spaced).expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("whitespace"));
+        let expected = KARAR.find("itirazın reddine karar").unwrap();
+        assert_eq!(result.matched_start, Some(char_offset(KARAR, expected)));
+    }
+
+    #[test]
+    fn altered_quote_is_mismatch_not_fake_decision() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/5"), Some("2025/6")))
+            .expect("emsal");
+        db.add_precedent_text(&p.id, &text_of(KARAR))
+            .expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın kabulüne karar verdi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "mismatch");
+        assert_eq!(result.reason.as_deref(), Some("not_found"));
+        assert!(result.matched_start.is_none());
+        // Sonuç yalnız "bulunamadı"dır; "uydurulmuş" damgası yok.
+        assert!(!result.state.contains("fake"));
+    }
+
+    #[test]
+    fn turkish_diacritics_fold_is_reported_as_loose_match() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/6"), Some("2025/7")))
+            .expect("emsal");
+        db.add_precedent_text(&p.id, &text_of(KARAR))
+            .expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazin reddine karar verdi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("turkish_fold"));
+        assert!(result.matched_start.is_some());
+    }
+
+    #[test]
+    fn newest_text_version_is_used() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/7"), Some("2025/8")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &p.id,
+            &text_of("İlk sürümde bu cümle vardı: itiraz reddedildi."),
+        )
+        .expect("v1");
+        let newest = db
+            .add_precedent_text(
+                &p.id,
+                &text_of("Yeni sürüm: itirazın reddine karar verildi."),
+            )
+            .expect("v2");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verildi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.version_id.as_deref(), Some(newest.id.as_str()));
+        // Eski sürümde olan ama yenisinde olmayan alıntı artık bulunamaz.
+        let old = db
+            .verify_precedent_quote(&p.id, "bu cümle vardı")
+            .expect("doğrulama");
+        assert_eq!(old.state, "mismatch");
+    }
+
+    #[test]
+    fn fold_matches_evidence_normalize() {
+        for sample in [
+            "İtirazın REDDİNE karar",
+            "Şişli'deki ğ harfi",
+            "  ÖDEME   yapılmadı \n",
+            "Âdet üzere îkâz",
+        ] {
+            assert_eq!(
+                normalize_with_map(sample).text,
+                dim_evidence::normalize(sample),
+                "sadeleştirme ayrıştı: {sample}"
+            );
+        }
+        let mapped = normalize_with_map("AB cd");
+        assert_eq!(mapped.map.len(), mapped.text.chars().count());
+        assert_eq!(mapped.text, "ab cd");
     }
 }

@@ -49,8 +49,8 @@ pub use parsing::{
     MAX_SEARCH_QUERY_CHARS, SEARCH_DATE_ROLES,
 };
 pub use precedents::{
-    CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, PrecedentNoteRow,
-    PrecedentRow,
+    CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, NewPrecedentText,
+    PrecedentNoteRow, PrecedentRow, PrecedentVersionRow, QuoteVerification,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{
@@ -164,9 +164,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0012_source_marks",
         sql: include_str!("migrations/0012_source_marks.sql"),
     },
+    Migration {
+        version: 13,
+        name: "0013_precedent_text",
+        sql: include_str!("migrations/0013_precedent_text.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SCHEMA_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

@@ -8,8 +8,18 @@ import {
   type DocumentRow,
   type PrecedentNoteRow,
   type PrecedentRow,
+  type PrecedentVersionRow,
+  type QuoteVerificationRow,
 } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
+import {
+  quoteStateText,
+  quoteStateTone,
+  quoteToCitationMatch,
+  summarizeVersions,
+  versionSourceLabel,
+  versionStateText,
+} from "../lib/precedents";
 
 type Draft = {
   court: string;
@@ -56,6 +66,12 @@ export function Precedents() {
   const [quoteMatch, setQuoteMatch] = useState<"match" | "mismatch" | "not_checked" | "unknown">("not_checked");
   const [checks, setChecks] = useState<CitationCheckRow[]>([]);
 
+  const [versions, setVersions] = useState<PrecedentVersionRow[]>([]);
+  const [fullText, setFullText] = useState("");
+  const [quoteInput, setQuoteInput] = useState("");
+  const [verification, setVerification] = useState<QuoteVerificationRow | null>(null);
+  const versionSummary = summarizeVersions(versions);
+
   const load = useCallback(async () => {
     try {
       setRows(await api.precedentList());
@@ -75,9 +91,16 @@ export function Precedents() {
   useEffect(() => {
     if (selected) {
       void api.precedentNoteList(selected.id).then(setNotes).catch((e) => setError(toApiError(e)));
+      void api
+        .precedentVersionList(selected.id)
+        .then(setVersions)
+        .catch((e) => setError(toApiError(e)));
     } else {
       setNotes([]);
+      setVersions([]);
     }
+    setVerification(null);
+    setQuoteInput("");
   }, [selected]);
 
   useEffect(() => {
@@ -139,6 +162,46 @@ export function Precedents() {
       setDistinguishing("");
       setConclusion("");
       setNotes(await api.precedentNoteList(selected.id));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addFullText() {
+    if (!selected) return;
+    if (fullText.trim().length === 0) {
+      setError({ code: "E_TEXT", message: "Tam metin boş olamaz.", retryable: false });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.precedentTextAdd(selected.id, {
+        sourceKind: "paste",
+        text: fullText,
+        documentVersionId: null,
+      });
+      setFullText("");
+      setVersions(await api.precedentVersionList(selected.id));
+      // Metin değişti: önceki doğrulama bu sürüme ait değil.
+      setVerification(null);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyQuote() {
+    if (!selected) return;
+    if (quoteInput.trim().length === 0) {
+      setError({ code: "E_QUOTE", message: "Doğrulanacak alıntı boş olamaz.", retryable: false });
+      return;
+    }
+    setBusy(true);
+    try {
+      setVerification(await api.precedentQuoteVerify(selected.id, quoteInput));
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -239,6 +302,7 @@ export function Precedents() {
       </div>
 
       {selected ? (
+        <>
         <div className="card">
           <div className="card-head">
             <div>
@@ -263,6 +327,101 @@ export function Precedents() {
           </div>
           <p className="hint" style={{ margin: 0 }}>Hukuki uygunluk değerlendirmesi kullanıcıya aittir.</p>
         </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Tam metin ve alıntı doğrulama</h2>
+              <p className="card-sub">
+                {versions.length} sürüm · {versionSummary.withText} metinli
+                {versions.length > 0 && !versionSummary.latestHasText ? " · en yeni sürümde metin yok" : ""}
+              </p>
+            </div>
+          </div>
+
+          {versions.length === 0 ? (
+            <div className="empty"><p style={{ margin: 0 }}>Bu kararın tam metni yok; alıntı doğrulanamaz.</p></div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {versions.map((version) => (
+                <div
+                  key={version.id}
+                  className="row"
+                  style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}
+                >
+                  <span className="small">
+                    {versionSourceLabel(version)} · {formatTimestamp(version.acquiredAt)}
+                    <span className="muted"> · sha256 {version.bodyHash.slice(0, 12)}…</span>
+                  </span>
+                  <span className={`badge ${version.hasText ? "ok" : "warn"}`}>{versionStateText(version)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="field">
+            <label htmlFor="p-fulltext">Karar tam metnini yapıştır</label>
+            <textarea
+              id="p-fulltext"
+              className="input"
+              rows={5}
+              style={{ height: "auto", minHeight: 110, padding: "8px 10px", resize: "vertical" }}
+              value={fullText}
+              onChange={(e) => setFullText(e.target.value)}
+              placeholder="Kararın tam metni (kaynağından kopyalanan hâli)…"
+            />
+          </div>
+          <div className="row">
+            <button className="btn" disabled={busy || fullText.trim().length === 0} onClick={() => void addFullText()}>
+              Tam metni kaydet
+            </button>
+            <span className="hint" style={{ flex: "1 1 260px", margin: 0 }}>
+              Metin kasanın şifreli veritabanında tutulur; listeye yalnız SHA-256 ve karakter sayısı çıkar.
+            </span>
+          </div>
+
+          <div className="row">
+            <div className="field" style={{ flex: "2 1 320px" }}>
+              <label htmlFor="p-quote">Karardan alıntı</label>
+              <input
+                id="p-quote"
+                className="input"
+                value={quoteInput}
+                onChange={(e) => setQuoteInput(e.target.value)}
+                placeholder="Doğrulanacak cümle (en az 8 karakter)"
+              />
+            </div>
+            <button
+              className="btn primary"
+              disabled={busy || !versionSummary.latestHasText || quoteInput.trim().length === 0}
+              onClick={() => void verifyQuote()}
+            >
+              Alıntıyı doğrula
+            </button>
+          </div>
+
+          {verification ? (
+            <div className={`notice${quoteStateTone(verification) === "ok" ? " ok" : quoteStateTone(verification) === "warn" ? " danger" : ""}`} role="status">
+              {quoteStateText(verification)}
+              {verification.state !== "not_checked" ? (
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    className="btn ghost"
+                    style={{ height: 26 }}
+                    onClick={() => setQuoteMatch(quoteToCitationMatch(verification))}
+                  >
+                    Atıf kontrolü alanına taşı ({quoteToCitationMatch(verification)})
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <p className="hint" style={{ margin: 0 }}>
+            Doğrulama yalnız metin eşleşmesidir; anlam/bağlam incelemesi ayrı boyuttur. “Bulunamadı”
+            sonucu tek başına “uydurulmuş” hükmü değildir.
+          </p>
+        </div>
+        </>
       ) : null}
 
       <div className="card">
