@@ -62,3 +62,4 @@
 `cargo test -p dim-cli-adapters` → **17** (10 yeni yürütme testi; gerçek süreç,
 stdin, zaman aşımı, iptal, ortam allowlist'i, gizli ad reddi, 64 KiB kesme).
 `cargo clippy -p dim-cli-adapters --all-targets -- -D warnings` temiz.
+CI: commit `67d9785` → run `40059718174`, **7/7 yeşil** (Linux + macOS).
