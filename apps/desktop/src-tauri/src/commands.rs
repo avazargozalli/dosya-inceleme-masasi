@@ -2261,9 +2261,7 @@ pub async fn cli_attack_probe(state: State<'_, AppState>) -> Result<CliAttackVie
     }
     let (result, adapters) = match joined {
         Ok(Ok(value)) => value,
-        Ok(Err(code)) => {
-            return Err(ApiError::new(&code, "Saldırı fikstürü hazırlanamadı."))
-        }
+        Ok(Err(code)) => return Err(ApiError::new(&code, "Saldırı fikstürü hazırlanamadı.")),
         Err(_) => {
             return Err(ApiError::new(
                 "E_CLI_EXEC_SPAWN",
