@@ -706,6 +706,8 @@ export const api = {
   lockVault: () => invoke<void>("vault_lock"),
   vaultBackup: (destDir: string) => invoke<BackupResult>("vault_backup", { destDir }),
   vaultGc: (dryRun: boolean) => invoke<VaultGcResult>("vault_gc", { dryRun }),
+  vaultChangePassword: (oldPassword: string, newPassword: string) =>
+    invoke<void>("vault_change_password", { oldPassword, newPassword }),
   vaultRestore: (backupDir: string, destDir: string) =>
     invoke<RestoreResult>("vault_restore", { backupDir, destDir }),
   status: () => invoke<VaultStatus>("vault_status"),

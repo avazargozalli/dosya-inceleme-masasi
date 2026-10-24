@@ -58,6 +58,8 @@ pub enum VaultError {
     Io(#[from] std::io::Error),
     #[error("kriptografik işlem başarısız")]
     Crypto,
+    #[error("parola çok kısa: en az 10 karakter")]
+    WeakPassword,
 }
 
 impl VaultError {
@@ -70,6 +72,7 @@ impl VaultError {
             Self::Corrupt(_) => "E_VAULT_CORRUPT",
             Self::Io(_) => "E_IO",
             Self::Crypto => "E_CRYPTO",
+            Self::WeakPassword => "E_PASSWORD_WEAK",
         }
     }
 }
@@ -240,7 +243,16 @@ impl VaultFile {
     pub fn open_with_recovery(path: &Path, recovery: &str) -> Result<UnlockedVault, VaultError> {
         let header = Self::read_header(path)?;
         let normalized = normalize_recovery_key(recovery).ok_or(VaultError::BadRecoveryKey)?;
-        let kek = derive_kek(normalized.as_bytes(), &header.salt_recovery, header.kdf)?;
+        // KDF girdisi **ham 32 bayt** olmalı: oluştururken `RecoveryKey::as_bytes()`
+        // kullanılıyor. Base32 metnini doğrudan vermek kurtarma anahtarını
+        // işlevsiz bırakıyordu (eski hata).
+        let raw = data_encoding::BASE32_NOPAD
+            .decode(normalized.as_bytes())
+            .map_err(|_| VaultError::BadRecoveryKey)?;
+        if raw.len() != 32 {
+            return Err(VaultError::BadRecoveryKey);
+        }
+        let kek = derive_kek(&raw, &header.salt_recovery, header.kdf)?;
         let master = unwrap_key(
             &kek,
             &header.nonce_recovery,
@@ -367,4 +379,47 @@ fn sync_dir(dir: &Path) -> Result<(), VaultError> {
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
     a.len() == b.len() && bool::from(a.ct_eq(b))
+}
+
+impl VaultFile {
+    /// Parolayı değiştirir: yalnız **parola yuvası** yeni parolayla yeniden
+    /// sarılır. Ana anahtar ve dolayısıyla veritabanı anahtarı değişmez; açık
+    /// kasa oturumu geçerli kalır. Kurtarma anahtarı da geçerli kalır.
+    ///
+    /// Başlık önce geçici dosyaya yazılır, `fsync` edilir ve atomik olarak
+    /// yerine taşınır; yazma sırasında çökme eski başlığı bozmaz.
+    pub fn change_password(path: &Path, old: &str, new: &str) -> Result<(), VaultError> {
+        if new.chars().count() < 10 {
+            return Err(VaultError::WeakPassword);
+        }
+        let unlocked = Self::open(path, old)?;
+        let mut header = Self::read_header(path)?;
+
+        let mut salt_pw = [0u8; SALT_LEN];
+        let mut nonce_pw = [0u8; NONCE_LEN];
+        OsRng.fill_bytes(&mut salt_pw);
+        OsRng.fill_bytes(&mut nonce_pw);
+        header.salt_password = salt_pw;
+        header.nonce_password = nonce_pw;
+
+        let kek = derive_kek(new.as_bytes(), &salt_pw, header.kdf)?;
+        header.rewrap_password_slot(unlocked.master_key(), &kek)?;
+
+        let tmp = path.with_extension("dimvault.tmp");
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp)?;
+            f.write_all(&header.to_bytes())?;
+            f.flush()?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, path)?;
+        if let Some(parent) = path.parent() {
+            sync_dir(parent)?;
+        }
+        Ok(())
+    }
 }

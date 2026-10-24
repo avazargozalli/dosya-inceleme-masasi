@@ -47,8 +47,19 @@ CI: **bekliyor** (bu commit ile ilk koşu).
 - Ayarlar'da iki adımlı akış: **Tara** → **Temizle**.
 - 3 storage testi (referanslı blob korunur, boş kasa no-op, türev yolu).
 
+## Parola değiştirme (ek)
+
+- `VaultFile::change_password`: yalnız **parola yuvası** yeni parolayla yeniden
+  sarılır; ana anahtar ve DB anahtarı değişmez, açık oturum ve kurtarma anahtarı
+  geçerli kalır. Başlık önce geçici dosyaya yazılıp `fsync` edilir, sonra atomik
+  `rename` — çökme eski başlığı bozmaz. 10 karakterden kısa parola `E_PASSWORD_WEAK`.
+- **Kritik düzeltme:** `open_with_recovery` KDF'e base32 **metnini** veriyordu;
+  anahtar oluştururken ise **32 ham bayt** kullanılıyordu. Kurtarma anahtarı bu
+  yüzden hiçbir zaman çalışmıyordu. Artık base32 çözülüp ham baytlar veriliyor;
+  regresyon testi eklendi (`crates/vault/tests/password_change.rs`, 3 test).
+- Ayarlar'da parola değiştirme formu (mevcut / yeni / tekrar).
+
 ## Hâlâ eksik
 
 - OS düzeyinde kilit (ekran kilidi) algılama.
-- Parola değiştirme (anahtar rewrap) akışı.
 

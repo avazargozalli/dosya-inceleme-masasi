@@ -2183,3 +2183,17 @@ pub fn vault_gc(state: State<'_, AppState>, dry_run: bool) -> Result<VaultGcView
         missing_files,
     })
 }
+
+/// Parolayı değiştirir. Yalnız parola yuvası yeniden sarılır; ana anahtar ve
+/// veritabanı anahtarı değişmez, açık oturum ve kurtarma anahtarı geçerli kalır.
+#[tauri::command]
+pub fn vault_change_password(
+    state: State<'_, AppState>,
+    old_password: String,
+    new_password: String,
+) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    VaultFile::change_password(path, &old_password, &new_password)?;
+    Ok(())
+}

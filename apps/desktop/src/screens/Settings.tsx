@@ -13,6 +13,10 @@ export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [gc, setGc] = useState<VaultGcResult | null>(null);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newPassword2, setNewPassword2] = useState("");
+  const [passwordChanged, setPasswordChanged] = useState(false);
   const [restoreDir, setRestoreDir] = useState("");
   const [destDir, setDestDir] = useState("");
   const [restored, setRestored] = useState<string | null>(null);
@@ -30,6 +34,27 @@ export function Settings() {
     setError(null);
     try {
       setBackup(await api.vaultBackup(picked));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changePassword() {
+    if (newPassword !== newPassword2) {
+      setError({ code: "E_PASSWORD_MISMATCH", message: "Yeni parolalar eşleşmiyor.", retryable: false });
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setPasswordChanged(false);
+    try {
+      await api.vaultChangePassword(oldPassword, newPassword);
+      setPasswordChanged(true);
+      setOldPassword("");
+      setNewPassword("");
+      setNewPassword2("");
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -204,6 +229,64 @@ export function Settings() {
             <br />
             Şimdi Kasa ekranından bu konumu ve parolanızı girerek açın.
           </div>
+        ) : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Parola değiştir</h2>
+            <p className="card-sub">
+              Yalnız parola yuvası yeniden sarılır; kasa içeriği ve kurtarma anahtarı değişmez.
+            </p>
+          </div>
+        </div>
+        <div className="row">
+          <div className="field" style={{ flex: "1 1 200px" }}>
+            <label htmlFor="pw-old">Mevcut parola</label>
+            <input
+              id="pw-old"
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+            />
+          </div>
+          <div className="field" style={{ flex: "1 1 200px" }}>
+            <label htmlFor="pw-new">Yeni parola (en az 10 karakter)</label>
+            <input
+              id="pw-new"
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+          </div>
+          <div className="field" style={{ flex: "1 1 200px" }}>
+            <label htmlFor="pw-new2">Yeni parola (tekrar)</label>
+            <input
+              id="pw-new2"
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword2}
+              onChange={(e) => setNewPassword2(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="row" style={{ justifyContent: "flex-end" }}>
+          <button
+            className="btn"
+            disabled={busy || !oldPassword || newPassword.length < 10}
+            onClick={() => void changePassword()}
+          >
+            Parolayı değiştir
+          </button>
+        </div>
+        {passwordChanged ? (
+          <div className="notice ok">Parola değiştirildi. Kurtarma anahtarınız hâlâ geçerli.</div>
         ) : null}
       </div>
 

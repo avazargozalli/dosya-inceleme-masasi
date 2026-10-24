@@ -110,6 +110,7 @@ pub fn run() {
             commands::citation_check_list,
             commands::vault_restore,
             commands::vault_gc,
+            commands::vault_change_password,
             commands::system_info,
         ])
         .run(tauri::generate_context!())
