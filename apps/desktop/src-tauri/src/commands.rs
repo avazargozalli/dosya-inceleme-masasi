@@ -2221,7 +2221,9 @@ pub fn document_redact_regions(
     let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
 
-    let version = db.get_version(&version_id)?.ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let version = db
+        .get_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
     let blob = db
         .blob_for_version(&version_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
@@ -2247,12 +2249,19 @@ pub fn document_redact_regions(
     let out_sha = hex::encode(Sha256::digest(&outcome.pdf));
     let aad = format!("{}:redacted:{}", version.case_id, out_sha);
     let out_path = vault.write_blob(
-        &vault_path.parent().unwrap_or_else(|| Path::new(".")).join("blobs"),
+        &vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs"),
         &outcome.pdf,
         aad.as_bytes(),
     )?;
     let out_size = i64::try_from(std::fs::metadata(&out_path)?.len()).unwrap_or(i64::MAX);
-    let storage_id = out_path.file_stem().and_then(|s| s.to_str()).unwrap_or("blob").to_string();
+    let storage_id = out_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("blob")
+        .to_string();
     let out_blob_id = db.create_blob_record(&storage_id, out_size, &aad)?;
 
     let source_doc = db
