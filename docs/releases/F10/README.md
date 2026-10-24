@@ -2,7 +2,7 @@
 
 - **Sürüm etiketi:** `v0.9.0` (hedef)
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
-  **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
+  **mimari uyum denetimi (T01)**, **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
   **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)** ve
   **arayüzden tetiklenen gerçek sınama** hazır; sağlayıcıya özel akışlar
   (T06–T08, T10) yok
@@ -10,7 +10,7 @@
 
 | İş | Durum | Kanıt |
 |---|---|---|
-| F10-T01 | 🚧 | PATH keşfi + `--version` yoklaması; **mimari kontrolü yok** |
+| F10-T01 | ✅ | mutlak PATH keşfi + `--version` + **başlık baytlarından mimari** (Mach-O thin/fat, ELF, PE, `#!` betiği → shebang); `same`/`different`/`fat`/`unknown`; arayüzde “mimari” rozeti + “Mimarileri denetle”. Süreç başlatılmaz |
 | F10-T02 | ✅ | adaptör kartı: kurulu / kurulu değil / doğrulanamadı |
 | F10-T03 | ⬜ | resmî giriş/çıkış akışı yok; kimlik dosyası **okunmuyor** |
 | F10-T04 | ✅ | `sanitize_env`: allowlist + gizli ad reddi; `env_clear()`; arayüzden geçen gerçek koşuda doğrulandı |
@@ -55,6 +55,90 @@ Argüman kapısı (`build_args`) yalnız `allowed_args` listesine bakıyordu; si
 kendi `version_args`'ı (`--version`, `--help`) listede olmadığı için **düğme
 `E_CLI_ARGUMENT` verecekti**. Kapı artık `version_args`'ı da izinli sayıyor
 (`version_flags_pass_the_argument_gate` testi). Bilinmeyen bayrak hâlâ reddedilir.
+
+## Mimari uyum denetimi (F10-T01, 2026-10-24)
+
+`crates/cli-adapters/src/arch.rs` — yürütülebilirin **başlık baytları** okunur,
+biçim ve mimari çıkarılır, uygulamanın süreç mimarisiyle karşılaştırılır.
+**Süreç başlatılmaz**, dosya çalıştırılmaz, ağ kullanılmaz; en çok 4 KiB okunur
+(PE başlığı daha ilerideyse yalnız o bölüm).
+
+### Okunan biçimler
+
+| Biçim | Nasıl | Mimari kaynağı |
+|---|---|---|
+| Mach-O thin | `CF FA ED FE` / `CE FA ED FE` (+ büyük-endian varyantları) | `cputype` (x86_64, arm64, …) |
+| Mach-O fat | `CA FE BA BE` / `CA FE BA BF` | her dilimin `cputype`'ı; iki+ dilim → **`fat`** |
+| ELF | `7F 45 4C 46` | `e_machine` (bayt sırası `e_ident[5]`'ten) |
+| PE | `MZ` + `e_lfanew` → `PE\0\0` | `IMAGE_FILE_HEADER.Machine` |
+| Betik | `#!` | **shebang yorumlayıcısı** (aşağıda) |
+
+Bozuk/kesik başlıklar **mimari uydurmaz**: `reason` kodu döner
+(`magic_unrecognized`, `fat_truncated`, `pe_signature_missing`,
+`header_too_short`, `empty_file`, `pe_offset_too_large`, …).
+
+### Betik → yorumlayıcı
+
+npm/uv ile kurulan CLI'lar çoğu zaman sembolik bağ → `#!` betiğidir
+(`#!/usr/bin/env node`, `#!/…/bin/python`). Betiğin kendisi mimari taşımaz;
+`env` bayrakları (`-S`) ve değişken atamaları atlanır, komut PATH'te bulunur ve
+**onun** başlığı okunur. Betik kendi biçimi olarak `betik (shebang)` kalır ama
+karşılaştırma yorumlayıcıdan gelir (evrensel yorumlayıcı → `fat`).
+Yorumlayıcı bulunamazsa `interpreter_unresolved` → **`unknown`**; "aynı" denmez.
+
+### Kararlar
+
+| Karar | Kural |
+|---|---|
+| `same` | tek mimari ve uygulamanın süreç mimarisiyle aynı |
+| `different` | tek mimari, uygulamadan farklı |
+| `fat` | Mach-O evrensel (≥2 dilim); **uygulama mimarisini içerip içermediği ayrıca** (`contains_app_arch`) yazılır |
+| `unknown` | başlık okunamadı, mimari yok ya da yorumlayıcı bulunamadı |
+
+### Gerçek ölçüm (bu makine, macOS aarch64)
+
+`cargo run -p dim-cli-adapters --example arch`
+
+| Adaptör | Bulunan yol | Biçim | Mimari | Karar |
+|---|---|---|---|---|
+| Claude Code 2.1.303 | `~/.npm-global/bin/claude` → `…/claude-code/bin/claude.exe` | Mach-O | aarch64 | `same` |
+| Codex CLI 0.159.2 | `~/.local/bin/codex` → `…/0.159.2-aarch64-apple-darwin/bin/codex` | Mach-O | aarch64 | `same` |
+| Kimi CLI 1.41.0 | `~/.local/bin/kimi` → `…/kimi-cli/bin/kimi` (betik) → `…/bin/python` | betik | x86_64 + aarch64 | `fat` (uygulama mimarisi var) |
+| Antigravity | PATH'te yok | — | — | `unknown` |
+
+Üç kurulu araç da **sembolik bağ** üzerinden çalışıyor; Kimi bir Python betiği
+olduğu için mimarisi ancak yorumlayıcıdan okunabildi — bu, betik yolunun gerçek
+bir kurulumda gerekli olduğunu gösteriyor.
+
+### Arayüz
+
+- **Adaptör kartı:** “kurulu” rozetinin yanında mimari rozeti
+  (`mimari aynı` yeşil / `mimari farklı` kırmızı / `evrensel` sarı /
+  `mimari bilinmiyor` nötr) + `Yol` ve `Mimari` satırları. Değer `provider_probe`
+  içinde başlıktan okunur; ayrı tıklama gerekmez.
+- **“Mimari uyum denetimi” kartı:** “Mimarileri denetle” düğmesi
+  (`cli_arch_report`), uygulama mimarisi + sayımlar, adaptör başına yol (bağ
+  çözümüyle), biçim, dilimler, yorumlayıcı, neden ve okunan bayt; uyarılar
+  (farklı / evrensel-uyumsuz / doğrulanamayan) ve “Denetimin sınırları”.
+- **Denetim:** `cli_arch`/`probe` — yalnız adaptör kimliği, kurulu, biçim,
+  karar, neden ve uygulama mimarisi. **Yol ve shebang denetime yazılmaz.**
+
+### Dürüst sınırlar (T01)
+
+- Karşılaştırma **süreç** mimarisiyle yapılır (`std::env::consts::ARCH`);
+  Rosetta altında çalışan x86_64 süreç kendini x86_64 bildirir. Donanım
+  mimarisi ayrıca okunmaz.
+- Mimari uyumu **güvenlik kanıtı değildir**: yalnız "bu ikili bu süreçle aynı
+  mimaride" der. Sürüm, yetenek kapısı (T11) ve kapsam (T05) ayrı denetlenir.
+- Üçüncü taraf yürütülebilirin **içeriği** doğrulanmaz (imza, hash, kötü niyet);
+  yalnız başlık baytları okunur.
+- Mach-O `cputype`/ELF `e_machine`/PE `Machine` alanlarına güvenilir; dosyanın
+  gerçekten o mimaride yüklenebileceği denenmez (süreç başlatılmıyor).
+- Windows'ta PE okuma kodu platformdan bağımsız ama bu makinede Windows ikilisi
+  ile **gerçek dosyada denenmedi** (birim testleri sentetik başlıklarla).
+- Betik zinciri en çok iki düzey çözülür; daha derin zincir `interpreter_chain`
+  olarak "bilinmiyor" kalır.
+- Tauri penceresi açılmadı → kartın görsel QA'sı yok.
 
 ## İş dizini ve dosya izin kapsamı (F10-T05, 2026-10-24)
 
@@ -385,7 +469,11 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 
 ## Doğrulama
 
-- `cargo test -p dim-cli-adapters` → **80** (F10-T12 turunda 17 yeni: fikstür
+- `cargo test -p dim-cli-adapters` → **97** (F10-T01 turunda 17 yeni: Mach-O thin/fat
+  dilimleri, ELF x86_64/arm64, PE AMD64/ARM64, 4 KiB ötesindeki PE başlığı, bozuk
+  PE/FAT başlığı, betik → yorumlayıcı mimarisi, evrensel yorumlayıcı → `fat`,
+  bulunamayan yorumlayıcı, `env` bayrakları, tanınmayan/boş dosya, sembolik bağ,
+  gerçek test ikilisinin kendi mimarisiyle eşleşmesi; F10-T12 turunda 17 yeni: fikstür
   yerleşimi, dört vektörün tetiklenmesi, temiz yerleşimde sessizlik, işaretçinin
   diskten okunması, çıktı yansıması, kirli proje dizininin iş dizini olarak
   reddi, ürün yapılandırmasında proje/hook/MCP kapalı + canary açık, fikstür
@@ -403,7 +491,10 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` temiz;
   `clippy -p dim-cli-adapters --all-targets -D warnings` temiz; rustfmt iki
   manifest temiz.
-- Web: **231** test (F10-T12 turunda 25 yeni `attack.test.ts`: karar tonları ve
+- Web: **246** test (F10-T01 turunda 15 yeni `arch.test.ts`: tonlar, evrensel rozet
+  metni, mimari listesi, biçim/yol satırları, neden çevirisi, shebang satırı, özet,
+  en kötü karar sırası, farklı/evrensel-uyumsuz/doğrulanamayan uyarıları, kart
+  rozeti, zaman damgası; F10-T12 turunda 25 yeni `attack.test.ts`: karar tonları ve
   metinleri, kapatma yolu, komut satırı, atlama nedenleri, fikstür özeti ve
   uyarıları, adaptör uyarıları, karar sayımı/en kötü karar/toplam işaret;
   F10-T11 turunda 8 yeni `capability.test.ts`: durum/bağlantı
@@ -412,6 +503,10 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - Gerçek yetenek yoklaması (`cargo run -p dim-cli-adapters --example caps`):
   Claude 4/4 `declared` (kapı açık), Codex 3/4 (`tool_free` doğrulanamadı),
   Kimi uyumsuz, Antigravity kurulu değil — tablo yukarıda.
+- Gerçek mimari denetimi (`cargo run -p dim-cli-adapters --example arch`):
+  Claude Code ve Codex CLI Mach-O `aarch64` → `same`; Kimi sembolik bağ →
+  Python betiği → evrensel yorumlayıcı (`fat`, uygulama mimarisi var);
+  Antigravity PATH'te yok → `unknown`.
 - Gerçek kalıntı ölçümü (`--example residue -- …`): Claude Code `2.1.303`
   401 ms, Codex `0.159.2` 124 ms; ikisinde de `--version` **0 yeni dosya**
   bıraktı. Mevcut kalıntı: Claude 396 dosya / 590 MB, Codex 94 dosya / 235 MB

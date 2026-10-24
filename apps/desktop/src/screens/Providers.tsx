@@ -4,6 +4,7 @@ import {
   toApiError,
   type AdapterView,
   type ApiError,
+  type CliArchReport,
   type CliAttackReport,
   type CliCapabilityMatrix,
   type CliProbeView,
@@ -12,6 +13,20 @@ import {
   type CliResidueScan,
   type CliSandboxSweep,
 } from "../lib/api";
+import {
+  adapterArchBadge,
+  archBadgeText,
+  archFormatText,
+  archInterpreterText,
+  archList,
+  archPathText,
+  archProbedAt,
+  archReasonText,
+  archSummaryText,
+  archTone,
+  archWarnings,
+  archWorst,
+} from "../lib/arch";
 import {
   attackAdapterWarnings,
   attackCommand,
@@ -91,6 +106,9 @@ export function Providers() {
   const [attack, setAttack] = useState<CliAttackReport | null>(null);
   const [attackBusy, setAttackBusy] = useState(false);
   const [attackError, setAttackError] = useState<ApiError | null>(null);
+  const [arch, setArch] = useState<CliArchReport | null>(null);
+  const [archBusy, setArchBusy] = useState(false);
+  const [archError, setArchError] = useState<ApiError | null>(null);
 
   async function refresh() {
     setBusy(true);
@@ -160,6 +178,18 @@ export function Providers() {
       setAttackError(toApiError(e));
     } finally {
       setAttackBusy(false);
+    }
+  }
+
+  async function runArch() {
+    setArchBusy(true);
+    setArchError(null);
+    try {
+      setArch(await api.cliArchReport());
+    } catch (e) {
+      setArchError(toApiError(e));
+    } finally {
+      setArchBusy(false);
     }
   }
 
@@ -432,6 +462,112 @@ export function Providers() {
       <div className="card">
         <div className="card-head">
           <div>
+            <h2>Mimari uyum denetimi</h2>
+            <p className="card-sub">
+              Yürütülebilirin başlık baytları okunur (Mach-O thin/fat, ELF, PE,{" "}
+              <code>#!</code> betiği → shebang yorumlayıcısı) ve uygulamanın süreç
+              mimarisiyle karşılaştırılır. Süreç başlatılmaz, dosya çalıştırılmaz.
+            </p>
+          </div>
+          <button
+            className="btn"
+            disabled={archBusy || running !== null || matrixBusy || attackBusy}
+            onClick={() => void runArch()}
+          >
+            {archBusy ? "Denetleniyor…" : "Mimarileri denetle"}
+          </button>
+        </div>
+
+        {archError ? (
+          <div className="notice danger" role="alert">
+            <strong>{archError.code}</strong> — {archError.message}
+          </div>
+        ) : null}
+
+        {arch ? (
+          <>
+            <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
+              Denetlendi: {archProbedAt(arch.probedAtUnix)} · {archSummaryText(arch)} · en kötü
+              durum: <strong>{archWorst(arch).label}</strong>
+            </div>
+            <div style={{ display: "grid", gap: "var(--space-3)" }}>
+              {arch.adapters.map((adapter) => {
+                const reason = archReasonText(adapter.reason);
+                const interpreter = archInterpreterText(adapter);
+                return (
+                  <div
+                    key={adapter.adapterId}
+                    className="card tight"
+                    style={{ background: "var(--surface)" }}
+                  >
+                    <div className="card-head">
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: 14 }}>{adapter.displayName}</h3>
+                        <p className="card-sub" style={MONO}>
+                          {adapter.command} · {archFormatText(adapter)}
+                        </p>
+                      </div>
+                      <span className={`badge ${archTone(adapter.comparison)}`}>
+                        {archBadgeText(adapter)}
+                      </span>
+                    </div>
+                    <dl className="kv" style={{ gridTemplateColumns: "110px 1fr" }}>
+                      <dt>Yol</dt>
+                      <dd style={MONO}>{archPathText(adapter)}</dd>
+                      <dt>Mimari</dt>
+                      <dd style={MONO}>
+                        {archList(adapter.architectures)} · {adapter.comparisonLabel}
+                      </dd>
+                      {interpreter ? (
+                        <>
+                          <dt>Yorumlayıcı</dt>
+                          <dd style={MONO}>{interpreter}</dd>
+                        </>
+                      ) : null}
+                      {reason ? (
+                        <>
+                          <dt>Neden</dt>
+                          <dd>{reason}</dd>
+                        </>
+                      ) : null}
+                      <dt>Başlık</dt>
+                      <dd>
+                        {adapter.headerBytes > 0
+                          ? `${adapter.headerBytes} bayt okundu`
+                          : "—"}
+                      </dd>
+                    </dl>
+                  </div>
+                );
+              })}
+            </div>
+            {archWarnings(arch).map((warning) => (
+              <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
+                {warning}
+              </div>
+            ))}
+            <details style={{ marginTop: "var(--space-3)" }}>
+              <summary className="muted small" style={{ cursor: "pointer" }}>
+                Denetimin sınırları
+              </summary>
+              <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                {arch.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </details>
+          </>
+        ) : (
+          <p className="muted small">
+            Henüz denetlenmedi. “Mimarileri denetle” her adaptörün PATH'te bulunan
+            yürütülebilirini başlık baytlarından okur; mimari uydurulmaz, dosya çalıştırılmaz.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
             <h2>Resmî komut satırı araçları</h2>
             <p className="card-sub">Kurulu olmak güvenli kabul değildir; sürüm ve yetenek kapısı ayrıdır.</p>
           </div>
@@ -456,16 +592,31 @@ export function Providers() {
                     <h2>{row.displayName}</h2>
                     <p className="card-sub" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{row.command}</p>
                   </div>
-                  <span
-                    className={`badge ${
-                      row.state === "installed" ? "ok" : row.state === "unverified" ? "warn" : "plain"
-                    }`}
-                  >
-                    {row.state === "installed" ? "kurulu" : row.state === "unverified" ? "sınırlı" : "kurulu değil"}
-                  </span>
+                  <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+                    <span
+                      className={`badge ${
+                        row.state === "installed" ? "ok" : row.state === "unverified" ? "warn" : "plain"
+                      }`}
+                    >
+                      {row.state === "installed" ? "kurulu" : row.state === "unverified" ? "sınırlı" : "kurulu değil"}
+                    </span>
+                    {row.architecture ? (
+                      <span className={`badge ${adapterArchBadge(row.architecture).tone}`}>
+                        {adapterArchBadge(row.architecture).label}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
                 <dl className="kv" style={{ gridTemplateColumns: "100px 1fr" }}>
                   <dt>Sürüm</dt><dd>{row.version ?? "—"}</dd>
+                  <dt>Yol</dt>
+                  <dd style={MONO}>{row.path ?? "PATH üzerinde bulunamadı"}</dd>
+                  <dt>Mimari</dt>
+                  <dd style={MONO}>
+                    {row.architecture
+                      ? `${archList(row.architecture.architectures)} · ${archBadgeText(row.architecture)}`
+                      : "—"}
+                  </dd>
                   <dt>Kimlik</dt><dd>{AUTH_LABEL[row.authMode] ?? row.authMode}</dd>
                   <dt>İzinli</dt>
                   <dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{row.allowedArgs.join(" ") || "—"}</dd>

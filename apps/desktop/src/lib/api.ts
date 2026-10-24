@@ -440,6 +440,17 @@ export type QuoteVerificationRow = {
   checkedAt: string;
 };
 
+export type AdapterArch = {
+  format: string;
+  formatLabel: string;
+  architectures: string[];
+  comparison: "same" | "different" | "fat" | "unknown";
+  comparisonLabel: string;
+  containsAppArch: boolean | null;
+  reason: string | null;
+  summary: string;
+};
+
 export type AdapterView = {
   id: string;
   displayName: string;
@@ -449,6 +460,8 @@ export type AdapterView = {
   authMode: "subscription" | "api_key" | "interactive_only";
   batchForbidden: boolean;
   allowedArgs: string[];
+  path: string | null;
+  architecture: AdapterArch | null;
 };
 
 export type CliProbeSandboxFile = {
@@ -586,6 +599,48 @@ export type CliCapabilityMatrix = {
   adapters: CliCapabilityAdapter[];
   probedAtUnix: number;
   helpTimeoutMs: number;
+  notes: string[];
+};
+
+/** F10-T01: yürütülebilir mimari uyumu (başlık baytlarından). */
+export type CliArchInterpreter = {
+  command: string;
+  path: string | null;
+  resolved: string | null;
+  format: string;
+  architectures: string[];
+  comparison: "same" | "different" | "fat" | "unknown";
+  reason: string | null;
+};
+
+export type CliArchAdapter = {
+  adapterId: string;
+  displayName: string;
+  command: string;
+  installed: boolean;
+  path: string | null;
+  resolved: string | null;
+  symlink: boolean;
+  format: string;
+  formatLabel: string;
+  architectures: string[];
+  comparison: "same" | "different" | "fat" | "unknown";
+  comparisonLabel: string;
+  containsAppArch: boolean | null;
+  summary: string;
+  interpreter: CliArchInterpreter | null;
+  reason: string | null;
+  headerBytes: number;
+};
+
+export type CliArchReport = {
+  appArch: string;
+  probedAtUnix: number;
+  adapters: CliArchAdapter[];
+  same: number;
+  different: number;
+  fat: number;
+  unknown: number;
   notes: string[];
 };
 
@@ -1250,6 +1305,7 @@ export const api = {
   providerProbeRun: (adapterId: string) =>
     invoke<CliProbeView>("provider_probe_run", { input: { adapterId } }),
   providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
+  cliArchReport: () => invoke<CliArchReport>("cli_arch_report"),
   cliCapabilityMatrix: () => invoke<CliCapabilityMatrix>("cli_capability_matrix"),
   cliAttackProbe: () => invoke<CliAttackReport>("cli_attack_probe"),
   cliResidueScan: (adapterId: string) =>

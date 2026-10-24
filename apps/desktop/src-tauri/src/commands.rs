@@ -1588,6 +1588,19 @@ pub fn checklist_item_state(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AdapterArchView {
+    pub format: &'static str,
+    pub format_label: &'static str,
+    pub architectures: Vec<String>,
+    pub comparison: &'static str,
+    pub comparison_label: &'static str,
+    pub contains_app_arch: Option<bool>,
+    pub reason: Option<&'static str>,
+    pub summary: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AdapterView {
     pub id: &'static str,
     pub display_name: &'static str,
@@ -1597,21 +1610,44 @@ pub struct AdapterView {
     pub auth_mode: &'static str,
     pub batch_forbidden: bool,
     pub allowed_args: &'static [&'static str],
+    /// PATH'te bulunan yürütülebilir (varsa); bağ çözümüyle birlikte.
+    pub path: Option<String>,
+    /// Başlık baytlarından okunan mimari (F10-T01). Kurulu değilse `None`.
+    pub architecture: Option<AdapterArchView>,
+}
+
+fn adapter_arch_view(report: &dim_cli_adapters::ArchReport) -> AdapterArchView {
+    AdapterArchView {
+        format: report.format.as_str(),
+        format_label: report.format.label(),
+        architectures: report.architectures.iter().map(|a| a.as_str()).collect(),
+        comparison: report.comparison.as_str(),
+        comparison_label: report.comparison.label(),
+        contains_app_arch: report.contains_app_arch,
+        reason: report.reason,
+        summary: report.summary(),
+    }
 }
 
 /// CLI adaptörlerini yoklar: yalnız `--version` çalıştırılır. Kimlik dosyası
-/// okunmaz, oturum açılmaz, istek gönderilmez.
+/// okunmaz, oturum açılmaz, istek gönderilmez. Yürütülebilirin mimarisi
+/// **başlık baytlarından** okunur (F10-T01); süreç başlatılmaz.
 #[tauri::command]
 pub fn provider_probe() -> Vec<AdapterView> {
     SPECS
         .iter()
         .map(|spec| {
             let discovery = discover(spec);
-            let (state, version) = match discovery.state {
-                DiscoveryState::Installed { version, .. } => ("installed", Some(version)),
-                DiscoveryState::Unverified { .. } => ("unverified", None),
-                DiscoveryState::NotInstalled => ("not_installed", None),
+            let (state, version, path) = match discovery.state {
+                DiscoveryState::Installed { version, path } => {
+                    ("installed", Some(version), Some(path))
+                }
+                DiscoveryState::Unverified { path, .. } => ("unverified", None, Some(path)),
+                DiscoveryState::NotInstalled => ("not_installed", None, None),
             };
+            let architecture = path
+                .as_ref()
+                .map(|executable| adapter_arch_view(&dim_cli_adapters::inspect_path(executable)));
             AdapterView {
                 id: spec.id,
                 display_name: spec.display_name,
@@ -1625,6 +1661,8 @@ pub fn provider_probe() -> Vec<AdapterView> {
                 },
                 batch_forbidden: spec.batch_forbidden,
                 allowed_args: spec.allowed_args,
+                path: path.map(|p| p.to_string_lossy().to_string()),
+                architecture,
             }
         })
         .collect()
@@ -1835,6 +1873,181 @@ pub fn provider_probe_cancel(state: State<'_, AppState>) -> bool {
         }
         None => false,
     }
+}
+
+// --- F10-T01: mimari uyum denetimi ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliArchInterpreterView {
+    pub command: String,
+    pub path: Option<String>,
+    pub resolved: Option<String>,
+    pub format: &'static str,
+    pub architectures: Vec<String>,
+    pub comparison: &'static str,
+    pub reason: Option<&'static str>,
+}
+
+/// Adaptör başına mimari denetimi. Yalnız başlık baytları okunur; dosya
+/// **çalıştırılmaz**, süreç başlatılmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliArchAdapterView {
+    pub adapter_id: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+    pub installed: bool,
+    pub path: Option<String>,
+    pub resolved: Option<String>,
+    pub symlink: bool,
+    pub format: &'static str,
+    pub format_label: &'static str,
+    pub architectures: Vec<String>,
+    pub comparison: &'static str,
+    pub comparison_label: &'static str,
+    pub contains_app_arch: Option<bool>,
+    pub summary: String,
+    pub interpreter: Option<CliArchInterpreterView>,
+    pub reason: Option<&'static str>,
+    pub header_bytes: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliArchReportView {
+    pub app_arch: String,
+    pub probed_at_unix: u64,
+    pub adapters: Vec<CliArchAdapterView>,
+    pub same: usize,
+    pub different: usize,
+    pub fat: usize,
+    pub unknown: usize,
+    pub notes: Vec<&'static str>,
+}
+
+/// **Gerçek** mimari denetimi (F10-T01): her adaptörün PATH'te bulunan
+/// yürütülebiliri başlık baytlarından okunur (Mach-O thin/fat, ELF, PE,
+/// `#!` betiği → shebang yorumlayıcısı) ve uygulamanın süreç mimarisiyle
+/// karşılaştırılır. Sonuç `same` / `different` / `fat` / `unknown`.
+/// Süreç başlatılmaz, dosya çalıştırılmaz, ağ kullanılmaz.
+#[tauri::command]
+pub fn cli_arch_report(state: State<'_, AppState>) -> Result<CliArchReportView, ApiError> {
+    let mut adapters: Vec<CliArchAdapterView> = Vec::new();
+    for adapter in SPECS {
+        let executable = find_on_path(adapter.command);
+        let Some(path) = executable else {
+            adapters.push(CliArchAdapterView {
+                adapter_id: adapter.id,
+                display_name: adapter.display_name,
+                command: adapter.command,
+                installed: false,
+                path: None,
+                resolved: None,
+                symlink: false,
+                format: "unknown",
+                format_label: "bilinmiyor",
+                architectures: Vec::new(),
+                comparison: "unknown",
+                comparison_label: "mimari doğrulanamadı",
+                contains_app_arch: None,
+                summary: "PATH üzerinde bulunamadı".to_string(),
+                interpreter: None,
+                reason: Some("not_found"),
+                header_bytes: 0,
+            });
+            continue;
+        };
+        let report = dim_cli_adapters::inspect_path(&path);
+        adapters.push(CliArchAdapterView {
+            adapter_id: adapter.id,
+            display_name: adapter.display_name,
+            command: adapter.command,
+            installed: true,
+            path: Some(path.to_string_lossy().to_string()),
+            resolved: report
+                .resolved
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            symlink: report.symlink,
+            format: report.format.as_str(),
+            format_label: report.format.label(),
+            architectures: report.architectures.iter().map(|a| a.as_str()).collect(),
+            comparison: report.comparison.as_str(),
+            comparison_label: report.comparison.label(),
+            contains_app_arch: report.contains_app_arch,
+            summary: report.summary(),
+            interpreter: report
+                .interpreter
+                .as_ref()
+                .map(|interp| CliArchInterpreterView {
+                    command: interp.command.clone(),
+                    path: interp
+                        .path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    resolved: interp
+                        .resolved
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    format: interp.format.as_str(),
+                    architectures: interp.architectures.iter().map(|a| a.as_str()).collect(),
+                    comparison: interp.comparison.as_str(),
+                    reason: interp.reason,
+                }),
+            reason: report.reason,
+            header_bytes: report.header_bytes,
+        });
+    }
+
+    let count = |wanted: &str| {
+        adapters
+            .iter()
+            .filter(|row| row.comparison == wanted)
+            .count()
+    };
+
+    // Denetime yalnız kimlik, biçim ve karar yazılır; yol ve shebang yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "appArch": dim_cli_adapters::app_arch_label(),
+                "adapters": adapters
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "adapterId": a.adapter_id,
+                        "installed": a.installed,
+                        "format": a.format,
+                        "comparison": a.comparison,
+                        "reason": a.reason,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            db.append_audit("cli_arch", None, "probe", "local-user", &metadata)?;
+        }
+    }
+
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(CliArchReportView {
+        app_arch: dim_cli_adapters::app_arch_label(),
+        probed_at_unix,
+        same: count("same"),
+        different: count("different"),
+        fat: count("fat"),
+        unknown: count("unknown"),
+        adapters,
+        notes: vec![
+            "Yalnız başlık baytları okunur (en çok 4 KiB; PE başlığı ilerideyse o bölüm). Dosya çalıştırılmaz, süreç başlatılmaz.",
+            "Karşılaştırma uygulamanın süreç mimarisiyle yapılır (std::env::consts::ARCH). Rosetta altında çalışan x86_64 süreç kendini x86_64 bildirir; donanım mimarisi ayrıca okunmaz.",
+            "Betiğin kendi mimarisi yoktur: sonuç shebang yorumlayıcısından gelir. Yorumlayıcı bulunamazsa mimari 'bilinmiyor' kalır.",
+            "Evrensel (fat) ikili ayrı durumdur; uygulama mimarisini içerip içermediği ayrıca yazılır.",
+            "Mimari uyumu tek başına güvenlik kanıtı değildir; sürüm, yetenek kapısı (T11) ve kapsam (T05) ayrı denetlenir.",
+        ],
+    })
 }
 
 // --- F10-T11: yetenek matrisi ve bağlantı durumu ---
