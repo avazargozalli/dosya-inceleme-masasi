@@ -242,3 +242,5 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - Gerçek kum havuzu koşusu (`--example probe -- …`): iş dizini `0700`,
   `HOME`/`TMPDIR` kum havuzunda, kalan dosya 0. `HOME` yönlendirmesi gerçek
   araçların `--version` yolunu bozmadı.
+- **CI:** `d9a5581` → run `40109851908` **7/7 yeşil** (arayüz, SBOM, masaüstü
+  kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
