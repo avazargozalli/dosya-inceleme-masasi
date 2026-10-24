@@ -40,6 +40,9 @@ export function Cases() {
   const [reader, setReader] = useState<{ left: ReaderTarget | null; right: ReaderTarget | null } | null>(null);
   const [anchors, setAnchors] = useState<AnchorRow[]>([]);
   const [pdfPassword, setPdfPassword] = useState("");
+  // F06-T07: düz metin kodlaması. Varsayılan otomatik; yanlış çözülürse
+  // kullanıcı aynı belgeyi açık kodlamayla yeniden ayrıştırabilir.
+  const [txtEncoding, setTxtEncoding] = useState("auto");
 
   const load = useCallback(async () => {
     try {
@@ -176,11 +179,15 @@ export function Cases() {
         versionId,
         ocr,
         "tur+eng",
+        txtEncoding,
         pdfPassword.trim() === "" ? undefined : pdfPassword,
       );
+      // Hangi kodlamanın kullanıldığı worker uyarısından okunur; tahmin edilmez.
+      const encodingNote = result.warnings.find((warning) => warning.includes("kodlama"));
       setNotice(
         `Ayrıştırma ${result.parseRun.status}: ${result.pages} sayfa, ${result.storedSegments} metin bloğu` +
-          (result.warnings.length ? ` · ${result.warnings.length} uyarı` : ""),
+          (result.warnings.length ? ` · ${result.warnings.length} uyarı` : "") +
+          (encodingNote ? ` · ${encodingNote}` : ""),
       );
     } catch (e) {
       setError(toApiError(e));
@@ -598,6 +605,25 @@ export function Cases() {
                 ))}
               </div>
             )}
+            <div className="field" style={{ maxWidth: 320, marginTop: 8 }}>
+              <label htmlFor="txt-encoding">TXT kodlaması (düz metin belgeler)</label>
+              <select
+                id="txt-encoding"
+                className="input"
+                value={txtEncoding}
+                onChange={(e) => setTxtEncoding(e.target.value)}
+              >
+                <option value="auto">Otomatik (BOM → UTF-8 → Türkçe)</option>
+                <option value="utf-8">UTF-8</option>
+                <option value="windows-1254">Windows-1254 (Türkçe)</option>
+                <option value="iso-8859-9">ISO-8859-9 (Latin-5)</option>
+              </select>
+            </div>
+            <p className="hint" style={{ marginTop: 6 }}>
+              Otomatik seçim BOM'u, katı UTF-8'i ve Türkçe tek baytlık kodlamaları dener; hangisinin
+              kullanıldığı ayrıştırma uyarısında yazılır. Metin bozuk görünürse kodlamayı açıkça
+              seçip yeniden ayrıştırın.
+            </p>
             <div className="field" style={{ maxWidth: 320, marginTop: 8 }}>
               <label htmlFor="pdf-password">Parolalı PDF parolası (yalnız bu oturum için)</label>
               <input

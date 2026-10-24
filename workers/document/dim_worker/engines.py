@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import codecs
 import io
 import os
 import re
 import shutil
 import subprocess
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -830,12 +832,118 @@ def _looks_like_image(data: bytes) -> bool:
     )
 
 
-def extract_plain(data: bytes, encoding: str = "utf-8") -> Extraction:
+#: Otomatik kodlama seçiminde denenen adaylar. Hepsi tek baytlıktır; seçim
+#: "çözüldü mü" ile değil, çıktının bozulma puanıyla yapılır (tek baytlık her
+#: kodlama her baytı çözer, bu yüzden sessiz mojibake riski gerçektir).
+SINGLE_BYTE_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("windows-1254", "Windows-1254 (Türkçe)"),
+    ("iso-8859-9", "ISO-8859-9 (Latin-5)"),
+    ("windows-1252", "Windows-1252"),
+    ("iso-8859-1", "ISO-8859-1 (Latin-1)"),
+)
+
+#: Bozuk çözümün işaretleri: UTF-8'in Latin-1 gibi okunmasından kalan çiftler
+#: ve C1 kontrol karakterleri. Türkçe metinde bunlar geçerli değildir.
+_MOJIBAKE_LEADS = "ÃÂÄÅÐÞ"
+
+
+def _mojibake_score(text: str) -> int:
+    score = 0
+    for char in text:
+        if char in _MOJIBAKE_LEADS:
+            score += 3
+        elif unicodedata.category(char) == "Cc" and char not in "\t\n\r\f":
+            score += 5
+    return score
+
+
+def _looks_binary(data: bytes) -> bool:
+    """NUL veya yoğun kontrol baytı içeren içerik metin sayılmaz.
+
+    UTF-16 BOM'u çağıran tarafta ayrıca ele alınır; buraya BOM'suz veri gelir.
+    """
+    sample = data[:8192]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    controls = sum(1 for byte in sample if byte < 0x09 or 0x0E <= byte < 0x20 or byte == 0x7F)
+    return controls / len(sample) > 0.02
+
+
+def decode_text(data: bytes, encoding: str = "auto") -> tuple[str, str, list[str]]:
+    """Metni çözer; `(metin, kullanılan kodlama, uyarılar)` döndürür.
+
+    `encoding="auto"` sırası: BOM (UTF-32/UTF-16/UTF-8) → katı UTF-8 → tek
+    baytlık adaylar arasında en düşük bozulma puanı. Hangi kodlamanın
+    kullanıldığı çağırana bildirilir; hiçbir varsayım sessiz değildir.
+    """
+    requested = (encoding or "auto").strip().lower()
+    if requested in {"auto", "otomatik", "detect"}:
+        return _decode_auto(data)
+
     try:
-        text = data.decode(encoding)
-    except (UnicodeDecodeError, LookupError) as exc:
-        raise EngineError("E_TEXT_ENCODING", f"metin {encoding} olarak çözülemedi") from exc
-    warnings: list[str] = []
+        decoded = data.decode(requested)
+    except LookupError as exc:
+        raise EngineError("E_TEXT_ENCODING", f"bilinmeyen kodlama: {encoding}") from exc
+    except UnicodeDecodeError as exc:
+        raise EngineError(
+            "E_TEXT_ENCODING",
+            f"metin {requested} olarak çözülemedi (bayt {exc.start}); kodlamayı elle seçin",
+        ) from exc
+    return decoded, requested, []
+
+
+def _decode_auto(data: bytes) -> tuple[str, str, list[str]]:
+    if data.startswith(codecs.BOM_UTF32_LE) or data.startswith(codecs.BOM_UTF32_BE):
+        return data.decode("utf-32"), "utf-32", ["metin kodlaması BOM'dan belirlendi: utf-32"]
+    if data.startswith(codecs.BOM_UTF8):
+        return (
+            data.decode("utf-8-sig"),
+            "utf-8-sig",
+            ["metin kodlaması BOM'dan belirlendi: utf-8"],
+        )
+    if data.startswith(codecs.BOM_UTF16_LE) or data.startswith(codecs.BOM_UTF16_BE):
+        return data.decode("utf-16"), "utf-16", ["metin kodlaması BOM'dan belirlendi: utf-16"]
+
+    if _looks_binary(data):
+        raise EngineError(
+            "E_TEXT_ENCODING",
+            "içerik metin gibi görünmüyor (ikili veri); kodlama denetlenmedi",
+        )
+
+    try:
+        return data.decode("utf-8"), "utf-8", []
+    except UnicodeDecodeError:
+        pass
+
+    best: tuple[int, str, str, str] | None = None
+    for codec_name, label in SINGLE_BYTE_CANDIDATES:
+        try:
+            candidate = data.decode(codec_name)
+        except UnicodeDecodeError:
+            continue
+        score = _mojibake_score(candidate)
+        if best is None or score < best[0]:
+            best = (score, codec_name, label, candidate)
+
+    if best is None:
+        raise EngineError(
+            "E_TEXT_ENCODING",
+            "metin kodlaması belirlenemedi; kodlamayı elle seçin (denenenler: "
+            + ", ".join([codec for codec, _ in SINGLE_BYTE_CANDIDATES])
+            + ")",
+        )
+
+    score, codec_name, label, text = best
+    warning = f"metin kodlaması otomatik belirlendi: {label}"
+    if score > 0:
+        warning += " (bozuk karakter olasılığı var; yanlışsa kodlamayı elle seçin)"
+    return text, codec_name, [warning]
+
+
+def extract_plain(data: bytes, encoding: str = "auto") -> Extraction:
+    text, _used, warnings = decode_text(data, encoding)
     if not text.strip():
         warnings.append("belgede metin yok")
     geometry: list[TextBlock] = [TextBlock(start=0, end=len(text))] if text else []
@@ -846,7 +954,10 @@ def extract_plain(data: bytes, encoding: str = "utf-8") -> Extraction:
         coordinate_space=COORDINATE_SPACE_STRUCTURE,
         blocks=geometry,
     )
-    return Extraction(engine="plain", engine_version="1", pages=[page], warnings=warnings)
+    result = Extraction(engine="plain", engine_version="2", pages=[page], warnings=warnings)
+    # Sürüm 2: kodlama otomatik belirlenir (BOM → UTF-8 → Türkçe tek baytlık
+    # adaylar). Hangi kodlamanın seçildiği `warnings` içinde açıkça yazılır.
+    return result
 
 
 def extract(
@@ -854,7 +965,7 @@ def extract(
     mime: str,
     ocr: bool = False,
     ocr_lang: str = "eng",
-    encoding: str = "utf-8",
+    encoding: str = "auto",
     password: str | None = None,
 ) -> Extraction:
     """MIME ve içerik imzasına göre doğru motoru seçer. Parola yalnız bu çağrı

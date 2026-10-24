@@ -384,6 +384,7 @@ impl WorkerClient {
         mime: &str,
         ocr: bool,
         ocr_lang: &str,
+        text_encoding: Option<&str>,
         password: Option<&str>,
     ) -> Result<Extraction, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
@@ -393,6 +394,11 @@ impl WorkerClient {
             "ocr": ocr,
             "ocrLang": ocr_lang,
         });
+        // Metin kodlaması yalnız düz metin belgelerde anlamlıdır; `auto`
+        // worker'ın BOM/UTF-8/Türkçe tek baytlık seçimini kullanır.
+        if let Some(choice) = text_encoding.filter(|value| !value.is_empty()) {
+            payload["encoding"] = json!(choice);
+        }
         // Parola yalnız bu istek için taşınır; kayda geçmez.
         if let Some(secret) = password.filter(|p| !p.is_empty()) {
             payload["password"] = json!(secret);
@@ -752,6 +758,39 @@ mod tests {
         assert!(old.pages[0].coordinate_space.is_none());
         assert!(old.pages[0].page_label.is_none());
         assert!(old.pages[0].blocks.is_empty());
+    }
+
+    #[test]
+    fn text_encoding_auto_detection_roundtrip_when_python_available() {
+        let (Some(py), Some(dir)) = (python(), dev_worker_dir()) else {
+            eprintln!("python veya workers/document bulunamadı; test atlandı");
+            return;
+        };
+        let mut client = WorkerClient::spawn_dev(&py, &dir).expect("başlat");
+        // Windows-1254 Türkçe baytlar: ı = 0xFD, ğ = 0xF0, ş = 0xFE, ç = 0xE7.
+        // Bu dizi katı UTF-8'de geçersizdir; otomatik algılama olmadan metin
+        // çözülemez (eski davranış E_TEXT_ENCODING ile duruyordu).
+        let data = b"Mahkeme itiraz\xfd reddetti \xf0\xfe\xfd\xe7";
+        let extraction = client
+            .extract_text(data, "text/plain", false, "eng", Some("auto"), None)
+            .expect("çıkarım");
+        assert_eq!(extraction.engine, "plain");
+        assert_eq!(extraction.pages.len(), 1);
+        assert_eq!(extraction.pages[0].text, "Mahkeme itirazı reddetti ğşıç");
+        assert!(extraction
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Windows-1254")));
+
+        // Açıkça yanlış kodlama seçilirse bozuk metin üretilmez; açık hata döner.
+        let err = client
+            .extract_text(data, "text/plain", false, "eng", Some("utf-8"), None)
+            .unwrap_err();
+        match err {
+            WorkerError::Remote { code, .. } => assert_eq!(code, "E_TEXT_ENCODING"),
+            other => panic!("beklenmeyen: {other:?}"),
+        }
+        client.shutdown();
     }
 
     #[test]

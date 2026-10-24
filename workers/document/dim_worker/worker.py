@@ -288,7 +288,7 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
     password = params.get("password")
     if password is not None and not isinstance(password, str):
         raise ProtocolError("E_PARAMS", "password metin olmalı")
-    encoding = str(params.get("encoding") or "utf-8")
+    encoding = str(params.get("encoding") or "auto")
     extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding, password=password)
     return _extract_frames(rid, extraction), False
 

@@ -3,6 +3,13 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.7.6] — 2026-10-24 — F06 düz metin kodlaması (T07)
+
+- Düz metin otomatik kodlama: BOM (UTF-32/16/8) → katı UTF-8 → Türkçe tek baytlık adaylar (Windows-1254, ISO-8859-9, Windows-1252, Latin-1) arasında bozulma puanıyla seçim
+- Kullanılan kodlama her zaman ayrıştırma uyarısında yazılır; ikili içerik ve hiçbir adayın çözülemediği durum `E_TEXT_ENCODING` ile durur (sessiz mojibake yok)
+- Arayüzde "TXT kodlaması" seçimi (Otomatik/UTF-8/Windows-1254/ISO-8859-9); seçim Tauri → worker `encoding` parametresine gider, ayar özetine yalnız düz metinde eklenir
+- `plain` motor sürümü 2: davranış değiştiği için eski `plain/1` parse kayıtlarıyla karışmaz
+
 ## [0.7.5] — 2026-10-24 — F07 kopmuş/eski kaynak bağlantısı
 
 - Anchor konumu güncel sürüm bilgisini taşır; okuyucu "eski sürüm v1 · güncel v2" rozetini gösterir ve eski konumu korur

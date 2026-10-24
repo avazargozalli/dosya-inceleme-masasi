@@ -1006,6 +1006,7 @@ pub fn document_parse(
     version_id: String,
     ocr: Option<bool>,
     ocr_lang: Option<String>,
+    text_encoding: Option<String>,
     password: Option<String>,
 ) -> Result<ParseResultView, ApiError> {
     let guard = state.lock();
@@ -1032,8 +1033,24 @@ pub fn document_parse(
         .unwrap_or_else(|_| serde_json::json!({}));
     let ocr_enabled = ocr.unwrap_or(false);
     let lang = ocr_lang.unwrap_or_else(|| "eng".to_string());
-    let extraction =
-        worker.extract_text(&data, &blob.mime, ocr_enabled, &lang, password.as_deref())?;
+    // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
+    let is_text = blob.mime.starts_with("text/");
+    let encoding = if is_text {
+        text_encoding
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "auto".to_string())
+    } else {
+        "auto".to_string()
+    };
+    let extraction = worker.extract_text(
+        &data,
+        &blob.mime,
+        ocr_enabled,
+        &lang,
+        is_text.then_some(encoding.as_str()),
+        password.as_deref(),
+    )?;
     worker.shutdown();
 
     // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü
@@ -1042,8 +1059,13 @@ pub fn document_parse(
         .pointer("/ocr/tessdataHash")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
+    let encoding_note = if is_text {
+        format!("|txt-encoding={encoding}")
+    } else {
+        String::new()
+    };
     let settings = format!(
-        "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}",
+        "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}{encoding_note}",
         blob.mime, ocr_enabled, lang, extraction.engine_version
     );
     // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
