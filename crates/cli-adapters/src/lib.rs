@@ -11,11 +11,18 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod attack;
 pub mod capability;
 pub mod exec;
 pub mod probe;
 pub mod residue;
 pub mod sandbox;
+pub use attack::{
+    guard_state, hardening_argv, outcomes, plant_attacks, run_real_attack, AttackError,
+    AttackFixture, AttackObservation, AttackOutcome, AttackVector, AttackVerdict, DetectorProof,
+    FixtureResult, GateCheck, GuardState, HitSource, LoaderLayout, NaiveLoad, PlantedAttacks,
+    RealAttack, ATTACK_MARKER_ENV,
+};
 pub use capability::{
     capabilities, evaluate, help_text_of, mentions_flag, run_help_probe, AdapterCapabilities,
     Capability, CapabilityReport, CapabilityRequirement, CapabilityRow, CapabilityState, HelpProbe,

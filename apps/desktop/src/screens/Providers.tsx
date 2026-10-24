@@ -4,6 +4,7 @@ import {
   toApiError,
   type AdapterView,
   type ApiError,
+  type CliAttackReport,
   type CliCapabilityMatrix,
   type CliProbeView,
   type CliResidueCleanup,
@@ -11,6 +12,19 @@ import {
   type CliResidueScan,
   type CliSandboxSweep,
 } from "../lib/api";
+import {
+  attackAdapterWarnings,
+  attackCommand,
+  attackFixtureSummary,
+  attackFixtureWarnings,
+  attackGuardText,
+  attackProductText,
+  attackSkipText,
+  attackTotalHits,
+  attackVerdictText,
+  attackVerdictTone,
+  attackWorstVerdict,
+} from "../lib/attack";
 import {
   formatBytes,
   persistenceText,
@@ -74,6 +88,9 @@ export function Providers() {
   const [matrix, setMatrix] = useState<CliCapabilityMatrix | null>(null);
   const [matrixBusy, setMatrixBusy] = useState(false);
   const [matrixError, setMatrixError] = useState<ApiError | null>(null);
+  const [attack, setAttack] = useState<CliAttackReport | null>(null);
+  const [attackBusy, setAttackBusy] = useState(false);
+  const [attackError, setAttackError] = useState<ApiError | null>(null);
 
   async function refresh() {
     setBusy(true);
@@ -131,6 +148,18 @@ export function Providers() {
       setMatrixError(toApiError(e));
     } finally {
       setMatrixBusy(false);
+    }
+  }
+
+  async function runAttack() {
+    setAttackBusy(true);
+    setAttackError(null);
+    try {
+      setAttack(await api.cliAttackProbe());
+    } catch (e) {
+      setAttackError(toApiError(e));
+    } finally {
+      setAttackBusy(false);
     }
   }
 
@@ -262,6 +291,140 @@ export function Providers() {
           <p className="muted small">
             Henüz yoklanmadı. “Yetenekleri sına” dört adaptörün kurulu sürümünü ve <code>--help</code>{" "}
             metnini yoklar; istem gönderilmez.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Başlangıç saldırı testi</h2>
+            <p className="card-sub">
+              Hook, MCP, proje talimatı ve kapsam dışı canary vektörleri geçici bir fikstürde
+              kurulur; kurulu CLI'lar sertleştirme bayrakları + <code>--help</code> ile boş kum
+              havuzunda, <code>HOME</code> sahte ev dizininde çalıştırılır. İstem gönderilmez.
+            </p>
+          </div>
+          <button
+            className="btn"
+            disabled={attackBusy || running !== null || matrixBusy}
+            onClick={() => void runAttack()}
+          >
+            {attackBusy ? "Sınanıyor…" : "Saldırıları sına"}
+          </button>
+        </div>
+
+        {attackError ? (
+          <div className="notice danger" role="alert">
+            <strong>{attackError.code}</strong> — {attackError.message}
+          </div>
+        ) : null}
+
+        {attack ? (
+          <>
+            <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
+              Sınandı: {new Date(attack.probedAtUnix * 1000).toLocaleString("tr-TR")} · en kötü
+              karar: <strong>{attackWorstVerdict(attack.adapters).label}</strong> · toplam işaret:{" "}
+              <strong>{attackTotalHits(attack)}</strong>
+            </div>
+
+            <div className="notice" style={{ fontSize: 12 }}>
+              <strong>Fikstür:</strong> {attackFixtureSummary(attack.fixture)}
+              <ul style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                {attack.fixture.productConfig.map((item) => (
+                  <li key={item.vector}>{attackProductText(item)}</li>
+                ))}
+              </ul>
+              {attackFixtureWarnings(attack.fixture).map((warning) => (
+                <div key={warning} style={{ marginTop: "var(--space-2)" }}>
+                  {warning}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "grid", gap: "var(--space-3)", marginTop: "var(--space-3)" }}>
+              {attack.adapters.map((adapter) => {
+                const warnings = attackAdapterWarnings(adapter);
+                return (
+                  <div
+                    key={adapter.adapterId}
+                    className="card tight"
+                    style={{ background: "var(--surface)" }}
+                  >
+                    <div className="card-head">
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: 14 }}>{adapter.displayName}</h3>
+                        <p className="card-sub" style={MONO}>
+                          {attackCommand(adapter)}
+                        </p>
+                      </div>
+                      <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+                        <span className={`badge ${linkTone(adapter.link)}`}>{adapter.linkLabel}</span>
+                        <span className={`badge ${adapter.hits > 0 ? "danger" : "plain"}`}>
+                          {adapter.hits > 0 ? `${adapter.hits} işaret` : "işaret yok"}
+                        </span>
+                        {adapter.skipped ? (
+                          <span className="badge plain">{attackSkipText(adapter.skipped)}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {adapter.vectors.length > 0 ? (
+                      <ul
+                        className="small"
+                        style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}
+                      >
+                        {adapter.vectors.map((vector) => (
+                          <li
+                            key={vector.vector}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "1fr auto",
+                              gap: "var(--space-2)",
+                              alignItems: "start",
+                            }}
+                          >
+                            <div>
+                              <strong style={{ fontWeight: 600 }}>{vector.label}</strong>
+                              <div style={MONO}>kapatma: {attackGuardText(vector)}</div>
+                              <div className="muted small">{vector.note}</div>
+                            </div>
+                            <span className={`badge ${attackVerdictTone(vector.verdict)}`}>
+                              {attackVerdictText(vector)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {warnings.map((warning) => (
+                      <div
+                        key={warning}
+                        className="notice"
+                        style={{ fontSize: 12, marginTop: "var(--space-2)" }}
+                      >
+                        {warning}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+
+            <details style={{ marginTop: "var(--space-3)" }}>
+              <summary className="muted small" style={{ cursor: "pointer" }}>
+                Saldırı testinin sınırları
+              </summary>
+              <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                {attack.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </details>
+          </>
+        ) : (
+          <p className="muted small">
+            Henüz sınanmadı. “Saldırıları sına” dört vektörü geçici bir fikstürde kurar, dedektörün
+            kör olmadığını kanıtlar ve kurulu CLI'ları sertleştirme bayraklarıyla çalıştırır; istem
+            gönderilmez.
           </p>
         )}
       </div>

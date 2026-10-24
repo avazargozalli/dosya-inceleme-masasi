@@ -101,6 +101,7 @@ pub fn run() {
             commands::provider_probe_run,
             commands::provider_probe_cancel,
             commands::cli_capability_matrix,
+            commands::cli_attack_probe,
             commands::cli_residue_scan,
             commands::cli_residue_measure,
             commands::cli_residue_cleanup,

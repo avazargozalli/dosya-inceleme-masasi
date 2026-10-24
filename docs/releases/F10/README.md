@@ -3,8 +3,9 @@
 - **Sürüm etiketi:** `v0.9.0` (hedef)
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
   **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
-  **kalıntı ölçümü/temizliği (T13)** ve **arayüzden tetiklenen gerçek sınama**
-  hazır; sağlayıcıya özel akışlar (T06–T08, T10) yok
+  **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)** ve
+  **arayüzden tetiklenen gerçek sınama** hazır; sağlayıcıya özel akışlar
+  (T06–T08, T10) yok
 - **Tarih:** 2026-10-24
 
 | İş | Durum | Kanıt |
@@ -20,7 +21,7 @@
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
-| F10-T12 | 🚧 | izinsiz bayrak reddi + **proje talimatı okunamayan boş iş dizini**; hook/MCP/canary saldırı testleri yok |
+| F10-T12 | ✅ | başlangıç saldırıları: hook / MCP / proje talimatı / kapsam dışı canary vektörleri geçici fikstürde; **dedektör kanıtı** (kirli 4/4, temiz 0/4), kirli proje dizini iş dizini olarak **reddedilir**, kurulu CLI'larda sertleştirme bayrakları + `--help` ile gerçek koşu (işaret 0); arayüzde “Saldırıları sına” |
 | F10-T13 | ✅ | kalıntı envanteri (sürüm bazlı bildirilen yollar) + önce/sonra ölçüm + **yalnız uygulamaya ait** dosya temizliği + çökme kum havuzu süpürme; arayüzde “Kalıntı denetimi” kartı |
 | F10-T14 | ✅ | süre sınırı, iptal, alt süreç öldürme, kısmi çıktı — **arayüz düğmesinden uçtan uca** |
 
@@ -78,6 +79,90 @@ kendi `version_args`'ı (`--version`, `--help`) listede olmadığı için **dü�
   `size_limit_exceeded`. Arayüzde "İzin · HOME/TMPDIR · stdin · Bırakılan dosya"
   satırları + dosya listesi; denetime yalnız sayılar ve politikalar yazılır
   (**dosya adı ve içerik yazılmaz**).
+
+## Başlangıç saldırıları — hook, MCP, proje talimatı, canary (F10-T12, 2026-10-24)
+
+`crates/cli-adapters/src/attack.rs`. Saldırı yüzeyi, CLI bir dizinde
+başladığında kendiliğinden okunan her şeydir: `CLAUDE.md`/`AGENTS.md`
+(proje talimatı), `.claude/settings.json` + hook betikleri, `.mcp.json` /
+`~/.codex/config.toml` (MCP sunucuları) ve modelin araç çağrısıyla
+erişebildiği dosyalar (kapsam dışı canary).
+
+### Üç ayrı ölçüm (karıştırılmaz)
+
+1. **Kapı (gerçek).** Saldırı dosyalarıyla dolu bir dizin **iş dizini olarak
+   reddedilir**: `check_workdir` → `E_CLI_WORKDIR_NOT_EMPTY`. Ürün CLI'ya proje
+   dizini vermez; iş dizini her zaman boş `0700` kum havuzudur (F10-T05). Yani
+   vektörler sürece hiç ulaşmaz. Ölçüm: fikstürün kirli proje dizini
+   `GateCheck` ile reddedilir, temiz dizin kabul edilir; ayrıca `run_cli`
+   aynı dizini süreç **başlamadan** reddeder.
+2. **Dedektör kanıtı (fikstür).** Kirli fikstürde **naif yükleyici taklidi**
+   (`naive_load`; gerçek CLI kodu değil) dört vektörün hepsinde işaret bırakır,
+   temiz fikstürde hiçbirinde. “Sıfır işaret” sonucunun körlükten değil
+   gerçekten temizlikten geldiğini yalnız bu adım gösterir.
+   İşaretler: `project_instruction.mark`, `hook.mark`, `mcp.mark`,
+   `canary.mark` — betikler `DIM_ATTACK_MARKERS` ile hedef dizini öğrenir.
+3. **Gerçek CLI koşusu (bilgilendirici).** Kurulu araç, F10-T11 matrisinin
+   bildirdiği **sertleştirme bayrakları** + `--help` ile boş kum havuzunda,
+   `HOME` **sahte ev** dizinine yönlendirilmiş hâlde çalışır; işaretçi ve
+   fikstür belirtecinin çıktıda yansıması aranır. İstem gönderilmediği için
+   hook/MCP/proje talimatı yolu bu çağrıda **hiç açılmaz**: sonuç “bu çağrıda
+   tetiklenmedi”dir, “korunuyor” değildir.
+
+### Kararlar
+
+| Karar | Anlamı |
+|---|---|
+| `triggered` | İşaretçi ya da yansıma bulundu — saldırı **başarılı** |
+| `silent_guarded` | İşaret yok, dedektör kanıtlı, kapatma yolu **bildirildi** (davranış denenmedi) |
+| `silent_unguarded` | İşaret yok, dedektör kanıtlı, kapatma yolu **bildirilmedi** → sessizlik koruma sayılmaz |
+| `inconclusive` | Dedektör kanıtlanmadı (vekil işaret bırakmadı) → sonuç anlamsız |
+
+`evaluate`/`outcomes` saf fonksiyonlardır: yetenek raporu + gözlem + dedektör
+kanıtı → karar. Bu yüzden “sessiz” hiçbir zaman yeşil gösterilmez.
+
+### Ölçüm (macOS aarch64, `--example attack`)
+
+- **Fikstür:** dedektör kirli **4/4**, temiz **0/4** → kanıtlı; kirli proje
+  dizini iş dizini olarak **reddedildi** (`E_CLI_WORKDIR_NOT_EMPTY`).
+- **Ürün yapılandırması** (boş iş dizini + yalıtılmış `HOME`): vekil yükleyici
+  proje talimatına, hook'a ve MCP'ye **ulaşamadı**; kapsam dışı canary'yi
+  **mutlak yolla okuyabildi**. Bu sınır kapatılmadı (aşağıya bakın).
+- **Claude Code 2.1.303:** `--tools= --bare --strict-mcp-config --help`,
+  722 ms, çıkış 0, **0 işaret**; dört vektör de “sessiz · kapatma yolu
+  bildirildi”. `--bare` yardım yoklamasını 13,1 sn'den ~0,7 sn'ye indirdi.
+- **Codex CLI 0.159.2:** `exec --ignore-user-config --ignore-rules --help`,
+  26 ms, çıkış 0, **0 işaret**; proje/hook/MCP “sessiz · bildirildi”, canary
+  “sessiz · koruma kanıtlanmadı” (`tool_free` yol yok).
+- **Antigravity:** kurulu değil → koşu yok. **Kimi 1.41.0:** etkileşimli-only →
+  otomatik saldırı koşusu yapılmaz.
+
+### Arayüz
+
+Providers → “Başlangıç saldırı testi” kartı: “Saldırıları sına” düğmesi
+(`cli_attack_probe`, async, `spawn_blocking`, tek CLI işlemi `E_CLI_BUSY`),
+fikstür özeti (dedektör, kapı) + ürün yapılandırması satırları, adaptör başına
+sürüm/argv/durum ve dört vektör (kapatma bayrakları + karar rozeti), uyarılar ve
+“Saldırı testinin sınırları”. Denetime `cli_attack`/`probe` yazılır: yalnız
+sayı, durum ve karar kimlikleri — **fikstür belirteci, dosya adı ve yardım
+metni yazılmaz**.
+
+### Dürüst sınırlar
+
+- **Sessizlik davranış kanıtı değildir.** Gerçek CLI'ya istem gönderilmedi
+  (T06–T08 istem yolu yok); hook/MCP/proje talimatı ancak bir oturum açıldığında
+  yüklenir. Bu çağrıda oturum açılmadı.
+- **Dedektör kanıtı kendi vekilimizle ölçülür**: `naive_load` gerçek CLI kodu
+  değil, fikstürün “naif yükleyici” taklididir. Kanıtladığı şey dedektörün kör
+  olmadığıdır; gerçek CLI'ların hook çalıştırdığı değil.
+- **Kapsam dışı canary kapatılmadı:** `unsafe_code = "forbid"` olduğu için
+  seccomp/kum havuzu yok; mutlak yolla okuma OS düzeyinde engellenmiyor.
+  Koruma istem/araç yolunun yokluğuna dayanıyor; arayüz bunu uyarı olarak yazar.
+- Bayrakların **kabul edildiği** görüldü (çıkış 0 + yardım metni); araç
+  çağrısının gerçekten sıfır olduğu, oturum yazılmadığı **ölçülmedi**.
+- Windows'ta betik yürütme yok (`sh` yok) → fikstürün hook/MCP adımları
+  çalışmaz; bu platformda yalnız dosya yerleşimi ve kapı testleri anlamlıdır.
+- Tauri penceresi açılmadı → kartın görsel QA'sı yok.
 
 ## Kalıntı denetimi — ölçüm ve temizlik (F10-T13, 2026-10-24)
 
@@ -300,7 +385,15 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 
 ## Doğrulama
 
-- `cargo test -p dim-cli-adapters` → **63** (F10-T11 turunda 13 yeni: bilinmeyen
+- `cargo test -p dim-cli-adapters` → **80** (F10-T12 turunda 17 yeni: fikstür
+  yerleşimi, dört vektörün tetiklenmesi, temiz yerleşimde sessizlik, işaretçinin
+  diskten okunması, çıktı yansıması, kirli proje dizininin iş dizini olarak
+  reddi, ürün yapılandırmasında proje/hook/MCP kapalı + canary açık, fikstür
+  temizliği, kanıtsız dedektörde “koruma yok” kararı, bildirilmiş/korumasız
+  ayrımı, tetiklenmenin üstünlüğü, sertleştirme argv'sinin argüman kapısından
+  geçmesi, raporun belirteci taşımaması, gerçek alt süreçte hook yakalama,
+  sessiz CLI'da sıfır işaret, kirli iş dizinini reddeden gerçek koşu).
+  F10-T11 turunda 13 yeni: bilinmeyen
   adaptör, Claude 4/4 bildirildi, eksik bayrak → uyumsuz + kapalı kapı, okunamayan
   yardım → sınırlı, kurulu değil, etkileşimli-only uyumsuz, codex `tool_free`
   doğrulanamadı, bayrak belirteç sınırı, matris ↔ argüman kapısı tutarlılığı,
@@ -310,7 +403,10 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` temiz;
   `clippy -p dim-cli-adapters --all-targets -D warnings` temiz; rustfmt iki
   manifest temiz.
-- Web: **206** test (F10-T11 turunda 8 yeni `capability.test.ts`: durum/bağlantı
+- Web: **231** test (F10-T12 turunda 25 yeni `attack.test.ts`: karar tonları ve
+  metinleri, kapatma yolu, komut satırı, atlama nedenleri, fikstür özeti ve
+  uyarıları, adaptör uyarıları, karar sayımı/en kötü karar/toplam işaret;
+  F10-T11 turunda 8 yeni `capability.test.ts`: durum/bağlantı
   tonları, özet sayıları, kapı metni, gerekçe çevirisi, uyarılar, en kötü durum,
   yoklanan komut), `tsc --noEmit` + `vite build` yeşil.
 - Gerçek yetenek yoklaması (`cargo run -p dim-cli-adapters --example caps`):

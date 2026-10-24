@@ -589,6 +589,69 @@ export type CliCapabilityMatrix = {
   notes: string[];
 };
 
+export type CliAttackVerdict =
+  | "triggered"
+  | "silent_guarded"
+  | "silent_unguarded"
+  | "inconclusive";
+
+export type CliAttackVector = {
+  vector: string;
+  label: string;
+  note: string;
+  guard: "declared" | "missing" | "unverified";
+  guardLabel: string;
+  guardFlags: string[];
+  hit: boolean;
+  source: "marker" | "output" | "none";
+  sourceLabel: string;
+  verdict: CliAttackVerdict;
+  verdictLabel: string;
+};
+
+export type CliAttackProduct = {
+  vector: string;
+  label: string;
+  hit: boolean;
+};
+
+export type CliAttackFixture = {
+  detectorProven: boolean;
+  detectorControlClean: boolean;
+  pollutedHits: number;
+  cleanHits: number;
+  vectorTotal: number;
+  gateRejected: boolean;
+  gateCode: string | null;
+  productConfig: CliAttackProduct[];
+  canaryReadInProductConfig: boolean;
+};
+
+export type CliAttackAdapter = {
+  adapterId: string;
+  displayName: string;
+  version: string | null;
+  argv: string[];
+  status: string;
+  exitCode: number | null;
+  durationMs: number;
+  hits: number;
+  helpRead: boolean;
+  helpError: string | null;
+  link: string;
+  linkLabel: string;
+  gateReasons: string[];
+  vectors: CliAttackVector[];
+  skipped: string | null;
+};
+
+export type CliAttackReport = {
+  fixture: CliAttackFixture;
+  adapters: CliAttackAdapter[];
+  probedAtUnix: number;
+  notes: string[];
+};
+
 export type ClaimRow = {
   id: string;
   caseId: string;
@@ -1188,6 +1251,7 @@ export const api = {
     invoke<CliProbeView>("provider_probe_run", { input: { adapterId } }),
   providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
   cliCapabilityMatrix: () => invoke<CliCapabilityMatrix>("cli_capability_matrix"),
+  cliAttackProbe: () => invoke<CliAttackReport>("cli_attack_probe"),
   cliResidueScan: (adapterId: string) =>
     invoke<CliResidueScan>("cli_residue_scan", { input: { adapterId } }),
   cliResidueMeasure: (adapterId: string, confirmUserHome: boolean) =>

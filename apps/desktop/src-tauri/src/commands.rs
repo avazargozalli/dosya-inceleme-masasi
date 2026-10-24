@@ -2046,6 +2046,310 @@ pub async fn cli_capability_matrix(
     })
 }
 
+// --- F10-T12: başlangıç saldırıları (hook, MCP, proje talimatı, kapsam dışı canary) ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackVectorView {
+    pub vector: &'static str,
+    pub label: &'static str,
+    pub note: &'static str,
+    pub guard: &'static str,
+    pub guard_label: &'static str,
+    pub guard_flags: Vec<&'static str>,
+    pub hit: bool,
+    pub source: &'static str,
+    pub source_label: &'static str,
+    pub verdict: &'static str,
+    pub verdict_label: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackProductView {
+    pub vector: &'static str,
+    pub label: &'static str,
+    pub hit: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackFixtureView {
+    pub detector_proven: bool,
+    pub detector_control_clean: bool,
+    pub polluted_hits: usize,
+    pub clean_hits: usize,
+    pub vector_total: usize,
+    pub gate_rejected: bool,
+    pub gate_code: Option<&'static str>,
+    pub product_config: Vec<CliAttackProductView>,
+    pub canary_read_in_product_config: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackAdapterView {
+    pub adapter_id: String,
+    pub display_name: &'static str,
+    pub version: Option<String>,
+    pub argv: Vec<String>,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub hits: usize,
+    pub help_read: bool,
+    pub help_error: Option<String>,
+    pub link: &'static str,
+    pub link_label: &'static str,
+    pub gate_reasons: Vec<String>,
+    pub vectors: Vec<CliAttackVectorView>,
+    /// Koşu yapılmadıysa nedeni (`not_installed`, `interactive_only`,
+    /// `executable_missing` ya da hata kodu).
+    pub skipped: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackView {
+    pub fixture: CliAttackFixtureView,
+    pub adapters: Vec<CliAttackAdapterView>,
+    pub probed_at_unix: u64,
+    pub notes: Vec<&'static str>,
+}
+
+fn run_status_id(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Exited(0) => "exited_ok",
+        RunStatus::Exited(_) => "exited_error",
+        RunStatus::TimedOut => "timed_out",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Signaled => "signaled",
+    }
+}
+
+fn attack_vector_views(outcomes: &[dim_cli_adapters::AttackOutcome]) -> Vec<CliAttackVectorView> {
+    outcomes
+        .iter()
+        .map(|outcome| CliAttackVectorView {
+            vector: outcome.vector.id(),
+            label: outcome.vector.label(),
+            note: outcome.vector.note(),
+            guard: outcome.guard.id(),
+            guard_label: outcome.guard.label(),
+            guard_flags: outcome.guard.flags().to_vec(),
+            hit: outcome.observation.hit,
+            source: outcome.observation.source.id(),
+            source_label: outcome.observation.source.label(),
+            verdict: outcome.verdict.id(),
+            verdict_label: outcome.verdict.label(),
+        })
+        .collect()
+}
+
+/// **Başlangıç saldırılarını** ölçer (F10-T12): fikstür dedektör kanıtı + kirli
+/// proje dizininin iş dizini olarak reddi + kurulu CLI'larda sertleştirme
+/// bayraklarıyla gerçek koşu. İstem gönderilmez; kimlik dosyası okunmaz; fikstür
+/// belirteci ve yardım metni denetime **yazılmaz**.
+#[tauri::command]
+pub async fn cli_attack_probe(state: State<'_, AppState>) -> Result<CliAttackView, ApiError> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let joined = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let fixture =
+            dim_cli_adapters::AttackFixture::create().map_err(|err| err.code().to_string())?;
+        let result = fixture.run().map_err(|err| err.code().to_string())?;
+        let mut adapters = Vec::with_capacity(SPECS.len());
+        for adapter in SPECS {
+            let discovery = discover(adapter);
+            let version = match &discovery.state {
+                DiscoveryState::Installed { version, .. } => Some(version.clone()),
+                _ => None,
+            };
+            let mut row = CliAttackAdapterView {
+                adapter_id: adapter.id.to_string(),
+                display_name: adapter.display_name,
+                version: version.clone(),
+                argv: Vec::new(),
+                status: "skipped",
+                exit_code: None,
+                duration_ms: 0,
+                hits: 0,
+                help_read: false,
+                help_error: None,
+                link: "not_checked",
+                link_label: "koşulmadı",
+                gate_reasons: Vec::new(),
+                vectors: Vec::new(),
+                skipped: None,
+            };
+            let caps = dim_cli_adapters::capabilities(adapter.id);
+            if version.is_none() {
+                row.skipped = Some("not_installed");
+                adapters.push(row);
+                continue;
+            }
+            if caps.is_none_or(|caps| caps.help_args.is_empty()) {
+                row.skipped = Some("interactive_only");
+                adapters.push(row);
+                continue;
+            }
+            let Some(executable) = find_on_path(adapter.command) else {
+                row.skipped = Some("executable_missing");
+                adapters.push(row);
+                continue;
+            };
+            match dim_cli_adapters::run_real_attack(&fixture, adapter, &executable, &run_cancel) {
+                Ok(run) => {
+                    let probe = dim_cli_adapters::HelpProbe {
+                        args: run.argv.clone(),
+                        stdout: run.stdout_head.clone(),
+                        stderr: run.stderr_head.clone(),
+                        status: run.status.clone(),
+                        duration_ms: run.duration_ms,
+                        truncated: run.truncated,
+                    };
+                    let help = dim_cli_adapters::help_text_of(&probe).ok();
+                    let report =
+                        dim_cli_adapters::evaluate(adapter.id, version.as_deref(), help, None);
+                    row.argv = run.argv.clone();
+                    row.status = run_status_id(&run.status);
+                    row.exit_code = run.exit_code;
+                    row.duration_ms = run.duration_ms;
+                    row.hits = run.observations.iter().filter(|o| o.hit).count();
+                    row.help_read = run.help_read;
+                    row.help_error = run.help_error.map(str::to_string);
+                    if let Some(report) = &report {
+                        row.link = report.link.id();
+                        row.link_label = report.link.label();
+                        row.gate_reasons = report.gate_reasons.clone();
+                        row.vectors = attack_vector_views(&dim_cli_adapters::outcomes(
+                            report,
+                            &run.observations,
+                            result.detector.proven,
+                        ));
+                    }
+                    if !matches!(run.status, RunStatus::Exited(0)) {
+                        // Sıfır dışı çıkışta yardım metni kanıt değildir; vektör
+                        // kararları yine de "ölçülemedi"ye düşer.
+                        row.skipped = Some("run_failed");
+                        row.vectors.clear();
+                    }
+                    adapters.push(row);
+                }
+                Err(err) => {
+                    row.skipped = Some(err.code());
+                    adapters.push(row);
+                }
+            }
+        }
+        Ok((result, adapters))
+    })
+    .await;
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+    let (result, adapters) = match joined {
+        Ok(Ok(value)) => value,
+        Ok(Err(code)) => {
+            return Err(ApiError::new(&code, "Saldırı fikstürü hazırlanamadı."))
+        }
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Saldırı testi tamamlanamadı.",
+            ))
+        }
+    };
+
+    // Denetime yalnız sayı/durum yazılır: fikstür belirteci, dosya adı ve yardım
+    // metni yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "detectorProven": result.detector.proven,
+                "detectorControlClean": result.detector.control_clean,
+                "pollutedHits": result.detector.polluted_hits,
+                "cleanHits": result.detector.clean_hits,
+                "gateRejected": result.gate.rejected,
+                "gateCode": result.gate.code,
+                "canaryReadInProductConfig": result.canary_read_in_product_config(),
+                "adapters": adapters
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "adapterId": a.adapter_id,
+                        "version": a.version,
+                        "status": a.status,
+                        "exitCode": a.exit_code,
+                        "hits": a.hits,
+                        "skipped": a.skipped,
+                        "verdicts": a
+                            .vectors
+                            .iter()
+                            .map(|v| serde_json::json!({
+                                "vector": v.vector,
+                                "verdict": v.verdict,
+                                "hit": v.hit,
+                                "source": v.source,
+                            }))
+                            .collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            db.append_audit("cli_attack", None, "probe", "local-user", &metadata)?;
+        }
+    }
+
+    let fixture = CliAttackFixtureView {
+        detector_proven: result.detector.proven,
+        detector_control_clean: result.detector.control_clean,
+        polluted_hits: result.detector.polluted_hits,
+        clean_hits: result.detector.clean_hits,
+        vector_total: dim_cli_adapters::AttackVector::ALL.len(),
+        gate_rejected: result.gate.rejected,
+        gate_code: result.gate.code,
+        product_config: result
+            .product_config
+            .iter()
+            .map(|observation| CliAttackProductView {
+                vector: observation.vector.id(),
+                label: observation.vector.label(),
+                hit: observation.hit,
+            })
+            .collect(),
+        canary_read_in_product_config: result.canary_read_in_product_config(),
+    };
+
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(CliAttackView {
+        fixture,
+        adapters,
+        probed_at_unix,
+        notes: vec![
+            "Vektörler geçici bir fikstürde kurulur; gerçek CLI'ya istem gönderilmez, kimlik dosyası okunmaz.",
+            "Dedektör kanıtı: kirli fikstürde naif yükleyici taklidi dört vektörün hepsinde işaret bıraktı, temiz fikstürde hiçbirinde. Vekil gerçek CLI kodu değildir.",
+            "Sessizlik davranış kanıtı değildir: hook/MCP/proje talimatı ancak bir oturum açıldığında yüklenir; bu çağrıda oturum açılmadı.",
+            "Kirli proje dizini iş dizini olarak reddedilir; ürün CLI'ya proje dizini vermez, iş dizini her zaman boş kum havuzudur.",
+            "Kapsam dışı canary: mutlak yolla okuma işletim sistemi düzeyinde engellenmiyor; koruma istem/araç yolunun yokluğuna dayanır.",
+            "Kimi etkileşimli-only olduğu için otomatik saldırı koşusu yapılmaz.",
+        ],
+    })
+}
+
 // --- F10-T13: CLI kalıntı envanteri, ölçümü ve yalnız uygulamaya ait temizlik ---
 
 #[derive(Serialize)]
