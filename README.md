@@ -82,6 +82,18 @@ Gerçek müvekkil belgesi, kişisel veri veya meslek sırrı içeren dosya **asl
 PR veya test fixture'ı olarak eklenemez. Yalnız `fixtures/synthetic/` altındaki kurgu
 veriler kullanılır.
 
+## Geliştirme
+
+```bash
+pnpm install
+bash scripts/install-hooks.sh   # commit sonrası disk koruması (core.hooksPath)
+```
+
+`scripts/disk-guard.sh` her commit sonrası arka planda çalışır: repo 2 GB'ı veya
+boş disk 5 GB'ı geçerse **yalnız yeniden üretilebilir** çıktıları (cargo target,
+PyInstaller build/dist, `.worker-venv`, paketlenmiş worker) siler. Kaynak, `docs/`
+ve `.git` korunur.
+
 ## Dağıtım ve imza
 
 Paketler **imzasız** dağıtılır (ADR-0012). macOS Gatekeeper / Windows Defender
