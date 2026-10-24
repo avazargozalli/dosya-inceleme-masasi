@@ -335,7 +335,18 @@ impl WorkerClient {
         for _ in 0..8 {
             let raw = match self.rx.recv_timeout(self.timeout) {
                 Ok(Ok(bytes)) => bytes,
-                Ok(Err(_)) => return Err(WorkerError::Disconnected),
+                Ok(Err(reason)) => {
+                    // Okuyucu iş parçacığı iki farklı arıza bildirir: çerçeve
+                    // sınırı aşımı ve okuma hatası. İkisini "bağlantı koptu"
+                    // diye birleştirmek çağıranın ayırt etmesini engellerdi
+                    // (aşırı çerçeve protokol/kötü niyet işareti, kopma ise
+                    // süreç ölümü); ayrı kod döner.
+                    return Err(if reason == "frame_too_large" {
+                        WorkerError::FrameTooLarge
+                    } else {
+                        WorkerError::Disconnected
+                    });
+                }
                 Err(RecvTimeoutError::Timeout) => return Err(WorkerError::Timeout),
                 Err(RecvTimeoutError::Disconnected) => return Err(WorkerError::Disconnected),
             };
@@ -800,6 +811,93 @@ mod tests {
             other => panic!("beklenmeyen: {other:?}"),
         }
         client.shutdown();
+    }
+
+    /// F01-T10 — süreç ölümü, yanıtsız süreç ve aşırı büyük çerçeve **ayrı**
+    /// kodlarla ve asılmadan raporlanır. Vekil süreç `/bin/sh` olduğu için bu
+    /// üç test Unix'e özgüdür; Windows'ta bu durumlar denenmedi (dürüst sınır).
+    #[cfg(unix)]
+    #[test]
+    fn worker_process_death_is_reported_without_hanging() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(Path::new("/bin/sh"), &["-c", "exit 7"], dir.path())
+            .expect("başlat")
+            .with_timeout(Duration::from_secs(2));
+        let started = std::time::Instant::now();
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(err, WorkerError::Disconnected),
+            "beklenmeyen hata: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_DISCONNECTED");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "süreç ölümü asılmamalı"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unresponsive_worker_times_out_instead_of_hanging() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(Path::new("/bin/sh"), &["-c", "sleep 30"], dir.path())
+            .expect("başlat")
+            .with_timeout(Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(err, WorkerError::Timeout),
+            "beklenmeyen hata: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_TIMEOUT");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "zaman aşımı sınırında dönmeli"
+        );
+    }
+
+    /// 1 MiB çerçeve sınırını aşan tek satır: hata **`E_WORKER_FRAME`** olarak
+    /// döner. Bu ayrım olmadan aşırı çerçeve "bağlantı koptu" gibi görünüyordu
+    /// ve çağıran süreç ölümü ile protokol ihlalini ayırt edemiyordu.
+    #[cfg(unix)]
+    #[test]
+    fn oversized_frame_is_reported_as_frame_error() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(
+            Path::new("/bin/sh"),
+            // 1,2 MB sıfır bayt, tek satır sonu yok: çerçeve sınırı aşılır.
+            &["-c", "head -c 1200000 /dev/zero"],
+            dir.path(),
+        )
+        .expect("başlat")
+        .with_timeout(Duration::from_secs(10));
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(err, WorkerError::FrameTooLarge),
+            "beklenmeyen hata: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_FRAME");
+    }
+
+    /// Bozuk çerçeve (JSON olmayan satır) `BadResponse` döner; ham çerçeve
+    /// hiçbir yere yazılmaz.
+    #[cfg(unix)]
+    #[test]
+    fn malformed_frame_is_reported_as_bad_response() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(
+            Path::new("/bin/sh"),
+            &["-c", "printf 'bu bir json degil\\n'"],
+            dir.path(),
+        )
+        .expect("başlat")
+        .with_timeout(Duration::from_secs(5));
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(err, WorkerError::BadResponse),
+            "beklenmeyen hata: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_RESPONSE");
     }
 
     #[test]

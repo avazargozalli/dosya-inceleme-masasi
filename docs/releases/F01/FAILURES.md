@@ -32,6 +32,7 @@ sonuç verir · **süreç** = ürün davranışı doğru, üretim/denetim izi et
 | 17 | Önceki turun yarım bıraktığı `DualReader.tsx` | Eksik import derlemeyi kırdı (F06-T10 turu) | Değişiklik yarım kalmış, `tsc` koşulmamış | Import + fixture alanı (`isCurrentRun`) | **işlevsel** — arayüz derlenmiyordu | `tsc --noEmit` + `vite build` + `reader.test.ts` |
 | 18 | `review_items.state`'e `superseded` eklemek | CHECK kısıtı reddeder; tabloyu yeniden kurmak FK riski | Şema kısıtı ile API durumu karıştırıldı | `superseded_at` ile ifade, durum API'de hesaplanır | **işlevsel** (gösterim) | Karar geçmişi testleri |
 | 19 | Test fixture'da sabit `storage_id` | İkinci çağrıda `UNIQUE constraint failed: blobs.storage_id` | Şema UNIQUE, fixture sabit | `Uuid::now_v7()` | **test** | Blob/itibar testleri |
+| 20 | `WorkerError::FrameTooLarge` tanımlıydı ama **hiç üretilmiyordu** | 1 MiB üstü çerçeve "bağlantı koptu" (`E_WORKER_DISCONNECTED`) olarak raporlanıyordu (F01-T10 testleri yazılırken bulundu) | Okuyucu iş parçacığı hatayı `String` olarak taşıyor, çağıran taraf hepsini `Disconnected`'a çeviriyordu | ~10 satır + 4 yeni test | **işlevsel** — tanılama yanlış: süreç ölümü ile protokol ihlali aynı kodla görünüyor, yanlış müdahale (yeniden başlat) yaptırıyordu | `oversized_frame_is_reported_as_frame_error` (`E_WORKER_FRAME`), `malformed_frame_...` (`E_WORKER_RESPONSE`), süreç ölümü ve zaman aşımı testleri |
 
 ## Yeniden denenmeyecekler (gerekçesi kodda yazılı)
 

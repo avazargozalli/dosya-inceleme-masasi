@@ -16,9 +16,9 @@
 | F01-T07 | Worker izolasyonu (kapsam dışı okuma/yazma/ağ) | ⬜ | — |
 | F01-T08 | CLI araçsız/izinli profil kanıtı | ⬜ | — |
 | F01-T09 | Yerel model RAM/ilk yanıt/iptal | ⬜ | — |
-| F01-T10 | Worker protokolü bozuk frame/süreç ölümü | 🚧 | `workers/document/tests` |
+| F01-T10 | Worker protokolü bozuk frame/süreç ölümü | ✅ Rust tarafı ölçüldü (Unix); Windows denenmedi | `crates/ingest/src/worker.rs` testleri (4 yeni: süreç ölümü, zaman aşımı, aşırı çerçeve, bozuk çerçeve) + `workers/document/tests/test_frames.py`, `test_protocol.py` (91 pytest) |
 | F01-T11 | Sürüm kilitleme ve ADR üretimi | ✅ | `Cargo.toml`, `package.json`, `docs/adr/` |
-| F01-T12 | Başarısız deneme kaydı | ✅ Defter yürürlükte (19 gerçek olay; yaşadıkça eklenir) | `docs/releases/F01/FAILURES.md` |
+| F01-T12 | Başarısız deneme kaydı | ✅ Defter yürürlükte (20 gerçek olay; yaşadıkça eklenir) | `docs/releases/F01/FAILURES.md` |
 
 > Not: F01'in platform spike'ları gerçek cihaz/CI koşusu olmadan "geçti" sayılmaz.
 > Bu dosya yalnız gerçekten çalıştırılan deneylerin sonucunu taşır.
@@ -55,3 +55,26 @@ Arama sonucu her iki durumda da boş; kalıntı yalnız şifreli sayfalarda duru
   işletim sisteminin sayfa takası (swap) kapsam dışı.
 - Worker testi Python + `workers/document` varsa koşar (bu makinede koştu,
   5 sn); yoksa atlandığını yazar — "geçti" sayılmaz.
+
+## F01-T10 — worker protokol arıza yolları (Rust tarafı ölçüldü, Unix)
+
+Vekil süreçlerle (`/bin/sh`) dört arıza yolu ve **asılma yok** ölçülür:
+
+| Test | Arıza | Beklenen kod |
+|---|---|---|
+| `worker_process_death_is_reported_without_hanging` | Süreç istek yazıldıktan sonra ölür (`exit 7`) | `E_WORKER_DISCONNECTED`, < 15 sn |
+| `unresponsive_worker_times_out_instead_of_hanging` | Süreç yanıt vermez (`sleep 30`), istemci sınırı 500 ms | `E_WORKER_TIMEOUT`, < 20 sn |
+| `oversized_frame_is_reported_as_frame_error` | Tek satırda 1,2 MB (çerçeve sınırı 1 MiB) | `E_WORKER_FRAME` |
+| `malformed_frame_is_reported_as_bad_response` | JSON olmayan satır | `E_WORKER_RESPONSE` |
+
+**Bulunan kusur (düzeltildi):** `WorkerError::FrameTooLarge` tanımlıydı ama
+**hiç üretilmiyordu** — okuyucu iş parçacığı aşırı çerçeveyi `Disconnected`'a
+çeviriyordu; çağıran süreç ölümü ile protokol ihlalini ayırt edemiyor, yanlış
+müdahale (yeniden başlat) yapıyordu. Ayrım eklendi (`E_WORKER_FRAME` /
+`E_WORKER_RESPONSE` / `E_WORKER_DISCONNECTED`).
+
+**Dürüst sınırlar:** testlerdeki süreçler vekildir; gerçek worker bu dört arızayı
+üretmedi (pytest tarafı `test_frames.py`/`test_protocol.py` ayrı kapsam).
+Windows'ta `/bin/sh` olmadığı için bu dört test **denenmedi**. Tauri katmanında
+`E_WORKER_*` kodları için özel kullanıcı mesajı yok — genel hata olarak yüzeye
+çıkar (ayrı iş).
