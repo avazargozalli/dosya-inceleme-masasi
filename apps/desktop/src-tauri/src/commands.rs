@@ -1,7 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use base64::Engine as _;
-use dim_cli_adapters::{discover, DiscoveryState, SPECS};
+use dim_cli_adapters::{
+    discover, find_on_path, run_probe, spec as adapter_spec, DiscoveryState, RunStatus, SPECS,
+};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
@@ -1607,6 +1611,155 @@ pub fn provider_probe() -> Vec<AdapterView> {
             }
         })
         .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeInput {
+    pub adapter_id: String,
+}
+
+/// Arayüzdeki "Bağlantıyı sına" düğmesinin gördüğü sonuç. Hangi argv ile,
+/// hangi ortam anahtarlarıyla, nerede ve ne kadar süre çalıştığı açıkça yazılır.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeView {
+    pub adapter_id: String,
+    pub display_name: String,
+    pub executable: String,
+    pub args: Vec<String>,
+    pub env_keys: Vec<String>,
+    pub workdir: String,
+    pub timeout_ms: u64,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout_head: String,
+    pub stderr_head: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
+fn probe_status_label(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Exited(_) => "exited",
+        RunStatus::TimedOut => "timed_out",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Signaled => "signaled",
+    }
+}
+
+/// **Gerçek** bağlantı sınaması: sürüm yoklaması yürütme çekirdeğinden geçer
+/// (izinli argv, allowlist ortam, boş geçici iş dizini, 15 sn sınır, iptal).
+/// İstem gönderilmez, kimlik dosyası okunmaz, model çağrılmaz.
+#[tauri::command]
+pub async fn provider_probe_run(
+    state: State<'_, AppState>,
+    input: CliProbeInput,
+) -> Result<CliProbeView, ApiError> {
+    let spec = adapter_spec(&input.adapter_id)
+        .ok_or_else(|| ApiError::new("E_CLI_UNKNOWN", "Bilinmeyen adaptör kimliği."))?;
+    if spec.batch_forbidden {
+        return Err(ApiError::new(
+            "E_CLI_BATCH_FORBIDDEN",
+            "Bu sağlayıcıda otomatik yürütme kapalı; yalnız etkileşimli kullanım var.",
+        ));
+    }
+    let executable = find_on_path(spec.command).ok_or_else(|| {
+        ApiError::new(
+            "E_CLI_NOT_INSTALLED",
+            "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
+        )
+    })?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir bağlantı sınaması var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+
+    let run_cancel = Arc::clone(&cancel);
+    let joined =
+        tauri::async_runtime::spawn_blocking(move || run_probe(spec, executable, &run_cancel))
+            .await;
+
+    // Yuva her durumda boşaltılır; iptal edilen ya da düşen koşu yeniyi engellemez.
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+
+    let report = match joined {
+        Ok(Ok(report)) => report,
+        Ok(Err(err)) => return Err(ApiError::new(err.code(), &err.to_string())),
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Sınama görevi tamamlanamadı.",
+            ))
+        }
+    };
+
+    let exit_code = match report.outcome.status {
+        RunStatus::Exited(code) => Some(code),
+        _ => None,
+    };
+    let view = CliProbeView {
+        adapter_id: spec.id.to_string(),
+        display_name: spec.display_name.to_string(),
+        executable: report.executable.to_string_lossy().to_string(),
+        args: report.args.clone(),
+        env_keys: report.env_keys.clone(),
+        workdir: report.workdir.to_string_lossy().to_string(),
+        timeout_ms: u64::try_from(report.timeout.as_millis()).unwrap_or(u64::MAX),
+        status: probe_status_label(&report.outcome.status),
+        exit_code,
+        duration_ms: report.outcome.duration_ms,
+        stdout_head: report.outcome.stdout_head.clone(),
+        stderr_head: report.outcome.stderr_head.clone(),
+        stdout_truncated: report.outcome.stdout_truncated,
+        stderr_truncated: report.outcome.stderr_truncated,
+    };
+
+    // Kasa açıksa sınama denetime yazılır; **çıktı metni denetime yazılmaz**.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": view.adapter_id,
+                "args": view.args,
+                "envKeys": view.env_keys,
+                "status": view.status,
+                "exitCode": view.exit_code,
+                "durationMs": view.duration_ms,
+                "stdoutTruncated": view.stdout_truncated,
+                "stderrTruncated": view.stderr_truncated,
+            });
+            db.append_audit("cli_probe", None, "run", "local-user", &metadata)?;
+        }
+    }
+
+    Ok(view)
+}
+
+/// Süren sınamayı iptal eder: alt süreç öldürülür, kısmi çıktı raporlanır.
+/// `true` = işaretlenecek bir koşu vardı.
+#[tauri::command]
+pub fn provider_probe_cancel(state: State<'_, AppState>) -> bool {
+    let slot = state.cli_probe_lock();
+    match slot.as_ref() {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            true
+        }
+        None => false,
+    }
 }
 
 #[tauri::command]

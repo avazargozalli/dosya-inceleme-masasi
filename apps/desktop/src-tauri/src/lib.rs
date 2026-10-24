@@ -97,6 +97,8 @@ pub fn run() {
             commands::checklist_item_state,
             commands::vault_backup,
             commands::provider_probe,
+            commands::provider_probe_run,
+            commands::provider_probe_cancel,
             commands::document_redact,
             commands::document_redact_regions,
             commands::export_json,

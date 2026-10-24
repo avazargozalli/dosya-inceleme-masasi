@@ -276,6 +276,23 @@ export type AdapterView = {
   allowedArgs: string[];
 };
 
+export type CliProbeView = {
+  adapterId: string;
+  displayName: string;
+  executable: string;
+  args: string[];
+  envKeys: string[];
+  workdir: string;
+  timeoutMs: number;
+  status: "exited" | "timed_out" | "cancelled" | "signaled";
+  exitCode: number | null;
+  durationMs: number;
+  stdoutHead: string;
+  stderrHead: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+};
+
 export type ClaimRow = {
   id: string;
   caseId: string;
@@ -871,6 +888,9 @@ export const api = {
   anchorLocate: (anchorId: string) =>
     invoke<AnchorLocationRow | null>("anchor_locate", { anchorId }),
   providerProbe: () => invoke<AdapterView[]>("provider_probe"),
+  providerProbeRun: (adapterId: string) =>
+    invoke<CliProbeView>("provider_probe_run", { input: { adapterId } }),
+  providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
 
   documentRedact: (versionId: string, terms: string[]) =>
     invoke<RedactionResult>("document_redact", { versionId, terms }),

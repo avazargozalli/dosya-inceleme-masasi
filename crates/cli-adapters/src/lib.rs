@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub mod exec;
+pub mod probe;
 pub use exec::{
     clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
     RunOutcome, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
 };
+pub use probe::{probe_request, run_probe, ProbeReport, ProbeWorkdir, PROBE_TIMEOUT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
@@ -238,14 +240,16 @@ fn is_executable(path: &Path) -> bool {
 }
 
 /// İzinli argüman kapısı. `--flag=value` biçimi de kabul edilir; bayrak adı
-/// listede yoksa istek reddedilir (INV-10).
+/// listede yoksa istek reddedilir (INV-10). Sicilde tanımlı **sürüm bayrakları**
+/// (`version_args`) ayrıca izinlidir: yoklama kendi sicilindeki bayrağı
+/// kullanabildiği hâlde kapıya takılmamalı.
 pub fn build_args(adapter_id: &str, extra: &[String]) -> Result<Vec<String>, AdapterError> {
     let spec =
         spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
     let mut out = Vec::with_capacity(extra.len());
     for arg in extra {
         let flag = arg.split('=').next().unwrap_or(arg);
-        if !spec.allowed_args.contains(&flag) {
+        if !spec.allowed_args.contains(&flag) && !spec.version_args.contains(&flag) {
             return Err(AdapterError::DisallowedArgument(flag.to_string()));
         }
         out.push(arg.clone());
@@ -292,6 +296,22 @@ mod tests {
     #[test]
     fn unknown_adapter_rejected() {
         assert_eq!(build_args("yok", &[]).unwrap_err().code(), "E_CLI_UNKNOWN");
+    }
+
+    #[test]
+    fn version_flags_pass_the_argument_gate() {
+        // Arayüzdeki "Bağlantıyı sına" düğmesi tam olarak bunu çalıştırır:
+        // sicildeki sürüm bayrağı kapıya takılmamalı.
+        let args = build_args("claude-code", &["--version".into()]).expect("izinli");
+        assert_eq!(args, vec!["--version".to_string()]);
+        assert!(build_args("kimi-cli", &["--help".into()]).is_ok());
+        // Bilinmeyen bayrak hâlâ reddedilir.
+        assert_eq!(
+            build_args("claude-code", &["--yolo".into()])
+                .unwrap_err()
+                .code(),
+            "E_CLI_ARGUMENT"
+        );
     }
 
     #[test]

@@ -20,6 +20,9 @@ pub struct AppState {
     pub vault: Mutex<VaultState>,
     /// Çözülmüş sayfa önizlemeleri; yalnız kilit açıkken tutulur (F07-T11).
     pub preview: Mutex<dim_preview::PreviewMemory>,
+    /// Süren CLI sınama işareti (F10). `None` iken sınama yok; aynı anda tek
+    /// sınama çalışır ve iptal düğmesi bu bayrağı işaretler.
+    pub cli_probe: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl AppState {
@@ -31,6 +34,21 @@ impl AppState {
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
                 guard.clear();
+                guard
+            }
+        }
+    }
+
+    /// Süren CLI sınama yuvası (F10). Zehirli kilitten sonra bayrak temizlenir:
+    /// panikle yarıda kalan bir sınama yeni sınamayı kalıcı olarak engellemez.
+    pub fn cli_probe_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> {
+        match self.cli_probe.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                *guard = None;
                 guard
             }
         }

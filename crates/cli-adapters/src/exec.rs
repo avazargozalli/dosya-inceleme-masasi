@@ -64,6 +64,8 @@ pub enum RunError {
     ExecutableUnavailable,
     #[error("iş dizini yok veya dizin değil")]
     InvalidWorkdir,
+    #[error("geçici iş dizini hazırlanamadı: {0}")]
+    WorkdirUnavailable(String),
     #[error("ortam değişkeni reddedildi: {0}")]
     EnvRejected(String),
     #[error("süreç başlatılamadı: {0}")]
@@ -78,6 +80,7 @@ impl RunError {
             Self::RelativeExecutable => "E_CLI_EXEC_PATH",
             Self::ExecutableUnavailable => "E_CLI_EXEC_MISSING",
             Self::InvalidWorkdir => "E_CLI_EXEC_WORKDIR",
+            Self::WorkdirUnavailable(_) => "E_CLI_EXEC_WORKDIR",
             Self::EnvRejected(_) => "E_CLI_EXEC_ENV",
             Self::SpawnFailed(_) => "E_CLI_EXEC_SPAWN",
         }
