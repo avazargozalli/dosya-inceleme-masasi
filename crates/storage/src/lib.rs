@@ -64,9 +64,10 @@ pub use precedent_terms::{
 };
 pub use precedents::{
     CitationCheckRow, CitationContext, NewCitationCheck, NewPrecedent, NewPrecedentNote,
-    NewPrecedentText, PrecedentBibliography, PrecedentNoteRow, PrecedentRow, PrecedentSearchHit,
-    PrecedentSearchPage, PrecedentSearchQuery, PrecedentVersionRow, QuoteVerification,
-    MAX_PRECEDENT_SEARCH_LIMIT, PRECEDENT_SEARCH_SCOPE,
+    NewPrecedentText, PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
+    PrecedentSearchHit, PrecedentSearchPage, PrecedentSearchQuery, PrecedentVersionRow,
+    QuoteVerification, MAX_PRECEDENT_DOCUMENT_TEXT_BYTES, MAX_PRECEDENT_SEARCH_LIMIT,
+    PRECEDENT_SEARCH_SCOPE,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{

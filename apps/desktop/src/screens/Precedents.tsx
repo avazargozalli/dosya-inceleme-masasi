@@ -12,7 +12,9 @@ import {
   type CorpusCoverage,
   type CorpusExportResult,
   type DocumentRow,
+  type DocumentVersionRow,
   type PrecedentBibliography,
+  type PrecedentDocumentText,
   type PrecedentNoteRow,
   type PrecedentRow,
   type PrecedentUsageTerms,
@@ -48,6 +50,12 @@ import {
   termsRecordedText,
   usageBasisLabel,
 } from "../lib/precedent-terms";
+import {
+  documentTextSummary,
+  documentTextWarnings,
+  transferBlockedReason,
+  versionOptionLabel,
+} from "../lib/precedent-document";
 
 type Draft = {
   court: string;
@@ -109,6 +117,15 @@ export function Precedents() {
   const [quoteInput, setQuoteInput] = useState("");
   const [verification, setVerification] = useState<QuoteVerificationRow | null>(null);
   const versionSummary = summarizeVersions(versions);
+
+  // Kasadaki belgeden tam metin (F12-T13)
+  const [srcCaseId, setSrcCaseId] = useState("");
+  const [srcDocs, setSrcDocs] = useState<DocumentRow[]>([]);
+  const [srcDocId, setSrcDocId] = useState("");
+  const [srcVersions, setSrcVersions] = useState<DocumentVersionRow[]>([]);
+  const [srcVersionId, setSrcVersionId] = useState("");
+  const [srcResult, setSrcResult] = useState<PrecedentDocumentText | null>(null);
+  const [srcBusy, setSrcBusy] = useState(false);
 
   // Bibliyografik künye (F12-T12)
   const [bibliography, setBibliography] = useState<PrecedentBibliography | null>(null);
@@ -193,6 +210,7 @@ export function Precedents() {
     setCopied(false);
     setVerification(null);
     setQuoteInput("");
+    setSrcResult(null);
   }, [selected]);
 
   useEffect(() => {
@@ -202,6 +220,44 @@ export function Precedents() {
       setVersionId(list.find((d) => d.currentVersionId)?.currentVersionId ?? "");
     }).catch((e) => setError(toApiError(e)));
   }, [caseId]);
+
+  // F12-T13: kaynak belge seçimi — dosyalar `cases`, sürümler gerçek
+  // `document_versions` kayıtlarından gelir. Liste boşsa arayüz nedenini yazar.
+  useEffect(() => {
+    setSrcCaseId((prev) =>
+      prev && cases.some((c) => c.id === prev) ? prev : (cases[0]?.id ?? ""),
+    );
+  }, [cases]);
+
+  useEffect(() => {
+    if (!srcCaseId) {
+      setSrcDocs([]);
+      setSrcDocId("");
+      return;
+    }
+    void api
+      .documentList(srcCaseId)
+      .then((list) => {
+        setSrcDocs(list);
+        setSrcDocId((prev) => (list.some((d) => d.id === prev) ? prev : (list[0]?.id ?? "")));
+      })
+      .catch((e) => setError(toApiError(e)));
+  }, [srcCaseId]);
+
+  useEffect(() => {
+    if (!srcDocId) {
+      setSrcVersions([]);
+      setSrcVersionId("");
+      return;
+    }
+    void api
+      .documentVersionList(srcDocId)
+      .then((list) => {
+        setSrcVersions(list);
+        setSrcVersionId((prev) => (list.some((v) => v.id === prev) ? prev : (list[0]?.id ?? "")));
+      })
+      .catch((e) => setError(toApiError(e)));
+  }, [srcDocId]);
 
   useEffect(() => {
     if (!versionId) {
@@ -285,6 +341,41 @@ export function Precedents() {
       setError(toApiError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * F12-T13 — kasadaki belge sürümünün çıkarılmış metnini emsale aktarır.
+   * Kaynak (hangi belge/sürüm) kullanıcı seçer; çekirdek ayrıştırma koşusunu
+   * bulamazsa metin yazılmaz ve hata kodu gösterilir.
+   */
+  async function transferFromDocument() {
+    if (!selected) return;
+    const blocked = transferBlockedReason({
+      hasPrecedent: true,
+      documentCount: srcDocs.length,
+      versionCount: srcVersions.length,
+      selectedVersionId: srcVersionId,
+    });
+    if (blocked) {
+      setError({ code: "E_TEXT_SOURCE", message: blocked, retryable: false });
+      return;
+    }
+    setSrcBusy(true);
+    setError(null);
+    setSrcResult(null);
+    try {
+      const result = await api.precedentTextFromDocument(selected.id, srcVersionId);
+      setSrcResult(result);
+      setVersions(await api.precedentVersionList(selected.id));
+      setBibliography(await api.precedentBibliography(selected.id));
+      // Metin değişti: önceki alıntı doğrulaması bu sürüme ait değil.
+      setVerification(null);
+      await loadCoverage();
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setSrcBusy(false);
     }
   }
 
@@ -906,6 +997,143 @@ export function Precedents() {
               ))}
             </div>
           )}
+
+          <div
+            style={{
+              borderTop: "1px solid var(--line)",
+              paddingTop: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div>
+              <strong style={{ fontSize: 13 }}>Kasadaki belgeden aktar</strong>
+              <p className="hint" style={{ margin: "2px 0 0" }}>
+                Belgenin <b>ayrıştırılmış sayfa metni</b> birleştirilir; dosyanın kendisi
+                kopyalanmaz. Hangi sürümden aktarılacağını sen seçersin.
+              </p>
+            </div>
+            <div className="row">
+              <div className="field" style={{ flex: "1 1 180px" }}>
+                <label htmlFor="src-case">Dosya</label>
+                <select
+                  id="src-case"
+                  className="input"
+                  value={srcCaseId}
+                  onChange={(e) => {
+                    setSrcCaseId(e.target.value);
+                    setSrcResult(null);
+                  }}
+                  disabled={cases.length === 0}
+                >
+                  {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+                  {cases.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field" style={{ flex: "1 1 200px" }}>
+                <label htmlFor="src-doc">Belge</label>
+                <select
+                  id="src-doc"
+                  className="input"
+                  value={srcDocId}
+                  onChange={(e) => {
+                    setSrcDocId(e.target.value);
+                    setSrcResult(null);
+                  }}
+                  disabled={srcDocs.length === 0}
+                >
+                  {srcDocs.length === 0 ? <option value="">Belge yok</option> : null}
+                  {srcDocs.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field" style={{ flex: "1 1 170px" }}>
+                <label htmlFor="src-version">Sürüm</label>
+                <select
+                  id="src-version"
+                  className="input"
+                  value={srcVersionId}
+                  onChange={(e) => {
+                    setSrcVersionId(e.target.value);
+                    setSrcResult(null);
+                  }}
+                  disabled={srcVersions.length === 0}
+                >
+                  {srcVersions.length === 0 ? <option value="">Sürüm yok</option> : null}
+                  {srcVersions.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {versionOptionLabel(row)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="btn"
+                disabled={
+                  srcBusy ||
+                  transferBlockedReason({
+                    hasPrecedent: Boolean(selected),
+                    documentCount: srcDocs.length,
+                    versionCount: srcVersions.length,
+                    selectedVersionId: srcVersionId,
+                  }) !== null
+                }
+                onClick={() => void transferFromDocument()}
+              >
+                {srcBusy ? "Aktarılıyor…" : "Bu belgeden tam metni aktar"}
+              </button>
+            </div>
+            {srcResult ? (
+              <div
+                style={{
+                  border: "1px solid var(--line)",
+                  borderRadius: "var(--radius)",
+                  padding: "8px 10px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+              >
+                <span className="small">{documentTextSummary(srcResult)}</span>
+                <span className="small muted">
+                  {srcResult.engine} · {srcResult.parseStatus} · ayrıştırma koşusu{" "}
+                  {srcResult.parseRunId.slice(0, 8)}…
+                </span>
+                <span className="small">
+                  {srcResult.written
+                    ? "Yeni sürüm yazıldı ve alıntı doğrulaması bu metne göre yapılır."
+                    : "Yeni sürüm yazılmadı; var olan sürüm gösteriliyor."}
+                </span>
+                {documentTextWarnings(srcResult).map((warning) => (
+                  <span key={warning} className="small" style={{ color: "var(--warn)" }}>
+                    {warning}
+                  </span>
+                ))}
+                {srcResult.notes.map((note) => (
+                  <span key={note} className="small muted">
+                    {note}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <span className="hint" style={{ margin: 0 }}>
+                {transferBlockedReason({
+                  hasPrecedent: Boolean(selected),
+                  documentCount: srcDocs.length,
+                  versionCount: srcVersions.length,
+                  selectedVersionId: srcVersionId,
+                }) ?? "Seçili sürümün sayfa metni aktarılacak; ayrıştırma yoksa metin yazılmaz."}
+              </span>
+            )}
+          </div>
 
           <div className="field">
             <label htmlFor="p-fulltext">Karar tam metnini yapıştır</label>

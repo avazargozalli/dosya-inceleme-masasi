@@ -195,6 +195,22 @@ impl Database {
         Ok(stmt.query_row([id], map_version).optional()?)
     }
 
+    /// Bir belgenin sürümleri, en yeniden eskiye. Arayüz "hangi sürümden metin
+    /// aktarılacak" seçimini bu listeden yapar (F12-T13); sürüm seçimi tahmin
+    /// edilmez, kullanıcı seçer.
+    pub fn list_versions(&self, document_id: &str) -> Result<Vec<DocumentVersion>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at
+             FROM document_versions WHERE document_id=?1 ORDER BY version_no DESC",
+        )?;
+        let rows = stmt.query_map([document_id], map_version)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Aynı baytlar daha önce içe alınmış mı? Kapsam **aynı case** ile sınırlıdır;
     /// başka dosyadaki aynı içerik bu dosyaya otomatik bağlanmaz.
     pub fn find_version_by_sha(
@@ -323,6 +339,13 @@ mod tests {
             )
             .expect("sürüm 2");
         assert_eq!(v2.version_no, 2);
+
+        // F12-T13: sürüm seçimi arayüzde bu listeden yapılır — en yeniden eskiye.
+        let listed = db.list_versions(&doc.id).expect("sürümler");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, v2.id);
+        assert_eq!(listed[1].id, v.id);
+        assert!(db.list_versions("yok").expect("boş").is_empty());
     }
 
     #[test]

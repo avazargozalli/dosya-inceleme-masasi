@@ -16,6 +16,7 @@
 | F12-T10 | ✅ | kütüphane araması dosya aramasından ayrı (şema değişikliği yok; sızıntı testi) |
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
+| F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -115,9 +116,10 @@ değerlendirmesidir; sistem hükmü değildir.
 
 ## Sınırlamalar
 
-- Tam metin **yapıştırma** veya **toplu içe alma** (dosyadan, `source_kind=file`)
-  ile girer. Kasadaki belge sürümünden aktarma (`source_kind=document`) veri
-  modelinde hazır; ayrı düğmesi yok (toplu içe almada dosya yolu kullanılıyor).
+- Tam metin **yapıştırma**, **toplu içe alma** (dosyadan, `source_kind=file`) veya
+  **kasadaki belge sürümünden aktarma** (`source_kind=document`, F12-T13) ile
+  girer. Belgeden aktarımda dosya kopyalanmaz: o sürümün en yeni başarılı/kısmi
+  ayrıştırmasının sayfa metinleri birleştirilir.
 - Doğrulama yalnız metin eşleşmesidir; **anlam/bağlam** incelemesi ayrı boyut
   olarak kalır (F12-T07).
 - Sadeleştirme Türkçe harf katlamasıyla sınırlı; kelime değişikliği, çeviri
@@ -226,3 +228,50 @@ binlerde doğrusal) — FTS indeksi yok. Pencere konumu yalnız üç yöntemle
 bulunur; noktalama araya girdiği ifade eşleşmelerinde konum `null` kalabilir
 (snippet baştan gösterilir). Kütüphane sonucu dosyaya delil olarak eklenmez;
 bunu yapan bir düğme bilinçli olarak yok.
+
+## F12-T13 — Kasadaki belge sürümünden tam metin aktarma
+
+`source_kind=document` yolu artık arayüzden çalışır; `add_precedent_text`'in
+"verilen `document_version_id` kasadaki gerçek sürüm olmalı" kuralı korunur,
+üzerine **metin üretimi** eklenir.
+
+- `Database::precedent_text_from_document(precedent_id, document_version_id)` →
+  `PrecedentDocumentText { version, parseRunId, engine, parseStatus, pages,
+  ocrPages, emptyPages, charCount, written, notes }`.
+  - Metin **çıkarılmış** sayfa metnidir: o sürümün **en yeni** `succeeded` /
+    `partial` ayrıştırma koşusunun sayfaları çift satır sonuyla birleştirilir.
+    Dosya baytları kopyalanmaz; PDF/DOCX'in kendisi saklanmaz.
+  - **Hiçbir şey uydurulmaz:** ayrıştırma yoksa, yalnız `failed` koşu varsa,
+    sayfalar boşsa ya da metin 16 MiB'ı aşarsa metin **yazılmaz** →
+    `E_PRECEDENT_SOURCE`. Sayfa numarası/başlık metne eklenmez.
+  - **Eksik bilgi gizlenmez:** `ocrPages` (`text_origin IN ('ocr','mixed')`),
+    `emptyPages` (birleştirmeye girmeyen), `parseStatus=partial` uyarısı ve
+    "metin dosyanın kopyası değil" notu döner.
+  - **Tekrar yazım yok:** aynı `body_hash` bu emsalde zaten varsa yeni sürüm
+    yazılmaz (`written=false`) ve var olan sürüm döner.
+  - Denetime `text_from_document` kaydı düşer: `documentVersionId`,
+    `parseRunId`, sayfa/OCR/boş sayfa sayıları, karakter sayısı — **metin
+    yazılmaz**.
+- `Database::list_versions(document_id)` — belgenin sürümleri en yeniden eskiye;
+  arayüz seçimi bu gerçek listeden yapılır ("en yeni sürüm" varsayımı yok,
+  varsayılan seçim kutuda görünür).
+- Tauri: `precedent_text_from_document`, `document_version_list`.
+- Arayüz (`Precedents.tsx` → "Tam metin ve alıntı doğrulama" kartı): **Kasadaki
+  belgeden aktar** bölümü — dosya / belge / sürüm seçicileri, aktar düğmesi,
+  sonuç kartı (sayfa, karakter, sha256, motor, koşu kimliği, uyarılar, notlar).
+  Liste boşsa düğme kapalı ve **nedeni yazılır**.
+- Test: 5 yeni storage testi (`precedents::document_text_transfer_*`) +
+  `list_versions` sırası; 12 yeni web testi (`precedent-document.test.ts`).
+
+### Dürüst sınırlama
+
+- Aktarım **çıkarılmış metindir**: OCR sayfalarında yazım hatası, taranmış
+  görüntüde hiç metin olmaması mümkündür; ürün kaynak PDF'e bakıp metni
+  doğrulamaz.
+- Sayfa sınırları çift satır sonudur; **basılı sayfa numarası/başlık metne
+  eklenmez**, dolayısıyla alıntı konumu belge sayfasıyla birebir eşlenmez
+  (alıntı doğrulaması karakter düzeyindedir).
+- Kısmi (`partial`) ayrıştırma "tam" sayılmaz; eksik sayfa olabilir ve bu
+  yazılır. Ayrıştırma yoksa kullanıcı önce belgeyi ayrıştırmalıdır.
+- Tauri penceresi bu ortamda açılmadı: akış typecheck + birim testleri +
+  üretim derlemesiyle doğrulandı; gerçek tıklama ve görsel QA yok.

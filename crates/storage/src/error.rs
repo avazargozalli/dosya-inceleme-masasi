@@ -60,6 +60,8 @@ pub enum StorageError {
     Terms(String),
     #[error("izinsiz toplu karar korpusu dağıtılmaz: {0}")]
     CorpusNotPermitted(String),
+    #[error("emsal tam metni kaynaktan üretilemedi: {0}")]
+    PrecedentSource(String),
 }
 
 impl StorageError {
@@ -92,6 +94,7 @@ impl StorageError {
             Self::Manifest(_) => "E_MANIFEST",
             Self::Terms(_) => "E_TERMS",
             Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",
+            Self::PrecedentSource(_) => "E_PRECEDENT_SOURCE",
         }
     }
 }

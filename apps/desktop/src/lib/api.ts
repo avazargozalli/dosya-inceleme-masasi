@@ -316,6 +316,22 @@ export type PrecedentVersionRow = {
   conflictWithVersionId: string | null;
 };
 
+/** Kasadaki belgeden tam metin aktarmanın sonucu (F12-T13). */
+export type PrecedentDocumentText = {
+  version: PrecedentVersionRow;
+  parseRunId: string;
+  engine: string;
+  /** `succeeded` | `partial` — kısmi ayrıştırmada eksik sayfa olabilir. */
+  parseStatus: string;
+  pages: number;
+  ocrPages: number;
+  emptyPages: number;
+  charCount: number;
+  /** `false` ise aynı SHA-256 zaten kayıtlıydı; yeni sürüm yazılmadı. */
+  written: boolean;
+  notes: string[];
+};
+
 /** Bibliyografik künye (F12-T12). Eksik alanlar `missing` içinde; tahmin yok. */
 export type PrecedentBibliography = {
   precedentId: string;
@@ -1111,6 +1127,15 @@ export const api = {
   ) => invoke<PrecedentVersionRow>("precedent_text_add", { precedentId, input }),
   precedentVersionList: (precedentId: string) =>
     invoke<PrecedentVersionRow[]>("precedent_version_list", { precedentId }),
+  /** Kasadaki belge sürümünün çıkarılmış metninden emsal tam metni (F12-T13). */
+  precedentTextFromDocument: (precedentId: string, documentVersionId: string) =>
+    invoke<PrecedentDocumentText>("precedent_text_from_document", {
+      precedentId,
+      documentVersionId,
+    }),
+  /** Belgenin sürümleri, en yeniden eskiye. Seçim kullanıcıya bırakılır. */
+  documentVersionList: (documentId: string) =>
+    invoke<DocumentVersionRow[]>("document_version_list", { documentId }),
   precedentQuoteVerify: (precedentId: string, quote: string) =>
     invoke<QuoteVerificationRow>("precedent_quote_verify", { precedentId, quote }),
   /** Bibliyografik künye (F12-T12): künye, kaynak bağlantısı, erişim tarihi. */

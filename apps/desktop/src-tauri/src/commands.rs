@@ -19,11 +19,12 @@ use dim_storage::{
     NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
     NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
     NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
-    PrecedentNoteRow, PrecedentRow, PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms,
-    PrecedentVersionRow, ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
-    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
-    SearchPage, SearchQuery, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
+    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
+    SetUsageTermsInput, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -353,6 +354,19 @@ pub fn document_list(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_documents(&case_id)?)
+}
+
+/// Belgenin sürümleri (en yeniden eskiye). F12-T13'te emsale tam metin
+/// aktarılırken kaynak sürüm bu listeden **kullanıcı tarafından** seçilir;
+/// "en yeni sürüm" varsayımı yapılmaz.
+#[tauri::command]
+pub fn document_version_list(
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<Vec<DocumentVersion>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_versions(&document_id)?)
 }
 
 #[derive(Serialize)]
@@ -1833,6 +1847,20 @@ pub fn precedent_text_add(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.add_precedent_text(&precedent_id, &input)?)
+}
+
+/// Kasadaki bir belge sürümünün çıkarılmış metninden emsal tam metni üretir
+/// (F12-T13). Ayrıştırma yoksa / metin boşsa metin **yazılmaz**
+/// (`E_PRECEDENT_SOURCE`); aynı SHA-256 zaten kayıtlıysa yeni sürüm yazılmaz.
+#[tauri::command]
+pub fn precedent_text_from_document(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    document_version_id: String,
+) -> Result<PrecedentDocumentText, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_text_from_document(&precedent_id, &document_version_id)?)
 }
 
 #[tauri::command]

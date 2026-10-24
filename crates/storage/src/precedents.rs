@@ -255,6 +255,35 @@ pub struct NewPrecedentText {
     pub document_version_id: Option<String>,
 }
 
+/// Kasadaki bir belge sürümünden emsale tam metin aktarmanın sonucu (F12-T13).
+///
+/// `version` yazılan (ya da aynı metin zaten varsa **var olan**) sürümdür.
+/// `page_texts` **çıkarılmış** metindir: PDF/DOCX dosyasının kendisi kopyalanmaz,
+/// sayfa metinleri birleştirilir. Bu yüzden OCR/boş sayfa sayıları ayrıca döner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentDocumentText {
+    pub version: PrecedentVersionRow,
+    /// Metnin alındığı ayrıştırma koşusu.
+    pub parse_run_id: String,
+    pub engine: String,
+    /// `succeeded` | `partial` — kısmi ayrıştırmada eksik sayfa olabilir.
+    pub parse_status: String,
+    pub pages: i64,
+    /// `text_origin IN ('ocr','mixed')` olan sayfa sayısı.
+    pub ocr_pages: i64,
+    /// Metni boş olduğu için birleştirmeye girmeyen sayfa sayısı.
+    pub empty_pages: i64,
+    pub char_count: i64,
+    /// `false` ise aynı SHA-256 zaten kayıtlıydı; yeni sürüm yazılmadı.
+    pub written: bool,
+    pub notes: Vec<String>,
+}
+
+/// Kasadaki belge sürümünden üretilecek tam metnin üst sınırı. Aşılırsa metin
+/// **yazılmaz**; sessizce kırpılmaz.
+pub const MAX_PRECEDENT_DOCUMENT_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Metin içi alıntı doğrulaması (F12-T05). `state`:
 /// - `match`: alıntı metinde bulundu; `method` farkın türünü söyler.
 /// - `mismatch`: tam metin elimizde ama alıntı bulunamadı.
@@ -755,6 +784,151 @@ impl Database {
             document_version_id,
             None,
         )
+    }
+
+    /// Başarılı ya da kısmi son ayrıştırma koşusunun sayfa metinlerinden emsal
+    /// tam metni üretir (F12-T13). Dosyanın kendisi kopyalanmaz: metin
+    /// **çıkarılmış** hâldir ve hangi koşudan geldiği sonuçta yazılır.
+    ///
+    /// - Ayrıştırma yoksa / metin boşsa metin yazılmaz (`E_PRECEDENT_SOURCE`).
+    /// - Sayfa metinleri çift satır sonuyla birleştirilir; boş sayfalar atlanır
+    ///   ve sayısı raporlanır. Sayfa numarası metne **eklenmez** (uydurma künye
+    ///   olurdu).
+    /// - Aynı SHA-256 bu emsalde zaten varsa yeni sürüm yazılmaz; var olan
+    ///   sürüm `written=false` ile döner.
+    pub fn precedent_text_from_document(
+        &self,
+        precedent_id: &str,
+        document_version_id: &str,
+    ) -> Result<PrecedentDocumentText, StorageError> {
+        if self.get_precedent(precedent_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let version_id = document_version_id.trim();
+        if version_id.is_empty() || self.get_version(version_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let run = self
+            .list_parse_runs(version_id)?
+            .into_iter()
+            .find(|r| matches!(r.status.as_str(), "succeeded" | "partial"))
+            .ok_or_else(|| {
+                StorageError::PrecedentSource(
+                    "belge sürümünün başarılı ya da kısmi ayrıştırması yok".into(),
+                )
+            })?;
+        let pages = self.pages_for_run(&run.id)?;
+        if pages.is_empty() {
+            return Err(StorageError::PrecedentSource(
+                "ayrıştırılmış sayfa bulunamadı".into(),
+            ));
+        }
+        let mut body = String::new();
+        let mut ocr_pages = 0i64;
+        let mut empty_pages = 0i64;
+        for page in &pages {
+            if matches!(page.text_origin.as_str(), "ocr" | "mixed") {
+                ocr_pages += 1;
+            }
+            let text = page.text.trim();
+            if text.is_empty() {
+                empty_pages += 1;
+                continue;
+            }
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str(text);
+        }
+        if body.trim().is_empty() {
+            return Err(StorageError::PrecedentSource(
+                "ayrıştırılmış sayfaların metni boş".into(),
+            ));
+        }
+        if body.len() > MAX_PRECEDENT_DOCUMENT_TEXT_BYTES {
+            return Err(StorageError::PrecedentSource(format!(
+                "çıkarılan metin {MAX_PRECEDENT_DOCUMENT_TEXT_BYTES} bayt sınırını aşıyor"
+            )));
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(body.as_bytes());
+        let body_hash = hex::encode(hasher.finalize());
+        let char_count = i64::try_from(body.chars().count()).unwrap_or(i64::MAX);
+        let mut notes = vec![
+            "Metin kasadaki belgeden çıkarıldı (dosyanın kopyası değil); sayfa sınırları çift satır sonuyla ayrıldı."
+                .to_string(),
+        ];
+        if ocr_pages > 0 {
+            notes.push(format!(
+                "{ocr_pages} sayfa OCR ile çıkarıldı; alıntı doğrulaması bu metne göre yapılır."
+            ));
+        }
+        if empty_pages > 0 {
+            notes.push(format!(
+                "{empty_pages} sayfa metinsiz; birleştirmeye alınmadı."
+            ));
+        }
+        if run.status == "partial" {
+            notes.push("Ayrıştırma kısmi (partial); eksik sayfa olabilir.".to_string());
+        }
+
+        let existing: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT id FROM precedent_versions WHERE precedent_id=?1 AND body_hash=?2 LIMIT 1",
+                rusqlite::params![precedent_id, body_hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let written = existing.is_none();
+        if !written {
+            notes.push(
+                "Aynı metin (aynı SHA-256) bu emsalde zaten kayıtlı; yeni sürüm yazılmadı."
+                    .to_string(),
+            );
+        }
+        let version = if let Some(id) = existing {
+            self.get_precedent_version(&id)?
+                .ok_or(StorageError::NotFound)?
+        } else {
+            let inserted = self.insert_precedent_version(
+                precedent_id,
+                &body,
+                &body_hash,
+                char_count,
+                "document",
+                Some(version_id),
+                None,
+            )?;
+            // Hangi koşudan geldiği denetimde kalsın; metin denetime yazılmaz.
+            self.append_audit(
+                "precedent_version",
+                Some(&inserted.id),
+                "text_from_document",
+                "local-user",
+                &serde_json::json!({
+                    "documentVersionId": version_id,
+                    "parseRunId": run.id,
+                    "pages": i64::try_from(pages.len()).unwrap_or(i64::MAX),
+                    "ocrPages": ocr_pages,
+                    "emptyPages": empty_pages,
+                    "charCount": char_count,
+                }),
+            )?;
+            inserted
+        };
+        Ok(PrecedentDocumentText {
+            version,
+            parse_run_id: run.id,
+            engine: run.engine,
+            parse_status: run.status,
+            pages: i64::try_from(pages.len()).unwrap_or(i64::MAX),
+            ocr_pages,
+            empty_pages,
+            char_count,
+            written,
+            notes,
+        })
     }
 
     pub fn get_precedent_version(
@@ -2079,6 +2253,265 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "E_SEARCH_QUERY"
+        );
+    }
+
+    /// Belge sürümü + ayrıştırma koşusu + sayfalar kurar (F12-T13 testleri).
+    /// `pages` = (metin, `text_origin`) çiftleri.
+    fn document_version_with_pages(db: &Database, pages: &[(&str, &str)], status: &str) -> String {
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db
+            .create_blob_record(&format!("st-f12-{}", uuid::Uuid::now_v7()), 10, "aad")
+            .expect("blob");
+        let doc = db
+            .create_document(&case.id, "Karar", "pdf", None, "unknown")
+            .expect("belge");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"e".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        let new_pages: Vec<crate::NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, (text, origin))| crate::NewPage {
+                index: i64::try_from(index).unwrap_or(0),
+                text: (*text).to_string(),
+                origin: (*origin).to_string(),
+                ..Default::default()
+            })
+            .collect();
+        if !new_pages.is_empty() {
+            db.store_pages(&run.id, &case.id, &new_pages)
+                .expect("sayfalar");
+        }
+        db.finish_parse_run(&run.id, status, &[]).expect("bitir");
+        version.id
+    }
+
+    #[test]
+    fn document_text_transfer_joins_pages_and_verifies_quotes() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/71"), Some("2025/72")))
+            .expect("emsal");
+        let version_id = document_version_with_pages(
+            &db,
+            &[
+                ("Birinci sayfa metni.", "native"),
+                ("İkinci sayfa metni.", "native"),
+            ],
+            "succeeded",
+        );
+
+        let result = db
+            .precedent_text_from_document(&p.id, &version_id)
+            .expect("aktarım");
+        assert!(result.written);
+        assert_eq!(result.pages, 2);
+        assert_eq!(result.ocr_pages, 0);
+        assert_eq!(result.empty_pages, 0);
+        assert_eq!(result.engine, "pymupdf");
+        assert_eq!(result.parse_status, "succeeded");
+        assert_eq!(result.version.source_kind, "document");
+        assert_eq!(
+            result.version.document_version_id.as_deref(),
+            Some(version_id.as_str())
+        );
+        assert_eq!(
+            result.char_count,
+            i64::try_from(
+                "Birinci sayfa metni.\n\nİkinci sayfa metni."
+                    .chars()
+                    .count()
+            )
+            .expect("sayı")
+        );
+        assert!(result.version.has_text);
+
+        // Alıntı doğrulaması gerçek metin üzerinde çalışır: sayfa sınırı aşılsa da
+        // (çift satır sonu) ikinci sayfadaki ifade bulunur.
+        let verification = db
+            .verify_precedent_quote(&p.id, "İkinci sayfa metni")
+            .expect("doğrulama");
+        assert_eq!(verification.state, "match");
+
+        // Denetim: hangi koşudan geldiği yazılır, metin yazılmaz.
+        let metadata: String = db
+            .conn()
+            .query_row(
+                "SELECT metadata_allowlist FROM audit_events WHERE operation='text_from_document' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("denetim");
+        assert!(metadata.contains(&result.parse_run_id));
+        assert!(!metadata.contains("Birinci sayfa metni"));
+    }
+
+    #[test]
+    fn document_text_transfer_reports_ocr_and_empty_pages() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/81"), Some("2025/82")))
+            .expect("emsal");
+        let version_id = document_version_with_pages(
+            &db,
+            &[
+                ("Taranmış sayfa.", "ocr"),
+                ("   ", "native"),
+                ("", "native"),
+            ],
+            "partial",
+        );
+        let result = db
+            .precedent_text_from_document(&p.id, &version_id)
+            .expect("aktarım");
+        assert_eq!(result.pages, 3);
+        assert_eq!(result.ocr_pages, 1);
+        assert_eq!(result.empty_pages, 2);
+        assert!(
+            result.notes.iter().any(|n| n.contains("1 sayfa OCR")),
+            "OCR notu yok: {:?}",
+            result.notes
+        );
+        assert!(result.notes.iter().any(|n| n.contains("2 sayfa metinsiz")));
+        assert!(result.notes.iter().any(|n| n.contains("kısmi")));
+        // Boş sayfa metne girmedi; metin yalnız OCR sayfasından.
+        assert_eq!(
+            result.char_count,
+            i64::try_from("Taranmış sayfa.".chars().count()).unwrap()
+        );
+    }
+
+    #[test]
+    fn document_text_transfer_refuses_without_parseable_source() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/91"), Some("2025/92")))
+            .expect("emsal");
+
+        // Hiç ayrıştırma yok.
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db.create_blob_record("st-none", 10, "aad").expect("blob");
+        let doc = db
+            .create_document(&case.id, "Ham", "pdf", None, "unknown")
+            .expect("belge");
+        let unparsed = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        assert_eq!(
+            db.precedent_text_from_document(&p.id, &unparsed.id)
+                .unwrap_err()
+                .code(),
+            "E_PRECEDENT_SOURCE"
+        );
+
+        // Yalnız **başarısız** koşu var: metin yok sayılır, yazılmaz.
+        let failed = document_version_with_pages(&db, &[("Metin", "native")], "failed");
+        assert_eq!(
+            db.precedent_text_from_document(&p.id, &failed)
+                .unwrap_err()
+                .code(),
+            "E_PRECEDENT_SOURCE"
+        );
+
+        // Sayfalar var ama hepsi boş.
+        let empty = document_version_with_pages(&db, &[("  ", "native")], "succeeded");
+        assert_eq!(
+            db.precedent_text_from_document(&p.id, &empty)
+                .unwrap_err()
+                .code(),
+            "E_PRECEDENT_SOURCE"
+        );
+
+        assert!(
+            db.precedent_versions(&p.id).expect("sürümler").is_empty(),
+            "başarısız aktarım sürüm yazmamalı"
+        );
+    }
+
+    #[test]
+    fn document_text_transfer_does_not_duplicate_same_hash() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/101"), Some("2025/102")))
+            .expect("emsal");
+        let version_id =
+            document_version_with_pages(&db, &[("Aynı karar metni.", "native")], "succeeded");
+
+        let first = db
+            .precedent_text_from_document(&p.id, &version_id)
+            .expect("ilk");
+        assert!(first.written);
+        let second = db
+            .precedent_text_from_document(&p.id, &version_id)
+            .expect("ikinci");
+        assert!(!second.written);
+        assert_eq!(second.version.id, first.version.id);
+        assert!(second.notes.iter().any(|n| n.contains("zaten kayıtlı")));
+        assert_eq!(db.precedent_versions(&p.id).expect("sürümler").len(), 1);
+    }
+
+    #[test]
+    fn document_text_transfer_rejects_unknown_ids() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/111"), Some("2025/112")))
+            .expect("emsal");
+        let version_id = document_version_with_pages(&db, &[("Metin.", "native")], "succeeded");
+        assert_eq!(
+            db.precedent_text_from_document("yok", &version_id)
+                .unwrap_err()
+                .code(),
+            "E_NOT_FOUND"
+        );
+        assert_eq!(
+            db.precedent_text_from_document(&p.id, "yok")
+                .unwrap_err()
+                .code(),
+            "E_NOT_FOUND"
+        );
+        assert_eq!(
+            db.precedent_text_from_document(&p.id, "   ")
+                .unwrap_err()
+                .code(),
+            "E_NOT_FOUND"
         );
     }
 }
