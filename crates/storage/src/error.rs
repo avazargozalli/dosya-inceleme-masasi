@@ -54,6 +54,8 @@ pub enum StorageError {
     AiConsent,
     #[error("sağlayıcı profili bulunamadı")]
     AiProvider,
+    #[error("künye listesi: {0}")]
+    Manifest(String),
 }
 
 impl StorageError {
@@ -83,6 +85,7 @@ impl StorageError {
             Self::QuoteHashMismatch => "E_QUOTE_HASH",
             Self::AiConsent => "E_AI_CONSENT",
             Self::AiProvider => "E_AI_PROVIDER",
+            Self::Manifest(_) => "E_MANIFEST",
         }
     }
 }

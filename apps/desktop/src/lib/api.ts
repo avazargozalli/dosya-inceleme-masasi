@@ -249,6 +249,53 @@ export type PrecedentVersionRow = {
   verificationState: "unverified" | "metadata_verified" | "text_verified" | "failed";
   charCount: number;
   hasText: boolean;
+  /** Aynı künyeyle farklı metin geldi (F12-T06); iki nüsha karşılaştırılmalı. */
+  identityConflict: boolean;
+  conflictWithVersionId: string | null;
+};
+
+/** Toplu içe almanın dosya başına sonucu (F12-T06). */
+export type BulkImportItem = {
+  fileName: string;
+  outcome: "created" | "duplicate" | "conflict" | "error";
+  precedentId: string | null;
+  versionId: string | null;
+  bodyHash: string | null;
+  charCount: number;
+  needsReview: boolean;
+  code: string | null;
+  message: string | null;
+};
+
+export type BulkImportReport = {
+  manifestHash: string | null;
+  manifestWarnings: string[];
+  items: BulkImportItem[];
+  created: number;
+  duplicates: number;
+  conflicts: number;
+  failed: number;
+};
+
+/** Dış bağlayıcı sicili satırı (F12-T06). Hepsi etkin değil. */
+export type ConnectorInfo = {
+  id: string;
+  name: string;
+  operator: string;
+  accessMethod: string;
+  termsUrl: string;
+  scope: string;
+  rateLimit: string;
+  reuseNote: string;
+  status: "documented_not_enabled";
+  networkAllowed: boolean;
+  blockedReason: string;
+};
+
+export type ConnectorCatalog = {
+  catalogHash: string;
+  connectors: ConnectorInfo[];
+  note: string;
 };
 
 /** Metin içi alıntı doğrulaması. `not_checked` "uydurulmuş" demek değildir. */
@@ -954,6 +1001,20 @@ export const api = {
     invoke<PrecedentVersionRow[]>("precedent_version_list", { precedentId }),
   precedentQuoteVerify: (precedentId: string, quote: string) =>
     invoke<QuoteVerificationRow>("precedent_quote_verify", { precedentId, quote }),
+  /** Toplu içe alma (F12-T06): seçilen dosyalar + isteğe bağlı CSV künye listesi. */
+  precedentBulkImport: (input: {
+    files: string[];
+    manifestPath: string | null;
+    defaults: {
+      court: string;
+      chamber: string;
+      sourceUrl: string;
+      tags: string[];
+      legalIssue: string;
+    };
+  }) => invoke<BulkImportReport>("precedent_bulk_import", { input }),
+  /** Dış bağlayıcı sicili: belgelenmiş kaynaklar, hiçbiri etkin değil. */
+  precedentConnectorList: () => invoke<ConnectorCatalog>("precedent_connector_list"),
   citationCheckList: (versionId: string) =>
     invoke<CitationCheckRow[]>("citation_check_list", { versionId }),
   citationCheckCreate: (input: {

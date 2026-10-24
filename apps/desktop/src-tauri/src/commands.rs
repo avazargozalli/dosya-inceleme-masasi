@@ -1856,6 +1856,351 @@ pub fn precedent_quote_verify(
     Ok(db.verify_precedent_quote(&precedent_id, &quote)?)
 }
 
+/// Tek turda içe alınabilecek dosya sayısı. Daha büyük seçim sessizce
+/// kırpılmaz; kullanıcı seçimini böler.
+const MAX_BULK_FILES: usize = 200;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportDefaults {
+    #[serde(default)]
+    pub court: String,
+    #[serde(default)]
+    pub chamber: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub legal_issue: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportRequest {
+    /// Kullanıcının dosya seçiciden seçtiği **mutlak** yollar.
+    pub files: Vec<String>,
+    /// İsteğe bağlı künye listesi (CSV) yolu.
+    #[serde(default)]
+    pub manifest_path: Option<String>,
+    #[serde(default)]
+    pub defaults: BulkImportDefaults,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportItemView {
+    pub file_name: String,
+    /// `created` | `duplicate` | `conflict` | `error`
+    pub outcome: String,
+    pub precedent_id: Option<String>,
+    pub version_id: Option<String>,
+    pub body_hash: Option<String>,
+    pub char_count: i64,
+    /// Aynı künye farklı metin: iki nüsha karşılaştırılmalı.
+    pub needs_review: bool,
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportReport {
+    pub manifest_hash: Option<String>,
+    pub manifest_warnings: Vec<String>,
+    pub items: Vec<BulkImportItemView>,
+    pub created: usize,
+    pub duplicates: usize,
+    pub conflicts: usize,
+    pub failed: usize,
+}
+
+fn bulk_error(file_name: &str, code: &str, message: &str) -> BulkImportItemView {
+    BulkImportItemView {
+        file_name: file_name.to_string(),
+        outcome: "error".into(),
+        precedent_id: None,
+        version_id: None,
+        body_hash: None,
+        char_count: 0,
+        needs_review: false,
+        code: Some(code.to_string()),
+        message: Some(message.to_string()),
+    }
+}
+
+/// **Toplu içe alma** (F12-T06): seçilen dosyaların metni belge worker'ında
+/// çıkarılır, künye listesi/varsayılanlarla eşlenir ve kasadaki emsal
+/// kütüphanesine yazılır. Ağ isteği yoktur; künye **tahmin edilmez**.
+/// Bir dosyanın hatası diğerlerini durdurmaz, sonuçta tek tek raporlanır.
+#[tauri::command]
+pub fn precedent_bulk_import(
+    state: State<'_, AppState>,
+    input: BulkImportRequest,
+) -> Result<BulkImportReport, ApiError> {
+    if input.files.is_empty() {
+        return Err(ApiError::new(
+            "E_BULK_EMPTY",
+            "İçe alınacak dosya seçilmedi.",
+        ));
+    }
+    if input.files.len() > MAX_BULK_FILES {
+        return Err(ApiError::new(
+            "E_BULK_TOO_MANY",
+            "Tek turda en çok 200 dosya içe alınır; seçimi bölün.",
+        ));
+    }
+
+    // Künye listesi kasadan bağımsız okunur; hatalı liste hiçbir dosyaya yazmaz.
+    let mut manifest_hash = None;
+    let mut manifest_warnings = Vec::new();
+    let mut manifest: Option<dim_storage::Manifest> = None;
+    if let Some(path) = input
+        .manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        let path = Path::new(path);
+        let meta = std::fs::metadata(path)
+            .map_err(|_| ApiError::new("E_MANIFEST", "Künye listesi okunamadı; yol geçerli mi?"))?;
+        if !meta.is_file() {
+            return Err(ApiError::new(
+                "E_MANIFEST",
+                "Künye listesi bir dosya olmalı.",
+            ));
+        }
+        if meta.len() > dim_storage::MANIFEST_MAX_BYTES as u64 {
+            return Err(ApiError::new(
+                "E_MANIFEST",
+                "Künye listesi 4 MiB sınırını aşıyor.",
+            ));
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|_| ApiError::new("E_MANIFEST", "Künye listesi UTF-8 okunamadı."))?;
+        let parsed = dim_storage::parse_manifest(&text)
+            .map_err(|err| ApiError::new(err.code(), &err.to_string()))?;
+        manifest_hash = Some(parsed.hash.clone());
+        manifest_warnings = parsed.warnings.clone();
+        manifest = Some(parsed);
+    }
+
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let mut worker = spawn_worker()?;
+
+    let mut items = Vec::with_capacity(input.files.len());
+    for raw in &input.files {
+        let path = Path::new(raw);
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("belge")
+            .to_string();
+        let outcome = import_one_precedent(
+            &file_name,
+            path,
+            &input.defaults,
+            manifest.as_ref(),
+            &mut worker,
+            db,
+        );
+        items.push(outcome);
+    }
+    worker.shutdown();
+
+    let mut report = BulkImportReport {
+        manifest_hash,
+        manifest_warnings,
+        items,
+        created: 0,
+        duplicates: 0,
+        conflicts: 0,
+        failed: 0,
+    };
+    for item in &report.items {
+        match item.outcome.as_str() {
+            "created" => report.created += 1,
+            "duplicate" => report.duplicates += 1,
+            "conflict" => report.conflicts += 1,
+            _ => report.failed += 1,
+        }
+    }
+    Ok(report)
+}
+
+fn import_one_precedent(
+    file_name: &str,
+    path: &Path,
+    defaults: &BulkImportDefaults,
+    manifest: Option<&dim_storage::Manifest>,
+    worker: &mut WorkerClient,
+    db: &Database,
+) -> BulkImportItemView {
+    if !path.is_absolute() {
+        return bulk_error(
+            file_name,
+            "E_BULK_PATH",
+            "Dosya yolu mutlak olmalı; göreli yol kabul edilmez.",
+        );
+    }
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(_) => {
+            return bulk_error(
+                file_name,
+                "E_IO",
+                "Dosya okunamadı (taşınmış veya izin yok).",
+            )
+        }
+    };
+    if !meta.is_file() {
+        return bulk_error(
+            file_name,
+            "E_IMPORT_UNSUPPORTED",
+            "Yalnız dosyalar içe alınır.",
+        );
+    }
+    if meta.len() > dim_storage::MAX_DOCUMENT_BYTES {
+        return bulk_error(
+            file_name,
+            "E_IMPORT_TOO_LARGE",
+            "Dosya 250 MiB sınırını aşıyor.",
+        );
+    }
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(_) => return bulk_error(file_name, "E_IO", "Dosya içeriği okunamadı."),
+    };
+    let Some(kind) = dim_ingest::detect(&data, file_name) else {
+        return bulk_error(
+            file_name,
+            "E_IMPORT_UNSUPPORTED",
+            "Desteklenmeyen dosya türü; PDF, DOCX, UDF veya düz metin kullanın.",
+        );
+    };
+    if matches!(
+        kind,
+        dim_ingest::FileKind::Png | dim_ingest::FileKind::Jpeg | dim_ingest::FileKind::Tiff
+    ) {
+        return bulk_error(
+            file_name,
+            "E_BULK_IMAGE",
+            "Görüntü dosyasından karar metni çıkarılmaz; OCR'li PDF kullanın.",
+        );
+    }
+    let is_text = kind == dim_ingest::FileKind::Text;
+    let extraction = match worker.extract_text(
+        &data,
+        kind.mime(),
+        false,
+        "tur",
+        is_text.then_some("auto"),
+        None,
+    ) {
+        Ok(extraction) => extraction,
+        Err(err) => {
+            return bulk_error(file_name, err.code(), "Metin çıkarılamadı.");
+        }
+    };
+    let text = extraction
+        .pages
+        .iter()
+        .map(|page| page.text.trim())
+        .filter(|page| !page.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if text.trim().is_empty() {
+        return bulk_error(
+            file_name,
+            "E_BULK_EMPTY_TEXT",
+            "Dosyadan metin çıkmadı (taranmış olabilir); alıntı doğrulanamayacağı için yazılmadı.",
+        );
+    }
+
+    let row = manifest.and_then(|value| value.row_for(file_name));
+    let court = row
+        .and_then(|r| r.court.clone())
+        .or_else(|| Some(defaults.court.trim().to_string()).filter(|v| !v.is_empty()));
+    let Some(court) = court else {
+        return bulk_error(
+            file_name,
+            "E_BULK_COURT",
+            "Mahkeme bilinmiyor: varsayılan mahkeme girin veya künye listesinde belirtin.",
+        );
+    };
+    let title = row.and_then(|r| r.title.clone()).or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+    });
+    let tags = match row.map(|r| r.user_tags.clone()) {
+        Some(tags) if !tags.is_empty() => tags,
+        _ => defaults.tags.clone(),
+    };
+    let citation = NewPrecedent {
+        court,
+        chamber: row
+            .and_then(|r| r.chamber.clone())
+            .or_else(|| Some(defaults.chamber.trim().to_string()).filter(|v| !v.is_empty())),
+        docket_no: row.and_then(|r| r.docket_no.clone()),
+        decision_no: row.and_then(|r| r.decision_no.clone()),
+        application_no: None,
+        decision_date: row.and_then(|r| r.decision_date.clone()),
+        title,
+        source_url: row
+            .and_then(|r| r.source_url.clone())
+            .or_else(|| Some(defaults.source_url.trim().to_string()).filter(|v| !v.is_empty())),
+        user_tags: tags,
+        legal_issue: row
+            .and_then(|r| r.legal_issue.clone())
+            .or_else(|| Some(defaults.legal_issue.trim().to_string()).filter(|v| !v.is_empty())),
+    };
+    let input = dim_storage::PrecedentCopyInput {
+        citation,
+        text,
+        source_kind: Some("file".into()),
+        document_version_id: None,
+    };
+    match db.import_precedent_copy(&input) {
+        Ok(result) => BulkImportItemView {
+            file_name: file_name.to_string(),
+            outcome: result.outcome,
+            precedent_id: Some(result.precedent_id),
+            version_id: result.version_id,
+            body_hash: Some(result.body_hash),
+            char_count: result.char_count,
+            needs_review: result.needs_review,
+            code: None,
+            message: None,
+        },
+        Err(err) => bulk_error(file_name, err.code(), &err.to_string()),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorCatalogView {
+    pub catalog_hash: String,
+    pub connectors: Vec<dim_storage::ConnectorInfo>,
+    pub note: String,
+}
+
+/// Dış bağlayıcı **sicili** (F12-T06). Kaynakların koşulları belgelenmiştir;
+/// hiçbiri etkin değildir ve ürün bu kaynaklara ağ isteği göndermez.
+#[tauri::command]
+pub fn precedent_connector_list() -> Result<ConnectorCatalogView, ApiError> {
+    let catalog_hash = dim_storage::connector_catalog_hash()
+        .map_err(|err| ApiError::new(err.code(), &err.to_string()))?;
+    Ok(ConnectorCatalogView {
+        catalog_hash,
+        connectors: dim_storage::connector_catalog(),
+        note: "Sicil yalnız belgelenmiş kaynakları listeler. Hiçbiri etkin değil: ürün bu\
+               adreslere istek göndermez; içe alma kullanıcının kendi indirdiği dosyayla yapılır."
+            .into(),
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RedactionView {

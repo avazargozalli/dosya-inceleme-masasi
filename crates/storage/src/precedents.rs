@@ -135,6 +135,11 @@ pub struct PrecedentVersionRow {
     pub char_count: i64,
     /// Tam metin elde mi. `false` ise alıntı doğrulaması yapılamaz.
     pub has_text: bool,
+    /// Aynı künyeyle **farklı** metin geldi (F12-T06). Sessiz birleştirme
+    /// yapılmadı; kullanıcı iki nüshayı karşılaştırmalı.
+    pub identity_conflict: bool,
+    /// Çakışmanın karşılaştırılacağı önceki sürüm.
+    pub conflict_with_version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -542,36 +547,17 @@ impl Database {
         hasher.update(text.as_bytes());
         let body_hash = hex::encode(hasher.finalize());
         let char_count = i64::try_from(text.chars().count()).unwrap_or(i64::MAX);
-        let id = uuid::Uuid::now_v7().to_string();
-        let now = now_iso();
-        self.conn().execute(
-            "INSERT INTO precedent_versions (id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,verification_state,full_text,text_char_count)
-             VALUES (?1,?2,?3,?4,?5,?6,'text_verified',?7,?8)",
-            rusqlite::params![
-                id,
-                precedent_id,
-                document_version_id,
-                now,
-                source_kind,
-                body_hash,
-                text,
-                char_count
-            ],
-        )?;
-        // Denetime metnin kendisi yazılmaz; yalnız hash ve boyut.
-        self.append_audit(
-            "precedent_version",
-            Some(&id),
-            "create",
-            "local-user",
-            &serde_json::json!({
-                "sourceKind": source_kind,
-                "charCount": char_count,
-                "bodyHash": body_hash,
-            }),
-        )?;
-        self.get_precedent_version(&id)?
-            .ok_or(StorageError::NotFound)
+        // Sürüm yazımı toplu içe alma ile **aynı** yoldan geçer (F12-T06);
+        // yapıştırma yolunda çakışma işareti konmaz.
+        self.insert_precedent_version(
+            precedent_id,
+            text,
+            &body_hash,
+            char_count,
+            source_kind,
+            document_version_id,
+            None,
+        )
     }
 
     pub fn get_precedent_version(
@@ -580,7 +566,7 @@ impl Database {
     ) -> Result<Option<PrecedentVersionRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,verification_state,text_char_count,
-                    (full_text IS NOT NULL AND length(full_text)>0)
+                    (full_text IS NOT NULL AND length(full_text)>0),identity_conflict,conflict_with_version_id
              FROM precedent_versions WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_version).optional()?)
@@ -593,7 +579,7 @@ impl Database {
     ) -> Result<Vec<PrecedentVersionRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,verification_state,text_char_count,
-                    (full_text IS NOT NULL AND length(full_text)>0)
+                    (full_text IS NOT NULL AND length(full_text)>0),identity_conflict,conflict_with_version_id
              FROM precedent_versions WHERE precedent_id=?1
              ORDER BY acquired_at DESC, id DESC",
         )?;
@@ -733,6 +719,8 @@ fn map_version(row: &Row<'_>) -> rusqlite::Result<PrecedentVersionRow> {
         verification_state: row.get(6)?,
         char_count: row.get(7)?,
         has_text: row.get::<_, i64>(8)? != 0,
+        identity_conflict: row.get::<_, i64>(9)? != 0,
+        conflict_with_version_id: row.get(10)?,
     })
 }
 

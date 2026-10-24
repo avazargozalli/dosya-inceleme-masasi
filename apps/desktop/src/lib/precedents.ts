@@ -79,3 +79,56 @@ export function summarizeVersions(versions: PrecedentVersionRow[]): PrecedentVer
   const latest = versions[0];
   return { versions, withText, latestHasText: latest ? latest.hasText : false };
 }
+
+/** Toplu içe alma sonucunun dosya başına dürüst etiketi (F12-T06). */
+export function bulkOutcomeLabel(item: {
+  outcome: string;
+  code: string | null;
+  message: string | null;
+  charCount: number;
+}): string {
+  switch (item.outcome) {
+    case "created":
+      return `eklendi · ${item.charCount.toLocaleString("tr-TR")} karakter`;
+    case "duplicate":
+      return "aynı nüsha zaten var; yeniden yazılmadı";
+    case "conflict":
+      return "aynı künye, farklı metin — inceleyin";
+    default: {
+      const code = item.code ? `${item.code}: ` : "";
+      return `${code}${item.message ?? "içe alınamadı"}`;
+    }
+  }
+}
+
+export function bulkOutcomeTone(item: { outcome: string }): "ok" | "warn" | "danger" {
+  if (item.outcome === "created") return "ok";
+  if (item.outcome === "duplicate") return "ok";
+  if (item.outcome === "conflict") return "warn";
+  return "danger";
+}
+
+/** Tek cümlelik toplu içe alma özeti; sayılar raporun kendisinden gelir. */
+export function bulkReportSummary(report: {
+  created: number;
+  duplicates: number;
+  conflicts: number;
+  failed: number;
+}): string {
+  const parts = [
+    `${report.created} eklendi`,
+    `${report.duplicates} zaten vardı`,
+    `${report.conflicts} çakışma`,
+  ];
+  if (report.failed > 0) parts.push(`${report.failed} hata`);
+  return parts.join(" · ");
+}
+
+/** Sürüm rozeti: künye çakışması varsa metin durumundan önce gelir. */
+export function versionConflictText(version: {
+  identityConflict: boolean;
+}): string | null {
+  return version.identityConflict
+    ? "aynı künye, farklı metin — iki nüshayı karşılaştırın"
+    : null;
+}

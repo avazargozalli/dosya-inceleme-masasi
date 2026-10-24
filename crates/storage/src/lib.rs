@@ -9,6 +9,7 @@ mod anchors;
 mod cases;
 mod checklists;
 mod claims;
+mod connectors;
 mod documents;
 mod error;
 mod exports;
@@ -16,6 +17,7 @@ mod gc;
 mod marks;
 mod notes;
 mod parsing;
+mod precedent_import;
 mod precedents;
 mod redactions;
 mod review_commit;
@@ -37,6 +39,9 @@ pub use claims::{
     ClaimRelationRow, ClaimRow, ContradictionAssessmentRow, EvidenceLinkRow, NewClaim,
     NewClaimRelation, NewEvidenceLink, NewReviewItem, ReviewDecisionRow, ReviewItemRow,
 };
+pub use connectors::{
+    connector_catalog, connector_catalog_hash, ConnectorInfo, STATUS_DOCUMENTED_NOT_ENABLED,
+};
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use exports::ExportRow;
@@ -47,6 +52,10 @@ pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
     SearchMode, SearchPage, SearchQuery, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT,
     MAX_SEARCH_QUERY_CHARS, SEARCH_DATE_ROLES,
+};
+pub use precedent_import::{
+    parse_manifest, Manifest, ManifestRow, PrecedentCopyInput, PrecedentCopyOutcome,
+    MANIFEST_MAX_BYTES,
 };
 pub use precedents::{
     CitationCheckRow, NewCitationCheck, NewPrecedent, NewPrecedentNote, NewPrecedentText,
@@ -169,9 +178,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0013_precedent_text",
         sql: include_str!("migrations/0013_precedent_text.sql"),
     },
+    Migration {
+        version: 14,
+        name: "0014_precedent_conflict",
+        sql: include_str!("migrations/0014_precedent_conflict.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 13;
+pub const CURRENT_SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

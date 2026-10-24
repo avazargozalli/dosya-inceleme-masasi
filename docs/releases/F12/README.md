@@ -11,7 +11,35 @@
 | F12-T03 | ✅ | atıf kontrolü: künye ve alıntı boyutları ayrı |
 | F12-T04 | ✅ | “bulunamadı” ile “uydurulmuş” ayrımı korunur; sahte hükmü yok |
 | F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama |
-| F12-T06 | ⬜ | dış bağlayıcılar ve toplu içe alma |
+| F12-T06 | ✅ | toplu içe alma (CSV künye listesi, çakışma işareti) + dış bağlayıcı sicili (etkin değil) |
+
+## F12-T06 — toplu içe alma ve dış bağlayıcı sicili
+
+**Şema v14** (`0014_precedent_conflict.sql`): `precedent_versions.identity_conflict`
+ve `conflict_with_version_id`; `(precedent_id, body_hash)` indeksi.
+
+- `Database::import_precedent_copy(&PrecedentCopyInput)` — metin **çıkarılmış**
+  olarak gelir; bu katman ağ, dosya okuma veya worker çağrısı yapmaz.
+  Sonuç: `created` | `duplicate` | `conflict` (+ `needs_review`).
+  Aynı künye + aynı SHA-256 yeni sürüm yazmaz; aynı künye + farklı metin
+  nüshayı **ayrı sürüm** olarak ekler ve incelemeye işaretler (sessiz
+  birleştirme yok). Kimlik: mahkeme + daire + esas/karar/başvuru numarası
+  birebir; numara yoksa birleştirme yapılmaz, farklı mahkeme ayrı emsaldir.
+- `parse_manifest` — bağımlılıksız RFC 4180'e yakın CSV: tırnaklı alan,
+  kaçırılmış tırnak, alan içi satır sonu, BOM. Türkçe/İngilizce başlıklar;
+  bilinmeyen sütun ve aynı dosya adının tekrarı `E_MANIFEST` ile reddedilir.
+- `precedent_bulk_import` (Tauri): dosya seçimi → `dim_ingest::detect` →
+  worker `extract_text` → künye (CSV satırı, yoksa varsayılan) → kasa yazımı.
+  Mutlak yol, 200 dosya ve 250 MiB sınırları; görüntü dosyası reddi; boş
+  metin yazılmaz. Bir dosyanın hatası diğerlerini durdurmaz.
+- `connectors.rs` + `precedent_connector_list`: Yargıtay, Danıştay ve AYM için
+  erişim yöntemi/kapsam/yeniden kullanım notu **belgelenir**, hiçbiri etkin
+  değildir (`network_allowed=false`), sicil içerik özeti (sha256) taşır.
+  Ayrıntı ve karar gerekçesi: `docs/releases/F12/CONNECTORS.md`.
+- Arayüz: "Toplu içe alma" kartı (dosya seç, CSV seç, varsayılan künye, dosya
+  başına sonuç rozetleri, çakışma uyarısı) ve "Dış bağlayıcılar" kartı
+  (kaynak başına "etkin değil" + gerekçe + koşullar bağlantısı).
+  Sürüm listesinde çakışan nüsha "aynı künye, farklı metin" rozetiyle görünür.
 
 ## F12-T05 — karar tam metni ve metin içi alıntı doğrulama
 
@@ -58,9 +86,9 @@ değerlendirmesidir; sistem hükmü değildir.
 
 ## Sınırlamalar
 
-- Tam metin şu an **yapıştırma** ile girilir; kasadaki belge sürümünden veya
-  dosyadan otomatik aktarma (`source_kind=document|file`) veri modelinde hazır
-  ama arayüzde düğmesi yok (F12-T06 toplu içe alma ile gelecek).
+- Tam metin **yapıştırma** veya **toplu içe alma** (dosyadan, `source_kind=file`)
+  ile girer. Kasadaki belge sürümünden aktarma (`source_kind=document`) veri
+  modelinde hazır; ayrı düğmesi yok (toplu içe almada dosya yolu kullanılıyor).
 - Doğrulama yalnız metin eşleşmesidir; **anlam/bağlam** incelemesi ayrı boyut
   olarak kalır (F12-T07).
 - Sadeleştirme Türkçe harf katlamasıyla sınırlı; kelime değişikliği, çeviri

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
+import { open as openFiles } from "@tauri-apps/plugin-dialog";
 import {
   api,
   toApiError,
   type ApiError,
+  type BulkImportReport,
   type CaseRow,
   type CitationCheckRow,
+  type ConnectorCatalog,
   type DocumentRow,
   type PrecedentNoteRow,
   type PrecedentRow,
@@ -13,10 +16,14 @@ import {
 } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
 import {
+  bulkOutcomeLabel,
+  bulkOutcomeTone,
+  bulkReportSummary,
   quoteStateText,
   quoteStateTone,
   quoteToCitationMatch,
   summarizeVersions,
+  versionConflictText,
   versionSourceLabel,
   versionStateText,
 } from "../lib/precedents";
@@ -72,6 +79,17 @@ export function Precedents() {
   const [verification, setVerification] = useState<QuoteVerificationRow | null>(null);
   const versionSummary = summarizeVersions(versions);
 
+  // Toplu içe alma (F12-T06)
+  const [bulkFiles, setBulkFiles] = useState<string[]>([]);
+  const [manifestPath, setManifestPath] = useState<string | null>(null);
+  const [bulkCourt, setBulkCourt] = useState("Yargıtay");
+  const [bulkChamber, setBulkChamber] = useState("");
+  const [bulkSourceUrl, setBulkSourceUrl] = useState("");
+  const [bulkTags, setBulkTags] = useState("");
+  const [bulkReport, setBulkReport] = useState<BulkImportReport | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
+
   const load = useCallback(async () => {
     try {
       setRows(await api.precedentList());
@@ -82,6 +100,10 @@ export function Precedents() {
 
   useEffect(() => {
     void load();
+    void api
+      .precedentConnectorList()
+      .then(setConnectors)
+      .catch((e) => setError(toApiError(e)));
     void api.caseList(false).then((r) => {
       setCases(r);
       if (r.length > 0) setCaseId((prev) => prev || r[0]!.id);
@@ -209,6 +231,65 @@ export function Precedents() {
     }
   }
 
+  async function pickBulkFiles() {
+    try {
+      const picked = await openFiles({
+        multiple: true,
+        title: "Karar dosyalarını seç",
+        filters: [{ name: "Karar dosyaları", extensions: ["pdf", "docx", "udf", "txt", "md"] }],
+      });
+      if (!picked) return;
+      setBulkFiles(Array.isArray(picked) ? picked : [picked]);
+      setBulkReport(null);
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function pickManifest() {
+    try {
+      const picked = await openFiles({
+        multiple: false,
+        title: "Künye listesi (CSV)",
+        filters: [{ name: "Künye listesi", extensions: ["csv", "txt"] }],
+      });
+      if (!picked) return;
+      setManifestPath(Array.isArray(picked) ? (picked[0] ?? null) : picked);
+      setBulkReport(null);
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }
+
+  async function runBulkImport() {
+    if (bulkFiles.length === 0) {
+      setError({ code: "E_BULK_EMPTY", message: "Önce dosya seçin.", retryable: false });
+      return;
+    }
+    setBulkBusy(true);
+    setBulkReport(null);
+    try {
+      const report = await api.precedentBulkImport({
+        files: bulkFiles,
+        manifestPath,
+        defaults: {
+          court: bulkCourt.trim(),
+          chamber: bulkChamber.trim(),
+          sourceUrl: bulkSourceUrl.trim(),
+          tags: bulkTags.split(",").map((t) => t.trim()).filter(Boolean),
+          legalIssue: "",
+        },
+      });
+      setBulkReport(report);
+      await load();
+      setVersions((prev) => prev);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function addCheck() {
     if (!versionId || citation.trim().length === 0) {
       setError({ code: "E_CITATION", message: "Belge sürümü ve atıf metni zorunlu.", retryable: false });
@@ -301,6 +382,85 @@ export function Precedents() {
         )}
       </div>
 
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Toplu içe alma</h2>
+            <p className="card-sub">
+              Dosyalar + isteğe bağlı künye listesi (CSV) · metin belge worker'ında çıkarılır, ağ isteği yok
+            </p>
+          </div>
+        </div>
+        <div className="row">
+          <button className="btn" disabled={bulkBusy} onClick={() => void pickBulkFiles()}>
+            {bulkFiles.length === 0 ? "Dosyaları seç…" : `${bulkFiles.length} dosya seçildi`}
+          </button>
+          <button className="btn ghost" disabled={bulkBusy} onClick={() => void pickManifest()}>
+            {manifestPath ? `Künye listesi: ${manifestPath.split("/").pop()}` : "Künye listesi (CSV) seç…"}
+          </button>
+          {bulkFiles.length > 0 ? (
+            <button
+              className="btn ghost"
+              disabled={bulkBusy}
+              onClick={() => {
+                setBulkFiles([]);
+                setBulkReport(null);
+              }}
+            >
+              Seçimi temizle
+            </button>
+          ) : null}
+        </div>
+        <div className="row">
+          <div className="field"><label htmlFor="b-court">Varsayılan mahkeme</label><input id="b-court" className="input" value={bulkCourt} onChange={(e) => setBulkCourt(e.target.value)} /></div>
+          <div className="field"><label htmlFor="b-chamber">Varsayılan daire</label><input id="b-chamber" className="input" value={bulkChamber} onChange={(e) => setBulkChamber(e.target.value)} /></div>
+          <div className="field"><label htmlFor="b-url">Kaynak URL</label><input id="b-url" className="input" value={bulkSourceUrl} onChange={(e) => setBulkSourceUrl(e.target.value)} placeholder="https://…" /></div>
+          <div className="field"><label htmlFor="b-tags">Etiketler</label><input id="b-tags" className="input" value={bulkTags} onChange={(e) => setBulkTags(e.target.value)} placeholder="kira, temerrüt" /></div>
+        </div>
+        <div className="row">
+          <button
+            className="btn primary"
+            disabled={bulkBusy || bulkFiles.length === 0}
+            onClick={() => void runBulkImport()}
+          >
+            {bulkBusy ? "İçe alınıyor…" : "İçe al"}
+          </button>
+          <span className="hint" style={{ flex: "1 1 280px", margin: 0 }}>
+            Liste sütunları: dosya, mahkeme, daire, esas, karar, tarih, başlık, kaynak url, etiketler, konu.
+            Liste yoksa varsayılan künye kullanılır; eksik künye “incomplete” kalır, numara tahmin edilmez.
+          </span>
+        </div>
+        {bulkReport ? (
+          <div role="status">
+            <p className="small" style={{ margin: "4px 0" }}>
+              {bulkReportSummary(bulkReport)}
+              {bulkReport.manifestHash ? ` · liste sha256 ${bulkReport.manifestHash.slice(0, 12)}…` : ""}
+            </p>
+            {bulkReport.manifestWarnings.map((warning) => (
+              <p key={warning} className="hint" style={{ margin: 0 }}>{warning}</p>
+            ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {bulkReport.items.map((item) => (
+                <div
+                  key={`${item.fileName}-${item.outcome}-${item.code ?? ""}`}
+                  className="row"
+                  style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}
+                >
+                  <span className="small">{item.fileName}</span>
+                  <span className={`badge ${bulkOutcomeTone(item)}`}>{bulkOutcomeLabel(item)}</span>
+                </div>
+              ))}
+            </div>
+            {bulkReport.conflicts > 0 ? (
+              <p className="hint" style={{ margin: 0 }}>
+                Çakışan nüshalar ayrı sürüm olarak eklendi ve “farklı metin” rozetiyle işaretlendi;
+                sessiz birleştirme yapılmadı. İki metni karşılaştırmadan biri silinmemelidir.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
       {selected ? (
         <>
         <div className="card">
@@ -353,7 +513,12 @@ export function Precedents() {
                     {versionSourceLabel(version)} · {formatTimestamp(version.acquiredAt)}
                     <span className="muted"> · sha256 {version.bodyHash.slice(0, 12)}…</span>
                   </span>
-                  <span className={`badge ${version.hasText ? "ok" : "warn"}`}>{versionStateText(version)}</span>
+                  <span style={{ display: "flex", gap: 6 }}>
+                    {versionConflictText(version) ? (
+                      <span className="badge warn">{versionConflictText(version)}</span>
+                    ) : null}
+                    <span className={`badge ${version.hasText ? "ok" : "warn"}`}>{versionStateText(version)}</span>
+                  </span>
                 </div>
               ))}
             </div>
@@ -496,6 +661,40 @@ export function Precedents() {
           Karar metni olmadan alıntı doğrulanamaz; bu durum “kontrol edilmedi” olarak kalır ve
           “uydurulmuş” anlamına gelmez.
         </p>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Dış bağlayıcılar</h2>
+            <p className="card-sub">
+              {connectors
+                ? `${connectors.connectors.length} kaynak belgelendi · hiçbiri etkin değil`
+                : "sicil yükleniyor…"}
+            </p>
+          </div>
+        </div>
+        {connectors ? (
+          <>
+            {connectors.connectors.map((connector) => (
+              <div key={connector.id} className="card tight" style={{ background: "var(--surface)" }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <strong style={{ fontWeight: 500 }}>{connector.name}</strong>
+                  <span className="badge warn">etkin değil</span>
+                </div>
+                <p className="muted small" style={{ margin: "2px 0" }}>{connector.operator}</p>
+                <p className="small" style={{ margin: "4px 0" }}>{connector.scope}</p>
+                <p className="small" style={{ margin: "4px 0" }}>{connector.reuseNote}</p>
+                <p className="hint" style={{ margin: 0 }}>
+                  {connector.accessMethod} <a href={connector.termsUrl} target="_blank" rel="noreferrer">koşullar</a>
+                </p>
+              </div>
+            ))}
+            <p className="hint" style={{ margin: 0 }}>
+              {connectors.note} <span className="muted">sicil sha256 {connectors.catalogHash.slice(0, 12)}…</span>
+            </p>
+          </>
+        ) : null}
       </div>
     </div>
   );

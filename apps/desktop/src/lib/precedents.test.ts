@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { PrecedentVersionRow, QuoteVerificationRow } from "./api";
 import {
+  bulkOutcomeLabel,
+  bulkOutcomeTone,
+  bulkReportSummary,
   quoteStateText,
   quoteStateTone,
   quoteToCitationMatch,
   summarizeVersions,
+  versionConflictText,
   versionSourceLabel,
   versionStateText,
 } from "./precedents";
@@ -36,6 +40,8 @@ function version(overrides: Partial<PrecedentVersionRow>): PrecedentVersionRow {
     verificationState: "text_verified",
     charCount: 1200,
     hasText: true,
+    identityConflict: false,
+    conflictWithVersionId: null,
     ...overrides,
   };
 }
@@ -126,5 +132,50 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     );
     expect(quoteToCitationMatch(verification({ state: "mismatch" }))).toBe("mismatch");
     expect(quoteToCitationMatch(verification({ state: "not_checked" }))).toBe("not_checked");
+  });
+});
+
+describe("toplu içe alma etiketleri (F12-T06)", () => {
+  it("eklenen dosyayı karakter sayısıyla söyler", () => {
+    expect(
+      bulkOutcomeLabel({ outcome: "created", code: null, message: null, charCount: 1234 }),
+    ).toBe("eklendi · 1.234 karakter");
+  });
+
+  it("aynı nüshayı 'zaten var' der, çakışmayı incelemeye bırakır", () => {
+    expect(
+      bulkOutcomeLabel({ outcome: "duplicate", code: null, message: null, charCount: 10 }),
+    ).toBe("aynı nüsha zaten var; yeniden yazılmadı");
+    expect(
+      bulkOutcomeLabel({ outcome: "conflict", code: null, message: null, charCount: 10 }),
+    ).toBe("aynı künye, farklı metin — inceleyin");
+  });
+
+  it("hatayı kod ve mesajla gösterir, sessizce yutmaz", () => {
+    expect(
+      bulkOutcomeLabel({
+        outcome: "error",
+        code: "E_BULK_COURT",
+        message: "Mahkeme bilinmiyor.",
+        charCount: 0,
+      }),
+    ).toBe("E_BULK_COURT: Mahkeme bilinmiyor.");
+    expect(bulkOutcomeTone({ outcome: "error" })).toBe("danger");
+    expect(bulkOutcomeTone({ outcome: "conflict" })).toBe("warn");
+    expect(bulkOutcomeTone({ outcome: "created" })).toBe("ok");
+  });
+
+  it("özet yalnız sıfır olmayan hata sayısını ekler", () => {
+    expect(
+      bulkReportSummary({ created: 3, duplicates: 1, conflicts: 1, failed: 0 }),
+    ).toBe("3 eklendi · 1 zaten vardı · 1 çakışma");
+    expect(
+      bulkReportSummary({ created: 0, duplicates: 0, conflicts: 0, failed: 2 }),
+    ).toBe("0 eklendi · 0 zaten vardı · 0 çakışma · 2 hata");
+  });
+
+  it("çakışma metni yalnız gerçek çakışmada döner", () => {
+    expect(versionConflictText({ identityConflict: true })).toContain("farklı metin");
+    expect(versionConflictText({ identityConflict: false })).toBeNull();
   });
 });

@@ -146,9 +146,14 @@ fn newer_schema_is_refused_before_any_write() {
     {
         let conn = Connection::open(&path).expect("aç");
         apply_key_and_pragmas(&conn, &key()).expect("anahtar");
+        // “Gelecek” sürüm daima mevcut şemanın bir üstüdür; sabit sayı
+        // yazmak her yeni migrasyonda testi yanlış yönde kırıyordu.
+        let future = crate::CURRENT_SCHEMA_VERSION + 1;
         conn.execute(
-            "INSERT INTO schema_migrations (version, name, checksum, applied_at)
-             VALUES (14, '0014_future', 'x', '2026-01-01T00:00:00Z')",
+            &format!(
+                "INSERT INTO schema_migrations (version, name, checksum, applied_at)
+                 VALUES ({future}, '00{future}_future', 'x', '2026-01-01T00:00:00Z')"
+            ),
             [],
         )
         .expect("gelecek sürüm");
@@ -176,6 +181,14 @@ fn newer_schema_is_refused_before_any_write() {
         )
         .expect("sütunlar");
     assert_eq!(columns, 0, "yeni şema yazılmamalı");
+    let conflict_columns: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('precedent_versions') WHERE name = 'identity_conflict'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("sütunlar");
+    assert_eq!(conflict_columns, 0, "v14 de yazılmamalı");
 }
 
 #[test]
