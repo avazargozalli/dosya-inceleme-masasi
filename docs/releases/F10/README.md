@@ -421,4 +421,6 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
   araçların `--version` yolunu bozmadı.
 - **CI:** `d9a5581` → run `40109851908` **7/7 yeşil** (arayüz, SBOM, masaüstü
   kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler). F10-T11: `c165063` →
-  run `40114620637` **7/7 yeşil** (aynı matris).
+  run `40114620637` **7/7 yeşil** (aynı matris). **F10-T12:** `753aed7` +
+  `bba6485` (rustfmt) → run `40121007054` **7/7 yeşil** (arayüz, SBOM, masaüstü
+  kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
