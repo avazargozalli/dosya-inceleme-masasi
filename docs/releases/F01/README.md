@@ -18,7 +18,7 @@
 | F01-T09 | Yerel model RAM/ilk yanıt/iptal | ⬜ | — |
 | F01-T10 | Worker protokolü bozuk frame/süreç ölümü | 🚧 | `workers/document/tests` |
 | F01-T11 | Sürüm kilitleme ve ADR üretimi | ✅ | `Cargo.toml`, `package.json`, `docs/adr/` |
-| F01-T12 | Başarısız deneme kaydı | ⬜ | bu dosya |
+| F01-T12 | Başarısız deneme kaydı | ✅ Defter yürürlükte (19 gerçek olay; yaşadıkça eklenir) | `docs/releases/F01/FAILURES.md` |
 
 > Not: F01'in platform spike'ları gerçek cihaz/CI koşusu olmadan "geçti" sayılmaz.
 > Bu dosya yalnız gerçekten çalıştırılan deneylerin sonucunu taşır.
