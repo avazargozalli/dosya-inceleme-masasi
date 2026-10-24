@@ -262,6 +262,7 @@ bunu yapan bir düğme bilinçli olarak yok.
   Liste boşsa düğme kapalı ve **nedeni yazılır**.
 - Test: 5 yeni storage testi (`precedents::document_text_transfer_*`) +
   `list_versions` sırası; 12 yeni web testi (`precedent-document.test.ts`).
+- Commit/CI: `18fef37` → run `40099826596` **7/7 yeşil**.
 
 ### Dürüst sınırlama
 
