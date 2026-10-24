@@ -28,6 +28,13 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.10.1] — 2026-10-24 — F14 şifreli devir paketi
+
+- `vault::package` seal/open: Argon2id + AES-256-GCM, `DIMPAK1` başlığı
+- `export_package` parola ile zip'i `.dimpak` dosyasına çevirir, klasörü kaldırır
+- 4 vault testi (roundtrip, yanlış parola, kurcalama, yabancı bayt)
+- Çıktılar ekranında paket parolası alanı ve şifreli yol gösterimi
+
 ## [0.10.0] — 2026-10-23 — F13 elle bölge maskeleme
 
 - Sayfa önizlemesi üzerinde dikdörtgen seçimi; piksel → punto (72/dpi) çevrimi

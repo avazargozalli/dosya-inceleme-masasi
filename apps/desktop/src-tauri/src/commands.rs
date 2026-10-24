@@ -1943,6 +1943,8 @@ pub struct PackageView {
     pub files: usize,
     pub sha256: String,
     pub record: ExportRow,
+    /// Parola verildiyse üretilen şifreli `.dimpak` dosyası.
+    pub sealed_path: Option<String>,
 }
 
 /// Devir paketi: dosya metadatası + rapor iskeleti + manifest. Belge baytları
@@ -1952,6 +1954,7 @@ pub fn export_package(
     state: State<'_, AppState>,
     case_id: String,
     dest_dir: String,
+    password: Option<String>,
 ) -> Result<PackageView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
@@ -1996,11 +1999,28 @@ pub fn export_package(
     std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
     let sha = hex::encode(Sha256::digest(&manifest_bytes));
     let record = db.record_export(&case_id, "package", &[], "user_selected_path", &sha)?;
+
+    // Parola verildiyse klasör tek şifreli dosyaya paketlenir; alıcıya kasa
+    // anahtarı verilmez, yalnız paket parolası söylenir.
+    let mut sealed_path = None;
+    if let Some(secret) = password.filter(|p| p.chars().count() >= 10) {
+        let archive = dir.with_extension("zip");
+        zip_dir(&dir, &archive)?;
+        let zip_bytes = std::fs::read(&archive)?;
+        let sealed = dim_vault::package::seal(&zip_bytes, &secret)?;
+        let target = dir.with_extension("dimpak");
+        std::fs::write(&target, &sealed)?;
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_dir_all(&dir);
+        sealed_path = Some(target.to_string_lossy().to_string());
+    }
+
     Ok(PackageView {
         path: dir.to_string_lossy().to_string(),
         files: 3,
         sha256: sha,
         record,
+        sealed_path,
     })
 }
 

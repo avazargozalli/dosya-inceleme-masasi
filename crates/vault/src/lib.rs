@@ -11,6 +11,7 @@
 
 mod blob;
 mod header;
+pub mod package;
 mod recovery;
 
 pub use blob::{decrypt_blob, encrypt_blob, expected_blob_len, BLOB_CHUNK_SIZE, BLOB_HEADER_LEN};
@@ -38,8 +39,8 @@ pub const DEFAULT_KDF: KdfParams = KdfParams {
 };
 
 const MASTER_LEN: usize = 32;
-const SALT_LEN: usize = 16;
-const NONCE_LEN: usize = 12;
+pub(crate) const SALT_LEN: usize = 16;
+pub(crate) const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 
 #[derive(Debug, thiserror::Error)]
@@ -281,7 +282,7 @@ impl VaultFile {
     }
 }
 
-fn derive_kek(
+pub(crate) fn derive_kek(
     secret: &[u8],
     salt: &[u8],
     params: KdfParams,

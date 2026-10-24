@@ -21,6 +21,7 @@ export function Exports() {
   const [pkg, setPkg] = useState<PackageResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [packagePassword, setPackagePassword] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -65,7 +66,13 @@ export function Exports() {
     setError(null);
     setPkg(null);
     try {
-      setPkg(await api.exportPackage(caseId, dir));
+      setPkg(
+        await api.exportPackage(
+          caseId,
+          dir,
+          packagePassword.trim().length >= 10 ? packagePassword : undefined,
+        ),
+      );
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -133,15 +140,34 @@ export function Exports() {
             {busy === "package" ? "Oluşturuluyor…" : "Paket oluştur"}
           </button>
         </div>
+        <div className="field" style={{ maxWidth: 360 }}>
+          <label htmlFor="pkg-password">Paket parolası (en az 10 karakter, isteğe bağlı)</label>
+          <input
+            id="pkg-password"
+            className="input"
+            type="password"
+            autoComplete="new-password"
+            value={packagePassword}
+            onChange={(e) => setPackagePassword(e.target.value)}
+            placeholder="Boş bırakılırsa klasör açık metin kalır"
+          />
+        </div>
         <p className="hint" style={{ margin: 0 }}>
-          Paylaşılacak belgeler için önce Maskeleme ekranından maskeli kopya üretin; paket açık
-          metindir, şifreli taşıma F16 kapsamındadır.
+          Parola girilirse klasör Argon2id + AES-256-GCM ile şifrelenip tek `.dimpak`
+          dosyasına dönüşür. Paylaşılacak belgeler için önce Maskeleme ekranından maskeli
+          kopya üretin.
         </p>
         {pkg ? (
           <div className="notice ok">
             Paket hazır: {pkg.path}
             <br />
             {pkg.files} dosya · manifest {pkg.sha256.slice(0, 16)}…
+            {pkg.sealedPath ? (
+              <>
+                <br />
+                Şifreli paket: <code>{pkg.sealedPath}</code>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -177,6 +177,7 @@ export type PackageResult = {
   path: string;
   files: number;
   sha256: string;
+  sealedPath: string | null;
   record: { id: string; exportType: string; status: string; createdAt: string };
 };
 
@@ -802,8 +803,8 @@ export const api = {
     invoke<ExportResult>("export_docx", { caseId, destPath }),
   exportPdf: (caseId: string, destPath: string) =>
     invoke<ExportResult>("export_pdf", { caseId, destPath }),
-  exportPackage: (caseId: string, destDir: string) =>
-    invoke<PackageResult>("export_package", { caseId, destDir }),
+  exportPackage: (caseId: string, destDir: string, password?: string) =>
+    invoke<PackageResult>("export_package", { caseId, destDir, password }),
 
   aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
   aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
