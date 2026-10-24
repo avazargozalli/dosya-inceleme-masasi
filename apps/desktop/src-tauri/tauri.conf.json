@@ -42,7 +42,12 @@
     "longDescription": "Avukatlar için kaynak izlenebilir, yerel ve şifreli dosya inceleme uygulaması.",
     "resources": [
       "resources/worker/**/*"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "language": "tr-TR"
+      }
+    }
   },
   "plugins": {
     "updater": {

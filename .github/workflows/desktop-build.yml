@@ -59,6 +59,14 @@ jobs:
           if-no-files-found: error
 
   windows-binary:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,19 +78,30 @@ jobs:
           node-version: "22"
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "apps/desktop/src-tauri -> target"
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @dim/desktop build
+      # Ürün adı ve açıklamalar Türkçe karakter taşır; WiX varsayılanı (en-US,
+      # kod sayfası 1252) bunları reddediyordu (LGHT0311). `bundle.windows.wix
+      # .language = tr-TR` kod sayfasını 1254 yapar.
       - name: İmzasız MSI üret (kod imzası kapsam dışı — ADR-0012)
-        run: pnpm --filter @dim/desktop exec tauri build --bundles msi
-      - name: MSI gerçekten üretildi mi
+        run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --bundles msi
+      - name: MSI gerçekten üretildi mi (boyut + sha256)
         shell: bash
         run: |
-          ls apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+          set -euo pipefail
+          msi=$(ls "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/"*.msi)
+          test -n "$msi"
+          ls -l "$msi"
+          sha256sum "$msi"
       - uses: actions/upload-artifact@v4
         with:
-          name: dim-windows-x64
-          path: apps/desktop/src-tauri/target/release/*.exe
-          if-no-files-found: ignore
+          name: dim-windows-${{ matrix.arch }}
+          path: |
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/*.exe
+          if-no-files-found: error
