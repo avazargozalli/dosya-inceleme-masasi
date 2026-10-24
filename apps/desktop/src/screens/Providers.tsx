@@ -4,6 +4,7 @@ import {
   toApiError,
   type AdapterView,
   type ApiError,
+  type CliCapabilityMatrix,
   type CliProbeView,
   type CliResidueCleanup,
   type CliResidueMeasure,
@@ -21,6 +22,15 @@ import {
   probeStatusLabel,
   probeSummary,
   probeWarnings,
+  capabilityDetailText,
+  capabilityGateText,
+  capabilityHelpCommand,
+  capabilityReasonLines,
+  capabilitySummary,
+  capabilityTone,
+  capabilityWarnings,
+  linkTone,
+  matrixWorstLink,
   residueAge,
   residueCleanupSummary,
   residueCleanupTargets,
@@ -61,6 +71,9 @@ export function Providers() {
   const [results, setResults] = useState<Record<string, CliProbeView>>({});
   const [runErrors, setRunErrors] = useState<Record<string, ApiError>>({});
   const [cancelHint, setCancelHint] = useState<string | null>(null);
+  const [matrix, setMatrix] = useState<CliCapabilityMatrix | null>(null);
+  const [matrixBusy, setMatrixBusy] = useState(false);
+  const [matrixError, setMatrixError] = useState<ApiError | null>(null);
 
   async function refresh() {
     setBusy(true);
@@ -109,6 +122,18 @@ export function Providers() {
     }
   }
 
+  async function runMatrix() {
+    setMatrixBusy(true);
+    setMatrixError(null);
+    try {
+      setMatrix(await api.cliCapabilityMatrix());
+    } catch (e) {
+      setMatrixError(toApiError(e));
+    } finally {
+      setMatrixBusy(false);
+    }
+  }
+
   return (
     <div className="page" style={{ maxWidth: 920 }}>
       <div className="page-head">
@@ -130,6 +155,115 @@ export function Providers() {
       <div className="notice">
         AI bağlantısı F09–F11 işidir. Şu anda “AI kapalı” modu geçerlidir: belge, arama, kronoloji,
         iddia ve inceleme akışları tamamen AI olmadan çalışır.
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Yetenek matrisi</h2>
+            <p className="card-sub">
+              Gerekli yetenek doğrulanmadan bağlantı “hazır” sayılmaz. Kanıt, kurulu sürümün kendi{" "}
+              <code>--help</code> metnidir; davranış (araç çağrısı, oturum yazımı) ölçülmez.
+            </p>
+          </div>
+          <button
+            className="btn"
+            disabled={matrixBusy || running !== null}
+            onClick={() => void runMatrix()}
+          >
+            {matrixBusy ? "Yoklanıyor…" : "Yetenekleri sına"}
+          </button>
+        </div>
+
+        {matrixError ? (
+          <div className="notice danger" role="alert">
+            <strong>{matrixError.code}</strong> — {matrixError.message}
+          </div>
+        ) : null}
+
+        {matrix ? (
+          <>
+            <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
+              Yoklandı: {new Date(matrix.probedAtUnix * 1000).toLocaleString("tr-TR")} · yardım sınırı{" "}
+              {Math.round(matrix.helpTimeoutMs / 1000)} sn · en kötü durum:{" "}
+              <strong>{matrixWorstLink(matrix).label}</strong>
+            </div>
+            <div style={{ display: "grid", gap: "var(--space-3)" }}>
+              {matrix.adapters.map((adapter) => {
+                const warnings = capabilityWarnings(adapter);
+                return (
+                  <div
+                    key={adapter.adapterId}
+                    className="card tight"
+                    style={{ background: "var(--surface)" }}
+                  >
+                    <div className="card-head">
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: 14 }}>{adapter.displayName}</h3>
+                        <p className="card-sub" style={MONO}>
+                          {adapter.version ?? "sürüm okunamadı"} · {capabilityHelpCommand(adapter)}
+                        </p>
+                      </div>
+                      <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+                        <span className={`badge ${linkTone(adapter.link)}`}>{adapter.linkLabel}</span>
+                        <span className={`badge ${adapter.gateOpen ? "warn" : "plain"}`}>
+                          {adapter.gateOpen ? "kapı açık" : "kapı kapalı"}
+                        </span>
+                      </div>
+                    </div>
+                    <ul
+                      className="small"
+                      style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}
+                    >
+                      {adapter.rows.map((row) => (
+                        <li
+                          key={row.capability}
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr auto",
+                            gap: "var(--space-2)",
+                            alignItems: "start",
+                          }}
+                        >
+                          <div>
+                            <strong style={{ fontWeight: 600 }}>{row.label}</strong>
+                            {row.required ? <span className="muted small"> · gerekli</span> : null}
+                            <div style={MONO}>{capabilityDetailText(row)}</div>
+                            <div className="muted small">{row.note}</div>
+                          </div>
+                          <span className={`badge ${capabilityTone(row.state)}`}>{row.stateLabel}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="muted small" style={{ marginTop: "var(--space-2)" }}>
+                      {capabilitySummary(adapter)} · {capabilityGateText(adapter)}
+                    </div>
+                    {warnings.map((warning) => (
+                      <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
+                        {warning}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+            <details style={{ marginTop: "var(--space-3)" }}>
+              <summary className="muted small" style={{ cursor: "pointer" }}>
+                Matrisin sınırları
+              </summary>
+              <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                {matrix.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            </details>
+          </>
+        ) : (
+          <p className="muted small">
+            Henüz yoklanmadı. “Yetenekleri sına” dört adaptörün kurulu sürümünü ve <code>--help</code>{" "}
+            metnini yoklar; istem gönderilmez.
+          </p>
+        )}
       </div>
 
       <div className="card">

@@ -2,6 +2,9 @@
 // çağırır, böylece etiket/uyarı mantığı DOM olmadan test edilir.
 
 import type {
+  CliCapabilityAdapter,
+  CliCapabilityMatrix,
+  CliCapabilityRow,
   CliProbeView,
   CliResidueCleanup,
   CliResidueMeasure,
@@ -256,4 +259,137 @@ export function sandboxSweepSummary(
 ): string {
   const age = Math.round(view.minAgeSecs / 60);
   return `${view.considered} aday · ${view.removed.length} silindi · ${view.skipped.length} atlandı · en az ${age} dk yaş`;
+}
+
+// --- F10-T11: yetenek matrisi ---
+
+/**
+ * Yetenek durumunun rozet tonu. `declared` **yeşil değildir**: bayrak yardım
+ * metninde bildirildi ama davranış (araç çağrısı/oturum yazımı) denenmedi.
+ */
+export function capabilityTone(state: string): ProbeTone {
+  switch (state) {
+    case "missing":
+      return "danger";
+    case "no_path":
+    case "unread":
+      return "warn";
+    case "declared":
+      return "warn";
+    default:
+      return "plain";
+  }
+}
+
+/** Bağlantı durumu rozeti: uyumsuz kırmızı, sınırlı/bildirildi sarı. */
+export function linkTone(link: string): ProbeTone {
+  switch (link) {
+    case "incompatible":
+      return "danger";
+    case "limited":
+    case "declared":
+      return "warn";
+    default:
+      return "plain";
+  }
+}
+
+/** Gerçekten yoklanan komut: kullanıcı ne çalıştığını görür. */
+export function capabilityHelpCommand(
+  view: Pick<CliCapabilityAdapter, "command" | "helpArgs">,
+): string {
+  return [view.command, ...view.helpArgs].join(" ");
+}
+
+/** Tek satır özet: kaç yetenek bildirildi / yok / doğrulanamadı. */
+export function capabilitySummary(
+  view: Pick<CliCapabilityAdapter, "rows">,
+): string {
+  const total = view.rows.length;
+  const declared = view.rows.filter((row) => row.state === "declared").length;
+  const missing = view.rows.filter((row) => row.state === "missing").length;
+  const unknown = total - declared - missing;
+  const parts = [`${declared}/${total} bildirildi`];
+  if (missing > 0) parts.push(`${missing} yok`);
+  if (unknown > 0) parts.push(`${unknown} doğrulanamadı`);
+  if (view.rows.some((row) => row.state === "declared")) parts.push("davranış denenmedi");
+  return parts.join(" · ");
+}
+
+/** Gerekçe kodu (`tool_free:no_path`) → okunur satır (`Araçsız çalışma: …`). */
+export function capabilityReasonLines(
+  view: Pick<CliCapabilityAdapter, "rows" | "gateReasons">,
+): string[] {
+  return view.gateReasons.map((reason) => {
+    const [id, state] = reason.split(":");
+    const row = view.rows.find((candidate) => candidate.capability === id);
+    if (!row) return reason;
+    const stateLabel =
+      row.state === "missing"
+        ? "kurulu sürümde yok"
+        : row.state === "no_path"
+          ? "doğrulanmış yol yok"
+          : row.state === "unread"
+            ? "okunamadı"
+            : row.stateLabel;
+    return `${row.label}: ${stateLabel}`;
+  });
+}
+
+/** Kapı tek satırda: açık/kapalı ve neden. */
+export function capabilityGateText(
+  view: Pick<CliCapabilityAdapter, "gateOpen" | "link" | "linkLabel" | "gateReasons" | "rows">,
+): string {
+  if (view.gateOpen) {
+    return "Yetenek kapısı açık: gerekli yeteneklerin hepsi kurulu sürümün yardım metninde bildirildi; davranış denenmedi.";
+  }
+  if (view.link === "not_installed") {
+    return "Yetenek kapısı kapalı: araç kurulu değil, yetenek doğrulanamaz.";
+  }
+  const reasons = capabilityReasonLines(view);
+  const detail = reasons.length > 0 ? ` — ${reasons.join("; ")}` : "";
+  return `Yetenek kapısı kapalı (${view.linkLabel})${detail}`;
+}
+
+/** Dürüstlük uyarıları: okunamayan yardım, kesik çıktı, eksik bayrak. */
+export function capabilityWarnings(
+  view: Pick<CliCapabilityAdapter, "helpError" | "helpRead" | "rows">,
+): string[] {
+  const out: string[] = [];
+  if (view.helpError !== null && view.helpError !== "") {
+    out.push(`Yardım metni okunamadı (${view.helpError}); yetenekler "okunamadı" kalır.`);
+  } else if (!view.helpRead && view.rows.some((row) => row.state === "unread")) {
+    out.push("Yardım metni okunamadı; yetenekler doğrulanmadı.");
+  }
+  for (const row of view.rows.filter((candidate) => candidate.state === "missing")) {
+    out.push(`${row.label}: kurulu sürümün yardım metninde ${row.flags.join(" ")} yok.`);
+  }
+  return out;
+}
+
+/** Matrisin en kötü bağlantı durumu (kart başlığı için). */
+export function matrixWorstLink(
+  view: Pick<CliCapabilityMatrix, "adapters">,
+): { link: string; label: string } {
+  const severity: Record<string, number> = {
+    declared: 0,
+    not_installed: 1,
+    limited: 2,
+    incompatible: 3,
+  };
+  let worst: { link: string; label: string } = { link: "unknown", label: "bilinmiyor" };
+  let worstScore = -1;
+  for (const adapter of view.adapters) {
+    const score = severity[adapter.link] ?? 0;
+    if (score > worstScore) {
+      worstScore = score;
+      worst = { link: adapter.link, label: adapter.linkLabel };
+    }
+  }
+  return worst;
+}
+
+/** Satır ayrıntısı boşsa gösterilecek metin. */
+export function capabilityDetailText(row: Pick<CliCapabilityRow, "detail">): string {
+  return row.detail.trim() === "" ? "—" : row.detail;
 }

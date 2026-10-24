@@ -553,6 +553,42 @@ export type CliProbeView = {
   sandbox: CliProbeSandbox;
 };
 
+/** F10-T11: yetenek matrisi. Yetenek kanıtı kurulu sürümün `--help` metnidir. */
+export type CliCapabilityState = "declared" | "missing" | "no_path" | "unread";
+
+export type CliCapabilityRow = {
+  capability: string;
+  label: string;
+  required: boolean;
+  note: string;
+  state: CliCapabilityState;
+  stateLabel: string;
+  flags: string[];
+  detail: string;
+};
+
+export type CliCapabilityAdapter = {
+  adapterId: string;
+  displayName: string;
+  command: string;
+  version: string | null;
+  helpArgs: string[];
+  helpRead: boolean;
+  helpError: string | null;
+  link: "not_installed" | "incompatible" | "limited" | "declared";
+  linkLabel: string;
+  gateOpen: boolean;
+  gateReasons: string[];
+  rows: CliCapabilityRow[];
+};
+
+export type CliCapabilityMatrix = {
+  adapters: CliCapabilityAdapter[];
+  probedAtUnix: number;
+  helpTimeoutMs: number;
+  notes: string[];
+};
+
 export type ClaimRow = {
   id: string;
   caseId: string;
@@ -1151,6 +1187,7 @@ export const api = {
   providerProbeRun: (adapterId: string) =>
     invoke<CliProbeView>("provider_probe_run", { input: { adapterId } }),
   providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
+  cliCapabilityMatrix: () => invoke<CliCapabilityMatrix>("cli_capability_matrix"),
   cliResidueScan: (adapterId: string) =>
     invoke<CliResidueScan>("cli_residue_scan", { input: { adapterId } }),
   cliResidueMeasure: (adapterId: string, confirmUserHome: boolean) =>

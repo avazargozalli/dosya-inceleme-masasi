@@ -1837,6 +1837,215 @@ pub fn provider_probe_cancel(state: State<'_, AppState>) -> bool {
     }
 }
 
+// --- F10-T11: yetenek matrisi ve bağlantı durumu ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCapabilityRowView {
+    pub capability: &'static str,
+    pub label: &'static str,
+    pub required: bool,
+    pub note: &'static str,
+    pub state: &'static str,
+    pub state_label: &'static str,
+    /// Bildirilen bayraklar (`declared`) ya da eksik olanlar (`missing`).
+    pub flags: Vec<String>,
+    /// Durumun ayrıntısı: bayrak listesi, eksik bayraklar ya da neden kodu.
+    pub detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCapabilityAdapterView {
+    pub adapter_id: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+    pub version: Option<String>,
+    pub help_args: Vec<String>,
+    pub help_read: bool,
+    pub help_error: Option<String>,
+    pub link: &'static str,
+    pub link_label: &'static str,
+    pub gate_open: bool,
+    pub gate_reasons: Vec<String>,
+    pub rows: Vec<CliCapabilityRowView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCapabilityMatrixView {
+    pub adapters: Vec<CliCapabilityAdapterView>,
+    pub probed_at_unix: u64,
+    pub help_timeout_ms: u64,
+    pub notes: Vec<&'static str>,
+}
+
+fn capability_rows(report: &dim_cli_adapters::CapabilityReport) -> Vec<CliCapabilityRowView> {
+    report
+        .rows
+        .iter()
+        .map(|row| {
+            let (flags, detail) = match &row.state {
+                dim_cli_adapters::CapabilityState::Declared { flags } => (
+                    flags.iter().map(|f| (*f).to_string()).collect::<Vec<_>>(),
+                    flags.join(" "),
+                ),
+                dim_cli_adapters::CapabilityState::Missing { absent } => (
+                    absent.iter().map(|f| (*f).to_string()).collect::<Vec<_>>(),
+                    format!("eksik: {}", absent.join(" ")),
+                ),
+                dim_cli_adapters::CapabilityState::NoPath { reason } => {
+                    (Vec::new(), (*reason).to_string())
+                }
+                dim_cli_adapters::CapabilityState::Unread { reason } => {
+                    (Vec::new(), reason.clone())
+                }
+            };
+            CliCapabilityRowView {
+                capability: row.capability.id(),
+                label: row.capability.label(),
+                required: row.required,
+                note: row.note,
+                state: row.state.id(),
+                state_label: row.state.label(),
+                flags,
+                detail,
+            }
+        })
+        .collect()
+}
+
+/// Dört adaptörün **yetenek matrisini** yoklar: kurulu sürüm + o sürümün kendi
+/// `--help` metni. Gerekli bir yetenek yoksa bağlantı **uyumsuz**, doğrulanamıyorsa
+/// **sınırlı** olur ve yetenek kapısı kapanır. İstem gönderilmez; yardım metni
+/// denetime yazılmaz, yalnız durumlar ve bayrak adları yazılır.
+#[tauri::command]
+pub async fn cli_capability_matrix(
+    state: State<'_, AppState>,
+) -> Result<CliCapabilityMatrixView, ApiError> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::with_capacity(SPECS.len());
+        for adapter in SPECS {
+            let discovery = discover(adapter);
+            let version = match &discovery.state {
+                DiscoveryState::Installed { version, .. } => Some(version.clone()),
+                _ => None,
+            };
+            // Yardım yalnız kurulu ve otomatik yürütmeye açık adaptörde yoklanır
+            // (`help_probe=false` → etkileşimli-only, süreç başlatılmaz).
+            let (help, help_error) =
+                match (&discovery.state, dim_cli_adapters::capabilities(adapter.id)) {
+                    (DiscoveryState::Installed { .. }, Some(caps)) if caps.help_probe => {
+                        match find_on_path(adapter.command) {
+                            Some(executable) => {
+                                match dim_cli_adapters::run_help_probe(
+                                    adapter,
+                                    &executable,
+                                    &run_cancel,
+                                ) {
+                                    Ok(probe) => match dim_cli_adapters::help_text_of(&probe) {
+                                        Ok(text) => (Some(text.to_string()), None),
+                                        Err(reason) => (None, Some(reason.to_string())),
+                                    },
+                                    Err(err) => (None, Some(err.code().to_string())),
+                                }
+                            }
+                            None => (None, Some("not_installed".to_string())),
+                        }
+                    }
+                    _ => (None, None),
+                };
+            let Some(report) = dim_cli_adapters::evaluate(
+                adapter.id,
+                version.as_deref(),
+                help.as_deref(),
+                help_error.as_deref(),
+            ) else {
+                continue;
+            };
+            out.push(CliCapabilityAdapterView {
+                adapter_id: report.adapter_id,
+                display_name: adapter.display_name,
+                command: adapter.command,
+                version: report.installed_version.clone(),
+                help_args: report.help_args.clone(),
+                help_read: report.help_read,
+                help_error: report.help_error.clone(),
+                link: report.link.id(),
+                link_label: report.link.label(),
+                gate_open: report.gate_open,
+                gate_reasons: report.gate_reasons.clone(),
+                rows: capability_rows(&report),
+            });
+        }
+        out
+    })
+    .await;
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+    let adapters = match joined {
+        Ok(adapters) => adapters,
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Yetenek yoklaması tamamlanamadı.",
+            ))
+        }
+    };
+
+    // Denetime yalnız durum ve bayrak adları yazılır; yardım metni yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapters": adapters
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "adapterId": a.adapter_id,
+                        "version": a.version,
+                        "link": a.link,
+                        "gateOpen": a.gate_open,
+                        "gateReasons": a.gate_reasons,
+                        "helpRead": a.help_read,
+                        "helpError": a.help_error,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            db.append_audit("cli_capability", None, "probe", "local-user", &metadata)?;
+        }
+    }
+
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(CliCapabilityMatrixView {
+        adapters,
+        probed_at_unix,
+        help_timeout_ms: u64::try_from(dim_cli_adapters::HELP_TIMEOUT.as_millis())
+            .unwrap_or(u64::MAX),
+        notes: vec![
+            "Yetenek kanıtı kurulu sürümün kendi --help metnidir; davranış (araç çağrısı, oturum yazımı) ölçülmedi.",
+            "Gerekli bir yetenek yardım metninde yoksa bağlantı uyumsuz, doğrulanamıyorsa sınırlı olur ve yetenek kapısı kapanır.",
+            "Kesilmiş, boş ya da sıfır olmayan çıkışlı yardım çıktısı kanıt sayılmaz.",
+        ],
+    })
+}
+
 // --- F10-T13: CLI kalıntı envanteri, ölçümü ve yalnız uygulamaya ait temizlik ---
 
 #[derive(Serialize)]

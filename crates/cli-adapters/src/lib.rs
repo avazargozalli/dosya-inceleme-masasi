@@ -11,10 +11,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod capability;
 pub mod exec;
 pub mod probe;
 pub mod residue;
 pub mod sandbox;
+pub use capability::{
+    capabilities, evaluate, help_text_of, mentions_flag, run_help_probe, AdapterCapabilities,
+    Capability, CapabilityReport, CapabilityRequirement, CapabilityRow, CapabilityState, HelpProbe,
+    LinkState, Mechanism, HELP_TIMEOUT, MATRIX,
+};
 pub use exec::{
     clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
     RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
@@ -72,6 +78,13 @@ pub const SPECS: &[AdapterSpec] = &[
             "--max-turns",
             // `claude --help` (2.1.303) ile doğrulandı: yalnız `--print` ile.
             "--no-session-persistence",
+            // F10-T11 yetenek matrisi: yardım metninde bildirilen kapatma yolları.
+            // Matris ile kapı ayrışmasın diye `capability::MATRIX` ile birlikte
+            // tutulur (`declared_capability_flags_pass_the_argument_gate`).
+            "--tools",
+            "--bare",
+            "--strict-mcp-config",
+            "--json-schema",
         ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
@@ -89,6 +102,11 @@ pub const SPECS: &[AdapterSpec] = &[
             "--skip-git-repo-check",
             // `codex exec --help` (0.159.2) ile doğrulandı: oturum dosyası yazmaz.
             "--ephemeral",
+            // F10-T11 yetenek matrisi: yapılandırma/kural yüklemeyi kapatma ve
+            // şemalı çıktı bayrakları.
+            "--output-schema",
+            "--ignore-user-config",
+            "--ignore-rules",
         ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
@@ -207,10 +225,15 @@ pub fn parse_version_output(output: &str) -> Option<String> {
 
 fn probe_version(path: &Path, spec: &AdapterSpec) -> Result<String, AdapterError> {
     let flag = spec.version_args.first().copied().unwrap_or("--version");
-    let output = Command::new(path)
-        .arg(flag)
-        .output()
-        .map_err(|_| AdapterError::ProbeFailed)?;
+    let mut command = Command::new(path);
+    command.arg(flag);
+    // Sürüm yoklaması da tam ortamı devralmaz (INV-11): `run_cli` ile aynı
+    // allowlist. Böylece liste dışı bir API anahtarı alt sürece geçmez.
+    command.env_clear();
+    for (key, value) in default_env_allowlist() {
+        command.env(key, value);
+    }
+    let output = command.output().map_err(|_| AdapterError::ProbeFailed)?;
     if !output.status.success() {
         return Err(AdapterError::ProbeFailed);
     }
