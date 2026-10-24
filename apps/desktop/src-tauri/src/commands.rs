@@ -4095,8 +4095,8 @@ pub fn ai_candidate_promote(
     Ok(db.promote_candidate(&candidate_id, &case_id)?)
 }
 
-/// Adayı **yazmadan** doğrular (şema + alıntı eşleştirmesi). Denetime yalnız
-/// sayı ve durum yazılır; aday metni ve alıntı içeriği yazılmaz.
+/// Adayı **yazmadan** doğrular (şema + alıntı eşleştirmesi); denetim kaydı
+/// oluşturmaz. Kalıcı kayıt `ai_candidate_record` ile yapılır.
 #[tauri::command]
 pub fn ai_candidate_validate(
     state: State<'_, AppState>,

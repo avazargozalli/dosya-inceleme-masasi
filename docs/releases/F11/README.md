@@ -87,3 +87,14 @@ yolu yoktur.
 - `pageIndex` 0 tabanlıdır; arayüz 1 tabanlı gösterir. `isoDate` ile `rawText`
   arasındaki tutarlılık **denetlenmez** (Türkçe tarih ayrıştırma kapsam dışı).
 - Tauri penceresi açılmadı → kartların görsel QA'sı yok.
+
+### Doğrulama kaydı
+
+- `cargo test -p dim-storage --lib` → **231** test yeşil (ai_candidate 13 yeni).
+- Web: `pnpm typecheck` temiz, `pnpm test` **259** (candidate.test.ts 13 test),
+  `pnpm build` yeşil.
+- Clippy: `-p dim-storage --all-targets -D warnings` ve
+  `--manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -D warnings`
+  temiz; rustfmt iki manifest temiz.
+- Commit `323a662` → CI run `40132668277` **7/7 yeşil** (arayüz, SBOM, masaüstü
+  kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
