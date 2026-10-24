@@ -8,7 +8,7 @@
 | F15-T01 erişilebilirlik regresyonu | ✅ | `src/a11y.test.ts` — etiketsiz alan, altsız görsel, adsız buton |
 | F15-T02 güvenlik test matrisi | ✅ | `docs/security/test-matrix.md` (T1–T15) |
 | F15-T03 SBOM | 🚧 | `scripts/sbom.sh`; CI job'u |
-| F15-T04 performans benchmark | 🚧 | koşucu + ilk ölçüm: `BENCHMARK.md`; **arama ölçeklenmiyor** (3.000 segmentte p95 2,1 sn) |
+| F15-T04 performans benchmark | 🚧 | koşucu + iki tur ölçüm: `BENCHMARK.md`; arama düzeltildi (3.000 segmentte p95 2,1 sn → **170 ms**), 100k hedefi **ölçülmedi** |
 | F15-T05 pilot (5–8 avukat) | ⬜ | **insan gerekir**; protokol `docs/pilot/` |
 | F15-T06 VoiceOver/NVDA turu | ⬜ | statik test var, ekran okuyucu turu yapılmadı |
 

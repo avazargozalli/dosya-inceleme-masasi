@@ -1,7 +1,10 @@
-# F15 — Kapasite ve gecikme ölçümü (ilk tur)
+# F15 — Kapasite ve gecikme ölçümü
 
-- **Tarih:** 2026-10-24
-- **Durum:** Koşucu hazır, **ilk ölçüm alındı**; 100k belge hedefi henüz ölçülmedi
+- **Tarih:** 2026-10-24 (2. tur: düzeltme sonrası ölçüm)
+- **Durum:** Koşucu hazır; arama ölçeklenmesi düzeltildi (**p95 2.100 ms → 170 ms**
+  @3.000 segment). 100k hedefi hâlâ **ölçülmedi** (donanım/disk); doğrusal
+  eğriyle dış değerleme ~5 sn → beta hedefi (p95 ≤ 2 sn) bu makinede
+  **karşılanmıyor**.
 - **Koşucu:** `crates/storage/tests/bench_scale.rs` (elle, `#[ignore]`)
 
 ## Yöntem
@@ -21,56 +24,84 @@
 
 | Korpus | Yükleme | Arama p50 | Arama p95 | Arama max | İlk sayfa p95 | DB |
 |---|---|---|---|---|---|---|
-| 100 belge / 300 sayfa / 300 segment | 0,27 sn (366 belge/sn) | 74,4 ms | 93,8 ms | 115,1 ms | 0,57 ms | 1,5 MB |
-| 1.000 belge / 3.000 sayfa / 3.000 segment | 2,77 sn (361 belge/sn) | **1.553,9 ms** | **2.099,9 ms** | 4.496,9 ms | 79,6 ms | 11,5 MB |
+| 100 belge / 300 segment | 0,27 sn | 74 ms | 94 ms | 115 ms | 0,6 ms | 1,5 MB |
+| 1.000 belge / 3.000 segment (**önce**) | 2,77 sn | **1.554 ms** | **2.100 ms** | 4.497 ms | 80 ms | 11,5 MB |
+| 1.000 belge / 3.000 segment (**sonra**) | 2,66 sn | **140 ms** | **170 ms** | 192 ms | 86 ms | 11,5 MB |
+| 3.333 belge / 9.999 segment (**sonra**) | 15,0 sn | **425 ms** | **517 ms** | 579 ms | 265 ms | 37 MB |
 
-Sorgu grubuna göre (1.000 belge):
+Sorgu grubuna göre (p50 / p95):
 
-| Grup | p50 | p95 |
-|---|---|---|
-| Esas/karar numarası (`2024/N E.`) | 111,6 ms | 115,4 ms |
-| Tırnaklı ifade | 603,2 ms | 654,8 ms |
-| Tek kelime | **1.668,8 ms** | **4.180,5 ms** |
-| Türkçe karaktersiz (esnek) | 1.691,4 ms | 4.176,3 ms |
+| Grup | 3.000 segment (önce) | 3.000 segment (sonra) | 10.000 segment (sonra) |
+|---|---|---|---|
+| Esas/karar numarası (`2024/N E.`) | 112 / 115 ms | **3,7 / 3,9 ms** | 6,6 / 6,7 ms |
+| Tırnaklı ifade | 603 / 655 ms | **166 / 179 ms** | 510 / 557 ms |
+| Tek kelime (esnek) | 1.669 / 4.181 ms | **138 / 146 ms** | 424 / 445 ms |
+| Türkçe karaktersiz (esnek) | 1.691 / 4.176 ms | **141 / 156 ms** | 425 / 448 ms |
+| **Genel** | 1.554 / 2.100 ms | **140 / 170 ms** | 425 / 517 ms |
 
-## Bulgu: arama ölçeklenmiyor (kabul hedefinin çok altında)
+**Kazanç: 3.000 segmentte p50 11×, p95 12,4×.** Ölçeklenme hâlâ **doğrusal**:
+segment sayısı 3,3× artınca p95 3,0× arttı.
 
-B-01 hedefi **100.000 segmentte p95 ≤ 2 sn** (çekirdek + IPC + UI). Biz
-**3.000 segmentte** çekirdekte p95 2,1 sn ölçtük. Aday sayısı 10 kat artınca
-gecikme ~21 kat arttı; yani maliyet aday sayısıyla **doğrusal**.
+## Düzeltmenin içeriği (ölçümle bulundu, ölçümle doğrulandı)
 
-Neden: `search_page` adayları FTS ile daraltıyor, ama kesin eşleşmeyi her aday
-satır için `dim_search_match(s.raw_text, …)` Rust/SQL fonksiyonuyla doğruluyor.
-Fonksiyon her çağrıda **tüm segment metnini yeniden normalleştiriyor** (Türkçe
-harf sadeleştirme + tokenizasyon). 200 sorgu × 3.000 satır = 600.000 tam metin
-normalleştirmesi. `include_total=true` sayım sorgusu da aynı doğrulamayı
-yineliyor.
+1. **Doğrulama artık sorgu başına bir kez hazırlanıyor.** Eskiden
+   `dim_search_match(s.raw_text, iğne, kip)` her aday satır için iğneyi yeniden
+   tokenize ediyor ve segment metnini yeniden normalleştiriyordu. Şimdi
+   `SearchMatcher` iğneyi bir kez hazırlar, satır başına yalnız samanlık taranır
+   ve ayırma yapılmaz (`token_spans` bayt aralıkları + yeniden kullanılan
+   tamponlar).
+2. **`flexible` doğrulaması `normalized_text` üzerinde.** Sütun zaten
+   `dim_evidence::normalize` çıktısı; her satırda yeniden normalleştirme yok.
+   `exact`/`phrase`/`docket` ham metin üzerinde çalışır (Türkçe `ı`/`i` ayrımı
+   ve rol harfi korunur).
+3. **Esas/karar numarasında aday daraltma:** eskiden yalnız **yıl** aranıyordu;
+   şimdi yıl + numara bitişik ifade olarak, baştaki sıfır varyantlarıyla ve son
+   belirteç önek olarak (`2024/0123`, `2024/123E`). Kesin kural değişmedi.
+4. **Sayımın planı değişti — en büyük tek kazanç.** `SELECT count(*) … FROM
+   text_segments_fts JOIN …` planında SQLite her aday için **rastgele** birincil
+   anahtar araması yapıyordu: 3.000 adayda **286 ms**. Aynı kümeyi
+   `s.rowid IN (SELECT rowid FROM text_segments_fts WHERE … MATCH …)` ile veren
+   plan `text_segments` üzerinde sıralı taramaya geçiyor: **<1 ms**. Kapsam
+   aynı (aynı filtreler, aynı doğrulama); yalnız plan değişti.
+5. **Sayım yalnız gerektiğinde:** sayfa bütün eşleşmeleri döndürdüyse
+   (`has_more` yok) toplam dönen sayıdır; ikinci geçiş atlanır.
 
-Kaba dış değerleme (ölçüm değil, uyarı): aynı eğri 100.000 segmentte sorgu
-başına ~50–70 sn demek olurdu. Bu haliyle beta kapasite hedefi **karşılanmıyor**.
+**Denenip vazgeçilen:** `count(*) OVER ()` pencere fonksiyonu. `bm25` FTS
+yardımcı fonksiyonu alt sorgu düzleştirmesinde bağlamını kaybettiği için
+`LIMIT -1` ile materyalizasyon gerekti; ölçümde **daha yavaş** çıktı
+(3.000 segmentte p50 2.620 ms, p95 3.477 ms). Kaldırıldı, gerekçesi kodda yazılı.
 
-Olası düzeltme yolları (henüz uygulanmadı, sıradaki iş):
+## Doğruluk güvencesi
 
-1. Doğrulamayı `s.normalized_text` üzerinde yapmak (kolon zaten var) — her satır
-   için yeniden normalleştirmeyi kaldırır.
-2. Normalleştirilmiş metni FTS belirteçleriyle önceden daraltmak; docket
-   sorgusunda yıl yerine yıl+numara belirteçleri (baştaki sıfır varyantlarıyla).
-3. `include_total` sayımını doğrulama fonksiyonundan bağımsız, yalnız FTS aday
-   sayısıyla hesaplamak (sayı "yaklaşık" olarak etiketlenmeli) ya da ikinci
-   sayfada hiç istememek (arayüz zaten yalnız ilk sayfada istiyor).
-4. Doğrulama fonksiyonunu toplu (set tabanlı) çağırmak.
+- `fast_matcher_agrees_with_reference_implementation`: hızlı doğrulayıcı,
+  referans `search_match` ile 4 kip × 10 iğne × 12 zor metin (Türkçe büyük/küçük
+  harf, noktalama, `2024-123`, `00123`, yapışık `123E`, boşluklu) üzerinde
+  **birebir** aynı sonucu verir.
+- `search_docket_narrowing_keeps_real_matches`: sıfırlı (`2024/0123`), boşluklu
+  (`2024 / 123`) ve harfe yapışık (`2024/123E`) yazımlar eşleşir; yanlış yıl
+  (`2023/123`) ve yanlış numara (`2024/12345`) eşleşmez.
+- `search_total_from_single_pass_matches_verified_hits`: sayım doğrulanmış
+  eşleşmeleri sayar (FTS'in bulup doğrulamanın reddettiği aday sayılmaz).
+- Mevcut F07 arama testleri (kip semantiği, filtreler, keyset sayfalama, kapsam
+  sınırı) değişmeden geçiyor: storage **178 test**.
 
 ## Dürüst sınırlamalar
 
-- 100.000 belge / 1.000.000 sayfa hedefi **ölçülmedi**: bu makinede disk boş
-  alanı ~5 GB ve koşu süresi sınırlı. Koşucu `DIM_BENCH_DOCS` ile kademeli
-  çalıştırılabilir; 100k için referans donanım (B-01: 16 GB RAM, 8+ CPU, SSD) ve
-  boş disk gerekir.
+- **100.000 belge / 300.000 sayfa hedefi ölçülmedi.** Bu makinede boş disk
+  ~4,5 GB; 100k korpus ~370 MB DB üretir ama koşu süresi ve disk güvenlik
+  eşiği buna izin vermiyor. Referans donanım (B-01: 16 GB RAM, 8+ CPU, SSD)
+  gerekir.
+- Ölçülen eğri doğrusal: 10.000 segmentte p95 517 ms → 100.000 segmentte
+  ~5 sn dış değerlemesi. **Beta hedefi (p95 ≤ 2 sn) bu eğriyle karşılanmıyor.**
+  Sıradaki kaldıraçlar: (a) sayfa sorgusunda da tüm adayları sıralama öncesi
+  doğrulamak yerine "aday penceresi + tembel doğrulama", (b) toplam sayıyı
+  arayüzde geciktirmeli/önbellekli göstermek, (c) `normalized_text` için
+  kalıcı belirteç/konum indeksi.
 - Ölçüm tek makine, tek koşu; sıcak/soğuk önbellek ayrımı yapılmadı.
 - IPC ve arayüz gecikmesi yok; gerçek kullanıcı gecikmesi bundan **büyüktür**.
 - OCR ve iş kuyruğu gecikmesi ölçülmedi (worker bu koşuda devrede değil).
-- Bu tablo bir "geçti" belgesi değildir; arama ölçeklenmesi düzeltilmeden
-  F15-T04/T05 kapanmaz.
+- Bu tablo bir "geçti" belgesi değildir; 100k hedefi ölçülene kadar F15-T04
+  **kısmi** kalır.
 
 ## Komut
 

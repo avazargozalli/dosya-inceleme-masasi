@@ -511,19 +511,20 @@ impl Database {
             return Ok(page);
         }
 
-        let (base_where, base_params) = search_where(case_id, &resolved, &expression, &filters);
-        if include_total {
-            let count: i64 = self.conn().query_row(
-                &format!("SELECT count(*) FROM {SEARCH_FROM} {base_where}"),
-                rusqlite::params_from_iter(base_params.iter()),
-                |row| row.get(0),
-            )?;
-            page.total = Some(count);
-        }
+        // Doğrulayıcı sorgu başına bir kez kurulur (F15 ölçek düzeltmesi).
+        let matcher = SearchMatcher::new(&resolved.text, resolved.mode, resolved.docket.clone());
+        let verify = if matcher.wants_normalized() {
+            "dim_search_verify(NULL, s.normalized_text)"
+        } else {
+            "dim_search_verify(s.raw_text, NULL)"
+        };
+        self.register_search_verifier(std::sync::Arc::new(matcher))?;
+
+        let (base_where, base_params) = search_where(case_id, &expression, &filters, verify);
 
         // Sonuç sınırı: bir fazla satır çekilir, `has_more` gerçek veriden gelir.
         let mut sql = format!(
-            "SELECT s.id, s.page_id, s.raw_text, p.page_index, bm25(text_segments_fts),
+            "SELECT s.id AS segment_id, s.page_id, s.raw_text, p.page_index, bm25(text_segments_fts) AS bm25_rank,
                     pr.document_version_id, dv.document_id, d.display_name, d.document_type,
                     d.status, p.text_origin, s.case_id
              FROM {SEARCH_FROM} {base_where}"
@@ -539,7 +540,11 @@ impl Database {
             params.push(rank);
             params.push(Value::Text(cursor.segment_id.clone()));
         }
-        sql.push_str(" ORDER BY bm25(text_segments_fts), s.id LIMIT ?");
+        // Pencere sayımı (`count(*) OVER ()`) ölçümde **daha yavaş** çıktı:
+        // `bm25` alt sorgu düzleştirmesinde bağlamını kaybettiği için alt sorgu
+        // materyalize ediliyor ve sıralama ikinci kez yapılıyor. Bu yüzden sayım
+        // ayrı geçişte kalır (doğrulayıcı ucuz).
+        sql.push_str(" ORDER BY bm25_rank, segment_id LIMIT ?");
         params.push(Value::Integer(limit + 1));
 
         let mut stmt = self.conn().prepare(&sql)?;
@@ -580,6 +585,24 @@ impl Database {
             }
         }
 
+        // Toplam: sayfa **bütün** eşleşmeleri döndürdüyse toplam dönen sayıdır;
+        // ikinci geçişe gerek yok. İmleçli sayfada bu çıkarım geçersizdir
+        // (elde kalan satırlar sayılır), orada tam sayım yapılır. Tam sayım
+        // FTS-güdümlü olmayan planla yapılır (`count_where`): 3.000 adaylı
+        // sorguda 286 ms → <1 ms (F15 ölçümü).
+        if include_total {
+            page.total = Some(if !page.has_more && cursor.is_none() {
+                hits.len() as i64
+            } else {
+                let (count_sql, count_params) = count_where(case_id, &expression, &filters, verify);
+                self.conn().query_row(
+                    &format!("SELECT count(*) FROM {COUNT_FROM}{count_sql}"),
+                    rusqlite::params_from_iter(count_params.iter()),
+                    |row| row.get(0),
+                )?
+            });
+        }
+
         let doc_ids: Vec<String> = {
             let mut ids: Vec<String> = hits.iter().filter_map(|h| h.document_id.clone()).collect();
             ids.sort();
@@ -600,6 +623,33 @@ impl Database {
         page.returned = hits.len() as i64;
         page.hits = hits;
         Ok(page)
+    }
+
+    /// Aday doğrulamasını sorguya bağlar (F15 ölçek düzeltmesi).
+    ///
+    /// Skaler fonksiyon adı sabittir; her arama kendi matcher'ını kaydeder.
+    /// Kayıt bağlantıya bağlıdır ve arama tek iş parçacığında bittiği için
+    /// arama sürerken değişmez.
+    fn register_search_verifier(
+        &self,
+        matcher: std::sync::Arc<SearchMatcher>,
+    ) -> Result<(), StorageError> {
+        let mut scratch = MatchScratch::default();
+        self.conn().create_scalar_function(
+            "dim_search_verify",
+            2,
+            FunctionFlags::SQLITE_UTF8,
+            move |ctx| {
+                let raw: Option<String> = ctx.get::<Option<String>>(0)?;
+                let normalized: Option<String> = ctx.get::<Option<String>>(1)?;
+                Ok(i64::from(matcher.matches(
+                    raw.as_deref(),
+                    normalized.as_deref(),
+                    &mut scratch,
+                )))
+            },
+        )?;
+        Ok(())
     }
 
     /// Sonuç sayfasındaki belgelerin etiketleri: tek sorgu, N+1 yok.
@@ -852,10 +902,9 @@ fn escape_fts(text: &str) -> String {
 /// `dim_search_match` doğrular (FTS diakritikleri kendiliğinden sadeleştirir).
 fn fts_expression(query: &ResolvedQuery) -> String {
     match query.mode {
-        // Yıl tek başına aday: `2024/0123` baştaki sıfır yüzünden `123`
-        // belirteciyle eşleşmez; numara doğrulamada kanonikleştirilir.
+        // Esas/karar numarası: yıl + numara belirteçleri (sıfır varyantlarıyla).
         SearchMode::Docket => match query.docket.as_ref() {
-            Some(docket) => format!("raw_text : \"{}\"", escape_fts(&docket.year)),
+            Some(docket) => docket_expression(docket),
             None => String::new(),
         },
         SearchMode::Exact => {
@@ -885,6 +934,32 @@ fn fts_expression(query: &ResolvedQuery) -> String {
         }
         SearchMode::Auto => String::new(),
     }
+}
+
+/// Esas/karar numarası adayları: **yıl ve numara** belirteçleri birlikte.
+///
+/// Önceki hâlde yalnız yıl aranıyordu; yoğun bir yılda bu, doğrulamaya binlerce
+/// aday bırakıyordu. Numara, baştaki sıfır varyantlarıyla ve **önek** olarak
+/// aranır (`2024/0123` → `0123`, `2024/123E` → `123e`). Eşleşme kuralı
+/// değişmez: kesin doğrulamayı yine `docket_match` yapar, burada yalnız aday
+/// daraltılır. Yıl ile numara arasında yalnız boşluk/nokta ve `/` olabildiği
+/// için ikisi FTS'te her zaman bitişik belirteçlerdir.
+fn docket_expression(docket: &DocketNumber) -> String {
+    // Numara metinde baştaki sıfırlarla yazılmış olabilir; doğrulama sıfırları
+    // atar, aday üretimi de aynı biçimleri aramalı.
+    const MAX_DIGITS: usize = 10;
+    let digits = docket.number.chars().count();
+    (0..=MAX_DIGITS.saturating_sub(digits))
+        .map(|zeros| {
+            format!(
+                "raw_text : \"{} {}{}\"*",
+                escape_fts(&docket.year),
+                "0".repeat(zeros),
+                escape_fts(&docket.number)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 /// Boşlukları tek boşluğa indirir (karşılaştırma için).
@@ -1009,7 +1084,270 @@ fn docket_match(text: &str, docket: &DocketNumber) -> bool {
     false
 }
 
+/// Türkçe küçük harf eşlemesi (tek karakter). `İ`→`i`, `I`→`ı`; diğerleri
+/// Unicode küçük harf. Çok karaktere açılan tek eşleme `İ`'dir ve burada özel
+/// olarak ele alındığı için tek karakter döndürmek `turkish_lower` ile aynıdır.
+fn fold_char(ch: char) -> char {
+    match ch {
+        'İ' => 'i',
+        'I' => 'ı',
+        _ => ch.to_lowercase().next().unwrap_or(ch),
+    }
+}
+
+/// `turkish_lower(collapse_ws(text))` çıktısını `out` içine yazar (ayırma yok).
+fn fold_ws_into(text: &str, out: &mut String) {
+    out.clear();
+    let mut last_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if out.is_empty() || last_space {
+                continue;
+            }
+            last_space = true;
+            out.push(' ');
+        } else {
+            last_space = false;
+            out.push(fold_char(ch));
+        }
+    }
+}
+
+/// `turkish_lower(collapse_ws(haystack)).contains(needle)` ile birebir aynı
+/// sonuç; `folded` yeniden kullanılan tampondur (satır başına ayırma yok).
+fn contains_folded_ws(haystack: &str, needle: &str, folded: &mut String) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    fold_ws_into(haystack, folded);
+    folded.contains(needle)
+}
+
+/// Metnin alfanümerik belirteç aralıkları (bayt). `turkish_lower` belirteç
+/// sınırlarını değiştirmez; bu yüzden ham metin üzerinde hesaplanabilir.
+fn token_spans(text: &str, out: &mut Vec<(usize, usize)>) {
+    out.clear();
+    let mut start: Option<usize> = None;
+    for (index, ch) in text.char_indices() {
+        if ch.is_alphanumeric() {
+            if start.is_none() {
+                start = Some(index);
+            }
+        } else if let Some(begin) = start.take() {
+            out.push((begin, index));
+        }
+    }
+    if let Some(begin) = start {
+        out.push((begin, text.len()));
+    }
+}
+
+/// Bir belirteç iğne belirteciyle eşleşiyor mu? `prefix` ise samanlık belirteci
+/// iğne belirtecinden **uzun** olabilir (son kelime öneki).
+fn token_equals(text: &str, span: (usize, usize), needle: &str, prefix: bool) -> bool {
+    let mut hay = text[span.0..span.1].chars();
+    let mut want = needle.chars();
+    loop {
+        match (hay.next(), want.next()) {
+            (None, None) => return true,
+            (Some(h), Some(w)) => {
+                if fold_char(h) != w {
+                    return false;
+                }
+            }
+            (Some(_), None) => return prefix,
+            (None, Some(_)) => return false,
+        }
+    }
+}
+
+/// Belirteç aralıkları üzerinde bitişik dizi eşleşmesi (ayırma yok).
+fn seq_matches_spans(
+    text: &str,
+    spans: &[(usize, usize)],
+    needle: &[String],
+    prefix_last: bool,
+) -> bool {
+    if needle.is_empty() || needle.len() > spans.len() {
+        return false;
+    }
+    let last = needle.len() - 1;
+    for start in 0..=(spans.len() - needle.len()) {
+        let mut all = true;
+        for (offset, want) in needle.iter().enumerate() {
+            if !token_equals(
+                text,
+                spans[start + offset],
+                want,
+                prefix_last && offset == last,
+            ) {
+                all = false;
+                break;
+            }
+        }
+        if all {
+            return true;
+        }
+    }
+    false
+}
+
+/// `i` konumundan başlayarak boşluk/nokta atlar (Unicode boşluk dahil).
+fn skip_ws_dots(text: &str, mut j: usize) -> usize {
+    while j < text.len() {
+        let ch = text[j..].chars().next().unwrap_or(' ');
+        if ch.is_whitespace() || ch == '.' {
+            j += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    j
+}
+
+/// `i` konumundan başlayarak yalnız boşluk atlar.
+fn skip_ws(text: &str, mut j: usize) -> usize {
+    while j < text.len() {
+        let ch = text[j..].chars().next().unwrap_or(' ');
+        if ch.is_whitespace() {
+            j += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    j
+}
+
+/// `docket_match` ile aynı kural, ayırma yapmadan (bayt taraması).
+fn docket_match_bytes(text: &str, docket: &DocketNumber) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if &text[start..i] != docket.year.as_str() {
+            continue;
+        }
+        let mut j = skip_ws_dots(text, i);
+        if j >= bytes.len() || bytes[j] != b'/' {
+            continue;
+        }
+        j = skip_ws(text, j + 1);
+        let number_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j == number_start {
+            continue;
+        }
+        let raw_number = &text[number_start..j];
+        let trimmed = raw_number.trim_start_matches('0');
+        let number = if trimmed.is_empty() { "0" } else { trimmed };
+        if number != docket.number {
+            continue;
+        }
+        let Some(expected) = docket.role else {
+            return true;
+        };
+        let mut k = j;
+        while k < text.len() {
+            let ch = text[k..].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() || matches!(ch, '.' | ',' | '-' | '/') {
+                k += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if k < text.len() && text[k..].starts_with(expected) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Aday satır doğrulaması için yeniden kullanılan tamponlar.
+#[derive(Default)]
+pub(crate) struct MatchScratch {
+    folded: String,
+    spans: Vec<(usize, usize)>,
+}
+
+/// Sorgu başına **bir kez** hazırlanan doğrulayıcı (F15 ölçek düzeltmesi).
+///
+/// Önceki hâlde SQL skaler fonksiyonu her aday satır için iğneyi yeniden
+/// tokenize ediyor ve segment metnini yeniden normalleştiriyordu; 1.000 belge
+/// ölçümünde gecikmenin ana nedeni buydu. Burada iğne bir kez hazırlanır,
+/// satır başına yalnız samanlık taranır; `flexible` kipinde zaten
+/// `dim_evidence::normalize` çıktısı olan `normalized_text` kullanılır.
+pub(crate) struct SearchMatcher {
+    mode: SearchMode,
+    /// `exact`: `turkish_lower(collapse_ws(iğne))`.
+    exact: String,
+    /// `phrase`: Türkçe küçük harfli belirteçler.
+    phrase: Vec<String>,
+    /// `flexible`: sadeleştirilmiş belirteçler.
+    folded: Vec<String>,
+    /// `docket`: ayrıştırılmış numara (yoksa kip eşleşmez).
+    docket: Option<DocketNumber>,
+}
+
+impl SearchMatcher {
+    fn new(text: &str, mode: SearchMode, docket: Option<DocketNumber>) -> Self {
+        Self {
+            mode,
+            exact: turkish_lower(&collapse_ws(text)),
+            phrase: exact_tokens(text),
+            folded: fold_tokens(text),
+            docket,
+        }
+    }
+
+    /// Bu kipin doğrulaması ham metni mi yoksa `normalized_text` sütununu mu
+    /// istediğini söyler (SQL tarafında yalnız gereken sütun okunur).
+    fn wants_normalized(&self) -> bool {
+        self.mode == SearchMode::Flexible
+    }
+
+    fn matches(
+        &self,
+        raw: Option<&str>,
+        normalized: Option<&str>,
+        scratch: &mut MatchScratch,
+    ) -> bool {
+        match self.mode {
+            SearchMode::Exact => {
+                raw.is_some_and(|raw| contains_folded_ws(raw, &self.exact, &mut scratch.folded))
+            }
+            SearchMode::Phrase => {
+                let Some(raw) = raw else { return false };
+                token_spans(raw, &mut scratch.spans);
+                seq_matches_spans(raw, &scratch.spans, &self.phrase, false)
+            }
+            SearchMode::Flexible => {
+                let Some(normalized) = normalized else {
+                    return false;
+                };
+                token_spans(normalized, &mut scratch.spans);
+                seq_matches_spans(normalized, &scratch.spans, &self.folded, true)
+            }
+            SearchMode::Docket => self
+                .docket
+                .as_ref()
+                .is_some_and(|docket| docket_match_bytes(raw.unwrap_or(""), docket)),
+            SearchMode::Auto => false,
+        }
+    }
+}
+
 /// SQL doğrulaması: `mode` etiketiyle gelen kipin kesin eşleşme kuralı.
+/// Yeni kod `SearchMatcher` kullanır; bu fonksiyon referans uygulama olarak
+/// (ve eşdeğerlik testi için) kalır.
 fn search_match(text: &str, needle: &str, mode: &str) -> bool {
     match mode {
         "exact" => {
@@ -1057,29 +1395,20 @@ const SEARCH_FROM: &str = "text_segments_fts
      LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
      LEFT JOIN documents d ON d.id = dv.document_id";
 
-/// WHERE'i ve parametrelerini (önce MATCH, sonra `case_id`, kip doğrulaması,
-/// ardından filtreler) üretir.
+/// Sayımın FROM'u. FTS tablosu **yok**: sürücü tablo `text_segments`.
+/// (Gerekçe `count_where` belgesinde — F15 ölçümü.)
+const COUNT_FROM: &str = "text_segments s
+     LEFT JOIN pages p ON p.id = s.page_id
+     LEFT JOIN parse_runs pr ON pr.id = s.parse_run_id
+     LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
+     LEFT JOIN documents d ON d.id = dv.document_id";
+
+/// Filtre koşullarını (belge türü, OCR durumu, etiketler, tarih rolü) ekler.
 ///
 /// Etiket filtresi **VE** semantiği taşır: verilen bütün etiketler aynı belgede
 /// olmalı. Tarih rolü, belgeye *kaynaklı* olayın rolüdür — belgeye bağlanmamış
 /// olay bu belgeyi sonuca sokmaz.
-fn search_where(
-    case_id: &str,
-    query: &ResolvedQuery,
-    expression: &str,
-    filters: &SearchFilters,
-) -> (String, Vec<Value>) {
-    let mut sql = String::from(
-        " WHERE text_segments_fts MATCH ? AND s.case_id = ?
-          AND dim_search_match(s.raw_text, ?, ?) = 1",
-    );
-    let mut params: Vec<Value> = vec![
-        Value::Text(expression.to_string()),
-        Value::Text(case_id.to_string()),
-        Value::Text(query.text.clone()),
-        Value::Text(query.mode.tag().to_string()),
-    ];
-
+fn push_filters(sql: &mut String, params: &mut Vec<Value>, case_id: &str, filters: &SearchFilters) {
     if !filters.document_types.is_empty() {
         let placeholders = vec!["?"; filters.document_types.len()].join(",");
         sql.push_str(&format!(" AND d.document_type IN ({placeholders})"));
@@ -1118,7 +1447,51 @@ fn search_where(
         params.push(Value::Text(case_id.to_string()));
         params.push(Value::Text(role.clone()));
     }
+}
 
+/// Sayfa sorgusunun WHERE'i (parametre sırası: MATCH, `case_id`, filtreler).
+fn search_where(
+    case_id: &str,
+    expression: &str,
+    filters: &SearchFilters,
+    verify: &str,
+) -> (String, Vec<Value>) {
+    let mut sql = format!(
+        " WHERE text_segments_fts MATCH ? AND s.case_id = ?
+          AND {verify} = 1"
+    );
+    let mut params: Vec<Value> = vec![
+        Value::Text(expression.to_string()),
+        Value::Text(case_id.to_string()),
+    ];
+    push_filters(&mut sql, &mut params, case_id, filters);
+    (sql, params)
+}
+
+/// Sayım sorgusunun WHERE'i (parametre sırası: `case_id`, MATCH, filtreler).
+///
+/// F15 ölçümü: FTS tablosu FROM'da olduğunda SQLite her aday için **rastgele**
+/// birincil anahtar araması yapıyor; 3.000 adaylı bir kelime sorgusunda sayım
+/// 286 ms sürüyordu. Aynı kümeyi `rowid IN (SELECT … MATCH …)` ile vermek
+/// planlayıcıyı `text_segments` üzerinde sıralı taramaya geçiriyor: **<1 ms**.
+/// Kapsam aynı (aynı filtreler, aynı doğrulama), yalnız plan değişiyor.
+fn count_where(
+    case_id: &str,
+    expression: &str,
+    filters: &SearchFilters,
+    verify: &str,
+) -> (String, Vec<Value>) {
+    let mut sql = format!(
+        " WHERE s.case_id = ?
+          AND s.rowid IN (SELECT rowid FROM text_segments_fts
+                           WHERE text_segments_fts MATCH ?)
+          AND {verify} = 1"
+    );
+    let mut params: Vec<Value> = vec![
+        Value::Text(case_id.to_string()),
+        Value::Text(expression.to_string()),
+    ];
+    push_filters(&mut sql, &mut params, case_id, filters);
     (sql, params)
 }
 
@@ -2352,5 +2725,136 @@ mod tests {
             .expect_err("numarasız metin reddedilmeli");
         assert!(matches!(err, StorageError::SearchQuery(_)));
         assert_eq!(err.code(), "E_SEARCH_QUERY");
+    }
+
+    /// F15 ölçek düzeltmesi: hızlı doğrulayıcı, referans uygulamayla **birebir**
+    /// aynı sonucu vermeli. Aday daraltması değişse bile kesin eşleşme kuralı
+    /// tek yerde kalır; bu test kuralın sessizce kaymasını engeller.
+    #[test]
+    fn fast_matcher_agrees_with_reference_implementation() {
+        let texts = [
+            "Mahkeme, itirazın reddine karar verdi. Esas 2024/0123 E.",
+            "ISLAH edilen tutar 1.234,56 TL; Irak'ın ısrarı",
+            "Kira  sözleşmesi\n\nfeshedildi",
+            "2024 / 123 sayılı karar",
+            "2024/123E karar",
+            "2024-123 numaralı",
+            "ĞÜŞİÖÇ ğüşiöç",
+            "İİİ ııı iıi",
+            "x123y 00123",
+            "   ",
+            "",
+            "itirazın itiraz itiraz",
+        ];
+        let needles = [
+            "ıslah",
+            "ISLAH",
+            "itiraz",
+            "kira sözleşmesi",
+            "2024/123 E.",
+            "2024/123",
+            "123",
+            "ğüş",
+            "Islah",
+            "i",
+        ];
+        let mut scratch = MatchScratch::default();
+        for mode in [
+            SearchMode::Exact,
+            SearchMode::Flexible,
+            SearchMode::Phrase,
+            SearchMode::Docket,
+        ] {
+            for needle in needles {
+                let matcher = SearchMatcher::new(needle, mode, parse_docket(needle));
+                for text in texts {
+                    let reference = search_match(text, needle, mode.tag());
+                    // `flexible` doğrulaması `normalized_text` sütununu kullanır;
+                    // testte o sütunun üretimi aynen çağrılır.
+                    let normalized = dim_evidence::normalize(text);
+                    let fast = matcher.matches(Some(text), Some(&normalized), &mut scratch);
+                    assert_eq!(
+                        fast, reference,
+                        "kip {mode:?}, iğne {needle:?}, metin {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Aday daraltması gerçek eşleşmeleri kaybetmemeli: numara sıfırla,
+    /// boşlukla ve harfe yapışık yazılmış olabilir.
+    #[test]
+    fn search_docket_narrowing_keeps_real_matches() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                "Esas 2024/0123 E. ile açıldı",
+                "2024 / 123 E. sayılı karar",
+                "2024/123E numaralı karar",
+                "2024/12345 E. başka dosya",
+                "2023/123 E. eski yıl",
+            ],
+        );
+        let page = db
+            .search_segments_page(
+                &case_id,
+                "2024/123 E.",
+                &SearchFilters::default(),
+                20,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(
+            page.total,
+            Some(3),
+            "sıfırlı, boşluklu ve harfe yapışık yazım eşleşmeli; yanlış yıl/numara değil"
+        );
+        let mut pages: Vec<i64> = page.hits.iter().filter_map(|hit| hit.page_index).collect();
+        pages.sort_unstable();
+        assert_eq!(pages, vec![0, 1, 2]);
+    }
+
+    /// Pencere sayımı ile sayfa aynı sonucu vermeli: ilk sayfada toplam tam,
+    /// imleçli sayfada sayım istenmez.
+    #[test]
+    fn search_total_from_single_pass_matches_verified_hits() {
+        let (db, case_id, _version_id) = setup();
+        for index in 0..4 {
+            add_document_with_text(
+                &db,
+                &case_id,
+                &format!("Belge {index}"),
+                "notice",
+                "kira bedeli ödenmedi",
+                "native",
+            );
+        }
+        // Eşleşmeyen aday: FTS iki kelimeyi de bulur, doğrulama **sırayı** arar.
+        add_document_with_text(
+            &db,
+            &case_id,
+            "Ters sıra",
+            "notice",
+            "bedeli kira olarak ödendi",
+            "native",
+        );
+        let page = db
+            .search_segments_page(
+                &case_id,
+                "kira bedeli",
+                &SearchFilters::default(),
+                2,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(page.total, Some(4), "sayım doğrulanmış eşleşmeleri sayar");
+        assert_eq!(page.returned, 2);
+        assert!(page.has_more);
     }
 }
