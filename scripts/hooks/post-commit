@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Commit sonrası disk koruması. Commit'i **bloklamaz**: arka planda çalışır,
+# yalnız eşik aşıldıysa temizler (bkz. scripts/disk-guard.sh).
+#
+# Kurulum: bash scripts/install-hooks.sh
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+if [ -x "$ROOT/scripts/disk-guard.sh" ]; then
+  nohup bash "$ROOT/scripts/disk-guard.sh" --quiet >>"$ROOT/.git/disk-guard.log" 2>&1 &
+fi
+exit 0
