@@ -156,3 +156,8 @@ kasadan gelen sayılar.
 - DOCX/PDF kapsam bölümü worker’ın `sections` şemasıyla üretilir; Tauri
   penceresi açılmadı → **görsel QA yok**, yalnız birim testleri + üretim
   derlemesi.
+- **Devir paketinin klasör yazımı** (`case.json`, `KAPSAM.md`, `manifest.json`)
+  Tauri komutu içinde ve `AppState`e bağlı; **uçtan uca birim testi yok**. Test
+  edilenler: `case_payload` içindeki `coverage` bloğu, `ExportCoverage::markdown`
+  çıktısı ve CSV/JSON biçimleri. Paket yolu kod incelemesi + CI derlemesiyle
+  doğrulandı, gerçek paket üretilerek denenmedi.
