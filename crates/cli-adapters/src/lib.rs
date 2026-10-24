@@ -13,12 +13,20 @@ use std::process::Command;
 
 pub mod exec;
 pub mod probe;
+pub mod residue;
 pub mod sandbox;
 pub use exec::{
     clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
     RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
 };
 pub use probe::{probe_request, run_probe, ProbeReport, PROBE_TIMEOUT};
+pub use residue::{
+    cleanup_created, cleanup_created_since, diff_snapshots, measure_residue, persistence_control,
+    residue_paths, scan_residue, snapshot_residue, sweep_stale_sandboxes, CleanupReport,
+    PersistenceControl, ResidueDelta, ResidueEntry, ResidueError, ResidueFileStamp, ResidueKind,
+    ResidueMeasurement, ResiduePathSpec, ResidueScan, ResidueSnapshot, SweepReport,
+    MAX_RESIDUE_FILES, SANDBOX_PREFIX, STALE_SANDBOX_AGE,
+};
 pub use sandbox::{
     check_workdir, HomeIsolation, RunSandbox, SandboxEntry, SandboxInventory, WorkdirCheck,
     MAX_INVENTORY_ENTRIES, MAX_SANDBOX_BYTES, MAX_STDIN_BYTES, SANDBOX_DIR_MODE,
@@ -57,7 +65,14 @@ pub const SPECS: &[AdapterSpec] = &[
         display_name: "Claude Code",
         command: "claude",
         version_args: COMMON,
-        allowed_args: &["--print", "--output-format", "--model", "--max-turns"],
+        allowed_args: &[
+            "--print",
+            "--output-format",
+            "--model",
+            "--max-turns",
+            // `claude --help` (2.1.303) ile doğrulandı: yalnız `--print` ile.
+            "--no-session-persistence",
+        ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
     },
@@ -72,6 +87,8 @@ pub const SPECS: &[AdapterSpec] = &[
             "--model",
             "--sandbox",
             "--skip-git-repo-check",
+            // `codex exec --help` (0.159.2) ile doğrulandı: oturum dosyası yazmaz.
+            "--ephemeral",
         ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,

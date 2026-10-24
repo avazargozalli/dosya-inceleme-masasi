@@ -2,8 +2,9 @@
 
 - **Sürüm etiketi:** `v0.9.0` (hedef)
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
-  **iş dizini kum havuzu (T05)** ve **arayüzden tetiklenen gerçek sınama** hazır;
-  sağlayıcıya özel akışlar (T06–T08, T10) yok
+  **iş dizini kum havuzu (T05)**, **kalıntı ölçümü/temizliği (T13)** ve
+  **arayüzden tetiklenen gerçek sınama** hazır; sağlayıcıya özel akışlar
+  (T06–T08, T10) yok
 - **Tarih:** 2026-10-24
 
 | İş | Durum | Kanıt |
@@ -20,7 +21,7 @@
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | 🚧 | `Unverified` durumu var; yetenek matrisi yok |
 | F10-T12 | 🚧 | izinsiz bayrak reddi + **proje talimatı okunamayan boş iş dizini**; hook/MCP/canary saldırı testleri yok |
-| F10-T13 | ⬜ | transcript/telemetri temizliği yok |
+| F10-T13 | ✅ | kalıntı envanteri (sürüm bazlı bildirilen yollar) + önce/sonra ölçüm + **yalnız uygulamaya ait** dosya temizliği + çökme kum havuzu süpürme; arayüzde “Kalıntı denetimi” kartı |
 | F10-T14 | ✅ | süre sınırı, iptal, alt süreç öldürme, kısmi çıktı — **arayüz düğmesinden uçtan uca** |
 
 ## Arayüz bağlantısı — “Bağlantıyı sına” (2026-10-24)
@@ -77,6 +78,68 @@ kendi `version_args`'ı (`--version`, `--help`) listede olmadığı için **dü�
   `size_limit_exceeded`. Arayüzde "İzin · HOME/TMPDIR · stdin · Bırakılan dosya"
   satırları + dosya listesi; denetime yalnız sayılar ve politikalar yazılır
   (**dosya adı ve içerik yazılmaz**).
+
+## Kalıntı denetimi — ölçüm ve temizlik (F10-T13, 2026-10-24)
+
+`crates/cli-adapters/src/residue.rs` — transcript/log/oturum kalıntısı için
+**envanter + ölçüm + sınırlı temizlik**.
+
+- **Bildirilen yollar sicilde sabit:** her adaptör için ev dizinine göreli liste
+  (`.claude/projects`, `.codex/sessions`, …) tür ve notla birlikte tanımlı.
+  Kullanıcı ev dizini **genel olarak taranmaz**; yalnız bu yollar.
+- **Yalnız üst veri:** ad, bayt, değişim zamanı okunur; **dosya içeriği
+  açılmaz**, sembolik bağ izlenmez, derinlik 8 ve dosya 4000 ile sınırlı.
+- **Ölçüm (`measure_residue`):** sürüm yoklaması boş kum havuzu iş dizininde,
+  `HOME` **kullanıcının kendi ev dizini** (açık onay: `confirmUserHome`);
+  önce/sonra anlık görüntüsü karşılaştırılır → `created` / `modified` /
+  `removed` / `createdDirs`.
+- **Temizlik iki kapılı:** `cleanup_created` yalnız ölçümde oluşan dosyaları
+  siler; `cleanup_created_since` arayüz yolunda ayrıca **değişim zamanı
+  ölçümden yeni değilse dokunmaz**. İkisinde de kapsam dışı yol, `..`, mutlak
+  yol ve sembolik bağ reddedilir (`E_CLI_RESIDUE_SCOPE`,
+  `E_CLI_RESIDUE_SYMLINK`). Önceden var olan dosya **asla** silinmez.
+- **Kum havuzu süpürme (`sweep_stale_sandboxes`):** çökme sonrası kalan
+  `dim-cli-sandbox-*` dizinleri; yalnız dizin, sembolik bağ değil, Unix'te
+  `0700`, sahibi biz ve en az **1 saat** yaşında. Süren koşuya dokunulmaz.
+- **Oturum kalıcılığını kapatma (sürüm bazlı, `--help` ile doğrulandı):**
+  Claude Code `2.1.303` → `--no-session-persistence` (yalnız `--print`),
+  Codex CLI `0.159.2` → `exec --ephemeral`. İkisi de argüman kapısına eklendi.
+  Kimi/Antigravity için **doğrulanmış kapatma yolu yok**; arayüz bunu yazar ve
+  koruma `HOME` yönlendirmesine (T05) kalır.
+- **Arayüz:** “CLI kalıntı denetimi” kartı — adaptör seçimi, “Envanteri tara”,
+  yol tablosu (tür, durum, yaş, not), kalıcılık satırı, onay kutusuyla
+  “Kalıntıyı ölç”, ölçüm sonucu (önce/sonra, oluşan/değişen dosyalar),
+  “Yalnız bu ölçümde oluşanları sil” ve “Bekleyen kum havuzlarını temizle”.
+- **Denetim:** `cli_residue` / `measure` ve `cleanup` — yalnız sayılar ve
+  politikalar; **dosya adı ve içerik yazılmaz**.
+
+### Gerçek ölçüm (bu makine, macOS aarch64)
+
+`cargo run -p dim-cli-adapters --example residue -- <adaptör>`:
+
+| Adaptör | Sürüm | Mevcut kalıntı | `--version` sonrası yeni |
+|---|---|---|---|
+| Claude Code | 2.1.303 | 396 dosya · 590 MB (389 transkript) | **0 dosya** |
+| Codex CLI | 0.159.2 | 94 dosya · 235 MB (93 oturum) | **0 dosya** |
+
+Bekleyen kum havuzu: 0. Yani sürüm yoklaması kalıntı üretmiyor; asıl kalıntı
+kullanıcının kendi oturumlarından geliyor ve **uygulama onlara dokunmuyor**.
+
+### Dürüst sınırlar (T13)
+
+- Envanter **bildirilen** yollardır: CLI'nin listede olmayan bir yere yazması bu
+  araçla yakalanmaz. Yeni sürüm yolu değiştirirse sicil güncellenmelidir.
+- Ölçüm `--version` yoklamasıdır; gerçek bir istem/oturum sırasında oluşan
+  kalıntı **ölçülmedi** (istem gönderilmiyor). Bu yüzden `--ephemeral` /
+  `--no-session-persistence` bayraklarının etkisi de ölçümle değil, `--help`
+  belgesiyle doğrulandı.
+- Temizlik yalnız **bu ölçümde oluşan** dosyalara uzanır; kullanıcının önceki
+  oturumlarından kalan 590 MB / 235 MB kalıntıyı silmek üründe **yok** (bilinçli:
+  o dosyalar kullanıcı verisi olabilir). Kullanıcı bunları elle siler.
+- Windows'ta Unix izin/sahiplik denetimi yok; süpürme orada yalnız önek + yaş +
+  dizin koşullarına bakar ve test edilmedi.
+- Tauri penceresi açılmadı → kartın gerçek tıklaması/görsel QA'sı yok. Ölçüm ve
+  temizlik çekirdeği gerçek süreçle test edildi (sentetik işaretçi testi).
 
 ## Yürütme çekirdeği (`crates/cli-adapters/src/exec.rs`)
 
@@ -156,17 +219,26 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 
 ## Doğrulama
 
-- `cargo test -p dim-cli-adapters` → **36** (F10-T05 turunda 13 yeni: kum havuzu
+- `cargo test -p dim-cli-adapters` → **50** (F10-T13 turunda 14 yeni: bildirilen
+  yollar/envanter, bilinmeyen adaptör, sembolik bağ izlenmez, önce/sonra farkı,
+  yalnız oluşanı silme, kapsam dışı + `..` reddi, sembolik bağ reddi, ölçümden
+  eski dosyaya dokunmama, kum havuzu süpürme (yaş/izin), kalıcılık bayrağı
+  sürüm kapısı, bayrağın argüman kapısından geçmesi, uçtan uca ölçüm+temizlik,
+  kum havuzunda sıfır ev dizini kalıntısı). F10-T05 turunda 13 yeni: kum havuzu
   boş/`0700`/silinir, çocuk dizinleri `0700`, geniş izin reddi, boş olmayan dizin
   reddi, sembolik bağ reddi, ev dizini reddi, stdin aşımı süreç başlamadan,
   sınırda stdin tam teslim, `HOME`/`TMPDIR` yönlendirme + dosya sayımı, `UserHome`
-  açık seçimi, sayım kesme sınırı).
+  açık seçimi, sayım kesme sınırı.
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` temiz;
   `clippy -p dim-cli-adapters --all-targets -D warnings` temiz; rustfmt iki
   manifest temiz.
-- Web: **190** test (3 yeni: bayt biçimi, kapsam satırları, kapsam uyarıları),
-  `tsc --noEmit` + `vite build` yeşil.
-- Gerçek CLI koşusu (`cargo run -p dim-cli-adapters --example probe -- …`):
-  Claude Code `2.1.303` 463 ms, Codex `codex-cli 0.159.2` 197 ms; ikisinde de iş
-  dizini `0700`, `HOME`/`TMPDIR` kum havuzunda, kalan dosya 0. `HOME`
-  yönlendirmesi gerçek araçların `--version` yolunu bozmadı.
+- Web: **198** test (8 yeni: yaş etiketi, yol satırı, kalıcılık satırı, tarama
+  kesilmesi, ölçüm uyarıları, temizlik hedefi, ölçüm/temizlik özeti, kum havuzu
+  süpürme özeti), `tsc --noEmit` + `vite build` yeşil.
+- Gerçek CLI ölçümü (`cargo run -p dim-cli-adapters --example residue -- …`):
+  Claude Code `2.1.303` 401 ms, Codex `0.159.2` 124 ms; ikisinde de `--version`
+  **0 yeni dosya** bıraktı. Mevcut kalıntı: Claude 396 dosya / 590 MB, Codex
+  94 dosya / 235 MB (uygulama bunlara dokunmuyor).
+- Gerçek kum havuzu koşusu (`--example probe -- …`): iş dizini `0700`,
+  `HOME`/`TMPDIR` kum havuzunda, kalan dosya 0. `HOME` yönlendirmesi gerçek
+  araçların `--version` yolunu bozmadı.

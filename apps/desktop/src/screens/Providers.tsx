@@ -1,7 +1,18 @@
 import { Fragment, useEffect, useState, type CSSProperties } from "react";
-import { api, toApiError, type AdapterView, type ApiError, type CliProbeView } from "../lib/api";
+import {
+  api,
+  toApiError,
+  type AdapterView,
+  type ApiError,
+  type CliProbeView,
+  type CliResidueCleanup,
+  type CliResidueMeasure,
+  type CliResidueScan,
+  type CliSandboxSweep,
+} from "../lib/api";
 import {
   formatBytes,
+  persistenceText,
   probeArgv,
   probeCanRun,
   probeOutputs,
@@ -10,6 +21,14 @@ import {
   probeStatusLabel,
   probeSummary,
   probeWarnings,
+  residueAge,
+  residueCleanupSummary,
+  residueCleanupTargets,
+  residueMeasureSummary,
+  residueMeasureWarnings,
+  residuePathLine,
+  residueScanWarnings,
+  sandboxSweepSummary,
 } from "../lib/providers";
 
 const AUTH_LABEL: Record<string, string> = {
@@ -270,6 +289,8 @@ export function Providers() {
         ) : null}
       </div>
 
+      <ResiduePanel rows={rows} />
+
       <div className="card">
         <div className="card-head">
           <div>
@@ -283,6 +304,335 @@ export function Providers() {
           sağlayıcı “hazır” gibi gösterilmez; gönderim onayı olmadan hiçbir içerik dışarı çıkmaz.
         </p>
       </div>
+    </div>
+  );
+}
+
+const RESIDUE_TH: CSSProperties = {
+  textAlign: "left",
+  fontWeight: 500,
+  padding: "2px 8px 2px 0",
+  color: "var(--muted)",
+};
+
+const RESIDUE_TD: CSSProperties = { padding: "2px 8px 2px 0", verticalAlign: "top" };
+
+/**
+ * F10-T13 — kalıntı envanteri, ölçümü ve **yalnız uygulamaya ait** dosyaların
+ * temizliği. Tarama yalnız bildirilen yolları üst veriyle okur; dosya içeriği
+ * açılmaz. Ölçüm gerçek ev dizininde çalışır ve açık onay ister.
+ */
+function ResiduePanel({ rows }: { rows: AdapterView[] }) {
+  const [adapterId, setAdapterId] = useState("claude-code");
+  const [scan, setScan] = useState<CliResidueScan | null>(null);
+  const [measure, setMeasure] = useState<CliResidueMeasure | null>(null);
+  const [cleanup, setCleanup] = useState<CliResidueCleanup | null>(null);
+  const [sweep, setSweep] = useState<CliSandboxSweep | null>(null);
+  const [busy, setBusy] = useState<"scan" | "measure" | "cleanup" | "sweep" | null>(null);
+  const [failure, setFailure] = useState<ApiError | null>(null);
+  const [confirmHome, setConfirmHome] = useState(false);
+
+  const selected = rows.find((row) => row.id === adapterId) ?? null;
+  const runnable = selected !== null && !selected.batchForbidden;
+
+  async function runScan() {
+    setBusy("scan");
+    setFailure(null);
+    try {
+      setScan(await api.cliResidueScan(adapterId));
+    } catch (e) {
+      setFailure(toApiError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runMeasure() {
+    setBusy("measure");
+    setFailure(null);
+    setCleanup(null);
+    try {
+      const result = await api.cliResidueMeasure(adapterId, confirmHome);
+      setMeasure(result);
+      setScan(result.after);
+    } catch (e) {
+      setFailure(toApiError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runCleanup() {
+    if (measure === null) return;
+    setBusy("cleanup");
+    setFailure(null);
+    try {
+      const result = await api.cliResidueCleanup(
+        adapterId,
+        measure.measuredAtUnix,
+        residueCleanupTargets(measure),
+      );
+      setCleanup(result);
+      setMeasure(null);
+      setScan(await api.cliResidueScan(adapterId));
+    } catch (e) {
+      setFailure(toApiError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runSweep() {
+    setBusy("sweep");
+    setFailure(null);
+    try {
+      setSweep(await api.cliStaleSandboxSweep());
+    } catch (e) {
+      setFailure(toApiError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const scanWarnings = scan ? residueScanWarnings(scan) : [];
+  const measureWarnings = measure ? residueMeasureWarnings(measure) : [];
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <h2>CLI kalıntı denetimi</h2>
+          <p className="card-sub">
+            Transcript, log ve oturum yolları sürüm bazlı envanterde. Yalnız <strong>üst veri</strong>{" "}
+            okunur (ad, bayt, zaman); dosya içeriği açılmaz, ev dizini genel olarak taranmaz.
+          </p>
+        </div>
+        <span className="badge plain">ölçüm</span>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: "var(--space-2)",
+          alignItems: "center",
+          flexWrap: "wrap",
+          marginBottom: "var(--space-3)",
+        }}
+      >
+        <select
+          value={adapterId}
+          onChange={(event) => {
+            setAdapterId(event.target.value);
+            setScan(null);
+            setMeasure(null);
+            setCleanup(null);
+            setConfirmHome(false);
+          }}
+          aria-label="Kalıntısı denetlenecek adaptör"
+        >
+          {rows.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.displayName}
+            </option>
+          ))}
+        </select>
+        <button className="btn" disabled={busy !== null} onClick={() => void runScan()}>
+          {busy === "scan" ? "Taranıyor…" : "Envanteri tara"}
+        </button>
+        <button
+          className="btn ghost"
+          disabled={busy !== null}
+          onClick={() => void runSweep()}
+          title="Yalnız uygulamanın açtığı, 1 saatten eski 0700 kum havuzları"
+        >
+          {busy === "sweep" ? "Süpürülüyor…" : "Bekleyen kum havuzlarını temizle"}
+        </button>
+      </div>
+
+      {failure ? (
+        <div className="notice danger" role="alert" style={{ fontSize: 12 }}>
+          <strong>{failure.code}</strong> — {failure.message}
+        </div>
+      ) : null}
+
+      {scan ? (
+        <>
+          <dl className="kv" style={{ gridTemplateColumns: "110px 1fr" }}>
+            <dt>Kök</dt>
+            <dd style={MONO}>{scan.root}</dd>
+            <dt>Toplam</dt>
+            <dd>
+              {scan.totalFiles} dosya · {formatBytes(scan.totalBytes)}
+            </dd>
+            <dt>Kalıcılık</dt>
+            <dd>{persistenceText(scan)}</dd>
+          </dl>
+          <table className="small" style={{ width: "100%", borderCollapse: "collapse", marginTop: "var(--space-2)" }}>
+            <thead>
+              <tr>
+                <th style={RESIDUE_TH}>Yol</th>
+                <th style={RESIDUE_TH}>Tür</th>
+                <th style={RESIDUE_TH}>Durum</th>
+                <th style={RESIDUE_TH}>Yaş</th>
+                <th style={RESIDUE_TH}>Not</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scan.paths.map((path) => (
+                <tr key={path.relative}>
+                  <td style={{ ...RESIDUE_TD, ...MONO }}>{path.relative}</td>
+                  <td style={RESIDUE_TD}>{path.kind}</td>
+                  <td style={RESIDUE_TD}>{residuePathLine(path)}</td>
+                  <td style={RESIDUE_TD}>{residueAge(path.newestAgeSecs)}</td>
+                  <td style={{ ...RESIDUE_TD, color: "var(--muted)" }}>{path.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {scanWarnings.map((warning) => (
+            <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
+              {warning}
+            </div>
+          ))}
+          <div
+            style={{
+              marginTop: "var(--space-3)",
+              borderTop: "1px solid var(--line)",
+              paddingTop: "var(--space-3)",
+            }}
+          >
+            <label className="small" style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={confirmHome}
+                onChange={(event) => setConfirmHome(event.target.checked)}
+              />
+              Gerçek ev dizininde tek sürüm yoklaması çalıştırmayı onaylıyorum (istem gönderilmez).
+            </label>
+            <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", marginTop: "var(--space-2)", flexWrap: "wrap" }}>
+              <button
+                className="btn"
+                disabled={!confirmHome || !runnable || busy !== null}
+                onClick={() => void runMeasure()}
+              >
+                {busy === "measure" ? "Ölçülüyor…" : "Kalıntıyı ölç"}
+              </button>
+              <span className="muted small">gerçek CLI · 15 sn · yalnız bildirilen yollar</span>
+            </div>
+            {!runnable && selected ? (
+              <p className="muted small" style={{ margin: "var(--space-2) 0 0" }}>
+                {selected.batchForbidden
+                  ? "Bu sağlayıcıda otomatik yürütme kapalı; ölçüm çalıştırılamaz."
+                  : "Araç kurulu değil; ölçüm çalıştırılamaz."}
+              </p>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <p className="muted small" style={{ margin: 0 }}>
+          Envanteri görmek için “Envanteri tara” düğmesine basın.
+        </p>
+      )}
+
+      {measure ? (
+        <div
+          style={{
+            marginTop: "var(--space-3)",
+            borderTop: "1px solid var(--line)",
+            paddingTop: "var(--space-3)",
+          }}
+        >
+          <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap" }}>
+            <span className="badge ok">ölçüm tamam</span>
+            <span className="muted small">{residueMeasureSummary(measure)}</span>
+          </div>
+          <dl className="kv" style={{ gridTemplateColumns: "110px 1fr", marginTop: "var(--space-2)" }}>
+            <dt>Komut</dt>
+            <dd style={MONO}>{[measure.root, ...measure.args].join(" ")}</dd>
+            <dt>Öncesi</dt>
+            <dd>
+              {measure.before.totalFiles} dosya · {formatBytes(measure.before.totalBytes)}
+            </dd>
+            <dt>Sonrası</dt>
+            <dd>
+              {measure.after.totalFiles} dosya · {formatBytes(measure.after.totalBytes)}
+            </dd>
+          </dl>
+          {measure.created.length > 0 ? (
+            <details open style={{ marginTop: "var(--space-2)" }}>
+              <summary className="muted small" style={{ cursor: "pointer" }}>
+                Bu koşuda oluşan {measure.created.length} dosya
+              </summary>
+              <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                {measure.created.map((file) => (
+                  <li key={file.relative} style={MONO}>
+                    {file.relative} · {formatBytes(file.bytes)}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+          {measure.modified.length > 0 ? (
+            <details style={{ marginTop: "var(--space-2)" }}>
+              <summary className="muted small" style={{ cursor: "pointer" }}>
+                Değişen {measure.modified.length} dosya (silinmez)
+              </summary>
+              <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                {measure.modified.map((file) => (
+                  <li key={file.relative} style={MONO}>
+                    {file.relative} · {formatBytes(file.bytes)}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+          {measureWarnings.map((warning) => (
+            <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
+              {warning}
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", marginTop: "var(--space-2)", flexWrap: "wrap" }}>
+            <button
+              className="btn ghost"
+              disabled={measure.created.length === 0 || busy !== null}
+              onClick={() => void runCleanup()}
+            >
+              {busy === "cleanup" ? "Siliniyor…" : `Yalnız bu ölçümde oluşanları sil (${measure.created.length})`}
+            </button>
+            <span className="muted small">{measure.cleanupHint}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {cleanup ? (
+        <div className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
+          {residueCleanupSummary(cleanup)}
+          {cleanup.skipped.length > 0 ? (
+            <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+              {cleanup.skipped.map((skip) => (
+                <li key={`${skip.path}-${skip.reason}`} style={MONO}>
+                  {skip.path} — {skip.reason}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
+      {sweep ? (
+        <div className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
+          {sandboxSweepSummary(sweep)}
+          {sweep.skipped.length > 0 ? (
+            <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+              {sweep.skipped.map((skip) => (
+                <li key={`${skip.path}-${skip.reason}`} style={MONO}>
+                  {skip.path} — {skip.reason}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

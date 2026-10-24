@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { CliProbeView } from "./api";
+import type { CliProbeView, CliResidueMeasure, CliResidueScan } from "./api";
 import {
   formatBytes,
+  persistenceText,
   probeArgv,
   probeCanRun,
   probeOutputs,
@@ -11,6 +12,14 @@ import {
   probeStatusLabel,
   probeSummary,
   probeWarnings,
+  residueAge,
+  residueCleanupSummary,
+  residueCleanupTargets,
+  residueMeasureSummary,
+  residueMeasureWarnings,
+  residuePathLine,
+  residueScanWarnings,
+  sandboxSweepSummary,
 } from "./providers";
 
 function view(overrides: Partial<CliProbeView> = {}): CliProbeView {
@@ -142,5 +151,131 @@ describe("bağlantı sınaması sunumu", () => {
     ).toHaveLength(1);
     expect(probeScopeWarnings(view({ sandbox: { ...view().sandbox, homeIsolation: "user_home" } }))).toHaveLength(1);
     expect(probeScopeWarnings(view({ sandbox: { ...view().sandbox, workdirMode: null } }))).toHaveLength(1);
+  });
+});
+
+function residueScan(overrides: Partial<CliResidueScan> = {}): CliResidueScan {
+  return {
+    adapterId: "claude-code",
+    root: "/Users/avukat",
+    paths: [
+      {
+        relative: ".claude/projects",
+        kind: "transcript",
+        note: "proje başına oturum transkriptleri",
+        exists: true,
+        files: 3,
+        bytes: 4096,
+        truncated: false,
+        newestAgeSecs: 120,
+      },
+    ],
+    totalFiles: 3,
+    totalBytes: 4096,
+    truncated: false,
+    fileLimit: 4000,
+    persistenceFlag: "--no-session-persistence",
+    persistenceAppliesTo: "--print",
+    persistenceVerifiedWith: "2.1.303",
+    ...overrides,
+  };
+}
+
+function residueMeasure(overrides: Partial<CliResidueMeasure> = {}): CliResidueMeasure {
+  return {
+    adapterId: "claude-code",
+    root: "/Users/avukat",
+    measuredAtUnix: 1_760_000_000,
+    usedUserHome: true,
+    status: "exited",
+    exitCode: 0,
+    durationMs: 220,
+    args: ["--version"],
+    before: residueScan({ totalFiles: 3, totalBytes: 4096 }),
+    after: residueScan({ totalFiles: 4, totalBytes: 4180 }),
+    created: [{ relative: ".claude/projects/yeni.jsonl", bytes: 84 }],
+    modified: [],
+    removed: [],
+    createdDirs: [],
+    bytesAdded: 84,
+    cleanupHint: "Yalnız bu ölçümde oluşan dosyalar silinebilir.",
+    ...overrides,
+  };
+}
+
+describe("residue", () => {
+  it("yaş etiketi kısa ve Türkçe", () => {
+    expect(residueAge(null)).toBe("—");
+    expect(residueAge(5)).toBe("az önce");
+    expect(residueAge(120)).toBe("2 dk");
+    expect(residueAge(3 * 3600)).toBe("3 sa");
+    expect(residueAge(5 * 86400)).toBe("5 gün");
+  });
+
+  it("yol satırı yok/boş/dolu ayrımını korur", () => {
+    expect(residuePathLine({ exists: false, files: 0, bytes: 0, truncated: false })).toBe("yok");
+    expect(residuePathLine({ exists: true, files: 0, bytes: 0, truncated: false })).toBe("boş");
+    expect(residuePathLine({ exists: true, files: 3, bytes: 4096, truncated: false })).toBe(
+      "3 dosya · 4,0 KiB",
+    );
+    expect(residuePathLine({ exists: true, files: 3, bytes: 4096, truncated: true })).toContain(
+      "liste kesik",
+    );
+  });
+
+  it("kalıcılık satırı doğrulanmış bayrağı sürümle yazar", () => {
+    expect(persistenceText(residueScan())).toContain("--no-session-persistence");
+    expect(persistenceText(residueScan())).toContain("2.1.303");
+    expect(
+      persistenceText(
+        residueScan({
+          persistenceFlag: null,
+          persistenceAppliesTo: "",
+          persistenceVerifiedWith: null,
+        }),
+      ),
+    ).toContain("doğrulanmış kapatma bayrağı yok");
+  });
+
+  it("tarama kesilirse toplamların eksik olduğu söylenir", () => {
+    expect(residueScanWarnings(residueScan())).toEqual([]);
+    const warnings = residueScanWarnings(residueScan({ truncated: true }));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("4000");
+  });
+
+  it("ölçüm uyarıları yalnız gerçek durumda üretilir", () => {
+    expect(residueMeasureWarnings(residueMeasure())).toHaveLength(2); // user home + created
+    expect(
+      residueMeasureWarnings(residueMeasure({ usedUserHome: false, created: [] })),
+    ).toEqual([]);
+    expect(residueMeasureWarnings(residueMeasure({ modified: [{ relative: ".codex/log/tui.log", bytes: 9 }] }))).toHaveLength(3);
+    expect(residueMeasureWarnings(residueMeasure({ status: "cancelled" }))).toHaveLength(3);
+  });
+
+  it("temizlik hedefi yalnız oluşan dosyalar", () => {
+    const measure = residueMeasure({
+      modified: [{ relative: ".codex/log/tui.log", bytes: 9 }],
+    });
+    expect(residueCleanupTargets(measure)).toEqual([".claude/projects/yeni.jsonl"]);
+  });
+
+  it("ölçüm ve temizlik özetleri sayıları taşır", () => {
+    expect(residueMeasureSummary(residueMeasure())).toBe("220 ms · 1 yeni dosya · 0 değişen · +84 B");
+    expect(
+      residueCleanupSummary({
+        removedFiles: 1,
+        removedBytes: 84,
+        removedDirs: 2,
+        skipped: [{ path: "x", reason: "kapsam dışı" }],
+        errors: [],
+      }),
+    ).toBe("1 dosya silindi · 84 B · 2 boş dizin · 1 atlandı");
+  });
+
+  it("kum havuzu süpürme özeti yaş eşiğini dakikaya çevirir", () => {
+    expect(
+      sandboxSweepSummary({ considered: 2, removed: ["a"], skipped: [], minAgeSecs: 3600 }),
+    ).toBe("2 aday · 1 silindi · 0 atlandı · en az 60 dk yaş");
   });
 });

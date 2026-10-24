@@ -472,6 +472,69 @@ export type CliProbeSandbox = {
   entryLimit: number;
 };
 
+/// Kalıntı yolu (tek satır).
+export type CliResiduePath = {
+  relative: string;
+  kind: string;
+  note: string;
+  exists: boolean;
+  files: number;
+  bytes: number;
+  truncated: boolean;
+  newestAgeSecs: number | null;
+};
+
+export type CliResidueScan = {
+  adapterId: string;
+  root: string;
+  paths: CliResiduePath[];
+  totalFiles: number;
+  totalBytes: number;
+  truncated: boolean;
+  fileLimit: number;
+  persistenceFlag: string | null;
+  persistenceAppliesTo: string;
+  persistenceVerifiedWith: string | null;
+};
+
+export type CliResidueFile = { relative: string; bytes: number };
+
+export type CliResidueSkip = { path: string; reason: string };
+
+export type CliResidueMeasure = {
+  adapterId: string;
+  root: string;
+  measuredAtUnix: number;
+  usedUserHome: boolean;
+  status: CliProbeView["status"];
+  exitCode: number | null;
+  durationMs: number;
+  args: string[];
+  before: CliResidueScan;
+  after: CliResidueScan;
+  created: CliResidueFile[];
+  modified: CliResidueFile[];
+  removed: string[];
+  createdDirs: string[];
+  bytesAdded: number;
+  cleanupHint: string;
+};
+
+export type CliResidueCleanup = {
+  removedFiles: number;
+  removedBytes: number;
+  removedDirs: number;
+  skipped: CliResidueSkip[];
+  errors: CliResidueSkip[];
+};
+
+export type CliSandboxSweep = {
+  considered: number;
+  removed: string[];
+  skipped: CliResidueSkip[];
+  minAgeSecs: number;
+};
+
 export type CliProbeView = {
   adapterId: string;
   displayName: string;
@@ -1088,6 +1151,17 @@ export const api = {
   providerProbeRun: (adapterId: string) =>
     invoke<CliProbeView>("provider_probe_run", { input: { adapterId } }),
   providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
+  cliResidueScan: (adapterId: string) =>
+    invoke<CliResidueScan>("cli_residue_scan", { input: { adapterId } }),
+  cliResidueMeasure: (adapterId: string, confirmUserHome: boolean) =>
+    invoke<CliResidueMeasure>("cli_residue_measure", {
+      input: { adapterId, confirmUserHome },
+    }),
+  cliResidueCleanup: (adapterId: string, measuredAtUnix: number, paths: string[]) =>
+    invoke<CliResidueCleanup>("cli_residue_cleanup", {
+      input: { adapterId, measuredAtUnix, paths },
+    }),
+  cliStaleSandboxSweep: () => invoke<CliSandboxSweep>("cli_stale_sandbox_sweep"),
 
   documentRedact: (versionId: string, terms: string[]) =>
     invoke<RedactionResult>("document_redact", { versionId, terms }),

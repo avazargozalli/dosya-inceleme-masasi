@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use base64::Engine as _;
 use dim_cli_adapters::{
@@ -1833,6 +1834,357 @@ pub fn provider_probe_cancel(state: State<'_, AppState>) -> bool {
             true
         }
         None => false,
+    }
+}
+
+// --- F10-T13: CLI kalıntı envanteri, ölçümü ve yalnız uygulamaya ait temizlik ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResiduePathView {
+    pub relative: String,
+    pub kind: &'static str,
+    pub note: &'static str,
+    pub exists: bool,
+    pub files: usize,
+    pub bytes: u64,
+    pub truncated: bool,
+    pub newest_age_secs: Option<u64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueScanView {
+    pub adapter_id: String,
+    pub root: String,
+    pub paths: Vec<CliResiduePathView>,
+    pub total_files: usize,
+    pub total_bytes: u64,
+    pub truncated: bool,
+    pub file_limit: usize,
+    /// Oturum kalıcılığını kapatma bayrağı (yalnız `--help` ile doğrulandıysa).
+    pub persistence_flag: Option<&'static str>,
+    pub persistence_applies_to: &'static str,
+    pub persistence_verified_with: Option<&'static str>,
+}
+
+fn residue_scan_view(root: &Path, adapter_id: &str) -> CliResidueScanView {
+    let scan = dim_cli_adapters::scan_residue(root, adapter_id, SystemTime::now());
+    residue_scan_view_of(scan)
+}
+
+fn residue_scan_view_of(scan: dim_cli_adapters::ResidueScan) -> CliResidueScanView {
+    let control = dim_cli_adapters::persistence_control(&scan.adapter);
+    CliResidueScanView {
+        adapter_id: scan.adapter,
+        root: scan.root.to_string_lossy().to_string(),
+        paths: scan
+            .entries
+            .into_iter()
+            .map(|entry| CliResiduePathView {
+                relative: entry.relative,
+                kind: entry.kind,
+                note: entry.note,
+                exists: entry.exists,
+                files: entry.files,
+                bytes: entry.bytes,
+                truncated: entry.truncated,
+                newest_age_secs: entry.newest_age_secs,
+            })
+            .collect(),
+        total_files: scan.total_files,
+        total_bytes: scan.total_bytes,
+        truncated: scan.truncated,
+        file_limit: dim_cli_adapters::MAX_RESIDUE_FILES,
+        persistence_flag: control.flag,
+        persistence_applies_to: control.applies_to,
+        persistence_verified_with: control.verified_with,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueFileView {
+    pub relative: String,
+    pub bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueSkipView {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueMeasureView {
+    pub adapter_id: String,
+    pub root: String,
+    pub measured_at_unix: u64,
+    pub used_user_home: bool,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub args: Vec<String>,
+    pub before: CliResidueScanView,
+    pub after: CliResidueScanView,
+    pub created: Vec<CliResidueFileView>,
+    pub modified: Vec<CliResidueFileView>,
+    pub removed: Vec<String>,
+    pub created_dirs: Vec<String>,
+    pub bytes_added: u64,
+    pub cleanup_hint: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueCleanupView {
+    pub removed_files: usize,
+    pub removed_bytes: u64,
+    pub removed_dirs: usize,
+    pub skipped: Vec<CliResidueSkipView>,
+    pub errors: Vec<CliResidueSkipView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliSandboxSweepView {
+    pub considered: usize,
+    pub removed: Vec<String>,
+    pub skipped: Vec<CliResidueSkipView>,
+    pub min_age_secs: u64,
+}
+
+fn user_home() -> Result<PathBuf, ApiError> {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .map_err(|_| ApiError::new("E_CLI_RESIDUE_IO", "Ev dizini belirlenemedi."))
+}
+
+/// Bildirilen kalıntı yollarını **üst veriyle** tarar: dosya içeriği açılmaz,
+/// sembolik bağ izlenmez, kullanıcı ev dizini genel olarak taranmaz.
+#[tauri::command]
+pub fn cli_residue_scan(input: CliProbeInput) -> Result<CliResidueScanView, ApiError> {
+    if adapter_spec(&input.adapter_id).is_none() {
+        return Err(ApiError::new(
+            "E_CLI_UNKNOWN",
+            "Bilinmeyen adaptör kimliği.",
+        ));
+    }
+    let home = user_home()?;
+    Ok(residue_scan_view(&home, &input.adapter_id))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueMeasureInput {
+    pub adapter_id: String,
+    /// Gerçek ev dizininde çalıştırma **açık onay** ister.
+    pub confirm_user_home: bool,
+}
+
+/// Kalıntı ölçümü: sürüm yoklaması **gerçek ev dizininde** çalışır, önce/sonra
+/// farkı yalnız bildirilen yollarda hesaplanır. İstem gönderilmez.
+#[tauri::command]
+pub async fn cli_residue_measure(
+    state: State<'_, AppState>,
+    input: CliResidueMeasureInput,
+) -> Result<CliResidueMeasureView, ApiError> {
+    if !input.confirm_user_home {
+        return Err(ApiError::new(
+            "E_CLI_RESIDUE_CONFIRM",
+            "Kalıntı ölçümü gerçek ev dizininde çalışır; açık onay gerekir.",
+        ));
+    }
+    let spec = adapter_spec(&input.adapter_id)
+        .ok_or_else(|| ApiError::new("E_CLI_UNKNOWN", "Bilinmeyen adaptör kimliği."))?;
+    if spec.batch_forbidden {
+        return Err(ApiError::new(
+            "E_CLI_BATCH_FORBIDDEN",
+            "Bu sağlayıcıda otomatik yürütme kapalı; ölçüm yapılmaz.",
+        ));
+    }
+    let executable = find_on_path(spec.command).ok_or_else(|| {
+        ApiError::new(
+            "E_CLI_NOT_INSTALLED",
+            "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
+        )
+    })?;
+    let home = user_home()?;
+    let measured_at = SystemTime::now();
+    let measured_at_unix = measured_at
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let home_for_run = home.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        dim_cli_adapters::measure_residue(spec, &executable, &home_for_run, &run_cancel)
+    })
+    .await;
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+    let measurement = match joined {
+        Ok(Ok(measurement)) => measurement,
+        Ok(Err(err)) => return Err(ApiError::new(err.code(), &err.to_string())),
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Ölçüm görevi tamamlanamadı.",
+            ))
+        }
+    };
+
+    let view = CliResidueMeasureView {
+        adapter_id: measurement.adapter.clone(),
+        root: measurement.root.to_string_lossy().to_string(),
+        measured_at_unix,
+        used_user_home: measurement.used_user_home,
+        status: probe_status_label(&measurement.status),
+        exit_code: measurement.exit_code,
+        duration_ms: measurement.duration_ms,
+        args: measurement.args.clone(),
+        before: residue_scan_view_of(measurement.scan_before),
+        after: residue_scan_view_of(measurement.scan_after),
+        created: measurement
+            .delta
+            .created
+            .iter()
+            .map(|stamp| CliResidueFileView {
+                relative: stamp.relative.clone(),
+                bytes: stamp.bytes,
+            })
+            .collect(),
+        modified: measurement
+            .delta
+            .modified
+            .iter()
+            .map(|stamp| CliResidueFileView {
+                relative: stamp.relative.clone(),
+                bytes: stamp.bytes,
+            })
+            .collect(),
+        removed: measurement.delta.removed.clone(),
+        created_dirs: measurement.delta.created_dirs.clone(),
+        bytes_added: measurement.delta.bytes_added,
+        cleanup_hint:
+            "Yalnız bu ölçümde oluşan dosyalar silinebilir; önceden var olan dosyalara dokunulmaz.",
+    };
+
+    // Denetime yalnız sayılar ve politika yazılır; **dosya adı ve içerik yok**.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": view.adapter_id,
+                "status": view.status,
+                "exitCode": view.exit_code,
+                "durationMs": view.duration_ms,
+                "homeIsolation": "user_home",
+                "createdFiles": view.created.len(),
+                "modifiedFiles": view.modified.len(),
+                "createdDirs": view.created_dirs.len(),
+                "bytesAdded": view.bytes_added,
+                "scanTruncated": view.after.truncated,
+            });
+            db.append_audit("cli_residue", None, "measure", "local-user", &metadata)?;
+        }
+    }
+
+    Ok(view)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueCleanupInput {
+    pub adapter_id: String,
+    /// Ölçümün başladığı an (saniye). Bundan eski dosyalar silinmez.
+    pub measured_at_unix: u64,
+    pub paths: Vec<String>,
+}
+
+/// **Yalnız** ölçümde oluştuğu bildirilen dosyaları siler. Dosya bildirilen
+/// kapsamda değilse, sembolik bağsa ya da ölçümden önce yazıldıysa atlanır.
+#[tauri::command]
+pub fn cli_residue_cleanup(
+    state: State<'_, AppState>,
+    input: CliResidueCleanupInput,
+) -> Result<CliResidueCleanupView, ApiError> {
+    if adapter_spec(&input.adapter_id).is_none() {
+        return Err(ApiError::new(
+            "E_CLI_UNKNOWN",
+            "Bilinmeyen adaptör kimliği.",
+        ));
+    }
+    let home = user_home()?;
+    let since = std::time::UNIX_EPOCH + std::time::Duration::from_secs(input.measured_at_unix);
+    let report =
+        dim_cli_adapters::cleanup_created_since(&home, &input.adapter_id, since, &input.paths);
+    let view = CliResidueCleanupView {
+        removed_files: report.removed_files,
+        removed_bytes: report.removed_bytes,
+        removed_dirs: report.removed_dirs,
+        skipped: report
+            .skipped
+            .into_iter()
+            .map(|(path, reason)| CliResidueSkipView { path, reason })
+            .collect(),
+        errors: report
+            .errors
+            .into_iter()
+            .map(|(path, reason)| CliResidueSkipView { path, reason })
+            .collect(),
+    };
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": input.adapter_id,
+                "removedFiles": view.removed_files,
+                "removedBytes": view.removed_bytes,
+                "removedDirs": view.removed_dirs,
+                "skipped": view.skipped.len(),
+                "errors": view.errors.len(),
+            });
+            db.append_audit("cli_residue", None, "cleanup", "local-user", &metadata)?;
+        }
+    }
+    Ok(view)
+}
+
+/// Çökme sonrası kalan **uygulamaya ait** kum havuzlarını süpürür: yalnız
+/// `dim-cli-sandbox-` öneki, `0700`, sahibi biz ve yaş eşiğini geçmiş dizinler.
+#[tauri::command]
+pub fn cli_stale_sandbox_sweep() -> CliSandboxSweepView {
+    let report = dim_cli_adapters::sweep_stale_sandboxes(
+        &std::env::temp_dir(),
+        dim_cli_adapters::STALE_SANDBOX_AGE,
+        SystemTime::now(),
+    );
+    CliSandboxSweepView {
+        considered: report.considered,
+        removed: report.removed,
+        skipped: report
+            .skipped
+            .into_iter()
+            .map(|(path, reason)| CliResidueSkipView { path, reason })
+            .collect(),
+        min_age_secs: dim_cli_adapters::STALE_SANDBOX_AGE.as_secs(),
     }
 }
 
