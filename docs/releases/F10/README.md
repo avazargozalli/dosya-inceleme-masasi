@@ -2,9 +2,9 @@
 
 - **Sürüm etiketi:** `v0.9.0` (hedef)
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
-  **iş dizini kum havuzu (T05)**, **kalıntı ölçümü/temizliği (T13)** ve
-  **arayüzden tetiklenen gerçek sınama** hazır; sağlayıcıya özel akışlar
-  (T06–T08, T10) yok
+  **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
+  **kalıntı ölçümü/temizliği (T13)** ve **arayüzden tetiklenen gerçek sınama**
+  hazır; sağlayıcıya özel akışlar (T06–T08, T10) yok
 - **Tarih:** 2026-10-24
 
 | İş | Durum | Kanıt |
@@ -19,7 +19,7 @@
 | F10-T08 | ⬜ | Antigravity taşıması yok |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
-| F10-T11 | 🚧 | `Unverified` durumu var; yetenek matrisi yok |
+| F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
 | F10-T12 | 🚧 | izinsiz bayrak reddi + **proje talimatı okunamayan boş iş dizini**; hook/MCP/canary saldırı testleri yok |
 | F10-T13 | ✅ | kalıntı envanteri (sürüm bazlı bildirilen yollar) + önce/sonra ölçüm + **yalnız uygulamaya ait** dosya temizliği + çökme kum havuzu süpürme; arayüzde “Kalıntı denetimi” kartı |
 | F10-T14 | ✅ | süre sınırı, iptal, alt süreç öldürme, kısmi çıktı — **arayüz düğmesinden uçtan uca** |
@@ -141,6 +141,76 @@ kullanıcının kendi oturumlarından geliyor ve **uygulama onlara dokunmuyor**.
 - Tauri penceresi açılmadı → kartın gerçek tıklaması/görsel QA'sı yok. Ölçüm ve
   temizlik çekirdeği gerçek süreçle test edildi (sentetik işaretçi testi).
 
+## Yetenek matrisi ve bağlantı durumu (F10-T11, 2026-10-24)
+
+`crates/cli-adapters/src/capability.rs`. Dört yetenek kaydedilir: **araçsız
+çalışma** (`tool_free`), **hook/MCP kapalı** (`hook_mcp_off`), **şemalı çıktı**
+(`structured_output`), **oturum kalıcılığı kapalı** (`session_persistence_off`).
+
+### Kanıt türü ve durumlar
+
+Kanıt, **kurulu sürümün kendi `--help` metni**dir; sürüm numarası tahmin edilmez,
+rapora kurulu sürüm yazılır. Yardım metni de `exec::run_cli` üzerinden okunur:
+izinli argv, allowlist ortam, boş `0700` kum havuzu, 30 sn sınır, iptal.
+
+- `Declared` — bayrak(lar) yardım metninde **belirteç olarak** var
+  (`mentions_flag`: öncesi boşluk/parantez/virgül, sonrası boşluk/`=`/`,`/`<`;
+  `--ephemeral` metni `--ephemeral-extra` ile eşleşmez). **Davranış kanıtı
+  değildir**: araç çağrısı yapılmadı, oturum yazımı ölçülmedi.
+- `Missing` — yardım metni okundu, bayrak **yok**: bu sürümde yol yok.
+- `NoPath` — sicilde doğrulanmış yol yok (Kimi/Antigravity taşıması, `codex exec`
+  araçsız kipi). "Desteklenmiyor" demek için kanıt olmadığı için bu durum
+  ayrı tutulur.
+- `Unread` — yardım okunamadı (kurulu değil, sıfır olmayan çıkış, süre, iptal).
+  Kesilmiş/boş çıktı **kanıt sayılmaz** (`help_text_of`).
+
+### Bağlantı durumu ve kapı
+
+| Durum | Kural | Arayüz |
+|---|---|---|
+| `not_installed` | sürüm okunamadı | “kurulu değil” |
+| `incompatible` | gerekli bir yetenek `Missing` **ya da** `batch_forbidden` | “uyumsuz” (kırmızı) |
+| `limited` | gerekli bir yetenek `NoPath`/`Unread` | “sınırlı” (sarı) |
+| `declared` | gerekli yeteneklerin hepsi `Declared` | “bildirildi · denenmedi” (sarı — yeşil değil) |
+
+`gate_open` yalnız `declared` durumunda `true`; `gate_reasons` makine okunur
+`yetenek:durum` listesidir (`tool_free:no_path`). Arayüz bunu okunur satıra
+çevirir. **Bugün kapı yalnız raporlanıyor**: istem gönderen yol (T06–T08) henüz
+yok; olduğunda `ensure_capable` benzeri bir çağrı bu raporu kullanacak.
+
+### Matris ile argüman kapısı ayrışmasın
+
+Matriste bildirilen her bayrak `AdapterSpec.allowed_args`'a eklendi
+(`claude`: `--tools`, `--bare`, `--strict-mcp-config`, `--json-schema`;
+`codex`: `--output-schema`, `--ignore-user-config`, `--ignore-rules`).
+`declared_capability_flags_pass_the_argument_gate` testi ikisini birlikte tutar:
+matriste bildirilen bir bayrak kapıya takılırsa test kırmızı olur.
+
+### Arayüz
+
+Providers ekranında **Yetenek matrisi** kartı: “Yetenekleri sına” düğmesi
+(`cli_capability_matrix`, async, `spawn_blocking`; aynı anda tek CLI işlemi,
+`E_CLI_BUSY`), adaptör başına sürüm + yoklanan komut (`claude --help`,
+`codex exec --help`), dört satır (durum rozeti + bayrak/eksik/nereden) ve
+bağlantı + kapı rozeti. “Matrisin sınırları” katlanır listesi dürüstlük
+notlarını taşır. Denetime `cli_capability`/`probe` yazılır: adaptör, sürüm,
+bağlantı, kapı, gerekçe — **yardım metni yazılmaz**.
+
+### Gerçek ölçüm (bu makine, macOS aarch64)
+
+`cargo run -p dim-cli-adapters --example caps`
+
+| Adaptör | Sürüm | Yardım | Sonuç | Kapı |
+|---|---|---|---|---|
+| Claude Code | 2.1.303 | 13.121 ms | 4/4 `declared` | **açık** |
+| Codex CLI | 0.159.2 | 78 ms | 3/4 `declared` · `tool_free` = `NoPath` | kapalı (sınırlı) |
+| Kimi CLI | 1.41.0 | yoklanmadı (etkileşimli-only) | 4/4 `NoPath` | kapalı (uyumsuz) |
+| Antigravity | kurulu değil | — | 4/4 `Unread` | kapalı |
+
+`claude --help` 13 sn sürdüğü için `HELP_TIMEOUT` 20 → **30 sn** yapıldı.
+Codex'te `--sandbox read-only` araçları kısıtlar ama kapatmaz; bu yüzden
+`tool_free` bilinçli olarak `NoPath` — "araçsız" denmez.
+
 ## Yürütme çekirdeği (`crates/cli-adapters/src/exec.rs`)
 
 `run_cli(&CliRunRequest, &Arc<AtomicBool>)`:
@@ -199,6 +269,17 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - **İstem/model çağrısı yok.** T06–T08 profilleri (araçsız, hook/MCP kapalı,
   şemalı çıktı) uygulanmadığı için hassas kaynak aktarımı **açılmadı**; düğme
   yalnız sürüm yoklaması çalıştırır.
+- **Yeteneğin kanıtı yardım metnidir, davranış değil.** `Declared` satırı
+  "bayrak var" der; araç çağrısının gerçekten sıfır olduğu, oturum dosyasının
+  yazılmadığı veya şemalı çıktının uyduğu **ölçülmedi** (istem gönderilmiyor).
+  Bu yüzden en iyi durum bile "bildirildi · denenmedi" etiketiyle sarı gösterilir.
+- Matris yalnız **bildirilen** bayraklara bakar; CLI'nin yardım metninde
+  yazmayan bir kapatma yolunu (ör. ortam değişkeni, yapılandırma dosyası)
+  bilmiyoruz. Kimi ve Antigravity için doğrulanmış taşıma yok; `codex exec`
+  araçsız kip bildirmiyor.
+- Sürüm yoklaması (`discover`) yardım yoklamasından ayrıdır: `--version` hâlâ
+  kullanıcının çalışma dizininde koşar (ortam artık allowlist'e çekildi).
+  `--help` ise boş kum havuzunda koşar.
 - **Dosya izin kapsamı (T05) bir politika kapsamıdır, çekirdek sanal alanı
   değildir.** Uygulama iş dizinini kendisi açar (`0700`), boş ve ev dizini dışında
   olmasını zorlar, `HOME`/`TMPDIR`'i kum havuzuna yönlendirir, stdin'i 1 MiB'te
@@ -219,28 +300,29 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 
 ## Doğrulama
 
-- `cargo test -p dim-cli-adapters` → **50** (F10-T13 turunda 14 yeni: bildirilen
-  yollar/envanter, bilinmeyen adaptör, sembolik bağ izlenmez, önce/sonra farkı,
-  yalnız oluşanı silme, kapsam dışı + `..` reddi, sembolik bağ reddi, ölçümden
-  eski dosyaya dokunmama, kum havuzu süpürme (yaş/izin), kalıcılık bayrağı
-  sürüm kapısı, bayrağın argüman kapısından geçmesi, uçtan uca ölçüm+temizlik,
-  kum havuzunda sıfır ev dizini kalıntısı). F10-T05 turunda 13 yeni: kum havuzu
-  boş/`0700`/silinir, çocuk dizinleri `0700`, geniş izin reddi, boş olmayan dizin
-  reddi, sembolik bağ reddi, ev dizini reddi, stdin aşımı süreç başlamadan,
-  sınırda stdin tam teslim, `HOME`/`TMPDIR` yönlendirme + dosya sayımı, `UserHome`
-  açık seçimi, sayım kesme sınırı.
+- `cargo test -p dim-cli-adapters` → **63** (F10-T11 turunda 13 yeni: bilinmeyen
+  adaptör, Claude 4/4 bildirildi, eksik bayrak → uyumsuz + kapalı kapı, okunamayan
+  yardım → sınırlı, kurulu değil, etkileşimli-only uyumsuz, codex `tool_free`
+  doğrulanamadı, bayrak belirteç sınırı, matris ↔ argüman kapısı tutarlılığı,
+  her adaptörün sicilde olması, gerçek yardım süreci, kesik yardım kanıt değil,
+  sıfır olmayan çıkış kanıt değil). F10-T13 turunda 14, T05 turunda 13 yeni test
+  (ayrıntı: kum havuzu, kalıntı, stdin, ölçüm/temizlik).
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` temiz;
   `clippy -p dim-cli-adapters --all-targets -D warnings` temiz; rustfmt iki
   manifest temiz.
-- Web: **198** test (8 yeni: yaş etiketi, yol satırı, kalıcılık satırı, tarama
-  kesilmesi, ölçüm uyarıları, temizlik hedefi, ölçüm/temizlik özeti, kum havuzu
-  süpürme özeti), `tsc --noEmit` + `vite build` yeşil.
-- Gerçek CLI ölçümü (`cargo run -p dim-cli-adapters --example residue -- …`):
-  Claude Code `2.1.303` 401 ms, Codex `0.159.2` 124 ms; ikisinde de `--version`
-  **0 yeni dosya** bıraktı. Mevcut kalıntı: Claude 396 dosya / 590 MB, Codex
-  94 dosya / 235 MB (uygulama bunlara dokunmuyor).
+- Web: **206** test (F10-T11 turunda 8 yeni `capability.test.ts`: durum/bağlantı
+  tonları, özet sayıları, kapı metni, gerekçe çevirisi, uyarılar, en kötü durum,
+  yoklanan komut), `tsc --noEmit` + `vite build` yeşil.
+- Gerçek yetenek yoklaması (`cargo run -p dim-cli-adapters --example caps`):
+  Claude 4/4 `declared` (kapı açık), Codex 3/4 (`tool_free` doğrulanamadı),
+  Kimi uyumsuz, Antigravity kurulu değil — tablo yukarıda.
+- Gerçek kalıntı ölçümü (`--example residue -- …`): Claude Code `2.1.303`
+  401 ms, Codex `0.159.2` 124 ms; ikisinde de `--version` **0 yeni dosya**
+  bıraktı. Mevcut kalıntı: Claude 396 dosya / 590 MB, Codex 94 dosya / 235 MB
+  (uygulama bunlara dokunmuyor).
 - Gerçek kum havuzu koşusu (`--example probe -- …`): iş dizini `0700`,
   `HOME`/`TMPDIR` kum havuzunda, kalan dosya 0. `HOME` yönlendirmesi gerçek
   araçların `--version` yolunu bozmadı.
 - **CI:** `d9a5581` → run `40109851908` **7/7 yeşil** (arayüz, SBOM, masaüstü
-  kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
+  kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler). F10-T11 değişikliğinin
+  koşusu aşağıda ayrıca yazılır.
