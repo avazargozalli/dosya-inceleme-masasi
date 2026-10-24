@@ -35,8 +35,20 @@ CI: **bekliyor** (bu commit ile ilk koşu).
 - Saat geri alınırsa (uyku, manuel değişiklik) güvenli tarafta kalınır: kilitlenir.
 - 5 birim testi (`src/lib/autolock.test.ts`).
 
+## Referanssız blob temizliği (ek)
+
+- `crates/storage/src/gc.rs`: `garbage_collect_blobs(dry_run)` yalnız hiçbir
+  `document_versions.blob_id` ve `pages.derivative_blob_id` tarafından
+  gösterilmeyen kayıtları seçer; `document_versions` FK'si `RESTRICT` olduğu
+  için yanlış silme veritabanı tarafından da engellenir.
+- `blob_inventory()` toplam/referanssız/boyut özeti verir.
+- `vault_gc` Tauri komutu kuru çalıştırma ve gerçek silme sunar; dosya
+  silinemezse `missingFiles` ile dürüstçe raporlar.
+- Ayarlar'da iki adımlı akış: **Tara** → **Temizle**.
+- 3 storage testi (referanslı blob korunur, boş kasa no-op, türev yolu).
+
 ## Hâlâ eksik
 
 - OS düzeyinde kilit (ekran kilidi) algılama.
 - Parola değiştirme (anahtar rewrap) akışı.
-- Referanssız blob çöp toplama.
+

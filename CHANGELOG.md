@@ -28,6 +28,11 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.9.0] — 2026-10-23 — F03 blob GC
+
+- Referanssız blob taraması/temizliği (kuru çalıştırma + gerçek), dosya uyarısıyla
+- Ayarlar'da iki adımlı akış; 3 storage testi
+
 ## [0.8.1] — 2026-10-23 — F03 otomatik kilit
 
 - 10 dakika hareketsizlikte kasa kendiliğinden kilitlenir (30 sn kontrol)

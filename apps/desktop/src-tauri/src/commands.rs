@@ -10,7 +10,7 @@ use dim_storage::{
     CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, ClaimRelationRow,
     ClaimRow, ContradictionAssessmentRow, CoverageReport, Database, DatabaseKey, Document,
     DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow,
-    ExportRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
+    ExportRow, GcReport, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
     NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewRedactionPlan,
     NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
     NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentNoteRow, PrecedentRow,
@@ -2136,4 +2136,53 @@ pub fn event_unlink_source(state: State<'_, AppState>, id: String) -> Result<(),
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     db.unlink_event_source(&id)?;
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultGcView {
+    pub dry_run: bool,
+    pub candidates: Vec<dim_storage::GcBlobRow>,
+    pub deleted: Vec<dim_storage::GcBlobRow>,
+    pub freed_bytes: i64,
+    pub missing_files: Vec<String>,
+}
+
+/// Referanssız blob kayıtlarını (isteğe bağlı olarak dosyalarıyla) temizler.
+/// Önce kuru çalıştırma yapılması önerilir; arayüz iki adımlı akış sunar.
+#[tauri::command]
+pub fn vault_gc(
+    state: State<'_, AppState>,
+    dry_run: bool,
+) -> Result<VaultGcView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let report: GcReport = db.garbage_collect_blobs(dry_run)?;
+    let mut missing_files = Vec::new();
+    if !dry_run {
+        let blob_dir = vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs");
+        for blob in &report.deleted {
+            let path = blob_dir.join(format!("{}.blb", blob.storage_id));
+            if path.exists() {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    missing_files.push(format!("{}: {error}", blob.storage_id));
+                }
+            } else {
+                missing_files.push(format!("{}: dosya yok", blob.storage_id));
+            }
+        }
+    }
+
+    Ok(VaultGcView {
+        dry_run: report.dry_run,
+        candidates: report.candidates,
+        deleted: report.deleted,
+        freed_bytes: report.freed_bytes,
+        missing_files,
+    })
 }

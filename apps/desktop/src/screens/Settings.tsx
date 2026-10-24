@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 import { api, toApiError, type ApiError, type BackupResult, type VaultStatus } from "../lib/api";
+import type { VaultGcResult } from "../lib/api";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -11,6 +12,7 @@ function formatBytes(bytes: number): string {
 export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [backup, setBackup] = useState<BackupResult | null>(null);
+  const [gc, setGc] = useState<VaultGcResult | null>(null);
   const [restoreDir, setRestoreDir] = useState("");
   const [destDir, setDestDir] = useState("");
   const [restored, setRestored] = useState<string | null>(null);
@@ -28,6 +30,18 @@ export function Settings() {
     setError(null);
     try {
       setBackup(await api.vaultBackup(picked));
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runGc(dryRun: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      setGc(await api.vaultGc(dryRun));
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -117,6 +131,46 @@ export function Settings() {
         ) : (
           <p className="hint" style={{ margin: 0 }}>
             Kasa kilitliyken yedek alınamaz. Yedeği kasa dosyasından ayrı bir diskte saklayın.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Kullanılmayan veriler</h2>
+            <p className="card-sub">
+              Hiçbir belge sürümüne veya türev sayfaya bağlı olmayan şifreli blob'lar.
+            </p>
+          </div>
+          <div className="row" style={{ gap: 6 }}>
+            <button className="btn" disabled={busy} onClick={() => void runGc(true)}>
+              Tara
+            </button>
+            <button
+              className="btn"
+              disabled={busy || !gc || gc.candidates.length === 0}
+              onClick={() => void runGc(false)}
+            >
+              Temizle
+            </button>
+          </div>
+        </div>
+        {gc ? (
+          <div className={gc.deleted.length > 0 ? "notice ok" : "notice"}>
+            {gc.dryRun
+              ? `${gc.candidates.length} aday · ${formatBytes(gc.candidates.reduce((sum, b) => sum + b.encryptedSize, 0))}`
+              : `${gc.deleted.length} kayıt silindi · ${formatBytes(gc.freedBytes)} boşaldı`}
+            {gc.missingFiles.length > 0 ? (
+              <>
+                <br />
+                Dosya uyarısı: {gc.missingFiles.join("; ")}
+              </>
+            ) : null}
+          </div>
+        ) : (
+          <p className="hint" style={{ margin: 0 }}>
+            Önce "Tara" ile adayları görün; silme yalnız referanssız kayıtlara dokunur.
           </p>
         )}
       </div>

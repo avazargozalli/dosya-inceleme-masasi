@@ -339,6 +339,16 @@ export type OutboxEventRow = {
   attemptCount: number;
 };
 
+export type GcBlobRow = { id: string; storageId: string; encryptedSize: number };
+
+export type VaultGcResult = {
+  dryRun: boolean;
+  candidates: GcBlobRow[];
+  deleted: GcBlobRow[];
+  freedBytes: number;
+  missingFiles: string[];
+};
+
 export type BackupResult = {
   path: string;
   fileCount: number;
@@ -695,6 +705,7 @@ export const api = {
     invoke<VaultInfo>("vault_open_with_recovery", { path, recoveryKey }),
   lockVault: () => invoke<void>("vault_lock"),
   vaultBackup: (destDir: string) => invoke<BackupResult>("vault_backup", { destDir }),
+  vaultGc: (dryRun: boolean) => invoke<VaultGcResult>("vault_gc", { dryRun }),
   vaultRestore: (backupDir: string, destDir: string) =>
     invoke<RestoreResult>("vault_restore", { backupDir, destDir }),
   status: () => invoke<VaultStatus>("vault_status"),

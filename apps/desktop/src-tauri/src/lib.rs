@@ -109,6 +109,7 @@ pub fn run() {
             commands::citation_check_create,
             commands::citation_check_list,
             commands::vault_restore,
+            commands::vault_gc,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

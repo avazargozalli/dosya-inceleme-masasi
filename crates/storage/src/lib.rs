@@ -12,6 +12,7 @@ mod claims;
 mod documents;
 mod error;
 mod exports;
+mod gc;
 mod notes;
 mod parsing;
 mod precedents;
@@ -38,6 +39,7 @@ pub use claims::{
 pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use exports::ExportRow;
+pub use gc::{GcBlobRow, GcReport};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
 pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
