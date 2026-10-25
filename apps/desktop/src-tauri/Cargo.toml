@@ -21,6 +21,7 @@ serde_json = "1.0.133"
 base64 = "0.22.1"
 dim-vault = { path = "../../../crates/vault" }
 dim-storage = { path = "../../../crates/storage" }
+dim-providers = { path = "../../../crates/providers" }
 dim-ingest = { path = "../../../crates/ingest" }
 dim-preview = { path = "../../../crates/preview" }
 dim-cli-adapters = { path = "../../../crates/cli-adapters" }

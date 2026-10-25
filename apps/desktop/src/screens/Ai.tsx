@@ -93,7 +93,14 @@ export function Ai() {
     setBusy(true);
     setError(null);
     try {
-      await api.aiRunStart(caseId, provider.id, consent.id, "summarize");
+      const docs = await api.documentList(caseId);
+      await api.aiRunExecute(
+        caseId,
+        provider.id,
+        consent.id,
+        "summarize",
+        docs.map((doc) => doc.id),
+      );
       setOverview(await api.aiOverview(caseId));
     } catch (e) {
       setError(toApiError(e));

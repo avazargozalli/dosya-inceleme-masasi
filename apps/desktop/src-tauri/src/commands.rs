@@ -15,6 +15,7 @@ use dim_ingest::packaging::{
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
+use dim_providers::{AiRequest, ApiProvider, ContextSegment, Provider};
 use dim_storage::{
     AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, CandidateReport, Case,
     CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow,
@@ -22,7 +23,7 @@ use dim_storage::{
     ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey,
     Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
     EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck, InTextQuoteInput,
-    MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
+    MarkRow, NewAiRun, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
     NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
     NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
     NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
@@ -5084,4 +5085,87 @@ pub fn ai_consent_preview(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.consent_preview(&case_id, &document_ids)?)
+}
+
+/// Onaylı aktarımı **gerçekten** yürütür: context segmentleri toplar, API
+/// sağlayıcısına gönderir, dönen adayı doğrulayıp kaydeder. Onay yoksa veya
+/// profil tanımlı değilse çağrı hiç kurulmaz.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn ai_run_execute(
+    state: State<'_, AppState>,
+    case_id: String,
+    provider_id: String,
+    consent_id: String,
+    task_type: String,
+    document_ids: Vec<String>,
+) -> Result<AiCandidateRow, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let (endpoint, model) = db
+        .api_profile_endpoint()?
+        .ok_or_else(|| ApiError::new("E_AI_OFF", "API profili tanımlı değil."))?;
+    let segments = db.context_segments(&case_id, &document_ids)?;
+    if segments.is_empty() {
+        return Err(ApiError::new(
+            "E_AI_UNSUPPORTED",
+            "Gönderilecek ayrıştırılmış metin yok.",
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    for (id, text) in &segments {
+        hasher.update(id.as_bytes());
+        hasher.update(text.as_bytes());
+    }
+    let manifest: String = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    let run = db.start_ai_run(
+        &case_id,
+        &NewAiRun {
+            task_type: task_type.clone(),
+            provider_id,
+            model_snapshot: model.clone(),
+            input_manifest_hash: manifest,
+            prompt_version: "1".to_string(),
+            output_schema_version: "candidate.v1".to_string(),
+            consent_id,
+        },
+    )?;
+
+    let request = AiRequest {
+        case_id,
+        task_type: task_type.clone(),
+        prompt_version: "1".to_string(),
+        output_schema_version: "candidate.v1".to_string(),
+        segments: segments
+            .iter()
+            .map(|(id, text)| ContextSegment {
+                segment_id: id.clone(),
+                text: text.clone(),
+                source_ref_json: None,
+            })
+            .collect(),
+    };
+    let bytes = request.outbound_bytes();
+    let mut provider = ApiProvider::new(&endpoint, &model)?;
+    let candidate = match provider.propose(&request) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            let report = serde_json::json!({"error": error.code()}).to_string();
+            db.finish_ai_run(&run.id, "failed", &report)?;
+            return Err(error.into());
+        }
+    };
+    let payload = serde_json::to_string(&candidate.payload).unwrap_or_else(|_| "{}".to_string());
+    let row = db.record_ai_candidate(&run.id, &task_type, &payload)?;
+    let report = serde_json::json!({"segments": segments.len(), "bytes": bytes}).to_string();
+    db.finish_ai_run(&run.id, "succeeded", &report)?;
+    Ok(row)
 }

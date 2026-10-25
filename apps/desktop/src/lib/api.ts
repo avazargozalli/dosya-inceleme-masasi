@@ -1585,6 +1585,20 @@ export const api = {
   aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
     invoke<TransferConsentRow>("ai_consent_create", { caseId, providerSnapshot, purpose, documentIds }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
+  aiRunExecute: (
+    caseId: string,
+    providerId: string,
+    consentId: string,
+    taskType: string,
+    documentIds: string[],
+  ) =>
+    invoke<AiCandidateRow>("ai_run_execute", {
+      caseId,
+      providerId,
+      consentId,
+      taskType,
+      documentIds,
+    }),
   aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),
   aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),

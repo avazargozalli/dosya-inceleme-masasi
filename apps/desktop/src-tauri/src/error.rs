@@ -35,6 +35,16 @@ impl From<dim_ingest::worker::WorkerError> for ApiError {
     }
 }
 
+impl From<dim_providers::ProviderError> for ApiError {
+    fn from(value: dim_providers::ProviderError) -> Self {
+        Self {
+            code: value.code().to_string(),
+            message: value.to_string(),
+            retryable: value.retryable(),
+        }
+    }
+}
+
 impl From<dim_ingest::IngestError> for ApiError {
     fn from(value: dim_ingest::IngestError) -> Self {
         Self {
