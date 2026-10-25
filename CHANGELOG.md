@@ -3,6 +3,12 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.11.3] — 2026-10-25 — Türkçe OCR verisi
+
+- `tesseract-lang` kuruldu (162 dil); `tur+eng` ile JPG güveni 85,1 → **93,6**, PDF 57,9 → **72,2**
+- Ürün zaten `tur+eng` gönderiyordu; eksik olan dil verisiydi
+- Ölçüm: `docs/releases/F06/REAL-DOCS.md`
+
 ## [0.11.2] — 2026-10-25 — gerçek belge kanıtı
 
 - `~/Downloads/ekler` ile PDF/UDF/JPG hattı gerçek veride doğrulandı
@@ -72,6 +78,12 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Arama sonucundan "Solda aç / Sağda aç" ile doğru sürüm ve sayfaya atlama, sorgu vurgusu
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
+
+## [0.11.3] — 2026-10-25 — Türkçe OCR verisi
+
+- `tesseract-lang` kuruldu (162 dil); `tur+eng` ile JPG güveni 85,1 → **93,6**, PDF 57,9 → **72,2**
+- Ürün zaten `tur+eng` gönderiyordu; eksik olan dil verisiydi
+- Ölçüm: `docs/releases/F06/REAL-DOCS.md`
 
 ## [0.11.2] — 2026-10-25 — gerçek belge kanıtı
 

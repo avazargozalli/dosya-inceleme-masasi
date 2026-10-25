@@ -48,3 +48,23 @@ r = engines.extract(data, "image/jpeg", ocr=True, ocr_lang="eng")
 print(len("\n".join(p.text for p in r.pages)))
 PY
 ```
+
+## `tur` dil paketi kuruldu — ölçülmüş fark (2026-10-25)
+
+`brew install tesseract-lang` → **162 dil**, `tur` dahil (685,7 MB).
+
+| Belge | Dil | Karakter | Ortalama güven | Örnek |
+|---|---|---|---|---|
+| `EK 15.jpg` | `eng` | 4.054 | **85,1** | `NOTERLIGI`, `DOC DR.`, `HALIL URUN` |
+| `EK 15.jpg` | `tur+eng` | 4.037 | **93,6** | `NOTERLİĞİ`, `DOÇ DR.`, `HALİL ÜRÜN` |
+| `EK 1.pdf` s.1 | `eng` | 1.597 | **57,9** | `Kamu Gdérevinden (Cikarma` |
+| `EK 1.pdf` s.1 | `tur+eng` | 1.601 | **72,2** | `Kamu Görevinden Çıkarma` |
+
+- JPG'de güven **+8,5 puan**, taranmış PDF'te **+14,3 puan**.
+- Türkçe karakterler (`İ`, `Ü`, `Ç`, `Ö`) doğru üretiliyor; `eng` tek başına
+  bunları düşürüyordu.
+- Ürün zaten `tur+eng` gönderiyordu (`Cases.tsx`); eksik olan yalnız dil verisiydi.
+  Kurulumla birlikte kod değişikliği gerekmedi.
+
+**Kural:** `tur` paketi yoksa OCR sessizce `eng`'e düşmez; `capabilities.ocr.langs`
+gerçek listeyi verir ve düşük güven uyarısı üretilir.
