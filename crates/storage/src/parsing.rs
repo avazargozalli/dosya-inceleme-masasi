@@ -337,15 +337,7 @@ impl Database {
     }
 
     pub fn pages_for_run(&self, parse_run_id: &str) -> Result<Vec<PageRow>, StorageError> {
-        let mut stmt = self.conn().prepare(
-            "SELECT p.id,
-                    (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS segment_id,
-                    p.page_index,
-                    COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'') AS text,
-                    p.text_origin,p.quality_flags,p.width,p.height,p.rotation,p.coordinate_space,p.page_label,
-                    (SELECT s.bbox_list FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS bbox_list
-             FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index",
-        )?;
+        let mut stmt = self.conn().prepare(PAGES_FOR_RUN_SQL)?;
         let rows = stmt.query_map([parse_run_id], |row| {
             let raw_blocks: Option<String> = row.get(11)?;
             Ok(PageRow {
@@ -1629,6 +1621,20 @@ pub const SEARCH_DATE_ROLES: &[&str] = &[
 /// Tek aramada dönebilecek en fazla sonuç (arayüz de aynı sınırı gösterir).
 pub const MAX_SEARCH_LIMIT: i64 = 200;
 
+/// `Database::pages_for_run` sorgusu. Testler **bu metnin** planını denetler;
+/// kopya bir sorgu yazılsaydı indeks denetimi sessizce eskiyebilirdi.
+///
+/// Üç korelasyonlu alt sorgu da `text_segments.page_id` üzerinden arar; bu
+/// sütunun indeksi (migration 0018) yokken her sayfa okuması tam tablo taraması
+/// yapıyordu (F15 ölçümü, `docs/releases/F15/BENCHMARK.md`).
+pub(crate) const PAGES_FOR_RUN_SQL: &str = "SELECT p.id,
+                    (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS segment_id,
+                    p.page_index,
+                    COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'') AS text,
+                    p.text_origin,p.quality_flags,p.width,p.height,p.rotation,p.coordinate_space,p.page_label,
+                    (SELECT s.bbox_list FROM text_segments s WHERE s.page_id=p.id LIMIT 1) AS bbox_list
+             FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index";
+
 /// Keyset imleci: son dönen sonucun `bm25` bitleri + segment kimliği.
 ///
 /// Rank `f64` olarak karşılaştırılır; ondalık metne çevirmek eşit skorlarda
@@ -1723,6 +1729,140 @@ mod tests {
             )
             .expect("v");
         (db, case.id, version.id)
+    }
+
+    /// F15-T05 kusuru: `text_segments.page_id` indekssizken `pages_for_run`
+    /// her sayfa için üç tam tablo taraması yapıyordu. Plan **gerçek** sorgu
+    /// metninden okunur (`PAGES_FOR_RUN_SQL`), kopyasından değil.
+    #[test]
+    fn pages_for_run_plan_uses_indexes() {
+        let (db, _, _) = setup();
+        let mut stmt = db
+            .conn()
+            .prepare(&format!("EXPLAIN QUERY PLAN {PAGES_FOR_RUN_SQL}"))
+            .expect("plan hazırlanır");
+        let details: Vec<String> = stmt
+            .query_map(["run-1"], |row| row.get::<_, String>(3))
+            .expect("plan satırları")
+            .collect::<Result<_, _>>()
+            .expect("plan okunur");
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("idx_text_segments_page")),
+            "segment araması page_id indeksini kullanmalı: {details:?}"
+        );
+        assert!(
+            !details
+                .iter()
+                .any(|detail| detail.starts_with("SCAN s") || detail.contains("SCAN text_segments")),
+            "segment tablosu taranmamalı: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("SEARCH p USING INDEX")
+                    && detail.contains("parse_run_id=?")),
+            "sayfa araması parse_run_id indeksiyle olmalı: {details:?}"
+        );
+    }
+
+    /// Sayfa okuması yalnız kendi ayrıştırma koşusunun sayfalarını döndürür;
+    /// komşu koşunun çok sayıda sayfası sonucu değiştirmez.
+    #[test]
+    fn pages_for_run_reads_only_its_own_run() {
+        let (db, case_id, version_id) = setup();
+        let bulk = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("komşu koşu");
+        let bulk_pages: Vec<NewPage> = (0..500)
+            .map(|index| NewPage {
+                index,
+                text: format!("Komşu koşu sayfası {index}"),
+                origin: "native".into(),
+                ..Default::default()
+            })
+            .collect();
+        db.store_pages(&bulk.id, &case_id, &bulk_pages)
+            .expect("komşu sayfalar");
+
+        let own = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("kendi koşusu");
+        db.store_pages(
+            &own.id,
+            &case_id,
+            &[
+                NewPage {
+                    index: 0,
+                    text: "Kendi ilk sayfası".into(),
+                    origin: "native".into(),
+                    ..Default::default()
+                },
+                NewPage {
+                    index: 1,
+                    text: "Kendi ikinci sayfası".into(),
+                    origin: "native".into(),
+                    ..Default::default()
+                },
+            ],
+        )
+        .expect("kendi sayfaları");
+
+        let pages = db.pages_for_run(&own.id).expect("sayfalar");
+        assert_eq!(pages.len(), 2, "yalnız kendi koşusunun sayfaları");
+        assert_eq!(pages[0].text, "Kendi ilk sayfası");
+        assert_eq!(pages[1].text, "Kendi ikinci sayfası");
+        assert_eq!(db.pages_for_run(&bulk.id).expect("komşu").len(), 500);
+    }
+
+    /// Bir sayfada birden çok segment varsa sayfanın **ilk** segmenti döner
+    /// (rowid sırası). İndeks eklendikten sonra da bu davranış korunur.
+    #[test]
+    fn pages_for_run_returns_first_segment_of_a_page() {
+        let (db, case_id, version_id) = setup();
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "İlk segment metni".into(),
+                origin: "native".into(),
+                ..Default::default()
+            }],
+        )
+        .expect("sayfa");
+        let page_id: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM pages WHERE parse_run_id = ?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .expect("sayfa kimliği");
+        let second = "İkinci segment metni";
+        db.conn()
+            .execute(
+                "INSERT INTO text_segments
+                 (id,parse_run_id,page_id,case_id,structural_path,raw_text,normalized_text,offset_map,bbox_list,created_at)
+                 VALUES (?1,?2,?3,?4,'page/0/seg1',?5,?6,'[]','[]',?7)",
+                rusqlite::params![
+                    uuid::Uuid::now_v7().to_string(),
+                    &run.id,
+                    &page_id,
+                    &case_id,
+                    second,
+                    dim_evidence::normalize(second),
+                    crate::now_iso(),
+                ],
+            )
+            .expect("ikinci segment");
+        let pages = db.pages_for_run(&run.id).expect("sayfalar");
+        assert_eq!(pages.len(), 1, "sayfa başına tek satır");
+        assert_eq!(pages[0].text, "İlk segment metni");
     }
 
     #[test]

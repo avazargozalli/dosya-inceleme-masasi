@@ -219,9 +219,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0017_ai_candidate_quotes",
         sql: include_str!("migrations/0017_ai_candidate_quotes.sql"),
     },
+    Migration {
+        version: 18,
+        name: "0018_page_lookup_index",
+        sql: include_str!("migrations/0018_page_lookup_index.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 17;
+pub const CURRENT_SCHEMA_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

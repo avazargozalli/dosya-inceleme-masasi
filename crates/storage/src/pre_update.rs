@@ -245,7 +245,10 @@ mod tests {
     fn lists_only_this_vaults_backups_and_flags_corrupt_ones() {
         let dir = tempfile::tempdir().expect("dizin");
         let path = make_vault(dir.path());
-        std::fs::copy(&path, dir.path().join("vault.db.v17-pre-update.bak")).expect("kopya");
+        // Ad **güncel şemadan** türetilir: sabit sürüm yazmak, şema her
+        // yükseldiğinde testi yalancı kırmızıya düşürüyordu (v18'de yakalandı).
+        let good_name = format!("vault.db.v{CURRENT_SCHEMA_VERSION}-pre-update.bak");
+        std::fs::copy(&path, dir.path().join(&good_name)).expect("kopya");
         std::fs::copy(&path, dir.path().join("baska.db.v12-pre-update.bak")).expect("yabancı");
         std::fs::write(dir.path().join("vault.db.v12-pre-update.bak"), b"bozuk")
             .expect("bozuk yedek");
@@ -256,7 +259,7 @@ mod tests {
         assert_eq!(list.len(), 2, "yalnız bu kasanın iki yedeği listelenir");
 
         let good = &list[0];
-        assert_eq!(good.file_name, "vault.db.v17-pre-update.bak");
+        assert_eq!(good.file_name, good_name);
         assert_eq!(good.claimed_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(good.verified_version, Some(CURRENT_SCHEMA_VERSION));
         assert_eq!(good.problem, None);
@@ -280,7 +283,8 @@ mod tests {
     fn backup_of_another_vault_is_listed_but_not_usable() {
         let dir = tempfile::tempdir().expect("dizin");
         let path = make_vault(dir.path());
-        std::fs::copy(&path, dir.path().join("vault.db.v17-pre-update.bak")).expect("kopya");
+        let name = format!("vault.db.v{CURRENT_SCHEMA_VERSION}-pre-update.bak");
+        std::fs::copy(&path, dir.path().join(&name)).expect("kopya");
 
         let list = pre_update_backups(&path, &DatabaseKey::new([7u8; 32])).expect("liste");
         assert_eq!(list.len(), 1);
@@ -310,7 +314,8 @@ mod tests {
     fn listing_does_not_modify_the_backup_file() {
         let dir = tempfile::tempdir().expect("dizin");
         let path = make_vault(dir.path());
-        let backup = dir.path().join("vault.db.v17-pre-update.bak");
+        let backup_name = format!("vault.db.v{CURRENT_SCHEMA_VERSION}-pre-update.bak");
+        let backup = dir.path().join(&backup_name);
         std::fs::copy(&path, &backup).expect("kopya");
         let before = std::fs::metadata(&backup).expect("meta").len();
         let bytes_before = std::fs::read(&backup).expect("bayt");
@@ -326,11 +331,11 @@ mod tests {
         );
         assert_eq!(bytes_before, bytes_after, "yedek baytları değişmemeli");
         assert!(
-            !dir.path().join("vault.db.v17-pre-update.bak-wal").exists(),
+            !dir.path().join(format!("{backup_name}-wal")).exists(),
             "doğrulamanın bıraktığı -wal temizlenir"
         );
         assert!(
-            !dir.path().join("vault.db.v17-pre-update.bak-shm").exists(),
+            !dir.path().join(format!("{backup_name}-shm")).exists(),
             "doğrulamanın bıraktığı -shm temizlenir"
         );
     }
