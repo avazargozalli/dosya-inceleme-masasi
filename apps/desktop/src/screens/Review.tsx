@@ -8,9 +8,23 @@ import {
   type ClaimRelationRow,
   type ClaimRow,
   type ContradictionAssessmentRow,
+  type DocumentRow,
   type EvidenceLinkRow,
+  type InTextQuoteCheck,
+  type InTextQuoteFinding,
   type ReviewItemRow,
 } from "../lib/api";
+import {
+  bindingInput,
+  canBind,
+  candidateLabel,
+  positionLabel,
+  quoteCheckSummary,
+  QUOTE_STATE_LABEL,
+  quoteStateTone,
+  scopeLabel,
+  skippedLabel,
+} from "../lib/intext";
 import { formatTimestamp } from "../lib/format";
 import {
   buildReviewTarget,
@@ -75,6 +89,13 @@ export function Review() {
   const [anchors, setAnchors] = useState<AnchorRow[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  const [documents, setDocuments] = useState<DocumentRow[]>([]);
+  const [quoteText, setQuoteText] = useState("");
+  const [quoteScope, setQuoteScope] = useState("");
+  const [quoteSource, setQuoteSource] = useState("");
+  const [quoteCheck, setQuoteCheck] = useState<InTextQuoteCheck | null>(null);
+  const [quoteBindings, setQuoteBindings] = useState<Record<number, string>>({});
+  const [quoteBusy, setQuoteBusy] = useState(false);
 
   const [claimText, setClaimText] = useState("");
   const [claimKind, setClaimKind] = useState("");
@@ -115,14 +136,16 @@ export function Review() {
   const load = useCallback(async (id: string) => {
     if (!id) return;
     try {
-      const [claimRows, itemRows, anchorRows] = await Promise.all([
+      const [claimRows, itemRows, anchorRows, documentRows] = await Promise.all([
         api.claimList(id),
         api.reviewItemList(id),
         api.anchorList(id),
+        api.documentList(id),
       ]);
       setClaims(claimRows);
       setItems(itemRows);
       setAnchors(anchorRows);
+      setDocuments(documentRows);
       const contradictionIds = itemRows
         .filter((i) => i.itemKind === "contradiction_candidate")
         .map((i) => i.id);
@@ -162,6 +185,38 @@ export function Review() {
       })
       .catch((e) => setError(toApiError(e)));
   }, [selectedClaim]);
+
+  async function runQuoteCheck() {
+    if (!caseId || quoteText.trim().length === 0) return;
+    setQuoteBusy(true);
+    try {
+      const report = await api.inTextQuoteCheck(caseId, {
+        text: quoteText,
+        documentId: quoteScope === "" ? null : quoteScope,
+      });
+      setQuoteCheck(report);
+      setQuoteBindings({});
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setQuoteBusy(false);
+    }
+  }
+
+  async function bindQuote(finding: InTextQuoteFinding) {
+    const input = bindingInput(caseId, finding);
+    if (!input) return;
+    setQuoteBusy(true);
+    try {
+      const anchor = await api.anchorCreate(input);
+      setQuoteBindings((prev) => ({ ...prev, [finding.index]: anchor.id }));
+      setAnchors((prev) => [anchor, ...prev]);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setQuoteBusy(false);
+    }
+  }
 
   async function addClaim() {
     if (!caseId || claimText.trim().length === 0 || claimKind === "") return;
@@ -853,6 +908,175 @@ export function Review() {
             </div>
           ) : null}
         </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Metin içi alıntı denetimi</h2>
+            <p className="card-sub">
+              İddia, özet veya not metnindeki çift tırnaklı pasajlar dosya belgelerinin metin
+              katmanında aranır; “bulunamadı” uydurma hükmü değildir.
+            </p>
+          </div>
+        </div>
+        <div className="row">
+          <div className="field" style={{ flex: "1 1 240px" }}>
+            <label htmlFor="rv-qclaim">İddia metnini kullan</label>
+            <select
+              id="rv-qclaim"
+              className="input"
+              value={quoteSource}
+              onChange={(e) => {
+                const id = e.target.value;
+                setQuoteSource(id);
+                const claim = claims.find((c) => c.id === id);
+                if (claim) {
+                  setQuoteText(claim.claimText);
+                  setQuoteCheck(null);
+                  setQuoteBindings({});
+                }
+              }}
+            >
+              <option value="">Seçin…</option>
+              {claims.map((claim) => (
+                <option key={claim.id} value={claim.id}>
+                  {claim.claimText.slice(0, 90)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field" style={{ flex: "1 1 240px" }}>
+            <label htmlFor="rv-qscope">Kapsam</label>
+            <select
+              id="rv-qscope"
+              className="input"
+              value={quoteScope}
+              onChange={(e) => {
+                setQuoteScope(e.target.value);
+                setQuoteCheck(null);
+                setQuoteBindings({});
+              }}
+            >
+              <option value="">Tüm dosya (güncel sürümler)</option>
+              {documents.map((document) => (
+                <option key={document.id} value={document.id}>
+                  {document.displayName}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="rv-qtext">Denetlenecek metin</label>
+          <textarea
+            id="rv-qtext"
+            className="input"
+            rows={3}
+            value={quoteText}
+            onChange={(e) => {
+              setQuoteText(e.target.value);
+              setQuoteCheck(null);
+              setQuoteBindings({});
+            }}
+            placeholder="Örn. Davacı “kira bedelini ödemediğini” beyan etmiştir."
+          />
+        </div>
+        <div className="row" style={{ justifyContent: "flex-end" }}>
+          <span className="hint" style={{ margin: 0, flex: "1 1 220px" }}>
+            Yalnız güncel sürümlerin ayrıştırılmış metni taranır; OCR'sız taranmış sayfa
+            bulunamaz. Alıntı en az 8 karakter olmalı.
+          </span>
+          <button
+            className="btn primary"
+            disabled={quoteBusy || quoteText.trim().length === 0}
+            onClick={() => void runQuoteCheck()}
+          >
+            {quoteBusy ? "Denetleniyor…" : "Alıntıları denetle"}
+          </button>
+        </div>
+
+        {quoteCheck ? (
+          <div className="card tight" style={{ background: "var(--surface)" }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <strong className="small">{quoteCheckSummary(quoteCheck)}</strong>
+              <span className="muted small">
+                {scopeLabel(quoteCheck)} · {quoteCheck.pagesScanned} sayfa
+              </span>
+            </div>
+            {skippedLabel(quoteCheck) ? (
+              <p className="hint" style={{ margin: 0 }}>{skippedLabel(quoteCheck)}</p>
+            ) : null}
+            {quoteCheck.quotes.length === 0 ? (
+              <p className="hint" style={{ margin: 0 }}>Metinde çift tırnaklı alıntı bulunamadı.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {quoteCheck.quotes.map((finding) => (
+                  <div
+                    key={finding.index}
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: "var(--radius)",
+                      padding: "8px 10px",
+                      background: "var(--bg)",
+                    }}
+                  >
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <strong className="small">“{finding.quote}”</strong>
+                      <span className={`badge ${quoteStateTone(finding.state)}`}>
+                        {QUOTE_STATE_LABEL[finding.state] ?? finding.state}
+                      </span>
+                    </div>
+                    {finding.reason === "no_text" ? (
+                      <p className="hint" style={{ margin: 0 }}>
+                        Bu kapsamda taranacak ayrıştırılmış metin yok.
+                      </p>
+                    ) : null}
+                    {finding.position ? (
+                      <p className="muted small" style={{ margin: 0 }}>
+                        {positionLabel(finding)} · kaynak: “{finding.position.sourceText.slice(0, 140)}”
+                      </p>
+                    ) : null}
+                    {finding.candidates.length > 0 ? (
+                      <ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                        {finding.candidates.map((candidate, candidateIndex) => (
+                          <li key={`${candidate.documentId}-${candidate.pageIndex}-${candidate.charStart}-${candidateIndex}`}>
+                            {candidateLabel(candidate)}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    <div className="row" style={{ justifyContent: "flex-end", marginTop: 4 }}>
+                      {quoteBindings[finding.index] ? (
+                        <span className="badge ok">
+                          Kaynağa bağlandı · {quoteBindings[finding.index]?.slice(0, 8)}
+                        </span>
+                      ) : canBind(finding) ? (
+                        <button className="btn" disabled={quoteBusy} onClick={() => void bindQuote(finding)}>
+                          Kaynağa bağla
+                        </button>
+                      ) : (
+                        <span className="hint" style={{ margin: 0 }}>
+                          {finding.state === "exact" ? "" : "Yalnız birebir tek konum kaynağa bağlanır."}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {quoteCheck.notes.length > 0 ? (
+              <details>
+                <summary className="small">Denetimin sınırları ({quoteCheck.notes.length})</summary>
+                <ul className="small" style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                  {quoteCheck.notes.map((note, noteIndex) => (
+                    <li key={noteIndex}>{note}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

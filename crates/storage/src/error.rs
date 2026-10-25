@@ -66,6 +66,12 @@ pub enum StorageError {
     AiSchema(String),
     #[error("adaydaki alıntı kaynak olarak kullanılamaz: {0}")]
     AiQuote(String),
+    #[error("alıntı denetimi için metin çok uzun (en çok 50.000 karakter)")]
+    QuoteTextTooLong,
+    #[error("metinde çok fazla alıntı var (en çok 30)")]
+    QuoteTooMany,
+    #[error("taranacak metin kapsamı çok büyük (20.000 sayfa); belge seçerek deneyin")]
+    QuoteScopeTooLarge,
 }
 
 impl StorageError {
@@ -101,6 +107,9 @@ impl StorageError {
             Self::PrecedentSource(_) => "E_PRECEDENT_SOURCE",
             Self::AiSchema(_) => "E_AI_SCHEMA",
             Self::AiQuote(_) => "E_AI_QUOTE",
+            Self::QuoteTextTooLong => "E_QUOTE_TEXT",
+            Self::QuoteTooMany => "E_QUOTE_TOO_MANY",
+            Self::QuoteScopeTooLarge => "E_QUOTE_SCOPE",
         }
     }
 }

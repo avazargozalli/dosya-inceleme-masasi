@@ -1,0 +1,1202 @@
+//! Metin içi alıntı denetimi (F12-T14).
+//!
+//! Serbest metindeki (iddia, özet, not) çift tırnaklı pasajları **çıkarır** ve
+//! dosyadaki belgelerin güncel sürümlerinin metin katmanında doğrular.
+//!
+//! Üç eşleşme katmanı ayrı raporlanır: `exact` (birebir), `whitespace` (yalnız
+//! boşluk/satır farkı) ve `turkish_fold` (harf sadeleştirmesi). Katmanlar
+//! sırayla denenir; üst katman bulunduysa alt katman aranmaz.
+//!
+//! `not_found` sonucu "uydurma" hükmü değildir: yalnız taranan metin
+//! katmanında bulunmadığını söyler. Taranmış (OCR'sız) sayfada görünen metin
+//! bu denetimde bulunamaz.
+
+use std::collections::BTreeSet;
+
+use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
+
+use crate::precedents::{
+    char_offset, collapse_ws_with_map, normalize_with_map, MappedText, MIN_QUOTE_CHARS,
+};
+use crate::{now_iso, Database, StorageError};
+
+/// Denetlenecek serbest metnin üst sınırı (karakter).
+pub const MAX_IN_TEXT_CHECK_CHARS: usize = 50_000;
+/// Tek metinde denetlenecek alıntı sayısı üst sınırı.
+pub const MAX_IN_TEXT_QUOTES: usize = 30;
+/// Tek alıntının üst sınırı: daha uzunu büyük olasılıkla tırnak hatasıdır.
+const MAX_SPAN_CHARS: usize = 1_000;
+/// Bulunulan konumdan rapora taşınacak en çok aday sayısı.
+const MAX_CANDIDATES: usize = 8;
+/// Tek denetimde taranacak sayfa üst sınırı; aşılırsa belge seçilmelidir.
+const MAX_SCOPE_PAGES: i64 = 20_000;
+
+const SCOPE_PAGE_SQL: &str = "SELECT p.id,p.page_index,p.text_origin,
+        (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1),
+        COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'')
+     FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index";
+
+/// Metinden çıkarılmış tek alıntı. `start`/`end`, alıntı **içeriğinin**
+/// (tırnaklar hariç) karakter aralığıdır.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpannedQuote {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+    pub style: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExtractedQuotes {
+    pub quotes: Vec<SpannedQuote>,
+    pub skipped_short: usize,
+    pub skipped_long: usize,
+    pub unclosed: usize,
+}
+
+/// Serbest metindeki çift tırnak ailesini çıkarır: `“…”`, `„…“`, `«…»`, `"…"`.
+/// Tek tırnak ve apostrof alıntı sayılmaz (Türkçe'de `İstanbul'da` alıntı
+/// değildir); bu yüzden `’`/`'` sınır kabul edilmez.
+#[must_use]
+pub fn extract_quoted_spans(text: &str) -> ExtractedQuotes {
+    const OPENERS: [(char, &str); 4] = [
+        ('\u{201C}', "typographic"),
+        ('\u{201E}', "german"),
+        ('\u{00AB}', "guillemet"),
+        ('"', "straight"),
+    ];
+    const CLOSERS: [char; 4] = ['\u{201D}', '\u{201C}', '\u{00BB}', '"'];
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = ExtractedQuotes::default();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let Some((_, style)) = OPENERS.iter().find(|(mark, _)| *mark == chars[index]) else {
+            index += 1;
+            continue;
+        };
+        let mut close = None;
+        let mut probe = index + 1;
+        while probe < chars.len() {
+            if CLOSERS.contains(&chars[probe]) {
+                close = Some(probe);
+                break;
+            }
+            probe += 1;
+        }
+        let Some(close) = close else {
+            // Kapanmayan tırnak: metnin geri kalanı alıntı sayılmaz.
+            out.unclosed += 1;
+            break;
+        };
+        let raw: String = chars[index + 1..close].iter().collect();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            out.skipped_short += 1;
+            index = close + 1;
+            continue;
+        }
+        // Kırpılan boşlukları karakter konumundan düş.
+        let lead = raw.chars().take_while(|c| c.is_whitespace()).count();
+        let text_len = trimmed.chars().count();
+        if text_len < MIN_QUOTE_CHARS {
+            out.skipped_short += 1;
+        } else if text_len > MAX_SPAN_CHARS {
+            out.skipped_long += 1;
+        } else {
+            out.quotes.push(SpannedQuote {
+                start: index + 1 + lead,
+                end: index + 1 + lead + text_len,
+                text: trimmed.to_string(),
+                style,
+            });
+        }
+        index = close + 1;
+    }
+    out
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InTextQuoteInput {
+    pub text: String,
+    /// Verilirse yalnız bu belgenin **güncel** sürümü taranır.
+    #[serde(default)]
+    pub document_id: Option<String>,
+}
+
+/// Alıntının bulunduğu gerçek konum. `sourceText`, kaynak metnin o aralıktaki
+/// **ham** hâlidir; `normalized` eşleşmede yazılan alıntıdan farklı olabilir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InTextQuotePosition {
+    pub document_id: String,
+    pub document_name: String,
+    pub document_version_id: String,
+    pub parse_run_id: String,
+    pub page_id: Option<String>,
+    pub segment_id: Option<String>,
+    pub page_index: i64,
+    /// Unicode scalar konumu (bayt değil).
+    pub char_start: i64,
+    pub char_end: i64,
+    /// `exact` | `whitespace` | `turkish_fold`
+    pub match_kind: String,
+    pub text_origin: String,
+    pub source_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InTextQuoteFinding {
+    pub index: usize,
+    pub quote: String,
+    /// `exact` | `normalized` | `ambiguous` | `not_found` | `unverifiable`
+    pub state: String,
+    /// `no_text` (taranacak metin yok) — başka neden uydurulmaz.
+    pub reason: Option<String>,
+    pub occurrences: i64,
+    pub distinct_documents: i64,
+    /// Yalnız tek konum varsa dolu.
+    pub position: Option<InTextQuotePosition>,
+    /// Birden fazla konum varsa ilk adaylar (en çok 8).
+    pub candidates: Vec<InTextQuotePosition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InTextQuoteCheck {
+    pub case_id: String,
+    pub scope: String,
+    pub scope_document_id: Option<String>,
+    pub scope_document_name: Option<String>,
+    pub text_chars: i64,
+    pub spans_found: usize,
+    pub skipped_short: usize,
+    pub skipped_long: usize,
+    pub unclosed: usize,
+    pub quotes: Vec<InTextQuoteFinding>,
+    pub exact: usize,
+    pub normalized: usize,
+    pub ambiguous: usize,
+    pub not_found: usize,
+    pub unverifiable: usize,
+    pub documents_total: usize,
+    pub documents_with_text: usize,
+    pub documents_without_text: usize,
+    pub pages_scanned: usize,
+    pub notes: Vec<String>,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchTier {
+    Exact,
+    Whitespace,
+    Fold,
+}
+
+impl MatchTier {
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Whitespace => "whitespace",
+            Self::Fold => "turkish_fold",
+        }
+    }
+}
+
+struct VersionScope {
+    document_id: String,
+    document_name: String,
+    version_id: Option<String>,
+    parse_run_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct RawHit {
+    document_id: String,
+    document_name: String,
+    version_id: String,
+    parse_run_id: String,
+    page_id: Option<String>,
+    segment_id: Option<String>,
+    page_index: i64,
+    char_start: i64,
+    char_end: i64,
+    match_kind: &'static str,
+    text_origin: String,
+    source_text: String,
+}
+
+impl RawHit {
+    fn position(&self) -> InTextQuotePosition {
+        InTextQuotePosition {
+            document_id: self.document_id.clone(),
+            document_name: self.document_name.clone(),
+            document_version_id: self.version_id.clone(),
+            parse_run_id: self.parse_run_id.clone(),
+            page_id: self.page_id.clone(),
+            segment_id: self.segment_id.clone(),
+            page_index: self.page_index,
+            char_start: self.char_start,
+            char_end: self.char_end,
+            match_kind: self.match_kind.to_string(),
+            text_origin: self.text_origin.clone(),
+            source_text: self.source_text.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct QuoteAccum {
+    hits: Vec<RawHit>,
+    occurrences: i64,
+    documents: BTreeSet<String>,
+}
+
+impl QuoteAccum {
+    fn record(&mut self, hit: RawHit) {
+        self.occurrences += 1;
+        self.documents.insert(hit.document_id.clone());
+        if self.hits.len() < MAX_CANDIDATES {
+            self.hits.push(hit);
+        }
+    }
+}
+
+impl Database {
+    /// Serbest metindeki alıntıları dosyanın belgelerinde doğrular.
+    ///
+    /// Kapsam: `document_id` verilirse o belgenin güncel sürümü; verilmezse
+    /// dosyadaki bütün belgelerin güncel sürümleri. Her sürümün **en yeni**
+    /// başarılı/kısmi ayrıştırması taranır.
+    pub fn check_in_text_quotes(
+        &self,
+        case_id: &str,
+        input: &InTextQuoteInput,
+    ) -> Result<InTextQuoteCheck, StorageError> {
+        let text_chars = input.text.chars().count();
+        if text_chars > MAX_IN_TEXT_CHECK_CHARS {
+            return Err(StorageError::QuoteTextTooLong);
+        }
+        let extracted = extract_quoted_spans(&input.text);
+        if extracted.quotes.len() > MAX_IN_TEXT_QUOTES {
+            return Err(StorageError::QuoteTooMany);
+        }
+        if self.get_case(case_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let scopes = self.resolve_quote_scopes(case_id, input.document_id.as_deref())?;
+        let documents_total = scopes.len();
+        let documents_with_text = scopes
+            .iter()
+            .filter(|scope| scope.parse_run_id.is_some())
+            .count();
+        let documents_without_text = documents_total - documents_with_text;
+
+        let mut notes = vec![
+            "Alıntı çıkarımı yalnız çift tırnak ailesini tanır (“…” · „…“ · «…» · \"…\"); \
+             tek tırnak ve apostrof alıntı sayılmaz."
+                .to_string(),
+            "Bulunamadı sonucu “uydurma” hükmü değildir: yalnız taranan metin katmanında \
+             bulunmadığını söyler."
+                .to_string(),
+        ];
+        if let Some(document_id) = input.document_id.as_deref() {
+            let name = scopes
+                .iter()
+                .find(|scope| scope.document_id == document_id)
+                .map(|scope| scope.document_name.clone())
+                .unwrap_or_default();
+            notes.push(format!(
+                "Yalnız “{name}” belgesinin güncel sürümü tarandı; alıntı başka belgede geçebilir."
+            ));
+        }
+        if documents_without_text > 0 {
+            notes.push(format!(
+                "{documents_without_text} belgenin güncel sürümünde ayrıştırılmış metin yok \
+                 (bu belgeler taranamadı)."
+            ));
+        }
+
+        let mut accum = (0..extracted.quotes.len())
+            .map(|_| QuoteAccum::default())
+            .collect::<Vec<_>>();
+        let mut pages_scanned = 0usize;
+        if extracted.quotes.is_empty() {
+            notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
+        } else {
+            pages_scanned = self.count_scope_pages(&scopes)?;
+            if pages_scanned > usize::try_from(MAX_SCOPE_PAGES).unwrap_or(usize::MAX) {
+                return Err(StorageError::QuoteScopeTooLarge);
+            }
+            let all: Vec<usize> = (0..extracted.quotes.len()).collect();
+            self.scan_quote_tier(
+                &scopes,
+                &extracted.quotes,
+                &all,
+                &mut accum,
+                MatchTier::Exact,
+            )?;
+            let pending = pending_quotes(&accum);
+            if !pending.is_empty() {
+                self.scan_quote_tier(
+                    &scopes,
+                    &extracted.quotes,
+                    &pending,
+                    &mut accum,
+                    MatchTier::Whitespace,
+                )?;
+            }
+            let pending = pending_quotes(&accum);
+            if !pending.is_empty() {
+                self.scan_quote_tier(
+                    &scopes,
+                    &extracted.quotes,
+                    &pending,
+                    &mut accum,
+                    MatchTier::Fold,
+                )?;
+            }
+        }
+
+        let mut counts = [0usize; 5];
+        let mut quotes = Vec::with_capacity(extracted.quotes.len());
+        for (index, span) in extracted.quotes.iter().enumerate() {
+            let found = &accum[index];
+            let mut finding = InTextQuoteFinding {
+                index,
+                quote: span.text.clone(),
+                state: "not_found".into(),
+                reason: None,
+                occurrences: found.occurrences,
+                distinct_documents: i64::try_from(found.documents.len()).unwrap_or(i64::MAX),
+                position: None,
+                candidates: Vec::new(),
+            };
+            if pages_scanned == 0 {
+                finding.state = "unverifiable".into();
+                finding.reason = Some("no_text".into());
+            } else if found.occurrences == 0 {
+                finding.state = "not_found".into();
+            } else if found.occurrences == 1 {
+                let hit = found.hits.first().ok_or(StorageError::NotFound)?;
+                finding.state = if hit.match_kind == MatchTier::Exact.kind() {
+                    "exact".into()
+                } else {
+                    "normalized".into()
+                };
+                finding.position = Some(hit.position());
+            } else {
+                finding.state = "ambiguous".into();
+                finding.candidates = found.hits.iter().map(RawHit::position).collect();
+            }
+            match finding.state.as_str() {
+                "exact" => counts[0] += 1,
+                "normalized" => counts[1] += 1,
+                "ambiguous" => counts[2] += 1,
+                "not_found" => counts[3] += 1,
+                _ => counts[4] += 1,
+            }
+            quotes.push(finding);
+        }
+        if counts[0] > 0 {
+            notes.push(format!(
+                "{} alıntı birebir tek konumda bulundu; kaynak bağlanabilir.",
+                counts[0]
+            ));
+        }
+        if counts[1] > 0 {
+            notes.push(
+                "Birebir olmayan (boşluk veya harf farkı) eşleşmeler kaynak metniyle gösterilir; \
+                 anchor'a bağlanmaz."
+                    .to_string(),
+            );
+        }
+        if counts[2] > 0 {
+            notes.push(
+                "Birden fazla konumda geçen alıntı tek kaynağa bağlanmaz; konumu kullanıcı seçmelidir."
+                    .to_string(),
+            );
+        }
+        if pages_scanned == 0 && !extracted.quotes.is_empty() {
+            notes.push(
+                "Taranacak ayrıştırılmış metin bulunamadı; alıntılar bu denetimde \
+                 doğrulanamadı."
+                    .to_string(),
+            );
+        }
+
+        let scope_document = input.document_id.as_deref().and_then(|id| {
+            scopes
+                .iter()
+                .find(|scope| scope.document_id == id)
+                .map(|scope| (scope.document_id.clone(), scope.document_name.clone()))
+        });
+        Ok(InTextQuoteCheck {
+            case_id: case_id.to_string(),
+            scope: if input.document_id.is_some() {
+                "document".into()
+            } else {
+                "case".into()
+            },
+            scope_document_id: scope_document.as_ref().map(|(id, _)| id.clone()),
+            scope_document_name: scope_document.map(|(_, name)| name),
+            text_chars: i64::try_from(text_chars).unwrap_or(i64::MAX),
+            spans_found: extracted.quotes.len(),
+            skipped_short: extracted.skipped_short,
+            skipped_long: extracted.skipped_long,
+            unclosed: extracted.unclosed,
+            quotes,
+            exact: counts[0],
+            normalized: counts[1],
+            ambiguous: counts[2],
+            not_found: counts[3],
+            unverifiable: counts[4],
+            documents_total,
+            documents_with_text,
+            documents_without_text,
+            pages_scanned,
+            notes,
+            checked_at: now_iso(),
+        })
+    }
+
+    fn resolve_quote_scopes(
+        &self,
+        case_id: &str,
+        document_id: Option<&str>,
+    ) -> Result<Vec<VersionScope>, StorageError> {
+        let mut scopes = Vec::new();
+        if let Some(document_id) = document_id {
+            let row: Option<(String, String, Option<String>)> = self
+                .conn()
+                .query_row(
+                    "SELECT id,display_name,current_version_id FROM documents
+                     WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                    [document_id, case_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let Some((id, name, version_id)) = row else {
+                return Err(StorageError::NotFound);
+            };
+            let run_id = match version_id.as_deref() {
+                Some(version) => self.latest_text_run(version)?,
+                None => None,
+            };
+            scopes.push(VersionScope {
+                document_id: id,
+                document_name: name,
+                version_id,
+                parse_run_id: run_id,
+            });
+            return Ok(scopes);
+        }
+        let mut stmt = self.conn().prepare(
+            "SELECT id,display_name,current_version_id FROM documents
+             WHERE case_id=?1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([case_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut docs = Vec::new();
+        for row in rows {
+            docs.push(row?);
+        }
+        for (id, name, version_id) in docs {
+            let run_id = match version_id.as_deref() {
+                Some(version) => self.latest_text_run(version)?,
+                None => None,
+            };
+            scopes.push(VersionScope {
+                document_id: id,
+                document_name: name,
+                version_id,
+                parse_run_id: run_id,
+            });
+        }
+        Ok(scopes)
+    }
+
+    fn latest_text_run(&self, version_id: &str) -> Result<Option<String>, StorageError> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id FROM parse_runs
+                 WHERE document_version_id=?1 AND status IN ('succeeded','partial')
+                 ORDER BY COALESCE(completed_at, created_at) DESC, id DESC LIMIT 1",
+                [version_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    fn count_scope_pages(&self, scopes: &[VersionScope]) -> Result<usize, StorageError> {
+        let mut total: i64 = 0;
+        for scope in scopes {
+            if let Some(run_id) = scope.parse_run_id.as_deref() {
+                total += self.conn().query_row(
+                    "SELECT count(*) FROM pages WHERE parse_run_id=?1",
+                    [run_id],
+                    |row| row.get::<_, i64>(0),
+                )?;
+            }
+        }
+        Ok(usize::try_from(total).unwrap_or(usize::MAX))
+    }
+
+    /// Tek bir eşleşme katmanını tarar. `active` yalnız o kata bakılacak
+    /// alıntı indeksleridir; üst katmanda bulunan alıntı alt kata inmez.
+    fn scan_quote_tier(
+        &self,
+        scopes: &[VersionScope],
+        spans: &[SpannedQuote],
+        active: &[usize],
+        accum: &mut [QuoteAccum],
+        tier: MatchTier,
+    ) -> Result<(), StorageError> {
+        if active.is_empty() {
+            return Ok(());
+        }
+        let needles: Vec<Option<MappedText>> = spans
+            .iter()
+            .map(|span| match tier {
+                MatchTier::Exact => None,
+                MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
+                MatchTier::Fold => Some(normalize_with_map(&span.text)),
+            })
+            .collect();
+        let needle_chars: Vec<usize> = needles
+            .iter()
+            .map(|needle| {
+                needle
+                    .as_ref()
+                    .map(|mapped| mapped.text.chars().count())
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let connection = self.conn();
+        let mut stmt = connection.prepare(SCOPE_PAGE_SQL)?;
+        for scope in scopes {
+            let Some(run_id) = scope.parse_run_id.as_deref() else {
+                continue;
+            };
+            let rows = stmt.query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (page_id, page_index, text_origin, segment_id, text) = row?;
+                if text.is_empty() {
+                    continue;
+                }
+                match tier {
+                    MatchTier::Exact => {
+                        for &quote_index in active {
+                            let quote = &spans[quote_index].text;
+                            for (byte, _) in text.match_indices(quote) {
+                                let start = char_offset(&text, byte);
+                                accum[quote_index].record(RawHit {
+                                    document_id: scope.document_id.clone(),
+                                    document_name: scope.document_name.clone(),
+                                    version_id: scope.version_id.clone().unwrap_or_default(),
+                                    parse_run_id: run_id.to_string(),
+                                    page_id: Some(page_id.clone()),
+                                    segment_id: segment_id.clone(),
+                                    page_index,
+                                    char_start: start,
+                                    char_end: start
+                                        + i64::try_from(quote.chars().count()).unwrap_or(i64::MAX),
+                                    match_kind: tier.kind(),
+                                    text_origin: text_origin.clone(),
+                                    source_text: quote.clone(),
+                                });
+                            }
+                        }
+                    }
+                    MatchTier::Whitespace | MatchTier::Fold => {
+                        let mapped = if tier == MatchTier::Whitespace {
+                            collapse_ws_with_map(&text)
+                        } else {
+                            normalize_with_map(&text)
+                        };
+                        for &quote_index in active {
+                            let Some(needle) = needles[quote_index].as_ref() else {
+                                continue;
+                            };
+                            if needle.text.is_empty() || needle_chars[quote_index] == 0 {
+                                continue;
+                            }
+                            let mut from = 0usize;
+                            while let Some(offset) = mapped.text[from..].find(&needle.text) {
+                                let at = from + offset;
+                                if let Some((start, end)) =
+                                    source_span(&mapped, at, needle_chars[quote_index])
+                                {
+                                    let source_text: String = text
+                                        .chars()
+                                        .skip(usize::try_from(start).unwrap_or(usize::MAX))
+                                        .take(usize::try_from(end - start).unwrap_or(0))
+                                        .collect();
+                                    accum[quote_index].record(RawHit {
+                                        document_id: scope.document_id.clone(),
+                                        document_name: scope.document_name.clone(),
+                                        version_id: scope.version_id.clone().unwrap_or_default(),
+                                        parse_run_id: run_id.to_string(),
+                                        page_id: Some(page_id.clone()),
+                                        segment_id: segment_id.clone(),
+                                        page_index,
+                                        char_start: start,
+                                        char_end: end,
+                                        match_kind: tier.kind(),
+                                        text_origin: text_origin.clone(),
+                                        source_text,
+                                    });
+                                }
+                                from = at + needle.text.len().max(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn pending_quotes(accum: &[QuoteAccum]) -> Vec<usize> {
+    accum
+        .iter()
+        .enumerate()
+        .filter(|(_, found)| found.occurrences == 0)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Sadeleştirilmiş metindeki eşleşmenin kaynak metindeki karakter aralığını
+/// verir. `needle_chars`, eşleşen iğnenin **sadeleştirilmiş** karakter sayısıdır.
+fn source_span(mapped: &MappedText, at_byte: usize, needle_chars: usize) -> Option<(i64, i64)> {
+    if needle_chars == 0 {
+        return None;
+    }
+    let start_index = mapped.text[..at_byte].chars().count();
+    let end_index = start_index.checked_add(needle_chars)?;
+    let first = *mapped.map.get(start_index)?;
+    let last = *mapped.map.get(end_index - 1)?;
+    Some((
+        i64::try_from(first).ok()?,
+        i64::try_from(last.checked_add(1)?).ok()?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cases::{CaseKind, NewCase};
+    use crate::{DatabaseKey, NewAnchor, NewPage};
+
+    fn db() -> Database {
+        Database::open_in_memory(&DatabaseKey::new([21u8; 32])).expect("db")
+    }
+
+    fn new_case(db: &Database, title: &str) -> String {
+        db.create_case(&NewCase {
+            title: title.into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: crate::Sensitivity::Normal,
+            default_ai_policy: crate::AiPolicy::Off,
+        })
+        .expect("case")
+        .id
+    }
+
+    fn page(index: i64, text: &str) -> NewPage {
+        NewPage {
+            index,
+            text: text.into(),
+            width: Some(595.0),
+            height: Some(842.0),
+            origin: "native".into(),
+            warnings: Vec::new(),
+            rotation: 0,
+            coordinate_space: Some("unrotated_cropbox_points".into()),
+            page_label: None,
+            blocks: Vec::new(),
+        }
+    }
+
+    /// Belge + sürüm + başarılı ayrıştırma + sayfalar. Dönüş: (belge, sürüm).
+    fn add_document(db: &Database, case_id: &str, name: &str, pages: &[&str]) -> (String, String) {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let document = db
+            .create_document(case_id, name, "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &document.id,
+                case_id,
+                &blob,
+                &"d".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("run");
+        let stored: Vec<NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, text)| page(i64::try_from(index).unwrap_or(i64::MAX), text))
+            .collect();
+        db.store_pages(&run.id, case_id, &stored).expect("pages");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+        (document.id, version.id)
+    }
+
+    fn add_empty_document(db: &Database, case_id: &str, name: &str) -> String {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let document = db
+            .create_document(case_id, name, "pdf", None, "unknown")
+            .expect("doc");
+        db.add_version(
+            &document.id,
+            case_id,
+            &blob,
+            &"e".repeat(64),
+            10,
+            "application/pdf",
+        )
+        .expect("version");
+        document.id
+    }
+
+    fn check(
+        db: &Database,
+        case_id: &str,
+        text: &str,
+        document_id: Option<&str>,
+    ) -> InTextQuoteCheck {
+        db.check_in_text_quotes(
+            case_id,
+            &InTextQuoteInput {
+                text: text.into(),
+                document_id: document_id.map(str::to_string),
+            },
+        )
+        .expect("check")
+    }
+
+    #[test]
+    fn extracts_typographic_quotes_with_content_positions() {
+        let out = extract_quoted_spans("Davacı “kira bedelini ödemediğini” söyledi.");
+        assert_eq!(out.quotes.len(), 1);
+        let quote = &out.quotes[0];
+        assert_eq!(quote.text, "kira bedelini ödemediğini");
+        assert_eq!(quote.style, "typographic");
+        let chars: Vec<char> = "Davacı “kira bedelini ödemediğini” söyledi."
+            .chars()
+            .collect();
+        let sliced: String = chars[quote.start..quote.end].iter().collect();
+        assert_eq!(sliced, quote.text);
+    }
+
+    #[test]
+    fn extracts_straight_guillemet_and_german_quotes() {
+        let out = extract_quoted_spans(
+            "Bir \"düz tırnak alıntısı\" ve «köşeli alıntı metni» ile „alman tipi alıntı“ var.",
+        );
+        assert_eq!(out.quotes.len(), 3);
+        let styles: Vec<&str> = out.quotes.iter().map(|q| q.style).collect();
+        assert_eq!(styles, vec!["straight", "guillemet", "german"]);
+        assert_eq!(out.quotes[2].text, "alman tipi alıntı");
+    }
+
+    #[test]
+    fn apostrophes_are_not_quote_delimiters() {
+        let out = extract_quoted_spans("İstanbul'da “kira ödenmedi” denildi; avukat’ın notu.");
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(out.quotes[0].text, "kira ödenmedi");
+    }
+
+    #[test]
+    fn short_unclosed_and_long_spans_are_counted_not_returned() {
+        let short = extract_quoted_spans("“kısa” ve “az”.");
+        assert!(short.quotes.is_empty());
+        assert_eq!(short.skipped_short, 2);
+
+        let unclosed = extract_quoted_spans("“kapanmayan uzun bir alıntı metni");
+        assert!(unclosed.quotes.is_empty());
+        assert_eq!(unclosed.unclosed, 1);
+
+        let long_text = "a".repeat(MAX_SPAN_CHARS + 1);
+        let long = extract_quoted_spans(&format!("“{long_text}”"));
+        assert!(long.quotes.is_empty());
+        assert_eq!(long.skipped_long, 1);
+    }
+
+    #[test]
+    fn exact_quote_is_found_once_and_position_binds_an_anchor() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        let (_, version_id) = add_document(
+            &db,
+            &case_id,
+            "Dava dilekçesi",
+            &[
+                "Mahkeme, kiracının kira bedelini ödemediğini tespit etti.",
+                "İkinci sayfa başka bir metindir.",
+            ],
+        );
+        let text = "Davacı “kira bedelini ödemediğini tespit etti” iddiasındadır.";
+        let report = check(&db, &case_id, text, None);
+        assert_eq!(report.spans_found, 1);
+        assert_eq!(report.exact, 1);
+        assert_eq!(report.ambiguous, 0);
+        assert_eq!(report.pages_scanned, 2);
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "exact");
+        assert_eq!(finding.occurrences, 1);
+        assert_eq!(finding.distinct_documents, 1);
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.document_version_id, version_id);
+        assert_eq!(position.page_index, 0);
+        assert_eq!(position.match_kind, "exact");
+        assert_eq!(
+            position.source_text,
+            "kira bedelini ödemediğini tespit etti"
+        );
+        assert_eq!(position.char_start, 19);
+
+        // Konum doğrudan anchor'a bağlanabilir: aynı doğrulama yeniden geçer.
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                end_offset: position.char_end,
+                exact_quote: position.source_text.clone(),
+            })
+            .expect("anchor");
+        assert_eq!(anchor.exact_quote, finding.quote);
+        assert_eq!(anchor.start_offset, 19);
+        assert_eq!(anchor.end_offset, 19 + 37);
+        let location = db.locate_anchor(&anchor.id).expect("locate").expect("row");
+        assert!(location.quote_intact);
+    }
+
+    #[test]
+    fn quote_in_two_documents_is_ambiguous_with_distinct_documents() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Dilekçe",
+            &["Kiracı kira bedelini ödemedi ve temerrüde düştü."],
+        );
+        add_document(
+            &db,
+            &case_id,
+            "Bilirkişi raporu",
+            &["Kiracı kira bedelini ödemedi; bu nedenle tahliye istendi."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“kira bedelini ödemedi” ifadesi geçiyor.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "ambiguous");
+        assert_eq!(finding.occurrences, 2);
+        assert_eq!(finding.distinct_documents, 2);
+        assert!(finding.position.is_none());
+        assert_eq!(finding.candidates.len(), 2);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("Birden fazla konumda")));
+    }
+
+    #[test]
+    fn repeated_quote_on_one_page_is_ambiguous() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Tutanak",
+            &["Kira bedeli ödenmedi. Kira bedeli ödenmedi. Kira bedeli ödenmedi."],
+        );
+        let report = check(&db, &case_id, "“kira bedeli ödenmedi” yazıyor.", None);
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "ambiguous");
+        assert_eq!(finding.occurrences, 3);
+        assert_eq!(finding.distinct_documents, 1);
+        assert_eq!(finding.candidates.len(), 3);
+    }
+
+    #[test]
+    fn whitespace_only_difference_is_reported_as_normalized_with_source_text() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["Mahkeme ödeme   yapılmadığını ve temerrüdün oluştuğunu tespit etti."],
+        );
+        let report = check(&db, &case_id, "“ödeme yapılmadığını” tespiti.", None);
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "whitespace");
+        assert_eq!(position.source_text, "ödeme   yapılmadığını");
+        assert_eq!(
+            normalize_with_map(&position.source_text).text,
+            normalize_with_map(&finding.quote).text
+        );
+        // Birebir olmayan eşleşme anchor'a bağlanmaz: çekirdek reddeder.
+        let error = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                end_offset: position.char_start
+                    + i64::try_from(finding.quote.chars().count()).unwrap_or(i64::MAX),
+                exact_quote: finding.quote.clone(),
+            })
+            .expect_err("normalized quote must not bind");
+        assert_eq!(error.code(), "E_QUOTE_NOT_FOUND");
+    }
+
+    #[test]
+    fn turkish_fold_is_a_separate_weaker_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(&db, &case_id, "Karar", &["ÖDEME YAPILMADIĞI sabittir."]);
+        let report = check(&db, &case_id, "“ödeme yapılmadığı” sabittir.", None);
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "turkish_fold");
+        assert_eq!(position.source_text, "ÖDEME YAPILMADIĞI");
+    }
+
+    #[test]
+    fn missing_quote_is_not_found_without_position() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(&db, &case_id, "Dilekçe", &["Kiracı kira bedelini ödedi."]);
+        let report = check(
+            &db,
+            &case_id,
+            "“tamamen uydurma bir pasaj burada” deniyor.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "not_found");
+        assert_eq!(finding.occurrences, 0);
+        assert!(finding.position.is_none());
+        assert_eq!(report.not_found, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("“uydurma” hükmü değildir")));
+    }
+
+    #[test]
+    fn document_scope_excludes_other_documents_and_says_so() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Dilekçe",
+            &["Kiracı kira bedelini ödemediğini beyan etti."],
+        );
+        let (other_document, _) = add_document(
+            &db,
+            &case_id,
+            "Rapor",
+            &["Raporda ödeme yapıldığı belirtilmiştir."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“kira bedelini ödemediğini” beyanı.",
+            Some(&other_document),
+        );
+        assert_eq!(report.scope, "document");
+        assert_eq!(
+            report.scope_document_id.as_deref(),
+            Some(other_document.as_str())
+        );
+        assert_eq!(report.quotes[0].state, "not_found");
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("Yalnız “Rapor” belgesinin güncel sürümü tarandı")));
+    }
+
+    #[test]
+    fn document_from_another_case_is_rejected() {
+        let db = db();
+        let case_a = new_case(&db, "A");
+        let case_b = new_case(&db, "B");
+        let (document, _) = add_document(&db, &case_a, "Belge", &["metin"]);
+
+        let error = db
+            .check_in_text_quotes(
+                &case_b,
+                &InTextQuoteInput {
+                    text: "“uzun bir alıntı metni” var.".into(),
+                    document_id: Some(document),
+                },
+            )
+            .expect_err("foreign document");
+        assert_eq!(error.code(), "E_NOT_FOUND");
+    }
+
+    #[test]
+    fn document_without_parse_is_counted_and_scan_still_works() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Dilekçe",
+            &["Kiracı kira bedelini ödemedi ve temerrüt oluştu."],
+        );
+        add_empty_document(&db, &case_id, "Taranmamış belge");
+        let report = check(&db, &case_id, "“kira bedelini ödemedi” ifadesi.", None);
+        assert_eq!(report.documents_total, 2);
+        assert_eq!(report.documents_with_text, 1);
+        assert_eq!(report.documents_without_text, 1);
+        assert_eq!(report.quotes[0].state, "exact");
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("1 belgenin güncel sürümünde ayrıştırılmış metin yok")));
+    }
+
+    #[test]
+    fn no_text_scope_is_unverifiable_not_not_found() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_empty_document(&db, &case_id, "Taranmamış belge");
+        let report = check(&db, &case_id, "“uzun bir alıntı metni” var.", None);
+        assert_eq!(report.pages_scanned, 0);
+        assert_eq!(report.quotes[0].state, "unverifiable");
+        assert_eq!(report.quotes[0].reason.as_deref(), Some("no_text"));
+        assert_eq!(report.unverifiable, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("Taranacak ayrıştırılmış metin bulunamadı")));
+    }
+
+    #[test]
+    fn quote_spanning_two_pages_is_not_found() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "Kiracı kira bedelini",
+                "ödemediği için tahliyeye karar verildi.",
+            ],
+        );
+        let report = check(&db, &case_id, "“kira bedelini ödemediği” ifadesi.", None);
+        assert_eq!(
+            report.quotes[0].state, "not_found",
+            "sayfa sınırını aşan alıntı bulunamaz; bu dürüst sınırdır"
+        );
+    }
+
+    #[test]
+    fn text_without_quotes_returns_empty_report() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(&db, &case_id, "Belge", &["metin"]);
+        let report = check(&db, &case_id, "Tırnaksız bir iddia metni.", None);
+        assert_eq!(report.spans_found, 0);
+        assert!(report.quotes.is_empty());
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("çift tırnaklı alıntı bulunamadı")));
+    }
+
+    #[test]
+    fn too_many_quotes_and_too_long_text_are_rejected() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        let many = vec!["“alıntı metni bir”"; MAX_IN_TEXT_QUOTES + 1].join(" ");
+        let error = db
+            .check_in_text_quotes(
+                &case_id,
+                &InTextQuoteInput {
+                    text: many,
+                    document_id: None,
+                },
+            )
+            .expect_err("too many");
+        assert_eq!(error.code(), "E_QUOTE_TOO_MANY");
+
+        let long = "a".repeat(MAX_IN_TEXT_CHECK_CHARS + 1);
+        let error = db
+            .check_in_text_quotes(
+                &case_id,
+                &InTextQuoteInput {
+                    text: long,
+                    document_id: None,
+                },
+            )
+            .expect_err("too long");
+        assert_eq!(error.code(), "E_QUOTE_TEXT");
+    }
+
+    #[test]
+    fn unknown_case_is_not_found() {
+        let db = db();
+        let error = db
+            .check_in_text_quotes(
+                "bilinmeyen",
+                &InTextQuoteInput {
+                    text: "“uzun bir alıntı metni”".into(),
+                    document_id: None,
+                },
+            )
+            .expect_err("unknown case");
+        assert_eq!(error.code(), "E_NOT_FOUND");
+    }
+}

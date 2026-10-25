@@ -16,6 +16,7 @@ mod error;
 mod export_coverage;
 mod exports;
 mod gc;
+mod intext_quotes;
 mod marks;
 mod notes;
 mod parsing;
@@ -53,6 +54,10 @@ pub use error::StorageError;
 pub use export_coverage::{ExportCoverage, COVERAGE_COUNTING_NOTE, COVERAGE_STATEMENT};
 pub use exports::ExportRow;
 pub use gc::{GcBlobRow, GcReport};
+pub use intext_quotes::{
+    extract_quoted_spans, ExtractedQuotes, InTextQuoteCheck, InTextQuoteFinding, InTextQuoteInput,
+    InTextQuotePosition, SpannedQuote, MAX_IN_TEXT_CHECK_CHARS, MAX_IN_TEXT_QUOTES,
+};
 pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
 pub use parsing::{

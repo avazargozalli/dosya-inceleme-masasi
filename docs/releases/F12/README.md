@@ -17,6 +17,7 @@
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
+| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -275,4 +276,58 @@ bunu yapan bir düğme bilinçli olarak yok.
 - Kısmi (`partial`) ayrıştırma "tam" sayılmaz; eksik sayfa olabilir ve bu
   yazılır. Ayrıştırma yoksa kullanıcı önce belgeyi ayrıştırmalıdır.
 - Tauri penceresi bu ortamda açılmadı: akış typecheck + birim testleri +
+  üretim derlemesiyle doğrulandı; gerçek tıklama ve görsel QA yok.
+
+## F12-T14 — Metin içi alıntı denetimi
+
+İddia, özet veya not metninin içine gömülü alıntılar artık ayrı bir çekirdek
+komutla dosya belgelerinde aranır. Girdi **serbest metindir**; kullanıcı alıntıyı
+tek tek işaretlemez, metindeki tırnaklı pasajlar çıkarılır.
+
+- **Çekirdek (`crates/storage/src/intext_quotes.rs`):**
+  `Database::check_in_text_quotes(case_id, InTextQuoteInput { text, document_id })`.
+  - **Çıkarım:** yalnız çift tırnak ailesi — `“…”`, `„…“`, `«…»`, `"…"`.
+    Tek tırnak/apostrof sınır değildir (`İstanbul'da` alıntı sayılmaz). En az
+    **8** karakter (daha kısa alıntı yanlış kesinlik üretir), en çok 1.000
+    karakter; kapanmayan/kısa/uzun tırnaklar **sayılır**, alıntı üretilmez.
+  - **Kapsam:** `document_id` yoksa dosyadaki bütün belgeler, varsa yalnız o
+    belge. Her belgenin **güncel sürümünün en yeni** `succeeded`/`partial`
+    ayrıştırması taranır; ayrıştırması olmayan belge sayılır ve yazılır.
+  - **Üç eşleşme katmanı ayrı:** `exact` (birebir) → `whitespace` (yalnız
+    boşluk/satır farkı) → `turkish_fold` (harf sadeleştirmesi). Üst katman
+    bulunduysa alt katman aranmaz; hangi katmanın tuttuğu konumda yazar.
+  - **Durumlar:** `exact` (tek konum), `normalized` (birebir değil, tek konum),
+    `ambiguous` (birden çok konum; `occurrences` ve `distinctDocuments`),
+    `not_found`, `unverifiable` (`no_text`: taranacak metin yok). “Bulunamadı”
+    **uydurma hükmü değildir**.
+  - **Konum:** belge/sürüm/parse koşusu/segment, fiziksel sayfa, Unicode scalar
+    `charStart`/`charEnd`, `textOrigin` (metin katmanı/OCR) ve **kaynak metnin
+    ham hâli** (`sourceText`) döner. Normalize eşleşmede `sourceText` yazılan
+    alıntıdan farklıdır ve fark kullanıcıya gösterilir.
+  - **Sınırlar:** metin 50.000 karakter, alıntı 30, taranan sayfa 20.000;
+    aşılırsa `E_QUOTE_TEXT` / `E_QUOTE_TOO_MANY` / `E_QUOTE_SCOPE` — sessiz
+    kesme yok.
+- **Arayüz (`Review.tsx` → “Metin içi alıntı denetimi” kartı):** iddia
+  listesinden metin seçme veya yapıştırma, kapsam (tüm dosya / tek belge),
+  “Alıntıları denetle”, özet satırı, alıntı başına rozet + konum + aday listesi.
+  **“Kaynağa bağla”** yalnız `exact` tek konumda açılır; `anchor_create` ile
+  gerçek `source_anchors` kaydı oluşturur ve delil bağı listesine düşer.
+  Normalize/belirsiz/bulunamadı satırları bağlanmaz (nedeni yazılır).
+- **Test:** storage **257** (+18: çıkarım 4, uçtan uca 14); Web **280** (+7).
+  `tsc --noEmit`, `vite build`, clippy storage + tauri `-D warnings`, rustfmt
+  iki manifest temiz.
+
+### Dürüst sınırlamalar
+
+- Denetim **metin katmanındadır**: OCR'sız taranmış sayfada görünen yazı
+  bulunamaz; OCR metni varsa yazım hatası eşleşmeyi düşürebilir.
+- Alıntı **tek sayfa içinde** aranır; iki sayfaya bölünen cümle bulunamaz
+  (test edildi, `not_found`).
+- Normalize eşleşme anchor'a **bağlanmaz**: kaynak metin farklı olduğu için
+  birebir alıntı yerine geçmez; kullanıcı kaynak metni görüp karar verir.
+- Yalnız **güncel sürüm** taranır; eski sürümde kalmış alıntı “bulunamadı”
+  görünür. Belge seçimi güncel sürüme çözülür (sürüm seçici yok).
+- Aynı metin birden çok yerde geçiyorsa tek kaynağa bağlanmaz; seçim
+  kullanıcıya bırakılır (aday listesi gösterilir).
+- Tauri penceresi bu ortamda açılmadı: kart typecheck + birim testleri +
   üretim derlemesiyle doğrulandı; gerçek tıklama ve görsel QA yok.

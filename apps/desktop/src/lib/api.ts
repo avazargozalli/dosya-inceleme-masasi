@@ -789,6 +789,56 @@ export type ClaimRow = {
   rowVersion: number;
 };
 
+export type InTextQuotePosition = {
+  documentId: string;
+  documentName: string;
+  documentVersionId: string;
+  parseRunId: string;
+  pageId: string | null;
+  segmentId: string | null;
+  pageIndex: number;
+  charStart: number;
+  charEnd: number;
+  matchKind: "exact" | "whitespace" | "turkish_fold";
+  textOrigin: string;
+  sourceText: string;
+};
+
+export type InTextQuoteFinding = {
+  index: number;
+  quote: string;
+  state: "exact" | "normalized" | "ambiguous" | "not_found" | "unverifiable";
+  reason: string | null;
+  occurrences: number;
+  distinctDocuments: number;
+  position: InTextQuotePosition | null;
+  candidates: InTextQuotePosition[];
+};
+
+export type InTextQuoteCheck = {
+  caseId: string;
+  scope: "case" | "document";
+  scopeDocumentId: string | null;
+  scopeDocumentName: string | null;
+  textChars: number;
+  spansFound: number;
+  skippedShort: number;
+  skippedLong: number;
+  unclosed: number;
+  quotes: InTextQuoteFinding[];
+  exact: number;
+  normalized: number;
+  ambiguous: number;
+  notFound: number;
+  unverifiable: number;
+  documentsTotal: number;
+  documentsWithText: number;
+  documentsWithoutText: number;
+  pagesScanned: number;
+  notes: string[];
+  checkedAt: string;
+};
+
 export type ClaimRelationRow = {
   id: string;
   caseId: string;
@@ -1526,6 +1576,8 @@ export const api = {
     caseId: string,
     input: { claimantActorId: string | null; claimText: string; claimKind: string; sourceAnchorId: string | null },
   ) => invoke<ClaimRow>("claim_create", { caseId, input }),
+  inTextQuoteCheck: (caseId: string, input: { text: string; documentId: string | null }) =>
+    invoke<InTextQuoteCheck>("in_text_quote_check", { caseId, input }),
   evidenceLinkList: (claimId: string) => invoke<EvidenceLinkRow[]>("evidence_link_list", { claimId }),
   evidenceLinkCreate: (
     caseId: string,

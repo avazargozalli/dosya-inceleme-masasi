@@ -16,16 +16,17 @@ use dim_storage::{
     CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow, ContradictionAssessmentRow,
     CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey, Document, DocumentTagRow,
     DocumentVersion, EventPatch, EventRow, EventSourceRow, EvidenceLinkRow, ExportCoverage,
-    ExportRow, GcReport, MarkRow, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation,
-    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
-    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
-    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
-    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
-    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
-    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
-    SearchPage, SearchQuery, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
+    ExportRow, GcReport, InTextQuoteCheck, InTextQuoteInput, MarkRow, NewAnchor, NewCase,
+    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
+    NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
+    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
+    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
+    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SegmentBlock,
+    SetUsageTermsInput, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -1425,6 +1426,20 @@ pub fn claim_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<Cla
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.list_claims(&case_id)?)
+}
+
+/// Metin içi alıntı denetimi (F12-T14): metindeki çift tırnaklı pasajları
+/// dosyanın güncel belge sürümlerinde doğrular. Okuma dışında yazım yapmaz;
+/// metin ve alıntı denetime yazılmaz.
+#[tauri::command]
+pub fn in_text_quote_check(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: InTextQuoteInput,
+) -> Result<InTextQuoteCheck, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.check_in_text_quotes(&case_id, &input)?)
 }
 
 #[tauri::command]

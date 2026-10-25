@@ -310,12 +310,12 @@ pub struct QuoteVerification {
 
 /// Alıntı doğrulaması için en kısa anlamlı alıntı. Daha kısa alıntı yanlış
 /// kesinlik üretir: “reddine” gibi tek kelime hemen her kararda geçer.
-const MIN_QUOTE_CHARS: usize = 8;
+pub(crate) const MIN_QUOTE_CHARS: usize = 8;
 
-struct MappedText {
-    text: String,
+pub(crate) struct MappedText {
+    pub(crate) text: String,
     /// `text` içindeki karakter indeksinin kaynak metindeki karakter indeksi.
-    map: Vec<usize>,
+    pub(crate) map: Vec<usize>,
 }
 
 fn fold_char(ch: char) -> char {
@@ -336,7 +336,7 @@ fn fold_char(ch: char) -> char {
 
 /// `dim_evidence::normalize` ile **aynı** sadeleştirme, ama konum eşlemesiyle.
 /// İkisi ayrışırsa `fold_matches_evidence_normalize` testi kırılır.
-fn normalize_with_map(input: &str) -> MappedText {
+pub(crate) fn normalize_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
@@ -363,7 +363,7 @@ fn normalize_with_map(input: &str) -> MappedText {
 
 /// Yalnız boşluk sadeleştirmesi; harfler **korunur** (birebir olmayan ama
 /// yalnız satır/biçim farkından kaynaklanan eşleşme için).
-fn collapse_ws_with_map(input: &str) -> MappedText {
+pub(crate) fn collapse_ws_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
@@ -387,7 +387,7 @@ fn collapse_ws_with_map(input: &str) -> MappedText {
     MappedText { text: out, map }
 }
 
-fn char_offset(text: &str, byte: usize) -> i64 {
+pub(crate) fn char_offset(text: &str, byte: usize) -> i64 {
     i64::try_from(text[..byte].chars().count()).unwrap_or(i64::MAX)
 }
 
@@ -407,7 +407,7 @@ fn count_occurrences(haystack: &str, needle: &str) -> i64 {
     count
 }
 
-fn mapped_start(mapped: &MappedText, at_byte: usize) -> Option<i64> {
+pub(crate) fn mapped_start(mapped: &MappedText, at_byte: usize) -> Option<i64> {
     let index = mapped.text[..at_byte].chars().count();
     mapped
         .map

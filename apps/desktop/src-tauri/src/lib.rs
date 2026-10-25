@@ -79,6 +79,7 @@ pub fn run() {
             commands::mark_delete,
             commands::claim_create,
             commands::claim_list,
+            commands::in_text_quote_check,
             commands::evidence_link_create,
             commands::evidence_link_list,
             commands::claim_relation_create,
