@@ -64,7 +64,9 @@ jobs:
       # kurmadan yalnız modül yolunu açar; PDF/OCR motoru isteyen testler yine
       # atlanır (onlar `python` işinde tam bağımlılıkla koşar).
       - name: Belge worker'ı modül yolu
-        run: echo "PYTHONPATH=$PWD/workers/document" >> "$GITHUB_ENV"
+        run: |
+          echo "PYTHONPATH=$PWD/workers/document" >> "$GITHUB_ENV"
+          PYTHONPATH="$PWD/workers/document" python3 -c "import dim_worker; print('dim_worker:', dim_worker.__file__)"
       - run: cargo test --workspace --all-targets
 
   desktop:
