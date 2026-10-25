@@ -25,6 +25,15 @@ pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Parçalı yanıtta kabul edilen en fazla çerçeve sayısı; sınırsız döngü yok.
 pub const MAX_RESPONSE_PARTS: usize = 5000;
+/// Paketlenmiş worker başlatılırken **kaldırılan** ortam değişkenleri: gömülü
+/// Python, depodaki kaynak ağacını `PYTHONPATH` üzerinden yüklerse paket
+/// kusuru gizlenir.
+pub const PYTHON_ENV_VARS: [&str; 4] = [
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONEXECUTABLE",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
@@ -333,20 +342,36 @@ impl WorkerClient {
 
     /// Paketlenmiş (PyInstaller onedir) worker ikilisini çalıştırır. Protokol
     /// aynıdır: NDJSON, stdin/stdout. Python kurulu olması gerekmez.
+    ///
+    /// Python ortam değişkenleri **kaldırılır**: paketlenmiş ikili `PYTHONPATH`/
+    /// `PYTHONHOME` devralırsa depodaki kaynak modülleri yükleyebilir ve paket
+    /// kusuru "çalışıyor" gibi görünür (F01-T02'nin ölçtüğü risk).
     pub fn spawn_bundled(exe: &Path) -> Result<Self, WorkerError> {
         let dir = exe.parent().unwrap_or_else(|| Path::new("."));
-        Self::spawn(exe, &[], dir)
+        Self::spawn_with_env(exe, &[], dir, &PYTHON_ENV_VARS)
     }
 
-    pub fn spawn(program: &Path, args: &[&str], working_dir: &Path) -> Result<Self, WorkerError> {
-        let mut child = Command::new(program)
+    fn spawn(program: &Path, args: &[&str], working_dir: &Path) -> Result<Self, WorkerError> {
+        Self::spawn_with_env(program, args, working_dir, &[])
+    }
+
+    fn spawn_with_env(
+        program: &Path,
+        args: &[&str],
+        working_dir: &Path,
+        removed_env: &[&str],
+    ) -> Result<Self, WorkerError> {
+        let mut command = Command::new(program);
+        command
             .args(args)
             .current_dir(working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(WorkerError::Spawn)?;
+            .stderr(Stdio::null());
+        for name in removed_env {
+            command.env_remove(name);
+        }
+        let mut child = command.spawn().map_err(WorkerError::Spawn)?;
 
         let stdin = child.stdin.take().ok_or(WorkerError::Disconnected)?;
         let stdout = child.stdout.take().ok_or(WorkerError::Disconnected)?;

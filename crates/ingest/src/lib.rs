@@ -5,6 +5,7 @@
 //! kapsamında bulunursa yeni mantıksal belge oluşturmak kullanıcı kararıdır.
 
 pub mod inventory;
+pub mod packaging;
 pub mod worker;
 
 use std::path::Path;
