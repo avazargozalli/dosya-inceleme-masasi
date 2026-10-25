@@ -1018,6 +1018,43 @@ export type PagePreviewView = {
   cached: boolean;
 };
 
+/// Belge envanteri (F01-T06): DOCX/UDF paketinin yapısı, ekleri, değişiklik izi.
+export type InventoryAttachment = {
+  name: string;
+  kind: string;
+  size: number;
+  detail?: string | null;
+};
+
+export type DocumentChanges = {
+  insertions: number;
+  deletions: number;
+  comments: number;
+  authors: string[];
+  firstDate?: string | null;
+  lastDate?: string | null;
+  revision?: string | null;
+  lastModifiedBy?: string | null;
+  creator?: string | null;
+  created?: string | null;
+  modified?: string | null;
+  trackRevisions?: boolean | null;
+  protection?: string | null;
+  signatures: number;
+};
+
+export type DocumentInventory = {
+  kind: string;
+  structure: Record<string, number>;
+  attachments: InventoryAttachment[];
+  attachmentCount: number;
+  attachmentBytes: number;
+  changes: DocumentChanges;
+  externalLinks: number;
+  notes: string[];
+  truncated: boolean;
+};
+
 export type NoteRevisionRow = {
   noteId: string;
   revisionNo: number;
@@ -1739,6 +1776,8 @@ export const api = {
     invoke<DocumentPages | null>("document_pages", { versionId }),
   documentPagePreview: (versionId: string, pageIndex: number, dpi = 96) =>
     invoke<PagePreviewView>("document_page_preview", { versionId, pageIndex, dpi }),
+  documentInventory: (versionId: string) =>
+    invoke<DocumentInventory>("document_inventory", { versionId }),
   noteList: (caseId: string) => invoke<NoteRow[]>("note_list", { caseId }),
   noteCreate: (caseId: string, input: { title: string; body: string; sourceAnchorIds: string[] }) =>
     invoke<NoteRow>("note_create", { caseId, input }),

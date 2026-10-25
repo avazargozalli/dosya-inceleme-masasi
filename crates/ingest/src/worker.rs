@@ -555,6 +555,21 @@ impl WorkerClient {
         self.request("capabilities", json!({}))
     }
 
+    /// Belge envanteri (yapı, ekler, değişiklik izi). Gövde metni gönderilmez,
+    /// yanıt da metin taşımaz; yalnız sayılar ve ek adları döner.
+    pub fn inventory(
+        &mut self,
+        data: &[u8],
+        mime: &str,
+    ) -> Result<crate::inventory::DocumentInventory, WorkerError> {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+        let result = self.request(
+            "inventory",
+            json!({ "contentBase64": encoded, "mime": mime }),
+        )?;
+        crate::inventory::parse_inventory(&result)
+    }
+
     /// DOCX rapor üretir. Girdi çekirdekte hazırlanır; worker DB görmez.
     pub fn render_report(&mut self, payload: &serde_json::Value) -> Result<Vec<u8>, WorkerError> {
         let result = self.request("render_report", json!({"payload": payload}))?;

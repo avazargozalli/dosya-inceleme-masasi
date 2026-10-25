@@ -29,8 +29,9 @@ from .engines import (
     render_report_pdf,
 )
 from .protocol import ProtocolError, err, ok, read_frame, write_frame
+from .inventory import InventoryError, inventory as build_inventory
 
-METHODS = {"ping", "capabilities", "extract_text", "redact", "redact_regions", "render_report", "render_report_pdf", "render_page", "shutdown"}
+METHODS = {"ping", "capabilities", "extract_text", "inventory", "redact", "redact_regions", "render_report", "render_report_pdf", "render_page", "shutdown"}
 
 # Geometri (blok/satır kutuları) çerçevenin bir parçasıdır. 1 MiB sert sınırına
 # yaklaşmamak için bütçe ayrılır; aşılırsa kutular kademeli atılır ve durum
@@ -203,6 +204,15 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
 
     data = decode_content(params)
 
+    if method == "inventory":
+        # Envanter paket düzeyinde çıkarılır: yapı sayıları, ekler, değişiklik
+        # izi. Gövde metni yanıta konmaz; MIME zorunludur (DOCX/UDF).
+        mime = params.get("mime")
+        if not isinstance(mime, str) or not mime:
+            raise ProtocolError("E_PARAMS", "mime zorunlu")
+        result = build_inventory(data, mime)
+        return ok(rid, result.to_dict()), False
+
     if method == "render_page":
         page_index = params.get("pageIndex")
         dpi = params.get("dpi", 96)
@@ -323,6 +333,8 @@ def serve(stdin, stdout) -> int:
             response, should_close = err(rid, exc.code, exc.message, exc.retryable), False
         except EngineError as exc:
             response, should_close = err(rid, exc.code, exc.message, exc.retryable), False
+        except InventoryError as exc:
+            response, should_close = err(rid, exc.code, exc.message), False
         except Exception:  # noqa: BLE001 - iç hata ayrıntısı sızdırılmaz
             response, should_close = err(rid, "E_WORKER_INTERNAL", "worker iç hatası"), False
         # Tek yanıt veya parçalı yanıt: sıra korunur, her çerçeve 1 MiB altındadır.

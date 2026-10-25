@@ -12,7 +12,7 @@
 | F01-T03 | SQLCipher/FTS5/WAL açık metin işaretçi taraması | ✅ Ölçüldü (sınırlar aşağıda) | `crates/storage/tests/plaintext.rs` (6), `crates/ingest/tests/worker_temp_plaintext.rs` (2) |
 | F01-T04 | Streaming AEAD + truncation + kurtarma | ✅ `crates/vault`; parola değiştirme + kurtarma KDF düzeltmesi | `cargo test -p dim-vault` (15 + 3 + 4) |
 | F01-T05 | PDF redaksiyon bağımsız doğrulama | ✅ Ölçüldü (sınırlar aşağıda) | `workers/document/tests/test_redaction_independent.py` (18), `crates/ingest/tests/redaction_hidden_objects.rs` (2), `fixtures/synthetic/redaction-hidden.pdf` |
-| F01-T06 | UDF/DOCX yapı ve ek envanteri | ✅ DOCX dipnot/sonnot/yorum/izlenen değişiklik + UDF envanteri | `tests/test_docx_annotations.py`, `docs/releases/F06/REAL-DOCS.md` |
+| F01-T06 | UDF/DOCX yapı ve ek envanteri | ✅ Ölçüldü: DOCX yapı+ek+değişiklik izi; UDF yapı+paket girdileri (sınırlar aşağıda) | `workers/document/tests/test_inventory.py` (14), `crates/ingest/tests/document_inventory.rs` (3), `docs/releases/F01/INVENTORY.md` |
 | F01-T07 | Worker izolasyonu (kapsam dışı okuma/yazma/ağ) | ⬜ | — |
 | F01-T08 | CLI araçsız/izinli profil kanıtı | 🚧 Codex: `--ignore-user-config --ignore-rules` ile hook kapalı (gerçek koşu); Claude/Antigravity/Kimi açık | `crates/cli-adapters/src/exec.rs`, `docs/releases/F10/HOOKS.md` |
 | F01-T09 | Yerel model RAM/ilk yanıt/iptal | ⬜ | — |

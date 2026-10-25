@@ -6,6 +6,7 @@ import {
   type AnchorRow,
   type ApiError,
   type DocumentPages,
+  type DocumentInventory,
   type DocumentRow,
   type MarkRow,
   type NoteRow,
@@ -46,6 +47,17 @@ import {
   type ReaderView,
   type ViewMemory,
 } from "../lib/reader";
+import {
+  attachmentRows,
+  attachmentSummary,
+  changeRows,
+  changeSummary,
+  inventoryGateReason,
+  inventoryNotices,
+  inventorySupported,
+  structureRows,
+  structureTotal,
+} from "../lib/inventory";
 
 /** Sayfa haritası: ayrıştırıcının **gerçekten ürettiği** blok kutuları.
  *  Sayfanın görüntüsü değildir; kutu yoksa hiç çizilmez (konum uydurulmaz).
@@ -211,6 +223,12 @@ function ReaderPane({
   // F07-T11: sayfa görüntüsü kasadaki şifreli önbellekten gelir; kasa
   // kilitlenince çekirdek belleği temizler ve bu panel görüntüyü bırakır.
   const [previewOn, setPreviewOn] = useState(false);
+  // F01-T06: belge envanteri (yapı, ekler, değişiklik izi) çekirdekten istek
+  // üzerine çıkarılır; panel kendi sayımını üretmez, kasaya yazmaz.
+  const [inventoryOn, setInventoryOn] = useState(false);
+  const [inventoryData, setInventoryData] = useState<DocumentInventory | null>(null);
+  const [inventoryBusy, setInventoryBusy] = useState(false);
+  const [inventoryError, setInventoryError] = useState<ApiError | null>(null);
   const [preview, setPreview] = useState<{
     pageIndex: number;
     dataUrl: string;
@@ -391,6 +409,31 @@ function ReaderPane({
     };
   }, [previewOn, versionId, page]);
 
+  // Envanter isteği yalnız kullanıcı açtığında; sürüm değişince tazelenir.
+  useEffect(() => {
+    setInventoryData(null);
+    setInventoryError(null);
+    if (!inventoryOn || !versionId) {
+      setInventoryBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setInventoryBusy(true);
+    void (async () => {
+      try {
+        const result = await api.documentInventory(versionId);
+        if (!cancelled) setInventoryData(result);
+      } catch (e) {
+        if (!cancelled) setInventoryError(toApiError(e));
+      } finally {
+        if (!cancelled) setInventoryBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [inventoryOn, versionId]);
+
   // Seçim sayfa metnine karşı doğrulanır: yeniden ayrıştırma metni kaydırdıysa
   // eski offset'teki alıntı işaretlenmez ve kullanıcıya sebep yazılır.
   const storedSelection = view.selection;
@@ -401,6 +444,15 @@ function ReaderPane({
   const rotation = rotateView(current?.rotation ?? 0, viewRotation);
   const zoomPercent = Math.round(clampZoom(zoom) * 100);
   const currentInfo = current ? pageLabelInfo(current) : null;
+  // Envanter düğmesinin kapısı: bu sürümün belge türü (docx|udf) gerçek
+  // listeden okunur, tahmin edilmez.
+  const currentDocument =
+    documents.find((doc) => doc.currentVersionId === versionId) ?? null;
+  const inventoryGate = inventoryGateReason(currentDocument?.documentType);
+  const inventoryStructure = structureRows(inventoryData);
+  const inventoryAttachments = attachmentRows(inventoryData);
+  const inventoryChanges = changeRows(inventoryData);
+  const inventoryWarnings = inventoryNotices(inventoryData);
   // Yapısal belge (DOCX/UDF): paragraf/bölüm yolları türev sayfadan ayrı
   // gösterilir. Paragraflar metnin tamamını kaplamıyorsa tek parça gösterime
   // dönülür; yoksa seçim offsetleri metinle uyuşmaz.
@@ -1094,7 +1146,122 @@ function ReaderPane({
             >
               {previewOn ? "Görüntü açık" : "Sayfa görüntüsü"}
             </button>
+            <button
+              className={inventoryOn ? "btn primary" : "btn"}
+              style={{ height: 26 }}
+              aria-pressed={inventoryOn}
+              disabled={inventoryGate !== null}
+              title={
+                inventoryGate ??
+                "Belgenin yapısını, eklerini ve değişiklik izini çıkar (DOCX/UDF; kasaya yazmaz)"
+              }
+              onClick={() => setInventoryOn((value) => !value)}
+            >
+              {inventoryOn ? "Envanter açık" : "Belge envanteri"}
+            </button>
           </div>
+
+          {/* F01-T06: belge envanteri — paket düzeyinde yapı, ek ve değişiklik
+              izi. Sayılar çekirdekten gelir; burada türetilmez. */}
+          {inventoryOn ? (
+            <section
+              aria-label={`${label}: belge envanteri`}
+              style={{
+                border: "1px solid var(--line)",
+                borderRadius: "var(--radius)",
+                padding: "8px 10px",
+                display: "grid",
+                gap: 6,
+              }}
+            >
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <strong style={{ fontSize: 13 }}>Belge envanteri</strong>
+                <span className="badge plain">
+                  {inventoryBusy
+                    ? "çıkarılıyor…"
+                    : inventoryData
+                      ? `${inventoryData.kind.toUpperCase()} · ${structureTotal(inventoryData)} öğe`
+                      : inventoryGate ?? "—"}
+                </span>
+              </div>
+              {inventoryError ? (
+                <div className="notice danger" role="alert">
+                  <strong>{inventoryError.code}</strong> — {inventoryError.message}
+                </div>
+              ) : null}
+              {inventoryData ? (
+                <>
+                  {inventoryStructure.length > 0 ? (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fill, minmax(116px, 1fr))",
+                        gap: 6,
+                      }}
+                    >
+                      {inventoryStructure.map((row) => (
+                        <div
+                          key={row.key}
+                          style={{
+                            border: "1px solid var(--line)",
+                            borderRadius: "var(--radius)",
+                            padding: "4px 6px",
+                            fontSize: 11,
+                          }}
+                        >
+                          <div className="muted">{row.label}</div>
+                          <strong style={{ fontSize: 14 }}>{row.count}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="hint" style={{ margin: 0 }}>
+                      Yapı öğesi bulunamadı.
+                    </p>
+                  )}
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    Ekler: {attachmentSummary(inventoryData)}
+                  </div>
+                  {inventoryAttachments.length > 0 ? (
+                    <details>
+                      <summary style={{ cursor: "pointer", fontSize: 12 }}>
+                        Ek listesi ({inventoryAttachments.length})
+                      </summary>
+                      <ul style={{ margin: "4px 0 0", paddingLeft: 16, fontSize: 12 }}>
+                        {inventoryAttachments.map((row) => (
+                          <li key={row.name}>
+                            {row.name} · {row.kindLabel} · {row.sizeLabel}
+                            {row.detail ? ` · ${row.detail}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    Değişiklik izi: {changeSummary(inventoryData.changes)}
+                  </div>
+                  {inventoryChanges.length > 0 ? (
+                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>
+                      {inventoryChanges.map((row) => (
+                        <li key={row.label}>
+                          {row.label}: {row.value}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {inventoryWarnings.map((note) => (
+                    <p key={note} className="hint" style={{ margin: 0 }}>
+                      {note}
+                    </p>
+                  ))}
+                  <p className="hint" style={{ margin: 0 }}>
+                    Envanter belge baytlarından istek üzerine çıkarılır: gövde metni göstermez,
+                    kasaya kayıt yazmaz; gömülü nesnelerin ve altChunk'ın içeriği çıkarılmaz.
+                  </p>
+                </>
+              ) : null}
+            </section>
+          ) : null}
 
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 6 }}>
             <span style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>

@@ -4,6 +4,7 @@
 //! Özgün baytlar hiçbir aşamada değiştirilmez (INV-01). Aynı içerik aynı dosya
 //! kapsamında bulunursa yeni mantıksal belge oluşturmak kullanıcı kararıdır.
 
+pub mod inventory;
 pub mod worker;
 
 use std::path::Path;

@@ -7,6 +7,7 @@ use base64::Engine as _;
 use dim_cli_adapters::{
     discover, find_on_path, run_probe, spec as adapter_spec, DiscoveryState, RunStatus, SPECS,
 };
+use dim_ingest::inventory::DocumentInventory;
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
@@ -502,6 +503,21 @@ mod tests {
     }
 
     #[test]
+    fn inventory_gate_accepts_only_docx_and_udf() {
+        assert!(inventory_mime_supported(INVENTORY_MIMES[0]));
+        assert!(inventory_mime_supported("application/udf"));
+        for mime in [
+            "application/pdf",
+            "image/jpeg",
+            "text/plain",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "",
+        ] {
+            assert!(!inventory_mime_supported(mime), "reddedilmeli: {mime:?}");
+        }
+    }
+
+    #[test]
     fn directory_gets_vault_file_name() {
         let p = resolve_vault_path("DimTest").expect("yol");
         assert!(p.ends_with("DimTest/vault.dimvault") || p.ends_with("DimTest\\vault.dimvault"));
@@ -911,6 +927,67 @@ pub fn document_page_preview(
     let _ = store.store(vault, &key, &rendered.png);
     state.preview_lock().put(&key, rendered.png.clone());
     Ok(view(&rendered.png, false))
+}
+
+/// Envanteri çıkarılabilen MIME'lar. PDF/görüntü/düz metin **kapsam dışıdır**:
+/// onlarda "yapı/ek/değişiklik" sayımı yoktur, uydurulmaz.
+const INVENTORY_MIMES: [&str; 3] = [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/udf",
+    "application/x-udf",
+];
+
+fn inventory_mime_supported(mime: &str) -> bool {
+    INVENTORY_MIMES.contains(&mime)
+}
+
+/// Belge envanteri: yapı, ekler ve değişiklik izi (DOCX/UDF).
+///
+/// Baytlar kasadan çözülür ve worker'a gönderilir; **kasaya hiçbir şey
+/// yazılmaz** (envanter istek üzerine üretilir, ayrıştırma koşusu açmaz).
+/// Denetime yalnız sayılar yazılır: ek adı, metin ve dosya yolu girmez.
+#[tauri::command]
+pub fn document_inventory(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<DocumentInventory, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db
+        .get_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    if !inventory_mime_supported(&blob.mime) {
+        return Err(ApiError::new(
+            "E_INVENTORY_UNSUPPORTED",
+            "Belge envanteri yalnız DOCX/UDF paketleri için çıkarılır; PDF ve görüntülerde yapı sayımı yoktur.",
+        ));
+    }
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let mut worker = spawn_worker()?;
+    let extracted = worker.inventory(&data, &blob.mime);
+    worker.shutdown();
+    let inventory = extracted?;
+
+    let _ = db.append_audit(
+        "document_inventory",
+        Some(&version.case_id),
+        "extract",
+        "local-user",
+        &inventory.audit_counts(),
+    );
+    Ok(inventory)
 }
 
 #[tauri::command]
