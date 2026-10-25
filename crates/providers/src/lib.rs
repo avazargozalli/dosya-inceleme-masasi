@@ -4,6 +4,12 @@
 //! Bu crate ağ veya süreç çağrısı yapmaz. Sağlayıcılar `propose` ile yalnız
 //! **aday** üretir; aday kalıcı hukuk kaydına dönüşmez (INV-08).
 
+mod api;
+mod local;
+
+pub use api::ApiProvider;
+pub use local::{LocalProvider, DEFAULT_ENDPOINT as DEFAULT_LOCAL_ENDPOINT};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

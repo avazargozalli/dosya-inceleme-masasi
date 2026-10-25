@@ -668,6 +668,59 @@ impl Database {
             .ok_or(StorageError::NotFound)
     }
 
+    /// Kayıtlı API profilinin uç noktası ve modeli. Profil yoksa `None`.
+    pub fn api_profile_endpoint(&self) -> Result<Option<(String, String)>, StorageError> {
+        let raw: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT capabilities FROM provider_profiles WHERE provider_type='api' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else { return Ok(None) };
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|_| StorageError::InvalidSetting)?;
+        let endpoint = value.get("endpoint").and_then(|v| v.as_str());
+        let model = value.get("model").and_then(|v| v.as_str());
+        match (endpoint, model) {
+            (Some(endpoint), Some(model)) => Ok(Some((endpoint.to_string(), model.to_string()))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Sağlayıcıya gönderilecek segmentler: yalnız **güncel** ayrıştırma
+    /// sürümünün metni. Ayrıştırılmamış belge sessizce atlanmaz; çağıran
+    /// kapsam raporuyla bunu görür.
+    pub fn context_segments(
+        &self,
+        case_id: &str,
+        document_ids: &[String],
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        let mut out = Vec::new();
+        for document_id in document_ids {
+            let mut statement = self.conn().prepare(
+                "SELECT s.id, s.text FROM text_segments s
+                 JOIN pages p ON p.id = s.page_id
+                 WHERE p.parse_run_id = (
+                    SELECT pr.id FROM parse_runs pr
+                    JOIN document_versions dv ON dv.id = pr.document_version_id
+                    WHERE dv.document_id = ?1
+                    ORDER BY pr.created_at DESC LIMIT 1
+                 )
+                 AND EXISTS (SELECT 1 FROM documents d WHERE d.id=?1 AND d.case_id=?2)
+                 ORDER BY p.page_index, s.segment_index",
+            )?;
+            let rows = statement.query_map(rusqlite::params![document_id, case_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
     /// Aktarım onayından **önce** ne gönderileceğini özetler: belge, segment,
     /// bayt ve kısa örnek. Tam metin arayüze dökülmez.
     pub fn consent_preview(
