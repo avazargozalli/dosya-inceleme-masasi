@@ -1,20 +1,20 @@
 # F01 — Teknik doğrulamalar ve mimari kararlar
 
 - **Sürüm etiketi:** `v0.0.1-spike` (hedef)
-- **Durum:** Devam ediyor
+- **Durum:** Kısmi — yalnız T07 (worker izolasyonu) ve T09 (yerel model ölçümü) açık
 
 ## Spike matrisi
 
 | İş | Deney | Durum | Kanıt |
 |---|---|---|---|
-| F01-T01 | Tauri/Rust/React üç hedefte derleme | 🚧 CI matrisi kuruldu, ilk koşu bekleniyor | `.github/workflows/ci.yml` |
-| F01-T02 | PyInstaller onedir + PyMuPDF + Tesseract çevrimdışı | ⬜ | — |
+| F01-T01 | Tauri/Rust/React üç hedefte derleme | ✅ 7/7 iş yeşil (Ubuntu, macOS, Tauri check, Windows ayrı) | `.github/workflows/ci.yml` |
+| F01-T02 | PyInstaller onedir + PyMuPDF + Tesseract çevrimdışı | ✅ Paket `.app` içinde; `ping` + `capabilities` gerçek koşu (macOS arm64) | `scripts/build-worker.sh`, `docs/releases/F02/README.md` |
 | F01-T03 | SQLCipher/FTS5/WAL açık metin işaretçi taraması | ✅ Ölçüldü (sınırlar aşağıda) | `crates/storage/tests/plaintext.rs` (6), `crates/ingest/tests/worker_temp_plaintext.rs` (2) |
-| F01-T04 | Streaming AEAD + truncation + kurtarma | 🚧 `crates/vault` prototipi | `cargo test -p dim-vault` |
+| F01-T04 | Streaming AEAD + truncation + kurtarma | ✅ `crates/vault`; parola değiştirme + kurtarma KDF düzeltmesi | `cargo test -p dim-vault` (15 + 3 + 4) |
 | F01-T05 | PDF redaksiyon bağımsız doğrulama | ✅ Ölçüldü (sınırlar aşağıda) | `workers/document/tests/test_redaction_independent.py` (18), `crates/ingest/tests/redaction_hidden_objects.rs` (2), `fixtures/synthetic/redaction-hidden.pdf` |
-| F01-T06 | UDF/DOCX yapı ve ek envanteri | ⬜ | — |
+| F01-T06 | UDF/DOCX yapı ve ek envanteri | ✅ DOCX dipnot/sonnot/yorum/izlenen değişiklik + UDF envanteri | `tests/test_docx_annotations.py`, `docs/releases/F06/REAL-DOCS.md` |
 | F01-T07 | Worker izolasyonu (kapsam dışı okuma/yazma/ağ) | ⬜ | — |
-| F01-T08 | CLI araçsız/izinli profil kanıtı | ⬜ | — |
+| F01-T08 | CLI araçsız/izinli profil kanıtı | 🚧 Codex: `--ignore-user-config --ignore-rules` ile hook kapalı (gerçek koşu); Claude/Antigravity/Kimi açık | `crates/cli-adapters/src/exec.rs`, `docs/releases/F10/HOOKS.md` |
 | F01-T09 | Yerel model RAM/ilk yanıt/iptal | ⬜ | — |
 | F01-T10 | Worker protokolü bozuk frame/süreç ölümü | ✅ Rust tarafı ölçüldü (Unix); Windows denenmedi | `crates/ingest/src/worker.rs` testleri (4 yeni: süreç ölümü, zaman aşımı, aşırı çerçeve, bozuk çerçeve) + `workers/document/tests/test_frames.py`, `test_protocol.py` (91 pytest) |
 | F01-T11 | Sürüm kilitleme ve ADR üretimi | ✅ | `Cargo.toml`, `package.json`, `docs/adr/` |

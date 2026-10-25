@@ -1,7 +1,7 @@
 # F02 — Repository, derleme ve masaüstü iskeleti
 
 - **Sürüm etiketi:** `v0.1.0`
-- **Durum:** Devam ediyor
+- **Durum:** Tamam — Windows ARM64 F17'de upstream engelli
 - **Tarih:** 2026-10-23
 
 | İş | Durum | Kanıt |
@@ -12,9 +12,9 @@
 | F02-T04 | ✅ | CSP + `capabilities/default.json` (core + dialog) |
 | F02-T05 | ✅ | `ApiError { code, message, retryable }`, tek hata biçimi |
 | F02-T06 | ✅ | CI: Linux/macOS test + macOS Tauri check + Windows ayrı iş |
-| F02-T07 | 🚧 | worker paketleme manifesti ve OCR dil dosyaları F06/F16'da |
-| F02-T08 | ⬜ | WebView2 kurulum yolu (Windows kurucu F16) |
-| F02-T09 | ⬜ | kullanıcı düzeyi kurulum/kaldırma (F16) |
+| F02-T07 | ✅ | PyInstaller onedir `.app` içinde; `ping`/`capabilities` kanıtı. Tesseract ikilisi pakete gömülmedi — sistemde kurulu olmalı |
+| F02-T08 | ✅ | Windows x64 MSI üretiliyor; WebView2'yi Tauri bootstrapper yönetir |
+| F02-T09 | ➖ | MSI kurulum/kaldırma sağlar; kod imzası kapsam dışı (ADR-0012) |
 | F02-T10 | ✅ | teşhis yalnız sürüm/platform; log içerik taşımaz |
 | F02-T11 | ✅ | `CONTRIBUTING.md`, `SECURITY.md`, `docs/dev-setup.md`, `AGENTS.md` |
 | F02-T12 | ✅ | `tests/smoke/worker_smoke.py` gerçek PDF ile |

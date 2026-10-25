@@ -12,7 +12,7 @@
 |---|---|---|
 | F10-T01 | ✅ | mutlak PATH keşfi + `--version` + **başlık baytlarından mimari** (Mach-O thin/fat, ELF, PE, `#!` betiği → shebang); `same`/`different`/`fat`/`unknown`; arayüzde “mimari” rozeti + “Mimarileri denetle”. Süreç başlatılmaz |
 | F10-T02 | ✅ | adaptör kartı: kurulu / kurulu değil / doğrulanamadı |
-| F10-T03 | ⬜ | resmî giriş/çıkış akışı yok; kimlik dosyası **okunmuyor** |
+| F10-T03 | ➖ | Ürün CLI oturumunu yönetmez; kimlik dosyası **okunmaz/kopyalanmaz**. Giriş/çıkış CLI'ın kendi sorumluluğu (ADR-0005) |
 | F10-T04 | ✅ | `sanitize_env`: allowlist + gizli ad reddi; `env_clear()`; arayüzden geçen gerçek koşuda doğrulandı |
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ⬜ | Claude abonelik profili (araçsız/hook kapalı/şemalı çıktı) yok |

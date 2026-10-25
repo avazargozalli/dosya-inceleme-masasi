@@ -13,19 +13,28 @@ bağlanır; yapay zekâ öneri üretir, hukuki kaydı yalnız avukat onayıyla o
 | Yetenek | Durum | Nerede |
 |---|---|---|
 | Şifreli kasa oluşturma/açma (Argon2id + AES-256-GCM) | ✅ gerçek | `crates/vault` |
-| Kurtarma anahtarı (32 bayt, base32, tek gösterim) | ✅ gerçek | `crates/vault` |
-| SQLCipher veritabanı, 47 tablo, migrasyon checksum | ✅ gerçek | `crates/storage` |
-| Dosya (case) oluşturma, arşiv, geri dönüşümlü silme | ✅ gerçek | `crates/storage`, Dosyalar ekranı |
-| Belge içe aktarma: SHA-256, şifreli blob, sürüm | ✅ gerçek | `crates/ingest` |
-| PDF metin çıkarma (PyMuPDF worker) | ✅ gerçek (motor kuruluysa) | `workers/document` |
-| Tam metin arama (FTS5, dosya kapsamlı) | ✅ gerçek | Arama ekranı |
+| Kurtarma anahtarı (32 bayt, base32, tek gösterim) | ✅ gerçek — KDF hatası düzeltildi | `crates/vault` |
+| Parola değiştirme (ana anahtar korunur) | ✅ gerçek | `VaultFile::change_password` |
+| SQLCipher veritabanı, şema v15, migrasyon checksum | ✅ gerçek | `crates/storage` |
+| Dosya, belge, sürüm, arşiv, geri dönüşümlü silme | ✅ gerçek | Dosyalar ekranı |
+| İçe aktarma: SHA-256, şifreli blob, sürükle-bırak | ✅ gerçek | `crates/ingest` |
+| PDF/DOCX/UDF/görüntü ayrıştırma | ✅ gerçek — gerçek belgelerle ölçüldü | `workers/document` |
+| OCR (`tur+eng`, güven skoru, 300 dpi) | ✅ gerçek | `docs/releases/F06/REAL-DOCS.md` |
+| Arama: FTS5, Türkçe kipler, filtreler, keyset sayfalama | ✅ gerçek | Arama ekranı |
+| Okuyucu: yan yana, zoom, `/PageLabels`, anchor | ✅ gerçek | Okuyucu |
 | Kronoloji: tarih türü/kesinliği, bilinmeyen tarih | ✅ gerçek | Kronoloji ekranı |
-| Görevler (kullanıcı tarihli) | ✅ gerçek | Görevler ekranı |
-| OCR (Tesseract) | ❌ yok | F06 devamı |
-| Belge okuyucu / sayfaya atlama | ❌ yok | F07 devamı |
-| AI sağlayıcı bağlantısı | ❌ yok (`OffProvider`) | F09–F11 |
-| CLI adaptör yürütme | ❌ yok (yalnız sicil) | F10 |
-| Maskeleme, rapor, yedek paketi | ❌ yok | F13–F14 |
+| Görev, not, hatırlatıcı | ✅ gerçek | Görevler |
+| İddia–delil matrisi, iddia–iddia ilişkisi | ✅ gerçek | İnceleme |
+| Kontrol listeleri (lisanslı, kaynaklı) | ✅ gerçek | Kontrol listesi ekranı |
+| Emsal: künye, tam metin, birebir alıntı, **anlam incelemesi** | ✅ gerçek | Emsal |
+| Maskeleme: terimle + **elle bölge**, bağımsız doğrulama | ✅ gerçek | Maskeleme |
+| Çıktılar: JSON/CSV/DOCX/PDF + şifreli `.dimpak` | ✅ gerçek | Çıktılar |
+| Yedek: `.dimbak` + geri yükleme + blob GC | ✅ gerçek | Ayarlar |
+| Otomatik kilit (10 dk) | ✅ gerçek | `src/lib/autolock.ts` |
+| AI sağlayıcı hattı (onay + sicil + aday) | 🚧 altyapı gerçek; **AI varsayılan kapalı** | `crates/providers`, AI ekranı |
+| CLI yürütme | 🚧 Codex doğrulandı (hook izolasyonu); diğer profiller açık | `crates/cli-adapters` |
+| İmzalı dağıtım | ➖ kapsam dışı (ADR-0012); paketler imzasız | `docs/releases/F16` |
+| Pilot (5–8 avukat) | ❌ insan bekliyor | `docs/pilot/` |
 
 “Buton var, iş yok” durumu bilinçli olarak engellenir: hazır olmayan ekranlar
 `Fxx` etiketiyle “hazır değil” der, sahte veri göstermez.
