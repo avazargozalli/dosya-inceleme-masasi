@@ -615,6 +615,123 @@ impl Database {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentPreview {
+    pub documents: i64,
+    pub segments: i64,
+    pub bytes: i64,
+    /// Gönderilecek ilk segmentin kısa örneği; veri yoksa boş.
+    pub sample: String,
+}
+
+impl Database {
+    /// `api` tipi sağlayıcı profili kaydeder. **API anahtarı saklanmaz**;
+    /// anahtar yalnız `DIM_API_KEY` ortam değişkeninden okunur ve hiçbir
+    /// tabloya/Denetim kaydına yazılmaz. Uç nokta `https://` olmalıdır.
+    pub fn register_api_profile(
+        &self,
+        endpoint: &str,
+        model: &str,
+    ) -> Result<ProviderProfileRow, StorageError> {
+        let endpoint = endpoint.trim();
+        let model = model.trim();
+        if !endpoint.starts_with("https://") || model.is_empty() {
+            return Err(StorageError::InvalidSetting);
+        }
+        if let Some(existing) = self
+            .list_provider_profiles()?
+            .into_iter()
+            .find(|p| p.provider_type == "api" && p.adapter_id == "openai-compatible")
+        {
+            return Ok(existing);
+        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let now = now_iso();
+        let capabilities =
+            serde_json::json!({"endpoint": endpoint, "model": model, "auth": "env:DIM_API_KEY"});
+        self.conn().execute(
+            "INSERT INTO provider_profiles (id,provider_type,adapter_id,execution_environment,auth_mode_requested,capabilities,policy_version,created_at,updated_at)
+             VALUES (?1,'api','openai-compatible','remote','env:DIM_API_KEY',?2,'1',?3,?3)",
+            rusqlite::params![id, capabilities.to_string(), now],
+        )?;
+        self.append_audit(
+            "provider_profile",
+            Some(&id),
+            "register",
+            "local-user",
+            &serde_json::json!({"type": "api", "endpoint": endpoint, "model": model}),
+        )?;
+        self.list_provider_profiles()?
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or(StorageError::NotFound)
+    }
+
+    /// Aktarım onayından **önce** ne gönderileceğini özetler: belge, segment,
+    /// bayt ve kısa örnek. Tam metin arayüze dökülmez.
+    pub fn consent_preview(
+        &self,
+        case_id: &str,
+        document_ids: &[String],
+    ) -> Result<ConsentPreview, StorageError> {
+        let mut preview = ConsentPreview {
+            documents: 0,
+            segments: 0,
+            bytes: 0,
+            sample: String::new(),
+        };
+        for document_id in document_ids {
+            let version_id: Option<String> = self
+                .conn()
+                .query_row(
+                    "SELECT current_version_id FROM documents WHERE id=?1 AND case_id=?2",
+                    rusqlite::params![document_id, case_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(version_id) = version_id else {
+                continue;
+            };
+            let run_id: Option<String> = self
+                .conn()
+                .query_row(
+                    "SELECT id FROM parse_runs WHERE document_version_id=?1 ORDER BY created_at DESC LIMIT 1",
+                    [&version_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(run_id) = run_id else { continue };
+            preview.documents += 1;
+            let (count, bytes): (i64, i64) = self.conn().query_row(
+                "SELECT count(*), coalesce(sum(length(s.text)),0)
+                 FROM text_segments s JOIN pages p ON p.id=s.page_id
+                 WHERE p.parse_run_id=?1",
+                [&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            preview.segments += count;
+            preview.bytes += bytes;
+            if preview.sample.is_empty() {
+                preview.sample = self
+                    .conn()
+                    .query_row(
+                        "SELECT s.text FROM text_segments s JOIN pages p ON p.id=s.page_id
+                         WHERE p.parse_run_id=?1 ORDER BY p.page_index, s.segment_index LIMIT 1",
+                        [&run_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect();
+            }
+        }
+        Ok(preview)
+    }
+}
+
 fn map_run(row: &Row<'_>) -> rusqlite::Result<AiRunRow> {
     Ok(AiRunRow {
         id: row.get(0)?,
@@ -823,6 +940,51 @@ mod tests {
         let report = db.coverage_report(&case_id).expect("rapor");
         assert_eq!(report.documents, 0);
         assert_eq!(report.empty_pages, 0);
+    }
+
+    #[test]
+    fn api_profile_requires_https_and_is_idempotent() {
+        let (db, _case_id, _provider) = setup();
+        assert_eq!(
+            db.register_api_profile("http://example.com", "model")
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        assert_eq!(
+            db.register_api_profile("https://example.com", "  ")
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        let first = db
+            .register_api_profile("https://example.com/v1", "ornek-model")
+            .expect("profil");
+        assert_eq!(first.provider_type, "api");
+        let again = db
+            .register_api_profile("https://example.com/v1", "ornek-model")
+            .expect("tekrar");
+        assert_eq!(first.id, again.id, "aynı profil ikinci kez eklenmemeli");
+        let profiles = db.list_provider_profiles().expect("liste");
+        assert_eq!(
+            profiles.iter().filter(|p| p.provider_type == "api").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn consent_preview_is_zero_without_documents() {
+        let (db, case_id, _) = setup();
+        let preview = db.consent_preview(&case_id, &[]).expect("önizleme");
+        assert_eq!(preview.documents, 0);
+        assert_eq!(preview.segments, 0);
+        assert_eq!(preview.bytes, 0);
+        assert!(preview.sample.is_empty());
+
+        let missing = db
+            .consent_preview(&case_id, &["olmayan-belge".to_string()])
+            .expect("önizleme");
+        assert_eq!(missing.documents, 0);
     }
 
     #[test]

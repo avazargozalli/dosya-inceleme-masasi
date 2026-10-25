@@ -119,6 +119,8 @@ pub fn run() {
             commands::export_pdf,
             commands::export_package,
             commands::ai_overview,
+            commands::provider_api_profile_save,
+            commands::ai_consent_preview,
             commands::ai_consent_create,
             commands::ai_consent_revoke,
             commands::ai_run_start,

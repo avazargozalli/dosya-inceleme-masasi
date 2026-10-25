@@ -31,8 +31,8 @@ mod tasks;
 mod timeline;
 
 pub use ai::{
-    AiCandidateRow, AiContextItemRow, AiRunRow, CoverageReport, NewAiContextItem, NewAiRun,
-    NewTransferConsent, ProviderProfileRow, TransferConsentRow,
+    AiCandidateRow, AiContextItemRow, AiRunRow, ConsentPreview, CoverageReport, NewAiContextItem,
+    NewAiRun, NewTransferConsent, ProviderProfileRow, TransferConsentRow,
 };
 pub use ai_candidate::{
     CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,

@@ -219,8 +219,54 @@ export function Providers() {
     }
   }
 
+  const [apiEndpoint, setApiEndpoint] = useState("");
+  const [apiModel, setApiModel] = useState("");
+  const [apiMessage, setApiMessage] = useState("");
+
   return (
     <div className="page" style={{ maxWidth: 920 }}>
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>API sağlayıcı profili</h2>
+            <p className="card-sub">
+              Anahtar <strong>saklanmaz</strong>; yalnız <code>DIM_API_KEY</code> ortam
+              değişkeninden okunur. Uç nokta https olmalı.
+            </p>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          <input
+            aria-label="Uç nokta"
+            placeholder="https://api.ornek.com/v1"
+            value={apiEndpoint}
+            onChange={(event) => setApiEndpoint(event.target.value)}
+            style={{ minWidth: 260 }}
+          />
+          <input
+            aria-label="Model"
+            placeholder="model-adı"
+            value={apiModel}
+            onChange={(event) => setApiModel(event.target.value)}
+          />
+          <button
+            className="btn"
+            disabled={!apiEndpoint || !apiModel}
+            onClick={async () => {
+              try {
+                await api.providerApiProfileSave(apiEndpoint, apiModel);
+                setApiMessage("Profil kaydedildi. Anahtar yalnız DIM_API_KEY'den okunur.");
+              } catch (error) {
+                setApiMessage(error instanceof Error ? error.message : String(error));
+              }
+            }}
+          >
+            Kaydet
+          </button>
+        </div>
+        {apiMessage ? <p className="card-sub">{apiMessage}</p> : null}
+      </div>
+
       <div className="page-head">
         <h1>AI bağlantıları</h1>
         <p className="lead">

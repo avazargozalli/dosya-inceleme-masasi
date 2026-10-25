@@ -16,7 +16,7 @@ use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, CandidateReport, Case,
+    AiCandidateRow, AiRunRow, ConsentPreview, AnchorLocation, AnchorRow, CandidateReport, Case,
     CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow,
     CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow, ContradictionAssessmentRow,
     CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey, Document, DocumentTagRow,
@@ -5062,4 +5062,26 @@ pub fn citation_context(
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let radius = radius.unwrap_or(120).clamp(10, 500);
     Ok(db.citation_context(&check_id, radius as usize)?)
+}
+
+#[tauri::command]
+pub fn provider_api_profile_save(
+    state: State<'_, AppState>,
+    endpoint: String,
+    model: String,
+) -> Result<ProviderProfileRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.register_api_profile(&endpoint, &model)?)
+}
+
+#[tauri::command]
+pub fn ai_consent_preview(
+    state: State<'_, AppState>,
+    case_id: String,
+    document_ids: Vec<String>,
+) -> Result<ConsentPreview, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.consent_preview(&case_id, &document_ids)?)
 }

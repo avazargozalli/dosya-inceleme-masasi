@@ -31,8 +31,10 @@ bağlanır; yapay zekâ öneri üretir, hukuki kaydı yalnız avukat onayıyla o
 | Çıktılar: JSON/CSV/DOCX/PDF + şifreli `.dimpak` | ✅ gerçek | Çıktılar |
 | Yedek: `.dimbak` + geri yükleme + blob GC | ✅ gerçek | Ayarlar |
 | Otomatik kilit (10 dk) | ✅ gerçek | `src/lib/autolock.ts` |
-| AI sağlayıcı hattı (onay + sicil + aday) | 🚧 altyapı gerçek; **AI varsayılan kapalı** | `crates/providers`, AI ekranı |
-| CLI yürütme | 🚧 Codex doğrulandı (hook izolasyonu); diğer profiller açık | `crates/cli-adapters` |
+| Otomatik yedek (7 gün, klasör seçmeli) | ✅ gerçek | `src/lib/backup-schedule.ts` |
+| API sağlayıcı profili (anahtar saklanmaz) | ✅ gerçek | Providers ekranı |
+| AI sağlayıcı hattı (onay + sicil + aday + gönderim önizlemesi) | 🚧 altyapı gerçek; **AI varsayılan kapalı** | `crates/providers`, AI ekranı |
+| CLI yürütme | ✅ Codex / Claude / Antigravity gerçek çağrıyla doğrulandı; Kimi API anahtarı bekliyor | `crates/cli-adapters` |
 | İmzalı dağıtım | ➖ kapsam dışı (ADR-0012); paketler imzasız | `docs/releases/F16` |
 | Pilot (5–8 avukat) | ❌ insan bekliyor | `docs/pilot/` |
 

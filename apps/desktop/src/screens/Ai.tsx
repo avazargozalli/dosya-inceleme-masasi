@@ -7,6 +7,7 @@ import {
   type ApiError,
   type CandidateReport,
   type CaseRow,
+  type ConsentPreview,
   type TransferConsentRow,
 } from "../lib/api";
 import {
@@ -32,6 +33,7 @@ export function Ai() {
   const [caseId, setCaseId] = useState("");
   const [overview, setOverview] = useState<AiOverview | null>(null);
   const [consent, setConsent] = useState<TransferConsentRow | null>(null);
+  const [preview, setPreview] = useState<ConsentPreview | null>(null);
   const [candidates, setCandidates] = useState<AiCandidateRow[]>([]);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
@@ -226,12 +228,41 @@ export function Ai() {
             <button className="btn" disabled={!provider || busy} onClick={() => void approve()}>
               Aktarım onayı ver
             </button>
+            <button
+              className="btn ghost"
+              onClick={async () => {
+                try {
+                  const docs = await api.documentList(caseId);
+                  setPreview(await api.aiConsentPreview(caseId, docs.map((doc) => doc.id)));
+                } catch {
+                  setPreview(null);
+                }
+              }}
+            >
+              Gönderilecek içeriği göster
+            </button>
             <button className="btn primary" disabled={!provider || !consent || busy} onClick={() => void start()}>
               Çalıştır
             </button>
           </div>
         </div>
 
+        {preview ? (
+          <div className="card" style={{ marginTop: 8 }}>
+            <div className="card-head">
+              <div>
+                <h3>Gönderilecek içerik</h3>
+                <p className="card-sub">
+                  {preview.documents} belge · {preview.segments} segment ·{" "}
+                  {(preview.bytes / 1024).toFixed(1)} KB
+                </p>
+              </div>
+            </div>
+            <pre style={{ maxHeight: 140, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
+              {preview.sample || "ayrıştırılmış metin yok — bu dosyada gönderilecek içerik bulunmuyor"}
+            </pre>
+          </div>
+        ) : null}
         {consent ? (
           <p className="hint" style={{ margin: 0 }}>
             Onay {consent.id.slice(0, 8)}… · {consent.providerSnapshot} · iptal edilene kadar geçerli.

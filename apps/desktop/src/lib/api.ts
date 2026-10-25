@@ -201,6 +201,13 @@ export type TransferConsentRow = {
   revokedAt: string | null;
 };
 
+export type ConsentPreview = {
+  documents: number;
+  segments: number;
+  bytes: number;
+  sample: string;
+};
+
 export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
 
 export type ValidationIssue = {
@@ -1571,6 +1578,10 @@ export const api = {
   caseCoverage: (caseId: string) => invoke<ExportCoverage>("case_coverage", { caseId }),
 
   aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
+  providerApiProfileSave: (endpoint: string, model: string) =>
+    invoke<ProviderProfileRow>("provider_api_profile_save", { endpoint, model }),
+  aiConsentPreview: (caseId: string, documentIds: string[]) =>
+    invoke<ConsentPreview>("ai_consent_preview", { caseId, documentIds }),
   aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
     invoke<TransferConsentRow>("ai_consent_create", { caseId, providerSnapshot, purpose, documentIds }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),

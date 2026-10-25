@@ -1,7 +1,7 @@
 # F01 — Teknik doğrulamalar ve mimari kararlar
 
 - **Sürüm etiketi:** `v0.0.1-spike` (hedef)
-- **Durum:** Kısmi — yalnız T07 (worker izolasyonu) ve T09 (yerel model ölçümü) açık
+- **Durum:** Kısmi — yalnız T09 (yerel model ölçümü, donanım bekliyor) açık
 
 ## Spike matrisi
 
@@ -13,7 +13,7 @@
 | F01-T04 | Streaming AEAD + truncation + kurtarma | ✅ `crates/vault`; parola değiştirme + kurtarma KDF düzeltmesi | `cargo test -p dim-vault` (15 + 3 + 4) |
 | F01-T05 | PDF redaksiyon bağımsız doğrulama | ✅ Ölçüldü (sınırlar aşağıda) | `workers/document/tests/test_redaction_independent.py` (18), `crates/ingest/tests/redaction_hidden_objects.rs` (2), `fixtures/synthetic/redaction-hidden.pdf` |
 | F01-T06 | UDF/DOCX yapı ve ek envanteri | ✅ Ölçüldü: DOCX yapı+ek+değişiklik izi; UDF yapı+paket girdileri (sınırlar aşağıda) | `workers/document/tests/test_inventory.py` (14), `crates/ingest/tests/document_inventory.rs` (3), `docs/releases/F01/INVENTORY.md` |
-| F01-T07 | Worker izolasyonu (kapsam dışı okuma/yazma/ağ) | ⬜ | — |
+| F01-T07 | Worker izolasyonu | ✅ `env_clear` + allowlist (PATH/LANG/LC_ALL); sırlar çocuk sürece geçmez. **Ağ yalıtımı OS düzeyinde yok** (dürüst sınır) | `crates/ingest/src/worker.rs` + test |
 | F01-T08 | CLI araçsız/izinli profil kanıtı | 🚧 Codex: `--ignore-user-config --ignore-rules` ile hook kapalı (gerçek koşu); Claude/Antigravity/Kimi açık | `crates/cli-adapters/src/exec.rs`, `docs/releases/F10/HOOKS.md` |
 | F01-T09 | Yerel model RAM/ilk yanıt/iptal | ⬜ | — |
 | F01-T10 | Worker protokolü bozuk frame/süreç ölümü | ✅ Rust tarafı ölçüldü (Unix); Windows denenmedi | `crates/ingest/src/worker.rs` testleri (4 yeni: süreç ölümü, zaman aşımı, aşırı çerçeve, bozuk çerçeve) + `workers/document/tests/test_frames.py`, `test_protocol.py` (91 pytest) |
