@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -29,6 +29,9 @@ import {
   searchModeHint,
   textOriginLabel,
   toggleValue,
+  TOTAL_PROBE_IDLE,
+  totalSummary,
+  type TotalProbe,
 } from "../lib/search";
 import {
   precedentCitation,
@@ -87,6 +90,47 @@ export function Search() {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** Ertelenmiş toplam sayım (F15): sonuçlar gösterildikten **sonra** istenir. */
+  const [totalProbe, setTotalProbe] = useState<TotalProbe>(TOTAL_PROBE_IDLE);
+  /** Sayım istek sırası: geç gelen eski yanıt yeni sayıyı ezmesin. */
+  const totalSeq = useRef(0);
+
+  /**
+   * Toplam sayıyı ilk boyamadan sonra ister (F15). Ölçüm: sayım sayfa
+   * sorgusuna p50'de +643 ms ekliyordu; bu yüzden sayfa onu beklemez.
+   * Sayı gelmezse satır gerçek hatayı yazar, sayı uydurulmaz.
+   */
+  const requestTotal = useCallback(
+    (targetCaseId: string, asked: string, applied: SearchFilters, askedMode: SearchMode) => {
+      const seq = ++totalSeq.current;
+      setTotalProbe({ status: "counting" });
+      const fire = () => {
+        void api
+          .searchTotal(targetCaseId, asked, applied, askedMode)
+          .then((result) => {
+            if (seq !== totalSeq.current) return;
+            setTotalProbe({
+              status: "done",
+              total: result.total,
+              tookMs: result.tookMs,
+              resolvedQuery: result.resolvedQuery,
+              mode: result.mode,
+            });
+          })
+          .catch((e) => {
+            if (seq !== totalSeq.current) return;
+            setTotalProbe({ status: "failed", message: toApiError(e).message });
+          });
+      };
+      // İlk boyama tamamlanmadan sayım gönderilirse kazanç kaybolur.
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => requestAnimationFrame(fire));
+      } else {
+        setTimeout(fire, 0);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     (async () => {
@@ -131,6 +175,8 @@ export function Search() {
     setReader(null);
     setPage(null);
     setSearchedQuery("");
+    totalSeq.current += 1;
+    setTotalProbe(TOTAL_PROBE_IDLE);
   }, [caseId]);
 
   // Kapsam değişince öteki kapsamın sonuçları ekranda kalmaz: her sonuç
@@ -140,6 +186,8 @@ export function Search() {
     setLibraryPage(null);
     setSearchedQuery("");
     setCopiedHit("");
+    totalSeq.current += 1;
+    setTotalProbe(TOTAL_PROBE_IDLE);
   }, [scope]);
 
   const run = useCallback(
@@ -182,7 +230,8 @@ export function Search() {
         const next = await api.searchPage(caseId, asked, applied, {
           limit: PAGE_SIZE,
           cursor,
-          includeTotal: kind === "fresh",
+          // Sayım artık sayfadan ayrı istenir (F15): ilk sonuçlar beklemez.
+          includeTotal: false,
           mode: askedMode,
         });
         setAppliedFilters(next.filters);
@@ -193,15 +242,31 @@ export function Search() {
           setPage({ ...next, hits: merged, returned: merged.length, total: page.total });
         } else {
           setPage(next);
+          requestTotal(caseId, asked, next.filters, askedMode);
         }
       } catch (e) {
         setError(toApiError(e));
+        if (kind === "fresh") {
+          totalSeq.current += 1;
+          setTotalProbe(TOTAL_PROBE_IDLE);
+        }
       } finally {
         setBusy(false);
         setLoadingMore(false);
       }
     },
-    [appliedFilters, caseId, draftFilters, mode, page, query, scope, searchedMode, searchedQuery],
+    [
+      appliedFilters,
+      caseId,
+      draftFilters,
+      mode,
+      page,
+      query,
+      requestTotal,
+      scope,
+      searchedMode,
+      searchedQuery,
+    ],
   );
 
   /** Sonucu seçilen panelde açar. Hedef, sonucun kendi sürümünü taşır;
@@ -247,6 +312,8 @@ export function Search() {
   const filterCount = activeFilterCount(appliedFilters);
   const stale = page !== null && filtersStale(page, draftFilters);
   const modeStale = page !== null && searchedMode !== mode;
+  /** Ertelenmiş toplam satırı (F15); sayfa toplamı sunucudan geldiyse boş. */
+  const totalLine = totalSummary(page, totalProbe);
   const hits = page?.hits ?? null;
 
   function updateFilter(patch: Partial<SearchFilters>) {
@@ -467,6 +534,11 @@ export function Search() {
                 {SEARCH_MODE_LABELS[page.mode]}
                 {filterCount > 0 ? ` · ${filterCount} filtre` : ""}
               </p>
+              {totalLine !== null ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  {totalLine}
+                </p>
+              ) : null}
               {filterLines.length > 0 ? (
                 <p className="hint" style={{ margin: 0 }}>{filterLines.join(" · ")}</p>
               ) : null}

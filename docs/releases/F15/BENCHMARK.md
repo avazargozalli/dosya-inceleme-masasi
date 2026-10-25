@@ -25,7 +25,9 @@
   `limit=50`, `include_total=true` (kullanıcı arayüzünde toplam sayı görünür).
 - Aynı sorguların bir alt kümesi (`DIM_BENCH_PAGE_ONLY_EVERY`, varsayılan her
   10.) `include_total=false` ile de koşar; **ilk sayfanın birebir aynı olduğu
-  doğrulanır** (20/20) ve toplam sayının maliyeti ayrışır.
+  doğrulanır** (20/20) ve toplam sayının maliyeti ayrışır. Aynı örnekte
+  `search_total` de çağrılır: dönen sayı sayfa toplamıyla **birebir aynı olmak
+  zorunda** (`assert_eq!`; rapor `searchTotalDeferred.matchesPageTotal`).
 - "İlk sayfa": son ayrıştırma koşusunun sayfalarının okunması (50 örnek).
 - Bellek: süreç RSS'i 2 sn aralıkla örneklenir (`ps` ile; `unsafe` yok), tepe
   değer raporlanır.
@@ -76,6 +78,37 @@ Aynı korpus ve aynı sorgu listesiyle **iki koşu** (tekrar oynaklığı kanıt
 `searchPageOnly.identicalFirstPageChecked`). Yani toplam sayı geciktirilirse ilk
 sayfa süresi yarıya iner — arayüz "N sonuç" alanını sayfa geldikten sonra
 doldurabilir.
+
+### Ertelenmiş sayım uygulandı (2026-10-26)
+
+Kaldıraç koda ve arayüze geçti: sayfa `include_total=false` ile istenir, sayı
+**ayrı** `search_segments_total` komutuyla, ilk boyamadan sonra alınır.
+
+- **Çekirdek:** `Database::search_total(case_id, query, filters)` → `SearchTotal`
+  (`total`, `tookMs`, `resolvedQuery`, `mode`, `filters`). Sayım kuralı
+  sayfayla **aynı** (`count_where`: doğrulamayı geçen satırlar); "en çok N" ya da
+  pencere kırpması **yok**, sayı tamdır.
+- **Arayüz:** sonuç başlığında önce "Eşleşme sayısı hesaplanıyor…", sayı gelince
+  "N eşleşme · sayım X ms sürdü". Sayı **sayfayla aynı sorguya** ait değilse
+  (kip/çözümlenmiş metin farklı) gösterilmez; hata varsa gerçek mesaj yazılır.
+- **Kanıt (bu turda koşuldu, 2.000 segment / 20 sorgu, debug):**
+
+| Ölçüm | p50 | p95 | max |
+|---|---|---|---|
+| `include_total=true` (eski yol) | 100,2 ms | 118,1 ms | 126,9 ms |
+| Yalnız ilk sayfa (`include_total=false`) | **53,1 ms** | **58,1 ms** | 59,9 ms |
+| Ayrı sayım (`search_total`) | 45,0 ms | 58,9 ms | 59,1 ms |
+
+  Sayfa + sayım ≈ eski tek çağrı (53,1 + 45,0 ≈ 98 ≈ 100,2) — ayrıştırma tutarlı.
+  **Sayı eşitliği 20/20 örnekte doğrulandı** (`searchTotalDeferred.matchesPageTotal=true`);
+  ilk sayfa da 20/20 birebir aynı. Koşucu artık bu karşılaştırmayı her örnekte
+  `assert_eq!` ile yapıyor, yani sayı ayrışırsa ölçüm **düşer**.
+
+Bu profil B-01'in altında (2.000 segment / 20 sorgu) — hedef hükmü değildir;
+yalnız ayrıştırmanın ve eşitliğin kanıtıdır. B-01 ölçeğinde beklenen kazanç
+yukarıdaki tablodan: p50 1.248 → ~605 ms, p95 2.179 → ~712 ms (kullanıcının
+beklediği süre). **Kuyruk değişmez**: `"numaralı reddine"` gibi sorgularda 36–54 sn
+süren kısım sayım değil, aday doğrulamasının kendisidir (sonraki kaldıraç).
 
 ### Sorgu grubuna göre (koşu 2, p50 / p95 / max)
 
@@ -178,13 +211,19 @@ SQLCipher her satırı çözüp HMAC doğruladığı için maliyet satır sayıs
   profili ve 100.000 **belge**/1 milyon sayfa kapasite testi (F15-T04) yapılmadı.
 - **Bellek** yalnız süreç RSS'i; SQLite sayfa önbelleği ve işletim sistemi
   önbelleği ayrı raporlanmaz. Örnekleme 2 sn aralıkla (tepe değer yaklaşık).
+- **Ertelenmiş sayım komutu senkron** (`search_segments_total`), tıpkı
+  `search_segments_page` gibi: arayüz sayıyı isterken pencere kısa süre
+  kilitlenebilir (p95 ~1,5 sn). Sayfa artık bu süreyi beklemez; ama sayımına
+  arka plana taşınması AppState'in (`Mutex<VaultState>`) yeniden düzenlenmesini
+  gerektirir — yapılmadı.
 - Bu tablo bir "geçti" belgesi değildir. Hedef tutmuyorsa güvenlik veya doğrulama
   adımı kaldırılmaz; kapasite iddiası ölçülen sınırla daraltılır.
 
 ## Sıradaki kaldıraçlar (ölçümle desteklenen)
 
-1. **Toplam sayıyı geciktir** — ölçüldü: yalnız ilk sayfa 605 ms, toplam sayıyla
-   1.248 ms (~%52). Arayüz ilk sayfayı hemen gösterip sayıyı sonra isteyebilir.
+1. ~~**Toplam sayıyı geciktir**~~ **uygulandı** (2026-10-26): `search_total` +
+   `search_segments_total` + arayüzde "sayılıyor…" satırı; sayı eşitliği her
+   ölçüm örneğinde assert ediliyor.
 2. **Aday penceresi + tembel doğrulama** — kuyruk, aday sayısı 100.000'e yakın
    sorgularda oluşuyor (`esas`, `haciz`, `sure`). İlk 50 sonuç için tüm adayları
    doğrulamak zorunlu değil; sıralama `bm25` olduğu için pencere büyütülerek

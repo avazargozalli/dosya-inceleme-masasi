@@ -145,6 +145,44 @@ export function canLoadMore(page: SearchPage | null): boolean {
   return page !== null && page.hasMore && page.nextCursor !== null;
 }
 
+// ---------------------------------------------------------------------------
+// Ertelenmiş toplam sayım (F15)
+// ---------------------------------------------------------------------------
+
+/**
+ * Arayüzde toplam sayının durumu. Sayım sayfayı bekletmediği için ayrı bir
+ * durum makinesi gerekir: kullanıcı önce sonuçları görür, sayı sonra gelir.
+ */
+export type TotalProbe =
+  | { status: "idle" }
+  | { status: "counting" }
+  | { status: "done"; total: number; tookMs: number; resolvedQuery: string; mode: string }
+  | { status: "failed"; message: string };
+
+export const TOTAL_PROBE_IDLE: TotalProbe = { status: "idle" };
+
+/**
+ * Toplam sayı satırı. Üç kural:
+ *
+ * 1. Sunucu toplamı sayfa yanıtında geldiyse (`page.total`) bu satır yazılmaz —
+ *    iki kaynak aynı anda gösterilmez.
+ * 2. Sayı **sayfayla aynı sorguya** ait değilse (kip/çözümlenmiş metin farklı)
+ *    gösterilmez: bayat sayı yeni sonuçların toplamı sanılmasın.
+ * 3. Sayı gelmediyse "hesaplanıyor" ya da gerçek hata metni yazılır; sayı
+ *    uydurulmaz.
+ */
+export function totalSummary(page: SearchPage | null, probe: TotalProbe): string | null {
+  if (!page) return null;
+  if (page.total !== null) return null;
+  if (probe.status === "idle") return null;
+  if (probe.status === "counting") return "Eşleşme sayısı hesaplanıyor…";
+  if (probe.status === "failed") return `Eşleşme sayısı alınamadı: ${probe.message}`;
+  if (probe.resolvedQuery !== page.resolvedQuery || probe.mode !== page.mode) {
+    return "Sayı önceki sorguya ait; yeni aramada tazelenir.";
+  }
+  return `${probe.total} eşleşme · sayım ${Math.round(probe.tookMs)} ms sürdü`;
+}
+
 /**
  * "Daha fazla" sonuçlarını öncekiyle birleştirir. Aynı segment iki kez
  * görünmez; sunucu imleci doğru olsa bile arayüz kendi tarafında tekilleştirir.

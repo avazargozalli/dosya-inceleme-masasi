@@ -32,7 +32,8 @@ use dim_storage::{
     ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
     RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
     ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
-    SearchPage, SearchQuery, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
+    SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow,
+    TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -473,6 +474,30 @@ mod tests {
     #[test]
     fn empty_path_rejected() {
         assert_eq!(resolve_vault_path("   ").unwrap_err().code, "E_PATH");
+    }
+
+    /// Arama kipi adı sunucuda çözülür: boş → `auto`, bilinmeyen reddedilir.
+    /// İki komut (`search_segments_page`, `search_segments_total`) aynı kuralı
+    /// kullanır; ayrışırsa sayfa ile sayı farklı kipe ait olurdu.
+    #[test]
+    fn search_mode_names_are_validated_and_empty_means_auto() {
+        assert!(matches!(parse_search_mode(None), Ok(SearchMode::Auto)));
+        assert!(matches!(
+            parse_search_mode(Some("   ")),
+            Ok(SearchMode::Auto)
+        ));
+        assert!(matches!(
+            parse_search_mode(Some("phrase")),
+            Ok(SearchMode::Phrase)
+        ));
+        assert!(matches!(
+            parse_search_mode(Some("Akıllı")),
+            Err(ApiError { .. })
+        ));
+        assert_eq!(
+            parse_search_mode(Some("fuzzy")).unwrap_err().code,
+            "E_SEARCH_QUERY"
+        );
     }
 
     #[test]
@@ -1322,6 +1347,17 @@ pub struct SearchPageInput {
     pub mode: Option<String>,
 }
 
+/// `mode` alanını çözer: boş/verilmemiş → `auto`; bilinmeyen ad
+/// `E_SEARCH_QUERY` ile reddedilir (F07-T02).
+fn parse_search_mode(mode: Option<&str>) -> Result<SearchMode, ApiError> {
+    match mode.map(str::trim).filter(|raw| !raw.is_empty()) {
+        None => Ok(SearchMode::Auto),
+        Some(raw) => SearchMode::parse(raw).ok_or_else(|| {
+            ApiError::new("E_SEARCH_QUERY", &format!("bilinmeyen arama kipi: {raw}"))
+        }),
+    }
+}
+
 /// Filtreli ve keyset sayfalı arama (F07-T03, F07-T05).
 ///
 /// `filters` verilmezse filtre uygulanmaz. `includeTotal` yalnız ilk sayfada
@@ -1332,17 +1368,7 @@ pub fn search_segments_page(
     state: State<'_, AppState>,
     input: SearchPageInput,
 ) -> Result<SearchPage, ApiError> {
-    let mode = match input
-        .mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|raw| !raw.is_empty())
-    {
-        None => SearchMode::Auto,
-        Some(raw) => SearchMode::parse(raw).ok_or_else(|| {
-            ApiError::new("E_SEARCH_QUERY", &format!("bilinmeyen arama kipi: {raw}"))
-        })?,
-    };
+    let mode = parse_search_mode(input.mode.as_deref())?;
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.search_page(
@@ -1355,6 +1381,30 @@ pub fn search_segments_page(
         input.limit.unwrap_or(50),
         input.cursor.as_deref(),
         input.include_total.unwrap_or(false),
+    )?)
+}
+
+/// **Ertelenmiş toplam sayım** (F15). Arayüz ilk sayfayı gösterdikten sonra
+/// çağırır; böylece sayfa `includeTotal=true` maliyetini beklemez.
+///
+/// `cursor`/`limit` yok sayılır: sayı sayfaya değil **sorgunun tamamına**
+/// aittir. Sayı `search_page(include_total=true)` ile birebir aynı kuraldan
+/// gelir (`Database::search_total`).
+#[tauri::command]
+pub fn search_segments_total(
+    state: State<'_, AppState>,
+    input: SearchPageInput,
+) -> Result<SearchTotal, ApiError> {
+    let mode = parse_search_mode(input.mode.as_deref())?;
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_total(
+        &input.case_id,
+        &SearchQuery {
+            text: input.query,
+            mode,
+        },
+        &input.filters.unwrap_or_default(),
     )?)
 }
 

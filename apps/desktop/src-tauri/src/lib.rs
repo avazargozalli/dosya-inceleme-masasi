@@ -34,6 +34,7 @@ pub fn run() {
             commands::document_parse,
             commands::search_segments,
             commands::search_segments_page,
+            commands::search_segments_total,
             commands::document_tags,
             commands::document_tags_for_case,
             commands::case_tags,

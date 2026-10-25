@@ -18,6 +18,8 @@ import {
   stripWrappingQuotes,
   textOriginLabel,
   toggleValue,
+  TOTAL_PROBE_IDLE,
+  totalSummary,
 } from "./search";
 
 function filters(overrides: Partial<SearchFilters> = {}): SearchFilters {
@@ -128,6 +130,57 @@ describe("resultSummary", () => {
     );
     expect(resultSummary(page({ total: null, returned: 0, hasMore: false }))).toBe(
       "0 sonuç gösteriliyor",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F15 — ertelenmiş toplam sayım
+// ---------------------------------------------------------------------------
+
+describe("totalSummary", () => {
+  const counted = page({ total: null, resolvedQuery: "kira bedeli", mode: "phrase" });
+
+  it("sayfa toplamı sunucudan geldiyse ikinci kez yazmaz", () => {
+    expect(totalSummary(page({ total: 7 }), { status: "counting" })).toBeNull();
+  });
+
+  it("sayfa yoksa satır yok", () => {
+    expect(totalSummary(null, { status: "done", total: 3, tookMs: 1, resolvedQuery: "kira", mode: "flexible" })).toBeNull();
+    expect(totalSummary(counted, TOTAL_PROBE_IDLE)).toBeNull();
+  });
+
+  it("sayım sürerken sayı uydurmaz", () => {
+    expect(totalSummary(counted, { status: "counting" })).toBe("Eşleşme sayısı hesaplanıyor…");
+  });
+
+  it("aynı sorguya ait sayıyı ve süresini yazar", () => {
+    expect(
+      totalSummary(counted, {
+        status: "done",
+        total: 4322,
+        tookMs: 643.4,
+        resolvedQuery: "kira bedeli",
+        mode: "phrase",
+      }),
+    ).toBe("4322 eşleşme · sayım 643 ms sürdü");
+  });
+
+  it("başka sorgunun sayısını göstermez", () => {
+    expect(
+      totalSummary(counted, {
+        status: "done",
+        total: 999,
+        tookMs: 5,
+        resolvedQuery: "kira",
+        mode: "flexible",
+      }),
+    ).toBe("Sayı önceki sorguya ait; yeni aramada tazelenir.");
+  });
+
+  it("hatayı gizlemez", () => {
+    expect(totalSummary(counted, { status: "failed", message: "Kasa kilitli." })).toBe(
+      "Eşleşme sayısı alınamadı: Kasa kilitli.",
     );
   });
 });

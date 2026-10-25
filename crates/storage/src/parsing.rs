@@ -617,6 +617,61 @@ impl Database {
         Ok(page)
     }
 
+    /// Toplam eşleşme sayısı — **sayfadan ayrı** çağrılabilir (F15 ertelenmiş
+    /// sayım).
+    ///
+    /// Aynı kümeyi `search_page(..., include_total=true)` ile birebir aynı
+    /// kuralla sayar (`count_where`: doğrulama geçen satırlar). Fark yalnız
+    /// çağrı düzenindedir: arayüz ilk sayfayı gösterdikten **sonra** bu komutu
+    /// çalıştırır. Ölçüm (B-01, 1.000 belge / 100.000 segment): sayım sayfa
+    /// sorgusuna p50'de **+643 ms (%52)**, p95'te **+1.467 ms** ekliyordu;
+    /// sayfa artık bu maliyeti beklemez.
+    ///
+    /// Sayım **tam**dır: "en çok N" ya da pencere kırpması yoktur. Bu yüzden
+    /// ucuz da değildir — çağıran taraf bunu kullanıcıya beklemesiz göstermeli
+    /// (arayüz: "sayılıyor…" → sayı), sayfayı bloke etmemelidir.
+    pub fn search_total(
+        &self,
+        case_id: &str,
+        query: &SearchQuery,
+        filters: &SearchFilters,
+    ) -> Result<SearchTotal, StorageError> {
+        let filters = filters.normalized()?;
+        let resolved = query.resolve()?;
+        let mut out = SearchTotal {
+            case_id: case_id.to_string(),
+            query: query.text.trim().to_string(),
+            resolved_query: resolved.text.clone(),
+            mode: resolved.mode,
+            scope: "case".to_string(),
+            total: 0,
+            took_ms: 0.0,
+            filters: filters.clone(),
+        };
+        let expression = fts_expression(&resolved);
+        if resolved.text.is_empty() || expression.is_empty() {
+            return Ok(out);
+        }
+
+        let started = std::time::Instant::now();
+        let matcher = SearchMatcher::new(&resolved.text, resolved.mode, resolved.docket.clone());
+        let verify = if matcher.wants_normalized() {
+            "dim_search_verify(NULL, s.normalized_text)"
+        } else {
+            "dim_search_verify(s.raw_text, NULL)"
+        };
+        self.register_search_verifier(std::sync::Arc::new(matcher))?;
+
+        let (count_sql, count_params) = count_where(case_id, &expression, &filters, verify);
+        out.total = self.conn().query_row(
+            &format!("SELECT count(*) FROM {COUNT_FROM}{count_sql}"),
+            rusqlite::params_from_iter(count_params.iter()),
+            |row| row.get(0),
+        )?;
+        out.took_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(out)
+    }
+
     /// Aday doğrulamasını sorguya bağlar (F15 ölçek düzeltmesi).
     ///
     /// Skaler fonksiyon adı sabittir; her arama kendi matcher'ını kaydeder.
@@ -1693,6 +1748,26 @@ pub struct SearchPage {
     pub total: Option<i64>,
     pub filters: SearchFilters,
     pub hits: Vec<SearchHit>,
+}
+
+/// Ertelenmiş toplam sayımın sonucu (F15). `search_page` ile **aynı** sorgu
+/// çözümünü taşır ki arayüz sayının hangi sorguya ait olduğunu doğrulayabilsin
+/// (sayım sürerken yeni arama başlarsa eski sayı gösterilmez).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTotal {
+    pub case_id: String,
+    pub query: String,
+    pub resolved_query: String,
+    pub mode: SearchMode,
+    /// `case` = yalnız bu dosya.
+    pub scope: String,
+    /// Doğrulamayı geçen **tam** eşleşme sayısı.
+    pub total: i64,
+    /// Sayımın çekirdekteki süresi (ms) — arayüzde "ne kadar sürdü" olarak
+    /// gösterilir; ölçüm iddiası buradan gelir.
+    pub took_ms: f64,
+    pub filters: SearchFilters,
 }
 
 #[cfg(test)]
@@ -2998,5 +3073,169 @@ mod tests {
         assert_eq!(page.total, Some(4), "sayım doğrulanmış eşleşmeleri sayar");
         assert_eq!(page.returned, 2);
         assert!(page.has_more);
+    }
+
+    // -----------------------------------------------------------------------
+    // F15 — ertelenmiş toplam sayım (`search_total`)
+    // -----------------------------------------------------------------------
+
+    /// Sayfa toplamı ile ayrı sayım **aynı** sayıyı vermeli; ayrı sayım önce
+    /// çağrıldığında da (doğrulayıcı kendisi kaydeder) doğru olmalı.
+    #[test]
+    fn deferred_total_matches_page_total_without_prior_search() {
+        let (db, case_id, _version_id) = setup();
+        for index in 0..5 {
+            add_document_with_text(
+                &db,
+                &case_id,
+                &format!("Belge {index}"),
+                "notice",
+                "kira bedeli ödenmedi",
+                "native",
+            );
+        }
+        add_document_with_text(
+            &db,
+            &case_id,
+            "Ters sıra",
+            "notice",
+            "bedeli kira olarak ödendi",
+            "native",
+        );
+
+        // Önce ayrı sayım: hiç sayfa araması yapılmadı.
+        let total = db
+            .search_total(
+                &case_id,
+                &SearchQuery::auto("kira bedeli"),
+                &SearchFilters::default(),
+            )
+            .expect("sayım");
+        assert_eq!(total.total, 5, "doğrulamayı geçen 5 eşleşme");
+        assert_eq!(total.scope, "case");
+        assert!(total.took_ms >= 0.0);
+
+        let page = db
+            .search_segments_page(
+                &case_id,
+                "kira bedeli",
+                &SearchFilters::default(),
+                50,
+                None,
+                true,
+            )
+            .expect("arama");
+        assert_eq!(
+            page.total,
+            Some(total.total),
+            "sayfa toplamı ayrı sayımla aynı"
+        );
+
+        // Sayımdan sonra yapılan arama eski doğrulayıcıyı kullanmamalı.
+        let other = db
+            .search_total(
+                &case_id,
+                &SearchQuery::auto("kira"),
+                &SearchFilters::default(),
+            )
+            .expect("ikinci sayım");
+        assert_eq!(other.total, 6, "tek kelime altı belgede de geçiyor");
+    }
+
+    /// Sayım filtreleri sayfayla aynı uygulamalı (etiket = VE).
+    #[test]
+    fn deferred_total_respects_filters() {
+        let (db, case_id, _version_id) = setup();
+        let (tagged_doc, _, _, _) = add_document_with_text(
+            &db,
+            &case_id,
+            "Etiketli",
+            "notice",
+            "kira bedeli ödenmedi",
+            "native",
+        );
+        add_document_with_text(
+            &db,
+            &case_id,
+            "Etiketsiz",
+            "notice",
+            "kira bedeli ödenmedi",
+            "native",
+        );
+        db.add_document_tag(&tagged_doc, "kritik").expect("etiket");
+
+        let filters = SearchFilters {
+            tags: vec!["kritik".to_string()],
+            ..Default::default()
+        };
+        let filtered = db
+            .search_total(&case_id, &SearchQuery::auto("kira bedeli"), &filters)
+            .expect("filtreli sayım");
+        assert_eq!(filtered.total, 1, "yalnız etiketli belge sayılır");
+        assert_eq!(filtered.filters.tags, vec!["kritik".to_string()]);
+
+        let unfiltered = db
+            .search_total(
+                &case_id,
+                &SearchQuery::auto("kira bedeli"),
+                &SearchFilters::default(),
+            )
+            .expect("filtresiz sayım");
+        assert_eq!(unfiltered.total, 2);
+
+        // Sayfa da aynı filtreyle aynı sayıyı vermeli.
+        let page = db
+            .search_segments_page(&case_id, "kira bedeli", &filters, 50, None, true)
+            .expect("filtreli arama");
+        assert_eq!(page.total, Some(filtered.total));
+    }
+
+    /// Boş sorgu: hata değil, sıfır — ve sayım sorgusu hiç çalışmaz.
+    #[test]
+    fn deferred_total_of_blank_query_is_zero() {
+        let (db, case_id, _version_id) = setup();
+        for query in ["", "   ", "\"\""] {
+            let total = db
+                .search_total(
+                    &case_id,
+                    &SearchQuery::auto(query),
+                    &SearchFilters::default(),
+                )
+                .expect("boş sorgu sayımı");
+            assert_eq!(total.total, 0, "sorgu {query:?} için sıfır");
+            assert_eq!(total.took_ms, 0.0, "boş sorguda sayım yapılmaz");
+        }
+    }
+
+    /// Sayım sonucu hangi sorguya ait olduğunu taşır (arayüz bayat sayıyı
+    /// göstermesin): kip + çözümlenmiş metin sayfayla birebir aynı.
+    #[test]
+    fn deferred_total_carries_resolved_query_and_mode() {
+        let (db, case_id, _version_id) = setup();
+        add_document_with_text(
+            &db,
+            &case_id,
+            "Bir",
+            "notice",
+            "kira bedeli ödenmedi, kira artışı yapıldı",
+            "native",
+        );
+        let query = SearchQuery {
+            text: "\"kira bedeli\"".to_string(),
+            mode: SearchMode::Auto,
+        };
+        let total = db
+            .search_total(&case_id, &query, &SearchFilters::default())
+            .expect("sayım");
+        assert_eq!(total.mode, SearchMode::Phrase, "tırnak ifade kipini seçer");
+        assert_eq!(total.resolved_query, "kira bedeli");
+        assert_eq!(total.query, "\"kira bedeli\"");
+
+        let page = db
+            .search_page(&case_id, &query, &SearchFilters::default(), 10, None, true)
+            .expect("arama");
+        assert_eq!(page.total, Some(total.total));
+        assert_eq!(page.resolved_query, total.resolved_query);
+        assert_eq!(page.mode, total.mode);
     }
 }

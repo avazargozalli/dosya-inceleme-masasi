@@ -1328,10 +1328,26 @@ export type SearchPage = {
   returned: number;
   hasMore: boolean;
   nextCursor: string | null;
-  /** Yalnız ilk sayfada istenir. */
+  /** Yalnız ilk sayfada istenir; arayüz artık `searchTotal` ile ayrı sayar. */
   total: number | null;
   filters: SearchFilters;
   hits: SearchHit[];
+};
+
+/**
+ * Ertelenmiş toplam sayımın sonucu (F15). Sayfa yanıtındaki `total` ile
+ * **aynı** kuraldan gelir; farkı, sayfanın bu sayıyı beklememesidir.
+ */
+export type SearchTotal = {
+  caseId: string;
+  query: string;
+  resolvedQuery: string;
+  mode: Exclude<SearchMode, "auto">;
+  scope: string;
+  total: number;
+  /** Çekirdekte sayımın sürdüğü süre (ms). */
+  tookMs: number;
+  filters: SearchFilters;
 };
 
 export type CaseTagRow = {
@@ -1503,6 +1519,15 @@ export const api = {
         includeTotal: options.includeTotal ?? false,
         mode: options.mode ?? "auto",
       },
+    }),
+
+  /**
+   * Ertelenmiş toplam sayım (F15): sayfa gösterildikten **sonra** çağrılır.
+   * `includeTotal: true` ile aynı sayıyı verir, ama ilk sonuçları geciktirmez.
+   */
+  searchTotal: (caseId: string, query: string, filters: SearchFilters, mode: SearchMode = "auto") =>
+    invoke<SearchTotal>("search_segments_total", {
+      input: { caseId, query, filters, mode },
     }),
 
   documentTags: (documentId: string) => invoke<string[]>("document_tags", { documentId }),

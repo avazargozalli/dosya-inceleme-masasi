@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use dim_storage::{
     AiPolicy, CaseKind, Database, DatabaseKey, NewCase, NewPage, SearchFilters, SearchMode,
-    Sensitivity,
+    SearchQuery, Sensitivity,
 };
 use sha2::{Digest, Sha256};
 
@@ -442,6 +442,9 @@ fn bench_scale_report() {
     let queries = fixed_queries(per_group);
     let mut search_us: Vec<u128> = Vec::with_capacity(queries.len());
     let mut page_only_us: Vec<u128> = Vec::new();
+    // Ertelenmiş sayımın (`search_total`) ayrı süresi (F15).
+    let mut deferred_us: Vec<u128> = Vec::new();
+    let mut totals_matched = 0usize;
     let mut groups: std::collections::BTreeMap<&str, Vec<u128>> = std::collections::BTreeMap::new();
     let mut per_query: Vec<serde_json::Value> = Vec::with_capacity(queries.len());
     let mut hits: usize = 0;
@@ -471,6 +474,7 @@ fn bench_scale_report() {
         // `include_total` maliyetini ayırmak için aynı sorgu bir de toplam
         // istenmeden koşar; **ilk sayfa birebir aynı olmalı** (kanıt, iddia değil).
         let mut page_only_value = serde_json::Value::Null;
+        let mut deferred_total_value = serde_json::Value::Null;
         if page_only_every > 0 && index % page_only_every == 0 {
             let started = Instant::now();
             let without_total = db
@@ -491,6 +495,21 @@ fn bench_scale_report() {
             assert_eq!(without_total.total, None, "toplamsız aramada toplam yok");
             hits_page_only_checked += 1;
             page_only_value = serde_json::json!(rounded(elapsed_page_only as f64 / 1000.0));
+
+            // Ertelenmiş sayım (arayüzün yeni yolu): **aynı** sayıyı vermeli ve
+            // maliyeti sayfadan ayrı ölçülmeli.
+            let started = Instant::now();
+            let deferred = db
+                .search_total(&case.id, &SearchQuery::auto(&query.text), &f)
+                .expect("ertelenmiş sayım");
+            deferred_us.push(started.elapsed().as_micros());
+            assert_eq!(
+                page.total,
+                Some(deferred.total),
+                "ertelenmiş sayım sayfa toplamıyla birebir aynı olmalı"
+            );
+            totals_matched += 1;
+            deferred_total_value = serde_json::json!(rounded(deferred.took_ms));
         }
 
         let mut entry = query.as_report();
@@ -500,6 +519,7 @@ fn bench_scale_report() {
             serde_json::json!(rounded(elapsed as f64 / 1000.0)),
         );
         object.insert("pageOnlyMs".into(), page_only_value);
+        object.insert("deferredTotalMs".into(), deferred_total_value);
         object.insert("hits".into(), serde_json::json!(page.hits.len()));
         object.insert("total".into(), serde_json::json!(page.total));
         object.insert("hasMore".into(), serde_json::json!(page.has_more));
@@ -641,6 +661,9 @@ fn bench_scale_report() {
     let max = percentile(&search_us, 1.0);
     let page_only_p50 = percentile(&page_only_us, 0.50);
     let page_only_p95 = percentile(&page_only_us, 0.95);
+    deferred_us.sort_unstable();
+    let deferred_p50 = percentile(&deferred_us, 0.50);
+    let deferred_p95 = percentile(&deferred_us, 0.95);
 
     // B-01: 1.000 belge · 100.000 segment · 200 sorgu · p95 ≤ 2 sn. Hedef
     // yalnız profil gerçekten kurulduysa değerlendirilir; altında `null`.
@@ -705,6 +728,19 @@ fn bench_scale_report() {
             "overheadP50Ms": rounded((p50 - page_only_p50).max(0.0)),
             "overheadP95Ms": rounded((p95 - page_only_p95).max(0.0)),
         },
+        // Ertelenmiş sayım: arayüzün gerçek yolu. Sayfa toplamı beklemiyor;
+        // sayı **aynı** olmak zorunda (koşucu her örnekte karşılaştırır).
+        "searchTotalDeferred": {
+            "queries": deferred_us.len(),
+            "pageP50Ms": page_only_p50,
+            "pageP95Ms": page_only_p95,
+            "totalP50Ms": deferred_p50,
+            "totalP95Ms": deferred_p95,
+            "totalMaxMs": percentile(&deferred_us, 1.0),
+            "identicalTotalsChecked": totals_matched,
+            "matchesPageTotal": totals_matched == deferred_us.len(),
+            "note": "Sayfa `include_total=false` ile gelir; sayı ayrı komutla sonradan istenir. `pageP*` kullanıcının beklediği süredir (ilk sayfa), `totalP*` arka plandaki tam sayım.",
+        },
         "searchByGroup": groups.iter_mut().map(|(group, samples)| {
             samples.sort_unstable();
             (group.to_string(), serde_json::json!({
@@ -738,6 +774,16 @@ fn bench_scale_report() {
             "coreP95Ms": p95,
             "coreMaxMs": max,
             "coreP95Met": if b01_applies { serde_json::json!(p95 <= 2000.0) } else { serde_json::Value::Null },
+            // Ertelenmiş sayımda kullanıcı yalnız ilk sayfayı bekler; örneklem
+            // `DIM_BENCH_PAGE_ONLY_EVERY` ile sınırlıdır (kuyruk sorgusu
+            // örnekte olmayabilir) — bu yüzden hüküm ayrı alanda verilir.
+            "deferredPageP95Ms": page_only_p95,
+            "deferredPageQueries": page_only_us.len(),
+            "deferredPageP95Met": if b01_applies && !page_only_us.is_empty() {
+                serde_json::json!(page_only_p95 <= 2000.0)
+            } else {
+                serde_json::Value::Null
+            },
             "note": if b01_applies {
                 "Çekirdek p95 ölçüldü. B-01 toplam süreyi (çekirdek+IPC+arayüz) kapsar; bu sayı alt sınırdır ve yalnız bu makine için geçerlidir."
             } else {

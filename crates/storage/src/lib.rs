@@ -63,8 +63,8 @@ pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
 pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT,
-    MAX_SEARCH_QUERY_CHARS, SEARCH_DATE_ROLES,
+    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SegmentGeometry,
+    MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_CHARS, SEARCH_DATE_ROLES,
 };
 pub use pre_update::{pre_update_backups, rollback_and_resume, InPlaceRollback, PreUpdateBackup};
 pub use precedent_import::{
