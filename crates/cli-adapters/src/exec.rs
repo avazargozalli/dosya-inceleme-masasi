@@ -285,6 +285,7 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     // otomatik yürütmeye açılmaz.
     ensure_batch_allowed(&req.adapter_id)?;
     let args = build_args(&req.adapter_id, &req.args)?;
+    let args = hardened_args(&req.adapter_id, args);
     if !req.executable.is_absolute() {
         return Err(RunError::RelativeExecutable);
     }
@@ -492,6 +493,24 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
             inventory: inventory.entries,
         },
     })
+}
+
+/// CLI'nın kullanıcı yapılandırmasını (hook, MCP, proje talimatı, kurallar)
+/// yüklemesini engelleyen **zorunlu** bayraklar. Çağıran bunları vermeyi
+/// unutsa bile ürün kendi güvenlik çerçevesini uygular.
+///
+/// Kanıt (Codex 0.159.2, 2026-10-25): `--ignore-user-config --ignore-rules`
+/// olmadan kullanıcının `SessionStart`/`Stop` hook'ları çalıştı ve çıktıya
+/// karıştı; bu bayraklarla hook satırları kayboldu, model yanıtı korundu.
+pub fn hardened_args(adapter_id: &str, mut args: Vec<String>) -> Vec<String> {
+    if adapter_id == "codex-cli" {
+        for flag in ["--ignore-user-config", "--ignore-rules"] {
+            if !args.iter().any(|arg| arg == flag) {
+                args.push(flag.to_string());
+            }
+        }
+    }
+    args
 }
 
 #[cfg(all(test, unix))]
@@ -905,5 +924,37 @@ mod tests {
             clamp_timeout(Duration::from_secs(30)),
             Duration::from_secs(30)
         );
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn codex_always_gets_config_and_rule_isolation() {
+        let args = hardened_args("codex-cli", vec!["exec".into()]);
+        assert_eq!(args.len(), 3, "{args:?}");
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+        assert!(args.contains(&"--ignore-rules".to_string()));
+    }
+
+    #[test]
+    fn isolation_flags_are_not_duplicated() {
+        let args = hardened_args(
+            "codex-cli",
+            vec![
+                "exec".into(),
+                "--ignore-user-config".into(),
+                "--ignore-rules".into(),
+            ],
+        );
+        assert_eq!(args.len(), 3, "{args:?}");
+    }
+
+    #[test]
+    fn other_adapters_are_untouched() {
+        let args = hardened_args("claude-code", vec!["--print".into()]);
+        assert_eq!(args, vec!["--print".to_string()]);
     }
 }

@@ -66,6 +66,12 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
 
+## [0.11.1] — 2026-10-25 — CLI hook izolasyonu
+
+- Gerçek Codex çağrısında kullanıcı hook'ları devreye girdiği **bulundu**
+- `hardened_args`: `codex-cli` için `--ignore-user-config --ignore-rules` zorunlu
+- Kanıt ve denenen bayraklar: `docs/releases/F10/HOOKS.md`; 3 test (100 toplam)
+
 ## [0.11.0] — 2026-10-24 — F12-T07 alıntı anlamı
 
 - Anlam incelemesi (doğru/yanıltıcı/bağlam dışı) + zorunlu gerekçe, şema v15
