@@ -214,3 +214,8 @@ Rapor JSON'u: `machine` (CPU modeli, RAM, çekirdek), `corpus`,
 `queryList` + `queryListSha256`, `perQuery` (sorgu bazında süre/hit/toplam),
 `ingest.phaseMs`, `search`, `searchPageOnly`, `searchByGroup`, `firstPage`,
 `pageLookupAb`, `memory`, `b01`, `storage`.
+
+**Kanıt dosyası:** `docs/releases/F15/bench-b01-2026-10-25.json` — bu belgedeki
+koşu 2'nin ham raporu (200 sorgu, sorgu bazında süreler, donanım kimliği,
+`queryListSha256`). Koşu 1 aynı komutun tekrarıdır; p50/p95/max değerleri yukarıdaki
+tabloda. Rapor dosyası makine tarafından üretilir, elle düzenlenmez.
