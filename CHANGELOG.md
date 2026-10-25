@@ -3,6 +3,13 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.11.2] — 2026-10-25 — gerçek belge kanıtı
+
+- `~/Downloads/ekler` ile PDF/UDF/JPG hattı gerçek veride doğrulandı
+- Taranmış PDF'te metin katmanı yok (8 sayfada 7 karakter) → OCR zorunlu
+- `tur` dil paketi eksik: OCR `eng` ile çalışıyor, Türkçe karakterlerde hata
+- Sonuçlar: `docs/releases/F06/REAL-DOCS.md`
+
 ## [0.11.1] — 2026-10-24 — F12-T12 bibliyografik künye
 
 - `precedent_bibliography`: künye metni + kaynak bağlantısı + erişim tarihi; eksik alanlar `missing` listesinde, hiçbiri tahmin edilmez
@@ -65,6 +72,13 @@ Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 - Arama sonucundan "Solda aç / Sağda aç" ile doğru sürüm ve sayfaya atlama, sorgu vurgusu
 - Kaynak alıntılar listesinden "Okuyucuda aç"; kopmuş alıntı ve kısmi ayrıştırma rozetleri
 - Belgeler ekranına "Oku" girişi; metin seçiminden kaynak bağlama okuyucuda
+
+## [0.11.2] — 2026-10-25 — gerçek belge kanıtı
+
+- `~/Downloads/ekler` ile PDF/UDF/JPG hattı gerçek veride doğrulandı
+- Taranmış PDF'te metin katmanı yok (8 sayfada 7 karakter) → OCR zorunlu
+- `tur` dil paketi eksik: OCR `eng` ile çalışıyor, Türkçe karakterlerde hata
+- Sonuçlar: `docs/releases/F06/REAL-DOCS.md`
 
 ## [0.11.1] — 2026-10-25 — CLI hook izolasyonu
 
