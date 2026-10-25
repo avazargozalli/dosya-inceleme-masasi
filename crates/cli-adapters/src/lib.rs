@@ -14,6 +14,7 @@ use std::process::Command;
 pub mod arch;
 pub mod attack;
 pub mod capability;
+mod events;
 pub mod exec;
 pub mod probe;
 pub mod residue;
@@ -33,6 +34,7 @@ pub use capability::{
     Capability, CapabilityReport, CapabilityRequirement, CapabilityRow, CapabilityState, HelpProbe,
     LinkState, Mechanism, HELP_TIMEOUT, MATRIX,
 };
+pub use events::{final_message, parse_codex_json_lines, CodexEvent, CodexUsage, EventError};
 pub use exec::{
     clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
     RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
@@ -128,7 +130,15 @@ pub const SPECS: &[AdapterSpec] = &[
         display_name: "Antigravity CLI",
         command: "antigravity",
         version_args: COMMON,
-        allowed_args: &["--print", "--model"],
+        allowed_args: &[
+            "--print",
+            "--model",
+            // `agy --help` (1.4.2) ile doğrulandı.
+            "--output-format",
+            "--json-schema",
+            "--sandbox",
+            "--print-timeout",
+        ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
     },

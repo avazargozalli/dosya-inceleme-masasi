@@ -59,6 +59,9 @@ pub struct RunOutcome {
     /// Kapsam kanıtı: iş dizini izni, `HOME`/`TMPDIR` politikası, stdin
     /// boyutu ve alt sürecin bıraktığı dosyaların sayımı.
     pub scope: RunScope,
+    /// `codex-cli --json` ise ayrıştırılmış olaylar. Çıktı kırpıldıysa boş
+    /// bırakılır — yarım JSONL'den "cevap" uydurulmaz.
+    pub codex_events: Vec<crate::events::CodexEvent>,
 }
 
 /// Yürütmenin **kapsam** kanıtı. İçerik taşımaz: yalnız izin, yol, sayı.
@@ -471,6 +474,14 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     // Kum havuzunda kalan dosyalar sayılır (içerik okunmaz).
     let inventory = crate::sandbox::inventory_of(&workdir.path);
 
+    let codex_events = if req.adapter_id == "codex-cli"
+        && req.args.iter().any(|arg| arg == "--json")
+        && !stdout_truncated
+    {
+        crate::events::parse_codex_json_lines(&stdout_head).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     Ok(RunOutcome {
         status: status.unwrap_or(RunStatus::Signaled),
         stdout_head,
@@ -478,6 +489,7 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         stdout_truncated,
         stderr_truncated,
+        codex_events,
         scope: RunScope {
             workdir: workdir.path.clone(),
             workdir_mode: workdir.mode,
@@ -503,11 +515,18 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
 /// olmadan kullanıcının `SessionStart`/`Stop` hook'ları çalıştı ve çıktıya
 /// karıştı; bu bayraklarla hook satırları kayboldu, model yanıtı korundu.
 pub fn hardened_args(adapter_id: &str, mut args: Vec<String>) -> Vec<String> {
-    if adapter_id == "codex-cli" {
-        for flag in ["--ignore-user-config", "--ignore-rules"] {
-            if !args.iter().any(|arg| arg == flag) {
-                args.push(flag.to_string());
-            }
+    let required: &[&str] = match adapter_id {
+        // Kullanıcı hook/MCP/proje talimatı yüklenmesin.
+        "codex-cli" => &["--ignore-user-config", "--ignore-rules"],
+        // Oturum kalıcılığı kapalı: her çağrı bağımsız, geçmiş taşınmaz.
+        "claude-code" => &["--no-session-persistence"],
+        // Araç/terminal kısıtlı kum havuzu.
+        "antigravity-cli" => &["--sandbox"],
+        _ => &[],
+    };
+    for flag in required {
+        if !args.iter().any(|arg| arg == flag) {
+            args.push((*flag).to_string());
         }
     }
     args
@@ -953,8 +972,23 @@ mod hardening_tests {
     }
 
     #[test]
-    fn other_adapters_are_untouched() {
+    fn claude_requires_no_session_persistence() {
         let args = hardened_args("claude-code", vec!["--print".into()]);
+        assert!(
+            args.contains(&"--no-session-persistence".to_string()),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn antigravity_requires_sandbox() {
+        let args = hardened_args("antigravity-cli", vec!["--print".into()]);
+        assert!(args.contains(&"--sandbox".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn adapters_without_hardening_rules_are_untouched() {
+        let args = hardened_args("kimi-cli", vec!["--print".into()]);
         assert_eq!(args, vec!["--print".to_string()]);
     }
 }
