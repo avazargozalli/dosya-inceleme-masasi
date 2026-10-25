@@ -60,6 +60,11 @@ jobs:
           workspaces: ". -> target"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Rust↔Python entegrasyon testleri `dim_worker` modülünü arar. Bağımlılık
+      # kurmadan yalnız modül yolunu açar; PDF/OCR motoru isteyen testler yine
+      # atlanır (onlar `python` işinde tam bağımlılıkla koşar).
+      - name: Belge worker'ı modül yolu
+        run: echo "PYTHONPATH=$PWD/workers/document" >> "$GITHUB_ENV"
       - run: cargo test --workspace --all-targets
 
   desktop:
