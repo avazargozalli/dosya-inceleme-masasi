@@ -12,8 +12,8 @@
 | F14-T04 PDF rapor | ✅ | `render_report_pdf`, HTML kaçışlı, `Story` ile sayfalama |
 | F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı |
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
-| F14-T07 yedek zamanlaması / bildirim | ⬜ | elle yedek var, otomatik yok |
-| F14-T08 PDF çıktısında Türkçe font gömme | ⬜ | varsayılan font; gömülü font doğrulanmadı |
+| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında gösterilir |
+| F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
 
 ## Dürüst durum
 
