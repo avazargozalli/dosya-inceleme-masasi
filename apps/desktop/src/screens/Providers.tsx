@@ -12,6 +12,7 @@ import {
   type CliResidueMeasure,
   type CliResidueScan,
   type CliSandboxSweep,
+  type WorkerPackageView,
 } from "../lib/api";
 import {
   adapterArchBadge,
@@ -40,6 +41,16 @@ import {
   attackVerdictTone,
   attackWorstVerdict,
 } from "../lib/attack";
+import {
+  PACKAGE_LIMITS,
+  packageStatusText,
+  packageSummary,
+  packageTone,
+  packageWarnings,
+  problemText,
+  roleRows,
+  verificationCounts,
+} from "../lib/package";
 import {
   formatBytes,
   persistenceText,
@@ -109,6 +120,9 @@ export function Providers() {
   const [arch, setArch] = useState<CliArchReport | null>(null);
   const [archBusy, setArchBusy] = useState(false);
   const [archError, setArchError] = useState<ApiError | null>(null);
+  const [pkg, setPkg] = useState<WorkerPackageView | null>(null);
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgError, setPkgError] = useState<ApiError | null>(null);
 
   async function refresh() {
     setBusy(true);
@@ -190,6 +204,18 @@ export function Providers() {
       setArchError(toApiError(e));
     } finally {
       setArchBusy(false);
+    }
+  }
+
+  async function runPackage() {
+    setPkgBusy(true);
+    setPkgError(null);
+    try {
+      setPkg(await api.workerPackageReport());
+    } catch (e) {
+      setPkgError(toApiError(e));
+    } finally {
+      setPkgBusy(false);
     }
   }
 
@@ -321,6 +347,158 @@ export function Providers() {
           <p className="muted small">
             Henüz yoklanmadı. “Yetenekleri sına” dört adaptörün kurulu sürümünü ve <code>--help</code>{" "}
             metnini yoklar; istem gönderilmez.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Yerel worker paketi</h2>
+            <p className="card-sub">
+              Belge worker'ı tek dosya değil, yüzlerce dosyalık bir ağaçtır. Bu düğme paketin
+              manifestini okur ve <strong>her dosyanın sha256'sını yeniden hesaplayarak</strong>{" "}
+              doğrular: eksik, değişmiş ya da manifestte olmayan dosya ayrı yazılır.
+            </p>
+          </div>
+          <button className="btn" disabled={pkgBusy} onClick={() => void runPackage()}>
+            {pkgBusy ? "Doğrulanıyor…" : "Paketi doğrula"}
+          </button>
+        </div>
+
+        {pkgError ? (
+          <div className="notice danger" role="alert">
+            <strong>{pkgError.code}</strong> — {pkgError.message}
+          </div>
+        ) : null}
+
+        {pkg ? (
+          <>
+            <div
+              className="muted small"
+              style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}
+            >
+              <span className={`badge ${packageTone(pkg)}`}>{packageStatusText(pkg)}</span>
+              <span>{packageSummary(pkg.manifest)}</span>
+              {pkg.manifest ? (
+                <span style={MONO}>
+                  {pkg.manifest.buildPlatform} · Python {pkg.manifest.pythonVersion} · PyInstaller{" "}
+                  {pkg.manifest.pyinstallerVersion}
+                </span>
+              ) : null}
+            </div>
+
+            {pkg.verification ? (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  gap: "var(--space-2)",
+                  marginTop: "var(--space-3)",
+                }}
+              >
+                {(() => {
+                  const counts = verificationCounts(pkg.verification);
+                  return (
+                    <>
+                      <div className="card tight">
+                        <div className="muted small">Doğrulanan</div>
+                        <strong>{counts.verified}</strong>
+                      </div>
+                      <div className="card tight">
+                        <div className="muted small">Uyuşmayan</div>
+                        <strong style={{ color: counts.problems > 0 ? "var(--danger)" : undefined }}>
+                          {counts.problems}
+                        </strong>
+                      </div>
+                      <div className="card tight">
+                        <div className="muted small">Fazla dosya</div>
+                        <strong style={{ color: counts.extra > 0 ? "var(--danger)" : undefined }}>
+                          {counts.extra}
+                        </strong>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : null}
+
+            {pkg.packageDir ? (
+              <div className="muted small" style={{ ...MONO, marginTop: "var(--space-2)" }}>
+                {pkg.packageDir}
+              </div>
+            ) : null}
+
+            {roleRows(pkg.manifest).length > 0 ? (
+              <details style={{ marginTop: "var(--space-3)" }}>
+                <summary className="muted small" style={{ cursor: "pointer" }}>
+                  Paket içeriği (roller)
+                </summary>
+                <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                  {roleRows(pkg.manifest).map((row) => (
+                    <li key={row.role}>
+                      {row.label} — {row.count}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+
+            {pkg.verification && pkg.verification.problems.length > 0 ? (
+              <div className="notice danger" style={{ marginTop: "var(--space-2)" }}>
+                <strong>Manifestle uyuşmayan dosyalar</strong>
+                <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                  {pkg.verification.problems.map((problem) => (
+                    <li key={`${problem.path}-${problem.problem}`}>
+                      <code>{problem.path}</code> — {problemText(problem)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {pkg.verification && pkg.verification.extra.length > 0 ? (
+              <div className="notice" style={{ marginTop: "var(--space-2)" }}>
+                <strong>Manifestte olmayan dosyalar</strong>
+                <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+                  {pkg.verification.extra.map((path) => (
+                    <li key={path}>
+                      <code>{path}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="muted small" style={{ marginTop: "var(--space-2)" }}>
+              Tesseract:{" "}
+              <strong>{pkg.tesseractOnPath ? "sistemde bulundu" : "bulunamadı"}</strong> · pakete
+              gömülmez{pkg.manifest?.tesseract.note ? ` — ${pkg.manifest.tesseract.note}` : ""}
+            </div>
+
+            {packageWarnings(pkg).map((warning) => (
+              <div
+                key={warning}
+                className="notice"
+                style={{ fontSize: 12, marginTop: "var(--space-2)" }}
+              >
+                {warning}
+              </div>
+            ))}
+
+            <details style={{ marginTop: "var(--space-3)" }}>
+              <summary className="muted small" style={{ cursor: "pointer" }}>
+                Doğrulamanın sınırları
+              </summary>
+              <p className="muted small" style={{ margin: "var(--space-1) 0 0" }}>
+                {PACKAGE_LIMITS}
+              </p>
+            </details>
+          </>
+        ) : (
+          <p className="muted small">
+            Henüz doğrulanmadı. Paket yoksa (geliştirme kipi) bu bir hata değildir: uygulama
+            worker'ı kaynak ağacından çalıştırır ve kart gerekçeyi yazar.
           </p>
         )}
       </div>

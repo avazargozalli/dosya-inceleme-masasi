@@ -8,6 +8,10 @@ use dim_cli_adapters::{
     discover, find_on_path, run_probe, spec as adapter_spec, DiscoveryState, RunStatus, SPECS,
 };
 use dim_ingest::inventory::DocumentInventory;
+use dim_ingest::packaging::{
+    read_manifest, verify_package, ManifestTotals, PackageVerification, TesseractStatus,
+    WorkerManifest, MANIFEST_FILE,
+};
 use dim_ingest::worker::{dev_worker_dir, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
@@ -515,6 +519,107 @@ mod tests {
         ] {
             assert!(!inventory_mime_supported(mime), "reddedilmeli: {mime:?}");
         }
+    }
+
+    #[test]
+    fn package_report_explains_a_missing_package() {
+        let view = read_worker_package(Path::new("/olmayan/worker/paketi")).expect("rapor");
+        assert!(!view.found);
+        assert!(view.manifest.is_none() && view.verification.is_none());
+        assert!(
+            view.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("geliştirme"),
+            "gerekçe yazılmalı: {:?}",
+            view.note
+        );
+    }
+
+    fn package_fixture() -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("dim-worker-pkg-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(dir.join("_internal")).expect("dizin");
+        std::fs::write(dir.join("dim-worker"), b"ikili").expect("ikili");
+        std::fs::write(dir.join("_internal").join("base_library.zip"), b"arsiv").expect("arsiv");
+        dir
+    }
+
+    fn write_manifest(dir: &Path, tamper: bool) {
+        let binary = if tamper { "baska" } else { "ikili" };
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "workerVersion": "0.1.0",
+            "mode": "onedir",
+            "buildPlatform": "test-arm64",
+            "pythonVersion": "3.12.0",
+            "pyinstallerVersion": "6.11.1",
+            "entryPoint": "dim-worker",
+            "totals": {"files": 2, "symlinks": 0, "bytes": 10, "truncated": false, "unsafeLinks": 0},
+            "roles": {"bootloader": 1, "stdlib_archive": 1},
+            "tesseract": {"bundled": false, "note": "sistemde kurulu olmalı"},
+            "files": [
+                {"path": "dim-worker", "role": "bootloader", "kind": "file",
+                 "bytes": binary.len(), "sha256": hex::encode(Sha256::digest(binary.as_bytes()))},
+                {"path": "_internal/base_library.zip", "role": "stdlib_archive", "kind": "file",
+                 "bytes": 5, "sha256": hex::encode(Sha256::digest(b"arsiv"))}
+            ]
+        });
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            serde_json::to_string(&manifest).expect("json"),
+        )
+        .expect("manifest");
+    }
+
+    #[test]
+    fn package_report_verifies_a_synthetic_package() {
+        let dir = package_fixture();
+        write_manifest(&dir, false);
+        let view = read_worker_package(&dir).expect("rapor");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(view.found, "{:?}", view.note);
+        let manifest = view.manifest.expect("manifest");
+        assert_eq!(manifest.worker_version, "0.1.0");
+        assert_eq!(manifest.totals.files, 2);
+        assert_eq!(manifest.roles.get("bootloader"), Some(&1));
+        let verification = view.verification.expect("doğrulama");
+        assert!(verification.ok, "{verification:?}");
+        assert_eq!(verification.verified, 2);
+        assert!(verification.entry_point_present);
+    }
+
+    #[test]
+    fn package_report_reports_tampering_instead_of_passing() {
+        let dir = package_fixture();
+        write_manifest(&dir, true);
+        let view = read_worker_package(&dir).expect("rapor");
+        let _ = std::fs::remove_dir_all(&dir);
+        let verification = view.verification.expect("doğrulama");
+        assert!(!verification.ok, "kurcalama geçmemeli");
+        assert!(verification.problems.iter().any(|p| p.path == "dim-worker"
+            && p.problem == dim_ingest::packaging::PackageProblemKind::HashChanged));
+    }
+
+    #[test]
+    fn package_report_flags_a_package_without_manifest() {
+        let dir = package_fixture();
+        let view = read_worker_package(&dir).expect("rapor");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!view.found);
+        assert!(
+            view.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("manifest"),
+            "gerekçe yazılmalı: {:?}",
+            view.note
+        );
     }
 
     #[test]
@@ -1348,6 +1453,162 @@ fn bundled_worker_exe() -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|candidate| candidate.is_file())
+}
+
+/// Paketlenmiş worker'ın manifest özeti. Dosya listesi arayüze taşınmaz
+/// (yüzlerce satır); yalnız sayılar, roller ve sürüm künyesi.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPackageManifestView {
+    pub worker_version: String,
+    pub mode: String,
+    pub build_platform: String,
+    pub python_version: String,
+    pub pyinstaller_version: String,
+    pub entry_point: String,
+    pub totals: ManifestTotals,
+    pub roles: std::collections::BTreeMap<String, u64>,
+    pub tesseract: TesseractStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPackageView {
+    /// Paket bulundu ve doğrulama koştu mu. `false` bir hata değil: geliştirme
+    /// kipinde paket yoktur, uygulama kaynak ağacından çalışır.
+    pub found: bool,
+    pub package_dir: Option<String>,
+    pub note: Option<String>,
+    pub manifest: Option<WorkerPackageManifestView>,
+    pub verification: Option<PackageVerification>,
+    /// Tesseract ikilisi pakete gömülmedi (bilinçli); sistemde PATH'te mi?
+    pub tesseract_on_path: bool,
+}
+
+/// PATH üzerinde `tesseract` ikilisini arar. Süreç başlatılmaz, dosya
+/// çalıştırılmaz — yalnız varlık. Sürüm/dil verisi bu komutun kapsamı dışında.
+fn tesseract_on_path() -> bool {
+    let name = if cfg!(windows) {
+        "tesseract.exe"
+    } else {
+        "tesseract"
+    };
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+        .unwrap_or(false)
+}
+
+fn manifest_view(manifest: &WorkerManifest) -> WorkerPackageManifestView {
+    WorkerPackageManifestView {
+        worker_version: manifest.worker_version.clone(),
+        mode: manifest.mode.clone(),
+        build_platform: manifest.build_platform.clone(),
+        python_version: manifest.python_version.clone(),
+        pyinstaller_version: manifest.pyinstaller_version.clone(),
+        entry_point: manifest.entry_point.clone(),
+        totals: manifest.totals.clone(),
+        roles: manifest.roles.clone(),
+        tesseract: manifest.tesseract.clone(),
+    }
+}
+
+/// Paket dizinini manifeste karşı doğrular. Dizin/manifest yokluğu **hata
+/// değil**, `found=false` + gerekçe; bozuk manifest ise `E_WORKER_PACKAGE`.
+fn read_worker_package(dir: &Path) -> Result<WorkerPackageView, ApiError> {
+    let entry_point = dir.join("dim-worker");
+    if !dir.is_dir() || !entry_point.is_file() {
+        return Ok(WorkerPackageView {
+            found: false,
+            package_dir: None,
+            note: Some(
+                "Paketlenmiş worker bulunamadı: uygulama geliştirme kipinde kaynak ağacından çalışıyor."
+                    .to_string(),
+            ),
+            manifest: None,
+            verification: None,
+            tesseract_on_path: tesseract_on_path(),
+        });
+    }
+    if !dir.join(MANIFEST_FILE).is_file() {
+        return Ok(WorkerPackageView {
+            found: false,
+            package_dir: Some(dir.to_string_lossy().to_string()),
+            note: Some(
+                "Paket var ama manifesti yok: bütünlük doğrulanamaz. `scripts/build-worker.sh` ile yeniden paketleyin."
+                    .to_string(),
+            ),
+            manifest: None,
+            verification: None,
+            tesseract_on_path: tesseract_on_path(),
+        });
+    }
+    let manifest = read_manifest(dir).map_err(|error| {
+        ApiError::new(
+            error.code(),
+            &format!("Worker manifesti okunamadı: {error}"),
+        )
+    })?;
+    let verification = verify_package(dir, &manifest).map_err(|error| {
+        ApiError::new(
+            error.code(),
+            &format!("Worker paketi doğrulanamadı: {error}"),
+        )
+    })?;
+    Ok(WorkerPackageView {
+        found: true,
+        package_dir: Some(dir.to_string_lossy().to_string()),
+        note: None,
+        manifest: Some(manifest_view(&manifest)),
+        verification: Some(verification),
+        tesseract_on_path: tesseract_on_path(),
+    })
+}
+
+/// Paketlenmiş worker'ın bütünlüğünü bildirir (yazmaz). Ağır iş (sha256)
+/// `spawn_blocking` içinde; kasa kilidi tutulmaz.
+#[tauri::command]
+pub async fn worker_package_report(
+    state: State<'_, AppState>,
+) -> Result<WorkerPackageView, ApiError> {
+    let dir = bundled_worker_exe().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let joined = tauri::async_runtime::spawn_blocking(move || -> Result<WorkerPackageView, (String, String)> {
+        match dir {
+            Some(dir) => read_worker_package(&dir).map_err(|err| (err.code.to_string(), err.message.clone())),
+            None => Ok(WorkerPackageView {
+                found: false,
+                package_dir: None,
+                note: Some(
+                    "Paketlenmiş worker bulunamadı: uygulama geliştirme kipinde kaynak ağacından çalışıyor."
+                        .to_string(),
+                ),
+                manifest: None,
+                verification: None,
+                tesseract_on_path: tesseract_on_path(),
+            }),
+        }
+    })
+    .await
+    .map_err(|_| ApiError::new("E_WORKER_PACKAGE", "Paket doğrulaması tamamlanamadı."))?;
+    let view = joined.map_err(|(code, message)| ApiError::new(&code, &message))?;
+
+    // Denetime yalnız sayı/durum yazılır: dosya adları ve tam yol yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "found": view.found,
+                "manifestFiles": view.manifest.as_ref().map(|m| m.totals.files),
+                "manifestBytes": view.manifest.as_ref().map(|m| m.totals.bytes),
+                "verified": view.verification.as_ref().map(|v| v.verified),
+                "problems": view.verification.as_ref().map(|v| v.problem_count),
+                "extra": view.verification.as_ref().map(|v| v.extra_count),
+                "ok": view.verification.as_ref().map(|v| v.ok),
+                "tesseractOnPath": view.tesseract_on_path,
+            });
+            let _ = db.append_audit("worker_package", None, "verify", "local-user", &metadata)?;
+        }
+    }
+    Ok(view)
 }
 
 fn spawn_worker() -> Result<WorkerClient, ApiError> {

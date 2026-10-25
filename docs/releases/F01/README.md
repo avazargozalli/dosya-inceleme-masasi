@@ -8,7 +8,7 @@
 | İş | Deney | Durum | Kanıt |
 |---|---|---|---|
 | F01-T01 | Tauri/Rust/React üç hedefte derleme | ✅ 7/7 iş yeşil (Ubuntu, macOS, Tauri check, Windows ayrı) | `.github/workflows/ci.yml` |
-| F01-T02 | PyInstaller onedir + PyMuPDF + Tesseract çevrimdışı | ✅ Paket `.app` içinde; `ping` + `capabilities` gerçek koşu (macOS arm64) | `scripts/build-worker.sh`, `docs/releases/F02/README.md` |
+| F01-T02 | PyInstaller onedir + PyMuPDF + Tesseract çevrimdışı | ✅ Ölçüldü (macOS arm64): 118 dosya + 18 bağ · 75,6 MiB · manifest 136/136 doğrulandı · ağ kapalı sandbox'ta gerçek çıkarım. Tesseract **gömülmedi** | `scripts/build-worker.sh`, `scripts/worker_manifest.py`, `scripts/verify-worker-offline.py`, `crates/ingest/src/packaging.rs`, `docs/releases/F01/PACKAGING.md` |
 | F01-T03 | SQLCipher/FTS5/WAL açık metin işaretçi taraması | ✅ Ölçüldü (sınırlar aşağıda) | `crates/storage/tests/plaintext.rs` (6), `crates/ingest/tests/worker_temp_plaintext.rs` (2) |
 | F01-T04 | Streaming AEAD + truncation + kurtarma | ✅ `crates/vault`; parola değiştirme + kurtarma KDF düzeltmesi | `cargo test -p dim-vault` (15 + 3 + 4) |
 | F01-T05 | PDF redaksiyon bağımsız doğrulama | ✅ Ölçüldü (sınırlar aşağıda) | `workers/document/tests/test_redaction_independent.py` (18), `crates/ingest/tests/redaction_hidden_objects.rs` (2), `fixtures/synthetic/redaction-hidden.pdf` |

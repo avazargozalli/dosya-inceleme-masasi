@@ -732,6 +732,61 @@ export type CliArchReport = {
   notes: string[];
 };
 
+export type PackageProblemKind =
+  | "missing"
+  | "sizeChanged"
+  | "hashChanged"
+  | "linkTargetChanged"
+  | "unverifiable"
+  | "wrongKind"
+  | "unreadable"
+  | "unsafeLink";
+
+export type PackageProblem = {
+  path: string;
+  problem: PackageProblemKind;
+  detail?: string | null;
+};
+
+export type PackageVerification = {
+  verified: number;
+  problemCount: number;
+  problems: PackageProblem[];
+  extraCount: number;
+  extra: string[];
+  totalBytes: number;
+  entryPointPresent: boolean;
+  truncated: boolean;
+  ok: boolean;
+};
+
+export type WorkerPackageManifest = {
+  workerVersion: string;
+  mode: string;
+  buildPlatform: string;
+  pythonVersion: string;
+  pyinstallerVersion: string;
+  entryPoint: string;
+  totals: {
+    files: number;
+    symlinks: number;
+    bytes: number;
+    truncated: boolean;
+    unsafeLinks: number;
+  };
+  roles: Record<string, number>;
+  tesseract: { bundled: boolean; note?: string | null };
+};
+
+export type WorkerPackageView = {
+  found: boolean;
+  packageDir: string | null;
+  note: string | null;
+  manifest: WorkerPackageManifest | null;
+  verification: PackageVerification | null;
+  tesseractOnPath: boolean;
+};
+
 export type CliAttackVerdict =
   | "triggered"
   | "silent_guarded"
@@ -1484,6 +1539,7 @@ export const api = {
     invoke<CliProbeView>("provider_probe_run", { input: { adapterId } }),
   providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
   cliArchReport: () => invoke<CliArchReport>("cli_arch_report"),
+  workerPackageReport: () => invoke<WorkerPackageView>("worker_package_report"),
   cliCapabilityMatrix: () => invoke<CliCapabilityMatrix>("cli_capability_matrix"),
   cliAttackProbe: () => invoke<CliAttackReport>("cli_attack_probe"),
   cliResidueScan: (adapterId: string) =>
