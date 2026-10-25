@@ -257,6 +257,13 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
                 "engineVersion": result.engine_version,
                 "ocrVerified": result.ocr_verified,
                 "engines": result.engines,
+                "streamsScanned": result.streams_scanned,
+                "streamsBinary": result.streams_binary,
+                "streamsUnreadable": result.streams_unreadable,
+                "annotationsRemoved": result.annotations_removed,
+                "offpageSpansRemoved": result.offpage_spans_removed,
+                "scriptsRemoved": result.scripts_removed,
+                "warnings": result.warnings,
             },
         ), False
 
@@ -277,6 +284,13 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
                 "engineVersion": result.engine_version,
                 "ocrVerified": result.ocr_verified,
                 "engines": result.engines,
+                "streamsScanned": result.streams_scanned,
+                "streamsBinary": result.streams_binary,
+                "streamsUnreadable": result.streams_unreadable,
+                "annotationsRemoved": result.annotations_removed,
+                "offpageSpansRemoved": result.offpage_spans_removed,
+                "scriptsRemoved": result.scripts_removed,
+                "warnings": result.warnings,
             },
         ), False
 
