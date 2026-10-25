@@ -935,7 +935,9 @@ mod tests {
         let mut client = WorkerClient::spawn(
             Path::new("/bin/sh"),
             // 1,2 MB sıfır bayt, tek satır sonu yok: çerçeve sınırı aşılır.
-            &["-c", "head -c 1200000 /dev/zero"],
+            // `sleep` şart: süreç hemen ölürse okuyucu EOF'u (`Disconnected`)
+            // çerçeve hatasından önce görebilir ve test yarışa girer.
+            &["-c", "head -c 1200000 /dev/zero; sleep 5"],
             dir.path(),
         )
         .expect("başlat")
@@ -956,7 +958,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let mut client = WorkerClient::spawn(
             Path::new("/bin/sh"),
-            &["-c", "printf 'bu bir json degil\\n'"],
+            // Süreç satırı yazdıktan sonra **yaşamalı**: hemen ölürse okuyucu
+            // EOF'u görüp `Disconnected` dönebilir (CI'da yaşandı, 25 Eki).
+            &["-c", "printf 'bu bir json degil\\n'; sleep 5"],
             dir.path(),
         )
         .expect("başlat")
