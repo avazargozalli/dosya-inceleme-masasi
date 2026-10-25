@@ -7,6 +7,12 @@ import { Precedents } from "./screens/Precedents";
 import { Redaction } from "./screens/Redaction";
 import { Ai } from "./screens/Ai";
 import { AUTO_LOCK_CHECK_MS, shouldAutoLock } from "./lib/autolock";
+import {
+  BACKUP_CHECK_MS,
+  BACKUP_LAST_KEY,
+  isBackupDue,
+  readBackupSettings,
+} from "./lib/backup-schedule";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
@@ -76,6 +82,25 @@ export function App() {
   useEffect(() => {
     unlocked.current = status.unlocked;
   }, [status.unlocked]);
+
+  // Otomatik yedek: klasör seçilmişse ve süresi dolduysa kasa açıkken alınır.
+  useEffect(() => {
+    const run = async () => {
+      if (!unlocked.current) return;
+      const settings = readBackupSettings();
+      if (!settings.dir) return;
+      if (!isBackupDue(settings.last, Date.now(), settings.days)) return;
+      try {
+        await api.vaultBackup(settings.dir);
+        localStorage.setItem(BACKUP_LAST_KEY, new Date().toISOString());
+      } catch {
+        // Sessiz: sonraki kontrolde yeniden denenir; kullanıcıya gürültü yapma.
+      }
+    };
+    const timer = setInterval(() => void run(), BACKUP_CHECK_MS);
+    void run();
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const bump = () => {

@@ -40,3 +40,28 @@ def test_pdf_report_contains_text_and_escapes_html():
     assert "Ödeme yapılmadı" in text
     # HTML kaçışlandığı için etiket metin olarak görünür, çalışmaz.
     assert "<script>" in text
+
+
+TR_PAYLOAD = {
+    "title": "Kira dosyası — ğüşıöç İĞÜŞÖÇ",
+    "meta": {"Dosya": "Çağrı Öztürk"},
+    "sections": [
+        {"heading": "Kronoloji", "rows": [["Tarih", "Başlık"], ["2026-01-01", "Ödeme yapılmadı ğüşiöç"]]},
+    ],
+}
+
+
+def test_pdf_report_embeds_unicode_font_and_keeps_turkish():
+    """PDF raporu gömülü Type0 font kullanmalı; aksi hâlde ğ/ş/ı/ö/ç kaybolur."""
+    pymupdf = pytest.importorskip("pymupdf")
+    data = render_report_pdf(TR_PAYLOAD)
+    document = pymupdf.open(stream=data, filetype="pdf")
+    try:
+        fonts = document.get_page_fonts(0)
+        assert fonts, "gömülü font bulunamadı"
+        assert any(entry[2] == "Type0" for entry in fonts), fonts
+        text = document[0].get_text("text")
+        for char in "ğüşıöçİĞÜŞÖÇ":
+            assert char in text, f"{char!r} kayboldu: {text[:120]!r}"
+    finally:
+        document.close()

@@ -11,6 +11,12 @@ import {
 } from "../lib/api";
 import type { VaultGcResult } from "../lib/api";
 import {
+  BACKUP_DAYS_KEY,
+  BACKUP_DIR_KEY,
+  BACKUP_LAST_KEY,
+  readBackupSettings,
+} from "../lib/backup-schedule";
+import {
   backupStatusText,
   backupVersionLabel,
   backupWarnings,
@@ -30,6 +36,7 @@ export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [gc, setGc] = useState<VaultGcResult | null>(null);
+  const [autoBackup, setAutoBackup] = useState(() => readBackupSettings());
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPassword2, setNewPassword2] = useState("");
@@ -379,6 +386,60 @@ export function Settings() {
             Kasa kilitliyken yedek alınamaz. Yedeği kasa dosyasından ayrı bir diskte saklayın.
           </p>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Otomatik yedek</h2>
+            <p className="card-sub">
+              Klasör seçilirse kasa açıkken süresi dolunca yedek alınır; sonuç kayda geçer.
+            </p>
+          </div>
+          <button
+            className="btn"
+            onClick={async () => {
+              const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörü seç" });
+              if (typeof picked !== "string") return;
+              localStorage.setItem(BACKUP_DIR_KEY, picked);
+              localStorage.setItem(BACKUP_DAYS_KEY, "7");
+              setAutoBackup(readBackupSettings());
+            }}
+          >
+            Klasör seç
+          </button>
+        </div>
+        <dl className="kv">
+          <dt>Klasör</dt>
+          <dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{autoBackup.dir || "seçilmedi"}</dd>
+          <dt>Aralık</dt>
+          <dd>{autoBackup.days} gün</dd>
+          <dt>Son yedek</dt>
+          <dd>{autoBackup.last ? new Date(autoBackup.last).toLocaleString("tr-TR") : "hiç"}</dd>
+        </dl>
+        <div className="row" style={{ gap: 6 }}>
+          <button
+            className="btn ghost"
+            disabled={!autoBackup.dir}
+            onClick={() => {
+              localStorage.removeItem(BACKUP_DIR_KEY);
+              setAutoBackup(readBackupSettings());
+            }}
+          >
+            Otomatik yedeği kapat
+          </button>
+          <button
+            className="btn ghost"
+            disabled={!autoBackup.last}
+            onClick={() => {
+              localStorage.removeItem(BACKUP_LAST_KEY);
+              setAutoBackup(readBackupSettings());
+            }}
+            title="Bir sonraki kontrolde yeniden yedek alınır"
+          >
+            Sıfırla
+          </button>
+        </div>
       </div>
 
       <div className="card">

@@ -368,6 +368,13 @@ impl WorkerClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        // F01-T07: worker ortamı devralmaz. Kullanıcının kabuk sırları (token,
+        // AWS/OPENAI anahtarları, HOME) çocuk sürece geçmez; yalnız çalışması
+        // için gereken asgari değişkenler verilir.
+        command.env_clear();
+        for (name, value) in worker_env() {
+            command.env(name, value);
+        }
         for name in removed_env {
             command.env_remove(name);
         }
@@ -711,6 +718,22 @@ pub fn dev_python_with_module(worker_dir: &Path, module: &str) -> Option<PathBuf
             .status()
             .is_ok_and(|status| status.success())
     })
+}
+
+/// Worker sürecine geçen **asgari** ortam. `env_clear()` sonrası yalnız bu
+/// değişkenler verilir; sırlar ve kullanıcı oturumu devralınmaz.
+///
+/// Kapsam sınırı (dürüst): ağ erişimi bu katmanda engellenemez — worker
+/// yalnız stdin/stdout ile konuşur ve ürün ona dosya yolu değil bayt verir,
+/// ancak işletim sistemi düzeyinde ağ yalıtımı yoktur (F01-T07).
+pub fn worker_env() -> Vec<(String, std::ffi::OsString)> {
+    let mut out = Vec::new();
+    for name in ["PATH", "LANG", "LC_ALL"] {
+        if let Some(value) = std::env::var_os(name) {
+            out.push((name.to_string(), value));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1059,5 +1082,28 @@ mod tests {
             }
             other => panic!("beklenmeyen: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod env_isolation_tests {
+    use super::worker_env;
+
+    #[test]
+    fn worker_env_is_allowlisted_and_leaks_no_secrets() {
+        std::env::set_var("DIM_TEST_SECRET_TOKEN", "s3cr3t");
+        let env = worker_env();
+        let names: Vec<&str> = env.iter().map(|(name, _)| name.as_str()).collect();
+
+        assert!(!names.contains(&"DIM_TEST_SECRET_TOKEN"), "{names:?}");
+        assert!(!names.contains(&"HOME"), "{names:?}");
+        assert!(!names.contains(&"OPENAI_API_KEY"), "{names:?}");
+        for name in &names {
+            assert!(
+                ["PATH", "LANG", "LC_ALL"].contains(name),
+                "beklenmeyen değişken: {name}"
+            );
+        }
+        std::env::remove_var("DIM_TEST_SECRET_TOKEN");
     }
 }
