@@ -23,6 +23,25 @@ export type VaultStatus = {
   preUpdateBackup: string | null;
 };
 
+/** Kasanın yanında bulunan güncelleme öncesi yedek (F16-T03). */
+export type PreUpdateBackup = {
+  fileName: string;
+  claimedVersion: number;
+  verifiedVersion: number | null;
+  sizeBytes: number;
+  modifiedAt: string | null;
+  problem: string | null;
+  usable: boolean;
+  nameMismatch: boolean;
+};
+
+export type RollbackResult = {
+  backupFile: string;
+  restoredVersion: number;
+  resumedVersion: number;
+  safetyCopy: string;
+};
+
 export type CaseRow = {
   id: string;
   title: string;
@@ -1336,6 +1355,9 @@ export const api = {
     invoke<void>("vault_change_password", { oldPassword, newPassword }),
   vaultRestore: (backupDir: string, destDir: string) =>
     invoke<RestoreResult>("vault_restore", { backupDir, destDir }),
+  vaultPreUpdateBackups: () => invoke<PreUpdateBackup[]>("vault_pre_update_backups"),
+  vaultRollbackPreUpdate: (backupFile: string, confirmation: string) =>
+    invoke<RollbackResult>("vault_rollback_pre_update", { backupFile, confirmation }),
   status: () => invoke<VaultStatus>("vault_status"),
 
   caseList: (includeArchived = false) => invoke<CaseRow[]>("case_list", { includeArchived }),

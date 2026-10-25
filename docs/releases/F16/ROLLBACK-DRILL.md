@@ -1,9 +1,13 @@
 # F16 — Atomik güncelleme ve geri dönüş tatbikatı
 
-- **Durum:** Tatbikat yapıldı (otomatik, gerçek dosyalarla)
-- **Tarih:** 2026-10-24
+- **Durum:** Tatbikat yapıldı (otomatik, gerçek dosyalarla) ve **uygulama içi
+  akışa bağlandı** (Ayarlar → “Güncelleme öncesi yedeğe dön”)
+- **Tarih:** 2026-10-24 (tatbikat) · 2026-10-25 (uygulama içi akış)
 - **Kod:** `crates/storage/src/lib.rs` (güncelleme zarfı + `rollback_vault`),
-  `crates/storage/src/upgrade_tests.rs` (6 test)
+  `crates/storage/src/pre_update.rs` (yedek keşfi + `rollback_and_resume`),
+  `crates/storage/src/upgrade_tests.rs` (7 test),
+  `apps/desktop/src-tauri/src/commands.rs`
+  (`vault_pre_update_backups`, `vault_rollback_pre_update`)
 
 Bu belge bir **tatbikat kaydıdır**: her adım gerçek SQLCipher kasa dosyasıyla,
 gerçek migrasyon dosyalarıyla ve gerçek geri dönüş koduyla çalıştırıldı.
@@ -29,6 +33,13 @@ Aşağıdaki davranışlar testle sabitlendi; hiçbiri "tasarım niyeti" değild
    `-wal` yeni dosyaya uygulanır ve kasa bozulur; bu yüzden taşınıyor.
 5. **Bozuk yedek reddedilir.** Yedek dosyası bozulmuşsa `rollback_vault`
    `E_DB_MIGRATION_BACKUP` verir ve **mevcut kasa dosyasına dokunmaz**.
+6. **Uygulama içi akış kilitler → geri koyar → yeniden açar.**
+   `rollback_and_resume` yedeği geri koyduktan sonra kasayı açar ve **güncel
+   şemaya ilerletir**; dönen bağlantı kullanıma hazırdır. Geri dönüş düşerse
+   `Err` döner ve çağıran kasayı eski hâlinde yeniden açar (kullanıcı kilitli
+   kalmaz). Geri dönüş başarılı olup yeniden açılış düşerse
+   `E_DB_ROLLBACK_REOPEN` **hangi sürümün geri konduğunu ve güvenlik
+   kopyasının yolunu** taşır; sessizce yutulmaz.
 
 ## Yedek dosyası nerede
 
@@ -56,23 +67,69 @@ Geri dönüşün güvenlik kopyası: `vault.db.rollback-<unix>.safety`.
 7. Yedek bozulup `rollback_vault` çağrılır → hata; ana kasa v13'te ve verisi
    yerinde.
 
+## Uygulama içi akış (Ayarlar → “Güncelleme öncesi yedeğe dön”)
+
+Arayüzdeki düğme gerçek çekirdeği çalıştırır; local state ile “geri döndü”
+görüntüsü üretilmez.
+
+1. **Liste — `vault_pre_update_backups`:** kasanın yanındaki
+   `<kasa>.db.v<N>-pre-update.bak` dosyaları bulunur. Her dosya **salt okunur**
+   açılıp anahtarı ve `PRAGMA integrity_check` sonucu doğrulanır; addan okunan
+   sürüm ile dosyanın bildirdiği sürüm ayrı alanlardır. Doğrulama yedeği
+   değiştirmez; kendi bıraktığı boş `-wal`/`-shm` yan dosyalarını temizler,
+   **dolu** bir `-wal` görürse bunu sorun olarak bildirir. Bozuk ya da başka
+   kasanın yedeği listede **görünür** ama `usable=false` olur ve düğme kapalı
+   kalır; neden yazılır.
+2. **Onay:** düğme, kullanıcı onay alanına birebir `GERİ DÖN` yazmadan
+   açılmaz (`E_ROLLBACK_CONFIRM`). Tek tıkla veri geri alma yok.
+3. **Seçim:** istemci **yol göndermez**, listedeki dosya adını gönderir; ad
+   yeniden doğrulanır, yol ayırıcısı/`..` reddedilir ve ad listede bulunanla
+   birebir eşleşmek zorundadır (`E_ROLLBACK_BACKUP`).
+4. **Geri dönüş:** kasa kilitlenir (bağlantı + önizleme belleği kapanır —
+   Windows'ta açık dosya yerine konmaz), `rollback_and_resume` yedeği geri
+   koyar, kasayı yeniden açar ve güncel şemaya ilerletir. Geri dönüş öncesi
+   dosya `vault.db.rollback-<unix>.safety` olarak saklanır.
+5. **Denetim:** istek **eski** kasaya (`vault_rollback`/`requested`, şema
+   sürümleri), tamamlanma **geri konan** kasaya
+   (`vault_rollback`/`completed`, `restoredVersion`, `resumedVersion`,
+   `safetyCopy=true`) yazılır. Denetime dosya yolu yazılmaz.
+
+Testler: `pre_update` 4 birim testi (kapsam/bozuk yedek/yanlış anahtar/ad
+uyuşmazlığı/yan dosya temizliği), `upgrade_tests` 1 yeni uçtan uca test
+(`in_app_rollback_restores_old_data_and_resumes_current_schema`: v12 kasa →
+güncelleme → yeni kayıt → liste → geri dönüş → yalnız eski kayıt, şema güncel,
+güvenlik kopyasında iki kayıt, denetim kaydı), komut testleri (ad kapısı, onay
+metni).
+
 ## Komut
 
 ```bash
 cargo test -p dim-storage upgrade_tests
+cargo test -p dim-storage pre_update
 ```
 
 ## Dürüst sınırlamalar
 
-- Tatbikat **kütüphane düzeyinde** yapıldı. Uygulama içinde "geri dön" düğmesi
-  yok: geri dönüş kapalı dosya üzerinde çalışır, çalışan bir kasadan çağrılması
-  ayrı bir akış (kilitle → kapat → geri dön → aç) gerektirir ve bu turda
-  yapılmadı. Kullanıcı yedeği Ayarlar'dan alıp yeni kasaya geri yükleyebilir
-  (`vault_restore`), ancak bu **aynı kasayı yerinde geri alma** değildir.
-- Gerçek bir sürüm yükseltmesi (imzalı güncelleme paketi) denenmedi: updater
-  `active=false` (ADR-0012, imza kapsam dışı). Tatbikat şema güncellemesini
-  ölçer, ikili (binary) geri dönüşü değil.
+- **İkili (uygulama) geri dönüşü yok.** Uygulama içi düğme **veriyi**
+  güncelleme öncesi hâline döndürür ve kasayı bu uygulamanın şema sürümüne
+  yeniden yükseltir. Eski bir uygulama sürümüne dönmek kurulumla yapılır; bu
+  akış onu yapmaz ve yaptığını iddia etmez. Gerçek bir imzalı sürüm
+  yükseltmesi denenmedi (updater `active=false`, ADR-0012).
+- **Ayrı kasaya kopyalama bu kartta yok.** Plan “güvenli dönüş” olarak
+  doğrulanmış snapshot'ın ayrı kasaya yüklenmesini de sayar; bunun için
+  Ayarlar'daki “Yedek al / Yedekten geri yükle” akışı kullanılır (tam yedek
+  klasörü). Güncelleme öncesi `.bak` dosyasını tek başına yeni kasaya açma
+  düğmesi **yok**.
+- **Blob'lar geri alınmaz.** Güncelleme öncesi yedek yalnız veritabanıdır
+  (`sqlcipher_export`); şifreli blob dosyaları şema güncellemesinden
+  etkilenmediği için yerinde kalır. Blob'ları da geri almak isteyen tam yedek
+  (`vault_backup`) kullanmalıdır.
+- **Disk:** geri dönüş sırasında kasa dosyası bir kez güvenlik kopyası olarak
+  kopyalanır; en az kasa boyutu kadar boş alan gerekir. Yetersiz alanda işlem
+  hata verir, kasa dosyası yerinde kalır (test edilmedi — F15-T06).
+- **Tek yazıcı:** geri dönüş kasa kilidi altında çalışır; süre kasa boyutu ve
+  migrasyon sayısıyla artar, bu sırada arayüzün diğer kasa komutları bekler.
+- **Arayüz görsel QA'sı yok:** Tauri penceresi bu ortamda açılmadı; kart
+  typecheck + birim testleri + üretim derlemesiyle doğrulandı, gerçek tıklama
+  ve ekran görüntüsü doğrulaması yapılmadı.
 - Disk dolması / süreç öldürme senaryoları bu tatbikatta yok (F15-T06).
-- Yedek `sqlcipher_export` ile alınır; çok büyük kasalarda güncelleme anında
-  ek disk alanı gerekir (kasa boyutu kadar). Bu, güncelleme öncesi boş alan
-  kontrolünü zorunlu kılar — uygulama tarafında henüz ölçülmüyor.

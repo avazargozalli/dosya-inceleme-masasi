@@ -206,6 +206,185 @@ pub fn vault_status(state: State<'_, AppState>) -> VaultStatus {
     }
 }
 
+/// Geri dönüş onayı. Kullanıcı bu metni birebir yazmadan düğme çalışmaz;
+/// tek tıkla veri geri alma kazasına izin verilmez.
+pub const ROLLBACK_CONFIRMATION: &str = "GERİ DÖN";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreUpdateBackupView {
+    /// Seçim anahtarı; istemci **yol** göndermez, bu adı gönderir.
+    pub file_name: String,
+    pub claimed_version: u32,
+    pub verified_version: Option<u32>,
+    pub size_bytes: u64,
+    pub modified_at: Option<String>,
+    pub problem: Option<String>,
+    pub usable: bool,
+    /// Dosya adı ile dosyanın bildirdiği sürüm ayrışıyor (yeniden adlandırılmış olabilir).
+    pub name_mismatch: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackView {
+    pub backup_file: String,
+    /// Yedeğin taşıdığı, geri konan şema sürümü.
+    pub restored_version: u32,
+    /// Yeniden açılıştan sonra kasanın bulunduğu (güncel) şema sürümü.
+    pub resumed_version: u32,
+    /// Geri dönüş öncesi dosyanın saklandığı güvenlik kopyası.
+    pub safety_copy: String,
+}
+
+/// Kasa açıkken kullanılabilir geri dönüş bağlamı: veritabanı yolu ve anahtar.
+fn rollback_context(guard: &crate::state::VaultState) -> Result<(PathBuf, DatabaseKey), ApiError> {
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_id = guard
+        .vault_id
+        .as_deref()
+        .ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let key = DatabaseKey::derive_from_master(vault.master_key(), vault_id)?;
+    let db_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("vault.db");
+    Ok((db_path, key))
+}
+
+/// Kasanın yanındaki güncelleme öncesi yedekleri listeler ve doğrular.
+/// Doğrulama yedeği değiştirmez; liste boşsa boş döner (uydurma kayıt yok).
+#[tauri::command]
+pub fn vault_pre_update_backups(
+    state: State<'_, AppState>,
+) -> Result<Vec<PreUpdateBackupView>, ApiError> {
+    let guard = state.lock();
+    let (db_path, key) = rollback_context(&guard)?;
+    let list = dim_storage::pre_update_backups(&db_path, &key)?;
+    Ok(list
+        .into_iter()
+        .map(|backup| {
+            // Türetilmiş alanlar taşımadan **önce** hesaplanır.
+            let usable = backup.usable();
+            let name_mismatch = backup.name_mismatch();
+            PreUpdateBackupView {
+                file_name: backup.file_name,
+                claimed_version: backup.claimed_version,
+                verified_version: backup.verified_version,
+                size_bytes: backup.size_bytes,
+                modified_at: backup.modified_at,
+                problem: backup.problem,
+                usable,
+                name_mismatch,
+            }
+        })
+        .collect())
+}
+
+/// Yedek seçimi yalnız **dosya adıyla** yapılır; istemciden yol kabul edilmez.
+/// Ad, listede bulunanla birebir eşleşmek zorunda.
+fn rollback_backup_name(input: &str) -> Result<&str, ApiError> {
+    let name = input.trim();
+    if name.is_empty()
+        || name != input
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        return Err(ApiError::new(
+            "E_ROLLBACK_BACKUP",
+            "Yedek adı geçersiz. Yedek listeden seçilir.",
+        ));
+    }
+    Ok(name)
+}
+
+/// Onay metni birebir eşleşmeli (büyük/küçük harf ve Türkçe harfler dahil).
+fn rollback_confirmed(input: &str) -> bool {
+    input.trim() == ROLLBACK_CONFIRMATION
+}
+
+/// Seçilen güncelleme öncesi yedeğe **yerinde** döner: kasayı kilitler, yedeği
+/// geri koyar, kasayı yeniden açar ve güncel şemaya ilerletir.
+///
+/// İkili (binary) sürüm düşürülmez: veri güncelleme öncesi hâline döner, şema
+/// bu uygulamanın sürümüne yeniden yükseltilir. Geri dönüş öncesi dosya
+/// güvenlik kopyası olarak saklanır.
+#[tauri::command]
+pub fn vault_rollback_pre_update(
+    state: State<'_, AppState>,
+    backup_file: String,
+    confirmation: String,
+) -> Result<RollbackView, ApiError> {
+    if !rollback_confirmed(&confirmation) {
+        return Err(ApiError::new(
+            "E_ROLLBACK_CONFIRM",
+            "Geri dönüş için onay metni birebir yazılmalı: GERİ DÖN",
+        ));
+    }
+    let name = rollback_backup_name(&backup_file)?;
+
+    let mut guard = state.lock();
+    let (db_path, key) = rollback_context(&guard)?;
+    let backup = dim_storage::pre_update_backups(&db_path, &key)?
+        .into_iter()
+        .find(|entry| entry.file_name == name)
+        .ok_or_else(|| {
+            ApiError::new(
+                "E_ROLLBACK_BACKUP",
+                "Bu ada sahip güncelleme öncesi yedek bulunamadı.",
+            )
+        })?;
+    if !backup.usable() {
+        return Err(ApiError::new(
+            "E_ROLLBACK_BACKUP",
+            "Seçilen yedek doğrulanamadı; geri dönüş başlatılmadı.",
+        ));
+    }
+
+    // İstek, geri dönüşten **önceki** kasaya yazılır; tamamlanma kaydı geri
+    // konan kasaya yazılır. İkisi birlikte tek bir olayı anlatır.
+    if let Some(db) = guard.db.as_ref() {
+        let _ = db.append_audit(
+            "vault_rollback",
+            None,
+            "requested",
+            "local-user",
+            &serde_json::json!({
+                "fromSchema": db.schema_version(),
+                "backupVersion": backup.verified_version,
+            }),
+        );
+    }
+
+    // Dosya yerine konmadan önce bütün bağlantılar kapanmalı (Windows kilidi).
+    guard.db = None;
+    state.preview_lock().clear();
+
+    match dim_storage::rollback_and_resume(&db_path, &backup.path, &key) {
+        Ok(resumed) => {
+            let resumed_version = resumed.database.schema_version();
+            guard.db = Some(resumed.database);
+            Ok(RollbackView {
+                backup_file: backup.file_name,
+                restored_version: resumed.restored_version,
+                resumed_version,
+                safety_copy: resumed.safety_copy.to_string_lossy().to_string(),
+            })
+        }
+        Err(err) => {
+            // Geri dönüş başlamadıysa kasa eski hâlinde yeniden açılır; kullanıcı
+            // kilitli kalmaz. `E_DB_ROLLBACK_REOPEN` ise dosya zaten geri konmuş
+            // durumdadır ve hata mesajı hangi sürümün geri konduğunu taşır.
+            if let Ok(database) = Database::open(&db_path, &key) {
+                guard.db = Some(database);
+            }
+            Err(ApiError::from(err))
+        }
+    }
+}
+
 #[tauri::command]
 pub fn case_create(state: State<'_, AppState>, input: NewCase) -> Result<Case, ApiError> {
     let guard = state.lock();
@@ -288,6 +467,38 @@ mod tests {
     #[test]
     fn empty_path_rejected() {
         assert_eq!(resolve_vault_path("   ").unwrap_err().code, "E_PATH");
+    }
+
+    #[test]
+    fn rollback_accepts_only_a_bare_backup_file_name() {
+        assert_eq!(
+            rollback_backup_name("vault.db.v12-pre-update.bak").expect("ad"),
+            "vault.db.v12-pre-update.bak"
+        );
+        for bad in [
+            "",
+            "   ",
+            " vault.db.v12-pre-update.bak",
+            "../vault.db.v12-pre-update.bak",
+            "/tmp/vault.db.v12-pre-update.bak",
+            "..\\vault.db.v12-pre-update.bak",
+            "alt/vault.db.v12-pre-update.bak",
+        ] {
+            assert_eq!(
+                rollback_backup_name(bad).unwrap_err().code,
+                "E_ROLLBACK_BACKUP",
+                "reddedilmeli: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_needs_the_exact_confirmation() {
+        assert!(rollback_confirmed("GERİ DÖN"));
+        assert!(rollback_confirmed("  GERİ DÖN  "), "kırpma hoş görülür");
+        for bad in ["", "GERI DON", "geri dön", "GERİ DÖN!", "onayla"] {
+            assert!(!rollback_confirmed(bad), "reddedilmeli: {bad:?}");
+        }
     }
 
     #[test]

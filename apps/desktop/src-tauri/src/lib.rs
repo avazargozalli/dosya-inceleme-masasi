@@ -148,6 +148,8 @@ pub fn run() {
             commands::vault_restore,
             commands::vault_gc,
             commands::vault_change_password,
+            commands::vault_pre_update_backups,
+            commands::vault_rollback_pre_update,
             commands::system_info,
         ])
         .run(tauri::generate_context!())

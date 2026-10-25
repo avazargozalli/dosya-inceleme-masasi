@@ -221,6 +221,93 @@ fn rollback_restores_previous_version_and_keeps_safety_copy() {
 }
 
 #[test]
+fn in_app_rollback_restores_old_data_and_resumes_current_schema() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    create_v12(&path);
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    db.conn()
+        .execute(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c-yeni','Yeni dosya','review','active','normal','off','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z')",
+            [],
+        )
+        .expect("yeni kayıt");
+    drop(db);
+
+    // Uygulamanın gördüğü liste: kasanın yanındaki yedek, doğrulanmış sürümüyle.
+    let list = pre_update_backups(&path, &key()).expect("liste");
+    assert_eq!(list.len(), 1, "güncelleme öncesi yedek listelenir");
+    assert_eq!(list[0].claimed_version, 12);
+    assert_eq!(list[0].verified_version, Some(12));
+    assert!(list[0].usable());
+    assert!(!list[0].name_mismatch());
+
+    let resumed = rollback_and_resume(&path, &list[0].path, &key()).expect("geri dönüş");
+    assert_eq!(resumed.restored_version, 12);
+    assert!(resumed.safety_copy.is_file(), "güvenlik kopyası kalır");
+    assert_eq!(
+        resumed.database.schema_version(),
+        CURRENT_SCHEMA_VERSION,
+        "kasa güncel şemaya ilerletilir"
+    );
+
+    // Geri dönen kasa yalnız güncelleme öncesi veriyi taşır; güncelleme
+    // sonrası kayıt güvenlik kopyasında durur.
+    let titles: Vec<String> = {
+        let mut stmt = resumed
+            .database
+            .conn()
+            .prepare("SELECT title FROM cases ORDER BY title")
+            .expect("hazırla");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("sorgu");
+        rows.map(|r| r.expect("satır")).collect()
+    };
+    assert_eq!(titles, vec!["Eski dosya".to_string()]);
+    assert_eq!(
+        case_titles(&resumed.safety_copy),
+        vec!["Eski dosya".to_string(), "Yeni dosya".to_string()]
+    );
+
+    // Yedek dosyası yerinde kalır: geri dönüş onu tüketmez.
+    assert!(list[0].path.is_file(), "yedek silinmez");
+
+    // Denetim kaydı geri konan kasada, sürümlerle; dosya yolu yazılmaz.
+    let (category, operation): (String, String) = resumed
+        .database
+        .conn()
+        .query_row(
+            "SELECT category, operation FROM audit_events WHERE category = 'vault_rollback' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("denetim");
+    assert_eq!(category, "vault_rollback");
+    assert_eq!(operation, "completed");
+    let metadata: String = resumed
+        .database
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE category = 'vault_rollback' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("meta");
+    assert!(
+        metadata.contains("\"restoredVersion\":12"),
+        "meta: {metadata}"
+    );
+    assert!(
+        !metadata.contains("vault.db"),
+        "denetime dosya yolu yazılmaz: {metadata}"
+    );
+}
+
+#[test]
 fn rollback_refuses_corrupt_backup_and_leaves_vault_untouched() {
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("vault.db");

@@ -18,6 +18,12 @@ pub enum StorageError {
     SchemaTooNew { found: u32, expected: u32 },
     #[error("güncelleme öncesi yedek alınamadı veya doğrulanamadı: {reason}")]
     MigrationBackup { reason: String },
+    #[error("veri v{restored_version} sürümüne geri döndü (güvenlik kopyası: {safety_copy}) ama kasa yeniden açılamadı: {reason}")]
+    RollbackReopen {
+        restored_version: u32,
+        safety_copy: String,
+        reason: String,
+    },
     #[error("bütünlük kontrolü başarısız: {0}")]
     Integrity(String),
     #[error("SQL hatası: {0}")]
@@ -83,6 +89,7 @@ impl StorageError {
             Self::Migration { .. } => "E_DB_MIGRATION",
             Self::SchemaTooNew { .. } => "E_DB_SCHEMA_NEWER",
             Self::MigrationBackup { .. } => "E_DB_MIGRATION_BACKUP",
+            Self::RollbackReopen { .. } => "E_DB_ROLLBACK_REOPEN",
             Self::Integrity(_) => "E_DB_INTEGRITY",
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",

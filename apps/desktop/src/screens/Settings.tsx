@@ -1,7 +1,24 @@
 import { useEffect, useState } from "react";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
-import { api, toApiError, type ApiError, type BackupResult, type VaultStatus } from "../lib/api";
+import {
+  api,
+  toApiError,
+  type ApiError,
+  type BackupResult,
+  type PreUpdateBackup,
+  type RollbackResult,
+  type VaultStatus,
+} from "../lib/api";
 import type { VaultGcResult } from "../lib/api";
+import {
+  backupStatusText,
+  backupVersionLabel,
+  backupWarnings,
+  formatBackupDate,
+  rollbackConsequences,
+  rollbackDisabledReason,
+  rollbackSummary,
+} from "../lib/rollback";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -22,10 +39,86 @@ export function Settings() {
   const [restored, setRestored] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preUpdate, setPreUpdate] = useState<PreUpdateBackup[]>([]);
+  const [preUpdateLoaded, setPreUpdateLoaded] = useState(false);
+  const [preUpdateSelected, setPreUpdateSelected] = useState("");
+  const [rollbackConfirm, setRollbackConfirm] = useState("");
+  const [rollbackDone, setRollbackDone] = useState<RollbackResult | null>(null);
 
   useEffect(() => {
     void api.status().then(setStatus).catch((e) => setError(toApiError(e)));
   }, []);
+
+  const unlocked = status?.unlocked ?? false;
+
+  // Kasa açılınca güncelleme öncesi yedekler taranır. Liste çekirdekten gelir;
+  // arayüz kendi başına "yedek var" varsaymaz.
+  useEffect(() => {
+    if (!unlocked) {
+      setPreUpdate([]);
+      setPreUpdateLoaded(false);
+      setPreUpdateSelected("");
+      setRollbackConfirm("");
+      return;
+    }
+    let cancelled = false;
+    void api
+      .vaultPreUpdateBackups()
+      .then((list) => {
+        if (cancelled) return;
+        setPreUpdate(list);
+        setPreUpdateLoaded(true);
+        setPreUpdateSelected(list.find((b) => b.usable)?.fileName ?? "");
+      })
+      .catch((e) => {
+        if (!cancelled) setError(toApiError(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [unlocked]);
+
+  async function refreshPreUpdate() {
+    setBusy(true);
+    setError(null);
+    try {
+      const list = await api.vaultPreUpdateBackups();
+      setPreUpdate(list);
+      setPreUpdateLoaded(true);
+      setPreUpdateSelected(list.find((b) => b.usable)?.fileName ?? "");
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runRollback() {
+    const blocked = rollbackDisabledReason(preUpdate, preUpdateSelected, rollbackConfirm);
+    if (blocked) {
+      setError({ code: "E_ROLLBACK_CONFIRM", message: blocked, retryable: false });
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setRollbackDone(null);
+    try {
+      const result = await api.vaultRollbackPreUpdate(preUpdateSelected, rollbackConfirm);
+      setRollbackDone(result);
+      setRollbackConfirm("");
+      setStatus(await api.status());
+      const list = await api.vaultPreUpdateBackups();
+      setPreUpdate(list);
+      setPreUpdateSelected(list.find((b) => b.usable)?.fileName ?? "");
+    } catch (e) {
+      // Hata mesajı çekirdekten gelir: geri dönüş başlamadıysa kasa açık kalır,
+      // E_DB_ROLLBACK_REOPEN ise hangi sürümün geri konduğunu yazar.
+      setError(toApiError(e));
+      setStatus(await api.status().catch(() => null));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function runBackup() {
     const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörünü seç" });
@@ -137,6 +230,125 @@ export function Settings() {
             . Güncelleme yarıda kalırsa bu dosya geri konur; uygulama yedek
             alınamadıysa güncellemeyi başlatmaz.
           </div>
+        ) : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>Güncelleme öncesi yedeğe dön</h2>
+            <p className="card-sub">
+              Kasa dosyasının güncellemeden önceki doğrulanmış kopyası; veriyi geri alır.
+            </p>
+          </div>
+          <button
+            className="btn"
+            disabled={busy || !unlocked}
+            onClick={() => void refreshPreUpdate()}
+          >
+            Yedekleri tara
+          </button>
+        </div>
+        {!unlocked ? (
+          <p className="hint" style={{ margin: 0 }}>
+            Kasa kilitliyken yedek listesi okunamaz.
+          </p>
+        ) : null}
+        {unlocked && preUpdateLoaded && preUpdate.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            Kasa klasöründe güncelleme öncesi yedek yok. Bu yedek yalnız şema
+            güncellemesi sırasında, doğrulanmış olarak yazılır.
+          </p>
+        ) : null}
+        {preUpdate.map((item) => (
+          <label
+            key={item.fileName}
+            className="row"
+            style={{ alignItems: "flex-start", gap: 8, marginBottom: 6 }}
+          >
+            <input
+              type="radio"
+              name="pre-update-backup"
+              checked={preUpdateSelected === item.fileName}
+              disabled={!item.usable || busy}
+              onChange={() => {
+                setPreUpdateSelected(item.fileName);
+                setRollbackDone(null);
+              }}
+            />
+            <span style={{ flex: 1 }}>
+              <strong>{backupVersionLabel(item)}</strong>{" "}
+              <span className={`badge ${item.usable ? "ok" : "danger"}`}>
+                {item.usable ? "kullanılabilir" : "kullanılamaz"}
+              </span>
+              <br />
+              <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{item.fileName}</span>
+              <br />
+              <span className="hint">
+                {formatBackupDate(item.modifiedAt)} · {formatBytes(item.sizeBytes)} ·{" "}
+                {backupStatusText(item)}
+              </span>
+              {backupWarnings(item).map((warning) => (
+                <span key={warning} className="hint error" style={{ display: "block" }}>
+                  {warning}
+                </span>
+              ))}
+            </span>
+          </label>
+        ))}
+        {preUpdate.length > 0 ? (
+          <>
+            <ul className="hint" style={{ margin: "8px 0 0 18px", padding: 0 }}>
+              {rollbackConsequences().map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+            <div className="field" style={{ marginTop: 10 }}>
+              <label htmlFor="rollback-confirm">Onay için “GERİ DÖN” yazın</label>
+              <input
+                id="rollback-confirm"
+                className="input"
+                value={rollbackConfirm}
+                autoComplete="off"
+                disabled={busy}
+                onChange={(e) => setRollbackConfirm(e.target.value)}
+              />
+            </div>
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button
+                className="btn"
+                disabled={
+                  busy ||
+                  rollbackDisabledReason(preUpdate, preUpdateSelected, rollbackConfirm) !== null
+                }
+                onClick={() => void runRollback()}
+              >
+                Seçili yedeğe dön
+              </button>
+            </div>
+            {rollbackDisabledReason(preUpdate, preUpdateSelected, rollbackConfirm) ? (
+              <p className="hint" style={{ margin: 0 }}>
+                {rollbackDisabledReason(preUpdate, preUpdateSelected, rollbackConfirm)}
+              </p>
+            ) : null}
+            {rollbackDone ? (
+              <div className="notice ok">
+                <strong>Geri dönüş tamamlandı.</strong> {rollbackSummary(rollbackDone)}
+                <br />
+                Yedek:{" "}
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                  {rollbackDone.backupFile}
+                </span>
+                <br />
+                Güvenlik kopyası:{" "}
+                <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                  {rollbackDone.safetyCopy}
+                </span>
+                <br />
+                Kasa açık; ekranlar tazelendiğinde geri dönen veri görünür.
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
 

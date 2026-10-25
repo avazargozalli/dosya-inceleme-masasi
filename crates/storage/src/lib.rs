@@ -20,6 +20,7 @@ mod intext_quotes;
 mod marks;
 mod notes;
 mod parsing;
+mod pre_update;
 mod precedent_import;
 mod precedent_terms;
 mod precedents;
@@ -65,6 +66,7 @@ pub use parsing::{
     SearchMode, SearchPage, SearchQuery, SegmentBlock, SegmentGeometry, MAX_SEARCH_LIMIT,
     MAX_SEARCH_QUERY_CHARS, SEARCH_DATE_ROLES,
 };
+pub use pre_update::{pre_update_backups, rollback_and_resume, InPlaceRollback, PreUpdateBackup};
 pub use precedent_import::{
     parse_manifest, Manifest, ManifestRow, PrecedentCopyInput, PrecedentCopyOutcome,
     MANIFEST_MAX_BYTES,
@@ -375,12 +377,30 @@ impl Database {
     /// Kapalı bir kasa dosyasını açar, bütünlüğünü doğrular ve şema sürümünü
     /// döndürür. Migrasyon uygulamaz; yedek doğrulaması için kullanılır.
     fn verify_database_file(path: &Path, key: &DatabaseKey) -> Result<u32, StorageError> {
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|err| StorageError::MigrationBackup {
-            reason: format!("dosya açılamadı: {err}"),
+        Self::verify_with_flags(path, key, false)
+    }
+
+    /// Aynı doğrulama, dosya **salt okunur** açılır: yedek listesi her bakışta
+    /// yedeğin başlığını değiştirmemeli (WAL bayrağı yazılmaz) ve salt okunur
+    /// ortamda duran yedek de doğrulanabilmeli.
+    fn verify_database_file_readonly(path: &Path, key: &DatabaseKey) -> Result<u32, StorageError> {
+        Self::verify_with_flags(path, key, true)
+    }
+
+    fn verify_with_flags(
+        path: &Path,
+        key: &DatabaseKey,
+        readonly: bool,
+    ) -> Result<u32, StorageError> {
+        let flags = if readonly {
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        };
+        let conn = Connection::open_with_flags(path, flags).map_err(|err| {
+            StorageError::MigrationBackup {
+                reason: format!("dosya açılamadı: {err}"),
+            }
         })?;
         apply_key_and_pragmas(&conn, key).map_err(|err| StorageError::MigrationBackup {
             reason: format!("anahtar/bütünlük: {err}"),
