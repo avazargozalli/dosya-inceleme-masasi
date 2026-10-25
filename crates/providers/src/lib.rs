@@ -1,5 +1,12 @@
-//! Sağlayıcı sözleşmesi. Yerel model, resmî CLI ve doğrudan API aynı arayüzü
-//! uygular; kaynak doğrulaması sağlayıcının dışındadır (ADR-04).
+//! Sağlayıcı sözleşmesi. **Yerel model** (`LocalProvider`) ve **doğrudan API**
+//! (`ApiProvider`) aynı arayüzü uygular; kaynak doğrulaması sağlayıcının
+//! dışındadır (ADR-04).
+//!
+//! Resmî CLI araçları (`codex`, `claude`, `agy`) bu trait'i **uygulamaz**:
+//! ürün onları yalnız kurulum/bağlantı sınaması için izinli argv ile çalıştırır
+//! (`crates/cli-adapters`). Gerekçe: CLI oturumu kullanıcı kimliğiyle açılır,
+//! kullanıcı hook'ları sürece girebilir ve çıktı şeması kararlı değildir; aday
+//! üretimi bu yüzden API/yerel model hattında kalır.
 //!
 //! Bu crate ağ veya süreç çağrısı yapmaz. Sağlayıcılar `propose` ile yalnız
 //! **aday** üretir; aday kalıcı hukuk kaydına dönüşmez (INV-08).

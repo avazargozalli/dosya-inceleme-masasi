@@ -520,3 +520,15 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
   run `40114620637` **7/7 yeşil** (aynı matris). **F10-T12:** `753aed7` +
   `bba6485` (rustfmt) → run `40121007054` **7/7 yeşil** (arayüz, SBOM, masaüstü
   kabuk, rust ubuntu+macos, belge worker'ı, sözleşmeler).
+
+## Kapsam kararı: CLI'lar aday üretmez
+
+Resmî CLI araçları `Provider` trait'ini uygulamaz. Ürün onları yalnız
+kurulum/bağlantı sınaması için izinli argv + allowlist ortam + boş geçici dizin
+ile çalıştırır. Aday üretimi `ApiProvider` / `LocalProvider` hattındadır.
+
+Gerekçe:
+1. CLI oturumu kullanıcının kimliğiyle açılır; ürün kimlik dosyası okumaz (ADR-05).
+2. Kullanıcı hook'ları sürece girebilir; Codex'te bu yalnız `--ignore-user-config
+   --ignore-rules` ile kapatılabildi (bkz. `HOOKS.md`).
+3. CLI çıktısı kararlı bir şema değildir; `--json` taşıması Codex'e özgüdür.
