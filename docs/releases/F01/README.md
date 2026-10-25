@@ -11,7 +11,7 @@
 | F01-T02 | PyInstaller onedir + PyMuPDF + Tesseract çevrimdışı | ⬜ | — |
 | F01-T03 | SQLCipher/FTS5/WAL açık metin işaretçi taraması | ✅ Ölçüldü (sınırlar aşağıda) | `crates/storage/tests/plaintext.rs` (6), `crates/ingest/tests/worker_temp_plaintext.rs` (2) |
 | F01-T04 | Streaming AEAD + truncation + kurtarma | 🚧 `crates/vault` prototipi | `cargo test -p dim-vault` |
-| F01-T05 | PDF redaksiyon bağımsız doğrulama | ⬜ | — |
+| F01-T05 | PDF redaksiyon bağımsız doğrulama | ✅ Ölçüldü (sınırlar aşağıda) | `workers/document/tests/test_redaction_independent.py` (18), `crates/ingest/tests/redaction_hidden_objects.rs` (2), `fixtures/synthetic/redaction-hidden.pdf` |
 | F01-T06 | UDF/DOCX yapı ve ek envanteri | ⬜ | — |
 | F01-T07 | Worker izolasyonu (kapsam dışı okuma/yazma/ağ) | ⬜ | — |
 | F01-T08 | CLI araçsız/izinli profil kanıtı | ⬜ | — |
@@ -78,3 +78,74 @@ müdahale (yeniden başlat) yapıyordu. Ayrım eklendi (`E_WORKER_FRAME` /
 Windows'ta `/bin/sh` olmadığı için bu dört test **denenmedi**. Tauri katmanında
 `E_WORKER_*` kodları için özel kullanıcı mesajı yok — genel hata olarak yüzeye
 çıkar (ayrı iş).
+
+## F01-T05 — karartmanın bağımsız okuyucuyla doğrulanması (ölçüldü, 25 Eki 2026)
+
+Kararı veren kontroller artık PyMuPDF'e dayanmıyor:
+
+1. **Ham bayt taraması** — hiçbir PDF kütüphanesi yok. Terim üç kodlamada aranır:
+   düz UTF-8, kaçışlı PDF dizesi ve **onaltılık** (`<5a5a…>`, `<FEFF…>`).
+2. **Flate akışlarını kendi açıcımız** (`zlib`) açıp aynı aramayı yapar —
+   "metin katmanında yok" ile "dosyada yok" ayrımı ölçülebilir.
+3. **pypdf** ikinci okuyucu (üretici değil); kurulu değilse motor listesine
+   **girmez** ve uyarı yazılır.
+4. **Tesseract** görüntü/piksel kontrolü; bölge karartmasında bölgenin
+   OCR'ı (metin katmanı yoksa OCR'dan gelen kelimelerle) karşılaştırılır.
+
+### Ölçülen vektörler ve bulunan kusurlar
+
+| Vektör | Önce | Bulunan kusur | Şimdi |
+|---|---|---|---|
+| Metin katmanı | temiz | — | temiz |
+| Görünmez metin (Tr 3) / beyaz / 0,6 punto | temiz | — | temiz |
+| **Sayfa dışı metin** (MediaBox dışı, x=900) | **dosyada kalıyordu** | `search_for`/`get_text` sayfa dışını hiç görmez; `remove_hidden` kapsamıyor | `get_texttrace` + cropbox dışı bölge karartılır (`offpage_spans_removed`) |
+| **Yapışkan not `/Contents`** | **ham baytta ve pypdf'te kalıyordu** | `scrub` yalnız yanıtları siler, notun metnini silmez | terimi taşıyan açıklama bütünüyle silinir (`annotations_removed`); zararsız not korunur |
+| **Annotation `/T` (yazar)** | **kalıyordu** | aynı | aynı yol |
+| **Katalog içine gömülü JavaScript** (`/OpenAction`) | **kalıyordu** | `scrub(javascript=True)` yalnız ayrı nesne olan `/S /JavaScript`'i siler | katalog/sayfa `/OpenAction`+`/AA` ve `/Names/JavaScript` kaldırılır (`scripts_removed`) |
+| Ek dosya, `/Info` metadata, XMP | temiz | — | temiz |
+| **Annotation içeren herhangi bir PDF** | **karartma çöküyordu** | PyMuPDF 1.24.14 `delete_responses`: yanıtı olmayan annotta `None.m_internal` | `reset_responses=False`; yanıt zincirleri terim taramasıyla silinir |
+| **Raster (taranmış) metin** | "temiz" sanılıyordu | terim araması pikseli bulamaz | OCR varsa `remaining` → çıktı **reddedilir** (`E_REDACT_VERIFY`); yoksa `ocrVerified=false` |
+| **Kara kutu çizmek** | maskeleme sanılırdı | metin dosyada kalır | dedektör yakalıyor (negatif kontrol testi) |
+| **pypdf kurulu değilse** | motor listesinde "pypdf" yazıyordu | yalan doğrulama iddiası | listede yok + uyarı |
+
+**Bulunan kusur (kendi tarayıcımızda):** ilk yazdığım bayt taraması yalnız düz
+UTF-8 arıyordu; PyMuPDF metni **onaltılık** yazdığı için sayfa metnini hiç
+görmüyor, "temiz" diyordu. Ölçüm bunu gösterdi (testte
+`test_compressed_stream_is_inflated_before_searching` kurgusu: terim ham baytta
+yok, açılmış akışta var). Aynı turda `endstream` içindeki `stream` sözcüğünü de
+yakalayan regex düzeltildi.
+
+### Kanıt
+
+- `workers/document/tests/test_redaction_independent.py` — **18 test**; her
+  testte iki yön: işaretçi kaynakta var (tarayıcı buluyor) **ve** çıktıda yok.
+- `crates/ingest/tests/redaction_hidden_objects.rs` — gerçek worker, gerçek
+  fikstür (`fixtures/synthetic/redaction-hidden.pdf`: metin + sayfa dışı metin +
+  yapışkan not + gömülü JS). Ölçüm: `annotations_removed=1`,
+  `offpage_spans_removed=1`, `scripts_removed=1`, `remaining=[]`, görünen metin
+  korunuyor.
+- `crates/ingest/src/worker.rs::redaction_response_parses_verification_counts…`
+  — sayılar/uyarılar Tauri'ye taşınıyor; alanları bilmeyen eski worker 0/boş
+  döner, hata vermez.
+- Arayüz (Redaction sonuç kartı): "Bağımsız tarama" satırı (açılan/ikili/
+  açılamayan akış), "Gizli nesne temizliği" sayıları ve "Doğrulama uyarıları"
+  listesi — "doğrulandı" rozeti artık bu sayılarla birlikte okunuyor.
+
+**Dürüst sınırlar:**
+- Tarama **bayt düzeyindedir**: alt küme font kodlaması (özel CMap), `TJ`
+  dizisinde bölünmüş dizeler veya başka bir filtre (ASCII85) kullanan üreticide
+  terim baytlarda görünmez; o durumda karar pypdf/PyMuPDF metin çıkarımına
+  dayanır ve bu sınır arayüzde yazılmaz (yalnız burada).
+- Sayfa dışı temizlik `cropbox` sınırına dayanır; `TrimBox`/`BleedBox` ile
+  oynanmış belgelerde kenar metni görünür sayılabilir (silinmez).
+- Annotation **tamamen** silinir (kısmi metin temizliği yapılmaz): kullanıcı
+  notu kaybolur, uyarı sayısı gösterilir, özgün sürüm kasadan silinmez.
+- JavaScript temizliği yalnız `/OpenAction`, `/AA` ve `/Names/JavaScript`
+  yollarını kapsar; form alanı eylemleri (`/A`) ayrı vektördür.
+- OCR yolu PyMuPDF ile rasterleştirir (piksel doğrulaması bağımsız motordan
+  değil, aynı rasterleştiriciden geçer); tesseract yoksa görüntü doğrulanmaz ve
+  bu `ocrVerified=false` + uyarı olarak görünür.
+- Görüntüde kalan terim **reddedilir** (bölge karartması gerekir); taranmış
+  belgede terim araması tek başına yeterli değildir.
+- Tauri penceresi açılmadı → kartın görsel QA'sı yok; alanlar tip denetimi,
+  birim testleri ve üretim derlemesiyle doğrulandı.

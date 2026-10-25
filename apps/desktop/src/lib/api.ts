@@ -259,6 +259,13 @@ export type RedactionResult = {
   remaining: string[];
   ocrVerified: boolean;
   engines: string[];
+  streamsScanned: number;
+  streamsBinary: number;
+  streamsUnreadable: number;
+  annotationsRemoved: number;
+  offpageSpansRemoved: number;
+  scriptsRemoved: number;
+  warnings: string[];
 };
 
 export type PrecedentRow = {

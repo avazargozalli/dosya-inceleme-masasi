@@ -137,8 +137,85 @@ pub struct RedactionOutcome {
     pub engine_version: String,
     /// Sayfa görüntüsü OCR ile de okundu mu? Tesseract yoksa `false`.
     pub ocr_verified: bool,
-    /// Çıktıyı doğrulayan motorlar (pymupdf, pypdf, tesseract).
+    /// Çıktıyı doğrulayan motorlar (pymupdf, raw-scan, pypdf, tesseract).
+    /// Çalışmayan doğrulayıcı burada **yer almaz**.
     pub engines: Vec<String>,
+    /// Bağımsız taramada açılan Flate akışı sayısı.
+    pub streams_scanned: u32,
+    /// Görüntü/font gibi ikili akış sayısı (ham bayt taraması kapsar).
+    pub streams_binary: u32,
+    /// Açılamayan filtreli akış sayısı; sıfırdan büyükse uyarı yazılır.
+    pub streams_unreadable: u32,
+    /// Karartılan terimi taşıdığı için silinen açıklama sayısı.
+    pub annotations_removed: u32,
+    /// Sayfa kutusunun dışında bulunup kaldırılan metin parçası sayısı.
+    pub offpage_spans_removed: u32,
+    /// Kaldırılan gömülü JavaScript eylemi sayısı.
+    pub scripts_removed: u32,
+    /// Doğrulama sınırları: arayüz bunları olduğu gibi gösterir.
+    pub warnings: Vec<String>,
+}
+
+/// Worker'ın karartma yanıtını çözer. İki komut (`redact`, `redact_regions`)
+/// aynı alanları döner; ayrıştırma tek yerde tutulur.
+fn parse_redaction(result: &serde_json::Value) -> Result<RedactionOutcome, WorkerError> {
+    let pdf_b64 = result
+        .get("pdfBase64")
+        .and_then(Value::as_str)
+        .ok_or(WorkerError::BadResponse)?;
+    let pdf = base64::engine::general_purpose::STANDARD
+        .decode(pdf_b64)
+        .map_err(|_| WorkerError::BadResponse)?;
+    let hits: Vec<RedactionHit> =
+        serde_json::from_value(result.get("hits").cloned().unwrap_or_else(|| json!([])))
+            .map_err(|_| WorkerError::BadResponse)?;
+    let remaining: Vec<String> = serde_json::from_value(
+        result
+            .get("remaining")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    )
+    .map_err(|_| WorkerError::BadResponse)?;
+    let count = |key: &str| -> u32 {
+        result
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0)
+    };
+    Ok(RedactionOutcome {
+        pdf,
+        hits,
+        remaining,
+        ocr_verified: result
+            .get("ocrVerified")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        engines: serde_json::from_value(
+            result.get("engines").cloned().unwrap_or_else(|| json!([])),
+        )
+        .unwrap_or_default(),
+        engine: result
+            .get("engine")
+            .and_then(Value::as_str)
+            .unwrap_or("pymupdf")
+            .to_string(),
+        engine_version: result
+            .get("engineVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        streams_scanned: count("streamsScanned"),
+        streams_binary: count("streamsBinary"),
+        streams_unreadable: count("streamsUnreadable"),
+        annotations_removed: count("annotationsRemoved"),
+        offpage_spans_removed: count("offpageSpansRemoved"),
+        scripts_removed: count("scriptsRemoved"),
+        warnings: serde_json::from_value(
+            result.get("warnings").cloned().unwrap_or_else(|| json!([])),
+        )
+        .unwrap_or_default(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -443,46 +520,7 @@ impl WorkerClient {
     ) -> Result<RedactionOutcome, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
         let result = self.request("redact", json!({"contentBase64": encoded, "terms": terms}))?;
-        let pdf_b64 = result
-            .get("pdfBase64")
-            .and_then(Value::as_str)
-            .ok_or(WorkerError::BadResponse)?;
-        let pdf = base64::engine::general_purpose::STANDARD
-            .decode(pdf_b64)
-            .map_err(|_| WorkerError::BadResponse)?;
-        let hits: Vec<RedactionHit> =
-            serde_json::from_value(result.get("hits").cloned().unwrap_or_else(|| json!([])))
-                .map_err(|_| WorkerError::BadResponse)?;
-        let remaining: Vec<String> = serde_json::from_value(
-            result
-                .get("remaining")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
-        )
-        .map_err(|_| WorkerError::BadResponse)?;
-        Ok(RedactionOutcome {
-            pdf,
-            hits,
-            remaining,
-            ocr_verified: result
-                .get("ocrVerified")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            engines: serde_json::from_value(
-                result.get("engines").cloned().unwrap_or_else(|| json!([])),
-            )
-            .unwrap_or_default(),
-            engine: result
-                .get("engine")
-                .and_then(Value::as_str)
-                .unwrap_or("pymupdf")
-                .to_string(),
-            engine_version: result
-                .get("engineVersion")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string(),
-        })
+        parse_redaction(&result)
     }
 
     /// Bir PDF sayfasını PNG önizleme olarak çizer (F07-T11). Sayfa numarası
@@ -544,46 +582,7 @@ impl WorkerClient {
             "redact_regions",
             json!({"contentBase64": encoded, "regions": items}),
         )?;
-        let pdf_b64 = result
-            .get("pdfBase64")
-            .and_then(Value::as_str)
-            .ok_or(WorkerError::BadResponse)?;
-        let pdf = base64::engine::general_purpose::STANDARD
-            .decode(pdf_b64)
-            .map_err(|_| WorkerError::BadResponse)?;
-        let hits: Vec<RedactionHit> =
-            serde_json::from_value(result.get("hits").cloned().unwrap_or_else(|| json!([])))
-                .map_err(|_| WorkerError::BadResponse)?;
-        let remaining: Vec<String> = serde_json::from_value(
-            result
-                .get("remaining")
-                .cloned()
-                .unwrap_or_else(|| json!([])),
-        )
-        .map_err(|_| WorkerError::BadResponse)?;
-        Ok(RedactionOutcome {
-            pdf,
-            hits,
-            remaining,
-            ocr_verified: result
-                .get("ocrVerified")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            engines: serde_json::from_value(
-                result.get("engines").cloned().unwrap_or_else(|| json!([])),
-            )
-            .unwrap_or_default(),
-            engine: result
-                .get("engine")
-                .and_then(Value::as_str)
-                .unwrap_or("pymupdf")
-                .to_string(),
-            engine_version: result
-                .get("engineVersion")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_string(),
-        })
+        parse_redaction(&result)
     }
 
     /// PDF rapor üretir (HTML kaçışlanmış, Story ile sayfalanmış).
@@ -646,6 +645,32 @@ pub fn dev_worker_dir() -> Option<PathBuf> {
         }
         current = current.parent()?;
     }
+}
+
+/// Geliştirme/test: verilen Python modülünü (`pymupdf` gibi) içe aktarabilen
+/// yorumlayıcıyı bulur.
+///
+/// Sıra: `DIM_WORKER_PYTHON` → `workers/document/.venv/bin/python` → PATH'teki
+/// `python3`/`python`. Modül hiçbirinde yoksa `None` döner; çağıran test
+/// "atlandı" yazar — motor yokken "temiz" ya da "bozuk" demek yanıltıcı olur.
+/// Süreç başlatma tek yerde tutulur (clippy `disallowed_methods` kapısı).
+#[must_use]
+pub fn dev_python_with_module(worker_dir: &Path, module: &str) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("DIM_WORKER_PYTHON") {
+        candidates.push(PathBuf::from(path));
+    }
+    let venv = worker_dir.join(".venv").join("bin").join("python");
+    if venv.is_file() {
+        candidates.push(venv);
+    }
+    candidates.extend(dev_python());
+    candidates.into_iter().find(|candidate| {
+        Command::new(candidate)
+            .args(["-c", &format!("import {module}")])
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 #[cfg(test)]
@@ -717,6 +742,50 @@ mod tests {
             merge_extraction_parts(&[extraction_part(2, 2, 0), extraction_part(1, 2, 1)])
                 .unwrap_err();
         assert!(matches!(misordered, WorkerError::Protocol(_)));
+    }
+
+    #[test]
+    fn redaction_response_parses_verification_counts_and_tolerates_old_workers() {
+        let pdf = base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.4");
+        let full = json!({
+            "pdfBase64": pdf,
+            "hits": [{"page": 0, "term": "Ahmet", "rect": [1.0, 2.0, 3.0, 4.0]}],
+            "remaining": [],
+            "engine": "pymupdf",
+            "engineVersion": "1.24.14",
+            "ocrVerified": true,
+            "engines": ["pymupdf", "raw-scan", "pypdf", "tesseract"],
+            "streamsScanned": 4,
+            "streamsBinary": 1,
+            "streamsUnreadable": 0,
+            "annotationsRemoved": 2,
+            "offpageSpansRemoved": 1,
+            "scriptsRemoved": 3,
+            "warnings": ["2 açıklama silindi: karartılan terimi taşıyordu"]
+        });
+        let outcome = parse_redaction(&full).expect("tam yanıt");
+        assert_eq!(outcome.pdf, b"%PDF-1.4");
+        assert_eq!(outcome.hits.len(), 1);
+        assert!(outcome.ocr_verified);
+        assert_eq!(
+            outcome.engines,
+            vec!["pymupdf", "raw-scan", "pypdf", "tesseract"]
+        );
+        assert_eq!(outcome.streams_scanned, 4);
+        assert_eq!(outcome.streams_binary, 1);
+        assert_eq!(outcome.streams_unreadable, 0);
+        assert_eq!(outcome.annotations_removed, 2);
+        assert_eq!(outcome.offpage_spans_removed, 1);
+        assert_eq!(outcome.scripts_removed, 3);
+        assert_eq!(outcome.warnings.len(), 1);
+
+        // Bu alanları bilmeyen eski worker: sıfır/boş, hata değil.
+        let legacy = json!({"pdfBase64": pdf, "hits": [], "remaining": []});
+        let outcome = parse_redaction(&legacy).expect("eski worker");
+        assert_eq!(outcome.streams_scanned, 0);
+        assert_eq!(outcome.annotations_removed, 0);
+        assert!(outcome.warnings.is_empty());
+        assert!(outcome.engines.is_empty());
     }
 
     #[test]

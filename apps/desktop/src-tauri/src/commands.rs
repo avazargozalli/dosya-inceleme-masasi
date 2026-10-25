@@ -3567,6 +3567,15 @@ pub struct RedactionView {
     pub remaining: Vec<String>,
     pub ocr_verified: bool,
     pub engines: Vec<String>,
+    /// Bağımsız doğrulama sayıları (F01-T05): arayüz "doğrulandı" iddiasını
+    /// bunlarla birlikte gösterir.
+    pub streams_scanned: u32,
+    pub streams_binary: u32,
+    pub streams_unreadable: u32,
+    pub annotations_removed: u32,
+    pub offpage_spans_removed: u32,
+    pub scripts_removed: u32,
+    pub warnings: Vec<String>,
 }
 
 /// Terimleri belgeden gerçekten çıkarır, çıktıyı yeni bir sürüm olarak kaydeder.
@@ -3672,6 +3681,13 @@ pub fn document_redact(
         remaining: outcome.remaining,
         ocr_verified: outcome.ocr_verified,
         engines: outcome.engines,
+        streams_scanned: outcome.streams_scanned,
+        streams_binary: outcome.streams_binary,
+        streams_unreadable: outcome.streams_unreadable,
+        annotations_removed: outcome.annotations_removed,
+        offpage_spans_removed: outcome.offpage_spans_removed,
+        scripts_removed: outcome.scripts_removed,
+        warnings: outcome.warnings,
     })
 }
 
@@ -4450,6 +4466,13 @@ pub fn document_redact_regions(
         remaining: outcome.remaining,
         ocr_verified: outcome.ocr_verified,
         engines: outcome.engines,
+        streams_scanned: outcome.streams_scanned,
+        streams_binary: outcome.streams_binary,
+        streams_unreadable: outcome.streams_unreadable,
+        annotations_removed: outcome.annotations_removed,
+        offpage_spans_removed: outcome.offpage_spans_removed,
+        scripts_removed: outcome.scripts_removed,
+        warnings: outcome.warnings,
     })
 }
 

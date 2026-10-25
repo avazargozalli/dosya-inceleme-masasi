@@ -289,8 +289,44 @@ export function Redaction() {
             <dt>Maskelenen bölge</dt><dd>{result.hits}</dd>
             <dt>Kalan terim</dt><dd>{result.remaining.length === 0 ? "yok" : result.remaining.join(", ")}</dd>
             <dt>Doğrulayan motorlar</dt><dd>{result.engines.join(", ")}</dd>
+            <dt>Bağımsız tarama</dt>
+            <dd>
+              {result.streamsScanned} akış açıldı · {result.streamsBinary} ikili akış
+              {result.streamsUnreadable > 0 ? (
+                <>
+                  {" · "}
+                  <span style={{ color: "var(--danger)" }}>
+                    {result.streamsUnreadable} akış açılamadı
+                  </span>
+                </>
+              ) : null}
+            </dd>
+            {result.annotationsRemoved +
+              result.offpageSpansRemoved +
+              result.scriptsRemoved >
+            0 ? (
+              <>
+                <dt>Gizli nesne temizliği</dt>
+                <dd>
+                  {result.annotationsRemoved} açıklama · {result.offpageSpansRemoved} sayfa dışı
+                  metin · {result.scriptsRemoved} JavaScript
+                </dd>
+              </>
+            ) : null}
             <dt>Görüntü (OCR) doğrulaması</dt>
             <dd>{result.ocrVerified ? "evet" : "hayır — tesseract yok, yalnız metin katmanı doğrulandı"}</dd>
+            {result.warnings.length > 0 ? (
+              <>
+                <dt>Doğrulama uyarıları</dt>
+                <dd>
+                  <ul style={{ margin: 0, paddingLeft: 16 }}>
+                    {result.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
+            ) : null}
             <dt>Plan</dt><dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{result.plan.id}</dd>
           </dl>
           <p className="hint" style={{ margin: 0 }}>
