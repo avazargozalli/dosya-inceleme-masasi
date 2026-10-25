@@ -12,8 +12,8 @@
 | F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT` (5 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
-| F09-T07 API profili | ⬜ | — |
-| F09-T08 gönderim önizlemesi (tam) | 🚧 | onay formu var; bayt düzeyi önizleme yok |
+| F09-T07 API profili | ✅ | `register_api_profile`: https zorunlu, anahtar **saklanmaz** (yalnız `DIM_API_KEY`), idempotent |
+| F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt + 200 karakter örnek; AI ekranında "Gönderilecek içeriği göster" |
 
 ## Dürüst durum
 
