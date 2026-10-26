@@ -25,6 +25,9 @@ use serde_json::{json, Value};
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+/// İptal denetim aralığı: bekleme bu dilimlere bölünür, iptal en geç bu kadar
+/// sonra fark edilir (şartname §17.5: iptal en geç 250 ms'de "iptal isteniyor").
+const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// Parçalı yanıtta kabul edilen en fazla çerçeve sayısı; sınırsız döngü yok.
 pub const MAX_RESPONSE_PARTS: usize = 5000;
 /// Paketlenmiş worker başlatılırken **kaldırılan** ortam değişkenleri: gömülü
@@ -516,12 +519,22 @@ impl WorkerClient {
         Ok(id)
     }
 
-    /// Verilen kimliğe ait ilk yanıtı okur.
-    fn read_response(&mut self, id: &str) -> Result<Value, WorkerError> {
-        // Yanıtlar sıralıdır; id eşleşmeyen eski çerçeveler atlanır.
-        for _ in 0..8 {
-            let raw = match self.rx.recv_timeout(self.timeout) {
-                Ok(Ok(bytes)) => bytes,
+    /// Yanıt çerçevesini bekler. Bekleme **dilimlere** bölünür: iptal, okuyucu
+    /// iş parçacığı EOF görmese bile (torun süreç boruyu tutabilir) en geç
+    /// `CANCEL_POLL` içinde fark edilir. Ubuntu CI'da `sh -c "sleep 30"` vekili
+    /// tam bu yüzden 30 sn beklemişti.
+    fn recv_frame(&mut self) -> Result<Vec<u8>, WorkerError> {
+        let deadline = std::time::Instant::now() + self.timeout;
+        loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(WorkerError::Canceled);
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(WorkerError::Timeout);
+            }
+            match self.rx.recv_timeout(remaining.min(CANCEL_POLL)) {
+                Ok(Ok(bytes)) => return Ok(bytes),
                 Ok(Err(reason)) => {
                     // Okuyucu iş parçacığı iki farklı arıza bildirir: çerçeve
                     // sınırı aşımı ve okuma hatası. İkisini "bağlantı koptu"
@@ -534,15 +547,17 @@ impl WorkerClient {
                         self.interrupt_error()
                     });
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    return Err(if self.cancel.load(Ordering::SeqCst) {
-                        WorkerError::Canceled
-                    } else {
-                        WorkerError::Timeout
-                    });
-                }
+                Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => return Err(self.interrupt_error()),
-            };
+            }
+        }
+    }
+
+    /// Verilen kimliğe ait ilk yanıtı okur.
+    fn read_response(&mut self, id: &str) -> Result<Value, WorkerError> {
+        // Yanıtlar sıralıdır; id eşleşmeyen eski çerçeveler atlanır.
+        for _ in 0..8 {
+            let raw = self.recv_frame()?;
             let value: Value =
                 serde_json::from_slice(&raw).map_err(|_| WorkerError::BadResponse)?;
             if value.get("id").and_then(Value::as_str) != Some(id) {
@@ -1104,6 +1119,11 @@ mod tests {
     /// **İptal gerçekten durdurur (F04-T07).** Yanıt vermeyen süreç, 30 sn
     /// zaman aşımını beklemeden öldürülür ve hata `E_WORKER_CANCELED` olur:
     /// kopma/zaman aşımından ayrı kod, çünkü iptal otomatik yeniden denenmez.
+    ///
+    /// `sh -c "sleep 30"` bilinçli: Linux'ta `sh` torun süreç bırakabilir ve
+    /// borunun yazma ucu açık kalır (EOF gelmez). İptal bu yüzden **EOF'a
+    /// bağlı değildir** — bekleme 50 ms dilimlerle yapılır (Ubuntu CI'da bu
+    /// vaka 30 sn bekliyordu, kusur buydu).
     #[cfg(unix)]
     #[test]
     fn cancel_kills_the_running_worker_and_reports_canceled() {
@@ -1152,6 +1172,38 @@ mod tests {
         assert!(
             !err.retryable(),
             "iptal otomatik tekrar döngüsüne girmemeli (§17.4)"
+        );
+    }
+
+    /// **Ubuntu CI'da yakalanan vaka (kusur #45):** çocuk süreç ölür ama
+    /// **torun** borunun yazma ucunu tutar → EOF gelmez. İptal yine de zaman
+    /// aşımını beklemez, çünkü bekleme 50 ms dilimlerle yapılır.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_does_not_wait_for_eof_when_a_grandchild_holds_the_pipe() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(
+            Path::new("/bin/sh"),
+            // `sleep` arka planda boruyu devralır, `sh` onu bekler: öldürülen
+            // çocükten sonra boru 10 sn daha açık kalır.
+            &["-c", "sleep 10 & wait"],
+            dir.path(),
+        )
+        .expect("başlat")
+        .with_timeout(Duration::from_secs(10));
+        let killer = client.killer();
+        let handle = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let err = client.ping().unwrap_err();
+            (err, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(killer.cancel(), "süreç sinyal almalı");
+        let (err, elapsed) = handle.join().expect("iş parçacığı");
+        assert_eq!(err.code(), "E_WORKER_CANCELED", "ayrı kod: {err:?}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "torun süreç boruyu tutsa da iptal EOF beklemez: {elapsed:?}"
         );
     }
 
