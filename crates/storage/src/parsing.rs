@@ -1124,8 +1124,28 @@ fn escape_fts(text: &str) -> String {
         .join(" ")
 }
 
-/// Kipin FTS aday ifadesi. Adaylar geniştir; kesin eşleşmeyi
-/// `dim_search_match` doğrular (FTS diakritikleri kendiliğinden sadeleştirir).
+/// Kipin FTS **aday** ifadesi.
+///
+/// Doğrulama (`SearchMatcher`) ile aday üretimi arasındaki ilişki bilinçlidir:
+/// doğrulama **bitişik** belirteç ister, ifade de öyle daraltır (F15 ölçümü:
+/// 3.030 adaylı seyrek profilde daraltma adayları 30'a indiriyor; uçtan uca
+/// ilk sayfa 5,95 → 1,55 ms (3,84×); `docs/releases/F15/BENCHMARK.md`). Kesin
+/// eşleşmeyi yine
+/// `SearchMatcher` kurar: burada yalnız "olabilir" kümesi üretilir.
+///
+/// Tek pay: `NEAR(…, belirteç sayısı)` araya **bir** belirteç girmesine izin
+/// verir. Pay keyfî değil: FTS `unicode61` bazı sembolleri (`₺`, `€`, `©`, `°`)
+/// ayırıcı saymaz, Rust `is_alphanumeric` sayar. Boşlukla ayrılmış tek sembol
+/// yüzünden gerçek eşleşme kaybolmasın diye bir belirteçlik pay bırakılır.
+/// Ölçülen sınır: **iki** sembol belirteci yan yana gelirse daraltma o eşleşmeyi
+/// kaçırır (test: `narrowing_keeps_symbol_separated_words`).
+///
+/// `phrase` kipi de `normalized_text` üzerinden aday üretir: FTS `raw_text`
+/// indeksi `I`/`ı` ayrımını Unicode katlamasıyla yapar, doğrulama ise Türkçe
+/// küçük harfle (`I`→`ı`). Fark, "ıslah" sorgusunun "ISLAH" yazılmış metni
+/// **kaçırmasına** yol açıyordu (defter #35, `phrase_finds_dotless_query_in_
+/// uppercase_text`). Aday üretimi sadeleşmiş sütuna taşındı; kesin eşleşmeyi
+/// yine `phrase` doğrulaması (Türkçe küçük harf, bitişik) kurar.
 fn fts_expression(query: &ResolvedQuery) -> String {
     match query.mode {
         // Esas/karar numarası: yıl + numara belirteçleri (sıfır varyantlarıyla).
@@ -1141,24 +1161,43 @@ fn fts_expression(query: &ResolvedQuery) -> String {
                 format!("raw_text : \"{needle}\"*")
             }
         }
-        SearchMode::Phrase => exact_tokens(&query.text)
-            .iter()
-            .map(|token| format!("raw_text : \"{}\"", escape_fts(token)))
-            .collect::<Vec<_>>()
-            .join(" AND "),
+        SearchMode::Phrase => {
+            narrow_expression("normalized_text", &fold_tokens(&query.text), false)
+        }
         SearchMode::Flexible => {
-            let tokens = fold_tokens(&query.text);
-            let Some((last, head)) = tokens.split_last() else {
-                return String::new();
-            };
-            let mut parts: Vec<String> = head
-                .iter()
-                .map(|token| format!("normalized_text : \"{}\"", escape_fts(token)))
-                .collect();
-            parts.push(format!("normalized_text : \"{}\"*", escape_fts(last)));
-            parts.join(" AND ")
+            narrow_expression("normalized_text", &fold_tokens(&query.text), true)
         }
         SearchMode::Auto => String::new(),
+    }
+}
+
+/// Bitişik belirteç ifadesi (`raw_text`/`normalized_text` sütununda).
+///
+/// `tokens` boşsa boş dizge (çağıran zaten boş sorguyu eler). Tek belirteçte
+/// düz ifade, çok belirteçte `NEAR`: FTS5'te `NEAR(…, n)` belirteç konumları
+/// arasındaki **en büyük farkı** sınırlar, bu yüzden `n = belirteç sayısı`
+/// "bitişik + araya en çok bir belirteç" demektir.
+fn narrow_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let last = tokens.len() - 1;
+    let quoted: Vec<String> = tokens
+        .iter()
+        .enumerate()
+        .map(|(index, token)| {
+            let text = escape_fts(token);
+            if prefix_last && index == last {
+                format!("\"{text}\"*")
+            } else {
+                format!("\"{text}\"")
+            }
+        })
+        .collect();
+    if quoted.len() == 1 {
+        format!("{column} : {}", quoted[0])
+    } else {
+        format!("{column} : NEAR({}, {})", quoted.join(" "), quoted.len())
     }
 }
 
@@ -3000,6 +3039,222 @@ mod tests {
         );
         assert!(page.verification.windows >= 2);
         assert!(!page.verification.stopped_early);
+    }
+
+    /// F15 — daraltılmış aday ifadesi: iki belirteci **uzak** taşıyan tuzaklar
+    /// FTS adayı bile olmaz. Ölçüm (3.000 tuzak + 30 eşleşme, `search_cost_bench`):
+    /// aday 3.030 → 30, uçtan uca ilk sayfa 5,95 → 1,55 ms. Sonuç kümesi değişmez.
+    #[test]
+    fn narrow_expression_skips_far_apart_candidates() {
+        let (db, case_id, version_id) = setup();
+        let mut texts: Vec<String> = (0..200)
+            .map(|i| format!("reddine dair gerekçe {i} dosyada itirazın konusu ayrıca ele alındı"))
+            .collect();
+        texts.push("itirazın reddine karar verdi".into());
+        texts.push("itirazın\nreddine karar verdi".into());
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let query = SearchQuery {
+            text: "itirazın reddine".into(),
+            mode: SearchMode::Flexible,
+        };
+        let page = db
+            .search_page_windowed(
+                &case_id,
+                &query,
+                &SearchFilters::default(),
+                10,
+                None,
+                true,
+                200,
+            )
+            .expect("sayfa");
+        assert_eq!(page.hits.len(), 2, "iki gerçek eşleşme");
+        assert_eq!(page.total, Some(2), "sayı aday değil eşleşme sayısı");
+        assert_eq!(
+            page.verification.candidates_examined, 2,
+            "uzak tuzaklar aday üretmemeli (daraltma sözleşmesi)"
+        );
+        assert!(!page.verification.stopped_early);
+    }
+
+    /// Daraltmanın **payı**: FTS `unicode61` bazı sembolleri ayırıcı saymaz,
+    /// Rust `is_alphanumeric` sayar. Boşlukla ayrılmış tek sembol yüzünden
+    /// gerçek eşleşme kaybolmamalı (`NEAR(…, belirteç sayısı)` bir belirteçlik
+    /// pay bırakır).
+    #[test]
+    fn narrowing_keeps_symbol_separated_words() {
+        let (db, case_id, version_id) = setup();
+        let texts = [
+            "itirazın ₺ reddine karar verdi",
+            "itirazın € reddine karar verdi",
+            "itirazın © reddine karar verdi",
+            "itirazın ° reddine karar verdi",
+        ];
+        let refs: Vec<&str> = texts.to_vec();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        for mode in [SearchMode::Flexible, SearchMode::Phrase] {
+            let query = SearchQuery {
+                text: "itirazın reddine".into(),
+                mode,
+            };
+            let page = db
+                .search_page(&case_id, &query, &SearchFilters::default(), 10, None, true)
+                .expect("sayfa");
+            assert_eq!(
+                page.hits.len(),
+                4,
+                "{} kipinde sembolle ayrılmış eşleşmeler görünür olmalı",
+                mode.tag()
+            );
+        }
+    }
+
+    /// Defter #35 — `phrase` kipinde aday üretimi `raw_text` indeksindeydi ve
+    /// FTS `I`/`ı` ayrımını Unicode katlamasıyla yapıyor; doğrulama ise Türkçe
+    /// küçük harfle (`I`→`ı`). Sonuç: "ıslah" sorgusu "ISLAH" yazılmış metni
+    /// **bulamıyordu** (metin doğrulamadan geçebilecekken aday olmuyordu).
+    /// Aday üretimi sadeleşmiş sütuna taşındı; test iki yönü de tutar.
+    #[test]
+    fn phrase_finds_dotless_query_in_uppercase_text() {
+        let (db, case_id, version_id) = setup();
+        let texts = [
+            "ISLAH edilen tutar 1.000 TL",
+            "ıslah edilen tutar 2.000 TL",
+            "islah edilen tutar 3.000 TL",
+            "ıslah edilmeyen tutar",
+        ];
+        let refs: Vec<&str> = texts.to_vec();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let query = SearchQuery {
+            text: "ıslah".into(),
+            mode: SearchMode::Phrase,
+        };
+        let page = db
+            .search_page(&case_id, &query, &SearchFilters::default(), 10, None, true)
+            .expect("sayfa");
+        let mut found: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "ISLAH edilen tutar 1.000 TL",
+                "ıslah edilen tutar 2.000 TL",
+                "ıslah edilmeyen tutar",
+            ],
+            "Türkçe küçük harf `I`yı `ı` sayar: ISLAH eşleşir, ASCII `islah` eşleşmez"
+        );
+
+        // `flexible` kipinde dördü de (sadeleşmiş eşleşme kuralı: `ı`→`i`).
+        let flexible = db
+            .search_page(
+                &case_id,
+                &SearchQuery {
+                    text: "ıslah".into(),
+                    mode: SearchMode::Flexible,
+                },
+                &SearchFilters::default(),
+                10,
+                None,
+                true,
+            )
+            .expect("sayfa");
+        assert_eq!(flexible.hits.len(), 4);
+    }
+
+    /// Daraltma **hiçbir gerçek eşleşmeyi** düşürmemeli: beklenen küme,
+    /// daraltmadan bağımsız olarak her metnin doğrulayıcıdan geçirilmesiyle
+    /// hesaplanır ve sayfayla birebir karşılaştırılır.
+    #[test]
+    fn narrowing_matches_full_verification_set() {
+        let (db, case_id, version_id) = setup();
+        let texts = [
+            "Mahkeme itirazın reddine karar verdi",
+            "itirazın\nreddine karar verdi",
+            "itirazın-reddine",
+            "itirazın ₺ reddine",
+            "itirazın € reddine",
+            "itirazın, reddine",
+            "itirazın... reddine",
+            "itirazın (reddine)",
+            "itirazın “reddine”",
+            "itirazın dair reddine", // araya kelime → doğrulama reddeder
+            "reddine itirazın",      // ters sıra → doğrulama reddeder
+            "itirazın konusu ayrıca reddine",
+            "itirazın 1. reddine", // araya sayı belirteci
+            "kira sözleşmesi feshedildi",
+            "kira\n\nsözleşmesi",
+            "KİRA SÖZLEŞMESİ",
+            "kira bedeli sözleşmesi",
+            "2024/123 sayılı",
+            "2024 / 123 sayılı",
+            "2024-0123 sayılı",
+            "ıslah edilen tutar",
+            "ISLAH edilen tutar",
+            "ıslah edilmeyen tutar",
+        ];
+        let refs: Vec<&str> = texts.to_vec();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let cases = [
+            ("itirazın reddine", SearchMode::Flexible),
+            ("itirazın reddine", SearchMode::Phrase),
+            ("kira sözleşmesi", SearchMode::Flexible),
+            ("kira sözleşmesi", SearchMode::Phrase),
+            ("2024/123", SearchMode::Flexible),
+            ("2024/123", SearchMode::Phrase),
+            ("ıslah", SearchMode::Flexible),
+            ("ıslah", SearchMode::Phrase),
+        ];
+        let mut scratch = MatchScratch::default();
+        for (text, mode) in cases {
+            let query = SearchQuery {
+                text: text.into(),
+                mode,
+            };
+            let resolved = query.resolve().expect("çözüm");
+            let matcher =
+                SearchMatcher::new(&resolved.text, resolved.mode, resolved.docket.clone());
+            let mut expected: Vec<String> = texts
+                .iter()
+                .filter(|candidate| {
+                    if resolved.mode == SearchMode::Flexible {
+                        matcher.matches(
+                            None,
+                            Some(&dim_evidence::normalize(candidate)),
+                            &mut scratch,
+                        )
+                    } else {
+                        matcher.matches(Some(candidate), None, &mut scratch)
+                    }
+                })
+                .map(|candidate| (*candidate).to_string())
+                .collect();
+            expected.sort();
+
+            let page = db
+                .search_page(&case_id, &query, &SearchFilters::default(), 50, None, true)
+                .expect("sayfa");
+            let mut actual: Vec<String> =
+                page.hits.iter().map(|hit| hit.raw_text.clone()).collect();
+            actual.sort();
+            assert_eq!(
+                actual,
+                expected,
+                "{:?} / {} kipinde daraltma sonucu değiştirmemeli",
+                text,
+                resolved.mode.tag()
+            );
+            assert_eq!(
+                page.total,
+                Some(expected.len() as i64),
+                "{text:?} / {} sayısı eşleşme sayısı olmalı",
+                resolved.mode.tag()
+            );
+        }
     }
 
     /// Keyset sayfalama pencere boyutundan bağımsız: her pencere boyutunda

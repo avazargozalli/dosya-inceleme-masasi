@@ -329,6 +329,75 @@ ve arama `SQLITE_CORRUPT_VTAB` ("database disk image is malformed") veriyordu;
 Düzeltme **migration 0019**: tetikleyici `AFTER UPDATE OF raw_text,
 normalized_text` olarak yeniden kuruldu (FTS içeriği yalnız bu iki sütuna bağlı).
 
+## Aday daraltma (`NEAR`) — uygulandı (2026-10-26)
+
+Önceki tur "kalan maliyet FTS'in bütün eşleşmelere `bm25` hesaplayıp sıralaması"
+diye **çıkarmıştı**; bu tur bileşenlere ayrıldı. Koşucu
+`crates/storage/tests/search_cost_bench.rs` (3.030 segment = 3.000 tuzak + 30
+eşleşme, 41 koşu, release, Apple M2):
+
+| Varyant | p50 | min |
+|---|---|---|
+| yalnız FTS sayımı (`count(*) … MATCH`) | 0,63 ms | 0,61 ms |
+| `ORDER BY bm25` + yalnız `s.id` | 4,68 ms | 4,50 ms |
+| `ORDER BY bm25` + `raw_text`/`normalized_text` (üretim şekli) | 5,70 ms | 5,66 ms |
+| aynı sorgu **sıralamasız** | 1.472,9 ms | 1.430,1 ms |
+| `ORDER BY` + `LIMIT 200` | 3,44 ms | 3,41 ms |
+
+Okuma: FTS numaralandırması 0,63 ms, **sıralama ≈ 4,05 ms**, metin yükü ≈ 1,02 ms.
+`LIMIT` sıralamayı kısaltmıyor (3,44 ms) — sıralama tüm eşleşmeler üzerinde
+kurulur. Sıralamasız sorgunun 1,5 **saniye** olması ayrı ve önemli bir gerçek:
+`ORDER BY` kalkınca SQLite planı FTS'ten sürmüyor, `text_segments` üzerinde
+tam taramaya düşüyor (SQLCipher her satırı çözüyor). Yani sıralama ifadesi
+planın da taşıyıcısı; kaldırılamaz.
+
+Asıl kaldıraç **aday sayısıydı**: doğrulama zaten bitişik belirteç istiyor
+(`seq_matches_spans`), ama FTS ifadesi `"a" AND "b"` idi → iki belirteci uzak
+taşıyan 3.000 tuzak da aday oluyor, `bm25` onlar için de hesaplanıp sıralanıyordu.
+İfade bitişikliğe çevrildi:
+
+| İfade | aday | p50 (üretim şekli) |
+|---|---|---|
+| geniş (`"a" AND "b"`) — eski | 3.030 | 5,70 ms |
+| tam bitişik ifade (`"a b" *`) — yalnız ölçüm | 30 | 1,28 ms |
+| **`NEAR("a" "b"*, 2)` — uygulanan** | **30** | **1,32 ms** |
+
+**Uçtan uca** (`apiFirstPage`, üretim API'si, limit 20): **5,95 → 1,55 ms
+(3,84×)**; doğrulanan aday 21'de sabit (limit+1, erken kesme çalışıyor).
+SQL sorgusunun kendisi 5,70 → 1,32 ms (**4,3×**). Daraltma **sonuç kümesini
+değiştirmez**: `bm25` skoru satır bazında aynıdır, sıralama aynı kalır; aday
+olmayan satırlar doğrulamadan da geçemezdi.
+
+**Neden tam ifade değil `NEAR`:** FTS `unicode61` bazı sembolleri (`₺`, `€`, `©`,
+`°`, `№`) **ayırıcı saymaz**, Rust `is_alphanumeric` sayar. Tam ifade, `itirazın ₺
+reddine` gibi bir metinde (tek sembol araya girmiş) doğrulamanın kabul ettiği
+eşleşmeyi kaçırırdı. `NEAR(…, belirteç sayısı)` bir belirteçlik pay bırakır ve
+ölçülen maliyeti aynıdır (1,28 → 1,32 ms).
+
+**Dürüst sınırlar (ölçüldü):**
+- Pay **bir** belirteç. İki sembol belirteci yan yana gelirse (`itirazın ₺ €
+  reddine`) daraltma o eşleşmeyi kaçırır. Test bunu görünür tutuyor
+  (`narrowing_keeps_symbol_separated_words`); sınıf 1.506 kod noktası (Mn/So/Po/Cn
+  ağırlıklı) — pratikte kelime ayırıcı boşluk olduğu için rastlanmıyor.
+- Daraltma **FTS** düzeyinde; `search_total` da aynı ifadeyi kullanır (sayfa ve
+  sayı aynı kümeden gelir). Tam eşleşme kuralı değişmedi.
+- Ölçüm seyrek profilde: **daraltmanın kazancı aday fazlalığıyla doğru orantılı**.
+  Her belirteci gerçekten bitişik taşıyan yoğun korpusta aday sayısı zaten
+  eşleşme sayısına yakındır → kazanç küçülür, maliyet artmaz.
+- 100k profilde yeniden ölçülmedi (disk); etki aday sayısına bağlı olduğu için
+  yöne bakılmaksızın negatif değil.
+
+**Yan bulgu (kusur #35, düzeltildi):** `phrase` kipinin adayları `raw_text`
+indeksinden geliyordu; FTS `I`/`ı` ayrımını Unicode katlamasıyla yapıyor,
+doğrulama ise Türkçe küçük harfle (`I`→`ı`). Sonuç: **"ıslah" sorgusu "ISLAH"
+yazılmış metni bulamıyordu** (metin doğrulamadan geçebilecekken aday olmuyordu).
+Aday üretimi `normalized_text`'e taşındı. Fark testi
+(`narrowing_matches_full_verification_set`) beklenen kümeyi daraltmadan bağımsız
+olarak doğrulayıcıdan hesaplayıp sayfayla karşılaştırır; bu kusuru o yakaladı.
+
+Ham raporlar: `bench-cost-before-2026-10-26.json` (daraltma öncesi, 21 koşu) ve
+`bench-cost-2026-10-26.json` (41 koşu, aynı korpus, aynı makine).
+
 ## Sıradaki kaldıraçlar (ölçümle desteklenen)
 
 1. ~~**Toplam sayıyı geciktir**~~ **uygulandı** (2026-10-26): `search_total` +
@@ -343,12 +412,20 @@ normalized_text` olarak yeniden kuruldu (FTS içeriği yalnız bu iki sütuna ba
    3.030 adaylı seyrek profilde kazanç yalnız **1,04–1,05×**, depolama maliyeti
    metnin **%54'ü** → eşik altı. Ölçüm: yukarıdaki "belirteç/konum indeksi"
    bölümü ve `bench-token-index-ab-negative-2026-10-26.json`.
-4. **`bm25` sıralama maliyeti** — yeni ölçüm: ilk sayfa 21 aday doğrulanırken de
-   ~5,5 ms. Kalan kuyruk burada; sıralamayı aday sayısıyla sınırlamak
-   (iki geçişli `rowid` ön seçimi) bir sonraki kaldıraç. **Yapılmadı.**
-5. ~~**İki aşamalı tarama**~~ **uygulandı** (2026-10-26): aday akışından JOIN'ler
+4. ~~**`bm25` sıralama maliyeti**~~ **uygulandı** (2026-10-26): maliyet bileşenlere
+   ayrıldı (`search_cost_bench`): FTS numaralandırması 0,63 ms, sıralama ≈4,05 ms,
+   metin yükü ≈1,02 ms. Sıralama kaldırılamaz (sıralamasız plan 1,5 sn'ye düşüyor),
+   bu yüzden **aday sayısı** daraltıldı: ifade bitişikliğe çevrildi
+   (`NEAR(…, belirteç sayısı)`), aday 3.030 → 30, uçtan uca ilk sayfa
+   **5,95 → 1,55 ms (3,84×)**. Ayrıntı: yukarıdaki "Aday daraltma" bölümü.
+5. **Kalan taban (ölçüldü):** seyrek profilde daraltmadan sonra 1,32 ms'nin
+   0,63–0,76 ms'si FTS'in ifadeyi **bütün** satırlarda değerlendirmesi (3030
+   satır), gerisi satır hattı. Sıradaki kaldıraç, ifade değerlendirmesini
+   belge/sayfa düzeyinde ön elemeyle kısaltmak; ölçülmeden uygulanmaz.
+6. ~~**İki aşamalı tarama**~~ **uygulandı** (2026-10-26): aday akışından JOIN'ler
    çıkarıldı, üst veri yalnız dönen sonuçlar için okunuyor → aynı korpusta
-   **2,6–3,1×** (ölçüm yukarıda).
+   **2,6–3,1×** (ölçüm yukarıda). Bu sayı daraltma **öncesi** ölçümdür; daraltma
+   sonrası aynı profil 1,32 ms'dir.
 
 ## Komutlar
 
