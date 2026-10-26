@@ -50,6 +50,21 @@ def write_frame(stream: BinaryIO, payload: dict[str, Any]) -> None:
     stream.flush()
 
 
+def progress_frame(
+    request_id: str | None, stage: str, done: int, total: int | None = None
+) -> dict[str, Any]:
+    """İlerleme çerçevesi (F04-T07).
+
+    İlerleme **yanıt değildir**: `ok` alanı yoktur, istek kimliğini taşır ve
+    isteğe ait sonuç çerçevesinden **önce** yazılır. Belge metni, dosya adı
+    veya yol taşımaz; yalnız aşama ve sayaç.
+    """
+    entry: dict[str, Any] = {"stage": stage, "done": done}
+    if total is not None:
+        entry["total"] = total
+    return {"v": PROTOCOL_VERSION, "id": request_id, "progress": entry}
+
+
 def ok(request_id: str | None, result: dict[str, Any]) -> dict[str, Any]:
     return {"v": PROTOCOL_VERSION, "id": request_id, "ok": True, "result": result}
 

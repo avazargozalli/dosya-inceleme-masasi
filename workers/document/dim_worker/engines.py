@@ -17,6 +17,7 @@ import subprocess
 import unicodedata
 import zlib
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -355,8 +356,17 @@ def _page_label(page: Any, *, defined: bool) -> str | None:
 
 
 def extract_pdf(
-    data: bytes, ocr: bool = False, ocr_lang: str = "eng", password: str | None = None
+    data: bytes,
+    ocr: bool = False,
+    ocr_lang: str = "eng",
+    password: str | None = None,
+    progress: Callable[[str, int, int | None], None] | None = None,
 ) -> Extraction:
+    """PDF'i sayfa sayfa çıkarır. `progress(stage, done, total)` çağrısı her
+    sayfa bittikçe yapılır (F04-T07 canlı sayaç); geri çağrı verilmezse hiçbir
+    şey yapılmaz. İlerleme bilgilendiricidir: ayrıştırma sonucunu değiştirmez.
+    """
+    notify = progress or (lambda stage, done, total: None)
     pymupdf = _pymupdf()
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
@@ -375,6 +385,8 @@ def extract_pdf(
         count = doc.page_count
         if count > MAX_PAGES:
             raise EngineError("E_PDF_TOO_MANY_PAGES", f"belge {MAX_PAGES} sayfa sınırını aşıyor")
+        # Açılış bitti, toplam sayfa biliniyor: arayüz "0 / N" gösterebilir.
+        notify("open", 0, count)
         # `/PageLabels` yalnız belgede gerçekten tanımlıysa okunur. PyMuPDF
         # `get_label()` ağaç yokken fiziksel numarayı döndürür; bu etiket gibi
         # gösterilirse uydurma olur. Bu yüzden önce ağacın varlığına bakılır.
@@ -417,6 +429,9 @@ def extract_pdf(
                     label=_page_label(page, defined=bool(page_labels)),
                 )
             )
+            # Sayfa kasaya yazılmadı; sayaç yalnız **okunan** sayfayı bildirir
+            # (yazma aşaması ayrıdır, orada ilerleme olayı yok).
+            notify("pages", index + 1, count)
     finally:
         doc.close()
 
@@ -761,10 +776,16 @@ def _check_pixel_budget(width: int, height: int) -> None:
         )
 
 
-def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extraction:
+def extract_image(
+    data: bytes,
+    ocr: bool = False,
+    ocr_lang: str = "eng",
+    progress: Callable[[str, int, int | None], None] | None = None,
+) -> Extraction:
     """PNG/JPEG/TIFF görüntüsünü sayfalara ayırır. OCR kapalıysa metin
     uydurulmaz: sayfa "metin katmanı yok" uyarısıyla boş döner. Çok kareli
     TIFF'te her kare ayrı fiziksel sayfadır; piksel bütçesi kare başına uygulanır."""
+    notify = progress or (lambda stage, done, total: None)
     Image = _pillow()
     try:
         image = Image.open(io.BytesIO(data))
@@ -779,6 +800,7 @@ def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extr
 
     pages: list[Page] = []
     warnings: list[str] = []
+    notify("open", 0, frames)
     try:
         for index in range(frames):
             image.seek(index)
@@ -809,6 +831,7 @@ def extract_image(data: bytes, ocr: bool = False, ocr_lang: str = "eng") -> Extr
                     blocks=blocks,
                 )
             )
+            notify("pages", index + 1, frames)
     finally:
         image.close()
 
@@ -969,13 +992,17 @@ def extract(
     ocr_lang: str = "eng",
     encoding: str = "auto",
     password: str | None = None,
+    progress: Callable[[str, int, int | None], None] | None = None,
 ) -> Extraction:
     """MIME ve içerik imzasına göre doğru motoru seçer. Parola yalnız bu çağrı
-    için kullanılır; hiçbir yere yazılmaz."""
+    için kullanılır; hiçbir yere yazılmaz. `progress` sayfa bazlı ilerleme
+    bildirimidir (F04-T07); çok sayfalı motorlarda doldurulur."""
     if mime == "application/pdf" or data.startswith(b"%PDF-"):
-        return extract_pdf(data, ocr=ocr, ocr_lang=ocr_lang, password=password)
+        return extract_pdf(
+            data, ocr=ocr, ocr_lang=ocr_lang, password=password, progress=progress
+        )
     if mime in {"image/png", "image/jpeg", "image/tiff", "image/tif"} or _looks_like_image(data):
-        return extract_image(data, ocr=ocr, ocr_lang=ocr_lang)
+        return extract_image(data, ocr=ocr, ocr_lang=ocr_lang, progress=progress)
     if mime in {"application/udf", "application/x-udf", "application/x-uyap-udf"}:
         return extract_udf(data)
     if mime in {"application/zip", "application/octet-stream"} and _looks_like_udf(data):

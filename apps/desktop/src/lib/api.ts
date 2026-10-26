@@ -1510,6 +1510,19 @@ export type ParseResult = {
   warnings: string[];
 };
 
+/**
+ * Ayrıştırma ilerlemesi (F04-T07, `parse-progress` olayı).
+ *
+ * Yalnız aşama ve sayaç taşır: belge metni, dosya adı veya yol **yok**.
+ * `total` bilinmiyorsa `null` — sıfır uydurulmaz.
+ */
+export type ParseProgressEvent = {
+  versionId: string;
+  stage: string;
+  done: number;
+  total: number | null;
+};
+
 export type ImportOutcome =
   | { kind: "imported"; document: DocumentRow; version: DocumentVersionRow }
   | { kind: "duplicate"; documentId: string; versionId: string; displayName: string };

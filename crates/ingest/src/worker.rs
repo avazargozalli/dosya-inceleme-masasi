@@ -30,6 +30,10 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// Parçalı yanıtta kabul edilen en fazla çerçeve sayısı; sınırsız döngü yok.
 pub const MAX_RESPONSE_PARTS: usize = 5000;
+/// Tek istek için kabul edilen en fazla **ilerleme** çerçevesi (F04-T07).
+/// Worker en çok `MAX_PAGES = 2000` sayfa bildirir; sınır onun çok üstünde,
+/// ama sınırsız değil: sonsuz ilerleme akıtan süreç isteği kilitleyemez.
+pub const MAX_PROGRESS_FRAMES: usize = 10_000;
 /// Paketlenmiş worker başlatılırken **kaldırılan** ortam değişkenleri: gömülü
 /// Python, depodaki kaynak ağacını `PYTHONPATH` üzerinden yüklerse paket
 /// kusuru gizlenir.
@@ -93,6 +97,68 @@ impl WorkerError {
                 | Self::Spawn(_)
         )
     }
+}
+
+/// Worker'ın canlı ilerleme bildirimi (F04-T07): aşama + sayılan/toplam birim.
+///
+/// İlerleme çerçevesi yanıt **değildir** (`ok` alanı yoktur); belge metni,
+/// dosya adı, yol veya kasa bilgisi taşımaz. Aşama adları worker'da tanımlıdır
+/// (`start`, `open`, `pages`, `ocr`); bilinmeyen aşama olduğu gibi iletilir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseProgress {
+    pub stage: String,
+    pub done: u32,
+    pub total: Option<u32>,
+}
+
+/// Çerçevede `progress` varsa çözer. Alan yoksa `None` (normal yanıt).
+///
+/// Bozuk ilerleme çerçevesi **sessizce yutulmaz**: sayaç okunamıyorsa ya da
+/// sayılan toplamı aşıyorsa protokol hatası döner. Aksi hâlde arayüz yanlış
+/// bir "5 / 3" göstergesi çizerdi.
+fn parse_progress(value: &Value) -> Result<Option<ParseProgress>, WorkerError> {
+    let Some(entry) = value.get("progress") else {
+        return Ok(None);
+    };
+    let object = entry
+        .as_object()
+        .ok_or_else(|| WorkerError::Protocol("ilerleme çerçevesi nesne olmalı".into()))?;
+    let stage = object
+        .get("stage")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|stage| !stage.is_empty())
+        .ok_or_else(|| WorkerError::Protocol("ilerleme aşaması boş".into()))?;
+    let done = object
+        .get("done")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| WorkerError::Protocol("ilerleme sayacı okunamadı".into()))?;
+    let total = match object.get("total") {
+        None | Some(Value::Null) => None,
+        Some(raw) => Some(
+            raw.as_u64()
+                .ok_or_else(|| WorkerError::Protocol("ilerleme toplamı okunamadı".into()))?,
+        ),
+    };
+    if total.is_some_and(|total| done > total) {
+        return Err(WorkerError::Protocol(
+            "ilerleme sayacı toplamı aşıyor".into(),
+        ));
+    }
+    let done = u32::try_from(done)
+        .map_err(|_| WorkerError::Protocol("ilerleme sayacı çok büyük".into()))?;
+    let total = match total {
+        Some(total) => Some(
+            u32::try_from(total)
+                .map_err(|_| WorkerError::Protocol("ilerleme toplamı çok büyük".into()))?,
+        ),
+        None => None,
+    };
+    Ok(Some(ParseProgress {
+        stage: stage.to_string(),
+        done,
+        total,
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,13 +620,39 @@ impl WorkerClient {
     }
 
     /// Verilen kimliğe ait ilk yanıtı okur.
-    fn read_response(&mut self, id: &str) -> Result<Value, WorkerError> {
+    ///
+    /// **İlerleme çerçeveleri (F04-T07):** `progress` alanlı satırlar yanıt
+    /// değildir; aynı isteğe aitse `progress` geri çağrısına verilir ve
+    /// okunmaya devam edilir. Başka isteğin ilerlemesi sayaca karışmaz.
+    fn read_response<F: FnMut(ParseProgress)>(
+        &mut self,
+        id: &str,
+        mut progress: F,
+    ) -> Result<Value, WorkerError> {
         // Yanıtlar sıralıdır; id eşleşmeyen eski çerçeveler atlanır.
-        for _ in 0..8 {
+        let mut stale = 0usize;
+        let mut progress_frames = 0usize;
+        loop {
             let raw = self.recv_frame()?;
             let value: Value =
                 serde_json::from_slice(&raw).map_err(|_| WorkerError::BadResponse)?;
+            if let Some(update) = parse_progress(&value)? {
+                progress_frames += 1;
+                if progress_frames > MAX_PROGRESS_FRAMES {
+                    return Err(WorkerError::Protocol(
+                        "ilerleme çerçevesi sınırı aşıldı".into(),
+                    ));
+                }
+                if value.get("id").and_then(Value::as_str) == Some(id) {
+                    progress(update);
+                }
+                continue;
+            }
             if value.get("id").and_then(Value::as_str) != Some(id) {
+                stale += 1;
+                if stale >= 8 {
+                    return Err(WorkerError::Protocol("yanıt kimliği eşleşmedi".into()));
+                }
                 continue;
             }
             if value.get("ok").and_then(Value::as_bool) == Some(true) {
@@ -584,12 +676,11 @@ impl WorkerClient {
                     .unwrap_or(false),
             });
         }
-        Err(WorkerError::Protocol("yanıt kimliği eşleşmedi".into()))
     }
 
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value, WorkerError> {
         let id = self.send_request(method, params)?;
-        self.read_response(&id)
+        self.read_response(&id, |_| {})
     }
 
     pub fn ping(&mut self) -> Result<(), WorkerError> {
@@ -605,6 +696,34 @@ impl WorkerClient {
         ocr_lang: &str,
         text_encoding: Option<&str>,
         password: Option<&str>,
+    ) -> Result<Extraction, WorkerError> {
+        self.extract_text_with_progress(
+            data,
+            mime,
+            ocr,
+            ocr_lang,
+            text_encoding,
+            password,
+            &mut |_| {},
+        )
+    }
+
+    /// `extract_text` + canlı ilerleme (F04-T07). Worker sayfa bittikçe
+    /// `progress` çerçevesi yazar; `progress` geri çağrısı **yanıt beklerken**
+    /// çağrılır, böylece arayüz sayaç gösterebilir.
+    ///
+    /// İlerleme çağrısı sonucu değiştirmez; yarım kalan iş yine tamamlanmış
+    /// sayılmaz (parça birleştirme kuralları aynı).
+    #[allow(clippy::too_many_arguments)]
+    pub fn extract_text_with_progress(
+        &mut self,
+        data: &[u8],
+        mime: &str,
+        ocr: bool,
+        ocr_lang: &str,
+        text_encoding: Option<&str>,
+        password: Option<&str>,
+        progress: &mut dyn FnMut(ParseProgress),
     ) -> Result<Extraction, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
         let mut payload = json!({
@@ -625,7 +744,7 @@ impl WorkerClient {
         let id = self.send_request("extract_text", payload)?;
         let mut parts: Vec<Value> = Vec::new();
         loop {
-            let result = self.read_response(&id)?;
+            let result = self.read_response(&id, &mut *progress)?;
             let declared = result.get("parts").and_then(Value::as_u64);
             parts.push(result);
             match declared {
@@ -1275,6 +1394,188 @@ mod tests {
                 );
             }
             other => panic!("beklenmeyen: {other:?}"),
+        }
+    }
+
+    /// Vekil worker: verilen çerçeve satırlarını **dosyadan** yazar, sonra
+    /// yaşar. Dosya kullanılır çünkü 10.000 satır `sh` argümanına sığmaz;
+    /// `sleep` ölü süreç yarışını önler (EOF erken gelebilir).
+    #[cfg(unix)]
+    fn spawn_frames(lines: &[String], timeout: Duration) -> (WorkerClient, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tmp");
+        let script = dir.path().join("frames.ndjson");
+        std::fs::write(&script, lines.join("\n") + "\n").expect("çerçeve dosyası");
+        let command = format!("cat '{}'; sleep 5", script.display());
+        let client =
+            WorkerClient::spawn(Path::new("/bin/sh"), &["-c", command.as_str()], dir.path())
+                .expect("başlat")
+                .with_timeout(timeout);
+        (client, dir)
+    }
+
+    #[cfg(unix)]
+    fn extraction_response(id: &str) -> String {
+        json!({
+            "v": 1,
+            "id": id,
+            "ok": true,
+            "result": {
+                "engine": "plain",
+                "engineVersion": "1",
+                "pages": [{"index": 0, "text": "metin", "width": 0.0, "height": 0.0}],
+                "warnings": []
+            }
+        })
+        .to_string()
+    }
+
+    /// **F04-T07 canlı sayaç:** ilerleme çerçeveleri yanıttan önce gelir ve
+    /// **yanıt beklenirken** geri çağrıya verilir; sonuç değişmez.
+    #[cfg(unix)]
+    #[test]
+    fn progress_frames_are_forwarded_before_the_response() {
+        let lines = vec![
+            json!({"v": 1, "id": "req-1", "progress": {"stage": "open", "done": 0, "total": 3}})
+                .to_string(),
+            json!({"v": 1, "id": "req-1", "progress": {"stage": "pages", "done": 2, "total": 3}})
+                .to_string(),
+            extraction_response("req-1"),
+        ];
+        let (mut client, _dir) = spawn_frames(&lines, Duration::from_secs(10));
+        let mut seen: Vec<ParseProgress> = Vec::new();
+        let extraction = client
+            .extract_text_with_progress(
+                b"x",
+                "text/plain",
+                false,
+                "eng",
+                None,
+                None,
+                &mut |update| seen.push(update),
+            )
+            .expect("çıkarım");
+        assert_eq!(
+            seen,
+            vec![
+                ParseProgress {
+                    stage: "open".into(),
+                    done: 0,
+                    total: Some(3)
+                },
+                ParseProgress {
+                    stage: "pages".into(),
+                    done: 2,
+                    total: Some(3)
+                },
+            ]
+        );
+        assert_eq!(extraction.pages.len(), 1);
+        assert_eq!(extraction.pages[0].text, "metin");
+    }
+
+    /// Başka isteğin ilerlemesi bu isteğin sayacına karışmaz (kimlik kapısı).
+    #[cfg(unix)]
+    #[test]
+    fn progress_for_another_request_is_ignored() {
+        let lines = vec![
+            json!({"v": 1, "id": "req-9", "progress": {"stage": "pages", "done": 1, "total": 2}})
+                .to_string(),
+            extraction_response("req-1"),
+        ];
+        let (mut client, _dir) = spawn_frames(&lines, Duration::from_secs(10));
+        let mut seen: Vec<ParseProgress> = Vec::new();
+        client
+            .extract_text_with_progress(
+                b"x",
+                "text/plain",
+                false,
+                "eng",
+                None,
+                None,
+                &mut |update| seen.push(update),
+            )
+            .expect("çıkarım");
+        assert!(seen.is_empty(), "yabancı sayaç gösterilmemeli: {seen:?}");
+    }
+
+    /// Tutarsız sayaç (5 / 3) sessizce gösterilmez: protokol hatası döner.
+    #[cfg(unix)]
+    #[test]
+    fn inconsistent_progress_counts_are_a_protocol_error() {
+        let lines = vec![
+            json!({"v": 1, "id": "req-1", "progress": {"stage": "pages", "done": 5, "total": 3}})
+                .to_string(),
+            extraction_response("req-1"),
+        ];
+        let (mut client, _dir) = spawn_frames(&lines, Duration::from_secs(10));
+        let err = client
+            .extract_text_with_progress(b"x", "text/plain", false, "eng", None, None, &mut |_| {})
+            .unwrap_err();
+        assert!(
+            matches!(err, WorkerError::Protocol(_)),
+            "beklenmeyen: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_PROTOCOL");
+    }
+
+    /// Sonsuz ilerleme akıtan süreç isteği kilitleyemez: çerçeve sınırı var.
+    #[cfg(unix)]
+    #[test]
+    fn progress_frames_are_bounded() {
+        let storm: Vec<String> = (0..=MAX_PROGRESS_FRAMES)
+            .map(|_| {
+                json!({"v": 1, "id": "req-1", "progress": {"stage": "pages", "done": 0}})
+                    .to_string()
+            })
+            .collect();
+        let (mut client, _dir) = spawn_frames(&storm, Duration::from_secs(30));
+        let started = std::time::Instant::now();
+        let err = client
+            .extract_text_with_progress(b"x", "text/plain", false, "eng", None, None, &mut |_| {})
+            .unwrap_err();
+        assert_eq!(err.code(), "E_WORKER_PROTOCOL", "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "sınır hızla dönmeli: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn progress_parser_reads_counts_and_rejects_bad_frames() {
+        let good = json!({"progress": {"stage": "pages", "done": 2, "total": 5}});
+        assert_eq!(
+            parse_progress(&good).expect("geçerli"),
+            Some(ParseProgress {
+                stage: "pages".into(),
+                done: 2,
+                total: Some(5)
+            })
+        );
+        // Toplam yoksa `None`: sıfır uydurulmaz.
+        assert_eq!(
+            parse_progress(&json!({"progress": {"stage": "open", "done": 0}})).expect("toplamsız"),
+            Some(ParseProgress {
+                stage: "open".into(),
+                done: 0,
+                total: None
+            })
+        );
+        // İlerleme yoksa normal yanıt.
+        assert!(parse_progress(&json!({"ok": true}))
+            .expect("yanıt")
+            .is_none());
+        for bad in [
+            json!({"progress": {"stage": "  ", "done": 0}}),
+            json!({"progress": {"stage": "pages", "done": "2"}}),
+            json!({"progress": {"stage": "pages", "done": 2, "total": "5"}}),
+            json!({"progress": {"stage": "pages", "done": 6, "total": 5}}),
+            json!({"progress": 7}),
+        ] {
+            assert!(
+                matches!(parse_progress(&bad), Err(WorkerError::Protocol(_))),
+                "bozuk çerçeve kabul edilmemeli: {bad}"
+            );
         }
     }
 }

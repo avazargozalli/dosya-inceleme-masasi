@@ -10,16 +10,75 @@
 | F04-T02 | ✅ | arşivle / geri al / geri dönüşümlü silme |
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
-| F04-T07 | 🚧 | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez; **canlı aşama/sayım akışı yok** (worker tek yanıt döndürür, ilerleme çerçevesi göndermez) |
+| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) |
 
 ## Doğrulama
 
 `cargo test -p dim-storage --lib` — **332** test (iş kuyruğu 22, iptal yolu 1 yeni).
-`cargo test -p dim-ingest --lib` — **39** test (worker 17, iptal 3 yeni).
-`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` — **13** test.
-clippy: `-p dim-storage`, `-p dim-ingest` ve tauri `--all-targets -D warnings` temiz;
-rustfmt iki manifest temiz. CI `40397926418` **7/7 yeşil** (arayüz tsc+vitest+build,
-rust macos-14 + ubuntu-latest, masaüstü kabuk, belge worker'ı, sözleşmeler, SBOM).
+`cargo test -p dim-ingest --lib` — **44** test (worker 22; ilerleme ayrıştırma/sınır 5 yeni).
+`cargo test -p dim-ingest --test worker_progress` — **2** test (gerçek Python worker,
+4 sayfalık kurgu PDF: `open 0/4` + `pages 1..4/4`).
+`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` — **14** test.
+Python `pytest workers/document/tests` — **140 passed, 1 skipped** (+7 ilerleme testi).
+Web `tsc --noEmit` + `vitest run` — **359** test (+11 `parseProgress`), `vite build` yeşil.
+clippy: `-p dim-ingest` ve tauri `--all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+
+## Canlı aşama/sayım (2026-10-27, F04-T07 kapanışı)
+
+**Neden:** önceki turun açık kaydı "canlı aşama/sayım yok — worker tek istek/tek yanıt
+çalışır, ilerleme çerçevesi göndermez; kullanıcı 'çalışıyor' görür, sayfa sayacı görmez"di.
+
+**Protokol (geriye uyumlu):** ilerleme **ayrı çerçevedir**, yanıt değildir:
+
+```json
+{"v":1,"id":"req-1","progress":{"stage":"pages","done":12,"total":40}}
+```
+
+- `ok`/`result` alanı yoktur; istemci bunu sonuç sanmaz. Aşamalar: `start` (Tauri),
+  `open` (belge açıldı, toplam biliniyor), `pages` (her sayfa bitti), `store`
+  (kasaya yazma: 0 → N).
+- Çerçeve belge metni, dosya adı, yol veya kasa bilgisi taşımaz (denetim sınırıyla aynı).
+- Eski worker ilerleme göndermezse istemci yalnız `start` gösterir: **sayaç uydurulmaz**.
+
+**Yapılan:**
+
+- `workers/document/dim_worker/protocol.py`: `progress_frame()`; `engines.extract_pdf` /
+  `extract_image` sayfa başına `notify(stage, done, total)` çağırır (geri çağrı yoksa
+  hiçbir şey yapılmaz — sonuç değişmez); `worker.serve` ilerlemeyi yazar, yazma düşerse
+  ayrıştırma düşmez.
+- `crates/ingest/src/worker.rs`: yeni `ParseProgress`, `parse_progress()` (tutarsız sayaç
+  — ör. 5 / 3 — **protokol hatası**, sessizce gösterilmez), `read_response` ilerleme
+  çerçevelerini ayırır (kimlik kapısı + `MAX_PROGRESS_FRAMES = 10_000` sınırı; sonsuz
+  akıtan süreç isteği kilitleyemez), yeni `extract_text_with_progress()`
+  (`extract_text` aynı yolu geri çağrısız kullanır).
+- Tauri `document_parse`: `parse-progress` olayı yayımlar; `start` olayı **kasadan
+  okuma başlamadan** gider, worker çerçeveleri aynen iletilir; olay kaybı ayrıştırmayı
+  etkilemez. `ParseProgressEvent` yalnız 4 alan taşır (test bunu tutuyor).
+- Arayüz (Dosyalar → belge satırı): ayrıştırma sürerken "Sayfalar okunuyor: 12 / 40 · %30"
+  satırı + `role="progressbar"`; olay yalnız **etkin sürüm** için gösterilir; toplam
+  yoksa yüzde yazılmaz, toplamı aşan sayaç toplamda kırpılır. `lib/parseProgress.ts`
+  4 saf yardımcı + 11 test.
+
+**Ölçüm (bu tur, gerçek worker):**
+
+- 4 sayfalık kurgu fikstür (`fixtures/synthetic/progress-pages.pdf`, 1.431 bayt):
+  `open 0/4` → `pages 1/4 … 4/4`, toplam **93,5 ms** (süreç başlatma + ayrıştırma).
+- Yalnız worker (bellek içi, 120 sayfa): **121** ilerleme çerçevesi; `open` **0,5 ms**,
+  sayfa 1 **4,1 ms**, sayfa 30 **7,8 ms**, sayfa 60 **11,6 ms**, sayfa 120 **19,3 ms**,
+  yanıt **20,5 ms** — çerçeveler gerçekten **artımlı**, sonuçla birlikte toplu değil.
+
+**Dürüst sınırlar:**
+
+- Tauri penceresi açılmadı: sayacın **görsel** QA'sı yok; kanıt protokol testleri +
+  gerçek worker ölçümü + arayüz birim testleri.
+- `store` aşaması 0 → N tek çağrıda yazıldığı için **ara değer yok**; okuma aşaması
+  kadar akıcı değil.
+- İlerleme yalnız **ayrıştırma** yolunda; kuyruktaki diğer iş türleri yürütücüsüz.
+  `jobs.progress` sütunu bu turda **güncellenmiyor** (olay arayüze gider, kuyruk
+  kartındaki sayı değişmez).
+- OCR aşaması ayrı ad olarak yayımlanmaz: OCR'lı görüntüde de `pages` sayacı kullanılır.
+- İlerleme çerçevesi kaybı ayrıştırmayı etkilemez ama sayaç donabilir; sonuç yine
+  döner (olay bilgilendiricidir).
 
 ## İş kuyruğu iptali (2026-10-26, F04-T07)
 

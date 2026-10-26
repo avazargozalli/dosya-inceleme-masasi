@@ -12,7 +12,7 @@ use dim_ingest::packaging::{
     read_manifest, verify_package, ManifestTotals, PackageVerification, TesseractStatus,
     WorkerManifest, MANIFEST_FILE,
 };
-use dim_ingest::worker::{dev_worker_dir, WorkerClient};
+use dim_ingest::worker::{dev_worker_dir, ParseProgress, WorkerClient};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_providers::{AiRequest, ApiProvider, ContextSegment, Provider};
@@ -37,7 +37,7 @@ use dim_storage::{
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 use zeroize::Zeroizing;
 
 use crate::error::ApiError;
@@ -497,6 +497,41 @@ mod tests {
     #[test]
     fn empty_path_rejected() {
         assert_eq!(resolve_vault_path("   ").unwrap_err().code, "E_PATH");
+    }
+
+    /// **F04-T07 ilerleme olayı:** yalnız sürüm kimliği, aşama ve sayaç taşır;
+    /// belge metni, dosya adı veya yol yayımlanmaz.
+    #[test]
+    fn parse_progress_event_carries_only_stage_and_counts() {
+        let event = ParseProgressEvent::new(
+            "version-1",
+            ParseProgress {
+                stage: "pages".to_string(),
+                done: 7,
+                total: Some(40),
+            },
+        );
+        let value = serde_json::to_value(&event).expect("olay JSON");
+        assert_eq!(value["versionId"], "version-1");
+        assert_eq!(value["stage"], "pages");
+        assert_eq!(value["done"], 7);
+        assert_eq!(value["total"], 40);
+        // Sözleşme: dört alan; metin/yol/ad alanı yok.
+        assert_eq!(value.as_object().expect("nesne").len(), 4);
+        for forbidden in ["text", "fileName", "path", "quote"] {
+            assert!(value.get(forbidden).is_none(), "{forbidden} yayımlanmamalı");
+        }
+        // Toplam bilinmiyorsa `null` (uydurulmuş sayı yok).
+        let open = ParseProgressEvent::new(
+            "version-1",
+            ParseProgress {
+                stage: "start".to_string(),
+                done: 0,
+                total: None,
+            },
+        );
+        let value = serde_json::to_value(&open).expect("olay JSON");
+        assert!(value["total"].is_null());
     }
 
     /// Arama kipi adı sunucuda çözülür: boş → `auto`, bilinmeyen reddedilir.
@@ -1730,14 +1765,43 @@ fn spawn_worker() -> Result<WorkerClient, ApiError> {
     WorkerClient::spawn_dev(Path::new(&python), &dir).map_err(Into::into)
 }
 
+/// Arayüze yayılan ayrıştırma ilerlemesi (F04-T07).
+///
+/// Olay **yalnız** sürüm kimliği, aşama ve sayaç taşır: belge metni, dosya
+/// adı, yol veya kasa bilgisi yayımlanmaz (denetim kaydıyla aynı sınır).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseProgressEvent {
+    pub version_id: String,
+    pub stage: String,
+    pub done: u32,
+    pub total: Option<u32>,
+}
+
+impl ParseProgressEvent {
+    fn new(version_id: &str, progress: ParseProgress) -> Self {
+        Self {
+            version_id: version_id.to_string(),
+            stage: progress.stage,
+            done: progress.done,
+            total: progress.total,
+        }
+    }
+}
+
 /// Belge sürümünü yerel worker'da ayrıştırır. Özgün blob çözülür, metin
 /// çıkarılır, sürümlü `parse_run` + sayfa + segment kayıtları yazılır.
 ///
 /// **Arayüz iş parçacığı beklemez (F04-T07):** ağır iş `spawn_blocking`
 /// içinde koşar; kasa kilidi orada tutulur. Süren worker yuvaya kaydedilir,
 /// `job_cancel` kasa kilidini beklemeden süreci öldürebilir.
+///
+/// **Canlı aşama/sayım:** worker'ın ilerleme çerçeveleri `parse-progress`
+/// olayına çevrilir (`start` → `open` → `pages`). Olay kaybolursa ayrıştırma
+/// etkilenmez; sayaç göstergesi bilgilendiricidir, sonuç değişmez.
 #[tauri::command]
 pub async fn document_parse(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     version_id: String,
     ocr: Option<bool>,
@@ -1748,6 +1812,11 @@ pub async fn document_parse(
     let hub = state.vault_handle();
     let slot = state.parse_handle();
     tauri::async_runtime::spawn_blocking(move || {
+        let mut emit = |progress: ParseProgress| {
+            let event = ParseProgressEvent::new(&version_id, progress);
+            // Pencere kapalıysa olay düşer; ayrıştırma sürer.
+            let _ = app.emit("parse-progress", event);
+        };
         let guard = lock_vault(&hub);
         parse_version_locked(
             &guard,
@@ -1757,6 +1826,7 @@ pub async fn document_parse(
             ocr_lang,
             text_encoding,
             password,
+            &mut emit,
         )
     })
     .await
@@ -1769,7 +1839,8 @@ pub async fn document_parse(
 }
 
 /// `document_parse` gövdesi. Kasa kilidi **çağıranda** tutulur; bu işlev
-/// bloklayan iş parçacığında çalışır.
+/// bloklayan iş parçacığında çalışır. `progress` arayüz olayına köprü kurar.
+#[allow(clippy::too_many_arguments)]
 fn parse_version_locked(
     guard: &crate::state::VaultState,
     slot: &Arc<Mutex<Option<RunningParse>>>,
@@ -1778,7 +1849,15 @@ fn parse_version_locked(
     ocr_lang: Option<String>,
     text_encoding: Option<String>,
     password: Option<String>,
+    progress: &mut dyn FnMut(ParseProgress),
 ) -> Result<ParseResultView, ApiError> {
+    // İlk olay kasadan okuma başlamadan gider: büyük blob çözülürken arayüz
+    // "hazırlanıyor" gösterir, donmuş görünmez.
+    progress(ParseProgress {
+        stage: "start".to_string(),
+        done: 0,
+        total: None,
+    });
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
@@ -1841,13 +1920,14 @@ fn parse_version_locked(
         } else {
             "auto".to_string()
         };
-        let extraction = worker.extract_text(
+        let extraction = worker.extract_text_with_progress(
             &data,
             &blob.mime,
             ocr_enabled,
             &lang,
             is_text.then_some(encoding.as_str()),
             password.as_deref(),
+            progress,
         )?;
         worker.shutdown();
         // İptal, çıkarımdan sonra ama yazmadan önce geldiyse: hiçbir çıktı
@@ -1918,7 +1998,20 @@ fn parse_version_locked(
             let _ = db.finish_parse_run(&run.id, "cancelled", &[]);
             return Err(canceled_parse_error());
         }
+        // Yazma aşaması ayrı ve uzun olabilir: okuma bitti, sayfalar kasaya
+        // yazılıyor. Sayaç **gerçek** durumu söyler (0 → N); ara değer
+        // uydurulmaz, çünkü tek çağrıda yazılıyor.
+        progress(ParseProgress {
+            stage: "store".to_string(),
+            done: 0,
+            total: Some(u32::try_from(pages.len()).unwrap_or(u32::MAX)),
+        });
         let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
+        progress(ParseProgress {
+            stage: "store".to_string(),
+            done: u32::try_from(pages.len()).unwrap_or(u32::MAX),
+            total: Some(u32::try_from(pages.len()).unwrap_or(u32::MAX)),
+        });
         let status = if extraction.warnings.is_empty() {
             "succeeded"
         } else {

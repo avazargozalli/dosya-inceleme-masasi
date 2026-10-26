@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { listen } from "@tauri-apps/api/event";
 import {
   api,
   toApiError,
@@ -9,8 +10,10 @@ import {
   type CaseRow,
   type DocumentRow,
   type NewCaseInput,
+  type ParseProgressEvent,
 } from "../lib/api";
 import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
+import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
 import { Notes } from "../components/Notes";
 import { DualReader } from "../components/DualReader";
 import { targetFromAnchor, type ReaderTarget } from "../lib/reader";
@@ -43,6 +46,31 @@ export function Cases() {
   // F06-T07: düz metin kodlaması. Varsayılan otomatik; yanlış çözülürse
   // kullanıcı aynı belgeyi açık kodlamayla yeniden ayrıştırabilir.
   const [txtEncoding, setTxtEncoding] = useState("auto");
+  // F04-T07: canlı aşama/sayım. `parse-progress` olayı yalnız aşama ve sayaç
+  // taşır; satır, geçerli ayrıştırmanın sürümüne aitse gösterilir.
+  const [parseProgress, setParseProgress] = useState<ParseProgressEvent | null>(null);
+  const activeParseVersion = useRef<string | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    // Tarayıcıda (Tauri yok) dinleyici kurulamaz; hata yutulur, ayrıştırma
+    // yalnızca uygulama içinde çalışır.
+    void listen<ParseProgressEvent>("parse-progress", (event) => {
+      if (disposed) return;
+      if (event.payload.versionId !== activeParseVersion.current) return;
+      setParseProgress(event.payload);
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -174,6 +202,8 @@ export function Cases() {
   async function parseDocument(versionId: string, ocr = false) {
     setBusy(true);
     setNotice(null);
+    setParseProgress(null);
+    activeParseVersion.current = versionId;
     try {
       const result = await api.documentParse(
         versionId,
@@ -192,6 +222,8 @@ export function Cases() {
     } catch (e) {
       setError(toApiError(e));
     } finally {
+      activeParseVersion.current = null;
+      setParseProgress(null);
       setBusy(false);
     }
   }
@@ -439,6 +471,37 @@ export function Cases() {
             <button className="btn" disabled={busy} onClick={() => void mutate("delete")}>Sil (geri dönüşümlü)</button>
           </div>
           {notice ? <div className="notice ok">{notice}</div> : null}
+          {/* F04-T07: canlı aşama/sayım — yalnız ayrıştırma sürerken görünür. */}
+          {busy && parseProgress ? (
+            <div className="field" style={{ marginTop: 8 }} aria-live="polite">
+              <p className="hint" style={{ margin: "0 0 4px" }}>
+                {parseProgressLine(parseProgress)}
+              </p>
+              {parseProgressWidth(parseProgress) !== null ? (
+                <div
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={parseProgressWidth(parseProgress) ?? 0}
+                  aria-label="Ayrıştırma ilerlemesi"
+                  style={{
+                    height: 4,
+                    borderRadius: 2,
+                    background: "var(--line)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${parseProgressWidth(parseProgress)}%`,
+                      height: "100%",
+                      background: "var(--accent)",
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {reader ? (
             <DualReader

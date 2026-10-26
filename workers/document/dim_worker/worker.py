@@ -7,6 +7,11 @@ Yöntemler: ping, capabilities, extract_text, redact, shutdown.
 alanlarıyla birden çok çerçevede gönderilir; istemci sırayı doğrulayıp
 birleştirir. Tek bir sayfa bile sığmıyorsa `E_FRAME_TOO_LARGE` döner, metin
 sessizce kırpılmaz.
+
+**İlerleme çerçeveleri (F04-T07):** çok sayfalı çıkarımda worker, sonuç
+çerçevesinden **önce** `{"id":…,"progress":{"stage":"pages","done":n,
+"total":m}}` satırları yazar. Bunlar yanıt değildir (`ok` yok); istemci
+bunları ayrı okur ve sonucu beklemezden önce kullanıcıya aşama/sayım gösterir.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from . import PROTOCOL_VERSION
@@ -28,10 +34,13 @@ from .engines import (
     render_report,
     render_report_pdf,
 )
-from .protocol import ProtocolError, err, ok, read_frame, write_frame
+from .protocol import ProtocolError, err, ok, progress_frame, read_frame, write_frame
 from .inventory import InventoryError, inventory as build_inventory
 
 METHODS = {"ping", "capabilities", "extract_text", "inventory", "redact", "redact_regions", "render_report", "render_report_pdf", "render_page", "shutdown"}
+
+# İlerleme geri çağrısı: (aşama, sayılan, toplam). Toplam bilinmiyorsa `None`.
+Progress = Callable[[str, int, int | None], None]
 
 # Geometri (blok/satır kutuları) çerçevenin bir parçasıdır. 1 MiB sert sınırına
 # yaklaşmamak için bütçe ayrılır; aşılırsa kutular kademeli atılır ve durum
@@ -184,8 +193,11 @@ def _extract_frames(rid: str | None, extraction: Any) -> list[dict[str, Any]]:
     return [ok(rid, chunk) for chunk in _split_pages(result)]
 
 
-def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]], bool]:
-    """Tek isteği işler. (yanıt, kapanmalı_mı) döner."""
+def handle(
+    frame: dict[str, Any], progress: Progress | None = None
+) -> tuple[dict[str, Any] | list[dict[str, Any]], bool]:
+    """Tek isteği işler. (yanıt, kapanmalı_mı) döner. `progress` verilirse
+    çok sayfalı çıkarımda aşama/sayım bildirir (F04-T07)."""
     rid = _request_id(frame)
     _require_version(frame)
     method = frame.get("method")
@@ -313,8 +325,32 @@ def handle(frame: dict[str, Any]) -> tuple[dict[str, Any] | list[dict[str, Any]]
     if password is not None and not isinstance(password, str):
         raise ProtocolError("E_PARAMS", "password metin olmalı")
     encoding = str(params.get("encoding") or "auto")
-    extraction = extract(data, mime, ocr=ocr, ocr_lang=ocr_lang, encoding=encoding, password=password)
+    extraction = extract(
+        data,
+        mime,
+        ocr=ocr,
+        ocr_lang=ocr_lang,
+        encoding=encoding,
+        password=password,
+        progress=progress,
+    )
     return _extract_frames(rid, extraction), False
+
+
+def progress_writer(stream, request_id: str | None) -> Progress:
+    """İlerlemeyi çerçeve olarak yazan geri çağrı.
+
+    Yazma düşerse **ayrıştırma düşmez**: ilerleme bilgilendiricidir, sonuç
+    çerçevesinin yazımı ayrıca denenir ve hata orada raporlanır.
+    """
+
+    def emit(stage: str, done: int, total: int | None = None) -> None:
+        try:
+            write_frame(stream, progress_frame(request_id, stage, done, total))
+        except ProtocolError:
+            pass
+
+    return emit
 
 
 def serve(stdin, stdout) -> int:
@@ -327,8 +363,9 @@ def serve(stdin, stdout) -> int:
         if frame is None:
             return 0
         rid: str | None = frame.get("id") if isinstance(frame.get("id"), str) else None
+        progress = progress_writer(stdout, rid)
         try:
-            response, should_close = handle(frame)
+            response, should_close = handle(frame, progress=progress)
         except ProtocolError as exc:
             response, should_close = err(rid, exc.code, exc.message, exc.retryable), False
         except EngineError as exc:
