@@ -128,6 +128,109 @@ pub fn remove_tree(path: &Path) {
     let _ = fs::remove_dir_all(path);
 }
 
+/// Kaynağı hedefe **sabit bağlantıyla** bağlar; desteklenmiyorsa tam kopya alır.
+///
+/// `true` = bağlantı kuruldu (ek yer kaplamaz, aynı dosya). `false` = kopya
+/// yazıldı (hedef ayrı bir dosya; çağıran doğrulamalıdır).
+///
+/// Geri dönüşte güvenlik kopyası için kullanılır: eski kod dosyayı `rename` ile
+/// taşıyordu ve süreç o arada ölürse kasa dosyası ortadan kalkıyordu. Bağlantı
+/// kurulduğunda hedefin yerine yazmak (`rename`) eski içeriği bozmaz, çünkü
+/// eski içerik artık ikinci adla da erişilebilir.
+pub fn hard_link_or_copy(src: &Path, dst: &Path) -> Result<bool, StorageError> {
+    match fs::hard_link(src, dst) {
+        Ok(()) => Ok(true),
+        Err(err) if link_unsupported(&err) => {
+            copy_atomic(src, dst)?;
+            Ok(false)
+        }
+        Err(err) => Err(map_io(err)),
+    }
+}
+
+/// Sabit bağlantı kurulamayan durumlar (farklı birim, izin, bağlantı sınırı,
+/// dosya sistemi desteklemiyor). Bunlarda tam kopya doğru yoldur.
+fn link_unsupported(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
+    ) || matches!(
+        err.raw_os_error(),
+        // EPERM, EXDEV, EMLINK, ENOTSUP (macOS), EOPNOTSUPP (Linux)
+        Some(1 | 18 | 31 | 45 | 95)
+    )
+}
+
+/// `.{ad}.{tag}-<pid>-<sıra>` geçici dosyalarını siler (yarıda kalan yazımların
+/// artıkları). `older_than` sıfırsa hepsi silinir.
+///
+/// Kural: bu adlar **yalnız** aynı dizinde çalışan tek yazıcıya aittir; kasa
+/// kilidi altında canlı bir geçici dosya bulunamaz. Yaş eşiği, kilitsiz
+/// kullanımda (ör. iki ayrı kasa klasörü paylaşılıyorsa) yanlışlıkla canlı bir
+/// dosyayı silmemek için vardır.
+pub fn sweep_tagged_temps(path: &Path, tag: &str, older_than: std::time::Duration) -> usize {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "dim".to_string());
+    let prefix = format!(".{name}.{tag}-");
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !file_name.starts_with(&prefix) {
+            continue;
+        }
+        let fresh = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .map(|modified| now.duration_since(modified).unwrap_or_default() < older_than)
+            .unwrap_or(false);
+        if fresh {
+            continue;
+        }
+        if fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Tatbikat kancası: hata ayıklama derlemesinde `DIM_DRILL_PAUSE` bu noktaya
+/// eşitse süreci bekletir (`DIM_DRILL_PAUSE_MS`, varsayılan 60 sn).
+///
+/// Yalnız süreç öldürme tatbikatında kullanılır (`tests/rollback_drill.rs`):
+/// çökme penceresini deterministik hâle getirir. **Ürün derlemesinde hiçbir
+/// şey yapmaz** (`cfg(not(debug_assertions))`), yani ürün yolunda davranış
+/// değiştirmez.
+#[cfg(debug_assertions)]
+pub fn drill_pause(point: &str) {
+    let Ok(wanted) = std::env::var("DIM_DRILL_PAUSE") else {
+        return;
+    };
+    if wanted != point {
+        return;
+    }
+    let millis = std::env::var("DIM_DRILL_PAUSE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(60_000);
+    std::thread::sleep(std::time::Duration::from_millis(millis));
+}
+
+/// Bkz. `drill_pause`; ürün derlemesinde boş.
+#[cfg(not(debug_assertions))]
+pub fn drill_pause(point: &str) {
+    let _ = point;
+}
+
 /// Dosyayı ve varsa yan dosyalarını (`-journal`, `-wal`, `-shm`) siler.
 pub fn remove_file_best_effort(path: &Path) {
     let _ = fs::remove_file(path);
@@ -221,5 +324,69 @@ mod tests {
             .expect("ad")
             .to_string_lossy()
             .starts_with(".vault.db.dimtmp-"));
+    }
+
+    /// Güvenlik kopyası **taşınmaz, bağlanır**: hedefin yerine yazmak eski
+    /// içeriği bozmaz. Eski `rename` sırası kasa dosyasını bir an yok ediyordu.
+    #[test]
+    fn hard_link_keeps_old_bytes_after_target_is_replaced() {
+        let dir = tempfile::tempdir().expect("dizin");
+        let src = dir.path().join("kasa.db");
+        fs::write(&src, b"eski icerik").expect("yazıldı");
+        let link = dir.path().join("kasa.db.rollback-1.safety");
+        assert!(
+            hard_link_or_copy(&src, &link).expect("bağ"),
+            "aynı birimde sabit bağlantı kurulur"
+        );
+        assert_eq!(fs::read(&link).expect("okundu"), b"eski icerik");
+
+        let replacement = dir.path().join("yeni.tmp");
+        fs::write(&replacement, b"yeni icerik").expect("yeni");
+        fs::rename(&replacement, &src).expect("yerine");
+
+        assert_eq!(fs::read(&src).expect("okundu"), b"yeni icerik");
+        assert_eq!(
+            fs::read(&link).expect("okundu"),
+            b"eski icerik",
+            "güvenlik kopyası eski baytları korur"
+        );
+    }
+
+    #[test]
+    fn sweep_removes_only_tagged_temps() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().expect("dizin");
+        let vault = dir.path().join("vault.db");
+        fs::write(&vault, b"kasa").expect("kasa");
+
+        let stale = dir.path().join(".vault.db.rollback-111-0");
+        let fresh = dir.path().join(".vault.db.rollback-222-1");
+        let other_tag = dir.path().join(".vault.db.dimtmp-333-0");
+        let safety = dir.path().join("vault.db.rollback-1.safety");
+        for file in [&stale, &fresh, &other_tag, &safety] {
+            fs::write(file, b"x").expect("yaz");
+        }
+        let old = SystemTime::now() - Duration::from_secs(7200);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .expect("aç")
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .expect("mtime");
+
+        let removed = sweep_tagged_temps(&vault, "rollback", Duration::from_secs(3600));
+        assert_eq!(removed, 1, "yalnız yaşlı etiketli artık silinir");
+        assert!(!stale.exists());
+        assert!(fresh.exists(), "taze geçici dosya korunur");
+        assert!(other_tag.exists(), "başka etiket korunur");
+        assert!(safety.exists(), "güvenlik kopyası silinmez");
+
+        assert_eq!(
+            sweep_tagged_temps(&vault, "rollback", Duration::ZERO),
+            1,
+            "sıfır eşik: kalan etiketli artık"
+        );
+        assert!(!fresh.exists());
+        assert!(other_tag.exists());
     }
 }

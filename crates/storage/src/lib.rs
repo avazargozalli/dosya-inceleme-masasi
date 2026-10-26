@@ -689,17 +689,48 @@ impl Database {
     }
 }
 
+/// Kasanın ilk okuması düştüğünde hatayı sınıflandırır.
+///
+/// `E_DB_KEY` "anahtar yanlış olabilir" der; ama disk dolu ya da birim
+/// koptuğunda da ilk okuma düşer ve kullanıcıya "kasanız bozuk" demek
+/// yanıltıcı olur (tatbikatta ölçüldü: tam dolu APFS'te SQLite
+/// `SystemIoFailure`/`SHMCLOSE` — "disk I/O error" — veriyor). Bu yüzden G/Ç
+/// sınıfı ayrı koda (`E_DB_IO`) düşer; gerçek anahtar/bozulma hatası
+/// `E_DB_KEY` olarak kalır.
+fn classify_first_read_failure(err: &rusqlite::Error) -> StorageError {
+    if crate::error::sql_is_disk_full(err) {
+        return StorageError::DiskFull {
+            reason: err.to_string(),
+        };
+    }
+    if let rusqlite::Error::SqliteFailure(inner, _) = err {
+        if matches!(
+            inner.code,
+            rusqlite::ErrorCode::SystemIoFailure
+                | rusqlite::ErrorCode::CannotOpen
+                | rusqlite::ErrorCode::DatabaseBusy
+        ) {
+            return StorageError::VaultIo {
+                reason: err.to_string(),
+            };
+        }
+    }
+    StorageError::BadKey
+}
+
 fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), StorageError> {
     // `PRAGMA key` parametre kabul etmez; anahtar hex olarak verilir (alfabe sabit).
     conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key.hex()))
         .map_err(|_| StorageError::Open)?;
     // Anahtar doğrulaması **ilk** okumada yapılır. Pragma'lar önce çalışırsa
     // yanlış anahtar `E_DB_SQL` olarak sızabilir; kullanıcıya "anahtar yanlış"
-    // demek için bu sıra korunmalıdır.
+    // demek için bu sıra korunmalıdır. **Ama** disk doluysa ilk okuma da
+    // düşer: o zaman "anahtar yanlış" demek yanıltıcı olur (tatbikatta ölçüldü,
+    // kasa `BadKey` görünüyordu). Disk dolması kendi koduna ayrılır.
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
         r.get::<_, i64>(0)
     })
-    .map_err(|_| StorageError::BadKey)?;
+    .map_err(|err| classify_first_read_failure(&err))?;
 
     // `cipher_memory_security` tüm SQLCipher build'lerinde yok; eksikse
     // bağlantıyı düşürmemeli, yalnız bu sertleştirme atlanır.
@@ -731,14 +762,24 @@ pub struct RollbackOutcome {
     pub restored_version: u32,
     /// Geri dönüşten önceki dosyanın saklandığı güvenlik kopyası.
     pub safety_copy: PathBuf,
+    /// Bu denemeden önce silinen sahipsiz `.rollback-*` geçici dosyası sayısı
+    /// (önceki çökmenin artıkları).
+    pub swept_temps: usize,
 }
 
 /// Kapalı bir kasa dosyasını, doğrulanmış güncelleme yedeğine geri döndürür.
 ///
-/// Sıra: yedeği aç ve bütünlüğünü doğrula → mevcut dosyayı (varsa `-wal`/`-shm`
-/// yan dosyalarıyla) güvenlik kopyasına taşı → yedeği yerine koy → yerleşen
+/// Sıra: yedeği aç ve bütünlüğünü doğrula → yedeği geçici ada kopyala ve
+/// doğrula → mevcut dosyayı **sabit bağlantıyla** (desteklenmiyorsa kopyayla)
+/// güvenlik kopyası olarak sakla → yedeği `rename` ile yerine koy → yerleşen
 /// dosyayı yeniden doğrula. Son doğrulama başarısız olursa güvenlik kopyası
-/// geri konur; yani geri dönüş de kendi içinde atomiktir.
+/// atomik olarak geri konur; yani geri dönüş de kendi içinde atomiktir.
+///
+/// **Kasa dosyası hiçbir an ortadan kalkmaz:** eski sıra dosyayı önce
+/// taşıyordu, süreç o arada ölürse kasa "yok" görünüyor ve `Database::open`
+/// (`SQLITE_OPEN_CREATE`) boş bir kasa yaratıyordu — kullanıcı için "bütün
+/// dosyalar kayboldu" demek. Sabit bağlantı bu pencereyi kapatır ve ek yer
+/// kaplamaz.
 pub fn rollback_vault(
     path: &Path,
     backup: &Path,
@@ -756,7 +797,16 @@ pub fn rollback_vault(
             "güncelleme yedeği bulunamadı",
         )));
     }
-    let backup_version = Database::verify_database_file(backup, key)?;
+    // Yedek **kendi bıraktığı** yan dosyalar temizlenerek doğrulanır: aksi
+    // hâlde her deneme kullanıcının klasöründe `-wal`/`-shm` artığı bırakır
+    // (`verify_without_residue` dolu `-wal`'ı silmez, sorun olarak bildirir).
+    let (verified, problem) = crate::pre_update::verify_without_residue(backup, key);
+    if let Some(problem) = problem {
+        return Err(StorageError::MigrationBackup { reason: problem });
+    }
+    let backup_version = verified.ok_or_else(|| StorageError::MigrationBackup {
+        reason: "yedek sürümü okunamadı".to_string(),
+    })?;
     if backup_version > CURRENT_SCHEMA_VERSION {
         return Err(StorageError::SchemaTooNew {
             found: backup_version,
@@ -769,7 +819,29 @@ pub fn rollback_vault(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "vault.db".to_string());
-    let safety_copy = path.with_file_name(format!("{name}.rollback-{stamp}.safety"));
+
+    // Yarıda kalan önceki denemenin geçici dosyaları burada temizlenir: her
+    // çökme kasa klasöründe bir `.rollback-*` artığı bırakırdı. Kasa kilidi
+    // tek yazıcı olduğundan bu artıklar sahipsizdir (canlı bir geri dönüşün
+    // geçici dosyası bu noktada olamaz).
+    let swept_temps = atomic::sweep_tagged_temps(path, "rollback", std::time::Duration::ZERO);
+
+    // Dolu `-wal`/`-shm`: kasa başka bir süreçte açık ya da düzgün kapanmamış
+    // demektir. Yan dosyalar yerinden oynatılırsa içlerindeki işlemler sessizce
+    // kaybolur; bu yüzden geri dönüş **başlamaz** (kasa bir kez açılıp
+    // kapanınca WAL emilir ve dosya kaybolur).
+    if sidecar_has_data(path, &name) {
+        return Err(StorageError::RollbackWalBusy);
+    }
+
+    // Güvenlik kopyası adı saniye çözünürlüklü damgadan gelir; aynı saniyedeki
+    // ikinci deneme önceki güvenlik kopyasının üzerine yazmasın diye sıra eklenir.
+    let mut safety_copy = path.with_file_name(format!("{name}.rollback-{stamp}.safety"));
+    let mut attempt = 0u32;
+    while safety_copy.exists() {
+        attempt += 1;
+        safety_copy = path.with_file_name(format!("{name}.rollback-{stamp}-{attempt}.safety"));
+    }
 
     // Yan dosyalar taşınmazsa eski `-wal` yeni dosyaya uygulanır ve kasa bozulur.
     let sidecars: Vec<(PathBuf, PathBuf)> = ["-wal", "-shm"]
@@ -796,7 +868,11 @@ pub fn rollback_vault(
         Ok(_) => Database::verify_database_file_readonly(&staged, key),
         Err(err) => Err(err),
     };
-    remove_empty_sidecars(&staged);
+    // Geçici doğrulama dosyasının **kendi** yan dosyaları silinir: SQLite
+    // doğrulama sırasında `-shm` (32 KiB) bırakır ve bu artık her geri
+    // dönüşte kasa klasöründe kalıyordu. Dosya bizim geçici kopyamız olduğu
+    // için ikisi de güvenle silinir.
+    remove_temp_sidecars(&staged);
     let staged_version = match staged_version {
         Ok(version) => version,
         Err(err) => {
@@ -813,10 +889,31 @@ pub fn rollback_vault(
         });
     }
 
-    std::fs::rename(path, &safety_copy).map_err(atomic::map_io)?;
+    // Güvenlik kopyası **taşınmaz, bağlanır**: `path` hiçbir an yok olmaz.
+    // Sabit bağlantı kurulamayan dosya sisteminde tam kopya alınır ve
+    // doğrulanır (yer maliyeti kasanın boyutu kadar).
+    let linked = atomic::hard_link_or_copy(path, &safety_copy)?;
+    if !linked {
+        let verified =
+            Database::verify_database_file_readonly(&safety_copy, key).inspect_err(|_| {
+                atomic::remove_file_best_effort(&safety_copy);
+            });
+        match verified {
+            Ok(_) => remove_temp_sidecars(&safety_copy),
+            Err(err) => return Err(err),
+        }
+    }
+
+    // Tatbikat kancası: süreç burada öldürülürse kasa dosyası **yerinde**
+    // kalmalı (bkz. `tests/rollback_drill.rs`). Ürün derlemesinde boş.
+    atomic::drill_pause("before_install");
+
     for (from, to) in &sidecars {
         if from.exists() {
-            std::fs::rename(from, to).map_err(atomic::map_io)?;
+            if let Err(err) = std::fs::rename(from, to) {
+                atomic::remove_file_best_effort(&safety_copy);
+                return Err(atomic::map_io(err));
+            }
         }
     }
 
@@ -832,9 +929,12 @@ pub fn rollback_vault(
         Ok(version) if version == backup_version => Ok(RollbackOutcome {
             restored_version: version,
             safety_copy,
+            swept_temps,
         }),
         other => {
-            atomic::remove_file_best_effort(path);
+            // Eski dosya `safety_copy` üzerinde duruyor; `path` **atomik
+            // olarak** onunla değiştirilir. Önce silmek kısa da olsa bir
+            // "kasa yok" penceresi açardı.
             let _ = std::fs::rename(&safety_copy, path);
             for (from, to) in sidecars.iter().rev() {
                 if to.exists() {
@@ -853,17 +953,31 @@ pub fn rollback_vault(
     }
 }
 
-/// Doğrulamanın geçici dosya yanında bıraktığı **boş** `-wal`/`-shm`
-/// dosyalarını temizler. Dolu `-wal` silinmez: doğrulama dosyaya yazmış
-/// demektir ve bu sessizce yutulmaz (bkz. `pre_update::verify_without_residue`).
-fn remove_empty_sidecars(path: &Path) {
+/// Kasanın yanındaki `-wal`/`-shm` dosyalarından **dolu** olan var mı?
+///
+/// Dolu yan dosya, kasa kapalı değilken (başka süreç/açık bağlantı) ya da
+/// düzgün kapanmadan bırakılmış demektir; geri dönüş bunları yerinden
+/// oynatırsa içlerindeki işlemler sessizce kaybolur.
+fn sidecar_has_data(path: &Path, name: &str) -> bool {
+    ["-wal", "-shm"].into_iter().any(|suffix| {
+        std::fs::metadata(path.with_file_name(format!("{name}{suffix}")))
+            .is_ok_and(|meta| meta.len() > 0)
+    })
+}
+
+/// Geçici doğrulama dosyasının **kendi** yan dosyalarını (`-wal`, `-shm`)
+/// siler.
+///
+/// Yalnız bizim ürettiğimiz geçici kopyalar için çağrılır: SQLite doğrulama
+/// sırasında `-shm` (32 KiB) bırakır, `-wal` boş kalır. Boş olanları silmek
+/// yetmiyordu; 32 KiB'lik `-shm` her geri dönüşte kasa klasöründe kalıyordu
+/// (tatbikatta ölçüldü). Kullanıcı dosyalarında kullanılmaz.
+fn remove_temp_sidecars(path: &Path) {
     let base = path.to_string_lossy().to_string();
-    for suffix in ["-shm", "-wal"] {
+    for suffix in ["-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{base}{suffix}"));
-        if let Ok(meta) = std::fs::metadata(&sidecar) {
-            if meta.len() == 0 {
-                let _ = std::fs::remove_file(&sidecar);
-            }
+        if std::fs::metadata(&sidecar).is_ok() {
+            let _ = std::fs::remove_file(&sidecar);
         }
     }
 }

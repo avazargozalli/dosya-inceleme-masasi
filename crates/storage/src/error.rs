@@ -26,6 +26,10 @@ pub enum StorageError {
     },
     #[error("diskte yeterli yer yok: {reason}")]
     DiskFull { reason: String },
+    #[error("kasa yanında dolu bir WAL dosyası var: kasa başka bir süreçte açık olabilir. Uygulamayı kapatıp kasayı bir kez açın, sonra geri dönüşü tekrarlayın")]
+    RollbackWalBusy,
+    #[error("kasa dosyası okunamadı: dosya sistemi hatası (disk dolu ya da birim koptu olabilir): {reason}")]
+    VaultIo { reason: String },
     #[error("yedek doğrulanamadı, hiçbir şey geri yüklenmedi: {reason}")]
     BackupInvalid { reason: String },
     #[error("hedef klasör boş değil; geri yükleme mevcut dosyaların üzerine yazmaz")]
@@ -93,7 +97,7 @@ pub enum StorageError {
 /// (`code: Unknown, extended_code: 1`) ve yalnız mesajda "database or disk is
 /// full" yazıyor; bu yüzden kod kadar mesaj da denetlenir. Başka hiçbir SQLite
 /// mesajı "is full" içermez.
-fn sql_is_disk_full(err: &rusqlite::Error) -> bool {
+pub(crate) fn sql_is_disk_full(err: &rusqlite::Error) -> bool {
     match err {
         rusqlite::Error::SqliteFailure(inner, message) => {
             inner.code == rusqlite::ErrorCode::DiskFull
@@ -130,6 +134,8 @@ impl StorageError {
             Self::MigrationBackup { .. } => "E_DB_MIGRATION_BACKUP",
             Self::RollbackReopen { .. } => "E_DB_ROLLBACK_REOPEN",
             Self::DiskFull { .. } => "E_DISK_FULL",
+            Self::RollbackWalBusy => "E_DB_ROLLBACK_WAL",
+            Self::VaultIo { .. } => "E_DB_IO",
             Self::BackupInvalid { .. } => "E_BACKUP_INVALID",
             Self::RestoreDestNotEmpty => "E_RESTORE_DEST_NOT_EMPTY",
             Self::Integrity(_) => "E_DB_INTEGRITY",

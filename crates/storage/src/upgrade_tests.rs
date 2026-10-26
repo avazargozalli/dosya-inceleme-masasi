@@ -208,8 +208,14 @@ fn rollback_restores_previous_version_and_keeps_safety_copy() {
     let backup = db.pre_migration_backup().expect("yedek").to_path_buf();
     drop(db);
 
+    // Önceki çökmenin artığı: geri dönüş başlamadan temizlenmeli.
+    let leftover = dir.path().join(".vault.db.rollback-999-0");
+    std::fs::write(&leftover, b"yarim").expect("artık");
+
     let outcome = rollback_vault(&path, &backup, &key()).expect("geri dönüş");
     assert_eq!(outcome.restored_version, 12);
+    assert_eq!(outcome.swept_temps, 1, "sahipsiz geçici dosya temizlenir");
+    assert!(!leftover.exists(), "geçici dosya silinir");
     assert!(outcome.safety_copy.is_file(), "güvenlik kopyası kalmalı");
 
     assert_eq!(case_titles(&path), vec!["Eski dosya".to_string()]);
@@ -305,6 +311,63 @@ fn in_app_rollback_restores_old_data_and_resumes_current_schema() {
         !metadata.contains("vault.db"),
         "denetime dosya yolu yazılmaz: {metadata}"
     );
+}
+
+/// Neden sıra önemli: kasa dosyası yokken `Database::open` (`SQLITE_OPEN_CREATE`)
+/// **boş bir kasa yaratır** — kullanıcı için "bütün dosyalar kayboldu" demek.
+/// Geri dönüş bu yüzden dosyayı hiç ortadan kaldırmaz (sabit bağlantı).
+#[test]
+fn opening_a_missing_vault_creates_an_empty_one() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    assert!(!path.exists());
+    let db = Database::open(&path, &key()).expect("boş kasa yaratılır");
+    assert!(path.is_file(), "open dosyayı yaratır");
+    assert_eq!(db.list_cases(true).expect("dosyalar").len(), 0);
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+}
+
+/// Dolu bir `-wal` yan dosyası varken geri dönüş **başlamaz**: yan dosyalar
+/// yerinden oynatılırsa içlerindeki işlemler sessizce kaybolurdu.
+#[test]
+fn rollback_refuses_when_wal_holds_data() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    create_v12(&path);
+    let db = Database::open(&path, &key()).expect("güncelle");
+    db.conn()
+        .execute(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c-yeni','Yeni dosya','review','active','normal','off','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z')",
+            [],
+        )
+        .expect("yeni kayıt");
+    let backup = db.pre_migration_backup().expect("yedek").to_path_buf();
+    drop(db);
+
+    let before = std::fs::read(&path).expect("okundu");
+    std::fs::write(dir.path().join("vault.db-wal"), b"wal-verisi").expect("wal");
+
+    let err = rollback_vault(&path, &backup, &key()).expect_err("WAL varken başlamaz");
+    assert_eq!(err.code(), "E_DB_ROLLBACK_WAL", "ayrı kod: {err}");
+    assert_eq!(
+        std::fs::read(&path).expect("okundu"),
+        before,
+        "kasa baytları değişmemeli"
+    );
+    let safety: Vec<String> = std::fs::read_dir(dir.path())
+        .expect("liste")
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.ends_with(".safety"))
+        .collect();
+    assert!(safety.is_empty(), "güvenlik kopyası oluşmamalı: {safety:?}");
+
+    // Kasa bir kez açılıp kapanınca WAL emilir; geri dönüş yine çalışır.
+    std::fs::remove_file(dir.path().join("vault.db-wal")).expect("wal silinir");
+    let outcome = rollback_vault(&path, &backup, &key()).expect("WAL gidince geri dönüş");
+    assert_eq!(outcome.restored_version, 12);
+    assert_eq!(case_titles(&path), vec!["Eski dosya".to_string()]);
 }
 
 #[test]

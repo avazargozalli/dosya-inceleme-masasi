@@ -75,9 +75,11 @@ describe("rollback helpers", () => {
 
   it("geri dönüşün sınırlarını açıkça listeler", () => {
     const lines = rollbackConsequences();
-    expect(lines).toHaveLength(4);
+    expect(lines).toHaveLength(6);
     expect(lines.join(" ")).toContain("güvenlik kopyası");
     expect(lines.join(" ")).toContain("ikili (uygulama) sürümü düşürülmez");
+    expect(lines.join(" ")).toContain("kasa dosyası yerinde kalır");
+    expect(lines.join(" ")).toContain("E_DISK_FULL");
   });
 
   it("düğme gerekçesini sırayla verir", () => {

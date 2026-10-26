@@ -68,6 +68,8 @@ export function rollbackConsequences(): string[] {
     "Kasa dosyası seçilen güncelleme öncesi yedekle değiştirilir; güncelleme sonrası kayıtlar kasadan çıkar.",
     "Değiştirilen dosya silinmez: aynı klasörde `vault.db.rollback-<zaman>.safety` güvenlik kopyası olarak kalır.",
     "Kasa yeniden açılır ve bu uygulamanın şema sürümüne ilerletilir; ikili (uygulama) sürümü düşürülmez.",
+    "Geri dönüş ortasında süreç ölürse kasa dosyası yerinde kalır; yarım kalan geçici dosya bir sonraki denemede silinir.",
+    "Disk doluysa geri dönüş başlamaz (`E_DISK_FULL`); kasa ve yedek olduğu gibi kalır. Kasa başka bir süreçte açıksa (dolu `-wal`) da başlamaz.",
   ];
 }
 

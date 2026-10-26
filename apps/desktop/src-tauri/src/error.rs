@@ -61,7 +61,10 @@ impl From<dim_storage::StorageError> for ApiError {
         // hatası olarak döner ama kodu ayrıdır (`E_DISK_FULL`).
         let retryable = matches!(
             value,
-            dim_storage::StorageError::Io(_) | dim_storage::StorageError::DiskFull { .. }
+            dim_storage::StorageError::Io(_)
+                | dim_storage::StorageError::DiskFull { .. }
+                | dim_storage::StorageError::VaultIo { .. }
+                | dim_storage::StorageError::RollbackWalBusy
         );
         Self {
             code: value.code().to_string(),

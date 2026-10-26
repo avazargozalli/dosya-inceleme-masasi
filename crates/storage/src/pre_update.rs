@@ -140,7 +140,10 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 /// `-wal` ise doğrulamanın yedeğe **yazdığı** anlamına gelir: silinmez,
 /// sorun olarak bildirilir (sessizce yutulmaz). Önceden var olan yan dosyalara
 /// dokunulmaz.
-fn verify_without_residue(path: &Path, key: &DatabaseKey) -> (Option<u32>, Option<String>) {
+pub(crate) fn verify_without_residue(
+    path: &Path,
+    key: &DatabaseKey,
+) -> (Option<u32>, Option<String>) {
     let wal = sidecar_path(path, "-wal");
     let shm = sidecar_path(path, "-shm");
     let (had_wal, had_shm) = (wal.exists(), shm.exists());
