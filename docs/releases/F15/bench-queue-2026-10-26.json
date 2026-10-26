@@ -1,0 +1,57 @@
+{
+  "bench": "queue_latency",
+  "generatedAt": "2026-10-26T14:31:38.931587Z",
+  "jobs": 400,
+  "ms": {
+    "claim": {
+      "max": 10.15,
+      "mean": 1.45,
+      "n": 400,
+      "p50": 1.016,
+      "p95": 4.588
+    },
+    "completeLoop": {
+      "max": 22.817,
+      "mean": 11.249,
+      "n": 400,
+      "p50": 11.365,
+      "p95": 16.654
+    },
+    "enqueue": {
+      "max": 22.565,
+      "mean": 0.374,
+      "n": 400,
+      "p50": 0.219,
+      "p95": 0.501
+    },
+    "queueWaitBatch4": {
+      "max": 37.921,
+      "mean": 32.513,
+      "n": 40,
+      "p50": 32.001,
+      "p95": 37.461
+    },
+    "queueWaitSerial": {
+      "max": 4492.986,
+      "mean": 2240.693,
+      "n": 400,
+      "p50": 2238.888,
+      "p95": 4296.266
+    }
+  },
+  "note": "Çekirdek ölçüm: Python worker/IPC/arayüz yok; sentetik iş sabit süreli.",
+  "profile": "release",
+  "summary": {
+    "blockedByDependency": 0,
+    "byState": [
+      {
+        "count": 440,
+        "state": "succeeded"
+      }
+    ],
+    "dueNow": 0,
+    "oldestQueuedAt": null,
+    "total": 440
+  },
+  "syntheticWorkMs": 2
+}

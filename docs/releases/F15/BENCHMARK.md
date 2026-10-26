@@ -495,3 +495,51 @@ Rapor JSON'u: `machine` (CPU modeli, RAM, çekirdek), `corpus`,
 koşu 2'nin ham raporu (200 sorgu, sorgu bazında süreler, donanım kimliği,
 `queryListSha256`). Koşu 1 aynı komutun tekrarıdır; p50/p95/max değerleri yukarıdaki
 tabloda. Rapor dosyası makine tarafından üretilir, elle düzenlenmez.
+
+## İş kuyruğu gecikmesi (F15-T05 "iş kuyruğu" maddesi)
+
+Kuyruk 2026-10-26'ya kadar **ölçülmemişti** çünkü yürütücüsü yoktu: `jobs`
+tablosuna yalnız yazılıyordu (her içe aktarma `parse_document` işi açıyor,
+hiçbir katman sahiplenmiyordu). F03-T07/T08 ile sahiplenme (lease), tamamlama,
+hata/tekrar, iptal ve açılışta kurtarma eklendi; ölçüm bu çekirdeğin üzerinde
+yapıldı.
+
+**Koşu (release, Apple M2, macOS 26.6.2, tek süreç):** 400 iş sıraya konur,
+seri yürütücü her işi sahiplenir → 2 ms sentetik iş → bitirir; ayrıca 40 iş
+4'lük parti sahiplenmeyle koşar. Ham rapor:
+`docs/releases/F15/bench-queue-2026-10-26.json`.
+
+| Ölçüm | p50 | p95 | max |
+|---|---|---|---|
+| Sıraya koyma (`enqueue`, 400 iş) | **0,219 ms** | 0,501 ms | 22,6 ms |
+| Sahiplenme (`claim`, 400 iş) | **1,016 ms** | 4,588 ms | 10,2 ms |
+| Sahiplen→bitir döngüsü (2 ms sentetik iş dahil) | **11,365 ms** | 16,654 ms | 22,8 ms |
+| Kuyruk beklemesi — seri yürütücü, 400 iş dolu kuyruk | **2.238,9 ms** | 4.296,3 ms | 4.493,0 ms |
+| Kuyruk beklemesi — 4'lük parti, 40 iş | **32,0 ms** | 37,5 ms | 37,9 ms |
+
+Okuma: mekanizmanın kendi maliyeti iş başına **≈ 9,4 ms** (döngü 11,4 ms − 2 ms
+sentetik iş; sahiplenme 1,0 ms + bitirme ≈ 8,4 ms). Bunun baskın kısmı
+SQLCipher'ın WAL commit'i; tarama değil. Kuyruk **dolu** olduğunda bekleme
+doğrusal büyür (400 iş × 11,4 ms ≈ 4,5 sn); bu yüzden yayımlanan sayı
+"kuyruk beklemesi = birikmiş iş × iş süresi" olarak okunmalıdır. Parti
+sahiplenme (4'lük) bekleme süresini kısaltmaz — iş sayısı az olduğu için
+33 ms'de kalır; kazanç, sahiplenme çağrısı sayısındadır.
+
+**Plan kanıtı (test):** sahiplenme sorgusu `idx_jobs_claim` indeksini kullanır ve
+sıralama için geçici B-tree kurmaz (`claim_query_uses_an_index_not_a_full_scan`).
+İlk yazımda sorgu `state IN (...)` ile yazılmıştı; SQLite sıralamayı indeksten
+karşılayamadığı için her sahiplenmede geçici B-tree kuruyordu — sorgu durum
+başına tek eşitliğe bölündü ve indeks `(state, priority DESC, created_at,
+next_run_at)` olarak düzeltildi. `EXPLAIN QUERY PLAN` testi bunu kalıcı tutar.
+
+**Dürüst sınırlar:**
+- Ölçüm **çekirdek**: Python worker, IPC ve arayüz yok. Sentetik iş sabit 2 ms;
+  gerçek ayrıştırma süresi belgeye göre değişir (B-01'de 1.000 belge 44–47 sn
+  yükleme, yani belge başına ≈ 45 ms).
+- Tek makine, sıcak önbellek, tek süreç. Kasa başına tek yazıcı kuralı
+  gereği iki worker'ın **gerçek paralelliği** ölçülmedi; parti ölçümü yalnız
+  sahiplenme çağrısı sayısını azaltır.
+- Kuyruk beklemesi, iş süresi varsayımına bağlıdır; 2 ms'lik sentetik iş
+  gerçek PDF ayrıştırmasını temsil etmez. Gerçek uçtan uca süre için
+  B-01 yükleme ölçümü ile bu tablo birlikte okunmalıdır.
+- 100.000 belge profilinde kuyruk yeniden ölçülmedi (disk).

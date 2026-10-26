@@ -32,6 +32,8 @@ pub fn run() {
             commands::document_list,
             commands::document_version_list,
             commands::document_parse,
+            commands::job_queue_status,
+            commands::job_queue_recover,
             commands::search_segments,
             commands::search_segments_page,
             commands::search_segments_total,

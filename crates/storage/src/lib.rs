@@ -26,6 +26,7 @@ mod pre_update;
 mod precedent_import;
 mod precedent_terms;
 mod precedents;
+pub mod queue;
 mod redactions;
 mod review_commit;
 mod tags;
@@ -84,6 +85,10 @@ pub use precedents::{
     PrecedentSearchHit, PrecedentSearchPage, PrecedentSearchQuery, PrecedentVersionRow,
     QuoteVerification, MAX_PRECEDENT_DOCUMENT_TEXT_BYTES, MAX_PRECEDENT_SEARCH_LIMIT,
     PRECEDENT_SEARCH_SCOPE,
+};
+pub use queue::{
+    JobCancelResult, JobQueueSummary, JobRecovery, JobRow, JobStateCount, DEFAULT_LEASE_SECONDS,
+    JOB_PARSE_DOCUMENT,
 };
 pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
 pub use review_commit::{
@@ -232,9 +237,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0019_fts_update_trigger",
         sql: include_str!("migrations/0019_fts_update_trigger.sql"),
     },
+    Migration {
+        version: 20,
+        name: "0020_job_queue",
+        sql: include_str!("migrations/0020_job_queue.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 19;
+pub const CURRENT_SCHEMA_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

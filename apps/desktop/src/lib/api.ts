@@ -42,6 +42,51 @@ export type RollbackResult = {
   safetyCopy: string;
 };
 
+/** İş kuyruğu (F03-T07/T08): durum sayımı; içerik/dosya adı taşımaz. */
+export type JobStateCount = {
+  state: string;
+  count: number;
+};
+
+export type JobQueueSummary = {
+  total: number;
+  byState: JobStateCount[];
+  dueNow: number;
+  oldestQueuedAt: string | null;
+  blockedByDependency: number;
+};
+
+export type JobRow = {
+  id: string;
+  jobType: string;
+  scope: string;
+  caseId: string | null;
+  state: string;
+  priority: number;
+  attemptCount: number;
+  maxAttempts: number;
+  progress: number;
+  nextRunAt: string | null;
+  leaseOwner: string | null;
+  leaseUntil: string | null;
+  cancelRequestedAt: string | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type JobQueueView = {
+  summary: JobQueueSummary;
+  jobs: JobRow[];
+};
+
+export type JobRecovery = {
+  interrupted: number;
+  cancelled: number;
+  interruptedJobIds: string[];
+};
+
 export type CaseRow = {
   id: string;
   title: string;
@@ -1497,6 +1542,8 @@ export const api = {
   vaultPreUpdateBackups: () => invoke<PreUpdateBackup[]>("vault_pre_update_backups"),
   vaultRollbackPreUpdate: (backupFile: string, confirmation: string) =>
     invoke<RollbackResult>("vault_rollback_pre_update", { backupFile, confirmation }),
+  jobQueueStatus: () => invoke<JobQueueView>("job_queue_status"),
+  jobQueueRecover: () => invoke<JobRecovery>("job_queue_recover"),
   status: () => invoke<VaultStatus>("vault_status"),
 
   caseList: (includeArchived = false) => invoke<CaseRow[]>("case_list", { includeArchived }),

@@ -10,6 +10,7 @@
 | F15-T03 SBOM | 🚧 | `scripts/sbom.sh`; CI job'u |
 | F15-T04 performans benchmark | 🚧 | **B-01 profili ölçüldü** (1.000 belge / 100.000 segment / 200 sorgu, release): p50 **1,25 sn**, p95 **1,53 / 2,18 sn** → 2 sn hedefi sınırda ve tutarlı değil; kuyruk **36–54 sn**. Ölçümle bulunan indeks kusuru düzeltildi (ilk sayfa **0,314 ms**). **Ertelenmiş toplam sayım** uygulandı: arayüz yalnız ilk sayfayı bekler (ölçülen sayfa p50 **605 ms**, p95 **712 ms**), sayı sonradan ayrı komutla gelir ve sayfayla **birebir aynı** sayıyı verir. **Aday penceresi + tembel doğrulama** (ilk sayfa 2,28×). **Belirteç/konum indeksi ölçüldü ve uygulanmadı** (kazanç %5, depolama +%54 — gerekçe `BENCHMARK.md`). **İki aşamalı tarama** uygulandı: seyrek profilde aynı korpusta **2,6–3,1×**. **Aday daraltma** (`NEAR`) uygulandı: seyrek profilde aday 3.030 → 30, uçtan uca ilk sayfa **5,95 → 1,55 ms (3,84×)**; yan bulgu **kusur #35** (`phrase` kipinde "ıslah" sorgusu "ISLAH" metnini bulamıyordu) düzeltildi. **Kusur #36** (`exact`/Tam kipi aynı sınıfı taşıyordu; ayrıca doğrulama alt dizge, aday ifadesi FTS önekiydi) düzeltildi: adaylar `normalized_text`ten, doğrulama belirteç başına çapalı; ölçülen `exact` ilk sayfa **1,56 ms**, aday 21 (düzeltme maliyet getirmedi). **Kalan FTS tabanı (0,71 ms / 3.030 satır) kapatıldı**: belge/sayfa ön elemesi `MATCH` taramasını kısaltmaz, kaba özet indeksi sınıfı ölçülüp reddedilmişti. 100.000 **belge** / 1 milyon sayfa kapasite testi **yapılmadı**. Ayrıntı: `BENCHMARK.md` |
 | F15-T05 pilot (5–8 avukat) | ⬜ | **insan gerekir**; protokol `docs/pilot/` |
+| F15-T05 iş kuyruğu ölçümü | ✅ | **Ölçüldü (2026-10-26)**: 400 iş, release, Apple M2 — sahiplenme p50 **1,016 ms** / p95 4,588; sıraya koyma p50 **0,219 ms**; sahiplen→bitir döngüsü p50 **11,365 ms** (2 ms sentetik iş dahil); dolu kuyrukta bekleme p50 **2.238,9 ms** / p95 4.296,3 (400 × 11,4 ms). Ham rapor `bench-queue-2026-10-26.json`, ayrıntı `BENCHMARK.md`. Kuyruk yürütücüsü bu turda gerçek oldu (F03-T07/T08) |
 | F15-T06 VoiceOver/NVDA turu | ⬜ | statik test var, ekran okuyucu turu yapılmadı |
 | Disk dolması (spec F15-T06 senaryosu) | 🚧 **kısmi** | **Disk dolması** ölçüldü ve düzeltildi (bu tur): gerçek 8 MB APFS imajı dolduruldu, `backup_to`/`write_atomic`/`copy_atomic` `E_DISK_FULL` verdi, **hedefte kalıntı 0**, kaynak kasa `integrity_check` temiz; geri yükleme artık **önce manifesti doğruluyor** (boyut+sha256) ve hazırlık dizininden tek `rename` ile yerleşiyor. Ölçüm: `crates/storage/tests/disk_full.rs` (`#[ignore]`, elle). **Kalan:** süreç öldürme (kısmen F01-T10'da), uyku/uyanma, harici disk kopması — donanım/insan gerekir. Defter #37/#38 |
 
@@ -23,7 +24,10 @@ durumu:
 - **Bellek** — yayımlandı (tepe RSS 10,3 MB, arama sonrası 21,1 MB).
 - **OCR** — **yayımlanmadı** (worker bu koşuda devrede değil; Tesseract bu
   makinede kurulu değil).
-- **İş kuyruğu** — **yayımlanmadı** (kuyruk gecikmesi ölçülmedi).
+- **İş kuyruğu** — **yayımlandı (2026-10-26)**: sahiplenme, sıraya koyma ve
+  dolu kuyrukta bekleme p50/p95 ölçüldü (`BENCHMARK.md` → "İş kuyruğu
+  gecikmesi"). Ölçüm **çekirdek**; Python worker ve IPC yok, sentetik iş
+  sabit 2 ms.
 
 Ayrıca 8 GB çekirdek profili ve anti-virüs/uyku gibi senaryolar (spec F15-T03/
 T06) bu makinede denenmedi; Windows/Linux ölçümü yok.

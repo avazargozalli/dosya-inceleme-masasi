@@ -89,6 +89,10 @@ pub enum StorageError {
     QuoteTooMany,
     #[error("taranacak metin kapsamı çok büyük (20.000 sayfa); belge seçerek deneyin")]
     QuoteScopeTooLarge,
+    #[error("iş kiralaması geçersiz: {0}")]
+    JobLease(String),
+    #[error("iş durumu bu işleme uygun değil: {0}")]
+    JobState(String),
 }
 
 /// SQLite hatası disk dolması mı?
@@ -165,6 +169,8 @@ impl StorageError {
             Self::QuoteTextTooLong => "E_QUOTE_TEXT",
             Self::QuoteTooMany => "E_QUOTE_TOO_MANY",
             Self::QuoteScopeTooLarge => "E_QUOTE_SCOPE",
+            Self::JobLease(_) => "E_JOB_LEASE",
+            Self::JobState(_) => "E_JOB_STATE",
         }
     }
 }

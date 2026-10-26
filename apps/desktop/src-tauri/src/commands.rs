@@ -23,13 +23,13 @@ use dim_storage::{
     ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey,
     Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
     EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck, InTextQuoteInput,
-    MarkRow, NewAiRun, NewAnchor, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
-    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
-    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
-    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
-    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
-    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiRun, NewAnchor, NewCase, NewCitationCheck,
+    NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
+    NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
+    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
+    OutboxEventRow, PageRow, ParseRun, PrecedentBibliography, PrecedentDocumentText,
+    PrecedentNoteRow, PrecedentRow, PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms,
+    PrecedentVersionRow, ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
     RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
     ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
     SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow,
@@ -171,6 +171,23 @@ fn remember(
     let vault_id = vault_id_from_master(unlocked.master_key());
     let db = open_database(&path, &unlocked, &vault_id)?;
     let schema_version = db.schema_version();
+    // F03-T08: açılışta yarım kalmış işler sessizce "yürüyor" görünmesin.
+    // Kirası dolmuş işler yeniden sıraya alınır; iptal istenmiş olanlar kapanır.
+    // Sayı denetime yazılır, iş kimliği/dosya adı yazılmaz.
+    let recovery = db
+        .recover_stale_jobs(time::OffsetDateTime::now_utc())
+        .unwrap_or(dim_storage::JobRecovery {
+            interrupted: 0,
+            cancelled: 0,
+            interrupted_job_ids: Vec::new(),
+        });
+    if recovery.interrupted > 0 || recovery.cancelled > 0 {
+        let metadata = serde_json::json!({
+            "interrupted": recovery.interrupted,
+            "cancelled": recovery.cancelled,
+        });
+        let _ = db.append_audit("job_queue", None, "recover", "local-user", &metadata);
+    }
     let info = VaultInfo {
         vault_path: path.to_string_lossy().to_string(),
         vault_id: vault_id.clone(),
@@ -498,6 +515,35 @@ mod tests {
             parse_search_mode(Some("fuzzy")).unwrap_err().code,
             "E_SEARCH_QUERY"
         );
+    }
+
+    /// Ayrıştırma hatasının tekrar sınıfı: yalnız geçici altyapı hataları
+    /// yeniden denenir. Belgeye özgü hatalar tekrar denenirse aynı belge için
+    /// üç deneme harcanır ve kullanıcıya yanlış "geçici hata" izlenimi verilir.
+    #[test]
+    fn only_transport_failures_are_retried() {
+        for code in [
+            "E_WORKER_DISCONNECTED",
+            "E_WORKER_TIMEOUT",
+            "E_WORKER_FRAME",
+            "E_WORKER_RESPONSE",
+            "E_IO",
+            "E_DISK_FULL",
+        ] {
+            assert!(parse_failure_is_retryable(code), "{code} tekrar denenmeli");
+        }
+        for code in [
+            "E_WORKER_MISSING",
+            "E_PARSE",
+            "E_PDF_PASSWORD",
+            "E_UNSUPPORTED",
+            "E_NOT_FOUND",
+        ] {
+            assert!(
+                !parse_failure_is_retryable(code),
+                "{code} tekrar denenmemeli"
+            );
+        }
     }
 
     #[test]
@@ -1695,111 +1741,191 @@ pub fn document_parse(
     let version = db
         .get_version(&version_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
-    let blob = db
-        .blob_for_version(&version_id)?
-        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
-    let blob_path = vault_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("blobs")
-        .join(format!("{}.blb", blob.storage_id));
-    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+    // Kuyruk: içe aktarma `parse:<sürüm>` işini açmıştı. İş burada sahiplenilir;
+    // ayrıştırma düşerse iş `failed`/`retry_wait` olur ve "yürüyor" diye asılı
+    // kalmaz (F03-T07/T08). İş yoksa (eski kasa) ayrıştırma yine çalışır.
+    let job_owner = format!("parse-{}", std::process::id());
+    let job_key = format!("parse:{}", version.id);
+    let job = db
+        .claim_job_by_key(
+            &job_key,
+            &job_owner,
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            time::OffsetDateTime::now_utc(),
+        )
+        .ok()
+        .flatten();
+    let outcome = (|| -> Result<ParseResultView, ApiError> {
+        let blob = db
+            .blob_for_version(&version_id)?
+            .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+        let blob_path = vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs")
+            .join(format!("{}.blb", blob.storage_id));
+        let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
-    let mut worker = spawn_worker()?;
-    let caps = worker
-        .capabilities()
-        .unwrap_or_else(|_| serde_json::json!({}));
-    let ocr_enabled = ocr.unwrap_or(false);
-    let lang = ocr_lang.unwrap_or_else(|| "eng".to_string());
-    // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
-    let is_text = blob.mime.starts_with("text/");
-    let encoding = if is_text {
-        text_encoding
-            .map(|value| value.trim().to_lowercase())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "auto".to_string())
-    } else {
-        "auto".to_string()
-    };
-    let extraction = worker.extract_text(
-        &data,
-        &blob.mime,
-        ocr_enabled,
-        &lang,
-        is_text.then_some(encoding.as_str()),
-        password.as_deref(),
-    )?;
-    worker.shutdown();
+        let mut worker = spawn_worker()?;
+        let caps = worker
+            .capabilities()
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let ocr_enabled = ocr.unwrap_or(false);
+        let lang = ocr_lang.unwrap_or_else(|| "eng".to_string());
+        // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
+        let is_text = blob.mime.starts_with("text/");
+        let encoding = if is_text {
+            text_encoding
+                .map(|value| value.trim().to_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "auto".to_string())
+        } else {
+            "auto".to_string()
+        };
+        let extraction = worker.extract_text(
+            &data,
+            &blob.mime,
+            ocr_enabled,
+            &lang,
+            is_text.then_some(encoding.as_str()),
+            password.as_deref(),
+        )?;
+        worker.shutdown();
 
-    // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü
-    // ve kurulu tessdata parmak izi. Yalnız MIME yazmak yanıltıcıydı.
-    let tessdata = caps
-        .pointer("/ocr/tessdataHash")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    let encoding_note = if is_text {
-        format!("|txt-encoding={encoding}")
-    } else {
-        String::new()
-    };
-    let settings = format!(
-        "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}{encoding_note}",
-        blob.mime, ocr_enabled, lang, extraction.engine_version
-    );
-    // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
-    // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
-    let run = db.start_parse_run(
-        &version_id,
-        &version.case_id,
-        &extraction.engine,
-        &extraction.engine_version,
-        &settings,
-    )?;
-    let pages: Vec<NewPage> = extraction
-        .pages
-        .iter()
-        .map(|p| NewPage {
-            index: i64::from(p.index),
-            text: p.text.clone(),
-            width: Some(p.width),
-            height: Some(p.height),
-            origin: if p.text.trim().is_empty() {
-                "none".to_string()
-            } else {
-                "native".to_string()
-            },
-            warnings: p.warnings.clone(),
-            rotation: i64::from(p.rotation % 360),
-            coordinate_space: p.coordinate_space.clone(),
-            page_label: p.page_label.clone(),
-            blocks: p
-                .blocks
-                .iter()
-                .map(|b| SegmentBlock {
-                    start: i64::from(b.start),
-                    end: i64::from(b.end),
-                    bbox: b.bbox,
-                    lines: b.lines.clone(),
-                    path: b.path.clone(),
-                    kind: b.kind.clone(),
-                })
-                .collect(),
+        // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü
+        // ve kurulu tessdata parmak izi. Yalnız MIME yazmak yanıltıcıydı.
+        let tessdata = caps
+            .pointer("/ocr/tessdataHash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let encoding_note = if is_text {
+            format!("|txt-encoding={encoding}")
+        } else {
+            String::new()
+        };
+        let settings = format!(
+            "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}{encoding_note}",
+            blob.mime, ocr_enabled, lang, extraction.engine_version
+        );
+        // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
+        // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
+        let run = db.start_parse_run(
+            &version_id,
+            &version.case_id,
+            &extraction.engine,
+            &extraction.engine_version,
+            &settings,
+        )?;
+        let pages: Vec<NewPage> = extraction
+            .pages
+            .iter()
+            .map(|p| NewPage {
+                index: i64::from(p.index),
+                text: p.text.clone(),
+                width: Some(p.width),
+                height: Some(p.height),
+                origin: if p.text.trim().is_empty() {
+                    "none".to_string()
+                } else {
+                    "native".to_string()
+                },
+                warnings: p.warnings.clone(),
+                rotation: i64::from(p.rotation % 360),
+                coordinate_space: p.coordinate_space.clone(),
+                page_label: p.page_label.clone(),
+                blocks: p
+                    .blocks
+                    .iter()
+                    .map(|b| SegmentBlock {
+                        start: i64::from(b.start),
+                        end: i64::from(b.end),
+                        bbox: b.bbox,
+                        lines: b.lines.clone(),
+                        path: b.path.clone(),
+                        kind: b.kind.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
+        let status = if extraction.warnings.is_empty() {
+            "succeeded"
+        } else {
+            "partial"
+        };
+        db.finish_parse_run(&run.id, status, &extraction.warnings)?;
+
+        Ok(ParseResultView {
+            parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
+            pages: pages.len(),
+            stored_segments: stored,
+            warnings: extraction.warnings,
         })
-        .collect();
-    let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
-    let status = if extraction.warnings.is_empty() {
-        "succeeded"
-    } else {
-        "partial"
-    };
-    db.finish_parse_run(&run.id, status, &extraction.warnings)?;
+    })();
 
-    Ok(ParseResultView {
-        parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
-        pages: pages.len(),
-        stored_segments: stored,
-        warnings: extraction.warnings,
+    // Kuyruk sonucu ayrıştırma sonucundan ayrı yazılır: iş kaydı düşse bile
+    // kullanıcının belgesi/parse koşusu yerinde kalır (kuyruk ikincil kayıttır).
+    match (job.as_ref(), &outcome) {
+        (Some(job), Ok(_)) => {
+            let _ = db.complete_job(&job.id, &job_owner, time::OffsetDateTime::now_utc());
+        }
+        (Some(job), Err(err)) => {
+            let _ = db.fail_job(
+                &job.id,
+                &job_owner,
+                &err.code,
+                parse_failure_is_retryable(&err.code),
+                time::OffsetDateTime::now_utc(),
+            );
+        }
+        (None, _) => {}
+    }
+    outcome
+}
+
+/// Ayrıştırma hatası yeniden denenebilir mi? Yalnız geçici altyapı hataları
+/// (worker koptu, G/Ç, disk) tekrar denenir; belgeye özgü hatalar (parola,
+/// bozuk/desteklenmeyen dosya) tekrar denenmez — şartname §17.4.
+fn parse_failure_is_retryable(code: &str) -> bool {
+    matches!(
+        code,
+        "E_WORKER_DISCONNECTED"
+            | "E_WORKER_TIMEOUT"
+            | "E_WORKER_FRAME"
+            | "E_WORKER_RESPONSE"
+            | "E_IO"
+            | "E_DISK_FULL"
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobQueueView {
+    pub summary: JobQueueSummary,
+    pub jobs: Vec<JobRow>,
+}
+
+#[tauri::command]
+pub fn job_queue_status(state: State<'_, AppState>) -> Result<JobQueueView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(JobQueueView {
+        summary: db.job_queue_summary()?,
+        jobs: db.list_jobs(20)?,
     })
+}
+
+#[tauri::command]
+pub fn job_queue_recover(state: State<'_, AppState>) -> Result<JobRecovery, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let report = db.recover_stale_jobs(time::OffsetDateTime::now_utc())?;
+    let metadata = serde_json::json!({
+        "interrupted": report.interrupted,
+        "cancelled": report.cancelled,
+    });
+    db.append_audit("job_queue", None, "recover", "local-user", &metadata)?;
+    Ok(report)
 }
 
 #[derive(Serialize)]

@@ -233,26 +233,8 @@ impl Database {
         input_fingerprint: &str,
         idempotency_key: &str,
     ) -> Result<String, StorageError> {
-        let existing: Option<String> = self
-            .conn()
-            .query_row(
-                "SELECT id FROM jobs WHERE idempotency_key=?1",
-                [idempotency_key],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(id) = existing {
-            return Ok(id);
-        }
-        let id = uuid::Uuid::now_v7().to_string();
-        let now = now_iso();
-        let scope = if case_id.is_some() { "case" } else { "vault" };
-        self.conn().execute(
-            "INSERT INTO jobs (id,type,scope,case_id,input_fingerprint,idempotency_key,state,progress,retry_policy,attempt_count,next_run_at,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,'queued',0,'{\"maxAttempts\":3,\"baseDelayMs\":2000}',0,?7,?7,?7)",
-            rusqlite::params![id, job_type, scope, case_id, input_fingerprint, idempotency_key, now],
-        )?;
-        Ok(id)
+        // Kural tek yerde: kuyruk modülü (varsayılan öncelik 0).
+        self.enqueue_job_with_priority(job_type, case_id, input_fingerprint, idempotency_key, 0)
     }
 }
 

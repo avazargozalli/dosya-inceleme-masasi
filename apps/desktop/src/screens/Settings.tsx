@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
+import { JobQueueCard } from "../components/JobQueueCard";
 import {
   api,
   toApiError,
@@ -598,6 +599,8 @@ export function Settings() {
           <div className="notice ok">Parola değiştirildi. Kurtarma anahtarınız hâlâ geçerli.</div>
         ) : null}
       </div>
+
+      <JobQueueCard unlocked={unlocked} />
 
       <div className="card tight">
         <h2>Teşhis</h2>
