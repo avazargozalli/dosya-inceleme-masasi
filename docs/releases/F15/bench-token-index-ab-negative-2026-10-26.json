@@ -1,0 +1,8 @@
+{
+"corpus":{"decoys":3000,"hits":30,"segments":3030,"indexedSegments":3030,"limit":200,"rounds":21,"ingestMs":5023.8},
+"storage":{"indexBytes":217800,"textBytes":403000,"indexPerSegment":71.9,"indexVsTextPct":54.0},
+"queries":[
+  {"query":"itirazın reddine","withIndex":{"p50":16.566,"p95":16.883,"max":17.079,"n":21},"withoutIndex":{"p50":17.287,"p95":17.425,"max":17.426,"n":21},"speedupP50":1.04,"examinedWithIndex":3030,"indexRejections":3000,"indexConfirmed":30,"falsePositives":0,"examinedWithoutIndex":3030,"hits":30,"sameHits":true},
+  {"query":"\"itirazın reddine\"","withIndex":{"p50":16.189,"p95":16.249,"max":16.261,"n":21},"withoutIndex":{"p50":17.058,"p95":17.137,"max":17.172,"n":21},"speedupP50":1.05,"examinedWithIndex":3030,"indexRejections":3000,"indexConfirmed":30,"falsePositives":0,"examinedWithoutIndex":3030,"hits":30,"sameHits":true}
+]
+}

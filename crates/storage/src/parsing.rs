@@ -557,14 +557,31 @@ impl Database {
         // sonra ve yalnız sayfanın ihtiyaç duyduğu kadar aday üzerinde koşar.
         let (base_where, base_params) = search_where_candidates(case_id, &expression, &filters);
 
+        // **İki aşamalı tarama (F15).** Ölçüm (3.030 adaylı seyrek eşleşme
+        // profili, `docs/releases/F15/bench-scan-2026-10-26.json`): aday başına
+        // maliyetin neredeyse tamamı satır hattıydı — dört LEFT JOIN, belge/sayfa
+        // yükü ve metin çıkarımı; doğrulamanın kendisi değil. Bu yüzden aday
+        // akışı yalnız `text_segments` + FTS üzerinden yürür; **belge üst
+        // verisi yalnız kabul edilen sonuçlar için** (tek `IN` sorgusu) okunur.
+        //
+        // Filtre varsa JOIN'ler WHERE'de gereklidir; o durumda eski FROM
+        // kullanılır (davranış aynı, yalnız seçilen sütunlar az).
+        let filters_need_join = !filters.document_types.is_empty()
+            || filters.ocr_status.is_some()
+            || !filters.tags.is_empty()
+            || filters.date_role.is_some();
+        let scan_from = if filters_need_join {
+            SEARCH_FROM
+        } else {
+            "text_segments_fts JOIN text_segments s ON s.rowid = text_segments_fts.rowid"
+        };
+
         // `LIMIT` yok: adaylar `bm25` sırasında akıtılır; kaç adayın
         // doğrulanacağına sayfanın dolması karar verir (erken kesme).
         let mut sql = format!(
             "SELECT s.id AS segment_id, s.page_id, s.raw_text, s.normalized_text,
-                    p.page_index, bm25(text_segments_fts) AS bm25_rank,
-                    pr.document_version_id, dv.document_id, d.display_name, d.document_type,
-                    d.status, p.text_origin, s.case_id
-             FROM {SEARCH_FROM} {base_where}"
+                    bm25(text_segments_fts) AS bm25_rank
+             FROM {scan_from} {base_where}"
         );
         let mut params = base_params;
         if let Some(cursor) = &cursor {
@@ -585,7 +602,9 @@ impl Database {
 
         let started = std::time::Instant::now();
         let mut scratch = MatchScratch::default();
-        let mut hits: Vec<SearchHit> = Vec::new();
+        // Doğrulamayı geçen adaylar: kimlik + sıra + metin. Belge üst verisi
+        // ikinci aşamada, tek sorguda gelir.
+        let mut accepted: Vec<(String, Option<String>, f64, String)> = Vec::new();
         let mut examined: i64 = 0;
         let mut windows: i64 = 0;
         let mut stopped_early = false;
@@ -617,22 +636,8 @@ impl Database {
                     if !matched {
                         continue;
                     }
-                    hits.push(SearchHit {
-                        segment_id: row.get(0)?,
-                        page_id: row.get(1)?,
-                        raw_text: raw,
-                        page_index: row.get(4)?,
-                        rank: row.get(5)?,
-                        document_version_id: row.get(6)?,
-                        document_id: row.get(7)?,
-                        document_name: row.get(8)?,
-                        document_type: row.get(9)?,
-                        document_status: row.get(10)?,
-                        text_origin: row.get(11)?,
-                        case_id: row.get(12)?,
-                        tags: Vec::new(),
-                    });
-                    if hits.len() as i64 > limit {
+                    accepted.push((row.get(0)?, row.get(1)?, row.get(4)?, raw));
+                    if accepted.len() as i64 > limit {
                         stopped_early = true;
                         break 'scan;
                     }
@@ -649,10 +654,33 @@ impl Database {
             scan_ms: started.elapsed().as_secs_f64() * 1000.0,
         };
 
-        if hits.len() as i64 > limit {
-            hits.truncate(limit as usize);
-            page.has_more = true;
+        let has_more = accepted.len() as i64 > limit;
+        if has_more {
+            accepted.truncate(limit as usize);
         }
+        // İkinci aşama: yalnız dönen sonuçların belge/sayfa üst verisi.
+        let metadata =
+            self.hit_metadata(&accepted.iter().map(|row| row.0.clone()).collect::<Vec<_>>())?;
+        let mut hits: Vec<SearchHit> = Vec::with_capacity(accepted.len());
+        for (segment_id, page_id, rank, raw_text) in accepted {
+            let extra = metadata.get(&segment_id);
+            hits.push(SearchHit {
+                document_version_id: extra.and_then(|meta| meta.document_version_id.clone()),
+                document_id: extra.and_then(|meta| meta.document_id.clone()),
+                document_name: extra.and_then(|meta| meta.display_name.clone()),
+                document_type: extra.and_then(|meta| meta.document_type.clone()),
+                document_status: extra.and_then(|meta| meta.status.clone()),
+                text_origin: extra.and_then(|meta| meta.text_origin.clone()),
+                page_index: extra.and_then(|meta| meta.page_index),
+                case_id: extra.map(|meta| meta.case_id.clone()),
+                segment_id,
+                page_id,
+                raw_text,
+                rank,
+                tags: Vec::new(),
+            });
+        }
+        page.has_more = has_more;
         if page.has_more {
             if let Some(last) = hits.last() {
                 page.next_cursor = Some(
@@ -797,6 +825,55 @@ impl Database {
             },
         )?;
         Ok(())
+    }
+
+    /// İkinci aşama (F15 iki aşamalı tarama): dönen sonuçların belge/sayfa üst
+    /// verisi tek `IN` sorgusuyla okunur. Aday akışında JOIN taşınmadığı için
+    /// seyrek eşleşen sorguda binlerce aday bu maliyeti ödemez.
+    ///
+    /// Eksik satır olursa alanlar **boş** kalır; üst veri uydurulmaz.
+    fn hit_metadata(
+        &self,
+        segment_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, HitMetadata>, StorageError> {
+        let mut out = std::collections::HashMap::with_capacity(segment_ids.len());
+        if segment_ids.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = vec!["?"; segment_ids.len()].join(",");
+        let sql = format!(
+            "SELECT s.id, p.page_index, pr.document_version_id, dv.document_id,
+                    d.display_name, d.document_type, d.status, p.text_origin, s.case_id
+             FROM text_segments s
+             LEFT JOIN pages p ON p.id = s.page_id
+             LEFT JOIN parse_runs pr ON pr.id = s.parse_run_id
+             LEFT JOIN document_versions dv ON dv.id = pr.document_version_id
+             LEFT JOIN documents d ON d.id = dv.document_id
+             WHERE s.id IN ({placeholders})"
+        );
+        let params: Vec<Value> = segment_ids
+            .iter()
+            .map(|id| Value::Text(id.clone()))
+            .collect();
+        let mut stmt = self.conn().prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(HitMetadata {
+                segment_id: row.get(0)?,
+                page_index: row.get(1)?,
+                document_version_id: row.get(2)?,
+                document_id: row.get(3)?,
+                display_name: row.get(4)?,
+                document_type: row.get(5)?,
+                status: row.get(6)?,
+                text_origin: row.get(7)?,
+                case_id: row.get(8)?,
+            })
+        })?;
+        for row in rows {
+            let meta = row?;
+            out.insert(meta.segment_id.clone(), meta);
+        }
+        Ok(out)
     }
 
     /// Sonuç sayfasındaki belgelerin etiketleri: tek sorgu, N+1 yok.
@@ -1658,6 +1735,19 @@ pub struct SegmentGeometry {
     pub total_blocks: usize,
 }
 
+/// İkinci aşamada okunan belge/sayfa üst verisi (F15 iki aşamalı tarama).
+struct HitMetadata {
+    segment_id: String,
+    page_index: Option<i64>,
+    document_version_id: Option<String>,
+    document_id: Option<String>,
+    display_name: Option<String>,
+    document_type: Option<String>,
+    status: Option<String>,
+    text_origin: Option<String>,
+    case_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {
@@ -2144,6 +2234,73 @@ mod tests {
         );
         assert_eq!(hits[0].document_name.as_deref(), Some("Belge"));
         assert!(hits[0].document_id.is_some());
+    }
+
+    /// İki aşamalı tarama (F15): üst veri ikinci aşamada, ayrı sorguyla gelir.
+    /// Sonucun bütün alanları **dolu** olmalı ve filtreli aramada da eksilmemeli;
+    /// eksik satır uydurma değerle doldurulmaz.
+    #[test]
+    fn two_stage_scan_keeps_full_hit_metadata() {
+        let (db, case_id, _version_id) = setup();
+        let (document_id, version_id, run_id, segment_id) = add_document_with_text(
+            &db,
+            &case_id,
+            "Kira sözleşmesi",
+            "contract",
+            "İtirazın reddine karar verildi",
+            "ocr",
+        );
+        assert!(!run_id.is_empty(), "koşu kimliği dolu olmalı");
+        db.add_document_tag(&document_id, "kira").expect("etiket");
+        db.add_document_tag(&document_id, "2024").expect("etiket");
+
+        let page = db
+            .search_page(
+                &case_id,
+                &SearchQuery::auto("itirazın reddine"),
+                &SearchFilters::default(),
+                10,
+                None,
+                false,
+            )
+            .expect("arama");
+        assert_eq!(page.hits.len(), 1);
+        let hit = &page.hits[0];
+        assert_eq!(hit.segment_id, segment_id);
+        assert_eq!(
+            hit.document_version_id.as_deref(),
+            Some(version_id.as_str())
+        );
+        assert_eq!(hit.document_id.as_deref(), Some(document_id.as_str()));
+        assert_eq!(hit.document_name.as_deref(), Some("Kira sözleşmesi"));
+        assert_eq!(hit.document_type.as_deref(), Some("contract"));
+        assert!(hit.document_status.is_some(), "belge durumu taşınmalı");
+        assert_eq!(hit.text_origin.as_deref(), Some("ocr"));
+        assert_eq!(hit.case_id.as_deref(), Some(case_id.as_str()));
+        assert_eq!(hit.page_index, Some(0));
+        assert_eq!(hit.tags, vec!["2024".to_string(), "kira".to_string()]);
+
+        // Filtreli aramada JOIN'ler WHERE için devrede; sonuç yine tam olmalı.
+        let filtered = db
+            .search_page(
+                &case_id,
+                &SearchQuery::auto("itirazın reddine"),
+                &SearchFilters {
+                    document_types: vec!["contract".into()],
+                    ocr_status: Some("ocr".into()),
+                    tags: vec!["kira".into()],
+                    ..Default::default()
+                },
+                10,
+                None,
+                false,
+            )
+            .expect("filtreli arama");
+        assert_eq!(filtered.hits.len(), 1);
+        assert_eq!(
+            filtered.hits[0].document_name.as_deref(),
+            Some("Kira sözleşmesi")
+        );
     }
 
     #[test]

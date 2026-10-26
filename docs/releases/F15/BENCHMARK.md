@@ -267,6 +267,68 @@ Ham rapor: `docs/releases/F15/bench-window-2026-10-26.json`.
 - Bu tablo bir "geçti" belgesi değildir. Hedef tutmuyorsa güvenlik veya doğrulama
   adımı kaldırılmaz; kapasite iddiası ölçülen sınırla daraltılır.
 
+## Seyrek eşleşme kuyruğu: belirteç/konum indeksi ölçüldü — **uygulanmadı** (2026-10-26)
+
+Önceki tur aday penceresini getirdi; geriye "eşleşme seyrekse tarama yine bütün
+adayları gezer" sınırı kalmıştı. Planlanan kaldıraç **kalıcı belirteç/konum
+indeksiydi**. Önce ölçüldü, sonra karar verildi.
+
+**Deney 1 — belirteç dizisi filtresi.** Her segmente belirteçlerin 16 bitlik
+özetleri (tam + ilk-üç-karakter, `flexible`/`phrase` için) yazıldı; aday, iğne
+belirteçlerini **bitişik** görmüyorsa metni hiç okumadan elendi, "olabilir"
+dediğinde eşleşme metinle onaylandı (özet çakışması yanlış sonuç üretmez).
+
+Korpus: **3.030 segment** (3.000 "iki belirteç var ama bitişik değil" tuzağı +
+30 gerçek eşleşme), limit 200 (sayfa erken dolmuyor → bütün adaylar geziliyor),
+21 koşu, release.
+
+| Sorgu | dizisiz p50 | dizili p50 | kazanç | elenen aday |
+|---|---|---|---|---|
+| `itirazın reddine` (esnek) | 17,29 ms | 16,57 ms | **1,04×** | 3.000 / 3.030 |
+| `"itirazın reddine"` (ifade) | 17,06 ms | 16,19 ms | **1,05×** | 3.000 / 3.030 |
+
+Sonuçlar birebir aynı (aynı segment kimlikleri, aynı sayılar), yanlış pozitif 0.
+Buna karşılık dizinin depolama maliyeti **segment başına 71,9 bayt**, metin
+boyutunun **%54'ü**. Kazanç %5, maliyet %54 → **uygulanmadı** (kod geri alındı,
+ölçüm dosyası `bench-token-index-ab-negative-2026-10-26.json`).
+
+**Ders:** aday başına maliyetin neredeyse tamamı doğrulama değil, **satır
+hattı**: dört `LEFT JOIN` (sayfa, koşu, sürüm, belge) + taşınan yük. 3.030
+adayda 17 ms, aday başına ~5,6 µs; doğrulamanın kendisi bunun küçük kısmı.
+
+## İki aşamalı tarama — uygulandı (2026-10-26)
+
+Aynı ölçümün işaret ettiği düzeltme: aday akışı **yalnız** `text_segments` + FTS
+üzerinden yürür (`SELECT s.id, s.page_id, s.raw_text, s.normalized_text,
+bm25(...)`), belge/sayfa üst verisi **yalnız dönen sonuçlar için** tek `IN`
+sorgusuyla okunur. Filtre varsa JOIN'ler `WHERE` için zaten gerekli olduğundan o
+durumda eski `FROM` kullanılır. Aynı korpus, aynı sorgular, arka arkaya iki
+derleme (önce/sonra), 21 koşu, release:
+
+| Sorgu | profil | önce (tek sorgu) | sonra (iki aşama) | kazanç |
+|---|---|---|---|---|
+| `itirazın reddine` | tam tarama (limit 200) | 18,03 ms | **6,88 ms** | **2,62×** |
+| `itirazın reddine` | ilk sayfa (limit 20) | 16,95 ms | **5,91 ms** | **2,87×** |
+| `"itirazın reddine"` | tam tarama (limit 200) | 18,14 ms | **6,58 ms** | **2,76×** |
+| `"itirazın reddine"` | ilk sayfa (limit 20) | 16,96 ms | **5,55 ms** | **3,06×** |
+
+A/B'de sonuç kimlikleri ve sayıları **assert** edilir (birebir aynı); ham
+raporlar `bench-scan-before-2026-10-26.json` ve `bench-scan-2026-10-26.json`.
+
+**Yeni ölçülen sınır:** ilk sayfa yalnız 21 aday doğrulanırken de ~5,5–5,9 ms
+sürüyor. Yani kalan maliyet doğrulama değil, **FTS'in bütün eşleşmeler için
+`bm25` hesaplayıp sıralaması**. Bir sonraki kaldıraç burada: sıralamayı
+aday sayısıyla sınırlamak (ör. iki geçişli `rowid` ön seçimi) — bu turda
+yapılmadı.
+
+**Yan bulgu (kusur, düzeltildi):** `0002_fts`'teki `text_segments_au`
+tetikleyicisi sütun listesi olmadan **her** UPDATE'te FTS'e `delete`+`insert`
+yazıyordu. Aynı satırda ikinci bir tetikleyici de yazınca FTS indeksi bozuluyor
+ve arama `SQLITE_CORRUPT_VTAB` ("database disk image is malformed") veriyordu;
+`anchors::locate_anchor_returns_page_and_intact_quote` testi bunu yakaladı.
+Düzeltme **migration 0019**: tetikleyici `AFTER UPDATE OF raw_text,
+normalized_text` olarak yeniden kuruldu (FTS içeriği yalnız bu iki sütuna bağlı).
+
 ## Sıradaki kaldıraçlar (ölçümle desteklenen)
 
 1. ~~**Toplam sayıyı geciktir**~~ **uygulandı** (2026-10-26): `search_total` +
@@ -277,8 +339,16 @@ Ham rapor: `docs/releases/F15/bench-window-2026-10-26.json`.
    segmentte ilk sayfa p50 **44,7 → 19,6 ms** (2,28×), doğrulanan aday ort.
    136. 100k profilde kuyruk yeniden ölçülmedi (disk); seyrek eşleşen sorguda
    tarama yine tüm adayları gezer.
-3. **Kalıcı belirteç/konum indeksi** (`normalized_text` için) — doğrulamayı satır
-   taramasından çıkarır; en büyük kazanç, en pahalı iş.
+3. ~~**Kalıcı belirteç/konum indeksi**~~ **ölçüldü, uygulanmadı** (2026-10-26):
+   3.030 adaylı seyrek profilde kazanç yalnız **1,04–1,05×**, depolama maliyeti
+   metnin **%54'ü** → eşik altı. Ölçüm: yukarıdaki "belirteç/konum indeksi"
+   bölümü ve `bench-token-index-ab-negative-2026-10-26.json`.
+4. **`bm25` sıralama maliyeti** — yeni ölçüm: ilk sayfa 21 aday doğrulanırken de
+   ~5,5 ms. Kalan kuyruk burada; sıralamayı aday sayısıyla sınırlamak
+   (iki geçişli `rowid` ön seçimi) bir sonraki kaldıraç. **Yapılmadı.**
+5. ~~**İki aşamalı tarama**~~ **uygulandı** (2026-10-26): aday akışından JOIN'ler
+   çıkarıldı, üst veri yalnız dönen sonuçlar için okunuyor → aynı korpusta
+   **2,6–3,1×** (ölçüm yukarıda).
 
 ## Komutlar
 

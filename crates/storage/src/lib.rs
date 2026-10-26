@@ -225,9 +225,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0018_page_lookup_index",
         sql: include_str!("migrations/0018_page_lookup_index.sql"),
     },
+    Migration {
+        version: 19,
+        name: "0019_fts_update_trigger",
+        sql: include_str!("migrations/0019_fts_update_trigger.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 18;
+pub const CURRENT_SCHEMA_VERSION: u32 = 19;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

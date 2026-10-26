@@ -1,0 +1,7 @@
+{
+"corpus":{"decoys":3000,"hits":30,"segments":3030,"rounds":21,"ingestMs":4893.2},
+"queries":[
+  {"query":"itirazın reddine","fullScan":{"p50":18.026,"p95":18.501,"max":18.579,"n":21},"fullScanExamined":3030,"fullScanHits":30,"fullScanHasMore":0,"firstPage":{"p50":16.954,"p95":17.297,"max":17.437,"n":21},"firstPageExamined":21,"firstPageHits":20,"firstPageHasMore":1},
+  {"query":"\"itirazın reddine\"","fullScan":{"p50":18.137,"p95":18.376,"max":18.397,"n":21},"fullScanExamined":3030,"fullScanHits":30,"fullScanHasMore":0,"firstPage":{"p50":16.958,"p95":17.524,"max":17.543,"n":21},"firstPageExamined":21,"firstPageHits":20,"firstPageHasMore":1}
+]
+}
