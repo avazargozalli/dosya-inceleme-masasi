@@ -762,7 +762,8 @@ impl Database {
     ) -> Result<Vec<ContradictionAssessmentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at
-             FROM contradiction_assessments WHERE review_item_id=?1 ORDER BY assessed_at ASC",
+             FROM contradiction_assessments WHERE review_item_id=?1
+             ORDER BY julianday(assessed_at) ASC, rowid ASC",
         )?;
         let rows = stmt.query_map([item_id], map_contradiction_assessment)?;
         let mut out = Vec::new();
@@ -775,7 +776,8 @@ impl Database {
     pub fn review_history(&self, item_id: &str) -> Result<Vec<ReviewDecisionRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at
-             FROM review_decisions WHERE review_item_id=?1 ORDER BY decided_at ASC",
+             FROM review_decisions WHERE review_item_id=?1
+             ORDER BY julianday(decided_at) ASC, rowid ASC",
         )?;
         let rows = stmt.query_map([item_id], |row| {
             Ok(ReviewDecisionRow {
@@ -1504,5 +1506,49 @@ mod tests {
             "yalnız çelişki öğesi değerlendirilir"
         );
         assert!(s.db.verify_audit_chain().expect("zincir") >= 4);
+    }
+
+    /// **Kusur #46:** sipariş metin karşılaştırmasına bırakılınca RFC3339'un
+    /// değişken kesir genişliği sırayı ters çeviriyor (".5Z" > ".55Z").
+    /// Eski kasalarda bu genişlik karışıklığı gerçek; sıra sayısal olmalı.
+    #[test]
+    fn assessment_history_orders_by_instant_not_by_text() {
+        let s = setup();
+        let other = second_anchor(&s);
+        let item =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "contradiction_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone(), other.id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("çelişki");
+        let first =
+            s.db.assess_contradiction(&s.case_id, &item.id, "explained", "", "avukat")
+                .expect("ilk");
+        let second =
+            s.db.assess_contradiction(&s.case_id, &item.id, "conflict", "", "avukat")
+                .expect("ikinci");
+        // Aynı saniye, farklı kesir genişliği: metin sırası ters, an sırası doğru.
+        s.db.conn()
+            .execute(
+                "UPDATE contradiction_assessments SET assessed_at='2026-01-01T00:00:00.5Z' WHERE id=?1",
+                [&first.id],
+            )
+            .expect("damga 1");
+        s.db.conn()
+            .execute(
+                "UPDATE contradiction_assessments SET assessed_at='2026-01-01T00:00:00.55Z' WHERE id=?1",
+                [&second.id],
+            )
+            .expect("damga 2");
+        let list =
+            s.db.list_contradiction_assessments(&item.id)
+                .expect("liste");
+        assert_eq!(list[0].id, first.id, "önce erken an gelmeli");
+        assert_eq!(list[1].id, second.id, "sonra geç an gelmeli");
     }
 }

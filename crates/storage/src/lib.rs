@@ -103,7 +103,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 /// Kasa ana anahtarından türetilmiş veritabanı anahtarı.
@@ -1037,9 +1037,16 @@ fn remove_temp_sidecars(path: &Path) {
 
 #[must_use]
 pub fn now_iso() -> String {
+    // **Sabit** milisaniye genişliği (kusur #46): RFC3339 biçimi sondaki
+    // sıfırları atar, bu yüzden `.5Z` metin olarak `.55Z`'den **sonra** gelir
+    // ("Z" > "5"). Bütün `ORDER BY <zaman>` sorguları metin sırası kullandığı
+    // için genişlik sabit tutulur: `YYYY-MM-DDTHH:MM:SS.mmmZ`.
+    const FMT: &[time::format_description::FormatItem<'static>] = time::macros::format_description!(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+    );
     OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+        .format(FMT)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_string())
 }
 
 #[cfg(test)]
@@ -1057,6 +1064,22 @@ mod tests {
         assert_eq!(
             MIGRATIONS.len(),
             usize::try_from(CURRENT_SCHEMA_VERSION).unwrap_or(0)
+        );
+    }
+
+    /// **Kusur #46:** zaman damgası sabit genişlikte olmalı; değişken kesir
+    /// genişliği metin sıralamasını ters çeviriyor (`.5Z` > `.55Z`).
+    #[test]
+    fn timestamps_are_fixed_width_and_text_sortable() {
+        let a = now_iso();
+        assert_eq!(a.len(), 24, "YYYY-MM-DDTHH:MM:SS.mmmZ beklenir: {a}");
+        assert!(a.ends_with('Z'), "UTC işareti: {a}");
+        assert_eq!(&a[19..20], ".", "milisaniye noktası: {a}");
+        assert!(a[20..23].chars().all(|c| c.is_ascii_digit()), "3 hane: {a}");
+        // Aynı saniyedeki iki damga metin olarak da doğru sırada olmalı.
+        assert!(
+            "2026-01-01T00:00:00.500Z" < "2026-01-01T00:00:00.550Z",
+            "sabit genişlikte metin sırası an sırasıdır"
         );
     }
 
