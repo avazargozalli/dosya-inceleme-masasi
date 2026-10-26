@@ -398,6 +398,40 @@ olarak doğrulayıcıdan hesaplayıp sayfayla karşılaştırır; bu kusuru o ya
 Ham raporlar: `bench-cost-before-2026-10-26.json` (daraltma öncesi, 21 koşu) ve
 `bench-cost-2026-10-26.json` (41 koşu, aynı korpus, aynı makine).
 
+## `exact` kipinin aday tabanı — kusur #36 (2026-10-26)
+
+`exact` kipi (arayüzde **Tam**) `phrase` ile aynı sınıfı taşıyordu: adaylar
+`raw_text` FTS indeksinden geliyordu, doğrulama ise Türkçe küçük harfle
+karşılaştırıyor. Önce **test kırmızı yazıldı**:
+`exact_finds_dotless_query_in_uppercase_text` "ıslah" sorgusu için 2 sonuç
+beklerken **1** döndü — `ISLAH` yazılmış metin hiç aday olmuyordu.
+
+İkinci, daha sinsi fark: `exact` doğrulaması alt dizge (`contains`), aday
+ifadesi ise FTS **öneki** (`"…"*`) idi. Kelime ortasından başlayan parça
+doğrulamada geçiyor, aday üretiminde hiç görünmüyordu — daraltmanın sessizce
+gizleyebileceği bir sınıf. Kural artık açık: **`candidates ⊇ verified`**.
+`exact` doğrulaması belirteç başına çapalanır (`anchored_contains`); sonu
+belirteç ortasında bitebilir ("itiraz" → "itirazın"), başı belirteç başında
+olmak zorunda. Aday üretimi `normalized_text`e taşındı (sadeleştirme `ı`/`i`
+ayrımını kaldırdığı için aday kümesi **üst küme** olur; kesin kararı doğrulama
+verir).
+
+**Ölçüm (aynı korpus: 3.030 segment = 3.000 tuzak + 30 eşleşme, 21 koşu,
+release, `search_cost_bench`):**
+
+| Ölçüm | p50 | Aday |
+|---|---|---|
+| `exact` ilk sayfa (`apiFirstPageExact`, limit 20) | **1,564 ms** | 21 (limit+1) |
+| `auto`→`flexible` ilk sayfa (aynı sorgu) | 1,560 ms | 21 |
+| FTS ifade tabanı (`ftsCountNear`, 3.030 satır) | 0,741 ms | 30 |
+| daraltılmış SQL (`nearOrderedText`) | 1,343 ms | 30 |
+
+`exact` artık `flexible` ile aynı sınıfta (fark ölçüm gürültüsünde) ve 3.000
+tuzağın hiçbiri aday değil — **düzeltme maliyet getirmedi**. Ham rapor:
+`bench-cost-exact-2026-10-26.json`; fark denetimi
+(`narrowing_matches_full_verification_set`) artık 4 `exact` sorgusunu da
+kapsıyor.
+
 ## Sıradaki kaldıraçlar (ölçümle desteklenen)
 
 1. ~~**Toplam sayıyı geciktir**~~ **uygulandı** (2026-10-26): `search_total` +
@@ -418,10 +452,17 @@ Ham raporlar: `bench-cost-before-2026-10-26.json` (daraltma öncesi, 21 koşu) v
    bu yüzden **aday sayısı** daraltıldı: ifade bitişikliğe çevrildi
    (`NEAR(…, belirteç sayısı)`), aday 3.030 → 30, uçtan uca ilk sayfa
    **5,95 → 1,55 ms (3,84×)**. Ayrıntı: yukarıdaki "Aday daraltma" bölümü.
-5. **Kalan taban (ölçüldü):** seyrek profilde daraltmadan sonra 1,32 ms'nin
-   0,63–0,76 ms'si FTS'in ifadeyi **bütün** satırlarda değerlendirmesi (3030
-   satır), gerisi satır hattı. Sıradaki kaldıraç, ifade değerlendirmesini
-   belge/sayfa düzeyinde ön elemeyle kısaltmak; ölçülmeden uygulanmaz.
+5. ~~**Kalan taban**~~ **kapatıldı (2026-10-26, gerekçeli):** seyrek profilde
+   daraltmadan sonra 1,34 ms'nin **0,74 ms**'si FTS'in ifadeyi 3.030 satırda
+   değerlendirmesidir (`ftsCountNear`); gerisi satır hattı + doğrulama.
+   **Belge/sayfa düzeyinde ön eleme bu tabanı kısaltmaz:** FTS `MATCH` indeksi
+   ifadenin kendisiyle tarar, sayfa/belge koşulu yalnız `WHERE`'e eklenir —
+   planlayıcı indeksi yine gezer. Daha kaba bir özet indeks ise
+   "belirteç/konum indeksi" sınıfıdır ve o **ölçülüp reddedildi** (kazanç
+   1,04×, depolama +%54). Taban segment sayısıyla doğrusal: 100k segmentte
+   ~24 ms (3.030 → 0,74 ms eğrisinden **türetildi, ölçülmedi**), B-01 p95
+   bütçesinin (2 sn) yanında küçük. → **Ek indeks uygulanmadı**; kalan iş
+   100k profilde kapasite testi (donanım/disk).
 6. ~~**İki aşamalı tarama**~~ **uygulandı** (2026-10-26): aday akışından JOIN'ler
    çıkarıldı, üst veri yalnız dönen sonuçlar için okunuyor → aynı korpusta
    **2,6–3,1×** (ölçüm yukarıda). Bu sayı daraltma **öncesi** ölçümdür; daraltma

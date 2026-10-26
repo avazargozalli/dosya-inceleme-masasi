@@ -1146,6 +1146,12 @@ fn escape_fts(text: &str) -> String {
 /// **kaçırmasına** yol açıyordu (defter #35, `phrase_finds_dotless_query_in_
 /// uppercase_text`). Aday üretimi sadeleşmiş sütuna taşındı; kesin eşleşmeyi
 /// yine `phrase` doğrulaması (Türkçe küçük harf, bitişik) kurar.
+///
+/// `exact` de aynı sınıfı taşıyordu (defter #36): adayları `raw_text`
+/// indeksindendi ve "ıslah" sorgusu "ISLAH" metnini bulamıyordu. Artık o da
+/// sadeleşmiş sütundan aday üretir (genişletici: sadeleştirme `ı`/`i` ayrımını
+/// kaldırdığı için aday kümesi **üst küme** olur), kesin kararı `exact`
+/// doğrulaması verir.
 fn fts_expression(query: &ResolvedQuery) -> String {
     match query.mode {
         // Esas/karar numarası: yıl + numara belirteçleri (sıfır varyantlarıyla).
@@ -1153,14 +1159,7 @@ fn fts_expression(query: &ResolvedQuery) -> String {
             Some(docket) => docket_expression(docket),
             None => String::new(),
         },
-        SearchMode::Exact => {
-            let needle = escape_fts(&query.text);
-            if needle.is_empty() {
-                String::new()
-            } else {
-                format!("raw_text : \"{needle}\"*")
-            }
-        }
+        SearchMode::Exact => narrow_expression("normalized_text", &fold_tokens(&query.text), true),
         SearchMode::Phrase => {
             narrow_expression("normalized_text", &fold_tokens(&query.text), false)
         }
@@ -1378,14 +1377,44 @@ fn fold_ws_into(text: &str, out: &mut String) {
     }
 }
 
-/// `turkish_lower(collapse_ws(haystack)).contains(needle)` ile birebir aynı
-/// sonuç; `folded` yeniden kullanılan tampondur (satır başına ayırma yok).
+/// `needle`, katlanmış metinde **belirteç başında** başlıyor mu?
+///
+/// `exact` kipinin aday ifadesi FTS önekidir (`"…"*`); eşleşme bir belirtecin
+/// başında başlamak zorunda, sonu belirteç ortasında bitebilir ("itiraz" →
+/// "itirazın"). Doğrulama da aynı kurala çapalanır: aksi hâlde doğrulamanın
+/// kabul ettiği bir eşleşme aday üretiminde hiç görünmez (defter #36 sınıfı).
+/// İğne noktalama ile başlıyorsa (`(reddine)`) sınır ilk alfanümerik karakterde
+/// aranır — böylece "X(reddine)" gibi bitişik yazım da eşleşir.
+fn anchored_contains(haystack: &str, needle: &str) -> bool {
+    let Some((anchor_offset, _)) = needle.char_indices().find(|(_, ch)| ch.is_alphanumeric())
+    else {
+        return false;
+    };
+    let mut from = 0;
+    while let Some(found) = haystack[from..].find(needle) {
+        let start = from + found;
+        let anchor = start + anchor_offset;
+        let boundary = match haystack[..anchor].chars().next_back() {
+            None => true,
+            Some(before) => !before.is_alphanumeric(),
+        };
+        if boundary {
+            return true;
+        }
+        let step = haystack[start..].chars().next().map_or(1, char::len_utf8);
+        from = start + step;
+    }
+    false
+}
+
+/// `anchored_contains` için katlama: `folded` yeniden kullanılan tampondur
+/// (satır başına ayırma yok).
 fn contains_folded_ws(haystack: &str, needle: &str, folded: &mut String) -> bool {
     if needle.is_empty() {
         return false;
     }
     fold_ws_into(haystack, folded);
-    folded.contains(needle)
+    anchored_contains(folded, needle)
 }
 
 /// Metnin alfanümerik belirteç aralıkları (bayt). `turkish_lower` belirteç
@@ -1618,7 +1647,7 @@ fn search_match(text: &str, needle: &str, mode: &str) -> bool {
         "exact" => {
             let haystack = turkish_lower(&collapse_ws(text));
             let wanted = turkish_lower(&collapse_ws(needle));
-            !wanted.is_empty() && haystack.contains(&wanted)
+            !wanted.is_empty() && anchored_contains(&haystack, &wanted)
         }
         "flexible" => seq_matches(&fold_tokens(text), &fold_tokens(needle), true),
         "phrase" => seq_matches(&exact_tokens(text), &exact_tokens(needle), false),
@@ -3165,6 +3194,54 @@ mod tests {
         assert_eq!(flexible.hits.len(), 4);
     }
 
+    /// Defter #36 — `exact` kipinin adayları `raw_text` indeksinden geliyordu;
+    /// FTS `unicode61` `I`yı `i` sayarken doğrulama Türkçe küçük harfle (`I`→`ı`)
+    /// sayıyor. Sonuç: **"ıslah" sorgusu "ISLAH" yazılmış metni bulamıyordu**
+    /// (metin doğrulamadan geçebilecekken aday olmuyordu). Aday üretimi
+    /// `normalized_text`e taşındı; `exact` `ı`/`i` ayrımını korumaya devam eder.
+    #[test]
+    fn exact_finds_dotless_query_in_uppercase_text() {
+        let (db, case_id, version_id) = setup();
+        let texts = [
+            "ISLAH edilen tutar 1.000 TL",
+            "ıslah edilen tutar 2.000 TL",
+            "islah edilen tutar 3.000 TL",
+        ];
+        let refs: Vec<&str> = texts.to_vec();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let exact = search_with(&db, &case_id, "ıslah", SearchMode::Exact);
+        let mut found: Vec<&str> = exact.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec!["ISLAH edilen tutar 1.000 TL", "ıslah edilen tutar 2.000 TL"],
+            "Türkçe küçük harf `I`yı `ı` sayar; ASCII `islah` tam aramada eşleşmez"
+        );
+        assert_eq!(exact.total, Some(2));
+    }
+
+    /// Aday ifadesi belirteç **başında** eşleşir (FTS öneki `"…"*`); bu yüzden
+    /// tam aramanın kuralı da belirteç başına çapalanır. Kelime ortasından
+    /// başlayan parça eşleşmez — daraltmanın sessizce gizleyemeyeceği sınır.
+    #[test]
+    fn exact_requires_token_start() {
+        let (db, case_id, version_id) = setup();
+        let texts = ["ıslah edilen tutar", "ISLAH edilen tutar"];
+        let refs: Vec<&str> = texts.to_vec();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let prefix = search_with(&db, &case_id, "ısl", SearchMode::Exact);
+        assert_eq!(prefix.total, Some(2), "belirteç başındaki önek eşleşir");
+
+        let mid_word = search_with(&db, &case_id, "slah", SearchMode::Exact);
+        assert_eq!(
+            mid_word.total,
+            Some(0),
+            "kelime ortasından başlayan parça aday üretiminde ifade edilemez → eşleşmez"
+        );
+    }
+
     /// Daraltma **hiçbir gerçek eşleşmeyi** düşürmemeli: beklenen küme,
     /// daraltmadan bağımsız olarak her metnin doğrulayıcıdan geçirilmesiyle
     /// hesaplanır ve sayfayla birebir karşılaştırılır.
@@ -3202,12 +3279,17 @@ mod tests {
         let cases = [
             ("itirazın reddine", SearchMode::Flexible),
             ("itirazın reddine", SearchMode::Phrase),
+            ("itirazın reddine", SearchMode::Exact),
             ("kira sözleşmesi", SearchMode::Flexible),
             ("kira sözleşmesi", SearchMode::Phrase),
+            ("kira sözleşmesi", SearchMode::Exact),
             ("2024/123", SearchMode::Flexible),
             ("2024/123", SearchMode::Phrase),
+            ("2024/123", SearchMode::Exact),
             ("ıslah", SearchMode::Flexible),
             ("ıslah", SearchMode::Phrase),
+            ("ıslah", SearchMode::Exact),
+            ("itiraz", SearchMode::Exact),
         ];
         let mut scratch = MatchScratch::default();
         for (text, mode) in cases {

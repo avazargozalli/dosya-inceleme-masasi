@@ -32,8 +32,8 @@
 use std::time::Instant;
 
 use dim_storage::{
-    AiPolicy, CaseKind, Database, DatabaseKey, NewCase, NewPage, SearchFilters, SearchQuery,
-    Sensitivity,
+    AiPolicy, CaseKind, Database, DatabaseKey, NewCase, NewPage, SearchFilters, SearchMode,
+    SearchQuery, Sensitivity,
 };
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -264,6 +264,32 @@ fn search_cost_breakdown() {
         api_examined = page.verification.candidates_examined;
     }
 
+    // `exact` kipi (defter #36 sonrası): adaylar artık `normalized_text`
+    // indeksinden gelir — maliyet `flexible` ile aynı sınıfta olmalı ve aday
+    // sayısı daraltılmış küme (30) kalmalı, 3.030 tuzak aday olmamalı.
+    let mut exact_times = Vec::with_capacity(rounds);
+    let mut exact_examined = 0_i64;
+    let mut exact_hits = 0_i64;
+    for _ in 0..rounds {
+        let started = Instant::now();
+        let page = db
+            .search_page(
+                &case.id,
+                &SearchQuery {
+                    text: "itirazın reddine".into(),
+                    mode: SearchMode::Exact,
+                },
+                &SearchFilters::default(),
+                20,
+                None,
+                false,
+            )
+            .expect("arama");
+        exact_times.push(started.elapsed().as_secs_f64() * 1000.0);
+        exact_examined = page.verification.candidates_examined;
+        exact_hits = page.returned;
+    }
+
     let mut report = String::new();
     report.push_str("{\n");
     report.push_str(&format!(
@@ -314,6 +340,10 @@ fn search_cost_breakdown() {
     report.push_str(&format!(
         "\"apiFirstPage\":{},\"apiCandidatesExamined\":{api_examined}\n",
         summarize(&api_times)
+    ));
+    report.push_str(&format!(
+        ",\"apiFirstPageExact\":{},\"exactCandidatesExamined\":{exact_examined},\"exactReturned\":{exact_hits}\n",
+        summarize(&exact_times)
     ));
     report.push_str("}\n");
 
