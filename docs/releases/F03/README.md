@@ -18,8 +18,12 @@
 ## Doğrulama
 
 `cargo test -p dim-vault -p dim-storage` — birim testleri: anahtar sarma, başlık
-kurcalama, truncation, FTS, FK, denetim zinciri, yedek.
-CI: **bekliyor** (bu commit ile ilk koşu).
+kurcalama, truncation, FTS, FK, denetim zinciri, yedek, iş kuyruğu (durum
+makinesi, engel, bağımlılık, doğrulama/kısmi, kurtarma).
+CI: `7640c9d` + `4f013a7` → run **`40381503652` 7/7 yeşil** (sözleşmeler,
+arayüz tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk, belge
+worker'ı, SBOM). Önceki run `40381133165` aynı eşzamanlılık grubunda **iptal**
+edildi (yeni push), kırmızı değildi.
 
 ## İş kuyruğu (2026-10-26)
 
