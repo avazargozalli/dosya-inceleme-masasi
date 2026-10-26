@@ -111,6 +111,24 @@ export function jobActionLabel(action: JobAction): string {
   return "Engeli kaldır";
 }
 
+/**
+ * İptal sonucunun tek satırı. Yalnız **gerçekleşen** sonuç yazılır
+ * (şartname §17.5): süreç durmadıysa "iptal tamam" denmez, durdurulduysa
+ * "bekleniyor" denmez.
+ */
+export function cancelOutcomeLine(result: {
+  outcome: "canceled" | "requested";
+  workerStopped: boolean;
+}): string {
+  if (result.outcome === "canceled") {
+    return "İş iptal edildi (hiç çalışmadı).";
+  }
+  if (result.workerStopped) {
+    return "Çalışan süreç durduruldu; iş iptal ediliyor, sonuç yazılmayacak.";
+  }
+  return 'İptal istendi; iş sonucu bekleniyor — süreç durmadan "iptal tamam" denmez.';
+}
+
 export function countOf(summary: JobQueueSummary, state: string): number {
   const canonical = canonicalJobState(state);
   return summary.byState

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { JobQueueSummary, JobRow } from "./api";
 import {
   blockedReasonLabel,
+  cancelOutcomeLine,
   canonicalJobState,
   countOf,
   jobActionLabel,
@@ -56,6 +57,25 @@ describe("iş kuyruğu yardımcıları", () => {
   it("boş kuyruğu sıfır uydurmadan yazar", () => {
     expect(queueSummaryLine(summary())).toBe("Kuyruk boş — bekleyen iş yok.");
     expect(queueAttention(summary())).toBeNull();
+  });
+
+  it("iptal satırı yalnız gerçekleşen sonucu yazar", () => {
+    expect(cancelOutcomeLine({ outcome: "canceled", workerStopped: false })).toBe(
+      "İş iptal edildi (hiç çalışmadı).",
+    );
+    expect(cancelOutcomeLine({ outcome: "requested", workerStopped: true })).toContain(
+      "süreç durduruldu",
+    );
+    expect(cancelOutcomeLine({ outcome: "requested", workerStopped: false })).toContain(
+      "sonucu bekleniyor",
+    );
+    // Süreç durdurulduysa "bekleniyor" denmez; durmadıysa "tamam" denmez.
+    expect(cancelOutcomeLine({ outcome: "requested", workerStopped: true })).not.toContain(
+      "bekleniyor",
+    );
+    expect(cancelOutcomeLine({ outcome: "requested", workerStopped: false })).not.toContain(
+      "durduruldu",
+    );
   });
 
   it("özet satırı yalnız sıfırdan büyük durumları sayar", () => {

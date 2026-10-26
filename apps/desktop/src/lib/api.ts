@@ -94,6 +94,8 @@ export type JobRecovery = {
 export type JobCancelResult = {
   outcome: "canceled" | "requested";
   job: JobRow;
+  /** Yürüyen ayrıştırma süreci gerçekten durduruldu mu (§17.5). */
+  workerStopped: boolean;
 };
 
 export type CaseRow = {

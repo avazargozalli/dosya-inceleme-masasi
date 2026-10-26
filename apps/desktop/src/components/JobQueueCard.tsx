@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, toApiError, type ApiError, type JobQueueView, type JobRow } from "../lib/api";
 import {
+  cancelOutcomeLine,
   jobActionLabel,
   jobActions,
   jobMetaLine,
+  jobProgressPercent,
   jobStateBadgeClass,
   jobStateLabel,
   jobTypeLabel,
@@ -69,11 +71,7 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
       try {
         if (action === "cancel") {
           const result = await api.jobCancel(job.id);
-          setMessage(
-            result.outcome === "canceled"
-              ? "İş iptal edildi (hiç çalışmadı)."
-              : "İptal istendi; iş sonucu bekleniyor — süreç durmadan \"iptal tamam\" denmez.",
-          );
+          setMessage(cancelOutcomeLine(result));
         } else if (action === "retry") {
           await api.jobRetry(job.id);
           setMessage("İş yeniden sıraya alındı; yeni deneme numarası açılacak.");

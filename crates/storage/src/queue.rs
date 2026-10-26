@@ -1274,6 +1274,27 @@ mod tests {
         assert_eq!(err.code(), "E_JOB_STATE");
     }
 
+    /// İptal edilen ayrıştırma `failed` değil `canceled` biter ve yeniden
+    /// sıraya girmez: Tauri iptal yolunda `E_WORKER_CANCELED` ile `fail_job`
+    /// çağırır (F04-T07); kullanıcının gördüğü durum bu yoldan gelir.
+    #[test]
+    fn failing_a_canceling_job_ends_canceled_without_retry() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "parse", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        db.cancel_job(&job, at(1)).expect("iptal isteği");
+        let row = db
+            .fail_job(&job, "w", "E_WORKER_CANCELED", false, at(2))
+            .expect("iptal sonucu");
+        assert_eq!(row.state, "canceled");
+        assert_eq!(row.error_code.as_deref(), Some("E_JOB_CANCELLED"));
+        assert!(
+            row.next_run_at.is_none(),
+            "iptal yeniden sıraya girmez (§17.4)"
+        );
+        assert!(row.completed_at.is_some());
+    }
+
     #[test]
     fn recovery_requeues_interrupted_and_cancels_requested() {
         let (db, case_id) = db();

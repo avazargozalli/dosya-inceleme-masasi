@@ -14,7 +14,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -41,6 +43,10 @@ pub enum WorkerError {
     Spawn(#[source] std::io::Error),
     #[error("worker ile iletişim koptu")]
     Disconnected,
+    /// Kullanıcı iptal etti; süreç **bizim** isteğimizle durduruldu. Kopma ve
+    /// zaman aşımından ayrıdır: otomatik tekrar denenmez (şartname §17.4).
+    #[error("ayrıştırma iptal edildi")]
+    Canceled,
     #[error("worker zaman aşımına uğradı")]
     Timeout,
     #[error("worker çerçevesi 1 MiB sınırını aşıyor")]
@@ -62,6 +68,7 @@ impl WorkerError {
         match self {
             Self::Spawn(_) => "E_WORKER_SPAWN",
             Self::Disconnected => "E_WORKER_DISCONNECTED",
+            Self::Canceled => "E_WORKER_CANCELED",
             Self::Timeout => "E_WORKER_TIMEOUT",
             Self::FrameTooLarge => "E_WORKER_FRAME",
             Self::Protocol(_) => "E_WORKER_PROTOCOL",
@@ -318,11 +325,57 @@ pub struct PagePreview {
 
 /// Worker süreci. `Drop` süreci kapatır; yarım kalan iş yok sayılır.
 pub struct WorkerClient {
-    child: Child,
+    /// Süreç tutamacı paylaşılır: iptal düğmesi ayrı iş parçacığından
+    /// `WorkerKiller` ile süreci durdurabilir (şartname §17.5, F04-T07).
+    child: Arc<Mutex<Child>>,
+    /// İptal isteği bu istemci için verildi mi? Kopma/zaman aşımı ile gerçek
+    /// iptali ayırır: iptal edilen iş otomatik yeniden denenmez.
+    cancel: Arc<AtomicBool>,
     stdin: ChildStdin,
     rx: Receiver<Result<Vec<u8>, String>>,
     next_id: u64,
     timeout: Duration,
+}
+
+/// Süren worker'ı durdurma tutamağı. `WorkerClient` sahibi onu bir yuvada
+/// tutar; iptal komutu kasa kilidini beklemeden süreci öldürebilir.
+#[derive(Clone)]
+pub struct WorkerKiller {
+    child: Arc<Mutex<Child>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for WorkerKiller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerKiller")
+            .field("canceled", &self.is_canceled())
+            .finish()
+    }
+}
+
+impl WorkerKiller {
+    /// İptal isteğini işaretler ve süreci öldürür (geri dönüşü yok).
+    ///
+    /// Dönen değer iptali **bu çağrının** başlattığını söyler; ikinci çağrı
+    /// `false` döner (zaten iptal edilmiş). Öldürülen süreç hemen toplanır:
+    /// geride zombi bırakılmaz.
+    pub fn cancel(&self) -> bool {
+        let first = !self.cancel.swap(true, Ordering::SeqCst);
+        if let Ok(mut child) = self.child.lock() {
+            if first {
+                let _ = child.kill();
+            }
+            // Zaten durmuş süreçte `kill()` de başarılı görünür (zombiye
+            // sinyal); bu yüzden "durdurdum" iddiası bayrağa dayanır.
+            let _ = child.wait();
+        }
+        first
+    }
+
+    #[must_use]
+    pub fn is_canceled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
 }
 
 impl std::fmt::Debug for WorkerClient {
@@ -409,12 +462,33 @@ impl WorkerClient {
         });
 
         Ok(Self {
-            child,
+            child: Arc::new(Mutex::new(child)),
+            cancel: Arc::new(AtomicBool::new(false)),
             stdin,
             rx,
             next_id: 0,
             timeout: DEFAULT_TIMEOUT,
         })
+    }
+
+    /// İptal tutamağı. Aynı worker için birden çok kez alınabilir; tutamak
+    /// istemci düştükten sonra da süreci durdurabilir (Arc).
+    #[must_use]
+    pub fn killer(&self) -> WorkerKiller {
+        WorkerKiller {
+            child: Arc::clone(&self.child),
+            cancel: Arc::clone(&self.cancel),
+        }
+    }
+
+    /// Bağlantı arızasını sınıflandırır: iptal istediysak kopma **bizim**
+    /// işimizdir ve `E_WORKER_CANCELED` döner; aksi hâlde gerçek arıza.
+    fn interrupt_error(&self) -> WorkerError {
+        if self.cancel.load(Ordering::SeqCst) {
+            WorkerError::Canceled
+        } else {
+            WorkerError::Disconnected
+        }
     }
 
     #[must_use]
@@ -431,10 +505,14 @@ impl WorkerClient {
         let frame = json!({"v": 1, "id": id, "method": method, "params": params});
         let mut line = serde_json::to_vec(&frame).map_err(|_| WorkerError::BadResponse)?;
         line.push(b'\n');
-        self.stdin
-            .write_all(&line)
-            .map_err(|_| WorkerError::Disconnected)?;
-        self.stdin.flush().map_err(|_| WorkerError::Disconnected)?;
+        // İptal edilen süreçte yazma `BrokenPipe` verir; bu bir arıza değil,
+        // kullanıcının iptalinin sonucudur.
+        if self.stdin.write_all(&line).is_err() {
+            return Err(self.interrupt_error());
+        }
+        if self.stdin.flush().is_err() {
+            return Err(self.interrupt_error());
+        }
         Ok(id)
     }
 
@@ -453,11 +531,17 @@ impl WorkerClient {
                     return Err(if reason == "frame_too_large" {
                         WorkerError::FrameTooLarge
                     } else {
-                        WorkerError::Disconnected
+                        self.interrupt_error()
                     });
                 }
-                Err(RecvTimeoutError::Timeout) => return Err(WorkerError::Timeout),
-                Err(RecvTimeoutError::Disconnected) => return Err(WorkerError::Disconnected),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(if self.cancel.load(Ordering::SeqCst) {
+                        WorkerError::Canceled
+                    } else {
+                        WorkerError::Timeout
+                    });
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err(self.interrupt_error()),
             };
             let value: Value =
                 serde_json::from_slice(&raw).map_err(|_| WorkerError::BadResponse)?;
@@ -649,14 +733,18 @@ impl WorkerClient {
 
     pub fn shutdown(mut self) {
         let _ = self.request("shutdown", json!({}));
-        let _ = self.child.wait();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.wait();
+        }
     }
 }
 
 impl Drop for WorkerClient {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -1011,6 +1099,60 @@ mod tests {
             "beklenmeyen hata: {err:?}"
         );
         assert_eq!(err.code(), "E_WORKER_FRAME");
+    }
+
+    /// **İptal gerçekten durdurur (F04-T07).** Yanıt vermeyen süreç, 30 sn
+    /// zaman aşımını beklemeden öldürülür ve hata `E_WORKER_CANCELED` olur:
+    /// kopma/zaman aşımından ayrı kod, çünkü iptal otomatik yeniden denenmez.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_the_running_worker_and_reports_canceled() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(Path::new("/bin/sh"), &["-c", "sleep 30"], dir.path())
+            .expect("başlat")
+            .with_timeout(Duration::from_secs(30));
+        let killer = client.killer();
+        // İsteği gönder, yanıtı beklemeden öldür: gerçek yarış bu.
+        let handle = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let err = client.ping().unwrap_err();
+            (err, started.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(killer.cancel(), "süreç sinyal almalı");
+        assert!(killer.is_canceled());
+        let (err, elapsed) = handle.join().expect("iş parçacığı");
+        // Ölçüm: iptal, zaman aşımını beklemeden dönmeli (değer rapora yazılır).
+        println!("iptal gecikmesi: {elapsed:?} (zaman aşımı 30 sn)");
+        assert_eq!(
+            err.code(),
+            "E_WORKER_CANCELED",
+            "iptal ayrı kodla dönmeli: {err:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "iptal zaman aşımını beklememeli: {elapsed:?}"
+        );
+    }
+
+    /// İptal işareti istekten **önce** verilirse de ayrı kod döner; ikinci
+    /// `cancel()` yanlış bir «durdurdum» iddiası üretmez.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_before_request_reports_canceled_and_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut client = WorkerClient::spawn(Path::new("/bin/sh"), &["-c", "sleep 30"], dir.path())
+            .expect("başlat")
+            .with_timeout(Duration::from_secs(30));
+        let killer = client.killer();
+        assert!(killer.cancel(), "ilk iptal sinyal vermeli");
+        assert!(!killer.cancel(), "ikinci iptal süreç yok diye false döner");
+        let err = client.ping().unwrap_err();
+        assert_eq!(err.code(), "E_WORKER_CANCELED");
+        assert!(
+            !err.retryable(),
+            "iptal otomatik tekrar döngüsüne girmemeli (§17.4)"
+        );
     }
 
     /// Bozuk çerçeve (JSON olmayan satır) `BadResponse` döner; ham çerçeve

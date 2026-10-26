@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use base64::Engine as _;
@@ -23,17 +23,17 @@ use dim_storage::{
     ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey,
     Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
     EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck, InTextQuoteInput,
-    JobCancelResult, JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiRun, NewAnchor, NewCase,
-    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
-    NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
-    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
-    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
-    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SearchTotal,
-    SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
+    JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiRun, NewAnchor, NewCase, NewCitationCheck,
+    NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
+    NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
+    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
+    OutboxEventRow, PageRow, ParseRun, PrecedentBibliography, PrecedentDocumentText,
+    PrecedentNoteRow, PrecedentRow, PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms,
+    PrecedentVersionRow, ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
+    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
+    SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow,
+    TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,9 @@ use tauri::State;
 use zeroize::Zeroizing;
 
 use crate::error::ApiError;
-use crate::state::{open_database, vault_id_from_master, AppState};
+use crate::state::{
+    lock_vault, open_database, vault_id_from_master, AppState, ParseSlotGuard, RunningParse,
+};
 
 use sha2::{Digest, Sha256};
 
@@ -524,6 +526,7 @@ mod tests {
     /// Ayrıştırma hatasının tekrar sınıfı: yalnız geçici altyapı hataları
     /// yeniden denenir. Belgeye özgü hatalar tekrar denenirse aynı belge için
     /// üç deneme harcanır ve kullanıcıya yanlış "geçici hata" izlenimi verilir.
+    /// **Disk dolu ve kullanıcı iptali** de tekrar denenmez (§17.4).
     #[test]
     fn only_transport_failures_are_retried() {
         for code in [
@@ -532,7 +535,6 @@ mod tests {
             "E_WORKER_FRAME",
             "E_WORKER_RESPONSE",
             "E_IO",
-            "E_DISK_FULL",
         ] {
             assert!(parse_failure_is_retryable(code), "{code} tekrar denenmeli");
         }
@@ -542,6 +544,8 @@ mod tests {
             "E_PDF_PASSWORD",
             "E_UNSUPPORTED",
             "E_NOT_FOUND",
+            "E_DISK_FULL",
+            "E_WORKER_CANCELED",
         ] {
             assert!(
                 !parse_failure_is_retryable(code),
@@ -1728,8 +1732,12 @@ fn spawn_worker() -> Result<WorkerClient, ApiError> {
 
 /// Belge sürümünü yerel worker'da ayrıştırır. Özgün blob çözülür, metin
 /// çıkarılır, sürümlü `parse_run` + sayfa + segment kayıtları yazılır.
+///
+/// **Arayüz iş parçacığı beklemez (F04-T07):** ağır iş `spawn_blocking`
+/// içinde koşar; kasa kilidi orada tutulur. Süren worker yuvaya kaydedilir,
+/// `job_cancel` kasa kilidini beklemeden süreci öldürebilir.
 #[tauri::command]
-pub fn document_parse(
+pub async fn document_parse(
     state: State<'_, AppState>,
     version_id: String,
     ocr: Option<bool>,
@@ -1737,13 +1745,46 @@ pub fn document_parse(
     text_encoding: Option<String>,
     password: Option<String>,
 ) -> Result<ParseResultView, ApiError> {
-    let guard = state.lock();
+    let hub = state.vault_handle();
+    let slot = state.parse_handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = lock_vault(&hub);
+        parse_version_locked(
+            &guard,
+            &slot,
+            &version_id,
+            ocr,
+            ocr_lang,
+            text_encoding,
+            password,
+        )
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "E_PARSE",
+            "Ayrıştırma işi beklenmedik biçimde sona erdi; kasa durumu değişmedi.",
+        )
+    })?
+}
+
+/// `document_parse` gövdesi. Kasa kilidi **çağıranda** tutulur; bu işlev
+/// bloklayan iş parçacığında çalışır.
+fn parse_version_locked(
+    guard: &crate::state::VaultState,
+    slot: &Arc<Mutex<Option<RunningParse>>>,
+    version_id: &str,
+    ocr: Option<bool>,
+    ocr_lang: Option<String>,
+    text_encoding: Option<String>,
+    password: Option<String>,
+) -> Result<ParseResultView, ApiError> {
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
 
     let version = db
-        .get_version(&version_id)?
+        .get_version(version_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
     // Kuyruk: içe aktarma `parse:<sürüm>` işini açmıştı. İş burada sahiplenilir;
     // ayrıştırma düşerse iş `failed`/`retry_wait` olur ve "yürüyor" diye asılı
@@ -1764,7 +1805,7 @@ pub fn document_parse(
     let mut parse_status: Option<String> = None;
     let outcome = (|| -> Result<ParseResultView, ApiError> {
         let blob = db
-            .blob_for_version(&version_id)?
+            .blob_for_version(version_id)?
             .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
         let blob_path = vault_path
             .parent()
@@ -1774,6 +1815,17 @@ pub fn document_parse(
         let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
         let mut worker = spawn_worker()?;
+        // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
+        // beklemeden bu süreci öldürür (F04-T07). Yuva düşünce temizlenir.
+        let killer = worker.killer();
+        let _slot = ParseSlotGuard::register(
+            Arc::clone(slot),
+            RunningParse {
+                version_id: version_id.to_string(),
+                job_id: job.as_ref().map(|job| job.id.clone()),
+                killer: killer.clone(),
+            },
+        );
         let caps = worker
             .capabilities()
             .unwrap_or_else(|_| serde_json::json!({}));
@@ -1798,6 +1850,12 @@ pub fn document_parse(
             password.as_deref(),
         )?;
         worker.shutdown();
+        // İptal, çıkarımdan sonra ama yazmadan önce geldiyse: hiçbir çıktı
+        // yazılmaz, koşu `cancelled` kapanır (şartname §17.2 canceled:
+        // "tamamlanmamış çıktı uygulanmadı").
+        if killer.is_canceled() {
+            return Err(canceled_parse_error());
+        }
 
         // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü
         // ve kurulu tessdata parmak izi. Yalnız MIME yazmak yanıltıcıydı.
@@ -1817,7 +1875,7 @@ pub fn document_parse(
         // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
         // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
         let run = db.start_parse_run(
-            &version_id,
+            version_id,
             &version.case_id,
             &extraction.engine,
             &extraction.engine_version,
@@ -1854,6 +1912,12 @@ pub fn document_parse(
                     .collect(),
             })
             .collect();
+        // Koşu açıldıktan sonra iptal geldiyse sayfa **yazılmaz**; koşu
+        // `cancelled` kapanır ki yarım çıktı "tamam" görünmesin.
+        if killer.is_canceled() {
+            let _ = db.finish_parse_run(&run.id, "cancelled", &[]);
+            return Err(canceled_parse_error());
+        }
         let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
         let status = if extraction.warnings.is_empty() {
             "succeeded"
@@ -1885,10 +1949,14 @@ pub fn document_parse(
             }
         }
         (Some(job), Err(err)) => {
-            // Parola bekleyen belge hata değil **engel**dir: `running → blocked`.
-            // Kullanıcı parolayla yeniden ayrıştırınca iş `blocked → queued`
-            // üzerinden yeniden sahiplenilir (şartname §17.2 "parola bekliyor").
-            if err.code == "E_PDF_PASSWORD" {
+            // Kullanıcı iptali: `running|validating → canceling → canceled`.
+            // `fail_job` iptal isteği varsa sonucu `canceled` yazar; iptal
+            // otomatik tekrar döngüsüne girmez (§17.4).
+            if err.code == "E_WORKER_CANCELED" {
+                let now = time::OffsetDateTime::now_utc();
+                let _ = db.cancel_job(&job.id, now);
+                let _ = db.fail_job(&job.id, &job_owner, "E_WORKER_CANCELED", false, now);
+            } else if err.code == "E_PDF_PASSWORD" {
                 let _ = db.block_job(
                     &job.id,
                     &job_owner,
@@ -1910,9 +1978,13 @@ pub fn document_parse(
     outcome
 }
 
-/// Ayrıştırma hatası yeniden denenebilir mi? Yalnız geçici altyapı hataları
-/// (worker koptu, G/Ç, disk) tekrar denenir; belgeye özgü hatalar (parola,
-/// bozuk/desteklenmeyen dosya) tekrar denenmez — şartname §17.4.
+/// Ayrıştırma hatası yeniden denenebilir mi? Yalnız **geçici altyapı**
+/// hataları (worker koptu, G/Ç) tekrar denenir; belgeye özgü hatalar (parola,
+/// bozuk/desteklenmeyen dosya), **disk yetersizliği** ve kullanıcı iptali
+/// otomatik tekrar döngüsüne girmez — şartname §17.4.
+///
+/// `E_DISK_FULL` listeden **çıkarıldı**: yer açılmadan tekrar denemek üç
+/// denemeyi harcar ve kullanıcıya yanlış "yeniden deniyorum" izlenimi verir.
 fn parse_failure_is_retryable(code: &str) -> bool {
     matches!(
         code,
@@ -1921,7 +1993,14 @@ fn parse_failure_is_retryable(code: &str) -> bool {
             | "E_WORKER_FRAME"
             | "E_WORKER_RESPONSE"
             | "E_IO"
-            | "E_DISK_FULL"
+    )
+}
+
+/// Kullanıcı iptali: yarım çıktı yazılmadı, otomatik tekrar yok (§17.4).
+fn canceled_parse_error() -> ApiError {
+    ApiError::new(
+        "E_WORKER_CANCELED",
+        "Ayrıştırma iptal edildi; yarım çıktı kasaya yazılmadı. Belge yeniden ayrıştırılabilir.",
     )
 }
 
@@ -1930,6 +2009,19 @@ fn parse_failure_is_retryable(code: &str) -> bool {
 pub struct JobQueueView {
     pub summary: JobQueueSummary,
     pub jobs: Vec<JobRow>,
+}
+
+/// İptal sonucu: kuyruk kararı + **sürecin gerçekten durup durmadığı**.
+///
+/// `workerStopped=false` "süreç durmadı" demek değildir; yürüyen ayrıştırma
+/// yoksa (iş sırada bekliyorsa) durdurulacak süreç de yoktur. Kullanıcıya
+/// yalnız gerçekleşen sonuç yazılır (§17.5).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobCancelView {
+    pub outcome: String,
+    pub job: JobRow,
+    pub worker_stopped: bool,
 }
 
 #[tauri::command]
@@ -1957,10 +2049,25 @@ pub fn job_queue_recover(state: State<'_, AppState>) -> Result<JobRecovery, ApiE
     Ok(report)
 }
 
-/// Kuyruktaki bir işi iptal eder. Sırada bekleyen hemen, yürüyen `canceling`
-/// işaretine geçer; "iptal tamam" demek için süreç sonucu beklenir.
+/// Kuyruktaki bir işi iptal eder. Sırada bekleyen hemen `canceled` olur;
+/// yürüyen iş **önce** gerçekten durdurulur, sonra `canceling` işaretine geçer
+/// (şartname §17.5: süreç durmadan "iptal tamam" denmez).
+///
+/// Süreç durdurma kasa kilidini **beklemez**: ayrıştırma kilidi tutuyorsa
+/// `state.parse` yuvasındaki tutamaç kullanılır, kuyruk kaydı sonra yazılır.
 #[tauri::command]
-pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCancelResult, ApiError> {
+pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCancelView, ApiError> {
+    // 1) Süreç: yuva kilidi kısa tutulur, kasa kilidi alınmaz.
+    let killer = {
+        let slot = state.parse_lock();
+        match slot.as_ref() {
+            Some(run) if run.job_id.as_deref() == Some(job_id.as_str()) => Some(run.killer.clone()),
+            _ => None,
+        }
+    };
+    let worker_stopped = killer.map(|killer| killer.cancel()).unwrap_or(false);
+
+    // 2) Kuyruk kaydı (`running → canceling`; hiç çalışmamış iş `canceled`).
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let result = db.cancel_job(&job_id, time::OffsetDateTime::now_utc())?;
@@ -1969,9 +2076,17 @@ pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCance
         None,
         "cancel",
         "local-user",
-        &serde_json::json!({ "outcome": result.outcome, "state": result.job.state }),
+        &serde_json::json!({
+            "outcome": result.outcome,
+            "state": result.job.state,
+            "workerStopped": worker_stopped,
+        }),
     )?;
-    Ok(result)
+    Ok(JobCancelView {
+        outcome: result.outcome,
+        job: result.job,
+        worker_stopped,
+    })
 }
 
 /// Başarısız işi kullanıcı isteğiyle yeniden sıraya alır (`failed → queued`).
