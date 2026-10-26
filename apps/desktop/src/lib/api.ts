@@ -1017,7 +1017,16 @@ export type BackupResult = {
   archivePath: string | null;
 };
 
-export type RestoreResult = { vaultPath: string; fileCount: number };
+export type RestoreResult = {
+  vaultPath: string;
+  fileCount: number;
+  /** Kopyalamadan önce manifest sha256 ile doğrulanan dosyalar. */
+  verifiedFiles: number;
+  verifiedBytes: number;
+  verifyMs: number;
+  /** Yedekte olup manifestte sayılmayan dosyalar (kasaya kopyalanmadı). */
+  unlistedBlobs: string[];
+};
 
 export type AnchorRow = {
   id: string;

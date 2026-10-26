@@ -1815,36 +1815,37 @@ pub struct BackupView {
 
 /// Klasörü tek dosyalık arşive paketler. Arşiv şifrelemez; içindeki DB ve
 /// blob'lar zaten kasa anahtarıyla şifreli olduğu için açık metin sızmaz.
+///
+/// Arşiv **geçici ada** yazılır ve bitince yerleştirilir: yarıda kalan bir
+/// `.dimbak` dosyası geçerli arşiv sanılmasın (F15-T06).
 fn zip_dir(src: &Path, dest: &Path) -> Result<(), ApiError> {
     use std::io::Write as _;
 
-    let file = std::fs::File::create(dest)?;
-    let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    let mut stack = vec![src.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
+    dim_storage::atomic::write_atomic_with(dest, |file| {
+        let io_err = |err: zip::result::ZipError| std::io::Error::other(err.to_string());
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut stack = vec![src.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(src)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                writer.start_file(name, options).map_err(io_err)?;
+                writer.write_all(&std::fs::read(&path)?)?;
             }
-            let name = path
-                .strip_prefix(src)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            writer
-                .start_file(name, options)
-                .map_err(|e| ApiError::new("E_BACKUP_ZIP", &e.to_string()))?;
-            writer.write_all(&std::fs::read(&path)?)?;
         }
-    }
-    writer
-        .finish()
-        .map_err(|e| ApiError::new("E_BACKUP_ZIP", &e.to_string()))?;
-    Ok(())
+        writer.finish().map(|_| ()).map_err(io_err)
+    })
+    .map_err(ApiError::from)
 }
 
 #[derive(Serialize)]
@@ -1852,6 +1853,12 @@ fn zip_dir(src: &Path, dest: &Path) -> Result<(), ApiError> {
 pub struct RestoreView {
     pub vault_path: String,
     pub file_count: usize,
+    /// Kopyalamadan **önce** doğrulanan dosya sayısı ve bayt (manifest sha256).
+    pub verified_files: usize,
+    pub verified_bytes: u64,
+    pub verify_ms: u64,
+    /// Yedekte olup manifestte sayılmayan dosyalar (kasaya kopyalanmadı).
+    pub unlisted_blobs: Vec<String>,
 }
 
 fn sha256_file(path: &Path) -> Result<String, ApiError> {
@@ -1861,6 +1868,10 @@ fn sha256_file(path: &Path) -> Result<String, ApiError> {
 
 /// Kasa dizinini (başlık + SQLCipher DB + şifreli blob'lar) tutarlı bir
 /// klasöre yedekler. DB `sqlcipher_export` ile alınır; açık metin yazılmaz.
+///
+/// Yedek **hazırlık dizininde** üretilir, manifestle doğrulanır ve tek
+/// `rename` ile yerleşir. Disk dolması ya da kesinti hâlinde geriye yarım
+/// bir "DimYedek-…" klasörü kalmaz; kullanıcı `E_DISK_FULL` görür (F15-T06).
 #[tauri::command]
 pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<BackupView, ApiError> {
     let guard = state.lock();
@@ -1872,10 +1883,10 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         .clone()
         .ok_or_else(|| ApiError::new("E_VAULT_LOCKED", "Kasa kimliği yok."))?;
 
-    let root = PathBuf::from(dest_dir.trim());
     if dest_dir.trim().is_empty() {
         return Err(ApiError::new("E_PATH", "Yedek konumu boş olamaz."));
     }
+    let root = PathBuf::from(dest_dir.trim());
     let stamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string())
@@ -1891,15 +1902,70 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
             "Aynı adlı yedek klasörü zaten var.",
         ));
     }
-    std::fs::create_dir_all(backup_dir.join("blobs"))?;
+    let archive = root.join(format!("DimYedek-{stamp}.dimbak"));
 
-    let key = DatabaseKey::derive_from_master(vault.master_key(), &vault_id)?;
-    let backup_db = backup_dir.join("vault.db");
+    let staging = dim_storage::atomic::temp_sibling(&backup_dir, "dimpart");
+    dim_storage::atomic::remove_tree(&staging);
+    let built = build_backup_staging(&staging, db, vault_path, &vault_id, vault.master_key());
+    let (file_count, total_bytes, manifest_hash) = match built {
+        Ok(done) => done,
+        Err(err) => {
+            dim_storage::atomic::remove_tree(&staging);
+            return Err(err);
+        }
+    };
+    if let Err(err) = dim_storage::atomic::commit_dir(&staging, &backup_dir) {
+        dim_storage::atomic::remove_tree(&staging);
+        return Err(err.into());
+    }
+    if let Err(err) = zip_dir(&backup_dir, &archive) {
+        // Klasör yedeği geçerli ve yerinde; yalnız tek dosyalık arşiv yazılamadı.
+        return Err(ApiError::new(
+            "E_BACKUP_ZIP",
+            &format!(
+                "Yedek klasörü hazır ama tek dosya arşivi yazılamadı: {}. Klasörü olduğu gibi kullanabilirsiniz.",
+                err.message
+            ),
+        ));
+    }
+
+    let _ = db.append_audit(
+        "backup",
+        None,
+        "create",
+        "local-user",
+        &serde_json::json!({"files": file_count}),
+    );
+    Ok(BackupView {
+        path: backup_dir.to_string_lossy().to_string(),
+        file_count,
+        total_bytes,
+        manifest_hash,
+        archive_path: Some(archive.to_string_lossy().to_string()),
+    })
+}
+
+/// Hazırlık dizinine yedeği yazar, manifesti üretir ve yedeğin açıldığını
+/// doğrular. Dönüş: (dosya sayısı, toplam bayt, manifest sha256).
+///
+/// Tüm yazımlar atomiktir; hata hâlinde çağıran hazırlık dizinini siler.
+fn build_backup_staging(
+    staging: &Path,
+    db: &Database,
+    vault_path: &Path,
+    vault_id: &str,
+    master_key: &[u8; 32],
+) -> Result<(usize, u64, String), ApiError> {
+    std::fs::create_dir_all(staging.join(dim_storage::backup::BLOBS_DIR))?;
+    let key = DatabaseKey::derive_from_master(master_key, vault_id)?;
+    let backup_db = staging.join(dim_storage::backup::DB_FILE);
     db.backup_to(&backup_db, &key)?;
-    std::fs::copy(vault_path, backup_dir.join("vault.dimvault"))?;
+    let mut total = dim_storage::atomic::copy_atomic(
+        vault_path,
+        &staging.join(dim_storage::backup::VAULT_FILE),
+    )?;
 
-    let mut files: Vec<serde_json::Value> = Vec::new();
-    let mut total: u64 = 0;
+    let mut blob_count = 0usize;
     let blob_src = vault_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -1910,103 +1976,47 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
             if !entry.file_type()?.is_file() {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().to_string();
-            let dest = backup_dir.join("blobs").join(&name);
-            std::fs::copy(entry.path(), &dest)?;
-            let size = std::fs::metadata(&dest)?.len();
-            total += size;
-            files.push(serde_json::json!({
-                "name": name,
-                "bytes": size,
-                "sha256": sha256_file(&dest)?,
-            }));
+            let dest = staging
+                .join(dim_storage::backup::BLOBS_DIR)
+                .join(entry.file_name());
+            total += dim_storage::atomic::copy_atomic(&entry.path(), &dest)?;
+            blob_count += 1;
         }
     }
-    let vault_hash = sha256_file(&backup_dir.join("vault.dimvault"))?;
-    let db_hash = sha256_file(&backup_db)?;
-    let manifest = serde_json::json!({
-        "format": "dim-backup",
-        "version": 1,
-        "createdAt": time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
-        "vaultSha256": vault_hash,
-        "dbSha256": db_hash,
-        "blobs": files,
-    });
-    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|_| ApiError::new("E_BACKUP", "Manifest üretilemedi."))?;
-    std::fs::write(backup_dir.join("manifest.json"), &manifest_bytes)?;
 
-    // Yedeğin açılabildiğini doğrula: bozuk yedek "başarılı" sayılmaz.
+    let written = dim_storage::backup::write_backup_manifest(staging)?;
+    total += std::fs::metadata(&backup_db)?.len();
+
+    // Yedeğin gerçekten açıldığını doğrula: bozuk yedek "başarılı" sayılmaz.
     {
         let verify = Database::open(&backup_db, &key)?;
         verify.integrity_check()?;
     }
 
-    let manifest_hash = hex::encode(Sha256::digest(&manifest_bytes));
-    let file_count = files.len() + 3;
-    let _ = db.append_audit(
-        "backup",
-        None,
-        "create",
-        "local-user",
-        &serde_json::json!({"files": file_count}),
-    );
-    let archive = root.join(format!("DimYedek-{stamp}.dimbak"));
-    zip_dir(&backup_dir, &archive)?;
-    Ok(BackupView {
-        path: backup_dir.to_string_lossy().to_string(),
-        file_count,
-        total_bytes: total
-            + std::fs::metadata(&backup_db)?.len()
-            + std::fs::metadata(backup_dir.join("vault.dimvault"))?.len(),
-        manifest_hash,
-        archive_path: Some(archive.to_string_lossy().to_string()),
-    })
+    Ok((blob_count + 3, total, written.manifest_sha256))
 }
 
 /// Yedek klasörünü yeni bir kasa dizinine kopyalar. Hedef boş olmalıdır;
 /// mevcut kasanın üzerine yazılmaz. Açma işlemi kullanıcı parolasıyla yapılır.
+///
+/// Kural `dim_storage::backup::restore_backup_dir` içinde: **önce doğrula**
+/// (manifest boyut/sha256), sonra hazırlık dizinine kopyala, en son tek
+/// `rename`. Komut yalnız kapıları (boş yol) ve görünümü taşır (F15-T06).
 #[tauri::command]
 pub fn vault_restore(backup_dir: String, dest_dir: String) -> Result<RestoreView, ApiError> {
-    let src = PathBuf::from(backup_dir.trim());
-    let dest = PathBuf::from(dest_dir.trim());
     if backup_dir.trim().is_empty() || dest_dir.trim().is_empty() {
         return Err(ApiError::new("E_PATH", "Yedek ve hedef konumu zorunlu."));
     }
-    for required in ["vault.dimvault", "vault.db", "manifest.json"] {
-        if !src.join(required).is_file() {
-            return Err(ApiError::new(
-                "E_RESTORE_INVALID",
-                "Seçilen klasör geçerli bir yedek değil.",
-            ));
-        }
-    }
-    if dest.join("vault.dimvault").exists() {
-        return Err(ApiError::new(
-            "E_RESTORE_DEST_NOT_EMPTY",
-            "Hedef klasörde zaten bir kasa var.",
-        ));
-    }
-    std::fs::create_dir_all(dest.join("blobs"))?;
-    std::fs::copy(src.join("vault.dimvault"), dest.join("vault.dimvault"))?;
-    std::fs::copy(src.join("vault.db"), dest.join("vault.db"))?;
-    std::fs::copy(src.join("manifest.json"), dest.join("manifest.json"))?;
-    let mut count = 0usize;
-    let blobs = src.join("blobs");
-    if blobs.is_dir() {
-        for entry in std::fs::read_dir(&blobs)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                std::fs::copy(entry.path(), dest.join("blobs").join(entry.file_name()))?;
-                count += 1;
-            }
-        }
-    }
+    let dest = PathBuf::from(dest_dir.trim());
+    let outcome =
+        dim_storage::backup::restore_backup_dir(&PathBuf::from(backup_dir.trim()), &dest)?;
     Ok(RestoreView {
         vault_path: dest.to_string_lossy().to_string(),
-        file_count: count + 3,
+        file_count: outcome.blob_count + 3,
+        verified_files: outcome.verified_files,
+        verified_bytes: outcome.verified_bytes,
+        verify_ms: outcome.verify_ms,
+        unlisted_blobs: outcome.unlisted,
     })
 }
 

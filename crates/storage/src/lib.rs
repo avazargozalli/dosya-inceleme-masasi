@@ -7,6 +7,8 @@
 mod ai;
 mod ai_candidate;
 mod anchors;
+pub mod atomic;
+pub mod backup;
 mod cases;
 mod checklists;
 mod claims;
@@ -527,6 +529,10 @@ impl Database {
     /// Tutarlı, şifreli yedek üretir. SQLCipher'ın `backup` API'si şifreli
     /// veritabanlarını desteklemediği için `sqlcipher_export` kullanılır; hedef
     /// dosya aynı anahtarla şifreli olarak oluşur ve düz metin yazılmaz.
+    ///
+    /// Hedef ada **doğrudan** yazılmaz: disk dolduğunda yarım bir DB kalır ve
+    /// sonraki deneme "hedef zaten var" ile kapanırdı. Geçici ada yazılır,
+    /// diske indirilir, sonra yerleştirilir (F15-T06).
     pub fn backup_to(&self, dest: &Path, key: &DatabaseKey) -> Result<(), StorageError> {
         if dest.exists() {
             return Err(StorageError::Io(std::io::Error::new(
@@ -535,19 +541,38 @@ impl Database {
             )));
         }
         if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(atomic::map_io)?;
         }
-        let path_literal = dest.to_string_lossy().replace('\'', "''");
-        self.conn.execute_batch(&format!(
-            "ATTACH DATABASE '{path_literal}' AS dim_backup KEY \"x'{}'\";",
-            key.hex()
-        ))?;
-        let export = self
-            .conn
-            .execute_batch("SELECT sqlcipher_export('dim_backup');");
-        let detach = self.conn.execute_batch("DETACH DATABASE dim_backup;");
-        export?;
-        detach?;
+        let temp = atomic::temp_sibling(dest, "dimdb");
+        let path_literal = temp.to_string_lossy().replace('\'', "''");
+        let exported = (|| -> Result<(), StorageError> {
+            self.conn.execute_batch(&format!(
+                "ATTACH DATABASE '{path_literal}' AS dim_backup KEY \"x'{}'\";",
+                key.hex()
+            ))?;
+            // `DETACH` her durumda denenir; başarısız export bağlantıyı
+            // iliştirilmiş bırakırsa sonraki yedekler de düşerdi.
+            let export = self
+                .conn
+                .execute_batch("SELECT sqlcipher_export('dim_backup');");
+            let detach = self.conn.execute_batch("DETACH DATABASE dim_backup;");
+            export?;
+            detach?;
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&temp)
+                .map_err(atomic::map_io)?;
+            file.sync_all().map_err(atomic::map_io)?;
+            Ok(())
+        })();
+        if let Err(err) = exported {
+            atomic::remove_file_best_effort(&temp);
+            return Err(err);
+        }
+        if let Err(err) = std::fs::rename(&temp, dest) {
+            atomic::remove_file_best_effort(&temp);
+            return Err(atomic::map_io(err));
+        }
         Ok(())
     }
 
@@ -762,17 +787,46 @@ pub fn rollback_vault(
         })
         .collect();
 
-    std::fs::rename(path, &safety_copy)?;
+    // Kopya **önce** hazırlanır ve doğrulanır: disk dolarsa ya da yedek
+    // bozuksa mevcut kasa hiç yerinden oynamaz. (Eski sıra kasayı taşıyıp
+    // sonra kopyalıyordu; ENOSPC'de kasa bir an "yok" oluyordu.)
+    let staged = atomic::temp_sibling(path, "rollback");
+    let staged_version = std::fs::copy(backup, &staged).map_err(atomic::map_io);
+    let staged_version = match staged_version {
+        Ok(_) => Database::verify_database_file_readonly(&staged, key),
+        Err(err) => Err(err),
+    };
+    remove_empty_sidecars(&staged);
+    let staged_version = match staged_version {
+        Ok(version) => version,
+        Err(err) => {
+            atomic::remove_file_best_effort(&staged);
+            return Err(err);
+        }
+    };
+    if staged_version != backup_version {
+        atomic::remove_file_best_effort(&staged);
+        return Err(StorageError::MigrationBackup {
+            reason: format!(
+                "geri yüklenen kasa sürümü {staged_version}, yedek sürümü {backup_version}"
+            ),
+        });
+    }
+
+    std::fs::rename(path, &safety_copy).map_err(atomic::map_io)?;
     for (from, to) in &sidecars {
         if from.exists() {
-            std::fs::rename(from, to)?;
+            std::fs::rename(from, to).map_err(atomic::map_io)?;
         }
     }
 
-    let restored = std::fs::copy(backup, path).and_then(|_| {
-        Database::verify_database_file(path, key)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
-    });
+    let restored = std::fs::rename(&staged, path)
+        .map_err(atomic::map_io)
+        .and_then(|()| {
+            Database::verify_database_file(path, key).map_err(|err| StorageError::MigrationBackup {
+                reason: format!("{}: {err}", err.code()),
+            })
+        });
 
     match restored {
         Ok(version) if version == backup_version => Ok(RollbackOutcome {
@@ -780,7 +834,7 @@ pub fn rollback_vault(
             safety_copy,
         }),
         other => {
-            let _ = std::fs::remove_file(path);
+            atomic::remove_file_best_effort(path);
             let _ = std::fs::rename(&safety_copy, path);
             for (from, to) in sidecars.iter().rev() {
                 if to.exists() {
@@ -793,8 +847,23 @@ pub fn rollback_vault(
                         "geri yüklenen kasa sürümü {version}, yedek sürümü {backup_version}"
                     ),
                 },
-                Err(err) => StorageError::Io(err),
+                Err(err) => err,
             })
+        }
+    }
+}
+
+/// Doğrulamanın geçici dosya yanında bıraktığı **boş** `-wal`/`-shm`
+/// dosyalarını temizler. Dolu `-wal` silinmez: doğrulama dosyaya yazmış
+/// demektir ve bu sessizce yutulmaz (bkz. `pre_update::verify_without_residue`).
+fn remove_empty_sidecars(path: &Path) {
+    let base = path.to_string_lossy().to_string();
+    for suffix in ["-shm", "-wal"] {
+        let sidecar = PathBuf::from(format!("{base}{suffix}"));
+        if let Ok(meta) = std::fs::metadata(&sidecar) {
+            if meta.len() == 0 {
+                let _ = std::fs::remove_file(&sidecar);
+            }
         }
     }
 }

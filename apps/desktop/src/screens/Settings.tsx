@@ -44,6 +44,12 @@ export function Settings() {
   const [restoreDir, setRestoreDir] = useState("");
   const [destDir, setDestDir] = useState("");
   const [restored, setRestored] = useState<string | null>(null);
+  const [restoreInfo, setRestoreInfo] = useState<{
+    verifiedFiles: number;
+    verifiedBytes: number;
+    verifyMs: number;
+    unlistedBlobs: string[];
+  } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [preUpdate, setPreUpdate] = useState<PreUpdateBackup[]>([]);
@@ -189,6 +195,12 @@ export function Settings() {
     try {
       const result = await api.vaultRestore(picked, destDir.trim());
       setRestored(result.vaultPath);
+      setRestoreInfo({
+        verifiedFiles: result.verifiedFiles,
+        verifiedBytes: result.verifiedBytes,
+        verifyMs: result.verifyMs,
+        unlistedBlobs: result.unlistedBlobs,
+      });
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -508,6 +520,21 @@ export function Settings() {
         {restored ? (
           <div className="notice ok">
             Geri yükleme tamamlandı: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{restored}</span>
+            {restoreInfo ? (
+              <>
+                <br />
+                Kopyalamadan önce <strong>{restoreInfo.verifiedFiles}</strong> dosya ·{" "}
+                {formatBytes(restoreInfo.verifiedBytes)} manifest sha256 ile doğrulandı ({restoreInfo.verifyMs} ms).
+                {restoreInfo.unlistedBlobs.length > 0 ? (
+                  <>
+                    {" "}
+                    Yedekte sayılmayan {restoreInfo.unlistedBlobs.length} dosya kasaya kopyalanmadı:{" "}
+                    {restoreInfo.unlistedBlobs.slice(0, 5).join(", ")}
+                    {restoreInfo.unlistedBlobs.length > 5 ? "…" : ""}
+                  </>
+                ) : null}
+              </>
+            ) : null}
             <br />
             Şimdi Kasa ekranından bu konumu ve parolanızı girerek açın.
           </div>

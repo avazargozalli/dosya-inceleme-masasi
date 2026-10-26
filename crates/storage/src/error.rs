@@ -24,10 +24,17 @@ pub enum StorageError {
         safety_copy: String,
         reason: String,
     },
+    #[error("diskte yeterli yer yok: {reason}")]
+    DiskFull { reason: String },
+    #[error("yedek doğrulanamadı, hiçbir şey geri yüklenmedi: {reason}")]
+    BackupInvalid { reason: String },
+    #[error("hedef klasör boş değil; geri yükleme mevcut dosyaların üzerine yazmaz")]
+    RestoreDestNotEmpty,
     #[error("bütünlük kontrolü başarısız: {0}")]
     Integrity(String),
     #[error("SQL hatası: {0}")]
-    Sql(#[from] rusqlite::Error),
+    Sql(rusqlite::Error),
+
     #[error("G/Ç hatası: {0}")]
     Io(#[from] std::io::Error),
     #[error("geçersiz ayar değeri")]
@@ -80,6 +87,38 @@ pub enum StorageError {
     QuoteScopeTooLarge,
 }
 
+/// SQLite hatası disk dolması mı?
+///
+/// SQLCipher bu hatayı bazen `SQLITE_ERROR` birincil koduyla bildiriyor
+/// (`code: Unknown, extended_code: 1`) ve yalnız mesajda "database or disk is
+/// full" yazıyor; bu yüzden kod kadar mesaj da denetlenir. Başka hiçbir SQLite
+/// mesajı "is full" içermez.
+fn sql_is_disk_full(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(inner, message) => {
+            inner.code == rusqlite::ErrorCode::DiskFull
+                || message
+                    .as_deref()
+                    .is_some_and(|text| text.to_ascii_lowercase().contains("is full"))
+        }
+        _ => false,
+    }
+}
+
+impl From<rusqlite::Error> for StorageError {
+    /// Disk dolması ayrı koda (`E_DISK_FULL`) düşer: kullanıcıya "disk dolu"
+    /// demek ile "SQL hatası" demek arasındaki fark, yedek alma sırasındaki
+    /// müdahaleyi belirler. Diğer SQL hataları eskisi gibi.
+    fn from(value: rusqlite::Error) -> Self {
+        if sql_is_disk_full(&value) {
+            return Self::DiskFull {
+                reason: value.to_string(),
+            };
+        }
+        Self::Sql(value)
+    }
+}
+
 impl StorageError {
     pub const fn code(&self) -> &'static str {
         match self {
@@ -90,6 +129,9 @@ impl StorageError {
             Self::SchemaTooNew { .. } => "E_DB_SCHEMA_NEWER",
             Self::MigrationBackup { .. } => "E_DB_MIGRATION_BACKUP",
             Self::RollbackReopen { .. } => "E_DB_ROLLBACK_REOPEN",
+            Self::DiskFull { .. } => "E_DISK_FULL",
+            Self::BackupInvalid { .. } => "E_BACKUP_INVALID",
+            Self::RestoreDestNotEmpty => "E_RESTORE_DEST_NOT_EMPTY",
             Self::Integrity(_) => "E_DB_INTEGRITY",
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",

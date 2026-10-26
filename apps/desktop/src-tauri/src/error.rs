@@ -57,7 +57,12 @@ impl From<dim_ingest::IngestError> for ApiError {
 
 impl From<dim_storage::StorageError> for ApiError {
     fn from(value: dim_storage::StorageError) -> Self {
-        let retryable = matches!(value, dim_storage::StorageError::Io(_));
+        // Disk dolması kullanıcı yer açtıktan sonra tekrar denenebilir; kasa
+        // hatası olarak döner ama kodu ayrıdır (`E_DISK_FULL`).
+        let retryable = matches!(
+            value,
+            dim_storage::StorageError::Io(_) | dim_storage::StorageError::DiskFull { .. }
+        );
         Self {
             code: value.code().to_string(),
             message: value.to_string(),
@@ -79,10 +84,18 @@ impl From<VaultError> for ApiError {
 
 impl From<std::io::Error> for ApiError {
     fn from(value: std::io::Error) -> Self {
+        // Disk dolması ayrı kod alır: arayüz "yer açın" diyebilsin ve testte
+        // `E_IO` ile karışmasın.
+        if dim_storage::atomic::is_no_space(&value) {
+            return Self {
+                code: "E_DISK_FULL".to_string(),
+                message: "Diskte yeterli alan yok. Yer açıp yeniden deneyin.".to_string(),
+                retryable: true,
+            };
+        }
         let message = match value.kind() {
             std::io::ErrorKind::PermissionDenied => "Bu konuma yazma izni yok.".to_string(),
             std::io::ErrorKind::NotFound => "Klasör bulunamadı.".to_string(),
-            std::io::ErrorKind::StorageFull => "Diskte yeterli alan yok.".to_string(),
             _ => "Dosya işlemi tamamlanamadı.".to_string(),
         };
         Self {
