@@ -236,8 +236,7 @@ pub fn now_utc() -> OffsetDateTime {
 }
 
 fn iso(at: OffsetDateTime) -> String {
-    at.format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+    crate::iso_at(at)
 }
 
 fn parse_ts(text: &str) -> Option<OffsetDateTime> {
@@ -361,6 +360,9 @@ impl Database {
                 b.0.priority
                     .cmp(&a.0.priority)
                     .then_with(|| a.0.created_at.cmp(&b.0.created_at))
+                    // Eşit öncelik ve eşit zaman: kimlik (UUIDv7, zaman sıralı)
+                    // deterministik sıra verir — rastgele seçim yok.
+                    .then_with(|| a.0.id.cmp(&b.0.id))
             });
 
             for (job, deps_raw) in candidates {

@@ -1036,17 +1036,24 @@ fn remove_temp_sidecars(path: &Path) {
 }
 
 #[must_use]
-pub fn now_iso() -> String {
-    // **Sabit** milisaniye genişliği (kusur #46): RFC3339 biçimi sondaki
+pub fn iso_at(at: OffsetDateTime) -> String {
+    // **Sabit** mikrosaniye genişliği (kusur #46): RFC3339 biçimi sondaki
     // sıfırları atar, bu yüzden `.5Z` metin olarak `.55Z`'den **sonra** gelir
-    // ("Z" > "5"). Bütün `ORDER BY <zaman>` sorguları metin sırası kullandığı
-    // için genişlik sabit tutulur: `YYYY-MM-DDTHH:MM:SS.mmmZ`.
+    // ("Z" > "5"). Bütün `ORDER BY <zaman>` ve `<=` karşılaştırmaları metin
+    // sırası kullandığı için genişlik sabit tutulur:
+    // `YYYY-MM-DDTHH:MM:SS.uuuuuuZ`. Milisaniye yetmedi: aynı milisaniyede
+    // açılan iki iş `created_at` eşitliğine düşüp sahiplenme sırasını
+    // belirsizleştiriyordu (CI'da kuyruk testleri kırıldı).
     const FMT: &[time::format_description::FormatItem<'static>] = time::macros::format_description!(
-        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]Z"
     );
-    OffsetDateTime::now_utc()
-        .format(FMT)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_string())
+    at.format(FMT)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00.000000Z".to_string())
+}
+
+#[must_use]
+pub fn now_iso() -> String {
+    iso_at(OffsetDateTime::now_utc())
 }
 
 #[cfg(test)]
@@ -1072,13 +1079,13 @@ mod tests {
     #[test]
     fn timestamps_are_fixed_width_and_text_sortable() {
         let a = now_iso();
-        assert_eq!(a.len(), 24, "YYYY-MM-DDTHH:MM:SS.mmmZ beklenir: {a}");
+        assert_eq!(a.len(), 27, "YYYY-MM-DDTHH:MM:SS.uuuuuuZ beklenir: {a}");
         assert!(a.ends_with('Z'), "UTC işareti: {a}");
-        assert_eq!(&a[19..20], ".", "milisaniye noktası: {a}");
-        assert!(a[20..23].chars().all(|c| c.is_ascii_digit()), "3 hane: {a}");
+        assert_eq!(&a[19..20], ".", "mikrosaniye noktası: {a}");
+        assert!(a[20..26].chars().all(|c| c.is_ascii_digit()), "6 hane: {a}");
         // Aynı saniyedeki iki damga metin olarak da doğru sırada olmalı.
         assert!(
-            "2026-01-01T00:00:00.500Z" < "2026-01-01T00:00:00.550Z",
+            "2026-01-01T00:00:00.500000Z" < "2026-01-01T00:00:00.550000Z",
             "sabit genişlikte metin sırası an sırasıdır"
         );
     }
