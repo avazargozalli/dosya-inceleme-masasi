@@ -1,0 +1,498 @@
+{
+  "b01": {
+    "applies": false,
+    "coreMaxMs": 90.78,
+    "coreP50Ms": 63.775,
+    "coreP95Met": null,
+    "coreP95Ms": 85.036,
+    "deferredPageP95Met": null,
+    "deferredPageP95Ms": 34.57,
+    "deferredPageQueries": 20,
+    "note": "Korpus ya da sorgu sayısı B-01 profilinin altında: sonuç hedef hükmü değildir.",
+    "queries": 20,
+    "requirement": "1.000 belge · 100.000 segment · 200 sabit sorgu · ilk 50 sonuç · p95 ≤ 2.000 ms (çekirdek+IPC+UI)",
+    "segments": 2000
+  },
+  "corpus": {
+    "documents": 200,
+    "pages": 2000,
+    "pagesPerDocument": 10,
+    "segments": 2000
+  },
+  "corpusGenerator": "lcg-6364136223846793005-v1 (46 kelime, 8 cümle × 12 kelime, Esas 2024/N E.)",
+  "costPerSegmentMs": {
+    "p50": 0.03189,
+    "p95": 0.04252
+  },
+  "firstPage": {
+    "p50Ms": 0.16,
+    "p95Ms": 0.171,
+    "pagesInVersion": 10,
+    "samples": 50
+  },
+  "generatedAt": "2026-10-26T00:24:12.654213Z",
+  "ingest": {
+    "documentsPerSecond": 169.68,
+    "pagesPerSecond": 1696.76,
+    "phaseMs": {
+      "blob": 32.97,
+      "document": 90.66,
+      "pages": 901.38,
+      "parseRun": 39.58,
+      "version": 113.27
+    },
+    "seconds": 1.179
+  },
+  "machine": {
+    "arch": "aarch64",
+    "cpuModel": "Apple M2",
+    "cpus": 8,
+    "memoryBytes": 17179869184,
+    "os": "macos",
+    "storage": "Mac14,7"
+  },
+  "memory": {
+    "afterSearchRssMb": 15.69,
+    "peakRssBytes": 9928704,
+    "peakRssMb": 9.47,
+    "samplingIntervalMs": 2000
+  },
+  "modeResolution": "auto: tırnaklı metin → ifade, 2024/N E. → esas/karar no",
+  "pageLookupAb": null,
+  "perQuery": [
+    {
+      "deferredTotalMs": 43.87,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 20.73,
+      "text": "tapu",
+      "total": 1771,
+      "withTotalMs": 65.4
+    },
+    {
+      "deferredTotalMs": 51.39,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": 34.71,
+      "text": "\"senet hak\"",
+      "total": 79,
+      "withTotalMs": 90.78
+    },
+    {
+      "deferredTotalMs": 42.74,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 22.24,
+      "text": "tanik",
+      "total": 1756,
+      "withTotalMs": 64.67
+    },
+    {
+      "deferredTotalMs": 1.69,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 10,
+      "mode": "Docket",
+      "pageOnlyMs": 2.32,
+      "text": "2024/1000 E.",
+      "total": 10,
+      "withTotalMs": 2.71
+    },
+    {
+      "deferredTotalMs": 44.74,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 23.06,
+      "text": "beyan",
+      "total": 1974,
+      "withTotalMs": 67.65
+    },
+    {
+      "deferredTotalMs": 53.1,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": 34.57,
+      "text": "\"süre gereği\"",
+      "total": 87,
+      "withTotalMs": 85.04
+    },
+    {
+      "deferredTotalMs": 42.87,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 20.59,
+      "text": "odenmedi",
+      "total": 1751,
+      "withTotalMs": 63.05
+    },
+    {
+      "deferredTotalMs": 1.74,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 10,
+      "mode": "Docket",
+      "pageOnlyMs": 2.39,
+      "text": "2024/1037 E.",
+      "total": 10,
+      "withTotalMs": 2.78
+    },
+    {
+      "deferredTotalMs": 42.66,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 21.15,
+      "text": "ihtarname",
+      "total": 1757,
+      "withTotalMs": 63.25
+    },
+    {
+      "deferredTotalMs": 52.35,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": 29.7,
+      "text": "\"süre tebliğ\"",
+      "total": 91,
+      "withTotalMs": 81.56
+    },
+    {
+      "deferredTotalMs": 41.83,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 20.82,
+      "text": "dosya",
+      "total": 1753,
+      "withTotalMs": 62.99
+    },
+    {
+      "deferredTotalMs": 1.73,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 10,
+      "mode": "Docket",
+      "pageOnlyMs": 2.46,
+      "text": "2024/1074 E.",
+      "total": 10,
+      "withTotalMs": 2.83
+    },
+    {
+      "deferredTotalMs": 42.69,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 20.54,
+      "text": "bilirkişi",
+      "total": 1757,
+      "withTotalMs": 63.41
+    },
+    {
+      "deferredTotalMs": 51.3,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": 29.16,
+      "text": "\"senet verildi\"",
+      "total": 85,
+      "withTotalMs": 80.22
+    },
+    {
+      "deferredTotalMs": 44.38,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 22.94,
+      "text": "sure",
+      "total": 1965,
+      "withTotalMs": 67.47
+    },
+    {
+      "deferredTotalMs": 1.76,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 10,
+      "mode": "Docket",
+      "pageOnlyMs": 2.45,
+      "text": "2024/1111 E.",
+      "total": 10,
+      "withTotalMs": 2.77
+    },
+    {
+      "deferredTotalMs": 42.24,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 20.71,
+      "text": "vekili",
+      "total": 1748,
+      "withTotalMs": 61.99
+    },
+    {
+      "deferredTotalMs": 54.3,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": 29.47,
+      "text": "\"takip temyiz\"",
+      "total": 101,
+      "withTotalMs": 84.23
+    },
+    {
+      "deferredTotalMs": 42.85,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 20.75,
+      "text": "bilirkisi",
+      "total": 1757,
+      "withTotalMs": 63.78
+    },
+    {
+      "deferredTotalMs": 1.8,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 10,
+      "mode": "Docket",
+      "pageOnlyMs": 2.43,
+      "text": "2024/1148 E.",
+      "total": 10,
+      "withTotalMs": 2.71
+    }
+  ],
+  "profile": "core-only (IPC/UI yok) — B-01 alt sınırı",
+  "queryList": [
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tapu"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"senet hak\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "tanik"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1000 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "beyan"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"süre gereği\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "odenmedi"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1037 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "ihtarname"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"süre tebliğ\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "dosya"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1074 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "bilirkişi"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"senet verildi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "sure"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1111 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "vekili"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"takip temyiz\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "bilirkisi"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1148 E."
+    }
+  ],
+  "queryListSha256": "472fe8ac2dc09e2a40ea3d29c234d2103d6ff2e0af7d64b6c72238bf66b3a341",
+  "schemaVersion": 2,
+  "search": {
+    "includeTotal": true,
+    "limit": 50,
+    "maxMs": 90.78,
+    "p50Ms": 63.775,
+    "p95Ms": 85.036,
+    "queries": 20,
+    "seconds": 2.17,
+    "totalHits": 800
+  },
+  "searchByGroup": {
+    "docket": {
+      "maxMs": 2.833,
+      "p50Ms": 2.766,
+      "p95Ms": 2.833,
+      "queries": 5
+    },
+    "folded": {
+      "maxMs": 67.47,
+      "p50Ms": 63.775,
+      "p95Ms": 67.47,
+      "queries": 5
+    },
+    "phrase": {
+      "maxMs": 90.78,
+      "p50Ms": 84.225,
+      "p95Ms": 90.78,
+      "queries": 5
+    },
+    "word": {
+      "maxMs": 67.649,
+      "p50Ms": 63.414,
+      "p95Ms": 67.649,
+      "queries": 5
+    }
+  },
+  "searchPageOnly": {
+    "identicalFirstPageChecked": 20,
+    "maxMs": 34.711,
+    "note": "Sayfa adayları bm25 sırasında pencere pencere doğrular ve dolduğu an keser; adayların tamamı doğrulanmaz. Sıra/sonuç değişmez (test: candidate_window_does_not_change_results).",
+    "overheadP50Ms": 42.95,
+    "overheadP95Ms": 50.47,
+    "p50Ms": 20.824,
+    "p95Ms": 34.57,
+    "queries": 20,
+    "stoppedEarlySamples": 15,
+    "verifiedCandidates": 2719,
+    "verifiedCandidatesAvg": 135.95,
+    "verifiedCandidatesMax": 580,
+    "window": 200
+  },
+  "searchTotalDeferred": {
+    "identicalTotalsChecked": 20,
+    "matchesPageTotal": true,
+    "note": "Sayfa `include_total=false` ile gelir; sayı ayrı komutla sonradan istenir. `pageP*` kullanıcının beklediği süredir (ilk sayfa), `totalP*` arka plandaki tam sayım.",
+    "pageP50Ms": 20.824,
+    "pageP95Ms": 34.57,
+    "queries": 20,
+    "totalMaxMs": 54.313,
+    "totalP50Ms": 42.858,
+    "totalP95Ms": 53.119
+  },
+  "storage": {
+    "bytesPerSegment": 3469,
+    "dbBytes": 6938624,
+    "dbMb": 6.62,
+    "shmBytes": 32768,
+    "walBytes": 4243632
+  }
+}

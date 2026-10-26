@@ -1331,7 +1331,22 @@ export type SearchPage = {
   /** Yalnız ilk sayfada istenir; arayüz artık `searchTotal` ile ayrı sayar. */
   total: number | null;
   filters: SearchFilters;
+  /** Sayfanın doğrulama maliyeti (F15 aday penceresi) — dürüst ölçüm. */
+  verification?: SearchVerification;
   hits: SearchHit[];
+};
+
+/**
+ * Aday penceresi ölçümü (F15). Sayfa, adayları `bm25` sırasında pencere
+ * pencere doğrular ve dolduğu an keser; `candidatesExamined` kaç adayın
+ * gerçekten doğrulandığını söyler.
+ */
+export type SearchVerification = {
+  candidatesExamined: number;
+  windows: number;
+  /** `true` = sayfa doldu, adayların tamamı doğrulanmadı. */
+  stoppedEarly: boolean;
+  scanMs: number;
 };
 
 /**

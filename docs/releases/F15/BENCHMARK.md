@@ -192,6 +192,54 @@ SQLCipher her satırı çözüp HMAC doğruladığı için maliyet satır sayıs
 - Mevcut F07 arama testleri (kip semantiği, filtreler, keyset sayfalama, kapsam
   sınırı) değişmeden geçiyor: storage **267 test**.
 
+## Aday penceresi + tembel doğrulama — 2026-10-26 (debug, aynı oturumda A/B)
+
+**Kusur:** doğrulama SQL'in `WHERE`'indeydi (`AND dim_search_verify(...)=1`).
+SQLite bu yüklemi `ORDER BY bm25` sıralamasından **önce** uyguladığı için sayfa
+20 sonuç istese de FTS adaylarının **tamamı** doğrulanıyordu; 2.000 segmentlik
+profilde kelime sorgularında 1.700–1.980 aday, 100.000 segmentte on binlerce
+aday demekti. Ölçülen kuyruk (36–54 sn) buradan geliyordu.
+
+**Düzeltme:** sayfa sorgusu adayları `bm25, segment_id` sırasında **akıtır**
+(`LIMIT` yok), doğrulamayı Rust'ta `SearchMatcher` ile 200 satırlık pencereler
+hâlinde yapar ve sayfa dolduğu an (`limit+1` eşleşme) taramayı keser.
+`SearchPage.verification` kaç adayın gerçekten doğrulandığını taşır; arayüz
+"*N aday doğrulandı · X ms · sayfa doldu, tarama kesildi*" satırını gösterir.
+
+**A/B (aynı makine, aynı korpus, aynı sorgu listesi `472fe8ac…`,
+200 belge / 2.000 segment / 20 sorgu, debug, arka arkaya iki koşu):**
+
+| ölçü | eski (SQL doğrulama) | yeni (aday penceresi) | kazanç |
+|---|---|---|---|
+| ilk sayfa p50 | 44,73 ms | **19,64 ms** | **2,28×** |
+| ilk sayfa p95 | 51,70 ms | **29,29 ms** | 1,77× |
+| ilk sayfa max | 52,53 ms | 32,89 ms | 1,60× |
+| toplamlı arama p50 | 84,99 ms | 61,38 ms | 1,38× |
+| ayrı sayım p50 | 40,08 ms | 40,95 ms | değişmedi (bilinçli) |
+
+Sorgu grubu bazında (sayfa, p50): kelime 50–58 → **20–23 ms**; ifade 55–60 →
+29–35 ms; esas/karar no 2,4–3,3 → 2,3–2,5 ms (aday kümesi zaten küçük).
+
+**Doğrulanan aday:** ortalama **135,95**, tepe **580** (3 pencere); 20 örneğin
+**15**'inde erken kesme. Eski kodda her örnekte adayların tamamı doğrulanıyordu.
+
+**Doğruluk:** ilk sayfa 20/20 birebir aynı (aynı segment kimlikleri), toplam
+sayı 20/20 eşit. Birim testleri pencere boyutunu 1, 2, 3, 4, 64, 200 vererek
+sonucun, sıranın ve imlecin değişmediğini; ilk pencerede eşleşme yoksa taramanın
+devam ettiğini denetler.
+
+**Sınır (dürüst):** kazanç **2.000 segmentte** ölçüldü; **100.000 segmentte
+kuyruk yeniden ölçülmedi** (disk 2 GB — 100k ingest + release derleme
+yapılmadı). Mekanizma aynı olduğu için beklenen kuyruk düşüşü, ilk 21 eşleşmenin
+kaç adayda bulunduğuna bağlı: eşleşme yoğun sorgularda tarama ilk pencerelerde
+kesilir; **eşleşme çok seyrekse** (ör. 50.000 adayda 5 eşleşme) tarama yine
+tüm adayları gezer — kuyruk **tamamen yok olmaz**, yalnız eşleşme bulunan yerde
+kısalır. Tam sayım (`search_total`) doğrulamayı hâlâ SQL'de yapar ve tüm
+adayları gezmek zorundadır; bu yüzden ölçümde **değişmedi** ve arayüzde ayrı
+(sonradan) istenir.
+
+Ham rapor: `docs/releases/F15/bench-window-2026-10-26.json`.
+
 ## Dürüst sınırlamalar
 
 - **B-01 toplam süreyi kapsar** (çekirdek + IPC + arayüz); buradaki sayılar
@@ -224,10 +272,11 @@ SQLCipher her satırı çözüp HMAC doğruladığı için maliyet satır sayıs
 1. ~~**Toplam sayıyı geciktir**~~ **uygulandı** (2026-10-26): `search_total` +
    `search_segments_total` + arayüzde "sayılıyor…" satırı; sayı eşitliği her
    ölçüm örneğinde assert ediliyor.
-2. **Aday penceresi + tembel doğrulama** — kuyruk, aday sayısı 100.000'e yakın
-   sorgularda oluşuyor (`esas`, `haciz`, `sure`). İlk 50 sonuç için tüm adayları
-   doğrulamak zorunlu değil; sıralama `bm25` olduğu için pencere büyütülerek
-   kesinlik korunabilir (tasarım değişikliği, ayrı iş).
+2. ~~**Aday penceresi + tembel doğrulama**~~ **uygulandı** (2026-10-26): sayfa
+   adayları `bm25` sırasında akıtıp yalnız ihtiyaç kadar doğruluyor; 2.000
+   segmentte ilk sayfa p50 **44,7 → 19,6 ms** (2,28×), doğrulanan aday ort.
+   136. 100k profilde kuyruk yeniden ölçülmedi (disk); seyrek eşleşen sorguda
+   tarama yine tüm adayları gezer.
 3. **Kalıcı belirteç/konum indeksi** (`normalized_text` için) — doğrulamayı satır
    taramasından çıkarır; en büyük kazanç, en pahalı iş.
 

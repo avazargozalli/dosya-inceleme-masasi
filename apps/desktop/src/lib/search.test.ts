@@ -20,6 +20,7 @@ import {
   toggleValue,
   TOTAL_PROBE_IDLE,
   totalSummary,
+  verificationSummary,
 } from "./search";
 
 function filters(overrides: Partial<SearchFilters> = {}): SearchFilters {
@@ -246,5 +247,37 @@ describe("arama kipi (F07-T02)", () => {
     expect(searchModeHint('"kira bedeli"', "auto")).toContain("İfade");
     expect(searchModeHint("2024/123 E.", "auto")).toContain("E./K.");
     expect(searchModeHint("kira", "exact")).toContain("Türkçe karakterler korunur");
+  });
+});
+
+describe("aday penceresi özeti (F15)", () => {
+  it("doğrulanan aday sayısını ve süreyi gerçek ölçümden yazar", () => {
+    const summarized = verificationSummary(
+      page({
+        verification: { candidatesExamined: 42, windows: 1, stoppedEarly: true, scanMs: 7.4 },
+      }),
+    );
+    expect(summarized).toBe("42 aday doğrulandı · 7 ms · sayfa doldu, tarama kesildi");
+  });
+
+  it("erken kesme yoksa adayların tükendiğini söyler", () => {
+    const summarized = verificationSummary(
+      page({
+        verification: { candidatesExamined: 14, windows: 7, stoppedEarly: false, scanMs: 2.6 },
+      }),
+    );
+    expect(summarized).toBe("14 aday doğrulandı · 3 ms · adaylar tükendi");
+  });
+
+  it("ölçüm yoksa satır göstermez, sayı uydurmaz", () => {
+    expect(verificationSummary(null)).toBeNull();
+    expect(verificationSummary(page())).toBeNull();
+    expect(
+      verificationSummary(
+        page({
+          verification: { candidatesExamined: 0, windows: 0, stoppedEarly: false, scanMs: 0 },
+        }),
+      ),
+    ).toBeNull();
   });
 });

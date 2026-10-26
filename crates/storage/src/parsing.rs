@@ -471,8 +471,49 @@ impl Database {
         cursor: Option<&str>,
         include_total: bool,
     ) -> Result<SearchPage, StorageError> {
+        self.search_page_windowed(
+            case_id,
+            query,
+            filters,
+            limit,
+            cursor,
+            include_total,
+            SEARCH_CANDIDATE_WINDOW,
+        )
+    }
+
+    /// `search_page`in **pencereli** çekirdeği (F15 kuyruk düzeltmesi).
+    ///
+    /// Önceki hâlde doğrulama SQL'in `WHERE`'indeydi: SQLite `ORDER BY bm25`
+    /// sıralamasından **önce** her FTS adayına `dim_search_verify` uyguluyor,
+    /// yani sayfa için 20 sonuç yetse de 50.000 adayın tamamı doğrulanıyordu.
+    /// Ölçülen kuyruk (`"numaralı reddine"` 36–54 sn) buradan geliyordu.
+    ///
+    /// Yeni yol: adaylar `bm25, segment_id` sırasında **akıtılır**, doğrulama
+    /// Rust'ta pencere pencere yapılır ve sayfa dolduğu an tarama kesilir.
+    /// Sıra ve sonuç kümesi değişmez (doğrulama aynı `SearchMatcher`), yalnız
+    /// gereksiz adaylar hiç okunmaz. Ayrıntı: `verification` alanı kaç adayın
+    /// gerçekten doğrulandığını dürüstçe taşır.
+    ///
+    /// `window` testlerde küçük verilir (pencere sınırları zorlanır); üretimde
+    /// `SEARCH_CANDIDATE_WINDOW`.
+    // Gerekçe: imza `search_page` ile aynı düzeni korur + tek ölçüm parametresi
+    // (`window`) ekler; argümanları struct'a sarmak çağrı yerlerini okunaksız
+    // kılardı. Testler bu yolu doğrudan çağırır.
+    #[allow(clippy::too_many_arguments)]
+    fn search_page_windowed(
+        &self,
+        case_id: &str,
+        query: &SearchQuery,
+        filters: &SearchFilters,
+        limit: i64,
+        cursor: Option<&str>,
+        include_total: bool,
+        window: i64,
+    ) -> Result<SearchPage, StorageError> {
         let filters = filters.normalized()?;
         let limit = limit.clamp(1, MAX_SEARCH_LIMIT);
+        let window = window.clamp(1, SEARCH_CANDIDATE_WINDOW);
         let resolved = query.resolve()?;
         let cursor = match cursor {
             Some(token) if !token.trim().is_empty() => {
@@ -493,6 +534,7 @@ impl Database {
             next_cursor: None,
             total: None,
             filters: filters.clone(),
+            verification: SearchVerification::default(),
             hits: Vec::new(),
         };
         let expression = fts_expression(&resolved);
@@ -504,19 +546,22 @@ impl Database {
         }
 
         // Doğrulayıcı sorgu başına bir kez kurulur (F15 ölçek düzeltmesi).
-        let matcher = SearchMatcher::new(&resolved.text, resolved.mode, resolved.docket.clone());
-        let verify = if matcher.wants_normalized() {
-            "dim_search_verify(NULL, s.normalized_text)"
-        } else {
-            "dim_search_verify(s.raw_text, NULL)"
-        };
-        self.register_search_verifier(std::sync::Arc::new(matcher))?;
+        let matcher = std::sync::Arc::new(SearchMatcher::new(
+            &resolved.text,
+            resolved.mode,
+            resolved.docket.clone(),
+        ));
+        let wants_normalized = matcher.wants_normalized();
 
-        let (base_where, base_params) = search_where(case_id, &expression, &filters, verify);
+        // Aday WHERE'i **doğrulama içermez**: doğrulama Rust'ta, sıralamadan
+        // sonra ve yalnız sayfanın ihtiyaç duyduğu kadar aday üzerinde koşar.
+        let (base_where, base_params) = search_where_candidates(case_id, &expression, &filters);
 
-        // Sonuç sınırı: bir fazla satır çekilir, `has_more` gerçek veriden gelir.
+        // `LIMIT` yok: adaylar `bm25` sırasında akıtılır; kaç adayın
+        // doğrulanacağına sayfanın dolması karar verir (erken kesme).
         let mut sql = format!(
-            "SELECT s.id AS segment_id, s.page_id, s.raw_text, p.page_index, bm25(text_segments_fts) AS bm25_rank,
+            "SELECT s.id AS segment_id, s.page_id, s.raw_text, s.normalized_text,
+                    p.page_index, bm25(text_segments_fts) AS bm25_rank,
                     pr.document_version_id, dv.document_id, d.display_name, d.document_type,
                     d.status, p.text_origin, s.case_id
              FROM {SEARCH_FROM} {base_where}"
@@ -536,31 +581,74 @@ impl Database {
         // `bm25` alt sorgu düzleştirmesinde bağlamını kaybettiği için alt sorgu
         // materyalize ediliyor ve sıralama ikinci kez yapılıyor. Bu yüzden sayım
         // ayrı geçişte kalır (doğrulayıcı ucuz).
-        sql.push_str(" ORDER BY bm25_rank, segment_id LIMIT ?");
-        params.push(Value::Integer(limit + 1));
+        sql.push_str(" ORDER BY bm25_rank, segment_id");
 
-        let mut stmt = self.conn().prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(SearchHit {
-                segment_id: row.get(0)?,
-                page_id: row.get(1)?,
-                raw_text: row.get(2)?,
-                page_index: row.get(3)?,
-                rank: row.get(4)?,
-                document_version_id: row.get(5)?,
-                document_id: row.get(6)?,
-                document_name: row.get(7)?,
-                document_type: row.get(8)?,
-                document_status: row.get(9)?,
-                text_origin: row.get(10)?,
-                case_id: row.get(11)?,
-                tags: Vec::new(),
-            })
-        })?;
-        let mut hits = Vec::new();
-        for row in rows {
-            hits.push(row?);
+        let started = std::time::Instant::now();
+        let mut scratch = MatchScratch::default();
+        let mut hits: Vec<SearchHit> = Vec::new();
+        let mut examined: i64 = 0;
+        let mut windows: i64 = 0;
+        let mut stopped_early = false;
+        {
+            let mut stmt = self.conn().prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+            'scan: loop {
+                let mut in_window: i64 = 0;
+                let mut opened = false;
+                let mut exhausted = false;
+                while in_window < window {
+                    let Some(row) = rows.next()? else {
+                        exhausted = true;
+                        break;
+                    };
+                    if !opened {
+                        windows += 1;
+                        opened = true;
+                    }
+                    in_window += 1;
+                    examined += 1;
+                    let raw: String = row.get(2)?;
+                    let normalized: Option<String> = row.get(3)?;
+                    let matched = if wants_normalized {
+                        matcher.matches(None, normalized.as_deref(), &mut scratch)
+                    } else {
+                        matcher.matches(Some(&raw), None, &mut scratch)
+                    };
+                    if !matched {
+                        continue;
+                    }
+                    hits.push(SearchHit {
+                        segment_id: row.get(0)?,
+                        page_id: row.get(1)?,
+                        raw_text: raw,
+                        page_index: row.get(4)?,
+                        rank: row.get(5)?,
+                        document_version_id: row.get(6)?,
+                        document_id: row.get(7)?,
+                        document_name: row.get(8)?,
+                        document_type: row.get(9)?,
+                        document_status: row.get(10)?,
+                        text_origin: row.get(11)?,
+                        case_id: row.get(12)?,
+                        tags: Vec::new(),
+                    });
+                    if hits.len() as i64 > limit {
+                        stopped_early = true;
+                        break 'scan;
+                    }
+                }
+                if exhausted {
+                    break;
+                }
+            }
         }
+        page.verification = SearchVerification {
+            candidates_examined: examined,
+            windows,
+            stopped_early,
+            scan_ms: started.elapsed().as_secs_f64() * 1000.0,
+        };
+
         if hits.len() as i64 > limit {
             hits.truncate(limit as usize);
             page.has_more = true;
@@ -584,8 +672,20 @@ impl Database {
         // sorguda 286 ms → <1 ms (F15 ölçümü).
         if include_total {
             page.total = Some(if !page.has_more && cursor.is_none() {
+                // Adaylar tükendi: sayfa **tüm** eşleşmeleri taşıyor, ikinci
+                // geçiş gerekmez (erken kesme yoksa doğru).
                 hits.len() as i64
             } else {
+                // Tam sayım doğrulamayı SQL'de yapar ve bütün adayları gezmek
+                // zorundadır — bu yüzden pahalıdır; arayüz onu `search_total`
+                // ile ayrı ve sonradan ister. Burada yalnız `include_total`
+                // açıkça istendiğinde çalışır.
+                let verify = if wants_normalized {
+                    "dim_search_verify(NULL, s.normalized_text)"
+                } else {
+                    "dim_search_verify(s.raw_text, NULL)"
+                };
+                self.register_search_verifier(std::sync::Arc::clone(&matcher))?;
                 let (count_sql, count_params) = count_where(case_id, &expression, &filters, verify);
                 self.conn().query_row(
                     &format!("SELECT count(*) FROM {COUNT_FROM}{count_sql}"),
@@ -1498,17 +1598,18 @@ fn push_filters(sql: &mut String, params: &mut Vec<Value>, case_id: &str, filter
     }
 }
 
-/// Sayfa sorgusunun WHERE'i (parametre sırası: MATCH, `case_id`, filtreler).
-fn search_where(
+/// Aday sorgusunun WHERE'i (parametre sırası: MATCH, `case_id`, filtreler).
+///
+/// **Doğrulama yok** (F15 kuyruk düzeltmesi): `dim_search_verify` WHERE'e
+/// konduğunda SQLite onu `ORDER BY bm25` sıralamasından önce her adaya
+/// uyguluyordu. Doğrulama artık Rust'ta, sıralanmış akış üzerinde ve yalnız
+/// sayfanın ihtiyaç duyduğu adaylar için yapılır (`search_page_windowed`).
+fn search_where_candidates(
     case_id: &str,
     expression: &str,
     filters: &SearchFilters,
-    verify: &str,
 ) -> (String, Vec<Value>) {
-    let mut sql = format!(
-        " WHERE text_segments_fts MATCH ? AND s.case_id = ?
-          AND {verify} = 1"
-    );
+    let mut sql = " WHERE text_segments_fts MATCH ? AND s.case_id = ?".to_string();
     let mut params: Vec<Value> = vec![
         Value::Text(expression.to_string()),
         Value::Text(case_id.to_string()),
@@ -1676,6 +1777,12 @@ pub const SEARCH_DATE_ROLES: &[&str] = &[
 /// Tek aramada dönebilecek en fazla sonuç (arayüz de aynı sınırı gösterir).
 pub const MAX_SEARCH_LIMIT: i64 = 200;
 
+/// Aday penceresi (F15 kuyruk düzeltmesi): sayfa sorgusu adayları `bm25`
+/// sırasında bu kadar satırlık pencereler hâlinde **doğrular**; sayfa dolduğu
+/// an tarama kesilir. 200, `MAX_SEARCH_LIMIT`in üstünde kalır ki tek pencere
+/// tipik bir sayfayı taşıyabilsin.
+pub const SEARCH_CANDIDATE_WINDOW: i64 = 200;
+
 /// `Database::pages_for_run` sorgusu. Testler **bu metnin** planını denetler;
 /// kopya bir sorgu yazılsaydı indeks denetimi sessizce eskiyebilirdi.
 ///
@@ -1747,7 +1854,27 @@ pub struct SearchPage {
     /// Yalnız `include_total` istendiğinde dolar.
     pub total: Option<i64>,
     pub filters: SearchFilters,
+    /// Sayfanın doğrulama maliyeti (F15 kuyruk düzeltmesi) — kaç adayın
+    /// gerçekten doğrulandığını **dürüstçe** taşır; arayüz bunu gösterir.
+    #[serde(default)]
+    pub verification: SearchVerification,
     pub hits: Vec<SearchHit>,
+}
+
+/// Sayfa doğrulamasının gerçek maliyeti (F15). "Hızlı" iddiası buradan
+/// okunur: erken kesme olmuşsa adayların tamamı hiç doğrulanmamıştır.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchVerification {
+    /// Doğrulanan (metni okunan) FTS adayı sayısı.
+    pub candidates_examined: i64,
+    /// Gezilen aday penceresi sayısı.
+    pub windows: i64,
+    /// Sayfa dolduğu için taramanın erken kesilip kesilmediği. `false` ise
+    /// adayların **tamamı** doğrulandı (sayfa eksik değil, aday bitti).
+    pub stopped_early: bool,
+    /// Aday taraması + doğrulamanın çekirdekteki süresi (ms).
+    pub scan_ms: f64,
 }
 
 /// Ertelenmiş toplam sayımın sonucu (F15). `search_page` ile **aynı** sorgu
@@ -2570,6 +2697,198 @@ mod tests {
         assert_eq!(page.limit, MAX_SEARCH_LIMIT);
         assert_eq!(page.scope, "case");
         assert_eq!(page.case_id, case_id);
+    }
+
+    /// F15 kuyruk düzeltmesi: aday penceresi **sonucu değiştirmez** — aynı
+    /// sorgu, aynı sıra, aynı toplam. Pencere yalnız kaç adayın doğrulandığını
+    /// belirler.
+    #[test]
+    fn candidate_window_does_not_change_results() {
+        let (db, case_id, version_id) = setup();
+        let mut texts: Vec<String> = (0..12)
+            .map(|i| format!("reddine numaralı {i} sayfa")) // aday, eşleşme değil
+            .collect();
+        texts.push("numaralı reddine kararı".into());
+        texts.push("NUMARALI REDDINE büyük harf".into());
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let query = SearchQuery {
+            text: "numaralı reddine".into(),
+            mode: SearchMode::Flexible,
+        };
+        let base = db
+            .search_page_windowed(
+                &case_id,
+                &query,
+                &SearchFilters::default(),
+                5,
+                None,
+                true,
+                64,
+            )
+            .expect("geniş pencere");
+        assert_eq!(base.hits.len(), 2, "iki gerçek eşleşme");
+        assert_eq!(base.total, Some(2), "sayı aday sayısı değil eşleşme sayısı");
+
+        for window in 1..=4 {
+            let page = db
+                .search_page_windowed(
+                    &case_id,
+                    &query,
+                    &SearchFilters::default(),
+                    5,
+                    None,
+                    true,
+                    window,
+                )
+                .expect("küçük pencere");
+            let ids: Vec<&str> = page.hits.iter().map(|h| h.segment_id.as_str()).collect();
+            let base_ids: Vec<&str> = base.hits.iter().map(|h| h.segment_id.as_str()).collect();
+            assert_eq!(ids, base_ids, "pencere {window} sonucu değiştirmemeli");
+            assert_eq!(
+                page.total, base.total,
+                "pencere {window} sayıyı değiştirmemeli"
+            );
+            assert_eq!(page.has_more, base.has_more);
+            assert_eq!(page.next_cursor, base.next_cursor);
+        }
+
+        // Küçük pencerede sayfa dolmadığı için adayların **tamamı** gezilir:
+        // 14 aday / 2'lik pencere = 7 pencere, erken kesme yok.
+        let small = db
+            .search_page_windowed(
+                &case_id,
+                &query,
+                &SearchFilters::default(),
+                5,
+                None,
+                false,
+                2,
+            )
+            .expect("pencere 2");
+        assert!(!small.verification.stopped_early);
+        assert_eq!(small.verification.candidates_examined, 14);
+        assert_eq!(small.verification.windows, 7);
+    }
+
+    /// Sayfa dolduğu an tarama kesilir: 30 eşleşen aday varken 3 sonuç için
+    /// **limit+1** aday doğrulanır, gerisi hiç okunmaz (kuyruğun kaynağı buydu).
+    #[test]
+    fn page_stops_scanning_when_it_fills() {
+        let (db, case_id, version_id) = setup();
+        let texts: Vec<String> = (0..30).map(|i| format!("karar metni {i}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let query = SearchQuery {
+            text: "karar".into(),
+            mode: SearchMode::Exact,
+        };
+        let page = db
+            .search_page_windowed(
+                &case_id,
+                &query,
+                &SearchFilters::default(),
+                3,
+                None,
+                true,
+                200,
+            )
+            .expect("sayfa");
+        assert_eq!(page.hits.len(), 3);
+        assert!(page.has_more);
+        assert_eq!(page.total, Some(30), "toplam tam sayıdır");
+        assert!(page.verification.stopped_early);
+        assert_eq!(
+            page.verification.candidates_examined, 4,
+            "limit+1 aday doğrulanır, 30 adayın tamamı değil"
+        );
+        assert_eq!(page.verification.windows, 1);
+    }
+
+    /// İlk pencerede eşleşme yoksa tarama **devam eder**: eksik sayfa
+    /// döndürmek yerine sonraki adaylar doğrulanır.
+    #[test]
+    fn sparse_matches_after_non_matching_candidates_are_found() {
+        let (db, case_id, version_id) = setup();
+        let mut texts: Vec<String> = (0..8)
+            .map(|i| format!("reddine {i} numaralı")) // ters sıra: aday, eşleşme değil
+            .collect();
+        texts.push("tam eşleşme: numaralı reddine".into());
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let query = SearchQuery {
+            text: "numaralı reddine".into(),
+            mode: SearchMode::Flexible,
+        };
+        let page = db
+            .search_page_windowed(
+                &case_id,
+                &query,
+                &SearchFilters::default(),
+                5,
+                None,
+                true,
+                1,
+            )
+            .expect("pencere 1");
+        assert_eq!(page.hits.len(), 1, "eşleşme pencere sınırında kaybolmamalı");
+        assert_eq!(page.hits[0].raw_text, "tam eşleşme: numaralı reddine");
+        assert_eq!(page.total, Some(1));
+        assert!(
+            page.verification.candidates_examined >= 2,
+            "ilk pencere eşleşmediği için tarama devam etmeli"
+        );
+        assert!(page.verification.windows >= 2);
+        assert!(!page.verification.stopped_early);
+    }
+
+    /// Keyset sayfalama pencere boyutundan bağımsız: her pencere boyutunda
+    /// aynı segment kimlikleri, tekrar yok, atlama yok.
+    #[test]
+    fn keyset_pagination_is_identical_for_every_window_size() {
+        let (db, case_id, version_id) = setup();
+        let texts: Vec<String> = (0..25)
+            .map(|i| format!("kira sözleşmesi {i} maddesi"))
+            .collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let query = SearchQuery {
+            text: "kira".into(),
+            mode: SearchMode::Exact,
+        };
+        let mut sequences: Vec<Vec<String>> = Vec::new();
+        for window in [1i64, 3, 200] {
+            let mut ids: Vec<String> = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = db
+                    .search_page_windowed(
+                        &case_id,
+                        &query,
+                        &SearchFilters::default(),
+                        4,
+                        cursor.as_deref(),
+                        false,
+                        window,
+                    )
+                    .expect("sayfa");
+                ids.extend(page.hits.iter().map(|h| h.segment_id.clone()));
+                cursor = page.next_cursor.clone();
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(ids.len(), 25, "pencere {window}: tüm eşleşmeler bir kez");
+            let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
+            assert_eq!(unique.len(), 25, "pencere {window}: tekrar yok");
+            sequences.push(ids);
+        }
+        assert_eq!(sequences[0], sequences[1], "pencere 1 ↔ 3 aynı sıra");
+        assert_eq!(sequences[0], sequences[2], "pencere 1 ↔ 200 aynı sıra");
     }
 
     #[test]

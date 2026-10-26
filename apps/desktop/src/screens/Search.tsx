@@ -32,6 +32,7 @@ import {
   TOTAL_PROBE_IDLE,
   totalSummary,
   type TotalProbe,
+  verificationSummary,
 } from "../lib/search";
 import {
   precedentCitation,
@@ -314,6 +315,8 @@ export function Search() {
   const modeStale = page !== null && searchedMode !== mode;
   /** Ertelenmiş toplam satırı (F15); sayfa toplamı sunucudan geldiyse boş. */
   const totalLine = totalSummary(page, totalProbe);
+  /** Aday penceresi satırı (F15): kaç adayın gerçekten doğrulandığı. */
+  const verificationLine = verificationSummary(page);
   const hits = page?.hits ?? null;
 
   function updateFilter(patch: Partial<SearchFilters>) {
@@ -538,6 +541,9 @@ export function Search() {
                 <p className="hint" style={{ margin: 0 }}>
                   {totalLine}
                 </p>
+              ) : null}
+              {verificationLine !== null ? (
+                <p className="hint" style={{ margin: 0 }}>{verificationLine}</p>
               ) : null}
               {filterLines.length > 0 ? (
                 <p className="hint" style={{ margin: 0 }}>{filterLines.join(" · ")}</p>

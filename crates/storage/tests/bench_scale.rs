@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use dim_storage::{
     AiPolicy, CaseKind, Database, DatabaseKey, NewCase, NewPage, SearchFilters, SearchMode,
-    SearchQuery, Sensitivity,
+    SearchQuery, Sensitivity, SEARCH_CANDIDATE_WINDOW,
 };
 use sha2::{Digest, Sha256};
 
@@ -449,6 +449,10 @@ fn bench_scale_report() {
     let mut per_query: Vec<serde_json::Value> = Vec::with_capacity(queries.len());
     let mut hits: usize = 0;
     let mut hits_page_only_checked = 0usize;
+    // F15 aday penceresi ölçümü: doğrulanan aday sayısı (erken kesme kanıtı).
+    let mut verified_candidates: usize = 0;
+    let mut stopped_early_samples: usize = 0;
+    let mut max_candidates: i64 = 0;
     let search_start = Instant::now();
     for (index, query) in queries.iter().enumerate() {
         let mut f = filters.clone();
@@ -495,6 +499,12 @@ fn bench_scale_report() {
             assert_eq!(without_total.total, None, "toplamsız aramada toplam yok");
             hits_page_only_checked += 1;
             page_only_value = serde_json::json!(rounded(elapsed_page_only as f64 / 1000.0));
+            // F15 aday penceresi: sayfanın gerçekten kaç aday doğruladığı.
+            verified_candidates += without_total.verification.candidates_examined as usize;
+            if without_total.verification.stopped_early {
+                stopped_early_samples += 1;
+            }
+            max_candidates = max_candidates.max(without_total.verification.candidates_examined);
 
             // Ertelenmiş sayım (arayüzün yeni yolu): **aynı** sayıyı vermeli ve
             // maliyeti sayfadan ayrı ölçülmeli.
@@ -727,6 +737,19 @@ fn bench_scale_report() {
             "identicalFirstPageChecked": hits_page_only_checked,
             "overheadP50Ms": rounded((p50 - page_only_p50).max(0.0)),
             "overheadP95Ms": rounded((p95 - page_only_p95).max(0.0)),
+            // Aday penceresi (F15): sayfa kaç adayı **gerçekten** doğruladı.
+            // `stoppedEarlySamples` = sayfa dolduğu için taramanın kesildiği
+            // örnek sayısı; adayların tamamı doğrulanmadı.
+            "verifiedCandidates": verified_candidates,
+            "verifiedCandidatesAvg": if page_only_us.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(rounded(verified_candidates as f64 / page_only_us.len() as f64))
+            },
+            "verifiedCandidatesMax": max_candidates,
+            "stoppedEarlySamples": stopped_early_samples,
+            "window": SEARCH_CANDIDATE_WINDOW,
+            "note": "Sayfa adayları bm25 sırasında pencere pencere doğrular ve dolduğu an keser; adayların tamamı doğrulanmaz. Sıra/sonuç değişmez (test: candidate_window_does_not_change_results).",
         },
         // Ertelenmiş sayım: arayüzün gerçek yolu. Sayfa toplamı beklemiyor;
         // sayı **aynı** olmak zorunda (koşucu her örnekte karşılaştırır).

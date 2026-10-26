@@ -184,6 +184,23 @@ export function totalSummary(page: SearchPage | null, probe: TotalProbe): string
 }
 
 /**
+ * Aday penceresi özeti (F15). "Kaç aday doğrulandı" **gerçek ölçümdür**:
+ * sayfa dolduğunda taramanın kesildiğini açıkça söyler, kesilmediyse adayların
+ * tükendiğini. Ölçüm yoksa satır gösterilmez (sayı uydurulmaz).
+ */
+export function verificationSummary(page: SearchPage | null): string | null {
+  if (!page) return null;
+  const verification = page.verification;
+  if (!verification || verification.candidatesExamined <= 0) return null;
+  const base = `${verification.candidatesExamined} aday doğrulandı · ${Math.round(
+    verification.scanMs,
+  )} ms`;
+  return verification.stoppedEarly
+    ? `${base} · sayfa doldu, tarama kesildi`
+    : `${base} · adaylar tükendi`;
+}
+
+/**
  * "Daha fazla" sonuçlarını öncekiyle birleştirir. Aynı segment iki kez
  * görünmez; sunucu imleci doğru olsa bile arayüz kendi tarafında tekilleştirir.
  */
