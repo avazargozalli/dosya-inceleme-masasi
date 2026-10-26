@@ -66,6 +66,15 @@ export type JobRow = {
   attemptCount: number;
   maxAttempts: number;
   progress: number;
+  /**
+   * Canlı aşama adı (`start`, `open`, `pages`, `store`) — 0022. İş yürümüyorsa
+   * `null`. Aşama adı protokol adıdır; serbest metin taşımaz.
+   */
+  progressStage: string | null;
+  /** Aşamada sayılan birim (biten sayfa); toplam bilinmiyorsa `null`. */
+  progressDone: number | null;
+  /** Aşamanın toplam birimi (belge sayfası); bilinmiyorsa `null`. */
+  progressTotal: number | null;
   nextRunAt: string | null;
   leaseOwner: string | null;
   leaseUntil: string | null;

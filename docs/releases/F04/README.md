@@ -14,13 +14,15 @@
 
 ## Doğrulama
 
-`cargo test -p dim-storage --lib` — **332** test (iş kuyruğu 22, iptal yolu 1 yeni).
-`cargo test -p dim-ingest --lib` — **44** test (worker 22; ilerleme ayrıştırma/sınır 5 yeni).
+`cargo test -p dim-storage --lib` — **338** test (iş kuyruğu 28, canlı sayaç 6 yeni).
+`cargo test -p dim-ingest --lib` — **44** test (worker 22; ilerleme ayrıştırma/sınır 5).
 `cargo test -p dim-ingest --test worker_progress` — **2** test (gerçek Python worker,
 4 sayfalık kurgu PDF: `open 0/4` + `pages 1..4/4`).
-`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` — **14** test.
+`cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` — **15** test
+(+1: `JobProgressSink` gerçek bellek içi kasayla kuyruk satırına yazıyor).
 Python `pytest workers/document/tests` — **140 passed, 1 skipped** (+7 ilerleme testi).
-Web `tsc --noEmit` + `vitest run` — **359** test (+11 `parseProgress`), `vite build` yeşil.
+Web `tsc --noEmit` + `vitest run` — **362** test (+11 `parseProgress`, +3 kuyruk
+sayaç satırı), `vite build` yeşil.
 clippy: `-p dim-ingest` ve tauri `--all-targets -D warnings` temiz; rustfmt iki manifest temiz.
 
 ## Canlı aşama/sayım (2026-10-27, F04-T07 kapanışı)
@@ -85,11 +87,64 @@ sebeple:
 - `store` aşaması 0 → N tek çağrıda yazıldığı için **ara değer yok**; okuma aşaması
   kadar akıcı değil.
 - İlerleme yalnız **ayrıştırma** yolunda; kuyruktaki diğer iş türleri yürütücüsüz.
-  `jobs.progress` sütunu bu turda **güncellenmiyor** (olay arayüze gider, kuyruk
-  kartındaki sayı değişmez).
+  Aynı kareler artık kuyruk satırına da yazılır (aşağıdaki 0022 bölümü) — kuyruk
+  kartındaki sayaç ayrıştırma sırasında **canlı** güncellenir.
 - OCR aşaması ayrı ad olarak yayımlanmaz: OCR'lı görüntüde de `pages` sayacı kullanılır.
 - İlerleme çerçevesi kaybı ayrıştırmayı etkilemez ama sayaç donabilir; sonuç yine
   döner (olay bilgilendiricidir).
+
+## Kuyruk satırında canlı sayaç (2026-10-27, migration 0022)
+
+**Neden:** önceki turun açık kaydı "`jobs.progress` sütunu güncellenmiyor — kuyruk
+kartındaki sayı değişmez"di. Ayrıştırma sırasında sayaç yalnız arayüz olayında
+(`parse-progress`) yaşıyordu; kasa kapanıp açıldığında ya da başka bir ekran
+kuyruğa baktığında "hangi aşamada, kaç sayfa" bilgisi **kayıptı**.
+
+**Şema (migration 0022):** `jobs.progress_stage TEXT`, `jobs.progress_done INTEGER`,
+`jobs.progress_total INTEGER`. Yol **`ALTER TABLE ADD COLUMN`** — tablo yeniden
+yazılmaz, 0021'de ölçülen FK/CASCADE tuzağı tekrarlanmaz. Sütunlar arası kural kodda:
+`done <= total`, `total > 0`, toplam yoksa `done = 0`.
+
+**Çekirdek (`crates/storage/src/queue.rs`):**
+
+- `update_job_progress(job_id, owner, stage, done, total, now)` — yalnız **kira
+  sahibi** yazar (`E_JOB_LEASE`); yalnız `running|validating` iş sayar; iş bu arada
+  iptal/engel/bitiş olduysa `Ok(None)` (geç gelen sayaç terminal satırı bozmaz).
+  Oran (`progress`) sayaçtan **türetilir** — ayrı hesaplanmaz.
+- `ProgressCounts::new` — tutarsız sayaç **reddedilir** (`E_JOB_PROGRESS`): `5/3`,
+  `total=0`, toplam yokken sayı. Aşama adı protokol adıdır (küçük harf/rakam/alt
+  çizgi, ≤24); serbest metin (dosya adı, yol) sütuna sızamaz.
+- `claim_jobs` / `claim_job_by_key` / `retry_failed_job` / kurtarma yeniden sıraya
+  alma yolları sayacı **sıfırlar**: yeni denemede "12/40" kalıntısı görünmez.
+- `ProgressGate` (saf kural) — arayüz olayı her karede gider, **veritabanı yazımı
+  seyrekleştirilir**: ilk kare, aşama değişimi, sayacın 0'a dönüşü ve toplamı bulma
+  her zaman yazılır; aradakiler yalnız 300 ms dolunca.
+
+**Tauri (`document_parse`):** yeni `JobProgressSink` olayı ve yazımı tek yerden
+yürütür: olay **önce** yayımlanır (arayüz DB'yi beklemez), yazım düşerse ayrıştırma
+**düşmez** ama sessizce yutulmaz — yazılan/atlanan/başarısız sayıları
+`document_parse`/`progress` denetim kaydına geçer (yalnız sayı, metin/ad/yol yok).
+
+**Arayüz:** Ayarlar → İş kuyruğu kartında yeni **İlerleme** sütunu
+("Sayfalar okunuyor: 12 / 40 · %30" + `role="progressbar"`). Biçim ayrıştırma
+satırıyla **aynı** kaynaktan gelir (`lib/parseProgress.ts`); iki yerde farklı dil
+olmaz. Kart, yürüyen iş varken 1,2 sn'de bir **sessiz** tazelenir (düğmeler
+kilitlenmez) ve iş bitince kendiliğinden durur. Bitmiş işte sayaç gösterilmez —
+önceki denemenin kalıntısı yanıltıcı olurdu.
+
+**Test:** storage **338** (+6: yazım/oran, terminal kapısı, sayaç doğrulama, kira
+kapısı, yeniden sahiplenme sıfırlaması, kapı kuralı), tauri **15** (+1: gerçek
+bellek içi kasa + gerçek kuyruk satırı ile sink), Web **362** (+3 `jobs`).
+
+**Dürüst sınırlar:**
+
+- Ölçüm "tek yazım maliyeti" düzeyinde; gerçek pencerede uçtan uca süre ölçülmedi.
+- Çok kısa belgede (kareler 300 ms'den hızlı) sayaç 0 → %100 atlar: kapı sayaç
+  yazımını zamana bağlar, "her sayfa" garantisi vermez.
+- `store` aşaması hâlâ tek çağrıda yazıldığı için ara değer yok (0 → N).
+- Sayaç yalnız `parse_document` yolunda yazılır; kuyruktaki diğer iş türlerinin
+  yürütücüsü yok.
+- Kartın görsel QA'sı hâlâ yok (Tauri penceresi açılmadı).
 
 ## İş kuyruğu iptali (2026-10-26, F04-T07)
 

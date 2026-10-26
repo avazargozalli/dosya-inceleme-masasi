@@ -6,15 +6,21 @@ import {
   jobActionLabel,
   jobActions,
   jobMetaLine,
+  jobProgressLine,
   jobProgressPercent,
+  jobProgressWidth,
   jobStateBadgeClass,
   jobStateLabel,
   jobTypeLabel,
   queueAttention,
+  queueHasLiveJobs,
   queueSummaryLine,
   recoveryLine,
   type JobAction,
 } from "../lib/jobs";
+
+/** Canlı sayaç için kartın kendini tazeleme aralığı (iş yürürken). */
+const LIVE_REFRESH_MS = 1200;
 
 /**
  * İş kuyruğu kartı: yalnız sayı ve durum gösterir; dosya adı, belge metni ve
@@ -44,9 +50,34 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
     }
   }, [unlocked]);
 
+  /**
+   * Sessiz tazeleme: canlı sayaç için kullanılır. Düğmeleri kilitlemez
+   * (`busy` false kalır), böylece 1,2 sn'de bir tazeleme kullanıcıyı engellemez.
+   */
+  const loadQuiet = useCallback(async () => {
+    if (!unlocked) return;
+    try {
+      setView(await api.jobQueueStatus());
+      setError(null);
+    } catch (e) {
+      setError(toApiError(e));
+    }
+  }, [unlocked]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // İş yürürken kart kendini tazeler: sayaç `jobs.progress_*` sütunlarından
+  // gelir (0022) ve ayrıştırma bitince kendiliğinden durur.
+  const live = view ? queueHasLiveJobs(view.jobs) : false;
+  useEffect(() => {
+    if (!unlocked || !live) return;
+    const timer = window.setInterval(() => {
+      void loadQuiet();
+    }, LIVE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [live, loadQuiet, unlocked]);
 
   const recover = useCallback(async () => {
     setBusy(true);
@@ -125,6 +156,7 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
                 <tr>
                   <th>Tür</th>
                   <th>Durum</th>
+                  <th>İlerleme</th>
                   <th>Deneme</th>
                   <th>Eylem</th>
                 </tr>
@@ -132,6 +164,8 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
               <tbody>
                 {view.jobs.map((job) => {
                   const actions = jobActions(job);
+                  const progressLine = jobProgressLine(job);
+                  const progressWidth = jobProgressWidth(job);
                   return (
                     <tr key={job.id}>
                       <td>{jobTypeLabel(job.jobType)}</td>
@@ -139,6 +173,39 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
                         <span className={`badge ${jobStateBadgeClass(job.state)}`}>
                           {jobStateLabel(job.state)}
                         </span>
+                      </td>
+                      <td>
+                        {progressLine === null ? (
+                          <span className="muted small">—</span>
+                        ) : (
+                          <div style={{ minWidth: 170 }} aria-live="polite">
+                            <span className="muted small">{progressLine}</span>
+                            {progressWidth !== null ? (
+                              <div
+                                role="progressbar"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={progressWidth}
+                                aria-label={`İş ilerlemesi: ${progressLine}`}
+                                style={{
+                                  height: 4,
+                                  borderRadius: 2,
+                                  background: "var(--line)",
+                                  overflow: "hidden",
+                                  marginTop: 4,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    width: `${progressWidth}%`,
+                                    height: "100%",
+                                    background: "var(--accent)",
+                                  }}
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
                       </td>
                       <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
                         {jobMetaLine(job)}
@@ -184,7 +251,10 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
           <p className="muted small" style={{ marginBottom: 0 }}>
             Sınır: kuyruk yürütücüsü tek süreçlidir (kasa başına tek yazıcı). Parola
             bekleyen belge işi "Engelli" kalır; parolayla yeniden ayrıştırınca sıraya
-            döner. Kuyruk gecikmesi ölçümü release derlemesinde yapılır.
+            döner. İlerleme sütunu ayrıştırma sırasında yazılır (en çok 0,3 sn'de bir
+            güncellenir, kart 1,2 sn'de bir tazelenir) — çok kısa belgede sayaç
+            0'dan %100'e atlayabilir; bitmiş işte sayaç gösterilmez. Kuyruk gecikmesi
+            ölçümü release derlemesinde yapılır.
           </p>
         </>
       ) : (

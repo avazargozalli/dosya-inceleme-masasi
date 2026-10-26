@@ -34,6 +34,11 @@ edildi (yeni push), kırmızı değildi.
 - **Şema (migration 0020):** `jobs.priority`, `jobs.completed_at` eklendi;
   eski satırlarda `next_run_at` dolduruldu; sahiplenme indeksi
   `(state, priority DESC, created_at, next_run_at)`.
+- **Canlı sayaç (migration 0022, 2026-10-27):** `jobs.progress_stage`,
+  `progress_done`, `progress_total` — `update_job_progress` yalnız **kira sahibi**
+  ve `running|validating` iş için yazar; tutarsız sayaç `E_JOB_PROGRESS`,
+  terminal işe geç yazım `Ok(None)` (uygulanmaz). Sahiplenme/yeniden deneme
+  sayacı sıfırlar. Ayrıntı ve ölçüm: `docs/releases/F04/README.md`.
 - **Çekirdek (`crates/storage/src/queue.rs`):**
   - `enqueue_job_with_priority` (idempotent; `enqueue_job` bunu çağırır),
   - `claim_jobs` — tek işlemde: durum/bağımlılık kapısı, `running` + kira +

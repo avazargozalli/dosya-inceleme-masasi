@@ -10,6 +10,7 @@
  * kasalardan gelen `succeeded`/`cancelled`/`leased` adları da okunur.
  */
 import type { JobQueueSummary, JobRow } from "./api";
+import { parseProgressLine, parseProgressWidth, type ProgressCounters } from "./parseProgress";
 
 const STATE_LABELS: Record<string, string> = {
   queued: "Bekliyor",
@@ -211,6 +212,44 @@ export function jobProgressPercent(job: JobRow): number {
   const value = Math.round(job.progress * 100);
   if (!Number.isFinite(value)) return 0;
   return Math.min(100, Math.max(0, value));
+}
+
+/**
+ * Kuyruk satırındaki **canlı** sayaç (0022): `progress_stage/done/total`
+ * sütunları ayrıştırma sırasında yazılır.
+ *
+ * Ayrıştırma satırıyla **aynı** dili kullanır (`lib/parseProgress.ts`); iki
+ * yerde farklı biçim olmaz. Terminal işte sayaç `null` döner: bitmiş işte
+ * önceki denemenin "12 / 40" kalıntısı yanıltıcı olur (durumu rozet söyler).
+ */
+export function jobProgressCounters(job: JobRow): ProgressCounters | null {
+  const canonical = canonicalJobState(job.state);
+  if (canonical !== "running" && canonical !== "validating" && canonical !== "canceling") {
+    return null;
+  }
+  if (!job.progressStage) return null;
+  // Sunucu toplamsız sayaç yazmaz; yine de savunmalı davran: toplam yoksa yüzde yok.
+  return {
+    stage: job.progressStage,
+    done: job.progressDone ?? 0,
+    total: job.progressTotal,
+  };
+}
+
+export function jobProgressLine(job: JobRow): string | null {
+  return parseProgressLine(jobProgressCounters(job));
+}
+
+export function jobProgressWidth(job: JobRow): number | null {
+  return parseProgressWidth(jobProgressCounters(job));
+}
+
+/** Kart kendini tazelemeli mi? Yürüyen/doğrulanan/iptal edilen iş varsa evet. */
+export function queueHasLiveJobs(jobs: JobRow[]): boolean {
+  return jobs.some((job) => {
+    const canonical = canonicalJobState(job.state);
+    return canonical === "running" || canonical === "validating" || canonical === "canceling";
+  });
 }
 
 export type RecoveryReport = {

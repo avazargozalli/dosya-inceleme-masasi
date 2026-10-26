@@ -29,6 +29,8 @@
 //!   `parse_document` girdisi kasadaki blob + ayarlardır).
 //! - Ölçüm: `docs/releases/F15/BENCHMARK.md` (kuyruk gecikmesi p50/p95).
 
+use std::time::{Duration, Instant};
+
 use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
@@ -56,7 +58,15 @@ pub struct JobRow {
     pub priority: i64,
     pub attempt_count: i64,
     pub max_attempts: i64,
+    /// Tamamlanan oran (0..1). Canlı sayaçtan **türetilir** (`done/total`);
+    /// toplam bilinmiyorsa 0 kalır — uydurulmuş yüzde yazılmaz.
     pub progress: f64,
+    /// Canlı aşama adı (`start`, `open`, `pages`, `store`); iş yürümüyorsa NULL.
+    pub progress_stage: Option<String>,
+    /// Aşamada sayılan birim (biten sayfa). Toplam bilinmiyorsa NULL.
+    pub progress_done: Option<i64>,
+    /// Aşamanın toplam birimi (belge sayfası). Bilinmiyorsa NULL.
+    pub progress_total: Option<i64>,
     pub next_run_at: Option<String>,
     pub lease_owner: Option<String>,
     pub lease_until: Option<String>,
@@ -119,7 +129,12 @@ pub struct JobCancelResult {
     pub job: JobRow,
 }
 
-const JOB_COLUMNS: &str = "id,type,scope,case_id,state,priority,attempt_count,retry_policy,progress,next_run_at,lease_owner,lease_until,cancel_requested_at,error_code,created_at,updated_at,completed_at,blocked_reason";
+const JOB_COLUMNS: &str = "id,type,scope,case_id,state,priority,attempt_count,retry_policy,progress,next_run_at,lease_owner,lease_until,cancel_requested_at,error_code,created_at,updated_at,completed_at,blocked_reason,progress_stage,progress_done,progress_total";
+
+/// `JOB_COLUMNS`ten sonra gelen ek sütun (`dependency_ids`): sahiplenme ve
+/// bağımlılık taramaları bu indeksten okur. Sütun listesi büyürse **buradan**
+/// türetilir, elle sayı yazılmaz.
+const DEPENDENCY_COLUMN_INDEX: usize = 21;
 
 fn map_job(row: &Row<'_>) -> rusqlite::Result<JobRow> {
     let retry_policy: String = row.get(7)?;
@@ -134,6 +149,9 @@ fn map_job(row: &Row<'_>) -> rusqlite::Result<JobRow> {
         attempt_count: row.get(6)?,
         max_attempts,
         progress: row.get(8)?,
+        progress_stage: row.get(18)?,
+        progress_done: row.get(19)?,
+        progress_total: row.get(20)?,
         next_run_at: row.get(9)?,
         lease_owner: row.get(10)?,
         lease_until: row.get(11)?,
@@ -350,7 +368,7 @@ impl Database {
                 let rows = stmt
                     .query_map(params![state, now_text, scan_limit], |row| {
                         let job = map_job(row)?;
-                        let deps: String = row.get(18)?;
+                        let deps: String = row.get(DEPENDENCY_COLUMN_INDEX)?;
                         Ok((job, deps))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -408,7 +426,8 @@ impl Database {
                 ensure_claimable(&job.state)?;
                 let changed = tx.execute(
                     "UPDATE jobs SET state='running', lease_owner=?2, lease_until=?3,
-                            attempt_count=attempt_count+1, updated_at=?4
+                            attempt_count=attempt_count+1, updated_at=?4,
+                            progress=0, progress_stage=NULL, progress_done=NULL, progress_total=NULL
                      WHERE id=?1 AND state IN ('queued','retry_wait')",
                     params![job.id, owner, until_text, now_text],
                 )?;
@@ -427,6 +446,12 @@ impl Database {
                     lease_owner: Some(owner.to_string()),
                     lease_until: Some(until_text.clone()),
                     updated_at: now_text.clone(),
+                    // Yeni deneme sıfırdan sayar: önceki denemenin sayaç
+                    // kalıntısı "12/40" göstermez.
+                    progress: 0.0,
+                    progress_stage: None,
+                    progress_done: None,
+                    progress_total: None,
                     ..job
                 });
             }
@@ -462,7 +487,8 @@ impl Database {
         ensure_claimable(&job.state)?;
         let changed = tx.execute(
             "UPDATE jobs SET state='running', lease_owner=?2, lease_until=?3,
-                    attempt_count=attempt_count+1, updated_at=?4
+                    attempt_count=attempt_count+1, updated_at=?4,
+                    progress=0, progress_stage=NULL, progress_done=NULL, progress_total=NULL
              WHERE id=?1 AND state IN ('queued','retry_wait')",
             params![job.id, owner, until_text, now_text],
         )?;
@@ -525,6 +551,59 @@ impl Database {
             return Err(StorageError::JobLease("kira süresi dolmuş".to_string()));
         }
         Ok(job)
+    }
+
+    /// **Canlı aşama/sayım (F04-T07 → kuyruk kartı).** Yürüyen işin sayacını
+    /// `jobs` satırına yazar: aşama adı, sayılan ve toplam birim, oran.
+    ///
+    /// Kapılar:
+    /// - yalnız **kira sahibi** yazabilir; kira kaybı `E_JOB_LEASE` ile
+    ///   bildirilir (sessizce yutulmaz),
+    /// - yalnız `running|validating` iş sayar; iş bu arada iptal/engel/bitiş
+    ///   durumuna geçtiyse yazım **uygulanmaz** ve `Ok(None)` döner — geç gelen
+    ///   sayaç terminal satırı "yarıda" göstermez,
+    /// - sayaç tutarsızsa (`done > total`, `total = 0`, toplam yokken sayı)
+    ///   `E_JOB_PROGRESS` döner: uydurulmuş yüzde yazılmaz.
+    ///
+    /// Oran (`progress`) **türetilir**; toplam bilinmiyorsa 0 kalır ve
+    /// `progress_total` NULL olur (arayüz yüzde göstermez).
+    pub fn update_job_progress(
+        &self,
+        job_id: &str,
+        owner: &str,
+        stage: &str,
+        done: u32,
+        total: Option<u32>,
+        now: OffsetDateTime,
+    ) -> Result<Option<JobRow>, StorageError> {
+        let stage = normalize_progress_stage(stage)?;
+        let counts = ProgressCounts::new(done, total)?;
+        // Durum kapısı **önce**: bitmiş/iptal edilmiş işte kira zaten bırakılmış
+        // olur; geç gelen sayaç "kira hatası" değil, uygulanmayan yazımdır.
+        let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
+        if !matches!(job.state.as_str(), "running" | "validating") {
+            return Ok(None);
+        }
+        // Kira kuralı tek yerde (`require_leased`): sahiplik + süre.
+        self.require_leased(job_id, owner, now)?;
+        let changed = self.conn().execute(
+            "UPDATE jobs SET progress=?2, progress_stage=?3, progress_done=?4,
+                    progress_total=?5, updated_at=?6
+             WHERE id=?1 AND state IN ('running','validating') AND lease_owner=?7",
+            params![
+                job_id,
+                counts.ratio(),
+                stage,
+                i64::from(counts.done),
+                counts.total.map(i64::from),
+                iso(now),
+                owner
+            ],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        self.get_job(job_id)
     }
 
     /// İşi başarıyla bitirir. Kira sahibi ve süresi denetlenir; iptal isteği
@@ -744,7 +823,8 @@ impl Database {
         let now_text = iso(now);
         let changed = self.conn().execute(
             "UPDATE jobs SET state='queued', error_code=NULL, blocked_reason=NULL,
-                    attempt_count=0, next_run_at=?2, completed_at=NULL, updated_at=?2
+                    attempt_count=0, next_run_at=?2, completed_at=NULL, updated_at=?2,
+                    progress=0, progress_stage=NULL, progress_done=NULL, progress_total=NULL
              WHERE id=?1 AND state='failed'",
             params![job_id, now_text],
         )?;
@@ -882,7 +962,8 @@ impl Database {
             if policy.should_retry(attempt) {
                 ensure_transition("interrupted", "queued")?;
                 tx.execute(
-                    "UPDATE jobs SET state='queued', error_code=NULL, next_run_at=?2, updated_at=?2
+                    "UPDATE jobs SET state='queued', error_code=NULL, next_run_at=?2, updated_at=?2,
+                            progress=0, progress_stage=NULL, progress_done=NULL, progress_total=NULL
                      WHERE id=?1 AND state='interrupted'",
                     params![job.id, now_text],
                 )?;
@@ -982,12 +1063,120 @@ impl Database {
     }
 }
 
+/// Doğrulanmış sayaç: oran **tek yerde** hesaplanır (`progress` sütunu ile
+/// arayüzün gösterdiği yüzde ayrışamaz).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressCounts {
+    pub done: u32,
+    pub total: Option<u32>,
+}
+
+impl ProgressCounts {
+    /// Tutarsız sayaç **reddedilir** (sessizce kırpılmaz): `5 / 3` gibi bir
+    /// çerçeve arayüzde yanlış bir gösterge çizerdi.
+    pub fn new(done: u32, total: Option<u32>) -> Result<Self, StorageError> {
+        match total {
+            Some(0) => Err(StorageError::JobProgress(
+                "ilerleme toplamı 0 olamaz (bilinmiyorsa toplam verilmez)".to_string(),
+            )),
+            Some(total) if done > total => Err(StorageError::JobProgress(format!(
+                "sayaç toplamı aşıyor: {done}/{total}"
+            ))),
+            None if done > 0 => Err(StorageError::JobProgress(
+                "toplam bilinmiyorken sayaç yazılamaz".to_string(),
+            )),
+            _ => Ok(Self { done, total }),
+        }
+    }
+
+    /// Tamamlanan oran (0..1). Toplam yoksa `0.0` — uydurulmuş yüzde yok.
+    #[must_use]
+    pub fn ratio(self) -> f64 {
+        match self.total {
+            Some(total) if total > 0 => f64::from(self.done) / f64::from(total),
+            _ => 0.0,
+        }
+    }
+}
+
+/// Aşama adı kapısı: protokol adları küçük harf/rakam/alt çizgi.
+///
+/// Serbest metin **kabul edilmez** (sütuna belge adı/yol sızmasın); büyük harf
+/// sessizce küçültülmez — protokol hatası görünür kalsın.
+fn normalize_progress_stage(stage: &str) -> Result<String, StorageError> {
+    let stage = stage.trim();
+    let valid = !stage.is_empty()
+        && stage.len() <= 24
+        && stage
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase())
+        && stage
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+    if !valid {
+        return Err(StorageError::JobProgress(format!(
+            "geçersiz ilerleme aşaması: {stage:?}"
+        )));
+    }
+    Ok(stage.to_string())
+}
+
+/// İlerleme yazımını seyrekleştiren **saf** kapı (veritabanı yok).
+///
+/// Arayüz olayı her karede gider; veritabanı yazımı bir WAL commit'i kadar
+/// pahalıdır (120 sayfalık belgede 121 commit, worker'ın kendi süresini
+/// katlardı). Kapı şu kenarları **her zaman** yazar: ilk kare, aşama değişimi,
+/// sayacın 0'a dönüşü ve sayacın toplamı bulması; aradaki kareler yalnız
+/// `min_interval` dolduğunda. Böylece sayaç kaybolmaz, commit sayısı sınırlı
+/// kalır.
+#[derive(Debug, Clone)]
+pub struct ProgressGate {
+    min_interval: Duration,
+    last: Option<(Instant, String, u32)>,
+}
+
+impl ProgressGate {
+    #[must_use]
+    pub fn new(min_interval: Duration) -> Self {
+        Self {
+            min_interval,
+            last: None,
+        }
+    }
+
+    /// `at` çağıranın saatidir (testte deterministik olsun diye dışarıdan).
+    pub fn should_write(
+        &mut self,
+        stage: &str,
+        done: u32,
+        total: Option<u32>,
+        at: Instant,
+    ) -> bool {
+        let new_stage = self.last.as_ref().is_none_or(|(_, last, _)| last != stage);
+        let restarted = done == 0 && self.last.as_ref().is_some_and(|(_, _, last)| *last > 0);
+        // Toplamı **yeni** bulan kare yazılır; aynı karenin tekrarı yazılmaz.
+        let finished = total.is_some_and(|total| total > 0 && done >= total)
+            && self
+                .last
+                .as_ref()
+                .is_none_or(|(_, last_stage, last_done)| last_stage != stage || *last_done < done);
+        let due = self.last.as_ref().is_none_or(|(instant, _, _)| {
+            at.saturating_duration_since(*instant) >= self.min_interval
+        });
+        let write = new_stage || restarted || finished || due;
+        if write {
+            self.last = Some((at, stage.to_string(), done));
+        }
+        write
+    }
+}
+
 enum DependencyState {
     Ready,
     Waiting,
     Aborted(&'static str),
 }
-
 /// Bitirme türü: başarı, kısmi başarı (açık eksik listesi), hata.
 #[derive(Debug, Clone, Copy)]
 enum FinishKind<'a> {
@@ -1009,7 +1198,7 @@ fn release_dependency_blocked(
     let rows: Vec<(JobRow, String)> = stmt
         .query_map([], |row| {
             let job = map_job(row)?;
-            let deps: String = row.get(18)?;
+            let deps: String = row.get(DEPENDENCY_COLUMN_INDEX)?;
             Ok((job, deps))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1736,5 +1925,197 @@ mod tests {
         assert!(job_state::allowed("running", "validating"));
         assert!(job_state::allowed("canceling", "canceled"));
         assert!(job_state::allowed("failed", "queued"));
+    }
+
+    /// **F04-T07 → kuyruk kartı:** canlı sayaç iş satırına yazılır; oran
+    /// sayaçtan **türetilir** (ayrı hesaplanmaz) ve `list_jobs` ile geri okunur.
+    #[test]
+    fn progress_updates_are_written_with_stage_and_counts() {
+        let (db, case_id) = db();
+        let id = enqueue(&db, &case_id, "parse:p1", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+
+        // `open`: toplam biliniyor, sayaç sıfır.
+        let open = db
+            .update_job_progress(&id, "w", "open", 0, Some(40), at(1))
+            .expect("yazım")
+            .expect("uygulandı");
+        assert_eq!(open.progress_stage.as_deref(), Some("open"));
+        assert_eq!(open.progress_total, Some(40));
+        assert_eq!(open.progress, 0.0);
+
+        // `pages`: 12/40 → oran 0,3.
+        let pages = db
+            .update_job_progress(&id, "w", "pages", 12, Some(40), at(2))
+            .expect("yazım")
+            .expect("uygulandı");
+        assert_eq!(pages.progress_done, Some(12));
+        assert_eq!(pages.progress_total, Some(40));
+        assert!(
+            (pages.progress - 0.3).abs() < f64::EPSILON,
+            "oran sayaçtan türetilmeli: {}",
+            pages.progress
+        );
+        // Arayüz kuyruk kartı `list_jobs` üzerinden okur: aynı değerler.
+        let listed = db.list_jobs(5).expect("liste");
+        let row = listed.iter().find(|job| job.id == id).expect("satır");
+        assert_eq!(row.progress_stage.as_deref(), Some("pages"));
+        assert_eq!(row.progress_done, Some(12));
+        assert_eq!(row.progress_total, Some(40));
+
+        // Toplam bilinmiyorken sayaç yok: satır NULL kalır, yüzde uydurulmaz.
+        let restart = db
+            .update_job_progress(&id, "w", "finalize", 0, None, at(3))
+            .expect("yazım")
+            .expect("uygulandı");
+        assert_eq!(restart.progress_total, None);
+        assert_eq!(restart.progress_done, Some(0));
+        assert_eq!(restart.progress, 0.0);
+    }
+
+    /// İş yürümüyorsa geç gelen sayaç **uygulanmaz** (`Ok(None)`); bu bir hata
+    /// değildir ama terminal satır "yarıda" da görünmez.
+    #[test]
+    fn progress_is_ignored_once_the_job_stops_running() {
+        let (db, case_id) = db();
+        let id = enqueue(&db, &case_id, "parse:p2", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        db.update_job_progress(&id, "w", "pages", 2, Some(10), at(1))
+            .expect("yazım");
+        let done = db.complete_job(&id, "w", at(2)).expect("bitir");
+        assert_eq!(done.progress, 1.0);
+
+        let after = db
+            .update_job_progress(&id, "w", "pages", 4, Some(10), at(3))
+            .expect("hata değil");
+        assert!(after.is_none(), "bitmiş işin sayacı yazılmamalı");
+        let row = db.get_job(&id).expect("oku").expect("var");
+        assert_eq!(row.state, "completed");
+        assert_eq!(
+            row.progress, 1.0,
+            "terminal satır yarıda kalmış gibi görünmemeli"
+        );
+
+        // İptal işaretli (canceling) iş de sayaç kabul etmez.
+        let other = enqueue(&db, &case_id, "parse:p3", 0);
+        db.claim_jobs("w", 1, 60, &[], at(4)).expect("sahiplen");
+        db.cancel_job(&other, at(5)).expect("iptal isteği");
+        assert!(db
+            .update_job_progress(&other, "w", "pages", 1, Some(4), at(6))
+            .expect("hata değil")
+            .is_none());
+    }
+
+    /// Tutarsız sayaç sessizce kırpılmaz: `5/3`, `toplam=0` ve toplamsız sayı
+    /// reddedilir; aşama adı serbest metin olamaz.
+    #[test]
+    fn progress_counters_are_validated_before_the_write() {
+        let (db, case_id) = db();
+        let id = enqueue(&db, &case_id, "parse:p4", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+
+        let over = db
+            .update_job_progress(&id, "w", "pages", 5, Some(3), at(1))
+            .expect_err("sayaç toplamı aşamaz");
+        assert_eq!(over.code(), "E_JOB_PROGRESS");
+        let zero = db
+            .update_job_progress(&id, "w", "pages", 0, Some(0), at(1))
+            .expect_err("toplam 0 olamaz");
+        assert_eq!(zero.code(), "E_JOB_PROGRESS");
+        let no_total = db
+            .update_job_progress(&id, "w", "pages", 3, None, at(1))
+            .expect_err("toplamsız sayaç yazılamaz");
+        assert_eq!(no_total.code(), "E_JOB_PROGRESS");
+
+        // Aşama adı: boş, büyük harf, boşluk, uzun metin — hepsi reddedilir.
+        for stage in ["", " Pages", "SAYFA", "page 1", "belge-adi.pdf"] {
+            let err = db
+                .update_job_progress(&id, "w", stage, 0, None, at(1))
+                .expect_err("aşama reddedilmeli");
+            assert_eq!(err.code(), "E_JOB_PROGRESS", "aşama: {stage:?}");
+        }
+        // Reddedilen çağrı satıra hiçbir şey yazmadı.
+        let row = db.get_job(&id).expect("oku").expect("var");
+        assert_eq!(row.progress_stage, None);
+        assert_eq!(row.progress_done, None);
+    }
+
+    /// Sayacı yalnız kira sahibi yazar; başka süreç sessizce ezemez.
+    #[test]
+    fn progress_write_requires_the_lease_owner() {
+        let (db, case_id) = db();
+        let id = enqueue(&db, &case_id, "parse:p5", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        let err = db
+            .update_job_progress(&id, "baska-surec", "pages", 1, Some(4), at(1))
+            .expect_err("kira sahibi değil");
+        assert_eq!(err.code(), "E_JOB_LEASE");
+    }
+
+    /// Yeni deneme sıfırdan sayar: önceki denemenin `12/40` kalıntısı kartta
+    /// görünmez.
+    #[test]
+    fn claim_resets_progress_from_a_previous_attempt() {
+        let (db, case_id) = db();
+        let id = enqueue(&db, &case_id, "parse:p6", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        db.update_job_progress(&id, "w", "pages", 12, Some(40), at(1))
+            .expect("yazım");
+        // Tekrar sınıfı bir hata: `retry_wait` (2 sn geri çekilme).
+        db.fail_job(&id, "w", "E_WORKER_TIMEOUT", true, at(2))
+            .expect("hata");
+        let waiting = db.get_job(&id).expect("oku").expect("var");
+        assert_eq!(waiting.state, "retry_wait");
+        assert_eq!(waiting.progress_done, Some(12), "geçmiş deneme kaydı kalır");
+
+        let claimed = db
+            .claim_jobs("w", 1, 60, &[], at(10))
+            .expect("yeniden sahiplen");
+        assert_eq!(claimed.len(), 1);
+        let fresh = db.get_job(&id).expect("oku").expect("var");
+        assert_eq!(fresh.progress, 0.0);
+        assert_eq!(fresh.progress_stage, None);
+        assert_eq!(fresh.progress_done, None);
+        assert_eq!(fresh.progress_total, None);
+        assert_eq!(fresh.attempt_count, 2);
+    }
+
+    /// Kapı kuralı (saf): ilk kare, aşama değişimi, 0'a dönüş ve toplamı bulma
+    /// **her zaman** yazılır; ara kareler yalnız aralık dolunca.
+    #[test]
+    fn progress_gate_writes_stage_edges_and_throttles_the_middle() {
+        let start = Instant::now();
+        let mut gate = ProgressGate::new(Duration::from_millis(300));
+        // İlk kare her zaman yazılır.
+        assert!(gate.should_write("open", 0, Some(40), start));
+        // Aynı aşama, aralık dolmadı → yazılmaz (commit sayısı sınırlı).
+        assert!(!gate.should_write("open", 0, Some(40), start + Duration::from_millis(50)));
+        // Aşama değişimi aralığı beklemez.
+        assert!(gate.should_write("pages", 1, Some(40), start + Duration::from_millis(60)));
+        // Aynı aşamada ara kareler aralık dolmadan yazılmaz.
+        assert!(!gate.should_write("pages", 2, Some(40), start + Duration::from_millis(100)));
+        assert!(!gate.should_write("pages", 3, Some(40), start + Duration::from_millis(200)));
+        // Aralık doldu → yazılır.
+        assert!(gate.should_write("pages", 4, Some(40), start + Duration::from_millis(360)));
+        // Toplamı yeni bulan kare aralığı beklemez.
+        assert!(gate.should_write("pages", 40, Some(40), start + Duration::from_millis(400)));
+        // Aynı karenin tekrarı yazılmaz.
+        assert!(!gate.should_write("pages", 40, Some(40), start + Duration::from_millis(410)));
+        // `store` aşaması 0'dan başlar: aşama değişimi + 0'a dönüş.
+        assert!(gate.should_write("store", 0, None, start + Duration::from_millis(420)));
+        // 120 sayfalık belge gibi uzun bir aşamada yazım sayısı zamana bağlı:
+        // her 300 ms'de bir; sayfa başına bir commit yok.
+        let mut writes = 0;
+        for page in 1..=120u32 {
+            let at = start + Duration::from_millis(420 + u64::from(page) * 40);
+            if gate.should_write("store", page, Some(120), at) {
+                writes += 1;
+            }
+        }
+        assert!(
+            writes <= 17,
+            "4,8 sn'lik aşamada yazım sayısı sınırlı olmalı, {writes} yazıldı"
+        );
+        assert!(writes >= 2, "yine de ilerleme yazılmalı: {writes}");
     }
 }

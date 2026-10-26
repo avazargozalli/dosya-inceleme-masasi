@@ -22,8 +22,15 @@ export function parseStageLabel(stage: string): string {
   return STAGE_LABEL[key] ?? key;
 }
 
+/**
+ * Gösterim için gereken **en az** alan kümesi: aynı dil hem worker olayında
+ * (`ParseProgressEvent`) hem kuyruk satırında (`jobs.progress_stage/done/total`,
+ * 0022) kullanılır — iki yerde farklı biçim olmaz.
+ */
+export type ProgressCounters = Pick<ParseProgressEvent, "stage" | "done" | "total">;
+
 /** Yüzde; toplam yoksa veya sıfırsa `null` (oran uydurulmaz). */
-export function parseProgressPercent(event: ParseProgressEvent): number | null {
+export function parseProgressPercent(event: ProgressCounters): number | null {
   if (event.total === null || !Number.isFinite(event.total) || event.total <= 0) return null;
   if (!Number.isFinite(event.done)) return null;
   const ratio = event.done / event.total;
@@ -35,7 +42,7 @@ export function parseProgressPercent(event: ParseProgressEvent): number | null {
  * Tek satır gösterim. Toplam varsa "N / M · %X", yoksa yalnız sayılan
  * ("0" bilgi taşımıyorsa aşama etiketi tek başına döner).
  */
-export function parseProgressLine(event: ParseProgressEvent | null): string | null {
+export function parseProgressLine(event: ProgressCounters | null): string | null {
   if (!event) return null;
   const label = parseStageLabel(event.stage);
   const percent = parseProgressPercent(event);
@@ -47,7 +54,7 @@ export function parseProgressLine(event: ParseProgressEvent | null): string | nu
 }
 
 /** İlerleme çubuğu için 0–100; oran yoksa `null`. */
-export function parseProgressWidth(event: ParseProgressEvent | null): number | null {
+export function parseProgressWidth(event: ProgressCounters | null): number | null {
   if (!event) return null;
   return parseProgressPercent(event);
 }

@@ -9,11 +9,15 @@ import {
   jobActionLabel,
   jobActions,
   jobMetaLine,
+  jobProgressCounters,
+  jobProgressLine,
   jobProgressPercent,
+  jobProgressWidth,
   jobStateBadgeClass,
   jobStateLabel,
   jobTypeLabel,
   queueAttention,
+  queueHasLiveJobs,
   queueSummaryLine,
   recoveryLine,
 } from "./jobs";
@@ -40,6 +44,9 @@ function job(partial: Partial<JobRow> = {}): JobRow {
     attemptCount: 0,
     maxAttempts: 3,
     progress: 0,
+    progressStage: null,
+    progressDone: null,
+    progressTotal: null,
     nextRunAt: null,
     leaseOwner: null,
     leaseUntil: null,
@@ -188,6 +195,72 @@ describe("iş kuyruğu yardımcıları", () => {
     expect(jobProgressPercent(job({ progress: 1.7 }))).toBe(100);
     expect(jobProgressPercent(job({ progress: -0.2 }))).toBe(0);
     expect(jobProgressPercent(job({ progress: Number.NaN }))).toBe(0);
+  });
+
+  it("canlı sayaç satırı aşama + sayı + yüzdeyi ayrıştırma satırıyla aynı dilde yazar", () => {
+    const running = job({
+      state: "running",
+      progressStage: "pages",
+      progressDone: 12,
+      progressTotal: 40,
+      progress: 0.3,
+    });
+    expect(jobProgressLine(running)).toBe("Sayfalar okunuyor: 12 / 40 · %30");
+    expect(jobProgressWidth(running)).toBe(30);
+    expect(jobProgressCounters(running)).toEqual({
+      stage: "pages",
+      done: 12,
+      total: 40,
+    });
+
+    // Toplam bilinmiyorsa yüzde yok; sayaç varsa yalnız sayı yazılır.
+    const noTotal = job({
+      state: "running",
+      progressStage: "pages",
+      progressDone: 5,
+      progressTotal: null,
+    });
+    expect(jobProgressLine(noTotal)).toBe("Sayfalar okunuyor: 5");
+    expect(jobProgressWidth(noTotal)).toBeNull();
+
+    // Aşama başlangıcı (0) bilgi taşımıyorsa yalnız etiket.
+    expect(
+      jobProgressLine(
+        job({ state: "running", progressStage: "start", progressDone: 0, progressTotal: null }),
+      ),
+    ).toBe("Hazırlanıyor");
+
+    // Sayaç toplamı aşarsa kırpılır — "45 / 40" yazılmaz.
+    expect(
+      jobProgressLine(
+        job({ state: "running", progressStage: "pages", progressDone: 45, progressTotal: 40 }),
+      ),
+    ).toBe("Sayfalar okunuyor: 40 / 40 · %100");
+  });
+
+  it("bitmiş işte canlı sayaç gösterilmez (kalıntı yanıltmasın)", () => {
+    for (const state of ["completed", "partial", "failed", "canceled", "queued", "blocked"]) {
+      const stale = job({
+        state,
+        progressStage: "pages",
+        progressDone: 12,
+        progressTotal: 40,
+      });
+      expect(jobProgressLine(stale), state).toBeNull();
+      expect(jobProgressWidth(stale), state).toBeNull();
+      expect(jobProgressCounters(stale), state).toBeNull();
+    }
+    // Aşama hiç yazılmamışsa satır yok (uydurulmuş "0 / 0" yok).
+    expect(jobProgressLine(job({ state: "running" }))).toBeNull();
+  });
+
+  it("kart yalnız yürüyen iş varken kendini tazeler", () => {
+    expect(queueHasLiveJobs([])).toBe(false);
+    expect(queueHasLiveJobs([job({ state: "queued" }), job({ state: "completed" })])).toBe(false);
+    expect(queueHasLiveJobs([job({ state: "running" })])).toBe(true);
+    expect(queueHasLiveJobs([job({ state: "validating" })])).toBe(true);
+    expect(queueHasLiveJobs([job({ state: "canceling" })])).toBe(true);
+    expect(queueHasLiveJobs([job({ state: "leased" })])).toBe(true);
   });
 
   it("sayım yardımcısı eksik durumda sıfır döner ve eski adları birleştirir", () => {
