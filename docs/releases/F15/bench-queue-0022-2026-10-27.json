@@ -1,0 +1,71 @@
+{
+  "bench": "queue_latency",
+  "generatedAt": "2026-10-26T23:23:00.26923Z",
+  "jobs": 400,
+  "ms": {
+    "claim": {
+      "max": 12.087,
+      "mean": 2.09,
+      "n": 400,
+      "p50": 2.107,
+      "p95": 2.941
+    },
+    "completeLoop": {
+      "max": 24.139,
+      "mean": 11.177,
+      "n": 400,
+      "p50": 11.604,
+      "p95": 14.894
+    },
+    "enqueue": {
+      "max": 8.521,
+      "mean": 0.285,
+      "n": 400,
+      "p50": 0.215,
+      "p95": 0.415
+    },
+    "queueWaitBatch4": {
+      "max": 47.68,
+      "mean": 35.995,
+      "n": 40,
+      "p50": 38.729,
+      "p95": 47.473
+    },
+    "queueWaitSerial": {
+      "max": 4468.356,
+      "mean": 2242.906,
+      "n": 400,
+      "p50": 2233.208,
+      "p95": 4232.585
+    }
+  },
+  "note": "Çekirdek ölçüm: Python worker/IPC/arayüz yok; sentetik iş sabit süreli.",
+  "profile": "release",
+  "progress": {
+    "frames": 120,
+    "gateMs": 300,
+    "note": "write = gerçek yazım gecikmesi; writesFastDoc/writesSlowDoc kapı kuralının sayımı (kare sayısı değil).",
+    "write": {
+      "max": 0.476,
+      "mean": 0.26,
+      "n": 120,
+      "p50": 0.255,
+      "p95": 0.271
+    },
+    "writesFastDoc": 2,
+    "writesSlowDoc": 3
+  },
+  "summary": {
+    "blockedByDependency": 0,
+    "byState": [
+      {
+        "count": 440,
+        "state": "completed"
+      }
+    ],
+    "dueNow": 0,
+    "oldestQueuedAt": null,
+    "total": 440
+  },
+  "syntheticWorkMs": 2
+}

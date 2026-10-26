@@ -569,3 +569,33 @@ yeniden koşulmadı.
   gerçek PDF ayrıştırmasını temsil etmez. Gerçek uçtan uca süre için
   B-01 yükleme ölçümü ile bu tablo birlikte okunmalıdır.
 - 100.000 belge profilinde kuyruk yeniden ölçülmedi (disk).
+
+### Canlı sayaç yazımı (2026-10-27, migration 0022)
+
+Ayrıştırma sırasında kuyruk satırındaki ilerleme (`jobs.progress_stage/done/total`)
+her karede değil, `ProgressGate` kuralıyla yazılır: **ilk kare, aşama değişimi,
+sayacın 0'a dönüşü ve toplamı bulma her zaman**, aradakiler yalnız 300 ms dolunca.
+Aynı koşucu (`queue_latency`, ayrı kasa), release, Apple M2:
+
+| Ölçüm | p50 | p95 | max | n |
+|---|---|---|---|---|
+| Tek `update_job_progress` (UPDATE + WAL commit) | **0,255 ms** | 0,271 ms | 0,476 ms | 120 |
+| 120 kare → yazım sayısı, hızlı belge (50 µs/sayfa) | **2** | — | — | kural sayımı |
+| 120 kare → yazım sayısı, yavaş/taranmış (5 ms/sayfa) | **3** | — | — | kural sayımı |
+
+Ham rapor: `docs/releases/F15/bench-queue-0022-2026-10-27.json` (`progress` alanı).
+
+**Okuma:** yazım başına ≈ 0,26 ms; 120 karede **sayfa başına commit yapılsaydı**
+≈ 31 ms ek yük olurdu (worker'ın 120 sayfalık çıktısı ≈ 20 ms — yani ayrıştırmayı
+1,5× yavaşlatırdı). Kapı bunu 2–3 yazıma (≈ 0,8 ms) indiriyor. Bedeli açık:
+**kısa belgede sayaç kabalaşır** (0 → %100 atlar); uzun/taranmış belgede (saniyeler
+süren aşama) 300 ms'de bir yazım görünür.
+
+Aynı koşuda sahiplenme p50 **2,107 ms** (0021: 1,929 ms) — sahiplenme `UPDATE`'i
+dört sayaç sütununu da sıfırladığı için +0,18 ms; mutlak değer hâlâ küçük ve
+bilinçli kabul (yanlış deneme sayacı kalıntısı göstermemek için).
+
+**Dürüst sınırlar:** ölçüm çekirdek (Python worker/IPC/arayüz yok) ve tek makine;
+"yazım sayısı" alanları **ölçüm değil**, kapı kuralının aynı kare dizisinde
+sayımıdır. Gerçek belgede kare aralıkları worker hızına bağlıdır; ağ biriminde
+`fsync` davranışı denenmedi. 100k profilde yeniden koşulmadı.

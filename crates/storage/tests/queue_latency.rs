@@ -53,6 +53,91 @@ fn parse_ts(text: &str) -> OffsetDateTime {
     OffsetDateTime::parse(text, &Rfc3339).unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
+/// **Canlı sayaç yazımı (0022).** Ayrı kasa: ana senaryonun sayımlarını
+/// kirletmez. İki şey ölçülür:
+/// 1. tek `update_job_progress` çağrısının gecikmesi (UPDATE + WAL commit),
+/// 2. `ProgressGate` (300 ms) ile 120 sayfalık bir aşamada kaç yazım olacağı —
+///    iki uç hız için (hızlı belge: 50 µs/sayfa, yavaş/taranmış: 5 ms/sayfa).
+///
+/// İkincisi **ölçüm değil, kapı kuralının sayımı**; raporda ayrı alanda durur.
+fn measure_progress_writes(pages: u32) -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("dizin");
+    let db = Database::open(
+        &dir.path().join("progress-bench.dimvault"),
+        &DatabaseKey::new([23u8; 32]),
+    )
+    .expect("kasa");
+    let case = db
+        .create_case(&NewCase {
+            title: "Sayaç ölçümü".into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: Sensitivity::Normal,
+            default_ai_policy: dim_storage::AiPolicy::Off,
+        })
+        .expect("dosya");
+    db.enqueue_job_with_priority(
+        JOB_PARSE_DOCUMENT,
+        Some(&case.id),
+        "fp-progress",
+        "parse:progress-bench",
+        0,
+    )
+    .expect("iş");
+    let job = db
+        .claim_job_by_key(
+            "parse:progress-bench",
+            "bench-progress",
+            300,
+            OffsetDateTime::now_utc(),
+        )
+        .expect("sahiplen")
+        .expect("iş var");
+
+    let mut write_ms = Vec::with_capacity(pages as usize);
+    for page in 1..=pages {
+        let started = Instant::now();
+        let written = db
+            .update_job_progress(
+                &job.id,
+                "bench-progress",
+                "pages",
+                page,
+                Some(pages),
+                OffsetDateTime::now_utc(),
+            )
+            .expect("sayaç")
+            .expect("uygulandı");
+        write_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(written.progress_total, Some(i64::from(pages)));
+    }
+
+    serde_json::json!({
+        "write": stats(&write_ms),
+        "frames": pages,
+        "gateMs": 300,
+        "writesFastDoc": simulated_writes(pages, 50),
+        "writesSlowDoc": simulated_writes(pages, 5_000),
+        "note": "write = gerçek yazım gecikmesi; writesFastDoc/writesSlowDoc kapı kuralının sayımı (kare sayısı değil).",
+    })
+}
+
+/// `ProgressGate` ile aynı kare dizisinde kaç yazım üretileceğini sayar.
+fn simulated_writes(pages: u32, per_page_us: u64) -> u32 {
+    let mut gate = dim_storage::queue::ProgressGate::new(Duration::from_millis(300));
+    let start = Instant::now();
+    let mut writes = 0;
+    for page in 1..=pages {
+        let at = start + Duration::from_micros(u64::from(page) * per_page_us);
+        if gate.should_write("pages", page, Some(pages), at) {
+            writes += 1;
+        }
+    }
+    writes
+}
+
 #[test]
 #[ignore = "elle: kuyruk gecikmesi ölçümü (release, --ignored)"]
 fn measure_queue_latency() {
@@ -178,6 +263,13 @@ fn measure_queue_latency() {
     assert_eq!(succeeded as usize, jobs + batch_jobs, "her iş bitmeli");
     assert_eq!(processed, jobs);
 
+    // 4) Canlı sayaç yazımı (0022) — ayrı kasa, ana senaryoyu kirletmez.
+    let progress_pages: u32 = std::env::var("DIM_PROGRESS_PAGES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let progress = measure_progress_writes(progress_pages);
+
     let report = serde_json::json!({
         "bench": "queue_latency",
         "generatedAt": OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default(),
@@ -192,6 +284,7 @@ fn measure_queue_latency() {
             "queueWaitSerial": stats(&wait_ms),
             "queueWaitBatch4": stats(&batch_wait_ms),
         },
+        "progress": progress,
         "summary": summary,
     });
     let text = serde_json::to_string_pretty(&report).expect("json");
