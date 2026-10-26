@@ -14,11 +14,12 @@
 
 ## Doğrulama
 
-`cargo test -p dim-storage --lib` — **330** test (iş kuyruğu 22, iptal yolu 1 yeni).
+`cargo test -p dim-storage --lib` — **332** test (iş kuyruğu 22, iptal yolu 1 yeni).
 `cargo test -p dim-ingest --lib` — **39** test (worker 17, iptal 3 yeni).
 `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` — **13** test.
-clippy: `-p dim-ingest --all-targets -D warnings` ve tauri `--all-targets -D warnings`
-temiz; rustfmt iki manifest temiz. Arayüz (`tsc`/`vitest`) CI `arayüz` işinde koşar.
+clippy: `-p dim-storage`, `-p dim-ingest` ve tauri `--all-targets -D warnings` temiz;
+rustfmt iki manifest temiz. CI `40397926418` **7/7 yeşil** (arayüz tsc+vitest+build,
+rust macos-14 + ubuntu-latest, masaüstü kabuk, belge worker'ı, sözleşmeler, SBOM).
 
 ## İş kuyruğu iptali (2026-10-26, F04-T07)
 
