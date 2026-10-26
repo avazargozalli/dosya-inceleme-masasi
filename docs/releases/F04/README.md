@@ -67,6 +67,17 @@ clippy: `-p dim-ingest` ve tauri `--all-targets -D warnings` temiz; rustfmt iki 
   sayfa 1 **4,1 ms**, sayfa 30 **7,8 ms**, sayfa 60 **11,6 ms**, sayfa 120 **19,3 ms**,
   yanıt **20,5 ms** — çerçeveler gerçekten **artımlı**, sonuçla birlikte toplu değil.
 
+**CI'ın yakaladığı kusurlar (#47):** ilk koşu `40409362853` **kırmızı** (5/7) iki ayrı
+sebeple:
+
+1. `arayüz`: `parseProgress.test.ts` içinde bir beklenti hâlâ `ocr` etiketini arıyordu
+   (etiket kaldırılmıştı) → 359 testte 1 kırmızı. Düzeltildi (`store` etiketi).
+2. `belge worker'ı`: **duman testi** (`tests/smoke/worker_smoke.py`) tek satır okuyup
+   yanıt sanıyordu; artık ilk satır `progress` çerçevesi → `KeyError: 'ok'` ve süreç
+   `shutdown` alamayınca 10 sn zaman aşımına düştü. Bu gerçek bir istemci kusuruydu:
+   duman testi ve `scripts/verify-worker-offline.py` ilerleme çerçevelerini **atlar**
+   (yanıt değildir); duman testi ayrıca `open 0/1` + `pages 1/1` çerçevelerini doğrular.
+
 **Dürüst sınırlar:**
 
 - Tauri penceresi açılmadı: sayacın **görsel** QA'sı yok; kanıt protokol testleri +

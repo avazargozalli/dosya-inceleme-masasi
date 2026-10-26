@@ -62,8 +62,8 @@ describe("parseProgressLine", () => {
 
   it("toplam yokken yalnız sayılanı yazar", () => {
     expect(parseProgressLine(progress({ stage: "start", done: 0, total: null }))).toBe("Hazırlanıyor");
-    expect(parseProgressLine(progress({ stage: "ocr", done: 3, total: null }))).toBe(
-      "OCR çalışıyor: 3",
+    expect(parseProgressLine(progress({ stage: "store", done: 3, total: null }))).toBe(
+      "Kasaya yazılıyor: 3",
     );
   });
 

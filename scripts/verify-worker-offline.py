@@ -82,6 +82,10 @@ def _decode(stdout: str) -> dict[str, dict]:
             frame = json.loads(line)
         except json.JSONDecodeError as exc:
             raise SystemExit(f"HATA: worker yanıtı JSON değil ({exc}): {line[:120]}")
+        if isinstance(frame, dict) and "progress" in frame:
+            # İlerleme çerçevesi yanıt değildir (F04-T07); aynı kimliğe sahip
+            # gerçek yanıtın üzerine yazmamalı.
+            continue
         if isinstance(frame, dict) and isinstance(frame.get("id"), str):
             responses[frame["id"]] = frame
     return responses

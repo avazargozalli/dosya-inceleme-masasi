@@ -18,15 +18,24 @@ sys.path.insert(0, str(ROOT / "fixtures" / "synthetic"))
 
 from generate import generate_pdf  # noqa: E402
 
+# İlerleme çerçeveleri (F04-T07) yanıt değildir; atlanır ve burada toplanır.
+SEEN_PROGRESS: list[dict] = []
+
 
 def send(proc: subprocess.Popen, payload: dict) -> dict:
+    """Yanıtı döner. `progress` çerçeveleri atlanır: `ok` alanı yoktur."""
     assert proc.stdin is not None and proc.stdout is not None
     proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode() + b"\n")
     proc.stdin.flush()
-    line = proc.stdout.readline()
-    if not line:
-        raise SystemExit("worker yanıt vermeden kapandı")
-    return json.loads(line)
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            raise SystemExit("worker yanıt vermeden kapandı")
+        frame = json.loads(line)
+        if "progress" in frame:
+            SEEN_PROGRESS.append(frame)
+            continue
+        return frame
 
 
 def main() -> None:
@@ -61,6 +70,13 @@ def main() -> None:
         text = result["result"]["pages"][0]["text"]
         assert "Kira sozlesmesi 2026" in text, text
         assert result["result"]["engine"] == "pymupdf", result["result"]
+        # F04-T07: canlı sayaç gerçekten akıyor — tek sayfalık belgede
+        # `open 0/1` + `pages 1/1`; bu çerçeveler yanıt sanılmamalı.
+        stages = [
+            (item["progress"]["stage"], item["progress"]["done"]) for item in SEEN_PROGRESS
+        ]
+        assert stages == [("open", 0), ("pages", 1)], stages
+        assert all("ok" not in item for item in SEEN_PROGRESS), SEEN_PROGRESS
 
         bye = send(proc, {"v": 1, "id": "4", "method": "shutdown", "params": {}})
         assert bye["ok"] is True, bye
