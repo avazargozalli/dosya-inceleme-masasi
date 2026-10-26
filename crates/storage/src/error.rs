@@ -93,6 +93,10 @@ pub enum StorageError {
     JobLease(String),
     #[error("iş durumu bu işleme uygun değil: {0}")]
     JobState(String),
+    #[error(
+        "migrasyon {version} yabancı anahtar ihlali bıraktı ({violations} satır); geri alındı"
+    )]
+    MigrationForeignKeys { version: u32, violations: i64 },
 }
 
 /// SQLite hatası disk dolması mı?
@@ -171,6 +175,7 @@ impl StorageError {
             Self::QuoteScopeTooLarge => "E_QUOTE_SCOPE",
             Self::JobLease(_) => "E_JOB_LEASE",
             Self::JobState(_) => "E_JOB_STATE",
+            Self::MigrationForeignKeys { .. } => "E_DB_MIGRATION_FK",
         }
     }
 }

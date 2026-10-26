@@ -172,7 +172,7 @@ fn measure_queue_latency() {
     let succeeded = summary
         .by_state
         .iter()
-        .find(|s| s.state == "succeeded")
+        .find(|s| s.state == "completed")
         .map(|s| s.count)
         .unwrap_or(0);
     assert_eq!(succeeded as usize, jobs + batch_jobs, "her iş bitmeli");

@@ -10,8 +10,8 @@
 | F03-T02 | ✅ | parola + kurtarma yuvası ayrı sarılı; `open_with_recovery` |
 | F03-T04 | ✅ | `crates/storage`: 47 tablo, FK/CHECK, migrasyon checksum |
 | F03-T05 | ✅ | rastgele `storage_id`, chunked AEAD blob, atomik rename |
-| F03-T07 | ✅ | **2026-10-26 düzeltmesi:** `crates/jobs` yalnız *kuralları* taşıyordu; `jobs` tablosu salt-yazılıydı (hiçbir katman sahiplenmiyordu). Kuyruk artık `crates/storage/src/queue.rs`'te gerçek: idempotent ekleme, atomik sahiplenme (lease + `job_attempts`), öncelik/yaş sırası, bağımlılık kapısı, tamamlama, hata + artan bekleme, iptal isteği |
-| F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26):** kirası dolmuş `running` işler `retry_wait` + `E_JOB_INTERRUPTED` ile yeniden sıraya alınır, iptal istenmiş olanlar kapanır; `vault_open` bunu kendiliğinden yapar (sayı denetime yazılır) |
+| F03-T07 | ✅ | **2026-10-26 düzeltmesi:** `crates/jobs` yalnız *kuralları* taşıyordu; `jobs` tablosu salt-yazılıydı. Kuyruk artık `crates/storage/src/queue.rs`'te gerçek: idempotent ekleme, atomik sahiplenme (lease + `job_attempts`), öncelik/yaş sırası, bağımlılık kapısı, doğrulama adımı, tamamlama/kısmi, hata + artan bekleme, engel, iptal, kullanıcı yeniden denemesi. **§17.2 durum makinesi tam** (migration 0021) |
+| F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26):** §17.6 iki adım — süresi dolmuş `running/validating/canceling` önce `interrupted`, sonra `queued` (bütçe varsa) / `failed` (bütçe bittiyse); iptal istenmiş iş `canceled`. `vault_open` kendiliğinden yapar (sayı denetime yazılır) |
 | F03-T10 | ✅ | `backup_to` (SQLCipher backup API), yanlış anahtarla açılmaz |
 | F03-T12 | ✅ | disk/izin/yanlış parola hata kodları |
 
@@ -36,32 +36,56 @@ CI: **bekliyor** (bu commit ile ilk koşu).
     `attempt_count+1`, `job_attempts` satırı. Durum başına tek eşitlik +
     `INDEXED BY idx_jobs_claim` (plan testi geçici B-tree kurulmadığını tutar).
   - `claim_job_by_key` — belge ayrıştırma yolunun tekil sahiplenmesi.
-  - `complete_job` / `fail_job` — kira sahibi ve süresi denetlenir; hata
-    tekrar sınıfına göre `retry_wait` (artan bekleme, `dim-jobs::RetryPolicy`)
-    ya da `failed`. İptal isteği varsa sonuç `cancelled` olur, sessizce yutulmaz.
-  - `cancel_job` — sırada bekleyen hemen iptal, yürüyen işe işaret.
-  - `recover_stale_jobs` — F03-T08 kurtarma.
+  - `begin_validation` / `complete_job` / `complete_job_partial` / `fail_job` —
+    `running → validating → completed|partial`, hata sınıfına göre
+    `retry_wait` (artan bekleme) ya da `failed`; iptal isteği her sonucun
+    önüne geçer (`→ canceling → canceled`).
+  - `block_job` / `unblock_job` — `running → blocked` (neden `blocked_reason`a
+    yazılır) ve `blocked → queued`.
+  - `cancel_job` — sırada bekleyen/engelli hemen `canceled`, yürüyen/doğrulanan
+    `canceling`.
+  - `retry_failed_job` — `failed → queued`, deneme bütçesi sıfırlanır,
+    `job_attempts` numaralandırması `MAX(attempt_no)+1` ile sürer.
+  - `recover_stale_jobs` — §17.6 iki adım (kurtarma raporu: `interrupted`,
+    `requeued`, `failed`, `canceled`).
   - `job_queue_summary` / `list_jobs` — arayüz için sayı ve son 20 iş
     (dosya adı/metin taşımaz).
-- **Tauri:** `document_parse` işi **gerçekten** sahiplenir (hata → `failed` /
-  `retry_wait`; yalnız `E_WORKER_*`, `E_IO`, `E_DISK_FULL` tekrar denenir),
-  `vault_open` kurtarmayı çalıştırır, yeni `job_queue_status` ve
-  `job_queue_recover` komutları eklendi. Arayüz: Ayarlar → **İş kuyruğu** kartı
-  (özet, dikkat satırı, son işler, "Bekleyen işleri kurtar").
+- **Durum makinesi tek kaynakta:** `crates/job_state_machine.tsv` (§17.2'nin
+  birebir tablosu, 11 durum). `crates/jobs` (kural crate'i) ve
+  `crates/storage/src/job_state.rs` **aynı dosyayı** `include_str!` ile okur;
+  iki kopya tablo yok, ayrışma testle değil yapısal olarak imkânsız. Her geçiş
+  SQL'den önce `job_state::allowed` ile denetlenir (`E_JOB_STATE`).
+- **Tauri:** `document_parse` işi **gerçekten** sahiplenir; başarıda
+  `begin_validation` → uyarısız `completed`, uyarılı `partial`; parola
+  korumalı belge **hata değil engel** (`running → blocked`, neden `password`);
+  yalnız `E_WORKER_*`, `E_IO`, `E_DISK_FULL` tekrar denenir. `vault_open`
+  kurtarmayı çalıştırır. Komutlar: `job_queue_status`, `job_queue_recover`,
+  `job_cancel`, `job_retry`, `job_unblock`. Arayüz: Ayarlar → **İş kuyruğu**
+  kartı (özet, dikkat satırı, son işler, satır başına gerçek eylem düğmeleri,
+  "Bekleyen işleri kurtar").
 - **Kanıt (ölçüm):** içe aktarma → iş kaydı → sahiplenme → bitirme uçtan uca
   (`crates/ingest/tests/queue_handoff.rs`); ikinci içe aktarma **yeni iş
-  açmaz**. Kuyruk testleri **13** (durum geçişi, öncelik, bağımlılık, kira,
-  iptal, kurtarma, tekrar bütçesi, plan). Gecikme ölçümü:
-  `docs/releases/F15/BENCHMARK.md`.
-- **Dürüst sınırlar:** `jobs.state` CHECK kümesi şartnamenin bütün durumlarını
-  taşımıyor (`blocked`, `validating`, `canceling`, `interrupted`, `partial`,
-  `completed` yok); `interrupted`/`canceling` **koşul** olarak taşınır
-  (`error_code='E_JOB_INTERRUPTED'`, `cancel_requested_at`). Yeni durum eklemek
-  tablo yeniden yazımı ister (CHECK), bu turda yapılmadı. Kuyruk yürütücüsü
-  seridir (kasa başına tek yazıcı); paralel belge worker'ları (şartname §17.3
-  "en fazla iki") uygulanmadı. Kuyruk gecikmesi **çekirdek** ölçümdür
-  (Python worker/IPC yok; sentetik iş 2 ms). 100k belge profilinde kuyruk
-  yeniden ölçülmedi.
+  açmaz**. Kuyruk testleri **21** (durum geçişi, öncelik, engel, bağımlılık,
+  kira, doğrulama/kısmi, iptal, kurtarma, kullanıcı denemesi, tekrar bütçesi,
+  plan, şema CHECK uyumu). Gecikme ölçümü: `docs/releases/F15/BENCHMARK.md`.
+- **Migrasyon tuzağı (ölçüldü):** `jobs` tablosunu yeniden yazmak (CHECK
+  değişmez) `foreign_keys` AÇIKken `job_attempts` satırlarını `ON DELETE
+  CASCADE` ile **siliyordu** (1 → 0). Bu yüzden `Database::migrate` artık
+  migrasyonları `PRAGMA foreign_keys=OFF` ile koşar ve her migrasyondan sonra
+  `PRAGMA foreign_key_check` ile denetler; ihlal varsa migrasyon geri alınır
+  (`E_DB_MIGRATION_FK`). Kanıt:
+  `upgrade_tests::job_state_rewrite_keeps_attempts_and_remaps_legacy_states`.
+- **Dürüst sınırlar:** Kuyruk yürütücüsü seridir (kasa başına tek yazıcı);
+  paralel belge worker'ları (şartname §17.3 "en fazla iki") uygulanmadı.
+  `completed`/`canceled` durumundaki iş **yeniden açılamaz** (kullanıcı yeni
+  bir ayrıştırma başlatır; yeni satır açılır). `interrupted → queued` "yeniden
+  doğrulama" adımı bugün girdi parmak izinin değişmediği varsayımıyla yapılır
+  (yerel deterministik iş); uzak (AI) işlerinde otomatik yeniden gönderim yok.
+  `partial` bu satır için terminaldir; şartnamenin "yeni alt iş" yolu ayrı bir
+  satırdır. Engel nedeni `password`/`dependency` dışında bugün üretilmiyor
+  (kota/izin bekleyen iş yolu yok). Kuyruk gecikmesi **çekirdek** ölçümdür
+  (Python worker/IPC yok; sentetik iş 2 ms); 100k belge profilinde yeniden
+  ölçülmedi. Tauri penceresi açılmadı → kartın görsel QA'sı yok.
 
 ## Bilinen sınırlar
 

@@ -71,6 +71,8 @@ export type JobRow = {
   leaseUntil: string | null;
   cancelRequestedAt: string | null;
   errorCode: string | null;
+  /** `blocked` durumunda engel nedeni (parola, bağımlılık, kota). */
+  blockedReason: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -83,8 +85,15 @@ export type JobQueueView = {
 
 export type JobRecovery = {
   interrupted: number;
-  cancelled: number;
+  requeued: number;
+  failed: number;
+  canceled: number;
   interruptedJobIds: string[];
+};
+
+export type JobCancelResult = {
+  outcome: "canceled" | "requested";
+  job: JobRow;
 };
 
 export type CaseRow = {
@@ -1544,6 +1553,9 @@ export const api = {
     invoke<RollbackResult>("vault_rollback_pre_update", { backupFile, confirmation }),
   jobQueueStatus: () => invoke<JobQueueView>("job_queue_status"),
   jobQueueRecover: () => invoke<JobRecovery>("job_queue_recover"),
+  jobCancel: (jobId: string) => invoke<JobCancelResult>("job_cancel", { jobId }),
+  jobRetry: (jobId: string) => invoke<JobRow>("job_retry", { jobId }),
+  jobUnblock: (jobId: string) => invoke<JobRow>("job_unblock", { jobId }),
   status: () => invoke<VaultStatus>("vault_status"),
 
   caseList: (includeArchived = false) => invoke<CaseRow[]>("case_list", { includeArchived }),

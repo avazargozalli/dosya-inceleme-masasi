@@ -1,23 +1,32 @@
-//! Kalıcı iş kuyruğu: sahiplenme (lease), tamamlama, hata, iptal ve yeniden
-//! başlatma kurtarması.
+//! Kalıcı iş kuyruğu: sahiplenme (lease), doğrulama, tamamlama, hata, engel,
+//! iptal ve yeniden başlatma kurtarması.
 //!
-//! Şartname §17 iş türlerini ve durum makinesini tanımlar. Bu modül kuyruğun
-//! **veritabanı ayağını** uygular; durum geçiş kuralları `dim-jobs`'ta tek
-//! yerde durur (kural burada kopyalanmaz). `jobs` tablosu 0001'den beri vardı
-//! ama hiçbir katman satırı sahiplenmiyordu: her içe aktarma `queued` bir iş
-//! bırakıyor, iş sonsuza kadar "bekliyor" görünüyordu. Bu modül o boşluğu
-//! kapatır.
+//! Şartname §17.2'nin durum makinesi **tek kaynakta** (`crates/job_state_machine.tsv`)
+//! durur; `dim-jobs` (kural crate'i) ve bu modül aynı dosyayı okur. Her geçiş
+//! SQL'den önce `job_state::allowed` ile denetlenir: tabloda olmayan bir ok
+//! `E_JOB_STATE` ile reddedilir, sessizce yazılmaz.
+//!
+//! Geçişler (özet):
+//! - sahiplenme: `queued|retry_wait → running` (tek işlemde; `retry_wait`
+//!   durumunda `retry_wait → queued` adımı da aynı işlemde tüketilir),
+//! - doğrulama: `running → validating` (`begin_validation`),
+//! - sonuç: `validating → completed` / `→ partial` / `→ failed`,
+//! - engel: `running → blocked` (`blocked_reason` yazılır) ve `blocked → queued`,
+//! - iptal: `queued|retry_wait|blocked → canceled`, `running|validating →
+//!   canceling`; yürütücü bitince `canceling → canceled`,
+//! - kesinti: `running|validating|canceling → interrupted`, ardından
+//!   `interrupted → queued` (yeniden sıraya) ya da `→ failed` (bütçe bitti),
+//! - kullanıcı yeniden denemesi: `failed → queued` (yeni attempt açar).
 //!
 //! Dürüst sınırlar:
-//! - `jobs.state` CHECK kümesi `queued|leased|running|succeeded|failed|cancelled|
-//!   retry_wait`. Şartnamenin `blocked|validating|canceling|interrupted|partial|
-//!   completed` adları **ayrı durum olarak yok**; `interrupted` ve `canceling`
-//!   burada *koşul* olarak taşınır (`error_code='E_JOB_INTERRUPTED'`,
-//!   `cancel_requested_at` dolu). Yeni durum eklemek tablo yeniden yazımı
-//!   gerektirir (CHECK değişmez); bilinçli olarak yapılmadı.
 //! - Kuyruk yürütücüsü tek süreçlidir: kasa başına tek `Database` bağlantısı
 //!   (tek yazıcı) kuralı burada da geçerli. Çok süreçli yarış yalnız
 //!   `lease_until` ile korunur.
+//! - `partial` bu satır için terminaldir; şartnamenin "yeni alt iş" yolu ayrı
+//!   bir iş satırıdır (aynı satırın geçişi değil).
+//! - `interrupted → queued` "yeniden doğrulama" adımı bugün **girdi parmak
+//!   izinin değişmediği** varsayımıyla yapılır (yerel deterministik iş;
+//!   `parse_document` girdisi kasadaki blob + ayarlardır).
 //! - Ölçüm: `docs/releases/F15/BENCHMARK.md` (kuyruk gecikmesi p50/p95).
 
 use rusqlite::{params, OptionalExtension, Row};
@@ -25,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+use crate::job_state;
 use crate::{now_iso, Database, StorageError};
 
 /// Belge ayrıştırma işi (içe aktarma sonrası).
@@ -52,6 +62,9 @@ pub struct JobRow {
     pub lease_until: Option<String>,
     pub cancel_requested_at: Option<String>,
     pub error_code: Option<String>,
+    /// `running → blocked` geçişinde yazılan engel nedeni (parola, kota, izin,
+    /// kasa kilidi). Hata kodu değildir.
+    pub blocked_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -80,14 +93,20 @@ pub struct JobQueueSummary {
     pub blocked_by_dependency: i64,
 }
 
-/// Kurtarma raporu (açılışta ya da elle).
+/// Kurtarma raporu (açılışta ya da elle). §17.6 iki adımlıdır: süresi dolmuş
+/// iş **önce** `interrupted` olur, sonra yeniden doğrulama sonrası sıraya ya da
+/// hataya düşer. Sayımlar bu iki adımı ayrı gösterir.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobRecovery {
-    /// Kirası dolmuş, yeniden sıraya alınan iş sayısı.
+    /// Kesintiye uğradığı tespit edilen iş sayısı (`→ interrupted`).
     pub interrupted: usize,
-    /// İptal isteği gelmiş ve yarıda kalmış, doğrudan iptal edilen iş sayısı.
-    pub cancelled: usize,
+    /// Yeniden sıraya alınan iş sayısı (`interrupted → queued`).
+    pub requeued: usize,
+    /// Tekrar bütçesi bittiği için kapatılan iş sayısı (`interrupted → failed`).
+    pub failed: usize,
+    /// İptal isteği gelmiş ve yarıda kalmış, kapatılan iş sayısı.
+    pub canceled: usize,
     /// Yeniden sıraya alınan işlerin kimlikleri (içerik taşımaz).
     pub interrupted_job_ids: Vec<String>,
 }
@@ -100,7 +119,7 @@ pub struct JobCancelResult {
     pub job: JobRow,
 }
 
-const JOB_COLUMNS: &str = "id,type,scope,case_id,state,priority,attempt_count,retry_policy,progress,next_run_at,lease_owner,lease_until,cancel_requested_at,error_code,created_at,updated_at,completed_at";
+const JOB_COLUMNS: &str = "id,type,scope,case_id,state,priority,attempt_count,retry_policy,progress,next_run_at,lease_owner,lease_until,cancel_requested_at,error_code,created_at,updated_at,completed_at,blocked_reason";
 
 fn map_job(row: &Row<'_>) -> rusqlite::Result<JobRow> {
     let retry_policy: String = row.get(7)?;
@@ -123,7 +142,31 @@ fn map_job(row: &Row<'_>) -> rusqlite::Result<JobRow> {
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
         completed_at: row.get(16)?,
+        blocked_reason: row.get(17)?,
     })
+}
+
+/// Durum makinesi kapısı: tabloda olmayan ok `E_JOB_STATE` ile reddedilir.
+/// SQL'deki `WHERE state IN (...)` yarışa karşı ikinci kapıdır; kural tek yerde.
+fn ensure_transition(from: &str, to: &str) -> Result<(), StorageError> {
+    if job_state::allowed(from, to) {
+        Ok(())
+    } else {
+        Err(StorageError::JobState(format!(
+            "{from} durumundan {to} durumuna geçiş şartname §17.2'de yok"
+        )))
+    }
+}
+
+/// Sahiplenme kapısı: `queued → running` tek ok; `retry_wait` ise
+/// `retry_wait → queued → running` iki okun **aynı işlemde** tüketilmesidir
+/// (tabloda doğrudan `retry_wait → running` yok).
+fn ensure_claimable(from: &str) -> Result<(), StorageError> {
+    if from == "queued" {
+        return ensure_transition("queued", "running");
+    }
+    ensure_transition(from, "queued")?;
+    ensure_transition("queued", "running")
 }
 
 /// Yeniden deneme bütçesi ve artan bekleme.
@@ -271,8 +314,10 @@ impl Database {
     /// yazılır, `attempt_count` artar, `job_attempts` satırı açılır.
     ///
     /// Sıra: öncelik (yüksek önce) → oluşturulma (eski önce). Bağımlılığı
-    /// bitmemiş iş atlanır; bağımlılığı **başarısız/iptal/kayıp** olan iş
-    /// sonsuza kadar beklemez, `failed` işaretlenir ve bir sonraki tura geçilir.
+    /// bitmemiş iş `blocked` işaretlenir (şartname §17.2: "bağımlılık bekliyor");
+    /// bağımlılığı **başarısız/iptal/kayıp** olan iş `canceled` olur — hiç
+    /// çalışmayacak iş `failed` diye yazılmaz, "yarım kaldı" görüntüsü vermez.
+    /// Bu tur başında bağımlılığı çözülmüş `blocked` işler yeniden `queued` olur.
     pub fn claim_jobs(
         &self,
         owner: &str,
@@ -288,6 +333,7 @@ impl Database {
         let until_text = iso(now + time::Duration::seconds(lease_seconds.max(1)));
         let scan_limit = i64::try_from(limit.saturating_mul(4).min(400)).unwrap_or(400);
         let tx = self.conn().unchecked_transaction()?;
+        release_dependency_blocked(&tx, &now_text)?;
         let mut claimed: Vec<JobRow> = Vec::new();
         {
             // Durum başına tek eşitlik: `state IN (...)` yazıldığında SQLite
@@ -295,7 +341,7 @@ impl Database {
             // B-tree kuruyordu (plan testi bunu tutuyor). İki sorgunun sonucu
             // Rust'ta (öncelik, yaş) sırasına dizilir.
             let mut candidates: Vec<(JobRow, String)> = Vec::new();
-            for state in ["queued", "retry_wait"] {
+            for state in job_state::CLAIMABLE {
                 let mut stmt = tx.prepare(&format!(
                     "SELECT {JOB_COLUMNS},dependency_ids FROM jobs INDEXED BY idx_jobs_claim
                      WHERE state=?1 AND next_run_at<=?2
@@ -305,7 +351,7 @@ impl Database {
                 let rows = stmt
                     .query_map(params![state, now_text, scan_limit], |row| {
                         let job = map_job(row)?;
-                        let deps: String = row.get(17)?;
+                        let deps: String = row.get(18)?;
                         Ok((job, deps))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -324,9 +370,10 @@ impl Database {
                 if !job_types.is_empty() && !job_types.iter().any(|t| *t == job.job_type) {
                     continue;
                 }
+                ensure_transition(&job.state, "canceled")?;
                 if job.cancel_requested_at.is_some() {
                     tx.execute(
-                        "UPDATE jobs SET state='cancelled', error_code='E_JOB_CANCELLED', completed_at=?2, updated_at=?2
+                        "UPDATE jobs SET state='canceled', error_code='E_JOB_CANCELLED', completed_at=?2, updated_at=?2
                          WHERE id=?1 AND state IN ('queued','retry_wait')",
                         params![job.id, now_text],
                     )?;
@@ -334,16 +381,29 @@ impl Database {
                 }
                 match dependency_state(&tx, &deps_raw)? {
                     DependencyState::Ready => {}
-                    DependencyState::Waiting => continue,
-                    DependencyState::Aborted(code) => {
+                    DependencyState::Waiting => {
+                        // `queued → blocked`: bağımlılık bekliyor. `claim_jobs`
+                        // başında çözülenler geri açılır; sonsuz bekleme yok.
+                        ensure_transition(&job.state, "blocked")?;
                         tx.execute(
-                            "UPDATE jobs SET state='failed', error_code=?2, completed_at=?3, updated_at=?3
+                            "UPDATE jobs SET state='blocked', blocked_reason='dependency',
+                                    next_run_at=?2, updated_at=?2, error_code='E_JOB_DEPENDENCY_WAIT'
+                             WHERE id=?1 AND state IN ('queued','retry_wait')",
+                            params![job.id, now_text],
+                        )?;
+                        continue;
+                    }
+                    DependencyState::Aborted(code) => {
+                        ensure_transition(&job.state, "canceled")?;
+                        tx.execute(
+                            "UPDATE jobs SET state='canceled', error_code=?2, completed_at=?3, updated_at=?3
                              WHERE id=?1 AND state IN ('queued','retry_wait')",
                             params![job.id, code, now_text],
                         )?;
                         continue;
                     }
                 }
+                ensure_claimable(&job.state)?;
                 let changed = tx.execute(
                     "UPDATE jobs SET state='running', lease_owner=?2, lease_until=?3,
                             attempt_count=attempt_count+1, updated_at=?4
@@ -355,8 +415,9 @@ impl Database {
                 }
                 let attempt_no = job.attempt_count + 1;
                 tx.execute(
-                    "INSERT INTO job_attempts (id, job_id, attempt_no, started_at) VALUES (?1,?2,?3,?4)",
-                    params![uuid::Uuid::now_v7().to_string(), job.id, attempt_no, now_text],
+                    "INSERT INTO job_attempts (id, job_id, attempt_no, started_at)
+                     VALUES (?1,?2,(SELECT COALESCE(MAX(attempt_no),0)+1 FROM job_attempts WHERE job_id=?2),?3)",
+                    params![uuid::Uuid::now_v7().to_string(), job.id, now_text],
                 )?;
                 claimed.push(JobRow {
                     state: "running".to_string(),
@@ -384,7 +445,7 @@ impl Database {
         let Some(job) = self.job_by_key(idempotency_key)? else {
             return Ok(None);
         };
-        if job.state != "queued" && job.state != "retry_wait" {
+        if !job_state::CLAIMABLE.contains(&job.state.as_str()) {
             return Ok(None);
         }
         if let Some(next) = job.next_run_at.as_deref().and_then(parse_ts) {
@@ -395,6 +456,8 @@ impl Database {
         let now_text = iso(now);
         let until_text = iso(now + time::Duration::seconds(lease_seconds.max(1)));
         let tx = self.conn().unchecked_transaction()?;
+        release_dependency_blocked(&tx, &now_text)?;
+        ensure_claimable(&job.state)?;
         let changed = tx.execute(
             "UPDATE jobs SET state='running', lease_owner=?2, lease_until=?3,
                     attempt_count=attempt_count+1, updated_at=?4
@@ -404,22 +467,71 @@ impl Database {
         if changed != 1 {
             return Ok(None);
         }
-        let attempt_no = job.attempt_count + 1;
         tx.execute(
-            "INSERT INTO job_attempts (id, job_id, attempt_no, started_at) VALUES (?1,?2,?3,?4)",
-            params![
-                uuid::Uuid::now_v7().to_string(),
-                job.id,
-                attempt_no,
-                now_text
-            ],
+            "INSERT INTO job_attempts (id, job_id, attempt_no, started_at)
+             VALUES (?1,?2,(SELECT COALESCE(MAX(attempt_no),0)+1 FROM job_attempts WHERE job_id=?2),?3)",
+            params![uuid::Uuid::now_v7().to_string(), job.id, now_text],
         )?;
         tx.commit()?;
         self.get_job(&job.id)
     }
 
+    /// `running → validating`: çıktı şema/hash/kapsam denetimine alındı.
+    ///
+    /// İptal isteği varsa yürüyen iş doğrudan `canceling` olur (şartname §17.2):
+    /// yeni bir doğrulama başlatılmaz.
+    pub fn begin_validation(
+        &self,
+        job_id: &str,
+        owner: &str,
+        now: OffsetDateTime,
+    ) -> Result<JobRow, StorageError> {
+        let job = self.require_leased(job_id, owner, now)?;
+        let now_text = iso(now);
+        let target = if job.cancel_requested_at.is_some() {
+            "canceling"
+        } else {
+            "validating"
+        };
+        ensure_transition(&job.state, target)?;
+        let changed = self.conn().execute(
+            "UPDATE jobs SET state=?2, updated_at=?3 WHERE id=?1 AND state='running'",
+            params![job_id, target, now_text],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::JobState(
+                "iş bu arada durum değiştirdi; doğrulama başlatılamadı".to_string(),
+            ));
+        }
+        self.get_job(job_id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// Kira sahibi + süre denetimi (bitirme yollarının ortak kapısı).
+    fn require_leased(
+        &self,
+        job_id: &str,
+        owner: &str,
+        now: OffsetDateTime,
+    ) -> Result<JobRow, StorageError> {
+        let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
+        if job.lease_owner.as_deref() != Some(owner) {
+            return Err(StorageError::JobLease(
+                "kira sahibi bu süreç değil".to_string(),
+            ));
+        }
+        if lease_expired(job.lease_until.as_deref(), now) {
+            return Err(StorageError::JobLease("kira süresi dolmuş".to_string()));
+        }
+        Ok(job)
+    }
+
     /// İşi başarıyla bitirir. Kira sahibi ve süresi denetlenir; iptal isteği
-    /// varsa sonuç `succeeded` değil `cancelled` olur (istek sessizce yutulmaz).
+    /// varsa sonuç `completed` değil `canceled` olur (istek sessizce yutulmaz).
+    ///
+    /// `running` durumundan çağrıldığında `running → validating → completed`
+    /// iki geçişi **tek işlemde** yazar (şartname §17.2'de `running → completed`
+    /// yoktur). Çağıran uzun bir doğrulama yapacaksa önce `begin_validation`
+    /// çağırır; sonuç yine bu yolla yazılır.
     pub fn complete_job(
         &self,
         job_id: &str,
@@ -429,8 +541,24 @@ impl Database {
         self.finish_job(job_id, owner, now, None, false)
     }
 
+    /// Doğrulama sonucu **kısmi**: bazı sayfalar/alt işler tamam, açık eksik
+    /// listesi var. `validating → partial` (terminal). `completed` demek
+    /// "her şey doğrulandı" demek olurdu; yarım çıktı tam sayılmaz.
+    pub fn complete_job_partial(
+        &self,
+        job_id: &str,
+        owner: &str,
+        error_code: &str,
+        now: OffsetDateTime,
+    ) -> Result<JobRow, StorageError> {
+        self.apply_finish(job_id, owner, now, FinishKind::Partial(error_code), false)
+    }
+
     /// İşi hatayla bitirir. `retryable` ve deneme bütçesi uygunsa iş
     /// `retry_wait` + artan bekleme ile yeniden sıraya girer; değilse `failed`.
+    /// Doğrulama aşamasındaki hata **tekrar denenmez** (şartname §17.2:
+    /// `validating` yalnız `failed`e gider), çünkü çıktı üretilmiştir ve aynı
+    /// girdiyle tekrar denenmesi yeni bir sonuç doğurmaz.
     pub fn fail_job(
         &self,
         job_id: &str,
@@ -450,52 +578,83 @@ impl Database {
         error_code: Option<&str>,
         retryable: bool,
     ) -> Result<JobRow, StorageError> {
-        let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
-        if job.state != "running" && job.state != "leased" {
+        let kind = match error_code {
+            Some(code) => FinishKind::Failure(code),
+            None => FinishKind::Success,
+        };
+        self.apply_finish(job_id, owner, now, kind, retryable)
+    }
+
+    fn apply_finish(
+        &self,
+        job_id: &str,
+        owner: &str,
+        now: OffsetDateTime,
+        kind: FinishKind<'_>,
+        retryable: bool,
+    ) -> Result<JobRow, StorageError> {
+        let job = self.require_leased(job_id, owner, now)?;
+        if !matches!(job.state.as_str(), "running" | "validating" | "canceling") {
             return Err(StorageError::JobState(format!(
-                "iş {} durumunda; yalnız yürüyen iş bitirilebilir",
+                "iş {} durumunda; yalnız yürüyen/doğrulanan iş bitirilebilir",
                 job.state
             )));
         }
-        if job.lease_owner.as_deref() != Some(owner) {
-            return Err(StorageError::JobLease(
-                "kira sahibi bu süreç değil".to_string(),
-            ));
-        }
-        if lease_expired(job.lease_until.as_deref(), now) {
-            return Err(StorageError::JobLease("kira süresi dolmuş".to_string()));
-        }
         let now_text = iso(now);
-        let raw_policy: String = self
-            .conn()
-            .query_row("SELECT retry_policy FROM jobs WHERE id=?1", [job_id], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .unwrap_or_default();
-        let policy = retry_policy_of(&raw_policy);
+        let policy = retry_policy_of(
+            &self
+                .conn()
+                .query_row("SELECT retry_policy FROM jobs WHERE id=?1", [job_id], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .unwrap_or_default(),
+        );
 
-        let mut effective_code = error_code;
-        let (state, next_run_at, completed_at) = if job.cancel_requested_at.is_some() {
-            effective_code = Some("E_JOB_CANCELLED");
-            ("cancelled", None, Some(now_text.clone()))
-        } else if let Some(_code) = error_code {
-            let attempt = u32::try_from(job.attempt_count).unwrap_or(u32::MAX);
-            if retryable && policy.should_retry(attempt) {
-                let delay = policy.delay_for(attempt);
-                let ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
-                (
-                    "retry_wait",
-                    Some(iso(now + time::Duration::milliseconds(ms))),
-                    None,
-                )
-            } else {
-                ("failed", None, Some(now_text.clone()))
-            }
+        // İptal isteği her sonucun önüne geçer: `canceling → canceled`.
+        let cancelled = job.cancel_requested_at.is_some() || job.state == "canceling";
+        let (state, code, next_run_at) = if cancelled {
+            ("canceled", Some("E_JOB_CANCELLED"), None)
         } else {
-            ("succeeded", None, Some(now_text.clone()))
+            match kind {
+                FinishKind::Success => ("completed", None, None),
+                FinishKind::Partial(code) => ("partial", Some(code), None),
+                FinishKind::Failure(code) => {
+                    let attempt = u32::try_from(job.attempt_count).unwrap_or(u32::MAX);
+                    // `validating → retry_wait` tabloda yok: doğrulama hatası
+                    // terminaldir (çıktı üretilmiştir, aynı girdi aynı sonucu verir).
+                    if retryable && job.state == "running" && policy.should_retry(attempt) {
+                        let delay = policy.delay_for(attempt);
+                        let ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
+                        (
+                            "retry_wait",
+                            Some(code),
+                            Some(iso(now + time::Duration::milliseconds(ms))),
+                        )
+                    } else {
+                        ("failed", Some(code), None)
+                    }
+                }
+            }
         };
-        let progress = if state == "succeeded" {
+        // Yol denetimi: atlanan ara adımlar da şartnamede olmalı. `running`den
+        // başarı/kısmilik `validating` üzerinden gider; iptal `canceling`
+        // üzerinden. Diğer oklar tabloda doğrudan var.
+        let hops: &[&str] = match (job.state.as_str(), state) {
+            ("running", "completed") => &["validating", "completed"],
+            ("running", "partial") => &["validating", "partial"],
+            ("running", "canceled") => &["canceling", "canceled"],
+            ("validating", "canceled") => &["canceling", "canceled"],
+            ("running", to) | ("validating", to) | ("canceling", to) => &[to],
+            _ => &[],
+        };
+        let mut from = job.state.clone();
+        for hop in hops {
+            ensure_transition(&from, hop)?;
+            from = (*hop).to_string();
+        }
+        let completed_at = next_run_at.is_none().then(|| now_text.clone());
+        let progress = if state == "completed" {
             1.0
         } else {
             job.progress
@@ -504,11 +663,11 @@ impl Database {
         tx.execute(
             "UPDATE jobs SET state=?2, error_code=NULLIF(?3,''), next_run_at=?4, completed_at=?5,
                     progress=?6, lease_owner=NULL, lease_until=NULL, updated_at=?7
-             WHERE id=?1 AND state IN ('running','leased')",
+             WHERE id=?1 AND state IN ('running','validating','canceling')",
             params![
                 job_id,
                 state,
-                effective_code.unwrap_or(""),
+                code.unwrap_or(""),
                 next_run_at,
                 completed_at,
                 progress,
@@ -518,14 +677,87 @@ impl Database {
         tx.execute(
             "UPDATE job_attempts SET ended_at=?2, error_code=NULLIF(?3,'')
              WHERE job_id=?1 AND ended_at IS NULL",
-            params![job_id, now_text, effective_code.unwrap_or("")],
+            params![job_id, now_text, code.unwrap_or("")],
         )?;
         tx.commit()?;
         self.get_job(job_id)?.ok_or(StorageError::NotFound)
     }
 
-    /// İptal isteği. Sırada bekleyen iş hemen `cancelled` olur; yürüyen işe
-    /// işaret konur (`cancelRequestedAt`) ve yürütücü bitirince iptal olur.
+    /// `running → blocked`: iş engellendi (parola, kota, izin, kasa kilidi).
+    /// Kira bırakılır, neden `blocked_reason`a yazılır; iş yeniden `queued`
+    /// olana kadar sahiplenilmez.
+    pub fn block_job(
+        &self,
+        job_id: &str,
+        owner: &str,
+        reason: &str,
+        now: OffsetDateTime,
+    ) -> Result<JobRow, StorageError> {
+        let job = self.require_leased(job_id, owner, now)?;
+        ensure_transition(&job.state, "blocked")?;
+        let now_text = iso(now);
+        let changed = self.conn().execute(
+            "UPDATE jobs SET state='blocked', blocked_reason=?2, lease_owner=NULL,
+                    lease_until=NULL, updated_at=?3
+             WHERE id=?1 AND state='running'",
+            params![job_id, reason, now_text],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::JobState(
+                "iş bu arada durum değiştirdi; engellenemedi".to_string(),
+            ));
+        }
+        self.get_job(job_id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// `blocked → queued`: engel kalktı (parola girildi, kota açıldı, kasa
+    /// açıldı). İş hemen sahiplenilebilir olur; engel nedeni kayıt için kalır.
+    pub fn unblock_job(&self, job_id: &str, now: OffsetDateTime) -> Result<JobRow, StorageError> {
+        let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
+        ensure_transition(&job.state, "queued")?;
+        let now_text = iso(now);
+        let changed = self.conn().execute(
+            "UPDATE jobs SET state='queued', error_code=NULL, next_run_at=?2, updated_at=?2
+             WHERE id=?1 AND state='blocked'",
+            params![job_id, now_text],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::JobState(
+                "iş bu arada durum değiştirdi; engel kaldırılamadı".to_string(),
+            ));
+        }
+        self.get_job(job_id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// `failed → queued`: kullanıcı yeniden denedi. Deneme sayacı **sıfırlanır**
+    /// (yeni bütçe); `job_attempts` satırları silinmez, numaralandırma
+    /// `MAX(attempt_no)+1` ile sürer — geçmiş kaybolmaz.
+    pub fn retry_failed_job(
+        &self,
+        job_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<JobRow, StorageError> {
+        let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
+        ensure_transition(&job.state, "queued")?;
+        let now_text = iso(now);
+        let changed = self.conn().execute(
+            "UPDATE jobs SET state='queued', error_code=NULL, blocked_reason=NULL,
+                    attempt_count=0, next_run_at=?2, completed_at=NULL, updated_at=?2
+             WHERE id=?1 AND state='failed'",
+            params![job_id, now_text],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::JobState(
+                "iş bu arada durum değiştirdi; yeniden denenemedi".to_string(),
+            ));
+        }
+        self.get_job(job_id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// İptal isteği. Sırada bekleyen/engellenen iş hemen `canceled` olur;
+    /// yürüyen ya da doğrulanan iş `canceling` işaretine geçer
+    /// (`cancelRequestedAt` yazılır) ve yürütücü bitirince `canceled` olur —
+    /// süreç gerçekten durmadan "iptal tamam" denmez (şartname §17.5).
     pub fn cancel_job(
         &self,
         job_id: &str,
@@ -534,22 +766,25 @@ impl Database {
         let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
         let now_text = iso(now);
         match job.state.as_str() {
-            "queued" | "retry_wait" => {
+            "queued" | "retry_wait" | "blocked" => {
+                ensure_transition(&job.state, "canceled")?;
                 self.conn().execute(
-                    "UPDATE jobs SET state='cancelled', error_code='E_JOB_CANCELLED',
-                            completed_at=?2, updated_at=?2
-                     WHERE id=?1 AND state IN ('queued','retry_wait')",
+                    "UPDATE jobs SET state='canceled', error_code='E_JOB_CANCELLED',
+                            completed_at=?2, lease_owner=NULL, lease_until=NULL, updated_at=?2
+                     WHERE id=?1 AND state IN ('queued','retry_wait','blocked')",
                     params![job_id, now_text],
                 )?;
                 Ok(JobCancelResult {
-                    outcome: "cancelled".to_string(),
+                    outcome: "canceled".to_string(),
                     job: self.get_job(job_id)?.ok_or(StorageError::NotFound)?,
                 })
             }
-            "running" | "leased" => {
+            "running" | "validating" => {
+                ensure_transition(&job.state, "canceling")?;
                 self.conn().execute(
-                    "UPDATE jobs SET cancel_requested_at=COALESCE(cancel_requested_at,?2), updated_at=?2
-                     WHERE id=?1 AND state IN ('running','leased')",
+                    "UPDATE jobs SET state='canceling',
+                            cancel_requested_at=COALESCE(cancel_requested_at,?2), updated_at=?2
+                     WHERE id=?1 AND state IN ('running','validating')",
                     params![job_id, now_text],
                 )?;
                 Ok(JobCancelResult {
@@ -557,36 +792,61 @@ impl Database {
                     job: self.get_job(job_id)?.ok_or(StorageError::NotFound)?,
                 })
             }
+            // Zaten iptal istenmiş yürüyen iş: tekrar istek zararsız.
+            "canceling" => Ok(JobCancelResult {
+                outcome: "requested".to_string(),
+                job,
+            }),
             other => Err(StorageError::JobState(format!(
                 "iş {other} durumunda; iptal edilemez"
             ))),
         }
     }
 
-    /// Kirası dolmuş yürüyen işleri kurtarır: iptal isteği olanı iptal eder,
-    /// olmayanı `retry_wait` + `E_JOB_INTERRUPTED` ile hemen sıraya alır.
-    /// Deneme sayısı **artmaz** (kesinti başarısız deneme değildir) ama
-    /// bütçe de sıfırlanmaz.
+    /// Kirası dolmuş işleri kurtarır (şartname §17.6 iki adım):
+    ///
+    /// 1. `running|validating|canceling` + süresi dolmuş → **önce** `interrupted`,
+    /// 2. yeniden doğrulama: iptal isteği olan `canceled`, tekrar bütçesi kalan
+    ///    `queued` (yeniden sıraya), bütçesi biten `failed`.
+    ///
+    /// Deneme sayısı artmaz (kesinti başarısız deneme değildir) ve bütçe
+    /// sıfırlanmaz. "Yeniden doğrulama" bugün **girdi parmak izinin değişmediği**
+    /// varsayımıdır: yerel deterministik iş (ayrıştırma girdisi kasadaki blob +
+    /// ayarlardır). Uzak (AI) işlerinde otomatik yeniden gönderim yoktur.
     pub fn recover_stale_jobs(&self, now: OffsetDateTime) -> Result<JobRecovery, StorageError> {
         let now_text = iso(now);
         let tx = self.conn().unchecked_transaction()?;
+        let stale_states = "('running','validating','canceling')";
         let mut stmt = tx.prepare(&format!(
-            "SELECT {JOB_COLUMNS} FROM jobs WHERE state IN ('running','leased')"
+            "SELECT {JOB_COLUMNS} FROM jobs WHERE state IN {stale_states}"
         ))?;
         let jobs: Vec<JobRow> = stmt
             .query_map([], map_job)?
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
 
-        let mut interrupted = Vec::new();
-        let mut cancelled = 0usize;
+        let mut interrupted_ids = Vec::new();
+        let mut requeued = 0usize;
+        let mut failed = 0usize;
+        let mut canceled = 0usize;
         for job in jobs {
             if !lease_expired(job.lease_until.as_deref(), now) {
                 continue;
             }
+            // İptal istenmiş iş kesintiye uğramış sayılmaz: `canceling → canceled`.
+            // (`interrupted → canceled` tabloda yok; iptal yolu kendi yolundan gider.)
             if job.cancel_requested_at.is_some() {
+                ensure_transition(
+                    &job.state,
+                    if job.state == "canceling" {
+                        "canceled"
+                    } else {
+                        "canceling"
+                    },
+                )?;
+                ensure_transition("canceling", "canceled")?;
                 tx.execute(
-                    "UPDATE jobs SET state='cancelled', error_code='E_JOB_CANCELLED',
+                    "UPDATE jobs SET state='canceled', error_code='E_JOB_CANCELLED',
                             completed_at=?2, lease_owner=NULL, lease_until=NULL, updated_at=?2
                      WHERE id=?1",
                     params![job.id, now_text],
@@ -596,12 +856,14 @@ impl Database {
                      WHERE job_id=?1 AND ended_at IS NULL",
                     params![job.id, now_text],
                 )?;
-                cancelled += 1;
+                canceled += 1;
                 continue;
             }
+            // 1) kesinti: `→ interrupted`
+            ensure_transition(&job.state, "interrupted")?;
             tx.execute(
-                "UPDATE jobs SET state='retry_wait', error_code='E_JOB_INTERRUPTED',
-                        next_run_at=?2, lease_owner=NULL, lease_until=NULL, updated_at=?2
+                "UPDATE jobs SET state='interrupted', error_code='E_JOB_INTERRUPTED',
+                        lease_owner=NULL, lease_until=NULL, updated_at=?2
                  WHERE id=?1",
                 params![job.id, now_text],
             )?;
@@ -610,14 +872,48 @@ impl Database {
                  WHERE job_id=?1 AND ended_at IS NULL",
                 params![job.id, now_text],
             )?;
-            interrupted.push(job.id);
+            interrupted_ids.push(job.id.clone());
+
+            // 2) yeniden doğrulama sonrası karar: bütçe varsa sıraya, yoksa hata.
+            let policy = retry_policy_of(&self.retry_policy_raw(&job.id)?);
+            let attempt = u32::try_from(job.attempt_count).unwrap_or(u32::MAX);
+            if policy.should_retry(attempt) {
+                ensure_transition("interrupted", "queued")?;
+                tx.execute(
+                    "UPDATE jobs SET state='queued', error_code=NULL, next_run_at=?2, updated_at=?2
+                     WHERE id=?1 AND state='interrupted'",
+                    params![job.id, now_text],
+                )?;
+                requeued += 1;
+            } else {
+                ensure_transition("interrupted", "failed")?;
+                tx.execute(
+                    "UPDATE jobs SET state='failed', error_code='E_JOB_RETRIES',
+                            completed_at=?2, updated_at=?2
+                     WHERE id=?1 AND state='interrupted'",
+                    params![job.id, now_text],
+                )?;
+                failed += 1;
+            }
         }
         tx.commit()?;
         Ok(JobRecovery {
-            interrupted: interrupted.len(),
-            cancelled,
-            interrupted_job_ids: interrupted,
+            interrupted: interrupted_ids.len(),
+            requeued,
+            failed,
+            canceled,
+            interrupted_job_ids: interrupted_ids,
         })
+    }
+
+    fn retry_policy_raw(&self, job_id: &str) -> Result<String, StorageError> {
+        Ok(self
+            .conn()
+            .query_row("SELECT retry_policy FROM jobs WHERE id=?1", [job_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .unwrap_or_default())
     }
 
     /// Kuyruk özeti. Sayımlar tablodan; hiçbir alan tahmin edilmez.
@@ -636,11 +932,16 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         drop(stmt);
         let total = by_state.iter().map(|s| s.count).sum();
-        let due_now: i64 = self.conn().query_row(
-            "SELECT COUNT(*) FROM jobs WHERE state='queued' AND (next_run_at IS NULL OR next_run_at<=?1)",
-            [&now_text],
-            |r| r.get(0),
-        )?;
+        // Sahiplenilebilir durumlar tablodan gelir (tek kaynak), sorgu durum
+        // başına tek eşitlik kullanır: `state IN (...)` indeksi kullanmıyordu.
+        let mut due_now = 0i64;
+        for state in job_state::CLAIMABLE {
+            due_now += self.conn().query_row(
+                "SELECT COUNT(*) FROM jobs WHERE state=?1 AND (next_run_at IS NULL OR next_run_at<=?2)",
+                params![state, &now_text],
+                |r| r.get::<_, i64>(0),
+            )?;
+        }
         let oldest_queued_at: Option<String> = self
             .conn()
             .query_row(
@@ -650,8 +951,10 @@ impl Database {
             )
             .optional()?
             .flatten();
+        // Bağımlılığı düşen iş artık `canceled` (hiç çalışmadı); sayı yine
+        // görünür olsun diye hata kodu üzerinden sayılır.
         let blocked_by_dependency: i64 = self.conn().query_row(
-            "SELECT COUNT(*) FROM jobs WHERE state='failed' AND error_code IN ('E_JOB_DEPENDENCY_ABORTED','E_JOB_DEPENDENCY_MISSING')",
+            "SELECT COUNT(*) FROM jobs WHERE state='canceled' AND error_code IN ('E_JOB_DEPENDENCY_ABORTED','E_JOB_DEPENDENCY_MISSING')",
             [],
             |r| r.get(0),
         )?;
@@ -683,6 +986,56 @@ enum DependencyState {
     Aborted(&'static str),
 }
 
+/// Bitirme türü: başarı, kısmi başarı (açık eksik listesi), hata.
+#[derive(Debug, Clone, Copy)]
+enum FinishKind<'a> {
+    Success,
+    Partial(&'a str),
+    Failure(&'a str),
+}
+
+/// Bağımlılığı çözülmüş `blocked` işleri açar, bağımlılığı düşmüş olanları
+/// kapatır. `blocked_reason='dependency'` olanlar taranır: engel nedeni başka
+/// olan iş (parola/kota) kendiliğinden açılmaz — kullanıcı `unblock_job` çağırır.
+fn release_dependency_blocked(
+    tx: &rusqlite::Transaction<'_>,
+    now_text: &str,
+) -> Result<(), StorageError> {
+    let mut stmt = tx.prepare(&format!(
+        "SELECT {JOB_COLUMNS},dependency_ids FROM jobs WHERE state='blocked' AND blocked_reason='dependency'"
+    ))?;
+    let rows: Vec<(JobRow, String)> = stmt
+        .query_map([], |row| {
+            let job = map_job(row)?;
+            let deps: String = row.get(18)?;
+            Ok((job, deps))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    for (job, deps) in rows {
+        match dependency_state(tx, &deps)? {
+            DependencyState::Waiting => {}
+            DependencyState::Ready => {
+                ensure_transition("blocked", "queued")?;
+                tx.execute(
+                    "UPDATE jobs SET state='queued', error_code=NULL, next_run_at=?2, updated_at=?2
+                     WHERE id=?1 AND state='blocked'",
+                    params![job.id, now_text],
+                )?;
+            }
+            DependencyState::Aborted(code) => {
+                ensure_transition("blocked", "canceled")?;
+                tx.execute(
+                    "UPDATE jobs SET state='canceled', error_code=?2, completed_at=?3, updated_at=?3
+                     WHERE id=?1 AND state='blocked'",
+                    params![job.id, code, now_text],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn dependency_state(
     tx: &rusqlite::Transaction<'_>,
     raw: &str,
@@ -697,8 +1050,9 @@ fn dependency_state(
             .query_row("SELECT state FROM jobs WHERE id=?1", [&id], |r| r.get(0))
             .optional()?;
         match state.as_deref() {
-            Some("succeeded") => {}
-            Some("failed" | "cancelled") => {
+            // `partial` çıktı üretir (eksik listesiyle) — bağımlı iş çalışabilir.
+            Some("completed" | "partial") => {}
+            Some("failed" | "canceled") => {
                 return Ok(DependencyState::Aborted("E_JOB_DEPENDENCY_ABORTED"))
             }
             Some(_) => waiting = true,
@@ -782,7 +1136,7 @@ mod tests {
             .is_empty());
 
         let done = db.complete_job(&first, "worker-a", at(1)).expect("bitir");
-        assert_eq!(done.state, "succeeded");
+        assert_eq!(done.state, "completed");
         assert_eq!(done.progress, 1.0);
         assert!(done.completed_at.is_some());
         assert!(done.lease_owner.is_none());
@@ -836,17 +1190,18 @@ mod tests {
         db.fail_job(&parent, "w", "E_PARSE", false, at(1))
             .expect("başarısız");
 
-        // Ebeveyn başarısız olunca bağımlı işler beklemez, `failed` olur.
+        // Ebeveyn başarısız olunca bağımlı işler beklemez, `canceled` olur
+        // (hiç çalışmadılar: "failed" demek yarım kalmış iş görüntüsü verirdi).
         let claimed = db.claim_jobs("w", 10, 60, &[], at(2)).expect("sahiplen");
         assert!(claimed.is_empty());
         let child_row = db.get_job(&child).expect("oku").expect("var");
-        assert_eq!(child_row.state, "failed");
+        assert_eq!(child_row.state, "canceled");
         assert_eq!(
             child_row.error_code.as_deref(),
             Some("E_JOB_DEPENDENCY_ABORTED")
         );
         let other_row = db.get_job(&other).expect("oku").expect("var");
-        assert_eq!(other_row.state, "failed");
+        assert_eq!(other_row.state, "canceled");
         let summary = db.job_queue_summary().expect("özet");
         assert_eq!(summary.blocked_by_dependency, 2);
     }
@@ -898,20 +1253,21 @@ mod tests {
         let (db, case_id) = db();
         let queued = enqueue(&db, &case_id, "q", 0);
         let result = db.cancel_job(&queued, at(0)).expect("iptal");
-        assert_eq!(result.outcome, "cancelled");
-        assert_eq!(result.job.state, "cancelled");
+        assert_eq!(result.outcome, "canceled");
+        assert_eq!(result.job.state, "canceled");
         assert!(result.job.completed_at.is_some());
 
         let running = enqueue(&db, &case_id, "r", 0);
         db.claim_jobs("w", 1, 60, &[], at(1)).expect("sahiplen");
         let result = db.cancel_job(&running, at(2)).expect("iptal isteği");
         assert_eq!(result.outcome, "requested");
-        assert_eq!(result.job.state, "running");
+        // `running → canceling`: süreç gerçekten durmadan "iptal tamam" denmez.
+        assert_eq!(result.job.state, "canceling");
         assert!(result.job.cancel_requested_at.is_some());
 
-        // Yürütücü bitirince sonuç `succeeded` değil `cancelled` olur.
+        // Yürütücü bitirince sonuç `completed` değil `canceled` olur.
         let finished = db.complete_job(&running, "w", at(3)).expect("bitir");
-        assert_eq!(finished.state, "cancelled");
+        assert_eq!(finished.state, "canceled");
         assert_eq!(finished.error_code.as_deref(), Some("E_JOB_CANCELLED"));
 
         let err = db.cancel_job(&running, at(4)).expect_err("terminal iş");
@@ -935,24 +1291,63 @@ mod tests {
             .expect("iptal işareti");
 
         let report = db.recover_stale_jobs(at(0)).expect("kurtar");
+        // §17.6 iki adım: önce `interrupted`, sonra yeniden doğrulama.
         assert_eq!(report.interrupted, 1);
-        assert_eq!(report.cancelled, 1);
+        assert_eq!(report.requeued, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.canceled, 1);
         assert_eq!(report.interrupted_job_ids, vec![interrupted.clone()]);
 
         let row = db.get_job(&interrupted).expect("oku").expect("var");
-        assert_eq!(row.state, "retry_wait");
-        assert_eq!(row.error_code.as_deref(), Some("E_JOB_INTERRUPTED"));
+        // Bütçe kaldığı için yeniden sıraya alındı (`interrupted → queued`).
+        assert_eq!(row.state, "queued");
+        assert_eq!(
+            row.error_code, None,
+            "kesinti kodu başarısızlık gibi kalmaz"
+        );
         assert!(row.lease_owner.is_none());
         // Kesinti deneme sayısını artırmaz, bütçeyi de sıfırlamaz.
         assert_eq!(row.attempt_count, 1);
+        assert_eq!(
+            db.get_job(&cancelled).expect("oku").expect("var").state,
+            "canceled"
+        );
 
-        // Kurtarılan iş hemen yeniden sahiplenilebilir.
+        // Kurtarılan iş hemen yeniden sahiplenilebilir; numara sürer.
         let claimed = db
             .claim_jobs("w2", 1, 60, &[], at(1))
             .expect("yeniden sahiplen");
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].id, interrupted);
         assert_eq!(claimed[0].attempt_count, 2);
+        let attempt_nos: Vec<i64> = db
+            .conn()
+            .prepare("SELECT attempt_no FROM job_attempts WHERE job_id=?1 ORDER BY attempt_no")
+            .expect("hazırla")
+            .query_map([&interrupted], |r| r.get(0))
+            .expect("sorgu")
+            .collect::<Result<_, _>>()
+            .expect("satır");
+        assert_eq!(attempt_nos, vec![1, 2]);
+    }
+
+    #[test]
+    fn recovery_of_exhausted_budget_ends_in_failed() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "b", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        // Bütçe bitti (3/3): kesinti yeniden sıraya almaz, `failed` yazar.
+        db.conn()
+            .execute("UPDATE jobs SET attempt_count=3 WHERE id=?1", [&job])
+            .expect("sayaç");
+        set_lease(&db, &job, Some(at(-10)));
+        let report = db.recover_stale_jobs(at(0)).expect("kurtar");
+        assert_eq!(report.interrupted, 1);
+        assert_eq!(report.requeued, 0);
+        assert_eq!(report.failed, 1);
+        let row = db.get_job(&job).expect("oku").expect("var");
+        assert_eq!(row.state, "failed");
+        assert_eq!(row.error_code.as_deref(), Some("E_JOB_RETRIES"));
     }
 
     #[test]
@@ -1036,7 +1431,7 @@ mod tests {
         let running = after
             .by_state
             .iter()
-            .find(|s| s.state == "succeeded")
+            .find(|s| s.state == "completed")
             .map(|s| s.count);
         assert_eq!(running, Some(1));
     }
@@ -1140,5 +1535,183 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// Şema kapısı: tabloda (tek kaynakta) olan her durum `jobs.state` CHECK
+    /// kümesinde yazılabilir olmalı. Tablo ile şema ayrışırsa bu test düşer —
+    /// bir turda tam bu ayrışma yaşandı (CHECK kümesi 7 eski adı taşıyordu).
+    #[test]
+    fn schema_check_covers_every_spec_state() {
+        let (db, _case) = db();
+        let schema: String = db
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("şema");
+        for (state, _) in job_state::all_states() {
+            assert!(
+                schema.contains(&format!("'{state}'")),
+                "{state} CHECK kümesinde yok: {schema}"
+            );
+        }
+        for legacy in ["'leased'", "'succeeded'", "'cancelled'"] {
+            assert!(
+                !schema.contains(legacy),
+                "eski ad {legacy} hâlâ şemada: yeni satırlar yazılamaz"
+            );
+        }
+        // Tablodaki her geçiş gerçekten yazılabiliyor mu: en azından hedef adlar
+        // CHECK kümesinde olmalı (yukarıdaki döngü kapsıyor), kaynak adlar da.
+        for (_, nexts) in job_state::all_states() {
+            for next in *nexts {
+                assert!(schema.contains(&format!("'{next}'")), "{next} eksik");
+            }
+        }
+    }
+
+    /// `running → blocked → queued`: engel nedeni yazılır, kira bırakılır ve
+    /// engel kalkınca iş yeniden sahiplenilebilir (şartname §17.2).
+    #[test]
+    fn blocked_job_keeps_reason_and_can_be_released() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "p", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        let blocked = db.block_job(&job, "w", "password", at(1)).expect("engelle");
+        assert_eq!(blocked.state, "blocked");
+        assert_eq!(blocked.blocked_reason.as_deref(), Some("password"));
+        assert!(blocked.lease_owner.is_none(), "kira bırakılmalı");
+        // Engelli iş sahiplenilmez.
+        assert!(db
+            .claim_jobs("w2", 5, 60, &[], at(2))
+            .expect("sahiplen")
+            .is_empty());
+        let released = db.unblock_job(&job, at(3)).expect("engeli kaldır");
+        assert_eq!(released.state, "queued");
+        assert_eq!(
+            released.blocked_reason.as_deref(),
+            Some("password"),
+            "neden kayıt olarak kalır"
+        );
+        let claimed = db.claim_jobs("w3", 5, 60, &[], at(4)).expect("sahiplen");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, job);
+    }
+
+    /// Doğrulama yolu: `running → validating` açık adım, sonuç `partial`.
+    /// `begun` çağrısı kira sahibini denetler.
+    #[test]
+    fn validation_step_and_partial_result_are_recorded() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "v", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        let validating = db.begin_validation(&job, "w", at(1)).expect("doğrula");
+        assert_eq!(validating.state, "validating");
+        let err = db
+            .begin_validation(&job, "other", at(2))
+            .expect_err("yabancı sahip doğrulayamaz");
+        assert_eq!(err.code(), "E_JOB_LEASE");
+
+        let partial = db
+            .complete_job_partial(&job, "w", "E_PARSE_PARTIAL", at(3))
+            .expect("kısmi");
+        assert_eq!(partial.state, "partial");
+        assert_eq!(partial.error_code.as_deref(), Some("E_PARSE_PARTIAL"));
+        assert!(partial.completed_at.is_some());
+        assert_ne!(partial.progress, 1.0, "kısmi çıktı tam sayılmaz");
+
+        // Doğrulamadaki hata tekrar denenmez (validating → failed).
+        let second = enqueue(&db, &case_id, "v2", 0);
+        db.claim_jobs("w", 1, 60, &[], at(10)).expect("sahiplen");
+        db.begin_validation(&second, "w", at(11)).expect("doğrula");
+        let failed = db
+            .fail_job(&second, "w", "E_VERIFY", true, at(12))
+            .expect("hata");
+        assert_eq!(failed.state, "failed");
+        assert_eq!(
+            failed.next_run_at, None,
+            "doğrulama hatası yeniden beklemez"
+        );
+    }
+
+    /// Kullanıcı yeniden denemesi: `failed → queued`, bütçe sıfırlanır ama
+    /// `job_attempts` numaralandırması sürer (geçmiş silinmez).
+    #[test]
+    fn user_retry_after_failure_restarts_budget_and_keeps_history() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "f", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        db.fail_job(&job, "w", "E_PARSE", false, at(1))
+            .expect("hata");
+        assert_eq!(db.get_job(&job).expect("oku").expect("var").state, "failed");
+        let err = db.cancel_job(&job, at(2)).expect_err("terminal iş");
+        assert_eq!(err.code(), "E_JOB_STATE");
+
+        let retried = db.retry_failed_job(&job, at(3)).expect("yeniden dene");
+        assert_eq!(retried.state, "queued");
+        assert_eq!(retried.attempt_count, 0, "yeni bütçe");
+        assert_eq!(retried.error_code, None);
+        assert_eq!(retried.completed_at, None);
+
+        let claimed = db.claim_jobs("w2", 1, 60, &[], at(4)).expect("sahiplen");
+        assert_eq!(claimed.len(), 1);
+        let attempt_nos: Vec<i64> = db
+            .conn()
+            .prepare("SELECT attempt_no FROM job_attempts WHERE job_id=?1 ORDER BY attempt_no")
+            .expect("hazırla")
+            .query_map([&job], |r| r.get(0))
+            .expect("sorgu")
+            .collect::<Result<_, _>>()
+            .expect("satır");
+        assert_eq!(attempt_nos, vec![1, 2], "numara artar, sıfırdan başlamaz");
+    }
+
+    /// Bağımlılığı bekleyen iş `blocked` (queued değil) ve ebeveyn bitince
+    /// kendiliğinden açılır: kuyruk "sessizce bekleyen" satır bırakmaz.
+    #[test]
+    fn waiting_child_is_blocked_and_released_by_parent_completion() {
+        let (db, case_id) = db();
+        let parent = enqueue(&db, &case_id, "parent", 0);
+        let child = enqueue(&db, &case_id, "child", 0);
+        db.conn()
+            .execute(
+                "UPDATE jobs SET dependency_ids=?2 WHERE id=?1",
+                params![child, serde_json::json!([parent]).to_string()],
+            )
+            .expect("bağımlılık");
+        let claimed = db.claim_jobs("w", 10, 60, &[], at(0)).expect("sahiplen");
+        assert_eq!(claimed.len(), 1, "yalnız ebeveyn sahiplenilir");
+        let blocked = db.get_job(&child).expect("oku").expect("var");
+        assert_eq!(blocked.state, "blocked");
+        assert_eq!(blocked.blocked_reason.as_deref(), Some("dependency"));
+        assert!(blocked.next_run_at.is_some());
+
+        db.complete_job(&parent, "w", at(1)).expect("bitir");
+        let claimed = db.claim_jobs("w", 10, 60, &[], at(2)).expect("sahiplen");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, child);
+    }
+
+    /// Durum makinesi kapısı: tabloda olmayan ok `E_JOB_STATE` ile reddedilir
+    /// (SQL'e hiç gitmeden).
+    #[test]
+    fn illegal_transitions_are_rejected_by_the_machine() {
+        assert!(!job_state::allowed("validating", "retry_wait"));
+        assert!(!job_state::allowed("completed", "queued"));
+        assert!(
+            !job_state::allowed("running", "completed"),
+            "ara ad validating olmalı"
+        );
+        assert!(!job_state::allowed("interrupted", "canceled"));
+        assert!(
+            !job_state::allowed("blocked", "running"),
+            "önce queued gerekir"
+        );
+        // ve gerçekten var olanlar
+        assert!(job_state::allowed("running", "validating"));
+        assert!(job_state::allowed("canceling", "canceled"));
+        assert!(job_state::allowed("failed", "queued"));
     }
 }

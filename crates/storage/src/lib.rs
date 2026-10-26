@@ -19,6 +19,7 @@ mod export_coverage;
 mod exports;
 mod gc;
 mod intext_quotes;
+pub mod job_state;
 mod marks;
 mod notes;
 mod parsing;
@@ -242,9 +243,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0020_job_queue",
         sql: include_str!("migrations/0020_job_queue.sql"),
     },
+    Migration {
+        version: 21,
+        name: "0021_job_states",
+        sql: include_str!("migrations/0021_job_states.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 20;
+pub const CURRENT_SCHEMA_VERSION: u32 = 21;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -448,7 +454,24 @@ impl Database {
 
     /// Bekleyen migrasyonları sırayla uygular. Uygulanmış bir migrasyonun
     /// checksum'ı değişmişse durur: dosya sonradan düzenlenmiş demektir.
+    ///
+    /// Yabancı anahtar denetimi migrasyon boyunca **kapatılır**: tablo yeniden
+    /// kuran bir migrasyonda `DROP TABLE <üst>` (ör. `jobs`) çocuk satırları
+    /// `ON DELETE CASCADE` ile siler — `foreign_keys` açıkken bu ölçüldü ve
+    /// `job_attempts` boşaldı. `PRAGMA foreign_keys` işlem içinde değişmediği
+    /// için kapatma işlemden önce yapılır; commit'ten önce her migrasyonun
+    /// ardından `PRAGMA foreign_key_check` koşar ve ihlal varsa migrasyon
+    /// geri alınır. Dönüşte denetim yeniden açılır (hata yolunda da).
     pub fn migrate(&mut self) -> Result<MigrationOutcome, StorageError> {
+        self.conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+        let outcome = self.migrate_without_foreign_keys();
+        let restored = self.conn.execute_batch("PRAGMA foreign_keys = ON;");
+        let outcome = outcome?;
+        restored?;
+        Ok(outcome)
+    }
+
+    fn migrate_without_foreign_keys(&mut self) -> Result<MigrationOutcome, StorageError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -483,6 +506,13 @@ impl Database {
                             version: migration.version,
                             source,
                         })?;
+                    let violations = foreign_key_violations(&tx)?;
+                    if violations > 0 {
+                        return Err(StorageError::MigrationForeignKeys {
+                            version: migration.version,
+                            violations,
+                        });
+                    }
                     tx.execute(
                         "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?1, ?2, ?3, ?4)",
                         rusqlite::params![
@@ -726,6 +756,19 @@ fn classify_first_read_failure(err: &rusqlite::Error) -> StorageError {
         }
     }
     StorageError::BadKey
+}
+
+/// `PRAGMA foreign_key_check` ihlal sayısı. Migrasyon commit'inden önce
+/// çağrılır: tablo yeniden kuran bir migrasyon yetim satır bırakırsa
+/// migrasyon geri alınır (sessizce bozuk kasa yazılmaz).
+fn foreign_key_violations(tx: &rusqlite::Transaction<'_>) -> Result<i64, StorageError> {
+    let mut stmt = tx.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = stmt.query([])?;
+    let mut count = 0i64;
+    while rows.next()?.is_some() {
+        count += 1;
+    }
+    Ok(count)
 }
 
 fn apply_key_and_pragmas(conn: &Connection, key: &DatabaseKey) -> Result<(), StorageError> {

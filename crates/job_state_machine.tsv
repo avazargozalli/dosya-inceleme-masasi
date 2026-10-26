@@ -1,0 +1,30 @@
+# Şartname §17.2 — iş durum makinesi (tek kaynak).
+#
+# Biçim: `<durum>\t<izinli sonraki durumlar>`. Boş sağ taraf = terminal.
+# `crates/jobs` (kurallar) ve `crates/storage` (veritabanı ayağı) bu dosyayı
+# `include_str!` ile okur; iki kopya tablo tutulmaz, ayrışma testle değil
+# yapısal olarak imkânsızdır.
+#
+# Şartname §17.2 tablosunun birebir karşılığı:
+#   queued      → running, blocked, canceled
+#   blocked     → queued, canceled
+#   running     → validating, blocked, retry_wait, interrupted, failed, canceling
+#   validating  → completed, partial, failed, canceling
+#   retry_wait  → queued, failed, canceled
+#   canceling   → canceled, interrupted
+#   interrupted → queued, partial, failed
+#   partial     → (yeni alt iş AYRI satırdır; bu satır terminal)
+#   completed   → terminal
+#   failed      → queued (kullanıcı yeniden denemesi yeni attempt açar)
+#   canceled    → terminal
+queued	running,blocked,canceled
+blocked	queued,canceled
+running	validating,blocked,retry_wait,interrupted,failed,canceling
+validating	completed,partial,failed,canceling
+retry_wait	queued,failed,canceled
+canceling	canceled,interrupted
+interrupted	queued,partial,failed
+partial	
+completed	
+failed	queued
+canceled	

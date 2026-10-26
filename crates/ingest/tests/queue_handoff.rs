@@ -74,11 +74,11 @@ fn import_opens_a_job_and_the_parse_path_can_claim_it() {
         .expect("tekrar")
         .is_none());
 
-    // 4) Bitince kuyruk boşalır; iş `succeeded`.
+    // 4) Bitince kuyruk boşalır; iş `completed`.
     let done = db
         .complete_job(&claimed.id, owner, dim_storage::queue::now_utc())
         .expect("bitir");
-    assert_eq!(done.state, "succeeded");
+    assert_eq!(done.state, "completed");
     let summary = db.job_queue_summary().expect("özet");
     assert_eq!(summary.total, 1);
     assert_eq!(summary.due_now, 0);

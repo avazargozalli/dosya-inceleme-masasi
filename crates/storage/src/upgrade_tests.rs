@@ -390,3 +390,110 @@ fn rollback_refuses_corrupt_backup_and_leaves_vault_untouched() {
     );
     assert_eq!(case_titles(&path), vec!["Eski dosya".to_string()]);
 }
+
+/// v20 kasası: eski durum adlarıyla (`leased`) bir iş ve bir deneme kaydı.
+fn create_v20_with_legacy_job(path: &Path) {
+    let conn = Connection::open(path).expect("dosya açılır");
+    apply_key_and_pragmas(&conn, &key()).expect("anahtar");
+    parsing::register_search_functions(&conn).expect("arama fonksiyonları");
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           name TEXT NOT NULL,
+           checksum TEXT NOT NULL,
+           applied_at TEXT NOT NULL
+         );",
+    )
+    .expect("sürüm tablosu");
+    for migration in MIGRATIONS.iter().filter(|m| m.version <= 20) {
+        conn.execute_batch(migration.sql).expect("eski migrasyon");
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, checksum, applied_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                migration.version,
+                migration.name,
+                hex::encode(Sha256::digest(migration.sql.as_bytes())),
+                now_iso()
+            ],
+        )
+        .expect("sürüm kaydı");
+    }
+    conn.execute(
+        "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+         VALUES ('c-eski','Eski dosya','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        [],
+    )
+    .expect("dosya");
+    conn.execute(
+        "INSERT INTO jobs (id,type,scope,case_id,input_fingerprint,idempotency_key,state,
+                           attempt_count,next_run_at,lease_owner,lease_until,created_at,updated_at)
+         VALUES ('j-legacy','parse_document','case','c-eski','fp','parse:v1','leased',
+                 1,'2026-01-01T00:00:00Z','worker-eski','2026-01-01T00:05:00Z',
+                 '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        [],
+    )
+    .expect("iş");
+    conn.execute(
+        "INSERT INTO job_attempts (id,job_id,attempt_no,started_at)
+         VALUES ('a-1','j-legacy',1,'2026-01-01T00:00:00Z')",
+        [],
+    )
+    .expect("deneme");
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+}
+
+/// 0021 `jobs` tablosunu yeniden yazar (SQLite `CHECK` kısıtını `ALTER` ile
+/// değiştirmiyor). Yeniden yazma sırasında yabancı anahtar denetimi açık
+/// olsaydı eski tablonun kaldırılması çocuk `job_attempts` satırlarını
+/// `ON DELETE CASCADE` ile **silerdi** (ölçüldü: 1 → 0). Kanıt: güncelleme
+/// sonrası deneme satırı yerinde, eski ad yeni ada eşlenmiş, denetim yeniden
+/// açık (yetim deneme yazılamaz).
+#[test]
+fn job_state_rewrite_keeps_attempts_and_remaps_legacy_states() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    create_v20_with_legacy_job(&path);
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let job = db.get_job("j-legacy").expect("oku").expect("iş var");
+    assert_eq!(job.state, "running", "leased → running eşlenmeli");
+    assert_eq!(job.blocked_reason, None);
+    let attempts: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM job_attempts WHERE job_id='j-legacy'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("denemeler");
+    assert_eq!(
+        attempts, 1,
+        "tablo yeniden yazılırken deneme satırları silinmemeli"
+    );
+
+    // Denetim gerçekten yeniden açık: yetim deneme yazılamaz.
+    let orphan = db.conn().execute(
+        "INSERT INTO job_attempts (id,job_id,attempt_no,started_at)
+         VALUES ('a-yetim','olmayan-is',1,'2026-01-01T00:00:00Z')",
+        [],
+    );
+    assert!(
+        orphan.is_err(),
+        "migrasyon sonrası foreign_keys açık olmalı"
+    );
+
+    // Ve yeni durumlar gerçekten yazılabiliyor (CHECK kümesi tamam).
+    for state in [
+        "blocked",
+        "validating",
+        "canceling",
+        "interrupted",
+        "partial",
+    ] {
+        db.conn()
+            .execute("UPDATE jobs SET state=?1 WHERE id='j-legacy'", [state])
+            .expect("yeni durum yazılabilmeli");
+    }
+}

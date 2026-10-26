@@ -23,17 +23,17 @@ use dim_storage::{
     ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey,
     Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
     EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck, InTextQuoteInput,
-    JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiRun, NewAnchor, NewCase, NewCitationCheck,
-    NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
-    NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
-    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
-    OutboxEventRow, PageRow, ParseRun, PrecedentBibliography, PrecedentDocumentText,
-    PrecedentNoteRow, PrecedentRow, PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms,
-    PrecedentVersionRow, ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, ReminderEnqueueResult, ReminderRow, ReviewCommitResult,
-    ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode,
-    SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow,
-    TransferConsentRow,
+    JobCancelResult, JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiRun, NewAnchor, NewCase,
+    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
+    NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
+    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
+    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
+    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
+    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SearchTotal,
+    SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -178,13 +178,17 @@ fn remember(
         .recover_stale_jobs(time::OffsetDateTime::now_utc())
         .unwrap_or(dim_storage::JobRecovery {
             interrupted: 0,
-            cancelled: 0,
+            requeued: 0,
+            failed: 0,
+            canceled: 0,
             interrupted_job_ids: Vec::new(),
         });
-    if recovery.interrupted > 0 || recovery.cancelled > 0 {
+    if recovery.interrupted > 0 || recovery.canceled > 0 {
         let metadata = serde_json::json!({
             "interrupted": recovery.interrupted,
-            "cancelled": recovery.cancelled,
+            "requeued": recovery.requeued,
+            "failed": recovery.failed,
+            "canceled": recovery.canceled,
         });
         let _ = db.append_audit("job_queue", None, "recover", "local-user", &metadata);
     }
@@ -1755,6 +1759,9 @@ pub fn document_parse(
         )
         .ok()
         .flatten();
+    // Ayrıştırma koşusunun durumu (`succeeded`/`partial`) kuyruğa da yansır:
+    // uyarılı çıktı `completed` değil `partial` yazılır.
+    let mut parse_status: Option<String> = None;
     let outcome = (|| -> Result<ParseResultView, ApiError> {
         let blob = db
             .blob_for_version(&version_id)?
@@ -1854,6 +1861,7 @@ pub fn document_parse(
             "partial"
         };
         db.finish_parse_run(&run.id, status, &extraction.warnings)?;
+        parse_status = Some(status.to_string());
 
         Ok(ParseResultView {
             parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
@@ -1865,18 +1873,37 @@ pub fn document_parse(
 
     // Kuyruk sonucu ayrıştırma sonucundan ayrı yazılır: iş kaydı düşse bile
     // kullanıcının belgesi/parse koşusu yerinde kalır (kuyruk ikincil kayıttır).
+    // Şartname §17.2 yolu: `running → validating → completed|partial`.
     match (job.as_ref(), &outcome) {
         (Some(job), Ok(_)) => {
-            let _ = db.complete_job(&job.id, &job_owner, time::OffsetDateTime::now_utc());
+            let now = time::OffsetDateTime::now_utc();
+            let _ = db.begin_validation(&job.id, &job_owner, now);
+            if parse_status.as_deref() == Some("partial") {
+                let _ = db.complete_job_partial(&job.id, &job_owner, "E_PARSE_PARTIAL", now);
+            } else {
+                let _ = db.complete_job(&job.id, &job_owner, now);
+            }
         }
         (Some(job), Err(err)) => {
-            let _ = db.fail_job(
-                &job.id,
-                &job_owner,
-                &err.code,
-                parse_failure_is_retryable(&err.code),
-                time::OffsetDateTime::now_utc(),
-            );
+            // Parola bekleyen belge hata değil **engel**dir: `running → blocked`.
+            // Kullanıcı parolayla yeniden ayrıştırınca iş `blocked → queued`
+            // üzerinden yeniden sahiplenilir (şartname §17.2 "parola bekliyor").
+            if err.code == "E_PDF_PASSWORD" {
+                let _ = db.block_job(
+                    &job.id,
+                    &job_owner,
+                    "password",
+                    time::OffsetDateTime::now_utc(),
+                );
+            } else {
+                let _ = db.fail_job(
+                    &job.id,
+                    &job_owner,
+                    &err.code,
+                    parse_failure_is_retryable(&err.code),
+                    time::OffsetDateTime::now_utc(),
+                );
+            }
         }
         (None, _) => {}
     }
@@ -1922,10 +1949,61 @@ pub fn job_queue_recover(state: State<'_, AppState>) -> Result<JobRecovery, ApiE
     let report = db.recover_stale_jobs(time::OffsetDateTime::now_utc())?;
     let metadata = serde_json::json!({
         "interrupted": report.interrupted,
-        "cancelled": report.cancelled,
+        "requeued": report.requeued,
+        "failed": report.failed,
+        "canceled": report.canceled,
     });
     db.append_audit("job_queue", None, "recover", "local-user", &metadata)?;
     Ok(report)
+}
+
+/// Kuyruktaki bir işi iptal eder. Sırada bekleyen hemen, yürüyen `canceling`
+/// işaretine geçer; "iptal tamam" demek için süreç sonucu beklenir.
+#[tauri::command]
+pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCancelResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let result = db.cancel_job(&job_id, time::OffsetDateTime::now_utc())?;
+    db.append_audit(
+        "job_queue",
+        None,
+        "cancel",
+        "local-user",
+        &serde_json::json!({ "outcome": result.outcome, "state": result.job.state }),
+    )?;
+    Ok(result)
+}
+
+/// Başarısız işi kullanıcı isteğiyle yeniden sıraya alır (`failed → queued`).
+#[tauri::command]
+pub fn job_retry(state: State<'_, AppState>, job_id: String) -> Result<JobRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let row = db.retry_failed_job(&job_id, time::OffsetDateTime::now_utc())?;
+    db.append_audit(
+        "job_queue",
+        None,
+        "retry",
+        "local-user",
+        &serde_json::json!({ "state": row.state }),
+    )?;
+    Ok(row)
+}
+
+/// Engellenen işin engelini kaldırır (`blocked → queued`).
+#[tauri::command]
+pub fn job_unblock(state: State<'_, AppState>, job_id: String) -> Result<JobRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let row = db.unblock_job(&job_id, time::OffsetDateTime::now_utc())?;
+    db.append_audit(
+        "job_queue",
+        None,
+        "unblock",
+        "local-user",
+        &serde_json::json!({ "state": row.state }),
+    )?;
+    Ok(row)
 }
 
 #[derive(Serialize)]

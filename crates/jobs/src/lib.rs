@@ -1,21 +1,33 @@
 //! İş kuyruğu kuralları. Veritabanı erişimi yoktur; `jobs` tablosundaki
 //! geçişler burada doğrulanır. Tek yazıcı ilkesi çağıran katmandadır.
+//!
+//! Durum kümesi ve geçişler **şartname §17.2**'nin birebir karşılığıdır ve tek
+//! kaynaktan (`crates/job_state_machine.tsv`) okunur: aynı dosyayı
+//! `dim-storage` da okur, böylece kural ile veritabanı ayağı ayrışamaz.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+/// §17.2 tablosu; `dim-storage` aynı dosyayı okur.
+const STATE_TABLE: &str = include_str!("../../job_state_machine.tsv");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     Queued,
-    Leased,
+    Blocked,
     Running,
-    Succeeded,
-    Failed,
-    Cancelled,
+    Validating,
     RetryWait,
+    Canceling,
+    Interrupted,
+    Partial,
+    Completed,
+    Failed,
+    Canceled,
 }
 
 impl JobState {
@@ -23,32 +35,49 @@ impl JobState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
-            Self::Leased => "leased",
+            Self::Blocked => "blocked",
             Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
+            Self::Validating => "validating",
             Self::RetryWait => "retry_wait",
+            Self::Canceling => "canceling",
+            Self::Interrupted => "interrupted",
+            Self::Partial => "partial",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
         }
     }
 
+    /// Eski (0001–0020) satır adları. `0021` bunları yeniden yazar; eski bir
+    /// kasadan gelen satır yine de okunabilsin diye eşleme burada durur.
     #[must_use]
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    pub fn from_db(raw: &str) -> Option<Self> {
+        match raw {
+            "queued" => Some(Self::Queued),
+            "blocked" => Some(Self::Blocked),
+            "running" | "leased" => Some(Self::Running),
+            "validating" => Some(Self::Validating),
+            "retry_wait" => Some(Self::RetryWait),
+            "canceling" => Some(Self::Canceling),
+            "interrupted" => Some(Self::Interrupted),
+            "partial" => Some(Self::Partial),
+            "completed" | "succeeded" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "canceled" | "cancelled" => Some(Self::Canceled),
+            _ => None,
+        }
     }
 
-    /// İptal her aktif durumdan mümkündür; terminal durumdan geri dönüş yoktur.
+    /// Terminal: giden geçişi olmayan durum.
     #[must_use]
-    pub const fn can_transition_to(self, next: Self) -> bool {
-        use JobState::{Cancelled, Failed, Leased, Queued, RetryWait, Running, Succeeded};
-        matches!(
-            (self, next),
-            (Queued, Leased | Cancelled)
-                | (Leased, Running | Queued | RetryWait | Cancelled)
-                | (Running, Succeeded | Failed | RetryWait | Cancelled)
-                | (RetryWait, Queued | Cancelled)
-                | (Failed, RetryWait)
-        )
+    pub fn is_terminal(self) -> bool {
+        transitions_of(self.as_str()).is_some_and(<[_]>::is_empty)
+    }
+
+    /// Şartname tablosuna göre geçiş izni.
+    #[must_use]
+    pub fn can_transition_to(self, next: Self) -> bool {
+        transitions_of(self.as_str()).is_some_and(|nexts| nexts.contains(&next.as_str()))
     }
 
     pub fn transition(self, next: Self) -> Result<Self, JobError> {
@@ -61,6 +90,42 @@ impl JobState {
             })
         }
     }
+}
+
+/// Tablodaki bütün durumlar (tanım sırasıyla).
+#[must_use]
+pub fn all_states() -> &'static [(&'static str, &'static [&'static str])] {
+    static TABLE: OnceLock<Vec<(&'static str, &'static [&'static str])>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| {
+            STATE_TABLE
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#') && !line.trim().is_empty())
+                .map(|line| {
+                    let mut parts = line.split('\t');
+                    let from = parts.next().unwrap_or_default().trim();
+                    let nexts: Vec<&'static str> = parts
+                        .next()
+                        .unwrap_or_default()
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|part| !part.is_empty())
+                        .collect();
+                    (
+                        from,
+                        Box::leak(nexts.into_boxed_slice()) as &'static [&'static str],
+                    )
+                })
+                .collect()
+        })
+        .as_slice()
+}
+
+fn transitions_of(state: &str) -> Option<&'static [&'static str]> {
+    all_states()
+        .iter()
+        .find(|(name, _)| *name == state)
+        .map(|(_, nexts)| *nexts)
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -167,26 +232,103 @@ mod tests {
     use super::*;
     use time::macros::datetime;
 
+    /// Şartname §17.2 tablosunun birebir kopyası — kaynak dosya bozulursa ya da
+    /// biri "düzeltmeye" kalkarsa test düşer.
+    const SPEC: &[(&str, &[&str])] = &[
+        ("queued", &["running", "blocked", "canceled"]),
+        ("blocked", &["queued", "canceled"]),
+        (
+            "running",
+            &[
+                "validating",
+                "blocked",
+                "retry_wait",
+                "interrupted",
+                "failed",
+                "canceling",
+            ],
+        ),
+        (
+            "validating",
+            &["completed", "partial", "failed", "canceling"],
+        ),
+        ("retry_wait", &["queued", "failed", "canceled"]),
+        ("canceling", &["canceled", "interrupted"]),
+        ("interrupted", &["queued", "partial", "failed"]),
+        ("partial", &[]),
+        ("completed", &[]),
+        ("failed", &["queued"]),
+        ("canceled", &[]),
+    ];
+
     #[test]
-    fn terminal_states_do_not_move() {
-        for state in [JobState::Succeeded, JobState::Failed, JobState::Cancelled] {
-            assert!(state.is_terminal());
-            assert!(!state.can_transition_to(JobState::Running));
+    fn table_matches_spec_section_17_2() {
+        assert_eq!(all_states(), SPEC, "durum tablosu şartnameden ayrışmış");
+    }
+
+    #[test]
+    fn every_transition_is_reachable_and_checked() {
+        // 11 × 11 çiftinin tamamı tabloyla karşılaştırılır: eksik ya da fazla
+        // bir geçiş sessizce kabul edilmez.
+        for (from_name, nexts) in SPEC {
+            let from = JobState::from_db(from_name).expect("durum");
+            for (to_name, _) in SPEC {
+                let to = JobState::from_db(to_name).expect("durum");
+                assert_eq!(
+                    from.can_transition_to(to),
+                    nexts.contains(to_name),
+                    "{from_name} -> {to_name}"
+                );
+            }
         }
     }
 
     #[test]
-    fn cancel_is_allowed_from_running() {
-        assert_eq!(
-            JobState::Running.transition(JobState::Cancelled).unwrap(),
-            JobState::Cancelled
-        );
+    fn terminal_states_have_no_exit() {
+        for state in [JobState::Completed, JobState::Canceled, JobState::Partial] {
+            assert!(state.is_terminal(), "{} terminal olmalı", state.as_str());
+            assert!(!state.can_transition_to(JobState::Running));
+        }
+        // `failed` terminal sayılmaz: kullanıcı yeniden denemesi `queued` açar.
+        assert!(!JobState::Failed.is_terminal());
+        assert!(JobState::Failed.can_transition_to(JobState::Queued));
+        assert!(!JobState::Failed.can_transition_to(JobState::Running));
     }
 
     #[test]
-    fn succeeded_cannot_be_retried() {
-        let err = JobState::Succeeded
-            .transition(JobState::RetryWait)
+    fn spec_named_states_all_exist() {
+        // §17.2'nin istediği adlar; 0001'in eski adları artık üretilmiyor.
+        for name in [
+            "queued",
+            "blocked",
+            "running",
+            "validating",
+            "retry_wait",
+            "canceling",
+            "interrupted",
+            "partial",
+            "completed",
+            "failed",
+            "canceled",
+        ] {
+            assert!(JobState::from_db(name).is_some(), "{name} tanınmalı");
+        }
+        // Eski satırlar okunabilir ama yeni adda yazılır.
+        assert_eq!(JobState::from_db("leased"), Some(JobState::Running));
+        assert_eq!(JobState::from_db("succeeded"), Some(JobState::Completed));
+        assert_eq!(JobState::from_db("cancelled"), Some(JobState::Canceled));
+    }
+
+    #[test]
+    fn cancel_paths_follow_the_table() {
+        assert!(JobState::Queued.can_transition_to(JobState::Canceled));
+        assert!(JobState::Running.can_transition_to(JobState::Canceling));
+        assert!(JobState::Validating.can_transition_to(JobState::Canceling));
+        assert!(JobState::Canceling.can_transition_to(JobState::Canceled));
+        // Yürüyen iş doğrudan `canceled` olamaz: önce `canceling`.
+        assert!(!JobState::Running.can_transition_to(JobState::Canceled));
+        let err = JobState::Running
+            .transition(JobState::Canceled)
             .unwrap_err();
         assert_eq!(err.code(), "E_JOB_TRANSITION");
     }

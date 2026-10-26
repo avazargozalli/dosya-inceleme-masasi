@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, toApiError, type ApiError, type JobQueueView } from "../lib/api";
+import { api, toApiError, type ApiError, type JobQueueView, type JobRow } from "../lib/api";
 import {
+  jobActionLabel,
+  jobActions,
   jobMetaLine,
   jobStateBadgeClass,
   jobStateLabel,
@@ -9,12 +11,14 @@ import {
   queueAttention,
   queueSummaryLine,
   recoveryLine,
+  type JobAction,
 } from "../lib/jobs";
 
 /**
  * İş kuyruğu kartı: yalnız sayı ve durum gösterir; dosya adı, belge metni ve
- * sağlayıcı bilgisi taşımaz. "Bekleyen işleri kurtar" gerçek çekirdek
- * komutunu (`job_queue_recover`) çağırır — sadece görünen bir düğme değildir.
+ * sağlayıcı bilgisi taşımaz. Bütün düğmeler gerçek çekirdek komutunu çağırır
+ * (`job_queue_recover`, `job_cancel`, `job_retry`, `job_unblock`) — sadece
+ * görünen bir düğme yoktur.
  */
 export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
   const [view, setView] = useState<JobQueueView | null>(null);
@@ -48,7 +52,7 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
     setMessage(null);
     try {
       const report = await api.jobQueueRecover();
-      setMessage(recoveryLine(report.interrupted, report.cancelled));
+      setMessage(recoveryLine(report));
       setView(await api.jobQueueStatus());
     } catch (e) {
       setError(toApiError(e));
@@ -56,6 +60,36 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
       setBusy(false);
     }
   }, []);
+
+  const act = useCallback(
+    async (job: JobRow, action: JobAction) => {
+      setBusy(true);
+      setError(null);
+      setMessage(null);
+      try {
+        if (action === "cancel") {
+          const result = await api.jobCancel(job.id);
+          setMessage(
+            result.outcome === "canceled"
+              ? "İş iptal edildi (hiç çalışmadı)."
+              : "İptal istendi; iş sonucu bekleniyor — süreç durmadan \"iptal tamam\" denmez.",
+          );
+        } else if (action === "retry") {
+          await api.jobRetry(job.id);
+          setMessage("İş yeniden sıraya alındı; yeni deneme numarası açılacak.");
+        } else {
+          await api.jobUnblock(job.id);
+          setMessage("Engel kaldırıldı; iş yeniden sıraya alındı.");
+        }
+        setView(await api.jobQueueStatus());
+      } catch (e) {
+        setError(toApiError(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
 
   const summary = view?.summary ?? null;
   const attention = summary ? queueAttention(summary) : null;
@@ -94,22 +128,44 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
                   <th>Tür</th>
                   <th>Durum</th>
                   <th>Deneme</th>
+                  <th>Eylem</th>
                 </tr>
               </thead>
               <tbody>
-                {view.jobs.map((job) => (
-                  <tr key={job.id}>
-                    <td>{jobTypeLabel(job.jobType)}</td>
-                    <td>
-                      <span className={`badge ${jobStateBadgeClass(job.state)}`}>
-                        {jobStateLabel(job.state)}
-                      </span>
-                    </td>
-                    <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
-                      {jobMetaLine(job)}
-                    </td>
-                  </tr>
-                ))}
+                {view.jobs.map((job) => {
+                  const actions = jobActions(job);
+                  return (
+                    <tr key={job.id}>
+                      <td>{jobTypeLabel(job.jobType)}</td>
+                      <td>
+                        <span className={`badge ${jobStateBadgeClass(job.state)}`}>
+                          {jobStateLabel(job.state)}
+                        </span>
+                      </td>
+                      <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                        {jobMetaLine(job)}
+                      </td>
+                      <td>
+                        {actions.length === 0 ? (
+                          <span className="muted small">—</span>
+                        ) : (
+                          <div className="row" style={{ gap: 4 }}>
+                            {actions.map((action) => (
+                              <button
+                                key={action}
+                                className="btn"
+                                disabled={busy}
+                                onClick={() => void act(job, action)}
+                              >
+                                {jobActionLabel(action)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (
@@ -122,13 +178,15 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
               Bekleyen işleri kurtar
             </button>
             <span className="muted small">
-              Kurtarma, kirası dolmuş işleri yeniden sıraya alır; iptal istenmiş işleri kapatır.
+              Kurtarma, kesintiye uğramış işleri yeniden sıraya alır; iptal istenmiş
+              işleri kapatır.
             </span>
           </div>
           {message ? <div className="notice ok">{message}</div> : null}
           <p className="muted small" style={{ marginBottom: 0 }}>
-            Sınır: kuyruk yürütücüsü tek süreçlidir (kasa başına tek yazıcı). Kuyruk
-            gecikmesi ölçümü release derlemesinde yapılır; bu kart yalnız durumu gösterir.
+            Sınır: kuyruk yürütücüsü tek süreçlidir (kasa başına tek yazıcı). Parola
+            bekleyen belge işi "Engelli" kalır; parolayla yeniden ayrıştırınca sıraya
+            döner. Kuyruk gecikmesi ölçümü release derlemesinde yapılır.
           </p>
         </>
       ) : (
