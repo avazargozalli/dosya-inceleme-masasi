@@ -532,6 +532,32 @@ karşılayamadığı için her sahiplenmede geçici B-tree kuruyordu — sorgu d
 başına tek eşitliğe bölündü ve indeks `(state, priority DESC, created_at,
 next_run_at)` olarak düzeltildi. `EXPLAIN QUERY PLAN` testi bunu kalıcı tutar.
 
+### §17.2 durum makinesi sonrası yeniden ölçüm (2026-10-26, migration 0021)
+
+Durum kümesi şartnamenin tamamına çıkarıldı (`blocked`, `validating`,
+`canceling`, `interrupted`, `partial`, `completed`, `canceled`) ve sahiplenme
+yoluna iki iş eklendi: (1) bağımlılığı çözülmüş `blocked` işleri açan tarama,
+(2) `job_attempts` numarası için `MAX(attempt_no)` alt sorgusu. Aynı koşucu,
+aynı profil (400 iş + 40'lık parti), release, Apple M2:
+
+| Ölçüm | p50 | p95 | max | 0020'e göre |
+|---|---|---|---|---|
+| Sıraya koyma (`enqueue`) | **0,184 ms** | 0,265 ms | 5,1 ms | −0,035 ms (gürültü) |
+| Sahiplenme (`claim`) | **1,929 ms** | 4,084 ms | 8,2 ms | **+0,91 ms** |
+| Sahiplen→bitir döngüsü | **11,776 ms** | 16,644 ms | 101,9 ms | +0,41 ms |
+| Kuyruk beklemesi — seri, 400 iş | **2.375,7 ms** | 4.776,3 ms | 4.995,4 ms | +137 ms |
+| Kuyruk beklemesi — 4'lük parti, 40 iş | **19,987 ms** | 21,657 ms | 21,7 ms | −12 ms |
+
+Ham rapor: `docs/releases/F15/bench-queue-0021-2026-10-26.json`.
+
+Okuma: sahiplenme **iki katına yakın** (1,0 → 1,9 ms) çıktı; eklenen tarama boş
+kuyrukta bile bir sorgu + hazırlık maliyeti getiriyor. Mutlak değer hâlâ
+küçük (400 işte toplam ≈ 0,36 s) ve kuyruk beklemesinin baskın kısmı hâlâ
+seri yürütme (400 × 11,8 ms). Bu maliyet **bilinçli kabul edildi**: engelli iş
+`queued` gibi görünmüyor ve bağımlılığı bitince kendiliğinden açılıyor.
+Kuyruk ölçümü hâlâ **çekirdek** (Python worker/IPC/arayüz yok); 100k profilde
+yeniden koşulmadı.
+
 **Dürüst sınırlar:**
 - Ölçüm **çekirdek**: Python worker, IPC ve arayüz yok. Sentetik iş sabit 2 ms;
   gerçek ayrıştırma süresi belgeye göre değişir (B-01'de 1.000 belge 44–47 sn
