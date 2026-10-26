@@ -13,6 +13,8 @@
 
 mod api;
 mod local;
+#[cfg(test)]
+mod test_server;
 
 pub use api::ApiProvider;
 pub use local::{LocalProvider, DEFAULT_ENDPOINT as DEFAULT_LOCAL_ENDPOINT};

@@ -121,13 +121,10 @@ impl Provider for LocalProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
     use serial_test::serial;
 
     use super::*;
+    use crate::test_server::serve;
     use crate::ContextSegment;
 
     static SERVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -146,23 +143,6 @@ mod tests {
         }
     }
 
-    fn serve(body: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("dinle");
-        let address = listener.local_addr().expect("adres");
-        thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buffer = [0u8; 8192];
-                let _ = stream.read(&mut buffer);
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-        format!("http://{address}")
-    }
-
     #[test]
     #[serial]
     fn remote_endpoint_is_rejected() {
@@ -177,7 +157,10 @@ mod tests {
         let _guard = SERVER_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let endpoint = serve(r#"{"message":{"content":"{\"summary\":\"kira\"}"}}"#);
+        let endpoint = serve(
+            "200 OK",
+            r#"{"message":{"content":"{\"summary\":\"kira\"}"}}"#,
+        );
         let mut provider = LocalProvider::with_endpoint(&endpoint, "qwen").expect("provider");
         let candidate = provider.propose(&request()).expect("aday");
         assert_eq!(candidate.payload["summary"], "kira");

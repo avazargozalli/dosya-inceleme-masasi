@@ -139,13 +139,10 @@ impl Provider for ApiProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
     use serial_test::serial;
 
     use super::*;
+    use crate::test_server::serve;
     use crate::ContextSegment;
 
     /// Testler paralel çalışıyor; gerçek soket trafiğini sıraya al.
@@ -163,80 +160,6 @@ mod tests {
                 source_ref_json: None,
             }],
         }
-    }
-
-    /// İsteği **tamamen** okur (başlıklar + `Content-Length` kadar gövde).
-    ///
-    /// Tek `read` yeterli değildi: istemci gövdeyi iki TCP parçasında
-    /// gönderirse sunucu başlıkları okuyup hemen yanıtlayıp soketi kapatıyordu;
-    /// kapanan soket istemcinin kalan yazımına RST ile karşılık verip **yanıtı
-    /// düşürebiliyordu** (macOS CI'da `Transport`, ubuntu'da geçiyordu).
-    fn read_request(stream: &mut std::net::TcpStream) {
-        use std::time::Duration;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut received: Vec<u8> = Vec::new();
-        let mut buffer = [0u8; 4096];
-        let header_end = loop {
-            match stream.read(&mut buffer) {
-                Ok(0) => return,
-                Ok(n) => {
-                    received.extend_from_slice(&buffer[..n]);
-                    if let Some(pos) = received.windows(4).position(|w| w == b"\r\n\r\n") {
-                        break pos + 4;
-                    }
-                    if received.len() > 64 * 1024 {
-                        return;
-                    }
-                }
-                Err(_) => return,
-            }
-        };
-
-        // `Content-Length` (varsa) kadar gövdeyi de oku; kalan bayt bırakma.
-        let headers = String::from_utf8_lossy(&received[..header_end]).to_ascii_lowercase();
-        let declared: usize = headers
-            .lines()
-            .find_map(|line| line.strip_prefix("content-length:"))
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .unwrap_or(0);
-        let mut remaining = declared.saturating_sub(received.len() - header_end);
-        while remaining > 0 {
-            match stream.read(&mut buffer) {
-                Ok(0) => return,
-                Ok(n) => remaining = remaining.saturating_sub(n),
-                Err(_) => return,
-            }
-        }
-    }
-
-    /// Gerçek bir TCP sunucusu: ureq gerçek HTTP konuşur. `Content-Length`
-    /// gövdeden hesaplanır — elle yazılan uzunluk testi bozuyordu.
-    fn serve(status: &str, body: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("dinle");
-        let address = listener.local_addr().expect("adres");
-        let status = status.to_string();
-        thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                read_request(&mut stream);
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
-                // Yazma yönünü kapat, okuma yönünü boşalt: istemci yanıtı
-                // aldıktan sonra kapanır, biz de EOF görürüz. Soketi hemen
-                // düşürmek RST üretip yanıtı kaybettirebiliyordu.
-                let _ = stream.shutdown(std::net::Shutdown::Write);
-                let mut sink = [0u8; 1024];
-                while let Ok(n) = stream.read(&mut sink) {
-                    if n == 0 {
-                        break;
-                    }
-                }
-            }
-        });
-        format!("http://{address}")
     }
 
     #[test]
