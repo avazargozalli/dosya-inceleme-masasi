@@ -10,7 +10,65 @@
 | F04-T02 | ✅ | arşivle / geri al / geri dönüşümlü silme |
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
-| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) |
+| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** (2026-10-28) |
+
+## Yeniden deneme gerçekten çalışıyor (2026-10-28, F04-T07 kapanışı)
+
+**Neden:** şartname F04-T07 "gerçek aşama, sayım, iptal ve **yeniden deneme**
+denetimlerini sun" diyor. Önceki turun açık kaydı "arayüzde yeniden deneme
+denetimi gerçek mi?" sorusuydu; **ölçüldü: değildi**.
+
+- **ÖLÇÜLEN KUSUR #52 (işlevsel, kritik):** `job_retry` yalnız
+  `retry_failed_job` + `append_audit` çağırıyordu (12 satır). Kuyrukta **arka
+  plan yürütücüsü yok**: `claim_job_by_key` yalnız `document_parse`,
+  `prepare_redaction` ve `documents_parse_pending` içinden çağrılıyor. Yani
+  düğme `failed → queued` yazıyor, iş **sonsuza kadar "Bekliyor"** kalıyordu;
+  arayüz mesajı "yeni deneme numarası açılacak" diyordu ama hiçbir deneme
+  açılmıyordu — kullanıcının en çok istemediği "çalışıyor gibi görünen düğme".
+- **Düzeltme — çekirdek:** yeni `Database::job_idempotency_key(job_id)`; iş
+  satırı hangi girdiye ait olduğunu buradan çözer (arayüze **verilmez**).
+- **Düzeltme — Tauri:** `job_retry` artık **async** ve iki aşamalı:
+  - **A (`plan_retry`, kısa kilit):** `failed → queued`, deneme bütçesi sıfır,
+    `parse:<sürüm>` anahtarından sürüm çözümü, denetim
+    `{state, jobType, started}` (metin/ad/yol yok).
+  - **B (kilitsiz):** `run_parse` `spawn_blocking` ile **gerçekten koşar**;
+    arayüz iş parçacığı beklemez, ilerleme `parse-progress` olayı **ve**
+    `jobs.progress_*` sütunlarından gelir.
+  - **Erken düşüş kapısı:** `prepare_parse` artık gövdeyi sahiplenmeden
+    **önce** okur; sürüm/blob yoksa iş `queued` kalır ve `finalize_failed_retry`
+    satırı `failed` yazar — "Sırada"da asılı kalmaz. Satır `running` ise (başka
+    bir yürütücü sahiplendi) **dokunulmaz**.
+  - **Bilinçli sınır:** maskeleme işi otomatik **başlatılmaz**
+    (`skipped="type_not_runnable"`): terimler/bölgeler iş satırında saklanmaz,
+    uydurulmuş bir istekle yeniden maskelemek yanlış çıktı üretirdi.
+- **Arayüz:** `JobRetryView` (`started`, `skipped`, `versionId`, `applied`);
+  `retryOutcomeLine` "sıraya alındı" ile "başladı"yı **ayırır** ve uygulanan
+  ayarı yazar ("OCR kapalı, kodlama auto"). `shouldPollQueue` sayesinde
+  yeniden denemesi başlayan iş terminal olana kadar kart 1,2 sn'de bir tazelenir
+  (`jobIsTerminal` eski `succeeded`/`cancelled` adlarını da tanır).
+- **YAN BULGU #53 (ölçüldü, test kırığı):** `ParsePool::acquire_noticing`
+  `Some(süre)`yı yalnız **bildirim eşiği (150 ms)** aşıldığında döndürüyordu;
+  yani "sıraya girdi mi" sorusu zamanlamaya bağlıydı. Yüklü makinede
+  `large_document_runs_alone` bu yüzden düştü (100 ms bekleyen büyük iş
+  `None` aldı). Artık `Some` = **kapı en az bir kez kapalıydı**; test sabit
+  100 ms uyku yerine "büyük iş beklemeye girdi" kapısıyla ilerliyor.
+- **ÖLÇÜM (gerçek kasa + gerçek Python worker, debug, Apple M2;**
+  `DIM_WORKER_PYTHON=workers/document/.venv/bin/python ... --ignored --nocapture`**)**: `retrying_a_failed_parse_job_really_parses_the_document`
+  → **4 sayfa, 4 segment, 1,21 s**, kareler `start → open → pages ×4 → store ×2`,
+  iş **`completed`**, `progress_stage=store`, `attempt_count=1` (yeniden
+  deneme gerçekten yeni bir denemedir).
+- **Test:** `cargo test -p dim-storage --lib queue::` **28/28**; tauri lib
+  **27 geçti / 4 ignored** (+3: girdi çözümü, plan, gerçek ölçüm); Web
+  `tsc --noEmit` temiz, `vitest run` **384/384** (+2).
+- **Dürüst sınırlar:** yeniden deneme **varsayılan ayarlarla** koşar (OCR
+  kapalı, kodlama `auto`); özgün istekteki OCR/parola iş satırında saklanmaz →
+  taranmış belgede OCR'sız deneme boş metin üretebilir (uyarı olarak görünür).
+  Parola korumalı belge yine `blocked` olur; parola belge ekranından girilir.
+  Maskeleme yeniden denemesi otomatik başlamaz. Tauri penceresi açılmadı →
+  düğme/mesaj satırının **görsel QA'si yok**. Arka plan görevi pencere kapansa
+  da sürer; kasaya yazma `commit_parse` kapısından geçer (kasa değiştiyse
+  yazmaz). Ölçüm tek makine + kurgu belge.
+
 
 ## Doğrulama
 
@@ -24,6 +82,10 @@ Python `pytest workers/document/tests` — **140 passed, 1 skipped** (+7 ilerlem
 Web `tsc --noEmit` + `vitest run` — **362** test (+11 `parseProgress`, +3 kuyruk
 sayaç satırı), `vite build` yeşil.
 clippy: `-p dim-ingest` ve tauri `--all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+
+**2026-10-28 (yeniden deneme turu):** `cargo test -p dim-storage --lib queue::` **28/28**;
+tauri lib **27 geçti / 4 ignored** (yeni: girdi çözümü, plan, gerçek worker ölçümü);
+Web `tsc --noEmit` temiz + `vitest run` **384/384**; rustfmt iki manifest temiz.
 
 ## Canlı aşama/sayım (2026-10-27, F04-T07 kapanışı)
 

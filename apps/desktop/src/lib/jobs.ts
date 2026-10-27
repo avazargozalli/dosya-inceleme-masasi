@@ -9,7 +9,7 @@
  * `blocked`, `validating`, `canceling`, `interrupted`, `partial`). Eski
  * kasalardan gelen `succeeded`/`cancelled`/`leased` adları da okunur.
  */
-import type { JobQueueSummary, JobRow } from "./api";
+import type { JobQueueSummary, JobRetryView, JobRow } from "./api";
 import { parseProgressLine, parseProgressWidth, type ProgressCounters } from "./parseProgress";
 
 const STATE_LABELS: Record<string, string> = {
@@ -250,6 +250,53 @@ export function queueHasLiveJobs(jobs: JobRow[]): boolean {
     const canonical = canonicalJobState(job.state);
     return canonical === "running" || canonical === "validating" || canonical === "canceling";
   });
+}
+
+/** Terminal durumlar: bu işler için canlı tazeleme anlamsızdır. */
+const TERMINAL_STATES = new Set([
+  "completed",
+  "partial",
+  "failed",
+  "canceled",
+  "interrupted",
+]);
+
+export function jobIsTerminal(state: string): boolean {
+  return TERMINAL_STATES.has(canonicalJobState(state));
+}
+
+/**
+ * Yeniden deneme **gerçekten başladıysa** kuyruk satırı kısa süre `queued`
+ * görünür: yürütücü işi sahiplenene kadar canlı sayılmaz. Kart bu yüzden
+ * `queueHasLiveJobs` yanında "izlenen iş" ile de tazelenir; aksi hâlde satır
+ * `completed` olana kadar donmuş görünürdü.
+ */
+export function shouldPollQueue(jobs: JobRow[], watchJobId: string | null): boolean {
+  if (queueHasLiveJobs(jobs)) return true;
+  if (!watchJobId) return false;
+  const watched = jobs.find((job) => job.id === watchJobId);
+  return watched ? !jobIsTerminal(watched.state) : false;
+}
+
+/**
+ * `job_retry` sonucunun **dürüst** satırı. "Sıraya alındı" ile "başladı"
+ * ayrılır; başlamadıysa neden yazılır (sahte "çalışıyor" görüntüsü yok).
+ */
+export function retryOutcomeLine(view: JobRetryView): string {
+  if (view.started) {
+    const applied = view.applied;
+    const settings = applied
+      ? `OCR ${applied.ocr ? `açık (${applied.ocrLang})` : "kapalı"}, kodlama ${applied.textEncoding}`
+      : "varsayılan ayarlar";
+    return `Yeniden deneme başladı (${settings}); sonucu satırda göreceksiniz.`;
+  }
+  if (view.skipped === "type_not_runnable") {
+    return "İş yeniden sıraya alındı, ama bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan yeniden çalıştırın.";
+  }
+  if (view.skipped === "no_input") {
+    return "İş yeniden sıraya alındı, ama girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın.";
+  }
+  return "İş yeniden sıraya alındı.";
 }
 
 export type RecoveryReport = {

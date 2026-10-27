@@ -5,6 +5,7 @@ import {
   cancelOutcomeLine,
   jobActionLabel,
   jobActions,
+  jobIsTerminal,
   jobMetaLine,
   jobProgressLine,
   jobProgressPercent,
@@ -13,9 +14,10 @@ import {
   jobStateLabel,
   jobTypeLabel,
   queueAttention,
-  queueHasLiveJobs,
   queueSummaryLine,
   recoveryLine,
+  retryOutcomeLine,
+  shouldPollQueue,
   type JobAction,
 } from "../lib/jobs";
 
@@ -33,6 +35,8 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  /** Yeniden denemesi gerçekten başlatılan iş: terminal olana kadar izlenir. */
+  const [watchJobId, setWatchJobId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!unlocked) {
@@ -69,8 +73,10 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
   }, [refresh]);
 
   // İş yürürken kart kendini tazeler: sayaç `jobs.progress_*` sütunlarından
-  // gelir (0022) ve ayrıştırma bitince kendiliğinden durur.
-  const live = view ? queueHasLiveJobs(view.jobs) : false;
+  // gelir (0022) ve ayrıştırma bitince kendiliğinden durur. Yeniden denemesi
+  // başlatılan iş `queued` görünürken de tazelenir (`shouldPollQueue`), yoksa
+  // satır terminal olana kadar donmuş görünürdü.
+  const live = view ? shouldPollQueue(view.jobs, watchJobId) : false;
   useEffect(() => {
     if (!unlocked || !live) return;
     const timer = window.setInterval(() => {
@@ -78,6 +84,13 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
     }, LIVE_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [live, loadQuiet, unlocked]);
+
+  // İzlenen iş bittiğinde (ya da listeden düştüğünde) izleme bırakılır.
+  useEffect(() => {
+    if (!watchJobId || !view) return;
+    const watched = view.jobs.find((job) => job.id === watchJobId);
+    if (!watched || jobIsTerminal(watched.state)) setWatchJobId(null);
+  }, [view, watchJobId]);
 
   const recover = useCallback(async () => {
     setBusy(true);
@@ -104,8 +117,12 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
           const result = await api.jobCancel(job.id);
           setMessage(cancelOutcomeLine(result));
         } else if (action === "retry") {
-          await api.jobRetry(job.id);
-          setMessage("İş yeniden sıraya alındı; yeni deneme numarası açılacak.");
+          const result = await api.jobRetry(job.id);
+          setMessage(retryOutcomeLine(result));
+          // Yürütücü gerçekten başladıysa satırı sonuna kadar izle: aksi hâlde
+          // kart bir sonraki elle yenilemeye kadar `queued`/`running` gösterip
+          // donmuş görünürdü.
+          if (result.started) setWatchJobId(job.id);
         } else {
           await api.jobUnblock(job.id);
           setMessage("Engel kaldırıldı; iş yeniden sıraya alındı.");

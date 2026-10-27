@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { JobQueueSummary, JobRow } from "./api";
+import type { JobQueueSummary, JobRetryView, JobRow } from "./api";
 import {
   blockedReasonLabel,
   cancelOutcomeLine,
@@ -8,6 +8,7 @@ import {
   countOf,
   jobActionLabel,
   jobActions,
+  jobIsTerminal,
   jobMetaLine,
   jobProgressCounters,
   jobProgressLine,
@@ -20,6 +21,8 @@ import {
   queueHasLiveJobs,
   queueSummaryLine,
   recoveryLine,
+  retryOutcomeLine,
+  shouldPollQueue,
 } from "./jobs";
 
 function summary(partial: Partial<JobQueueSummary> = {}): JobQueueSummary {
@@ -291,5 +294,50 @@ describe("iş kuyruğu yardımcıları", () => {
     expect(recoveryLine({ interrupted: 3, requeued: 1, failed: 2, canceled: 0 })).toContain(
       "2 iş tekrar bütçesi bittiği için kapandı",
     );
+  });
+
+  it("yeniden deneme 'sıraya alındı' ile 'başladı'yı ayırır", () => {
+    const started: JobRetryView = {
+      job: job({ state: "queued" }),
+      started: true,
+      skipped: null,
+      versionId: "v1",
+      applied: { ocr: false, ocrLang: "eng", textEncoding: "auto" },
+    };
+    expect(retryOutcomeLine(started)).toBe(
+      "Yeniden deneme başladı (OCR kapalı, kodlama auto); sonucu satırda göreceksiniz.",
+    );
+
+    const queuedOnly: JobRetryView = {
+      job: job({ state: "queued" }),
+      started: false,
+      skipped: "type_not_runnable",
+      versionId: null,
+      applied: null,
+    };
+    expect(retryOutcomeLine(queuedOnly)).toContain("kendiliğinden başlatan yürütücü yok");
+    expect(retryOutcomeLine({ ...queuedOnly, skipped: "no_input" })).toContain(
+      "girdisi (belge sürümü) çözülemedi",
+    );
+    // Uygulanan ayar yazılır: "varsayılan" denip OCR açık gizlenmez.
+    expect(
+      retryOutcomeLine({
+        ...started,
+        applied: { ocr: true, ocrLang: "tur", textEncoding: "utf-8" },
+      }),
+    ).toContain("OCR açık (tur)");
+  });
+
+  it("yeniden denemesi başlayan iş terminal olana kadar izlenir", () => {
+    expect(jobIsTerminal("completed")).toBe(true);
+    expect(jobIsTerminal("succeeded"), "eski ad terminal sayılır").toBe(true);
+    expect(jobIsTerminal("partial")).toBe(true);
+    expect(jobIsTerminal("queued")).toBe(false);
+    const jobs = [job({ id: "j1", state: "queued" })];
+    expect(queueHasLiveJobs(jobs), "queued tek başına canlı sayılmaz").toBe(false);
+    expect(shouldPollQueue(jobs, "j1"), "izlenen iş tazelenir").toBe(true);
+    expect(shouldPollQueue(jobs, null)).toBe(false);
+    expect(shouldPollQueue([job({ id: "j1", state: "completed" })], "j1")).toBe(false);
+    expect(shouldPollQueue([job({ id: "j2", state: "running" })], null)).toBe(true);
   });
 });

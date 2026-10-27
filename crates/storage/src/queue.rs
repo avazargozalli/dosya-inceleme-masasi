@@ -316,6 +316,21 @@ impl Database {
         }
     }
 
+    /// İş satırının **idempotency anahtarı**. Arayüze verilmez; yürütücü işin
+    /// ne üzerinde çalıştığını buradan çözer (ör. `parse:<sürüm kimliği>`).
+    /// Yeniden deneme yolunun sürümü bulması için gereklidir (§17.2: iş satırı
+    /// hangi girdiye ait olduğunu kaybederse yeniden çalıştırılamaz).
+    pub fn job_idempotency_key(&self, job_id: &str) -> Result<Option<String>, StorageError> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT idempotency_key FROM jobs WHERE id=?1",
+                [job_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn job_by_key(&self, idempotency_key: &str) -> Result<Option<JobRow>, StorageError> {
         let mut stmt = self.conn().prepare(&format!(
             "SELECT {JOB_COLUMNS} FROM jobs WHERE idempotency_key=?1"

@@ -101,6 +101,12 @@ impl ParsePool {
 
     /// `acquire` + kuyruk bildirimi: bekleme `QUEUE_NOTICE_WAIT`'i aştığında
     /// `notice` **bir kez** çağrılır (arayüz "sırada" gösterir).
+    ///
+    /// Dönüş: `Some(süre)` iş **gerçekten sıraya girdiyse** (kapı en az bir kez
+    /// kapalıydı), `Some` olmayan `None` ise izin beklemeden verildiyse. Eski
+    /// uygulama `Some`ı yalnız bildirim eşiği (150 ms) aşıldığında döndürüyordu;
+    /// bu, "sıraya girdi mi" sorusunu zamanlamaya bağlı kılıyordu (ölçüldü:
+    /// 100 ms bekleyen büyük iş `None` alıyordu).
     pub fn acquire_noticing(
         &self,
         weight: ParseWeight,
@@ -113,10 +119,12 @@ impl ParsePool {
         }
         let started = Instant::now();
         let mut noticed = false;
+        let mut queued = false;
         loop {
             if self.admissible(&state, weight) {
                 break;
             }
+            queued = true;
             let (guard, _) = match self.ready.wait_timeout(state, Duration::from_millis(25)) {
                 Ok(pair) => pair,
                 Err(poisoned) => poisoned.into_inner(),
@@ -140,8 +148,7 @@ impl ParsePool {
             state.waited += 1;
         }
         drop(state);
-        // `noticed` yalnız eşik aşıldığında işaretlenir; süre de o zaman bildirilir.
-        let waited_out = if noticed { Some(waited) } else { None };
+        let waited_out = if queued { Some(waited) } else { None };
         (PoolPermit { pool: self, weight }, waited_out)
     }
 
@@ -254,7 +261,15 @@ mod tests {
             assert!(state.exclusive);
             done.fetch_add(1, Ordering::SeqCst);
         });
-        std::thread::sleep(Duration::from_millis(100));
+        // **Sabit uyku yerine kapı:** yüklü makinede iş parçacığı 100 ms içinde
+        // başlamayabilir; sabit uyku testi zamanlamaya bağlı kılar (ölçüldü:
+        // yüklü koşuda `waited` None dönüyordu). Büyük iş **beklemeye
+        // girdiğinde** devam edilir.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pool.lock_state().waiting == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(pool.lock_state().waiting, 1, "büyük iş beklemeye girmeli");
         assert_eq!(large_done.load(Ordering::SeqCst), 0);
         drop(small_permit);
         large.join().expect("büyük iş");
@@ -269,6 +284,7 @@ mod tests {
     fn small_jobs_do_not_starve_a_waiting_large_job() {
         let pool = Arc::new(ParsePool::new());
         let first = pool.acquire_noticing(ParseWeight::Normal, &mut quiet());
+        let second = pool.acquire_noticing(ParseWeight::Normal, &mut quiet());
 
         let pool_for_large = Arc::clone(&pool);
         let entered = Arc::new(AtomicUsize::new(0));
@@ -279,15 +295,62 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
         });
 
-        // Adalet penceresi dolmadan ikinci küçük iş kabul edilir.
-        let (second, _) = pool.acquire_noticing(ParseWeight::Normal, &mut quiet());
-        assert_eq!(pool.lock_state().running, 2);
-        drop(second);
-        drop(first);
+        // Büyük iş **sıraya girdi mi?** Sabit uyku yerine durum kapısı: yüklü
+        // makinede iş parçacığı gecikebilir, o zaman "adalet penceresi" hiç
+        // başlamamış olurdu.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pool.lock_state().large_wait_since.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let since = pool
+            .lock_state()
+            .large_wait_since
+            .expect("büyük iş sıraya girmeli");
 
-        std::thread::sleep(LARGE_FAIRNESS_WAIT + Duration::from_millis(80));
+        // Pencere dolmadan küçük işler kapasiteyi kullanır: bir izin boşalınca
+        // (running 2 → 1) yeni küçük iş **alınır**.
+        drop(second);
+        let (third, _) = pool.acquire_noticing(ParseWeight::Normal, &mut quiet());
+        assert_eq!(
+            pool.lock_state().running,
+            2,
+            "pencere dolmadan küçük iş alınır"
+        );
+        drop(third);
+
+        // Pencere dolduktan sonra: kapasite var (running=1) ama yeni küçük iş
+        // alınmaz — büyük iş açlığa düşmez.
+        let remain = LARGE_FAIRNESS_WAIT.saturating_sub(since.elapsed());
+        std::thread::sleep(remain + Duration::from_millis(60));
+        let acquired = Arc::new(AtomicUsize::new(0));
+        let pool_for_small = Arc::clone(&pool);
+        let acquired_in = Arc::clone(&acquired);
+        let small = std::thread::spawn(move || {
+            let (_permit, _) = pool_for_small.acquire_noticing(ParseWeight::Normal, &mut quiet());
+            acquired_in.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            acquired.load(Ordering::SeqCst),
+            0,
+            "adalet penceresi dolduktan sonra yeni küçük iş alınmamalı"
+        );
+
+        // Son izin de bırakılınca büyük iş **tek başına** girer, sonra küçük iş.
+        drop(first);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while entered.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(entered.load(Ordering::SeqCst), 1, "büyük iş girmiş olmalı");
         large.join().expect("büyük iş");
+        small.join().expect("küçük iş");
+        assert_eq!(
+            acquired.load(Ordering::SeqCst),
+            1,
+            "büyük iş bitince bekleyen küçük iş girer"
+        );
         assert_eq!(pool.lock_state().running, 0);
     }
 
@@ -305,11 +368,25 @@ mod tests {
                 notices_in.fetch_add(1, Ordering::SeqCst);
             });
         });
-        std::thread::sleep(QUEUE_NOTICE_WAIT + Duration::from_millis(200));
-        assert_eq!(notices.load(Ordering::SeqCst), 1);
+        // Bildirim eşiği **geçildikten sonra** en çok bir kez: sabit uyku
+        // yerine kapı (yüklü makinede iş parçacığı gecikebilir).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while notices.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            notices.load(Ordering::SeqCst),
+            1,
+            "bildirim bir kez gelmeli"
+        );
         drop(second);
         drop(first);
         waiter.join().expect("bekleyen");
+        assert_eq!(
+            notices.load(Ordering::SeqCst),
+            1,
+            "izin verildikten sonra ikinci bildirim yok"
+        );
     }
 
     /// Sayaçlar yalnız sayıdır; boş havuz tutarlı görünür.

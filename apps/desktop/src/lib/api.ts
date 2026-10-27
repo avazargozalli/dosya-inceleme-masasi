@@ -87,6 +87,19 @@ export type JobRow = {
   completedAt: string | null;
 };
 
+/**
+ * `job_retry` görünümü: işin **gerçekten** yeniden çalıştırılıp
+ * çalıştırılmadığını taşır (`started`). `started=false` iken neden
+ * `skipped` alanındadır ve arayüz "çalışıyor" görüntüsü üretmez.
+ */
+export type JobRetryView = {
+  job: JobRow;
+  started: boolean;
+  skipped: string | null;
+  versionId: string | null;
+  applied: { ocr: boolean; ocrLang: string; textEncoding: string } | null;
+};
+
 export type JobQueueView = {
   summary: JobQueueSummary;
   jobs: JobRow[];
@@ -1649,7 +1662,7 @@ export const api = {
   jobQueueStatus: () => invoke<JobQueueView>("job_queue_status"),
   jobQueueRecover: () => invoke<JobRecovery>("job_queue_recover"),
   jobCancel: (jobId: string) => invoke<JobCancelResult>("job_cancel", { jobId }),
-  jobRetry: (jobId: string) => invoke<JobRow>("job_retry", { jobId }),
+  jobRetry: (jobId: string) => invoke<JobRetryView>("job_retry", { jobId }),
   jobUnblock: (jobId: string) => invoke<JobRow>("job_unblock", { jobId }),
   status: () => invoke<VaultStatus>("vault_status"),
 
