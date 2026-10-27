@@ -157,3 +157,86 @@ def test_single_page_engines_emit_no_progress_frames():
     )
     assert response["ok"] is True
     assert seen == []
+
+
+def test_redaction_reports_page_counts_and_phases():
+    """Maskeleme artık gerçek sayfa sayacı verir: redact → pack → verify → scan.
+
+    Ölçülen sözleşme: sayaç uydurulmaz — `redact` sayfa sayısı kadar artar,
+    `verify` ikinci okuma turunda aynı sayıya ulaşır, `scan` tek birimdir.
+    """
+    from dim_worker.engines import redact_pdf
+
+    data = _pdf_bytes(3)
+    seen: list[tuple[str, int, int | None]] = []
+    result = redact_pdf(data, ["Sayfa 2"], progress=lambda *item: seen.append(item))
+
+    assert result.remaining == []
+    redact_frames = [(done, total) for stage, done, total in seen if stage == "redact"]
+    assert redact_frames[0] == (0, 3)
+    assert redact_frames[1:] == [(1, 3), (2, 3), (3, 3)]
+    verify_frames = [(done, total) for stage, done, total in seen if stage == "verify"]
+    assert verify_frames == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert ("pack", 0, 1) in seen and ("pack", 1, 1) in seen
+    assert ("scan", 0, 1) in seen and ("scan", 1, 1) in seen
+    # Aşama sırası gerçek iş sırasıdır: doğrulama paketlemeden sonra gelir.
+    stages = [stage for stage, _, _ in seen]
+    assert stages.index("pack") < stages.index("verify") < stages.index("scan")
+
+
+def test_redaction_result_is_identical_with_and_without_progress():
+    """İlerleme bilgilendiricidir: maskeli çıktının **metni** değişmez.
+
+    Bayt eşitliği beklenmez: PyMuPDF çıktıya her koşuda farklı belge kimliği
+    yazar (ölçüldü). Anlamlı değişmez, maskeli belgenin metni ve bulgularıdır.
+    """
+    import pymupdf
+
+    from dim_worker.engines import redact_pdf
+
+    data = _pdf_bytes(2)
+    silent = redact_pdf(data, ["Sayfa 1"])
+    seen: list[tuple[str, int, int | None]] = []
+    noisy = redact_pdf(data, ["Sayfa 1"], progress=lambda *item: seen.append(item))
+
+    def texts(pdf: bytes) -> list[str]:
+        doc = pymupdf.open(stream=pdf, filetype="pdf")
+        try:
+            return [page.get_text("text") for page in doc]
+        finally:
+            doc.close()
+
+    assert texts(noisy.pdf) == texts(silent.pdf)
+    assert noisy.hits == silent.hits
+    assert noisy.remaining == silent.remaining == []
+    assert seen
+
+
+def test_region_redaction_reports_progress_per_page():
+    from dim_worker.engines import redact_pdf_regions
+
+    data = _pdf_bytes(2)
+    seen: list[tuple[str, int, int | None]] = []
+    redact_pdf_regions(
+        data,
+        [{"page": 0, "rect": [60, 60, 220, 100]}, {"page": 1, "rect": [60, 60, 220, 100]}],
+        progress=lambda *item: seen.append(item),
+    )
+    redact_frames = [(done, total) for stage, done, total in seen if stage == "redact"]
+    assert redact_frames == [(0, 2), (1, 2), (2, 2)]
+    assert ("scan", 1, 1) in seen
+
+
+def test_handle_forwards_progress_for_redact():
+    seen: list[tuple[str, int, int | None]] = []
+    params = {"contentBase64": _pdf_b64(2), "terms": ["Sayfa 1"]}
+    response = _single(
+        handle(
+            _request(method="redact", params=params),
+            progress=lambda stage, done, total: seen.append((stage, done, total)),
+        )[0]
+    )
+    assert response["ok"] is True
+    assert response["result"]["remaining"] == []
+    assert seen[0] == ("redact", 0, 2)
+    assert seen[-1] == ("scan", 1, 1)

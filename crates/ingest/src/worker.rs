@@ -1011,8 +1011,23 @@ impl WorkerClient {
         data: &[u8],
         terms: &[String],
     ) -> Result<RedactionOutcome, WorkerError> {
+        self.redact_with_progress(data, terms, &mut |_| {})
+    }
+
+    /// Terim maskesini **ilerleme çerçeveleriyle** çalıştırır (F04-T07).
+    ///
+    /// Worker `redact` aşamasında sayfa sayacı, sonra `pack`/`verify`/`scan`
+    /// aşamalarını bildirir. Çerçeve gelmezse sonuç yine aynıdır; ilerleme
+    /// yalnız bilgilendirir.
+    pub fn redact_with_progress(
+        &mut self,
+        data: &[u8],
+        terms: &[String],
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<RedactionOutcome, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
-        let result = self.request("redact", json!({"contentBase64": encoded, "terms": terms}))?;
+        let id = self.send_request("redact", json!({"contentBase64": encoded, "terms": terms}))?;
+        let result = self.read_response(&id, &mut *progress)?;
         parse_redaction(&result)
     }
 
@@ -1081,15 +1096,26 @@ impl WorkerClient {
         data: &[u8],
         regions: &[(u32, [f64; 4])],
     ) -> Result<RedactionOutcome, WorkerError> {
+        self.redact_regions_with_progress(data, regions, &mut |_| {})
+    }
+
+    /// Bölge maskesini **ilerleme çerçeveleriyle** çalıştırır (F04-T07).
+    pub fn redact_regions_with_progress(
+        &mut self,
+        data: &[u8],
+        regions: &[(u32, [f64; 4])],
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<RedactionOutcome, WorkerError> {
         let encoded = base64::engine::general_purpose::STANDARD.encode(data);
         let items: Vec<serde_json::Value> = regions
             .iter()
             .map(|(page, rect)| json!({"page": page, "rect": rect}))
             .collect();
-        let result = self.request(
+        let id = self.send_request(
             "redact_regions",
             json!({"contentBase64": encoded, "regions": items}),
         )?;
+        let result = self.read_response(&id, &mut *progress)?;
         parse_redaction(&result)
     }
 
@@ -1302,7 +1328,29 @@ pub fn worker_env() -> Vec<(String, std::ffi::OsString)> {
             out.push((name.to_string(), value));
         }
     }
+    // Geçici dizin **açıkça** verilir (F04-T07'de ölçüldü): allowlist'te yokken
+    // Python `tempfile` macOS'ta `/tmp`e düşüyor; `/tmp` bir sembolik bağ
+    // olduğu için pytesseract geçici çıktıyı okuyamıyor ve OCR doğrulaması
+    // `UnicodeDecodeError` ile çöküyordu → maskeleme ürün yolunda hiç
+    // kaydedilmiyordu. `canonicalize` gerçek yolu verir (`/private/tmp`).
+    if let Some(dir) = worker_temp_dir() {
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            out.push((name.to_string(), dir.clone().into_os_string()));
+        }
+    }
     out
+}
+
+/// Worker'ın kullanacağı geçici dizin: kabuk ortamından devralınmaz, kendi
+/// çözülmüş yolundan türetilir (sembolik bağ verilmez).
+fn worker_temp_dir() -> Option<PathBuf> {
+    let dir = std::env::temp_dir();
+    let resolved = dir.canonicalize().unwrap_or(dir);
+    if resolved.is_dir() {
+        Some(resolved)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1820,6 +1868,55 @@ mod tests {
         assert_eq!(extraction.pages[0].text, "metin");
     }
 
+    /// **F04-T07:** maskeleme de canlı sayaç verir. Çerçeveler yanıttan önce
+    /// geri çağrıya verilir; sonuç (`pdf`, `hits`, `remaining`) aynı çözülür.
+    #[cfg(unix)]
+    #[test]
+    fn redaction_progress_frames_are_forwarded_before_the_response() {
+        let lines = vec![
+            json!({"v": 1, "id": "req-1", "progress": {"stage": "redact", "done": 0, "total": 2}})
+                .to_string(),
+            json!({"v": 1, "id": "req-1", "progress": {"stage": "redact", "done": 2, "total": 2}})
+                .to_string(),
+            json!({"v": 1, "id": "req-1", "progress": {"stage": "verify", "done": 2, "total": 2}})
+                .to_string(),
+            json!({
+                "v": 1,
+                "id": "req-1",
+                "ok": true,
+                "result": {
+                    "pdfBase64": base64::engine::general_purpose::STANDARD.encode(b"%PDF-maskeli"),
+                    "hits": [],
+                    "remaining": [],
+                    "engine": "pymupdf",
+                    "engineVersion": "1.24.14",
+                    "engines": ["pymupdf", "raw-scan"]
+                }
+            })
+            .to_string(),
+        ];
+        let (mut client, _dir) = spawn_frames(&lines, Duration::from_secs(10));
+        let mut seen: Vec<ParseProgress> = Vec::new();
+        let outcome = client
+            .redact_with_progress(b"x", &["Gizli".to_string()], &mut |update| {
+                seen.push(update)
+            })
+            .expect("maskeleme");
+        assert_eq!(
+            seen.iter()
+                .map(|update| (update.stage.as_str(), update.done, update.total))
+                .collect::<Vec<_>>(),
+            vec![
+                ("redact", 0, Some(2)),
+                ("redact", 2, Some(2)),
+                ("verify", 2, Some(2)),
+            ]
+        );
+        assert_eq!(outcome.pdf, b"%PDF-maskeli");
+        assert!(outcome.remaining.is_empty());
+        assert_eq!(outcome.engines, vec!["pymupdf", "raw-scan"]);
+    }
+
     /// Başka isteğin ilerlemesi bu isteğin sayacına karışmaz (kimlik kapısı).
     #[cfg(unix)]
     #[test]
@@ -2246,6 +2343,7 @@ mod tests {
 #[cfg(test)]
 mod env_isolation_tests {
     use super::worker_env;
+    use std::path::PathBuf;
 
     #[test]
     fn worker_env_is_allowlisted_and_leaks_no_secrets() {
@@ -2258,10 +2356,40 @@ mod env_isolation_tests {
         assert!(!names.contains(&"OPENAI_API_KEY"), "{names:?}");
         for name in &names {
             assert!(
-                ["PATH", "LANG", "LC_ALL"].contains(name),
+                ["PATH", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP"].contains(name),
                 "beklenmeyen değişken: {name}"
             );
         }
         std::env::remove_var("DIM_TEST_SECRET_TOKEN");
+    }
+
+    /// F04-T07'de ölçülen kusurun kapısı: worker'a verilen geçici dizin
+    /// **gerçek** bir dizin olmalı. `/tmp` gibi bir sembolik bağ verilirse
+    /// pytesseract geçici çıktıyı okuyamıyor (`UnicodeDecodeError`) ve OCR
+    /// doğrulaması çöküyor — maskeleme ürün yolunda hiç kaydedilmiyordu.
+    #[test]
+    fn worker_env_hands_a_real_temp_directory() {
+        let env = worker_env();
+        let (_, tmp) = env
+            .iter()
+            .find(|(name, _)| name == "TMPDIR")
+            .expect("TMPDIR verilmeli");
+        let path = PathBuf::from(tmp);
+        assert!(path.is_absolute(), "{path:?}");
+        assert!(path.is_dir(), "{path:?}");
+        assert_eq!(
+            path.canonicalize().expect("çözülmeli"),
+            path,
+            "geçici dizin sembolik bağ olmamalı: {path:?}"
+        );
+        // Üç ad da aynı değeri taşır (Windows `TEMP`/`TMP` okur).
+        for name in ["TMP", "TEMP"] {
+            let value = env
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+                .expect("kardeş ad");
+            assert_eq!(value, *tmp, "{name}");
+        }
     }
 }

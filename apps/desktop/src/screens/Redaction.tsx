@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { api, toApiError, type ApiError, type CaseRow, type DocumentRow, type RedactionResult } from "../lib/api";
+import { listen } from "@tauri-apps/api/event";
+import {
+  api,
+  toApiError,
+  type ApiError,
+  type CaseRow,
+  type DocumentRow,
+  type ParseProgressEvent,
+  type RedactionResult,
+} from "../lib/api";
+import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
 
 export function Redaction() {
   const [cases, setCases] = useState<CaseRow[]>([]);
@@ -10,12 +20,36 @@ export function Redaction() {
   const [result, setResult] = useState<RedactionResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  // F04-T07: maskeleme artık kuyruk işi olarak koşar; aşama/sayım
+  // `redact-progress` olayıyla gelir. Sayaç uydurulmaz: olay yoksa satır yok.
+  const [progress, setProgress] = useState<ParseProgressEvent | null>(null);
+  const activeVersion = useRef<string | null>(null);
   const [mode, setMode] = useState<"terms" | "regions">("terms");
   const [page, setPage] = useState(0);
   const [preview, setPreview] = useState<{ src: string; dpi: number } | null>(null);
   const [regions, setRegions] = useState<Array<{ pageIndex: number; rect: [number, number, number, number] }>>([]);
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const imageRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    // Tarayıcıda (Tauri yok) dinleyici kurulamaz; hata yutulur.
+    void listen<ParseProgressEvent>("redact-progress", (event) => {
+      if (disposed) return;
+      if (event.payload.versionId !== activeVersion.current) return;
+      setProgress(event.payload);
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -62,12 +96,16 @@ export function Redaction() {
     setBusy(true);
     setError(null);
     setResult(null);
+    activeVersion.current = versionId;
+    setProgress(null);
     try {
       setResult(await api.documentRedactRegions(versionId, regions));
       setRegions([]);
     } catch (e) {
       setError(toApiError(e));
     } finally {
+      activeVersion.current = null;
+      setProgress(null);
       setBusy(false);
     }
   }
@@ -116,11 +154,15 @@ export function Redaction() {
     setBusy(true);
     setError(null);
     setResult(null);
+    activeVersion.current = versionId;
+    setProgress(null);
     try {
       setResult(await api.documentRedact(versionId, list));
     } catch (e) {
       setError(toApiError(e));
     } finally {
+      activeVersion.current = null;
+      setProgress(null);
       setBusy(false);
     }
   }
@@ -272,6 +314,35 @@ export function Redaction() {
             </button>
           )}
         </div>
+        {busy ? (
+          <div style={{ marginTop: 10 }}>
+            <div className="hint" role="status" style={{ marginBottom: 4 }}>
+              {parseProgressLine(progress) ?? "Maskeleme hazırlanıyor…"}
+            </div>
+            {parseProgressWidth(progress) === null ? null : (
+              <div
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={parseProgressWidth(progress) ?? undefined}
+                style={{ height: 6, background: "var(--border)", borderRadius: 3, overflow: "hidden" }}
+              >
+                <div
+                  style={{
+                    width: `${parseProgressWidth(progress) ?? 0}%`,
+                    height: "100%",
+                    background: "var(--accent)",
+                    transition: "width 120ms linear",
+                  }}
+                />
+              </div>
+            )}
+            <p className="hint" style={{ marginTop: 4, marginBottom: 0 }}>
+              Maskeleme uzun belgede sürebilir; pencere donmaz. İş kuyruğundan iptal
+              edilirse yarım çıktı kasaya yazılmaz.
+            </p>
+          </div>
+        ) : null}
       </div>
 
       {result ? (

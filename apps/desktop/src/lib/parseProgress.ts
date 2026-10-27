@@ -16,6 +16,11 @@ const STAGE_LABEL: Record<string, string> = {
   open: "Belge açıldı",
   pages: "Sayfalar okunuyor",
   store: "Kasaya yazılıyor",
+  // F04-T07 maskeleme aşamaları (aynı kuyruk satırı ve olay biçimi).
+  redact: "Sayfalar maskeleniyor",
+  pack: "PDF paketleniyor",
+  verify: "Çıktı doğrulanıyor",
+  scan: "Bağımsız tarama",
 };
 
 export function parseStageLabel(stage: string): string {

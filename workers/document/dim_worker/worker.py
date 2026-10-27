@@ -266,7 +266,7 @@ def handle(
         regions = params.get("regions")
         if not isinstance(regions, list) or not regions:
             raise ProtocolError("E_PARAMS", "regions listesi zorunlu")
-        result = redact_pdf_regions(data, regions)
+        result = redact_pdf_regions(data, regions, progress=progress)
         import base64 as _b64
 
         return ok(
@@ -293,7 +293,7 @@ def handle(
         terms = params.get("terms")
         if not isinstance(terms, list) or not terms:
             raise ProtocolError("E_PARAMS", "terms listesi zorunlu")
-        result = redact_pdf(data, [str(t) for t in terms])
+        result = redact_pdf(data, [str(t) for t in terms], progress=progress)
         import base64 as _b64
 
         return ok(

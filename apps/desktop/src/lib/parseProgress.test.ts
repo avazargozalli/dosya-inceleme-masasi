@@ -89,3 +89,33 @@ describe("parseProgressWidth", () => {
     expect(parseProgressWidth(null)).toBeNull();
   });
 });
+
+/**
+ * F04-T07: maskeleme de aynı olay/sayaç biçimini kullanır. Aşama adları
+ * worker'dan gelir (`redact` → `pack` → `verify` → `scan`); bilinmeyen aşama
+ * yine olduğu gibi gösterilir, sayaç uydurulmaz.
+ */
+describe("maskeleme aşamaları", () => {
+  it("aşama adlarını Türkçe yazar", () => {
+    expect(parseStageLabel("redact")).toBe("Sayfalar maskeleniyor");
+    expect(parseStageLabel("pack")).toBe("PDF paketleniyor");
+    expect(parseStageLabel("verify")).toBe("Çıktı doğrulanıyor");
+    expect(parseStageLabel("scan")).toBe("Bağımsız tarama");
+  });
+
+  it("sayfa sayacını yüzdeyle yazar; toplam yoksa oran uydurmaz", () => {
+    expect(parseProgressLine(progress({ stage: "redact", done: 3, total: 12 }))).toBe(
+      "Sayfalar maskeleniyor: 3 / 12 · %25",
+    );
+    expect(parseProgressLine(progress({ stage: "scan", done: 0, total: 1 }))).toBe(
+      "Bağımsız tarama: 0 / 1 · %0",
+    );
+    expect(parseProgressWidth(progress({ stage: "redact", done: 5, total: null }))).toBeNull();
+  });
+
+  it("taşan sayacı toplamda kırpar (5 / 3 yazılmaz)", () => {
+    expect(parseProgressLine(progress({ stage: "verify", done: 9, total: 4 }))).toBe(
+      "Çıktı doğrulanıyor: 4 / 4 · %100",
+    );
+  });
+});

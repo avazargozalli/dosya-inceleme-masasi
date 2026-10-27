@@ -377,3 +377,60 @@ def test_reports_are_not_in_engine_list_when_not_run(monkeypatch):
     result = redact_pdf(source, [MARKER])
     assert "tesseract" not in result.engines
     assert result.ocr_verified is False
+
+
+def test_pypdf_crash_is_reported_as_unverified_not_as_leak(monkeypatch):
+    """Doğrulayıcı çökerse dosya 'sızıntı' diye reddedilmez (ölçülen kusur).
+
+    Eskiden yardımcı çökme yolunda `list(terms)` dönüyordu: `remaining` doluyor,
+    ürün `E_REDACT_VERIFY` veriyor ve **maskeli dosya hiç kaydedilmiyordu**.
+    Doğru davranış: çökme "doğrulanamadı"dır (uyarı), sızıntı değildir.
+    """
+
+    class BoomPypdf:
+        class PdfReader:  # noqa: D401 - taklit
+            def __init__(self, *_args, **_kwargs):
+                raise RuntimeError("okuyucu çöktü")
+
+    monkeypatch.setattr(engines, "_pypdf_module", lambda: BoomPypdf)
+    source = _text_pdf()
+
+    result = redact_pdf(source, [MARKER])
+    assert result.remaining == [], "çökme sızıntı sayılmamalı"
+    assert "pypdf" not in result.engines
+    assert any("pypdf doğrulaması yapılamadı" in note for note in result.warnings)
+
+
+def test_ocr_crash_is_reported_as_unverified_not_as_leak(monkeypatch):
+    """Aynı sınıf OCR tarafında: tesseract hatası maskeli dosyayı düşürmez."""
+    pytesseract = pytest.importorskip("pytesseract")
+    monkeypatch.setattr(engines.shutil, "which", lambda _name: "/usr/bin/tesseract")
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("tesseract çöktü")
+
+    monkeypatch.setattr(pytesseract, "image_to_string", boom)
+    source = _text_pdf()
+
+    result = redact_pdf(source, [MARKER])
+    assert result.remaining == [], "OCR çökmesi sızıntı sayılmamalı"
+    assert result.ocr_verified is False
+    assert "tesseract" not in result.engines
+    assert any("OCR doğrulaması yapılamadı" in note for note in result.warnings)
+
+
+def test_region_ocr_crash_is_reported_as_unverified(monkeypatch):
+    """Bölge maskesinde de çökme 'doğrulanamadı'dır; 'bölgede metin kaldı' değil."""
+    pytesseract = pytest.importorskip("pytesseract")
+    monkeypatch.setattr(engines.shutil, "which", lambda _name: "/usr/bin/tesseract")
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("tesseract çöktü")
+
+    monkeypatch.setattr(pytesseract, "image_to_string", boom)
+    source = _text_pdf()
+
+    result = redact_pdf_regions(source, [{"page": 0, "rect": [0, 0, 400, 200]}])
+    assert not any("bölgede metin kaldı" in note for note in result.warnings)
+    assert "tesseract" not in result.engines
+    assert any("OCR doğrulaması yapılamadı" in note for note in result.warnings)

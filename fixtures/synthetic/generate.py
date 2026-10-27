@@ -396,6 +396,44 @@ def generate_progress_pdf(path: Path) -> Path:
     return path
 
 
+# --- F04-T07 iptal fikstürü -------------------------------------------------
+# İptal ölçümü için **gerçek zaman penceresi** gerekir: 4 sayfalık fikstür
+# maskelenirken iptal düğmesine basılamayacak kadar hızlı biter. Bu fikstür
+# 120 sayfadır ve testte süreç başlatılmaz (ADR-05) — dosya depoda durur.
+CANCEL_PAGES = 120
+
+
+def build_cancel_pdf(pages: int = CANCEL_PAGES) -> bytes:
+    kids = " ".join(f"{4 + 2 * index} 0 R" for index in range(pages))
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>".encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    for index in range(pages):
+        content = (
+            f"BT /F1 12 Tf 72 760 Td (Sayfa {index + 1} Gizli) Tj ET".encode("latin-1")
+        )
+        objects.append(
+            (
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+                f"/Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * index} 0 R >>"
+            ).encode()
+        )
+        objects.append(
+            b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream"
+        )
+    return _assemble_pdf(objects)
+
+
+def generate_cancel_pdf(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    path.write_bytes(build_cancel_pdf())
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kurgu test belgesi üret")
     parser.add_argument("--out", default="fixtures/generated", help="çıktı klasörü")
@@ -407,12 +445,14 @@ def main() -> None:
     docx = generate_docx_inventory(Path("fixtures/synthetic/docx-inventory.docx"))
     udf = generate_udf_inventory(Path("fixtures/synthetic/udf-inventory.udf"))
     progress = generate_progress_pdf(Path("fixtures/synthetic/progress-pages.pdf"))
+    cancel = generate_cancel_pdf(Path("fixtures/synthetic/cancel-pages.pdf"))
     print(f"üretildi: {pdf} ({os.path.getsize(pdf)} bayt)")
     print(f"üretildi: {txt} ({os.path.getsize(txt)} bayt)")
     print(f"üretildi: {redaction} ({os.path.getsize(redaction)} bayt)")
     print(f"üretildi: {docx} ({os.path.getsize(docx)} bayt)")
     print(f"üretildi: {udf} ({os.path.getsize(udf)} bayt)")
     print(f"üretildi: {progress} ({os.path.getsize(progress)} bayt)")
+    print(f"üretildi: {cancel} ({os.path.getsize(cancel)} bayt)")
 
 
 if __name__ == "__main__":

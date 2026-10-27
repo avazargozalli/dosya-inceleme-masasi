@@ -13,7 +13,9 @@ use dim_ingest::packaging::{
     read_manifest, verify_package, ManifestTotals, PackageVerification, TesseractStatus,
     WorkerManifest, MANIFEST_FILE,
 };
-use dim_ingest::worker::{dev_worker_dir, ParseProgress, WorkerClient};
+use dim_ingest::worker::{
+    dev_worker_dir, ParseProgress, RedactionOutcome, WorkerClient, WorkerError,
+};
 use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_providers::{AiRequest, ApiProvider, ContextSegment, Provider};
@@ -43,8 +45,8 @@ use zeroize::Zeroizing;
 
 use crate::error::ApiError;
 use crate::state::{
-    lock_vault, open_database, vault_id_from_master, AppState, ParseSlotGuard, RunningParse,
-    VaultState,
+    lock_vault, open_database, vault_id_from_master, AppState, RunningWorker, VaultState,
+    WorkerSlotGuard,
 };
 
 use sha2::{Digest, Sha256};
@@ -217,7 +219,7 @@ pub fn vault_lock(state: State<'_, AppState>) -> Result<(), ApiError> {
     // §17.5: kasa kilidi güvenlik önceliğidir — süren ayrıştırmalar **önce**
     // durdurulur; aksi hâlde kilitli kasaya yazmaya çalışan bir süreç kalırdı.
     // (§17.3 ile ayrıştırma kilidi bırakarak çalıştığı için bu gerekli oldu.)
-    let _stopped = state.cancel_all_parses();
+    let _stopped = state.cancel_all_workers();
     let mut guard = state.lock();
     guard.unlocked = None;
     guard.db = None;
@@ -691,6 +693,365 @@ mod tests {
         }
     }
 
+    /// **F04-T07 ortamı:** gerçek kasa dosyası + bir belge sürümü; worker yok.
+    /// Şifreli blob gerçekten yazılır (maskeleme girdisi oradan okunur).
+    fn redaction_fixture() -> (AppState, PathBuf, DocumentVersion) {
+        redaction_fixture_with(b"%PDF-1.7 maskeleme girdisi")
+    }
+
+    fn redaction_fixture_with(data: &[u8]) -> (AppState, PathBuf, DocumentVersion) {
+        use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+
+        let dir = std::env::temp_dir().join(format!(
+            "dim-redact-job-{}-{}",
+            std::process::id(),
+            PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dizin");
+        let vault_path = dir.join("vault.dimvault");
+        let (file, _recovery, unlocked) =
+            VaultFile::create(&vault_path, "maskeleme-parola").expect("kasa");
+        let vault_id = vault_id_from_master(unlocked.master_key());
+        let db = open_database(&file.path, &unlocked, &vault_id).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Maskeleme".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: Sensitivity::Normal,
+                default_ai_policy: AiPolicy::Off,
+            })
+            .expect("dosya");
+        let sha = "a".repeat(64);
+        let aad = format!("{}:original:{sha}", case.id);
+        let blobs = dir.join("blobs");
+        let path = unlocked
+            .write_blob(&blobs, data, aad.as_bytes())
+            .expect("blob");
+        let storage_id = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("ad")
+            .to_string();
+        let size =
+            i64::try_from(std::fs::metadata(&path).expect("boyut").len()).unwrap_or(i64::MAX);
+        let blob_id = db
+            .create_blob_record(&storage_id, size, &aad)
+            .expect("blob kaydı");
+        let doc = db
+            .create_document(&case.id, "sozlesme.pdf", "pdf", None, "unknown")
+            .expect("belge");
+        let version = db
+            .add_version_with_parent(
+                &doc.id,
+                &case.id,
+                &blob_id,
+                &sha,
+                size,
+                "application/pdf",
+                None,
+            )
+            .expect("sürüm");
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.unlocked = Some(unlocked);
+            guard.db = Some(db);
+            guard.path = Some(file.path.clone());
+            guard.vault_id = Some(vault_id);
+        }
+        (state, dir, version)
+    }
+
+    /// Maskeleme artık **kendi iş türünü** açar (`redaction`) ve sahiplenir;
+    /// yürüyen iş varken ikinci worker başlatılmaz (`E_REDACT_BUSY`).
+    #[test]
+    fn redaction_opens_its_own_job_and_refuses_a_second_run() {
+        let (state, _dir, version) = redaction_fixture();
+        let request = RedactRequest::Terms(vec!["Gizli".into()]);
+        let prep = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request).expect("hazırlık")
+        };
+        let job = prep.job.as_ref().expect("iş sahiplenilmeli");
+        assert_eq!(job.job_type, "redaction");
+        assert_eq!(job.state, "running");
+        assert_eq!(job.lease_owner.as_deref(), Some(prep.owner.as_str()));
+        assert!(
+            !prep.data.is_empty(),
+            "şifreli blob çözülmeli (maskeleme girdisi)"
+        );
+
+        let err = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request)
+                .map(|_| ())
+                .expect_err("ikinci koşu reddedilmeli")
+        };
+        assert_eq!(err.code, "E_REDACT_BUSY");
+
+        let regions = RedactRequest::Regions(vec![(0, [10.0, 10.0, 40.0, 40.0])]);
+        let other = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &regions).expect("bölge işi")
+        };
+        assert_ne!(
+            other.job.as_ref().expect("bölge işi").id,
+            job.id,
+            "farklı maskeleme isteği ayrı iş satırı"
+        );
+    }
+
+    /// Bitmiş maskeleme yeniden istenirse **yeni** iş satırı açılır; terminal
+    /// satır yeniden yazılmaz (§17.2).
+    #[test]
+    fn a_completed_redaction_opens_a_fresh_job_row() {
+        let (state, _dir, version) = redaction_fixture();
+        let request = RedactRequest::Terms(vec!["Gizli".into()]);
+        let first = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request).expect("hazırlık")
+        };
+        let first_job = first.job.clone().expect("iş");
+        {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            db.complete_job(&first_job.id, &first.owner, time::OffsetDateTime::now_utc())
+                .expect("bitir");
+        }
+        let second = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request).expect("ikinci hazırlık")
+        };
+        let second_job = second.job.expect("yeni iş");
+        assert_ne!(second_job.id, first_job.id, "yeni niyet, yeni satır");
+        assert_eq!(second_job.state, "running");
+        let guard = state.lock();
+        let row = guard
+            .db
+            .as_ref()
+            .expect("db")
+            .get_job(&first_job.id)
+            .expect("oku")
+            .expect("satır");
+        assert_eq!(row.state, "completed", "eski satır terminal kalır");
+    }
+
+    /// Gerçek worker'lı ölçümler için python + worker klasörü.
+    fn redaction_dev_python() -> Option<PathBuf> {
+        let dir = dim_ingest::worker::dev_worker_dir()?;
+        dim_ingest::worker::dev_python_with_module(&dir, "pymupdf")
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ — kasa kilidi worker boyunca tutulmaz.** Eski kod
+    /// `state.lock()` altında worker'ı çalıştırıyordu: uzun maskede bütün arayüz
+    /// kilitleniyor, iptal düğmesine basılamıyordu. Bu test maskeleme sürerken
+    /// kilidi örnekler ve **en uzun bekleme**yi yazar.
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=workers/document/.venv/bin/python cargo test
+    /// --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// redaction_runs_off_the_vault_lock -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
+    fn redaction_runs_off_the_vault_lock_and_reports_pages() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/progress-pages.pdf");
+        let data = std::fs::read(&fixture).expect("fikstür");
+        let (state, _dir, version) = redaction_fixture_with(&data);
+        let hub = state.vault_handle();
+        let slot = state.workers_handle();
+        let pool = state.parse_pool_handle();
+        let frames = Arc::new(Mutex::new(Vec::<ParseProgress>::new()));
+        let collected = Arc::clone(&frames);
+        let vid = version.id.clone();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            let mut emit = |update: &ParseProgress| {
+                collected.lock().expect("kare").push(update.clone());
+            };
+            run_redaction(
+                &hub,
+                &slot,
+                &pool,
+                &vid,
+                RedactRequest::Terms(vec!["Sayfa 2".to_string()]),
+                &mut emit,
+            )
+        });
+
+        // Worker gerçekten koşmaya başlasın (ilk `redact` karesi).
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if frames
+                .lock()
+                .expect("kare")
+                .iter()
+                .any(|frame| frame.stage == "redact")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Kilit beklemesini örnekle: worker sürerken başka komutlar beklemez.
+        let mut worst = Duration::ZERO;
+        let sampling = Instant::now();
+        while !handle.is_finished() && sampling.elapsed() < Duration::from_secs(60) {
+            let probe = Instant::now();
+            drop(state.lock());
+            worst = worst.max(probe.elapsed());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let view = handle.join().expect("iş parçacığı").expect("maskeleme");
+        let seen = frames.lock().expect("kare").clone();
+        println!(
+            "maskeleme: {:?} · en uzun kilit beklemesi {:?} · kareler {:?}",
+            started.elapsed(),
+            worst,
+            seen
+        );
+
+        assert!(
+            seen.iter()
+                .any(|frame| frame.stage == "redact" && frame.done > 0),
+            "gerçek sayfa sayacı gelmeli: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|frame| frame.stage == "verify" && frame.done > 0),
+            "doğrulama aşaması da bildirilmeli: {seen:?}"
+        );
+        // Aşama sırası gerçek iş sırasıdır (F04-T07): kuyruk satırına en son
+        // yazılan aşama `scan` olur; `pack`/`verify` ondan önce gelmeli.
+        let stages: Vec<&str> = {
+            let mut out: Vec<&str> = Vec::new();
+            for frame in &seen {
+                if out.last().copied() != Some(frame.stage.as_str()) {
+                    out.push(frame.stage.as_str());
+                }
+            }
+            out
+        };
+        assert_eq!(
+            stages,
+            vec!["start", "redact", "pack", "verify", "scan"],
+            "aşama sırası: {seen:?}"
+        );
+        assert!(
+            worst < Duration::from_millis(150),
+            "kasa kilidi worker boyunca tutulmamalı; en uzun bekleme {worst:?}"
+        );
+        assert!(view.hits > 0, "terim fikstürde bulunmalı");
+        assert!(view.remaining.is_empty());
+        let guard = state.lock();
+        let row = guard
+            .db
+            .as_ref()
+            .expect("db")
+            .job_by_key(&format!(
+                "redact:{}:{}",
+                version.id,
+                RedactRequest::Terms(vec!["Sayfa 2".to_string()]).fingerprint()
+            ))
+            .expect("oku")
+            .expect("iş satırı");
+        assert_eq!(row.state, "completed", "iş kuyrukta kapanmalı");
+        assert_eq!(
+            row.progress_stage.as_deref(),
+            Some("scan"),
+            "kuyruk satırındaki son aşama gerçek iş sırasını yansıtır"
+        );
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ — gerçek iptal.** Maskeleme sürerken iptal, süreci
+    /// durdurur; **hiçbir çıktı** yazılmaz ve iş `canceled` kapanır (§17.2).
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=… cargo test --manifest-path
+    /// apps/desktop/src-tauri/Cargo.toml --lib redaction_cancel -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
+    fn redaction_cancel_stops_the_worker_and_writes_nothing() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        // 120 sayfa: iptal için gerçek zaman penceresi. Fikstür **depoda**
+        // durur (`fixtures/synthetic/cancel-pages.pdf`, generate.py üretir):
+        // test süreç başlatmaz (ADR-05) ve ölçüm her koşuda aynı belgeyi kullanır.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/cancel-pages.pdf");
+        let data = std::fs::read(&fixture).expect("cancel-pages.pdf fikstürü");
+        let (state, _vault_dir, version) = redaction_fixture_with(&data);
+        let before = state
+            .lock()
+            .db
+            .as_ref()
+            .expect("db")
+            .list_documents(&version.case_id)
+            .expect("belgeler")
+            .len();
+
+        let hub = state.vault_handle();
+        let slot = state.workers_handle();
+        let pool = state.parse_pool_handle();
+        let frames = Arc::new(Mutex::new(Vec::<ParseProgress>::new()));
+        let collected = Arc::clone(&frames);
+        let vid = version.id.clone();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            let mut emit = |update: &ParseProgress| {
+                collected.lock().expect("kare").push(update.clone());
+            };
+            run_redaction(
+                &hub,
+                &slot,
+                &pool,
+                &vid,
+                RedactRequest::Terms(vec!["Gizli".to_string()]),
+                &mut emit,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut stopped = 0usize;
+        while Instant::now() < deadline {
+            let progress_read = frames.lock().expect("kare").iter().any(|frame| {
+                frame.stage == "redact" && frame.done >= 1 && frame.done < frame.total.unwrap_or(0)
+            });
+            if progress_read {
+                stopped = state.cancel_all_workers();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(stopped >= 1, "iptal, yürüyen worker'ı durdurmalı");
+        let outcome = handle.join().expect("iş parçacığı");
+        println!("iptal {:?} sonra döndü", started.elapsed());
+        let err = outcome
+            .err()
+            .expect("iptal edilen maskeleme çıktı üretmemeli");
+        assert_eq!(err.code, "E_WORKER_CANCELED");
+
+        let guard = state.lock();
+        let db = guard.db.as_ref().expect("db");
+        let after = db.list_documents(&version.case_id).expect("belgeler").len();
+        assert_eq!(after, before, "yarım/ maskeli belge yazılmamalı");
+        let job = db
+            .job_by_key(&format!(
+                "redact:{}:{}",
+                version.id,
+                RedactRequest::Terms(vec!["Gizli".to_string()]).fingerprint()
+            ))
+            .expect("oku")
+            .expect("iş satırı");
+        assert_eq!(job.state, "canceled", "iş canceled kapanmalı");
+    }
+
     /// **§17.3 ölçümü — gerçek kasa + gerçek worker.** İki belge paralel
     /// ayrıştırıldığında duvar saati, seri toplamdan **kısadır** ve iki
     /// ayrıştırma gerçekten **çakışır**; veritabanı yazımları kasa kilidi
@@ -758,7 +1119,7 @@ mod tests {
         }
 
         let hub = state.vault_handle();
-        let slot = state.parse_handle();
+        let slot = state.workers_handle();
         let pool = state.parse_pool_handle();
 
         // Isınma: ilk süreç başlatma disk/önbellek maliyetini ölçüme katmaz.
@@ -844,7 +1205,7 @@ mod tests {
                 );
             }
         }
-        assert!(state.parse_lock().is_empty(), "yuva temizlenmeli");
+        assert!(state.workers_lock().is_empty(), "yuva temizlenmeli");
 
         println!(
             "parallel_wall={parallel_wall:.3}s serial_wall={serial_wall:.3}s overlap={overlap:.3}s marks={samples:?}"
@@ -2559,7 +2920,7 @@ pub async fn document_parse(
     password: Option<String>,
 ) -> Result<ParseResultView, ApiError> {
     let hub = state.vault_handle();
-    let slot = state.parse_handle();
+    let slot = state.workers_handle();
     let pool = state.parse_pool_handle();
     tauri::async_runtime::spawn_blocking(move || {
         let mut emit = |progress: &ParseProgress| {
@@ -2595,7 +2956,7 @@ pub async fn document_parse(
 #[allow(clippy::too_many_arguments)]
 fn run_parse(
     hub: &Arc<Mutex<VaultState>>,
-    slot: &Arc<Mutex<Vec<RunningParse>>>,
+    slot: &Arc<Mutex<Vec<RunningWorker>>>,
     pool: &Arc<crate::parse_pool::ParsePool>,
     version_id: &str,
     options: ParseOptions,
@@ -2670,9 +3031,10 @@ fn run_parse(
                 let killer = worker.killer();
                 // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
                 // beklemeden bu süreci öldürür (F04-T07). Yuva düşünce temizlenir.
-                let _slot = ParseSlotGuard::register(
+                let _slot = WorkerSlotGuard::register(
                     Arc::clone(slot),
-                    RunningParse {
+                    RunningWorker {
+                        kind: "parse",
                         version_id: version_id.to_string(),
                         job_id: prep.job.as_ref().map(|job| job.id.clone()),
                         killer: killer.clone(),
@@ -2866,7 +3228,7 @@ pub async fn documents_parse_pending(
     limit: Option<u32>,
 ) -> Result<BatchParseView, ApiError> {
     let hub = state.vault_handle();
-    let slot = state.parse_handle();
+    let slot = state.workers_handle();
     let pool = state.parse_pool_handle();
     let limit = i64::from(limit.unwrap_or(4).clamp(1, 8));
     let pending = {
@@ -3026,7 +3388,7 @@ pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCance
     // 1) Süreç: yuva kilidi kısa tutulur, kasa kilidi **alınmaz**. §17.3 ile
     //    birden çok ayrıştırma koşabildiği için iş kimliğiyle eşleşen süreç
     //    durdurulur (diğerleri etkilenmez).
-    let worker_stopped = state.cancel_parse_job(&job_id);
+    let worker_stopped = state.cancel_running_job(&job_id);
 
     // 2) Kuyruk kaydı (`running → canceling`; hiç çalışmamış iş `canceled`).
     let guard = state.lock();
@@ -5483,24 +5845,179 @@ pub struct RedactionView {
     pub warnings: Vec<String>,
 }
 
-/// Terimleri belgeden gerçekten çıkarır, çıktıyı yeni bir sürüm olarak kaydeder.
-/// Worker doğrulaması geçmezse hiçbir çıktı kaydedilmez.
-#[tauri::command]
-pub fn document_redact(
-    state: State<'_, AppState>,
-    version_id: String,
-    terms: Vec<String>,
-) -> Result<RedactionView, ApiError> {
-    let guard = state.lock();
+/// Maskeleme isteği: terim listesi ya da seçili bölgeler (F04-T07).
+///
+/// İki komut (`document_redact`, `document_redact_regions`) aynı iş hattını
+/// kullanır; fark yalnız worker yöntemi ve plan bölgelerinin türetilmesidir.
+#[derive(Clone, Debug)]
+enum RedactRequest {
+    Terms(Vec<String>),
+    Regions(Vec<(u32, [f64; 4])>),
+}
+
+impl RedactRequest {
+    /// Kuyruk parmak izi: **aynı istek** aynı anahtarı üretir (idempotent ekleme).
+    /// Terim sırası anlamlıdır; bölge sırası da öyle (kullanıcı seçimi).
+    fn fingerprint(&self) -> String {
+        let mut hasher = Sha256::new();
+        match self {
+            Self::Terms(terms) => {
+                hasher.update(b"terms");
+                for term in terms {
+                    hasher.update([0x1f]);
+                    hasher.update(term.as_bytes());
+                }
+            }
+            Self::Regions(regions) => {
+                hasher.update(b"regions");
+                for (page, rect) in regions {
+                    hasher.update([0x1f]);
+                    hasher.update(page.to_le_bytes());
+                    for value in rect {
+                        hasher.update(value.to_le_bytes());
+                    }
+                }
+            }
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    fn label_suffix(&self) -> &'static str {
+        match self {
+            Self::Terms(_) => "maskeli",
+            Self::Regions(_) => "bölge maskeli",
+        }
+    }
+
+    fn verify_message(&self) -> &'static str {
+        match self {
+            Self::Terms(_) => "Maskeli çıktıda hâlâ aranan metin var; dosya kaydedilmedi.",
+            Self::Regions(_) => "Seçilen bölgede metin kaldı; dosya kaydedilmedi.",
+        }
+    }
+
+    /// Worker'da gerçek maskeleme. İlerleme çerçeveleri aynen iletilir.
+    fn run(
+        &self,
+        worker: &mut WorkerClient,
+        data: &[u8],
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<RedactionOutcome, WorkerError> {
+        match self {
+            Self::Terms(terms) => worker.redact_with_progress(data, terms, progress),
+            Self::Regions(regions) => worker.redact_regions_with_progress(data, regions, progress),
+        }
+    }
+
+    /// Plan bölgeleri: terim maskesinde **gerçek isabetler**, bölge maskesinde
+    /// kullanıcının seçtiği dikdörtgenler (worker'ın isabet listesinden).
+    fn plan_regions(&self, outcome: &RedactionOutcome) -> Vec<RedactionRegionInput> {
+        outcome
+            .hits
+            .iter()
+            .map(|hit| RedactionRegionInput {
+                page_index: i64::from(hit.page),
+                rect: hit.rect,
+                term_hash: match self {
+                    Self::Terms(_) => hex::encode(Sha256::digest(hit.term.as_bytes())),
+                    Self::Regions(_) => hex::encode(Sha256::digest(
+                        format!("region:{}:{:?}", hit.page, hit.rect).as_bytes(),
+                    )),
+                },
+            })
+            .collect()
+    }
+}
+
+/// **Aşama A çıktısı:** kilit bırakıldıktan sonra worker'ın ihtiyaç duyduğu
+/// her şey (çözülmüş bayt, sürüm, iş kaydı) burada taşınır.
+struct RedactPrep {
+    version: DocumentVersion,
+    job: Option<JobRow>,
+    owner: String,
+    data: Vec<u8>,
+    vault_path: PathBuf,
+    request: RedactRequest,
+}
+
+fn canceled_redaction_error() -> ApiError {
+    ApiError::new(
+        "E_WORKER_CANCELED",
+        "Maskeleme iptal edildi; yarım çıktı kasaya yazılmadı. Belge yeniden maskelenebilir.",
+    )
+}
+
+/// **Aşama A — kilit altında hazırlık.** Sürüm, kuyruk sahiplenmesi ve şifreli
+/// blob çözümü. Ağır iş (worker) bu bloğun **dışında** koşar.
+///
+/// Maskeleme uzun sürebilir; kilit worker boyunca tutulursa bütün arayüz
+/// kilitlenir ve iptal düğmesine basılamaz (ayrıştırmada ölçülen sınıf).
+fn prepare_redaction(
+    guard: &crate::state::VaultState,
+    version_id: &str,
+    request: &RedactRequest,
+) -> Result<RedactPrep, ApiError> {
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
 
     let version = db
-        .get_version(&version_id)?
+        .get_version(version_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let fingerprint = request.fingerprint();
+    let base_key = format!("redact:{}:{}", version.id, fingerprint);
+    let owner = format!(
+        "redact-{}-{}",
+        std::process::id(),
+        PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+
+    // Kuyruk: iş **açılır** (idempotent) ve sahiplenilir. Şartname §17.1
+    // maskelemeyi ayrı iş türü sayar; ilerleme/sayaç/iptal bu satırda yaşar.
+    db.enqueue_job_with_priority(
+        "redaction",
+        Some(&version.case_id),
+        &fingerprint,
+        &base_key,
+        0,
+    )?;
+    let mut job_key = base_key.clone();
+    if let Some(state) = db.job_by_key(&job_key)?.map(|row| row.state) {
+        if !dim_storage::job_state::CLAIMABLE.contains(&state.as_str()) {
+            if matches!(state.as_str(), "running" | "validating" | "canceling") {
+                return Err(ApiError::new(
+                    "E_REDACT_BUSY",
+                    "Bu maskeleme zaten çalışıyor; bitmesini bekleyin.",
+                ));
+            }
+            // Aynı maskeleme daha önce koşup bitmiş: yeni niyet = **yeni iş
+            // satırı**. Terminal iş yeniden açılamaz (şartname §17.2).
+            job_key = format!(
+                "{base_key}#{}-{}",
+                std::process::id(),
+                PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+            );
+            db.enqueue_job_with_priority(
+                "redaction",
+                Some(&version.case_id),
+                &fingerprint,
+                &job_key,
+                0,
+            )?;
+        }
+    }
+    let job = db
+        .claim_job_by_key(
+            &job_key,
+            &owner,
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            time::OffsetDateTime::now_utc(),
+        )
+        .ok()
+        .flatten();
+
     let blob = db
-        .blob_for_version(&version_id)?
+        .blob_for_version(version_id)?
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
     let blob_path = vault_path
         .parent()
@@ -5509,21 +6026,57 @@ pub fn document_redact(
         .join(format!("{}.blb", blob.storage_id));
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
-    let mut worker = spawn_worker(WorkerKind::Redaction)?;
-    let outcome = worker.redact(&data, &terms)?;
-    worker.shutdown();
+    Ok(RedactPrep {
+        version,
+        job,
+        owner,
+        data,
+        vault_path: vault_path.clone(),
+        request: request.clone(),
+    })
+}
 
+/// **Aşama C — kilit altında yazma.** Kasa kapanmış, başka kasaya geçilmiş
+/// veya iş iptal edilmiş olabilir; üçü de "yarım çıktı yaz" ile sonuçlanmaz
+/// (§17.2 `canceled`).
+fn commit_redaction(
+    guard: &crate::state::VaultState,
+    prep: &RedactPrep,
+    outcome: RedactionOutcome,
+) -> Result<RedactionView, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    if guard.path.as_ref() != Some(&prep.vault_path) {
+        return Err(ApiError::new(
+            "E_VAULT_LOCKED",
+            "Kasa bu arada kapandı; maskeleme çıktısı yazılmadı.",
+        ));
+    }
+    if let Some(job) = prep.job.as_ref() {
+        let still_ours = db
+            .get_job(&job.id)?
+            .map(|row| {
+                row.state == "running" && row.lease_owner.as_deref() == Some(prep.owner.as_str())
+            })
+            .unwrap_or(false);
+        if !still_ours {
+            return Err(canceled_redaction_error());
+        }
+    }
+    // Ürün değişmezi: bağımsız doğrulama kalan terim bulduysa dosya yazılmaz.
     if !outcome.remaining.is_empty() {
         return Err(ApiError::new(
             "E_REDACT_VERIFY",
-            "Maskeli çıktıda hâlâ aranan metin var; dosya kaydedilmedi.",
+            prep.request.verify_message(),
         ));
     }
 
+    let version = &prep.version;
     let out_sha = hex::encode(Sha256::digest(&outcome.pdf));
-    let aad = format!("{}:redacted:{}", version.case_id, out_sha);
+    let aad = format!("{}:redacted:{out_sha}", version.case_id);
     let out_path = vault.write_blob(
-        &vault_path
+        &prep
+            .vault_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("blobs"),
@@ -5543,7 +6096,11 @@ pub fn document_redact(
         .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge bulunamadı."))?;
     let new_doc = db.create_document(
         &version.case_id,
-        &format!("{} (maskeli)", source_doc.display_name),
+        &format!(
+            "{} ({})",
+            source_doc.display_name,
+            prep.request.label_suffix()
+        ),
         "pdf",
         None,
         "unknown",
@@ -5555,27 +6112,19 @@ pub fn document_redact(
         &out_sha,
         i64::try_from(outcome.pdf.len()).unwrap_or(i64::MAX),
         "application/pdf",
-        Some(&version_id),
+        Some(&version.id),
     )?;
 
     let plan = db.create_redaction_plan(
         &version.case_id,
         &NewRedactionPlan {
-            document_version_id: version_id.clone(),
+            document_version_id: version.id.clone(),
             parse_run_id: None,
             render_hash: version.original_sha256.clone(),
             output_profile: "share".to_string(),
         },
     )?;
-    let regions: Vec<RedactionRegionInput> = outcome
-        .hits
-        .iter()
-        .map(|hit| RedactionRegionInput {
-            page_index: i64::from(hit.page),
-            rect: hit.rect,
-            term_hash: hex::encode(Sha256::digest(hit.term.as_bytes())),
-        })
-        .collect();
+    let regions = prep.request.plan_regions(&outcome);
     db.add_redaction_regions(&plan.id, &regions)?;
 
     Ok(RedactionView {
@@ -5594,6 +6143,170 @@ pub fn document_redact(
         scripts_removed: outcome.scripts_removed,
         warnings: outcome.warnings,
     })
+}
+
+/// Maskelenin üç aşamalı gövdesi (bloklayan iş parçacığında koşar).
+///
+/// **Aşama A** kilit altında hazırlık, **B** kilit yokken worker (kaynak bütçesi
+/// ve §17.3 kapısı), **C** kilit altında yazma. İlerleme hem `redact-progress`
+/// olayına hem kuyruk satırına yazılır; olay düşerse maskeleme etkilenmez.
+fn run_redaction(
+    hub: &Arc<Mutex<VaultState>>,
+    slot: &Arc<Mutex<Vec<RunningWorker>>>,
+    pool: &Arc<crate::parse_pool::ParsePool>,
+    version_id: &str,
+    request: RedactRequest,
+    progress: &mut dyn FnMut(&ParseProgress),
+) -> Result<RedactionView, ApiError> {
+    progress(&ParseProgress {
+        stage: "start".to_string(),
+        done: 0,
+        total: None,
+    });
+    let prep = {
+        let guard = lock_vault(hub);
+        prepare_redaction(&guard, version_id, &request)?
+    };
+
+    let mut sink = JobProgressSink::new(
+        prep.job.as_ref().map(|job| job.id.clone()),
+        prep.owner.clone(),
+        progress,
+    );
+
+    let outcome: Result<RedactionView, ApiError> = (|| {
+        let weight = crate::parse_pool::ParseWeight::for_bytes(
+            u64::try_from(prep.data.len()).unwrap_or(u64::MAX),
+        );
+        let (permit, _waited) = {
+            let mut notice = || sink.record(&queued_frame(), &mut ProgressStore::Locked(hub));
+            pool.acquire_noticing(weight, &mut notice)
+        };
+        let redacted = (|| {
+            let mut worker = spawn_worker(WorkerKind::Redaction)?;
+            let killer = worker.killer();
+            // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
+            // beklemeden süreci öldürür (F04-T07 ile aynı yol).
+            let _slot = WorkerSlotGuard::register(
+                Arc::clone(slot),
+                RunningWorker {
+                    kind: "redact",
+                    version_id: version_id.to_string(),
+                    job_id: prep.job.as_ref().map(|job| job.id.clone()),
+                    killer: killer.clone(),
+                },
+            );
+            let mut store = ProgressStore::Locked(hub);
+            let mut forward = |update: ParseProgress| sink.record(&update, &mut store);
+            let outcome = prep.request.run(&mut worker, &prep.data, &mut forward)?;
+            worker.shutdown();
+            // İptal, çıktı yazılmadan **önce** denetlenir: hiçbir şey yazılmaz.
+            if killer.is_canceled() {
+                return Err(canceled_redaction_error());
+            }
+            Ok::<_, ApiError>(outcome)
+        })()?;
+        drop(permit);
+        let guard = lock_vault(hub);
+        commit_redaction(&guard, &prep, redacted)
+    })();
+
+    // Denetim + kuyruk sonucu ayrı ve kısa bir kilitle yazılır.
+    {
+        let guard = lock_vault(hub);
+        if let Some(db) = guard.db.as_ref() {
+            if prep.job.is_some() {
+                let _ = db.append_audit(
+                    "document_redact",
+                    None,
+                    "progress",
+                    "local-user",
+                    &sink.audit_metadata(),
+                );
+            }
+            if let Some(job) = prep.job.as_ref() {
+                let now = time::OffsetDateTime::now_utc();
+                match &outcome {
+                    Ok(_) => {
+                        let _ = db.begin_validation(&job.id, &prep.owner, now);
+                        let _ = db.complete_job(&job.id, &prep.owner, now);
+                    }
+                    Err(err) if err.code == "E_WORKER_CANCELED" => {
+                        let _ = db.cancel_job(&job.id, now);
+                        let _ = db.fail_job(&job.id, &prep.owner, "E_WORKER_CANCELED", false, now);
+                    }
+                    Err(err) => {
+                        let _ = db.fail_job(
+                            &job.id,
+                            &prep.owner,
+                            &err.code,
+                            parse_failure_is_retryable(&err.code),
+                            now,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Maskelemeyi arayüz iş parçacığı dışında koşar (uzun belgede pencere
+/// kilitlenmez) ve işi kuyruğa yazar.
+async fn redact_command(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    request: RedactRequest,
+) -> Result<RedactionView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.workers_handle();
+    let pool = state.parse_pool_handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut emit = |progress: &ParseProgress| {
+            let event = ParseProgressEvent::new(&version_id, progress);
+            // Pencere kapalıysa olay düşer; maskeleme sürer.
+            let _ = app.emit("redact-progress", event);
+        };
+        run_redaction(&hub, &slot, &pool, &version_id, request, &mut emit)
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "E_REDACT",
+            "Maskeleme işi beklenmedik biçimde sona erdi; kasa durumu değişmedi.",
+        )
+    })?
+}
+
+/// Terimleri belgeden gerçekten çıkarır, çıktıyı yeni bir sürüm olarak kaydeder.
+///
+/// Kasa kilidi worker boyunca **tutulmaz**: uzun maskede pencere donmaz ve
+/// iptal düğmesi çalışır. Doğrulama geçmezse hiçbir çıktı kaydedilmez.
+#[tauri::command]
+pub async fn document_redact(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    terms: Vec<String>,
+) -> Result<RedactionView, ApiError> {
+    redact_command(app, state, version_id, RedactRequest::Terms(terms)).await
+}
+
+/// Kullanıcının seçtiği sayfa bölgelerini gerçekten kaldırır (aynı iş hattı).
+#[tauri::command]
+pub async fn document_redact_regions(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    regions: Vec<RedactRegionInput>,
+) -> Result<RedactionView, ApiError> {
+    if regions.is_empty() {
+        return Err(ApiError::new("E_REDACT_REGIONS", "En az bir bölge seçin."));
+    }
+    let pairs: Vec<(u32, [f64; 4])> = regions.iter().map(|r| (r.page_index, r.rect)).collect();
+    redact_command(app, state, version_id, RedactRequest::Regions(pairs)).await
 }
 
 #[derive(Serialize)]
@@ -6264,123 +6977,6 @@ pub struct RedactRegionInput {
 
 /// Kullanıcının sayfa üzerinde seçtiği bölgeleri gerçekten kaldırır ve yeni
 /// sürüm olarak kaydeder. Doğrulama geçmezse hiçbir çıktı yazılmaz.
-#[tauri::command]
-pub fn document_redact_regions(
-    state: State<'_, AppState>,
-    version_id: String,
-    regions: Vec<RedactRegionInput>,
-) -> Result<RedactionView, ApiError> {
-    if regions.is_empty() {
-        return Err(ApiError::new("E_REDACT_REGIONS", "En az bir bölge seçin."));
-    }
-    let guard = state.lock();
-    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
-
-    let version = db
-        .get_version(&version_id)?
-        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
-    let blob = db
-        .blob_for_version(&version_id)?
-        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
-    let blob_path = vault_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("blobs")
-        .join(format!("{}.blb", blob.storage_id));
-    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
-
-    let pairs: Vec<(u32, [f64; 4])> = regions.iter().map(|r| (r.page_index, r.rect)).collect();
-    let mut worker = spawn_worker(WorkerKind::Redaction)?;
-    let outcome = worker.redact_regions(&data, &pairs)?;
-    worker.shutdown();
-
-    if !outcome.remaining.is_empty() {
-        return Err(ApiError::new(
-            "E_REDACT_VERIFY",
-            "Seçilen bölgede metin kaldı; dosya kaydedilmedi.",
-        ));
-    }
-
-    let out_sha = hex::encode(Sha256::digest(&outcome.pdf));
-    let aad = format!("{}:redacted:{}", version.case_id, out_sha);
-    let out_path = vault.write_blob(
-        &vault_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("blobs"),
-        &outcome.pdf,
-        aad.as_bytes(),
-    )?;
-    let out_size = i64::try_from(std::fs::metadata(&out_path)?.len()).unwrap_or(i64::MAX);
-    let storage_id = out_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("blob")
-        .to_string();
-    let out_blob_id = db.create_blob_record(&storage_id, out_size, &aad)?;
-
-    let source_doc = db
-        .get_document(&version.document_id)?
-        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge bulunamadı."))?;
-    let new_doc = db.create_document(
-        &version.case_id,
-        &format!("{} (bölge maskeli)", source_doc.display_name),
-        "pdf",
-        None,
-        "unknown",
-    )?;
-    let new_version = db.add_version_with_parent(
-        &new_doc.id,
-        &version.case_id,
-        &out_blob_id,
-        &out_sha,
-        i64::try_from(outcome.pdf.len()).unwrap_or(i64::MAX),
-        "application/pdf",
-        Some(&version_id),
-    )?;
-
-    let plan = db.create_redaction_plan(
-        &version.case_id,
-        &dim_storage::NewRedactionPlan {
-            document_version_id: version_id.clone(),
-            parse_run_id: None,
-            render_hash: version.original_sha256.clone(),
-            output_profile: "share".to_string(),
-        },
-    )?;
-    let inputs: Vec<dim_storage::RedactionRegionInput> = outcome
-        .hits
-        .iter()
-        .map(|hit| dim_storage::RedactionRegionInput {
-            page_index: i64::from(hit.page),
-            rect: hit.rect,
-            term_hash: hex::encode(Sha256::digest(
-                format!("region:{}:{:?}", hit.page, hit.rect).as_bytes(),
-            )),
-        })
-        .collect();
-    db.add_redaction_regions(&plan.id, &inputs)?;
-
-    Ok(RedactionView {
-        document: new_doc,
-        version: new_version,
-        plan,
-        hits: outcome.hits.len(),
-        remaining: outcome.remaining,
-        ocr_verified: outcome.ocr_verified,
-        engines: outcome.engines,
-        streams_scanned: outcome.streams_scanned,
-        streams_binary: outcome.streams_binary,
-        streams_unreadable: outcome.streams_unreadable,
-        annotations_removed: outcome.annotations_removed,
-        offpage_spans_removed: outcome.offpage_spans_removed,
-        scripts_removed: outcome.scripts_removed,
-        warnings: outcome.warnings,
-    })
-}
-
 #[tauri::command]
 pub fn citation_meaning_review(
     state: State<'_, AppState>,

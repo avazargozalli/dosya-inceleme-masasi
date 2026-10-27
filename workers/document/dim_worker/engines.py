@@ -1285,12 +1285,20 @@ def _pypdf_module() -> Any:
         return None
 
 
-def _verify_with_pypdf(data: bytes, terms: list[str]) -> tuple[list[str], bool]:
-    """Bağımsız ikinci okuyucu. Kurulu değilse `ran=False` döner ve motor
-    listesine **girmez**; "pypdf doğruladı" yalanı yazılmaz."""
+def _verify_with_pypdf(
+    data: bytes, terms: list[str]
+) -> tuple[list[str], bool, str | None]:
+    """Bağımsız ikinci okuyucu.
+
+    Dönen üçlü: `(bulunan, çalıştı_mı, hata)`. Kurulu değilse `ran=False`,
+    `hata=None` (motorda "pypdf kurulu değil" uyarısı yazılır). **Çökme sızıntı
+    değildir**: eskiden `list(terms)` dönüyordu, yani doğrulayıcı hatası
+    "terim hâlâ var" diye raporlanıp maskeli dosya kaydettirilmiyordu
+    (ölçüldü: TMPDIR'siz ortamda tesseract hatası aynı sınıftı). Artık çökme
+    "doğrulanamadı" olarak ayrılır ve uyarı olarak yazılır."""
     pypdf = _pypdf_module()
     if pypdf is None:
-        return [], False
+        return [], False, None
     try:
         reader = pypdf.PdfReader(io.BytesIO(data))
         found: list[str] = []
@@ -1299,23 +1307,29 @@ def _verify_with_pypdf(data: bytes, terms: list[str]) -> tuple[list[str], bool]:
             for term in terms:
                 if term in text:
                     found.append(term)
-        return sorted(set(found)), True
-    except Exception:  # noqa: BLE001 - doğrulayıcı çöktüyse sonuç "temiz" sayılmaz
-        return list(terms), True
+        return sorted(set(found)), True, None
+    except Exception:  # noqa: BLE001 - doğrulayıcı çöktü: "temiz" de değil, "sızıntı" da değil
+        return [], False, "pypdf doğrulaması yapılamadı (okuyucu hatası)"
 
 
-def _verify_with_ocr(data: bytes, terms: list[str]) -> tuple[list[str], bool]:
-    """Sayfa görüntüsünü OCR ile okur. Tesseract yoksa `False` döner; bu durum
-    'görüntü doğrulandı' diye sunulmaz."""
+def _verify_with_ocr(
+    data: bytes, terms: list[str]
+) -> tuple[list[str], bool, str | None]:
+    """Sayfa görüntüsünü OCR ile okur.
+
+    `(bulunan, çalıştı_mı, hata)`. Tesseract/pytesseract yoksa `ran=False` ve
+    `hata=None` (görüntü doğrulandı diye sunulmaz). **OCR çökmesi sızıntı
+    değildir**: eskiden `list(terms)` dönüyordu ve tek bir ortam eksiği
+    (TMPDIR) yüzünden maskeli dosya hiç kaydedilmiyordu — ölçüldü."""
     try:
         import pytesseract  # type: ignore
         from PIL import Image  # type: ignore
     except ImportError:
-        return [], False
+        return [], False, None
     import shutil
 
     if shutil.which("tesseract") is None:
-        return [], False
+        return [], False, None
     pymupdf = _pymupdf()
     found: list[str] = []
     try:
@@ -1330,9 +1344,9 @@ def _verify_with_ocr(data: bytes, terms: list[str]) -> tuple[list[str], bool]:
                         found.append(term)
         finally:
             doc.close()
-    except Exception:  # noqa: BLE001
-        return list(terms), True
-    return found, True
+    except Exception:  # noqa: BLE001 - çökme: doğrulanamadı (sızıntı değil)
+        return [], False, "OCR doğrulaması yapılamadı (tesseract hatası)"
+    return found, True, None
 
 
 def _annotation_blobs(doc: Any, xref: int) -> list[bytes]:
@@ -1515,20 +1529,20 @@ def _region_probe_terms(
 
 def _region_ocr_leaks(
     data: bytes, regions: list[tuple[int, Any, list[float]]], probes: list[str]
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], bool, str | None]:
     """Karartılan bölgelerin **görüntüsünü** OCR ile okur.
 
     Bölge karartması pikselleri siler; metin katmanı temiz görünse bile
     görüntüde kalan yazı sızıntıdır. Tesseract yoksa `ran=False`."""
     if not probes:
-        return [], False
+        return [], False, None
     try:
         import pytesseract  # type: ignore
         from PIL import Image  # type: ignore
     except ImportError:
-        return [], False
+        return [], False, None
     if shutil.which("tesseract") is None:
-        return [], False
+        return [], False, None
     pymupdf = _pymupdf()
     found: set[str] = set()
     try:
@@ -1544,9 +1558,9 @@ def _region_ocr_leaks(
                         found.add(probe)
         finally:
             doc.close()
-    except Exception:  # noqa: BLE001 - OCR çöktüyse bölge "temiz" sayılmaz
-        return list(probes), True
-    return sorted(found), True
+    except Exception:  # noqa: BLE001 - çökme: doğrulanamadı (sızıntı değil)
+        return [], False, "bölge OCR doğrulaması yapılamadı (tesseract hatası)"
+    return sorted(found), True, None
 
 
 def _verification_warnings(
@@ -1572,6 +1586,7 @@ def redact_pdf_regions(
     data: bytes,
     regions: list[dict[str, Any]],
     fill: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    progress: Callable[[str, int, int | None], None] | None = None,
 ) -> RedactionResult:
     """Kullanıcının seçtiği dikdörtgenleri gerçekten kaldırır.
 
@@ -1582,6 +1597,7 @@ def redact_pdf_regions(
     pymupdf = _pymupdf()
     if not regions:
         raise EngineError("E_REDACT_REGIONS", "maskelenecek bölge yok")
+    notify = progress or (lambda stage, done, total: None)
 
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
@@ -1608,6 +1624,8 @@ def redact_pdf_regions(
 
     hits: list[RedactionHit] = []
     ocr_probes: list[str] = []
+    total_pages = len({item[0] for item in parsed})
+    notify("redact", 0, total_pages)
     try:
         probes, ocr_probes = _region_probe_terms(doc, parsed, pymupdf)
         for page_index, rect, cleaned in parsed:
@@ -1620,8 +1638,9 @@ def redact_pdf_regions(
                     rect=cleaned,
                 )
             )
-        for page_index in sorted({item[0] for item in parsed}):
+        for done, page_index in enumerate(sorted({item[0] for item in parsed}), start=1):
             doc.load_page(page_index).apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+            notify("redact", done, total_pages)
         offpage_spans_removed = _strip_offpage_text(doc, pymupdf)
         scripts_removed = _strip_document_scripts(doc)
         # `reset_responses=False`: PyMuPDF 1.24.14'te `delete_responses`, yanıtı
@@ -1634,29 +1653,37 @@ def redact_pdf_regions(
             hidden_text=True,
             reset_responses=False,
         )
+        notify("pack", 0, 1)
         out = doc.tobytes(garbage=4, deflate=True)
+        notify("pack", 1, 1)
     finally:
         doc.close()
 
     check = pymupdf.open(stream=out, filetype="pdf")
     remaining: list[str] = []
+    notify("verify", 0, total_pages)
     try:
-        for page_index, _rect, cleaned in parsed:
+        for done, (page_index, _rect, cleaned) in enumerate(parsed, start=1):
             page = check.load_page(page_index)
             leftover = (page.get_text("text", clip=pymupdf.Rect(*cleaned)) or "").strip()
             if leftover:
                 remaining.append(f"sayfa {page_index + 1}: bölgede metin kaldı")
+            notify("verify", done, total_pages)
     finally:
         check.close()
 
     # Bölgede ne olduğu bilinmediği için doğrulama bölgedeki kelimelerle yapılır.
+    notify("scan", 0, 1)
     leaked, streams_scanned, streams_binary, streams_unreadable = _scan_terms(out, probes)
     remaining.extend(leaked)
-    pypdf_found, pypdf_ran = _verify_with_pypdf(out, probes)
+    pypdf_found, pypdf_ran, pypdf_error = _verify_with_pypdf(out, probes)
     remaining.extend(pypdf_found)
     verify_words = sorted(set(probes) | set(ocr_probes))
-    region_ocr_found, region_ocr_ran = _region_ocr_leaks(out, parsed, verify_words)
+    region_ocr_found, region_ocr_ran, region_ocr_error = _region_ocr_leaks(
+        out, parsed, verify_words
+    )
     remaining.extend(region_ocr_found)
+    notify("scan", 1, 1)
 
     engines = ["pymupdf", "raw-scan"]
     if pypdf_ran:
@@ -1669,9 +1696,13 @@ def redact_pdf_regions(
         offpage_spans_removed=offpage_spans_removed,
         streams_unreadable=streams_unreadable,
     )
-    if not pypdf_ran:
+    if pypdf_error:
+        warnings.append(pypdf_error)
+    elif not pypdf_ran:
         warnings.append("pypdf kurulu değil: ikinci okuyucu doğrulaması yapılmadı")
-    if ocr_probes and not probes:
+    if region_ocr_error:
+        warnings.append(region_ocr_error)
+    if ocr_probes and not probes and region_ocr_ran:
         warnings.append("bölgede metin katmanı yoktu; doğrulama bölge görüntüsünün OCR'ıyla yapıldı")
     if not verify_words:
         warnings.append("bölgede okunabilir metin yok: karşılaştırılacak kelime bulunamadı")
@@ -1695,7 +1726,12 @@ def redact_pdf_regions(
     )
 
 
-def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> RedactionResult:
+def redact_pdf(
+    data: bytes,
+    terms: list[str],
+    fill: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    progress: Callable[[str, int, int | None], None] | None = None,
+) -> RedactionResult:
     """Terimleri PDF'in **metin katmanından ve görüntüsünden** gerçekten çıkarır.
 
     Yalnız siyah dikdörtgen çizmek maskeleme sayılmaz: `apply_redactions`
@@ -1711,6 +1747,7 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
     cleaned = [t for t in (terms or []) if isinstance(t, str) and t.strip()]
     if not cleaned:
         raise EngineError("E_REDACT_TERMS", "maskelenecek terim listesi boş")
+    notify = progress or (lambda stage, done, total: None)
 
     try:
         doc = pymupdf.open(stream=data, filetype="pdf")
@@ -1720,6 +1757,8 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
         raise EngineError("E_PDF_PASSWORD", "belge parola korumalı; parola desteği henüz yok")
 
     hits: list[RedactionHit] = []
+    total_pages = doc.page_count
+    notify("redact", 0, total_pages)
     try:
         annotations_removed = _strip_leaking_annotations(doc, cleaned)
         scripts_removed = _strip_document_scripts(doc)
@@ -1736,6 +1775,7 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
                     )
             # Görüntü pikselleri de temizlenir; yalnız vektör kutusu bırakılmaz.
             page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
+            notify("redact", page.number + 1, total_pages)
         offpage_spans_removed = _strip_offpage_text(doc, pymupdf)
         # `reset_responses=False`: PyMuPDF 1.24.14'te `delete_responses`, yanıtı
         # olmayan her annotation'da `None.m_internal` ile çöküyor (karartmayı
@@ -1748,36 +1788,42 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
             hidden_text=True,
             reset_responses=False,
         )
+        notify("pack", 0, 1)
         out = doc.tobytes(garbage=4, deflate=True)
+        notify("pack", 1, 1)
     finally:
         doc.close()
 
     check = pymupdf.open(stream=out, filetype="pdf")
     remaining: list[str] = []
+    notify("verify", 0, total_pages)
     try:
-        for page in check:
+        for done, page in enumerate(check, start=1):
             text = page.get_text("text") or ""
             for term in cleaned:
                 if term in text or page.search_for(term):
                     remaining.append(term)
                     break
+            notify("verify", done, total_pages)
     finally:
         check.close()
 
     # Ham bayt taraması: 3 karakterden kısa terimler rastgele baytlarla
     # eşleşebileceği için yalnız metin katmanında doğrulanır (uyarıda yazılır).
     scan_terms = [t for t in cleaned if len(t) >= 4]
+    notify("scan", 0, 1)
     leaked, streams_scanned, streams_binary, streams_unreadable = _scan_terms(out, scan_terms)
     remaining.extend(leaked)
-    pypdf_found, pypdf_ran = _verify_with_pypdf(out, cleaned)
+    pypdf_found, pypdf_ran, pypdf_error = _verify_with_pypdf(out, cleaned)
     remaining.extend(pypdf_found)
-    ocr_found, ocr_verified = _verify_with_ocr(out, cleaned)
+    ocr_found, ocr_ran, ocr_error = _verify_with_ocr(out, cleaned)
     remaining.extend(ocr_found)
+    notify("scan", 1, 1)
 
     engines = ["pymupdf", "raw-scan"]
     if pypdf_ran:
         engines.append("pypdf")
-    if ocr_verified:
+    if ocr_ran:
         engines.append("tesseract")
 
     warnings = _verification_warnings(
@@ -1786,8 +1832,12 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
         offpage_spans_removed=offpage_spans_removed,
         streams_unreadable=streams_unreadable,
     )
-    if not pypdf_ran:
+    if pypdf_error:
+        warnings.append(pypdf_error)
+    elif not pypdf_ran:
         warnings.append("pypdf kurulu değil: ikinci okuyucu doğrulaması yapılmadı")
+    if ocr_error:
+        warnings.append(ocr_error)
     if len(scan_terms) < len(cleaned):
         warnings.append("3 karakterden kısa terimler yalnız metin katmanında doğrulandı")
 
@@ -1798,7 +1848,7 @@ def redact_pdf(data: bytes, terms: list[str], fill: tuple[float, float, float] =
         remaining=sorted(set(remaining)),
         engine="pymupdf",
         engine_version=version,
-        ocr_verified=ocr_verified,
+        ocr_verified=ocr_ran,
         engines=engines,
         streams_scanned=streams_scanned,
         streams_binary=streams_binary,

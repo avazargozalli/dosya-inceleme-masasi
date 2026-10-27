@@ -10,7 +10,7 @@
 | F04-T02 | ✅ | arşivle / geri al / geri dönüşümlü silme |
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
-| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) |
+| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) |
 
 ## Doğrulama
 
@@ -145,6 +145,84 @@ bellek içi kasa + gerçek kuyruk satırı ile sink), Web **362** (+3 `jobs`).
 - Sayaç yalnız `parse_document` yolunda yazılır; kuyruktaki diğer iş türlerinin
   yürütücüsü yok.
 - Kartın görsel QA'sı hâlâ yok (Tauri penceresi açılmadı).
+
+## Maskeleme kuyruk işi olarak koşar (2026-10-28, F04-T07 genişletmesi)
+
+**Neden:** maskeleme `state.lock()` altında çalışıyordu — uzun maskede bütün arayüz
+kilitleniyor, iptal düğmesine basılamıyordu. Ayrıca kuyrukta `parse_document` dışında
+yürütücüsü olan iş türü yoktu.
+
+**Yapılan (üç aşamalı `run_redaction`):** (A) kilit altında sürüm + blob + iş satırı
+(`prepare_redaction`), (B) **kilit yokken** worker süreci ve doğrulama, (C) kilit altında
+çıktı/denetim yazımı (`commit_redaction`). Yeni iş türü `redaction` (idempotent anahtar
+`redact:<sürüm>:<parmak izi>`, aynı niyet ikinci kez `E_REDACT_BUSY`), iptal yuvası artık
+iş türü taşır (`RunningParse` → `RunningWorker` + `kind`), yeni `redact-progress` olayı;
+`redaction` / `redaction_regions` komutları async (`spawn_blocking`).
+
+### ÖLÇÜLEN KUSUR #50 — ürün zarfı OCR'ı çökertiyordu (kritik, işlevsel)
+
+`worker_env()` yalnız `PATH/LANG/LC_ALL` veriyordu; `TMPDIR` yoktu. Bu makinede
+`/tmp` bir **sembolik bağ**tır ve pytesseract geçici çıktıyı okuyamıyor:
+
+| zarf | sonuç |
+|---|---|
+| `PATH/LANG/LC_ALL` (ürün) | **`UnicodeDecodeError`** (`byte 0x89`, PNG imzası) |
+| `+ HOME` | aynı hata (çözüm değil) |
+| `+ TMPDIR=/tmp` | **aynı hata** (sembolik bağ) |
+| `+ TMPDIR=/private/tmp` | ✅ `Sayfa 2 kurgu` |
+| `+ TMPDIR=<gerçek dizin>` | ✅ |
+
+Eski kodda doğrulayıcı istisnası **sızıntı** sayılıyordu (aşağıdaki #51) → ürün
+`E_REDACT_VERIFY` veriyor ve **maskeli dosya hiç kaydedilmiyordu**. Yani tesseract
+kurulu bir makinede maskeleme ürün yolunda sessizce çalışmıyordu; önceki turlar bunu
+görmedi çünkü testler tam ortamla (`spawn_dev`) koşuyordu.
+
+**Düzeltme:** `worker_env()` artık `TMPDIR/TMP/TEMP` verir; değer kabuk ortamından
+devralınmaz, `std::env::temp_dir()`in **çözülmüş** yoludur (`/tmp` → `/private/tmp`).
+Regresyon testi: `worker_env_hands_a_real_temp_directory` (mutlak + var + sembolik bağ
+değil + üç ad aynı değer).
+
+### ÖLÇÜLEN KUSUR #51 — doğrulayıcı çökmesi "sızıntı" diye raporlanıyordu
+
+`_verify_with_pypdf`, `_verify_with_ocr`, `_region_ocr_leaks` istisna yolunda
+`list(terms)` dönüyordu: doğrulayıcı hatası "terim hâlâ var" gibi görünüyordu. Artık
+üçlü döner — `(bulunan, çalıştı_mı, hata)`; çökme `remaining`e **girmez**, uyarı olarak
+yazılır ("pypdf/OCR doğrulaması yapılamadı"), `engines` listesine o doğrulayıcı eklenmez
+ve `ocr_verified=false` kalır. Bölge maskesinde "bölgede metin kaldı" ile "doğrulanamadı"
+ayrıldı; "OCR ile doğrulandı" uyarısı yalnız OCR gerçekten koştuysa yazılır.
+
+### ÖLÇÜM (gerçek worker + gerçek kasa, debug, Apple M2)
+
+`redaction_runs_off_the_vault_lock_and_reports_pages` (4 sayfalık fikstür, 3 koşu):
+maskeleme **5,27 / 2,91 / 3,00 s** (ilki soğuk), **en uzun kasa kilidi beklemesi
+15,4 / 47,5 / 40,6 ms** (eşik 150 ms), kareler birebir
+`start → redact 0..4 → pack 0..1 → verify 0..4 → scan 0..1`, iş satırı `completed`,
+son aşama `scan`. `redaction_cancel_stops_the_worker_and_writes_nothing`
+(120 sayfa, `fixtures/synthetic/cancel-pages.pdf`): iptal **153 / 211 ms**'de döndü,
+hata `E_WORKER_CANCELED`, iş `canceled`, **hiçbir belge yazılmadı**.
+
+**Fikstür:** `fixtures/synthetic/cancel-pages.pdf` (120 sayfa, 33.144 bayt) —
+`fixtures/synthetic/generate.py` üretir (`build_cancel_pdf`). Test **süreç başlatmaz**
+(ADR-05); ölçüm her koşuda aynı belgeyi kullanır.
+
+**Test:** `cargo test -p dim-ingest --lib` **67** (+1 ortam testi, 1 ignored);
+tauri `--lib` **25** (+2 iş testi, 3 ignored); ignored ölçüm **2/2**; Python
+`pytest workers/document/tests` **147 passed, 1 skipped** (+3 doğrulayıcı dürüstlüğü;
+pymupdf 1.24.14 / pypdf 5.1.0 / pytesseract 0.3.13 — CI pinleriyle);
+Web `tsc --noEmit` temiz, `vitest run` **382/382**. clippy `-p dim-ingest` ve tauri
+`--all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+
+**Dürüst sınırlar:**
+
+- Takas bilinçli: doğrulayıcı çökerse dosya **kaydedilir** ama uyarı + `ocr_verified=false`
+  ile; eskiden her şeyi reddediyordu (ürün fiilen çalışmıyordu). Uyarı arayüzde
+  "Doğrulama notları" altında görünür.
+- OCR doğrulaması yalnız tesseract **kuruluysa** koşar (bu makinede 5.5.3; ürün
+  paketinde tesseract dağıtımı ayrı iş — F01-T02).
+- Kilit beklemesi örnekleyen bir yoklamayla ölçüldü (2 ms aralık), garanti değil;
+  ölçüm **debug** derleme, tek makine, 4 ve 120 sayfalık kurgu belgeler.
+- `TMPDIR` düzeltmesi macOS'ta ölçüldü; Windows'ta `TMP/TEMP` verilir ama **denenmedi**.
+- Tauri penceresi açılmadı → aşama satırının ve iptal düğmesinin **görsel QA'si yok**.
 
 ## İş kuyruğu iptali (2026-10-26, F04-T07)
 

@@ -15,22 +15,24 @@ pub struct VaultState {
     pub vault_id: Option<String>,
 }
 
-/// Süren belge ayrıştırması: hangi iş/sürüm ve **süreci durdurma** tutamağı
-/// (şartname §17.5, F04-T07). Ayrıştırma kasa kilidini tutarken iptal komutu
+/// Süren belge işi: hangi iş/sürüm ve **süreci durdurma** tutamağı
+/// (şartname §17.5, F04-T07). İş kasa kilidini tutarken iptal komutu
 /// bu yuvaya bakıp süreci öldürür; kasa kilidi beklenmez.
 ///
-/// **§17.3:** aynı anda en fazla iki ayrıştırma koşabildiği için yuva **liste**
+/// **§17.3:** aynı anda en fazla iki belge worker'ı koşabildiği için yuva **liste**
 /// tutar; iptal, iş kimliğine (yoksa sürüm kimliğine) göre eşleşen süreci
-/// durdurur.
-pub struct RunningParse {
+/// durdurur. `kind` hangi işin süreci olduğunu söyler (`parse` · `redact`).
+pub struct RunningWorker {
+    pub kind: &'static str,
     pub version_id: String,
     pub job_id: Option<String>,
     pub killer: dim_ingest::worker::WorkerKiller,
 }
 
-impl std::fmt::Debug for RunningParse {
+impl std::fmt::Debug for RunningWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunningParse")
+        f.debug_struct("RunningWorker")
+            .field("kind", &self.kind)
             .field("version_id", &self.version_id)
             .field("job_id", &self.job_id)
             .field("canceled", &self.killer.is_canceled())
@@ -49,7 +51,7 @@ pub struct AppState {
     /// sınama çalışır ve iptal düğmesi bu bayrağı işaretler.
     pub cli_probe: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// Süren ayrıştırmalar (§17.3: en fazla iki). Boşken ayrıştırma yok.
-    pub parse: Arc<Mutex<Vec<RunningParse>>>,
+    pub workers: Arc<Mutex<Vec<RunningWorker>>>,
     /// Belge worker eşzamanlılık kapısı (§17.3). Kapasite 2; büyük belge tek.
     pub parse_pool: Arc<crate::parse_pool::ParsePool>,
 }
@@ -87,10 +89,10 @@ impl AppState {
         lock_vault(&self.vault)
     }
 
-    /// Süren ayrıştırma yuvası. Zehirli kilitte yuva temizlenir: panikle
+    /// Süren belge işleri yuvası (ayrıştırma + maskeleme). Zehirli kilitte yuva temizlenir: panikle
     /// yarıda kalan ayrıştırma yeni ayrıştırmayı kilitlemez.
-    pub fn parse_lock(&self) -> MutexGuard<'_, Vec<RunningParse>> {
-        match self.parse.lock() {
+    pub fn workers_lock(&self) -> MutexGuard<'_, Vec<RunningWorker>> {
+        match self.workers.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
@@ -106,10 +108,10 @@ impl AppState {
         Arc::clone(&self.vault)
     }
 
-    /// `spawn_blocking` için ayrıştırma yuvası tutamacı.
+    /// `spawn_blocking` için belge işleri yuvası tutamacı.
     #[must_use]
-    pub fn parse_handle(&self) -> Arc<Mutex<Vec<RunningParse>>> {
-        Arc::clone(&self.parse)
+    pub fn workers_handle(&self) -> Arc<Mutex<Vec<RunningWorker>>> {
+        Arc::clone(&self.workers)
     }
 
     /// `spawn_blocking` için eşzamanlılık kapısı tutamacı.
@@ -120,9 +122,9 @@ impl AppState {
 
     /// İş kimliğine uyan süreci durdurur. Dönen değer: süreç gerçekten
     /// durduruldu mu (yuva kilidi kısa tutulur, kasa kilidi **alınmaz** — §17.5).
-    pub fn cancel_parse_job(&self, job_id: &str) -> bool {
+    pub fn cancel_running_job(&self, job_id: &str) -> bool {
         let killer = {
-            let slot = self.parse_lock();
+            let slot = self.workers_lock();
             slot.iter()
                 .find(|run| run.job_id.as_deref() == Some(job_id))
                 .map(|run| run.killer.clone())
@@ -130,11 +132,11 @@ impl AppState {
         killer.map(|killer| killer.cancel()).unwrap_or(false)
     }
 
-    /// Kasa kilitlenirken/çıkışta süren bütün ayrıştırmaları durdurur.
+    /// Kasa kilitlenirken/çıkışta süren bütün belge işlerini durdurur.
     /// Dönen değer: durdurulan süreç sayısı.
-    pub fn cancel_all_parses(&self) -> usize {
+    pub fn cancel_all_workers(&self) -> usize {
         let killers: Vec<_> = {
-            let slot = self.parse_lock();
+            let slot = self.workers_lock();
             slot.iter().map(|run| run.killer.clone()).collect()
         };
         killers.into_iter().filter(|killer| killer.cancel()).count()
@@ -157,16 +159,16 @@ pub fn lock_vault(handle: &Mutex<VaultState>) -> MutexGuard<'_, VaultState> {
 
 /// Ayrıştırma yuvasını temizleyen nöbetçi: hata veya panik yolunda da yuva
 /// `None` kalır (yarım ayrıştırma yeni ayrıştırmayı engellemez).
-pub struct ParseSlotGuard {
-    slot: Arc<Mutex<Vec<RunningParse>>>,
+pub struct WorkerSlotGuard {
+    slot: Arc<Mutex<Vec<RunningWorker>>>,
     version_id: String,
     job_id: Option<String>,
 }
 
-impl ParseSlotGuard {
+impl WorkerSlotGuard {
     /// Süren ayrıştırmayı yuvaya yazar (§17.3: birden çok kayıt olabilir).
     #[must_use]
-    pub fn register(slot: Arc<Mutex<Vec<RunningParse>>>, entry: RunningParse) -> Self {
+    pub fn register(slot: Arc<Mutex<Vec<RunningWorker>>>, entry: RunningWorker) -> Self {
         let version_id = entry.version_id.clone();
         let job_id = entry.job_id.clone();
         match slot.lock() {
@@ -181,7 +183,7 @@ impl ParseSlotGuard {
     }
 }
 
-impl Drop for ParseSlotGuard {
+impl Drop for WorkerSlotGuard {
     fn drop(&mut self) {
         let version_id = &self.version_id;
         let job_id = &self.job_id;
