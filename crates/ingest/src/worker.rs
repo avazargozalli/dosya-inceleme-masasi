@@ -686,9 +686,17 @@ impl WorkerClient {
         }))
     }
 
-    /// Süreç bütçe sinyaliyle mi öldü? `SIGXCPU` (24) CPU sınırını,
-    /// `SIGXFSZ` (25) dosya boyutu sınırını gösterir; ikisi de POSIX'te sabittir.
-    /// Çıkış kodu hemen görünmeyebilir (EOF önce gelir): en çok 200 ms beklenir.
+    /// Süreç bütçe sinyaliyle mi öldü? `SIGXCPU` (24) CPU sınırını gösterir;
+    /// POSIX'te sabittir. Çıkış kodu hemen görünmeyebilir (EOF önce gelir):
+    /// en çok 200 ms beklenir.
+    ///
+    /// **`SIGXFSZ` (25) bilinçli olarak eşlenmez:** `RLIMIT_FSIZE` uygulanmıyor
+    /// (çıktı bütçesi yanıt **baytıyla** ölçülür), dolayısıyla bu sinyalle ölen
+    /// sürece "çıktı bütçesi aşıldı" demek yanlış olurdu.
+    ///
+    /// **`SIGKILL` bilinçli olarak eşlenmez:** iki farklı neden olabilir (bellek
+    /// gözcüsü — ki o ihlali bayrakla yazar ve `budget_error()` önce görür — ya
+    /// da dışarıdan öldürme). Sinyalden neden uydurulmaz.
     #[cfg(unix)]
     fn signal_budget_error(&self) -> Option<WorkerError> {
         use std::os::unix::process::ExitStatusExt;
@@ -710,7 +718,6 @@ impl WorkerClient {
                     }
                     let dimension = match status.signal() {
                         Some(24) => BudgetDimension::Cpu,
-                        Some(25) => BudgetDimension::Output,
                         _ => return None,
                     };
                     // Rapor da aynı nedeni taşısın: sinyal yolu sayaç yazmaz.
@@ -1992,6 +1999,37 @@ mod tests {
         assert_eq!(report.budget.kind, WorkerKind::Extract);
         assert_eq!(report.violated, Some(BudgetDimension::Cpu));
         assert_eq!(report.budget_break().expect("ihlal").limit, 1);
+    }
+
+    /// Sinyal **eşlemesi** (çekirdek `ulimit` semantiğinden bağımsız): kendini
+    /// `SIGXCPU` ile öldüren süreç CPU bütçesi olarak raporlanır. Linux'ta
+    /// soft = hard sınırı `SIGKILL` ürettiği için bu yol ayrıca tutulmalı.
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_killed_by_the_cpu_signal_reports_the_cpu_budget() {
+        let mut budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        budget.cpu_seconds = 0; // sınır zarfı uygulanmasın: yalnız sinyal yolu
+        budget.memory_bytes = 0;
+        budget.wall_clock = Duration::from_secs(20);
+        let script =
+            "import os, signal, time\nos.kill(os.getpid(), signal.SIGXCPU)\ntime.sleep(5)\n";
+        let Some((mut client, _dir)) = spawn_budgeted(script, &[], budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WorkerError::Budget(BudgetBreak {
+                    dimension: BudgetDimension::Cpu,
+                    ..
+                })
+            ),
+            "beklenmeyen: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_BUDGET");
+        assert!(!err.retryable(), "CPU aşımı tekrar denenmez (§17.4)");
     }
 
     /// Bellek bütçesi: 200 MiB ayıran süreç 64 MiB sınırında durdurulur.

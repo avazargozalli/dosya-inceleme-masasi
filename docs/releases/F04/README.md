@@ -313,7 +313,7 @@ denenebilir**) olarak raporlanıyordu.
 - **Arayüz:** Ayarlar → **"Kaynak bütçeleri"** kartı (beş profil × beş sınır,
   tablo + tek satır özet), ayrıştırma sonuç satırında gerçek tepe bellek/yanıt/
   süre. `lib/budget.ts` 10 saf yardımcı + 8 vitest.
-- **Bulunan ve düzeltilen iki kusur (bu tur):**
+- **Bulunan ve düzeltilen üç kusur (bu tur):**
   1. **Sinyal yolundan gelen ihlal rapora yazılmıyordu** (`violated: None` iken
      hata `Cpu`) → `mark_violation`.
   2. **Kısa işte "tepe bellek 0 MiB"** raporlanıyordu: gözcü 500 ms'de bir
@@ -322,6 +322,20 @@ denenebilir**) olarak raporlanıyordu.
      süreç yaşıyorsa, `try_wait` ile toplanmış pid'e örnek alınmaz). Regresyon
      testi: `report_samples_peak_memory_even_when_the_job_ends_before_the_watchdog_wakes`
      (bellek bütçesi kapalı → gözcü koşmaz, tek örnek rapor anındadır).
+  3. **Linux'ta CPU bütçesi yanlış kodla raporlanıyordu (CI yakaladı).**
+     `ulimit -t N` soft **ve** hard tavanı birlikte N yapar; Linux çekirdeği bu
+     durumda `SIGXCPU` yerine **doğrudan `SIGKILL`** gönderir → süreç sinyalle
+     ayırt edilemez, iş `E_WORKER_DISCONNECTED` (**retryable** — §17.4 ihlali)
+     olarak kapanır. macOS'ta aynı kod `SIGXCPU` verdiği için kusur yerelde
+     görünmüyordu. Düzeltme: zarf önce **hard** tavanı indirir (`ulimit -H -t
+     soft+5`), sonra **soft** tavanı (`ulimit -S -t N`) — `SIGXCPU` garanti,
+     SIGXCPU'yu yok sayan süreç için 5 sn sonra `SIGKILL` geri çekilmesi.
+     `SIGXFSZ` (25) eşlemesi **kaldırıldı** (`RLIMIT_FSIZE` uygulanmıyor; "çıktı
+     bütçesi aşıldı" demek yanlış olurdu). Kanıt: aynı zarf Ubuntu 24.04
+     (dash, Docker) içinde — **eski** biçim `ulimit -t 1` → çıkış **137**
+     (`SIGKILL`); **yeni** biçim → çıkış **152** (`128+24`, `SIGXCPU`). Regresyon
+     testleri: `cpu_hard_limit_stays_above_the_soft_limit`,
+     `a_worker_killed_by_the_cpu_signal_reports_the_cpu_budget`.
 
 **ÖLÇÜM (gerçek Python worker + PyMuPDF, `progress-pages.pdf` 4 sayfa, debug,
 Apple M2, bu turda yeniden koşuldu):** süreç süresi **115,9 ms**, tepe bellek
@@ -332,14 +346,14 @@ Apple M2, bu turda yeniden koşuldu):** süreç süresi **115,9 ms**, tepe belle
 `Budget(Memory)` verdi, 200 KB yanıt 64 KiB çıktı bütçesinde reddedildi, 1 sn
 duvar saati `E_WORKER_BUDGET(Time)` döndü.
 
-**Test:** `dim-ingest` lib **63 geçti / 1 ignored** (+9 `budget`: profil
-sıralaması, sınır arama, zarf metni, sayaç/ilk-neden, sıfırlama; +5 worker:
-CPU, bellek, çıktı, duvar saati, rapor-anı örneklemesi), tauri **23 geçti /
-1 ignored** (+2: bütçe görünümü çekirdek raporuyla birebir, beş profil
-çekirdekten gelir); arayüz `budget.ts` üzerinde **39 gerçek assert** (vitest'siz
-node tip-sıyırma koşucusu; `node_modules` yok). clippy `-p dim-ingest
---all-targets -D warnings` temiz, tauri clippy `--all-targets -D warnings`
-temiz, rustfmt iki manifest temiz.
+**Test:** `dim-ingest` lib **65 geçti / 1 ignored** (+9 `budget`: profil
+sıralaması, sınır arama, zarf metni/hard-soft sırası, sayaç/ilk-neden, sıfırlama;
++7 worker: CPU, CPU sinyal eşlemesi, bellek, çıktı, duvar saati, rapor-anı
+örneklemesi), tauri **23 geçti / 1 ignored** (+2: bütçe görünümü çekirdek
+raporuyla birebir, beş profil çekirdekten gelir); arayüz `budget.ts` üzerinde
+**39 gerçek assert** (vitest'siz node tip-sıyırma koşucusu; `node_modules` yok).
+clippy `-p dim-ingest --all-targets -D warnings` temiz, tauri clippy
+`--all-targets -D warnings` temiz, rustfmt iki manifest temiz.
 
 **Dürüst sınırlar:**
 
@@ -348,6 +362,11 @@ temiz, rustfmt iki manifest temiz.
 - Bellek gözcüsü **aralıklı** örnekler (500 ms): süreç örnekler arasında sınırı
   aşabilir; aşım bayrağı yazılır ama "hiç aşmadı" garantisi yoktur. macOS'ta her
   örnek bir `ps` süreci başlatır (bütçe yoksa gözcü hiç koşmaz).
+- **Hard CPU tavanı "en iyi çaba"**: kısıtlı ortamda `ulimit -H` indirilemezse
+  yalnız soft sınır uygulanır (`SIGXCPU` yine gelir; süreç sinyali yok sayarsa
+  duvar saati bütçesi devreye girer). Süreç `SIGKILL` ile ölürse neden
+  **atfedilmez** — iş `E_WORKER_DISCONNECTED` olarak raporlanır (sinyalden neden
+  uydurulmaz).
 - **AI profili süreç değil:** CPU/dosya sınırı yok, yalnız duvar saati ve yanıt
   boyutu ölçülür; modelin bellek kullanımı bu bütçeye girmez.
 - Profil değerleri **başlangıç ayarları** (ölçümle gerekçelendirilmiş ama tek

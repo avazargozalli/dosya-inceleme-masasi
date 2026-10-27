@@ -25,6 +25,15 @@ use std::time::Duration;
 /// MiB → bayt. Sınırlar MiB cinsinden yazılır, karşılaştırma baytla yapılır.
 pub const MIB: u64 = 1024 * 1024;
 
+/// CPU soft sınırının üstüne eklenen **hard** geri çekilme payı (saniye).
+///
+/// Linux'ta `RLIMIT_CPU` soft = hard olduğunda çekirdek `SIGXCPU` yerine
+/// doğrudan `SIGKILL` gönderir; süreç sinyalle ölçülemediği için bütçe aşımı
+/// ayırt edilemez. Hard tavanı yukarıda tutmak `SIGXCPU`'yu garanti eder:
+/// SIGXCPU'yu yok sayan bir worker en geç bu pay kadar sonra `SIGKILL` olur
+/// (ikinci savunma hattı; birincisi duvar saati bütçesi).
+pub const CPU_HARD_BACKSTOP_SECONDS: u64 = 5;
+
 /// Worker türü. §17.3 dört profil adı verir (render, OCR, redaksiyon, AI);
 /// metin çıkarma beşinci profildir çünkü en sık koşan yoldur ve OCR'dan
 /// belirgin biçimde ucuzdur.
@@ -235,11 +244,26 @@ impl WorkerBudget {
     /// yorumlamasına** girmez (enjeksiyon yok), yalnız konumsal parametre olur.
     /// Sınır uygulanamazsa süreç hiç başlamaz (`exit 126`): sessizce sınırsız
     /// çalışan bir worker "bütçeli" sayılmaz.
+    ///
+    /// **CPU: soft + hard çifti.** Linux'ta `RLIMIT_CPU` soft = hard olursa
+    /// çekirdek `SIGXCPU` yerine **doğrudan `SIGKILL`** gönderir; o zaman bütçe
+    /// aşımının nedeni kaybolur (ubuntu CI'da `E_WORKER_DISCONNECTED` görüldü —
+    /// yanlış kod ve yanlış tekrar sınıfı). Bu yüzden hard tavan yumuşak tavanın
+    /// [`CPU_HARD_BACKSTOP_SECONDS`] üstünde tutulur: önce `SIGXCPU` gelir,
+    /// süreç sinyali yok sayarsa hard tavan `SIGKILL` ile durdurur.
     #[must_use]
     pub fn limit_script(&self) -> String {
         let mut script = String::new();
         if self.cpu_seconds > 0 {
-            script.push_str(&format!("ulimit -t {} || exit 126; ", self.cpu_seconds));
+            let hard = self.cpu_seconds.saturating_add(CPU_HARD_BACKSTOP_SECONDS);
+            // Hard tavanı **önce** indir (soft'tan küçük olamaz), sonra soft.
+            // Hard indirme kısıtlı ortamda başarısız olabilir; o durumda soft
+            // sınır yine de uygulanır (`|| true` bilinçli, sessiz sınırsızlık yok:
+            // soft uygulanamazsa `exit 126`).
+            script.push_str(&format!(
+                "ulimit -H -t {hard} 2>/dev/null || true; ulimit -S -t {} || exit 126; ",
+                self.cpu_seconds
+            ));
         }
         if self.open_files > 0 {
             script.push_str(&format!("ulimit -n {} || exit 126; ", self.open_files));
@@ -378,16 +402,45 @@ mod tests {
     fn limit_script_applies_limits_then_execs_without_shell_expansion() {
         let budget = WorkerBudget::for_kind(WorkerKind::Extract);
         let script = budget.limit_script();
-        assert!(script.contains("ulimit -t 120"), "script: {script}");
+        assert!(script.contains("ulimit -S -t 120"), "script: {script}");
+        assert!(script.contains("ulimit -H -t 125"), "script: {script}");
+        // Hard tavan soft'un **üstünde** ve **önce** yazılır: Linux'ta
+        // soft = hard olursa çekirdek SIGXCPU yerine SIGKILL gönderir.
+        assert!(
+            script.find("ulimit -H -t").unwrap() < script.find("ulimit -S -t").unwrap(),
+            "script: {script}"
+        );
         assert!(script.contains("ulimit -n 256"), "script: {script}");
         assert!(script.ends_with("exec \"$0\" \"$@\""), "script: {script}");
         // Sınır uygulanamazsa süreç başlamaz: sessiz sınırsız çalışma yok.
         assert_eq!(script.matches("exit 126").count(), 2, "script: {script}");
         // CPU sırası dosya sınırından önce gelir.
         assert!(
-            script.find("ulimit -t").unwrap() < script.find("ulimit -n").unwrap(),
+            script.find("ulimit -S -t").unwrap() < script.find("ulimit -n").unwrap(),
             "script: {script}"
         );
+    }
+
+    /// **Linux kusuru (ubuntu CI):** `ulimit -t N` soft = hard yazar; çekirdek
+    /// `SIGXCPU` yerine `SIGKILL` gönderir ve bütçe aşımı `Disconnected` gibi
+    /// görünür. Hard tavan her profilde soft'un üstünde kalmalı.
+    #[test]
+    fn cpu_hard_limit_stays_above_the_soft_limit() {
+        for seconds in [1u64, 30, 120, 600] {
+            let mut budget = WorkerBudget::for_kind(WorkerKind::Extract);
+            budget.cpu_seconds = seconds;
+            let script = budget.limit_script();
+            assert!(
+                script.contains(&format!("ulimit -S -t {seconds}")),
+                "script: {script}"
+            );
+            let hard = seconds + CPU_HARD_BACKSTOP_SECONDS;
+            assert!(
+                script.contains(&format!("ulimit -H -t {hard}")),
+                "script: {script}"
+            );
+            assert!(hard > seconds, "hard tavan soft'tan büyük olmalı");
+        }
     }
 
     #[test]
