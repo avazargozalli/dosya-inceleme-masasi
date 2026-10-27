@@ -53,11 +53,17 @@ export function attackGuardText(
   return view.guardFlags.length > 0 ? view.guardFlags.join(" ") : view.guardLabel;
 }
 
-/** Gerçekten çalıştırılan komut satırı (sürüm başta). */
+/** Gerçekten çalıştırılan komut satırı (sürüm başta).
+ *
+ * Boş argüman `""` olarak yazılır: sertleştirme `--tools ""` biçimini kullanır
+ * ve boşlukla birleştirme onu görünmez kılardı (`--tools  --help`). */
 export function attackCommand(
   adapter: Pick<CliAttackAdapter, "version" | "argv">,
 ): string {
-  const argv = adapter.argv.length > 0 ? adapter.argv.join(" ") : "—";
+  const argv =
+    adapter.argv.length > 0
+      ? adapter.argv.map((arg) => (arg === "" ? '""' : arg)).join(" ")
+      : "—";
   return adapter.version ? `${adapter.version} · ${argv}` : argv;
 }
 

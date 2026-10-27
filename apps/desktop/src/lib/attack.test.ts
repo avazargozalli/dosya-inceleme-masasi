@@ -141,6 +141,12 @@ describe("attackCommand", () => {
   it("koşu yoksa tire gösterir", () => {
     expect(attackCommand(adapter({ version: null, argv: [] }))).toBe("—");
   });
+
+  it("boş değer argümanını görünür yazar", () => {
+    expect(
+      attackCommand(adapter({ version: null, argv: ["--tools", "", "--help"] })),
+    ).toBe('--tools "" --help');
+  });
 });
 
 describe("attackSkipText", () => {

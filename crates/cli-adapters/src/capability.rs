@@ -108,14 +108,14 @@ const CLAUDE: &[CapabilityRequirement] = &[
         required: true,
         mechanism: Mechanism::HelpFlag,
         flags: &["--tools"],
-        note: "`--tools \"\"` tüm yerleşik araçları kapatır (yardım metni).",
+        note: "`--tools \"\"` tüm yerleşik araçları kapatır; ürün bu bayrağı **zorunlu** ekler. Ölçüldü (2.1.303): boş iş dizininde bile mutlak yol okunuyordu, bayrakla okunamadı. `--tools=` biçimi kapatmıyor.",
     },
     CapabilityRequirement {
         capability: Capability::HookMcpOff,
         required: true,
         mechanism: Mechanism::HelpFlag,
-        flags: &["--bare", "--strict-mcp-config"],
-        note: "`--bare` hook'ları ve CLAUDE.md keşfini atlar; `--strict-mcp-config` yalnız `--mcp-config` sunucularını yükler.",
+        flags: &["--strict-mcp-config"],
+        note: "`--strict-mcp-config` yalnız `--mcp-config` sunucularını yükler; ürün MCP yapılandırması vermez → MCP kapalı. **Hook'lar için doğrulanmış bayrak yok**: `--bare` oturumu düşürüyor (ölçüldü, \"Not logged in\").",
     },
     CapabilityRequirement {
         capability: Capability::StructuredOutput,

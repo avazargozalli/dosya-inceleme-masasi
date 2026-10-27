@@ -137,6 +137,9 @@ pub const SPECS: &[AdapterSpec] = &[
             "--output-format",
             "--json-schema",
             "--sandbox",
+            // `agy --help` (1.4.7) ile doğrulandı: print kipinde slash komut ve
+            // skill genişlemesini kapatır (sertleştirmede zorunlu).
+            "--disable-slash-commands",
             "--print-timeout",
         ],
         auth_mode: AuthMode::Subscription,
@@ -310,11 +313,19 @@ fn is_executable(path: &Path) -> bool {
 /// listede yoksa istek reddedilir (INV-10). Sicilde tanımlı **sürüm bayrakları**
 /// (`version_args`) ayrıca izinlidir: yoklama kendi sicilindeki bayrağı
 /// kullanabildiği hâlde kapıya takılmamalı.
+///
+/// Boş dize tek başına anlamlı bir argüman değildir; yalnız bir bayrağın boş
+/// değeri olarak kullanılır (`--tools ""`). İçerik taşımadığı için kapıyı
+/// gevşetmez: serbest metin (istem, yol, komut) hâlâ reddedilir.
 pub fn build_args(adapter_id: &str, extra: &[String]) -> Result<Vec<String>, AdapterError> {
     let spec =
         spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
     let mut out = Vec::with_capacity(extra.len());
     for arg in extra {
+        if arg.is_empty() {
+            out.push(arg.clone());
+            continue;
+        }
         let flag = arg.split('=').next().unwrap_or(arg);
         if !spec.allowed_args.contains(&flag) && !spec.version_args.contains(&flag) {
             return Err(AdapterError::DisallowedArgument(flag.to_string()));

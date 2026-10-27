@@ -162,9 +162,15 @@ pub struct CliRunRequest {
 
 /// Varsayılan ortam allowlist'i: yalnız süreç çalışması için gerekenler.
 /// API anahtarı, token, cookie **yok**.
+///
+/// `USER` **zorunlu** (ölçüldü, Claude Code 2.1.303, 2026-10-27): allowlist'te
+/// yokken CLI `--print` çağrısı "Not logged in · Please run /login" ile
+/// düşüyordu; `USER` eklendiğinde aynı çağrı kimlik doğrulayıp yanıt verdi.
+/// Gizli değer değildir (süreç zaten o kullanıcı olarak çalışır), ama eksikliği
+/// kimlikli CLI yolunu tamamen kapatıyordu.
 #[must_use]
 pub fn default_env_allowlist() -> Vec<(String, String)> {
-    ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ"]
+    ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "TZ"]
         .iter()
         .filter_map(|key| {
             std::env::var(key)
@@ -507,27 +513,66 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     })
 }
 
-/// CLI'nın kullanıcı yapılandırmasını (hook, MCP, proje talimatı, kurallar)
-/// yüklemesini engelleyen **zorunlu** bayraklar. Çağıran bunları vermeyi
+/// Bir bayrak grubu: bayrak ve (varsa) ürünün sabitlediği değeri **birlikte**
+/// eklenir. Değer ayrı belirteçte olabilir (`--tools ""`).
+type FlagGroup = &'static [&'static str];
+
+/// CLI'nın kullanıcı yapılandırmasını (hook, MCP, proje talimatı, kurallar) ve
+/// araçlarını devre dışı bırakan **zorunlu** gruplar. Çağıran bunları vermeyi
 /// unutsa bile ürün kendi güvenlik çerçevesini uygular.
 ///
 /// Kanıt (Codex 0.159.2, 2026-10-25): `--ignore-user-config --ignore-rules`
 /// olmadan kullanıcının `SessionStart`/`Stop` hook'ları çalıştı ve çıktıya
 /// karıştı; bu bayraklarla hook satırları kayboldu, model yanıtı korundu.
-pub fn hardened_args(adapter_id: &str, mut args: Vec<String>) -> Vec<String> {
-    let required: &[&str] = match adapter_id {
+fn hardened_groups(adapter_id: &str) -> &'static [FlagGroup] {
+    match adapter_id {
         // Kullanıcı hook/MCP/proje talimatı yüklenmesin.
-        "codex-cli" => &["--ignore-user-config", "--ignore-rules"],
-        // Oturum kalıcılığı kapalı: her çağrı bağımsız, geçmiş taşınmaz.
-        "claude-code" => &["--no-session-persistence"],
-        // Araç/terminal kısıtlı kum havuzu.
-        "antigravity-cli" => &["--sandbox"],
+        "codex-cli" => &[&["--ignore-user-config"], &["--ignore-rules"]],
+        "claude-code" => &[
+            // Oturum kalıcılığı kapalı: her çağrı bağımsız, geçmiş taşınmaz.
+            &["--no-session-persistence"],
+            // ÖLÇÜLDÜ (Claude Code 2.1.303, 2026-10-27): boş iş dizininde bile
+            // `--allowedTools Read` ile **mutlak yol** okunuyordu (kum havuzu dışı
+            // canary). `--tools ""` bunu kapatıyor; `--tools=` (tek belirteç)
+            // **kapatmıyor** — model araç çağrısı üretmeye devam etti.
+            &["--tools", ""],
+            // `--mcp-config` verilmediği için hiçbir MCP sunucusu yüklenmez.
+            &["--strict-mcp-config"],
+        ],
+        // `--sandbox` tek başına dosya okumayı engellemiyor (ölçüldü); yanına
+        // slash komut / skill genişlemesini kapatan bayrak eklenir.
+        "antigravity-cli" => &[&["--sandbox"], &["--disable-slash-commands"]],
         _ => &[],
-    };
-    for flag in required {
-        if !args.iter().any(|arg| arg == flag) {
-            args.push((*flag).to_string());
+    }
+}
+
+/// `args` içinde `flag` geçiyorsa onu (ve bayrak değer alıyorsa ardından gelen
+/// **bayrak olmayan** belirteçleri) atar. Böylece zorunlu bayrak çağıranın
+/// verdiği değerle değil, ürünün verdiği değerle çalışır; yinelenen bayrak olmaz.
+fn strip_flag(args: &mut Vec<String>, flag: &str, takes_value: bool) {
+    let mut i = 0;
+    while i < args.len() {
+        let same = args[i] == flag
+            || (args[i].starts_with(flag)
+                && args[i].len() > flag.len()
+                && args[i][flag.len()..].starts_with('='));
+        if !same {
+            i += 1;
+            continue;
         }
+        args.remove(i);
+        while takes_value && i < args.len() && !args[i].starts_with('-') {
+            args.remove(i);
+        }
+    }
+}
+
+pub fn hardened_args(adapter_id: &str, mut args: Vec<String>) -> Vec<String> {
+    for group in hardened_groups(adapter_id) {
+        let flag = group[0];
+        // Değerli bayrak: grupta ikinci belirteç varsa bayrak değer alıyor demektir.
+        strip_flag(&mut args, flag, group.len() > 1);
+        args.extend(group.iter().map(|arg| (*arg).to_string()));
     }
     args
 }
@@ -677,6 +722,20 @@ mod tests {
         .expect("çalıştı");
         assert_eq!(outcome.status, RunStatus::Cancelled);
         assert!(outcome.duration_ms < 3000);
+    }
+
+    /// `USER` allowlist'te olmalı: yoksa kimlikli CLI çağrısı "Not logged in"
+    /// ile düşüyor (ölçüldü). Ortamda `USER` yoksa test atlanır.
+    #[test]
+    fn env_allowlist_carries_the_user_variable() {
+        if std::env::var_os("USER").is_none() {
+            return;
+        }
+        let keys: Vec<String> = default_env_allowlist()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert!(keys.iter().any(|key| key == "USER"), "{keys:?}");
     }
 
     #[test]
@@ -981,9 +1040,108 @@ mod hardening_tests {
     }
 
     #[test]
+    fn claude_shuts_every_tool_off_with_an_empty_value_token() {
+        let args = hardened_args("claude-code", vec!["--print".into()]);
+        let at = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .unwrap_or_else(|| panic!("--tools yok: {args:?}"));
+        assert_eq!(
+            args.get(at + 1).map(String::as_str),
+            Some(""),
+            "boş değer ayrı belirteç olmalı: {args:?}"
+        );
+        assert!(
+            args.contains(&"--strict-mcp-config".to_string()),
+            "{args:?}"
+        );
+        // `--tools=` tek belirteç biçimi araçları kapatmıyor (ölçüldü) → kullanılmaz.
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--tools=")),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn hardening_replaces_a_caller_supplied_tool_list() {
+        let args = hardened_args(
+            "claude-code",
+            vec![
+                "--print".into(),
+                "--tools".into(),
+                "Read".into(),
+                "Edit".into(),
+            ],
+        );
+        assert_eq!(
+            args.iter().filter(|arg| *arg == "--tools").count(),
+            1,
+            "yinelenmemeli: {args:?}"
+        );
+        let at = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools");
+        assert_eq!(args.get(at + 1).map(String::as_str), Some(""));
+        assert!(!args.iter().any(|arg| arg == "Read" || arg == "Edit"));
+    }
+
+    #[test]
+    fn hardening_replaces_a_caller_supplied_tools_equals_form() {
+        let args = hardened_args(
+            "claude-code",
+            vec!["--print".into(), "--tools=Read,Edit".into()],
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--tools=")),
+            "{args:?}"
+        );
+        let at = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools");
+        assert_eq!(args.get(at + 1).map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn hardening_is_idempotent() {
+        for adapter in crate::SPECS {
+            let once = hardened_args(adapter.id, vec!["--print".into()]);
+            let twice = hardened_args(adapter.id, once.clone());
+            assert_eq!(once, twice, "{}", adapter.id);
+        }
+    }
+
+    #[test]
     fn antigravity_requires_sandbox() {
         let args = hardened_args("antigravity-cli", vec!["--print".into()]);
         assert!(args.contains(&"--sandbox".to_string()), "{args:?}");
+    }
+
+    #[test]
+    fn antigravity_requires_slash_command_shutoff() {
+        let args = hardened_args("antigravity-cli", vec!["--print".into()]);
+        assert!(
+            args.contains(&"--disable-slash-commands".to_string()),
+            "{args:?}"
+        );
+    }
+
+    /// Sicil ile sertleştirme ayrışmasın: zorunlu bayraklar izinli argüman
+    /// kapısından geçebilmeli (boş değer belirteci kapıda kabul edilir).
+    #[test]
+    fn every_hardened_flag_passes_the_argument_gate() {
+        for adapter in crate::SPECS {
+            let base = adapter
+                .version_args
+                .first()
+                .copied()
+                .unwrap_or("--help")
+                .to_string();
+            let args = hardened_args(adapter.id, vec![base]);
+            crate::build_args(adapter.id, &args)
+                .unwrap_or_else(|err| panic!("{}: {err} ({args:?})", adapter.id));
+        }
     }
 
     #[test]

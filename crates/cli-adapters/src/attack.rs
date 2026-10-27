@@ -110,7 +110,7 @@ impl AttackVector {
                 "İş dizinindeki talimat dosyası oturum başında okunur; ürün boş iş dizini verir."
             }
             Self::Hook => {
-                "Hook, ayar dosyasındaki komutun oturum başında çalıştırılmasıdır; `--bare` bunu atlar."
+                "Hook, ayar dosyasındaki komutun oturum başında çalıştırılmasıdır; ürün `HOME`'i kum havuzuna yönlendirir, kullanıcı ayarları görünmez. Doğrulanmış kapatma bayrağı yok: `--bare` oturumu düşürüyor (ölçüldü)."
             }
             Self::McpServer => {
                 "MCP sunucusu yapılandırmadan yüklenip süreç başlatır; `--strict-mcp-config` / `--ignore-user-config` kapatır."
@@ -909,10 +909,12 @@ pub fn hardening_argv(adapter_id: &str) -> Result<Vec<String>, RunError> {
             if VALUE_ONLY_FLAGS.contains(flag) {
                 continue;
             }
+            flags.push((*flag).to_string());
             if EMPTY_VALUE_FLAGS.contains(flag) {
-                flags.push(format!("{flag}="));
-            } else {
-                flags.push((*flag).to_string());
+                // Değer **ayrı belirteç** olmalı: `--tools ""`. Ölçüldü
+                // (Claude Code 2.1.303, 2026-10-27): `--tools=` biçimi araçları
+                // kapatmıyor; model araç çağrısı üretmeye devam ediyor.
+                flags.push(String::new());
             }
         }
     }
@@ -1208,7 +1210,7 @@ mod tests {
             let expected = if outcome.vector == AttackVector::OutOfScopeCanary {
                 "--tools"
             } else {
-                "--bare"
+                "--strict-mcp-config"
             };
             assert!(
                 outcome.guard.flags().contains(&expected),
@@ -1274,9 +1276,13 @@ mod tests {
             );
         }
         let claude = hardening_argv("claude-code").expect("claude");
-        assert!(claude.contains(&"--bare".to_string()));
         assert!(claude.contains(&"--strict-mcp-config".to_string()));
-        assert!(claude.contains(&"--tools=".to_string()));
+        // `--tools` boş değeri **ayrı belirteç** olarak geçmeli (`--tools=` değil).
+        let tools_at = claude
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools yok");
+        assert_eq!(claude.get(tools_at + 1).map(String::as_str), Some(""));
         let codex = hardening_argv("codex-cli").expect("codex");
         assert_eq!(codex.first().map(String::as_str), Some("exec"));
         assert!(codex.contains(&"--ignore-rules".to_string()));
