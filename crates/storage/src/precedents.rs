@@ -387,6 +387,80 @@ pub(crate) fn collapse_ws_with_map(input: &str) -> MappedText {
     MappedText { text: out, map }
 }
 
+/// **Satır/sayfa sonunda tire ile bölünmüş** kelimeyi birleştiren sadeleştirme.
+///
+/// `normalize_with_map` ile aynı harf sadeleştirmesi, üstüne iki kural:
+///
+/// - **Tire + satır sonu + harf/rakam** → tire ve satır sonu atılır, kelime
+///   birleşir (`bedel-\nlini` → `bedellini`). Yalnız **kanıtlı** bölünmede
+///   uygulanır: tire ile kelime arasında satır sonu yoksa (`kredi-kartı`) tire
+///   korunur, çünkü o gerçek bir tiredir.
+/// - **Yumuşak tire** (`U+00AD`) her yerde atılır: görünmez, yazım farkı değildir.
+///
+/// Konum eşlemesi korunur; birleşen harf kendi kaynak indeksini taşır, böylece
+/// raporlanan aralık kaynakta tireyi ve satır sonunu **içerir**.
+pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    let mut last_space = false;
+    let mut index = 0usize;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\u{00AD}' {
+            index += 1;
+            continue;
+        }
+        if ch == '-' {
+            // Tire + (boşluk*) + **tek** satır sonu + (boşluk*) + harf/rakam
+            let mut probe = index + 1;
+            while probe < chars.len() && matches!(chars[probe], ' ' | '\t') {
+                probe += 1;
+            }
+            if probe < chars.len() && matches!(chars[probe], '\n' | '\r') {
+                let mut after = probe;
+                let mut breaks = 0usize;
+                while after < chars.len() && chars[after].is_whitespace() {
+                    if matches!(chars[after], '\n' | '\r') {
+                        // `\r\n` tek satır sonu sayılır.
+                        let previous_is_cr =
+                            after > probe && chars[after] == '\n' && chars[after - 1] == '\r';
+                        if !previous_is_cr {
+                            breaks += 1;
+                        }
+                    }
+                    after += 1;
+                }
+                // İkiden çok satır sonu paragraf/sayfa ayrımıdır; kelime
+                // birleştirmesi orada yapılmaz (yanlış eşleşme üretmemek için).
+                if breaks == 1 && after < chars.len() && chars[after].is_alphanumeric() {
+                    index = after;
+                    last_space = false;
+                    continue;
+                }
+            }
+        }
+        let mapped = fold_char(ch);
+        if mapped.is_whitespace() {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+                map.push(index);
+            }
+            last_space = true;
+        } else {
+            out.push(mapped);
+            map.push(index);
+            last_space = false;
+        }
+        index += 1;
+    }
+    while out.ends_with(' ') {
+        out.pop();
+        map.pop();
+    }
+    MappedText { text: out, map }
+}
+
 pub(crate) fn char_offset(text: &str, byte: usize) -> i64 {
     i64::try_from(text[..byte].chars().count()).unwrap_or(i64::MAX)
 }
@@ -1922,6 +1996,36 @@ mod tests {
         let mapped = normalize_with_map("AB cd");
         assert_eq!(mapped.map.len(), mapped.text.chars().count());
         assert_eq!(mapped.text, "ab cd");
+    }
+
+    #[test]
+    fn dehyphenation_joins_only_a_word_broken_at_one_line_end() {
+        // Satır sonu tiresi birleşir, harfler de sadeleşir.
+        let joined = dehyphenate_with_map("Kira bedel-\nLİNİ ödendi");
+        assert_eq!(joined.text, "kira bedellini odendi");
+        assert_eq!(joined.map.len(), joined.text.chars().count());
+        // `\r\n` de tek satır sonudur.
+        assert_eq!(
+            dehyphenate_with_map("bedel-\r\nlini").text,
+            "bedellini",
+            "CRLF birleşmeli"
+        );
+        // Gerçek tire (satır sonu yok) korunur.
+        assert_eq!(
+            dehyphenate_with_map("kredi-kartı").text,
+            "kredi-karti",
+            "satır sonu olmayan tire korunmalı"
+        );
+        // Paragraf/sayfa ayrımı (iki satır sonu) birleştirilmez.
+        assert_eq!(
+            dehyphenate_with_map("madde-\n\nAşağıdaki").text,
+            "madde- asagidaki",
+            "paragraf ayrımı birleştirilmemeli"
+        );
+        // Yumuşak tire görünmez: her yerde atılır.
+        assert_eq!(dehyphenate_with_map("be\u{00AD}del").text, "bedel");
+        // Tire metnin sonundaysa korunur (birleşecek harf yok).
+        assert_eq!(dehyphenate_with_map("bedel-").text, "bedel-");
     }
 
     #[test]

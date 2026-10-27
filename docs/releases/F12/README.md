@@ -17,7 +17,7 @@
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
-| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır |
+| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır; **satır/sayfa sonunda tire ile bölünmüş kelime** birleştirilerek aranır (en zayıf katman, bağlanmaz) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -437,3 +437,57 @@ güncellendiğinde alıntının sessizce “bulunamadı” olması denetimin en 
   (yinelenmez). Pencere ~1.064 karakter
   sınırı ve tire ile bölünmüş kelime sınırı aynen sürüyor. Tauri penceresi
   açılmadı → “eski sürüm” rozetinin görsel QA'si yok.
+
+## F12-T14 genişletmesi — tire ile bölünmüş kelime (2026-10-27)
+
+Sayfa sınırı turunun **açık kaydı** “sayfa sonunda tire ile bölünmüş kelime
+(`bedel-\lini`) kapsam dışı” kapandı. Hukuk metinlerinde iki yana yaslı dizgi ve
+OCR, kelimeyi satır sonunda tireyle böler; avukat alıntıyı doğal olarak
+`bedellini` diye yazar. Bu durumda alıntı **sessizce** `not_found` oluyordu —
+sayfa sınırı ve eski sürüm turlarında kapatılan sınıfın aynısı: **yanlış
+negatif**.
+
+- **Çekirdek (`crates/storage/src/precedents.rs` → `dehyphenate_with_map`):**
+  harf sadeleştirmesi + iki kural.
+  - **Tire + tek satır sonu + harf/rakam** → tire ve satır sonu atılır, kelime
+    birleşir (`bedel-\nlini` → `bedellini`; `\r\n` de tek satır sonu sayılır).
+  - **Yumuşak tire** (`U+00AD`) her yerde atılır: görünmez, yazım farkı değildir.
+  - **Yalnız kanıtlı bölünme:** tire ile kelime arasında satır sonu yoksa
+    (`kredi-kartı`) tire **korunur**; iki ve daha çok satır sonu (paragraf/sayfa
+    ayrımı) birleştirilmez. Böylece “kredikartı” gibi uydurma birleştirme
+    yapılmaz — bu kural testle tutuluyor.
+- **Yeni katman `MatchTier::Dehyphenated` (`kind = "dehyphenated"`):** en
+  **zayıf** katman, `Fold`'dan sonra taranır. Katman sırası korunur: birebir →
+  boşluk → harf → tire birleştirme; her katmanda önce güncel sürümün tek sayfası,
+  sonra sayfa sınırı, sonra eski sürümler. Yani güncel sürümdeki harf farkı
+  eşleşmesi, eski sürümdeki tire birleştirmesinden üstündür.
+- **Veri modeli:** `InTextQuotePosition.matchKind = "dehyphenated"`;
+  `InTextQuoteCheck` + `dehyphenated` (yalnız bu katmanda bulunan alıntı sayısı).
+  Notlar: “N alıntı yalnız **tire ile bölünmüş kelime** birleştirilerek bulundu
+  (kaynakta `kelime-\nsatır` gibi); birebir sayılmaz ve anchor'a bağlanmaz,
+  kaynak metin gösterilir.”
+- **Bağlama kapısı:** birebir olmadığı için `canBind` **false**; `bindHint`
+  nedeni yazar (“…tire ile bölünmüş kelime birleştirilerek bulundu; birebir
+  sayılmaz, kaynağa bağlanmaz.”). Anchor `source_text`'i kaynak aralığından
+  üretildiği için tire + satır sonu **gerçekten** görünür (uydurulmuş düz metin
+  yok).
+- **Arayüz (`lib/intext.ts`):** `MATCH_KIND_LABEL.dehyphenated = "tire
+  birleştirme"`, özet satırında yalnız sayı sıfırdan büyükse “N tire birleştirme”
+  (gürültü yok), `bindHint` tire nedeni, `candidateLabel` aynı etiket.
+- **Test (gerçek çekirdek, bellek içi kasa):** `intext_quotes` **33** test
+  (önceki 27 + 6 yeni: satır sonu tiresi bulunur + konum kaynağı tireyi gösterir;
+  yumuşak tire fark değildir; **gerçek tire birleştirilmez**; sayfa sınırındaki
+  tire bulunur ve `spansPages=true`; paragraf ayrımındaki tire birleştirilmez;
+  birebir eşleşme en güçlü katmanda kalır). `precedents` +1 birim testi
+  (`dehyphenation_joins_only_a_word_broken_at_one_line_end`: CRLF, gerçek tire,
+  iki satır sonu, yumuşak tire, metin sonu tiresi).
+- **Dürüst sınırlar:**
+  - Ölçüm **bellek içi kasa + elle yazılmış sayfa metinleri**; gerçek PDF/worker
+    ile uçtan uca denenmedi (taranmış/OCR metinde tire karakteri `-` yerine
+    `–`/`—` gelirse eşleşmez — yalnız `-` tanınır).
+  - Alıntı **da** tireyle yazılmışsa (`bedel-lini`) ve kaynakta satır sonu yoksa
+    birleştirme yapılmaz (gerçek tire kabul edilir); iki yön aynı kurala tabidir.
+  - Kelime ortasındaki tire kaynakta **gerçekten** satır sonundaysa (ör.
+    `Türk-\nAlman`) birleştirilir; bu, satır sonu tiresinden ayırt edilemez
+    (tasarım gereği, katman en zayıf ve bağlanmaz).
+  - Tauri penceresi açılmadı → etiketin görsel QA'si yok.

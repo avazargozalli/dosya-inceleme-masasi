@@ -76,6 +76,7 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     versionsScanned: 2,
     historicalVersionsScanned: 0,
     foundInOldVersion: 0,
+    dehyphenated: 0,
     notes: [],
     checkedAt: "2026-10-25T10:00:00Z",
     ...overrides,
@@ -204,6 +205,39 @@ describe("metin içi alıntı yardımcıları", () => {
         finding({ position: position({ versionNo: 3, isCurrentVersion: false, matchKind: "whitespace" }) }),
       ),
     ).toBe("Alıntı güncel sürümde geçmiyor; yalnız v3 sürümünde bulundu.");
+  });
+
+  it("tire ile bölünmüş kelime eşleşmesini etiketler ve bağlanamama nedenini yazar", () => {
+    const hyphenated = finding({
+      state: "normalized",
+      position: position({
+        matchKind: "dehyphenated",
+        charStart: 19,
+        charEnd: 44,
+        sourceText: "kira bedel-\nlini ödemediğini",
+      }),
+    });
+    expect(positionLabel(hyphenated)).toBe(
+      "Dilekçe · s. 1 · tire birleştirme · metin katmanı",
+    );
+    expect(canBind(hyphenated)).toBe(false);
+    expect(bindHint(hyphenated)).toBe(
+      "Alıntı ancak satır sonunda tire ile bölünmüş kelime birleştirilerek bulundu; birebir sayılmaz, kaynağa bağlanmaz.",
+    );
+    // Özet satırı yalnız sayı sıfırdan büyükse tire satırını ekler.
+    expect(quoteCheckSummary(check({ exact: 0, normalized: 1, dehyphenated: 1 }))).toBe(
+      "1 alıntı · 0 birebir · 1 birebir değil · 0 belirsiz · 0 bulunamadı · 0 doğrulanamadı · 1 tire birleştirme",
+    );
+    expect(quoteCheckSummary(check())).not.toContain("tire birleştirme");
+    // Aday listesinde de tire etiketi görünür.
+    expect(
+      candidateLabel({
+        documentName: "Rapor",
+        pageIndex: 0,
+        charStart: 5,
+        matchKind: "dehyphenated",
+      }),
+    ).toBe("Rapor · s. 1 · karakter 5 · tire birleştirme");
   });
 
   it("sürüm sayacı eski sürüm taramasını yazar", () => {

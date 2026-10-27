@@ -13,6 +13,7 @@ export const MATCH_KIND_LABEL: Record<string, string> = {
   exact: "birebir",
   whitespace: "boşluk farkı",
   turkish_fold: "harf farkı",
+  dehyphenated: "tire birleştirme",
 };
 
 const TEXT_ORIGIN_LABEL: Record<string, string> = {
@@ -36,14 +37,18 @@ export function quoteStateTone(state: string): "ok" | "warn" | "danger" | "plain
 }
 
 export function quoteCheckSummary(check: InTextQuoteCheck): string {
-  return [
+  const parts = [
     `${check.spansFound} alıntı`,
     `${check.exact} birebir`,
     `${check.normalized} birebir değil`,
     `${check.ambiguous} belirsiz`,
     `${check.notFound} bulunamadı`,
     `${check.unverifiable} doğrulanamadı`,
-  ].join(" · ");
+  ];
+  if (check.dehyphenated > 0) {
+    parts.push(`${check.dehyphenated} tire birleştirme`);
+  }
+  return parts.join(" · ");
 }
 
 /** Yalnız tek konumda birebir bulunan alıntı kaynağa bağlanabilir. Sayfa
@@ -72,6 +77,12 @@ export function bindHint(finding: InTextQuoteFinding): string {
   if (canBind(finding)) return "";
   if (finding.state === "exact" && finding.position?.spansPages) {
     return "Alıntı sayfa sınırını aşıyor; tek sayfalık anchor'a bağlanmaz.";
+  }
+  if (
+    finding.position?.matchKind === "dehyphenated" ||
+    finding.candidates.some((candidate) => candidate.matchKind === "dehyphenated")
+  ) {
+    return "Alıntı ancak satır sonunda tire ile bölünmüş kelime birleştirilerek bulundu; birebir sayılmaz, kaynağa bağlanmaz.";
   }
   return "Yalnız birebir tek konum kaynağa bağlanır.";
 }

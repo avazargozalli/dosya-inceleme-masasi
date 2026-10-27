@@ -28,7 +28,8 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
-    char_offset, collapse_ws_with_map, normalize_with_map, MappedText, MIN_QUOTE_CHARS,
+    char_offset, collapse_ws_with_map, dehyphenate_with_map, normalize_with_map, MappedText,
+    MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -219,6 +220,9 @@ pub struct InTextQuoteCheck {
     pub historical_versions_scanned: usize,
     /// Yalnız eski sürümde bulunan alıntı sayısı.
     pub found_in_old_version: usize,
+    /// Yalnız **tire ile bölünmüş kelime** birleştirilerek bulunan alıntı
+    /// sayısı (kaynakta `kelime-\nsatır`). Birebir sayılmaz.
+    pub dehyphenated: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
 }
@@ -228,6 +232,11 @@ enum MatchTier {
     Exact,
     Whitespace,
     Fold,
+    /// En zayıf katman: harf sadeleştirmesi + **satır/sayfa sonunda tire ile
+    /// bölünmüş** kelimenin birleştirilmesi. Kaynakta `bedel-\nlini` yazıyorsa
+    /// alıntı `bedellini` olarak bulunur; yalnız bu katmanda bulunan eşleşme
+    /// "birebir değil" sayılır ve kaynağa bağlanmaz.
+    Dehyphenated,
 }
 
 impl MatchTier {
@@ -236,6 +245,7 @@ impl MatchTier {
             Self::Exact => "exact",
             Self::Whitespace => "whitespace",
             Self::Fold => "turkish_fold",
+            Self::Dehyphenated => "dehyphenated",
         }
     }
 }
@@ -408,7 +418,12 @@ impl Database {
             // Her katmanda önce güncel sürümün tek sayfası, sonra sayfa sınırı,
             // ardından **eski sürümler** taranır; böylece eski sürümdeki birebir
             // eşleşme, güncel sürümdeki normalize eşleşmeden üstün kalır.
-            for tier in [MatchTier::Exact, MatchTier::Whitespace, MatchTier::Fold] {
+            for tier in [
+                MatchTier::Exact,
+                MatchTier::Whitespace,
+                MatchTier::Fold,
+                MatchTier::Dehyphenated,
+            ] {
                 if active.is_empty() {
                     break;
                 }
@@ -483,6 +498,7 @@ impl Database {
         let mut spanning = 0usize;
         let mut bindable = 0usize;
         let mut found_in_old_version = 0usize;
+        let mut dehyphenated = 0usize;
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         for (index, span) in extracted.quotes.iter().enumerate() {
             let found = &accum[index];
@@ -541,7 +557,25 @@ impl Database {
             {
                 found_in_old_version += 1;
             }
+            if finding
+                .position
+                .as_ref()
+                .is_some_and(|position| position.match_kind == MatchTier::Dehyphenated.kind())
+                || finding
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.match_kind == MatchTier::Dehyphenated.kind())
+            {
+                dehyphenated += 1;
+            }
             quotes.push(finding);
+        }
+        if dehyphenated > 0 {
+            notes.push(format!(
+                "{dehyphenated} alıntı yalnız **tire ile bölünmüş kelime** birleştirilerek \
+                 bulundu (kaynakta `kelime-\\nsatır` gibi); birebir sayılmaz ve anchor'a \
+                 bağlanmaz, kaynak metin gösterilir."
+            ));
         }
         if found_in_old_version > 0 {
             notes.push(format!(
@@ -616,6 +650,7 @@ impl Database {
             versions_scanned,
             historical_versions_scanned,
             found_in_old_version,
+            dehyphenated,
             notes,
             checked_at: now_iso(),
         })
@@ -806,6 +841,7 @@ impl Database {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
                 MatchTier::Fold => Some(normalize_with_map(&span.text)),
+                MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
             })
             .collect();
         let needle_chars: Vec<usize> = needles
@@ -866,11 +902,11 @@ impl Database {
                             }
                         }
                     }
-                    MatchTier::Whitespace | MatchTier::Fold => {
-                        let mapped = if tier == MatchTier::Whitespace {
-                            collapse_ws_with_map(&text)
-                        } else {
-                            normalize_with_map(&text)
+                    MatchTier::Whitespace | MatchTier::Fold | MatchTier::Dehyphenated => {
+                        let mapped = match tier {
+                            MatchTier::Whitespace => collapse_ws_with_map(&text),
+                            MatchTier::Fold => normalize_with_map(&text),
+                            _ => dehyphenate_with_map(&text),
                         };
                         for &quote_index in active {
                             let Some(needle) = needles[quote_index].as_ref() else {
@@ -943,6 +979,7 @@ impl Database {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
                 MatchTier::Fold => Some(normalize_with_map(&span.text)),
+                MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
             })
             .collect();
         let needle_chars: Vec<usize> = needles
@@ -1034,11 +1071,11 @@ impl Database {
                             }
                         }
                     }
-                    MatchTier::Whitespace | MatchTier::Fold => {
-                        let mapped = if tier == MatchTier::Whitespace {
-                            collapse_ws_with_map(&joined)
-                        } else {
-                            normalize_with_map(&joined)
+                    MatchTier::Whitespace | MatchTier::Fold | MatchTier::Dehyphenated => {
+                        let mapped = match tier {
+                            MatchTier::Whitespace => collapse_ws_with_map(&joined),
+                            MatchTier::Fold => normalize_with_map(&joined),
+                            _ => dehyphenate_with_map(&joined),
                         };
                         for &quote_index in active {
                             let Some(needle) = needles[quote_index].as_ref() else {
@@ -2000,5 +2037,148 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("en çok 5 eski sürüm tarandı")));
+    }
+
+    #[test]
+    fn quote_is_found_when_the_source_breaks_a_word_with_a_line_hyphen() {
+        let db = db();
+        let case_id = new_case(&db, "Satır sonu tiresi");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Mahkeme, davacının kira bedel-\nlini ödemediğini tespit etmiştir."],
+        );
+
+        let report = check(
+            &db,
+            &case_id,
+            "Davacı “kira bedellini ödemediğini” söyledi.",
+            None,
+        );
+
+        assert_eq!(report.not_found, 0, "tire ile bölünmüş kelime bulunamadı");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(report.dehyphenated, 1);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("tire ile bölünmüş kelime")),
+            "notlar tire birleştirmesini yazmalı: {:?}",
+            report.notes
+        );
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "dehyphenated");
+        assert!(!position.spans_pages);
+        assert!(
+            position.source_text.contains("bedel-\nlini"),
+            "kaynak metin tire + satır sonunu göstermeli: {}",
+            position.source_text
+        );
+    }
+
+    #[test]
+    fn soft_hyphen_inside_a_word_is_not_a_difference() {
+        let db = db();
+        let case_id = new_case(&db, "Yumuşak tire");
+        add_document(
+            &db,
+            &case_id,
+            "Dilekçe.pdf",
+            &["Davacı kira bedel\u{00AD}ini ödemedi."],
+        );
+
+        let report = check(&db, &case_id, "“kira bedelini ödemedi”", None);
+
+        assert_eq!(report.not_found, 0, "yumuşak tire eşleşmeyi engelledi");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "dehyphenated"
+        );
+    }
+
+    #[test]
+    fn a_real_hyphen_between_words_is_not_joined() {
+        let db = db();
+        let case_id = new_case(&db, "Gerçek tire");
+        add_document(
+            &db,
+            &case_id,
+            "Sözleşme.pdf",
+            &["Taraflar kredi-kartı sözleşmesi imzalamıştır."],
+        );
+
+        let report = check(&db, &case_id, "“kredikartı sözleşmesi”", None);
+
+        assert_eq!(
+            report.not_found, 1,
+            "satır sonu olmayan tire birleştirilmemeli"
+        );
+    }
+
+    #[test]
+    fn hyphenated_word_across_a_page_break_is_found_and_still_not_bindable() {
+        let db = db();
+        let case_id = new_case(&db, "Sayfa sınırında tire");
+        add_document(
+            &db,
+            &case_id,
+            "Bilirkişi.pdf",
+            &[
+                "Bilirkişi raporunda kira bedel-",
+                "lini ödemediğini belirtmiştir.",
+            ],
+        );
+
+        let report = check(&db, &case_id, "“kira bedellini ödemediğini”", None);
+
+        assert_eq!(report.not_found, 0);
+        assert_eq!(report.normalized, 1);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "dehyphenated");
+        assert!(position.spans_pages, "iki sayfaya yayılmalı");
+    }
+
+    #[test]
+    fn a_hyphen_at_a_paragraph_break_is_not_joined() {
+        let db = db();
+        let case_id = new_case(&db, "Paragraf ayrımı");
+        add_document(
+            &db,
+            &case_id,
+            "Tutanak.pdf",
+            &["Birinci madde-\n\nAşağıdaki hükümler uygulanır."],
+        );
+
+        let report = check(&db, &case_id, "“maddeaşağıdaki hükümler”", None);
+
+        assert_eq!(
+            report.not_found, 1,
+            "paragraf ayrımındaki tire kelime birleştirmesi sayılmamalı"
+        );
+        assert_eq!(report.dehyphenated, 0);
+    }
+
+    #[test]
+    fn exact_match_wins_over_a_dehyphenated_one() {
+        let db = db();
+        let case_id = new_case(&db, "Katman sırası");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Kira bedel-\nlini ödemedi. Sonra kira bedellini ödedi."],
+        );
+
+        let report = check(&db, &case_id, "“kira bedellini ödedi”", None);
+
+        assert_eq!(report.exact, 1, "birebir eşleşme en güçlü katmanda kalmalı");
+        assert_eq!(report.quotes[0].state, "exact");
     }
 }

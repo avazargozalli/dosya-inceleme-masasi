@@ -953,7 +953,7 @@ export type InTextQuotePosition = {
   isCurrentVersion: boolean;
   charStart: number;
   charEnd: number;
-  matchKind: "exact" | "whitespace" | "turkish_fold";
+  matchKind: "exact" | "whitespace" | "turkish_fold" | "dehyphenated";
   textOrigin: string;
   sourceText: string;
 };
@@ -994,6 +994,8 @@ export type InTextQuoteCheck = {
   historicalVersionsScanned: number;
   /** Yalnız eski sürümde bulunan alıntı sayısı. */
   foundInOldVersion: number;
+  /** Yalnız tire ile bölünmüş kelime birleştirilerek bulunan alıntı sayısı. */
+  dehyphenated: number;
   notes: string[];
   checkedAt: string;
 };
