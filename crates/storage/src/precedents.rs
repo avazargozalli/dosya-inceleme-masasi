@@ -296,7 +296,7 @@ pub struct QuoteVerification {
     pub precedent_id: String,
     pub version_id: Option<String>,
     pub state: String,
-    /// `exact` | `whitespace` | `turkish_fold`
+    /// `exact` | `whitespace` | `turkish_fold` | `dehyphenated`
     pub method: Option<String>,
     /// Alıntının **kaynak metindeki** karakter konumu (0 tabanlı).
     pub matched_start: Option<i64>,
@@ -487,6 +487,37 @@ pub(crate) fn mapped_start(mapped: &MappedText, at_byte: usize) -> Option<i64> {
         .map
         .get(index)
         .map(|i| i64::try_from(*i).unwrap_or(i64::MAX))
+}
+
+/// Eşleşmenin **kaynak metindeki** aralığını (başlangıç, uzunluk) karakter
+/// cinsinden verir. `at_byte`/`len_bytes` sadeleştirilmiş metindeki eşleşmeyi
+/// gösterir; `map` her çıktı karakterinin kaynak indeksini taşıdığı için aralık
+/// kaynakta **tireyi, satır sonunu ve katlanan boşlukları içerir**.
+///
+/// Neden gerekli: `matched_length` alıntının karakter sayısı olamaz — boşluk
+/// katlama ve tire birleştirme kaynak aralığını kısaltır/uzatır. Yanlış uzunluk,
+/// `citation_context`'in “sonrası” dilimini kelimenin ortasından başlatıyordu.
+pub(crate) fn mapped_span(
+    mapped: &MappedText,
+    at_byte: usize,
+    len_bytes: usize,
+) -> Option<(i64, i64)> {
+    let start_char = mapped.text[..at_byte].chars().count();
+    let end_char = start_char + mapped.text[at_byte..at_byte + len_bytes].chars().count();
+    let start = *mapped.map.get(start_char)?;
+    let end = match mapped.map.get(end_char) {
+        Some(next) => *next,
+        None => mapped
+            .map
+            .last()
+            .copied()
+            .map(|last| last + 1)
+            .unwrap_or(start + 1),
+    };
+    Some((
+        i64::try_from(start).unwrap_or(i64::MAX),
+        i64::try_from(end.saturating_sub(start)).unwrap_or(i64::MAX),
+    ))
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -797,13 +828,20 @@ impl Database {
         if start > chars.len() {
             return Ok(context);
         }
-        let quote_len = check.extracted_citation.chars().count();
+        // **Kaynak aralığı** kullanılır: boşluk katlama ve tire birleştirmede
+        // aralık alıntının karakter sayısından farklıdır. Alıntı uzunluğuyla
+        // dilimlemek “sonrası” bağlamı kelimenin ortasından başlatıyordu.
+        let span = verification
+            .matched_length
+            .and_then(|v| usize::try_from(v).ok())
+            .filter(|v| *v > 0)
+            .unwrap_or_else(|| check.extracted_citation.chars().count());
         let before_start = start.saturating_sub(radius.max(1));
-        let after_end = (start + quote_len + radius.max(1)).min(chars.len());
+        let after_end = (start + span + radius.max(1)).min(chars.len());
         context.found = true;
         context.char_position = Some(i64::try_from(start).unwrap_or(i64::MAX));
         context.before = chars[before_start..start].iter().collect();
-        context.after = chars[(start + quote_len).min(chars.len())..after_end]
+        context.after = chars[(start + span).min(chars.len())..after_end]
             .iter()
             .collect();
         Ok(context)
@@ -1093,24 +1131,45 @@ impl Database {
         let needle = collapse_ws_with_map(quote);
         if !needle.text.is_empty() {
             if let Some(at) = haystack.text.find(&needle.text) {
-                result.state = "match".into();
-                result.method = Some("whitespace".into());
-                result.matched_start = mapped_start(&haystack, at);
-                result.matched_length = Some(length);
-                result.occurrences = count_occurrences(&haystack.text, &needle.text);
-                return Ok(result);
+                if let Some((start, span)) = mapped_span(&haystack, at, needle.text.len()) {
+                    result.state = "match".into();
+                    result.method = Some("whitespace".into());
+                    result.matched_start = Some(start);
+                    result.matched_length = Some(span);
+                    result.occurrences = count_occurrences(&haystack.text, &needle.text);
+                    return Ok(result);
+                }
             }
         }
         let haystack = normalize_with_map(&text);
         let needle = normalize_with_map(quote);
         if !needle.text.is_empty() {
             if let Some(at) = haystack.text.find(&needle.text) {
-                result.state = "match".into();
-                result.method = Some("turkish_fold".into());
-                result.matched_start = mapped_start(&haystack, at);
-                result.matched_length = Some(length);
-                result.occurrences = count_occurrences(&haystack.text, &needle.text);
-                return Ok(result);
+                if let Some((start, span)) = mapped_span(&haystack, at, needle.text.len()) {
+                    result.state = "match".into();
+                    result.method = Some("turkish_fold".into());
+                    result.matched_start = Some(start);
+                    result.matched_length = Some(span);
+                    result.occurrences = count_occurrences(&haystack.text, &needle.text);
+                    return Ok(result);
+                }
+            }
+        }
+        // En zayıf katman: satır sonunda tire ile bölünmüş kelime.
+        // Karar metinleri çoğunlukla iki yana yaslı PDF'ten geldiği için
+        // `bedel-\nlini` yaygındır; alıntı doğal olarak `bedellini` yazılır.
+        let haystack = dehyphenate_with_map(&text);
+        let needle = dehyphenate_with_map(quote);
+        if !needle.text.is_empty() {
+            if let Some(at) = haystack.text.find(&needle.text) {
+                if let Some((start, span)) = mapped_span(&haystack, at, needle.text.len()) {
+                    result.state = "match".into();
+                    result.method = Some("dehyphenated".into());
+                    result.matched_start = Some(start);
+                    result.matched_length = Some(span);
+                    result.occurrences = count_occurrences(&haystack.text, &needle.text);
+                    return Ok(result);
+                }
             }
         }
         result.state = "mismatch".into();
@@ -1948,6 +2007,136 @@ mod tests {
         assert_eq!(result.state, "match");
         assert_eq!(result.method.as_deref(), Some("turkish_fold"));
         assert!(result.matched_start.is_some());
+    }
+
+    #[test]
+    fn quote_broken_by_a_hyphen_at_line_end_is_found_as_a_loose_match() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/8"), Some("2025/9")))
+            .expect("emsal");
+        let body = "Kira bedel-\nlini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "kira bedellini ödemeyen kiracı")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("dehyphenated"));
+        assert_eq!(result.matched_start, Some(0));
+        // Kaynak aralığı tireyi ve satır sonunu **içerir**: 32 karakter;
+        // yazılan alıntı 30 karakterdir. Uzunluk alıntıdan türetilmez.
+        assert_eq!(result.matched_length, Some(32));
+        assert_eq!(result.occurrences, 1);
+    }
+
+    #[test]
+    fn a_real_hyphen_is_not_joined_in_precedent_quotes() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/9"), Some("2025/10")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &p.id,
+            &text_of("Kredi-kartı borcunu ödemeyen davacı hakkında icra takibi başlatıldı."),
+        )
+        .expect("metin");
+        // Satır sonu yok: bu gerçek bir tiredir, birleştirilmez.
+        let result = db
+            .verify_precedent_quote(&p.id, "kredikartı borcunu ödemeyen davacı")
+            .expect("doğrulama");
+        assert_eq!(result.state, "mismatch");
+        assert_eq!(result.reason.as_deref(), Some("not_found"));
+        assert!(result.matched_start.is_none());
+    }
+
+    #[test]
+    fn soft_hyphen_is_not_a_writing_difference() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/10"), Some("2025/11")))
+            .expect("emsal");
+        let body = "Kira bedel\u{00AD}lini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "kira bedellini ödemeyen kiracı")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("dehyphenated"));
+        // Görünmez tire de kaynak aralığına dahildir (31 karakter).
+        assert_eq!(result.matched_length, Some(31));
+    }
+
+    #[test]
+    fn exact_match_stays_strongest_next_to_a_hyphenated_copy() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/11"), Some("2025/12")))
+            .expect("emsal");
+        let body = "Karar bedellini ödedi. Metinde bedel-\nlini diye de yazıldı.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "bedellini ödedi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("exact"));
+        assert_eq!(
+            result.matched_start,
+            Some(char_offset(body, body.find("bedellini").unwrap()))
+        );
+        assert_eq!(result.matched_length, Some(15));
+    }
+
+    #[test]
+    fn citation_context_uses_the_source_span_not_the_quote_length() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/12"), Some("2025/13")))
+            .expect("emsal");
+        let quote = "ödeme yapılmadığı";
+        let body = "Gerekçede ödeme    yapılmadığı belirtildi.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        let check = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v-span".into(),
+                extracted_citation: quote.into(),
+                candidate_precedent_id: Some(p.id.clone()),
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+        let verification = db.verify_precedent_quote(&p.id, quote).expect("doğrulama");
+        assert_eq!(verification.method.as_deref(), Some("whitespace"));
+        // Kaynakta dört boşluk var: aralık 20, alıntı 17 karakter.
+        assert_eq!(verification.matched_length, Some(20));
+        let context = db.citation_context(&check.id, 8).expect("bağlam");
+        assert!(context.found, "{context:?}");
+        // Sonraki bağlam alıntının kuyruğunu **tekrarlamaz**.
+        assert!(context.after.starts_with(" belirti"), "{context:?}");
+
+        let p2 = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/13"), Some("2025/14")))
+            .expect("emsal");
+        let hyphenated = "Kira bedel-\nlini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        db.add_precedent_text(&p2.id, &text_of(hyphenated))
+            .expect("metin");
+        let check2 = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v-span-2".into(),
+                extracted_citation: "kira bedellini ödemeyen kiracı".into(),
+                candidate_precedent_id: Some(p2.id.clone()),
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+        let context2 = db.citation_context(&check2.id, 6).expect("bağlam");
+        assert!(context2.found, "{context2:?}");
+        assert_eq!(context2.state, "match");
+        // Tire + satır sonu atlanır; bağlam kelimenin ortasından başlamaz.
+        assert!(context2.after.starts_with(" hakkı"), "{context2:?}");
     }
 
     #[test]

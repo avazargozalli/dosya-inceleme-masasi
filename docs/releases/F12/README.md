@@ -10,7 +10,7 @@
 | F12-T02 | ✅ | kullanım notu: benzerlik / ayrışan nokta / kullanıcı sonucu |
 | F12-T03 | ✅ | atıf kontrolü: künye ve alıntı boyutları ayrı |
 | F12-T04 | ✅ | “bulunamadı” ile “uydurulmuş” ayrımı korunur; sahte hükmü yok |
-| F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama |
+| F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama; **tire ile bölünmüş kelime** katmanı ve gerçek kaynak aralığı (2026-10-27) |
 | F12-T06 | ✅ | toplu içe alma (CSV künye listesi, çakışma işareti) + dış bağlayıcı sicili (etkin değil) |
 | F12-T07 | ✅ | alıntı çevresi + anlam incelemesi (şema v15; gerekçesiz olumsuz hüküm yok) |
 | F12-T10 | ✅ | kütüphane araması dosya aramasından ayrı (şema değişikliği yok; sızıntı testi) |
@@ -123,7 +123,8 @@ değerlendirmesidir; sistem hükmü değildir.
   ayrıştırmasının sayfa metinleri birleştirilir.
 - Doğrulama yalnız metin eşleşmesidir; **anlam/bağlam** incelemesi ayrı boyut
   olarak kalır (F12-T07).
-- Sadeleştirme Türkçe harf katlamasıyla sınırlı; kelime değişikliği, çeviri
+- Sadeleştirme Türkçe harf katlamasıyla ve **satır sonunda tire ile bölünmüş
+  kelime birleştirmesiyle** sınırlı (2026-10-27); kelime değişikliği, çeviri
   veya özet metin eşleşmez — bu durumda sonuç `mismatch` (“bulunamadı”) olur,
   “uydurulmuş” değil.
 - Tauri penceresi bu ortamda açılmadı: kart, yapıştırma ve doğrulama akışı
@@ -491,3 +492,56 @@ negatif**.
     `Türk-\nAlman`) birleştirilir; bu, satır sonu tiresinden ayırt edilemez
     (tasarım gereği, katman en zayıf ve bağlanmaz).
   - Tauri penceresi açılmadı → etiketin görsel QA'si yok.
+
+## F12-T05 genişletmesi — tire ile bölünmüş kelime + gerçek kaynak aralığı (2026-10-27)
+
+**Neden:** son dört turda **belge** alıntılarında kapatılan yanlış negatif sınıfı
+(sayfa sınırı, eski sürüm, satır sonu tiresi) emsal **tam metninde** açıktı.
+`check_in_text_quotes` `bedel-\nlini` yazılmış metinde `bedellini` alıntısını
+bulurken aynı alıntı `verify_precedent_quote`'da `mismatch` (“bulunamadı”)
+dönüyordu: iki amiral gemisi özellik aynı olguda farklı hüküm veriyordu. Karar
+metinleri çoğunlukla iki yana yaslı PDF'ten geldiği için bu tipografi beklenen
+durumdur.
+
+**Ölçülen ikinci kusur (aynı turda):** `matched_length` her katmanda **alıntının**
+karakter sayısıydı. Boşluk katlama ve tire birleştirmede kaynak aralığı farklıdır
+(ölçüm: kaynak `ödeme    yapılmadığı` = 20 karakter, alıntı 17). `citation_context`
+“sonrası” dilimini bu yanlış uzunlukla başlattığı için bağlam **kelimenin
+ortasından** başlıyordu. Artık `matched_length` **kaynak aralığıdır**.
+
+**Çekirdek (`crates/storage/src/precedents.rs`):**
+
+- `mapped_span` — eşleşmenin kaynak metindeki (başlangıç, uzunluk) aralığı;
+  `map` her çıktı karakterinin kaynak indeksini taşıdığı için tire, satır sonu ve
+  katlanan boşluklar aralığa **dahil** edilir.
+- Katman sırası: `exact` → `whitespace` → `turkish_fold` → **`dehyphenated`**
+  (en zayıf). `dehyphenate_with_map` aynı kuralları uygular: `-` + **tek** satır
+  sonu + harf birleşir; satır sonu yoksa gerçek tire korunur; iki+ satır sonu
+  paragraf ayrımıdır, birleşmez; yumuşak tire (`U+00AD`) atılır.
+- `citation_context` artık `matched_length`'i kullanır (yoksa alıntı uzunluğuna
+  düşer) — “sonrası” bağlam eşleşmenin **bittiği** yerden başlar.
+
+**Arayüz:** `QuoteVerificationRow.method` birleşimine `"dehyphenated"`;
+`quoteStateText` “yalnız satır sonunda tire ile bölünmüş kelime birleştirilerek
+bulundu … Birebir değil, gözle doğrulayın.”; ton `warn` (birebir sayılmaz).
+
+**Test (gerçek çekirdek, bellek içi kasa):** `precedents` **39** (34 + 5 yeni:
+satır sonu tiresi bulunur + kaynak aralığı 32; gerçek tire birleştirilmez;
+yumuşak tire fark değildir; birebir eşleşme en güçlü katmanda kalır;
+`citation_context` kaynak aralığını kullanır — boşluk katlamalı ve tireli iki
+vaka). Önce **3 test kırmızı** koştu (dehyphenated ve yumuşak tire `mismatch`;
+aralık 17).
+
+**Dürüst sınırlar:**
+
+- Yalnız ASCII `-` tanınır; OCR `–`/`—` üretirse birleşmez.
+- Alıntı **da** tireyle yazılmışsa ve kaynakta satır sonu yoksa birleştirme
+  yapılmaz (gerçek tire sayılır; iki yön aynı kural).
+- Yalnız **en yeni** tam metin sürümü taranır; eski sürümde kalmış alıntı hâlâ
+  `mismatch` — belge tarafında kapatılan sürüm sınıfı emsal tarafında **açık
+  kayıt**.
+- Tire birleştirme `method=dehyphenated` ile raporlanır ve `quote_match`
+  boyutuna `match` olarak taşınır (bugünkü `whitespace`/`turkish_fold` gibi);
+  birebir olmadığı arayüzde yazılır.
+- Ölçüm bellek içi kasa + elle yazılmış metinler; gerçek PDF/worker uçtan uca
+  denenmedi. Tauri penceresi açılmadı → etiketin görsel QA'si yok.

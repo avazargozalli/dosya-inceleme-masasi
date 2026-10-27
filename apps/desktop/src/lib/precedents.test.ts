@@ -92,6 +92,16 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     expect(folded).toContain("gözle doğrulayın");
   });
 
+  it("tire ile bölünmüş kelimeyi ayrı ve zayıf bir eşleşme olarak yazar", () => {
+    const hyphenated = quoteStateText(
+      verification({ state: "match", method: "dehyphenated", matchedStart: 0, occurrences: 1 }),
+    );
+    expect(hyphenated).toContain("tire ile bölünmüş");
+    expect(hyphenated).toContain("Birebir değil");
+    expect(hyphenated).not.toContain("harf farkıyla");
+    expect(quoteStateTone(verification({ state: "match", method: "dehyphenated" }))).toBe("warn");
+  });
+
   it("tekrarlanan alıntıda kaç kez geçtiğini yazar", () => {
     const text = quoteStateText(
       verification({ state: "match", method: "exact", matchedStart: 0, occurrences: 3 }),

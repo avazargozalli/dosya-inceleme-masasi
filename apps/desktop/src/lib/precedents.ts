@@ -23,6 +23,8 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
       if (verification.method === "exact") return `Alıntı metinde birebir bulundu${at}${repeated}.`;
       if (verification.method === "whitespace")
         return `Alıntı yalnız satır/boşluk farkıyla bulundu${at}${repeated}. Birebir değil.`;
+      if (verification.method === "dehyphenated")
+        return `Alıntı yalnız satır sonunda tire ile bölünmüş kelime birleştirilerek bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.`;
       return `Alıntı Türkçe harf farkıyla bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.`;
     }
     case "mismatch":

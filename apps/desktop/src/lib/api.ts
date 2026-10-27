@@ -591,7 +591,7 @@ export type QuoteVerificationRow = {
   precedentId: string;
   versionId: string | null;
   state: "match" | "mismatch" | "not_checked";
-  method: "exact" | "whitespace" | "turkish_fold" | null;
+  method: "exact" | "whitespace" | "turkish_fold" | "dehyphenated" | null;
   matchedStart: number | null;
   matchedLength: number | null;
   occurrences: number;
