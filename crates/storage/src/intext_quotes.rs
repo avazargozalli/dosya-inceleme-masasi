@@ -1856,6 +1856,46 @@ mod tests {
     }
 
     #[test]
+    fn historical_quote_binds_an_anchor_to_the_old_version() {
+        let db = db();
+        let case_id = new_case(&db, "Bilirkişi");
+        let (document_id, first_version) = add_document(
+            &db,
+            &case_id,
+            "Bilirkişi raporu",
+            &["Raporun eski sürümünde kalan cümle burada."],
+        );
+        add_version_with_pages(
+            &db,
+            &case_id,
+            &document_id,
+            &["Güncel metin, cümle çıkarıldı."],
+        );
+
+        let report = check(&db, &case_id, "“kalan cümle burada”", None);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert!(!position.is_current_version);
+
+        // Eski sürümün segmenti üzerinden anchor kurulabilir: kayıt hangi
+        // sürümde doğrulandığını taşır, sessizce güncel sürüme yazılmaz.
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                end_offset: position.char_end,
+                exact_quote: position.source_text.clone(),
+            })
+            .expect("anchor");
+        assert_eq!(anchor.document_version_id, first_version);
+        assert_eq!(anchor.exact_quote, "kalan cümle burada");
+        let location = db.locate_anchor(&anchor.id).expect("locate").expect("row");
+        assert!(location.quote_intact);
+    }
+
+    #[test]
     fn current_version_wins_over_history_and_history_is_not_scanned() {
         let db = db();
         let case_id = new_case(&db, "Kira");
