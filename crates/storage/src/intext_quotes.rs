@@ -15,6 +15,12 @@
 //! sınırını aşan** eşleşme aranır: ardışık sayfalar bir pencerede birleştirilir,
 //! yalnız iki sayfaya da gerçekten yayılan eşleşmeler kaydedilir. Böyle bir
 //! eşleşme `spansPages` ile işaretlenir; tek sayfalık anchor'a bağlanmaz.
+//!
+//! Güncel sürümde bulunamayan alıntı için **belgenin eski sürümleri** de
+//! taranır (en çok `MAX_HISTORICAL_VERSIONS_PER_DOCUMENT`, yeniden yeniye).
+//! Eski sürümde bulunan konum `isCurrentVersion=false` taşır: alıntı güncel
+//! metinde geçmiyor, belge güncellenmiş olabilir. Anchor sürümü zaten kaydettiği
+//! için bağlanabilir, ama arayüz bunu ayrıca yazar.
 
 use std::collections::BTreeSet;
 
@@ -36,6 +42,10 @@ const MAX_SPAN_CHARS: usize = 1_000;
 const MAX_CANDIDATES: usize = 8;
 /// Tek denetimde taranacak sayfa üst sınırı; aşılırsa belge seçilmelidir.
 const MAX_SCOPE_PAGES: i64 = 20_000;
+/// Belge başına taranacak **eski** sürüm sayısı üst sınırı. Güncel sürüm her
+/// zaman taranır; sınırın ötesindeki daha eski sürümler taranmaz ve durum
+/// notlarda yazılır (sessiz kesme yok).
+const MAX_HISTORICAL_VERSIONS_PER_DOCUMENT: usize = 5;
 
 const SCOPE_PAGE_SQL: &str = "SELECT p.id,p.page_index,p.text_origin,
         (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1),
@@ -153,6 +163,11 @@ pub struct InTextQuotePosition {
     pub end_page_index: i64,
     /// Eşleşme sayfa sınırını aşıyor mu (kaynakta sayfa/satır sonu).
     pub spans_pages: bool,
+    /// Kaynağın sürüm numarası (`document_versions.version_no`).
+    pub version_no: i64,
+    /// Konum **güncel** sürümde mi? `false` ise alıntı yalnız eski bir sürümde
+    /// bulundu; belge güncellenmiş olabilir.
+    pub is_current_version: bool,
     /// `exact` | `whitespace` | `turkish_fold`
     pub match_kind: String,
     pub text_origin: String,
@@ -198,6 +213,12 @@ pub struct InTextQuoteCheck {
     pub documents_with_text: usize,
     pub documents_without_text: usize,
     pub pages_scanned: usize,
+    /// Taranan sürüm sayısı (güncel + eski).
+    pub versions_scanned: usize,
+    /// Bunlardan **eski** sürüm sayısı.
+    pub historical_versions_scanned: usize,
+    /// Yalnız eski sürümde bulunan alıntı sayısı.
+    pub found_in_old_version: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
 }
@@ -223,7 +244,19 @@ struct VersionScope {
     document_id: String,
     document_name: String,
     version_id: Option<String>,
+    /// `document_versions.version_no`; metin yoksa 0.
+    version_no: i64,
+    /// Bu kapsam belgenin **güncel** sürümü mü?
+    is_current: bool,
     parse_run_id: Option<String>,
+}
+
+/// `resolve_historical_scopes` içinde belge başına sürüm toplama torbası.
+struct HistoryBucket {
+    document_id: String,
+    document_name: String,
+    /// Yeniden eskiye `(version_id, version_no)`.
+    versions: Vec<(String, i64)>,
 }
 
 #[derive(Clone)]
@@ -240,6 +273,8 @@ struct RawHit {
     end_page_index: i64,
     char_end: i64,
     spans_pages: bool,
+    version_no: i64,
+    is_current_version: bool,
     match_kind: &'static str,
     text_origin: String,
     source_text: String,
@@ -259,6 +294,8 @@ impl RawHit {
             char_end: self.char_end,
             end_page_index: self.end_page_index,
             spans_pages: self.spans_pages,
+            version_no: self.version_no,
+            is_current_version: self.is_current_version,
             match_kind: self.match_kind.to_string(),
             text_origin: self.text_origin.clone(),
             source_text: self.source_text.clone(),
@@ -289,6 +326,11 @@ impl Database {
     /// Kapsam: `document_id` verilirse o belgenin güncel sürümü; verilmezse
     /// dosyadaki bütün belgelerin güncel sürümleri. Her sürümün **en yeni**
     /// başarılı/kısmi ayrıştırması taranır.
+    ///
+    /// Güncel sürümde bulunamayan alıntı için belgenin **eski sürümleri** de
+    /// taranır (belge başına en çok `MAX_HISTORICAL_VERSIONS_PER_DOCUMENT`,
+    /// yeniden yeniye). Eski sürümde bulunan konum `is_current_version=false`
+    /// taşır; anchor sürümü kaydettiği için bağlanabilir, arayüz bunu yazar.
     pub fn check_in_text_quotes(
         &self,
         case_id: &str,
@@ -342,19 +384,30 @@ impl Database {
             .map(|_| QuoteAccum::default())
             .collect::<Vec<_>>();
         let mut pages_scanned = 0usize;
+        let mut versions_scanned = 0usize;
+        let mut historical_versions_scanned = 0usize;
+        let mut historical_truncated_documents = 0usize;
+        let mut historical_skipped_for_pages = false;
         if extracted.quotes.is_empty() {
             notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
         } else {
+            let max_pages = usize::try_from(MAX_SCOPE_PAGES).unwrap_or(usize::MAX);
             pages_scanned = self.count_scope_pages(&scopes)?;
-            if pages_scanned > usize::try_from(MAX_SCOPE_PAGES).unwrap_or(usize::MAX) {
+            versions_scanned = scopes
+                .iter()
+                .filter(|scope| scope.parse_run_id.is_some())
+                .count();
+            if pages_scanned > max_pages {
                 return Err(StorageError::QuoteScopeTooLarge);
             }
-            let all: Vec<usize> = (0..extracted.quotes.len()).collect();
+            // Eski sürüm kapsamları yalnız güncel sürümde bir şey bulunamazsa
+            // çözülür ve taranır: sık durumda ek maliyet yok.
+            let mut historical: Option<Vec<VersionScope>> = None;
+            let mut active: Vec<usize> = (0..extracted.quotes.len()).collect();
             // Katman sırası korunur: üst katman bulduysa alt kata inilmez.
-            // Her katmanda önce tek sayfa, sonra **sayfa sınırı** taranır; böylece
-            // birebir ama sayfa sonuna denk gelen eşleşme, tek sayfadaki
-            // normalize eşleşmeden üstün kalır.
-            let mut active = all;
+            // Her katmanda önce güncel sürümün tek sayfası, sonra sayfa sınırı,
+            // ardından **eski sürümler** taranır; böylece eski sürümdeki birebir
+            // eşleşme, güncel sürümdeki normalize eşleşmeden üstün kalır.
             for tier in [MatchTier::Exact, MatchTier::Whitespace, MatchTier::Fold] {
                 if active.is_empty() {
                     break;
@@ -366,12 +419,70 @@ impl Database {
                 }
                 self.scan_page_break_tier(&scopes, &extracted.quotes, &active, &mut accum, tier)?;
                 active = pending_quotes(&accum);
+                if active.is_empty() {
+                    break;
+                }
+                if historical.is_none() {
+                    let (historic, truncated) =
+                        self.resolve_historical_scopes(case_id, input.document_id.as_deref())?;
+                    historical_truncated_documents = truncated;
+                    let extra_pages = self.count_scope_pages(&historic)?;
+                    if extra_pages > 0 && pages_scanned.saturating_add(extra_pages) > max_pages {
+                        // Sessizce kesmek yerine hiç taranmaz ve nedeni yazılır.
+                        historical_skipped_for_pages = true;
+                        historical = Some(Vec::new());
+                    } else {
+                        pages_scanned = pages_scanned.saturating_add(extra_pages);
+                        historical_versions_scanned = historic
+                            .iter()
+                            .filter(|scope| scope.parse_run_id.is_some())
+                            .count();
+                        versions_scanned =
+                            versions_scanned.saturating_add(historical_versions_scanned);
+                        historical = Some(historic);
+                    }
+                }
+                let historic = historical.as_deref().unwrap_or(&[]);
+                if !historic.is_empty() {
+                    self.scan_quote_tier(historic, &extracted.quotes, &active, &mut accum, tier)?;
+                    active = pending_quotes(&accum);
+                    if !active.is_empty() {
+                        self.scan_page_break_tier(
+                            historic,
+                            &extracted.quotes,
+                            &active,
+                            &mut accum,
+                            tier,
+                        )?;
+                        active = pending_quotes(&accum);
+                    }
+                }
             }
+        }
+        if historical_versions_scanned > 0 {
+            notes.push(format!(
+                "Güncel sürümde bulunamayan alıntılar için belgelerin eski sürümleri de \
+                 tarandı ({historical_versions_scanned} sürüm)."
+            ));
+        }
+        if historical_truncated_documents > 0 {
+            notes.push(format!(
+                "{historical_truncated_documents} belgede en çok \
+                 {MAX_HISTORICAL_VERSIONS_PER_DOCUMENT} eski sürüm tarandı; daha eski \
+                 sürümler taranmadı."
+            ));
+        }
+        if historical_skipped_for_pages {
+            notes.push(format!(
+                "Eski sürüm taraması {MAX_SCOPE_PAGES} sayfa sınırı nedeniyle yapılmadı; \
+                 kapsamı belge seçerek daraltın."
+            ));
         }
 
         let mut counts = [0usize; 5];
         let mut spanning = 0usize;
         let mut bindable = 0usize;
+        let mut found_in_old_version = 0usize;
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         for (index, span) in extracted.quotes.iter().enumerate() {
             let found = &accum[index];
@@ -423,7 +534,21 @@ impl Database {
                 // Tek sayfada birebir: tek sayfalık anchor'a bağlanabilir.
                 bindable += 1;
             }
+            if finding
+                .position
+                .as_ref()
+                .is_some_and(|position| !position.is_current_version)
+            {
+                found_in_old_version += 1;
+            }
             quotes.push(finding);
+        }
+        if found_in_old_version > 0 {
+            notes.push(format!(
+                "{found_in_old_version} alıntı yalnız **eski** bir sürümde bulundu; güncel \
+                 sürümde geçmiyor (belge güncellenmiş olabilir). Kaynak, alıntının bulunduğu \
+                 sürüme bağlanır."
+            ));
         }
         if bindable > 0 {
             notes.push(format!(
@@ -488,6 +613,9 @@ impl Database {
             documents_with_text,
             documents_without_text,
             pages_scanned,
+            versions_scanned,
+            historical_versions_scanned,
+            found_in_old_version,
             notes,
             checked_at: now_iso(),
         })
@@ -500,16 +628,19 @@ impl Database {
     ) -> Result<Vec<VersionScope>, StorageError> {
         let mut scopes = Vec::new();
         if let Some(document_id) = document_id {
-            let row: Option<(String, String, Option<String>)> = self
+            let row: Option<(String, String, Option<String>, i64)> = self
                 .conn()
                 .query_row(
-                    "SELECT id,display_name,current_version_id FROM documents
-                     WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                    "SELECT d.id,d.display_name,d.current_version_id,
+                            COALESCE((SELECT v.version_no FROM document_versions v
+                                      WHERE v.id=d.current_version_id),0)
+                     FROM documents d
+                     WHERE d.id=?1 AND d.case_id=?2 AND d.deleted_at IS NULL",
                     [document_id, case_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            let Some((id, name, version_id)) = row else {
+            let Some((id, name, version_id, version_no)) = row else {
                 return Err(StorageError::NotFound);
             };
             let run_id = match version_id.as_deref() {
@@ -520,26 +651,32 @@ impl Database {
                 document_id: id,
                 document_name: name,
                 version_id,
+                version_no,
+                is_current: true,
                 parse_run_id: run_id,
             });
             return Ok(scopes);
         }
         let mut stmt = self.conn().prepare(
-            "SELECT id,display_name,current_version_id FROM documents
-             WHERE case_id=?1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC",
+            "SELECT d.id,d.display_name,d.current_version_id,
+                    COALESCE((SELECT v.version_no FROM document_versions v
+                              WHERE v.id=d.current_version_id),0)
+             FROM documents d
+             WHERE d.case_id=?1 AND d.deleted_at IS NULL ORDER BY d.created_at DESC, d.id DESC",
         )?;
         let rows = stmt.query_map([case_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })?;
         let mut docs = Vec::new();
         for row in rows {
             docs.push(row?);
         }
-        for (id, name, version_id) in docs {
+        for (id, name, version_id, version_no) in docs {
             let run_id = match version_id.as_deref() {
                 Some(version) => self.latest_text_run(version)?,
                 None => None,
@@ -548,10 +685,79 @@ impl Database {
                 document_id: id,
                 document_name: name,
                 version_id,
+                version_no,
+                is_current: true,
                 parse_run_id: run_id,
             });
         }
         Ok(scopes)
+    }
+
+    /// Güncel sürümde bulunamayan alıntılar için **eski sürüm** kapsamları.
+    ///
+    /// Her belge için güncel sürüm dışındaki sürümler yeniden eskiye alınır ve
+    /// `MAX_HISTORICAL_VERSIONS_PER_DOCUMENT` ile sınırlanır; sınırın ötesinde
+    /// kalan sürüm varsa ikinci dönüş değeri (kesilen belge sayısı) artar.
+    /// Metni olmayan sürümler de kapsama girer: `documents_without_text`
+    /// sayımı güncel sürüm üzerinden yapıldığı için burada ayrıca sayılmaz.
+    fn resolve_historical_scopes(
+        &self,
+        case_id: &str,
+        document_id: Option<&str>,
+    ) -> Result<(Vec<VersionScope>, usize), StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT v.document_id,d.display_name,v.id,v.version_no
+             FROM document_versions v JOIN documents d ON d.id=v.document_id
+             WHERE d.case_id=?1 AND d.deleted_at IS NULL
+               AND (?2 IS NULL OR d.id=?2)
+               AND (d.current_version_id IS NULL OR v.id<>d.current_version_id)
+             ORDER BY v.document_id, v.version_no DESC, v.id DESC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![case_id, document_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut buckets: Vec<HistoryBucket> = Vec::new();
+        for row in rows {
+            let (doc_id, name, version_id, version_no) = row?;
+            match buckets.last_mut() {
+                Some(bucket) if bucket.document_id == doc_id => {
+                    bucket.versions.push((version_id, version_no));
+                }
+                _ => buckets.push(HistoryBucket {
+                    document_id: doc_id,
+                    document_name: name,
+                    versions: vec![(version_id, version_no)],
+                }),
+            }
+        }
+        let mut scopes = Vec::new();
+        let mut truncated_documents = 0usize;
+        for bucket in buckets {
+            if bucket.versions.len() > MAX_HISTORICAL_VERSIONS_PER_DOCUMENT {
+                truncated_documents += 1;
+            }
+            for (version_id, version_no) in bucket
+                .versions
+                .into_iter()
+                .take(MAX_HISTORICAL_VERSIONS_PER_DOCUMENT)
+            {
+                let run_id = self.latest_text_run(&version_id)?;
+                scopes.push(VersionScope {
+                    document_id: bucket.document_id.clone(),
+                    document_name: bucket.document_name.clone(),
+                    version_id: Some(version_id),
+                    version_no,
+                    is_current: false,
+                    parse_run_id: run_id,
+                });
+            }
+        }
+        Ok((scopes, truncated_documents))
     }
 
     fn latest_text_run(&self, version_id: &str) -> Result<Option<String>, StorageError> {
@@ -651,6 +857,8 @@ impl Database {
                                     char_end: start
                                         + i64::try_from(quote.chars().count()).unwrap_or(i64::MAX),
                                     spans_pages: false,
+                                    version_no: scope.version_no,
+                                    is_current_version: scope.is_current,
                                     match_kind: tier.kind(),
                                     text_origin: text_origin.clone(),
                                     source_text: quote.clone(),
@@ -694,6 +902,8 @@ impl Database {
                                         char_end: end,
                                         end_page_index: page_index,
                                         spans_pages: false,
+                                        version_no: scope.version_no,
+                                        is_current_version: scope.is_current,
                                         match_kind: tier.kind(),
                                         text_origin: text_origin.clone(),
                                         source_text,
@@ -933,6 +1143,8 @@ fn page_break_hit(
         end_page_index: end_page,
         char_end: last.char_in_page.checked_add(1)?,
         spans_pages: true,
+        version_no: scope.version_no,
+        is_current_version: scope.is_current,
         match_kind,
         text_origin: meta.text_origin.clone(),
         source_text,
@@ -1033,6 +1245,41 @@ mod tests {
         db.finish_parse_run(&run.id, "succeeded", &[])
             .expect("finish");
         (document.id, version.id)
+    }
+
+    /// Var olan belgeye yeni sürüm + başarılı ayrıştırma ekler (sürüm numarası
+    /// veritabanında artar; `documents.current_version_id` yeni sürüme döner).
+    fn add_version_with_pages(
+        db: &Database,
+        case_id: &str,
+        document_id: &str,
+        pages: &[&str],
+    ) -> String {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let version = db
+            .add_version(
+                document_id,
+                case_id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("run");
+        let stored: Vec<NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, text)| page(i64::try_from(index).unwrap_or(i64::MAX), text))
+            .collect();
+        db.store_pages(&run.id, case_id, &stored).expect("pages");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+        version.id
     }
 
     fn add_empty_document(db: &Database, case_id: &str, name: &str) -> String {
@@ -1571,5 +1818,147 @@ mod tests {
             )
             .expect_err("unknown case");
         assert_eq!(error.code(), "E_NOT_FOUND");
+    }
+
+    #[test]
+    fn quote_missing_from_the_current_version_is_found_in_history() {
+        let db = db();
+        let case_id = new_case(&db, "Bilirkişi");
+        let (document_id, first_version) = add_document(
+            &db,
+            &case_id,
+            "Bilirkişi raporu",
+            &["Raporun eski sürümünde kalan cümle burada."],
+        );
+        let current_version = add_version_with_pages(
+            &db,
+            &case_id,
+            &document_id,
+            &["Güncel metin, cümle çıkarıldı."],
+        );
+
+        let report = check(&db, &case_id, "Raporda “kalan cümle burada” yazıyor.", None);
+
+        assert_eq!(report.exact, 1, "alıntı eski sürümde birebir bulunmalı");
+        assert_eq!(report.not_found, 0);
+        assert_eq!(report.found_in_old_version, 1);
+        assert_eq!(report.historical_versions_scanned, 1);
+        assert_eq!(report.versions_scanned, 2);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.document_version_id, first_version);
+        assert_ne!(position.document_version_id, current_version);
+        assert_eq!(position.version_no, 1);
+        assert!(!position.is_current_version);
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("yalnız **eski** bir sürümde bulundu")));
+    }
+
+    #[test]
+    fn current_version_wins_over_history_and_history_is_not_scanned() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        let (document_id, _) =
+            add_document(&db, &case_id, "Sözleşme", &["Karar gerekçesi şöyledir."]);
+        add_version_with_pages(&db, &case_id, &document_id, &["Karar gerekçesi şöyledir."]);
+
+        let report = check(
+            &db,
+            &case_id,
+            "Metinde “Karar gerekçesi şöyledir” deniyor.",
+            None,
+        );
+
+        assert_eq!(report.exact, 1);
+        assert_eq!(
+            report.quotes[0].occurrences, 1,
+            "güncel sürüm kazandı, yinelenmez"
+        );
+        assert_eq!(report.found_in_old_version, 0);
+        assert_eq!(
+            report.historical_versions_scanned, 0,
+            "güncel sürümde bulunan alıntı için eski sürümler taranmaz"
+        );
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert!(position.is_current_version);
+        assert_eq!(position.version_no, 2);
+    }
+
+    #[test]
+    fn exact_history_beats_normalized_current_version() {
+        let db = db();
+        let case_id = new_case(&db, "Karar");
+        let (document_id, first_version) =
+            add_document(&db, &case_id, "Karar metni", &["Karar gerekçesi şöyledir."]);
+        // Güncel sürümde yalnız **boşluk farkıyla** geçiyor: `whitespace` katmanı.
+        add_version_with_pages(
+            &db,
+            &case_id,
+            &document_id,
+            &["Karar  gerekçesi    şöyledir."],
+        );
+
+        let report = check(&db, &case_id, "“Karar gerekçesi şöyledir”", None);
+
+        assert_eq!(report.exact, 1, "eski sürümdeki birebir eşleşme üstündür");
+        assert_eq!(report.normalized, 0);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "exact");
+        assert_eq!(position.version_no, 1);
+        assert_eq!(position.document_version_id, first_version);
+        assert!(!position.is_current_version);
+    }
+
+    #[test]
+    fn document_scope_does_not_scan_another_documents_history() {
+        let db = db();
+        let case_id = new_case(&db, "Dosya");
+        let (first_document, _) =
+            add_document(&db, &case_id, "Dilekçe", &["Dilekçe güncel metni."]);
+        let (second_document, _) = add_document(
+            &db,
+            &case_id,
+            "Ek rapor",
+            &["Ek raporda kalan cümle burada."],
+        );
+        add_version_with_pages(&db, &case_id, &second_document, &["Ek rapor güncel metni."]);
+
+        let scoped = check(&db, &case_id, "“kalan cümle burada”", Some(&first_document));
+        assert_eq!(scoped.not_found, 1, "başka belgenin eski sürümü taranmaz");
+        assert_eq!(scoped.found_in_old_version, 0);
+
+        let whole_case = check(&db, &case_id, "“kalan cümle burada”", None);
+        assert_eq!(whole_case.exact, 1);
+        assert_eq!(whole_case.found_in_old_version, 1);
+    }
+
+    #[test]
+    fn old_versions_beyond_the_limit_are_reported_not_silently_skipped() {
+        let db = db();
+        let case_id = new_case(&db, "Dosya");
+        let (document_id, _) = add_document(
+            &db,
+            &case_id,
+            "Sözleşme",
+            &["En eski sürümde kalan cümle burada."],
+        );
+        // v2..v6 eski sürümler (sınır 5), v7 güncel; alıntı yalnız v1'de.
+        for index in 2..=MAX_HISTORICAL_VERSIONS_PER_DOCUMENT + 2 {
+            let body = format!("Sürüm {index} gövde metni.");
+            add_version_with_pages(&db, &case_id, &document_id, &[body.as_str()]);
+        }
+
+        let report = check(&db, &case_id, "“kalan cümle burada”", None);
+
+        assert_eq!(report.not_found, 1, "v1 sınırın ötesinde: taranmadı");
+        assert_eq!(
+            report.historical_versions_scanned,
+            MAX_HISTORICAL_VERSIONS_PER_DOCUMENT
+        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("en çok 5 eski sürüm tarandı")));
     }
 }

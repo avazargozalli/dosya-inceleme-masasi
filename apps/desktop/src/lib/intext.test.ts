@@ -5,6 +5,7 @@ import {
   bindingInput,
   canBind,
   candidateLabel,
+  oldVersionNote,
   pageSpanLabel,
   positionLabel,
   quoteCheckSummary,
@@ -12,6 +13,7 @@ import {
   quoteStateTone,
   scopeLabel,
   skippedLabel,
+  versionsLabel,
 } from "./intext";
 
 function position(overrides: Partial<InTextQuotePosition> = {}): InTextQuotePosition {
@@ -25,6 +27,8 @@ function position(overrides: Partial<InTextQuotePosition> = {}): InTextQuotePosi
     pageIndex: 0,
     endPageIndex: 0,
     spansPages: false,
+    versionNo: 1,
+    isCurrentVersion: true,
     charStart: 19,
     charEnd: 56,
     matchKind: "exact",
@@ -69,6 +73,9 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     documentsWithText: 2,
     documentsWithoutText: 0,
     pagesScanned: 4,
+    versionsScanned: 2,
+    historicalVersionsScanned: 0,
+    foundInOldVersion: 0,
     notes: [],
     checkedAt: "2026-10-25T10:00:00Z",
     ...overrides,
@@ -176,5 +183,36 @@ describe("metin içi alıntı yardımcıları", () => {
     expect(
       scopeLabel(check({ scope: "document", scopeDocumentName: "Rapor", documentsWithText: 1 })),
     ).toBe("Kapsam: yalnız “Rapor” belgesinin güncel sürümü");
+  });
+
+  it("eski sürümde bulunan alıntıyı etiketler ve bağlama uyarısını yazar", () => {
+    const historical = finding({
+      position: position({ versionNo: 1, isCurrentVersion: false }),
+    });
+    expect(positionLabel(historical)).toBe(
+      "Dilekçe · s. 1 · birebir · metin katmanı · eski sürüm (v1)",
+    );
+    // Anchor sürümü kaydettiği için bağlanabilir; kullanıcı yine de uyarılır.
+    expect(canBind(historical)).toBe(true);
+    expect(oldVersionNote(historical)).toBe(
+      "Kaynak v1 sürümüne bağlanır; alıntı güncel sürümde geçmiyor.",
+    );
+    expect(oldVersionNote(finding())).toBe("");
+    expect(oldVersionNote(finding({ state: "not_found", position: null }))).toBe("");
+    expect(
+      oldVersionNote(
+        finding({ position: position({ versionNo: 3, isCurrentVersion: false, matchKind: "whitespace" }) }),
+      ),
+    ).toBe("Alıntı güncel sürümde geçmiyor; yalnız v3 sürümünde bulundu.");
+  });
+
+  it("sürüm sayacı eski sürüm taramasını yazar", () => {
+    expect(versionsLabel(check({ versionsScanned: 3, historicalVersionsScanned: 2 }))).toBe(
+      "3 sürüm tarandı · 2 eski sürüm",
+    );
+    expect(versionsLabel(check({ versionsScanned: 1, historicalVersionsScanned: 0 }))).toBe(
+      "1 sürüm tarandı",
+    );
+    expect(versionsLabel(check({ versionsScanned: 0, historicalVersionsScanned: 0 }))).toBe("");
   });
 });

@@ -947,6 +947,10 @@ export type InTextQuotePosition = {
   endPageIndex: number;
   /** Eşleşme birden çok sayfaya yayılıyor (kaynakta sayfa/satır sonu). */
   spansPages: boolean;
+  /** Kaynağın sürüm numarası. */
+  versionNo: number;
+  /** Konum güncel sürümde mi? `false` ise alıntı yalnız eski sürümde bulundu. */
+  isCurrentVersion: boolean;
   charStart: number;
   charEnd: number;
   matchKind: "exact" | "whitespace" | "turkish_fold";
@@ -985,6 +989,11 @@ export type InTextQuoteCheck = {
   documentsWithText: number;
   documentsWithoutText: number;
   pagesScanned: number;
+  /** Taranan sürüm sayısı (güncel + eski) ve bunlardan eski olanlar. */
+  versionsScanned: number;
+  historicalVersionsScanned: number;
+  /** Yalnız eski sürümde bulunan alıntı sayısı. */
+  foundInOldVersion: number;
   notes: string[];
   checkedAt: string;
 };

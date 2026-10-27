@@ -97,7 +97,29 @@ export function positionLabel(finding: InTextQuoteFinding): string {
   const kind = MATCH_KIND_LABEL[position.matchKind] ?? position.matchKind;
   const pages = pageSpanLabel(position.pageIndex, position.endPageIndex);
   const span = position.spansPages ? " · sayfa sınırını aşıyor" : "";
-  return `${position.documentName} · ${pages} · ${kind} · ${origin}${span}`;
+  const old = position.isCurrentVersion === false
+    ? ` · eski sürüm (v${position.versionNo})`
+    : "";
+  return `${position.documentName} · ${pages} · ${kind} · ${origin}${span}${old}`;
+}
+
+/** Eski sürümde bulunan alıntı için bağlama uyarısı; güncel sürümde boştur. */
+export function oldVersionNote(finding: InTextQuoteFinding): string {
+  const position = finding.position;
+  if (!position || position.isCurrentVersion !== false) return "";
+  if (!canBind(finding)) {
+    return `Alıntı güncel sürümde geçmiyor; yalnız v${position.versionNo} sürümünde bulundu.`;
+  }
+  return `Kaynak v${position.versionNo} sürümüne bağlanır; alıntı güncel sürümde geçmiyor.`;
+}
+
+/** Taranan sürüm sayısı satırı; hiç sürüm yoksa boştur. */
+export function versionsLabel(check: InTextQuoteCheck): string {
+  if (!check.versionsScanned) return "";
+  const historical = check.historicalVersionsScanned
+    ? ` · ${check.historicalVersionsScanned} eski sürüm`
+    : "";
+  return `${check.versionsScanned} sürüm tarandı${historical}`;
 }
 
 export function candidateLabel(candidate: {
@@ -107,11 +129,16 @@ export function candidateLabel(candidate: {
   spansPages?: boolean;
   charStart: number;
   matchKind: string;
+  versionNo?: number;
+  isCurrentVersion?: boolean;
 }): string {
   const kind = MATCH_KIND_LABEL[candidate.matchKind] ?? candidate.matchKind;
   const pages = pageSpanLabel(candidate.pageIndex, candidate.endPageIndex ?? candidate.pageIndex);
   const span = candidate.spansPages ? " · sayfa sınırını aşıyor" : "";
-  return `${candidate.documentName} · ${pages} · karakter ${candidate.charStart} · ${kind}${span}`;
+  const old = candidate.isCurrentVersion === false
+    ? ` · eski sürüm (v${candidate.versionNo ?? "?"})`
+    : "";
+  return `${candidate.documentName} · ${pages} · karakter ${candidate.charStart} · ${kind}${span}${old}`;
 }
 
 export function skippedLabel(check: InTextQuoteCheck): string {

@@ -17,7 +17,7 @@
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
-| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz |
+| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -292,7 +292,9 @@ tek tek işaretlemez, metindeki tırnaklı pasajlar çıkarılır.
     karakter; kapanmayan/kısa/uzun tırnaklar **sayılır**, alıntı üretilmez.
   - **Kapsam:** `document_id` yoksa dosyadaki bütün belgeler, varsa yalnız o
     belge. Her belgenin **güncel sürümünün en yeni** `succeeded`/`partial`
-    ayrıştırması taranır; ayrıştırması olmayan belge sayılır ve yazılır.
+    ayrıştırması taranır; ayrıştırması olmayan belge sayılır ve yazılır. Güncel
+    sürümde bulunamayan alıntı için belgenin **eski sürümleri** de taranır
+    (2026-10-27 genişletmesi, aşağıda).
   - **Üç eşleşme katmanı ayrı:** `exact` (birebir) → `whitespace` (yalnız
     boşluk/satır farkı) → `turkish_fold` (harf sadeleştirmesi). Üst katman
     bulunduysa alt katman aranmaz; hangi katmanın tuttuğu konumda yazar.
@@ -330,8 +332,11 @@ tek tek işaretlemez, metindeki tırnaklı pasajlar çıkarılır.
   yalnız alıntı başka yerde bulunamazsa aranır.
 - Normalize eşleşme anchor'a **bağlanmaz**: kaynak metin farklı olduğu için
   birebir alıntı yerine geçmez; kullanıcı kaynak metni görüp karar verir.
-- Yalnız **güncel sürüm** taranır; eski sürümde kalmış alıntı “bulunamadı”
-  görünür. Belge seçimi güncel sürüme çözülür (sürüm seçici yok).
+- Eski sürüm taraması **belge başına 5 sürümle** sınırlıdır (yeniden yeniye);
+  daha eskiler taranmaz ve durum notlarda yazılır. Eski sürümde bulunan alıntı
+  `isCurrentVersion=false` + sürüm numarasıyla işaretlenir: güncel metinde
+  geçmiyor demektir, “uydurma” hükmü değildir. Belge seçimi hâlâ güncel sürüme
+  çözülür; sürüm seçici yoktur (eski sürümler yalnız arama kapsamına girer).
 - Aynı metin birden çok yerde geçiyorsa tek kaynağa bağlanmaz; seçim
   kullanıcıya bırakılır (aday listesi gösterilir).
 - Tauri penceresi bu ortamda açılmadı: kart typecheck + birim testleri +
@@ -379,3 +384,55 @@ bulunuyor ve hangi sayfalar arasında olduğu yazılıyor.
   üzerinden üç+ sayfaya yayılan çok uzun alıntı kaçabilir. Tauri penceresi
   açılmadı → yeni satırın görsel QA'si yok. macOS aarch64 + rustc 1.99.1 ile
   ölçüldü.
+
+## F12-T14 genişletmesi — eski sürümlerde arama (2026-10-27)
+
+Sayfa sınırı turunun **açık kaydı** “yalnız güncel sürüm taranır; eski sürümde
+kalmış alıntı `not_found` görünür” kapandı. Hukukta bir belgenin önceki nüshası
+(uzman raporunun ilk hâli, düzeltilmiş sözleşme) sıkça alıntılanır; belge
+güncellendiğinde alıntının sessizce “bulunamadı” olması denetimin en olası
+**yanlış negatifiydi**.
+
+- **Çekirdek (`crates/storage/src/intext_quotes.rs`):** yeni
+  `resolve_historical_scopes` — her belgenin güncel sürüm **dışındaki**
+  sürümleri yeniden eskiye alınır, belge başına `MAX_HISTORICAL_VERSIONS_PER_DOCUMENT`
+  (**5**) ile sınırlanır; sınırın ötesinde sürüm varsa belge sayılır ve not
+  düşülür (sessiz kesme yok). Kapsam `document_id` verildiğinde yalnız o belgeye
+  daralır.
+- **Katman sırası korunur ve genişler:** her katmanda (birebir → boşluk → harf)
+  önce güncel sürümün tek sayfası, sonra sayfa sınırı, **sonra eski sürümler**
+  taranır. Böylece eski sürümdeki **birebir** eşleşme, güncel sürümdeki
+  **normalize** eşleşmeden üstün kalır; güncel sürümde bulunan alıntı hiçbir
+  zaman eski sürüm taramasına düşmez (`historical_versions_scanned = 0`).
+- **Veri modeli:** `InTextQuotePosition` + `versionNo`, `isCurrentVersion`.
+  `InTextQuoteCheck` + `versionsScanned`, `historicalVersionsScanned`,
+  `foundInOldVersion`. Eski sürüm kapsamları **yalnız** güncel sürümde
+  bulunamayan alıntı olduğunda çözülür → sık durumda ek maliyet yok.
+- **Bağlama:** `source_anchors` zaten `document_version_id` + `parse_run_id`
+  taşıdığı için eski sürümdeki birebir tek konum **bağlanabilir**; arayüz bunu
+  “eski sürüm” rozeti + “Kaynak v1 sürümüne bağlanır; alıntı güncel sürümde
+  geçmiyor.” satırıyla yazar. Anchor uydurma değil: hangi sürümde doğrulandığı
+  kayıtta durur.
+- **Arayüz (`lib/intext.ts`, `Review.tsx`):** `positionLabel` eski sürümde
+  “· eski sürüm (v1)” ekler; `oldVersionNote` bağlama uyarısını üretir;
+  `versionsLabel` “3 sürüm tarandı · 1 eski sürüm” satırını başlıkta gösterir;
+  kartta “eski sürüm” rozeti.
+- **Sayfa sınırı:** eski sürüm sayfaları da `pages_scanned` sayımına girer;
+  toplam 20.000 sayfa sınırını aşacaksa eski sürüm taraması **hiç yapılmaz** ve
+  nedeni notlarda yazılır (yarım tarama yok).
+- **Test (gerçek çekirdek, bellek içi kasa):** `intext_quotes` **26** test
+  (önceki 21 + 5 yeni: güncelde yok/eski sürümde var; güncel sürüm kazanır ve
+  eski sürüm taranmaz; eski sürümdeki `exact` günceldeki `whitespace`i yener;
+  belge kapsamı başka belgenin geçmişini taramaz; 5 sürüm sınırı aşılınca not
+  düşer). `cargo test -p dim-storage --lib` **347/347**; clippy
+  `-p dim-storage --all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+  Arayüz: `tsc --noEmit` temiz, `vitest run` **375/375** (intext 10).
+- **Dürüst sınırlar:** ölçüm **bellek içi kasa + elle yazılmış sayfa metinleri**;
+  gerçek PDF/worker ile uçtan uca denenmedi. Eski sürüm taraması belge başına
+  5 sürümle sınırlı; daha eskisi taranmaz. Katman kuralı gereği **eski sürümdeki
+  birebir** eşleşme, güncel sürümdeki normalize eşleşmeden üstündür (hangisinin
+  raporlandığı `isCurrentVersion` + `versionNo` ile yazılır). Aynı alıntı hem
+  güncelde hem eski sürümde geçiyorsa `occurrences` yalnız güncel sürümü sayar
+  (yinelenmez). Pencere ~1.064 karakter
+  sınırı ve tire ile bölünmüş kelime sınırı aynen sürüyor. Tauri penceresi
+  açılmadı → “eski sürüm” rozetinin görsel QA'si yok.

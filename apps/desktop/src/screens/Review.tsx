@@ -19,12 +19,14 @@ import {
   bindingInput,
   canBind,
   candidateLabel,
+  oldVersionNote,
   positionLabel,
   quoteCheckSummary,
   QUOTE_STATE_LABEL,
   quoteStateTone,
   scopeLabel,
   skippedLabel,
+  versionsLabel,
 } from "../lib/intext";
 import { formatTimestamp } from "../lib/format";
 import {
@@ -1003,6 +1005,7 @@ export function Review() {
               <strong className="small">{quoteCheckSummary(quoteCheck)}</strong>
               <span className="muted small">
                 {scopeLabel(quoteCheck)} · {quoteCheck.pagesScanned} sayfa
+                {versionsLabel(quoteCheck) ? ` · ${versionsLabel(quoteCheck)}` : ""}
               </span>
             </div>
             {skippedLabel(quoteCheck) ? (
@@ -1044,6 +1047,14 @@ export function Review() {
                         Sayfa sınırını aşıyor: {finding.position.pageIndex + 1}. sayfa →{" "}
                         {finding.position.endPageIndex + 1}. sayfa. Tek sayfalık anchor'a
                         bağlanmaz; kaynak metin yukarıda.
+                      </p>
+                    ) : null}
+                    {finding.position?.isCurrentVersion === false ? (
+                      <p className="hint" style={{ margin: 0 }}>
+                        <span className="badge warn" style={{ marginRight: 6 }}>
+                          eski sürüm
+                        </span>
+                        {oldVersionNote(finding)}
                       </p>
                     ) : null}
                     {finding.candidates.length > 0 ? (
