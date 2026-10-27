@@ -18,6 +18,10 @@ pub struct VaultState {
 /// Süren belge ayrıştırması: hangi iş/sürüm ve **süreci durdurma** tutamağı
 /// (şartname §17.5, F04-T07). Ayrıştırma kasa kilidini tutarken iptal komutu
 /// bu yuvaya bakıp süreci öldürür; kasa kilidi beklenmez.
+///
+/// **§17.3:** aynı anda en fazla iki ayrıştırma koşabildiği için yuva **liste**
+/// tutar; iptal, iş kimliğine (yoksa sürüm kimliğine) göre eşleşen süreci
+/// durdurur.
 pub struct RunningParse {
     pub version_id: String,
     pub job_id: Option<String>,
@@ -44,8 +48,10 @@ pub struct AppState {
     /// Süren CLI sınama işareti (F10). `None` iken sınama yok; aynı anda tek
     /// sınama çalışır ve iptal düğmesi bu bayrağı işaretler.
     pub cli_probe: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
-    /// Süren ayrıştırma yuvası (F04-T07). `None` iken ayrıştırma yok.
-    pub parse: Arc<Mutex<Option<RunningParse>>>,
+    /// Süren ayrıştırmalar (§17.3: en fazla iki). Boşken ayrıştırma yok.
+    pub parse: Arc<Mutex<Vec<RunningParse>>>,
+    /// Belge worker eşzamanlılık kapısı (§17.3). Kapasite 2; büyük belge tek.
+    pub parse_pool: Arc<crate::parse_pool::ParsePool>,
 }
 
 impl AppState {
@@ -83,12 +89,12 @@ impl AppState {
 
     /// Süren ayrıştırma yuvası. Zehirli kilitte yuva temizlenir: panikle
     /// yarıda kalan ayrıştırma yeni ayrıştırmayı kilitlemez.
-    pub fn parse_lock(&self) -> MutexGuard<'_, Option<RunningParse>> {
+    pub fn parse_lock(&self) -> MutexGuard<'_, Vec<RunningParse>> {
         match self.parse.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
-                *guard = None;
+                guard.clear();
                 guard
             }
         }
@@ -102,8 +108,36 @@ impl AppState {
 
     /// `spawn_blocking` için ayrıştırma yuvası tutamacı.
     #[must_use]
-    pub fn parse_handle(&self) -> Arc<Mutex<Option<RunningParse>>> {
+    pub fn parse_handle(&self) -> Arc<Mutex<Vec<RunningParse>>> {
         Arc::clone(&self.parse)
+    }
+
+    /// `spawn_blocking` için eşzamanlılık kapısı tutamacı.
+    #[must_use]
+    pub fn parse_pool_handle(&self) -> Arc<crate::parse_pool::ParsePool> {
+        Arc::clone(&self.parse_pool)
+    }
+
+    /// İş kimliğine uyan süreci durdurur. Dönen değer: süreç gerçekten
+    /// durduruldu mu (yuva kilidi kısa tutulur, kasa kilidi **alınmaz** — §17.5).
+    pub fn cancel_parse_job(&self, job_id: &str) -> bool {
+        let killer = {
+            let slot = self.parse_lock();
+            slot.iter()
+                .find(|run| run.job_id.as_deref() == Some(job_id))
+                .map(|run| run.killer.clone())
+        };
+        killer.map(|killer| killer.cancel()).unwrap_or(false)
+    }
+
+    /// Kasa kilitlenirken/çıkışta süren bütün ayrıştırmaları durdurur.
+    /// Dönen değer: durdurulan süreç sayısı.
+    pub fn cancel_all_parses(&self) -> usize {
+        let killers: Vec<_> = {
+            let slot = self.parse_lock();
+            slot.iter().map(|run| run.killer.clone()).collect()
+        };
+        killers.into_iter().filter(|killer| killer.cancel()).count()
     }
 }
 
@@ -124,31 +158,40 @@ pub fn lock_vault(handle: &Mutex<VaultState>) -> MutexGuard<'_, VaultState> {
 /// Ayrıştırma yuvasını temizleyen nöbetçi: hata veya panik yolunda da yuva
 /// `None` kalır (yarım ayrıştırma yeni ayrıştırmayı engellemez).
 pub struct ParseSlotGuard {
-    slot: Arc<Mutex<Option<RunningParse>>>,
+    slot: Arc<Mutex<Vec<RunningParse>>>,
+    version_id: String,
+    job_id: Option<String>,
 }
 
 impl ParseSlotGuard {
+    /// Süren ayrıştırmayı yuvaya yazar (§17.3: birden çok kayıt olabilir).
     #[must_use]
-    pub fn register(slot: Arc<Mutex<Option<RunningParse>>>, entry: RunningParse) -> Self {
+    pub fn register(slot: Arc<Mutex<Vec<RunningParse>>>, entry: RunningParse) -> Self {
+        let version_id = entry.version_id.clone();
+        let job_id = entry.job_id.clone();
         match slot.lock() {
-            Ok(mut guard) => *guard = Some(entry),
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                *guard = Some(entry);
-            }
+            Ok(mut guard) => guard.push(entry),
+            Err(poisoned) => poisoned.into_inner().push(entry),
         }
-        Self { slot }
+        Self {
+            slot,
+            version_id,
+            job_id,
+        }
     }
 }
 
 impl Drop for ParseSlotGuard {
     fn drop(&mut self) {
+        let version_id = &self.version_id;
+        let job_id = &self.job_id;
         match self.slot.lock() {
-            Ok(mut guard) => *guard = None,
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                *guard = None;
+            Ok(mut guard) => {
+                guard.retain(|run| !(run.version_id == *version_id && run.job_id == *job_id))
             }
+            Err(poisoned) => poisoned
+                .into_inner()
+                .retain(|run| !(run.version_id == *version_id && run.job_id == *job_id)),
         }
     }
 }

@@ -1532,6 +1532,26 @@ export type ParseProgressEvent = {
   total: number | null;
 };
 
+/** Toplu ayrıştırma sonucu (§17.3). `peakParallel` gözlenen eşzamanlılıktır (≤ 2). */
+export type BatchParseItem = {
+  versionId: string;
+  documentId: string;
+  displayName: string;
+  ok: boolean;
+  pages: number;
+  code: string | null;
+  message: string | null;
+};
+
+export type BatchParseResult = {
+  requested: number;
+  succeeded: number;
+  failed: number;
+  pages: number;
+  peakParallel: number;
+  results: BatchParseItem[];
+};
+
 export type ImportOutcome =
   | { kind: "imported"; document: DocumentRow; version: DocumentVersionRow }
   | { kind: "duplicate"; documentId: string; versionId: string; displayName: string };
@@ -1602,6 +1622,13 @@ export const api = {
     password?: string,
   ) =>
     invoke<ParseResult>("document_parse", { versionId, ocr, ocrLang, textEncoding, password }),
+  /**
+   * §17.3 toplu ayrıştırma: **bekleyen** belgeler (güncel sürümü var, başarılı
+   * ayrıştırması yok) en fazla iki worker'la ayrıştırılır. Sonuç belge başına
+   * gerçektir; `failed` sayısı uydurulmuş "tamam" değildir.
+   */
+  documentsParsePending: (caseId: string, limit = 4) =>
+    invoke<BatchParseResult>("documents_parse_pending", { caseId, limit }),
   searchSegments: (caseId: string, query: string, limit = 50) =>
     invoke<SearchHit[]>("search_segments", { caseId, query, limit }),
   /** Filtreli + keyset sayfalı arama (F07-T03/T05); kip F07-T02. */

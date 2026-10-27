@@ -24,6 +24,14 @@ describe("parseStageLabel", () => {
     expect(parseStageLabel("store")).toBe("Kasaya yazılıyor");
   });
 
+  /** §17.3: havuz doluyken iş sessizce beklemez — "sırada" olduğu yazılır. */
+  it("eşzamanlılık kapısında bekleyen işi 'Sırada' olarak yazar", () => {
+    expect(parseStageLabel("queued")).toBe("Sırada (en fazla 2 ayrıştırma)");
+    expect(parseProgressLine(progress({ stage: "queued", done: 0, total: null }))).toBe(
+      "Sırada (en fazla 2 ayrıştırma)",
+    );
+  });
+
   it("bilinmeyen aşamayı olduğu gibi bırakır (uydurma etiket yok)", () => {
     expect(parseStageLabel("extract")).toBe("extract");
   });

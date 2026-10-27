@@ -54,7 +54,7 @@ pub use claims::{
 pub use connectors::{
     connector_catalog, connector_catalog_hash, ConnectorInfo, STATUS_DOCUMENTED_NOT_ENABLED,
 };
-pub use documents::{Document, DocumentVersion, MAX_DOCUMENT_BYTES};
+pub use documents::{Document, DocumentVersion, PendingParse, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use export_coverage::{ExportCoverage, COVERAGE_COUNTING_NOTE, COVERAGE_STATEMENT};
 pub use exports::ExportRow;

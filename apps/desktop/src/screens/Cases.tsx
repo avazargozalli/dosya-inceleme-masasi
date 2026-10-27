@@ -8,6 +8,7 @@ import {
   type ApiError,
   type AnchorRow,
   type CaseRow,
+  type BatchParseResult,
   type DocumentRow,
   type NewCaseInput,
   type ParseProgressEvent,
@@ -50,6 +51,10 @@ export function Cases() {
   // taşır; satır, geçerli ayrıştırmanın sürümüne aitse gösterilir.
   const [parseProgress, setParseProgress] = useState<ParseProgressEvent | null>(null);
   const activeParseVersion = useRef<string | null>(null);
+  // §17.3 toplu ayrıştırma: bekleyen belgeler en fazla iki worker'la. Sonuç
+  // belge başına gerçektir; kaç belgenin gerçekten ayrıştığı yazılır.
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchParseResult | null>(null);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -225,6 +230,23 @@ export function Cases() {
       activeParseVersion.current = null;
       setParseProgress(null);
       setBusy(false);
+    }
+  }
+
+  /** §17.3: bekleyen belgeleri en fazla iki worker'la ayrıştırır. */
+  async function parsePending() {
+    if (!selected) return;
+    setBatchBusy(true);
+    setError(null);
+    setBatchResult(null);
+    try {
+      const result = await api.documentsParsePending(selected.id, 4);
+      setBatchResult(result);
+      await loadDocs(selected.id);
+    } catch (e) {
+      setError(toApiError(e));
+    } finally {
+      setBatchBusy(false);
     }
   }
 
@@ -573,9 +595,19 @@ export function Cases() {
                 <h2>Belgeler</h2>
                 <p className="card-sub">{docs.length} belge · özgün baytlar şifreli saklanır</p>
               </div>
-              <button className="btn" disabled={busy} onClick={() => void addDocument()}>
-                Belge ekle
-              </button>
+              <div style={{ display: "flex", gap: "var(--space-2)" }}>
+                <button
+                  className="btn"
+                  disabled={busy || batchBusy || docs.length === 0}
+                  title="Güncel sürümü ayrıştırılmamış belgeleri en fazla iki worker'la ayrıştırır"
+                  onClick={() => void parsePending()}
+                >
+                  {batchBusy ? "Ayrıştırılıyor…" : "Bekleyenleri ayrıştır"}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => void addDocument()}>
+                  Belge ekle
+                </button>
+              </div>
             </div>
             {docs.length === 0 ? (
               <div className="empty" style={{ padding: "var(--space-4)" }}>
@@ -669,6 +701,43 @@ export function Cases() {
               </div>
             )}
             <div className="field" style={{ maxWidth: 320, marginTop: 8 }}>
+            {batchResult && (
+              <div
+                className="card tight"
+                style={{ marginTop: "var(--space-3)", background: "var(--surface)" }}
+              >
+                <div className="card-head" style={{ paddingBottom: 4 }}>
+                  <div>
+                    <strong>
+                      {batchResult.succeeded} / {batchResult.requested} belge ayrıştırıldı
+                    </strong>
+                    <p className="card-sub" style={{ marginBottom: 0 }}>
+                      {batchResult.pages} sayfa · eşzamanlılık tepe {batchResult.peakParallel} (en fazla 2)
+                      {batchResult.failed > 0 ? ` · ${batchResult.failed} başarısız` : ""}
+                    </p>
+                  </div>
+                </div>
+                {batchResult.requested === 0 ? (
+                  <p className="muted small" style={{ margin: 0 }}>
+                    Bekleyen belge yok: her belgenin güncel sürümü için başarılı bir ayrıştırma var.
+                  </p>
+                ) : (
+                  <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>
+                    {batchResult.results.map((item) => (
+                      <li key={item.versionId}>
+                        <span className={`badge ${item.ok ? "" : "plain"}`}>
+                          {item.ok ? `${item.pages} sayfa` : (item.code ?? "E_PARSE")}
+                        </span>{" "}
+                        {item.displayName}
+                        {!item.ok && item.message ? (
+                          <span className="muted"> — {item.message}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
               <label htmlFor="txt-encoding">TXT kodlaması (düz metin belgeler)</label>
               <select
                 id="txt-encoding"

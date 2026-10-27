@@ -599,3 +599,35 @@ bilinçli kabul (yanlış deneme sayacı kalıntısı göstermemek için).
 "yazım sayısı" alanları **ölçüm değil**, kapı kuralının aynı kare dizisinde
 sayımıdır. Gerçek belgede kare aralıkları worker hızına bağlıdır; ağ biriminde
 `fsync` davranışı denenmedi. 100k profilde yeniden koşulmadı.
+
+### Belge worker paralelliği (2026-10-27, §17.3)
+
+Şartname §17.3 "aynı anda en fazla iki belge worker işi; büyük dosyada bir iş"
+diyor. Bu ölçüm **gerçek kasa + gerçek Python worker** ile yapıldı (debug
+derleme, Apple M2); koşucu Tauri testi
+`commands::tests::two_parses_run_concurrently_on_a_real_vault`
+(`#[ignore]`, `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+--lib two_parses -- --ignored --nocapture`).
+
+İki belge: `progress-pages.pdf` (4 sayfa) ve `redaction-hidden.pdf` (1 sayfa).
+Isınma koşusundan sonra:
+
+| Koşu | 1. ölçüm | 2. ölçüm | Not |
+|---|---|---|---|
+| Seri (2 belge sırayla) | 1,235 s | 1,233 s | belge başına ≈ 0,62 s |
+| Paralel (2 worker, havuz tavanı 2) | **0,721 s** | **0,699 s** | **1,71× / 1,76×** |
+| İki ayrıştırmanın çakışması | 0,720 s | 0,698 s | aralıklar neredeyse tamamen kesişiyor |
+
+**Okuma:** kazanç gerçek ama 2× değil. Baskın maliyet **süreç başlatma +
+PyMuPDF importu** (≈ 0,4 s); 4 sayfalık belgede çıkarım ≈ 20 ms. Yani paralellik
+bu profilde süreç sayısıyla sınırlı; büyük belgede (çıkarımın baskın olduğu
+yerde) kazanç **türetilmemeli, ölçülmelidir** — ölçülmedi.
+
+**Ölçüm tuzağı (kayıtlı):** ısınma olmadan, paralel koşu önce yapıldığında
+1,816 s / seri 1,389 s çıktı — "paralel daha yavaş" yanıltıcısı. Sebep soğuk
+sayfa önbelleğiydi (ilk iki süreç PyMuPDF'i diskten okur). A/B sırası ısınma
+koşusu olmadan bu ölçümde yanıltıcıdır.
+
+**Sınırlar:** debug derleme; küçük belgeler; tek makine; iş parçacığı/veritabanı
+yazımı ölçümün parçası değil (yazımlar kasa kilidi altında seri — kural, ölçüm
+değil). Windows/Linux ve release derleme ölçülmedi.

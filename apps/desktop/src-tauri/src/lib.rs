@@ -1,5 +1,6 @@
 mod commands;
 mod error;
+mod parse_pool;
 mod state;
 
 use state::AppState;
@@ -32,6 +33,8 @@ pub fn run() {
             commands::document_list,
             commands::document_version_list,
             commands::document_parse,
+            commands::documents_pending_parse,
+            commands::documents_parse_pending,
             commands::job_queue_status,
             commands::job_queue_recover,
             commands::job_cancel,

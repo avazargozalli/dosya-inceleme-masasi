@@ -37,6 +37,20 @@ pub struct DocumentVersion {
     pub imported_at: String,
 }
 
+/// Ayrıştırma bekleyen belge: güncel sürümü var, o sürüm için `succeeded` ya da
+/// `partial` bir ayrıştırma koşusu **yok** (§17.3 toplu ayrıştırma girdisi).
+///
+/// Sıralama `created_at` + kimlik: aynı saniyede açılan belgelerde sıra
+/// deterministiktir (zaman damgası çözünürlüğü tek başına yetmez).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingParse {
+    pub document_id: String,
+    pub display_name: String,
+    pub version_id: String,
+    pub byte_size: i64,
+}
+
 impl Database {
     /// Blob üst kaydı. Fiziksel dosya çağıran tarafından yazılmıştır; burada
     /// yalnız referans ve bütünlük durumu tutulur.
@@ -236,6 +250,43 @@ impl Database {
         // Kural tek yerde: kuyruk modülü (varsayılan öncelik 0).
         self.enqueue_job_with_priority(job_type, case_id, input_fingerprint, idempotency_key, 0)
     }
+
+    /// **§17.3 toplu ayrıştırma girdisi:** güncel sürümü olup o sürüm için
+    /// `succeeded`/`partial` ayrıştırma koşusu bulunmayan belgeler.
+    ///
+    /// - Silinmiş belgeler listelenmez.
+    /// - `failed` koşusu olan belge **bekliyordur** (yeniden denenebilir).
+    /// - Sıra deterministik: `created_at`, sonra belge kimliği.
+    /// - `limit` 1..=50 aralığına kırpılır; sessizce sınırsız liste dönmez.
+    pub fn documents_pending_parse(
+        &self,
+        case_id: &str,
+        limit: i64,
+    ) -> Result<Vec<PendingParse>, StorageError> {
+        let limit = limit.clamp(1, 50);
+        let mut stmt = self.conn().prepare(
+            "SELECT d.id, d.display_name, v.id, v.byte_size
+             FROM documents d
+             JOIN document_versions v ON v.id = d.current_version_id
+             WHERE d.case_id = ?1 AND d.deleted_at IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM parse_runs r
+                 WHERE r.document_version_id = v.id
+                   AND r.status IN ('succeeded','partial')
+               )
+             ORDER BY d.created_at, d.id
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![case_id, limit], |row| {
+            Ok(PendingParse {
+                document_id: row.get(0)?,
+                display_name: row.get(1)?,
+                version_id: row.get(2)?,
+                byte_size: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
 }
 
 fn map_document(row: &Row<'_>) -> rusqlite::Result<Document> {
@@ -393,5 +444,95 @@ mod tests {
             .enqueue_job("parse_document", Some(&case_id), "fp", "key-1")
             .expect("iş");
         assert_eq!(a, b);
+    }
+
+    /// **§17.3 toplu ayrıştırma girdisi:** yalnız `succeeded`/`partial` koşusu
+    /// olan sürümler "ayrıştırıldı" sayılır. `running` ve `failed` koşular
+    /// belgeyi **bekleyen** bırakır (failed yeniden denenebilir).
+    #[test]
+    fn pending_parse_lists_only_unparsed_current_versions() {
+        let (db, case_id) = db_with_case();
+        let doc = db
+            .create_document(&case_id, "Bekleyen", "contract", None, "unknown")
+            .expect("belge");
+        let b = blob(&db, "p1");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b,
+                &"b".repeat(64),
+                2048,
+                "application/pdf",
+            )
+            .expect("sürüm");
+
+        let pending = db.documents_pending_parse(&case_id, 10).expect("liste");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].document_id, doc.id);
+        assert_eq!(pending[0].version_id, version.id);
+        assert_eq!(pending[0].byte_size, 2048);
+        assert_eq!(pending[0].display_name, "Bekleyen");
+
+        let run = db
+            .start_parse_run(&version.id, &case_id, "pymupdf", "1.24", "application/pdf")
+            .expect("koşu");
+        assert_eq!(
+            db.documents_pending_parse(&case_id, 10).unwrap().len(),
+            1,
+            "yarım (running) koşu belgeyi ayrıştırılmış saymaz"
+        );
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("bitti");
+        assert!(
+            db.documents_pending_parse(&case_id, 10).unwrap().is_empty(),
+            "başarılı koşudan sonra beklemez"
+        );
+
+        // Eski **başarılı** koşu dururken yeni bir başarısız deneme belgeyi
+        // "bekleyen" yapmaz: belgenin metni var, toplu ayrıştırma onu atlar.
+        let failed = db
+            .start_parse_run(&version.id, &case_id, "pymupdf", "1.24", "application/pdf")
+            .expect("koşu");
+        db.finish_parse_run(&failed.id, "failed", &["bozuk".to_string()])
+            .expect("bitti");
+        assert!(
+            db.documents_pending_parse(&case_id, 10).unwrap().is_empty(),
+            "başarılı koşu geçmişi varsa belge beklemez"
+        );
+
+        // Yalnız **başarısız** koşusu olan belge bekliyordur (yeniden denenebilir).
+        let other = db
+            .create_document(&case_id, "Bozuk", "contract", None, "unknown")
+            .expect("belge");
+        let b2 = blob(&db, "p2");
+        let other_version = db
+            .add_version(
+                &other.id,
+                &case_id,
+                &b2,
+                &"c".repeat(64),
+                512,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        let failed_only = db
+            .start_parse_run(
+                &other_version.id,
+                &case_id,
+                "pymupdf",
+                "1.24",
+                "application/pdf",
+            )
+            .expect("koşu");
+        db.finish_parse_run(&failed_only.id, "failed", &["bozuk".to_string()])
+            .expect("bitti");
+        let pending = db.documents_pending_parse(&case_id, 10).expect("liste");
+        assert_eq!(pending.len(), 1, "yalnız başarısız koşulu belge beklemede");
+        assert_eq!(pending[0].document_id, other.id);
+
+        // Limit kırpılır: sessizce sınırsız liste dönmez.
+        assert_eq!(db.documents_pending_parse(&case_id, 0).unwrap().len(), 1);
+        assert_eq!(db.documents_pending_parse(&case_id, 500).unwrap().len(), 1);
     }
 }

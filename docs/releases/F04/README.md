@@ -201,6 +201,79 @@ yetersizliği otomatik tekrar döngüsüne girmez" — listeden çıkarıldı.
 - Windows'ta iptal testleri koşmaz (`#[cfg(unix)]`, `/bin/sh` vekil süreç);
   Windows'ta süreç öldürme yolu denenmedi.
 
+## §17.3 belge worker paralelliği (2026-10-27)
+
+**Neden:** şartname §17.3 "aynı anda **en fazla iki** belge worker işi; büyük
+dosyada **bir** iş" diyor. Kuyruk yürütücüsü seriydi ve `document_parse` kasa
+kilidini **bütün** ayrıştırma boyunca tutuyordu: iki belge paralel istense bile
+ikincisi kilidi beklerdi. Yani "iki worker" yalnız kâğıt üzerinde vardı.
+
+**Yapılan (dikey dilim):**
+
+- **`parse_pool.rs` (yeni):** eşzamanlılık kapısı. Normal iş **2** eşzamanlı,
+  `LARGE_DOCUMENT_BYTES` (32 MiB) üstü iş **tek başına** koşar. Küçük iş büyük
+  işi beklemez; sonsuz açlığa karşı `LARGE_FAIRNESS_WAIT` (2 sn) sonrası yeni
+  küçük iş alınmaz. `QUEUE_NOTICE_WAIT` (150 ms) aşılırsa arayüze **`queued`**
+  karesi gider (sessiz bekleyiş yok).
+- **Üç aşamalı ayrıştırma (`run_parse`):** (A) kilit altında sürüm + kuyruk
+  sahiplenmesi + blob çözümü; (B) **kilit yokken** worker süreci; (C) kilit
+  altında koşu/sayfa/segment yazımı. Kasa kilidi artık ayrıştırma boyunca
+  tutulmuyor → iki belge **gerçekten** paralel.
+- **Tek yazıcı korunur:** ilerleme yazımları kilit dışında **kısa** kilitlerle,
+  sonuç yazımı zaten kilit altında; iki ayrıştırma aynı anda yazmaz.
+- **Kira sahibi tekil:** `parse-<pid>-<sıra>`; iki iş aynı sahibi taşısaydı
+  kuyruk "kim kiraladı" ayrımını kaybederdi.
+- **§17.5 uyumu:** `vault_lock` artık **önce** süren ayrıştırmaları durdurur
+  (kilit bırakılarak çalışıldığı için gerekli oldu). `job_cancel` iş kimliğiyle
+  eşleşen süreci durdurur; diğer paralel ayrıştırma etkilenmez. Yazma aşamasında
+  iş "bizim + `running`" değilse **çıktı yazılmaz** (§17.2 `canceled`).
+- **Toplu ayrıştırma:** `documents_pending_parse` (güncel sürümü var, başarılı
+  ayrıştırması yok) + `documents_parse_pending` (en fazla 4 belge, havuz 2).
+  Arayüz: **Belgeler → "Bekleyenleri ayrıştır"** düğmesi; sonuç kartı belge
+  başına gerçek sonucu, sayfayı ve **gözlenen eşzamanlılık tepesini** yazar.
+  `jobs` tarafında toplu iş için tek denetim satırı (yalnız sayılar).
+
+**ÖLÇÜM (gerçek kasa + gerçek Python worker, debug derleme, Apple M2):**
+`two_parses_run_concurrently_on_a_real_vault` (elle: `--ignored --nocapture`),
+iki belge (`progress-pages.pdf` 4 sayfa, `redaction-hidden.pdf` 1 sayfa),
+ısınma koşusundan sonra:
+
+| Koşu | Duvar saati (1. ölçüm) | Duvar saati (2. ölçüm) | Not |
+|---|---|---|---|
+| Seri (2 belge sırayla) | 1,235 s | 1,233 s | belge başına ≈ 0,62 s |
+| Paralel (2 worker) | **0,721 s** | **0,699 s** | **1,71× / 1,76×** |
+| Çakışma | 0,720 s | 0,698 s | iki aralık neredeyse tamamen kesişiyor |
+
+Ayrıştırma süresinin baskın kısmı **süreç başlatma + PyMuPDF importu** (≈ 0,4 s);
+belge 4 sayfa olduğu için kazanç üst sınırı süreç sayısıyla sınırlı. Küçük
+belgede iki worker **daha yavaş değil**, ama kazanç 2× değil: ölçülen 1,71×.
+
+**İlk ölçüm tuzağı (kayda değer):** ilk denemede paralel koşu **önce**, seri
+koşu **sonra** yapıldı ve paralel 1,816 s / seri 1,389 s çıktı — yani "paralel
+daha yavaş" göründü. Sebep paralellik değil **soğuk önbellekti** (ilk iki süreç
+PyMuPDF'i diskten okuyor). Isınma koşusu eklendikten sonra sıra tersine döndü.
+A/B sırası ısınma olmadan ölçümü yanıltıyor.
+
+**Test:** tauri **21** (+5 `parse_pool`: iki iş sınırı, büyük iş tek başına,
+açlık önleyici, kuyruk bildirimi, boş havuz; +1 gerçek kasa/worker ölçümü
+`#[ignore]`), storage **339** (+1 `documents_pending_parse`), Web **363**
+(+1 `queued` etiketi). clippy tauri `--all-targets -D warnings` ve
+`-p dim-storage --all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+
+**Dürüst sınırlar:**
+
+- Ölçüm **debug** derleme ve **küçük** belgelerle; release ve büyük belgede
+  kazanç daha yüksek olabilir — **ölçülmedi** (türetilmiyor).
+- `LARGE_DOCUMENT_BYTES` = 32 MiB **seçilmiş** bir eşik; gerçek büyük belgeyle
+  "tek başına koşma" davranışı ölçülmedi (birim testte 1 byte'lık sınırla
+  doğrulanıyor).
+- Toplu ayrıştırma **arayüzde görsel QA edilmedi** (Tauri penceresi açılmadı);
+  komut katmanı ve havuz testlerle doğrulandı.
+- Toplu ayrıştırma **kullanıcı seçimlerini** (OCR, parola, kodlama) taşımaz:
+  varsayılanlarla çalışır. Parola korumalı belge `blocked` olur, kullanıcı tek
+  belge akışından açar.
+- Windows'ta süreç/paralellik yolu denenmedi.
+
 ## Bilinen sınırlar
 
 - Erişilebilirlik (klavye/ekran okuyucu) tam denetimi F15'te.

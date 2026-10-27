@@ -43,6 +43,7 @@ use zeroize::Zeroizing;
 use crate::error::ApiError;
 use crate::state::{
     lock_vault, open_database, vault_id_from_master, AppState, ParseSlotGuard, RunningParse,
+    VaultState,
 };
 
 use sha2::{Digest, Sha256};
@@ -212,6 +213,10 @@ fn remember(
 
 #[tauri::command]
 pub fn vault_lock(state: State<'_, AppState>) -> Result<(), ApiError> {
+    // §17.5: kasa kilidi güvenlik önceliğidir — süren ayrıştırmalar **önce**
+    // durdurulur; aksi hâlde kilitli kasaya yazmaya çalışan bir süreç kalırdı.
+    // (§17.3 ile ayrıştırma kilidi bırakarak çalıştığı için bu gerekli oldu.)
+    let _stopped = state.cancel_all_parses();
     let mut guard = state.lock();
     guard.unlocked = None;
     guard.db = None;
@@ -565,24 +570,34 @@ mod tests {
 
         let mut frames: Vec<ParseProgress> = Vec::new();
         let mut emit = |update: &ParseProgress| frames.push(update.clone());
-        let mut sink = JobProgressSink::new(&db, Some(job.id.clone()), "surec-1".into(), &mut emit);
+        let mut store = ProgressStore::Direct(&db);
+        let mut sink = JobProgressSink::new(Some(job.id.clone()), "surec-1".into(), &mut emit);
         for page in 1..=40u32 {
-            sink.record(&ParseProgress {
-                stage: "pages".into(),
-                done: page,
-                total: Some(40),
-            });
+            sink.record(
+                &ParseProgress {
+                    stage: "pages".into(),
+                    done: page,
+                    total: Some(40),
+                },
+                &mut store,
+            );
         }
-        sink.record(&ParseProgress {
-            stage: "store".into(),
-            done: 0,
-            total: Some(40),
-        });
-        sink.record(&ParseProgress {
-            stage: "store".into(),
-            done: 40,
-            total: Some(40),
-        });
+        sink.record(
+            &ParseProgress {
+                stage: "store".into(),
+                done: 0,
+                total: Some(40),
+            },
+            &mut store,
+        );
+        sink.record(
+            &ParseProgress {
+                stage: "store".into(),
+                done: 40,
+                total: Some(40),
+            },
+            &mut store,
+        );
 
         let written = sink.written;
         let skipped = sink.skipped;
@@ -618,6 +633,171 @@ mod tests {
         for forbidden in ["text", "fileName", "path"] {
             assert!(object.get(forbidden).is_none(), "{forbidden} yazılmamalı");
         }
+    }
+
+    /// **§17.3 ölçümü — gerçek kasa + gerçek worker.** İki belge paralel
+    /// ayrıştırıldığında duvar saati, seri toplamdan **kısadır** ve iki
+    /// ayrıştırma gerçekten **çakışır**; veritabanı yazımları kasa kilidi
+    /// altında seri kalır (kasa başına tek yazıcı).
+    ///
+    /// Elle koşulur (gerçek Python worker gerekir):
+    /// `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// two_parses -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; F15 ölçümü elle koşulur"]
+    fn two_parses_run_concurrently_on_a_real_vault() {
+        use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+
+        let dir = std::env::temp_dir().join(format!("dim-parse-parallel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dizin");
+        let vault_path = dir.join("vault.dimvault");
+        let (file, _recovery, unlocked) =
+            VaultFile::create(&vault_path, "olcum-parola").expect("kasa");
+        let vault_id = vault_id_from_master(unlocked.master_key());
+        let db = open_database(&file.path, &unlocked, &vault_id).expect("db");
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.unlocked = Some(unlocked);
+            guard.db = Some(db);
+            guard.path = Some(file.path.clone());
+            guard.vault_id = Some(vault_id);
+        }
+
+        let case = {
+            let guard = state.lock();
+            guard
+                .db
+                .as_ref()
+                .expect("db")
+                .create_case(&NewCase {
+                    title: "Paralel ölçüm".into(),
+                    case_kind: CaseKind::Review,
+                    reference_code: None,
+                    jurisdiction_label: None,
+                    practice_area: None,
+                    sensitivity: Sensitivity::Normal,
+                    default_ai_policy: AiPolicy::Off,
+                })
+                .expect("dosya")
+        };
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/synthetic");
+        let blob_dir = file.path.parent().expect("dizin").join("blobs");
+        let mut versions = Vec::new();
+        for name in ["progress-pages.pdf", "redaction-hidden.pdf"] {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            let vault = guard.unlocked.as_ref().expect("kasa");
+            let result = import_path(db, vault, &blob_dir, &case.id, &fixtures.join(name), false)
+                .expect("içe aktarma");
+            let version = match result {
+                ImportResult::Imported { version, .. } => version,
+                ImportResult::Duplicate { version_id, .. } => {
+                    db.get_version(&version_id).expect("oku").expect("sürüm")
+                }
+            };
+            drop(guard);
+            versions.push(version.id);
+        }
+
+        let hub = state.vault_handle();
+        let slot = state.parse_handle();
+        let pool = state.parse_pool_handle();
+
+        // Isınma: ilk süreç başlatma disk/önbellek maliyetini ölçüme katmaz.
+        for version in &versions {
+            let mut emit = |_p: &ParseProgress| {};
+            run_parse(
+                &hub,
+                &slot,
+                &pool,
+                version,
+                ParseOptions::default(),
+                &mut emit,
+            )
+            .expect("ısınma ayrıştırması");
+        }
+
+        // Seri taban: aynı iki belge sırayla.
+        let serial_started = Instant::now();
+        for version in &versions {
+            let mut emit = |_p: &ParseProgress| {};
+            run_parse(
+                &hub,
+                &slot,
+                &pool,
+                version,
+                ParseOptions::default(),
+                &mut emit,
+            )
+            .expect("seri ayrıştırma");
+        }
+        let serial_wall = serial_started.elapsed().as_secs_f64();
+
+        // Paralel: iki belge aynı anda (havuz kapasitesi 2).
+        let started = Instant::now();
+        let marks = Arc::new(Mutex::new(Vec::<(usize, f64, f64)>::new()));
+        let mut handles = Vec::new();
+        for (index, version) in versions.iter().enumerate() {
+            let hub = Arc::clone(&hub);
+            let slot = Arc::clone(&slot);
+            let pool = Arc::clone(&pool);
+            let marks = Arc::clone(&marks);
+            let version = version.clone();
+            handles.push(std::thread::spawn(move || {
+                let begin = started.elapsed().as_secs_f64();
+                let mut emit = |_p: &ParseProgress| {};
+                let outcome = run_parse(
+                    &hub,
+                    &slot,
+                    &pool,
+                    &version,
+                    ParseOptions::default(),
+                    &mut emit,
+                );
+                let end = started.elapsed().as_secs_f64();
+                marks.lock().expect("ölçüm").push((index, begin, end));
+                outcome.map(|view| view.pages)
+            }));
+        }
+        let parallel: Vec<Result<usize, ApiError>> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("iş parçacığı"))
+            .collect();
+        let parallel_wall = started.elapsed().as_secs_f64();
+        assert!(
+            parallel.iter().all(Result::is_ok),
+            "paralel ayrıştırma düştü: {parallel:?}"
+        );
+
+        // Çakışma kanıtı: iki aralık kesişmeli (gerçekten aynı anda koşuyorlar).
+        let samples = marks.lock().expect("ölçüm").clone();
+        let overlap = (samples[0].2.min(samples[1].2) - samples[0].1.max(samples[1].1)).max(0.0);
+        assert!(overlap > 0.02, "ayrıştırmalar çakışmadı ({overlap:.3} sn)");
+
+        // Veri bütünlüğü: her sürümün başarılı koşusu var, yuva boşaldı.
+        {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            for version in &versions {
+                let runs = db.list_parse_runs(version).expect("koşular");
+                assert!(
+                    runs.iter().any(|run| run.status == "succeeded"),
+                    "başarılı koşu yok"
+                );
+            }
+        }
+        assert!(state.parse_lock().is_empty(), "yuva temizlenmeli");
+
+        println!(
+            "parallel_wall={parallel_wall:.3}s serial_wall={serial_wall:.3}s overlap={overlap:.3}s marks={samples:?}"
+        );
+        assert!(
+            parallel_wall < serial_wall * 0.9,
+            "paralel koşu seri toplamdan belirgin hızlı olmalı: {parallel_wall:.3} vs {serial_wall:.3}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Arama kipi adı sunucuda çözülür: boş → `auto`, bilinmeyen reddedilir.
@@ -1890,8 +2070,52 @@ const PROGRESS_DB_INTERVAL: Duration = Duration::from_millis(300);
 /// Yazım düşerse ayrıştırma **düşmez** (kuyruk ikincil kayıttır, F03-T07) ama
 /// sessizce de yutulmaz: yazılan/atlanan/başarısız sayıları denetim kaydına
 /// geçer.
+/// İlerleme yazımının hedefi (§17.3: ayrıştırma artık kilidi **bırakarak**
+/// çalışır; yazım hedefi aşamaya göre değişir).
+enum ProgressStore<'a> {
+    /// Kilit **tutulmuyorken**: kapılı her yazım kasa kilidini kısa süre alır.
+    /// İki ayrıştırma aynı anda koşsa bile yazımlar **seridir** (kasa başına tek
+    /// yazıcı kuralı bozulmaz).
+    Locked(&'a Arc<Mutex<VaultState>>),
+    /// Kilit **tutulurken** (sonuç yazımı): doğrudan bağlantı kullanılır; kilidi
+    /// yeniden almak kendini kilitlerdi.
+    Direct(&'a Database),
+}
+
+impl ProgressStore<'_> {
+    fn write(
+        &mut self,
+        job_id: &str,
+        owner: &str,
+        stage: &str,
+        done: u32,
+        total: Option<u32>,
+    ) -> Result<Option<JobRow>, &'static str> {
+        let now = time::OffsetDateTime::now_utc();
+        match self {
+            Self::Locked(hub) => {
+                let guard = lock_vault(hub);
+                let Some(db) = guard.db.as_ref() else {
+                    // Kasa bu arada kilitlendi: sayaç yazılmaz, ayrıştırma düşmez.
+                    return Err("E_VAULT_LOCKED");
+                };
+                db.update_job_progress(job_id, owner, stage, done, total, now)
+                    .map_err(|err| err.code())
+            }
+            Self::Direct(db) => db
+                .update_job_progress(job_id, owner, stage, done, total, now)
+                .map_err(|err| err.code()),
+        }
+    }
+}
+
+/// `parse-progress` olayı ile kuyruk satırı yazımını **tek** yerden yürütür.
+///
+/// Olay önce yayımlanır: sayaç arayüzde veritabanı yazımını beklemeden görünür.
+/// Yazım düşerse ayrıştırma **düşmez** (kuyruk ikincil kayıttır, F03-T07) ama
+/// sessizce de yutulmaz: yazılan/atlanan/başarısız sayıları denetim kaydına
+/// geçer.
 struct JobProgressSink<'a> {
-    db: &'a Database,
     job_id: Option<String>,
     owner: String,
     emit: &'a mut dyn FnMut(&ParseProgress),
@@ -1903,14 +2127,8 @@ struct JobProgressSink<'a> {
 }
 
 impl<'a> JobProgressSink<'a> {
-    fn new(
-        db: &'a Database,
-        job_id: Option<String>,
-        owner: String,
-        emit: &'a mut dyn FnMut(&ParseProgress),
-    ) -> Self {
+    fn new(job_id: Option<String>, owner: String, emit: &'a mut dyn FnMut(&ParseProgress)) -> Self {
         Self {
-            db,
             job_id,
             owner,
             emit,
@@ -1923,9 +2141,9 @@ impl<'a> JobProgressSink<'a> {
     }
 
     /// Tek kare: olay her zaman, veritabanı yazımı kapıya göre.
-    fn record(&mut self, update: &ParseProgress) {
+    fn record(&mut self, update: &ParseProgress, store: &mut ProgressStore<'_>) {
         (self.emit)(update);
-        let Some(job_id) = self.job_id.as_deref() else {
+        let Some(job_id) = self.job_id.clone() else {
             // İş kaydı yok (eski kasa): ayrıştırma normal, sayaç yalnız arayüzde.
             return;
         };
@@ -1936,22 +2154,20 @@ impl<'a> JobProgressSink<'a> {
             self.skipped += 1;
             return;
         }
-        let result = self.db.update_job_progress(
-            job_id,
+        match store.write(
+            &job_id,
             &self.owner,
             &update.stage,
             update.done,
             update.total,
-            time::OffsetDateTime::now_utc(),
-        );
-        match result {
+        ) {
             Ok(Some(_)) => self.written += 1,
             // İş bu arada bitti/iptal edildi: geç gelen sayaç uygulanmadı.
             Ok(None) => self.skipped += 1,
-            Err(err) => {
+            Err(code) => {
                 self.failed += 1;
                 if self.first_error.is_none() {
-                    self.first_error = Some(err.code());
+                    self.first_error = Some(code);
                 }
             }
         }
@@ -1968,18 +2184,236 @@ impl<'a> JobProgressSink<'a> {
     }
 }
 
+/// Ayrıştırma seçenekleri. Komut argümanlarının tek taşıyıcısı: tek belge
+/// kullanıcı seçimleriyle, toplu ayrıştırma varsayılanlarla çağırır.
+#[derive(Clone, Default)]
+struct ParseOptions {
+    ocr: Option<bool>,
+    ocr_lang: Option<String>,
+    text_encoding: Option<String>,
+    password: Option<String>,
+}
+
+/// Ayar özetine **gerçekten** uygulanan seçimler (tahmin yazılmaz).
+struct AppliedSettings {
+    ocr: bool,
+    lang: String,
+    encoding: String,
+    is_text: bool,
+}
+
+/// Aşama A çıktısı: kasa kilidi **altında** toplanan, kilit bırakıldıktan sonra
+/// değişmeyen girdiler. Worker bu veriyle, kilit olmadan çalışır (§17.3).
+struct ParsePrep {
+    version: DocumentVersion,
+    job: Option<JobRow>,
+    owner: String,
+    data: Vec<u8>,
+    mime: String,
+    vault_path: PathBuf,
+}
+
+/// Aynı süreçte iki ayrıştırma koşabildiği için kira sahibi **tekil** olmalı:
+/// `parse-<pid>-<sıra>`. Aksi hâlde iki iş de aynı sahibi taşır ve kuyruk "kim
+/// kiraladı" ayrımını kaybederdi (§17.3, tek yazıcı kuralı).
+static PARSE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Büyük belge eşiğinin üstünde kalan işlerde arayüz "sırada" bilgisini alır.
+fn queued_frame() -> ParseProgress {
+    ParseProgress {
+        stage: "queued".to_string(),
+        done: 0,
+        total: None,
+    }
+}
+
+/// **Aşama A — kilit altında hazırlık.** Sürüm, kuyruk sahiplenmesi ve şifreli
+/// blob çözümü. Ağır iş (worker) bu bloğun **dışında** koşar; kilit yalnız bu
+/// kısa okuma boyunca tutulur.
+fn prepare_parse(
+    guard: &crate::state::VaultState,
+    version_id: &str,
+) -> Result<ParsePrep, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db
+        .get_version(version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    // Kuyruk: içe aktarma `parse:<sürüm>` işini açmıştı. İş burada sahiplenilir;
+    // ayrıştırma düşerse iş `failed`/`retry_wait` olur ve "yürüyor" diye asılı
+    // kalmaz (F03-T07/T08). İş yoksa (eski kasa) ayrıştırma yine çalışır.
+    let owner = format!(
+        "parse-{}-{}",
+        std::process::id(),
+        PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let job_key = format!("parse:{}", version.id);
+    let job = db
+        .claim_job_by_key(
+            &job_key,
+            &owner,
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            time::OffsetDateTime::now_utc(),
+        )
+        .ok()
+        .flatten();
+
+    let blob = db
+        .blob_for_version(version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    Ok(ParsePrep {
+        version,
+        job,
+        owner,
+        data,
+        mime: blob.mime,
+        vault_path: vault_path.clone(),
+    })
+}
+
+/// **Aşama C — kilit altında yazma.** Kilit bırakıldıktan sonra kasa kapanmış,
+/// başka kasaya geçilmiş veya iş iptal edilmiş olabilir; üçü de denetlenir ve
+/// hiçbiri "yarım çıktı yaz" ile sonuçlanmaz (§17.2 `canceled`).
+fn commit_parse(
+    guard: &crate::state::VaultState,
+    prep: &ParsePrep,
+    extraction: dim_ingest::worker::Extraction,
+    caps: serde_json::Value,
+    settings_in: &AppliedSettings,
+    sink: &mut JobProgressSink<'_>,
+) -> Result<ParseResultView, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    if guard.path.as_ref() != Some(&prep.vault_path) {
+        return Err(ApiError::new(
+            "E_VAULT_LOCKED",
+            "Kasa bu arada kapandı; ayrıştırma çıktısı yazılmadı.",
+        ));
+    }
+    if let Some(job) = prep.job.as_ref() {
+        let still_ours = db
+            .get_job(&job.id)?
+            .map(|row| {
+                row.state == "running" && row.lease_owner.as_deref() == Some(prep.owner.as_str())
+            })
+            .unwrap_or(false);
+        if !still_ours {
+            return Err(canceled_parse_error());
+        }
+    }
+
+    // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü ve
+    // kurulu tessdata parmak izi. Yalnız MIME yazmak yanıltıcıydı.
+    let tessdata = caps
+        .pointer("/ocr/tessdataHash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let encoding_note = if settings_in.is_text {
+        format!("|txt-encoding={}", settings_in.encoding)
+    } else {
+        String::new()
+    };
+    let settings = format!(
+        "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}{encoding_note}",
+        prep.mime, settings_in.ocr, settings_in.lang, extraction.engine_version
+    );
+    // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
+    // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
+    let run = db.start_parse_run(
+        &prep.version.id,
+        &prep.version.case_id,
+        &extraction.engine,
+        &extraction.engine_version,
+        &settings,
+    )?;
+    let pages: Vec<NewPage> = extraction
+        .pages
+        .iter()
+        .map(|p| NewPage {
+            index: i64::from(p.index),
+            text: p.text.clone(),
+            width: Some(p.width),
+            height: Some(p.height),
+            origin: if p.text.trim().is_empty() {
+                "none".to_string()
+            } else {
+                "native".to_string()
+            },
+            warnings: p.warnings.clone(),
+            rotation: i64::from(p.rotation % 360),
+            coordinate_space: p.coordinate_space.clone(),
+            page_label: p.page_label.clone(),
+            blocks: p
+                .blocks
+                .iter()
+                .map(|b| SegmentBlock {
+                    start: i64::from(b.start),
+                    end: i64::from(b.end),
+                    bbox: b.bbox,
+                    lines: b.lines.clone(),
+                    path: b.path.clone(),
+                    kind: b.kind.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    // Yazma aşaması ayrı ve uzun olabilir: okuma bitti, sayfalar kasaya
+    // yazılıyor. Sayaç **gerçek** durumu söyler (0 → N); ara değer uydurulmaz.
+    let total = u32::try_from(pages.len()).unwrap_or(u32::MAX);
+    let mut direct = ProgressStore::Direct(db);
+    sink.record(
+        &ParseProgress {
+            stage: "store".to_string(),
+            done: 0,
+            total: Some(total),
+        },
+        &mut direct,
+    );
+    let stored = db.store_pages(&run.id, &prep.version.case_id, &pages)?;
+    sink.record(
+        &ParseProgress {
+            stage: "store".to_string(),
+            done: total,
+            total: Some(total),
+        },
+        &mut ProgressStore::Direct(db),
+    );
+    let status = if extraction.warnings.is_empty() {
+        "succeeded"
+    } else {
+        "partial"
+    };
+    db.finish_parse_run(&run.id, status, &extraction.warnings)?;
+
+    Ok(ParseResultView {
+        parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
+        pages: pages.len(),
+        stored_segments: stored,
+        warnings: extraction.warnings,
+    })
+}
+
 /// Belge sürümünü yerel worker'da ayrıştırır. Özgün blob çözülür, metin
 /// çıkarılır, sürümlü `parse_run` + sayfa + segment kayıtları yazılır.
 ///
-/// **Arayüz iş parçacığı beklemez (F04-T07):** ağır iş `spawn_blocking`
-/// içinde koşar; kasa kilidi orada tutulur. Süren worker yuvaya kaydedilir,
-/// `job_cancel` kasa kilidini beklemeden süreci öldürebilir.
+/// **Arayüz iş parçacığı beklemez (F04-T07):** ağır iş `spawn_blocking` içinde
+/// koşar. **§17.3:** kasa kilidi yalnız okuma (A) ve yazma (C) aşamalarında
+/// tutulur; worker **kilitsiz** çalışır, böylece iki belge gerçekten paralel
+/// ayrıştırılabilir. Eşzamanlılık `ParsePool` ile en fazla iki süreçtir;
+/// büyük belge tek başına koşar. Veritabanı yazımları yine **seridir**.
 ///
 /// **Canlı aşama/sayım:** worker'ın ilerleme çerçeveleri `parse-progress`
-/// olayına çevrilir (`start` → `open` → `pages`); aynı kareler **kuyruk
-/// satırına** da yazılır (`jobs.progress_stage/done/total`, 0022) — böylece
-/// Ayarlar → İş kuyruğu kartı da sayacı gösterir. Olay kaybolursa ayrıştırma
-/// etkilenmez; sayaç göstergesi bilgilendiricidir, sonuç değişmez.
+/// olayına çevrilir (`start` → `queued` → `open` → `pages` → `store`); aynı
+/// kareler **kuyruk satırına** da yazılır (`jobs.progress_stage/done/total`,
+/// 0022). Olay kaybolursa ayrıştırma etkilenmez.
 #[tauri::command]
 pub async fn document_parse(
     app: tauri::AppHandle,
@@ -1992,21 +2426,24 @@ pub async fn document_parse(
 ) -> Result<ParseResultView, ApiError> {
     let hub = state.vault_handle();
     let slot = state.parse_handle();
+    let pool = state.parse_pool_handle();
     tauri::async_runtime::spawn_blocking(move || {
         let mut emit = |progress: &ParseProgress| {
             let event = ParseProgressEvent::new(&version_id, progress);
             // Pencere kapalıysa olay düşer; ayrıştırma sürer.
             let _ = app.emit("parse-progress", event);
         };
-        let guard = lock_vault(&hub);
-        parse_version_locked(
-            &guard,
+        run_parse(
+            &hub,
             &slot,
+            &pool,
             &version_id,
-            ocr,
-            ocr_lang,
-            text_encoding,
-            password,
+            ParseOptions {
+                ocr,
+                ocr_lang,
+                text_encoding,
+                password,
+            },
             &mut emit,
         )
     })
@@ -2019,17 +2456,15 @@ pub async fn document_parse(
     })?
 }
 
-/// `document_parse` gövdesi. Kasa kilidi **çağıranda** tutulur; bu işlev
-/// bloklayan iş parçacığında çalışır. `progress` arayüz olayına köprü kurar.
+/// Ayrıştırmanın üç aşamalı gövdesi (bloklayan iş parçacığında koşar).
+/// `progress` arayüz olayına köprü kurar.
 #[allow(clippy::too_many_arguments)]
-fn parse_version_locked(
-    guard: &crate::state::VaultState,
-    slot: &Arc<Mutex<Option<RunningParse>>>,
+fn run_parse(
+    hub: &Arc<Mutex<VaultState>>,
+    slot: &Arc<Mutex<Vec<RunningParse>>>,
+    pool: &Arc<crate::parse_pool::ParsePool>,
     version_id: &str,
-    ocr: Option<bool>,
-    ocr_lang: Option<String>,
-    text_encoding: Option<String>,
-    password: Option<String>,
+    options: ParseOptions,
     progress: &mut dyn FnMut(&ParseProgress),
 ) -> Result<ParseResultView, ApiError> {
     // İlk olay kasadan okuma başlamadan gider: büyük blob çözülürken arayüz
@@ -2040,248 +2475,160 @@ fn parse_version_locked(
         done: 0,
         total: None,
     });
-    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let prep = {
+        let guard = lock_vault(hub);
+        prepare_parse(&guard, version_id)?
+    };
 
-    let version = db
-        .get_version(version_id)?
-        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
-    // Kuyruk: içe aktarma `parse:<sürüm>` işini açmıştı. İş burada sahiplenilir;
-    // ayrıştırma düşerse iş `failed`/`retry_wait` olur ve "yürüyor" diye asılı
-    // kalmaz (F03-T07/T08). İş yoksa (eski kasa) ayrıştırma yine çalışır.
-    let job_owner = format!("parse-{}", std::process::id());
-    let job_key = format!("parse:{}", version.id);
-    let job = db
-        .claim_job_by_key(
-            &job_key,
-            &job_owner,
-            dim_storage::DEFAULT_LEASE_SECONDS,
-            time::OffsetDateTime::now_utc(),
-        )
-        .ok()
-        .flatten();
-    // Ayrıştırma koşusunun durumu (`succeeded`/`partial`) kuyruğa da yansır:
-    // uyarılı çıktı `completed` değil `partial` yazılır.
-    let mut parse_status: Option<String> = None;
-    // Canlı sayaç: olay her karede, kuyruk satırı kapıya göre (0022).
+    let is_text = prep.mime.starts_with("text/");
+    let ocr_enabled = options.ocr.unwrap_or(false);
+    let lang = options
+        .ocr_lang
+        .clone()
+        .unwrap_or_else(|| "eng".to_string());
+    // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
+    let encoding = if is_text {
+        options
+            .text_encoding
+            .as_ref()
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "auto".to_string())
+    } else {
+        "auto".to_string()
+    };
+    let applied = AppliedSettings {
+        ocr: ocr_enabled,
+        lang: lang.clone(),
+        encoding: encoding.clone(),
+        is_text,
+    };
+
     let mut sink = JobProgressSink::new(
-        db,
-        job.as_ref().map(|job| job.id.clone()),
-        job_owner.clone(),
+        prep.job.as_ref().map(|job| job.id.clone()),
+        prep.owner.clone(),
         progress,
     );
-    let outcome = {
-        let mut forward = |update: ParseProgress| sink.record(&update);
-        (|| -> Result<ParseResultView, ApiError> {
-            let blob = db
-                .blob_for_version(version_id)?
-                .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
-            let blob_path = vault_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("blobs")
-                .join(format!("{}.blb", blob.storage_id));
-            let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
-            let mut worker = spawn_worker()?;
-            // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
-            // beklemeden bu süreci öldürür (F04-T07). Yuva düşünce temizlenir.
-            let killer = worker.killer();
-            let _slot = ParseSlotGuard::register(
-                Arc::clone(slot),
-                RunningParse {
-                    version_id: version_id.to_string(),
-                    job_id: job.as_ref().map(|job| job.id.clone()),
-                    killer: killer.clone(),
-                },
+    let outcome: Result<ParseResultView, ApiError> = {
+        // §17.3 kapısı: izin alınmadan süreç başlatılmaz. Sırada beklerken
+        // arayüze "queued" karesi gider; kuyruk satırına da yazılır (kapıya göre).
+        (|| {
+            let weight = crate::parse_pool::ParseWeight::for_bytes(
+                u64::try_from(prep.data.len()).unwrap_or(u64::MAX),
             );
-            let caps = worker
-                .capabilities()
-                .unwrap_or_else(|_| serde_json::json!({}));
-            let ocr_enabled = ocr.unwrap_or(false);
-            let lang = ocr_lang.unwrap_or_else(|| "eng".to_string());
-            // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
-            let is_text = blob.mime.starts_with("text/");
-            let encoding = if is_text {
-                text_encoding
-                    .map(|value| value.trim().to_lowercase())
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| "auto".to_string())
-            } else {
-                "auto".to_string()
+            let (permit, _waited) = {
+                let mut notice = || {
+                    sink.record(&queued_frame(), &mut ProgressStore::Locked(hub));
+                };
+                pool.acquire_noticing(weight, &mut notice)
             };
-            let extraction = worker.extract_text_with_progress(
-                &data,
-                &blob.mime,
-                ocr_enabled,
-                &lang,
-                is_text.then_some(encoding.as_str()),
-                password.as_deref(),
-                &mut forward,
-            )?;
-            worker.shutdown();
-            // İptal, çıkarımdan sonra ama yazmadan önce geldiyse: hiçbir çıktı
-            // yazılmaz, koşu `cancelled` kapanır (şartname §17.2 canceled:
-            // "tamamlanmamış çıktı uygulanmadı").
-            if killer.is_canceled() {
-                return Err(canceled_parse_error());
-            }
-
-            // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü
-            // ve kurulu tessdata parmak izi. Yalnız MIME yazmak yanıltıcıydı.
-            let tessdata = caps
-                .pointer("/ocr/tessdataHash")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let encoding_note = if is_text {
-                format!("|txt-encoding={encoding}")
-            } else {
-                String::new()
-            };
-            let settings = format!(
-                "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}{encoding_note}",
-                blob.mime, ocr_enabled, lang, extraction.engine_version
-            );
-            // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
-            // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
-            let run = db.start_parse_run(
-                version_id,
-                &version.case_id,
-                &extraction.engine,
-                &extraction.engine_version,
-                &settings,
-            )?;
-            let pages: Vec<NewPage> = extraction
-                .pages
-                .iter()
-                .map(|p| NewPage {
-                    index: i64::from(p.index),
-                    text: p.text.clone(),
-                    width: Some(p.width),
-                    height: Some(p.height),
-                    origin: if p.text.trim().is_empty() {
-                        "none".to_string()
-                    } else {
-                        "native".to_string()
+            let extracted = (|| {
+                let mut worker = spawn_worker()?;
+                let killer = worker.killer();
+                // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
+                // beklemeden bu süreci öldürür (F04-T07). Yuva düşünce temizlenir.
+                let _slot = ParseSlotGuard::register(
+                    Arc::clone(slot),
+                    RunningParse {
+                        version_id: version_id.to_string(),
+                        job_id: prep.job.as_ref().map(|job| job.id.clone()),
+                        killer: killer.clone(),
                     },
-                    warnings: p.warnings.clone(),
-                    rotation: i64::from(p.rotation % 360),
-                    coordinate_space: p.coordinate_space.clone(),
-                    page_label: p.page_label.clone(),
-                    blocks: p
-                        .blocks
-                        .iter()
-                        .map(|b| SegmentBlock {
-                            start: i64::from(b.start),
-                            end: i64::from(b.end),
-                            bbox: b.bbox,
-                            lines: b.lines.clone(),
-                            path: b.path.clone(),
-                            kind: b.kind.clone(),
-                        })
-                        .collect(),
-                })
-                .collect();
-            // Koşu açıldıktan sonra iptal geldiyse sayfa **yazılmaz**; koşu
-            // `cancelled` kapanır ki yarım çıktı "tamam" görünmesin.
-            if killer.is_canceled() {
-                let _ = db.finish_parse_run(&run.id, "cancelled", &[]);
-                return Err(canceled_parse_error());
-            }
-            // Yazma aşaması ayrı ve uzun olabilir: okuma bitti, sayfalar kasaya
-            // yazılıyor. Sayaç **gerçek** durumu söyler (0 → N); ara değer
-            // uydurulmaz, çünkü tek çağrıda yazılıyor.
-            forward(ParseProgress {
-                stage: "store".to_string(),
-                done: 0,
-                total: Some(u32::try_from(pages.len()).unwrap_or(u32::MAX)),
-            });
-            let stored = db.store_pages(&run.id, &version.case_id, &pages)?;
-            forward(ParseProgress {
-                stage: "store".to_string(),
-                done: u32::try_from(pages.len()).unwrap_or(u32::MAX),
-                total: Some(u32::try_from(pages.len()).unwrap_or(u32::MAX)),
-            });
-            let status = if extraction.warnings.is_empty() {
-                "succeeded"
-            } else {
-                "partial"
-            };
-            db.finish_parse_run(&run.id, status, &extraction.warnings)?;
-            parse_status = Some(status.to_string());
-
-            Ok(ParseResultView {
-                parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
-                pages: pages.len(),
-                stored_segments: stored,
-                warnings: extraction.warnings,
-            })
+                );
+                let caps = worker
+                    .capabilities()
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                let mut store = ProgressStore::Locked(hub);
+                let mut forward = |update: ParseProgress| sink.record(&update, &mut store);
+                let extraction = worker.extract_text_with_progress(
+                    &prep.data,
+                    &prep.mime,
+                    ocr_enabled,
+                    &lang,
+                    is_text.then_some(encoding.as_str()),
+                    options.password.as_deref(),
+                    &mut forward,
+                )?;
+                worker.shutdown();
+                // İptal, çıkarımdan sonra ama yazmadan önce geldiyse: hiçbir
+                // çıktı yazılmaz, koşu `cancelled` kapanır (§17.2 `canceled`).
+                if killer.is_canceled() {
+                    return Err(canceled_parse_error());
+                }
+                Ok::<(dim_ingest::worker::Extraction, serde_json::Value), ApiError>((
+                    extraction, caps,
+                ))
+            })()?;
+            drop(permit);
+            let guard = lock_vault(hub);
+            commit_parse(&guard, &prep, extracted.0, extracted.1, &applied, &mut sink)
         })()
     };
 
-    // Sayaç yazımının dürüstlük kaydı: kaç kare kuyruk satırına yazıldı, kaçı
-    // kapı tarafından atlandı, kaçı düştü. **Yalnız sayılar** (metin/ad/yol yok).
-    if job.is_some() {
-        let _ = db.append_audit(
-            "document_parse",
-            None,
-            "progress",
-            "local-user",
-            &sink.audit_metadata(),
-        );
+    // Denetim + kuyruk sonucu ayrı ve kısa bir kilitle yazılır: iş kaydı düşse
+    // bile kullanıcının belgesi/parse koşusu yerinde kalır (kuyruk ikincil).
+    {
+        let guard = lock_vault(hub);
+        if let Some(db) = guard.db.as_ref() {
+            if prep.job.is_some() {
+                let _ = db.append_audit(
+                    "document_parse",
+                    None,
+                    "progress",
+                    "local-user",
+                    &sink.audit_metadata(),
+                );
+            }
+            // Şartname §17.2 yolu: `running → validating → completed|partial`;
+            // hata yolunda `fail_job` (iptal/parola ayrı sınıflar, §17.4).
+            if let Some(job) = prep.job.as_ref() {
+                let now = time::OffsetDateTime::now_utc();
+                match &outcome {
+                    Ok(view) => {
+                        let _ = db.begin_validation(&job.id, &prep.owner, now);
+                        if view.parse_run.status == "partial" {
+                            let _ = db.complete_job_partial(
+                                &job.id,
+                                &prep.owner,
+                                "E_PARSE_PARTIAL",
+                                now,
+                            );
+                        } else {
+                            let _ = db.complete_job(&job.id, &prep.owner, now);
+                        }
+                    }
+                    Err(err) if err.code == "E_WORKER_CANCELED" => {
+                        let _ = db.cancel_job(&job.id, now);
+                        let _ = db.fail_job(&job.id, &prep.owner, "E_WORKER_CANCELED", false, now);
+                    }
+                    Err(err) if err.code == "E_PDF_PASSWORD" => {
+                        let _ = db.block_job(&job.id, &prep.owner, "password", now);
+                    }
+                    Err(err) => {
+                        let _ = db.fail_job(
+                            &job.id,
+                            &prep.owner,
+                            &err.code,
+                            parse_failure_is_retryable(&err.code),
+                            now,
+                        );
+                    }
+                }
+            }
+        }
     }
 
-    // Kuyruk sonucu ayrıştırma sonucundan ayrı yazılır: iş kaydı düşse bile
-    // kullanıcının belgesi/parse koşusu yerinde kalır (kuyruk ikincil kayıttır).
-    // Şartname §17.2 yolu: `running → validating → completed|partial`.
-    match (job.as_ref(), &outcome) {
-        (Some(job), Ok(_)) => {
-            let now = time::OffsetDateTime::now_utc();
-            let _ = db.begin_validation(&job.id, &job_owner, now);
-            if parse_status.as_deref() == Some("partial") {
-                let _ = db.complete_job_partial(&job.id, &job_owner, "E_PARSE_PARTIAL", now);
-            } else {
-                let _ = db.complete_job(&job.id, &job_owner, now);
-            }
-        }
-        (Some(job), Err(err)) => {
-            // Kullanıcı iptali: `running|validating → canceling → canceled`.
-            // `fail_job` iptal isteği varsa sonucu `canceled` yazar; iptal
-            // otomatik tekrar döngüsüne girmez (§17.4).
-            if err.code == "E_WORKER_CANCELED" {
-                let now = time::OffsetDateTime::now_utc();
-                let _ = db.cancel_job(&job.id, now);
-                let _ = db.fail_job(&job.id, &job_owner, "E_WORKER_CANCELED", false, now);
-            } else if err.code == "E_PDF_PASSWORD" {
-                let _ = db.block_job(
-                    &job.id,
-                    &job_owner,
-                    "password",
-                    time::OffsetDateTime::now_utc(),
-                );
-            } else {
-                let _ = db.fail_job(
-                    &job.id,
-                    &job_owner,
-                    &err.code,
-                    parse_failure_is_retryable(&err.code),
-                    time::OffsetDateTime::now_utc(),
-                );
-            }
-        }
-        (None, _) => {}
-    }
     outcome
 }
 
-/// Ayrıştırma hatası yeniden denenebilir mi? Yalnız **geçici altyapı**
-/// hataları (worker koptu, G/Ç) tekrar denenir; belgeye özgü hatalar (parola,
+/// Ayrıştırma hatası yeniden denenebilir mi? Yalnız **geçici altyapı** hataları
+/// (worker koptu, G/Ç) tekrar denenir; belgeye özgü hatalar (parola,
 /// bozuk/desteklenmeyen dosya), **disk yetersizliği** ve kullanıcı iptali
 /// otomatik tekrar döngüsüne girmez — şartname §17.4.
 ///
-/// `E_DISK_FULL` listeden **çıkarıldı**: yer açılmadan tekrar denemek üç
-/// denemeyi harcar ve kullanıcıya yanlış "yeniden deniyorum" izlenimi verir.
+/// `E_DISK_FULL` listeden **çıkarıldı**: yer açılmadan tekrar denemek üç denemeyi
+/// harcar ve kullanıcıya yanlış "yeniden deniyorum" izlenimi verir.
 fn parse_failure_is_retryable(code: &str) -> bool {
     matches!(
         code,
@@ -2299,6 +2646,179 @@ fn canceled_parse_error() -> ApiError {
         "E_WORKER_CANCELED",
         "Ayrıştırma iptal edildi; yarım çıktı kasaya yazılmadı. Belge yeniden ayrıştırılabilir.",
     )
+}
+
+/// Ayrıştırma bekleyen belge (güncel sürümü var, `succeeded|partial` koşusu yok).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingParseRow {
+    pub document_id: String,
+    pub display_name: String,
+    pub version_id: String,
+    pub byte_size: i64,
+}
+
+/// Toplu ayrıştırma sonucu: her belge için gerçek sonuç, uydurulmuş "tamam" yok.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchParseItem {
+    pub version_id: String,
+    pub document_id: String,
+    pub display_name: String,
+    pub ok: bool,
+    pub pages: usize,
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchParseView {
+    pub requested: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub pages: usize,
+    /// §17.3 kanıtı: gözlenen en yüksek eşzamanlı ayrıştırma sayısı (≤ 2).
+    pub peak_parallel: usize,
+    pub results: Vec<BatchParseItem>,
+}
+
+/// Ayrıştırma bekleyen belgeleri listeler (yazmaz).
+#[tauri::command]
+pub fn documents_pending_parse(
+    state: State<'_, AppState>,
+    case_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<PendingParseRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let limit = i64::from(limit.unwrap_or(4).clamp(1, 8));
+    let pending = db.documents_pending_parse(&case_id, limit)?;
+    Ok(pending
+        .into_iter()
+        .map(|row| PendingParseRow {
+            document_id: row.document_id,
+            display_name: row.display_name,
+            version_id: row.version_id,
+            byte_size: row.byte_size,
+        })
+        .collect())
+}
+
+/// **§17.3 toplu ayrıştırma:** bekleyen belgeleri en fazla iki worker'la
+/// ayrıştırır. Kasa başına tek yazıcı korunur (yazımlar seri); büyük belge tek
+/// başına koşar. Sonuç **belge başına** gerçektir: düşen iş `failed` sayılır ve
+/// hata kodu/mesajı yazılır.
+#[tauri::command]
+pub async fn documents_parse_pending(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    case_id: String,
+    limit: Option<u32>,
+) -> Result<BatchParseView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.parse_handle();
+    let pool = state.parse_pool_handle();
+    let limit = i64::from(limit.unwrap_or(4).clamp(1, 8));
+    let pending = {
+        let guard = lock_vault(&hub);
+        let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+        db.documents_pending_parse(&case_id, limit)?
+    };
+
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut handles = Vec::new();
+    for row in pending {
+        let app = app.clone();
+        let hub = Arc::clone(&hub);
+        let slot = Arc::clone(&slot);
+        let pool = Arc::clone(&pool);
+        let live = Arc::clone(&live);
+        let peak = Arc::clone(&peak);
+        let version_id = row.version_id.clone();
+        handles.push(tauri::async_runtime::spawn_blocking(move || {
+            let now_live = live.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now_live, Ordering::SeqCst);
+            let mut emit = |progress: &ParseProgress| {
+                let _ = app.emit(
+                    "parse-progress",
+                    ParseProgressEvent::new(&version_id, progress),
+                );
+            };
+            let outcome = run_parse(
+                &hub,
+                &slot,
+                &pool,
+                &version_id,
+                ParseOptions::default(),
+                &mut emit,
+            );
+            live.fetch_sub(1, Ordering::SeqCst);
+            (row, outcome)
+        }));
+    }
+
+    let mut view = BatchParseView {
+        requested: handles.len(),
+        succeeded: 0,
+        failed: 0,
+        pages: 0,
+        peak_parallel: 0,
+        results: Vec::new(),
+    };
+    for handle in handles {
+        match handle.await {
+            Ok((row, Ok(result))) => {
+                view.succeeded += 1;
+                view.pages += result.pages;
+                view.results.push(BatchParseItem {
+                    version_id: row.version_id,
+                    document_id: row.document_id,
+                    display_name: row.display_name,
+                    ok: true,
+                    pages: result.pages,
+                    code: None,
+                    message: None,
+                });
+            }
+            Ok((row, Err(err))) => {
+                view.failed += 1;
+                view.results.push(BatchParseItem {
+                    version_id: row.version_id,
+                    document_id: row.document_id,
+                    display_name: row.display_name,
+                    ok: false,
+                    pages: 0,
+                    code: Some(err.code),
+                    message: Some(err.message),
+                });
+            }
+            Err(_) => {
+                view.failed += 1;
+            }
+        }
+    }
+    view.peak_parallel = peak.load(Ordering::SeqCst);
+    // Denetim: yalnız sayılar (belge adı/kimliği yazılmaz).
+    {
+        let guard = lock_vault(&hub);
+        if let Some(db) = guard.db.as_ref() {
+            let _ = db.append_audit(
+                "document_parse",
+                None,
+                "batch",
+                "local-user",
+                &serde_json::json!({
+                    "requested": view.requested,
+                    "succeeded": view.succeeded,
+                    "failed": view.failed,
+                    "peakParallel": view.peak_parallel,
+                }),
+            );
+        }
+    }
+    Ok(view)
 }
 
 #[derive(Serialize)]
@@ -2354,15 +2874,10 @@ pub fn job_queue_recover(state: State<'_, AppState>) -> Result<JobRecovery, ApiE
 /// `state.parse` yuvasındaki tutamaç kullanılır, kuyruk kaydı sonra yazılır.
 #[tauri::command]
 pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCancelView, ApiError> {
-    // 1) Süreç: yuva kilidi kısa tutulur, kasa kilidi alınmaz.
-    let killer = {
-        let slot = state.parse_lock();
-        match slot.as_ref() {
-            Some(run) if run.job_id.as_deref() == Some(job_id.as_str()) => Some(run.killer.clone()),
-            _ => None,
-        }
-    };
-    let worker_stopped = killer.map(|killer| killer.cancel()).unwrap_or(false);
+    // 1) Süreç: yuva kilidi kısa tutulur, kasa kilidi **alınmaz**. §17.3 ile
+    //    birden çok ayrıştırma koşabildiği için iş kimliğiyle eşleşen süreç
+    //    durdurulur (diğerleri etkilenmez).
+    let worker_stopped = state.cancel_parse_job(&job_id);
 
     // 2) Kuyruk kaydı (`running → canceling`; hiç çalışmamış iş `canceled`).
     let guard = state.lock();

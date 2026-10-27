@@ -11,6 +11,8 @@ import type { ParseProgressEvent } from "./api";
 /** Worker'ın bildirdiği aşamalar; bilinmeyen aşama olduğu gibi gösterilir. */
 const STAGE_LABEL: Record<string, string> = {
   start: "Hazırlanıyor",
+  // §17.3: eşzamanlılık kapısı doluysa iş sırada bekler — sessiz bekleyiş yok.
+  queued: "Sırada (en fazla 2 ayrıştırma)",
   open: "Belge açıldı",
   pages: "Sayfalar okunuyor",
   store: "Kasaya yazılıyor",
