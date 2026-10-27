@@ -87,13 +87,22 @@ indeksi.
 - `precedent_versions` / `get_precedent_version`: metin gövdesi **dönmez**;
   yalnız `has_text`, `charCount`, `bodyHash`, `sourceKind`, tarih.
 - `verify_precedent_quote(precedent_id, quote)`: kararın **en yeni** tam metnine
-  karşı üç aşamalı doğrulama —
+  karşı dört aşamalı doğrulama —
   1. birebir (`method='exact'`, kaynak metindeki **karakter** konumu),
   2. yalnız satır/boşluk farkı (`method='whitespace'`),
-  3. Türkçe harf sadeleştirmesi (`method='turkish_fold'`, OCR/klavye farkı).
-  Eşleşme sayısı (`occurrences`) ayrıca döner. Sonuç `match` | `mismatch` |
-  `not_checked`; `not_checked` nedenleri `no_full_text`, `quote_too_short`
-  (< 8 karakter — yanlış kesinlik üretmemek için), `mismatch` nedeni `not_found`.
+  3. Türkçe harf sadeleştirmesi (`method='turkish_fold'`, OCR/klavye farkı),
+  4. satır sonunda tire ile bölünmüş kelime birleştirme (`method='dehyphenated'`).
+  Güncel metinde bulunamazsa emsalin **eski tam metin sürümleri** yeniden eskiye
+  taranır (en çok 5; sınır aşılırsa `historicalTruncated=true`, sessiz kesme yok).
+  Katman sırası belge tarafıyla aynıdır: her katmanda önce güncel sürüm, sonra
+  eskiler — yani eski sürümdeki birebir eşleşme günceldeki zayıf eşleşmeyi yener,
+  aynı katmanda güncel kazanır. Eşleşme sayısı (`occurrences`) yalnız **eşleşen**
+  sürümün metninden sayılır. Sonuç `match` | `mismatch` | `not_checked`;
+  `not_checked` nedenleri `no_full_text`, `quote_too_short` (< 8 karakter — yanlış
+  kesinlik üretmemek için), `mismatch` nedeni `not_found`. Yanıt
+  `versionsScanned`, `historicalVersionsScanned`, `foundInOldVersion`,
+  `historicalTruncated` alanlarını taşır; `foundInOldVersion=true` “alıntı güncel
+  metinde geçmiyor” demektir, sessizce gizlenmez.
 - `normalize_with_map`, `dim_evidence::normalize` ile **aynı** sadeleştirmeyi
   yapar ama konum eşlemesi taşır; ikisinin ayrışmasını
   `fold_matches_evidence_normalize` testi yakalar.
@@ -545,3 +554,67 @@ aralık 17).
   birebir olmadığı arayüzde yazılır.
 - Ölçüm bellek içi kasa + elle yazılmış metinler; gerçek PDF/worker uçtan uca
   denenmedi. Tauri penceresi açılmadı → etiketin görsel QA'si yok.
+
+## F12-T05 genişletmesi — emsal tam metninde **eski sürüm** taraması (2026-10-27, ikinci tur)
+
+**Neden:** önceki turun açık kaydı: “yalnız **en yeni** tam metin sürümü taranır;
+eski sürümde kalmış alıntı hâlâ `mismatch` — belge tarafında kapatılan sürüm sınıfı
+emsal tarafında açık”. Aynı sınıf `check_in_text_quotes`'ta 25 Eki'de kapatılmıştı
+(belge güncellenince eski nüshadan alınan alıntı “bulunamadı” görünüyordu). Emsalde
+nüsha değişimi daha sık: aynı kararın düzeltilmiş/uzun nüshası yüklenir, kullanıcı
+alıntıyı önceki nüshadan almış olabilir. “Bulunamadı” hükmü bu durumda yanlış negatifti.
+
+**Çekirdek (`crates/storage/src/precedents.rs`):**
+
+- `quote_scopes(precedent_id)` — en yeni **metinli** sürüm `is_current=true`,
+  ardından eski sürümler yeniden eskiye `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT`
+  (**5**) ile sınırlı; sınır aşılırsa ikinci dönüş `true` (`historicalTruncated`).
+  Metinsiz sürümler kapsama girmez (güncel seçimi de metne göre yapılır).
+- Eşleşme döngüsü **katman-major**: `exact → whitespace → turkish_fold →
+  dehyphenated`; her katmanda önce güncel sürüm, sonra eskiler. Yani eski sürümdeki
+  **birebir** eşleşme, günceldeki zayıf (boşluk/harf/tire) eşleşmesini yener; aynı
+  katmanda güncel sürüm kazanır. Sıra belge tarafıyla birebir aynı.
+- `find_in_scope` tek sürümde tek katmanı arar; konum/uzunluk **kaynak metnin**
+  karakter cinsindendir (`mapped_span`), `occurrences` yalnız **eşleşen** sürümün
+  metninden sayılır. `version_id` eşleşen sürümü gösterir → `citation_context`
+  bağlamı **o sürümün** metninden alır.
+- Tembel: güncel sürümde birebir bulunan alıntı için eski sürüm hiç taranmaz
+  (`historicalVersionsScanned=0`); normalizasyon katman başına sürüm başına bir kez.
+
+**Veri modeli:** `QuoteVerification` + `versions_scanned` (bakılan **farklı** sürüm
+sayısı: güncel + eşleşmeden öncekiler), `historical_versions_scanned`,
+`found_in_old_version`, `historical_truncated`. `mismatch` artık kaç sürümün
+tarandığını söyler; kesme varsa sonuç **kesin değildir** ve bu yazılır.
+
+**Arayüz:** `quoteStateText` eski sürüm eşleşmesini “**eski bir sürümde** birebir
+bulundu … Güncel tam metinde geçmiyor; karar metni güncellenmiş olabilir.” diye
+yazar; `quoteStateTone` bu durumda **birebir olsa da** `warn` döner. Yeni
+`quoteScanNote` “3 sürüm tarandı · 2 eski sürüm [· daha eski sürümler taranmadı]”
+satırını üretir; `mismatch` metni taranan sürüm sayısını ve kesmeyi taşır.
+“Alıntıyı doğrula” düğmesi artık `latestHasText` yerine `withText > 0` ile açılır:
+en yeni sürüm metinsiz olsa da eski metinli sürüm doğrulanabilir.
+
+**Test (gerçek çekirdek, bellek içi kasa):** `precedents` **45** (39 + 6 yeni:
+yalnız eski sürümde bulunur + sürüm kimliği; eski sürümdeki `exact` günceldeki
+`whitespace`i yener; alıntı iki sürümde de varsa güncel kazanır ve `occurrences`
+güncelden sayılır; 5 sürüm sınırı + `historical_truncated` + sınır içindeki alıntı
+yine bulunur; `citation_context` **eşleşen** sürümün metninden bağlam verir;
+taranmayan durumlarda sayaç 0). Önce **3 test kırmızı** koştu (`mismatch` 2,
+`whitespace` 1). `cargo test -p dim-storage --lib` **366/366** (178 sn); clippy
+`-p dim-storage --all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+Arayüz: `tsc --noEmit` temiz (node 22.23.1), `vitest run` **379/379** (28 dosya),
+`vite build` temiz. `precedents.test.ts` 11 → 13 test.
+
+**Dürüst sınırlar:**
+
+- Tarama emsal başına **5 eski sürümle** sınırlı; daha eskisi taranmaz
+  (`historicalTruncated=true` ile bildirilir) — sessiz kesme yok ama sonuç kesin
+  değildir.
+- Eski sürümdeki eşleşme **bugünkü metni doğrulamaz**: `quote_match` boyutuna
+  `match` taşınır (belge tarafındaki sürüm davranışıyla aynı), arayüz ayrıca uyarır.
+- Katman-major sıra bilinçli: eski nüshadaki birebir eşleşme günceldeki zayıf
+  eşleşmeden **daha güçlü kanıt** sayılır. Tersi tercih edilirse sıra değişmeli.
+- Tüm sürümler belleğe alınır (en çok 6 metin); emsal tam metni üst sınırı 16 MiB
+  olduğundan teorik tepe ~96 MiB — ölçülmedi.
+- Ölçüm bellek içi kasa + elle yazılmış metinler; gerçek PDF/worker uçtan uca
+  denenmedi. Tauri penceresi açılmadı → yeni satırın görsel QA'si yok.

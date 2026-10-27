@@ -30,6 +30,7 @@ import {
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
+  quoteScanNote,
   quoteStateText,
   quoteStateTone,
   quoteToCitationMatch,
@@ -1169,7 +1170,7 @@ export function Precedents() {
             </div>
             <button
               className="btn primary"
-              disabled={busy || !versionSummary.latestHasText || quoteInput.trim().length === 0}
+              disabled={busy || versionSummary.withText === 0 || quoteInput.trim().length === 0}
               onClick={() => void verifyQuote()}
             >
               Alıntıyı doğrula
@@ -1179,6 +1180,9 @@ export function Precedents() {
           {verification ? (
             <div className={`notice${quoteStateTone(verification) === "ok" ? " ok" : quoteStateTone(verification) === "warn" ? " danger" : ""}`} role="status">
               {quoteStateText(verification)}
+              {quoteScanNote(verification) ? (
+                <div className="hint" style={{ marginTop: 6 }}>{quoteScanNote(verification)}</div>
+              ) : null}
               {verification.state !== "not_checked" ? (
                 <div style={{ marginTop: 8 }}>
                   <button

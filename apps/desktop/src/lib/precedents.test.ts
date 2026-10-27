@@ -6,6 +6,7 @@ import {
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
+  quoteScanNote,
   quoteStateText,
   quoteStateTone,
   quoteToCitationMatch,
@@ -25,6 +26,10 @@ function verification(overrides: Partial<QuoteVerificationRow>): QuoteVerificati
     matchedLength: null,
     occurrences: 0,
     reason: null,
+    versionsScanned: 0,
+    historicalVersionsScanned: 0,
+    foundInOldVersion: false,
+    historicalTruncated: false,
     quote: "itirazın reddine",
     checkedAt: "2026-10-24T00:00:00Z",
     ...overrides,
@@ -136,6 +141,54 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     expect(quoteStateTone(verification({ state: "match", method: "exact" }))).toBe("ok");
     expect(quoteStateTone(verification({ state: "match", method: "turkish_fold" }))).toBe("warn");
     expect(quoteStateTone(verification({ state: "mismatch" }))).toBe("warn");
+  });
+
+  it("eski sürümde bulunan alıntıyı gizlemez ve uyarı tonuna alır", () => {
+    const text = quoteStateText(
+      verification({
+        state: "match",
+        method: "exact",
+        matchedStart: 4,
+        versionsScanned: 3,
+        historicalVersionsScanned: 2,
+        foundInOldVersion: true,
+      }),
+    );
+    expect(text).toContain("eski bir sürümde birebir bulundu");
+    expect(text).toContain("Güncel tam metinde geçmiyor");
+    // Birebir olsa da bugünkü metni doğrulamaz.
+    expect(quoteStateTone(verification({ state: "match", method: "exact", foundInOldVersion: true }))).toBe(
+      "warn",
+    );
+  });
+
+  it("taranan sürüm sayısını ve kesmeyi söyler", () => {
+    const scanned = quoteScanNote(
+      verification({ state: "mismatch", versionsScanned: 3, historicalVersionsScanned: 2 }),
+    );
+    expect(scanned).toBe("3 sürüm tarandı · 2 eski sürüm");
+    const cut = quoteScanNote(
+      verification({
+        state: "mismatch",
+        versionsScanned: 6,
+        historicalVersionsScanned: 5,
+        historicalTruncated: true,
+      }),
+    );
+    expect(cut).toContain("daha eski sürümler taranmadı");
+    // Sınır kesildiyse "bulunamadı" kesin değildir.
+    expect(
+      quoteStateText(
+        verification({
+          state: "mismatch",
+          versionsScanned: 6,
+          historicalVersionsScanned: 5,
+          historicalTruncated: true,
+        }),
+      ),
+    ).toContain("sonuç kesin değildir");
+    // Hiç taranmayan durumda satır üretilmez.
+    expect(quoteScanNote(verification({ state: "not_checked" }))).toBeNull();
   });
 
   it("atıf kontrolü boyutuna yalnız üç değer taşır", () => {

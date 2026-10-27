@@ -304,6 +304,15 @@ pub struct QuoteVerification {
     pub occurrences: i64,
     /// `no_full_text` | `quote_too_short` | `not_found`
     pub reason: Option<String>,
+    /// Taranan tam metin sürümü sayısı (güncel + eski).
+    pub versions_scanned: i64,
+    /// Taranan **eski** sürüm sayısı. Güncel sürümde bulunan alıntı için `0`.
+    pub historical_versions_scanned: i64,
+    /// Alıntı yalnız eski bir sürümde bulundu: güncel tam metinde geçmiyor.
+    pub found_in_old_version: bool,
+    /// Daha eski sürümler `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT` sınırı
+    /// yüzünden **taranmadı**; `mismatch` bu durumda kesin değildir.
+    pub historical_truncated: bool,
     pub quote: String,
     pub checked_at: String,
 }
@@ -311,6 +320,84 @@ pub struct QuoteVerification {
 /// Alıntı doğrulaması için en kısa anlamlı alıntı. Daha kısa alıntı yanlış
 /// kesinlik üretir: “reddine” gibi tek kelime hemen her kararda geçer.
 pub(crate) const MIN_QUOTE_CHARS: usize = 8;
+
+/// Emsal başına taranacak **eski** tam metin sürümü üst sınırı (F12-T05).
+///
+/// Güncel (en yeni metinli) sürüm her zaman taranır; sınırın ötesindeki daha
+/// eski sürümler taranmaz ve sonuç `historical_truncated` ile işaretlenir —
+/// sessiz kesme yok.
+const MAX_HISTORICAL_VERSIONS_PER_PRECEDENT: usize = 5;
+
+/// Doğrulamada taranan tek tam metin sürümü.
+struct TextScope {
+    version_id: String,
+    /// En yeni metinli sürüm: katman içinde bu sürüm eski sürümlerden önce gelir.
+    is_current: bool,
+    text: String,
+}
+
+/// Eşleşme katmanı; sıra güçten zayıfa doğrudur (belge tarafıyla aynı).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QuoteTier {
+    Exact,
+    Whitespace,
+    TurkishFold,
+    Dehyphenated,
+}
+
+impl QuoteTier {
+    const ORDER: [QuoteTier; 4] = [
+        QuoteTier::Exact,
+        QuoteTier::Whitespace,
+        QuoteTier::TurkishFold,
+        QuoteTier::Dehyphenated,
+    ];
+
+    fn method(self) -> &'static str {
+        match self {
+            QuoteTier::Exact => "exact",
+            QuoteTier::Whitespace => "whitespace",
+            QuoteTier::TurkishFold => "turkish_fold",
+            QuoteTier::Dehyphenated => "dehyphenated",
+        }
+    }
+}
+
+/// Katmanın sadeleştirilmiş metni (konum eşlemesiyle).
+fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
+    match tier {
+        QuoteTier::Whitespace => collapse_ws_with_map(text),
+        QuoteTier::TurkishFold => normalize_with_map(text),
+        // `exact` bu yolu kullanmaz; en zayıf katman tire birleştirmedir.
+        QuoteTier::Exact | QuoteTier::Dehyphenated => dehyphenate_with_map(text),
+    }
+}
+
+/// Tek bir sürümde, tek katmanda eşleşme arar. Konum ve uzunluk **kaynak
+/// metnin** karakter cinsindendir; `occurrences` aynı katmanın metninde sayılır.
+fn find_in_scope(
+    scope: &TextScope,
+    quote: &str,
+    quote_chars: usize,
+    tier: QuoteTier,
+) -> Option<(i64, i64, i64)> {
+    if tier == QuoteTier::Exact {
+        let byte = scope.text.find(quote)?;
+        return Some((
+            char_offset(&scope.text, byte),
+            i64::try_from(quote_chars).unwrap_or(i64::MAX),
+            count_occurrences(&scope.text, quote),
+        ));
+    }
+    let haystack = tier_mapped(&scope.text, tier);
+    let needle = tier_mapped(quote, tier);
+    if needle.text.is_empty() {
+        return None;
+    }
+    let at = haystack.text.find(&needle.text)?;
+    let (start, span) = mapped_span(&haystack, at, needle.text.len())?;
+    Some((start, span, count_occurrences(&haystack.text, &needle.text)))
+}
 
 pub(crate) struct MappedText {
     pub(crate) text: String,
@@ -1074,9 +1161,16 @@ impl Database {
         Ok(out)
     }
 
-    /// Metin içi alıntıyı emsalin **en yeni tam metninde** doğrular
-    /// (F12-T05). Yalnız okuma yapar; sonuç kaydı ayrı atıf kontrolüdür.
-    /// Tam metin yoksa `not_checked` döner — bu “uydurulmuş” demek değildir.
+    /// Metin içi alıntıyı emsalin **en yeni tam metninde**, bulunamazsa
+    /// **eski tam metin sürümlerinde** doğrular (F12-T05).
+    ///
+    /// Katman sırası belge tarafıyla (`intext_quotes`) aynıdır: her katman için
+    /// önce güncel sürüm, sonra eski sürümler yeniden eskiye. Böylece eski
+    /// sürümdeki birebir eşleşme, günceldeki zayıf (boşluk/harf/tire)
+    /// eşleşmesini yener; aynı katmanda güncel sürüm kazanır.
+    ///
+    /// Yalnız okuma yapar; sonuç kaydı ayrı atıf kontrolüdür. Tam metin yoksa
+    /// `not_checked` döner — bu “uydurulmuş” demek değildir.
     pub fn verify_precedent_quote(
         &self,
         precedent_id: &str,
@@ -1096,6 +1190,10 @@ impl Database {
             matched_length: None,
             occurrences: 0,
             reason: None,
+            versions_scanned: 0,
+            historical_versions_scanned: 0,
+            found_in_old_version: false,
+            historical_truncated: false,
             quote: quote.to_string(),
             checked_at: now_iso(),
         };
@@ -1103,78 +1201,77 @@ impl Database {
             result.reason = Some("quote_too_short".into());
             return Ok(result);
         }
-        let latest: Option<(String, String)> = self
-            .conn()
-            .query_row(
-                "SELECT id, full_text FROM precedent_versions
-                  WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0
-                  ORDER BY acquired_at DESC, id DESC LIMIT 1",
-                [precedent_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let Some((version_id, text)) = latest else {
+        let (scopes, truncated) = self.quote_scopes(precedent_id)?;
+        if scopes.is_empty() {
             result.reason = Some("no_full_text".into());
             return Ok(result);
-        };
-        result.version_id = Some(version_id);
-        let length = i64::try_from(quote_chars).unwrap_or(i64::MAX);
-        if let Some(byte) = text.find(quote) {
-            result.state = "match".into();
-            result.method = Some("exact".into());
-            result.matched_start = Some(char_offset(&text, byte));
-            result.matched_length = Some(length);
-            result.occurrences = count_occurrences(&text, quote);
-            return Ok(result);
         }
-        let haystack = collapse_ws_with_map(&text);
-        let needle = collapse_ws_with_map(quote);
-        if !needle.text.is_empty() {
-            if let Some(at) = haystack.text.find(&needle.text) {
-                if let Some((start, span)) = mapped_span(&haystack, at, needle.text.len()) {
-                    result.state = "match".into();
-                    result.method = Some("whitespace".into());
-                    result.matched_start = Some(start);
-                    result.matched_length = Some(span);
-                    result.occurrences = count_occurrences(&haystack.text, &needle.text);
-                    return Ok(result);
-                }
-            }
-        }
-        let haystack = normalize_with_map(&text);
-        let needle = normalize_with_map(quote);
-        if !needle.text.is_empty() {
-            if let Some(at) = haystack.text.find(&needle.text) {
-                if let Some((start, span)) = mapped_span(&haystack, at, needle.text.len()) {
-                    result.state = "match".into();
-                    result.method = Some("turkish_fold".into());
-                    result.matched_start = Some(start);
-                    result.matched_length = Some(span);
-                    result.occurrences = count_occurrences(&haystack.text, &needle.text);
-                    return Ok(result);
-                }
-            }
-        }
-        // En zayıf katman: satır sonunda tire ile bölünmüş kelime.
-        // Karar metinleri çoğunlukla iki yana yaslı PDF'ten geldiği için
-        // `bedel-\nlini` yaygındır; alıntı doğal olarak `bedellini` yazılır.
-        let haystack = dehyphenate_with_map(&text);
-        let needle = dehyphenate_with_map(quote);
-        if !needle.text.is_empty() {
-            if let Some(at) = haystack.text.find(&needle.text) {
-                if let Some((start, span)) = mapped_span(&haystack, at, needle.text.len()) {
-                    result.state = "match".into();
-                    result.method = Some("dehyphenated".into());
-                    result.matched_start = Some(start);
-                    result.matched_length = Some(span);
-                    result.occurrences = count_occurrences(&haystack.text, &needle.text);
-                    return Ok(result);
-                }
+        result.historical_truncated = truncated;
+        // Bulunamazsa "hangi metne baktık" sorusunun cevabı güncel sürüm olur.
+        result.version_id = Some(scopes[0].version_id.clone());
+        for tier in QuoteTier::ORDER {
+            for (index, scope) in scopes.iter().enumerate() {
+                let Some((start, span, occurrences)) =
+                    find_in_scope(scope, quote, quote_chars, tier)
+                else {
+                    continue;
+                };
+                result.state = "match".into();
+                result.method = Some(tier.method().into());
+                result.matched_start = Some(start);
+                result.matched_length = Some(span);
+                result.occurrences = occurrences;
+                result.version_id = Some(scope.version_id.clone());
+                result.found_in_old_version = !scope.is_current;
+                // Bakılan **farklı** sürüm sayısı: güncel + eşleşmeden önceki
+                // eski sürümler. Katman tekrarı aynı sürümü yeniden saymaz.
+                result.versions_scanned = i64::try_from(index + 1).unwrap_or(i64::MAX);
+                result.historical_versions_scanned = i64::try_from(index).unwrap_or(i64::MAX);
+                return Ok(result);
             }
         }
         result.state = "mismatch".into();
         result.reason = Some("not_found".into());
+        result.versions_scanned = i64::try_from(scopes.len()).unwrap_or(i64::MAX);
+        result.historical_versions_scanned =
+            i64::try_from(scopes.len().saturating_sub(1)).unwrap_or(i64::MAX);
         Ok(result)
+    }
+
+    /// Doğrulamada taranacak tam metin kapsamları: en yeni metinli sürüm
+    /// `is_current=true`, ardından eski sürümler yeniden eskiye
+    /// `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT` ile sınırlı. İkinci dönüş
+    /// değeri, sınır yüzünden taranmayan sürüm olup olmadığını söyler.
+    fn quote_scopes(&self, precedent_id: &str) -> Result<(Vec<TextScope>, bool), StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id, full_text FROM precedent_versions
+              WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0
+              ORDER BY acquired_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([precedent_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut scopes: Vec<TextScope> = Vec::new();
+        let mut truncated = false;
+        for row in rows {
+            let (version_id, text) = row?;
+            if scopes.is_empty() {
+                scopes.push(TextScope {
+                    version_id,
+                    is_current: true,
+                    text,
+                });
+            } else if scopes.len() <= MAX_HISTORICAL_VERSIONS_PER_PRECEDENT {
+                scopes.push(TextScope {
+                    version_id,
+                    is_current: false,
+                    text,
+                });
+            } else {
+                truncated = true;
+            }
+        }
+        Ok((scopes, truncated))
     }
 
     /// Bibliyografik künye (F12-T12): künye alanları, kaynak bağlantısı ve
@@ -2161,11 +2258,180 @@ mod tests {
             .expect("doğrulama");
         assert_eq!(result.state, "match");
         assert_eq!(result.version_id.as_deref(), Some(newest.id.as_str()));
-        // Eski sürümde olan ama yenisinde olmayan alıntı artık bulunamaz.
+        // Eski sürümde kalan alıntı artık **eski sürüm** etiketiyle bulunur.
         let old = db
             .verify_precedent_quote(&p.id, "bu cümle vardı")
             .expect("doğrulama");
-        assert_eq!(old.state, "mismatch");
+        assert_eq!(old.state, "match");
+        assert_eq!(old.method.as_deref(), Some("exact"));
+        assert!(old.version_id.as_deref() != Some(newest.id.as_str()));
+    }
+
+    #[test]
+    fn quote_found_only_in_an_old_version_is_reported_with_that_version() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/20"), Some("2025/21")))
+            .expect("emsal");
+        let old = db
+            .add_precedent_text(
+                &p.id,
+                &text_of("Eski nüsha: kira bedellini ödemeyen kiracı hakkında tahliye kararı."),
+            )
+            .expect("v1");
+        db.add_precedent_text(
+            &p.id,
+            &text_of("Yeni nüsha: itirazın reddine karar verildi."),
+        )
+        .expect("v2");
+        let result = db
+            .verify_precedent_quote(&p.id, "kira bedellini ödemeyen kiracı")
+            .expect("doğrulama");
+        // Güncel metinde geçmiyor ama emsal **aynı karar**: kayıp bilgi gizlenmez.
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("exact"));
+        assert_eq!(result.version_id.as_deref(), Some(old.id.as_str()));
+    }
+
+    #[test]
+    fn exact_match_in_an_old_version_beats_a_loose_match_in_the_current_one() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/22"), Some("2025/23")))
+            .expect("emsal");
+        let old = db
+            .add_precedent_text(&p.id, &text_of("Karar: itirazın reddine karar verdi."))
+            .expect("v1");
+        // Güncel metinde çift boşluk var → yalnız `whitespace` katmanı.
+        db.add_precedent_text(&p.id, &text_of("Karar: itirazın  reddine karar verdi."))
+            .expect("v2");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verdi")
+            .expect("doğrulama");
+        // Katman sırası belge tarafıyla aynı: önce bütün katmanlar güncelde,
+        // sonra eski sürümler — ama **birebir** her zaman zayıf katmanı yener.
+        assert_eq!(result.method.as_deref(), Some("exact"));
+        assert_eq!(result.version_id.as_deref(), Some(old.id.as_str()));
+    }
+
+    #[test]
+    fn current_version_wins_when_the_quote_is_in_both_versions() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/24"), Some("2025/25")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &p.id,
+            &text_of("itirazın reddine karar verdi. itirazın reddine karar verdi."),
+        )
+        .expect("v1");
+        let newest = db
+            .add_precedent_text(&p.id, &text_of("Son karar: itirazın reddine karar verdi."))
+            .expect("v2");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verdi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.version_id.as_deref(), Some(newest.id.as_str()));
+        // `occurrences` güncel sürümün metninden sayılır (eski sürümdeki tekrar
+        // sayıya eklenmez).
+        assert_eq!(result.occurrences, 1);
+        assert_eq!(result.versions_scanned, 1);
+        assert_eq!(result.historical_versions_scanned, 0);
+        assert!(!result.found_in_old_version);
+        assert!(!result.historical_truncated);
+    }
+
+    #[test]
+    fn historical_scan_is_bounded_and_says_so() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/26"), Some("2025/27")))
+            .expect("emsal");
+        // v1 (en eski) yalnız burada geçen alıntıyı taşır; sonra 7 sürüm daha.
+        db.add_precedent_text(
+            &p.id,
+            &text_of("En eski nüsha: kira bedellini ödemeyen kiracı."),
+        )
+        .expect("v1");
+        for index in 2..=8 {
+            db.add_precedent_text(
+                &p.id,
+                &text_of(&format!("Nüsha {index}: itiraz reddedildi.")),
+            )
+            .expect("sürüm");
+        }
+        let result = db
+            .verify_precedent_quote(&p.id, "kira bedellini ödemeyen kiracı")
+            .expect("doğrulama");
+        // 5 eski sürüm taranır (v8..v4); v1 sınırın ötesinde kalır.
+        assert_eq!(result.state, "mismatch");
+        assert!(result.historical_truncated, "kesme sessiz olmamalı");
+        assert_eq!(result.historical_versions_scanned, 5);
+        assert_eq!(result.versions_scanned, 6);
+        // Sınır içinde kalan bir alıntı bulunur ve kesme yine bildirilir.
+        let found = db
+            .verify_precedent_quote(&p.id, "Nüsha 5: itiraz reddedildi")
+            .expect("doğrulama");
+        assert_eq!(found.state, "match");
+        assert!(found.found_in_old_version);
+        assert!(found.historical_truncated);
+    }
+
+    #[test]
+    fn citation_context_reads_the_version_that_matched() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/28"), Some("2025/29")))
+            .expect("emsal");
+        let quote = "kira bedellini ödemeyen kiracı";
+        db.add_precedent_text(
+            &p.id,
+            &text_of("Eski nüsha gerekçesi: kira bedellini ödemeyen kiracı hakkında tahliyeye karar verildi."),
+        )
+        .expect("v1");
+        db.add_precedent_text(&p.id, &text_of("Yeni nüsha: hüküm bozuldu."))
+            .expect("v2");
+        let check = db
+            .record_citation_check(&NewCitationCheck {
+                input_document_version_id: "v-old".into(),
+                extracted_citation: quote.into(),
+                candidate_precedent_id: Some(p.id.clone()),
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                meaning_review: "not_reviewed".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+        let verification = db.verify_precedent_quote(&p.id, quote).expect("doğrulama");
+        assert!(verification.found_in_old_version);
+        let context = db.citation_context(&check.id, 6).expect("bağlam");
+        // Bağlam **eşleşen** sürümün metninden gelir; güncel metne karışmaz.
+        assert!(context.found, "{context:?}");
+        assert!(context.before.ends_with(": "), "{context:?}");
+        assert!(context.after.starts_with(" hakkı"), "{context:?}");
+    }
+
+    #[test]
+    fn unscanned_states_report_zero_versions() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/30"), Some("2025/31")))
+            .expect("emsal");
+        let no_text = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verdi")
+            .expect("doğrulama");
+        assert_eq!(no_text.state, "not_checked");
+        assert_eq!(no_text.versions_scanned, 0);
+        assert!(!no_text.found_in_old_version);
+
+        db.add_precedent_text(&p.id, &text_of("Karar: itirazın reddine karar verdi."))
+            .expect("metin");
+        let too_short = db
+            .verify_precedent_quote(&p.id, "reddine")
+            .expect("doğrulama");
+        assert_eq!(too_short.reason.as_deref(), Some("quote_too_short"));
+        assert_eq!(too_short.versions_scanned, 0);
     }
 
     #[test]

@@ -596,6 +596,14 @@ export type QuoteVerificationRow = {
   matchedLength: number | null;
   occurrences: number;
   reason: "no_full_text" | "quote_too_short" | "not_found" | null;
+  /** Taranan tam metin sürümü sayısı (güncel + eski). */
+  versionsScanned: number;
+  /** Taranan **eski** sürüm sayısı; güncel sürümde bulunduysa 0. */
+  historicalVersionsScanned: number;
+  /** Alıntı yalnız eski bir sürümde bulundu. */
+  foundInOldVersion: boolean;
+  /** Daha eski sürümler sınır yüzünden taranmadı; `mismatch` kesin değil. */
+  historicalTruncated: boolean;
   quote: string;
   checkedAt: string;
 };

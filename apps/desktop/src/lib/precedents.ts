@@ -18,17 +18,31 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
       : ` (konum ${(verification.matchedStart + 1).toLocaleString("tr-TR")})`;
   const repeated =
     verification.occurrences > 1 ? ` · metinde ${verification.occurrences} kez geçiyor` : "";
+  // Eski sürümde bulunan alıntı gizlenmez: güncel metinde geçmiyor.
+  const oldNote = verification.foundInOldVersion
+    ? " Güncel tam metinde geçmiyor; karar metni güncellenmiş olabilir."
+    : "";
+  const where = verification.foundInOldVersion ? "eski bir sürümde" : "metinde";
   switch (verification.state) {
     case "match": {
-      if (verification.method === "exact") return `Alıntı metinde birebir bulundu${at}${repeated}.`;
+      if (verification.method === "exact")
+        return `Alıntı ${where} birebir bulundu${at}${repeated}.${oldNote}`;
       if (verification.method === "whitespace")
-        return `Alıntı yalnız satır/boşluk farkıyla bulundu${at}${repeated}. Birebir değil.`;
+        return `Alıntı yalnız satır/boşluk farkıyla ${where} bulundu${at}${repeated}. Birebir değil.${oldNote}`;
       if (verification.method === "dehyphenated")
-        return `Alıntı yalnız satır sonunda tire ile bölünmüş kelime birleştirilerek bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.`;
-      return `Alıntı Türkçe harf farkıyla bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.`;
+        return `Alıntı yalnız satır sonunda tire ile bölünmüş kelime birleştirilerek ${where} bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.${oldNote}`;
+      return `Alıntı Türkçe harf farkıyla ${where} bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.${oldNote}`;
     }
-    case "mismatch":
-      return "Alıntı bu tam metinde bulunamadı. Bu tek başına “uydurulmuş” demek değildir; başka sürüm veya çeviri olabilir.";
+    case "mismatch": {
+      const scope =
+        verification.historicalVersionsScanned > 0
+          ? `güncel metinde ve taranan ${verification.historicalVersionsScanned} eski sürümde`
+          : "bu tam metinde";
+      const cut = verification.historicalTruncated
+        ? " Daha eski sürümler taranmadı; sonuç kesin değildir."
+        : "";
+      return `Alıntı ${scope} bulunamadı. Bu tek başına “uydurulmuş” demek değildir; başka sürüm veya çeviri olabilir.${cut}`;
+    }
     default:
       if (verification.reason === "quote_too_short")
         return "Alıntı çok kısa (en az 8 karakter gerekir); doğrulanmadı.";
@@ -36,10 +50,22 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
   }
 }
 
+/** Kaç sürümün tarandığını söyleyen tek satır; sayı çekirdekten gelir. */
+export function quoteScanNote(verification: QuoteVerificationRow): string | null {
+  if (verification.state === "not_checked") return null;
+  const parts = [`${verification.versionsScanned} sürüm tarandı`];
+  if (verification.historicalVersionsScanned > 0)
+    parts.push(`${verification.historicalVersionsScanned} eski sürüm`);
+  if (verification.historicalTruncated) parts.push("daha eski sürümler taranmadı");
+  return parts.join(" · ");
+}
+
 export function quoteStateTone(
   verification: QuoteVerificationRow,
 ): "ok" | "warn" | "muted" {
   if (verification.state === "match") {
+    // Eski sürümdeki birebir eşleşme bugünkü metni doğrulamaz → uyarı tonu.
+    if (verification.foundInOldVersion) return "warn";
     return verification.method === "exact" ? "ok" : "warn";
   }
   if (verification.state === "mismatch") return "warn";
