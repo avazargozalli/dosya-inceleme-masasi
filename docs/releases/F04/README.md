@@ -224,6 +224,12 @@ Web `tsc --noEmit` temiz, `vitest run` **382/382**. clippy `-p dim-ingest` ve ta
 - `TMPDIR` düzeltmesi macOS'ta ölçüldü; Windows'ta `TMP/TEMP` verilir ama **denenmedi**.
 - Tauri penceresi açılmadı → aşama satırının ve iptal düğmesinin **görsel QA'si yok**.
 
+**Commit/CI:** `7ebc21b` → CI `40583920367` **7/7 yeşil** (sözleşmeler, arayüz
+tsc+vitest+build, rust macos-14 + ubuntu-latest — `cargo clippy --workspace
+--all-targets -D warnings` dahil, masaüstü kabuk — tauri clippy `-D warnings` dahil,
+belge worker'ı pytest+duman, SBOM). `HEAD == origin/main`; `git status`ta yalnız iki
+`Cargo.lock` (başka ajanın, **dokunulmadı**).
+
 ## İş kuyruğu iptali (2026-10-26, F04-T07)
 
 **Ölçülen kusur (#43):** `job_cancel` yürüyen ayrıştırmaya yalnız `canceling` işareti
