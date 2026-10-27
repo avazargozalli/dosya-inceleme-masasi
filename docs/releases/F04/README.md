@@ -274,6 +274,90 @@ açlık önleyici, kuyruk bildirimi, boş havuz; +1 gerçek kasa/worker ölçüm
   belge akışından açar.
 - Windows'ta süreç/paralellik yolu denenmedi.
 
+## §17.3 worker kaynak bütçeleri (2026-10-27)
+
+**Neden:** şartname §17.3 "süreç başına CPU/bellek/çıktı bütçesi; salt bir
+timeout değeri bütün belgeler için kullanılmaz; bütçe aşımı **ayrı hata kodu**
+taşır" diyor. Önceki durum tek bir `DEFAULT_TIMEOUT` (30 sn) idi: render,
+ayrıştırma, OCR, redaksiyon ve AI çağrısı aynı sınırı paylaşıyordu, bellek/çıktı
+sınırı yoktu ve aşım `E_WORKER_TIMEOUT` (transport arızası gibi, **tekrar
+denenebilir**) olarak raporlanıyordu.
+
+**Yapılan (dikey dilim):**
+
+- **`crates/ingest/src/budget.rs` (yeni):** beş profil — `render`, `extract`,
+  `ocr`, `redaction`, `ai` — × beş sınır: CPU saniyesi, bellek, yanıt/çıktı
+  baytı, açık dosya, duvar saati. Profiller **birbirinin yerine geçmez** (test
+  ağırlık sırasını ve AI profilinde CPU sınırının bilinçli yokluğunu tutuyor).
+- **Sınır uygulama yolu:** POSIX `sh` zarfı (`ulimit -t`, `ulimit -n` +
+  `exec "$0" "$@"`). Argümanlar kabuk tarafından **yorumlanmaz** (konumsal
+  parametre): `$(whoami)`, `a b`, `tek'tırnak` birebir geçiyor (test). `ulimit`
+  uygulanamazsa zarf `exit 126` verir → `E_WORKER_LIMIT` ("bütçeli" görünen
+  sınırsız süreç yok).
+- **Ayrı hata kodları:** `WorkerError::Budget` → **`E_WORKER_BUDGET`**,
+  `retryable=false` (§17.4: bütçe aşımı otomatik tekrar döngüsüne girmez);
+  sınır uygulanamadı → `E_WORKER_LIMIT`. Duvar saati aşımı bütçeli işte
+  `E_WORKER_TIMEOUT` **değil** `E_WORKER_BUDGET(Time)`; bütçesiz istemcide eski
+  davranış korunur (protokol testleri).
+- **Ölçüm yolu:** çıktı sayacı okuyucu iş parçacığında (istek başına sıfırlanır,
+  parçalı yanıtta parçalar toplanır); bellek gözcüsü RSS örnekler (macOS
+  `ps -o rss=`, Linux `/proc/<pid>/status`; `libproc` `unsafe` ister, kullanılmaz)
+  ve sınır aşılınca süreci öldürür; `SIGXCPU`(24)/`SIGXFSZ`(25) sinyal yolu da
+  ihlali rapora yazar (`BudgetUsage::mark_violation` — ilk neden korunur).
+- **Tauri:** `spawn_worker(kind)`; 8 çağrı yeri gerçek türle bağlandı
+  (önizleme/rapor → `render`, ayrıştırma OCR açıksa `ocr` değilse `extract`,
+  redaksiyon → `redaction`, envanter/toplu içe aktarma → `extract`).
+  `ParseResultView.budget` iş sonrası **uygulanan** profili ve gözlenen tepe
+  değerleri taşır; yeni `worker_budgets` komutu profilleri çekirdekten okur
+  (arayüz kendi sabitini yazmaz).
+- **Arayüz:** Ayarlar → **"Kaynak bütçeleri"** kartı (beş profil × beş sınır,
+  tablo + tek satır özet), ayrıştırma sonuç satırında gerçek tepe bellek/yanıt/
+  süre. `lib/budget.ts` 10 saf yardımcı + 8 vitest.
+- **Bulunan ve düzeltilen iki kusur (bu tur):**
+  1. **Sinyal yolundan gelen ihlal rapora yazılmıyordu** (`violated: None` iken
+     hata `Cpu`) → `mark_violation`.
+  2. **Kısa işte "tepe bellek 0 MiB"** raporlanıyordu: gözcü 500 ms'de bir
+     uyanıyor, 433 ms'lik iş hiç örnek almıyordu. Düzeltme: gözcü **ilk örneği
+     hemen** alır + `budget_report()` rapor anında son örneği alır (`note_peak`;
+     süreç yaşıyorsa, `try_wait` ile toplanmış pid'e örnek alınmaz). Regresyon
+     testi: `report_samples_peak_memory_even_when_the_job_ends_before_the_watchdog_wakes`
+     (bellek bütçesi kapalı → gözcü koşmaz, tek örnek rapor anındadır).
+
+**ÖLÇÜM (gerçek Python worker + PyMuPDF, `progress-pages.pdf` 4 sayfa, debug,
+Apple M2, bu turda yeniden koşuldu):** süreç süresi **115,9 ms**, tepe bellek
+**57 MiB**, yanıt **1.431 B**, ihlal **yok**; `extract` profili (120 sn CPU,
+1024 MiB bellek, 32 MiB çıktı, 256 dosya, 300 sn) aşılmıyor → bellek tavanının
+~%5,6'sı kullanılıyor. Bütçe sınırları sınama yoluyla doğrulandı: sonsuz döngü
+`SIGXCPU` ile ~1 sn'de durdu, 200 MiB ayıran süreç 64 MiB sınırında
+`Budget(Memory)` verdi, 200 KB yanıt 64 KiB çıktı bütçesinde reddedildi, 1 sn
+duvar saati `E_WORKER_BUDGET(Time)` döndü.
+
+**Test:** `dim-ingest` lib **63 geçti / 1 ignored** (+9 `budget`: profil
+sıralaması, sınır arama, zarf metni, sayaç/ilk-neden, sıfırlama; +5 worker:
+CPU, bellek, çıktı, duvar saati, rapor-anı örneklemesi), tauri **23 geçti /
+1 ignored** (+2: bütçe görünümü çekirdek raporuyla birebir, beş profil
+çekirdekten gelir); arayüz `budget.ts` üzerinde **39 gerçek assert** (vitest'siz
+node tip-sıyırma koşucusu; `node_modules` yok). clippy `-p dim-ingest
+--all-targets -D warnings` temiz, tauri clippy `--all-targets -D warnings`
+temiz, rustfmt iki manifest temiz.
+
+**Dürüst sınırlar:**
+
+- `sh`/`ulimit` **yalnız POSIX**: Windows'ta CPU ve açık dosya sınırı
+  **uygulanmaz** (süre ve çıktı bütçesi uygulanır). Windows'ta denenmedi.
+- Bellek gözcüsü **aralıklı** örnekler (500 ms): süreç örnekler arasında sınırı
+  aşabilir; aşım bayrağı yazılır ama "hiç aşmadı" garantisi yoktur. macOS'ta her
+  örnek bir `ps` süreci başlatır (bütçe yoksa gözcü hiç koşmaz).
+- **AI profili süreç değil:** CPU/dosya sınırı yok, yalnız duvar saati ve yanıt
+  boyutu ölçülür; modelin bellek kullanımı bu bütçeye girmez.
+- Profil değerleri **başlangıç ayarları** (ölçümle gerekçelendirilmiş ama tek
+  belge/tek makine): büyük ve taranmış belgelerde tavanlar F15 ölçümüyle
+  güncellenmeli.
+- Bütçe aşımı işi `failed` yapar; **kısmi çıktı uygulanmaz** (worker zaten
+  kasaya yazmaz) ama yarım ayrıştırma raporlanmaz — kullanıcı yeniden başlatır.
+- Arayüzün **görsel QA'si yok** (Tauri penceresi açılmadı); kartın okunabilirliği
+  ve tablo taşması denenmedi.
+
 ## Bilinen sınırlar
 
 - Erişilebilirlik (klavye/ekran okuyucu) tam denetimi F15'te.

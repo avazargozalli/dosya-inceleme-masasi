@@ -15,6 +15,7 @@ import {
 } from "../lib/api";
 import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
 import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
+import { budgetSummary, budgetWarning } from "../lib/budget";
 import { Notes } from "../components/Notes";
 import { DualReader } from "../components/DualReader";
 import { targetFromAnchor, type ReaderTarget } from "../lib/reader";
@@ -219,10 +220,17 @@ export function Cases() {
       );
       // Hangi kodlamanın kullanıldığı worker uyarısından okunur; tahmin edilmez.
       const encodingNote = result.warnings.find((warning) => warning.includes("kodlama"));
+      // §17.3: uygulanan bütçe ve gözlenen tepe değerler çekirdekten gelir.
+      const budgetLine = result.budget ? ` · ${budgetSummary(result.budget)}` : "";
+      // Başarılı işte ihlal beklenmez (ihlal işi durdurur); yine de görülürse
+      // hata olarak değil, açık bir uyarı satırı olarak yazılır.
+      const budgetAlert = result.budget ? budgetWarning(result.budget) : null;
       setNotice(
         `Ayrıştırma ${result.parseRun.status}: ${result.pages} sayfa, ${result.storedSegments} metin bloğu` +
           (result.warnings.length ? ` · ${result.warnings.length} uyarı` : "") +
-          (encodingNote ? ` · ${encodingNote}` : ""),
+          (encodingNote ? ` · ${encodingNote}` : "") +
+          budgetLine +
+          (budgetAlert ? ` · ${budgetAlert}` : ""),
       );
     } catch (e) {
       setError(toApiError(e));

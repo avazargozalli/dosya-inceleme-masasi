@@ -7,6 +7,7 @@ use base64::Engine as _;
 use dim_cli_adapters::{
     discover, find_on_path, run_probe, spec as adapter_spec, DiscoveryState, RunStatus, SPECS,
 };
+use dim_ingest::budget::{BudgetReport, WorkerBudget, WorkerKind};
 use dim_ingest::inventory::DocumentInventory;
 use dim_ingest::packaging::{
     read_manifest, verify_package, ManifestTotals, PackageVerification, TesseractStatus,
@@ -537,6 +538,61 @@ mod tests {
         );
         let value = serde_json::to_value(&open).expect("olay JSON");
         assert!(value["total"].is_null());
+    }
+
+    /// **§17.3 bütçe görünümü:** çekirdekten gelen rapor arayüz tipine **birebir**
+    /// çevrilir; sınır uydurulmaz, ihlal kodu çekirdeğin kodudur.
+    #[test]
+    fn worker_budget_view_mirrors_the_core_report() {
+        let budget = WorkerBudget::for_kind(WorkerKind::Ocr);
+        let report = BudgetReport {
+            budget,
+            elapsed: std::time::Duration::from_millis(1234),
+            output_bytes: 2048,
+            peak_memory_bytes: 96 * 1024 * 1024,
+            violated: Some(dim_ingest::budget::BudgetDimension::Memory),
+        };
+        let view = WorkerBudgetView::from_report(&report);
+        assert_eq!(view.kind, "ocr");
+        assert_eq!(view.label, "OCR");
+        assert_eq!(view.cpu_seconds, budget.cpu_seconds);
+        assert_eq!(view.memory_bytes, budget.memory_bytes);
+        assert_eq!(view.output_bytes, budget.output_bytes);
+        assert_eq!(view.open_files, budget.open_files);
+        assert_eq!(view.wall_clock_seconds, budget.wall_clock.as_secs());
+        assert_eq!(view.elapsed_ms, 1234);
+        assert_eq!(view.observed_output_bytes, 2048);
+        assert_eq!(view.peak_memory_bytes, 96 * 1024 * 1024);
+        assert_eq!(view.violated.as_deref(), Some("memory"));
+        // İhlal yoksa `null` — "0" ya da boş metin değil.
+        let clean = WorkerBudgetView::from_report(&BudgetReport {
+            violated: None,
+            ..report
+        });
+        assert!(clean.violated.is_none());
+    }
+
+    /// Profiller arayüze **çekirdekten** gelir (`WorkerKind::ALL` sırası korunur);
+    /// AI profilinde CPU sınırı yoktur (çağrı yerel süreç değil).
+    #[test]
+    fn worker_budgets_lists_all_profiles_from_the_core() {
+        let profiles = worker_budgets();
+        let codes: Vec<&str> = profiles
+            .iter()
+            .map(|profile| profile.kind.as_str())
+            .collect();
+        assert_eq!(codes, vec!["render", "extract", "ocr", "redaction", "ai"]);
+        for profile in &profiles {
+            assert!(!profile.label.is_empty(), "{}: etiket", profile.kind);
+            assert!(profile.memory_bytes > 0, "{}: bellek", profile.kind);
+            assert!(profile.output_bytes > 0, "{}: çıktı", profile.kind);
+            assert!(profile.wall_clock_seconds > 0, "{}: süre", profile.kind);
+        }
+        let ai = profiles
+            .iter()
+            .find(|p| p.kind == "ai")
+            .expect("ai profili");
+        assert_eq!(ai.cpu_seconds, 0, "AI çağrısı yerel süreç değil");
     }
 
     /// **Kuyruk sayacı (F04-T07 → kart):** aynı kareler iş satırına yazılır;
@@ -1398,7 +1454,7 @@ pub fn document_page_preview(
         .join(format!("{}.blb", blob.storage_id));
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Render)?;
     let rendered = worker.render_page(&data, page_index, dpi);
     worker.shutdown();
     let rendered = rendered?;
@@ -1461,7 +1517,7 @@ pub fn document_inventory(
         .join(format!("{}.blb", blob.storage_id));
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Extract)?;
     let extracted = worker.inventory(&data, &blob.mime);
     worker.shutdown();
     let inventory = extracted?;
@@ -1822,6 +1878,8 @@ pub struct ParseResultView {
     pub pages: usize,
     pub stored_segments: usize,
     pub warnings: Vec<String>,
+    /// §17.3: uygulanan bütçe profili ve gözlenen tepe değerler.
+    pub budget: Option<WorkerBudgetView>,
 }
 
 /// Paketlenmiş worker ikilisini arar. Sıra: `DIM_WORKER_EXE`, uygulama yanındaki
@@ -2017,9 +2075,12 @@ pub async fn worker_package_report(
     Ok(view)
 }
 
-fn spawn_worker() -> Result<WorkerClient, ApiError> {
+/// Worker'ı **kaynak bütçesiyle** başlatır (§17.3). Türü çağıran seçer; sınırlar
+/// `dim_ingest::budget` içinde tek yerde tanımlıdır (kural kopyalanmaz).
+fn spawn_worker(kind: WorkerKind) -> Result<WorkerClient, ApiError> {
+    let budget = WorkerBudget::for_kind(kind);
     if let Some(exe) = bundled_worker_exe() {
-        return WorkerClient::spawn_bundled(&exe).map_err(Into::into);
+        return WorkerClient::spawn_bundled_budgeted(&exe, budget).map_err(Into::into);
     }
     let dir = dev_worker_dir().ok_or_else(|| {
         ApiError::new(
@@ -2028,7 +2089,78 @@ fn spawn_worker() -> Result<WorkerClient, ApiError> {
         )
     })?;
     let python = std::env::var("DIM_WORKER_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    WorkerClient::spawn_dev(Path::new(&python), &dir).map_err(Into::into)
+    WorkerClient::spawn_dev_budgeted(Path::new(&python), &dir, budget).map_err(Into::into)
+}
+
+/// §17.3 bütçe profili (arayüzde liste). Değerler ölçümle değişebilir; burada
+/// yalnız **okunur**, hesaplanmaz.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerBudgetProfileView {
+    pub kind: String,
+    pub label: String,
+    pub cpu_seconds: u64,
+    pub memory_bytes: u64,
+    pub output_bytes: u64,
+    pub open_files: u32,
+    pub wall_clock_seconds: u64,
+}
+
+/// Bir işte **uygulanan** bütçe ve gözlenen kullanım (yalnız sayı; belge adı,
+/// yol, içerik yok).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerBudgetView {
+    pub kind: String,
+    pub label: String,
+    pub cpu_seconds: u64,
+    pub memory_bytes: u64,
+    pub output_bytes: u64,
+    pub open_files: u32,
+    pub wall_clock_seconds: u64,
+    pub elapsed_ms: u64,
+    pub observed_output_bytes: u64,
+    pub peak_memory_bytes: u64,
+    pub violated: Option<String>,
+}
+
+impl WorkerBudgetView {
+    fn from_report(report: &BudgetReport) -> Self {
+        let budget = report.budget;
+        Self {
+            kind: budget.kind.code().to_string(),
+            label: budget.kind.label_tr().to_string(),
+            cpu_seconds: budget.cpu_seconds,
+            memory_bytes: budget.memory_bytes,
+            output_bytes: budget.output_bytes,
+            open_files: budget.open_files,
+            wall_clock_seconds: budget.wall_clock.as_secs(),
+            elapsed_ms: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
+            observed_output_bytes: report.output_bytes,
+            peak_memory_bytes: report.peak_memory_bytes,
+            violated: report.violated.map(|dim| dim.code().to_string()),
+        }
+    }
+}
+
+/// §17.3 bütçe profilleri (Ayarlar → kaynak bütçeleri kartı).
+#[tauri::command]
+pub fn worker_budgets() -> Vec<WorkerBudgetProfileView> {
+    WorkerKind::ALL
+        .iter()
+        .map(|kind| {
+            let budget = WorkerBudget::for_kind(*kind);
+            WorkerBudgetProfileView {
+                kind: budget.kind.code().to_string(),
+                label: budget.kind.label_tr().to_string(),
+                cpu_seconds: budget.cpu_seconds,
+                memory_bytes: budget.memory_bytes,
+                output_bytes: budget.output_bytes,
+                open_files: budget.open_files,
+                wall_clock_seconds: budget.wall_clock.as_secs(),
+            }
+        })
+        .collect()
 }
 
 /// Arayüze yayılan ayrıştırma ilerlemesi (F04-T07).
@@ -2398,6 +2530,8 @@ fn commit_parse(
         pages: pages.len(),
         stored_segments: stored,
         warnings: extraction.warnings,
+        // Bütçe raporu çağıran tarafta (`run_parse`) eklenir.
+        budget: None,
     })
 }
 
@@ -2524,7 +2658,15 @@ fn run_parse(
                 pool.acquire_noticing(weight, &mut notice)
             };
             let extracted = (|| {
-                let mut worker = spawn_worker()?;
+                // §17.3: OCR açıksa OCR profili (geniş süre/bellek), değilse
+                // metin çıkarma profili. Profil seçimi belgeye göre değil,
+                // **yapılan işe** göre yapılır.
+                let kind = if ocr_enabled {
+                    WorkerKind::Ocr
+                } else {
+                    WorkerKind::Extract
+                };
+                let mut worker = spawn_worker(kind)?;
                 let killer = worker.killer();
                 // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
                 // beklemeden bu süreci öldürür (F04-T07). Yuva düşünce temizlenir.
@@ -2550,19 +2692,26 @@ fn run_parse(
                     options.password.as_deref(),
                     &mut forward,
                 )?;
+                // §17.3: uygulanan bütçe + gözlenen tepe bellek/çıktı, süreç
+                // kapanmadan önce alınır (kapanınca sayaçlar kaybolur).
+                let budget_report = worker.budget_report();
                 worker.shutdown();
                 // İptal, çıkarımdan sonra ama yazmadan önce geldiyse: hiçbir
                 // çıktı yazılmaz, koşu `cancelled` kapanır (§17.2 `canceled`).
                 if killer.is_canceled() {
                     return Err(canceled_parse_error());
                 }
-                Ok::<(dim_ingest::worker::Extraction, serde_json::Value), ApiError>((
-                    extraction, caps,
-                ))
+                Ok::<_, ApiError>((extraction, caps, budget_report))
             })()?;
             drop(permit);
             let guard = lock_vault(hub);
-            commit_parse(&guard, &prep, extracted.0, extracted.1, &applied, &mut sink)
+            let mut view =
+                commit_parse(&guard, &prep, extracted.0, extracted.1, &applied, &mut sink)?;
+            // §17.3: profilin adı/sınırları ve gözlenen tepe değerler yanıtta.
+            view.budget = extracted
+                .2
+                .map(|report| WorkerBudgetView::from_report(&report));
+            Ok(view)
         })()
     };
 
@@ -5099,7 +5248,7 @@ pub fn precedent_bulk_import(
 
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Extract)?;
 
     let mut items = Vec::with_capacity(input.files.len());
     for raw in &input.files {
@@ -5360,7 +5509,7 @@ pub fn document_redact(
         .join(format!("{}.blb", blob.storage_id));
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Redaction)?;
     let outcome = worker.redact(&data, &terms)?;
     worker.shutdown();
 
@@ -5707,7 +5856,7 @@ pub fn export_docx(
         ],
     });
 
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Render)?;
     let bytes = worker.render_report(&payload)?;
     worker.shutdown();
     write_export(&dest_path, &bytes)?;
@@ -5760,7 +5909,7 @@ pub fn export_pdf(
         ],
     });
 
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Render)?;
     let bytes = worker.render_report_pdf(&payload)?;
     worker.shutdown();
     write_export(&dest_path, &bytes)?;
@@ -6143,7 +6292,7 @@ pub fn document_redact_regions(
     let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
 
     let pairs: Vec<(u32, [f64; 4])> = regions.iter().map(|r| (r.page_index, r.rect)).collect();
-    let mut worker = spawn_worker()?;
+    let mut worker = spawn_worker(WorkerKind::Redaction)?;
     let outcome = worker.redact_regions(&data, &pairs)?;
     worker.shutdown();
 

@@ -1517,6 +1517,34 @@ export type ParseResult = {
   pages: number;
   storedSegments: number;
   warnings: string[];
+  /** §17.3 uygulanan kaynak bütçesi ve gözlenen tepe değerler. */
+  budget: WorkerBudgetView | null;
+};
+
+/**
+ * §17.3 worker kaynak bütçesi (§17.3 profili).
+ *
+ * Sınırlar çekirdekte tek yerde tanımlıdır (`crates/ingest/src/budget.rs`);
+ * arayüz yalnız **gösterir**, hesaplamaz.
+ */
+export type WorkerBudgetProfile = {
+  kind: string;
+  label: string;
+  /** Saniye; `0` → CPU sınırı uygulanmaz (ör. AI profilinde). */
+  cpuSeconds: number;
+  memoryBytes: number;
+  outputBytes: number;
+  openFiles: number;
+  wallClockSeconds: number;
+};
+
+/** Bir işte gerçekten uygulanan bütçe ve gözlenen kullanım (yalnız sayı). */
+export type WorkerBudgetView = WorkerBudgetProfile & {
+  elapsedMs: number;
+  observedOutputBytes: number;
+  peakMemoryBytes: number;
+  /** Aşılan boyut: `cpu|memory|output|open_files|time` ya da `null`. */
+  violated: string | null;
 };
 
 /**
@@ -1706,6 +1734,8 @@ export const api = {
   providerProbeCancel: () => invoke<boolean>("provider_probe_cancel"),
   cliArchReport: () => invoke<CliArchReport>("cli_arch_report"),
   workerPackageReport: () => invoke<WorkerPackageView>("worker_package_report"),
+  /** §17.3 kaynak bütçesi profilleri (tek kaynak: çekirdek `budget.rs`). */
+  workerBudgets: () => invoke<WorkerBudgetProfile[]>("worker_budgets"),
   cliCapabilityMatrix: () => invoke<CliCapabilityMatrix>("cli_capability_matrix"),
   cliAttackProbe: () => invoke<CliAttackReport>("cli_attack_probe"),
   cliResidueScan: (adapterId: string) =>

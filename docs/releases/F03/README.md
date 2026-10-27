@@ -85,7 +85,9 @@ edildi (yeni push), kırmızı değildi.
   (`E_DB_MIGRATION_FK`). Kanıt:
   `upgrade_tests::job_state_rewrite_keeps_attempts_and_remaps_legacy_states`.
 - **Dürüst sınırlar:** Kuyruk yürütücüsü seridir (kasa başına tek yazıcı);
-  paralel belge worker'ları (şartname §17.3 "en fazla iki") uygulanmadı.
+  paralel belge worker'ları (şartname §17.3 "en fazla iki") **F04'te** uygulandı
+  (`parse_pool.rs`, ölçüm **1,71×**) ve worker kaynak bütçeleri (CPU/bellek/
+  çıktı/dosya/süre profilleri, `E_WORKER_BUDGET`) **F04/§17.3** turunda eklendi.
   `completed`/`canceled` durumundaki iş **yeniden açılamaz** (kullanıcı yeni
   bir ayrıştırma başlatır; yeni satır açılır). `interrupted → queued` "yeniden
   doğrulama" adımı bugün girdi parmak izinin değişmediği varsayımıyla yapılır

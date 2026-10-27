@@ -17,11 +17,13 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use crate::budget::{BudgetBreak, BudgetDimension, BudgetReport, BudgetUsage, WorkerBudget};
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -54,6 +56,15 @@ pub enum WorkerError {
     /// zaman aşımından ayrıdır: otomatik tekrar denenmez (şartname §17.4).
     #[error("ayrıştırma iptal edildi")]
     Canceled,
+    /// Kaynak bütçesi aşıldı (§17.3). Zaman aşımından **ayrı** koddur: hangi
+    /// sınırın aşıldığını taşır ve otomatik tekrar denenmez — aynı belge aynı
+    /// sınırı yeniden aşar, tekrar denemek kullanıcıyı döngüye sokar (§17.4).
+    #[error("worker bütçesi aşıldı: {0}")]
+    Budget(BudgetBreak),
+    /// `sh` zarfı sınırları uygulayamadı (`ulimit` başarısız → `exit 126`).
+    /// Sınırsız çalışan bir worker "bütçeli" sayılmaz: iş baştan reddedilir.
+    #[error("worker kaynak sınırları uygulanamadı; süreç başlatılmadı")]
+    LimitsNotApplied,
     #[error("worker zaman aşımına uğradı")]
     Timeout,
     #[error("worker çerçevesi 1 MiB sınırını aşıyor")]
@@ -76,6 +87,8 @@ impl WorkerError {
             Self::Spawn(_) => "E_WORKER_SPAWN",
             Self::Disconnected => "E_WORKER_DISCONNECTED",
             Self::Canceled => "E_WORKER_CANCELED",
+            Self::Budget(_) => "E_WORKER_BUDGET",
+            Self::LimitsNotApplied => "E_WORKER_LIMIT",
             Self::Timeout => "E_WORKER_TIMEOUT",
             Self::FrameTooLarge => "E_WORKER_FRAME",
             Self::Protocol(_) => "E_WORKER_PROTOCOL",
@@ -404,6 +417,19 @@ pub struct WorkerClient {
     rx: Receiver<Result<Vec<u8>, String>>,
     next_id: u64,
     timeout: Duration,
+    /// §17.3 kaynak bütçesi. `None` yalnız protokol testleri/araçları içindir;
+    /// ürün yolları (`spawn_*_budgeted`) her zaman bir profil verir.
+    budget: Option<WorkerBudget>,
+    /// Gözlenen kullanım: okuyucu iş parçacığı çıktıyı, bellek gözcüsü tepeyi
+    /// yazar. İkisi de **sayı** taşır (belge adı/yolu yok).
+    usage: Arc<Mutex<BudgetUsage>>,
+    /// Süreç başlatma anı; raporun `elapsed` alanı bundan türetilir.
+    started: Instant,
+    /// Bellek gözcüsünün durdurma bayrağı (`Drop` işaretler).
+    watchdog: Option<Arc<AtomicBool>>,
+    /// Süreç kimliği: rapor anındaki son bellek örneği için (gözcü aralığından
+    /// bağımsız).
+    pid: u32,
 }
 
 /// Süren worker'ı durdurma tutamağı. `WorkerClient` sahibi onu bir yuvada
@@ -455,11 +481,60 @@ impl std::fmt::Debug for WorkerClient {
     }
 }
 
+/// Worker sürecini başlatacak komutu kurar.
+///
+/// Bütçe varsa POSIX `sh` zarfı sınırları **çocuğa** uygular
+/// (`WorkerBudget::limit_script`) ve süreci `exec` ile devralır: pid değişmez,
+/// borular aynı kalır, `WorkerKiller` yine doğru süreci öldürür. Bütçe yoksa
+/// program doğrudan koşar (yalnız protokol testleri/araçları).
+fn worker_command(program: &Path, args: &[&str], budget: Option<WorkerBudget>) -> Command {
+    #[cfg(unix)]
+    {
+        if let Some(budget) = budget {
+            let mut command = Command::new("/bin/sh");
+            // `$0` = program, `$@` = argümanlar: kabuk yorumlaması yok, yalnız
+            // konumsal parametre (enjeksiyon yüzeyi açılmaz).
+            command
+                .arg("-c")
+                .arg(budget.limit_script())
+                .arg(program)
+                .args(args);
+            return command;
+        }
+    }
+    // Windows'ta POSIX rlimit yok: CPU/dosya sınırı uygulanmaz, süre ve çıktı
+    // bütçesi yine uygulanır (dürüst sınır, F01/F17'de ayrıca ele alınır).
+    #[cfg(not(unix))]
+    let _ = budget;
+    let mut command = Command::new(program);
+    command.args(args);
+    command
+}
+
 impl WorkerClient {
     /// Geliştirme modunda `python3 -m dim_worker.worker`. `cwd`, modülün
     /// bulunduğu klasördür; paketlenmiş sürümde gömülü Python yolu verilir.
+    ///
+    /// Bütçesiz: yalnız protokol testleri/araçları içindir. Ürün yolu
+    /// [`WorkerClient::spawn_dev_budgeted`] (§17.3).
     pub fn spawn_dev(python: &Path, working_dir: &Path) -> Result<Self, WorkerError> {
         Self::spawn(python, &["-m", "dim_worker.worker"], working_dir)
+    }
+
+    /// §17.3 bütçeli geliştirme worker'ı: sınırlar süreç **başlatılırken**
+    /// uygulanır (sonradan daraltılamaz), süre bütçesi `timeout` olur.
+    pub fn spawn_dev_budgeted(
+        python: &Path,
+        working_dir: &Path,
+        budget: WorkerBudget,
+    ) -> Result<Self, WorkerError> {
+        Self::spawn_with_env(
+            python,
+            &["-m", "dim_worker.worker"],
+            working_dir,
+            &[],
+            Some(budget),
+        )
     }
 
     /// Paketlenmiş (PyInstaller onedir) worker ikilisini çalıştırır. Protokol
@@ -470,11 +545,17 @@ impl WorkerClient {
     /// kusuru "çalışıyor" gibi görünür (F01-T02'nin ölçtüğü risk).
     pub fn spawn_bundled(exe: &Path) -> Result<Self, WorkerError> {
         let dir = exe.parent().unwrap_or_else(|| Path::new("."));
-        Self::spawn_with_env(exe, &[], dir, &PYTHON_ENV_VARS)
+        Self::spawn_with_env(exe, &[], dir, &PYTHON_ENV_VARS, None)
+    }
+
+    /// §17.3 bütçeli paketlenmiş worker: ürün yolu.
+    pub fn spawn_bundled_budgeted(exe: &Path, budget: WorkerBudget) -> Result<Self, WorkerError> {
+        let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+        Self::spawn_with_env(exe, &[], dir, &PYTHON_ENV_VARS, Some(budget))
     }
 
     fn spawn(program: &Path, args: &[&str], working_dir: &Path) -> Result<Self, WorkerError> {
-        Self::spawn_with_env(program, args, working_dir, &[])
+        Self::spawn_with_env(program, args, working_dir, &[], None)
     }
 
     fn spawn_with_env(
@@ -482,10 +563,10 @@ impl WorkerClient {
         args: &[&str],
         working_dir: &Path,
         removed_env: &[&str],
+        budget: Option<WorkerBudget>,
     ) -> Result<Self, WorkerError> {
-        let mut command = Command::new(program);
+        let mut command = worker_command(program, args, budget);
         command
-            .args(args)
             .current_dir(working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -502,9 +583,25 @@ impl WorkerClient {
         }
         let mut child = command.spawn().map_err(WorkerError::Spawn)?;
 
+        let pid = child.id();
         let stdin = child.stdin.take().ok_or(WorkerError::Disconnected)?;
         let stdout = child.stdout.take().ok_or(WorkerError::Disconnected)?;
         let (tx, rx) = mpsc::channel();
+        let child = Arc::new(Mutex::new(child));
+        let usage = Arc::new(Mutex::new(BudgetUsage::default()));
+        // Bellek gözcüsü yalnız bütçe varsa koşar: her örnekleme bir `ps`
+        // süreci başlatır (macOS), boşa maliyet çıkarmaz.
+        let watchdog = match budget {
+            Some(budget) if budget.memory_bytes > 0 => Some(start_memory_watchdog(
+                pid,
+                budget.memory_bytes,
+                Arc::clone(&usage),
+                Arc::clone(&child),
+            )),
+            _ => None,
+        };
+        let reader_usage = Arc::clone(&usage);
+        let output_limit = budget.map_or(0, |budget| budget.output_bytes);
 
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -517,6 +614,12 @@ impl WorkerClient {
                         if buf.len() > MAX_FRAME_BYTES {
                             let _ = tx.send(Err("frame_too_large".to_string()));
                             break;
+                        }
+                        if let Ok(mut usage) = reader_usage.lock() {
+                            usage.note_output(
+                                u64::try_from(buf.len()).unwrap_or(u64::MAX),
+                                output_limit,
+                            );
                         }
                         if tx.send(Ok(buf.clone())).is_err() {
                             break;
@@ -531,12 +634,18 @@ impl WorkerClient {
         });
 
         Ok(Self {
-            child: Arc::new(Mutex::new(child)),
+            child,
             cancel: Arc::new(AtomicBool::new(false)),
             stdin,
             rx,
             next_id: 0,
-            timeout: DEFAULT_TIMEOUT,
+            // §17.3: süre bütçesi tek "timeout" değerinin yerine geçer.
+            timeout: budget.map_or(DEFAULT_TIMEOUT, |budget| budget.wall_clock),
+            budget,
+            usage,
+            started: Instant::now(),
+            watchdog,
+            pid,
         })
     }
 
@@ -551,13 +660,111 @@ impl WorkerClient {
     }
 
     /// Bağlantı arızasını sınıflandırır: iptal istediysak kopma **bizim**
-    /// işimizdir ve `E_WORKER_CANCELED` döner; aksi hâlde gerçek arıza.
+    /// işimizdir ve `E_WORKER_CANCELED` döner; bütçe aşıldıysa hangi boyutun
+    /// aşıldığı ayrı kodla döner; aksi hâlde gerçek arıza.
     fn interrupt_error(&self) -> WorkerError {
         if self.cancel.load(Ordering::SeqCst) {
-            WorkerError::Canceled
-        } else {
-            WorkerError::Disconnected
+            return WorkerError::Canceled;
         }
+        if let Some(error) = self.budget_error() {
+            return error;
+        }
+        if let Some(error) = self.signal_budget_error() {
+            return error;
+        }
+        WorkerError::Disconnected
+    }
+
+    /// Gözlenen ihlali hataya çevirir (bellek gözcüsü ve çıktı sayacı yazar).
+    fn budget_error(&self) -> Option<WorkerError> {
+        let budget = self.budget.as_ref()?;
+        let usage = self.usage.lock().ok()?;
+        let dimension = usage.violated?;
+        Some(WorkerError::Budget(BudgetBreak {
+            dimension,
+            limit: budget.limit_for(dimension),
+        }))
+    }
+
+    /// Süreç bütçe sinyaliyle mi öldü? `SIGXCPU` (24) CPU sınırını,
+    /// `SIGXFSZ` (25) dosya boyutu sınırını gösterir; ikisi de POSIX'te sabittir.
+    /// Çıkış kodu hemen görünmeyebilir (EOF önce gelir): en çok 200 ms beklenir.
+    #[cfg(unix)]
+    fn signal_budget_error(&self) -> Option<WorkerError> {
+        use std::os::unix::process::ExitStatusExt;
+
+        let budget = self.budget.as_ref()?;
+        let mut waited = Duration::ZERO;
+        loop {
+            let status = self
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok().flatten());
+            match status {
+                Some(status) => {
+                    // `ulimit` uygulanamadıysa kabuk `exit 126` ile döner:
+                    // sınırsız çalışan worker "bütçeli" sayılmaz.
+                    if status.code() == Some(126) {
+                        return Some(WorkerError::LimitsNotApplied);
+                    }
+                    let dimension = match status.signal() {
+                        Some(24) => BudgetDimension::Cpu,
+                        Some(25) => BudgetDimension::Output,
+                        _ => return None,
+                    };
+                    // Rapor da aynı nedeni taşısın: sinyal yolu sayaç yazmaz.
+                    if let Ok(mut usage) = self.usage.lock() {
+                        usage.mark_violation(dimension);
+                    }
+                    return Some(WorkerError::Budget(BudgetBreak {
+                        dimension,
+                        limit: budget.limit_for(dimension),
+                    }));
+                }
+                None if waited < Duration::from_millis(200) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    waited += Duration::from_millis(10);
+                }
+                None => return None,
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn signal_budget_error(&self) -> Option<WorkerError> {
+        None
+    }
+
+    /// §17.3 raporu: profil, gözlenen tepe bellek/çıktı, geçen süre ve ihlal.
+    /// Bütçesiz istemcide `None` (uydurma sayı yok).
+    ///
+    /// Rapor anında **son bir örnek** alınır: kısa işte (gözcü aralığı 500 ms)
+    /// hiç örnek alınmamış olabilir ve "tepe bellek 0 MiB" yanlış olurdu. Süreç
+    /// hâlâ yaşıyorsa pid yeniden kullanılmamıştır (`try_wait` süreci toplar,
+    /// toplanmış pid'e örnek alınmaz → başka sürecin belleği yazılmaz).
+    #[must_use]
+    pub fn budget_report(&self) -> Option<BudgetReport> {
+        let budget = *self.budget.as_ref()?;
+        let running = self
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok().flatten())
+            .is_none();
+        let mut usage = *self.usage.lock().ok()?;
+        if running {
+            if let Some(bytes) = sample_rss_bytes(self.pid) {
+                usage.note_peak(bytes);
+            }
+        }
+        Some(BudgetReport {
+            budget,
+            elapsed: self.started.elapsed(),
+            output_bytes: usage.output_bytes,
+            peak_memory_bytes: usage.peak_memory_bytes,
+            violated: usage.violated,
+        })
     }
 
     #[must_use]
@@ -570,6 +777,11 @@ impl WorkerClient {
     /// yanıtta aynı kimlikle birden çok çerçeve gelebilir.
     fn send_request(&mut self, method: &str, params: Value) -> Result<String, WorkerError> {
         self.next_id += 1;
+        // §17.3: çıktı bütçesi **istek başına** sayılır; parçalı yanıtın bütün
+        // parçaları aynı işin çıktısıdır (sayaç sıfırlanmaz, parça eklenir).
+        if let Ok(mut usage) = self.usage.lock() {
+            usage.reset_output();
+        }
         let id = format!("req-{}", self.next_id);
         let frame = json!({"v": 1, "id": id, "method": method, "params": params});
         let mut line = serde_json::to_vec(&frame).map_err(|_| WorkerError::BadResponse)?;
@@ -590,17 +802,41 @@ impl WorkerClient {
     /// `CANCEL_POLL` içinde fark edilir. Ubuntu CI'da `sh -c "sleep 30"` vekili
     /// tam bu yüzden 30 sn beklemişti.
     fn recv_frame(&mut self) -> Result<Vec<u8>, WorkerError> {
-        let deadline = std::time::Instant::now() + self.timeout;
+        let deadline = Instant::now() + self.timeout;
         loop {
             if self.cancel.load(Ordering::SeqCst) {
                 return Err(WorkerError::Canceled);
             }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            // Bellek gözcüsü/çıktı sayacı ihlali yazdıysa bekleme uzamaz.
+            if let Some(error) = self.budget_error() {
+                return Err(error);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(WorkerError::Timeout);
+                // §17.3: bütçeli işte süre aşımı **bütçe** hatasıdır; bütçesiz
+                // istemcide eski `E_WORKER_TIMEOUT` korunur.
+                return Err(match self.budget {
+                    Some(budget) => {
+                        if let Ok(mut usage) = self.usage.lock() {
+                            usage.mark_violation(BudgetDimension::Time);
+                        }
+                        WorkerError::Budget(BudgetBreak {
+                            dimension: BudgetDimension::Time,
+                            limit: budget.wall_clock.as_secs(),
+                        })
+                    }
+                    None => WorkerError::Timeout,
+                });
             }
             match self.rx.recv_timeout(remaining.min(CANCEL_POLL)) {
-                Ok(Ok(bytes)) => return Ok(bytes),
+                Ok(Ok(bytes)) => {
+                    // Çıktı bütçesi okuyucu iş parçacığında sayılır; burada
+                    // yalnız görülür. Sınırı aşan çerçeve sonuç sayılmaz.
+                    if let Some(error) = self.budget_error() {
+                        return Err(error);
+                    }
+                    return Ok(bytes);
+                }
                 Ok(Err(reason)) => {
                     // Okuyucu iş parçacığı iki farklı arıza bildirir: çerçeve
                     // sınırı aşımı ve okuma hatası. İkisini "bağlantı koptu"
@@ -875,6 +1111,11 @@ impl WorkerClient {
 
 impl Drop for WorkerClient {
     fn drop(&mut self) {
+        // Bellek gözcüsü süreç tutamacını paylaşır; önce durdurulur ki kapanan
+        // istemci için örnekleme yapmasın.
+        if let Some(stop) = &self.watchdog {
+            stop.store(true, Ordering::SeqCst);
+        }
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
             let _ = child.wait();
@@ -882,12 +1123,111 @@ impl Drop for WorkerClient {
     }
 }
 
+/// Bellek gözcüsünün örnekleme aralığı. Daha sık örnekleme, macOS'ta her
+/// örnek için bir `ps` süreci başlatmak demektir; 500 ms taşmayı saniye
+/// içinde yakalar.
+const MEMORY_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Bekleme dilimi: gözcü, istemci düşünce bu dilimde uyanıp çıkar.
+const MEMORY_POLL_SLICE: Duration = Duration::from_millis(100);
+
+/// Worker'ın **yerleşik** belleğini (RSS) örnekler.
+///
+/// macOS'ta `/proc` yok; `libproc`/`proc_pid_rusage` ise `unsafe` ister ve
+/// çalışma alanı `unsafe_code = "forbid"` der. Bu yüzden `ps -o rss=` okunur
+/// (süreç başına bir alt süreç; bütçe yoksa hiç çağrılmaz).
+#[cfg(target_os = "macos")]
+fn sample_rss_bytes(pid: u32) -> Option<u64> {
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let kilobytes: u64 = text.trim().parse().ok()?;
+    Some(kilobytes.saturating_mul(1024))
+}
+
+/// Linux: `/proc/<pid>/status` içindeki `VmRSS` (kB). Süreç başına dosya
+/// okuması; alt süreç başlatılmaz.
+#[cfg(target_os = "linux")]
+fn sample_rss_bytes(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kilobytes: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kilobytes.saturating_mul(1024));
+        }
+    }
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn sample_rss_bytes(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Bellek gözcüsü: tepe RSS bütçeyi aşarsa ihlali yazar ve süreci öldürür.
+///
+/// İlk örnek **hemen** alınır (beklemeden): kısa işte 500 ms beklemek "tepe
+/// bellek 0" demekti. Sonra her [`MEMORY_SAMPLE_INTERVAL`]'da bir örnek alınır.
+///
+/// Dürüst sınır: örnekleme **aralıklıdır** (macOS 500 ms), yani süreç örnekler
+/// arasında sınırı aşabilir; öldürme gerçekleşmezse bile ihlal bayrağı yazılır
+/// ve çağıran en geç `CANCEL_POLL` (50 ms) içinde bütçe hatasını görür.
+fn start_memory_watchdog(
+    pid: u32,
+    limit: u64,
+    usage: Arc<Mutex<BudgetUsage>>,
+    child: Arc<Mutex<Child>>,
+) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    std::thread::spawn(move || loop {
+        if let Some(bytes) = sample_rss_bytes(pid) {
+            let breached = match usage.lock() {
+                Ok(mut usage) => usage.note_memory(bytes, limit).is_some(),
+                Err(_) => return,
+            };
+            if breached {
+                if let Ok(mut child) = child.try_lock() {
+                    let _ = child.kill();
+                }
+                return;
+            }
+        }
+        let mut waited = Duration::ZERO;
+        while waited < MEMORY_SAMPLE_INTERVAL {
+            if flag.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(MEMORY_POLL_SLICE);
+            waited += MEMORY_POLL_SLICE;
+        }
+    });
+    stop
+}
+
 /// Geliştirme ortamında Python yorumlayıcısını bulur (`python3`, sonra `python`).
+///
+/// `DIM_WORKER_PYTHON` verildiyse **o** kullanılır (Tauri ile aynı kural:
+/// ölçüm/ölçek koşuları kendi sanal ortamını verebilir). Verilen yol çalışmıyorsa
+/// sistem python'una **düşülmez** — yanlış yol sessizce gizlenmez.
 ///
 /// Süreç başlatma bu modülde merkezîdir (ADR-05); worker'ı sınayan testler de
 /// yorumlayıcıyı bu yardımcıyla arar, kendi `Command` çağrısını yazmaz.
 #[must_use]
 pub fn dev_python() -> Option<PathBuf> {
+    if let Some(chosen) = std::env::var_os("DIM_WORKER_PYTHON") {
+        let path = PathBuf::from(chosen);
+        let works = Command::new(&path)
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success());
+        return works.then_some(path);
+    }
     for candidate in ["python3", "python"] {
         if let Ok(out) = Command::new(candidate).arg("--version").output() {
             if out.status.success() {
@@ -1577,6 +1917,291 @@ mod tests {
                 "bozuk çerçeve kabul edilmemeli: {bad}"
             );
         }
+    }
+
+    // ---- §17.3 kaynak bütçesi -------------------------------------------------
+    //
+    // Bu testler **gerçek süreç** başlatır: sınırın gerçekten uygulandığını
+    // (yalnız tanımlı olduğunu değil) kanıtlar. Python yoksa atlanır.
+
+    use crate::budget::{WorkerKind, MIB};
+
+    /// Verilen python betiğini bütçeyle başlatır. `args`, betiğe **aynen**
+    /// geçirilir (kabuk yorumlaması olmadığını sınamak için).
+    fn spawn_budgeted(
+        script: &str,
+        args: &[&str],
+        budget: WorkerBudget,
+    ) -> Option<(WorkerClient, tempfile::TempDir)> {
+        let py = python()?;
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut full: Vec<&str> = vec!["-c", script];
+        full.extend_from_slice(args);
+        let client = WorkerClient::spawn_with_env(&py, &full, dir.path(), &[], Some(budget))
+            .expect("başlat");
+        Some((client, dir))
+    }
+
+    /// Bütçeli iş **`sh` zarfıyla** başlar; bütçesiz iş doğrudan koşar.
+    #[cfg(unix)]
+    #[test]
+    fn budget_wraps_the_program_in_a_limit_shell_only_when_given() {
+        let budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        let wrapped = worker_command(Path::new("/usr/bin/python3"), &["-c", "pass"], Some(budget));
+        assert_eq!(wrapped.get_program(), std::ffi::OsStr::new("/bin/sh"));
+        let plain = worker_command(Path::new("/usr/bin/python3"), &["-c", "pass"], None);
+        assert_eq!(
+            plain.get_program(),
+            std::ffi::OsStr::new("/usr/bin/python3")
+        );
+    }
+
+    /// CPU bütçesi: sonsuz döngü `SIGXCPU` ile durur ve hata **kendi koduyla**
+    /// döner (`E_WORKER_BUDGET`), zaman aşımı beklemez.
+    #[cfg(unix)]
+    #[test]
+    fn cpu_budget_stops_a_runaway_worker_with_its_own_code() {
+        let mut budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        budget.cpu_seconds = 1;
+        budget.wall_clock = Duration::from_secs(30);
+        let script = "x = 0\nwhile True:\n    x += 1\n";
+        let Some((mut client, _dir)) = spawn_budgeted(script, &[], budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let started = Instant::now();
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WorkerError::Budget(BudgetBreak {
+                    dimension: BudgetDimension::Cpu,
+                    ..
+                })
+            ),
+            "beklenmeyen: {err:?}"
+        );
+        assert_eq!(err.code(), "E_WORKER_BUDGET");
+        assert!(!err.retryable(), "bütçe aşımı tekrar denenmez (§17.4)");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "CPU sınırı duvar saatini beklemez: {:?}",
+            started.elapsed()
+        );
+        let report = client.budget_report().expect("bütçe raporu");
+        assert_eq!(report.budget.kind, WorkerKind::Extract);
+        assert_eq!(report.violated, Some(BudgetDimension::Cpu));
+        assert_eq!(report.budget_break().expect("ihlal").limit, 1);
+    }
+
+    /// Bellek bütçesi: 200 MiB ayıran süreç 64 MiB sınırında durdurulur.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn memory_budget_stops_a_worker_that_outgrows_the_limit() {
+        let mut budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        budget.cpu_seconds = 0;
+        budget.memory_bytes = 64 * MIB;
+        budget.wall_clock = Duration::from_secs(30);
+        let script = "import time\nx = bytearray(200 * 1024 * 1024)\ntime.sleep(30)\n";
+        let Some((mut client, _dir)) = spawn_budgeted(script, &[], budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WorkerError::Budget(BudgetBreak {
+                    dimension: BudgetDimension::Memory,
+                    ..
+                })
+            ),
+            "beklenmeyen: {err:?}"
+        );
+        let report = client.budget_report().expect("bütçe raporu");
+        assert!(
+            report.peak_memory_bytes > 64 * MIB,
+            "gözlenen tepe: {}",
+            report.peak_memory_bytes
+        );
+    }
+
+    /// Çıktı bütçesi: sınırı aşan yanıt sonuç sayılmaz.
+    #[cfg(unix)]
+    #[test]
+    fn output_budget_rejects_a_response_over_the_limit() {
+        let mut budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        budget.cpu_seconds = 0;
+        budget.memory_bytes = 0;
+        budget.output_bytes = 64 * 1024;
+        let script = concat!(
+            "import json, sys\n",
+            "line = sys.stdin.readline()\n",
+            "request = json.loads(line)\n",
+            "blob = \"x\" * 200000\n",
+            "sys.stdout.write(json.dumps({\"v\": 1, \"id\": request[\"id\"], \"ok\": True, ",
+            "\"result\": {\"blob\": blob}}) + \"\\n\")\n",
+            "sys.stdout.flush()\n",
+            "sys.stdin.readline()\n",
+        );
+        let Some((mut client, _dir)) = spawn_budgeted(script, &[], budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let err = client.ping().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WorkerError::Budget(BudgetBreak {
+                    dimension: BudgetDimension::Output,
+                    ..
+                })
+            ),
+            "beklenmeyen: {err:?}"
+        );
+        let report = client.budget_report().expect("bütçe raporu");
+        assert!(report.output_bytes > 64 * 1024);
+    }
+
+    /// Duvar saati bütçesi zaman aşımından **ayrı** raporlanır.
+    #[cfg(unix)]
+    #[test]
+    fn wall_clock_budget_is_reported_as_budget_not_timeout() {
+        let mut budget = WorkerBudget::for_kind(WorkerKind::Render);
+        budget.cpu_seconds = 0;
+        budget.memory_bytes = 0;
+        budget.wall_clock = Duration::from_secs(1);
+        let script = "import time\ntime.sleep(30)\n";
+        let Some((mut client, _dir)) = spawn_budgeted(script, &[], budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let err = client.ping().unwrap_err();
+        assert_eq!(err.code(), "E_WORKER_BUDGET");
+        match err {
+            WorkerError::Budget(BudgetBreak {
+                dimension: BudgetDimension::Time,
+                limit,
+            }) => assert_eq!(limit, 1),
+            other => panic!("beklenmeyen: {other:?}"),
+        }
+    }
+
+    /// Rapor gerçek sayıları taşır ve **argümanlar kabuk yorumlamasına girmez**.
+    #[cfg(unix)]
+    #[test]
+    fn budget_report_records_limits_and_arguments_are_not_shell_expanded() {
+        let budget = WorkerBudget::for_kind(WorkerKind::Ocr);
+        let script = concat!(
+            "import json, sys, time\n",
+            "line = sys.stdin.readline()\n",
+            "request = json.loads(line)\n",
+            "time.sleep(1.0)\n",
+            "sys.stdout.write(json.dumps({\"v\": 1, \"id\": request[\"id\"], \"ok\": True, ",
+            "\"result\": dict(enumerate(sys.argv[1:]))}) + \"\\n\")\n",
+            "sys.stdout.flush()\n",
+            "sys.stdin.readline()\n",
+        );
+        let tricky = ["$(whoami)", "a b", "tek'tırnak", "noktalı;virgül"];
+        let Some((mut client, _dir)) = spawn_budgeted(script, &tricky, budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let result = client.request("ping", json!({})).expect("yanıt");
+        for (index, expected) in tricky.iter().enumerate() {
+            assert_eq!(
+                result.get(index.to_string()).and_then(Value::as_str),
+                Some(*expected),
+                "argüman kabuk tarafından değiştirilmemeli"
+            );
+        }
+        let report = client.budget_report().expect("bütçe raporu");
+        assert_eq!(report.budget, budget);
+        assert_eq!(report.budget.kind, WorkerKind::Ocr);
+        assert!(report.elapsed >= Duration::from_millis(900));
+        assert!(report.output_bytes > 0);
+        assert!(report.peak_memory_bytes > 0, "gözcü en az bir örnek almalı");
+        assert_eq!(report.violated, None);
+        assert!(report.budget_break().is_none());
+        client.shutdown();
+    }
+
+    /// Kısa iş: gözcü aralığı (500 ms) dolmadan biten istekte tepe bellek
+    /// **0 yazılmaz**. Ölçülen kusur: 433 ms'lik gerçek ayrıştırmada rapor
+    /// "tepe bellek 0 MiB" demişti, çünkü gözcü hiç uyanmamıştı. Bu testte
+    /// bellek bütçesi kapalı → gözcü **koşmaz**; tek örnek rapor anında alınır.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn report_samples_peak_memory_even_when_the_job_ends_before_the_watchdog_wakes() {
+        let mut budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        budget.cpu_seconds = 0;
+        budget.memory_bytes = 0;
+        budget.wall_clock = Duration::from_secs(20);
+        let script = concat!(
+            "import json, sys\n",
+            "line = sys.stdin.readline()\n",
+            "request = json.loads(line)\n",
+            "sys.stdout.write(json.dumps({\"v\": 1, \"id\": request[\"id\"], \"ok\": True, ",
+            "\"result\": {\"pong\": True}}) + \"\\n\")\n",
+            "sys.stdout.flush()\n",
+            "sys.stdin.readline()\n",
+        );
+        let Some((mut client, _dir)) = spawn_budgeted(script, &[], budget) else {
+            eprintln!("python bulunamadı; test atlandı");
+            return;
+        };
+        let started = Instant::now();
+        client.request("ping", json!({})).expect("yanıt");
+        let process_time = started.elapsed();
+        assert!(
+            process_time < Duration::from_millis(500),
+            "iş gözcü aralığından kısa olmalı: {process_time:?}"
+        );
+        let report = client.budget_report().expect("bütçe raporu");
+        assert!(
+            report.peak_memory_bytes > 0,
+            "rapor anındaki örnek tepeyi yazmalı (0 MiB değil)"
+        );
+    }
+
+    /// Gerçek worker + kurgu fikstür: ölçüm, varsayım değil. `#[ignore]` çünkü
+    /// Python + PyMuPDF ister ve süre ölçer (CI'da koşmaz; elle koşulur).
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "gerçek worker + fikstür ölçümü: DIM_WORKER_PYTHON ile elle koşulur"]
+    fn real_parse_reports_peak_memory_within_the_extract_budget() {
+        let (Some(py), Some(dir)) = (python(), dev_worker_dir()) else {
+            eprintln!("python veya workers/document bulunamadı; ölçüm atlandı");
+            return;
+        };
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/synthetic/progress-pages.pdf");
+        let data = std::fs::read(&path).expect("fikstür");
+        let budget = WorkerBudget::for_kind(WorkerKind::Extract);
+        let started = Instant::now();
+        let mut client = WorkerClient::spawn_dev_budgeted(&py, &dir, budget).expect("başlat");
+        let extraction = client
+            .extract_text(&data, "application/pdf", false, "eng", None, None)
+            .expect("çıkarım");
+        let process_time = started.elapsed();
+        let report = client.budget_report().expect("rapor");
+        println!(
+            "ölçüm: sayfa={} süreç_süresi={:?} tepe_bellek={} MiB yanıt={} B ihlal={:?} sınırlar: cpu={} sn bellek={} MiB çıktı={} MiB dosya={} süre={:?}",
+            extraction.pages.len(),
+            process_time,
+            report.peak_memory_bytes / MIB,
+            report.output_bytes,
+            report.violated,
+            budget.cpu_seconds,
+            budget.memory_bytes / MIB,
+            budget.output_bytes / MIB,
+            budget.open_files,
+            budget.wall_clock
+        );
+        assert_eq!(report.violated, None, "gerçek iş bütçeyi aşmamalı");
+        assert!(report.peak_memory_bytes > 0, "gözcü en az bir örnek almalı");
+        assert!(report.output_bytes > 0);
+        client.shutdown();
     }
 }
 

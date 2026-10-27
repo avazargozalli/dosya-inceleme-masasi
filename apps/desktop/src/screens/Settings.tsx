@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 import { JobQueueCard } from "../components/JobQueueCard";
+import { WorkerBudgetCard } from "../components/WorkerBudgetCard";
 import {
   api,
   toApiError,
@@ -601,6 +602,8 @@ export function Settings() {
       </div>
 
       <JobQueueCard unlocked={unlocked} />
+
+      <WorkerBudgetCard unlocked={unlocked} />
 
       <div className="card tight">
         <h2>Teşhis</h2>

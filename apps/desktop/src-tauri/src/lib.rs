@@ -67,6 +67,7 @@ pub fn run() {
             commands::document_page_preview,
             commands::document_inventory,
             commands::worker_package_report,
+            commands::worker_budgets,
             commands::note_create,
             commands::note_list,
             commands::note_delete,
