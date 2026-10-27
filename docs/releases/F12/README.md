@@ -420,11 +420,12 @@ güncellendiğinde alıntının sessizce “bulunamadı” olması denetimin en 
 - **Sayfa sınırı:** eski sürüm sayfaları da `pages_scanned` sayımına girer;
   toplam 20.000 sayfa sınırını aşacaksa eski sürüm taraması **hiç yapılmaz** ve
   nedeni notlarda yazılır (yarım tarama yok).
-- **Test (gerçek çekirdek, bellek içi kasa):** `intext_quotes` **26** test
-  (önceki 21 + 5 yeni: güncelde yok/eski sürümde var; güncel sürüm kazanır ve
-  eski sürüm taranmaz; eski sürümdeki `exact` günceldeki `whitespace`i yener;
-  belge kapsamı başka belgenin geçmişini taramaz; 5 sürüm sınırı aşılınca not
-  düşer). `cargo test -p dim-storage --lib` **347/347**; clippy
+- **Test (gerçek çekirdek, bellek içi kasa):** `intext_quotes` **27** test
+  (önceki 21 + 6 yeni: güncelde yok/eski sürümde var; eski sürüm konumu
+  `create_anchor` ile **gerçekten** bağlanıyor (`quote_intact`); güncel sürüm
+  kazanır ve eski sürüm taranmaz; eski sürümdeki `exact` günceldeki `whitespace`i
+  yener; belge kapsamı başka belgenin geçmişini taramaz; 5 sürüm sınırı aşılınca
+  not düşer). `cargo test -p dim-storage --lib` **348/348**; clippy
   `-p dim-storage --all-targets -D warnings` temiz; rustfmt iki manifest temiz.
   Arayüz: `tsc --noEmit` temiz, `vitest run` **375/375** (intext 10).
 - **Dürüst sınırlar:** ölçüm **bellek içi kasa + elle yazılmış sayfa metinleri**;
