@@ -1,4 +1,5 @@
 import type { AnchorLocationRow, DocumentRow, PageBlock, PageRow, SearchHit } from "./api";
+import { formatSize } from "./format";
 
 /** Okuyucunun açılacağı yer. `versionId` zorunludur: sonuç/bağ, doğru
  *  sürümü açar; "en son sürüm" tahmini yapılmaz (F07 kabul testi). */
@@ -327,10 +328,7 @@ export type PreviewMeta = { cached: boolean; byteSize: number; dpi: number };
 
 /** Önizleme alt yazısı: kaynağı (şifreli önbellek/yeni) ve boyutunu dürüstçe yazar. */
 export function previewCaption(meta: PreviewMeta): string {
-  const size =
-    meta.byteSize >= 1024 * 1024
-      ? `${(meta.byteSize / (1024 * 1024)).toFixed(1)} MB`
-      : `${Math.max(1, Math.round(meta.byteSize / 1024))} KB`;
+  const size = formatSize(meta.byteSize);
   const source = meta.cached ? "şifreli önbellekten" : "yeni üretildi";
   return `${source} · ${size} · ${meta.dpi} dpi`;
 }

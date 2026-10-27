@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, toApiError, type ApiError, type VaultStatus } from "./lib/api";
+import { t, type MessageKey } from "./lib/i18n";
+import { version as appVersion } from "../package.json";
 import { Cases } from "./screens/Cases";
 import { Checklists } from "./screens/Checklists";
 import { Exports } from "./screens/Exports";
@@ -37,20 +39,24 @@ type Screen =
   | "ai-review"
   | "settings";
 
-const NAV: Array<{ id: Screen; label: string; phase?: string }> = [
-  { id: "vault", label: "Kasa" },
-  { id: "files", label: "Dosyalar", phase: "F04" },
-  { id: "search", label: "Arama", phase: "F07" },
-  { id: "timeline", label: "Kronoloji", phase: "F08" },
-  { id: "tasks", label: "Görevler", phase: "F08" },
-  { id: "checklists", label: "Kontrol listesi", phase: "F08" },
-  { id: "review", label: "İnceleme", phase: "F08" },
-  { id: "precedents", label: "Emsal" },
-  { id: "redaction", label: "Maskeleme" },
-  { id: "exports", label: "Çıktılar" },
-  { id: "ai", label: "AI bağlantıları" },
-  { id: "ai-review", label: "AI inceleme" },
-  { id: "settings", label: "Ayarlar" },
+// Sürüm etiketi tek kaynaktan gelir: paket sürümü. Eskiden burada gömülü
+// eski sürüm/faz etiketi yazıyordu; uygulama F04'teyken etiket bayat kalmıştı.
+const APP_VERSION: string = appVersion;
+
+const NAV: Array<{ id: Screen; labelKey: MessageKey; phase?: string }> = [
+  { id: "vault", labelKey: "nav.vault" },
+  { id: "files", labelKey: "nav.files", phase: "F04" },
+  { id: "search", labelKey: "nav.search", phase: "F07" },
+  { id: "timeline", labelKey: "nav.timeline", phase: "F08" },
+  { id: "tasks", labelKey: "nav.tasks", phase: "F08" },
+  { id: "checklists", labelKey: "nav.checklists", phase: "F08" },
+  { id: "review", labelKey: "nav.review", phase: "F08" },
+  { id: "precedents", labelKey: "nav.precedents" },
+  { id: "redaction", labelKey: "nav.redaction" },
+  { id: "exports", labelKey: "nav.exports" },
+  { id: "ai", labelKey: "nav.ai" },
+  { id: "ai-review", labelKey: "nav.aiReview" },
+  { id: "settings", labelKey: "nav.settings" },
 ];
 
 export function App() {
@@ -132,15 +138,15 @@ export function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden="true">Dİ</div>
+          <div className="brand-mark" aria-hidden="true">{t("shell.mark")}</div>
           <div>
-            <div className="brand-name">Dosya İnceleme</div>
-            <div className="brand-sub">yerel · şifreli</div>
+            <div className="brand-name">{t("shell.appName")}</div>
+            <div className="brand-sub">{t("shell.tagline")}</div>
           </div>
         </div>
 
-        <nav className="nav" aria-label="Ana gezinme">
-          <div className="nav-label">Çalışma</div>
+        <nav className="nav" aria-label={t("nav.aria")}>
+          <div className="nav-label">{t("nav.group")}</div>
           {NAV.map((item) => (
             <button
               key={item.id}
@@ -148,7 +154,7 @@ export function App() {
               aria-current={screen === item.id ? "page" : undefined}
               onClick={() => setScreen(item.id)}
             >
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
               {item.phase ? <span className="nav-tag">{item.phase}</span> : null}
             </button>
           ))}
@@ -157,16 +163,17 @@ export function App() {
         <div className="sidebar-foot">
           <div className="lock-state">
             <span className={status.unlocked ? "dot ok" : "dot locked"} aria-hidden="true" />
-            {status.unlocked ? "Kasa açık" : "Kasa kilitli"}
+            {status.unlocked ? t("shell.unlocked") : t("shell.locked")}
           </div>
-          <div className="muted small">v0.1.0 · F02</div>
+          <div className="muted small">{t("shell.version", { version: APP_VERSION })}</div>
         </div>
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div className="crumb">
-            Kasa <span aria-hidden="true">/</span> <strong>{NAV.find((n) => n.id === screen)?.label}</strong>
+            {t("shell.crumbRoot")} <span aria-hidden="true">/</span>{" "}
+            <strong>{t(NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot")}</strong>
           </div>
           {status.unlocked ? (
             <button
@@ -180,7 +187,7 @@ export function App() {
                 }
               }}
             >
-              Kasayı kilitle
+              {t("shell.lock")}
             </button>
           ) : null}
         </header>
@@ -228,7 +235,10 @@ export function App() {
           ) : screen === "settings" ? (
             <Settings />
           ) : (
-            <ComingPhase label={NAV.find((n) => n.id === screen)?.label ?? ""} phase={NAV.find((n) => n.id === screen)?.phase ?? ""} />
+            <ComingPhase
+              labelKey={NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot"}
+              phase={NAV.find((n) => n.id === screen)?.phase ?? ""}
+            />
           )}
         </div>
       </main>
@@ -236,15 +246,15 @@ export function App() {
   );
 }
 
-function ComingPhase({ label, phase }: { label: string; phase: string }) {
+function ComingPhase({ labelKey, phase }: { labelKey: MessageKey; phase: string }) {
   return (
     <div className="page">
       <div className="page-head">
-        <h1>{label}</h1>
-        <p className="lead">Bu ekran {phase} fazında açılır. Şu an çalışıyormuş gibi gösterilmiyor.</p>
+        <h1>{t(labelKey)}</h1>
+        <p className="lead">{t("shell.comingLead", { phase })}</p>
       </div>
       <div className="empty">
-        <p style={{ margin: 0 }}>Hazır değil — sahte veri veya pasif buton üretilmez (INV-09).</p>
+        <p style={{ margin: 0 }}>{t("shell.comingEmpty")}</p>
       </div>
     </div>
   );

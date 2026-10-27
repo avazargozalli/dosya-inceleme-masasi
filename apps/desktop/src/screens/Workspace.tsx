@@ -1,41 +1,47 @@
 import type { VaultStatus } from "../lib/api";
+import { t } from "../lib/i18n";
 
 export function Workspace({ status }: { status: VaultStatus }) {
   return (
     <div className="page">
       <div className="page-head">
-        <div className="steps" aria-label="Kurulum adımları">
-          <span className="step done"><span className="step-dot">✓</span> Kasa</span>
-          <span className="step done"><span className="step-dot">✓</span> Kurtarma</span>
-          <span className="step active"><span className="step-dot">3</span> Kullanmaya başla</span>
+        <div className="steps" aria-label={t("steps.aria")}>
+          <span className="step done"><span className="step-dot">✓</span> {t("steps.vault")}</span>
+          <span className="step done"><span className="step-dot">✓</span> {t("steps.recovery")}</span>
+          <span className="step active"><span className="step-dot">3</span> {t("steps.start")}</span>
         </div>
-        <h1>Kasa açık</h1>
-        <p className="lead">
-          Şifreli kasa hazır. Bu fazda belge içe aktarma kapalı; F05 ile dosya ve sürüm yönetimi
-          açılacak. Aşağıdaki bilgiler gerçek kasa başlığından okunur.
-        </p>
+        <h1>{t("workspace.title")}</h1>
+        <p className="lead">{t("workspace.lead")}</p>
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Kasa bilgisi</h2>
-            <p className="card-sub">Başlık sürümü ve konum; içerik değil.</p>
+            <h2>{t("workspace.cardTitle")}</h2>
+            <p className="card-sub">{t("workspace.cardSub")}</p>
           </div>
-          <span className="badge ok"><span className="dot ok" aria-hidden="true" /> açık</span>
+          <span className="badge ok">
+            <span className="dot ok" aria-hidden="true" /> {t("workspace.badgeOpen")}
+          </span>
         </div>
         <dl className="kv">
-          <dt>Kasa kimliği</dt><dd>{status.vaultId ?? "—"}</dd>
-          <dt>Konum</dt><dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{status.vaultPath ?? "—"}</dd>
-          <dt>Şifreleme</dt><dd>SQLCipher hedefi · blob AEAD etkin · başlık v1</dd>
-          <dt>Kurtarma</dt><dd>parola yuvası + kurtarma yuvası ayrı sarılmış</dd>
+          <dt>{t("workspace.idLabel")}</dt>
+          <dd>{status.vaultId ?? t("common.unknown")}</dd>
+          <dt>{t("workspace.pathLabel")}</dt>
+          <dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+            {status.vaultPath ?? t("common.unknown")}
+          </dd>
+          <dt>{t("workspace.encryptionLabel")}</dt>
+          <dd>{t("workspace.encryptionValue")}</dd>
+          <dt>{t("workspace.recoveryLabel")}</dt>
+          <dd>{t("workspace.recoveryValue")}</dd>
         </dl>
       </div>
 
       <div className="card tight">
-        <h2>Sıradaki</h2>
+        <h2>{t("workspace.nextTitle")}</h2>
         <p className="muted small" style={{ margin: 0 }}>
-          F03: SQLCipher şeması, migrasyonlar, kilit ve yedek. F04: dosya çalışma alanı.
+          {t("workspace.nextBody")}
         </p>
       </div>
     </div>

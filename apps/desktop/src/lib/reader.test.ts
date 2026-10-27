@@ -352,7 +352,7 @@ describe("sayfa önizlemesi (F07-T11)", () => {
 
   it("önbellekten gelen görüntüyü kaynağıyla yazar", () => {
     expect(previewCaption({ cached: true, byteSize: 2048, dpi: 96 })).toBe(
-      "şifreli önbellekten · 2 KB · 96 dpi",
+      "şifreli önbellekten · 2 KiB · 96 dpi",
     );
   });
 
@@ -360,11 +360,12 @@ describe("sayfa önizlemesi (F07-T11)", () => {
     const caption = previewCaption({ cached: false, byteSize: 1536 * 1024, dpi: 200 });
     expect(caption).toContain("yeni üretildi");
     expect(caption).not.toContain("önbellek");
-    expect(caption).toContain("1.5 MB");
+    expect(caption).toContain("1,5 MiB");
   });
 
-  it("küçük görüntüde 1 KB'dan aşağı yazmaz", () => {
-    expect(previewCaption({ cached: true, byteSize: 20, dpi: 48 })).toContain("1 KB");
+  it("küçük görüntüyü gerçek baytıyla yazar (uydurma taban yok)", () => {
+    // Eskiden 20 bayt "1 KB" görünüyordu; kullanıcıya olmayan bir boyut söylenmez.
+    expect(previewCaption({ cached: true, byteSize: 20, dpi: 48 })).toContain("20 bayt");
   });
 });
 

@@ -41,6 +41,7 @@ import {
   attackVerdictTone,
   attackWorstVerdict,
 } from "../lib/attack";
+import { formatUnixSeconds } from "../lib/format";
 import {
   PACKAGE_LIMITS,
   packageStatusText,
@@ -315,7 +316,7 @@ export function Providers() {
         {matrix ? (
           <>
             <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
-              Yoklandı: {new Date(matrix.probedAtUnix * 1000).toLocaleString("tr-TR")} · yardım sınırı{" "}
+              Yoklandı: {formatUnixSeconds(matrix.probedAtUnix)} · yardım sınırı{" "}
               {Math.round(matrix.helpTimeoutMs / 1000)} sn · en kötü durum:{" "}
               <strong>{matrixWorstLink(matrix).label}</strong>
             </div>
@@ -577,7 +578,7 @@ export function Providers() {
         {attack ? (
           <>
             <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
-              Sınandı: {new Date(attack.probedAtUnix * 1000).toLocaleString("tr-TR")} · en kötü
+              Sınandı: {formatUnixSeconds(attack.probedAtUnix)} · en kötü
               karar: <strong>{attackWorstVerdict(attack.adapters).label}</strong> · toplam işaret:{" "}
               <strong>{attackTotalHits(attack)}</strong>
             </div>

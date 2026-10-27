@@ -70,7 +70,7 @@ describe("attachments", () => {
     expect(rows[0]).toEqual({
       name: "word/embeddings/oleObject1.bin",
       kindLabel: "Gömülü nesne (OLE)",
-      sizeLabel: "84 B",
+      sizeLabel: "84 bayt",
       detail: "Excel.Sheet.12",
     });
   });

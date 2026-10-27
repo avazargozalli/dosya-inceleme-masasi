@@ -1,4 +1,6 @@
 import type { PreUpdateBackup, RollbackResult } from "./api";
+import { formatDateTime } from "./format";
+import { t } from "./i18n";
 
 /**
  * Onay metni çekirdekteki `ROLLBACK_CONFIRMATION` ile birebir aynı olmalı.
@@ -44,18 +46,12 @@ export function backupWarnings(backup: PreUpdateBackup): string[] {
   return warnings;
 }
 
-/** `tr-TR` tarih; tarih yoksa "tarih bilinmiyor" (uydurma zaman yok). */
+/** Yerel tarih+saat; tarih yoksa "tarih bilinmiyor" (uydurma zaman yok). */
 export function formatBackupDate(iso: string | null): string {
-  if (!iso) return "tarih bilinmiyor";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "tarih okunamadı";
-  return date.toLocaleString("tr-TR", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  if (!iso) return t("dates.missing");
+  const out = formatDateTime(iso);
+  // Biçimleyici geçersiz damgada "—" döner; yedek satırında bu "okunamadı"dır.
+  return out === t("common.unknown") ? t("dates.unreadable") : out;
 }
 
 /**

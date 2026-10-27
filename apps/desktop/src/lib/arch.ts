@@ -5,6 +5,7 @@
 // burada mimari **tahmin edilmez**, yalnız etiketlenir.
 
 import type { AdapterArch, CliArchAdapter, CliArchReport } from "./api";
+import { formatUnixSeconds } from "./format";
 
 export type ArchTone = "ok" | "danger" | "warn" | "plain";
 
@@ -156,6 +157,5 @@ export function adapterArchBadge(arch: AdapterArch | null): { label: string; ton
 
 /** Eski kalıntı/ölçüm testlerinde kullanılan zaman biçimiyle tutarlı damga. */
 export function archProbedAt(unixSeconds: number): string {
-  if (!Number.isFinite(unixSeconds) || unixSeconds <= 0) return "—";
-  return new Date(unixSeconds * 1000).toLocaleString("tr-TR");
+  return formatUnixSeconds(unixSeconds);
 }

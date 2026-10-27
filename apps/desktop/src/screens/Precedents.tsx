@@ -23,7 +23,7 @@ import {
   type Redistribution,
   type UsageBasis,
 } from "../lib/api";
-import { formatTimestamp } from "../lib/format";
+import { formatSize, formatTimestamp } from "../lib/format";
 import {
   accessBasisLabel,
   bibliographyMissingText,
@@ -784,7 +784,7 @@ export function Precedents() {
               <div className="notice ok" role="status">
                 {corpusResultText(corpusResult)}
                 <div className="hint" style={{ marginTop: 4 }}>
-                  {corpusResult.path} · {corpusResult.bytes.toLocaleString("tr-TR")} bayt
+                  {corpusResult.path} · {formatSize(corpusResult.bytes)}
                 </div>
               </div>
             ) : null}

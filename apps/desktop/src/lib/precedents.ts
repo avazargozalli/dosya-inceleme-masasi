@@ -1,4 +1,5 @@
 import type { PrecedentVersionRow, QuoteVerificationRow } from "./api";
+import { formatNumber } from "./format";
 
 /** Tam metin sürümünün kısa durumu. Metin yoksa "yok" denir; tahmin yok. */
 export function versionStateText(version: {
@@ -6,7 +7,7 @@ export function versionStateText(version: {
   charCount: number;
 }): string {
   if (!version.hasText) return "tam metin yok";
-  return `tam metin · ${version.charCount.toLocaleString("tr-TR")} karakter`;
+  return `tam metin · ${formatNumber(version.charCount)} karakter`;
 }
 
 /** Alıntı doğrulamasının tek cümlelik, dürüst özeti. "Bulunamadı" asla
@@ -15,7 +16,7 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
   const at =
     verification.matchedStart === null
       ? ""
-      : ` (konum ${(verification.matchedStart + 1).toLocaleString("tr-TR")})`;
+      : ` (konum ${formatNumber(verification.matchedStart + 1)})`;
   const repeated =
     verification.occurrences > 1 ? ` · metinde ${verification.occurrences} kez geçiyor` : "";
   // Eski sürümde bulunan alıntı gizlenmez: güncel metinde geçmiyor.
@@ -117,7 +118,7 @@ export function bulkOutcomeLabel(item: {
 }): string {
   switch (item.outcome) {
     case "created":
-      return `eklendi · ${item.charCount.toLocaleString("tr-TR")} karakter`;
+      return `eklendi · ${formatNumber(item.charCount)} karakter`;
     case "duplicate":
       return "aynı nüsha zaten var; yeniden yazılmadı";
     case "conflict":

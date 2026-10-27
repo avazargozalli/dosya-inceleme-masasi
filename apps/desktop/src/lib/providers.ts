@@ -1,6 +1,7 @@
 // "Bağlantıyı sına" sonucunun sunumu. Saf fonksiyonlar: ekran yalnız bunları
 // çağırır, böylece etiket/uyarı mantığı DOM olmadan test edilir.
 
+import { formatSize } from "./format";
 import type {
   CliCapabilityAdapter,
   CliCapabilityMatrix,
@@ -78,13 +79,12 @@ export function probeCanRun(
   return row.state === "installed" && !row.batchForbidden && running === null;
 }
 
-/** Bayt → okunur boyut (Türkçe ondalık virgül). */
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kib = bytes / 1024;
-  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0).replace(".", ",")} KiB`;
-  return `${(kib / 1024).toFixed(1).replace(".", ",")} MiB`;
-}
+/**
+ * Bayt → okunur boyut. **Tek uygulama** `format.ts::formatSize`'dır (F04-T08):
+ * aynı değer üç ayrı biçimde yazılıyordu ("1.5 KB" / "1,5 KiB" / "1.5 MB").
+ * Buradaki ad yalnız geriye uyum için durur.
+ */
+export const formatBytes = formatSize;
 
 /**
  * Kapsam kanıtı satırları: iş dizini izni, `HOME`/`TMPDIR` politikası, stdin

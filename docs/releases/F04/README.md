@@ -11,6 +11,79 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** (2026-10-28) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** (kabuk, Kasa/Workspace/Unlock ekranları taşındı; 11 ekran açık) — 2026-10-28 |
+
+## Merkezi sözlük ve biçimlendirme katmanı (2026-10-28, F04-T08 — kısmi)
+
+**Neden:** şartname F04-T08 "Türkçe metinleri merkezi sözlüğe taşı; tarih/sayı
+gösterimini veri türünden ayır" diyor. Ölçüm, ikinci yarısının **hiç
+yapılmadığını** ve arayüzde üç ayrı biçimin yan yana yaşadığını gösterdi.
+
+- **ÖLÇÜLEN KUSUR #54 (tutarsız biçim):** aynı bayt değeri üç ayrı yerde üç ayrı
+  biçimde yazılıyordu — `providers.ts` `"1,5 KiB"` (virgül, doğru), `Settings.tsx`
+  ve `Ai.tsx` `(b/1024).toFixed(1) + " KB"` (**nokta**), `reader.ts`
+  `toFixed(1) + " MB"`. Türkçede ondalık ayracı virgüldür; ayrıca 1024'e bölen
+  birim `KB` değil `KiB`'dir. Aynı ekranda "1.5 KB" ile "1,5 KiB" birlikte
+  görünüyordu.
+- **ÖLÇÜLEN KUSUR #55 (uydurma boyut):** `reader.ts` küçük önizlemeyi
+  `Math.max(1, Math.round(b/1024))` ile **1 KB tabanına** yuvarlıyordu; 20 baytlık
+  bir önizleme kullanıcıya "1 KB" görünüyordu. Kullanıcıya olmayan bir boyut
+  söylenmez (ürün değişmezi: "ölçülmeyen değer uydurulmaz").
+- **ÖLÇÜLEN KUSUR #56 (gün kayması sınıfı):** takvim tarihi `new Date("2026-01-01")`
+  ile ayrıştırılırsa **UTC** gece yarısı olur; eksi saat diliminde gün bir önce
+  kayar. Ölçüm (Node 22, `America/New_York`): naif ayrıştırma **31.12.2025**,
+  yerel kurulum **01.01.2026**; `Europe/Istanbul`'da ikisi de 01.01.2026 (kusur
+  +03'te görünmez). Hukuki tarihte bir gün kayması kabul edilemez.
+- **Kapanan kusur #57 (bayat etiket):** kenar çubuğu gömülü `"v0.1.0 · F02"`
+  yazıyordu; uygulama F04'te. Artık sürüm **tek kaynaktan** (`package.json`) gelir.
+
+**Yazılanlar**
+
+- **`src/lib/i18n.ts` (yeni, tek sözlük):** `tr` ağacı `as const`; `MessageKey`
+  yaprak anahtar birleşimi → yazım hatası **derleme hatası**. `t(key, params?)`
+  `{ad}` yer tutucusunu doldurur; **eksik parametre hata atar** (ekranda yarım
+  cümle görünmez). `messageKeys()` denetim/test için.
+- **`src/lib/format.ts` (tek biçimlendirme katmanı):** `formatDateTime` (anlık
+  zaman), **`formatLegalDate`** (takvim tarihi: `23.10.2026`, `10.2026`, `2026` —
+  eksik gün uydurulmaz, zaman bileşeni taşıyan değer "tarih biçimi
+  desteklenmiyor" döner), `formatUnixSeconds` (0/negatif → "—", 1970 uydurulmaz),
+  `formatNumber`, `formatPercent`, **`formatSize`** (bayt/KiB/MiB, virgül),
+  `formatDuration`. `formatTimestamp` geriye uyum için aynı fonksiyondur.
+- **Taşınan ekranlar (tam):** `App.tsx` (gezinme + kabuk + "hazır değil" ekranı),
+  `screens/Unlock.tsx` (kasa açma/oluşturma/kurtarma, 40+ metin),
+  `screens/Workspace.tsx`. Etiket haritaları (`CASE_KIND_LABEL`,
+  `SENSITIVITY_LABEL`, `AI_POLICY_LABEL`) artık sözlükten **türetilir**.
+- **Biçimlendirme çağrı yerleri tek katmana alındı (7 dosya):** `arch.ts`,
+  `precedents.ts`, `providers.ts` (`formatBytes` = `formatSize`), `reader.ts`,
+  `rollback.ts`, `Ai.tsx`, `Precedents.tsx`, `Providers.tsx`, `Settings.tsx`.
+  `src` altında `toLocaleString`/`new Intl`/`"tr-TR"` **yalnız** `lib/format.ts`'te.
+- **`src/lib/localization.test.ts` (yeni kapı):** (a) biçimlendirme başka dosyaya
+  sızarsa, (b) sözlükte kullanılmayan anahtar kalırsa, (c) taşınmış ekranlara
+  gömülü metin geri gelirse, (d) kabukta gömülü sürüm etiketi olursa **kırmızı**.
+
+**Test**
+
+- Web `tsc --noEmit` temiz · `vitest run` **413/413** (30 dosya; önceki 384 → +29:
+  `i18n` 6, `format` 19, `localization` 4) · `vite build` temiz (83 modül, 698 ms).
+- Biçim testleri **iki saat diliminde** koşuldu: `TZ=UTC` 23/23 ve
+  `TZ=America/New_York` 33/33 (takvim tarihi kaymıyor).
+- Ölçüm/kanıt: 20 bayt → `"20 bayt"` (eskiden "1 KB"); 1.536 bayt →
+  `"1,5 KiB"`; 0 saniye → `"—"`.
+
+**Dürüst sınırlar**
+
+- Sözlüğe **11 ekran taşınmadı** (Dosyalar/Cases, Arama, İnceleme, Emsal, Maskeleme,
+  Çıktılar, AI, Sağlayıcılar, Ayarlar, Kronoloji, Görevler, Kontrol listesi).
+  F04-T08 bu yüzden **🚧 kaldı**; kalan taşıma mekanik ama dosya dosya yapılmalı.
+- Sözlük **tek dilli**: dil değiştirme düğmesi yok, ürün Türkçe sabit. Sözlüğün
+  değeri çeviri değil, **tek kaynak + derleme zamanı anahtar denetimi**.
+- `package.json`/`tauri.conf.json`/`Cargo.toml` sürümü hâlâ **0.1.0**, F04 belgesi
+  `v0.3.0` diyor; sürüm yükseltmesi (updater/SBOM'u etkiler) bu turda **yapılmadı**
+  — kenar çubuğu artık paket sürümünü gösterdiği için ekranda "v0.1.0" yazar.
+- Tauri penceresi açılmadı → sözlükten gelen metinlerin **görsel QA'si yok**
+  (metinler birebir aynı; yalnız kaynak değişti).
+- `formatLegalDate` bugün **çağrılmıyor**: takvim tarihi alanları (F05+ belge
+  tarihleri) geldiğinde kullanılacak; şimdilik altyapı + test.
 
 ## Yeniden deneme gerçekten çalışıyor (2026-10-28, F04-T07 kapanışı)
 

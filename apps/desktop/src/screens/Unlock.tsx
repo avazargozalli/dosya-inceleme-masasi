@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, toApiError, type ApiError } from "../lib/api";
+import { t } from "../lib/i18n";
 import { checkPassword, checkPasswordConfirmation } from "../lib/vault-input";
 
 type Mode = "open" | "create" | "recovery";
@@ -50,21 +51,18 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
     return (
       <div className="page" style={{ maxWidth: 720 }}>
         <div className="page-head">
-          <div className="steps" aria-label="Kurulum adımları">
-            <span className="step done"><span className="step-dot">✓</span> Kasa</span>
-            <span className="step active"><span className="step-dot">2</span> Kurtarma</span>
-            <span className="step"><span className="step-dot">3</span> Kullanmaya başla</span>
+          <div className="steps" aria-label={t("steps.aria")}>
+            <span className="step done"><span className="step-dot">✓</span> {t("steps.vault")}</span>
+            <span className="step active"><span className="step-dot">2</span> {t("steps.recovery")}</span>
+            <span className="step"><span className="step-dot">3</span> {t("steps.start")}</span>
           </div>
-          <h1>Kurtarma anahtarını şimdi kaydet</h1>
-          <p className="lead">
-            Bu anahtar yalnızca bir kez gösterilir. Parolanı unutursan kasayı bununla açarsın.
-            Anahtarı kasa dosyasından ayrı bir yerde sakla; birlikte saklamak korumasını azaltır.
-          </p>
+          <h1>{t("unlock.recoveryTitle")}</h1>
+          <p className="lead">{t("unlock.recoveryLead")}</p>
         </div>
 
         <div className="card">
-          <div className="recovery" aria-label="Kurtarma anahtarı">{createdKey}</div>
-          <div className="hint">8 grup · 52 karakter · tireler yalnız okunabilirlik içindir.</div>
+          <div className="recovery" aria-label={t("unlock.recoveryAria")}>{createdKey}</div>
+          <div className="hint">{t("unlock.recoveryHint")}</div>
           <label className="row" style={{ alignItems: "center", gap: 8 }}>
             <input
               type="checkbox"
@@ -72,7 +70,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
               onChange={(e) => setKeySaved(e.target.checked)}
               style={{ width: 16, height: 16 }}
             />
-            <span>Anahtarı güvenli bir yere kaydettim.</span>
+            <span>{t("unlock.savedCheck")}</span>
           </label>
           <div className="row" style={{ justifyContent: "flex-end" }}>
             <button
@@ -83,16 +81,14 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
                 setMode("open");
               }}
             >
-              Geri
+              {t("common.back")}
             </button>
             <button className="btn primary" disabled={!keySaved} onClick={() => void onUnlocked()}>
-              Kasayı aç
+              {t("unlock.openVault")}
             </button>
           </div>
         </div>
-        <div className="notice">
-          Anahtarı kaybetmediğinden emin olmadan bu ekranı kapatma. Uygulama anahtarı tekrar göstermez.
-        </div>
+        <div className="notice">{t("unlock.recoveryNotice")}</div>
       </div>
     );
   }
@@ -100,22 +96,25 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
   return (
     <div className="page" style={{ maxWidth: 620 }}>
       <div className="page-head">
-        <h1>Kasa</h1>
-        <p className="lead">
-          Belgeler cihazında şifreli bir kasada durur. Kasa kapalıyken içerik okunamaz; arama
-          indeksi ve yedekler de aynı şifreleme kapsamındadır.
-        </p>
+        <h1>{t("unlock.title")}</h1>
+        <p className="lead">{t("unlock.lead")}</p>
       </div>
 
       <div className="card">
-        <div className="steps" aria-label="Kasa işlemleri">
-          <button className={mode === "create" ? "btn primary" : "btn"} onClick={() => setMode("create")}>Yeni kasa</button>
-          <button className={mode === "open" ? "btn primary" : "btn"} onClick={() => setMode("open")}>Mevcut kasayı aç</button>
-          <button className={mode === "recovery" ? "btn primary" : "btn"} onClick={() => setMode("recovery")}>Kurtarma anahtarı</button>
+        <div className="steps" aria-label={t("unlock.modesAria")}>
+          <button className={mode === "create" ? "btn primary" : "btn"} onClick={() => setMode("create")}>
+            {t("unlock.modeCreate")}
+          </button>
+          <button className={mode === "open" ? "btn primary" : "btn"} onClick={() => setMode("open")}>
+            {t("unlock.modeOpen")}
+          </button>
+          <button className={mode === "recovery" ? "btn primary" : "btn"} onClick={() => setMode("recovery")}>
+            {t("unlock.modeRecovery")}
+          </button>
         </div>
 
         <div className="field">
-          <label htmlFor="vault-path">Kasa konumu</label>
+          <label htmlFor="vault-path">{t("unlock.pathLabel")}</label>
           <input
             id="vault-path"
             className="input"
@@ -125,15 +124,12 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
             autoComplete="off"
             spellCheck={false}
           />
-          <span className="hint">
-            Ev klasörüne göreli yol veya tam yol. Klasör yoksa oluşturulur; mevcut kasa dosyası
-            üzerine yazılmaz.
-          </span>
+          <span className="hint">{t("unlock.pathHint")}</span>
         </div>
 
         {mode === "recovery" ? (
           <div className="field">
-            <label htmlFor="recovery-key">Kurtarma anahtarı</label>
+            <label htmlFor="recovery-key">{t("unlock.recoveryKeyLabel")}</label>
             <input
               id="recovery-key"
               className="input"
@@ -144,12 +140,14 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
               spellCheck={false}
               style={{ fontFamily: "var(--mono)" }}
             />
-            <span className="hint">Tireler ve boşluklar önemsiz; büyük/küçük harf fark etmez.</span>
+            <span className="hint">{t("unlock.recoveryKeyHint")}</span>
           </div>
         ) : (
           <>
             <div className="field">
-              <label htmlFor="password">{mode === "create" ? "Parola oluştur" : "Parola"}</label>
+              <label htmlFor="password">
+                {mode === "create" ? t("unlock.passwordCreate") : t("unlock.password")}
+              </label>
               <input
                 id="password"
                 className="input"
@@ -161,14 +159,12 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
               {mode === "create" && password.length > 0 && !check.ok ? (
                 <span className="hint error">{check.reason}</span>
               ) : (
-                <span className="hint">
-                  En az 12 karakter. Parola cihazda kalır; hiçbir sunucuya gönderilmez.
-                </span>
+                <span className="hint">{t("unlock.passwordHint")}</span>
               )}
             </div>
             {mode === "create" ? (
               <div className="field">
-                <label htmlFor="confirm">Parola (tekrar)</label>
+                <label htmlFor="confirm">{t("unlock.passwordConfirm")}</label>
                 <input
                   id="confirm"
                   className="input"
@@ -185,24 +181,34 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
         {error ? (
           <div className="notice danger" role="alert">
             <strong>{error.code}</strong> — {error.message}
-            {error.retryable ? " (yeniden denenebilir)" : ""}
+            {error.retryable ? ` ${t("common.retryableSuffix")}` : ""}
           </div>
         ) : null}
 
         <div className="row" style={{ justifyContent: "flex-end" }}>
           <button className="btn primary" disabled={!canSubmit} onClick={() => void submit()}>
-            {busy ? "İşleniyor…" : mode === "create" ? "Kasayı oluştur" : mode === "open" ? "Kilidi aç" : "Kurtarma ile aç"}
+            {busy
+              ? t("common.busy")
+              : mode === "create"
+                ? t("unlock.submitCreate")
+                : mode === "open"
+                  ? t("unlock.submitOpen")
+                  : t("unlock.submitRecovery")}
           </button>
         </div>
       </div>
 
       <div className="card tight">
-        <h2>Bu fazda ne çalışıyor?</h2>
+        <h2>{t("unlock.phaseTitle")}</h2>
         <dl className="kv">
-          <dt>Kasa oluşturma</dt><dd><span className="badge ok">gerçek</span> Argon2id + AES-256-GCM</dd>
-          <dt>Kilit açma</dt><dd><span className="badge ok">gerçek</span> dosyadan okuma, anahtar yalnız bellekte</dd>
-          <dt>Kurtarma anahtarı</dt><dd><span className="badge ok">gerçek</span> 32 bayt, base32 gösterim</dd>
-          <dt>Belge içe aktarma</dt><dd><span className="badge plain">F05</span> henüz yok</dd>
+          <dt>{t("unlock.phaseVault")}</dt>
+          <dd><span className="badge ok">{t("unlock.badgeReal")}</span> {t("unlock.phaseVaultValue")}</dd>
+          <dt>{t("unlock.phaseUnlock")}</dt>
+          <dd><span className="badge ok">{t("unlock.badgeReal")}</span> {t("unlock.phaseUnlockValue")}</dd>
+          <dt>{t("unlock.phaseRecovery")}</dt>
+          <dd><span className="badge ok">{t("unlock.badgeReal")}</span> {t("unlock.phaseRecoveryValue")}</dd>
+          <dt>{t("unlock.phaseImport")}</dt>
+          <dd><span className="badge plain">{t("unlock.badgePhase")}</span> {t("unlock.phaseImportValue")}</dd>
         </dl>
       </div>
     </div>

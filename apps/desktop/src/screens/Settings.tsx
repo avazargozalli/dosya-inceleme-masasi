@@ -12,6 +12,7 @@ import {
   type VaultStatus,
 } from "../lib/api";
 import type { VaultGcResult } from "../lib/api";
+import { formatDateTime, formatSize } from "../lib/format";
 import {
   BACKUP_DAYS_KEY,
   BACKUP_DIR_KEY,
@@ -27,12 +28,6 @@ import {
   rollbackDisabledReason,
   rollbackSummary,
 } from "../lib/rollback";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
@@ -306,7 +301,7 @@ export function Settings() {
               <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{item.fileName}</span>
               <br />
               <span className="hint">
-                {formatBackupDate(item.modifiedAt)} · {formatBytes(item.sizeBytes)} ·{" "}
+                {formatBackupDate(item.modifiedAt)} · {formatSize(item.sizeBytes)} ·{" "}
                 {backupStatusText(item)}
               </span>
               {backupWarnings(item).map((warning) => (
@@ -387,7 +382,7 @@ export function Settings() {
           <div className="notice ok">
             Yedek hazır: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{backup.path}</span>
             <br />
-            {backup.fileCount} dosya · {formatBytes(backup.totalBytes)} · manifest {backup.manifestHash.slice(0, 16)}…
+            {backup.fileCount} dosya · {formatSize(backup.totalBytes)} · manifest {backup.manifestHash.slice(0, 16)}…
             {backup.archivePath ? (
               <>
                 <br />
@@ -429,7 +424,7 @@ export function Settings() {
           <dt>Aralık</dt>
           <dd>{autoBackup.days} gün</dd>
           <dt>Son yedek</dt>
-          <dd>{autoBackup.last ? new Date(autoBackup.last).toLocaleString("tr-TR") : "hiç"}</dd>
+          <dd>{autoBackup.last ? formatDateTime(autoBackup.last) : "hiç"}</dd>
         </dl>
         <div className="row" style={{ gap: 6 }}>
           <button
@@ -480,8 +475,8 @@ export function Settings() {
         {gc ? (
           <div className={gc.deleted.length > 0 ? "notice ok" : "notice"}>
             {gc.dryRun
-              ? `${gc.candidates.length} aday · ${formatBytes(gc.candidates.reduce((sum, b) => sum + b.encryptedSize, 0))}`
-              : `${gc.deleted.length} kayıt silindi · ${formatBytes(gc.freedBytes)} boşaldı`}
+              ? `${gc.candidates.length} aday · ${formatSize(gc.candidates.reduce((sum, b) => sum + b.encryptedSize, 0))}`
+              : `${gc.deleted.length} kayıt silindi · ${formatSize(gc.freedBytes)} boşaldı`}
             {gc.missingFiles.length > 0 ? (
               <>
                 <br />
@@ -526,7 +521,7 @@ export function Settings() {
               <>
                 <br />
                 Kopyalamadan önce <strong>{restoreInfo.verifiedFiles}</strong> dosya ·{" "}
-                {formatBytes(restoreInfo.verifiedBytes)} manifest sha256 ile doğrulandı ({restoreInfo.verifyMs} ms).
+                {formatSize(restoreInfo.verifiedBytes)} manifest sha256 ile doğrulandı ({restoreInfo.verifyMs} ms).
                 {restoreInfo.unlistedBlobs.length > 0 ? (
                   <>
                     {" "}

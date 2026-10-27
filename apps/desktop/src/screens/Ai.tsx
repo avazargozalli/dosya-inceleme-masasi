@@ -10,6 +10,7 @@ import {
   type ConsentPreview,
   type TransferConsentRow,
 } from "../lib/api";
+import { formatDateTime, formatSize } from "../lib/format";
 import {
   CANDIDATE_KINDS,
   candidateKindLabel,
@@ -261,7 +262,7 @@ export function Ai() {
                 <h3>Gönderilecek içerik</h3>
                 <p className="card-sub">
                   {preview.documents} belge · {preview.segments} segment ·{" "}
-                  {(preview.bytes / 1024).toFixed(1)} KB
+                  {formatSize(preview.bytes)}
                 </p>
               </div>
             </div>
@@ -306,7 +307,7 @@ export function Ai() {
                 <tr key={run.id}>
                   <td>{run.taskType}</td>
                   <td><span className={`badge ${run.status === "succeeded" ? "ok" : ""}`}>{run.status}</span></td>
-                  <td>{new Date(run.createdAt).toLocaleString("tr-TR")}</td>
+                  <td>{formatDateTime(run.createdAt)}</td>
                   <td>
                     <button className="btn ghost" onClick={() => void selectRun(run.id)}>
                       {runId === run.id ? "Seçili · adayları yenile" : "Seç ve adayları gör"}
@@ -495,7 +496,7 @@ export function Ai() {
                       {candidateKindLabel(candidate.candidateType)}
                       <span className="hint" style={{ display: "block" }}>
                         {candidate.checkedAt
-                          ? new Date(candidate.checkedAt).toLocaleString("tr-TR")
+                          ? formatDateTime(candidate.checkedAt)
                           : "denetlenmemiş"}
                       </span>
                     </td>

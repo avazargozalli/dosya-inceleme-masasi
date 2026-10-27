@@ -110,11 +110,11 @@ describe("bağlantı sınaması sunumu", () => {
   });
 
   it("bayt biçimi Türkçe ondalıkla okunur", () => {
-    expect(formatBytes(0)).toBe("0 B");
-    expect(formatBytes(1023)).toBe("1023 B");
-    expect(formatBytes(1024)).toBe("1,0 KiB");
+    expect(formatBytes(0)).toBe("0 bayt");
+    expect(formatBytes(1023)).toBe("1.023 bayt");
+    expect(formatBytes(1024)).toBe("1 KiB");
     expect(formatBytes(20480)).toBe("20 KiB");
-    expect(formatBytes(1048576)).toBe("1,0 MiB");
+    expect(formatBytes(1048576)).toBe("1 MiB");
   });
 
   it("kapsam satırları izin, HOME politikası, stdin ve dosya sayısını yazar", () => {
@@ -122,13 +122,13 @@ describe("bağlantı sınaması sunumu", () => {
     expect(lines.map((l) => l.label)).toEqual(["İzin", "HOME / TMPDIR", "stdin", "Bırakılan dosya"]);
     expect(lines[0]?.value).toBe("0700 yalnız kullanıcı");
     expect(lines[1]?.value).toBe("kum havuzunda");
-    expect(lines[2]?.value).toBe("0 B / 1,0 MiB");
+    expect(lines[2]?.value).toBe("0 bayt / 1 MiB");
     expect(lines[3]?.value).toBe("yok");
 
     const withFiles = view({
       sandbox: { ...view().sandbox, files: [{ name: "home/a.json", bytes: 12 }], totalBytes: 12 },
     });
-    expect(probeScopeLines(withFiles)[3]?.value).toBe("1 dosya · 12 B");
+    expect(probeScopeLines(withFiles)[3]?.value).toBe("1 dosya · 12 bayt");
 
     const userHome = view({ sandbox: { ...view().sandbox, homeIsolation: "user_home", home: null } });
     expect(probeScopeLines(userHome)[1]?.value).toBe("kullanıcı ev dizini (açık seçim)");
@@ -216,7 +216,7 @@ describe("residue", () => {
     expect(residuePathLine({ exists: false, files: 0, bytes: 0, truncated: false })).toBe("yok");
     expect(residuePathLine({ exists: true, files: 0, bytes: 0, truncated: false })).toBe("boş");
     expect(residuePathLine({ exists: true, files: 3, bytes: 4096, truncated: false })).toBe(
-      "3 dosya · 4,0 KiB",
+      "3 dosya · 4 KiB",
     );
     expect(residuePathLine({ exists: true, files: 3, bytes: 4096, truncated: true })).toContain(
       "liste kesik",
@@ -261,7 +261,7 @@ describe("residue", () => {
   });
 
   it("ölçüm ve temizlik özetleri sayıları taşır", () => {
-    expect(residueMeasureSummary(residueMeasure())).toBe("220 ms · 1 yeni dosya · 0 değişen · +84 B");
+    expect(residueMeasureSummary(residueMeasure())).toBe("220 ms · 1 yeni dosya · 0 değişen · +84 bayt");
     expect(
       residueCleanupSummary({
         removedFiles: 1,
@@ -270,7 +270,7 @@ describe("residue", () => {
         skipped: [{ path: "x", reason: "kapsam dışı" }],
         errors: [],
       }),
-    ).toBe("1 dosya silindi · 84 B · 2 boş dizin · 1 atlandı");
+    ).toBe("1 dosya silindi · 84 bayt · 2 boş dizin · 1 atlandı");
   });
 
   it("kum havuzu süpürme özeti yaş eşiğini dakikaya çevirir", () => {
