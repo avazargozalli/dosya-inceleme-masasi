@@ -10,6 +10,11 @@
 //! `not_found` sonucu "uydurma" hükmü değildir: yalnız taranan metin
 //! katmanında bulunmadığını söyler. Taranmış (OCR'sız) sayfada görünen metin
 //! bu denetimde bulunamaz.
+//!
+//! Tek sayfa taramasından sonra, hâlâ bulunamayan alıntılar için **sayfa
+//! sınırını aşan** eşleşme aranır: ardışık sayfalar bir pencerede birleştirilir,
+//! yalnız iki sayfaya da gerçekten yayılan eşleşmeler kaydedilir. Böyle bir
+//! eşleşme `spansPages` ile işaretlenir; tek sayfalık anchor'a bağlanmaz.
 
 use std::collections::BTreeSet;
 
@@ -138,9 +143,16 @@ pub struct InTextQuotePosition {
     pub page_id: Option<String>,
     pub segment_id: Option<String>,
     pub page_index: i64,
-    /// Unicode scalar konumu (bayt değil).
+    /// Unicode scalar konumu (bayt değil). Sayfa sınırını aşan eşleşmede
+    /// `char_start` **ilk** sayfadaki, `char_end` **son** sayfadaki konumdur
+    /// (`end_page_index`).
     pub char_start: i64,
     pub char_end: i64,
+    /// Eşleşmenin bittiği sayfa. Sayfa sınırını aşmayan eşleşmede
+    /// `page_index` ile aynıdır.
+    pub end_page_index: i64,
+    /// Eşleşme sayfa sınırını aşıyor mu (kaynakta sayfa/satır sonu).
+    pub spans_pages: bool,
     /// `exact` | `whitespace` | `turkish_fold`
     pub match_kind: String,
     pub text_origin: String,
@@ -224,7 +236,10 @@ struct RawHit {
     segment_id: Option<String>,
     page_index: i64,
     char_start: i64,
+    /// Eşleşmenin bittiği sayfa ve o sayfadaki bitiş konumu.
+    end_page_index: i64,
     char_end: i64,
+    spans_pages: bool,
     match_kind: &'static str,
     text_origin: String,
     source_text: String,
@@ -242,6 +257,8 @@ impl RawHit {
             page_index: self.page_index,
             char_start: self.char_start,
             char_end: self.char_end,
+            end_page_index: self.end_page_index,
+            spans_pages: self.spans_pages,
             match_kind: self.match_kind.to_string(),
             text_origin: self.text_origin.clone(),
             source_text: self.source_text.clone(),
@@ -333,36 +350,28 @@ impl Database {
                 return Err(StorageError::QuoteScopeTooLarge);
             }
             let all: Vec<usize> = (0..extracted.quotes.len()).collect();
-            self.scan_quote_tier(
-                &scopes,
-                &extracted.quotes,
-                &all,
-                &mut accum,
-                MatchTier::Exact,
-            )?;
-            let pending = pending_quotes(&accum);
-            if !pending.is_empty() {
-                self.scan_quote_tier(
-                    &scopes,
-                    &extracted.quotes,
-                    &pending,
-                    &mut accum,
-                    MatchTier::Whitespace,
-                )?;
-            }
-            let pending = pending_quotes(&accum);
-            if !pending.is_empty() {
-                self.scan_quote_tier(
-                    &scopes,
-                    &extracted.quotes,
-                    &pending,
-                    &mut accum,
-                    MatchTier::Fold,
-                )?;
+            // Katman sırası korunur: üst katman bulduysa alt kata inilmez.
+            // Her katmanda önce tek sayfa, sonra **sayfa sınırı** taranır; böylece
+            // birebir ama sayfa sonuna denk gelen eşleşme, tek sayfadaki
+            // normalize eşleşmeden üstün kalır.
+            let mut active = all;
+            for tier in [MatchTier::Exact, MatchTier::Whitespace, MatchTier::Fold] {
+                if active.is_empty() {
+                    break;
+                }
+                self.scan_quote_tier(&scopes, &extracted.quotes, &active, &mut accum, tier)?;
+                active = pending_quotes(&accum);
+                if active.is_empty() {
+                    break;
+                }
+                self.scan_page_break_tier(&scopes, &extracted.quotes, &active, &mut accum, tier)?;
+                active = pending_quotes(&accum);
             }
         }
 
         let mut counts = [0usize; 5];
+        let mut spanning = 0usize;
+        let mut bindable = 0usize;
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         for (index, span) in extracted.quotes.iter().enumerate() {
             let found = &accum[index];
@@ -400,12 +409,32 @@ impl Database {
                 "not_found" => counts[3] += 1,
                 _ => counts[4] += 1,
             }
+            let hit_spans = finding
+                .position
+                .as_ref()
+                .is_some_and(|position| position.spans_pages)
+                || finding
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.spans_pages);
+            if hit_spans {
+                spanning += 1;
+            } else if finding.state == "exact" {
+                // Tek sayfada birebir: tek sayfalık anchor'a bağlanabilir.
+                bindable += 1;
+            }
             quotes.push(finding);
         }
-        if counts[0] > 0 {
+        if bindable > 0 {
             notes.push(format!(
-                "{} alıntı birebir tek konumda bulundu; kaynak bağlanabilir.",
-                counts[0]
+                "{bindable} alıntı birebir tek konumda bulundu; kaynak bağlanabilir."
+            ));
+        }
+        if spanning > 0 {
+            notes.push(format!(
+                "{spanning} alıntı yalnız sayfa sınırını aşarak bulundu (kaynakta sayfa \
+                 sonu/satır sonu var); tek sayfalık anchor'a bağlanmaz, kaynak metin \
+                 gösterilir."
             ));
         }
         if counts[1] > 0 {
@@ -618,8 +647,10 @@ impl Database {
                                     segment_id: segment_id.clone(),
                                     page_index,
                                     char_start: start,
+                                    end_page_index: page_index,
                                     char_end: start
                                         + i64::try_from(quote.chars().count()).unwrap_or(i64::MAX),
+                                    spans_pages: false,
                                     match_kind: tier.kind(),
                                     text_origin: text_origin.clone(),
                                     source_text: quote.clone(),
@@ -661,6 +692,8 @@ impl Database {
                                         page_index,
                                         char_start: start,
                                         char_end: end,
+                                        end_page_index: page_index,
+                                        spans_pages: false,
                                         match_kind: tier.kind(),
                                         text_origin: text_origin.clone(),
                                         source_text,
@@ -675,6 +708,235 @@ impl Database {
         }
         Ok(())
     }
+
+    /// **Sayfa sınırını aşan** eşleşmeleri arar (F12-T14 genişletmesi).
+    ///
+    /// Ardışık sayfalar tek pencerede birleştirilir (araya bir ayırıcı konur);
+    /// yalnız iki sayfaya da gerçekten yayılan eşleşmeler kaydedilir, çünkü tek
+    /// sayfa içinde kalanlar birinci taramada zaten bulunmuştur. Katman
+    /// kuralları `scan_quote_tier` ile aynıdır; `spansPages=true` yazılır ve
+    /// böyle bir konum tek sayfalık anchor'a bağlanamaz.
+    fn scan_page_break_tier(
+        &self,
+        scopes: &[VersionScope],
+        spans: &[SpannedQuote],
+        active: &[usize],
+        accum: &mut [QuoteAccum],
+        tier: MatchTier,
+    ) -> Result<(), StorageError> {
+        if active.is_empty() {
+            return Ok(());
+        }
+        let needles: Vec<Option<MappedText>> = spans
+            .iter()
+            .map(|span| match tier {
+                MatchTier::Exact => None,
+                MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
+                MatchTier::Fold => Some(normalize_with_map(&span.text)),
+            })
+            .collect();
+        let needle_chars: Vec<usize> = needles
+            .iter()
+            .map(|needle| {
+                needle
+                    .as_ref()
+                    .map(|mapped| mapped.text.chars().count())
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        // Taşınan kuyruk en uzun alıntıdan (+ayırıcılar) büyük olmalı; daha
+        // uzun bir alıntı çok kısa sayfalar üzerinden üç sayfaya yayılırsa
+        // pencere başlangıcı yetmeyebilir (dürüst sınır, README'de yazılı).
+        let carry_limit = MAX_SPAN_CHARS + 64;
+        let connection = self.conn();
+        let mut stmt = connection.prepare(SCOPE_PAGE_SQL)?;
+        for scope in scopes {
+            let Some(run_id) = scope.parse_run_id.as_deref() else {
+                continue;
+            };
+            let rows = stmt.query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            let mut carry: Vec<WindowChar> = Vec::new();
+            let mut metas: Vec<PageMeta> = Vec::new();
+            for row in rows {
+                let (page_id, page_index, text_origin, segment_id, text) = row?;
+                if text.is_empty() {
+                    continue;
+                }
+                let boundary = carry.len();
+                let mut window: Vec<WindowChar> =
+                    Vec::with_capacity(boundary + 1 + text.chars().count());
+                window.extend(carry.iter().cloned());
+                window.push(WindowChar {
+                    page_index: None,
+                    char_in_page: 0,
+                    ch: '\n',
+                });
+                for (index, ch) in text.chars().enumerate() {
+                    window.push(WindowChar {
+                        page_index: Some(page_index),
+                        char_in_page: i64::try_from(index).unwrap_or(i64::MAX),
+                        ch,
+                    });
+                }
+                // Pencerede artık bulunmayan sayfaların üst verisi düşer;
+                // böylece kuyruk sınırlı kalır (sayfa sayısıyla büyümez).
+                metas.retain(|meta| {
+                    window
+                        .iter()
+                        .any(|item| item.page_index == Some(meta.page_index))
+                });
+                metas.push(PageMeta {
+                    page_index,
+                    page_id: page_id.clone(),
+                    segment_id: segment_id.clone(),
+                    text_origin: text_origin.clone(),
+                });
+
+                let joined: String = window.iter().map(|item| item.ch).collect();
+                match tier {
+                    MatchTier::Exact => {
+                        for &quote_index in active {
+                            let quote = &spans[quote_index].text;
+                            for (byte, _) in joined.match_indices(quote) {
+                                let start = joined[..byte].chars().count();
+                                let end = start + quote.chars().count();
+                                if let Some(hit) = page_break_hit(
+                                    scope,
+                                    run_id,
+                                    &metas,
+                                    &window,
+                                    boundary,
+                                    start,
+                                    end,
+                                    tier.kind(),
+                                ) {
+                                    accum[quote_index].record(hit);
+                                }
+                            }
+                        }
+                    }
+                    MatchTier::Whitespace | MatchTier::Fold => {
+                        let mapped = if tier == MatchTier::Whitespace {
+                            collapse_ws_with_map(&joined)
+                        } else {
+                            normalize_with_map(&joined)
+                        };
+                        for &quote_index in active {
+                            let Some(needle) = needles[quote_index].as_ref() else {
+                                continue;
+                            };
+                            if needle.text.is_empty() || needle_chars[quote_index] == 0 {
+                                continue;
+                            }
+                            let mut from = 0usize;
+                            while let Some(offset) = mapped.text[from..].find(&needle.text) {
+                                let at = from + offset;
+                                if let Some((start, end)) =
+                                    source_span(&mapped, at, needle_chars[quote_index])
+                                {
+                                    if let Some(hit) = page_break_hit(
+                                        scope,
+                                        run_id,
+                                        &metas,
+                                        &window,
+                                        boundary,
+                                        usize::try_from(start).unwrap_or(usize::MAX),
+                                        usize::try_from(end).unwrap_or(usize::MAX),
+                                        tier.kind(),
+                                    ) {
+                                        accum[quote_index].record(hit);
+                                    }
+                                }
+                                from = at + needle.text.len().max(1);
+                            }
+                        }
+                    }
+                }
+
+                // Kuyruğu pencere sonundan sınırla taşı.
+                let keep = window.len().min(carry_limit);
+                carry = window.split_off(window.len() - keep);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Pencerede taşınan tek karakter: hangi sayfanın kaçıncı karakteri olduğu.
+/// `page_index` `None` ise araya konan sayfa ayırıcısıdır (hiçbir sayfaya ait
+/// değildir, eşleşmenin ucu olamaz).
+#[derive(Clone)]
+struct WindowChar {
+    page_index: Option<i64>,
+    char_in_page: i64,
+    ch: char,
+}
+
+/// Pencerede tutulan sayfanın kimlikleri: sınırı aşan eşleşmenin **ilk**
+/// sayfasının `page_id`/`segment_id` değerleri gerekir.
+struct PageMeta {
+    page_index: i64,
+    page_id: String,
+    segment_id: Option<String>,
+    text_origin: String,
+}
+
+/// Pencere içindeki eşleşmeyi sayfa sınırını aşan bir konuma çevirir.
+///
+/// Yalnız **iki tarafında da** gerçek sayfa karakteri bulunan eşleşmeler
+/// kabul edilir: `start` ayırıcıdan önce, `end` ayırıcıdan en az bir karakter
+/// sonra olmalıdır. Aksi hâlde eşleşme tek sayfa içindedir ve birinci
+/// taramada bulunmuştur (yinelenmez).
+// Gerekçe: pencere bağlamı (kapsam, kimlik, sınır, eşleşme) tek çağrıda
+// taşınıyor; ara yapı kurmak kuralı iki yere kopyalardı.
+#[allow(clippy::too_many_arguments)]
+fn page_break_hit(
+    scope: &VersionScope,
+    run_id: &str,
+    metas: &[PageMeta],
+    window: &[WindowChar],
+    boundary: usize,
+    start: usize,
+    end: usize,
+    match_kind: &'static str,
+) -> Option<RawHit> {
+    if start >= boundary || end <= boundary + 1 || end > window.len() {
+        return None;
+    }
+    let first = window.get(start)?;
+    let last = window.get(end - 1)?;
+    let start_page = first.page_index?;
+    let end_page = last.page_index?;
+    if start_page >= end_page {
+        return None;
+    }
+    let meta = metas.iter().find(|meta| meta.page_index == start_page)?;
+    let source_text: String = window[start..end].iter().map(|item| item.ch).collect();
+    Some(RawHit {
+        document_id: scope.document_id.clone(),
+        document_name: scope.document_name.clone(),
+        version_id: scope.version_id.clone().unwrap_or_default(),
+        parse_run_id: run_id.to_string(),
+        page_id: Some(meta.page_id.clone()),
+        segment_id: meta.segment_id.clone(),
+        page_index: start_page,
+        char_start: first.char_in_page,
+        end_page_index: end_page,
+        char_end: last.char_in_page.checked_add(1)?,
+        spans_pages: true,
+        match_kind,
+        text_origin: meta.text_origin.clone(),
+        source_text,
+    })
 }
 
 fn pending_quotes(accum: &[QuoteAccum]) -> Vec<usize> {
@@ -882,6 +1144,8 @@ mod tests {
         let position = finding.position.as_ref().expect("position");
         assert_eq!(position.document_version_id, version_id);
         assert_eq!(position.page_index, 0);
+        assert_eq!(position.end_page_index, 0);
+        assert!(!position.spans_pages);
         assert_eq!(position.match_kind, "exact");
         assert_eq!(
             position.source_text,
@@ -1123,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn quote_spanning_two_pages_is_not_found() {
+    fn quote_spanning_two_pages_is_found_with_its_page_range() {
         let db = db();
         let case_id = new_case(&db, "Kira");
         add_document(
@@ -1136,10 +1400,119 @@ mod tests {
             ],
         );
         let report = check(&db, &case_id, "“kira bedelini ödemediği” ifadesi.", None);
-        assert_eq!(
-            report.quotes[0].state, "not_found",
-            "sayfa sınırını aşan alıntı bulunamaz; bu dürüst sınırdır"
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(finding.occurrences, 1);
+        assert_eq!(report.normalized, 1);
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.page_index, 0);
+        assert_eq!(position.end_page_index, 1);
+        assert!(position.spans_pages);
+        assert_eq!(position.match_kind, "whitespace");
+        assert_eq!(position.char_start, 7);
+        assert_eq!(position.char_end, 9);
+        assert_eq!(position.source_text, "kira bedelini\nödemediği");
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("sayfa sınırını aşarak bulundu")));
+        // Sayfa sınırını aşan konum tek sayfalık anchor'a bağlanamaz: çekirdek
+        // reddeder (arayüz de düğmeyi kapatır).
+        let error = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                // Arayüz `charEnd` gönderir (son sayfadaki konum): tek segmentte
+                // uzunluk tutmaz, çekirdek aralığı reddeder. Yani sayfa sınırını
+                // aşan alıntı **tek segmentlik anchor olarak ifade edilemez**.
+                end_offset: position.char_end,
+                exact_quote: finding.quote.clone(),
+            })
+            .expect_err("sayfa sınırını aşan alıntı bağlanmamalı");
+        assert_eq!(error.code(), "E_DB_SETTING");
+    }
+
+    #[test]
+    fn exact_quote_that_carries_the_page_break_stays_exact_but_is_not_bindable() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(&db, &case_id, "Karar", &["Karar gerekçesi", "şöyledir"]);
+        // Alıntı sayfa sonundaki satır sonunu **taşıyor**: katman `exact`.
+        let report = check(&db, &case_id, "“Karar gerekçesi\nşöyledir” denildi.", None);
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "exact");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "exact");
+        assert_eq!(position.page_index, 0);
+        assert_eq!(position.end_page_index, 1);
+        assert!(position.spans_pages);
+        // Birebir olsa da tek sayfaya sığmadığı için bağlanamaz; "birebir tek
+        // konumda" notu bu alıntıyı saymaz.
+        assert!(!report
+            .notes
+            .iter()
+            .any(|note| note.contains("kaynak bağlanabilir")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("tek sayfalık anchor'a bağlanmaz")));
+    }
+
+    #[test]
+    fn cross_page_match_is_ambiguous_when_it_repeats_over_two_breaks() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Tutanak",
+            &[
+                "kira bedelini",
+                "ödemediği birinci kayıt",
+                "kira bedelini",
+                "ödemediği ikinci kayıt",
+            ],
         );
+        let report = check(&db, &case_id, "“kira bedelini ödemediği” yazıyor.", None);
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "ambiguous");
+        assert_eq!(finding.occurrences, 2);
+        assert_eq!(finding.candidates.len(), 2);
+        assert!(finding
+            .candidates
+            .iter()
+            .all(|candidate| candidate.spans_pages));
+        assert_eq!(finding.candidates[0].page_index, 0);
+        assert_eq!(finding.candidates[1].page_index, 2);
+    }
+
+    #[test]
+    fn cross_page_match_works_in_the_fold_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Kira");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["ÖDEME YAPILMADIĞINI", "tespit etti."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“ödeme yapılmadığını tespit” sabittir.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "turkish_fold");
+        assert!(position.spans_pages);
+        assert_eq!(position.page_index, 0);
+        assert_eq!(position.end_page_index, 1);
+        assert_eq!(position.source_text, "ÖDEME YAPILMADIĞINI\ntespit");
     }
 
     #[test]

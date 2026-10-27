@@ -17,7 +17,7 @@
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
-| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır |
+| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -321,8 +321,13 @@ tek tek işaretlemez, metindeki tırnaklı pasajlar çıkarılır.
 
 - Denetim **metin katmanındadır**: OCR'sız taranmış sayfada görünen yazı
   bulunamaz; OCR metni varsa yazım hatası eşleşmeyi düşürebilir.
-- Alıntı **tek sayfa içinde** aranır; iki sayfaya bölünen cümle bulunamaz
-  (test edildi, `not_found`).
+- Alıntı **sayfa sınırını aşabiliyorsa** bulunur (2026-10-27 genişletmesi, aşağıda);
+  ancak sayfa sınırını aşan eşleşme **tek sayfalık anchor'a bağlanmaz** — tek
+  segmentlik bir aralık olarak ifade edilemez, kaynak metin gösterilir.
+- Sayfa sınırı taraması **sınırlı bir pencere** kullanır (son ~1.000 karakter):
+  çok kısa sayfalar üzerinden üç ve daha fazla sayfaya yayılan çok uzun alıntı
+  kaçabilir. Tek sayfa içinde bulunan eşleşme her zaman üstündür; sayfa sınırı
+  yalnız alıntı başka yerde bulunamazsa aranır.
 - Normalize eşleşme anchor'a **bağlanmaz**: kaynak metin farklı olduğu için
   birebir alıntı yerine geçmez; kullanıcı kaynak metni görüp karar verir.
 - Yalnız **güncel sürüm** taranır; eski sürümde kalmış alıntı “bulunamadı”
@@ -331,3 +336,46 @@ tek tek işaretlemez, metindeki tırnaklı pasajlar çıkarılır.
   kullanıcıya bırakılır (aday listesi gösterilir).
 - Tauri penceresi bu ortamda açılmadı: kart typecheck + birim testleri +
   üretim derlemesiyle doğrulandı; gerçek tıklama ve görsel QA yok.
+
+## F12-T14 genişletmesi — sayfa sınırını aşan alıntı (2026-10-27)
+
+Önceki turun **açık kaydı** “alıntı tek sayfa içinde aranır; iki sayfaya bölünen
+cümle bulunamaz (`not_found`)” kapandı: PDF sayfa sonuna denk gelen alıntı artık
+bulunuyor ve hangi sayfalar arasında olduğu yazılıyor.
+
+- **Çekirdek (`crates/storage/src/intext_quotes.rs`):** tek sayfa taramasından
+  sonra, hâlâ bulunamayan alıntılar için **sayfa sınırı** taraması
+  (`scan_page_break_tier`). Ardışık sayfalar tek pencerede birleştirilir (araya
+  bir ayırıcı konur); **yalnız iki sayfaya da gerçekten yayılan** eşleşmeler
+  kaydedilir — tek sayfa içinde kalanlar birinci taramada bulunduğu için
+  yinelenmez, `occurrences` şişmez.
+- **Katman sırası korunur:** her katmanda (birebir → boşluk → harf) önce tek
+  sayfa, sonra sayfa sınırı taranır. Böylece birebir ama sayfa sonuna denk gelen
+  eşleşme, başka yerdeki normalize eşleşmeden **üstün** kalır. Alıntı sayfa
+  sonundaki satır sonunu taşıyorsa (`“Karar gerekçesi\nşöyledir”`) katman yine
+  `exact` olur.
+- **Konum:** `InTextQuotePosition` iki alan kazandı — `endPageIndex` ve
+  `spansPages`. Sayfa sınırını aşmayan eşleşmede `endPageIndex == pageIndex` ve
+  `spansPages=false`; aşanda `charStart` **ilk** sayfadaki, `charEnd` **son**
+  sayfadaki konumdur.
+- **Bağlanamaz:** sayfa sınırını aşan konum tek segmentlik anchor olarak ifade
+  edilemez; çekirdek reddeder (`E_DB_SETTING`, aralık/uzunluk kapısı), arayüz
+  “Kaynağa bağla” düğmesini **açmaz** ve nedenini yazar. “Birebir tek konumda
+  bulundu; kaynak bağlanabilir” notu artık yalnız **tek sayfada** birebir
+  bulunanları sayar; sayfa sınırını aşanlar ayrı notla bildirilir.
+- **Arayüz (`lib/intext.ts`, `Review.tsx`):** `pageSpanLabel` (“s. 3–4”),
+  `canBind` içinde `!spansPages` kapısı, `bindHint` (bağlanamama nedeni), kaynak
+  metinde satır sonu `⏎` ile gösterilir ve “Sayfa sınırını aşıyor: 3. sayfa → 4.
+  sayfa” satırı düşer.
+- **Test (gerçek çekirdek, bellek içi kasa):** `intext_quotes` **21** test
+  (önceki 18; kapanan “bulunamaz” testi yerine 4 yeni: sayfa aralığı + bağlanmama,
+  satır sonu taşıyan `exact`, iki sınırda tekrar → `ambiguous`, harf katmanında
+  sayfa sınırı). `cargo test -p dim-storage --lib` **342/342**; clippy
+  `-p dim-storage --all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+  Arayüz: `tsc --noEmit` temiz, `vitest run` **373/373** (intext 8).
+- **DİKKAT (dürüst):** ölçüm **bellek içi kasa + elle yazılmış sayfa metinleri**;
+  gerçek PDF/worker ile uçtan uca denenmedi (sayfa sonu boşlukları, tire ile
+  bölünmüş kelime kapsam dışı). Pencere ~1.000 karakter; çok kısa sayfalar
+  üzerinden üç+ sayfaya yayılan çok uzun alıntı kaçabilir. Tauri penceresi
+  açılmadı → yeni satırın görsel QA'si yok. macOS aarch64 + rustc 1.99.1 ile
+  ölçüldü.

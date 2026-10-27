@@ -15,6 +15,7 @@ import {
   type ReviewItemRow,
 } from "../lib/api";
 import {
+  bindHint,
   bindingInput,
   canBind,
   candidateLabel,
@@ -1034,7 +1035,15 @@ export function Review() {
                     ) : null}
                     {finding.position ? (
                       <p className="muted small" style={{ margin: 0 }}>
-                        {positionLabel(finding)} · kaynak: “{finding.position.sourceText.slice(0, 140)}”
+                        {positionLabel(finding)} · kaynak: “
+                        {finding.position.sourceText.replace(/\s*\n\s*/g, " ⏎ ").slice(0, 140)}”
+                      </p>
+                    ) : null}
+                    {finding.position?.spansPages ? (
+                      <p className="hint" style={{ margin: 0 }}>
+                        Sayfa sınırını aşıyor: {finding.position.pageIndex + 1}. sayfa →{" "}
+                        {finding.position.endPageIndex + 1}. sayfa. Tek sayfalık anchor'a
+                        bağlanmaz; kaynak metin yukarıda.
                       </p>
                     ) : null}
                     {finding.candidates.length > 0 ? (
@@ -1057,7 +1066,7 @@ export function Review() {
                         </button>
                       ) : (
                         <span className="hint" style={{ margin: 0 }}>
-                          {finding.state === "exact" ? "" : "Yalnız birebir tek konum kaynağa bağlanır."}
+                          {bindHint(finding)}
                         </span>
                       )}
                     </div>

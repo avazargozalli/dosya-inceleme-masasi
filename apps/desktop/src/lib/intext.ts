@@ -46,16 +46,34 @@ export function quoteCheckSummary(check: InTextQuoteCheck): string {
   ].join(" · ");
 }
 
-/** Yalnız tek konumda birebir bulunan alıntı kaynağa bağlanabilir. */
+/** Yalnız tek konumda birebir bulunan alıntı kaynağa bağlanabilir. Sayfa
+ * sınırını aşan eşleşme tek sayfalık anchor olarak ifade edilemez. */
 export function canBind(finding: InTextQuoteFinding): boolean {
   const position = finding.position;
   return (
     finding.state === "exact" &&
     position !== null &&
     position.matchKind === "exact" &&
+    !position.spansPages &&
     position.segmentId !== null &&
     position.charEnd > position.charStart
   );
+}
+
+/** Sayfa aralığı etiketi: `s. 3` ya da `s. 3–4`. */
+export function pageSpanLabel(pageIndex: number, endPageIndex: number): string {
+  return endPageIndex > pageIndex
+    ? `s. ${pageIndex + 1}–${endPageIndex + 1}`
+    : `s. ${pageIndex + 1}`;
+}
+
+/** Bağlanamayan alıntı için nedeni yazar; bağlanabilende boştur. */
+export function bindHint(finding: InTextQuoteFinding): string {
+  if (canBind(finding)) return "";
+  if (finding.state === "exact" && finding.position?.spansPages) {
+    return "Alıntı sayfa sınırını aşıyor; tek sayfalık anchor'a bağlanmaz.";
+  }
+  return "Yalnız birebir tek konum kaynağa bağlanır.";
 }
 
 export function bindingInput(caseId: string, finding: InTextQuoteFinding) {
@@ -77,17 +95,23 @@ export function positionLabel(finding: InTextQuoteFinding): string {
   if (!position) return "";
   const origin = TEXT_ORIGIN_LABEL[position.textOrigin] ?? position.textOrigin;
   const kind = MATCH_KIND_LABEL[position.matchKind] ?? position.matchKind;
-  return `${position.documentName} · s. ${position.pageIndex + 1} · ${kind} · ${origin}`;
+  const pages = pageSpanLabel(position.pageIndex, position.endPageIndex);
+  const span = position.spansPages ? " · sayfa sınırını aşıyor" : "";
+  return `${position.documentName} · ${pages} · ${kind} · ${origin}${span}`;
 }
 
 export function candidateLabel(candidate: {
   documentName: string;
   pageIndex: number;
+  endPageIndex?: number;
+  spansPages?: boolean;
   charStart: number;
   matchKind: string;
 }): string {
   const kind = MATCH_KIND_LABEL[candidate.matchKind] ?? candidate.matchKind;
-  return `${candidate.documentName} · s. ${candidate.pageIndex + 1} · karakter ${candidate.charStart} · ${kind}`;
+  const pages = pageSpanLabel(candidate.pageIndex, candidate.endPageIndex ?? candidate.pageIndex);
+  const span = candidate.spansPages ? " · sayfa sınırını aşıyor" : "";
+  return `${candidate.documentName} · ${pages} · karakter ${candidate.charStart} · ${kind}${span}`;
 }
 
 export function skippedLabel(check: InTextQuoteCheck): string {

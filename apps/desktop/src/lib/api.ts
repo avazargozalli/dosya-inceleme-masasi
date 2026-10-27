@@ -943,6 +943,10 @@ export type InTextQuotePosition = {
   pageId: string | null;
   segmentId: string | null;
   pageIndex: number;
+  /** Sayfa sınırını aşan eşleşmede bitiş sayfası; aksi hâlde `pageIndex`. */
+  endPageIndex: number;
+  /** Eşleşme birden çok sayfaya yayılıyor (kaynakta sayfa/satır sonu). */
+  spansPages: boolean;
   charStart: number;
   charEnd: number;
   matchKind: "exact" | "whitespace" | "turkish_fold";

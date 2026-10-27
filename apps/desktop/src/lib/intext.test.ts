@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { InTextQuoteCheck, InTextQuoteFinding, InTextQuotePosition } from "./api";
 import {
+  bindHint,
   bindingInput,
   canBind,
   candidateLabel,
+  pageSpanLabel,
   positionLabel,
   quoteCheckSummary,
   QUOTE_STATE_LABEL,
@@ -21,6 +23,8 @@ function position(overrides: Partial<InTextQuotePosition> = {}): InTextQuotePosi
     pageId: "page1",
     segmentId: "seg1",
     pageIndex: 0,
+    endPageIndex: 0,
+    spansPages: false,
     charStart: 19,
     charEnd: 56,
     matchKind: "exact",
@@ -96,6 +100,38 @@ describe("metin içi alıntı yardımcıları", () => {
     expect(canBind(finding({ state: "not_found", position: null }))).toBe(false);
     expect(canBind(finding({ position: position({ segmentId: null }) }))).toBe(false);
     expect(canBind(finding({ position: position({ matchKind: "whitespace" }) }))).toBe(false);
+    // Sayfa sınırını aşan birebir eşleşme tek sayfalık anchor'a sığmaz.
+    expect(
+      canBind(finding({ position: position({ spansPages: true, endPageIndex: 1 }) })),
+    ).toBe(false);
+  });
+
+  it("sayfa sınırını aşan alıntıda aralığı ve bağlanamama nedenini yazar", () => {
+    const spanning = finding({
+      position: position({ pageIndex: 2, endPageIndex: 3, spansPages: true }),
+    });
+    expect(pageSpanLabel(2, 3)).toBe("s. 3–4");
+    expect(pageSpanLabel(2, 2)).toBe("s. 3");
+    expect(positionLabel(spanning)).toBe(
+      "Dilekçe · s. 3–4 · birebir · metin katmanı · sayfa sınırını aşıyor",
+    );
+    expect(bindHint(spanning)).toBe(
+      "Alıntı sayfa sınırını aşıyor; tek sayfalık anchor'a bağlanmaz.",
+    );
+    expect(bindHint(finding())).toBe("");
+    expect(bindHint(finding({ state: "normalized" }))).toBe(
+      "Yalnız birebir tek konum kaynağa bağlanır.",
+    );
+    expect(
+      candidateLabel({
+        documentName: "Rapor",
+        pageIndex: 2,
+        endPageIndex: 3,
+        spansPages: true,
+        charStart: 120,
+        matchKind: "whitespace",
+      }),
+    ).toBe("Rapor · s. 3–4 · karakter 120 · boşluk farkı · sayfa sınırını aşıyor");
   });
 
   it("bağlama yükü gerçek konumdan üretilir", () => {
