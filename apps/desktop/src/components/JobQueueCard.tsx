@@ -17,6 +17,7 @@ import {
   queueSummaryLine,
   recoveryLine,
   retryOutcomeLine,
+  runOutcomeLine,
   shouldPollQueue,
   type JobAction,
 } from "../lib/jobs";
@@ -123,6 +124,12 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
           // kart bir sonraki elle yenilemeye kadar `queued`/`running` gösterip
           // donmuş görünürdü.
           if (result.started) setWatchJobId(job.id);
+        } else if (action === "run") {
+          // Çökme sonrası kurtarılan iş `queued` kalır; kuyrukta zamanlayıcı
+          // yok. "Başlat" gerçek `job_run` komutunu çağırır ve işi sahiplenir.
+          const result = await api.jobRun(job.id);
+          setMessage(runOutcomeLine(result));
+          if (result.started) setWatchJobId(job.id);
         } else {
           await api.jobUnblock(job.id);
           setMessage("Engel kaldırıldı; iş yeniden sıraya alındı.");
@@ -146,8 +153,8 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
         <div>
           <h2>İş kuyruğu</h2>
           <p className="card-sub">
-            Ayrıştırma ve uzun işler kalıcı kayıtta tutulur; uygulama kapanırsa yarıda
-            kalan iş açılışta yeniden sıraya alınır.
+            Ayrıştırma ve uzun işler kalıcı kayıtta tutulur. Uygulama çökerse yarıda
+            kalan iş açılışta yeniden sıraya alınır; "Başlat" ile hemen sürdürülür.
           </p>
         </div>
         <button className="btn" disabled={busy || !unlocked} onClick={() => void refresh()}>

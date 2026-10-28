@@ -39,6 +39,7 @@ pub fn run() {
             commands::job_queue_recover,
             commands::job_cancel,
             commands::job_retry,
+            commands::job_run,
             commands::job_unblock,
             commands::search_segments,
             commands::search_segments_page,

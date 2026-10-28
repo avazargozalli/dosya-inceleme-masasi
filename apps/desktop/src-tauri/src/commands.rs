@@ -169,19 +169,18 @@ pub fn vault_open_with_recovery(
     remember(state, vault_path, unlocked)
 }
 
-fn remember(
-    state: State<'_, AppState>,
-    path: PathBuf,
-    unlocked: UnlockedVault,
-) -> Result<VaultInfo, ApiError> {
-    let vault_id = vault_id_from_master(unlocked.master_key());
-    let db = open_database(&path, &unlocked, &vault_id)?;
-    let schema_version = db.schema_version();
-    // F03-T08: açılışta yarım kalmış işler sessizce "yürüyor" görünmesin.
-    // Kirası dolmuş işler yeniden sıraya alınır; iptal istenmiş olanlar kapanır.
-    // Sayı denetime yazılır, iş kimliği/dosya adı yazılmaz.
+/// **Kasa açılışında iş kurtarma** (F03-T08 / F15-T06).
+///
+/// **Kiraya bakmaz**: süreç SIGKILL/çökme ile öldüyse satır `running` ve kira
+/// 300 sn gelecekte kalır; kullanıcı uygulamayı hemen yeniden açtığında
+/// `recover_stale_jobs` kiraya saygı duyduğu için iş hiç kesilmez ve arayüz
+/// sonsuza kadar "Yürüyor" gösterir (ölçüldü). Bu süreçte hiçbir işçi yoktur;
+/// satırlar önceki süreçten kalmıştır. İptal istenmiş olanlar kapanır.
+///
+/// Sayı denetime yazılır; iş kimliği ve dosya adı **yazılmaz**.
+fn recover_at_open(db: &Database) -> dim_storage::JobRecovery {
     let recovery = db
-        .recover_stale_jobs(time::OffsetDateTime::now_utc())
+        .recover_orphaned_jobs(time::OffsetDateTime::now_utc())
         .unwrap_or(dim_storage::JobRecovery {
             interrupted: 0,
             requeued: 0,
@@ -198,6 +197,20 @@ fn remember(
         });
         let _ = db.append_audit("job_queue", None, "recover", "local-user", &metadata);
     }
+    recovery
+}
+
+fn remember(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    unlocked: UnlockedVault,
+) -> Result<VaultInfo, ApiError> {
+    let vault_id = vault_id_from_master(unlocked.master_key());
+    let db = open_database(&path, &unlocked, &vault_id)?;
+    let schema_version = db.schema_version();
+    // F03-T08 / F15-T06: açılışta yarım kalmış işler sessizce "yürüyor" görünmesin.
+    // Ayrıntı ve gerekçe: `recover_at_open`.
+    recover_at_open(&db);
     let info = VaultInfo {
         vault_path: path.to_string_lossy().to_string(),
         vault_id: vault_id.clone(),
@@ -2712,6 +2725,118 @@ pub async fn job_retry(
         let outcome = run_parse(&hub, &slot, &pool, &run_version, parse_options, &mut emit);
         if let Err(error) = outcome {
             finalize_failed_retry(&hub, &retry_job_id, &run_version, &error.code);
+        }
+    });
+
+    Ok(JobRetryView {
+        job: row,
+        started: true,
+        skipped: None,
+        version_id: Some(version_id),
+        applied: Some(applied),
+    })
+}
+
+/// **Sırada bekleyen işi şimdi başlatma planı** (F15-T06 çökme kurtarması).
+///
+/// Çökme sonrası kurtarılan iş `queued` kalır; kuyrukta kendiliğinden çalışan
+/// bir zamanlayıcı **yoktur** (bilinçli: arka planda habersiz ağır iş
+/// başlatılmaz). Bu plan yalnız **sırada bekleyen** ayrıştırma işini başlatır:
+/// satır `queued` değilse `E_JOB_STATE` — çalışan iş ikinci kez başlatılmaz.
+/// Ayarlar yeniden denemeyle aynı kaynaktan (iş satırı) gelir.
+fn plan_run(hub: &Arc<Mutex<VaultState>>, job_id: &str) -> Result<RetryPlan, ApiError> {
+    let guard = lock_vault(hub);
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let job = db
+        .get_job(job_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "İş bulunamadı."))?;
+    if job.state != "queued" {
+        return Err(ApiError::new(
+            "E_JOB_STATE",
+            "Yalnız sırada bekleyen iş başlatılabilir.",
+        ));
+    }
+    let options = db.job_parse_options(job_id)?;
+    if options
+        .as_ref()
+        .is_some_and(|options| options.requires_password)
+    {
+        return Ok(RetryPlan {
+            job,
+            version_id: None,
+            options,
+            skipped: Some("password_required"),
+        });
+    }
+    let key = db.job_idempotency_key(job_id)?;
+    let version = runnable_parse_version(&job.job_type, key.as_deref());
+    db.append_audit(
+        "job_queue",
+        None,
+        "run",
+        "local-user",
+        &serde_json::json!({
+            "state": job.state,
+            "jobType": job.job_type,
+            "started": version.is_some(),
+        }),
+    )?;
+    Ok(RetryPlan {
+        job,
+        version_id: version,
+        options,
+        skipped: None,
+    })
+}
+
+/// Sırada bekleyen ayrıştırma işini **gerçekten** başlatır.
+///
+/// Neden gerekli: çökme sonrası açılış kurtarması işi `queued` yazar ama
+/// kuyrukta zamanlayıcı olmadığı için iş kendiliğinden koşmaz; arayüzde
+/// "Bekliyor" satırı yalnız "İptal et" sunuyordu — kullanıcı için çıkmaz sokak.
+/// Bu komut satırı sahiplenir ve ayrıştırmayı arka planda koşar; ilerleme
+/// `parse-progress` + `jobs.progress_*` ile gelir. İş türü yürütücüsü yoksa
+/// (`type_not_runnable`) veya girdisi çözülemezse `started=false` + neden döner.
+#[tauri::command]
+pub async fn job_run(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+) -> Result<JobRetryView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.workers_handle();
+    let pool = state.parse_pool_handle();
+
+    let plan = plan_run(&hub, &job_id)?;
+    let (row, version_id) = (plan.job, plan.version_id);
+
+    let Some(version_id) = version_id else {
+        let skipped = match plan.skipped {
+            Some(reason) => reason.to_string(),
+            None => "type_not_runnable".to_string(),
+        };
+        return Ok(JobRetryView {
+            job: row,
+            started: false,
+            skipped: Some(skipped),
+            version_id: None,
+            applied: None,
+        });
+    };
+
+    let (parse_options, applied) = retry_parse_options(plan.options.as_ref());
+
+    let run_version = version_id.clone();
+    let emit_version = version_id.clone();
+    let run_job_id = row.id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut emit = |progress: &ParseProgress| {
+            let event = ParseProgressEvent::new(&emit_version, progress);
+            let _ = app.emit("parse-progress", event);
+        };
+        let outcome = run_parse(&hub, &slot, &pool, &run_version, parse_options, &mut emit);
+        if let Err(error) = outcome {
+            finalize_failed_retry(&hub, &run_job_id, &run_version, &error.code);
         }
     });
 

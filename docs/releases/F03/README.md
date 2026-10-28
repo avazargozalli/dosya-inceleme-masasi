@@ -11,7 +11,7 @@
 | F03-T04 | ✅ | `crates/storage`: 54 tablo tanımı (şema v23), FK/CHECK, migrasyon checksum |
 | F03-T05 | ✅ | rastgele `storage_id`, chunked AEAD blob, atomik rename |
 | F03-T07 | ✅ | **2026-10-26 düzeltmesi:** `crates/jobs` yalnız *kuralları* taşıyordu; `jobs` tablosu salt-yazılıydı. Kuyruk artık `crates/storage/src/queue.rs`'te gerçek: idempotent ekleme, atomik sahiplenme (lease + `job_attempts`), öncelik/yaş sırası, bağımlılık kapısı, doğrulama adımı, tamamlama/kısmi, hata + artan bekleme, engel, iptal, kullanıcı yeniden denemesi. **§17.2 durum makinesi tam** (migration 0021) |
-| F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26):** §17.6 iki adım — süresi dolmuş `running/validating/canceling` önce `interrupted`, sonra `queued` (bütçe varsa) / `failed` (bütçe bittiyse); iptal istenmiş iş `canceled`. `vault_open` kendiliğinden yapar (sayı denetime yazılır) |
+| F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26, süreç öldürme 2026-10-29):** §17.6 iki adım — kesilen `running/validating/canceling` önce `interrupted`, sonra `queued` (bütçe varsa) / `failed` (bütçe bittiyse); iptal istenmiş iş `canceled`. `vault_open` **kiraya bakmadan** yapar (`recover_orphaned_jobs`; çökme sonrası kira hâlâ gelecekte olabilir — ölçüldü), orta oturumdaki "Bekleyen işleri kurtar" kiraya saygı duyar. Kurtarılan iş `queued` kalır; **"Başlat"** (`job_run`) gerçekten çalıştırır |
 | F03-T10 | ✅ | `backup_to` (SQLCipher backup API), yanlış anahtarla açılmaz |
 | F03-T12 | ✅ | disk/izin/yanlış parola hata kodları |
 
@@ -55,8 +55,14 @@ edildi (yeni push), kırmızı değildi.
     `canceling`.
   - `retry_failed_job` — `failed → queued`, deneme bütçesi sıfırlanır,
     `job_attempts` numaralandırması `MAX(attempt_no)+1` ile sürer.
-  - `recover_stale_jobs` — §17.6 iki adım (kurtarma raporu: `interrupted`,
-    `requeued`, `failed`, `canceled`).
+  - `recover_stale_jobs` — §17.6 iki adım, **orta oturum**: yalnız kirası
+    dolmuş satırlar (kurtarma raporu: `interrupted`, `requeued`, `failed`,
+    `canceled`). Kiraya saygı duyar: süresi dolmamış iş canlı bir işçiye ait
+    olabilir.
+  - `recover_orphaned_jobs` — **kasa açılışında**: kiraya **bakmaz**, çünkü o
+    anda bu süreçte hiçbir işçi yoktur. Çökme/SIGKILL sonrası hemen yeniden
+    açılışta kira hâlâ gelecekte (300 sn) olur ve `recover_stale_jobs` işi hiç
+    kesmezdi → satır sonsuza kadar "Yürüyor" kalırdı (ölçüldü, F15-T06).
   - `job_queue_summary` / `list_jobs` — arayüz için sayı ve son 20 iş
     (dosya adı/metin taşımaz).
 - **Durum makinesi tek kaynakta:** `crates/job_state_machine.tsv` (§17.2'nin
@@ -68,10 +74,12 @@ edildi (yeni push), kırmızı değildi.
   `begin_validation` → uyarısız `completed`, uyarılı `partial`; parola
   korumalı belge **hata değil engel** (`running → blocked`, neden `password`);
   yalnız `E_WORKER_*`, `E_IO`, `E_DISK_FULL` tekrar denenir. `vault_open`
-  kurtarmayı çalıştırır. Komutlar: `job_queue_status`, `job_queue_recover`,
-  `job_cancel`, `job_retry`, `job_unblock`. Arayüz: Ayarlar → **İş kuyruğu**
-  kartı (özet, dikkat satırı, son işler, satır başına gerçek eylem düğmeleri,
-  "Bekleyen işleri kurtar").
+  **açılış kurtarmasını** (`recover_orphaned_jobs`) çalıştırır. Komutlar:
+  `job_queue_status`, `job_queue_recover` (orta oturum), `job_cancel`,
+  `job_retry`, **`job_run`** (sırada bekleyen ayrıştırmayı gerçekten başlatır),
+  `job_unblock`. Arayüz: Ayarlar → **İş kuyruğu** kartı (özet, dikkat satırı,
+  son işler, satır başına gerçek eylem düğmeleri, "Bekleyen işleri kurtar");
+  `queued` ayrıştırma satırında **"Başlat"**.
 - **Kanıt (ölçüm):** içe aktarma → iş kaydı → sahiplenme → bitirme uçtan uca
   (`crates/ingest/tests/queue_handoff.rs`); ikinci içe aktarma **yeni iş
   açmaz**. Kuyruk testleri **21** (durum geçişi, öncelik, engel, bağımlılık,

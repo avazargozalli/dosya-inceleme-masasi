@@ -88,11 +88,18 @@ export function blockedReasonLabel(reason: string | null): string | null {
 }
 
 /** Satırda hangi eylem gösterilmeli? Sunucu durumu belirler, buton uydurulmaz. */
-export type JobAction = "cancel" | "retry" | "unblock";
+export type JobAction = "cancel" | "retry" | "run" | "unblock";
 
+/**
+ * `queued` bir iş **sahipsizdir** (kuyrukta kendiliğinden çalışan zamanlayıcı
+ * yok). Çökme sonrası kurtarılan ayrıştırma işi bu yüzden "Bekliyor" kalır;
+ * "Başlat" gerçek `job_run` komutunu çağırır. Maskeleme gibi yürütücüsü
+ * olmayan türlerde düğme gösterilmez (arka planda habersiz iş başlatılmaz).
+ */
 export function jobActions(job: JobRow): JobAction[] {
   switch (canonicalJobState(job.state)) {
     case "queued":
+      return job.jobType === "parse_document" ? ["run", "cancel"] : ["cancel"];
     case "retry_wait":
     case "running":
     case "validating":
@@ -109,6 +116,7 @@ export function jobActions(job: JobRow): JobAction[] {
 export function jobActionLabel(action: JobAction): string {
   if (action === "cancel") return "İptal et";
   if (action === "retry") return "Yeniden dene";
+  if (action === "run") return "Başlat";
   return "Engeli kaldır";
 }
 
@@ -283,6 +291,22 @@ export function shouldPollQueue(jobs: JobRow[], watchJobId: string | null): bool
  * ayrılır; başlamadıysa neden yazılır (sahte "çalışıyor" görüntüsü yok).
  */
 export function retryOutcomeLine(view: JobRetryView): string {
+  return startOutcomeLine(view, { verb: "Yeniden deneme", requeued: true });
+}
+
+/**
+ * Sırada bekleyen işi başlatan `job_run` sonucunun dürüst satırı. Yeniden
+ * denemeyle aynı sözleşme (`JobRetryView`); yalnız eylem adı değişir ve
+ * "yeniden sıraya alındı" gibi **olmayan** bir geçiş yazılmaz.
+ */
+export function runOutcomeLine(view: JobRetryView): string {
+  return startOutcomeLine(view, { verb: "İş", requeued: false });
+}
+
+function startOutcomeLine(
+  view: JobRetryView,
+  wording: { verb: string; requeued: boolean },
+): string {
   if (view.started) {
     const applied = view.applied;
     const settings = applied
@@ -292,18 +316,25 @@ export function retryOutcomeLine(view: JobRetryView): string {
     const source = applied?.restored
       ? "kaydedilmiş ayarlar"
       : "varsayılanlar (özgün ayar bu işte kayıtlı değil)";
-    return `Yeniden deneme başladı — kaynak: ${source} · ${settings}; sonucu satırda göreceksiniz.`;
+    return `${wording.verb} başladı — kaynak: ${source} · ${settings}; sonucu satırda göreceksiniz.`;
   }
+  const requeued = wording.requeued;
   if (view.skipped === "password_required") {
-    return "Belge parola ile açılmıştı; parola saklanmaz. Yeniden deneme başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın.";
+    return requeued
+      ? "Belge parola ile açılmıştı; parola saklanmaz. Yeniden deneme başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın."
+      : "Belge parola ile açılmıştı; parola saklanmaz. İş başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın.";
   }
   if (view.skipped === "type_not_runnable") {
-    return "İş yeniden sıraya alındı, ama bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan yeniden çalıştırın.";
+    return requeued
+      ? "İş yeniden sıraya alındı, ama bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan yeniden çalıştırın."
+      : "Bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan çalıştırın.";
   }
   if (view.skipped === "no_input") {
-    return "İş yeniden sıraya alındı, ama girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın.";
+    return requeued
+      ? "İş yeniden sıraya alındı, ama girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın."
+      : "İş başlatılamadı: girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın.";
   }
-  return "İş yeniden sıraya alındı.";
+  return requeued ? "İş yeniden sıraya alındı." : "İş başlatılamadı.";
 }
 
 export type RecoveryReport = {

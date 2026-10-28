@@ -15,13 +15,18 @@
 //! - iptal: `queued|retry_wait|blocked → canceled`, `running|validating →
 //!   canceling`; yürütücü bitince `canceling → canceled`,
 //! - kesinti: `running|validating|canceling → interrupted`, ardından
-//!   `interrupted → queued` (yeniden sıraya) ya da `→ failed` (bütçe bitti),
+//!   `interrupted → queued` (yeniden sıraya) ya da `→ failed` (bütçe bitti);
+//!   **orta oturumda** yalnız kirası dolmuş satırlar (`recover_stale_jobs`),
+//!   **kasa açılışında** kirasına bakılmaksızın hepsi (`recover_orphaned_jobs`
+//!   — çökme sonrası hemen yeniden açılışta kira hâlâ gelecekte olabilir),
 //! - kullanıcı yeniden denemesi: `failed → queued` (yeni attempt açar).
 //!
 //! Dürüst sınırlar:
 //! - Kuyruk yürütücüsü tek süreçlidir: kasa başına tek `Database` bağlantısı
 //!   (tek yazıcı) kuralı burada da geçerli. Çok süreçli yarış yalnız
-//!   `lease_until` ile korunur.
+//!   `lease_until` ile korunur; **açılış kurtarması** bu varsayıma dayanır
+//!   (aynı kasayı iki örnek açarsa ikincisi birincinin canlı işini keser —
+//!   çok örnek desteklenmiyor, denenmedi).
 //! - `partial` bu satır için terminaldir; şartnamenin "yeni alt iş" yolu ayrı
 //!   bir iş satırıdır (aynı satırın geçişi değil).
 //! - `interrupted → queued` "yeniden doğrulama" adımı bugün **girdi parmak
@@ -987,7 +992,35 @@ impl Database {
     /// sıfırlanmaz. "Yeniden doğrulama" bugün **girdi parmak izinin değişmediği**
     /// varsayımıdır: yerel deterministik iş (ayrıştırma girdisi kasadaki blob +
     /// ayarlardır). Uzak (AI) işlerinde otomatik yeniden gönderim yoktur.
+    ///
+    /// **Orta oturum** içindir: süresi dolmamış kira, canlı bir işçiye ait
+    /// olabilir → dokunulmaz. Açılış için `recover_orphaned_jobs` kullanılır.
     pub fn recover_stale_jobs(&self, now: OffsetDateTime) -> Result<JobRecovery, StorageError> {
+        self.recover_jobs(now, false)
+    }
+
+    /// **Kasa açılışında** çağrılır: bu süreçte henüz hiçbir işçi yoktur, yani
+    /// `running|validating|canceling` satırlarının hepsi önceki süreçten
+    /// kalmıştır. **Kiraya bakılmaz.**
+    ///
+    /// Neden: süreç SIGKILL/çökme ile ölürse satır `running` ve kira 300 sn
+    /// **gelecekte** kalır. Kullanıcı uygulamayı hemen yeniden açtığında
+    /// (`recover_stale_jobs` kiraya saygı duyduğu için) iş hiç kesilmez; arayüz
+    /// sonsuza kadar "Yürüyor" gösterir ve "Bekleyen işleri kurtar" düğmesi
+    /// "0" der. Ölçüldü: F15-T06 süreç öldürme senaryosu.
+    ///
+    /// **Tek süreç varsayımı (dürüst sınır):** aynı kasa dosyasını iki uygulama
+    /// örneği açarsa ikinci örnek birincinin **canlı** işini keser. Ürün tek
+    /// örnek için tasarlandı; çok örnek desteklenmiyor ve denenmedi.
+    pub fn recover_orphaned_jobs(&self, now: OffsetDateTime) -> Result<JobRecovery, StorageError> {
+        self.recover_jobs(now, true)
+    }
+
+    fn recover_jobs(
+        &self,
+        now: OffsetDateTime,
+        ignore_lease: bool,
+    ) -> Result<JobRecovery, StorageError> {
         let now_text = iso(now);
         let tx = self.conn().unchecked_transaction()?;
         let stale_states = "('running','validating','canceling')";
@@ -1004,7 +1037,7 @@ impl Database {
         let mut failed = 0usize;
         let mut canceled = 0usize;
         for job in jobs {
-            if !lease_expired(job.lease_until.as_deref(), now) {
+            if !ignore_lease && !lease_expired(job.lease_until.as_deref(), now) {
                 continue;
             }
             // İptal istenmiş iş kesintiye uğramış sayılmaz: `canceling → canceled`.
@@ -1686,6 +1719,62 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("satır");
         assert_eq!(attempt_nos, vec![1, 2]);
+    }
+
+    /// **F15-T06 süreç öldürme senaryosu.** Uygulama ayrıştırma sırasında
+    /// SIGKILL ile ölürse satır `running` ve kira **gelecekte** kalır. Kullanıcı
+    /// uygulamayı hemen yeniden açar (5 dk dolmadan). Bu süreçte hiçbir işçi
+    /// yoktur → satır sahipsizdir; açılış kurtarması kiraya bakmamalıdır.
+    ///
+    /// Test **kusuru önce** gösterir: bugünkü yol yalnız `recover_stale_jobs`.
+    #[test]
+    fn a_crash_restart_requeues_a_job_whose_lease_is_still_valid() {
+        let dir = tempfile::tempdir().expect("dizin");
+        let path = dir.path().join("vault.db");
+        let key = DatabaseKey::new([9u8; 32]);
+        let (job, case_id) = {
+            let db = Database::open(&path, &key).expect("kasa");
+            let case = db
+                .create_case(&NewCase {
+                    title: "Çökme".into(),
+                    case_kind: CaseKind::Review,
+                    reference_code: None,
+                    jurisdiction_label: None,
+                    practice_area: None,
+                    sensitivity: Sensitivity::Normal,
+                    default_ai_policy: AiPolicy::Off,
+                })
+                .expect("case");
+            let job = enqueue(&db, &case.id, "crash", 0);
+            let claimed = db
+                .claim_jobs("parse-999-1", 1, DEFAULT_LEASE_SECONDS, &[], at(0))
+                .expect("sahiplen");
+            assert_eq!(claimed.len(), 1);
+            // SIGKILL benzetimi: süreç sonlanır, bağlantı kapanır; iş satırı ve
+            // kira olduğu gibi kalır (temizleme kodu çalışmaz).
+            drop(db);
+            (job, case.id)
+        };
+        let db = Database::open(&path, &key).expect("yeniden aç");
+
+        // Orta oturum kurtarması kiraya saygı duyar: süresi dolmamış iş, canlı
+        // bir işçiye ait olabilir.
+        let mid_session = db.recover_stale_jobs(at(0)).expect("orta oturum");
+        assert_eq!(
+            mid_session.interrupted, 0,
+            "süresi dolmamış kira orta oturumda kesilmemeli"
+        );
+
+        // Açılış kurtarması: bu süreçte hiçbir işçi yok → iş sahipsiz.
+        let report = db.recover_orphaned_jobs(at(0)).expect("açılış kurtarması");
+        assert_eq!(report.interrupted, 1, "çökmüş iş kesildi sayılmalı");
+        assert_eq!(report.requeued, 1, "bütçe var → yeniden sıraya");
+        let row = db.get_job(&job).expect("oku").expect("var");
+        assert_eq!(row.state, "queued");
+        assert!(row.lease_owner.is_none(), "sahipsiz iş kira taşımaz");
+        assert_eq!(row.case_id.as_deref(), Some(case_id.as_str()));
+        // Kesinti deneme sayısını artırmaz (başarısız deneme değildir).
+        assert_eq!(row.attempt_count, 1);
     }
 
     #[test]

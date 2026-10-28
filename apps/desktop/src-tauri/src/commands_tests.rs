@@ -359,6 +359,125 @@ fn retry_plan_reopens_failed_jobs_and_resolves_the_parse_version() {
     assert_eq!(redact_plan.version_id, None, "maskeleme isteği uydurulmaz");
 }
 
+/// **F15-T06 süreç öldürme (Tauri ayağı).** `remember` yolunun çağırdığı
+/// `recover_at_open` **kiraya bakmaz**: çökme sonrası hemen açılışta satır hâlâ
+/// `running` + kira gelecekte olsa da iş kesilir, yeniden sıraya alınır ve
+/// denetime **yalnız sayılar** yazılır (iş kimliği/dosya adı yazılmaz).
+#[test]
+fn opening_a_vault_after_a_crash_requeues_the_running_job() {
+    let dir = std::env::temp_dir().join(format!("dim-crash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dizin");
+    let path = dir.join("vault.db");
+    let key = DatabaseKey::new([11u8; 32]);
+    let job = {
+        let db = Database::open(&path, &key).expect("kasa");
+        let case = db
+            .create_case(&NewCase {
+                title: "Çökme".into(),
+                case_kind: dim_storage::CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: dim_storage::Sensitivity::Normal,
+                default_ai_policy: dim_storage::AiPolicy::Off,
+            })
+            .expect("dosya");
+        db.enqueue_job_with_priority("parse_document", Some(&case.id), "fp", "parse:v1", 0)
+            .expect("iş");
+        let claimed = db
+            .claim_job_by_key(
+                "parse:v1",
+                "parse-999-1",
+                dim_storage::DEFAULT_LEASE_SECONDS,
+                time::OffsetDateTime::now_utc() + time::Duration::seconds(1),
+            )
+            .expect("sahiplen")
+            .expect("iş var");
+        assert_eq!(claimed.state, "running");
+        // Süreç SIGKILL: temizleme kodu çalışmaz, kira gelecekte kalır.
+        drop(db);
+        claimed.id
+    };
+
+    let db = Database::open(&path, &key).expect("yeniden aç");
+    let report = recover_at_open(&db);
+    assert_eq!(report.interrupted, 1, "çökmüş iş kesildi sayılmalı");
+    assert_eq!(report.requeued, 1, "bütçe var → yeniden sıraya");
+    let row = db.get_job(&job).expect("oku").expect("var");
+    assert_eq!(row.state, "queued");
+    assert!(row.lease_owner.is_none());
+    let audits: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE operation='recover'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("denetim");
+    assert_eq!(audits, 1, "açılış kurtarması denetime yazılır");
+    drop(db);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **Sıradaki işi başlatma planı**: yalnız `queued` ayrıştırma işi başlatılır.
+/// Çalışan iş ikinci kez başlatılmaz (`E_JOB_STATE`); yürütücüsü olmayan türde
+/// sürüm uydurulmaz (`version_id = None` → arayüz `type_not_runnable` yazar).
+#[test]
+fn run_plan_only_starts_queued_parse_jobs() {
+    let db = Database::open_in_memory(&DatabaseKey::new([13u8; 32])).expect("kasa");
+    let case = db
+        .create_case(&NewCase {
+            title: "Başlat".into(),
+            case_kind: dim_storage::CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: dim_storage::Sensitivity::Normal,
+            default_ai_policy: dim_storage::AiPolicy::Off,
+        })
+        .expect("dosya");
+    let parse_job = db
+        .enqueue_job_with_priority("parse_document", Some(&case.id), "fp-parse", "parse:v9", 0)
+        .expect("iş");
+    let redact_job = db
+        .enqueue_job_with_priority("redaction", Some(&case.id), "fp-redact", "redact:v9", 0)
+        .expect("iş");
+
+    let state = AppState::default();
+    {
+        let mut guard = state.lock();
+        guard.db = Some(db);
+    }
+    let hub = state.vault_handle();
+
+    let plan = plan_run(&hub, &parse_job).expect("başlatma planı");
+    assert_eq!(plan.job.state, "queued");
+    assert_eq!(plan.version_id.as_deref(), Some("v9"));
+    assert_eq!(plan.skipped, None);
+
+    let redact_plan = plan_run(&hub, &redact_job).expect("başlatma planı");
+    assert_eq!(redact_plan.version_id, None, "yürütücüsü olmayan tür");
+
+    // İş sahiplenildikten sonra "Başlat" ikinci kez çalışmaz.
+    {
+        let guard = hub.lock().expect("kasa");
+        let db = guard.db.as_ref().expect("db");
+        db.claim_job_by_key(
+            "parse:v9",
+            "w1",
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            time::OffsetDateTime::now_utc() + time::Duration::seconds(1),
+        )
+        .expect("sahiplen")
+        .expect("iş var");
+    }
+    let error = plan_run(&hub, &parse_job)
+        .err()
+        .expect("çalışan iş başlatılamaz");
+    assert_eq!(error.code, "E_JOB_STATE");
+}
+
 /// **F04-T07 ÖLÇÜMÜ — yeniden deneme gerçekten ayrıştırıyor.**
 ///
 /// Gerçek kasa ve gerçek worker: iş `failed` iken yeniden deneme planı

@@ -22,6 +22,7 @@ import {
   queueSummaryLine,
   recoveryLine,
   retryOutcomeLine,
+  runOutcomeLine,
   shouldPollQueue,
 } from "./jobs";
 
@@ -159,7 +160,11 @@ describe("iş kuyruğu yardımcıları", () => {
   });
 
   it("eylemler sunucu durumundan türetilir", () => {
-    expect(jobActions(job({ state: "queued" }))).toEqual(["cancel"]);
+    // `queued` bir ayrıştırma işi sahipsizdir (kuyrukta zamanlayıcı yok):
+    // "Başlat" gerçek `job_run` komutunu çağırır.
+    expect(jobActions(job({ state: "queued" }))).toEqual(["run", "cancel"]);
+    // Yürütücüsü olmayan türde "Başlat" gösterilmez (ölü düğme yok).
+    expect(jobActions(job({ state: "queued", jobType: "redaction" }))).toEqual(["cancel"]);
     expect(jobActions(job({ state: "running" }))).toEqual(["cancel"]);
     expect(jobActions(job({ state: "validating" }))).toEqual(["cancel"]);
     expect(jobActions(job({ state: "blocked" }))).toEqual(["unblock", "cancel"]);
@@ -170,6 +175,7 @@ describe("iş kuyruğu yardımcıları", () => {
     expect(jobActions(job({ state: "partial" }))).toEqual([]);
     expect(jobActionLabel("cancel")).toBe("İptal et");
     expect(jobActionLabel("retry")).toBe("Yeniden dene");
+    expect(jobActionLabel("run")).toBe("Başlat");
     expect(jobActionLabel("unblock")).toBe("Engeli kaldır");
   });
 
@@ -338,6 +344,33 @@ describe("iş kuyruğu yardımcıları", () => {
         applied: { ocr: true, ocrLang: "tur", textEncoding: "utf-8", restored: true },
       }),
     ).toContain("kaynak: kaydedilmiş ayarlar");
+  });
+
+  it("sıradaki işi başlatma sonucu 'yeniden sıraya alındı' demez", () => {
+    const started: JobRetryView = {
+      job: job({ state: "running" }),
+      started: true,
+      skipped: null,
+      versionId: "v1",
+      applied: { ocr: false, ocrLang: "eng", textEncoding: "auto", restored: true },
+    };
+    expect(runOutcomeLine(started)).toBe(
+      "İş başladı — kaynak: kaydedilmiş ayarlar · OCR kapalı, kodlama auto; sonucu satırda göreceksiniz.",
+    );
+    const skipped: JobRetryView = {
+      job: job({ state: "queued" }),
+      started: false,
+      skipped: "type_not_runnable",
+      versionId: null,
+      applied: null,
+    };
+    const line = runOutcomeLine(skipped);
+    expect(line).toContain("yürütücü yok");
+    // `job_run` hiçbir geçiş yapmadı: "yeniden sıraya alındı" yazılmaz.
+    expect(line).not.toContain("yeniden sıraya alındı");
+    expect(runOutcomeLine({ ...skipped, skipped: "no_input" })).toContain(
+      "İş başlatılamadı",
+    );
   });
 
   it("yeniden denemesi başlayan iş terminal olana kadar izlenir", () => {

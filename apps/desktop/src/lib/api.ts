@@ -1676,6 +1676,7 @@ export const api = {
   jobQueueRecover: () => invoke<JobRecovery>("job_queue_recover"),
   jobCancel: (jobId: string) => invoke<JobCancelResult>("job_cancel", { jobId }),
   jobRetry: (jobId: string) => invoke<JobRetryView>("job_retry", { jobId }),
+  jobRun: (jobId: string) => invoke<JobRetryView>("job_run", { jobId }),
   jobUnblock: (jobId: string) => invoke<JobRow>("job_unblock", { jobId }),
   status: () => invoke<VaultStatus>("vault_status"),
 
