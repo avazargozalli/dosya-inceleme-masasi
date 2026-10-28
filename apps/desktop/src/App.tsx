@@ -9,6 +9,7 @@ import { Precedents } from "./screens/Precedents";
 import { Redaction } from "./screens/Redaction";
 import { Ai } from "./screens/Ai";
 import { AUTO_LOCK_CHECK_MS, shouldAutoLock } from "./lib/autolock";
+import { canShowScreen } from "./lib/lock";
 import {
   BACKUP_CHECK_MS,
   BACKUP_LAST_KEY,
@@ -199,7 +200,9 @@ export function App() {
             </div>
           ) : null}
 
-          {screen === "vault" ? (
+          {!canShowScreen(screen, locked) ? (
+            <LockedNotice onUnlock={() => setScreen("vault")} />
+          ) : screen === "vault" ? (
             locked ? (
               <Unlock
                 onUnlocked={async () => {
@@ -242,6 +245,27 @@ export function App() {
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+/// Kasa kilitliyken `vault` dışındaki ekranlar **render edilmez**: bileşen
+/// ağacı sökülür, yüklenmiş belge/segment state'i bellekte kalmaz. Yalnız bu
+/// ekran gösterilir; "Kasa"ya dönüp parola girilir.
+function LockedNotice({ onUnlock }: { onUnlock: () => void }) {
+  return (
+    <div className="card" role="status" aria-live="polite">
+      <div className="card-head">
+        <div>
+          <h2>{t("shell.locked")}</h2>
+          <p className="card-sub">
+            Kasa kilitli. Bu ekrandaki içerik gösterilmez ve bellekte tutulmaz.
+          </p>
+        </div>
+        <button className="btn primary" onClick={onUnlock}>
+          Kasa ekranına git
+        </button>
+      </div>
     </div>
   );
 }

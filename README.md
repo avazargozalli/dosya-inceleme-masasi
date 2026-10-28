@@ -15,7 +15,7 @@ bağlanır; yapay zekâ öneri üretir, hukuki kaydı yalnız avukat onayıyla o
 | Şifreli kasa oluşturma/açma (Argon2id + AES-256-GCM) | ✅ gerçek | `crates/vault` |
 | Kurtarma anahtarı (32 bayt, base32, tek gösterim) | ✅ gerçek — KDF hatası düzeltildi | `crates/vault` |
 | Parola değiştirme (ana anahtar korunur) | ✅ gerçek | `VaultFile::change_password` |
-| SQLCipher veritabanı, şema v15, migrasyon checksum | ✅ gerçek | `crates/storage` |
+| SQLCipher veritabanı, şema v23, migrasyon checksum | ✅ gerçek | `crates/storage` |
 | Dosya, belge, sürüm, arşiv, geri dönüşümlü silme | ✅ gerçek | Dosyalar ekranı |
 | İçe aktarma: SHA-256, şifreli blob, sürükle-bırak | ✅ gerçek | `crates/ingest` |
 | PDF/DOCX/UDF/görüntü ayrıştırma | ✅ gerçek — gerçek belgelerle ölçüldü | `workers/document` |

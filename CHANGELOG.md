@@ -3,6 +3,14 @@
 Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 Sürümleme: şartnamedeki faz etiketleri (`docs/roadmap.md`).
 
+## [0.11.4] — 2026-10-26 — kilit sızıntısı ve doküman senkronu
+
+- **Güvenlik:** kasa kilitliyken `vault` dışındaki ekranlar artık render edilmiyor;
+  `Cases`/`Search`/`Review` bileşen ağacı sökülüyor, yüklenmiş belge state'i bellekte kalmıyor
+- `canShowScreen` saf kuralı + 4 regresyon testi (`ligi` ekran listesi)
+- README şema v15 → **v23**; F03 tablo sayısı 47 → **54**
+- Roadmap F16 "imzalı genel sürüm ✅" → **"Dağıtım (imzasız) 🚧"** (ADR-0012 ile hizalı)
+
 ## [0.11.3] — 2026-10-25 — Türkçe OCR verisi
 
 - `tesseract-lang` kuruldu (162 dil); `tur+eng` ile JPG güveni 85,1 → **93,6**, PDF 57,9 → **72,2**
