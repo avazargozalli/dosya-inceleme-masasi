@@ -55,3 +55,6 @@ apps/desktop/src-tauri/resources/worker/*
 !apps/desktop/src-tauri/resources/worker/README.md
 .worker-venv/
 workers/document/dist/
+
+# SBOM çıktısı (üretilir; CI artefakt olarak yükler)
+sbom.json

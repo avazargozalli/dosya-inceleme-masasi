@@ -5,7 +5,7 @@
 
 | İş | Durum | Not |
 |---|---|---|
-| F16-T01 SBOM | ✅ | `scripts/sbom.sh`, CI `sbom` job'u, artefakt |
+| F16-T01 kaynak etiketi + kilit dosyaları + SBOM + üçüncü taraf bildirimleri | 🚧 | **SBOM tarafı tamam (2026-10-28)**: kapsam gerçek (üretim **7** + geliştirme **185** node bileşeni, geçişli dahil; rust 159; python 5) ve ürüne bağlı (sürüm/commit/üç kilit sha256); kapı `scripts/sbom_check.py` + `--self-test` CI'da. Kusur #60 — ayrıntı `docs/releases/F15/README.md` → "SBOM kapsamı". **Eksik:** kaynak etiketi (git tag/arşiv), üçüncü taraf lisans bildirimleri (NOTICE/THIRD-PARTY) |
 | F16-T02 güncelleme imza doğrulama | 🚧 | mekanizma var, anahtar yok; `plugins.updater.active=false` |
 | F16-T03 atomik migrasyon geri dönüş | ✅ | `rollback_vault` (sabit bağlantılı güvenlik kopyası, dolu `-wal` kapısı, artık süpürme) + uygulama içi akış (`pre_update.rs`, Ayarlar kartı, onay metni); `ROLLBACK-DRILL.md` — **süreç öldürme ve gerçek disk dolması tatbikatı** (kusur #39–#41) |
 | F16-T04 Apple Developer ID + notarization | ➖ | **kapsam dışı** (ADR-0012) |

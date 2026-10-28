@@ -119,8 +119,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Malzeme listesi üret
         run: bash scripts/sbom.sh
-      - name: SBOM boş olamaz
-        run: python3 -c "import json;d=json.load(open('sbom.json'));assert d['counts']['rust']>0 and d['counts']['node']>0 and d['counts']['python']>0,d['counts']"
+      - name: SBOM bağlayıcı kapısı (kapsam + sabit sürüm + ürüne bağlama)
+        run: |
+          python3 scripts/sbom_check.py sbom.json
+          python3 scripts/sbom_check.py --self-test
       - uses: actions/upload-artifact@v4
         with:
           name: sbom
