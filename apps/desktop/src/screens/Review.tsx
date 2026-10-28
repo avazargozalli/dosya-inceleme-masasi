@@ -1049,7 +1049,7 @@ export function Review() {
                         bağlanmaz; kaynak metin yukarıda.
                       </p>
                     ) : null}
-                    {finding.position?.isCurrentVersion === false ? (
+                    {oldVersionNote(finding) ? (
                       <p className="hint" style={{ margin: 0 }}>
                         <span className="badge warn" style={{ marginRight: 6 }}>
                           eski sürüm

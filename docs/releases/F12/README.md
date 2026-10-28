@@ -648,10 +648,13 @@ iki amiral gemisi aynı olguda farklı hüküm veriyordu.
   sürümdeki konum kullanıldı”). “Yalnız eski sürümde” notu artık “belirsiz eşleşme
   bağlanmaz” diye tamamlanır.
 
-**Arayüz (`lib/intext.ts`):** `oldVersionNote` konum yokken de çalışır — adayların
-**hepsi** eski sürümdeyse “Alıntı güncel sürümde geçmiyor; yalnız v2 sürümünde 2
-konumda bulundu.” yazar; adaylardan biri güncel sürümdeyse susar. Önceden bu olgu
-yalnız katlanmış “Denetimin sınırları” notunda kalıyordu.
+**Arayüz (`lib/intext.ts` + `Review.tsx`):** `oldVersionNote` konum yokken de çalışır —
+adayların **hepsi** eski sürümdeyse “Alıntı güncel sürümde geçmiyor; yalnız v2
+sürümünde 2 konumda bulundu.” yazar; adaylardan biri güncel sürümdeyse susar. Önceden
+bu olgu yalnız katlanmış “Denetimin sınırları” notunda kalıyordu. `Review.tsx` satırı
+da `position?.isCurrentVersion === false` koşulu yerine **notun kendisine** bakar;
+yoksa belirsiz eşleşmede uyarı hiç görünmezdi (ölçülen ikinci kusur: yeni metin
+yazılmış ama render kapısı eski koşulda kalmıştı).
 
 **Test:** önce **2 test kırmızı** koştu (`ambiguous` 1 → 0 bekleniyordu;
 `found_in_old_version` 0 → 1). `intext_quotes` **35** (33 + 2: “iki eski sürüm tek
