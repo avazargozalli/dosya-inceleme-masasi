@@ -673,5 +673,8 @@ kapağı 8; `occurrences` kapağa takılmaz. Ölçüm bellek içi kasa + elle ya
 sayfa metinleri; gerçek PDF/worker uçtan uca denenmedi. Tauri penceresi açılmadı →
 yeni uyarı satırının görsel QA'si yok.
 
-**Commit/CI:** `bad747c` → CI **`40730120844` 7/7 yeşil** (sözleşmeler, arayüz
-tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk, belge worker'ı, SBOM).
+**Commit/CI:** `bad747c` (çekirdek + test + arayüz + belge) → CI **`40730120844` 7/7
+yeşil**; `6628f23` (render kapısı + belge) → CI **`40731762280` 7/7 yeşil**
+(sözleşmeler, arayüz tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk,
+belge worker'ı, SBOM). `774a650` (yalnız belge) koşusu yeni push'un eşzamanlılık
+grubuyla **cancelled** oldu — yeşil olan koşu HEAD'i kapsar.
