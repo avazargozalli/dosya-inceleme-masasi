@@ -70,10 +70,14 @@ Bu, "çalışıyor gibi görünen düğme"nin daha sessiz bir biçimidir: düğm
   — diğerlerinden farklı olarak **PyMuPDF** ister (glif çizimi + 300 dpi
   raster); dosya depoda durduğu için testler üretimi koşmaz (ADR-05).
 - **Test:** `cargo test -p dim-storage` **369/369** (+3: yaz/oku + biçim kapısı
-  + yeniden deneme ayarı silmez) ve entegrasyon 8/8 (3 ignored); tauri lib
+  + yeniden deneme ayarı silmez) ve entegrasyon 8/8 (5 ignored); tauri lib
   **29 geçti / 5 ignored** (+2 saf/plan testi, +1 gerçek ölçüm); Web
   `tsc --noEmit` temiz, `vitest run` **413/413** (+2 `jobs` iddiası: kaynak
-  satırı ve `password_required`).
+  satırı ve `password_required`). Clippy `-p dim-storage --all-targets` ve tauri
+  `--all-targets` `-D warnings` temiz; rustfmt iki manifest temiz.
+- **Commit/CI:** `db118fb` → CI **`40724481987` 7/7 yeşil** (sözleşmeler,
+  arayüz tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk,
+  belge worker'ı, SBOM).
 - **Dürüst sınırlar:** 0023 öncesi işlerde ayar **kayıtlı değildir**; yeniden
   deneme varsayılanlarla koşar ve arayüz bunu yazar (sessizce "aynı iş"
   denmez). Parola ile açılmış iş **elle** yeniden ayrıştırılmalıdır. Maskeleme
