@@ -61,6 +61,11 @@ yapılmadığını** ve arayüzde üç ayrı biçimin yan yana yaşadığını g
   sızarsa, (b) sözlükte kullanılmayan anahtar kalırsa, (c) taşınmış ekranlara
   gömülü metin geri gelirse, (d) kabukta gömülü sürüm etiketi olursa **kırmızı**.
 
+**Commit/CI:** `4d5c2da` → CI **`40605471296` 7/7 yeşil** (sözleşmeler, arayüz
+tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk, belge worker'ı,
+SBOM). `HEAD == origin/main`; `git status`ta yalnız iki `Cargo.lock` (başka ajanın,
+dokunulmadı).
+
 **Test**
 
 - Web `tsc --noEmit` temiz · `vitest run` **413/413** (30 dosya; önceki 384 → +29:
