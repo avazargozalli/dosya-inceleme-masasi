@@ -184,6 +184,8 @@ pub struct InTextQuoteFinding {
     pub state: String,
     /// `no_text` (taranacak metin yok) — başka neden uydurulmaz.
     pub reason: Option<String>,
+    /// Eşleşen **sürüm içindeki** konum sayısı. Aynı pasajın birden çok sürümde
+    /// (düzeltilmiş/uzun nüsha) geçmesi ayrı konum sayılmaz: en yeni sürüm seçilir.
     pub occurrences: i64,
     pub distinct_documents: i64,
     /// Yalnız tek konum varsa dolu.
@@ -316,16 +318,99 @@ impl RawHit {
 #[derive(Default)]
 struct QuoteAccum {
     hits: Vec<RawHit>,
+    /// **Ham** eşleşme sayısı; yalnız "bu alıntı bir şey buldu mu" kapısı
+    /// (`pending_quotes`) içindir. Rapora yazılan sayı `resolve_version_copies`
+    /// çıktısıdır — sürüm kopyaları orada birleştirilir.
     occurrences: i64,
     documents: BTreeSet<String>,
+    /// (belge, sürüm) başına eşleşme sayısı.
+    versions: Vec<VersionHit>,
+}
+
+/// Bir alıntının tek bir belge sürümündeki eşleşme sayısı.
+struct VersionHit {
+    document_id: String,
+    version_id: String,
+    version_no: i64,
+    is_current: bool,
+    count: i64,
+}
+
+/// Sürüm önceliği: güncel sürüm her zaman kazanır, yoksa en yüksek sürüm no.
+fn version_rank(scope: &VersionHit) -> (bool, i64) {
+    (scope.is_current, scope.version_no)
+}
+
+/// Bir alıntının sürüm kopyaları birleştirilmiş hâli.
+struct ResolvedHits {
+    occurrences: i64,
+    hits: Vec<RawHit>,
+    /// Elenen sürüm kopyası sayısı (dürüstlük notu için).
+    dropped_versions: usize,
 }
 
 impl QuoteAccum {
     fn record(&mut self, hit: RawHit) {
         self.occurrences += 1;
         self.documents.insert(hit.document_id.clone());
+        match self.versions.iter_mut().find(|scope| {
+            scope.document_id == hit.document_id && scope.version_id == hit.version_id
+        }) {
+            Some(scope) => scope.count += 1,
+            None => self.versions.push(VersionHit {
+                document_id: hit.document_id.clone(),
+                version_id: hit.version_id.clone(),
+                version_no: hit.version_no,
+                is_current: hit.is_current_version,
+                count: 1,
+            }),
+        }
         if self.hits.len() < MAX_CANDIDATES {
             self.hits.push(hit);
+        }
+    }
+
+    /// Aynı pasaj bir belgenin birden çok sürümünde geçebilir (düzeltilmemiş
+    /// nüsha, uzun nüsha). Bunlar ayrı **konum** değildir: belge başına en yeni
+    /// sürüm seçilir (güncel varsa güncel, yoksa en yüksek `version_no`) ve
+    /// `occurrences` yalnız seçilen sürümün içindeki konumları sayar. Emsal
+    /// doğrulaması (`verify_precedent_quote`) da tek sürümün sayısını verir;
+    /// iki amiral gemisi aynı olguda aynı hükmü vermeli.
+    fn resolve_version_copies(&self) -> ResolvedHits {
+        let mut winners: Vec<&VersionHit> = Vec::new();
+        for scope in &self.versions {
+            match winners
+                .iter_mut()
+                .find(|winner| winner.document_id == scope.document_id)
+            {
+                Some(winner) => {
+                    if version_rank(scope) > version_rank(winner) {
+                        *winner = scope;
+                    }
+                }
+                None => winners.push(scope),
+            }
+        }
+        let occurrences = winners.iter().map(|winner| winner.count).sum();
+        let mut hits: Vec<RawHit> = self
+            .hits
+            .iter()
+            .filter(|hit| {
+                winners.iter().any(|winner| {
+                    winner.document_id == hit.document_id && winner.version_id == hit.version_id
+                })
+            })
+            .cloned()
+            .collect();
+        if hits.is_empty() && occurrences > 0 {
+            // Kuramsal: konum kapağı (8) dolduğu için kazanan sürümün konumu
+            // düşmüş olabilir; boş konum listesi göstermektense ham liste verilir.
+            hits = self.hits.clone();
+        }
+        ResolvedHits {
+            occurrences,
+            hits,
+            dropped_versions: self.versions.len().saturating_sub(winners.len()),
         }
     }
 }
@@ -499,15 +584,20 @@ impl Database {
         let mut bindable = 0usize;
         let mut found_in_old_version = 0usize;
         let mut dehyphenated = 0usize;
+        let mut collapsed_version_copies = 0usize;
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         for (index, span) in extracted.quotes.iter().enumerate() {
             let found = &accum[index];
+            let resolved = found.resolve_version_copies();
+            if resolved.dropped_versions > 0 {
+                collapsed_version_copies += 1;
+            }
             let mut finding = InTextQuoteFinding {
                 index,
                 quote: span.text.clone(),
                 state: "not_found".into(),
                 reason: None,
-                occurrences: found.occurrences,
+                occurrences: resolved.occurrences,
                 distinct_documents: i64::try_from(found.documents.len()).unwrap_or(i64::MAX),
                 position: None,
                 candidates: Vec::new(),
@@ -515,10 +605,10 @@ impl Database {
             if pages_scanned == 0 {
                 finding.state = "unverifiable".into();
                 finding.reason = Some("no_text".into());
-            } else if found.occurrences == 0 {
+            } else if resolved.occurrences == 0 {
                 finding.state = "not_found".into();
-            } else if found.occurrences == 1 {
-                let hit = found.hits.first().ok_or(StorageError::NotFound)?;
+            } else if resolved.occurrences == 1 {
+                let hit = resolved.hits.first().ok_or(StorageError::NotFound)?;
                 finding.state = if hit.match_kind == MatchTier::Exact.kind() {
                     "exact".into()
                 } else {
@@ -527,7 +617,7 @@ impl Database {
                 finding.position = Some(hit.position());
             } else {
                 finding.state = "ambiguous".into();
-                finding.candidates = found.hits.iter().map(RawHit::position).collect();
+                finding.candidates = resolved.hits.iter().map(RawHit::position).collect();
             }
             match finding.state.as_str() {
                 "exact" => counts[0] += 1,
@@ -550,11 +640,12 @@ impl Database {
                 // Tek sayfada birebir: tek sayfalık anchor'a bağlanabilir.
                 bindable += 1;
             }
-            if finding
-                .position
-                .as_ref()
-                .is_some_and(|position| !position.is_current_version)
-            {
+            // "Yalnız eski sürümde" hükmü konum yokken de (belirsiz eşleşme)
+            // verilmeli: kullanıcı için en önemli olgu, alıntının **güncel**
+            // metinde geçmediğidir.
+            let only_old = !resolved.hits.is_empty()
+                && resolved.hits.iter().all(|hit| !hit.is_current_version);
+            if only_old {
                 found_in_old_version += 1;
             }
             if finding
@@ -580,8 +671,14 @@ impl Database {
         if found_in_old_version > 0 {
             notes.push(format!(
                 "{found_in_old_version} alıntı yalnız **eski** bir sürümde bulundu; güncel \
-                 sürümde geçmiyor (belge güncellenmiş olabilir). Kaynak, alıntının bulunduğu \
-                 sürüme bağlanır."
+                 sürümde geçmiyor (belge güncellenmiş olabilir). Kaynak, eşleşmenin bulunduğu \
+                 sürüme bağlanır (belirsiz eşleşme bağlanmaz)."
+            ));
+        }
+        if collapsed_version_copies > 0 {
+            notes.push(format!(
+                "{collapsed_version_copies} alıntı aynı belgenin birden çok sürümünde geçiyordu; \
+                 sürüm kopyaları ayrı konum sayılmadı, **en yeni** sürümdeki konum kullanıldı."
             ));
         }
         if bindable > 0 {
@@ -1960,6 +2057,86 @@ mod tests {
         let position = report.quotes[0].position.as_ref().expect("konum");
         assert!(position.is_current_version);
         assert_eq!(position.version_no, 2);
+    }
+
+    #[test]
+    fn the_same_passage_in_two_old_versions_is_one_location_not_ambiguous() {
+        let db = db();
+        let case_id = new_case(&db, "Karar");
+        let (document_id, first_version) =
+            add_document(&db, &case_id, "Karar metni", &["Karar gerekçesi şöyledir."]);
+        // Aynı pasajın düzeltilmemiş ikinci nüshası (v2): metin birebir aynı.
+        let second_version =
+            add_version_with_pages(&db, &case_id, &document_id, &["Karar gerekçesi şöyledir."]);
+        // Güncel sürümde cümle çıkarıldı: alıntı yalnız eski sürümlerde.
+        add_version_with_pages(
+            &db,
+            &case_id,
+            &document_id,
+            &["Güncel metin, cümle çıkarıldı."],
+        );
+
+        let report = check(&db, &case_id, "“Karar gerekçesi şöyledir”", None);
+
+        assert_eq!(report.ambiguous, 0, "sürüm kopyası ayrı konum değildir");
+        assert_eq!(report.exact, 1);
+        let finding = &report.quotes[0];
+        assert_eq!(
+            finding.occurrences, 1,
+            "aynı pasajın iki nüshası tek konumdur"
+        );
+        assert_eq!(finding.distinct_documents, 1);
+        let position = finding.position.as_ref().expect("konum");
+        assert_eq!(
+            position.document_version_id, second_version,
+            "en yeni eski sürüm seçilir"
+        );
+        assert_ne!(position.document_version_id, first_version);
+        assert_eq!(position.version_no, 2);
+        assert!(!position.is_current_version);
+        assert_eq!(report.found_in_old_version, 1);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("sürüm kopyaları ayrı konum sayılmadı")),
+            "sürüm kopyası birleştirmesi dürüstçe yazılmalı: {:?}",
+            report.notes
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_quote_that_is_only_in_an_old_version_is_reported_as_old() {
+        let db = db();
+        let case_id = new_case(&db, "Karar");
+        let (document_id, _) = add_document(
+            &db,
+            &case_id,
+            "Karar metni",
+            &["Karar gerekçesi şöyledir. Sonra yine: Karar gerekçesi şöyledir."],
+        );
+        add_version_with_pages(
+            &db,
+            &case_id,
+            &document_id,
+            &["Güncel metin, cümle çıkarıldı."],
+        );
+
+        let report = check(&db, &case_id, "“Karar gerekçesi şöyledir”", None);
+
+        assert_eq!(
+            report.ambiguous, 1,
+            "aynı sürümde iki konum gerçekten belirsiz"
+        );
+        assert_eq!(report.quotes[0].occurrences, 2);
+        assert_eq!(
+            report.found_in_old_version, 1,
+            "konum yok ama eşleşme yalnız eski sürümde"
+        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("yalnız **eski** bir sürümde bulundu")));
     }
 
     #[test]

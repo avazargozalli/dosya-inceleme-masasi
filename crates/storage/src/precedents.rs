@@ -2343,6 +2343,36 @@ mod tests {
     }
 
     #[test]
+    fn the_same_passage_in_two_old_versions_is_one_location_on_the_precedent_side_too() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/28"), Some("2025/29")))
+            .expect("emsal");
+        db.add_precedent_text(&p.id, &text_of("İlk nüsha: itirazın reddine karar verdi."))
+            .expect("v1");
+        let second = db
+            .add_precedent_text(
+                &p.id,
+                &text_of("İkinci nüsha: itirazın reddine karar verdi."),
+            )
+            .expect("v2");
+        // Güncel metinde cümle çıkarıldı: alıntı yalnız eski sürümlerde.
+        db.add_precedent_text(&p.id, &text_of("Güncel metin, cümle çıkarıldı."))
+            .expect("v3");
+        let result = db
+            .verify_precedent_quote(&p.id, "itirazın reddine karar verdi")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        // Emsal tarafı zaten en yeni eşleşen sürümü seçer ve `occurrences`ı tek
+        // sürümden sayar; belge tarafı (`intext_quotes`) artık aynı hükmü verir.
+        assert_eq!(result.version_id.as_deref(), Some(second.id.as_str()));
+        assert_eq!(result.occurrences, 1, "sürüm kopyası sayıya eklenmez");
+        assert!(result.found_in_old_version);
+        assert_eq!(result.versions_scanned, 2);
+        assert_eq!(result.historical_versions_scanned, 1);
+    }
+
+    #[test]
     fn historical_scan_is_bounded_and_says_so() {
         let db = db();
         let p = db

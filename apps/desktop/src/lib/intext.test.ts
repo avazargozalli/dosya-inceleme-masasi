@@ -207,6 +207,39 @@ describe("metin içi alıntı yardımcıları", () => {
     ).toBe("Alıntı güncel sürümde geçmiyor; yalnız v3 sürümünde bulundu.");
   });
 
+  it("belirsiz eşleşmenin bütün adayları eski sürümdeyse bunu yine söyler", () => {
+    const oldCandidates = finding({
+      state: "ambiguous",
+      position: null,
+      occurrences: 2,
+      candidates: [
+        position({ versionNo: 2, isCurrentVersion: false, charStart: 10 }),
+        position({ versionNo: 2, isCurrentVersion: false, charStart: 60 }),
+      ],
+    });
+    expect(oldVersionNote(oldCandidates)).toBe(
+      "Alıntı güncel sürümde geçmiyor; yalnız v2 sürümünde 2 konumda bulundu.",
+    );
+    // Adaylardan biri güncel sürümdeyse “güncel sürümde geçmiyor” denmez.
+    expect(
+      oldVersionNote(
+        finding({
+          state: "ambiguous",
+          position: null,
+          occurrences: 2,
+          candidates: [
+            position({ isCurrentVersion: true }),
+            position({ versionNo: 2, isCurrentVersion: false, charStart: 60 }),
+          ],
+        }),
+      ),
+    ).toBe("");
+    // Konum da aday da yoksa (bulunamadı) boştur.
+    expect(
+      oldVersionNote(finding({ state: "ambiguous", position: null, occurrences: 2, candidates: [] })),
+    ).toBe("");
+  });
+
   it("tire ile bölünmüş kelime eşleşmesini etiketler ve bağlanamama nedenini yazar", () => {
     const hyphenated = finding({
       state: "normalized",

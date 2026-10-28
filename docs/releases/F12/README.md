@@ -444,7 +444,8 @@ güncellendiğinde alıntının sessizce “bulunamadı” olması denetimin en 
   birebir** eşleşme, güncel sürümdeki normalize eşleşmeden üstündür (hangisinin
   raporlandığı `isCurrentVersion` + `versionNo` ile yazılır). Aynı alıntı hem
   güncelde hem eski sürümde geçiyorsa `occurrences` yalnız güncel sürümü sayar
-  (yinelenmez). Pencere ~1.064 karakter
+  (yinelenmez); **birden çok eski sürümde** geçiyorsa da tek konum sayılır (en yeni
+  sürüm seçilir — 2026-10-28 bölümü, kusur #59). Pencere ~1.064 karakter
   sınırı ve tire ile bölünmüş kelime sınırı aynen sürüyor. Tauri penceresi
   açılmadı → “eski sürüm” rozetinin görsel QA'si yok.
 
@@ -618,3 +619,53 @@ Arayüz: `tsc --noEmit` temiz (node 22.23.1), `vitest run` **379/379** (28 dosya
   olduğundan teorik tepe ~96 MiB — ölçülmedi.
 - Ölçüm bellek içi kasa + elle yazılmış metinler; gerçek PDF/worker uçtan uca
   denenmedi. Tauri penceresi açılmadı → yeni satırın görsel QA'si yok.
+
+## Alıntı sayımında sürüm kopyası birleştirmesi (2026-10-28, kusur #59)
+
+**Ölçülen kusur (işlevsel, yanlış hüküm):** belge tarafı (`check_in_text_quotes`)
+aynı pasajı bir belgenin **birden çok sürümünde** bulunca her nüshayı ayrı konum
+sayıyordu. Ölçüm (bellek içi kasa, önce kırmızı koşan test): v1 ve v2 birebir aynı
+cümleyi taşıyor, güncel v3'te cümle yok → `ambiguous` **1** · `occurrences` **2** ·
+`position` **null**. Avukat “alıntı birden fazla konumda geçiyor, seçin” görüyordu;
+oysa tek bir pasajın iki nüshası vardı ve **hiçbiri güncel sürümde değildi**. Dahası
+“yalnız eski sürümde” uyarısı hiç çıkmıyordu (`found_in_old_version=0`), çünkü o
+sayaç yalnız **tek konum** varken artıyordu — yani en önemli olgu (alıntı güncel
+metinde geçmiyor) tam da belirsiz durumda kayboluyordu. Emsal tarafı
+(`verify_precedent_quote`) aynı olguda **tek** konum ve `occurrences=1` döndürüyordu:
+iki amiral gemisi aynı olguda farklı hüküm veriyordu.
+
+**Düzeltme (`crates/storage/src/intext_quotes.rs`):**
+
+- `QuoteAccum` artık (belge, sürüm) başına eşleşme sayısı tutar (`VersionHit`).
+- `resolve_version_copies()` belge başına **en yeni** sürümü seçer (güncel varsa
+  güncel, yoksa en yüksek `version_no`); `occurrences` yalnız seçilen sürümün
+  **içindeki** konumları sayar, aday listesi kazanan sürümün konumlarından gelir.
+  Ham sayı yalnız “bulundu mu” kapısında (`pending_quotes`) kalır; katman sırası ve
+  tembel eski-sürüm taraması **değişmedi**.
+- Eşleşme yalnız eski sürümdeyse `found_in_old_version` artık **belirsiz eşleşmede
+  de** artar; sürüm kopyası birleştirildiğinde not düşülür (“N alıntı aynı belgenin
+  birden çok sürümünde geçiyordu; sürüm kopyaları ayrı konum sayılmadı, **en yeni**
+  sürümdeki konum kullanıldı”). “Yalnız eski sürümde” notu artık “belirsiz eşleşme
+  bağlanmaz” diye tamamlanır.
+
+**Arayüz (`lib/intext.ts`):** `oldVersionNote` konum yokken de çalışır — adayların
+**hepsi** eski sürümdeyse “Alıntı güncel sürümde geçmiyor; yalnız v2 sürümünde 2
+konumda bulundu.” yazar; adaylardan biri güncel sürümdeyse susar. Önceden bu olgu
+yalnız katlanmış “Denetimin sınırları” notunda kalıyordu.
+
+**Test:** önce **2 test kırmızı** koştu (`ambiguous` 1 → 0 bekleniyordu;
+`found_in_old_version` 0 → 1). `intext_quotes` **35** (33 + 2: “iki eski sürüm tek
+konum”, “belirsiz ama yalnız eski sürümde”), `precedents` **46** (+1 eşlik testi: aynı
+olguda emsal tarafı en yeni eşleşen sürümü seçer, `occurrences=1`),
+`cargo test -p dim-storage --lib` **372/372** (184 sn); clippy
+`-p dim-storage --all-targets -D warnings` temiz; rustfmt iki manifest temiz.
+Arayüz: `tsc --noEmit` temiz (node 22.23.1), `vitest run` **414/414** (30 dosya;
+`intext.test.ts` +1), `vite build` temiz (83 modül, 486,04 kB).
+
+**Dürüst sınırlar:** seçim **en yeni** sürümle sınırlı — daha eski nüshada kalan
+farklı bir metin ayrı konum olarak raporlanmaz (aynı pasajın nüshası sayılır);
+kullanıcı eski nüshayı görmek isterse belge geçmişini açmalı. Sayım seçilen sürümün
+**içindeki** tekrarları sayar (aynı sayfada 3 kez → 3, `ambiguous` korunur). Konum
+kapağı 8; `occurrences` kapağa takılmaz. Ölçüm bellek içi kasa + elle yazılmış
+sayfa metinleri; gerçek PDF/worker uçtan uca denenmedi. Tauri penceresi açılmadı →
+yeni uyarı satırının görsel QA'si yok.

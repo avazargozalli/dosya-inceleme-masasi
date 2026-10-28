@@ -117,11 +117,27 @@ export function positionLabel(finding: InTextQuoteFinding): string {
 /** Eski sürümde bulunan alıntı için bağlama uyarısı; güncel sürümde boştur. */
 export function oldVersionNote(finding: InTextQuoteFinding): string {
   const position = finding.position;
-  if (!position || position.isCurrentVersion !== false) return "";
-  if (!canBind(finding)) {
-    return `Alıntı güncel sürümde geçmiyor; yalnız v${position.versionNo} sürümünde bulundu.`;
+  if (position) {
+    if (position.isCurrentVersion !== false) return "";
+    if (!canBind(finding)) {
+      return `Alıntı güncel sürümde geçmiyor; yalnız v${position.versionNo} sürümünde bulundu.`;
+    }
+    return `Kaynak v${position.versionNo} sürümüne bağlanır; alıntı güncel sürümde geçmiyor.`;
   }
-  return `Kaynak v${position.versionNo} sürümüne bağlanır; alıntı güncel sürümde geçmiyor.`;
+  // Belirsiz eşleşmede tek konum yoktur; ama adayların **hepsi** eski sürümdeyse
+  // “alıntı güncel metinde geçmiyor” hükmü yine verilmelidir — aksi hâlde en
+  // önemli olgu yalnız katlanmış “denetimin sınırları” notunda kalır.
+  const candidates = finding.candidates;
+  if (candidates.length === 0) return "";
+  if (candidates.some((candidate) => candidate.isCurrentVersion !== false)) return "";
+  const versions = [...new Set(candidates.map((candidate) => candidate.versionNo))].sort(
+    (left, right) => right - left,
+  );
+  const where =
+    versions.length === 1
+      ? `v${versions[0]} sürümünde`
+      : `eski sürümlerde (${versions.map((version) => `v${version}`).join(", ")})`;
+  return `Alıntı güncel sürümde geçmiyor; yalnız ${where} ${finding.occurrences} konumda bulundu.`;
 }
 
 /** Taranan sürüm sayısı satırı; hiç sürüm yoksa boştur. */
