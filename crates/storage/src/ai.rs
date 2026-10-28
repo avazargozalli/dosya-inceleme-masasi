@@ -107,6 +107,26 @@ impl Database {
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
+        // Onay **belge kümesine** bağlıdır: boş seçim hiçbir şeyi yetkilendirmez,
+        // başka dosyanın ya da silinmiş bir belgenin kimliği onaya yazılamaz.
+        let mut selected: Vec<String> = Vec::new();
+        for document_id in &new.selected_document_ids {
+            if selected.contains(document_id) {
+                continue;
+            }
+            let belongs: i64 = self.conn().query_row(
+                "SELECT count(*) FROM documents WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                rusqlite::params![document_id, new.case_scope],
+                |r| r.get(0),
+            )?;
+            if belongs == 0 {
+                return Err(StorageError::AiConsent);
+            }
+            selected.push(document_id.clone());
+        }
+        if selected.is_empty() {
+            return Err(StorageError::AiConsent);
+        }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         self.conn().execute(
@@ -117,7 +137,7 @@ impl Database {
                 new.provider_snapshot.trim(),
                 new.case_scope,
                 new.purpose.trim(),
-                serde_json::to_string(&new.selected_document_ids).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&selected).unwrap_or_else(|_| "[]".into()),
                 new.expires_at,
                 new.consent_text_version,
                 now
@@ -188,6 +208,22 @@ impl Database {
             .ok_or(StorageError::NotFound)?;
         if consent.case_scope != case_id {
             return Err(StorageError::AiConsent);
+        }
+        if consent.selected_document_ids.is_empty() {
+            return Err(StorageError::AiConsent);
+        }
+        // Onaydan sonra belge silinmiş/taşınmışsa kapsam daralmıştır: yeni
+        // çalıştırma açılmaz (izin kendiliğinden genişlemez, daralmış izinle
+        // de gönderim yapılmaz).
+        for document_id in &consent.selected_document_ids {
+            let live: i64 = self.conn().query_row(
+                "SELECT count(*) FROM documents WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                rusqlite::params![document_id, case_id],
+                |r| r.get(0),
+            )?;
+            if live == 0 {
+                return Err(StorageError::AiConsent);
+            }
         }
         let provider_exists: i64 = self.conn().query_row(
             "SELECT count(*) FROM provider_profiles WHERE id=?1",
@@ -623,6 +659,56 @@ pub struct ConsentPreview {
     pub bytes: i64,
     /// Gönderilecek ilk segmentin kısa örneği; veri yoksa boş.
     pub sample: String,
+    /// Kapsam dışı kalan belgeler ve nedeni (sessiz atlama yok).
+    pub skipped: Vec<ScopeSkip>,
+}
+
+/// Aktarım kapsamında gönderilecek tek segment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeSegment {
+    pub segment_id: String,
+    pub document_version_id: String,
+    pub text: String,
+}
+
+/// Kapsama giren belge: güncel sürüm + o sürümün sayfa üreten en yeni koşusu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeDocument {
+    pub document_id: String,
+    pub document_version_id: String,
+    pub segment_count: i64,
+    pub bytes: i64,
+}
+
+/// Kapsam dışı kalan belge ve **nedeni**.
+/// `missing` · `no_current_version` · `not_parsed` · `empty_text`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeSkip {
+    pub document_id: String,
+    pub reason: String,
+}
+
+/// Kapsam çözümlemesinin ham sonucu (kapsam içi belgeler, kapsam dışı nedenler,
+/// gönderilecek segmentler).
+struct ResolvedScope {
+    documents: Vec<ScopeDocument>,
+    skipped: Vec<ScopeSkip>,
+    segments: Vec<ScopeSegment>,
+}
+
+/// Onayın çözdüğü **gerçek** aktarım kapsamı.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentScope {
+    pub consent_id: String,
+    pub case_id: String,
+    pub documents: Vec<ScopeDocument>,
+    pub skipped: Vec<ScopeSkip>,
+    pub segments: Vec<ScopeSegment>,
+    pub bytes: i64,
 }
 
 impl Database {
@@ -689,99 +775,169 @@ impl Database {
         }
     }
 
-    /// Sağlayıcıya gönderilecek segmentler: yalnız **güncel** ayrıştırma
-    /// sürümünün metni. Ayrıştırılmamış belge sessizce atlanmaz; çağıran
-    /// kapsam raporuyla bunu görür.
-    pub fn context_segments(
+    /// Aktarım kapsamını **tek** yerden çözer. Önizleme ile gönderim aynı
+    /// işlevi kullanır; böylece "onaylanan içerik" ile "gönderilen içerik"
+    /// ayrışamaz.
+    ///
+    /// Kural: belgenin **güncel** sürümü; o sürümün **sayfa üreten en yeni**
+    /// ayrıştırma koşusu. Eski sürümün metni asla gönderilmez. Kapsam dışı
+    /// kalan belge sessizce atlanmaz — nedeni `ScopeSkip` olarak döner
+    /// (`missing`, `no_current_version`, `not_parsed`, `empty_text`).
+    fn resolve_transfer_scope(
         &self,
         case_id: &str,
         document_ids: &[String],
-    ) -> Result<Vec<(String, String)>, StorageError> {
-        let mut out = Vec::new();
+    ) -> Result<ResolvedScope, StorageError> {
+        let mut documents = Vec::new();
+        let mut skipped = Vec::new();
+        let mut segments = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
         for document_id in document_ids {
-            let mut statement = self.conn().prepare(
-                "SELECT s.id, s.text FROM text_segments s
-                 JOIN pages p ON p.id = s.page_id
-                 WHERE p.parse_run_id = (
-                    SELECT pr.id FROM parse_runs pr
-                    JOIN document_versions dv ON dv.id = pr.document_version_id
-                    WHERE dv.document_id = ?1
-                    ORDER BY pr.created_at DESC LIMIT 1
-                 )
-                 AND EXISTS (SELECT 1 FROM documents d WHERE d.id=?1 AND d.case_id=?2)
-                 ORDER BY p.page_index, s.segment_index",
-            )?;
-            let rows = statement.query_map(rusqlite::params![document_id, case_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
-            for row in rows {
-                out.push(row?);
+            if seen.contains(&document_id.as_str()) {
+                continue;
             }
-        }
-        Ok(out)
-    }
-
-    /// Aktarım onayından **önce** ne gönderileceğini özetler: belge, segment,
-    /// bayt ve kısa örnek. Tam metin arayüze dökülmez.
-    pub fn consent_preview(
-        &self,
-        case_id: &str,
-        document_ids: &[String],
-    ) -> Result<ConsentPreview, StorageError> {
-        let mut preview = ConsentPreview {
-            documents: 0,
-            segments: 0,
-            bytes: 0,
-            sample: String::new(),
-        };
-        for document_id in document_ids {
-            let version_id: Option<String> = self
+            seen.push(document_id.as_str());
+            let version_id: Option<Option<String>> = self
                 .conn()
                 .query_row(
-                    "SELECT current_version_id FROM documents WHERE id=?1 AND case_id=?2",
+                    "SELECT current_version_id FROM documents
+                     WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
                     rusqlite::params![document_id, case_id],
-                    |row| row.get(0),
+                    |row| row.get::<_, Option<String>>(0),
                 )
                 .optional()?;
             let Some(version_id) = version_id else {
+                skipped.push(ScopeSkip {
+                    document_id: document_id.clone(),
+                    reason: "missing".into(),
+                });
+                continue;
+            };
+            let Some(version_id) = version_id else {
+                skipped.push(ScopeSkip {
+                    document_id: document_id.clone(),
+                    reason: "no_current_version".into(),
+                });
                 continue;
             };
             let run_id: Option<String> = self
                 .conn()
                 .query_row(
-                    "SELECT id FROM parse_runs WHERE document_version_id=?1 ORDER BY created_at DESC LIMIT 1",
+                    "SELECT pr.id FROM parse_runs pr
+                     WHERE pr.document_version_id=?1
+                       AND EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=pr.id)
+                     ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1",
                     [&version_id],
                     |row| row.get(0),
                 )
                 .optional()?;
-            let Some(run_id) = run_id else { continue };
-            preview.documents += 1;
-            let (count, bytes): (i64, i64) = self.conn().query_row(
-                "SELECT count(*), coalesce(sum(length(s.text)),0)
-                 FROM text_segments s JOIN pages p ON p.id=s.page_id
-                 WHERE p.parse_run_id=?1",
-                [&run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+            let Some(run_id) = run_id else {
+                skipped.push(ScopeSkip {
+                    document_id: document_id.clone(),
+                    reason: "not_parsed".into(),
+                });
+                continue;
+            };
+            let mut statement = self.conn().prepare(
+                "SELECT s.id, s.raw_text FROM text_segments s
+                 JOIN pages p ON p.id = s.page_id
+                 WHERE p.parse_run_id = ?1
+                 ORDER BY p.page_index, s.rowid",
             )?;
-            preview.segments += count;
-            preview.bytes += bytes;
-            if preview.sample.is_empty() {
-                preview.sample = self
-                    .conn()
-                    .query_row(
-                        "SELECT s.text FROM text_segments s JOIN pages p ON p.id=s.page_id
-                         WHERE p.parse_run_id=?1 ORDER BY p.page_index, s.segment_index LIMIT 1",
-                        [&run_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                    .unwrap_or_default()
-                    .chars()
-                    .take(200)
-                    .collect();
+            let rows = statement.query_map([&run_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut count = 0i64;
+            let mut bytes = 0i64;
+            let mut own = Vec::new();
+            for row in rows {
+                let (segment_id, text) = row?;
+                count += 1;
+                bytes += i64::try_from(text.len()).unwrap_or(i64::MAX);
+                own.push(ScopeSegment {
+                    segment_id,
+                    document_version_id: version_id.clone(),
+                    text,
+                });
             }
+            if count == 0 {
+                skipped.push(ScopeSkip {
+                    document_id: document_id.clone(),
+                    reason: "empty_text".into(),
+                });
+                continue;
+            }
+            segments.extend(own);
+            documents.push(ScopeDocument {
+                document_id: document_id.clone(),
+                document_version_id: version_id,
+                segment_count: count,
+                bytes,
+            });
         }
-        Ok(preview)
+        Ok(ResolvedScope {
+            documents,
+            skipped,
+            segments,
+        })
+    }
+
+    /// Onay kimliğinden çözülen **gerçek** aktarım kapsamı: gönderilecek
+    /// segmentler onayın belge listesinden gelir, çağıranın verdiği listeden
+    /// değil. İptal/süresi geçmiş onay ve başka dosyanın onayı reddedilir.
+    pub fn consent_scope_segments(
+        &self,
+        case_id: &str,
+        consent_id: &str,
+    ) -> Result<ConsentScope, StorageError> {
+        let consent = self
+            .get_transfer_consent(consent_id)?
+            .ok_or(StorageError::NotFound)?;
+        if consent.case_scope != case_id || !self.consent_is_active(consent_id)? {
+            return Err(StorageError::AiConsent);
+        }
+        let resolved = self.resolve_transfer_scope(case_id, &consent.selected_document_ids)?;
+        let bytes = resolved
+            .segments
+            .iter()
+            .map(|segment| i64::try_from(segment.text.len()).unwrap_or(i64::MAX))
+            .sum();
+        Ok(ConsentScope {
+            consent_id: consent.id,
+            case_id: case_id.to_string(),
+            documents: resolved.documents,
+            skipped: resolved.skipped,
+            segments: resolved.segments,
+            bytes,
+        })
+    }
+
+    /// Aktarım onayından **önce** ne gönderileceğini özetler: belge, segment,
+    /// bayt, kısa örnek ve **kapsam dışı kalan belgeler**. Gönderim yolu aynı
+    /// çözümleyiciyi kullandığı için önizleme ile gönderilen içerik ayrışamaz.
+    /// Tam metin arayüze dökülmez.
+    pub fn consent_preview(
+        &self,
+        case_id: &str,
+        document_ids: &[String],
+    ) -> Result<ConsentPreview, StorageError> {
+        let resolved = self.resolve_transfer_scope(case_id, document_ids)?;
+        let bytes = resolved
+            .segments
+            .iter()
+            .map(|segment| i64::try_from(segment.text.len()).unwrap_or(i64::MAX))
+            .sum();
+        Ok(ConsentPreview {
+            documents: i64::try_from(resolved.documents.len()).unwrap_or(i64::MAX),
+            segments: i64::try_from(resolved.segments.len()).unwrap_or(i64::MAX),
+            bytes,
+            sample: resolved
+                .segments
+                .first()
+                .map(|segment| segment.text.chars().take(200).collect())
+                .unwrap_or_default(),
+            skipped: resolved.skipped,
+        })
     }
 }
 
@@ -864,11 +1020,12 @@ mod tests {
     }
 
     fn consent(db: &Database, case_id: &str) -> TransferConsentRow {
+        let (document_id, _) = document_with_text(db, case_id, "Belge", &["Sözleşme metni"]);
         db.create_transfer_consent(&NewTransferConsent {
             provider_snapshot: "claude-code@2.1".into(),
             case_scope: case_id.into(),
             purpose: "ozet".into(),
-            selected_document_ids: vec!["d1".into()],
+            selected_document_ids: vec![document_id],
             expires_at: None,
             consent_text_version: "1".into(),
         })
@@ -906,15 +1063,14 @@ mod tests {
     #[test]
     fn expired_consent_blocks_run() {
         let (db, case_id, _) = setup();
-        let mut c = consent(&db, &case_id);
-        c.expires_at = Some("2000-01-01T00:00:00Z".into());
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
         let row = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: c.provider_snapshot.clone(),
+                provider_snapshot: "claude-code@2.1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
-                selected_document_ids: vec![],
-                expires_at: c.expires_at.clone(),
+                selected_document_ids: vec![document_id],
+                expires_at: Some("2000-01-01T00:00:00Z".into()),
                 consent_text_version: "1".into(),
             })
             .expect("onay");
@@ -1061,5 +1217,379 @@ mod tests {
             .expect("bitir");
         let finished = db.get_ai_run(&r.id).expect("get").expect("var");
         assert_eq!(finished.status, "succeeded");
+    }
+
+    fn case_titled(db: &Database, title: &str) -> String {
+        db.create_case(&NewCase {
+            title: title.into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: crate::Sensitivity::Normal,
+            default_ai_policy: crate::AiPolicy::Off,
+        })
+        .expect("case")
+        .id
+    }
+
+    fn page(index: i64, text: &str) -> crate::NewPage {
+        crate::NewPage {
+            index,
+            text: text.into(),
+            width: Some(595.0),
+            height: Some(842.0),
+            origin: "native".into(),
+            warnings: Vec::new(),
+            rotation: 0,
+            coordinate_space: Some("unrotated_cropbox_points".into()),
+            page_label: None,
+            blocks: Vec::new(),
+        }
+    }
+
+    /// Belge + sürüm + başarılı ayrıştırma + sayfalar. Dönüş: (belge, sürüm).
+    fn document_with_text(
+        db: &Database,
+        case_id: &str,
+        name: &str,
+        pages: &[&str],
+    ) -> (String, String) {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let document = db
+            .create_document(case_id, name, "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &document.id,
+                case_id,
+                &blob,
+                &"d".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("run");
+        let stored: Vec<crate::NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, text)| page(i64::try_from(index).unwrap_or(i64::MAX), text))
+            .collect();
+        db.store_pages(&run.id, case_id, &stored).expect("pages");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+        (document.id, version.id)
+    }
+
+    /// Var olan belgeye **ayrıştırılmamış** yeni sürüm ekler (güncel sürüm olur).
+    fn unparsed_version(db: &Database, case_id: &str, document_id: &str) -> String {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        db.add_version(
+            document_id,
+            case_id,
+            &blob,
+            &"e".repeat(64),
+            10,
+            "application/pdf",
+        )
+        .expect("version")
+        .id
+    }
+
+    /// Var olan belgeye **ayrıştırılmış** yeni sürüm ekler (güncel sürüm olur).
+    fn document_with_text_version(
+        db: &Database,
+        case_id: &str,
+        document_id: &str,
+        pages: &[&str],
+    ) -> String {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let version = db
+            .add_version(
+                document_id,
+                case_id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("run");
+        let stored: Vec<crate::NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, text)| page(i64::try_from(index).unwrap_or(i64::MAX), text))
+            .collect();
+        db.store_pages(&run.id, case_id, &stored).expect("pages");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+        version.id
+    }
+
+    /// Önizlemede görünmeyen metin gönderilmemeli: güncel sürüm ayrıştırılmamışsa
+    /// eski sürümün metni **ne** önizlemede **ne** gönderim kapsamında olmalı.
+    #[test]
+    fn preview_and_send_scope_never_diverge() {
+        let (db, case_id, _) = setup();
+        let (document_id, _v1) =
+            document_with_text(&db, &case_id, "Sozlesme", &["BİRİNCİ SÜRÜM METNİ"]);
+        let _v2 = unparsed_version(&db, &case_id, &document_id);
+        let ids = vec![document_id.clone()];
+        let preview = db.consent_preview(&case_id, &ids).expect("önizleme");
+        // Aynı belge kümesiyle onay: gönderim kapsamı önizlemeyle **birebir** olmalı.
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_snapshot: "claude-code@2.1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: ids,
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        assert_eq!(
+            preview.documents, 0,
+            "güncel sürüm ayrıştırılmadı → önizlemede belge sayılmamalı"
+        );
+        assert!(
+            scope.segments.is_empty(),
+            "önizlemede görünmeyen eski sürüm metni gönderilmemeli ({} segment)",
+            scope.segments.len()
+        );
+        assert_eq!(preview.segments, scope.segments.len() as i64);
+        assert_eq!(preview.bytes, scope.bytes);
+        assert_eq!(
+            preview.skipped.first().map(|s| s.reason.as_str()),
+            Some("not_parsed"),
+            "kapsam dışı neden sessizce kaybolmamalı"
+        );
+        assert_eq!(
+            scope.skipped.first().map(|s| s.reason.as_str()),
+            Some("not_parsed")
+        );
+    }
+
+    /// Gönderim kapsamı **güncel** sürümün metnidir; eski sürümün metni ve
+    /// sayfa üretmeyen (başarısız) yeni koşu kapsamı bozamaz.
+    #[test]
+    fn scope_uses_the_current_version_and_the_latest_run_with_pages() {
+        let (db, case_id, _) = setup();
+        let (document_id, _v1) = document_with_text(&db, &case_id, "Belge", &["ESKİ METİN"]);
+        let v2 = document_with_text_version(&db, &case_id, &document_id, &["YENİ METİN"]);
+        // v2 üzerinde sayfa üretmeyen (başarısız) daha yeni bir koşu:
+        let failed = db
+            .start_parse_run(&v2, &case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("koşu");
+        db.finish_parse_run(&failed.id, "failed", &[])
+            .expect("bitir");
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_snapshot: "claude-code@2.1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        let texts: Vec<&str> = scope.segments.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["YENİ METİN"], "güncel sürüm metni gönderilmeli");
+        assert!(scope.skipped.is_empty());
+    }
+
+    /// Kapsam yalnız onaydan gelir: onaya yazılmamış belge, çağıran istese de
+    /// gönderim kapsamına girmez.
+    #[test]
+    fn send_scope_comes_from_the_consent_only() {
+        let (db, case_id, _) = setup();
+        let (approved, _) = document_with_text(&db, &case_id, "Onaylı", &["ONAYLI METİN"]);
+        let (_other, _) = document_with_text(&db, &case_id, "Onaysız", &["ONAYSIZ METİN"]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_snapshot: "claude-code@2.1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![approved],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        let texts: Vec<&str> = scope.segments.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["ONAYLI METİN"]);
+    }
+
+    /// Onaydan sonra seçili belge silinirse kapsam daralmıştır: yeni çalıştırma
+    /// açılmaz (sessizce eksik kapsamla gönderim yapılmaz).
+    #[test]
+    fn run_blocked_when_an_approved_document_is_deleted() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_snapshot: "claude-code@2.1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at=?1 WHERE id=?2",
+                rusqlite::params![now_iso(), document_id],
+            )
+            .expect("sil");
+        assert_eq!(
+            db.start_ai_run(&case_id, &run(&case_id, &c.id))
+                .unwrap_err()
+                .code(),
+            "E_AI_CONSENT"
+        );
+        assert_eq!(
+            db.consent_scope_segments(&case_id, &c.id)
+                .expect("kapsam")
+                .segments
+                .len(),
+            0
+        );
+    }
+
+    /// Aktarım sicili belge **metnini** saklamaz: denetim/koşu/bağlam/makbuz
+    /// satırlarında belge metni geçmez (yalnız kimlik, sayı ve özet).
+    #[test]
+    fn transfer_records_never_store_document_text() {
+        fn table_has(db: &Database, table: &str, needle: &str) -> bool {
+            let mut stmt = db
+                .conn()
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("şema");
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("sütunlar")
+                .map(|column| column.expect("sütun"))
+                .collect();
+            for column in columns {
+                let sql = format!(
+                    "SELECT count(*) FROM {table} WHERE instr(CAST(\"{column}\" AS TEXT), ?1) > 0"
+                );
+                let hits: i64 = db
+                    .conn()
+                    .query_row(&sql, [needle], |row| row.get(0))
+                    .expect("tarama");
+                if hits > 0 {
+                    return true;
+                }
+            }
+            false
+        }
+
+        let (db, case_id, _) = setup();
+        let canary = "GİZLİ-İBARE-9F3A";
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &[canary]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_snapshot: "claude-code@2.1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        assert_eq!(scope.segments.len(), 1);
+        let run = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        db.record_context_items(
+            &run.id,
+            &[NewAiContextItem {
+                document_version_id: scope.documents[0].document_version_id.clone(),
+                source_anchor_id: None,
+                inclusion_reason: "onaylanan belge".into(),
+                bytes_sent: scope.documents[0].bytes,
+            }],
+        )
+        .expect("bağlam");
+        db.record_transfer_receipt(
+            &run.id,
+            "api.ornek.com · m",
+            &"b".repeat(64),
+            1,
+            scope.bytes,
+        )
+        .expect("makbuz");
+        db.finish_ai_run(&run.id, "succeeded", "{}").expect("bitir");
+        for table in [
+            "audit_log",
+            "ai_runs",
+            "ai_context_items",
+            "transfer_receipts",
+            "transfer_consents",
+        ] {
+            assert!(
+                !table_has(&db, table, canary),
+                "{table} belge metnini saklamamalı"
+            );
+        }
+        // Metin gerçekten kasadadır (yanlış negatif olmasın): kontrol.
+        assert!(table_has(&db, "text_segments", canary));
+    }
+
+    /// Onay, kapsamındaki belgeleri **gerçekten** adlandırmalı: başka dosyanın
+    /// belgesi ya da var olmayan kimlik onaya yazılamaz.
+    #[test]
+    fn consent_cannot_name_a_document_outside_the_case() {
+        let (db, case_id, _) = setup();
+        let other_case = case_titled(&db, "Başka dosya");
+        let (foreign_document, _) =
+            document_with_text(&db, &other_case, "Yabanci", &["BAŞKA DOSYA METNİ"]);
+        for (label, ids) in [
+            ("başka dosyanın belgesi", vec![foreign_document.clone()]),
+            ("var olmayan kimlik", vec!["olmayan-belge".to_string()]),
+        ] {
+            let err = db
+                .create_transfer_consent(&NewTransferConsent {
+                    provider_snapshot: "claude-code@2.1".into(),
+                    case_scope: case_id.clone(),
+                    purpose: "ozet".into(),
+                    selected_document_ids: ids,
+                    expires_at: None,
+                    consent_text_version: "1".into(),
+                })
+                .expect_err(label);
+            assert_eq!(err.code(), "E_AI_CONSENT", "{label}");
+        }
+    }
+
+    /// Belge seçimi taşımayan onay hiçbir şeyi yetkilendirmez.
+    #[test]
+    fn consent_requires_a_concrete_document_selection() {
+        let (db, case_id, _) = setup();
+        let err = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_snapshot: "claude-code@2.1".into(),
+                case_scope: case_id,
+                purpose: "ozet".into(),
+                selected_document_ids: vec![],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect_err("boş seçim");
+        assert_eq!(err.code(), "E_AI_CONSENT");
     }
 }

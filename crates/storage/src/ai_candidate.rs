@@ -1222,12 +1222,29 @@ mod tests {
                 [],
             )
             .expect("provider");
+        let blob = db
+            .create_blob_record(&format!("st-{}", uuid::Uuid::now_v7()), 10, "aad")
+            .expect("blob");
+        let document = db
+            .create_document(&case.id, "Dilekçe.pdf", "petition", None, "unknown")
+            .expect("document");
+        let version = db
+            .add_version(
+                &document.id,
+                &case.id,
+                &blob,
+                &"a".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        // Onay **belge kümesine** bağlıdır: belge oluştuktan sonra onaylanır.
         let consent = db
             .create_transfer_consent(&NewTransferConsent {
                 provider_snapshot: "claude-code@2.1".into(),
                 case_scope: case.id.clone(),
                 purpose: "ozet".into(),
-                selected_document_ids: vec![],
+                selected_document_ids: vec![document.id.clone()],
                 expires_at: None,
                 consent_text_version: "1".into(),
             })
@@ -1246,22 +1263,6 @@ mod tests {
                 },
             )
             .expect("run");
-        let blob = db
-            .create_blob_record(&format!("st-{}", uuid::Uuid::now_v7()), 10, "aad")
-            .expect("blob");
-        let document = db
-            .create_document(&case.id, "Dilekçe.pdf", "petition", None, "unknown")
-            .expect("document");
-        let version = db
-            .add_version(
-                &document.id,
-                &case.id,
-                &blob,
-                &"a".repeat(64),
-                10,
-                "application/pdf",
-            )
-            .expect("version");
         let parse_run = db
             .start_parse_run(&version.id, &case.id, "plain", "2", "{}")
             .expect("parse");
