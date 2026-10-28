@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// Makbuz hedefi **yalnız** ana makine + model taşır: yol, sorgu ve anahtar

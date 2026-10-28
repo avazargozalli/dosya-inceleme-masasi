@@ -335,7 +335,7 @@ def test_attachment_metadata_and_xmp_are_scrubbed():
 
 
 def test_missing_pypdf_is_not_claimed_as_verifier(monkeypatch):
-    monkeypatch.setattr(engines, "_pypdf_module", lambda: None)
+    monkeypatch.setattr(engines.redaction, "_pypdf_module", lambda: None)
     source = _text_pdf()
 
     result = redact_pdf(source, [MARKER])
@@ -358,7 +358,7 @@ def test_unreadable_stream_is_reported(monkeypatch):
             raise __import__("zlib").error("bozuk")
 
     source = _text_pdf()
-    monkeypatch.setattr(engines, "zlib", FakeZlib)
+    monkeypatch.setattr(engines.redaction, "zlib", FakeZlib)
 
     result = redact_pdf(source, [MARKER])
     assert result.streams_unreadable >= 1
@@ -372,7 +372,7 @@ def test_terms_required():
 
 
 def test_reports_are_not_in_engine_list_when_not_run(monkeypatch):
-    monkeypatch.setattr(engines.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(engines.redaction.shutil, "which", lambda _name: None)
     source = _text_pdf()
     result = redact_pdf(source, [MARKER])
     assert "tesseract" not in result.engines
@@ -392,7 +392,7 @@ def test_pypdf_crash_is_reported_as_unverified_not_as_leak(monkeypatch):
             def __init__(self, *_args, **_kwargs):
                 raise RuntimeError("okuyucu çöktü")
 
-    monkeypatch.setattr(engines, "_pypdf_module", lambda: BoomPypdf)
+    monkeypatch.setattr(engines.redaction, "_pypdf_module", lambda: BoomPypdf)
     source = _text_pdf()
 
     result = redact_pdf(source, [MARKER])
@@ -404,7 +404,7 @@ def test_pypdf_crash_is_reported_as_unverified_not_as_leak(monkeypatch):
 def test_ocr_crash_is_reported_as_unverified_not_as_leak(monkeypatch):
     """Aynı sınıf OCR tarafında: tesseract hatası maskeli dosyayı düşürmez."""
     pytesseract = pytest.importorskip("pytesseract")
-    monkeypatch.setattr(engines.shutil, "which", lambda _name: "/usr/bin/tesseract")
+    monkeypatch.setattr(engines.redaction.shutil, "which", lambda _name: "/usr/bin/tesseract")
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("tesseract çöktü")
@@ -422,7 +422,7 @@ def test_ocr_crash_is_reported_as_unverified_not_as_leak(monkeypatch):
 def test_region_ocr_crash_is_reported_as_unverified(monkeypatch):
     """Bölge maskesinde de çökme 'doğrulanamadı'dır; 'bölgede metin kaldı' değil."""
     pytesseract = pytest.importorskip("pytesseract")
-    monkeypatch.setattr(engines.shutil, "which", lambda _name: "/usr/bin/tesseract")
+    monkeypatch.setattr(engines.redaction.shutil, "which", lambda _name: "/usr/bin/tesseract")
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("tesseract çöktü")
