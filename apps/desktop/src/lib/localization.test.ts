@@ -34,6 +34,30 @@ const files = walk(SRC)
 /** Biçimlendirme yalnız burada yapılır. */
 const FORMAT_MODULE = "lib/format.ts";
 
+/**
+ * Yorumları ayıklar; **satır sayısı korunur** (rapor edilen satır numarası koda
+ * işaret etsin). Blok yorumlar boşlukla, satır başı `//` yorumları boş satırla
+ * değiştirilir.
+ *
+ * Neden: kapı metni ham kaynakta arıyordu ve `/// Kasa kilitliyken …` gibi bir
+ * **yorum** "gömülü metin sızdı" diye kırmızı verdi (2026-10-28'de iki CI koşusu
+ * bu yüzden düştü — kusur #62). Yorum kullanıcıya görünmez; kapı yalnız gerçekten
+ * render edilen metni aramalıdır.
+ *
+ * Sınır: satır **sonundaki** `// …` yorumu ayıklanmaz (dize içindeki `://` ile
+ * karışmaması için bilinçli); böyle bir yorumda gömülü metin geçerse kapı yine
+ * yanlış pozitif verir.
+ */
+export function stripComments(source: string): string {
+  const withoutBlocks = source.replace(/\/\*[\s\S]*?\*\//g, (block) =>
+    block.replace(/[^\n]/g, " "),
+  );
+  return withoutBlocks
+    .split("\n")
+    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+    .join("\n");
+}
+
 const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
   { name: "toLocaleString", pattern: /toLocaleString\s*\(/ },
   { name: "toLocaleDateString", pattern: /toLocaleDateString\s*\(/ },
@@ -47,7 +71,7 @@ describe("yerelleştirme kapısı", () => {
     const offences: string[] = [];
     for (const { rel, source } of files) {
       if (rel === FORMAT_MODULE) continue;
-      const lines = source.split("\n");
+      const lines = stripComments(source).split("\n");
       for (const { name, pattern } of FORBIDDEN) {
         lines.forEach((line, index) => {
           if (pattern.test(line)) offences.push(`${rel}:${index + 1} ${name}`);
@@ -85,8 +109,9 @@ describe("yerelleştirme kapısı", () => {
     const leaks: string[] = [];
     for (const { rel, source } of files) {
       if (!migrated.includes(rel)) continue;
+      const code = stripComments(source);
       for (const literal of leakedLiterals) {
-        if (source.includes(literal)) leaks.push(`${rel}: ${literal}`);
+        if (code.includes(literal)) leaks.push(`${rel}: ${literal}`);
       }
     }
     expect(leaks).toEqual([]);
@@ -96,6 +121,33 @@ describe("yerelleştirme kapısı", () => {
     const app = files.find(({ rel }) => rel === "App.tsx");
     expect(app).toBeDefined();
     expect(app!.source).toContain('from "../package.json"');
-    expect(app!.source).not.toContain("v0.1.0 · F02");
+    expect(stripComments(app!.source)).not.toContain("v0.1.0 · F02");
+  });
+});
+
+describe("yorum ayıklama (kapı yanlış pozitif üretmesin)", () => {
+  it("satır başı ve blok yorumdaki metin sızıntı sayılmaz", () => {
+    const source = [
+      "/// Kasa kilitliyken ekran ağacı sökülür.",
+      "const a = 1;",
+      "/* Kasa kilitli */",
+      "const b = 2;",
+    ].join("\n");
+    const code = stripComments(source);
+    expect(code).not.toContain("Kasa kilitli");
+    expect(code).toContain("const a = 1;");
+    expect(code).toContain("const b = 2;");
+  });
+
+  it("kod içindeki gerçek metin korunur (kapı hâlâ yakalar)", () => {
+    expect(stripComments('const label = "Kasa kilitli";')).toContain("Kasa kilitli");
+    expect(stripComments('throw new Error("toLocaleString(");')).toContain("toLocaleString(");
+  });
+
+  it("blok yorum satır numaralarını kaydırmaz", () => {
+    const source = ["/*", " * toLocaleString(", " */", "const x = 1;"].join("\n");
+    const lines = stripComments(source).split("\n");
+    expect(lines).toHaveLength(4);
+    expect(lines[3]).toBe("const x = 1;");
   });
 });
