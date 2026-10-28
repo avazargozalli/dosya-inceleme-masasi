@@ -123,8 +123,17 @@ jobs:
         run: |
           python3 scripts/sbom_check.py sbom.json
           python3 scripts/sbom_check.py --self-test
+      - name: Üçüncü taraf lisans bildirimi (kapsam + SPDX + SBOM eşleşmesi)
+        run: |
+          python3 scripts/third_party_notices.py --check --sbom sbom.json
+          python3 scripts/third_party_notices.py --self-test
       - uses: actions/upload-artifact@v4
         with:
           name: sbom
           path: sbom.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-notices
+          path: THIRD_PARTY_NOTICES.md
           if-no-files-found: error

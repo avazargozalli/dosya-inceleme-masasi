@@ -97,10 +97,114 @@ farklı ve bu yüzden SBOM platforma göre değişir, platform etiketi yok).
 olur (sessiz geçmez). Python tarafı yalnız **bildirilen** pinlerdir; geçişli
 Python bağımlılıkları SBOM'da yok (paketlenmiş worker içeriği
 `scripts/worker_manifest.py` ile ayrı doğrulanır — release'te birleştirilmeli).
-Lisans/üçüncü taraf bildirimi ve kaynak etiketi yok (F16-T01'in kalanı). Kök
+Lisans/üçüncü taraf bildirimi **artık var** (`THIRD_PARTY_NOTICES.md`, aşağıdaki
+bölüm) ve kapıya bağlı; kaynak etiketi (git tag/arşiv) hâlâ **yok** (F16-T01'in
+kalan tek maddesi). Kök
 `package.json` sürümü **0.2.0**, uygulama **0.1.0**: subject yalnız uygulama/paket/
 Cargo sürümünü taşır, monorepo sürümü hizalanmadı (sürüm hizalama işi açık).
 SBOM imzalanmıyor, attestation yok.
+
+## Üçüncü taraf lisans bildirimi (2026-10-28, kusur #63–#68)
+
+F16-T01'in "üçüncü taraf lisans bildirimleri" maddesi **kâğıt üzerinde vardı**:
+`THIRD_PARTY_NOTICES.md` 9 satırlık **elle yazılmış** bir tablodur ve "makine okunur
+SBOM sürüm hattında üretilir (`pnpm sbom`, `cargo cyclonedx`)" diyordu. Ölçüm:
+`package.json`'da `sbom` script'i **yok** (`lint, typecheck, test, build,
+contracts:generate, contracts:write`), `cargo cyclonedx` yapılandırması **yok** —
+yani beyan edilen üretim hattı **hiç yoktu**. Tablo 9 bileşen sayıyor; gerçek
+kapsam **269** ölçülen bileşen → kapsam **%3,3**; "her PR satır eklemek zorundadır"
+kuralı hiçbir kapıya bağlı değildi. Bildirim artık **üretiliyor** ve bağımsız
+kaynaklarla denetleniyor. Üretim sırasında **beş sessiz kusur** ölçüldü:
+
+- **#63 — `MIT/Apache-2.0` geçerli SPDX değil (5 crate).** SPDX'te `/` operatör
+  değildir; bir SPDX tüketicisi ifadeyi tek bilinmeyen lisans sanar. Ölçüm: SPDX
+  3.29.0 kimlik listesine göre `spdx_problems("MIT/Apache-2.0")` → **1 sorun**;
+  etkilenen crate'ler `fallible-iterator`, `fallible-streaming-iterator`,
+  `openssl-src`, `vcpkg`, `version_check`. Düzeltme: normalleştirme tablosu
+  (`MIT/Apache-2.0` → `MIT OR Apache-2.0`), gerekçesi bildirimde yazılı; tabloda
+  olmayan eski biçim **kırmızı** (sessizce geçmez).
+- **#64 — `pypdf==5.1.0` üstverisinde lisans alanı yok.** Yalnız sınıflandırıcı
+  (`License :: OSI Approved :: BSD License`) ve `LICENSE` dosyası var. Yalnız
+  `License`/`License-Expression` okuyan bir üretici bu pini **sessizce atlar**
+  (ölçüm: 5 pinin **4'ü** yazılır). Kimlik LICENSE metninden çıkarılıyor ve
+  `kaynak: çıkarıldı` olarak işaretleniyor. **İkinci kusur aynı yerde:** pypdf'in
+  LICENSE metni iki yana yaslı → üçüncü madde satır ortasında bölünüyor; ham
+  alt dizi araması `endorse or promote products derived from this software`
+  desenini bulamayıp lisansı **BSD-2-Clause** sanıyor (ilk koşuda ölçüldü).
+  Düzeltme: metin düzleştirilerek aranıyor → **BSD-3-Clause**.
+- **#65 / #66 — iki paket lisans metni taşımıyor:** `stackback@0.0.2` (node, MIT
+  bildiriyor) ve `r-efi@6.0.0` (rust; ifadesi `MIT OR Apache-2.0 OR
+  LGPL-2.1-or-later`). "Her bileşenin metni var" varsayımı sessiz boşluk üretirdi →
+  ayrı **"Metni paketlemeyen bileşenler"** defteri. r-efi'nin LGPL bileşeni
+  AGPL-3.0-or-later ürünle uyumlu ama **kaynağı sağlama** yükümlülüğü doğurur;
+  metin pakette olmadığı için elle doğrulanmalı (açık kayıt).
+- **#67 — kapsam: SBOM 192 node bileşeni, `pnpm licenses list` 105.** Aradaki
+  **87** platforma özgü isteğe bağlı paket (esbuild/rollup/tauri-cli/fsevents
+  ikilileri) bu makinede kurulu değil. Yalnız **kurulu** paketleri gezen bir
+  bildirim üreteci kapsamı sessizce %45'e düşürürdü. Düzeltme: kapsam **kilit
+  dosyasından çözümlenen ağaç**la kurulur (platformdan bağımsız); lisansı
+  ölçülemeyenler **uydurulmaz**, ayrı deftere yazılır.
+- **#68 — beyan edilen üretim hattı yoktu (belge, izlenebilirlik).** Eski bildirim
+  "`pnpm sbom`, `cargo cyclonedx` ile üretilir" diyordu; ikisi de depoda **yok**
+  (`package.json` script listesi ölçüldü: `sbom` yok; `cyclonedx` yalnız o cümlede
+  geçiyor). Yani tablo elle yazılmış ve **hiçbir kapıya bağlı değildi**. Yeni
+  başlık gerçek komutu (`python3 scripts/third_party_notices.py build`) yazar;
+  hukuki kararlar `docs/legal/license-registry.md`'de kalır (oraya yalnız eksik
+  olan **React/Vite** satırı eklendi — eski tablodaki diğer 8 satır sicilde zaten
+  vardı).
+
+**Yazılanlar**
+
+- `scripts/third_party_notices.py` — üretici + kapı; `build`, `--check`
+  (`--sbom`, `--strict-texts`), `--self-test`.
+- `scripts/spdx-ids.json` — SPDX **3.29.0** kimlik listesi (740 lisans, 86 istisna);
+  depoda durur ki kapı çevrimdışı ve deterministik çalışsın.
+- `THIRD_PARTY_NOTICES.md` — **356** bileşen kapsamda: **269 ölçülen** +
+  **87 lisansı ölçülemeyen**; **101 benzersiz lisans metni** gömülü (1,0 MB),
+  **1** bileşen metin taşımıyor. Gruplar: Rust 159 (91 metin) · Node dağıtılan 7
+  (5) · Node geliştirme 98 (metin **bilinçli** gömülmez — dağıtılmıyor) ·
+  Python 5 (5). **21** farklı lisans ifadesi.
+- **Kapı (10 kural):** biçim/ürün sürümü · rust kapsamı · node kapsamı (kilit
+  ağacı) · python pinleri · SPDX geçerliliği · yasaklı lisans (`SSPL`, `BUSL`,
+  `Commons-Clause`, `CC-BY-NC`, `Elastic`; ayrıca AGPL ile uyumsuz
+  `GPL-2.0-only`) · özet sayaçları · metin özeti/bütünlüğü · SBOM **iki yönlü**
+  eşleşme · okunamayan satır sessizce atlanmaz.
+- **CI:** `sbom` işine iki adım (gerçek bildirim denetimi + öz test) ve
+  `third-party-notices` artefaktı eklendi.
+
+**Kanıt (ölçüldü)**
+
+- `--check --sbom sbom.json --strict-texts` → **yeşil** (metinler registry
+  `src/`, `node_modules` ve `dist-info`dan yeniden okunup sha256 karşılaştırıldı).
+- CI koşullarını taklit eden mod (venv yok): **yeşil**, dürüst uyarılarla
+  (Python lisansları bu ortamda doğrulanamadı).
+- `--self-test` → **13 kapı kuralı + 10 SPDX ifadesi + yasak listesi** yeşil.
+- **Gerçek dosya üzerinde 8 mutasyon → 8 kırmızı:** bileşen silmek, lisansı
+  değiştirmek, `MIT/Apache-2.0`'a geri döndürmek, metin gövdesini bozmak,
+  "kurulu değil" defterinden satır silmek, "metin yok" defterinden satır silmek,
+  kapsam sayısını bozmak, geliştirme bileşenine metin gömmek.
+
+**Dürüst sınırlar**
+
+- **87** node bileşeninin lisansı **ölçülmedi** (bu platformda kurulu değil);
+  kimlik uydurulmadı. Linux CI'da bu kümenin bir kısmı kurulu olacağı için kapı
+  "platform farkı" **uyarısı** verir, hata değil — kapsam kümesi kilit
+  dosyasından geldiği için yine tamdır.
+- **Python lisans değerleri** yalnız `workers/document/.venv` varken yeniden
+  türetilebilir; CI'da venv yok → değerler yapı/SPDX açısından denetlenir,
+  **kaynağından doğrulanmaz** (yerelde doğrulandı). Venv'deki sürüm pinle
+  eşleşmezse üretici **durur**.
+- `--strict-texts` metni diskten okur; CI'da cargo registry `src/` yok (`.crate`
+  arşivinden okuma yolu var, CI'da kullanılmıyor) → metinlerin kaynağıyla
+  birebirliği **yerelde** kanıtlandı. CI koşullarını taklit eden ölçüm (registry
+  `src` yok + venv yok): kapı **yeşil**, **166 uyarı** — metin özetleri ve
+  "metin yok" defteri orada **doğrulanamaz**; kapsam, lisans kimlikleri, SPDX
+  geçerliliği, sayaçlar ve SBOM eşleşmesi yine denetlenir.
+- Lisans metni birden çok dosyaya yayılmışsa (`LICENSE-MIT` + `LICENSE-APACHE`)
+  tek gövdede birleştirilir; hangi dosyanın hangi kimliğe ait olduğu
+  **iddia edilmez**.
+- Kaynak etiketi (git tag/arşiv) ve imza/attestation yok; SBOM ile bildirim
+  birbirine **bağlı** ama ikisi de imzasız.
 
 ## Kimlik eşlemesi (2026-10-28, kusur #61)
 

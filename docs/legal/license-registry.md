@@ -6,6 +6,7 @@ değiştirilemez; değişiklik ADR veya sürüm notu gerektirir.
 | Bileşen | Sürüm politikası | Lisans | Karar | Koşul |
 |---|---|---|---|---|
 | Tauri 2 | minor sabit, patch güncel | MIT / Apache-2.0 | Kullanılabilir | Bildirim dosyası korunur |
+| React, Vite | major sabit | MIT | Kullanılabilir | Arayüz paketi; bildirim `THIRD_PARTY_NOTICES.md` üretiminde otomatik listelenir |
 | RustCrypto (argon2, aes-gcm, hkdf, sha2) | minor sabit | MIT / Apache-2.0 | Kullanılabilir | — |
 | rusqlite + SQLCipher | 0.32 / 4.x | MIT + BSD-style | Kullanılabilir | Açık kaynak SQLCipher build'i; ticari binary dağıtılmaz |
 | PyMuPDF | minor sabit | AGPL-3.0 | Koşullu | Uygulama AGPL-3.0-or-later; kaynak dağıtımı sağlanır |
