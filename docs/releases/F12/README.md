@@ -669,3 +669,6 @@ kullanıcı eski nüshayı görmek isterse belge geçmişini açmalı. Sayım se
 kapağı 8; `occurrences` kapağa takılmaz. Ölçüm bellek içi kasa + elle yazılmış
 sayfa metinleri; gerçek PDF/worker uçtan uca denenmedi. Tauri penceresi açılmadı →
 yeni uyarı satırının görsel QA'si yok.
+
+**Commit/CI:** `bad747c` → CI **`40730120844` 7/7 yeşil** (sözleşmeler, arayüz
+tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk, belge worker'ı, SBOM).
