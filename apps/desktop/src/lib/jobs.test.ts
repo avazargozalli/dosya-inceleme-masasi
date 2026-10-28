@@ -302,10 +302,11 @@ describe("iş kuyruğu yardımcıları", () => {
       started: true,
       skipped: null,
       versionId: "v1",
-      applied: { ocr: false, ocrLang: "eng", textEncoding: "auto" },
+      applied: { ocr: false, ocrLang: "eng", textEncoding: "auto", restored: false },
     };
+    // Kayıt yoksa "kaydedilmiş ayarlarla" denmez: dürüst kaynak yazılır.
     expect(retryOutcomeLine(started)).toBe(
-      "Yeniden deneme başladı (OCR kapalı, kodlama auto); sonucu satırda göreceksiniz.",
+      "Yeniden deneme başladı — kaynak: varsayılanlar (özgün ayar bu işte kayıtlı değil) · OCR kapalı, kodlama auto; sonucu satırda göreceksiniz.",
     );
 
     const queuedOnly: JobRetryView = {
@@ -319,13 +320,24 @@ describe("iş kuyruğu yardımcıları", () => {
     expect(retryOutcomeLine({ ...queuedOnly, skipped: "no_input" })).toContain(
       "girdisi (belge sürümü) çözülemedi",
     );
+    // Parola saklanmaz: yeniden deneme başlatılmadığı ve ne yapılacağı yazılır.
+    expect(retryOutcomeLine({ ...queuedOnly, skipped: "password_required" })).toContain(
+      "parola saklanmaz",
+    );
     // Uygulanan ayar yazılır: "varsayılan" denip OCR açık gizlenmez.
     expect(
       retryOutcomeLine({
         ...started,
-        applied: { ocr: true, ocrLang: "tur", textEncoding: "utf-8" },
+        applied: { ocr: true, ocrLang: "tur", textEncoding: "utf-8", restored: true },
       }),
     ).toContain("OCR açık (tur)");
+    // Kaydedilmiş ayar geri yüklendiyse kaynak da yazılır.
+    expect(
+      retryOutcomeLine({
+        ...started,
+        applied: { ocr: true, ocrLang: "tur", textEncoding: "utf-8", restored: true },
+      }),
+    ).toContain("kaynak: kaydedilmiş ayarlar");
   });
 
   it("yeniden denemesi başlayan iş terminal olana kadar izlenir", () => {

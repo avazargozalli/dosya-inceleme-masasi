@@ -10,8 +10,80 @@
 | F04-T02 | ✅ | arşivle / geri al / geri dönüşümlü silme |
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
-| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** (2026-10-28) |
+| F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
 | F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** (kabuk, Kasa/Workspace/Unlock ekranları taşındı; 11 ekran açık) — 2026-10-28 |
+
+## Ayrıştırma ayarları yeniden denemede korunur (2026-10-28, F04-T07 kapanışı — kusur #58)
+
+**Neden:** 2026-10-28 turu F04-T07'yi "yeniden deneme gerçekten çalışıyor" diye
+kapatmıştı; ama ölçülen sınır şuydu: *"yeniden deneme **varsayılan ayarlarla**
+koşar (OCR kapalı, kodlama `auto`); özgün OCR/parola iş satırında saklanmaz."*
+Bu, "çalışıyor gibi görünen düğme"nin daha sessiz bir biçimidir: düğme gerçekten
+çalışır, **ama başka bir iş yapar**.
+
+- **ÖLÇÜLEN KUSUR #58 (işlevsel, sessiz yanlış çıktı):** `job_retry`, `run_parse`a
+  `ParseOptions { ocr: None, ocr_lang: None, text_encoding: None }` veriyordu;
+  kullanıcının seçtiği ayarlar hiçbir yere yazılmıyordu. Ölçüm (gerçek kasa +
+  gerçek worker + **metin katmanı olmayan** fikstür `scanned-page.pdf`, 1 sayfa):
+  - OCR **açık** koşu → **1 sayfa / 1 segment**, metin `MADDE 1 / Kira
+    sozlesmesi 2026 / Odeme yapilmadi.`
+  - **varsayılan** (OCR kapalı) koşu → **1 sayfa / 0 segment**, metin **boş**,
+    yalnız uyarı: *"sayfa 1: metin katmanı yok (OCR gerekli)"*.
+  Yani taranmış bir belgede yeniden deneme, kullanıcıya "başladı" diyor ve
+  **metinsiz** bir sonuç üretiyordu; iş yine `completed` görünüyordu.
+- **Şema (migration 0023):** `jobs.parse_ocr`, `parse_ocr_lang`,
+  `parse_text_encoding`, `parse_requires_password`. Yol **`ALTER TABLE ADD
+  COLUMN`** — tablo yeniden yazılmaz (0021'de ölçülen FK/CASCADE tuzağı
+  tekrarlanmaz). `parse_ocr IS NULL` = "bu işte ayar kaydı yok" (0023 öncesi
+  işler); varsayılan **uydurulmaz**.
+- **Parola saklanmaz:** yalnız `parse_requires_password` bayrağı yazılır.
+  Parolayı iş satırında tutmak onu kasa kilidinin dışına çıkarırdı. Bayrak
+  `true` ise `job_retry` işi **kendiliğinden başlatmaz**:
+  `skipped="password_required"`, satır `failed` kalır (asılı `queued` yok),
+  arayüz "parolayı Dosyalar ekranından girin" der.
+- **Çekirdek (`crates/storage/src/queue.rs`):**
+  `set_job_parse_options` / `job_parse_options`. Kapılar: iş var olmalı,
+  `parse_document` türünde olmalı (`E_JOB_OPTIONS`), dil/kodlama **biçim**
+  denetiminden geçer (harf/rakam/`+`/`-`/`_`, dil ≤64, kodlama ≤40) — serbest
+  metin (yol, belge adı) satıra yazılmaz. Kira aranmaz: bu bir sonuç değil,
+  isteğin kendi kaydıdır. `retry_failed_job` ayarları **silmez**.
+- **Tauri (`apps/desktop/src-tauri/src/commands.rs`):**
+  - `run_parse`, işi sahiplendikten sonra **uygulanan** ayarları (OCR, dil,
+    **etkin** kodlama) satıra yazar; yazım ikincildir (düşerse ayrıştırma
+    düşmez, yeniden deneme "kayıt yok" görür ve bunu söyler).
+  - `plan_retry` artık `RetryPlan { job, versionId, options, skipped }` döner:
+    ayarları okur, parola bayrağını **geçişten önce** denetler, denetime
+    `optionsRestored` (yalnız bayrak) yazar.
+  - `retry_parse_options` (**saf**) kayıtlı ayarı `ParseOptions`a çevirir;
+    kayıt yoksa varsayılan + `restored=false`.
+- **Arayüz:** `retryOutcomeLine` kaynağı yazar — *"kaynak: kaydedilmiş ayarlar ·
+  OCR açık (tur), kodlama auto"* ya da *"kaynak: varsayılanlar (özgün ayar bu
+  işte kayıtlı değil)"*; `password_required` için ayrı dürüst satır. `applied`
+  tipi `restored` taşır.
+- **ÖLÇÜM (gerçek kasa + gerçek Python worker + tesseract 5.5.3, M2;
+  `retry_reuses_the_recorded_ocr_setting_on_a_scanned_document`, `--ignored --nocapture`):**
+  `1) OCR açık: 1 sayfa / 1 segment` · `2) varsayılan (eski davranış): 1 sayfa /
+  0 segment, metin ""` · `3) kayıtlı ayar (yeni davranış): 1 sayfa / 1 segment`,
+  metin ilk koşuyla **aynı**.
+- **Fikstür:** `fixtures/synthetic/scanned-page.pdf` (1 sayfa, **33.380 bayt**,
+  yalnız görüntü; `get_text()` boş). Üretici `generate.py::build_scanned_pdf`
+  — diğerlerinden farklı olarak **PyMuPDF** ister (glif çizimi + 300 dpi
+  raster); dosya depoda durduğu için testler üretimi koşmaz (ADR-05).
+- **Test:** `cargo test -p dim-storage` **369/369** (+3: yaz/oku + biçim kapısı
+  + yeniden deneme ayarı silmez) ve entegrasyon 8/8 (3 ignored); tauri lib
+  **29 geçti / 5 ignored** (+2 saf/plan testi, +1 gerçek ölçüm); Web
+  `tsc --noEmit` temiz, `vitest run` **413/413** (+2 `jobs` iddiası: kaynak
+  satırı ve `password_required`).
+- **Dürüst sınırlar:** 0023 öncesi işlerde ayar **kayıtlı değildir**; yeniden
+  deneme varsayılanlarla koşar ve arayüz bunu yazar (sessizce "aynı iş"
+  denmez). Parola ile açılmış iş **elle** yeniden ayrıştırılmalıdır. Maskeleme
+  işi ayar taşımaz (uydurulmuş istek üretilmez; davranış değişmedi). Kodlama
+  ayarı yalnız düz metin belgelerde etkilidir (PDF/DOCX'te `auto`ya düşer) ve
+  içe aktarma bugün **UTF-8 olmayan `.txt`ü kabul etmiyor** — bu yüzden
+  `windows-1254` gibi bir kodlama seçimi ürün yolunda henüz kullanılamıyor
+  (ayrı iş: `detect_kind` yalnız geçerli UTF-8 metni tanıyor). Tauri penceresi
+  açılmadı → yeni satırın **görsel QA'si yok**. Windows'ta denenmedi.
+
 
 ## Merkezi sözlük ve biçimlendirme katmanı (2026-10-28, F04-T08 — kısmi)
 

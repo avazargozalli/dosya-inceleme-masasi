@@ -288,7 +288,14 @@ export function retryOutcomeLine(view: JobRetryView): string {
     const settings = applied
       ? `OCR ${applied.ocr ? `açık (${applied.ocrLang})` : "kapalı"}, kodlama ${applied.textEncoding}`
       : "varsayılan ayarlar";
-    return `Yeniden deneme başladı (${settings}); sonucu satırda göreceksiniz.`;
+    // Kayıt yoksa bunu **söyle**: "aynı ayarla koştu" demek yanlış olurdu.
+    const source = applied?.restored
+      ? "kaydedilmiş ayarlar"
+      : "varsayılanlar (özgün ayar bu işte kayıtlı değil)";
+    return `Yeniden deneme başladı — kaynak: ${source} · ${settings}; sonucu satırda göreceksiniz.`;
+  }
+  if (view.skipped === "password_required") {
+    return "Belge parola ile açılmıştı; parola saklanmaz. Yeniden deneme başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın.";
   }
   if (view.skipped === "type_not_runnable") {
     return "İş yeniden sıraya alındı, ama bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan yeniden çalıştırın.";

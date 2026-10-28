@@ -621,6 +621,83 @@ impl Database {
         self.get_job(job_id)
     }
 
+    /// **Ayrıştırma ayarları (F04-T07 kapanışı).** Kullanıcının belge için
+    /// seçtiği ayarlar iş satırında saklanır; yeniden deneme aynı ayarlarla
+    /// koşar. Eski davranış ayarları hiç yazmıyordu → OCR açık + `tur` ile
+    /// ayrıştırılmış taranmış belge, yeniden denemede **varsayılanlarla**
+    /// (OCR kapalı) koşuyor ve sessizce metinsiz kalıyordu.
+    ///
+    /// **Parola saklanmaz.** Yalnız `requires_password` bayrağı yazılır: parola
+    /// iş satırında tutulsaydı kasa kilidinin dışına çıkardı. Bayrak `true` ise
+    /// yeniden deneme kendiliğinden başlatılmaz (Tauri katmanı engeller).
+    ///
+    /// Kapılar: iş var olmalı, `parse_document` türünde olmalı; dil ve kodlama
+    /// **biçim** denetiminden geçer (`E_JOB_OPTIONS`) — serbest metin satıra
+    /// yazılmaz. Kira aranmaz: bu bir sonuç değil, isteğin kendi kaydıdır.
+    pub fn set_job_parse_options(
+        &self,
+        job_id: &str,
+        options: &JobParseOptions,
+        now: OffsetDateTime,
+    ) -> Result<JobParseOptions, StorageError> {
+        let job = self.get_job(job_id)?.ok_or(StorageError::NotFound)?;
+        if job.job_type != "parse_document" {
+            return Err(StorageError::JobOptions(format!(
+                "{} türünde iş ayrıştırma ayarı taşımaz",
+                job.job_type
+            )));
+        }
+        let normalized = normalize_parse_options(options)?;
+        self.conn().execute(
+            "UPDATE jobs SET parse_ocr=?2, parse_ocr_lang=?3, parse_text_encoding=?4,
+                    parse_requires_password=?5, updated_at=?6
+             WHERE id=?1",
+            params![
+                job_id,
+                i64::from(normalized.ocr),
+                normalized.ocr_lang,
+                normalized.text_encoding,
+                i64::from(normalized.requires_password),
+                iso(now)
+            ],
+        )?;
+        Ok(normalized)
+    }
+
+    /// İş satırındaki ayrıştırma ayarları. `None` = **kayıt yok** (0023 öncesi
+    /// iş): varsayılan uydurulmaz, çağıran "özgün ayarlar kaydedilmemişti" der.
+    pub fn job_parse_options(&self, job_id: &str) -> Result<Option<JobParseOptions>, StorageError> {
+        let row: Option<StoredParseOptions> = self
+            .conn()
+            .query_row(
+                "SELECT parse_ocr, parse_ocr_lang, parse_text_encoding, parse_requires_password
+                 FROM jobs WHERE id=?1",
+                [job_id],
+                |row| {
+                    Ok(StoredParseOptions {
+                        ocr: row.get(0)?,
+                        lang: row.get(1)?,
+                        encoding: row.get(2)?,
+                        requires_password: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(stored) = row else {
+            return Err(StorageError::NotFound);
+        };
+        // `parse_ocr IS NULL` = bu işte ayar kaydı yok (eski kasa).
+        let Some(ocr) = stored.ocr else {
+            return Ok(None);
+        };
+        Ok(Some(JobParseOptions {
+            ocr: ocr != 0,
+            ocr_lang: stored.lang.unwrap_or_else(|| "eng".to_string()),
+            text_encoding: stored.encoding.unwrap_or_else(|| "auto".to_string()),
+            requires_password: stored.requires_password != 0,
+        }))
+    }
+
     /// İşi başarıyla bitirir. Kira sahibi ve süresi denetlenir; iptal isteği
     /// varsa sonuç `completed` değil `canceled` olur (istek sessizce yutulmaz).
     ///
@@ -1112,6 +1189,59 @@ impl ProgressCounts {
             _ => 0.0,
         }
     }
+}
+
+/// Ayrıştırma **isteğinde** kullanılan ayarlar (F04-T07 kapanışı).
+///
+/// `requires_password` parolanın kendisi **değildir**: yalnız "bu iş parola ile
+/// açıldı" bilgisidir. Parola iş satırında tutulmaz (kasa kilidinin dışına
+/// çıkardı); yeniden deneme bu bayrağı görünce kendiliğinden başlamaz.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobParseOptions {
+    pub ocr: bool,
+    pub ocr_lang: String,
+    pub text_encoding: String,
+    pub requires_password: bool,
+}
+
+/// `jobs` satırındaki **ham** ayar sütunları (SQL okuması).
+///
+/// Ayrı tip: dört alanlı tuple clippy `type_complexity` kapısını aşar ve
+/// alanların adı olmadan `row.get(0..3)` sırası okunaksız olurdu.
+struct StoredParseOptions {
+    ocr: Option<i64>,
+    lang: Option<String>,
+    encoding: Option<String>,
+    requires_password: i64,
+}
+
+/// Ayar alanlarının **biçim** kapısı: serbest metin satıra yazılmaz.
+///
+/// Değerler boş olamaz ve harf/rakam/`+`/`-`/`_` dışında karakter taşıyamaz
+/// (dil `tur`, `eng+deu`; kodlama `auto`, `utf-8`, `windows-1254`). Uzunluk
+/// sınırı sütuna belge adı/yol sızmasını da engeller.
+fn normalize_parse_options(options: &JobParseOptions) -> Result<JobParseOptions, StorageError> {
+    let field = |value: &str, label: &str, max: usize| -> Result<String, StorageError> {
+        let trimmed = value.trim().to_ascii_lowercase();
+        let valid = !trimmed.is_empty()
+            && trimmed.len() <= max
+            && trimmed
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '_'));
+        if !valid {
+            return Err(StorageError::JobOptions(format!(
+                "geçersiz {label}: {value:?} (harf/rakam/+/-/_ ve en çok {max} karakter)"
+            )));
+        }
+        Ok(trimmed)
+    };
+    Ok(JobParseOptions {
+        ocr: options.ocr,
+        ocr_lang: field(&options.ocr_lang, "OCR dili", 64)?,
+        text_encoding: field(&options.text_encoding, "metin kodlaması", 40)?,
+        requires_password: options.requires_password,
+    })
 }
 
 /// Aşama adı kapısı: protokol adları küçük harf/rakam/alt çizgi.
@@ -1893,6 +2023,161 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("satır");
         assert_eq!(attempt_nos, vec![1, 2], "numara artar, sıfırdan başlamaz");
+    }
+
+    /// **F04-T07 kapanışı:** ayrıştırma ayarları iş satırında saklanır; yeniden
+    /// deneme aynı ayarları okuyabilir. Kayıt yoksa `None` döner (varsayılan
+    /// uydurulmaz).
+    #[test]
+    fn parse_options_are_stored_and_read_back() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "opt", 0);
+        assert_eq!(
+            db.job_parse_options(&job).expect("oku"),
+            None,
+            "yazılmadan önce kayıt yok"
+        );
+
+        let stored = db
+            .set_job_parse_options(
+                &job,
+                &JobParseOptions {
+                    ocr: true,
+                    // Boşluk ve büyük harf normalleştirilir; serbest metin değil.
+                    ocr_lang: " TUR+ENG ".into(),
+                    text_encoding: "windows-1254".into(),
+                    requires_password: true,
+                },
+                at(0),
+            )
+            .expect("yaz");
+        assert_eq!(stored.ocr_lang, "tur+eng");
+        assert_eq!(stored.text_encoding, "windows-1254");
+
+        let read = db.job_parse_options(&job).expect("oku").expect("kayıt");
+        assert!(read.ocr, "OCR açık kaldı");
+        assert_eq!(read.ocr_lang, "tur+eng");
+        assert_eq!(read.text_encoding, "windows-1254");
+        assert!(
+            read.requires_password,
+            "parola bayrağı (parolanın kendisi değil)"
+        );
+
+        // Satırda parola **yok**: yalnız bayrak sütunu yazılır.
+        let columns: Vec<String> = db
+            .conn()
+            .prepare("SELECT name FROM pragma_table_info('jobs') WHERE name LIKE 'parse_%'")
+            .expect("hazırla")
+            .query_map([], |r| r.get(0))
+            .expect("sorgu")
+            .collect::<Result<_, _>>()
+            .expect("satır");
+        assert_eq!(
+            columns,
+            vec![
+                "parse_ocr".to_string(),
+                "parse_ocr_lang".to_string(),
+                "parse_text_encoding".to_string(),
+                "parse_requires_password".to_string()
+            ],
+            "parola sütunu yok; yalnız ayarlar ve bayrak"
+        );
+    }
+
+    /// Ayar alanları **biçim** kapısından geçer: serbest metin (yol, belge adı,
+    /// tırnak) satıra yazılmaz. Ayrıştırma dışı iş türü ayar taşımaz.
+    #[test]
+    fn parse_options_reject_free_text_and_wrong_job_type() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "opt-fmt", 0);
+        for bad in [
+            JobParseOptions {
+                ocr: false,
+                ocr_lang: "tur; DROP TABLE jobs".into(),
+                text_encoding: "auto".into(),
+                requires_password: false,
+            },
+            JobParseOptions {
+                ocr: false,
+                ocr_lang: "".into(),
+                text_encoding: "auto".into(),
+                requires_password: false,
+            },
+            JobParseOptions {
+                ocr: false,
+                ocr_lang: "tur".into(),
+                text_encoding: "/Users/avukat/belge.pdf".into(),
+                requires_password: false,
+            },
+        ] {
+            let err = db.set_job_parse_options(&job, &bad, at(0)).unwrap_err();
+            assert_eq!(err.code(), "E_JOB_OPTIONS", "reddedilmeli: {bad:?}");
+        }
+        assert_eq!(
+            db.job_parse_options(&job).expect("oku"),
+            None,
+            "reddedilen yazım satıra düşmez"
+        );
+
+        let other = db
+            .enqueue_job_with_priority("prepare_redaction", Some(&case_id), "fp-r", "r", 0)
+            .expect("iş");
+        let err = db
+            .set_job_parse_options(
+                &other,
+                &JobParseOptions {
+                    ocr: false,
+                    ocr_lang: "eng".into(),
+                    text_encoding: "auto".into(),
+                    requires_password: false,
+                },
+                at(0),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_JOB_OPTIONS");
+
+        let err = db
+            .set_job_parse_options(
+                "yok",
+                &JobParseOptions {
+                    ocr: false,
+                    ocr_lang: "eng".into(),
+                    text_encoding: "auto".into(),
+                    requires_password: false,
+                },
+                at(0),
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
+    }
+
+    /// Yeniden deneme ayarları **silmez**: `failed → queued` yalnız sayaçları
+    /// sıfırlar; kaydedilmiş ayar yeni denemede de okunur.
+    #[test]
+    fn retry_keeps_recorded_parse_options() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "opt-retry", 0);
+        db.claim_jobs("w", 1, 60, &[], at(0)).expect("sahiplen");
+        db.set_job_parse_options(
+            &job,
+            &JobParseOptions {
+                ocr: true,
+                ocr_lang: "tur".into(),
+                text_encoding: "auto".into(),
+                requires_password: false,
+            },
+            at(1),
+        )
+        .expect("yaz");
+        db.fail_job(&job, "w", "E_WORKER_TIMEOUT", false, at(2))
+            .expect("hata");
+
+        let retried = db.retry_failed_job(&job, at(3)).expect("yeniden dene");
+        assert_eq!(retried.state, "queued");
+        assert_eq!(retried.attempt_count, 0);
+        let options = db.job_parse_options(&job).expect("oku").expect("kayıt");
+        assert!(options.ocr);
+        assert_eq!(options.ocr_lang, "tur");
     }
 
     /// Bağımlılığı bekleyen iş `blocked` (queued değil) ve ebeveyn bitince

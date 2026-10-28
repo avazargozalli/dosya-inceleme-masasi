@@ -434,6 +434,42 @@ def generate_cancel_pdf(path: Path) -> Path:
     return path
 
 
+# --- F04-T07 taranmış fikstürü ----------------------------------------------
+# "Taranmış" belge = **metin katmanı olmayan** sayfa: içerik yalnız görüntü.
+# Bu fikstür OCR'ın gerçekten gerekli olduğu durumu ölçer (OCR kapalıyken metin
+# çıkmaz). Diğer üreticilerin aksine burada raster gerekir; metni glif olarak
+# çizip 300 dpi'e render etmek için PyMuPDF kullanılır.
+#
+# Depoda hazır dosya durur (`scanned-page.pdf`), testler onu okur — üretim
+# testte **koşmaz** (ADR-05: test süreç başlatmaz). PyMuPDF sürümü çıktıyı
+# değiştirebilir; yeniden üretim gerekirse aynı sürümle yapılmalı.
+def build_scanned_pdf() -> bytes:
+    import io
+
+    import fitz  # PyMuPDF — yalnız bu fikstür için
+
+    source = fitz.open()
+    page = source.new_page(width=595, height=842)
+    page.insert_text((72, 200), "MADDE 1", fontsize=44, fontname="helv")
+    page.insert_text((72, 280), "Kira sozlesmesi 2026", fontsize=28, fontname="helv")
+    page.insert_text((72, 340), "Odeme yapilmadi.", fontsize=24, fontname="helv")
+    pixmap = page.get_pixmap(dpi=300, colorspace=fitz.csGRAY)
+    scanned = fitz.open()
+    target = scanned.new_page(width=595, height=842)
+    target.insert_image(target.rect, pixmap=pixmap)
+    buffer = io.BytesIO()
+    scanned.save(buffer, deflate=True)
+    return buffer.getvalue()
+
+
+def generate_scanned_pdf(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    path.write_bytes(build_scanned_pdf())
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kurgu test belgesi üret")
     parser.add_argument("--out", default="fixtures/generated", help="çıktı klasörü")
@@ -446,6 +482,11 @@ def main() -> None:
     udf = generate_udf_inventory(Path("fixtures/synthetic/udf-inventory.udf"))
     progress = generate_progress_pdf(Path("fixtures/synthetic/progress-pages.pdf"))
     cancel = generate_cancel_pdf(Path("fixtures/synthetic/cancel-pages.pdf"))
+    try:
+        scanned = generate_scanned_pdf(Path("fixtures/synthetic/scanned-page.pdf"))
+        print(f"üretildi: {scanned} ({os.path.getsize(scanned)} bayt)")
+    except ImportError:
+        print("scanned-page.pdf atlandı: PyMuPDF (fitz) kurulu değil")
     print(f"üretildi: {pdf} ({os.path.getsize(pdf)} bayt)")
     print(f"üretildi: {txt} ({os.path.getsize(txt)} bayt)")
     print(f"üretildi: {redaction} ({os.path.getsize(redaction)} bayt)")

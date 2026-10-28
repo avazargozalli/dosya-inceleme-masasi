@@ -97,7 +97,13 @@ export type JobRetryView = {
   started: boolean;
   skipped: string | null;
   versionId: string | null;
-  applied: { ocr: boolean; ocrLang: string; textEncoding: string } | null;
+  applied: {
+    ocr: boolean;
+    ocrLang: string;
+    textEncoding: string;
+    /** Ayarlar iş satırından geri yüklendi mi? `false` = kayıt yok, varsayılan. */
+    restored: boolean;
+  } | null;
 };
 
 export type JobQueueView = {

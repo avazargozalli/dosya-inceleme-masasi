@@ -95,6 +95,8 @@ pub enum StorageError {
     JobState(String),
     #[error("iş ilerlemesi geçersiz: {0}")]
     JobProgress(String),
+    #[error("ayrıştırma ayarları geçersiz: {0}")]
+    JobOptions(String),
     #[error(
         "migrasyon {version} yabancı anahtar ihlali bıraktı ({violations} satır); geri alındı"
     )]
@@ -178,6 +180,7 @@ impl StorageError {
             Self::JobLease(_) => "E_JOB_LEASE",
             Self::JobState(_) => "E_JOB_STATE",
             Self::JobProgress(_) => "E_JOB_PROGRESS",
+            Self::JobOptions(_) => "E_JOB_OPTIONS",
             Self::MigrationForeignKeys { .. } => "E_DB_MIGRATION_FK",
         }
     }

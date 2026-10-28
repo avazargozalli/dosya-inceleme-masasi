@@ -804,18 +804,23 @@ mod tests {
         }
         let hub = state.vault_handle();
 
-        let (row, version) = plan_retry(&hub, &parse_job).expect("yeniden deneme");
-        assert_eq!(row.state, "queued", "iş yeniden sıraya alınmalı");
-        assert_eq!(row.attempt_count, 0, "deneme bütçesi sıfırlanır");
+        let plan = plan_retry(&hub, &parse_job).expect("yeniden deneme");
+        assert_eq!(plan.job.state, "queued", "iş yeniden sıraya alınmalı");
+        assert_eq!(plan.job.attempt_count, 0, "deneme bütçesi sıfırlanır");
         assert_eq!(
-            version.as_deref(),
+            plan.version_id.as_deref(),
             Some("sürüm-7"),
             "sürüm anahtardan çözülür"
         );
+        assert_eq!(plan.skipped, None);
+        assert!(
+            plan.options.is_none(),
+            "ayar kaydı olmayan işte uydurulmuş ayar dönmez"
+        );
 
-        let (redact_row, redact_version) = plan_retry(&hub, &redact_job).expect("yeniden deneme");
-        assert_eq!(redact_row.state, "queued");
-        assert_eq!(redact_version, None, "maskeleme isteği uydurulmaz");
+        let redact_plan = plan_retry(&hub, &redact_job).expect("yeniden deneme");
+        assert_eq!(redact_plan.job.state, "queued");
+        assert_eq!(redact_plan.version_id, None, "maskeleme isteği uydurulmaz");
     }
 
     /// **F04-T07 ÖLÇÜMÜ — yeniden deneme gerçekten ayrıştırıyor.**
@@ -870,9 +875,9 @@ mod tests {
         let hub = state.vault_handle();
         let slot = state.workers_handle();
         let pool = state.parse_pool_handle();
-        let (row, resolved) = plan_retry(&hub, &job_id).expect("plan");
-        assert_eq!(row.state, "queued");
-        let version_id = resolved.expect("sürüm çözülmeli");
+        let plan = plan_retry(&hub, &job_id).expect("plan");
+        assert_eq!(plan.job.state, "queued");
+        let version_id = plan.version_id.expect("sürüm çözülmeli");
         assert_eq!(version_id, version.id);
 
         let frames = Arc::new(Mutex::new(Vec::<ParseProgress>::new()));
@@ -928,6 +933,321 @@ mod tests {
             "son sayaç aşaması kasaya yazma olmalı (ayrıştırma yolunda `scan` yok)"
         );
         assert_eq!(job.attempt_count, 1, "yeniden deneme yeni bir denemedir");
+    }
+
+    /// **Ayarların geri yüklenmesi (saf).** Kayıtlı ayar isteğe birebir geçer;
+    /// kayıt yoksa varsayılan + `restored=false`. Parola hiçbir yolda taşınmaz.
+    #[test]
+    fn retry_options_come_from_the_recorded_job_row() {
+        let stored = dim_storage::queue::JobParseOptions {
+            ocr: true,
+            ocr_lang: "tur+eng".into(),
+            text_encoding: "windows-1254".into(),
+            requires_password: true,
+        };
+        let (options, applied) = retry_parse_options(Some(&stored));
+        assert_eq!(options.ocr, Some(true));
+        assert_eq!(options.ocr_lang.as_deref(), Some("tur+eng"));
+        assert_eq!(options.text_encoding.as_deref(), Some("windows-1254"));
+        assert!(options.password.is_none(), "parola isteğe taşınmaz");
+        assert!(applied.restored, "kayıt geri yüklendi");
+        assert!(applied.ocr);
+        assert_eq!(applied.ocr_lang, "tur+eng");
+        assert_eq!(applied.text_encoding, "windows-1254");
+
+        let (defaults, applied) = retry_parse_options(None);
+        assert_eq!(defaults.ocr, None, "kayıt yok → OCR kapalı varsayılanı");
+        assert!(defaults.password.is_none());
+        assert!(!applied.restored, "kayıt yokluğu dürüstçe bildirilir");
+        assert!(!applied.ocr);
+        assert_eq!(applied.ocr_lang, "eng");
+        assert_eq!(applied.text_encoding, "auto");
+    }
+
+    /// Kaydedilmiş ayar planla birlikte gelir; **parola ile açılmış** iş
+    /// kendiliğinden yeniden başlatılmaz (satır `failed` kalır, sahte "başladı"
+    /// denmez).
+    #[test]
+    fn retry_plan_restores_recorded_options_and_holds_password_jobs() {
+        use dim_storage::queue::JobParseOptions;
+
+        let db = Database::open_in_memory(&DatabaseKey::new([5u8; 32])).expect("kasa");
+        let case = db
+            .create_case(&NewCase {
+                title: "Ayarlar".into(),
+                case_kind: dim_storage::CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: dim_storage::Sensitivity::Normal,
+                default_ai_policy: dim_storage::AiPolicy::Off,
+            })
+            .expect("dosya");
+        let now = time::OffsetDateTime::now_utc();
+        let claim_at = now + time::Duration::seconds(1);
+
+        let failed_parse = |key: &str| -> (String, String) {
+            let id = db
+                .enqueue_job_with_priority("parse_document", Some(&case.id), "fp", key, 0)
+                .expect("iş");
+            let claimed = db
+                .claim_job_by_key(key, "w1", dim_storage::DEFAULT_LEASE_SECONDS, claim_at)
+                .expect("sahiplen")
+                .expect("iş var");
+            db.fail_job(&claimed.id, "w1", "E_WORKER_TIMEOUT", false, claim_at)
+                .expect("başarısız");
+            (id, claimed.id)
+        };
+        // Anahtar biçimi `parse:<sürüm>`: sürüm kimliği anahtardan gelir.
+        let (with_settings, with_settings_id) = failed_parse("parse:v-tur");
+        db.set_job_parse_options(
+            &with_settings,
+            &JobParseOptions {
+                ocr: true,
+                ocr_lang: "tur".into(),
+                text_encoding: "auto".into(),
+                requires_password: false,
+            },
+            claim_at,
+        )
+        .expect("ayar");
+        let (with_password, with_password_id) = failed_parse("parse:v-parola");
+        db.set_job_parse_options(
+            &with_password,
+            &JobParseOptions {
+                ocr: false,
+                ocr_lang: "eng".into(),
+                text_encoding: "auto".into(),
+                requires_password: true,
+            },
+            claim_at,
+        )
+        .expect("ayar");
+
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.db = Some(db);
+        }
+        let hub = state.vault_handle();
+
+        let plan = plan_retry(&hub, &with_settings).expect("plan");
+        assert_eq!(plan.job.state, "queued");
+        assert_eq!(plan.job.id, with_settings_id);
+        assert_eq!(plan.skipped, None);
+        let stored = plan.options.as_ref().expect("ayar kaydı");
+        assert!(stored.ocr);
+        assert_eq!(stored.ocr_lang, "tur");
+        let (options, applied) = retry_parse_options(plan.options.as_ref());
+        assert_eq!(options.ocr, Some(true), "OCR ayarı isteğe geçer");
+        assert_eq!(options.ocr_lang.as_deref(), Some("tur"));
+        assert!(applied.restored);
+
+        let plan = plan_retry(&hub, &with_password).expect("plan");
+        assert_eq!(plan.job.id, with_password_id);
+        assert_eq!(
+            plan.skipped,
+            Some("password_required"),
+            "parola saklanmaz; parolasız deneme başlatılmaz"
+        );
+        assert_eq!(
+            plan.job.state, "failed",
+            "satır yeniden sıraya alınmaz (asılı `queued` yok)"
+        );
+        assert_eq!(plan.version_id, None);
+    }
+
+    /// Kuyruk satırı açılır, **sahiplenilmez**: `run_parse` kendisi sahiplenir.
+    fn enqueue_parse_job(state: &AppState, version_id: &str) -> String {
+        let guard = state.lock();
+        let db = guard.db.as_ref().expect("db");
+        db.enqueue_job_with_priority(
+            "parse_document",
+            None,
+            "fp",
+            &format!("parse:{version_id}"),
+            0,
+        )
+        .expect("iş")
+    }
+
+    /// İş sahiplenilip **başarısız** kapatılır (kullanıcının gördüğü durum).
+    fn failed_parse_job(state: &AppState, version_id: &str) -> String {
+        let key = format!("parse:{version_id}");
+        let guard = state.lock();
+        let db = guard.db.as_ref().expect("db");
+        db.enqueue_job_with_priority("parse_document", None, "fp", &key, 0)
+            .expect("iş");
+        // `enqueue` `next_run_at`ı kendi saatinden yazar; sahiplenme **sonra**
+        // olmalı (eşitlik yeterli değil).
+        let claim_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(1);
+        let claimed = db
+            .claim_job_by_key(&key, "w-once", dim_storage::DEFAULT_LEASE_SECONDS, claim_at)
+            .expect("sahiplen")
+            .expect("iş var");
+        db.fail_job(&claimed.id, "w-once", "E_WORKER_TIMEOUT", false, claim_at)
+            .expect("başarısız");
+        claimed.id
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ (kusur #58) — yeniden deneme kaydedilmiş ayarla koşar.**
+    ///
+    /// Gerçek kasa + gerçek worker + **metin katmanı olmayan** fikstür
+    /// (`fixtures/synthetic/scanned-page.pdf`, 1 sayfa, 33.380 bayt; sayfada
+    /// yalnız görüntü var, `get_text()` boş).
+    ///
+    /// 1. OCR **açık** koşu metni çıkarır ve ayarı iş satırına yazar.
+    /// 2. Ayar kaydı olmayan iş varsayılanlarla (OCR kapalı) koşarsa **metin
+    ///    çıkmaz** — eski davranışın sessiz farkı budur.
+    /// 3. Kayıtlı ayarla yeniden deneme metni üretir; segment sayısı 1'e eşittir
+    ///    (aynı belge + aynı ayar = aynı çıktı).
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=workers/document/.venv/bin/python cargo test
+    /// --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// retry_reuses -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa + tesseract; ölçüm elle koşulur"]
+    fn retry_reuses_the_recorded_ocr_setting_on_a_scanned_document() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/scanned-page.pdf");
+        let data = std::fs::read(&fixture).expect("fikstür");
+        assert!(data.starts_with(b"%PDF-"), "fikstür PDF olmalı");
+
+        let ocr_on = || ParseOptions {
+            ocr: Some(true),
+            ocr_lang: Some("eng".to_string()),
+            text_encoding: None,
+            password: None,
+        };
+        let text_of = |state: &AppState, run_id: &str| -> String {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            db.pages_for_run(run_id)
+                .expect("sayfalar")
+                .into_iter()
+                .map(|page| page.text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1 — ayarın kaydı: OCR açık koşu iş satırına yazılır.
+        let (state, _dir, version) = redaction_fixture_with(&data);
+        let job = enqueue_parse_job(&state, &version.id);
+        let mut noop = |_: &ParseProgress| {};
+        let first = run_parse(
+            &state.vault_handle(),
+            &state.workers_handle(),
+            &state.parse_pool_handle(),
+            &version.id,
+            ocr_on(),
+            &mut noop,
+        )
+        .expect("OCR koşusu");
+        let first_text = text_of(&state, &first.parse_run.id);
+        let recorded = {
+            let guard = state.lock();
+            guard
+                .db
+                .as_ref()
+                .expect("db")
+                .job_parse_options(&job)
+                .expect("oku")
+        };
+        let recorded = recorded.expect("ayar kaydı yazılmalı");
+        assert!(recorded.ocr, "OCR açık ayarı iş satırına yazılır");
+        assert_eq!(recorded.ocr_lang, "eng");
+        assert!(!recorded.requires_password, "parola kullanılmadı");
+
+        // 2 — kayıt yok: varsayılan (OCR kapalı) → metin çıkmaz.
+        let (state_default, _dir2, version2) = redaction_fixture_with(&data);
+        let job2 = failed_parse_job(&state_default, &version2.id);
+        let plan = plan_retry(&state_default.vault_handle(), &job2).expect("plan");
+        assert!(plan.options.is_none(), "0023 öncesi iş: ayar kaydı yok");
+        let (defaults, applied) = retry_parse_options(plan.options.as_ref());
+        assert!(!applied.restored, "varsayılan koşu dürüstçe bildirilir");
+        let mut noop2 = |_: &ParseProgress| {};
+        let without = run_parse(
+            &state_default.vault_handle(),
+            &state_default.workers_handle(),
+            &state_default.parse_pool_handle(),
+            &version2.id,
+            defaults,
+            &mut noop2,
+        )
+        .expect("varsayılan koşu");
+        let without_text = text_of(&state_default, &without.parse_run.id);
+
+        // 3 — kayıtlı ayar: aynı metin çıkar.
+        let (state_recorded, _dir3, version3) = redaction_fixture_with(&data);
+        let job3 = failed_parse_job(&state_recorded, &version3.id);
+        {
+            let guard = state_recorded.lock();
+            guard
+                .db
+                .as_ref()
+                .expect("db")
+                .set_job_parse_options(
+                    &job3,
+                    &dim_storage::queue::JobParseOptions {
+                        ocr: true,
+                        ocr_lang: "eng".into(),
+                        text_encoding: "auto".into(),
+                        requires_password: false,
+                    },
+                    time::OffsetDateTime::now_utc(),
+                )
+                .expect("ayar");
+        }
+        let plan = plan_retry(&state_recorded.vault_handle(), &job3).expect("plan");
+        let (options, applied) = retry_parse_options(plan.options.as_ref());
+        assert!(applied.restored, "ayar iş satırından geri yüklendi");
+        let mut noop3 = |_: &ParseProgress| {};
+        let with = run_parse(
+            &state_recorded.vault_handle(),
+            &state_recorded.workers_handle(),
+            &state_recorded.parse_pool_handle(),
+            &version3.id,
+            options,
+            &mut noop3,
+        )
+        .expect("kayıtlı ayarla koşu");
+        let with_text = text_of(&state_recorded, &with.parse_run.id);
+
+        println!(
+            "1) OCR açık: {} sayfa / {} segment, metin {:?}\n\
+             2) varsayılan (eski davranış): {} sayfa / {} segment, metin {:?}\n\
+             3) kayıtlı ayar (yeni davranış): {} sayfa / {} segment, metin {:?}",
+            first.pages,
+            first.stored_segments,
+            first_text.trim(),
+            without.pages,
+            without.stored_segments,
+            without_text.trim(),
+            with.pages,
+            with.stored_segments,
+            with_text.trim()
+        );
+        assert!(
+            first_text.contains("MADDE 1"),
+            "OCR metni okunmalı: {first_text:?}"
+        );
+        assert_eq!(
+            without_text.trim(),
+            "",
+            "varsayılan (OCR kapalı) koşuda metin çıkmaz — ölçülen fark"
+        );
+        assert!(
+            with_text.contains("MADDE 1"),
+            "kayıtlı ayarla metin çıkar: {with_text:?}"
+        );
+        assert_eq!(
+            with.stored_segments, first.stored_segments,
+            "aynı belge + aynı ayar = aynı segment sayısı"
+        );
     }
 
     /// **F04-T07 ortamı:** gerçek kasa dosyası + bir belge sürümü; worker yok.
@@ -3241,6 +3561,27 @@ fn run_parse(
         is_text,
     };
 
+    // **Ayarları iş satırına yaz (F04-T07 kapanışı).** Yeniden deneme bu
+    // kayıttan aynı ayarları geri yükler; parola **yazılmaz**, yalnız "parola
+    // kullanıldı" bayrağı. Kayıt ikincildir: yazım düşerse ayrıştırma düşmez,
+    // ama yeniden deneme o işte "kayıt yok" görür ve arayüz varsayılanlarla
+    // koştuğunu **söyler** (sessizce aynı iş denmez). Kilit kısa tutulur.
+    if let Some(job) = prep.job.as_ref() {
+        let guard = lock_vault(hub);
+        if let Some(db) = guard.db.as_ref() {
+            let _ = db.set_job_parse_options(
+                &job.id,
+                &dim_storage::queue::JobParseOptions {
+                    ocr: ocr_enabled,
+                    ocr_lang: lang.clone(),
+                    text_encoding: encoding.clone(),
+                    requires_password: options.password.is_some(),
+                },
+                time::OffsetDateTime::now_utc(),
+            );
+        }
+    }
+
     let mut sink = JobProgressSink::new(
         prep.job.as_ref().map(|job| job.id.clone()),
         prep.owner.clone(),
@@ -3665,7 +4006,9 @@ pub struct JobRetryView {
     /// Yürütücü gerçekten başlatıldı mı?
     pub started: bool,
     /// Başlatılmadıysa neden: `type_not_runnable` (maskeleme isteği iş
-    /// satırında saklanmaz) veya `no_input` (girdi anahtarı çözülemedi).
+    /// satırında saklanmaz), `no_input` (girdi anahtarı çözülemedi) veya
+    /// `password_required` (belge parola ile açılmıştı; parola saklanmaz, satır
+    /// `failed` kalır — kullanıcı parolayı belge ekranından girer).
     pub skipped: Option<String>,
     /// Yeniden çalıştırılan belge sürümü (parse işleri).
     pub version_id: Option<String>,
@@ -3679,6 +4022,9 @@ pub struct RetryApplied {
     pub ocr: bool,
     pub ocr_lang: String,
     pub text_encoding: String,
+    /// Ayarlar iş satırından **geri yüklendi** mi? `false` ise (0023 öncesi iş)
+    /// varsayılanlarla koşuldu ve arayüz bunu dürüstçe yazar.
+    pub restored: bool,
 }
 
 /// Yeniden denemede çalıştırılabilecek iş türü → girdi çözümü.
@@ -3698,14 +4044,41 @@ fn runnable_parse_version(job_type: &str, key: Option<&str>) -> Option<String> {
     Some(version.to_string())
 }
 
-/// **Yeniden denemenin A aşaması** (kısa kilit): durum geçişi, girdi çözümü ve
-/// denetim. Yürütme çağıranın işidir; test bu yolu doğrudan koşar.
-fn plan_retry(
-    hub: &Arc<Mutex<VaultState>>,
-    job_id: &str,
-) -> Result<(JobRow, Option<String>), ApiError> {
+/// **Yeniden deneme planı.** Satır, çözülen sürüm, **kaydedilmiş ayarlar** ve
+/// başlatmayı engelleyen neden tek yerde toplanır (test bu yolu doğrudan koşar).
+struct RetryPlan {
+    job: JobRow,
+    version_id: Option<String>,
+    options: Option<dim_storage::queue::JobParseOptions>,
+    /// `password_required`: belge parola ile açılmıştı, parola saklanmaz.
+    skipped: Option<&'static str>,
+}
+
+/// **Yeniden denemenin A aşaması** (kısa kilit): durum geçişi, girdi çözümü,
+/// kaydedilmiş ayarların okunması ve denetim.
+///
+/// Parola ile açılmış bir iş **kendiliğinden yeniden başlatılmaz**: parola iş
+/// satırında saklanmadığı için parolasız deneme sessizce farklı (çoğu kez
+/// metinsiz) çıktı üretirdi. Bu durumda satır `failed` kalır ve çağıran
+/// `password_required` bildirir.
+fn plan_retry(hub: &Arc<Mutex<VaultState>>, job_id: &str) -> Result<RetryPlan, ApiError> {
     let guard = lock_vault(hub);
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let job = db
+        .get_job(job_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "İş bulunamadı."))?;
+    let options = db.job_parse_options(job_id)?;
+    if options
+        .as_ref()
+        .is_some_and(|options| options.requires_password)
+    {
+        return Ok(RetryPlan {
+            job,
+            version_id: None,
+            options,
+            skipped: Some("password_required"),
+        });
+    }
     let row = db.retry_failed_job(job_id, time::OffsetDateTime::now_utc())?;
     let key = db.job_idempotency_key(job_id)?;
     let version = runnable_parse_version(&row.job_type, key.as_deref());
@@ -3718,9 +4091,56 @@ fn plan_retry(
             "state": row.state,
             "jobType": row.job_type,
             "started": version.is_some(),
+            // Ayarlar geri yüklendi mi? Değerler denetime yazılmaz (yalnız bayrak).
+            "optionsRestored": options.is_some(),
         }),
     )?;
-    Ok((row, version))
+    Ok(RetryPlan {
+        job: row,
+        version_id: version,
+        options,
+        skipped: None,
+    })
+}
+
+/// Kaydedilmiş ayarları yeniden deneme isteğine çevirir (**saf**, test edilir).
+///
+/// Kayıt yoksa (0023 öncesi iş) **varsayılan** kullanılır ve `restored=false`
+/// döner: arayüz "özgün ayarlar kayıtlı değil" der, uydurulmuş bir ayar
+/// gösterilmez. Parola hiçbir durumda taşınmaz (`password: None`).
+fn retry_parse_options(
+    stored: Option<&dim_storage::queue::JobParseOptions>,
+) -> (ParseOptions, RetryApplied) {
+    match stored {
+        Some(options) => (
+            ParseOptions {
+                ocr: Some(options.ocr),
+                ocr_lang: Some(options.ocr_lang.clone()),
+                text_encoding: Some(options.text_encoding.clone()),
+                password: None,
+            },
+            RetryApplied {
+                ocr: options.ocr,
+                ocr_lang: options.ocr_lang.clone(),
+                text_encoding: options.text_encoding.clone(),
+                restored: true,
+            },
+        ),
+        None => (
+            ParseOptions {
+                ocr: None,
+                ocr_lang: None,
+                text_encoding: None,
+                password: None,
+            },
+            RetryApplied {
+                ocr: false,
+                ocr_lang: "eng".to_string(),
+                text_encoding: "auto".to_string(),
+                restored: false,
+            },
+        ),
+    }
 }
 
 /// **Erken düşüş** (sürüm/blob yok): `prepare_parse` sahiplenmeden önce döndüğü
@@ -3775,10 +4195,12 @@ fn finalize_failed_retry(
 /// başlatır; arayüz iş parçacığı beklemez, ilerleme `parse-progress` olayı ve
 /// `jobs.progress_*` sütunlarından gelir.
 ///
-/// **Ayarlar:** yeniden deneme **varsayılan** ayarlarla koşar (OCR kapalı,
-/// kodlama `auto`); özgün istekteki OCR/parola iş satırında saklanmaz. Parola
-/// korumalı belge yine `blocked` olur ve kullanıcı parolayı belge ekranından
-/// girer — sessizce farklı bir çıktı üretilmez.
+/// **Ayarlar:** yeniden deneme, iş satırına yazılmış **aynı ayarlarla** koşar
+/// (OCR, dil, kodlama). Kayıt yoksa (0023 öncesi iş) varsayılanlar kullanılır ve
+/// yanıt `applied.restored=false` ile bunu bildirir — sessizce "aynı iş" denmez.
+/// **Parola saklanmaz:** parola ile açılmış belgede yeniden deneme
+/// kendiliğinden başlatılmaz (`skipped=password_required`, satır `failed`
+/// kalır); kullanıcı parolayı belge ekranından girer.
 #[tauri::command]
 pub async fn job_retry(
     app: tauri::AppHandle,
@@ -3789,14 +4211,16 @@ pub async fn job_retry(
     let slot = state.workers_handle();
     let pool = state.parse_pool_handle();
 
-    let (row, version_id) = plan_retry(&hub, &job_id)?;
+    let plan = plan_retry(&hub, &job_id)?;
+    let (row, version_id) = (plan.job, plan.version_id);
 
     let Some(version_id) = version_id else {
-        // Yürütücüsü olmayan iş türü: satır sıraya alındı, ama "başladı" denmez.
-        let skipped = if row.job_type == "parse_document" {
-            "no_input".to_string()
-        } else {
-            "type_not_runnable".to_string()
+        // `password_required` dışındaki durum: yürütücüsü olmayan iş türü ya da
+        // girdisi çözülemeyen ayrıştırma. Satır sıraya alındı ama "başladı" denmez.
+        let skipped = match plan.skipped {
+            Some(reason) => reason.to_string(),
+            None if row.job_type == "parse_document" => "no_input".to_string(),
+            None => "type_not_runnable".to_string(),
         };
         return Ok(JobRetryView {
             job: row,
@@ -3806,6 +4230,10 @@ pub async fn job_retry(
             applied: None,
         });
     };
+
+    // Ayarlar iş satırından geri yüklenir (F04-T07 kapanışı): aynı belge, aynı
+    // ayar. Kayıt yoksa varsayılan + `restored=false` (arayüz dürüstçe yazar).
+    let (parse_options, applied) = retry_parse_options(plan.options.as_ref());
 
     // Aşama B — kilit yok: gerçek ayrıştırma arka planda koşar. Sonuç kuyruk
     // satırına yazılır (`completed`/`partial`/`failed`/`blocked`); komut onu
@@ -3818,19 +4246,7 @@ pub async fn job_retry(
             let event = ParseProgressEvent::new(&emit_version, progress);
             let _ = app.emit("parse-progress", event);
         };
-        let outcome = run_parse(
-            &hub,
-            &slot,
-            &pool,
-            &run_version,
-            ParseOptions {
-                ocr: None,
-                ocr_lang: None,
-                text_encoding: None,
-                password: None,
-            },
-            &mut emit,
-        );
+        let outcome = run_parse(&hub, &slot, &pool, &run_version, parse_options, &mut emit);
         if let Err(error) = outcome {
             finalize_failed_retry(&hub, &retry_job_id, &run_version, &error.code);
         }
@@ -3841,11 +4257,7 @@ pub async fn job_retry(
         started: true,
         skipped: None,
         version_id: Some(version_id),
-        applied: Some(RetryApplied {
-            ocr: false,
-            ocr_lang: "eng".to_string(),
-            text_encoding: "auto".to_string(),
-        }),
+        applied: Some(applied),
     })
 }
 
