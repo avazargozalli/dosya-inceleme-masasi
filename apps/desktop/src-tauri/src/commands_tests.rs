@@ -1,0 +1,7440 @@
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_path_rejected() {
+        assert_eq!(resolve_vault_path("   ").unwrap_err().code, "E_PATH");
+    }
+
+    /// **F04-T07 ilerleme olayı:** yalnız sürüm kimliği, aşama ve sayaç taşır;
+    /// belge metni, dosya adı veya yol yayımlanmaz.
+    #[test]
+    fn parse_progress_event_carries_only_stage_and_counts() {
+        let event = ParseProgressEvent::new(
+            "version-1",
+            &ParseProgress {
+                stage: "pages".to_string(),
+                done: 7,
+                total: Some(40),
+            },
+        );
+        let value = serde_json::to_value(&event).expect("olay JSON");
+        assert_eq!(value["versionId"], "version-1");
+        assert_eq!(value["stage"], "pages");
+        assert_eq!(value["done"], 7);
+        assert_eq!(value["total"], 40);
+        // Sözleşme: dört alan; metin/yol/ad alanı yok.
+        assert_eq!(value.as_object().expect("nesne").len(), 4);
+        for forbidden in ["text", "fileName", "path", "quote"] {
+            assert!(value.get(forbidden).is_none(), "{forbidden} yayımlanmamalı");
+        }
+        // Toplam bilinmiyorsa `null` (uydurulmuş sayı yok).
+        let open = ParseProgressEvent::new(
+            "version-1",
+            &ParseProgress {
+                stage: "start".to_string(),
+                done: 0,
+                total: None,
+            },
+        );
+        let value = serde_json::to_value(&open).expect("olay JSON");
+        assert!(value["total"].is_null());
+    }
+
+    /// **§17.3 bütçe görünümü:** çekirdekten gelen rapor arayüz tipine **birebir**
+    /// çevrilir; sınır uydurulmaz, ihlal kodu çekirdeğin kodudur.
+    #[test]
+    fn worker_budget_view_mirrors_the_core_report() {
+        let budget = WorkerBudget::for_kind(WorkerKind::Ocr);
+        let report = BudgetReport {
+            budget,
+            elapsed: std::time::Duration::from_millis(1234),
+            output_bytes: 2048,
+            peak_memory_bytes: 96 * 1024 * 1024,
+            violated: Some(dim_ingest::budget::BudgetDimension::Memory),
+        };
+        let view = WorkerBudgetView::from_report(&report);
+        assert_eq!(view.kind, "ocr");
+        assert_eq!(view.label, "OCR");
+        assert_eq!(view.cpu_seconds, budget.cpu_seconds);
+        assert_eq!(view.memory_bytes, budget.memory_bytes);
+        assert_eq!(view.output_bytes, budget.output_bytes);
+        assert_eq!(view.open_files, budget.open_files);
+        assert_eq!(view.wall_clock_seconds, budget.wall_clock.as_secs());
+        assert_eq!(view.elapsed_ms, 1234);
+        assert_eq!(view.observed_output_bytes, 2048);
+        assert_eq!(view.peak_memory_bytes, 96 * 1024 * 1024);
+        assert_eq!(view.violated.as_deref(), Some("memory"));
+        // İhlal yoksa `null` — "0" ya da boş metin değil.
+        let clean = WorkerBudgetView::from_report(&BudgetReport {
+            violated: None,
+            ..report
+        });
+        assert!(clean.violated.is_none());
+    }
+
+    /// Profiller arayüze **çekirdekten** gelir (`WorkerKind::ALL` sırası korunur);
+    /// AI profilinde CPU sınırı yoktur (çağrı yerel süreç değil).
+    #[test]
+    fn worker_budgets_lists_all_profiles_from_the_core() {
+        let profiles = worker_budgets();
+        let codes: Vec<&str> = profiles
+            .iter()
+            .map(|profile| profile.kind.as_str())
+            .collect();
+        assert_eq!(codes, vec!["render", "extract", "ocr", "redaction", "ai"]);
+        for profile in &profiles {
+            assert!(!profile.label.is_empty(), "{}: etiket", profile.kind);
+            assert!(profile.memory_bytes > 0, "{}: bellek", profile.kind);
+            assert!(profile.output_bytes > 0, "{}: çıktı", profile.kind);
+            assert!(profile.wall_clock_seconds > 0, "{}: süre", profile.kind);
+        }
+        let ai = profiles
+            .iter()
+            .find(|p| p.kind == "ai")
+            .expect("ai profili");
+        assert_eq!(ai.cpu_seconds, 0, "AI çağrısı yerel süreç değil");
+    }
+
+    /// **Kuyruk sayacı (F04-T07 → kart):** aynı kareler iş satırına yazılır;
+    /// olay her karede gider ama yazım kapıya uyar (aşama kenarları + aralık).
+    /// Gerçek kasa (bellek içi) + gerçek kuyruk satırı; worker yok.
+    #[test]
+    fn progress_sink_writes_the_job_row_and_respects_the_gate() {
+        let db = Database::open_in_memory(&DatabaseKey::new([7u8; 32])).expect("kasa");
+        let case = db
+            .create_case(&NewCase {
+                title: "Sayaç".into(),
+                case_kind: dim_storage::CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: dim_storage::Sensitivity::Normal,
+                default_ai_policy: dim_storage::AiPolicy::Off,
+            })
+            .expect("dosya");
+        db.enqueue_job_with_priority("parse_document", Some(&case.id), "fp-1", "parse:v1", 0)
+            .expect("iş");
+        let job = db
+            .claim_job_by_key(
+                "parse:v1",
+                "surec-1",
+                dim_storage::DEFAULT_LEASE_SECONDS,
+                time::OffsetDateTime::now_utc(),
+            )
+            .expect("sahiplen")
+            .expect("iş var");
+
+        let mut frames: Vec<ParseProgress> = Vec::new();
+        let mut emit = |update: &ParseProgress| frames.push(update.clone());
+        let mut store = ProgressStore::Direct(&db);
+        let mut sink = JobProgressSink::new(Some(job.id.clone()), "surec-1".into(), &mut emit);
+        for page in 1..=40u32 {
+            sink.record(
+                &ParseProgress {
+                    stage: "pages".into(),
+                    done: page,
+                    total: Some(40),
+                },
+                &mut store,
+            );
+        }
+        sink.record(
+            &ParseProgress {
+                stage: "store".into(),
+                done: 0,
+                total: Some(40),
+            },
+            &mut store,
+        );
+        sink.record(
+            &ParseProgress {
+                stage: "store".into(),
+                done: 40,
+                total: Some(40),
+            },
+            &mut store,
+        );
+
+        let written = sink.written;
+        let skipped = sink.skipped;
+        let failed = sink.failed;
+        let metadata = sink.audit_metadata();
+        drop(sink);
+
+        assert_eq!(frames.len(), 42, "olay her karede arayüze gitmeli");
+        assert_eq!(failed, 0, "yazım düşmemeli");
+        assert!(
+            written >= 3,
+            "aşama kenarları yazılmalı (ilk kare, store başı, store sonu): {written}"
+        );
+        assert!(
+            written + skipped == 42,
+            "her kare ya yazıldı ya atlandı ({written} + {skipped})"
+        );
+        assert!(
+            written < 42,
+            "sayfa başına commit yapılmamalı: {written} yazım"
+        );
+
+        let row = db.get_job(&job.id).expect("oku").expect("satır");
+        assert_eq!(row.state, "running", "sayaç iş durumunu değiştirmez");
+        assert_eq!(row.progress_stage.as_deref(), Some("store"));
+        assert_eq!(row.progress_done, Some(40));
+        assert_eq!(row.progress_total, Some(40));
+        assert_eq!(row.progress, 1.0);
+
+        // Denetim yükü **yalnız sayı** taşır; metin/ad/yol yok.
+        let object = metadata.as_object().expect("nesne");
+        assert_eq!(object.len(), 4);
+        for forbidden in ["text", "fileName", "path"] {
+            assert!(object.get(forbidden).is_none(), "{forbidden} yazılmamalı");
+        }
+    }
+
+    /// **F04-T07 yeniden deneme denetimi — girdi çözümü.** Düğme yalnız satırı
+    /// `queued` yapmıyor; yürütülebilir işte sürüm çözülüp ayrıştırma
+    /// başlatılıyor. Maskeleme isteği (terimler/bölgeler) iş satırında
+    /// **saklanmadığı** için uydurulmuş bir istekle yeniden çalıştırılmaz.
+    #[test]
+    fn retry_runs_only_jobs_whose_input_is_known() {
+        assert_eq!(
+            runnable_parse_version("parse_document", Some("parse:sürüm-7")).as_deref(),
+            Some("sürüm-7")
+        );
+        assert_eq!(
+            runnable_parse_version("redaction", Some("redact:sürüm-7:abc")),
+            None,
+            "maskeleme isteği satırda yok; tahmin edilmez"
+        );
+        assert_eq!(
+            runnable_parse_version("parse_document", Some("import:sürüm-7")),
+            None,
+            "başka anahtar biçimi sessizce yorumlanmaz"
+        );
+        assert_eq!(
+            runnable_parse_version("parse_document", Some("parse:  ")),
+            None
+        );
+        assert_eq!(runnable_parse_version("parse_document", None), None);
+    }
+
+    /// **Yeniden deneme planı (gerçek kasa, bellek içi, worker yok).**
+    /// `failed → queued`, deneme bütçesi sıfırlanır, girdi anahtarından sürüm
+    /// çözülür; yürütücüsü olmayan iş türünde sürüm **uydurulmaz**.
+    #[test]
+    fn retry_plan_reopens_failed_jobs_and_resolves_the_parse_version() {
+        let db = Database::open_in_memory(&DatabaseKey::new([3u8; 32])).expect("kasa");
+        let case = db
+            .create_case(&NewCase {
+                title: "Yeniden deneme".into(),
+                case_kind: dim_storage::CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: dim_storage::Sensitivity::Normal,
+                default_ai_policy: dim_storage::AiPolicy::Off,
+            })
+            .expect("dosya");
+        let now = time::OffsetDateTime::now_utc();
+        // Enqueue `next_run_at`ı kendi saatinden yazar; sahiplenme ondan **sonra**
+        // olmalı (eşitlik yeterli değil).
+        let claim_at = now + time::Duration::seconds(1);
+        let parse_job = db
+            .enqueue_job_with_priority(
+                "parse_document",
+                Some(&case.id),
+                "fp-parse",
+                "parse:sürüm-7",
+                0,
+            )
+            .expect("iş");
+        let claimed = db
+            .claim_job_by_key(
+                "parse:sürüm-7",
+                "w1",
+                dim_storage::DEFAULT_LEASE_SECONDS,
+                claim_at,
+            )
+            .expect("sahiplen")
+            .expect("iş var");
+        db.fail_job(&claimed.id, "w1", "E_WORKER_TIMEOUT", false, claim_at)
+            .expect("başarısız");
+
+        let redact_job = db
+            .enqueue_job_with_priority(
+                "redaction",
+                Some(&case.id),
+                "fp-redact",
+                "redact:sürüm-7:abc",
+                0,
+            )
+            .expect("iş");
+        let claimed_redact = db
+            .claim_job_by_key(
+                "redact:sürüm-7:abc",
+                "w2",
+                dim_storage::DEFAULT_LEASE_SECONDS,
+                claim_at,
+            )
+            .expect("sahiplen")
+            .expect("iş var");
+        db.fail_job(
+            &claimed_redact.id,
+            "w2",
+            "E_WORKER_DISCONNECTED",
+            false,
+            claim_at,
+        )
+        .expect("başarısız");
+
+        // Anahtar okuması yürütücünün tek dayanağıdır: arayüze verilmez.
+        assert_eq!(
+            db.job_idempotency_key(&parse_job)
+                .expect("anahtar")
+                .as_deref(),
+            Some("parse:sürüm-7")
+        );
+
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.db = Some(db);
+        }
+        let hub = state.vault_handle();
+
+        let plan = plan_retry(&hub, &parse_job).expect("yeniden deneme");
+        assert_eq!(plan.job.state, "queued", "iş yeniden sıraya alınmalı");
+        assert_eq!(plan.job.attempt_count, 0, "deneme bütçesi sıfırlanır");
+        assert_eq!(
+            plan.version_id.as_deref(),
+            Some("sürüm-7"),
+            "sürüm anahtardan çözülür"
+        );
+        assert_eq!(plan.skipped, None);
+        assert!(
+            plan.options.is_none(),
+            "ayar kaydı olmayan işte uydurulmuş ayar dönmez"
+        );
+
+        let redact_plan = plan_retry(&hub, &redact_job).expect("yeniden deneme");
+        assert_eq!(redact_plan.job.state, "queued");
+        assert_eq!(redact_plan.version_id, None, "maskeleme isteği uydurulmaz");
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ — yeniden deneme gerçekten ayrıştırıyor.**
+    ///
+    /// Gerçek kasa ve gerçek worker: iş `failed` iken yeniden deneme planı
+    /// sürümü çözer, `run_parse` sayfaları yazar, iş `completed` olur ve
+    /// hiçbir adım "Sırada"da asılı kalmaz.
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=workers/document/.venv/bin/python cargo test
+    /// --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// retry_parses -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
+    fn retrying_a_failed_parse_job_really_parses_the_document() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/progress-pages.pdf");
+        let data = std::fs::read(&fixture).expect("fikstür");
+        let (state, _dir, version) = redaction_fixture_with(&data);
+
+        // İş: içe aktarma gibi `parse:<sürüm>` anahtarıyla açılır, bir kez
+        // sahiplenilip **başarısız** kapatılır (kullanıcının gördüğü durum).
+        let job_id = {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            let key = format!("parse:{}", version.id);
+            db.enqueue_job_with_priority("parse_document", None, "fp", &key, 0)
+                .expect("iş");
+            let claimed = db
+                .claim_job_by_key(
+                    &key,
+                    "w-once",
+                    dim_storage::DEFAULT_LEASE_SECONDS,
+                    time::OffsetDateTime::now_utc(),
+                )
+                .expect("sahiplen")
+                .expect("iş var");
+            db.fail_job(
+                &claimed.id,
+                "w-once",
+                "E_WORKER_TIMEOUT",
+                false,
+                time::OffsetDateTime::now_utc(),
+            )
+            .expect("başarısız");
+            claimed.id
+        };
+
+        let hub = state.vault_handle();
+        let slot = state.workers_handle();
+        let pool = state.parse_pool_handle();
+        let plan = plan_retry(&hub, &job_id).expect("plan");
+        assert_eq!(plan.job.state, "queued");
+        let version_id = plan.version_id.expect("sürüm çözülmeli");
+        assert_eq!(version_id, version.id);
+
+        let frames = Arc::new(Mutex::new(Vec::<ParseProgress>::new()));
+        let collected = Arc::clone(&frames);
+        let mut emit = |update: &ParseProgress| {
+            collected.lock().expect("kare").push(update.clone());
+        };
+        let started = Instant::now();
+        let view = run_parse(
+            &hub,
+            &slot,
+            &pool,
+            &version_id,
+            ParseOptions {
+                ocr: None,
+                ocr_lang: None,
+                text_encoding: None,
+                password: None,
+            },
+            &mut emit,
+        )
+        .expect("yeniden deneme ayrıştırması");
+        let elapsed = started.elapsed();
+        let seen = frames.lock().expect("kare").clone();
+        println!(
+            "yeniden deneme: {} sayfa, {} segment, {:?}, kareler {:?}",
+            view.pages,
+            view.stored_segments,
+            elapsed,
+            seen.iter().map(|f| f.stage.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(view.pages, 4, "fikstür 4 sayfa");
+        assert!(view.stored_segments > 0, "segment yazılmalı");
+        assert!(
+            seen.iter().any(|f| f.stage == "pages" && f.done > 0),
+            "canlı sayaç gelmeli: {seen:?}"
+        );
+        let guard = state.lock();
+        let job = guard
+            .db
+            .as_ref()
+            .expect("db")
+            .get_job(&job_id)
+            .expect("oku")
+            .expect("satır");
+        assert_eq!(
+            job.state, "completed",
+            "iş terminal olmalı, asılı kalmamalı"
+        );
+        assert_eq!(
+            job.progress_stage.as_deref(),
+            Some("store"),
+            "son sayaç aşaması kasaya yazma olmalı (ayrıştırma yolunda `scan` yok)"
+        );
+        assert_eq!(job.attempt_count, 1, "yeniden deneme yeni bir denemedir");
+    }
+
+    /// **Ayarların geri yüklenmesi (saf).** Kayıtlı ayar isteğe birebir geçer;
+    /// kayıt yoksa varsayılan + `restored=false`. Parola hiçbir yolda taşınmaz.
+    #[test]
+    fn retry_options_come_from_the_recorded_job_row() {
+        let stored = dim_storage::queue::JobParseOptions {
+            ocr: true,
+            ocr_lang: "tur+eng".into(),
+            text_encoding: "windows-1254".into(),
+            requires_password: true,
+        };
+        let (options, applied) = retry_parse_options(Some(&stored));
+        assert_eq!(options.ocr, Some(true));
+        assert_eq!(options.ocr_lang.as_deref(), Some("tur+eng"));
+        assert_eq!(options.text_encoding.as_deref(), Some("windows-1254"));
+        assert!(options.password.is_none(), "parola isteğe taşınmaz");
+        assert!(applied.restored, "kayıt geri yüklendi");
+        assert!(applied.ocr);
+        assert_eq!(applied.ocr_lang, "tur+eng");
+        assert_eq!(applied.text_encoding, "windows-1254");
+
+        let (defaults, applied) = retry_parse_options(None);
+        assert_eq!(defaults.ocr, None, "kayıt yok → OCR kapalı varsayılanı");
+        assert!(defaults.password.is_none());
+        assert!(!applied.restored, "kayıt yokluğu dürüstçe bildirilir");
+        assert!(!applied.ocr);
+        assert_eq!(applied.ocr_lang, "eng");
+        assert_eq!(applied.text_encoding, "auto");
+    }
+
+    /// Kaydedilmiş ayar planla birlikte gelir; **parola ile açılmış** iş
+    /// kendiliğinden yeniden başlatılmaz (satır `failed` kalır, sahte "başladı"
+    /// denmez).
+    #[test]
+    fn retry_plan_restores_recorded_options_and_holds_password_jobs() {
+        use dim_storage::queue::JobParseOptions;
+
+        let db = Database::open_in_memory(&DatabaseKey::new([5u8; 32])).expect("kasa");
+        let case = db
+            .create_case(&NewCase {
+                title: "Ayarlar".into(),
+                case_kind: dim_storage::CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: dim_storage::Sensitivity::Normal,
+                default_ai_policy: dim_storage::AiPolicy::Off,
+            })
+            .expect("dosya");
+        let now = time::OffsetDateTime::now_utc();
+        let claim_at = now + time::Duration::seconds(1);
+
+        let failed_parse = |key: &str| -> (String, String) {
+            let id = db
+                .enqueue_job_with_priority("parse_document", Some(&case.id), "fp", key, 0)
+                .expect("iş");
+            let claimed = db
+                .claim_job_by_key(key, "w1", dim_storage::DEFAULT_LEASE_SECONDS, claim_at)
+                .expect("sahiplen")
+                .expect("iş var");
+            db.fail_job(&claimed.id, "w1", "E_WORKER_TIMEOUT", false, claim_at)
+                .expect("başarısız");
+            (id, claimed.id)
+        };
+        // Anahtar biçimi `parse:<sürüm>`: sürüm kimliği anahtardan gelir.
+        let (with_settings, with_settings_id) = failed_parse("parse:v-tur");
+        db.set_job_parse_options(
+            &with_settings,
+            &JobParseOptions {
+                ocr: true,
+                ocr_lang: "tur".into(),
+                text_encoding: "auto".into(),
+                requires_password: false,
+            },
+            claim_at,
+        )
+        .expect("ayar");
+        let (with_password, with_password_id) = failed_parse("parse:v-parola");
+        db.set_job_parse_options(
+            &with_password,
+            &JobParseOptions {
+                ocr: false,
+                ocr_lang: "eng".into(),
+                text_encoding: "auto".into(),
+                requires_password: true,
+            },
+            claim_at,
+        )
+        .expect("ayar");
+
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.db = Some(db);
+        }
+        let hub = state.vault_handle();
+
+        let plan = plan_retry(&hub, &with_settings).expect("plan");
+        assert_eq!(plan.job.state, "queued");
+        assert_eq!(plan.job.id, with_settings_id);
+        assert_eq!(plan.skipped, None);
+        let stored = plan.options.as_ref().expect("ayar kaydı");
+        assert!(stored.ocr);
+        assert_eq!(stored.ocr_lang, "tur");
+        let (options, applied) = retry_parse_options(plan.options.as_ref());
+        assert_eq!(options.ocr, Some(true), "OCR ayarı isteğe geçer");
+        assert_eq!(options.ocr_lang.as_deref(), Some("tur"));
+        assert!(applied.restored);
+
+        let plan = plan_retry(&hub, &with_password).expect("plan");
+        assert_eq!(plan.job.id, with_password_id);
+        assert_eq!(
+            plan.skipped,
+            Some("password_required"),
+            "parola saklanmaz; parolasız deneme başlatılmaz"
+        );
+        assert_eq!(
+            plan.job.state, "failed",
+            "satır yeniden sıraya alınmaz (asılı `queued` yok)"
+        );
+        assert_eq!(plan.version_id, None);
+    }
+
+    /// Kuyruk satırı açılır, **sahiplenilmez**: `run_parse` kendisi sahiplenir.
+    fn enqueue_parse_job(state: &AppState, version_id: &str) -> String {
+        let guard = state.lock();
+        let db = guard.db.as_ref().expect("db");
+        db.enqueue_job_with_priority(
+            "parse_document",
+            None,
+            "fp",
+            &format!("parse:{version_id}"),
+            0,
+        )
+        .expect("iş")
+    }
+
+    /// İş sahiplenilip **başarısız** kapatılır (kullanıcının gördüğü durum).
+    fn failed_parse_job(state: &AppState, version_id: &str) -> String {
+        let key = format!("parse:{version_id}");
+        let guard = state.lock();
+        let db = guard.db.as_ref().expect("db");
+        db.enqueue_job_with_priority("parse_document", None, "fp", &key, 0)
+            .expect("iş");
+        // `enqueue` `next_run_at`ı kendi saatinden yazar; sahiplenme **sonra**
+        // olmalı (eşitlik yeterli değil).
+        let claim_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(1);
+        let claimed = db
+            .claim_job_by_key(&key, "w-once", dim_storage::DEFAULT_LEASE_SECONDS, claim_at)
+            .expect("sahiplen")
+            .expect("iş var");
+        db.fail_job(&claimed.id, "w-once", "E_WORKER_TIMEOUT", false, claim_at)
+            .expect("başarısız");
+        claimed.id
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ (kusur #58) — yeniden deneme kaydedilmiş ayarla koşar.**
+    ///
+    /// Gerçek kasa + gerçek worker + **metin katmanı olmayan** fikstür
+    /// (`fixtures/synthetic/scanned-page.pdf`, 1 sayfa, 33.380 bayt; sayfada
+    /// yalnız görüntü var, `get_text()` boş).
+    ///
+    /// 1. OCR **açık** koşu metni çıkarır ve ayarı iş satırına yazar.
+    /// 2. Ayar kaydı olmayan iş varsayılanlarla (OCR kapalı) koşarsa **metin
+    ///    çıkmaz** — eski davranışın sessiz farkı budur.
+    /// 3. Kayıtlı ayarla yeniden deneme metni üretir; segment sayısı 1'e eşittir
+    ///    (aynı belge + aynı ayar = aynı çıktı).
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=workers/document/.venv/bin/python cargo test
+    /// --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// retry_reuses -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa + tesseract; ölçüm elle koşulur"]
+    fn retry_reuses_the_recorded_ocr_setting_on_a_scanned_document() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/scanned-page.pdf");
+        let data = std::fs::read(&fixture).expect("fikstür");
+        assert!(data.starts_with(b"%PDF-"), "fikstür PDF olmalı");
+
+        let ocr_on = || ParseOptions {
+            ocr: Some(true),
+            ocr_lang: Some("eng".to_string()),
+            text_encoding: None,
+            password: None,
+        };
+        let text_of = |state: &AppState, run_id: &str| -> String {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            db.pages_for_run(run_id)
+                .expect("sayfalar")
+                .into_iter()
+                .map(|page| page.text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1 — ayarın kaydı: OCR açık koşu iş satırına yazılır.
+        let (state, _dir, version) = redaction_fixture_with(&data);
+        let job = enqueue_parse_job(&state, &version.id);
+        let mut noop = |_: &ParseProgress| {};
+        let first = run_parse(
+            &state.vault_handle(),
+            &state.workers_handle(),
+            &state.parse_pool_handle(),
+            &version.id,
+            ocr_on(),
+            &mut noop,
+        )
+        .expect("OCR koşusu");
+        let first_text = text_of(&state, &first.parse_run.id);
+        let recorded = {
+            let guard = state.lock();
+            guard
+                .db
+                .as_ref()
+                .expect("db")
+                .job_parse_options(&job)
+                .expect("oku")
+        };
+        let recorded = recorded.expect("ayar kaydı yazılmalı");
+        assert!(recorded.ocr, "OCR açık ayarı iş satırına yazılır");
+        assert_eq!(recorded.ocr_lang, "eng");
+        assert!(!recorded.requires_password, "parola kullanılmadı");
+
+        // 2 — kayıt yok: varsayılan (OCR kapalı) → metin çıkmaz.
+        let (state_default, _dir2, version2) = redaction_fixture_with(&data);
+        let job2 = failed_parse_job(&state_default, &version2.id);
+        let plan = plan_retry(&state_default.vault_handle(), &job2).expect("plan");
+        assert!(plan.options.is_none(), "0023 öncesi iş: ayar kaydı yok");
+        let (defaults, applied) = retry_parse_options(plan.options.as_ref());
+        assert!(!applied.restored, "varsayılan koşu dürüstçe bildirilir");
+        let mut noop2 = |_: &ParseProgress| {};
+        let without = run_parse(
+            &state_default.vault_handle(),
+            &state_default.workers_handle(),
+            &state_default.parse_pool_handle(),
+            &version2.id,
+            defaults,
+            &mut noop2,
+        )
+        .expect("varsayılan koşu");
+        let without_text = text_of(&state_default, &without.parse_run.id);
+
+        // 3 — kayıtlı ayar: aynı metin çıkar.
+        let (state_recorded, _dir3, version3) = redaction_fixture_with(&data);
+        let job3 = failed_parse_job(&state_recorded, &version3.id);
+        {
+            let guard = state_recorded.lock();
+            guard
+                .db
+                .as_ref()
+                .expect("db")
+                .set_job_parse_options(
+                    &job3,
+                    &dim_storage::queue::JobParseOptions {
+                        ocr: true,
+                        ocr_lang: "eng".into(),
+                        text_encoding: "auto".into(),
+                        requires_password: false,
+                    },
+                    time::OffsetDateTime::now_utc(),
+                )
+                .expect("ayar");
+        }
+        let plan = plan_retry(&state_recorded.vault_handle(), &job3).expect("plan");
+        let (options, applied) = retry_parse_options(plan.options.as_ref());
+        assert!(applied.restored, "ayar iş satırından geri yüklendi");
+        let mut noop3 = |_: &ParseProgress| {};
+        let with = run_parse(
+            &state_recorded.vault_handle(),
+            &state_recorded.workers_handle(),
+            &state_recorded.parse_pool_handle(),
+            &version3.id,
+            options,
+            &mut noop3,
+        )
+        .expect("kayıtlı ayarla koşu");
+        let with_text = text_of(&state_recorded, &with.parse_run.id);
+
+        println!(
+            "1) OCR açık: {} sayfa / {} segment, metin {:?}\n\
+             2) varsayılan (eski davranış): {} sayfa / {} segment, metin {:?}\n\
+             3) kayıtlı ayar (yeni davranış): {} sayfa / {} segment, metin {:?}",
+            first.pages,
+            first.stored_segments,
+            first_text.trim(),
+            without.pages,
+            without.stored_segments,
+            without_text.trim(),
+            with.pages,
+            with.stored_segments,
+            with_text.trim()
+        );
+        assert!(
+            first_text.contains("MADDE 1"),
+            "OCR metni okunmalı: {first_text:?}"
+        );
+        assert_eq!(
+            without_text.trim(),
+            "",
+            "varsayılan (OCR kapalı) koşuda metin çıkmaz — ölçülen fark"
+        );
+        assert!(
+            with_text.contains("MADDE 1"),
+            "kayıtlı ayarla metin çıkar: {with_text:?}"
+        );
+        assert_eq!(
+            with.stored_segments, first.stored_segments,
+            "aynı belge + aynı ayar = aynı segment sayısı"
+        );
+    }
+
+    /// **F04-T07 ortamı:** gerçek kasa dosyası + bir belge sürümü; worker yok.
+    /// Şifreli blob gerçekten yazılır (maskeleme girdisi oradan okunur).
+    fn redaction_fixture() -> (AppState, PathBuf, DocumentVersion) {
+        redaction_fixture_with(b"%PDF-1.7 maskeleme girdisi")
+    }
+
+    fn redaction_fixture_with(data: &[u8]) -> (AppState, PathBuf, DocumentVersion) {
+        use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+
+        let dir = std::env::temp_dir().join(format!(
+            "dim-redact-job-{}-{}",
+            std::process::id(),
+            PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dizin");
+        let vault_path = dir.join("vault.dimvault");
+        let (file, _recovery, unlocked) =
+            VaultFile::create(&vault_path, "maskeleme-parola").expect("kasa");
+        let vault_id = vault_id_from_master(unlocked.master_key());
+        let db = open_database(&file.path, &unlocked, &vault_id).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Maskeleme".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: Sensitivity::Normal,
+                default_ai_policy: AiPolicy::Off,
+            })
+            .expect("dosya");
+        let sha = "a".repeat(64);
+        let aad = format!("{}:original:{sha}", case.id);
+        let blobs = dir.join("blobs");
+        let path = unlocked
+            .write_blob(&blobs, data, aad.as_bytes())
+            .expect("blob");
+        let storage_id = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("ad")
+            .to_string();
+        let size =
+            i64::try_from(std::fs::metadata(&path).expect("boyut").len()).unwrap_or(i64::MAX);
+        let blob_id = db
+            .create_blob_record(&storage_id, size, &aad)
+            .expect("blob kaydı");
+        let doc = db
+            .create_document(&case.id, "sozlesme.pdf", "pdf", None, "unknown")
+            .expect("belge");
+        let version = db
+            .add_version_with_parent(
+                &doc.id,
+                &case.id,
+                &blob_id,
+                &sha,
+                size,
+                "application/pdf",
+                None,
+            )
+            .expect("sürüm");
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.unlocked = Some(unlocked);
+            guard.db = Some(db);
+            guard.path = Some(file.path.clone());
+            guard.vault_id = Some(vault_id);
+        }
+        (state, dir, version)
+    }
+
+    /// Maskeleme artık **kendi iş türünü** açar (`redaction`) ve sahiplenir;
+    /// yürüyen iş varken ikinci worker başlatılmaz (`E_REDACT_BUSY`).
+    #[test]
+    fn redaction_opens_its_own_job_and_refuses_a_second_run() {
+        let (state, _dir, version) = redaction_fixture();
+        let request = RedactRequest::Terms(vec!["Gizli".into()]);
+        let prep = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request).expect("hazırlık")
+        };
+        let job = prep.job.as_ref().expect("iş sahiplenilmeli");
+        assert_eq!(job.job_type, "redaction");
+        assert_eq!(job.state, "running");
+        assert_eq!(job.lease_owner.as_deref(), Some(prep.owner.as_str()));
+        assert!(
+            !prep.data.is_empty(),
+            "şifreli blob çözülmeli (maskeleme girdisi)"
+        );
+
+        let err = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request)
+                .map(|_| ())
+                .expect_err("ikinci koşu reddedilmeli")
+        };
+        assert_eq!(err.code, "E_REDACT_BUSY");
+
+        let regions = RedactRequest::Regions(vec![(0, [10.0, 10.0, 40.0, 40.0])]);
+        let other = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &regions).expect("bölge işi")
+        };
+        assert_ne!(
+            other.job.as_ref().expect("bölge işi").id,
+            job.id,
+            "farklı maskeleme isteği ayrı iş satırı"
+        );
+    }
+
+    /// Bitmiş maskeleme yeniden istenirse **yeni** iş satırı açılır; terminal
+    /// satır yeniden yazılmaz (§17.2).
+    #[test]
+    fn a_completed_redaction_opens_a_fresh_job_row() {
+        let (state, _dir, version) = redaction_fixture();
+        let request = RedactRequest::Terms(vec!["Gizli".into()]);
+        let first = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request).expect("hazırlık")
+        };
+        let first_job = first.job.clone().expect("iş");
+        {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            db.complete_job(&first_job.id, &first.owner, time::OffsetDateTime::now_utc())
+                .expect("bitir");
+        }
+        let second = {
+            let guard = state.lock();
+            prepare_redaction(&guard, &version.id, &request).expect("ikinci hazırlık")
+        };
+        let second_job = second.job.expect("yeni iş");
+        assert_ne!(second_job.id, first_job.id, "yeni niyet, yeni satır");
+        assert_eq!(second_job.state, "running");
+        let guard = state.lock();
+        let row = guard
+            .db
+            .as_ref()
+            .expect("db")
+            .get_job(&first_job.id)
+            .expect("oku")
+            .expect("satır");
+        assert_eq!(row.state, "completed", "eski satır terminal kalır");
+    }
+
+    /// Gerçek worker'lı ölçümler için python + worker klasörü.
+    fn redaction_dev_python() -> Option<PathBuf> {
+        let dir = dim_ingest::worker::dev_worker_dir()?;
+        dim_ingest::worker::dev_python_with_module(&dir, "pymupdf")
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ — kasa kilidi worker boyunca tutulmaz.** Eski kod
+    /// `state.lock()` altında worker'ı çalıştırıyordu: uzun maskede bütün arayüz
+    /// kilitleniyor, iptal düğmesine basılamıyordu. Bu test maskeleme sürerken
+    /// kilidi örnekler ve **en uzun bekleme**yi yazar.
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=workers/document/.venv/bin/python cargo test
+    /// --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// redaction_runs_off_the_vault_lock -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
+    fn redaction_runs_off_the_vault_lock_and_reports_pages() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/progress-pages.pdf");
+        let data = std::fs::read(&fixture).expect("fikstür");
+        let (state, _dir, version) = redaction_fixture_with(&data);
+        let hub = state.vault_handle();
+        let slot = state.workers_handle();
+        let pool = state.parse_pool_handle();
+        let frames = Arc::new(Mutex::new(Vec::<ParseProgress>::new()));
+        let collected = Arc::clone(&frames);
+        let vid = version.id.clone();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            let mut emit = |update: &ParseProgress| {
+                collected.lock().expect("kare").push(update.clone());
+            };
+            run_redaction(
+                &hub,
+                &slot,
+                &pool,
+                &vid,
+                RedactRequest::Terms(vec!["Sayfa 2".to_string()]),
+                &mut emit,
+            )
+        });
+
+        // Worker gerçekten koşmaya başlasın (ilk `redact` karesi).
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if frames
+                .lock()
+                .expect("kare")
+                .iter()
+                .any(|frame| frame.stage == "redact")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Kilit beklemesini örnekle: worker sürerken başka komutlar beklemez.
+        let mut worst = Duration::ZERO;
+        let sampling = Instant::now();
+        while !handle.is_finished() && sampling.elapsed() < Duration::from_secs(60) {
+            let probe = Instant::now();
+            drop(state.lock());
+            worst = worst.max(probe.elapsed());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let view = handle.join().expect("iş parçacığı").expect("maskeleme");
+        let seen = frames.lock().expect("kare").clone();
+        println!(
+            "maskeleme: {:?} · en uzun kilit beklemesi {:?} · kareler {:?}",
+            started.elapsed(),
+            worst,
+            seen
+        );
+
+        assert!(
+            seen.iter()
+                .any(|frame| frame.stage == "redact" && frame.done > 0),
+            "gerçek sayfa sayacı gelmeli: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|frame| frame.stage == "verify" && frame.done > 0),
+            "doğrulama aşaması da bildirilmeli: {seen:?}"
+        );
+        // Aşama sırası gerçek iş sırasıdır (F04-T07): kuyruk satırına en son
+        // yazılan aşama `scan` olur; `pack`/`verify` ondan önce gelmeli.
+        let stages: Vec<&str> = {
+            let mut out: Vec<&str> = Vec::new();
+            for frame in &seen {
+                if out.last().copied() != Some(frame.stage.as_str()) {
+                    out.push(frame.stage.as_str());
+                }
+            }
+            out
+        };
+        assert_eq!(
+            stages,
+            vec!["start", "redact", "pack", "verify", "scan"],
+            "aşama sırası: {seen:?}"
+        );
+        assert!(
+            worst < Duration::from_millis(150),
+            "kasa kilidi worker boyunca tutulmamalı; en uzun bekleme {worst:?}"
+        );
+        assert!(view.hits > 0, "terim fikstürde bulunmalı");
+        assert!(view.remaining.is_empty());
+        let guard = state.lock();
+        let row = guard
+            .db
+            .as_ref()
+            .expect("db")
+            .job_by_key(&format!(
+                "redact:{}:{}",
+                version.id,
+                RedactRequest::Terms(vec!["Sayfa 2".to_string()]).fingerprint()
+            ))
+            .expect("oku")
+            .expect("iş satırı");
+        assert_eq!(row.state, "completed", "iş kuyrukta kapanmalı");
+        assert_eq!(
+            row.progress_stage.as_deref(),
+            Some("scan"),
+            "kuyruk satırındaki son aşama gerçek iş sırasını yansıtır"
+        );
+    }
+
+    /// **F04-T07 ÖLÇÜMÜ — gerçek iptal.** Maskeleme sürerken iptal, süreci
+    /// durdurur; **hiçbir çıktı** yazılmaz ve iş `canceled` kapanır (§17.2).
+    ///
+    /// Elle: `DIM_WORKER_PYTHON=… cargo test --manifest-path
+    /// apps/desktop/src-tauri/Cargo.toml --lib redaction_cancel -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
+    fn redaction_cancel_stops_the_worker_and_writes_nothing() {
+        if redaction_dev_python().is_none() {
+            eprintln!("python+pymupdf yok; test atlandı");
+            return;
+        }
+        // 120 sayfa: iptal için gerçek zaman penceresi. Fikstür **depoda**
+        // durur (`fixtures/synthetic/cancel-pages.pdf`, generate.py üretir):
+        // test süreç başlatmaz (ADR-05) ve ölçüm her koşuda aynı belgeyi kullanır.
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/synthetic/cancel-pages.pdf");
+        let data = std::fs::read(&fixture).expect("cancel-pages.pdf fikstürü");
+        let (state, _vault_dir, version) = redaction_fixture_with(&data);
+        let before = state
+            .lock()
+            .db
+            .as_ref()
+            .expect("db")
+            .list_documents(&version.case_id)
+            .expect("belgeler")
+            .len();
+
+        let hub = state.vault_handle();
+        let slot = state.workers_handle();
+        let pool = state.parse_pool_handle();
+        let frames = Arc::new(Mutex::new(Vec::<ParseProgress>::new()));
+        let collected = Arc::clone(&frames);
+        let vid = version.id.clone();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            let mut emit = |update: &ParseProgress| {
+                collected.lock().expect("kare").push(update.clone());
+            };
+            run_redaction(
+                &hub,
+                &slot,
+                &pool,
+                &vid,
+                RedactRequest::Terms(vec!["Gizli".to_string()]),
+                &mut emit,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut stopped = 0usize;
+        while Instant::now() < deadline {
+            let progress_read = frames.lock().expect("kare").iter().any(|frame| {
+                frame.stage == "redact" && frame.done >= 1 && frame.done < frame.total.unwrap_or(0)
+            });
+            if progress_read {
+                stopped = state.cancel_all_workers();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(stopped >= 1, "iptal, yürüyen worker'ı durdurmalı");
+        let outcome = handle.join().expect("iş parçacığı");
+        println!("iptal {:?} sonra döndü", started.elapsed());
+        let err = outcome
+            .err()
+            .expect("iptal edilen maskeleme çıktı üretmemeli");
+        assert_eq!(err.code, "E_WORKER_CANCELED");
+
+        let guard = state.lock();
+        let db = guard.db.as_ref().expect("db");
+        let after = db.list_documents(&version.case_id).expect("belgeler").len();
+        assert_eq!(after, before, "yarım/ maskeli belge yazılmamalı");
+        let job = db
+            .job_by_key(&format!(
+                "redact:{}:{}",
+                version.id,
+                RedactRequest::Terms(vec!["Gizli".to_string()]).fingerprint()
+            ))
+            .expect("oku")
+            .expect("iş satırı");
+        assert_eq!(job.state, "canceled", "iş canceled kapanmalı");
+    }
+
+    /// **§17.3 ölçümü — gerçek kasa + gerçek worker.** İki belge paralel
+    /// ayrıştırıldığında duvar saati, seri toplamdan **kısadır** ve iki
+    /// ayrıştırma gerçekten **çakışır**; veritabanı yazımları kasa kilidi
+    /// altında seri kalır (kasa başına tek yazıcı).
+    ///
+    /// Elle koşulur (gerçek Python worker gerekir):
+    /// `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+    /// two_parses -- --ignored --nocapture`
+    #[test]
+    #[ignore = "gerçek worker + gerçek kasa; F15 ölçümü elle koşulur"]
+    fn two_parses_run_concurrently_on_a_real_vault() {
+        use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+
+        let dir = std::env::temp_dir().join(format!("dim-parse-parallel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dizin");
+        let vault_path = dir.join("vault.dimvault");
+        let (file, _recovery, unlocked) =
+            VaultFile::create(&vault_path, "olcum-parola").expect("kasa");
+        let vault_id = vault_id_from_master(unlocked.master_key());
+        let db = open_database(&file.path, &unlocked, &vault_id).expect("db");
+        let state = AppState::default();
+        {
+            let mut guard = state.lock();
+            guard.unlocked = Some(unlocked);
+            guard.db = Some(db);
+            guard.path = Some(file.path.clone());
+            guard.vault_id = Some(vault_id);
+        }
+
+        let case = {
+            let guard = state.lock();
+            guard
+                .db
+                .as_ref()
+                .expect("db")
+                .create_case(&NewCase {
+                    title: "Paralel ölçüm".into(),
+                    case_kind: CaseKind::Review,
+                    reference_code: None,
+                    jurisdiction_label: None,
+                    practice_area: None,
+                    sensitivity: Sensitivity::Normal,
+                    default_ai_policy: AiPolicy::Off,
+                })
+                .expect("dosya")
+        };
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/synthetic");
+        let blob_dir = file.path.parent().expect("dizin").join("blobs");
+        let mut versions = Vec::new();
+        for name in ["progress-pages.pdf", "redaction-hidden.pdf"] {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            let vault = guard.unlocked.as_ref().expect("kasa");
+            let result = import_path(db, vault, &blob_dir, &case.id, &fixtures.join(name), false)
+                .expect("içe aktarma");
+            let version = match result {
+                ImportResult::Imported { version, .. } => version,
+                ImportResult::Duplicate { version_id, .. } => {
+                    db.get_version(&version_id).expect("oku").expect("sürüm")
+                }
+            };
+            drop(guard);
+            versions.push(version.id);
+        }
+
+        let hub = state.vault_handle();
+        let slot = state.workers_handle();
+        let pool = state.parse_pool_handle();
+
+        // Isınma: ilk süreç başlatma disk/önbellek maliyetini ölçüme katmaz.
+        for version in &versions {
+            let mut emit = |_p: &ParseProgress| {};
+            run_parse(
+                &hub,
+                &slot,
+                &pool,
+                version,
+                ParseOptions::default(),
+                &mut emit,
+            )
+            .expect("ısınma ayrıştırması");
+        }
+
+        // Seri taban: aynı iki belge sırayla.
+        let serial_started = Instant::now();
+        for version in &versions {
+            let mut emit = |_p: &ParseProgress| {};
+            run_parse(
+                &hub,
+                &slot,
+                &pool,
+                version,
+                ParseOptions::default(),
+                &mut emit,
+            )
+            .expect("seri ayrıştırma");
+        }
+        let serial_wall = serial_started.elapsed().as_secs_f64();
+
+        // Paralel: iki belge aynı anda (havuz kapasitesi 2).
+        let started = Instant::now();
+        let marks = Arc::new(Mutex::new(Vec::<(usize, f64, f64)>::new()));
+        let mut handles = Vec::new();
+        for (index, version) in versions.iter().enumerate() {
+            let hub = Arc::clone(&hub);
+            let slot = Arc::clone(&slot);
+            let pool = Arc::clone(&pool);
+            let marks = Arc::clone(&marks);
+            let version = version.clone();
+            handles.push(std::thread::spawn(move || {
+                let begin = started.elapsed().as_secs_f64();
+                let mut emit = |_p: &ParseProgress| {};
+                let outcome = run_parse(
+                    &hub,
+                    &slot,
+                    &pool,
+                    &version,
+                    ParseOptions::default(),
+                    &mut emit,
+                );
+                let end = started.elapsed().as_secs_f64();
+                marks.lock().expect("ölçüm").push((index, begin, end));
+                outcome.map(|view| view.pages)
+            }));
+        }
+        let parallel: Vec<Result<usize, ApiError>> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("iş parçacığı"))
+            .collect();
+        let parallel_wall = started.elapsed().as_secs_f64();
+        assert!(
+            parallel.iter().all(Result::is_ok),
+            "paralel ayrıştırma düştü: {parallel:?}"
+        );
+
+        // Çakışma kanıtı: iki aralık kesişmeli (gerçekten aynı anda koşuyorlar).
+        let samples = marks.lock().expect("ölçüm").clone();
+        let overlap = (samples[0].2.min(samples[1].2) - samples[0].1.max(samples[1].1)).max(0.0);
+        assert!(overlap > 0.02, "ayrıştırmalar çakışmadı ({overlap:.3} sn)");
+
+        // Veri bütünlüğü: her sürümün başarılı koşusu var, yuva boşaldı.
+        {
+            let guard = state.lock();
+            let db = guard.db.as_ref().expect("db");
+            for version in &versions {
+                let runs = db.list_parse_runs(version).expect("koşular");
+                assert!(
+                    runs.iter().any(|run| run.status == "succeeded"),
+                    "başarılı koşu yok"
+                );
+            }
+        }
+        assert!(state.workers_lock().is_empty(), "yuva temizlenmeli");
+
+        println!(
+            "parallel_wall={parallel_wall:.3}s serial_wall={serial_wall:.3}s overlap={overlap:.3}s marks={samples:?}"
+        );
+        assert!(
+            parallel_wall < serial_wall * 0.9,
+            "paralel koşu seri toplamdan belirgin hızlı olmalı: {parallel_wall:.3} vs {serial_wall:.3}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Arama kipi adı sunucuda çözülür: boş → `auto`, bilinmeyen reddedilir.
+    /// İki komut (`search_segments_page`, `search_segments_total`) aynı kuralı
+    /// kullanır; ayrışırsa sayfa ile sayı farklı kipe ait olurdu.
+    #[test]
+    fn search_mode_names_are_validated_and_empty_means_auto() {
+        assert!(matches!(parse_search_mode(None), Ok(SearchMode::Auto)));
+        assert!(matches!(
+            parse_search_mode(Some("   ")),
+            Ok(SearchMode::Auto)
+        ));
+        assert!(matches!(
+            parse_search_mode(Some("phrase")),
+            Ok(SearchMode::Phrase)
+        ));
+        assert!(matches!(
+            parse_search_mode(Some("Akıllı")),
+            Err(ApiError { .. })
+        ));
+        assert_eq!(
+            parse_search_mode(Some("fuzzy")).unwrap_err().code,
+            "E_SEARCH_QUERY"
+        );
+    }
+
+    /// Ayrıştırma hatasının tekrar sınıfı: yalnız geçici altyapı hataları
+    /// yeniden denenir. Belgeye özgü hatalar tekrar denenirse aynı belge için
+    /// üç deneme harcanır ve kullanıcıya yanlış "geçici hata" izlenimi verilir.
+    /// **Disk dolu ve kullanıcı iptali** de tekrar denenmez (§17.4).
+    #[test]
+    fn only_transport_failures_are_retried() {
+        for code in [
+            "E_WORKER_DISCONNECTED",
+            "E_WORKER_TIMEOUT",
+            "E_WORKER_FRAME",
+            "E_WORKER_RESPONSE",
+            "E_IO",
+        ] {
+            assert!(parse_failure_is_retryable(code), "{code} tekrar denenmeli");
+        }
+        for code in [
+            "E_WORKER_MISSING",
+            "E_PARSE",
+            "E_PDF_PASSWORD",
+            "E_UNSUPPORTED",
+            "E_NOT_FOUND",
+            "E_DISK_FULL",
+            "E_WORKER_CANCELED",
+        ] {
+            assert!(
+                !parse_failure_is_retryable(code),
+                "{code} tekrar denenmemeli"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_accepts_only_a_bare_backup_file_name() {
+        assert_eq!(
+            rollback_backup_name("vault.db.v12-pre-update.bak").expect("ad"),
+            "vault.db.v12-pre-update.bak"
+        );
+        for bad in [
+            "",
+            "   ",
+            " vault.db.v12-pre-update.bak",
+            "../vault.db.v12-pre-update.bak",
+            "/tmp/vault.db.v12-pre-update.bak",
+            "..\\vault.db.v12-pre-update.bak",
+            "alt/vault.db.v12-pre-update.bak",
+        ] {
+            assert_eq!(
+                rollback_backup_name(bad).unwrap_err().code,
+                "E_ROLLBACK_BACKUP",
+                "reddedilmeli: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_needs_the_exact_confirmation() {
+        assert!(rollback_confirmed("GERİ DÖN"));
+        assert!(rollback_confirmed("  GERİ DÖN  "), "kırpma hoş görülür");
+        for bad in ["", "GERI DON", "geri dön", "GERİ DÖN!", "onayla"] {
+            assert!(!rollback_confirmed(bad), "reddedilmeli: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn inventory_gate_accepts_only_docx_and_udf() {
+        assert!(inventory_mime_supported(INVENTORY_MIMES[0]));
+        assert!(inventory_mime_supported("application/udf"));
+        for mime in [
+            "application/pdf",
+            "image/jpeg",
+            "text/plain",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "",
+        ] {
+            assert!(!inventory_mime_supported(mime), "reddedilmeli: {mime:?}");
+        }
+    }
+
+    #[test]
+    fn package_report_explains_a_missing_package() {
+        let view = read_worker_package(Path::new("/olmayan/worker/paketi")).expect("rapor");
+        assert!(!view.found);
+        assert!(view.manifest.is_none() && view.verification.is_none());
+        assert!(
+            view.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("geliştirme"),
+            "gerekçe yazılmalı: {:?}",
+            view.note
+        );
+    }
+
+    fn package_fixture() -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("dim-worker-pkg-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(dir.join("_internal")).expect("dizin");
+        std::fs::write(dir.join("dim-worker"), b"ikili").expect("ikili");
+        std::fs::write(dir.join("_internal").join("base_library.zip"), b"arsiv").expect("arsiv");
+        dir
+    }
+
+    fn write_manifest(dir: &Path, tamper: bool) {
+        let binary = if tamper { "baska" } else { "ikili" };
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "workerVersion": "0.1.0",
+            "mode": "onedir",
+            "buildPlatform": "test-arm64",
+            "pythonVersion": "3.12.0",
+            "pyinstallerVersion": "6.11.1",
+            "entryPoint": "dim-worker",
+            "totals": {"files": 2, "symlinks": 0, "bytes": 10, "truncated": false, "unsafeLinks": 0},
+            "roles": {"bootloader": 1, "stdlib_archive": 1},
+            "tesseract": {"bundled": false, "note": "sistemde kurulu olmalı"},
+            "files": [
+                {"path": "dim-worker", "role": "bootloader", "kind": "file",
+                 "bytes": binary.len(), "sha256": hex::encode(Sha256::digest(binary.as_bytes()))},
+                {"path": "_internal/base_library.zip", "role": "stdlib_archive", "kind": "file",
+                 "bytes": 5, "sha256": hex::encode(Sha256::digest(b"arsiv"))}
+            ]
+        });
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            serde_json::to_string(&manifest).expect("json"),
+        )
+        .expect("manifest");
+    }
+
+    #[test]
+    fn package_report_verifies_a_synthetic_package() {
+        let dir = package_fixture();
+        write_manifest(&dir, false);
+        let view = read_worker_package(&dir).expect("rapor");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(view.found, "{:?}", view.note);
+        let manifest = view.manifest.expect("manifest");
+        assert_eq!(manifest.worker_version, "0.1.0");
+        assert_eq!(manifest.totals.files, 2);
+        assert_eq!(manifest.roles.get("bootloader"), Some(&1));
+        let verification = view.verification.expect("doğrulama");
+        assert!(verification.ok, "{verification:?}");
+        assert_eq!(verification.verified, 2);
+        assert!(verification.entry_point_present);
+    }
+
+    #[test]
+    fn package_report_reports_tampering_instead_of_passing() {
+        let dir = package_fixture();
+        write_manifest(&dir, true);
+        let view = read_worker_package(&dir).expect("rapor");
+        let _ = std::fs::remove_dir_all(&dir);
+        let verification = view.verification.expect("doğrulama");
+        assert!(!verification.ok, "kurcalama geçmemeli");
+        assert!(verification.problems.iter().any(|p| p.path == "dim-worker"
+            && p.problem == dim_ingest::packaging::PackageProblemKind::HashChanged));
+    }
+
+    #[test]
+    fn package_report_flags_a_package_without_manifest() {
+        let dir = package_fixture();
+        let view = read_worker_package(&dir).expect("rapor");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!view.found);
+        assert!(
+            view.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("manifest"),
+            "gerekçe yazılmalı: {:?}",
+            view.note
+        );
+    }
+
+    #[test]
+    fn directory_gets_vault_file_name() {
+        let p = resolve_vault_path("DimTest").expect("yol");
+        assert!(p.ends_with("DimTest/vault.dimvault") || p.ends_with("DimTest\\vault.dimvault"));
+    }
+
+    #[test]
+    fn explicit_extension_is_kept() {
+        let p = resolve_vault_path("~/DimTest/ozel.dimvault").expect("yol");
+        assert!(p.ends_with("ozel.dimvault"));
+    }
+
+    #[test]
+    fn case_payload_embeds_coverage_block() {
+        use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+        let db = Database::open_in_memory(&DatabaseKey::new([90u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kapsam".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: Sensitivity::Normal,
+                default_ai_policy: AiPolicy::Off,
+            })
+            .expect("case");
+        let coverage = ExportCoverage::from_report(&db.coverage_report(&case.id).expect("rapor"));
+        let payload = case_payload(&db, &case.id, &coverage).expect("yük");
+        assert_eq!(
+            payload["coverage"]["statement"],
+            dim_storage::COVERAGE_STATEMENT
+        );
+        assert_eq!(payload["coverage"]["documents"], 0);
+        assert_eq!(payload["coverage"]["complete"], false);
+        assert_eq!(payload["coverage"]["textPages"], 0);
+        // Rapor bölümü tablo başlığıyla başlar ve tüm sayımları taşır.
+        let section = coverage_section(&coverage);
+        assert_eq!(section["heading"], "İncelenen kapsam");
+        assert_eq!(section["rows"][0][0], "Ölçü");
+        assert_eq!(
+            section["rows"].as_array().map(Vec::len),
+            Some(coverage.rows().len() + 1)
+        );
+        assert_eq!(
+            section["lines"].as_array().map(Vec::len),
+            Some(coverage.warnings.len() + 1)
+        );
+        assert_eq!(
+            section["lines"]
+                .as_array()
+                .and_then(|lines| lines.last())
+                .cloned(),
+            Some(serde_json::json!(dim_storage::COVERAGE_STATEMENT))
+        );
+        // CSV yorumları tablo başlığını kirletmez.
+        assert!(coverage
+            .csv_comment_block()
+            .lines()
+            .all(|l| l.starts_with('#')));
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[allow(clippy::large_enum_variant)] // IPC yanıtı; kutu serde çıktısını değiştirmez ama gereksiz karmaşıklık
+pub enum ImportView {
+    Imported {
+        document: Document,
+        version: DocumentVersion,
+    },
+    Duplicate {
+        document_id: String,
+        version_id: String,
+        display_name: String,
+    },
+}
+
+#[tauri::command]
+pub fn document_import(
+    state: State<'_, AppState>,
+    case_id: String,
+    path: String,
+) -> Result<ImportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let blob_dir = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs");
+
+    let result = import_path(db, vault, &blob_dir, &case_id, Path::new(&path), false)?;
+    Ok(match result {
+        ImportResult::Imported { document, version } => ImportView::Imported { document, version },
+        ImportResult::Duplicate {
+            document_id,
+            version_id,
+            display_name,
+        } => ImportView::Duplicate {
+            document_id,
+            version_id,
+            display_name,
+        },
+    })
+}
+
+#[tauri::command]
+pub fn document_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<Document>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_documents(&case_id)?)
+}
+
+/// Belgenin sürümleri (en yeniden eskiye). F12-T13'te emsale tam metin
+/// aktarılırken kaynak sürüm bu listeden **kullanıcı tarafından** seçilir;
+/// "en yeni sürüm" varsayımı yapılmaz.
+#[tauri::command]
+pub fn document_version_list(
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<Vec<DocumentVersion>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_versions(&document_id)?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentPagesView {
+    pub parse_run: ParseRun,
+    pub pages: Vec<PageRow>,
+}
+
+/// Bir sürümün en güncel ayrıştırma koşusunu ve sayfalarını döndürür.
+#[tauri::command]
+pub fn anchor_create(state: State<'_, AppState>, input: NewAnchor) -> Result<AnchorRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_anchor(&input)?)
+}
+
+#[tauri::command]
+pub fn anchor_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<AnchorRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_anchors(&case_id)?)
+}
+
+/// Anchor'ı okuyucuda açılacak sayfaya çözer (F07 "kaynağa git").
+/// F07-T12: kopmuş/eski bağlantı için güncel sürümde yeniden bağlama önerisi.
+/// Eşleşme yoksa `unresolved`, birden fazlaysa `ambiguous` döner; öneri
+/// kullanıcı onayı olmadan anchor'ı taşımaz.
+#[tauri::command]
+pub fn anchor_rebind_suggestion(
+    state: State<'_, AppState>,
+    anchor_id: String,
+) -> Result<RebindSuggestion, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.rebind_suggestion(&anchor_id)?)
+}
+
+/// Anchor'ı güncel sürümdeki **doğrulanmış** konuma taşır. Alıntı verilen
+/// offset'te birebir durmuyorsa bağ değişmez.
+#[tauri::command]
+pub fn anchor_rebind(
+    state: State<'_, AppState>,
+    anchor_id: String,
+    segment_id: String,
+    start_offset: i64,
+) -> Result<AnchorRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.rebind_anchor(&anchor_id, &segment_id, start_offset)?)
+}
+
+#[tauri::command]
+pub fn anchor_locate(
+    state: State<'_, AppState>,
+    anchor_id: String,
+) -> Result<Option<AnchorLocation>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.locate_anchor(&anchor_id)?)
+}
+
+/// F07-T09: metin seçiminden kalıcı işaret. Alıntı segmentte birebir
+/// doğrulanmazsa anchor da işaret de oluşmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkSelectionResult {
+    pub anchor: AnchorRow,
+    pub mark: MarkRow,
+}
+
+/// F07-T09: metin seçiminden kaynaklı not. Notun kaynak listesi oluşan
+/// anchor'dan gelir; çağıranın verdiği kimlikler yazılmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSelectionResult {
+    pub anchor: AnchorRow,
+    pub note: NoteRow,
+}
+
+#[tauri::command]
+pub fn mark_create_from_selection(
+    state: State<'_, AppState>,
+    input: NewAnchor,
+    label: String,
+) -> Result<MarkSelectionResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let (anchor, mark) = db.mark_from_selection(&input, &label)?;
+    Ok(MarkSelectionResult { anchor, mark })
+}
+
+#[tauri::command]
+pub fn note_create_from_selection(
+    state: State<'_, AppState>,
+    input: NewAnchor,
+    note: NewNote,
+) -> Result<NoteSelectionResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let (anchor, note) = db.note_from_selection(&input, &note)?;
+    Ok(NoteSelectionResult { anchor, note })
+}
+
+/// Sayfa bölgesinden işaret (görsel seçim). Dikdörtgenler sayfa uzayındadır.
+#[tauri::command]
+pub fn mark_create_region(
+    state: State<'_, AppState>,
+    input: NewRegionMark,
+) -> Result<MarkRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_region_mark(&input)?)
+}
+
+#[tauri::command]
+pub fn marks_for_version(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<Vec<MarkRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.marks_for_version(&version_id)?)
+}
+
+#[tauri::command]
+pub fn mark_delete(state: State<'_, AppState>, mark_id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.delete_mark(&mark_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn task_confirm_date(state: State<'_, AppState>, id: String) -> Result<TaskRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.confirm_task_date(&id)?)
+}
+
+#[tauri::command]
+pub fn task_reminders(
+    state: State<'_, AppState>,
+    case_id: String,
+    today: String,
+) -> Result<Vec<ReminderRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.due_task_reminders(&case_id, &today)?)
+}
+
+#[tauri::command]
+pub fn task_reminders_enqueue(
+    state: State<'_, AppState>,
+    case_id: String,
+    today: String,
+) -> Result<ReminderEnqueueResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.enqueue_task_reminders(&case_id, &today)?)
+}
+
+#[tauri::command]
+pub fn document_pages(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<Option<DocumentPagesView>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let runs = db.list_parse_runs(&version_id)?;
+    let Some(run) = runs.into_iter().next() else {
+        return Ok(None);
+    };
+    let pages = db.pages_for_run(&run.id)?;
+    Ok(Some(DocumentPagesView {
+        parse_run: run,
+        pages,
+    }))
+}
+
+/// Önizleme PNG üst sınırı: diskte ve bellekte tek kayıt için.
+const PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PagePreviewView {
+    pub version_id: String,
+    pub page_index: u32,
+    pub dpi: u32,
+    pub png_base64: String,
+    pub byte_size: usize,
+    /// `true` ise görüntü kasadaki şifreli önbellekten geldi.
+    pub cached: bool,
+}
+
+/// Sayfa görüntüsü önizlemesi (F07-T11): fiziksel sayfa, PDF.
+///
+/// Sıra: bellek önbelleği → kasadaki şifreli önbellek → worker'da yeniden
+/// üretim. Üretilen görüntü kasa anahtarıyla şifrelenip diske yazılır; düz PNG
+/// kasa dışında bırakılmaz. Kasa kilitliyse komut çalışmaz.
+#[tauri::command]
+pub fn document_page_preview(
+    state: State<'_, AppState>,
+    version_id: String,
+    page_index: u32,
+    dpi: Option<u32>,
+) -> Result<PagePreviewView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let dpi = dpi.unwrap_or(96).clamp(48, 200);
+    let key = PreviewKey::new(version_id.clone(), page_index, dpi);
+    let store = PreviewStore::new(
+        vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("preview-cache"),
+    );
+
+    let view = |bytes: &[u8], cached: bool| PagePreviewView {
+        version_id: version_id.clone(),
+        page_index,
+        dpi,
+        png_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        byte_size: bytes.len(),
+        cached,
+    };
+
+    let mut memory = state.preview_lock();
+    if let Some(bytes) = memory.get(&key) {
+        return Ok(view(&bytes, true));
+    }
+    match store.load(vault, &key) {
+        Ok(Some(bytes)) => {
+            memory.put(&key, bytes.clone());
+            return Ok(view(&bytes, true));
+        }
+        Ok(None) => {}
+        // Bozuk/anahtarı uyuşmayan kayıt sessizce "yok" sayılmaz: atılır ve
+        // görüntü yeniden üretilir; önbellek doğruluk kaynağı değildir.
+        Err(_) => {
+            let _ = store.purge_version(&version_id);
+        }
+    }
+    drop(memory);
+
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    if blob.mime != "application/pdf" {
+        return Err(ApiError::new(
+            "E_PREVIEW_UNSUPPORTED",
+            "Sayfa görüntüsü yalnız PDF için üretilir; DOCX/UDF yapısal görünüm kullanır.",
+        ));
+    }
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let mut worker = spawn_worker(WorkerKind::Render)?;
+    let rendered = worker.render_page(&data, page_index, dpi);
+    worker.shutdown();
+    let rendered = rendered?;
+    if rendered.png.len() > PREVIEW_MAX_BYTES {
+        return Err(ApiError::new(
+            "E_PREVIEW_TOO_LARGE",
+            "Önizleme 8 MiB sınırını aşıyor; daha düşük çözünürlük deneyin.",
+        ));
+    }
+    // Önbellek yazımı başarısız olsa bile görüntü döner; kalıcı kayıt zorunlu
+    // değildir, ama başarı iddiası yalnız gerçekten yazıldıysa "cached" olur.
+    let _ = store.store(vault, &key, &rendered.png);
+    state.preview_lock().put(&key, rendered.png.clone());
+    Ok(view(&rendered.png, false))
+}
+
+/// Envanteri çıkarılabilen MIME'lar. PDF/görüntü/düz metin **kapsam dışıdır**:
+/// onlarda "yapı/ek/değişiklik" sayımı yoktur, uydurulmaz.
+const INVENTORY_MIMES: [&str; 3] = [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/udf",
+    "application/x-udf",
+];
+
+fn inventory_mime_supported(mime: &str) -> bool {
+    INVENTORY_MIMES.contains(&mime)
+}
+
+/// Belge envanteri: yapı, ekler ve değişiklik izi (DOCX/UDF).
+///
+/// Baytlar kasadan çözülür ve worker'a gönderilir; **kasaya hiçbir şey
+/// yazılmaz** (envanter istek üzerine üretilir, ayrıştırma koşusu açmaz).
+/// Denetime yalnız sayılar yazılır: ek adı, metin ve dosya yolu girmez.
+#[tauri::command]
+pub fn document_inventory(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<DocumentInventory, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db
+        .get_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let blob = db
+        .blob_for_version(&version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    if !inventory_mime_supported(&blob.mime) {
+        return Err(ApiError::new(
+            "E_INVENTORY_UNSUPPORTED",
+            "Belge envanteri yalnız DOCX/UDF paketleri için çıkarılır; PDF ve görüntülerde yapı sayımı yoktur.",
+        ));
+    }
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let mut worker = spawn_worker(WorkerKind::Extract)?;
+    let extracted = worker.inventory(&data, &blob.mime);
+    worker.shutdown();
+    let inventory = extracted?;
+
+    let _ = db.append_audit(
+        "document_inventory",
+        Some(&version.case_id),
+        "extract",
+        "local-user",
+        &inventory.audit_counts(),
+    );
+    Ok(inventory)
+}
+
+#[tauri::command]
+pub fn note_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewNote,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_note(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn note_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<NoteRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_notes(&case_id)?)
+}
+
+/// Notun güncel hâli. Sürüm çakışmasında arayüz farkı göstermek için buradan
+/// okur; çakışma mesajındaki sürüm numarasına güvenip içerik uydurulmaz.
+#[tauri::command]
+pub fn note_get(state: State<'_, AppState>, id: String) -> Result<Option<NoteRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.get_note(&id)?)
+}
+
+#[tauri::command]
+pub fn note_update(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+    input: NoteEdit,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.update_note(&id, expected_row_version, &input)?)
+}
+
+#[tauri::command]
+pub fn note_undo(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.undo_note(&id, expected_row_version)?)
+}
+
+#[tauri::command]
+pub fn note_redo(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+) -> Result<NoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.redo_note(&id, expected_row_version)?)
+}
+
+#[tauri::command]
+pub fn note_revisions(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<NoteRevisionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_note_revisions(&id)?)
+}
+
+#[tauri::command]
+pub fn note_draft_save(
+    state: State<'_, AppState>,
+    case_id: String,
+    note_id: Option<String>,
+    input: NoteDraftInput,
+) -> Result<NoteDraftRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.save_note_draft(&case_id, note_id.as_deref(), &input)?)
+}
+
+#[tauri::command]
+pub fn note_draft_get(
+    state: State<'_, AppState>,
+    case_id: String,
+    note_id: Option<String>,
+) -> Result<Option<NoteDraftRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.get_note_draft(&case_id, note_id.as_deref())?)
+}
+
+#[tauri::command]
+pub fn note_draft_clear(
+    state: State<'_, AppState>,
+    case_id: String,
+    note_id: Option<String>,
+) -> Result<bool, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.clear_note_draft(&case_id, note_id.as_deref())?)
+}
+
+#[tauri::command]
+pub fn note_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.delete_note(&id)?)
+}
+
+#[tauri::command]
+pub fn task_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewTask,
+) -> Result<TaskRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_task(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn task_list(
+    state: State<'_, AppState>,
+    case_id: String,
+    include_done: Option<bool>,
+) -> Result<Vec<TaskRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_tasks(&case_id, include_done.unwrap_or(false))?)
+}
+
+#[tauri::command]
+pub fn task_complete(state: State<'_, AppState>, id: String) -> Result<TaskRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.complete_task(&id)?)
+}
+
+#[tauri::command]
+pub fn task_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.soft_delete_task(&id)?)
+}
+
+#[tauri::command]
+pub fn event_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewEvent,
+) -> Result<EventRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_event(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn event_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<EventRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_events(&case_id)?)
+}
+
+#[tauri::command]
+pub fn event_confirm(state: State<'_, AppState>, id: String) -> Result<EventRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.confirm_event(&id)?)
+}
+
+#[tauri::command]
+pub fn event_delete(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.soft_delete_event(&id)?)
+}
+
+/// Kullanıcı düzenlemesi. `expectedRowVersion` arayüzün okuduğu sürümdür;
+/// bu arada başka yazma olduysa `E_ROW_VERSION` döner, kayıt ezilmez (F08-T09).
+#[tauri::command]
+pub fn event_update(
+    state: State<'_, AppState>,
+    id: String,
+    expected_row_version: i64,
+    input: EventPatch,
+) -> Result<EventRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.update_event(&id, expected_row_version, &input)?)
+}
+
+#[tauri::command]
+pub fn search_segments(
+    state: State<'_, AppState>,
+    case_id: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<SearchHit>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_segments(&case_id, &query, limit.unwrap_or(50).clamp(1, 200))?)
+}
+
+/// `search_segments_page` girdisi. Alanlar tek tek adlandırılmıştır; kip
+/// filtreden ayrıdır (F07-T02) ve IPC yükü açık kalır.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchPageInput {
+    pub case_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub filters: Option<SearchFilters>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub include_total: Option<bool>,
+    /// `auto` | `exact` | `flexible` | `phrase` | `docket`.
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// `mode` alanını çözer: boş/verilmemiş → `auto`; bilinmeyen ad
+/// `E_SEARCH_QUERY` ile reddedilir (F07-T02).
+fn parse_search_mode(mode: Option<&str>) -> Result<SearchMode, ApiError> {
+    match mode.map(str::trim).filter(|raw| !raw.is_empty()) {
+        None => Ok(SearchMode::Auto),
+        Some(raw) => SearchMode::parse(raw).ok_or_else(|| {
+            ApiError::new("E_SEARCH_QUERY", &format!("bilinmeyen arama kipi: {raw}"))
+        }),
+    }
+}
+
+/// Filtreli ve keyset sayfalı arama (F07-T03, F07-T05).
+///
+/// `filters` verilmezse filtre uygulanmaz. `includeTotal` yalnız ilk sayfada
+/// true olmalı; sonraki sayfalarda tam sayım gereksiz maliyettir.
+/// `mode` (F07-T02) sunucuda çözülür; bilinmeyen kip `E_SEARCH_QUERY` döner.
+#[tauri::command]
+pub fn search_segments_page(
+    state: State<'_, AppState>,
+    input: SearchPageInput,
+) -> Result<SearchPage, ApiError> {
+    let mode = parse_search_mode(input.mode.as_deref())?;
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_page(
+        &input.case_id,
+        &SearchQuery {
+            text: input.query,
+            mode,
+        },
+        &input.filters.unwrap_or_default(),
+        input.limit.unwrap_or(50),
+        input.cursor.as_deref(),
+        input.include_total.unwrap_or(false),
+    )?)
+}
+
+/// **Ertelenmiş toplam sayım** (F15). Arayüz ilk sayfayı gösterdikten sonra
+/// çağırır; böylece sayfa `includeTotal=true` maliyetini beklemez.
+///
+/// `cursor`/`limit` yok sayılır: sayı sayfaya değil **sorgunun tamamına**
+/// aittir. Sayı `search_page(include_total=true)` ile birebir aynı kuraldan
+/// gelir (`Database::search_total`).
+#[tauri::command]
+pub fn search_segments_total(
+    state: State<'_, AppState>,
+    input: SearchPageInput,
+) -> Result<SearchTotal, ApiError> {
+    let mode = parse_search_mode(input.mode.as_deref())?;
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_total(
+        &input.case_id,
+        &SearchQuery {
+            text: input.query,
+            mode,
+        },
+        &input.filters.unwrap_or_default(),
+    )?)
+}
+
+#[tauri::command]
+pub fn document_tags(
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<Vec<String>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_document_tags(&document_id)?)
+}
+
+#[tauri::command]
+pub fn document_tags_for_case(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<DocumentTagRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_document_tags(&case_id)?)
+}
+
+#[tauri::command]
+pub fn case_tags(state: State<'_, AppState>, case_id: String) -> Result<Vec<CaseTagRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_tags(&case_id)?)
+}
+
+/// Etiket ekler ve belgenin güncel etiket listesini döner.
+#[tauri::command]
+pub fn document_tag_add(
+    state: State<'_, AppState>,
+    document_id: String,
+    tag: String,
+) -> Result<Vec<String>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.add_document_tag(&document_id, &tag)?;
+    Ok(db.list_document_tags(&document_id)?)
+}
+
+#[tauri::command]
+pub fn document_tag_remove(
+    state: State<'_, AppState>,
+    document_id: String,
+    tag: String,
+) -> Result<Vec<String>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.remove_document_tag(&document_id, &tag)?;
+    Ok(db.list_document_tags(&document_id)?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseResultView {
+    pub parse_run: ParseRun,
+    pub pages: usize,
+    pub stored_segments: usize,
+    pub warnings: Vec<String>,
+    /// §17.3: uygulanan bütçe profili ve gözlenen tepe değerler.
+    pub budget: Option<WorkerBudgetView>,
+}
+
+/// Paketlenmiş worker ikilisini arar. Sıra: `DIM_WORKER_EXE`, uygulama yanındaki
+/// `worker/`, macOS `.app/Contents/Resources/worker/`, Windows `resources/worker/`.
+fn bundled_worker_exe() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("DIM_WORKER_EXE") {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) {
+        "dim-worker.exe"
+    } else {
+        "dim-worker"
+    };
+    [
+        dir.join("worker").join(name),
+        dir.join("..").join("Resources").join("worker").join(name),
+        // Tauri `resources/worker/**` ifadesini macOS'ta
+        // Contents/Resources/resources/worker altına kopyalar; Windows'ta
+        // aynı yapı resources\\resources\\worker olur.
+        dir.join("..")
+            .join("Resources")
+            .join("resources")
+            .join("worker")
+            .join(name),
+        dir.join("resources").join("worker").join(name),
+        dir.join("resources")
+            .join("resources")
+            .join("worker")
+            .join(name),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+/// Paketlenmiş worker'ın manifest özeti. Dosya listesi arayüze taşınmaz
+/// (yüzlerce satır); yalnız sayılar, roller ve sürüm künyesi.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPackageManifestView {
+    pub worker_version: String,
+    pub mode: String,
+    pub build_platform: String,
+    pub python_version: String,
+    pub pyinstaller_version: String,
+    pub entry_point: String,
+    pub totals: ManifestTotals,
+    pub roles: std::collections::BTreeMap<String, u64>,
+    pub tesseract: TesseractStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPackageView {
+    /// Paket bulundu ve doğrulama koştu mu. `false` bir hata değil: geliştirme
+    /// kipinde paket yoktur, uygulama kaynak ağacından çalışır.
+    pub found: bool,
+    pub package_dir: Option<String>,
+    pub note: Option<String>,
+    pub manifest: Option<WorkerPackageManifestView>,
+    pub verification: Option<PackageVerification>,
+    /// Tesseract ikilisi pakete gömülmedi (bilinçli); sistemde PATH'te mi?
+    pub tesseract_on_path: bool,
+}
+
+/// PATH üzerinde `tesseract` ikilisini arar. Süreç başlatılmaz, dosya
+/// çalıştırılmaz — yalnız varlık. Sürüm/dil verisi bu komutun kapsamı dışında.
+fn tesseract_on_path() -> bool {
+    let name = if cfg!(windows) {
+        "tesseract.exe"
+    } else {
+        "tesseract"
+    };
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+        .unwrap_or(false)
+}
+
+fn manifest_view(manifest: &WorkerManifest) -> WorkerPackageManifestView {
+    WorkerPackageManifestView {
+        worker_version: manifest.worker_version.clone(),
+        mode: manifest.mode.clone(),
+        build_platform: manifest.build_platform.clone(),
+        python_version: manifest.python_version.clone(),
+        pyinstaller_version: manifest.pyinstaller_version.clone(),
+        entry_point: manifest.entry_point.clone(),
+        totals: manifest.totals.clone(),
+        roles: manifest.roles.clone(),
+        tesseract: manifest.tesseract.clone(),
+    }
+}
+
+/// Paket dizinini manifeste karşı doğrular. Dizin/manifest yokluğu **hata
+/// değil**, `found=false` + gerekçe; bozuk manifest ise `E_WORKER_PACKAGE`.
+fn read_worker_package(dir: &Path) -> Result<WorkerPackageView, ApiError> {
+    let entry_point = dir.join("dim-worker");
+    if !dir.is_dir() || !entry_point.is_file() {
+        return Ok(WorkerPackageView {
+            found: false,
+            package_dir: None,
+            note: Some(
+                "Paketlenmiş worker bulunamadı: uygulama geliştirme kipinde kaynak ağacından çalışıyor."
+                    .to_string(),
+            ),
+            manifest: None,
+            verification: None,
+            tesseract_on_path: tesseract_on_path(),
+        });
+    }
+    if !dir.join(MANIFEST_FILE).is_file() {
+        return Ok(WorkerPackageView {
+            found: false,
+            package_dir: Some(dir.to_string_lossy().to_string()),
+            note: Some(
+                "Paket var ama manifesti yok: bütünlük doğrulanamaz. `scripts/build-worker.sh` ile yeniden paketleyin."
+                    .to_string(),
+            ),
+            manifest: None,
+            verification: None,
+            tesseract_on_path: tesseract_on_path(),
+        });
+    }
+    let manifest = read_manifest(dir).map_err(|error| {
+        ApiError::new(
+            error.code(),
+            &format!("Worker manifesti okunamadı: {error}"),
+        )
+    })?;
+    let verification = verify_package(dir, &manifest).map_err(|error| {
+        ApiError::new(
+            error.code(),
+            &format!("Worker paketi doğrulanamadı: {error}"),
+        )
+    })?;
+    Ok(WorkerPackageView {
+        found: true,
+        package_dir: Some(dir.to_string_lossy().to_string()),
+        note: None,
+        manifest: Some(manifest_view(&manifest)),
+        verification: Some(verification),
+        tesseract_on_path: tesseract_on_path(),
+    })
+}
+
+/// Paketlenmiş worker'ın bütünlüğünü bildirir (yazmaz). Ağır iş (sha256)
+/// `spawn_blocking` içinde; kasa kilidi tutulmaz.
+#[tauri::command]
+pub async fn worker_package_report(
+    state: State<'_, AppState>,
+) -> Result<WorkerPackageView, ApiError> {
+    let dir = bundled_worker_exe().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let joined = tauri::async_runtime::spawn_blocking(move || -> Result<WorkerPackageView, (String, String)> {
+        match dir {
+            Some(dir) => read_worker_package(&dir).map_err(|err| (err.code.to_string(), err.message.clone())),
+            None => Ok(WorkerPackageView {
+                found: false,
+                package_dir: None,
+                note: Some(
+                    "Paketlenmiş worker bulunamadı: uygulama geliştirme kipinde kaynak ağacından çalışıyor."
+                        .to_string(),
+                ),
+                manifest: None,
+                verification: None,
+                tesseract_on_path: tesseract_on_path(),
+            }),
+        }
+    })
+    .await
+    .map_err(|_| ApiError::new("E_WORKER_PACKAGE", "Paket doğrulaması tamamlanamadı."))?;
+    let view = joined.map_err(|(code, message)| ApiError::new(&code, &message))?;
+
+    // Denetime yalnız sayı/durum yazılır: dosya adları ve tam yol yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "found": view.found,
+                "manifestFiles": view.manifest.as_ref().map(|m| m.totals.files),
+                "manifestBytes": view.manifest.as_ref().map(|m| m.totals.bytes),
+                "verified": view.verification.as_ref().map(|v| v.verified),
+                "problems": view.verification.as_ref().map(|v| v.problem_count),
+                "extra": view.verification.as_ref().map(|v| v.extra_count),
+                "ok": view.verification.as_ref().map(|v| v.ok),
+                "tesseractOnPath": view.tesseract_on_path,
+            });
+            let _ = db.append_audit("worker_package", None, "verify", "local-user", &metadata)?;
+        }
+    }
+    Ok(view)
+}
+
+/// Worker'ı **kaynak bütçesiyle** başlatır (§17.3). Türü çağıran seçer; sınırlar
+/// `dim_ingest::budget` içinde tek yerde tanımlıdır (kural kopyalanmaz).
+fn spawn_worker(kind: WorkerKind) -> Result<WorkerClient, ApiError> {
+    let budget = WorkerBudget::for_kind(kind);
+    if let Some(exe) = bundled_worker_exe() {
+        return WorkerClient::spawn_bundled_budgeted(&exe, budget).map_err(Into::into);
+    }
+    let dir = dev_worker_dir().ok_or_else(|| {
+        ApiError::new(
+            "E_WORKER_MISSING",
+            "Belge worker'ı bulunamadı: paket içinde worker yok, geliştirme dizini de yok.",
+        )
+    })?;
+    let python = std::env::var("DIM_WORKER_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    WorkerClient::spawn_dev_budgeted(Path::new(&python), &dir, budget).map_err(Into::into)
+}
+
+/// §17.3 bütçe profili (arayüzde liste). Değerler ölçümle değişebilir; burada
+/// yalnız **okunur**, hesaplanmaz.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerBudgetProfileView {
+    pub kind: String,
+    pub label: String,
+    pub cpu_seconds: u64,
+    pub memory_bytes: u64,
+    pub output_bytes: u64,
+    pub open_files: u32,
+    pub wall_clock_seconds: u64,
+}
+
+/// Bir işte **uygulanan** bütçe ve gözlenen kullanım (yalnız sayı; belge adı,
+/// yol, içerik yok).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerBudgetView {
+    pub kind: String,
+    pub label: String,
+    pub cpu_seconds: u64,
+    pub memory_bytes: u64,
+    pub output_bytes: u64,
+    pub open_files: u32,
+    pub wall_clock_seconds: u64,
+    pub elapsed_ms: u64,
+    pub observed_output_bytes: u64,
+    pub peak_memory_bytes: u64,
+    pub violated: Option<String>,
+}
+
+impl WorkerBudgetView {
+    fn from_report(report: &BudgetReport) -> Self {
+        let budget = report.budget;
+        Self {
+            kind: budget.kind.code().to_string(),
+            label: budget.kind.label_tr().to_string(),
+            cpu_seconds: budget.cpu_seconds,
+            memory_bytes: budget.memory_bytes,
+            output_bytes: budget.output_bytes,
+            open_files: budget.open_files,
+            wall_clock_seconds: budget.wall_clock.as_secs(),
+            elapsed_ms: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
+            observed_output_bytes: report.output_bytes,
+            peak_memory_bytes: report.peak_memory_bytes,
+            violated: report.violated.map(|dim| dim.code().to_string()),
+        }
+    }
+}
+
+/// §17.3 bütçe profilleri (Ayarlar → kaynak bütçeleri kartı).
+#[tauri::command]
+pub fn worker_budgets() -> Vec<WorkerBudgetProfileView> {
+    WorkerKind::ALL
+        .iter()
+        .map(|kind| {
+            let budget = WorkerBudget::for_kind(*kind);
+            WorkerBudgetProfileView {
+                kind: budget.kind.code().to_string(),
+                label: budget.kind.label_tr().to_string(),
+                cpu_seconds: budget.cpu_seconds,
+                memory_bytes: budget.memory_bytes,
+                output_bytes: budget.output_bytes,
+                open_files: budget.open_files,
+                wall_clock_seconds: budget.wall_clock.as_secs(),
+            }
+        })
+        .collect()
+}
+
+/// Arayüze yayılan ayrıştırma ilerlemesi (F04-T07).
+///
+/// Olay **yalnız** sürüm kimliği, aşama ve sayaç taşır: belge metni, dosya
+/// adı, yol veya kasa bilgisi yayımlanmaz (denetim kaydıyla aynı sınır).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseProgressEvent {
+    pub version_id: String,
+    pub stage: String,
+    pub done: u32,
+    pub total: Option<u32>,
+}
+
+impl ParseProgressEvent {
+    fn new(version_id: &str, progress: &ParseProgress) -> Self {
+        Self {
+            version_id: version_id.to_string(),
+            stage: progress.stage.clone(),
+            done: progress.done,
+            total: progress.total,
+        }
+    }
+}
+
+/// Kuyruk satırına ilerleme yazımının en küçük aralığı.
+///
+/// Arayüz olayı **her** karede gider; veritabanı yazımı bir WAL commit'i
+/// kadardır. 120 sayfalık bir belgede 121 commit, worker'ın kendi süresini
+/// katlardı; 300 ms aralıkla yazım sayısı zamana bağlanır (kural:
+/// `dim_storage::queue::ProgressGate`). Aşama değişimi, sayaç başlangıcı ve
+/// toplamı bulan kare aralığı **beklemez**.
+const PROGRESS_DB_INTERVAL: Duration = Duration::from_millis(300);
+
+/// `parse-progress` olayı ile kuyruk satırı yazımını **tek** yerden yürütür.
+///
+/// Olay önce yayımlanır: sayaç arayüzde veritabanı yazımını beklemeden görünür.
+/// Yazım düşerse ayrıştırma **düşmez** (kuyruk ikincil kayıttır, F03-T07) ama
+/// sessizce de yutulmaz: yazılan/atlanan/başarısız sayıları denetim kaydına
+/// geçer.
+/// İlerleme yazımının hedefi (§17.3: ayrıştırma artık kilidi **bırakarak**
+/// çalışır; yazım hedefi aşamaya göre değişir).
+enum ProgressStore<'a> {
+    /// Kilit **tutulmuyorken**: kapılı her yazım kasa kilidini kısa süre alır.
+    /// İki ayrıştırma aynı anda koşsa bile yazımlar **seridir** (kasa başına tek
+    /// yazıcı kuralı bozulmaz).
+    Locked(&'a Arc<Mutex<VaultState>>),
+    /// Kilit **tutulurken** (sonuç yazımı): doğrudan bağlantı kullanılır; kilidi
+    /// yeniden almak kendini kilitlerdi.
+    Direct(&'a Database),
+}
+
+impl ProgressStore<'_> {
+    fn write(
+        &mut self,
+        job_id: &str,
+        owner: &str,
+        stage: &str,
+        done: u32,
+        total: Option<u32>,
+    ) -> Result<Option<JobRow>, &'static str> {
+        let now = time::OffsetDateTime::now_utc();
+        match self {
+            Self::Locked(hub) => {
+                let guard = lock_vault(hub);
+                let Some(db) = guard.db.as_ref() else {
+                    // Kasa bu arada kilitlendi: sayaç yazılmaz, ayrıştırma düşmez.
+                    return Err("E_VAULT_LOCKED");
+                };
+                db.update_job_progress(job_id, owner, stage, done, total, now)
+                    .map_err(|err| err.code())
+            }
+            Self::Direct(db) => db
+                .update_job_progress(job_id, owner, stage, done, total, now)
+                .map_err(|err| err.code()),
+        }
+    }
+}
+
+/// `parse-progress` olayı ile kuyruk satırı yazımını **tek** yerden yürütür.
+///
+/// Olay önce yayımlanır: sayaç arayüzde veritabanı yazımını beklemeden görünür.
+/// Yazım düşerse ayrıştırma **düşmez** (kuyruk ikincil kayıttır, F03-T07) ama
+/// sessizce de yutulmaz: yazılan/atlanan/başarısız sayıları denetim kaydına
+/// geçer.
+struct JobProgressSink<'a> {
+    job_id: Option<String>,
+    owner: String,
+    emit: &'a mut dyn FnMut(&ParseProgress),
+    gate: dim_storage::queue::ProgressGate,
+    written: u32,
+    skipped: u32,
+    failed: u32,
+    first_error: Option<&'static str>,
+}
+
+impl<'a> JobProgressSink<'a> {
+    fn new(job_id: Option<String>, owner: String, emit: &'a mut dyn FnMut(&ParseProgress)) -> Self {
+        Self {
+            job_id,
+            owner,
+            emit,
+            gate: dim_storage::queue::ProgressGate::new(PROGRESS_DB_INTERVAL),
+            written: 0,
+            skipped: 0,
+            failed: 0,
+            first_error: None,
+        }
+    }
+
+    /// Tek kare: olay her zaman, veritabanı yazımı kapıya göre.
+    fn record(&mut self, update: &ParseProgress, store: &mut ProgressStore<'_>) {
+        (self.emit)(update);
+        let Some(job_id) = self.job_id.clone() else {
+            // İş kaydı yok (eski kasa): ayrıştırma normal, sayaç yalnız arayüzde.
+            return;
+        };
+        if !self
+            .gate
+            .should_write(&update.stage, update.done, update.total, Instant::now())
+        {
+            self.skipped += 1;
+            return;
+        }
+        match store.write(
+            &job_id,
+            &self.owner,
+            &update.stage,
+            update.done,
+            update.total,
+        ) {
+            Ok(Some(_)) => self.written += 1,
+            // İş bu arada bitti/iptal edildi: geç gelen sayaç uygulanmadı.
+            Ok(None) => self.skipped += 1,
+            Err(code) => {
+                self.failed += 1;
+                if self.first_error.is_none() {
+                    self.first_error = Some(code);
+                }
+            }
+        }
+    }
+
+    /// Denetim kaydı için **yalnız sayılar** (metin/ad/yol yok).
+    fn audit_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "progressWritten": self.written,
+            "progressSkipped": self.skipped,
+            "progressFailed": self.failed,
+            "progressErrorCode": self.first_error,
+        })
+    }
+}
+
+/// Ayrıştırma seçenekleri. Komut argümanlarının tek taşıyıcısı: tek belge
+/// kullanıcı seçimleriyle, toplu ayrıştırma varsayılanlarla çağırır.
+#[derive(Clone, Default)]
+struct ParseOptions {
+    ocr: Option<bool>,
+    ocr_lang: Option<String>,
+    text_encoding: Option<String>,
+    password: Option<String>,
+}
+
+/// Ayar özetine **gerçekten** uygulanan seçimler (tahmin yazılmaz).
+struct AppliedSettings {
+    ocr: bool,
+    lang: String,
+    encoding: String,
+    is_text: bool,
+}
+
+/// Aşama A çıktısı: kasa kilidi **altında** toplanan, kilit bırakıldıktan sonra
+/// değişmeyen girdiler. Worker bu veriyle, kilit olmadan çalışır (§17.3).
+struct ParsePrep {
+    version: DocumentVersion,
+    job: Option<JobRow>,
+    owner: String,
+    data: Vec<u8>,
+    mime: String,
+    vault_path: PathBuf,
+}
+
+/// Aynı süreçte iki ayrıştırma koşabildiği için kira sahibi **tekil** olmalı:
+/// `parse-<pid>-<sıra>`. Aksi hâlde iki iş de aynı sahibi taşır ve kuyruk "kim
+/// kiraladı" ayrımını kaybederdi (§17.3, tek yazıcı kuralı).
+static PARSE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Büyük belge eşiğinin üstünde kalan işlerde arayüz "sırada" bilgisini alır.
+fn queued_frame() -> ParseProgress {
+    ParseProgress {
+        stage: "queued".to_string(),
+        done: 0,
+        total: None,
+    }
+}
+
+/// **Aşama A — kilit altında hazırlık.** Sürüm, kuyruk sahiplenmesi ve şifreli
+/// blob çözümü. Ağır iş (worker) bu bloğun **dışında** koşar; kilit yalnız bu
+/// kısa okuma boyunca tutulur.
+fn prepare_parse(
+    guard: &crate::state::VaultState,
+    version_id: &str,
+) -> Result<ParsePrep, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db
+        .get_version(version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    // Kuyruk: içe aktarma `parse:<sürüm>` işini açmıştı. İş burada sahiplenilir;
+    // ayrıştırma düşerse iş `failed`/`retry_wait` olur ve "yürüyor" diye asılı
+    // kalmaz (F03-T07/T08). İş yoksa (eski kasa) ayrıştırma yine çalışır.
+    let owner = format!(
+        "parse-{}-{}",
+        std::process::id(),
+        PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+
+    // **Sıra bilinçli:** gövde okuması sahiplenmeden **önce**. Blob/sürüm yoksa
+    // ayrıştırma daha sahiplenmeden düşer; iş satırı `running` kalmaz (yarısı
+    // çalışmış görüntüsü yok) — yeniden deneme yolu da bu yüzden işi `queued`
+    // bulur ve hatayı kendisi yazar.
+    let blob = db
+        .blob_for_version(version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    let job_key = format!("parse:{}", version.id);
+    let job = db
+        .claim_job_by_key(
+            &job_key,
+            &owner,
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            time::OffsetDateTime::now_utc(),
+        )
+        .ok()
+        .flatten();
+
+    Ok(ParsePrep {
+        version,
+        job,
+        owner,
+        data,
+        mime: blob.mime,
+        vault_path: vault_path.clone(),
+    })
+}
+
+/// **Aşama C — kilit altında yazma.** Kilit bırakıldıktan sonra kasa kapanmış,
+/// başka kasaya geçilmiş veya iş iptal edilmiş olabilir; üçü de denetlenir ve
+/// hiçbiri "yarım çıktı yaz" ile sonuçlanmaz (§17.2 `canceled`).
+fn commit_parse(
+    guard: &crate::state::VaultState,
+    prep: &ParsePrep,
+    extraction: dim_ingest::worker::Extraction,
+    caps: serde_json::Value,
+    settings_in: &AppliedSettings,
+    sink: &mut JobProgressSink<'_>,
+) -> Result<ParseResultView, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    if guard.path.as_ref() != Some(&prep.vault_path) {
+        return Err(ApiError::new(
+            "E_VAULT_LOCKED",
+            "Kasa bu arada kapandı; ayrıştırma çıktısı yazılmadı.",
+        ));
+    }
+    if let Some(job) = prep.job.as_ref() {
+        let still_ours = db
+            .get_job(&job.id)?
+            .map(|row| {
+                row.state == "running" && row.lease_owner.as_deref() == Some(prep.owner.as_str())
+            })
+            .unwrap_or(false);
+        if !still_ours {
+            return Err(canceled_parse_error());
+        }
+    }
+
+    // Ayar özeti gerçek girdileri taşır: MIME, OCR bayrağı, dil, motor sürümü ve
+    // kurulu tessdata parmak izi. Yalnız MIME yazmak yanıltıcıydı.
+    let tessdata = caps
+        .pointer("/ocr/tessdataHash")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let encoding_note = if settings_in.is_text {
+        format!("|txt-encoding={}", settings_in.encoding)
+    } else {
+        String::new()
+    };
+    let settings = format!(
+        "{}|ocr={}|lang={}|engine={}|tessdata={tessdata}{encoding_note}",
+        prep.mime, settings_in.ocr, settings_in.lang, extraction.engine_version
+    );
+    // `start_parse_run` ayar özetini kendisi hash'ler (engine|sürüm|ayarlar);
+    // burada ön-hash vermek çift hash üretir ve kaydı okunamaz kılar.
+    let run = db.start_parse_run(
+        &prep.version.id,
+        &prep.version.case_id,
+        &extraction.engine,
+        &extraction.engine_version,
+        &settings,
+    )?;
+    let pages: Vec<NewPage> = extraction
+        .pages
+        .iter()
+        .map(|p| NewPage {
+            index: i64::from(p.index),
+            text: p.text.clone(),
+            width: Some(p.width),
+            height: Some(p.height),
+            origin: if p.text.trim().is_empty() {
+                "none".to_string()
+            } else {
+                "native".to_string()
+            },
+            warnings: p.warnings.clone(),
+            rotation: i64::from(p.rotation % 360),
+            coordinate_space: p.coordinate_space.clone(),
+            page_label: p.page_label.clone(),
+            blocks: p
+                .blocks
+                .iter()
+                .map(|b| SegmentBlock {
+                    start: i64::from(b.start),
+                    end: i64::from(b.end),
+                    bbox: b.bbox,
+                    lines: b.lines.clone(),
+                    path: b.path.clone(),
+                    kind: b.kind.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    // Yazma aşaması ayrı ve uzun olabilir: okuma bitti, sayfalar kasaya
+    // yazılıyor. Sayaç **gerçek** durumu söyler (0 → N); ara değer uydurulmaz.
+    let total = u32::try_from(pages.len()).unwrap_or(u32::MAX);
+    let mut direct = ProgressStore::Direct(db);
+    sink.record(
+        &ParseProgress {
+            stage: "store".to_string(),
+            done: 0,
+            total: Some(total),
+        },
+        &mut direct,
+    );
+    let stored = db.store_pages(&run.id, &prep.version.case_id, &pages)?;
+    sink.record(
+        &ParseProgress {
+            stage: "store".to_string(),
+            done: total,
+            total: Some(total),
+        },
+        &mut ProgressStore::Direct(db),
+    );
+    let status = if extraction.warnings.is_empty() {
+        "succeeded"
+    } else {
+        "partial"
+    };
+    db.finish_parse_run(&run.id, status, &extraction.warnings)?;
+
+    Ok(ParseResultView {
+        parse_run: db.get_parse_run(&run.id)?.unwrap_or(run),
+        pages: pages.len(),
+        stored_segments: stored,
+        warnings: extraction.warnings,
+        // Bütçe raporu çağıran tarafta (`run_parse`) eklenir.
+        budget: None,
+    })
+}
+
+/// Belge sürümünü yerel worker'da ayrıştırır. Özgün blob çözülür, metin
+/// çıkarılır, sürümlü `parse_run` + sayfa + segment kayıtları yazılır.
+///
+/// **Arayüz iş parçacığı beklemez (F04-T07):** ağır iş `spawn_blocking` içinde
+/// koşar. **§17.3:** kasa kilidi yalnız okuma (A) ve yazma (C) aşamalarında
+/// tutulur; worker **kilitsiz** çalışır, böylece iki belge gerçekten paralel
+/// ayrıştırılabilir. Eşzamanlılık `ParsePool` ile en fazla iki süreçtir;
+/// büyük belge tek başına koşar. Veritabanı yazımları yine **seridir**.
+///
+/// **Canlı aşama/sayım:** worker'ın ilerleme çerçeveleri `parse-progress`
+/// olayına çevrilir (`start` → `queued` → `open` → `pages` → `store`); aynı
+/// kareler **kuyruk satırına** da yazılır (`jobs.progress_stage/done/total`,
+/// 0022). Olay kaybolursa ayrıştırma etkilenmez.
+#[tauri::command]
+pub async fn document_parse(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    ocr: Option<bool>,
+    ocr_lang: Option<String>,
+    text_encoding: Option<String>,
+    password: Option<String>,
+) -> Result<ParseResultView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.workers_handle();
+    let pool = state.parse_pool_handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut emit = |progress: &ParseProgress| {
+            let event = ParseProgressEvent::new(&version_id, progress);
+            // Pencere kapalıysa olay düşer; ayrıştırma sürer.
+            let _ = app.emit("parse-progress", event);
+        };
+        run_parse(
+            &hub,
+            &slot,
+            &pool,
+            &version_id,
+            ParseOptions {
+                ocr,
+                ocr_lang,
+                text_encoding,
+                password,
+            },
+            &mut emit,
+        )
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "E_PARSE",
+            "Ayrıştırma işi beklenmedik biçimde sona erdi; kasa durumu değişmedi.",
+        )
+    })?
+}
+
+/// Ayrıştırmanın üç aşamalı gövdesi (bloklayan iş parçacığında koşar).
+/// `progress` arayüz olayına köprü kurar.
+#[allow(clippy::too_many_arguments)]
+fn run_parse(
+    hub: &Arc<Mutex<VaultState>>,
+    slot: &Arc<Mutex<Vec<RunningWorker>>>,
+    pool: &Arc<crate::parse_pool::ParsePool>,
+    version_id: &str,
+    options: ParseOptions,
+    progress: &mut dyn FnMut(&ParseProgress),
+) -> Result<ParseResultView, ApiError> {
+    // İlk olay kasadan okuma başlamadan gider: büyük blob çözülürken arayüz
+    // "hazırlanıyor" gösterir, donmuş görünmez. Kuyruk satırına yazılmaz:
+    // sahiplenme satırı zaten sıfırlar, ilk gerçek sayaç `open` ile gelir.
+    progress(&ParseProgress {
+        stage: "start".to_string(),
+        done: 0,
+        total: None,
+    });
+    let prep = {
+        let guard = lock_vault(hub);
+        prepare_parse(&guard, version_id)?
+    };
+
+    let is_text = prep.mime.starts_with("text/");
+    let ocr_enabled = options.ocr.unwrap_or(false);
+    let lang = options
+        .ocr_lang
+        .clone()
+        .unwrap_or_else(|| "eng".to_string());
+    // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
+    let encoding = if is_text {
+        options
+            .text_encoding
+            .as_ref()
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "auto".to_string())
+    } else {
+        "auto".to_string()
+    };
+    let applied = AppliedSettings {
+        ocr: ocr_enabled,
+        lang: lang.clone(),
+        encoding: encoding.clone(),
+        is_text,
+    };
+
+    // **Ayarları iş satırına yaz (F04-T07 kapanışı).** Yeniden deneme bu
+    // kayıttan aynı ayarları geri yükler; parola **yazılmaz**, yalnız "parola
+    // kullanıldı" bayrağı. Kayıt ikincildir: yazım düşerse ayrıştırma düşmez,
+    // ama yeniden deneme o işte "kayıt yok" görür ve arayüz varsayılanlarla
+    // koştuğunu **söyler** (sessizce aynı iş denmez). Kilit kısa tutulur.
+    if let Some(job) = prep.job.as_ref() {
+        let guard = lock_vault(hub);
+        if let Some(db) = guard.db.as_ref() {
+            let _ = db.set_job_parse_options(
+                &job.id,
+                &dim_storage::queue::JobParseOptions {
+                    ocr: ocr_enabled,
+                    ocr_lang: lang.clone(),
+                    text_encoding: encoding.clone(),
+                    requires_password: options.password.is_some(),
+                },
+                time::OffsetDateTime::now_utc(),
+            );
+        }
+    }
+
+    let mut sink = JobProgressSink::new(
+        prep.job.as_ref().map(|job| job.id.clone()),
+        prep.owner.clone(),
+        progress,
+    );
+
+    let outcome: Result<ParseResultView, ApiError> = {
+        // §17.3 kapısı: izin alınmadan süreç başlatılmaz. Sırada beklerken
+        // arayüze "queued" karesi gider; kuyruk satırına da yazılır (kapıya göre).
+        (|| {
+            let weight = crate::parse_pool::ParseWeight::for_bytes(
+                u64::try_from(prep.data.len()).unwrap_or(u64::MAX),
+            );
+            let (permit, _waited) = {
+                let mut notice = || {
+                    sink.record(&queued_frame(), &mut ProgressStore::Locked(hub));
+                };
+                pool.acquire_noticing(weight, &mut notice)
+            };
+            let extracted = (|| {
+                // §17.3: OCR açıksa OCR profili (geniş süre/bellek), değilse
+                // metin çıkarma profili. Profil seçimi belgeye göre değil,
+                // **yapılan işe** göre yapılır.
+                let kind = if ocr_enabled {
+                    WorkerKind::Ocr
+                } else {
+                    WorkerKind::Extract
+                };
+                let mut worker = spawn_worker(kind)?;
+                let killer = worker.killer();
+                // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
+                // beklemeden bu süreci öldürür (F04-T07). Yuva düşünce temizlenir.
+                let _slot = WorkerSlotGuard::register(
+                    Arc::clone(slot),
+                    RunningWorker {
+                        kind: "parse",
+                        version_id: version_id.to_string(),
+                        job_id: prep.job.as_ref().map(|job| job.id.clone()),
+                        killer: killer.clone(),
+                    },
+                );
+                let caps = worker
+                    .capabilities()
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                let mut store = ProgressStore::Locked(hub);
+                let mut forward = |update: ParseProgress| sink.record(&update, &mut store);
+                let extraction = worker.extract_text_with_progress(
+                    &prep.data,
+                    &prep.mime,
+                    ocr_enabled,
+                    &lang,
+                    is_text.then_some(encoding.as_str()),
+                    options.password.as_deref(),
+                    &mut forward,
+                )?;
+                // §17.3: uygulanan bütçe + gözlenen tepe bellek/çıktı, süreç
+                // kapanmadan önce alınır (kapanınca sayaçlar kaybolur).
+                let budget_report = worker.budget_report();
+                worker.shutdown();
+                // İptal, çıkarımdan sonra ama yazmadan önce geldiyse: hiçbir
+                // çıktı yazılmaz, koşu `cancelled` kapanır (§17.2 `canceled`).
+                if killer.is_canceled() {
+                    return Err(canceled_parse_error());
+                }
+                Ok::<_, ApiError>((extraction, caps, budget_report))
+            })()?;
+            drop(permit);
+            let guard = lock_vault(hub);
+            let mut view =
+                commit_parse(&guard, &prep, extracted.0, extracted.1, &applied, &mut sink)?;
+            // §17.3: profilin adı/sınırları ve gözlenen tepe değerler yanıtta.
+            view.budget = extracted
+                .2
+                .map(|report| WorkerBudgetView::from_report(&report));
+            Ok(view)
+        })()
+    };
+
+    // Denetim + kuyruk sonucu ayrı ve kısa bir kilitle yazılır: iş kaydı düşse
+    // bile kullanıcının belgesi/parse koşusu yerinde kalır (kuyruk ikincil).
+    {
+        let guard = lock_vault(hub);
+        if let Some(db) = guard.db.as_ref() {
+            if prep.job.is_some() {
+                let _ = db.append_audit(
+                    "document_parse",
+                    None,
+                    "progress",
+                    "local-user",
+                    &sink.audit_metadata(),
+                );
+            }
+            // Şartname §17.2 yolu: `running → validating → completed|partial`;
+            // hata yolunda `fail_job` (iptal/parola ayrı sınıflar, §17.4).
+            if let Some(job) = prep.job.as_ref() {
+                let now = time::OffsetDateTime::now_utc();
+                match &outcome {
+                    Ok(view) => {
+                        let _ = db.begin_validation(&job.id, &prep.owner, now);
+                        if view.parse_run.status == "partial" {
+                            let _ = db.complete_job_partial(
+                                &job.id,
+                                &prep.owner,
+                                "E_PARSE_PARTIAL",
+                                now,
+                            );
+                        } else {
+                            let _ = db.complete_job(&job.id, &prep.owner, now);
+                        }
+                    }
+                    Err(err) if err.code == "E_WORKER_CANCELED" => {
+                        let _ = db.cancel_job(&job.id, now);
+                        let _ = db.fail_job(&job.id, &prep.owner, "E_WORKER_CANCELED", false, now);
+                    }
+                    Err(err) if err.code == "E_PDF_PASSWORD" => {
+                        let _ = db.block_job(&job.id, &prep.owner, "password", now);
+                    }
+                    Err(err) => {
+                        let _ = db.fail_job(
+                            &job.id,
+                            &prep.owner,
+                            &err.code,
+                            parse_failure_is_retryable(&err.code),
+                            now,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Ayrıştırma hatası yeniden denenebilir mi? Yalnız **geçici altyapı** hataları
+/// (worker koptu, G/Ç) tekrar denenir; belgeye özgü hatalar (parola,
+/// bozuk/desteklenmeyen dosya), **disk yetersizliği** ve kullanıcı iptali
+/// otomatik tekrar döngüsüne girmez — şartname §17.4.
+///
+/// `E_DISK_FULL` listeden **çıkarıldı**: yer açılmadan tekrar denemek üç denemeyi
+/// harcar ve kullanıcıya yanlış "yeniden deniyorum" izlenimi verir.
+fn parse_failure_is_retryable(code: &str) -> bool {
+    matches!(
+        code,
+        "E_WORKER_DISCONNECTED"
+            | "E_WORKER_TIMEOUT"
+            | "E_WORKER_FRAME"
+            | "E_WORKER_RESPONSE"
+            | "E_IO"
+    )
+}
+
+/// Kullanıcı iptali: yarım çıktı yazılmadı, otomatik tekrar yok (§17.4).
+fn canceled_parse_error() -> ApiError {
+    ApiError::new(
+        "E_WORKER_CANCELED",
+        "Ayrıştırma iptal edildi; yarım çıktı kasaya yazılmadı. Belge yeniden ayrıştırılabilir.",
+    )
+}
+
+/// Ayrıştırma bekleyen belge (güncel sürümü var, `succeeded|partial` koşusu yok).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingParseRow {
+    pub document_id: String,
+    pub display_name: String,
+    pub version_id: String,
+    pub byte_size: i64,
+}
+
+/// Toplu ayrıştırma sonucu: her belge için gerçek sonuç, uydurulmuş "tamam" yok.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchParseItem {
+    pub version_id: String,
+    pub document_id: String,
+    pub display_name: String,
+    pub ok: bool,
+    pub pages: usize,
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchParseView {
+    pub requested: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub pages: usize,
+    /// §17.3 kanıtı: gözlenen en yüksek eşzamanlı ayrıştırma sayısı (≤ 2).
+    pub peak_parallel: usize,
+    pub results: Vec<BatchParseItem>,
+}
+
+/// Ayrıştırma bekleyen belgeleri listeler (yazmaz).
+#[tauri::command]
+pub fn documents_pending_parse(
+    state: State<'_, AppState>,
+    case_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<PendingParseRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let limit = i64::from(limit.unwrap_or(4).clamp(1, 8));
+    let pending = db.documents_pending_parse(&case_id, limit)?;
+    Ok(pending
+        .into_iter()
+        .map(|row| PendingParseRow {
+            document_id: row.document_id,
+            display_name: row.display_name,
+            version_id: row.version_id,
+            byte_size: row.byte_size,
+        })
+        .collect())
+}
+
+/// **§17.3 toplu ayrıştırma:** bekleyen belgeleri en fazla iki worker'la
+/// ayrıştırır. Kasa başına tek yazıcı korunur (yazımlar seri); büyük belge tek
+/// başına koşar. Sonuç **belge başına** gerçektir: düşen iş `failed` sayılır ve
+/// hata kodu/mesajı yazılır.
+#[tauri::command]
+pub async fn documents_parse_pending(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    case_id: String,
+    limit: Option<u32>,
+) -> Result<BatchParseView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.workers_handle();
+    let pool = state.parse_pool_handle();
+    let limit = i64::from(limit.unwrap_or(4).clamp(1, 8));
+    let pending = {
+        let guard = lock_vault(&hub);
+        let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+        db.documents_pending_parse(&case_id, limit)?
+    };
+
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut handles = Vec::new();
+    for row in pending {
+        let app = app.clone();
+        let hub = Arc::clone(&hub);
+        let slot = Arc::clone(&slot);
+        let pool = Arc::clone(&pool);
+        let live = Arc::clone(&live);
+        let peak = Arc::clone(&peak);
+        let version_id = row.version_id.clone();
+        handles.push(tauri::async_runtime::spawn_blocking(move || {
+            let now_live = live.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now_live, Ordering::SeqCst);
+            let mut emit = |progress: &ParseProgress| {
+                let _ = app.emit(
+                    "parse-progress",
+                    ParseProgressEvent::new(&version_id, progress),
+                );
+            };
+            let outcome = run_parse(
+                &hub,
+                &slot,
+                &pool,
+                &version_id,
+                ParseOptions::default(),
+                &mut emit,
+            );
+            live.fetch_sub(1, Ordering::SeqCst);
+            (row, outcome)
+        }));
+    }
+
+    let mut view = BatchParseView {
+        requested: handles.len(),
+        succeeded: 0,
+        failed: 0,
+        pages: 0,
+        peak_parallel: 0,
+        results: Vec::new(),
+    };
+    for handle in handles {
+        match handle.await {
+            Ok((row, Ok(result))) => {
+                view.succeeded += 1;
+                view.pages += result.pages;
+                view.results.push(BatchParseItem {
+                    version_id: row.version_id,
+                    document_id: row.document_id,
+                    display_name: row.display_name,
+                    ok: true,
+                    pages: result.pages,
+                    code: None,
+                    message: None,
+                });
+            }
+            Ok((row, Err(err))) => {
+                view.failed += 1;
+                view.results.push(BatchParseItem {
+                    version_id: row.version_id,
+                    document_id: row.document_id,
+                    display_name: row.display_name,
+                    ok: false,
+                    pages: 0,
+                    code: Some(err.code),
+                    message: Some(err.message),
+                });
+            }
+            Err(_) => {
+                view.failed += 1;
+            }
+        }
+    }
+    view.peak_parallel = peak.load(Ordering::SeqCst);
+    // Denetim: yalnız sayılar (belge adı/kimliği yazılmaz).
+    {
+        let guard = lock_vault(&hub);
+        if let Some(db) = guard.db.as_ref() {
+            let _ = db.append_audit(
+                "document_parse",
+                None,
+                "batch",
+                "local-user",
+                &serde_json::json!({
+                    "requested": view.requested,
+                    "succeeded": view.succeeded,
+                    "failed": view.failed,
+                    "peakParallel": view.peak_parallel,
+                }),
+            );
+        }
+    }
+    Ok(view)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobQueueView {
+    pub summary: JobQueueSummary,
+    pub jobs: Vec<JobRow>,
+}
+
+/// İptal sonucu: kuyruk kararı + **sürecin gerçekten durup durmadığı**.
+///
+/// `workerStopped=false` "süreç durmadı" demek değildir; yürüyen ayrıştırma
+/// yoksa (iş sırada bekliyorsa) durdurulacak süreç de yoktur. Kullanıcıya
+/// yalnız gerçekleşen sonuç yazılır (§17.5).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobCancelView {
+    pub outcome: String,
+    pub job: JobRow,
+    pub worker_stopped: bool,
+}
+
+#[tauri::command]
+pub fn job_queue_status(state: State<'_, AppState>) -> Result<JobQueueView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(JobQueueView {
+        summary: db.job_queue_summary()?,
+        jobs: db.list_jobs(20)?,
+    })
+}
+
+#[tauri::command]
+pub fn job_queue_recover(state: State<'_, AppState>) -> Result<JobRecovery, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let report = db.recover_stale_jobs(time::OffsetDateTime::now_utc())?;
+    let metadata = serde_json::json!({
+        "interrupted": report.interrupted,
+        "requeued": report.requeued,
+        "failed": report.failed,
+        "canceled": report.canceled,
+    });
+    db.append_audit("job_queue", None, "recover", "local-user", &metadata)?;
+    Ok(report)
+}
+
+/// Kuyruktaki bir işi iptal eder. Sırada bekleyen hemen `canceled` olur;
+/// yürüyen iş **önce** gerçekten durdurulur, sonra `canceling` işaretine geçer
+/// (şartname §17.5: süreç durmadan "iptal tamam" denmez).
+///
+/// Süreç durdurma kasa kilidini **beklemez**: ayrıştırma kilidi tutuyorsa
+/// `state.parse` yuvasındaki tutamaç kullanılır, kuyruk kaydı sonra yazılır.
+#[tauri::command]
+pub fn job_cancel(state: State<'_, AppState>, job_id: String) -> Result<JobCancelView, ApiError> {
+    // 1) Süreç: yuva kilidi kısa tutulur, kasa kilidi **alınmaz**. §17.3 ile
+    //    birden çok ayrıştırma koşabildiği için iş kimliğiyle eşleşen süreç
+    //    durdurulur (diğerleri etkilenmez).
+    let worker_stopped = state.cancel_running_job(&job_id);
+
+    // 2) Kuyruk kaydı (`running → canceling`; hiç çalışmamış iş `canceled`).
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let result = db.cancel_job(&job_id, time::OffsetDateTime::now_utc())?;
+    db.append_audit(
+        "job_queue",
+        None,
+        "cancel",
+        "local-user",
+        &serde_json::json!({
+            "outcome": result.outcome,
+            "state": result.job.state,
+            "workerStopped": worker_stopped,
+        }),
+    )?;
+    Ok(JobCancelView {
+        outcome: result.outcome,
+        job: result.job,
+        worker_stopped,
+    })
+}
+
+/// Yeniden deneme görünümü: işin **gerçekten** yeniden çalıştırılıp
+/// çalıştırılmadığını taşır. Arayüz "sıraya alındı" ile "başladı"yı ayırır;
+/// `started=false` iken nedeni yazar ve "çalışıyor" görüntüsü üretmez.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobRetryView {
+    /// `failed → queued` sonrası satır.
+    pub job: JobRow,
+    /// Yürütücü gerçekten başlatıldı mı?
+    pub started: bool,
+    /// Başlatılmadıysa neden: `type_not_runnable` (maskeleme isteği iş
+    /// satırında saklanmaz), `no_input` (girdi anahtarı çözülemedi) veya
+    /// `password_required` (belge parola ile açılmıştı; parola saklanmaz, satır
+    /// `failed` kalır — kullanıcı parolayı belge ekranından girer).
+    pub skipped: Option<String>,
+    /// Yeniden çalıştırılan belge sürümü (parse işleri).
+    pub version_id: Option<String>,
+    /// Yeniden denemede uygulanan ayarlar; arayüz "hangi ayarla" yazar.
+    pub applied: Option<RetryApplied>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryApplied {
+    pub ocr: bool,
+    pub ocr_lang: String,
+    pub text_encoding: String,
+    /// Ayarlar iş satırından **geri yüklendi** mi? `false` ise (0023 öncesi iş)
+    /// varsayılanlarla koşuldu ve arayüz bunu dürüstçe yazar.
+    pub restored: bool,
+}
+
+/// Yeniden denemede çalıştırılabilecek iş türü → girdi çözümü.
+///
+/// Bugün yalnız belge ayrıştırma kendiliğinden yürütülebilir: anahtarı
+/// `parse:<sürüm>` biçimindedir ve `prepare_parse` aynı anahtarı sahiplenir.
+/// Maskeleme isteği (terimler/bölgeler) iş satırında **saklanmaz**; uydurulmuş
+/// bir istekle yeniden çalıştırmak yanlış maskeleme üretirdi.
+fn runnable_parse_version(job_type: &str, key: Option<&str>) -> Option<String> {
+    if job_type != "parse_document" {
+        return None;
+    }
+    let version = key?.strip_prefix("parse:")?;
+    if version.trim().is_empty() {
+        return None;
+    }
+    Some(version.to_string())
+}
+
+/// **Yeniden deneme planı.** Satır, çözülen sürüm, **kaydedilmiş ayarlar** ve
+/// başlatmayı engelleyen neden tek yerde toplanır (test bu yolu doğrudan koşar).
+struct RetryPlan {
+    job: JobRow,
+    version_id: Option<String>,
+    options: Option<dim_storage::queue::JobParseOptions>,
+    /// `password_required`: belge parola ile açılmıştı, parola saklanmaz.
+    skipped: Option<&'static str>,
+}
+
+/// **Yeniden denemenin A aşaması** (kısa kilit): durum geçişi, girdi çözümü,
+/// kaydedilmiş ayarların okunması ve denetim.
+///
+/// Parola ile açılmış bir iş **kendiliğinden yeniden başlatılmaz**: parola iş
+/// satırında saklanmadığı için parolasız deneme sessizce farklı (çoğu kez
+/// metinsiz) çıktı üretirdi. Bu durumda satır `failed` kalır ve çağıran
+/// `password_required` bildirir.
+fn plan_retry(hub: &Arc<Mutex<VaultState>>, job_id: &str) -> Result<RetryPlan, ApiError> {
+    let guard = lock_vault(hub);
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let job = db
+        .get_job(job_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "İş bulunamadı."))?;
+    let options = db.job_parse_options(job_id)?;
+    if options
+        .as_ref()
+        .is_some_and(|options| options.requires_password)
+    {
+        return Ok(RetryPlan {
+            job,
+            version_id: None,
+            options,
+            skipped: Some("password_required"),
+        });
+    }
+    let row = db.retry_failed_job(job_id, time::OffsetDateTime::now_utc())?;
+    let key = db.job_idempotency_key(job_id)?;
+    let version = runnable_parse_version(&row.job_type, key.as_deref());
+    db.append_audit(
+        "job_queue",
+        None,
+        "retry",
+        "local-user",
+        &serde_json::json!({
+            "state": row.state,
+            "jobType": row.job_type,
+            "started": version.is_some(),
+            // Ayarlar geri yüklendi mi? Değerler denetime yazılmaz (yalnız bayrak).
+            "optionsRestored": options.is_some(),
+        }),
+    )?;
+    Ok(RetryPlan {
+        job: row,
+        version_id: version,
+        options,
+        skipped: None,
+    })
+}
+
+/// Kaydedilmiş ayarları yeniden deneme isteğine çevirir (**saf**, test edilir).
+///
+/// Kayıt yoksa (0023 öncesi iş) **varsayılan** kullanılır ve `restored=false`
+/// döner: arayüz "özgün ayarlar kayıtlı değil" der, uydurulmuş bir ayar
+/// gösterilmez. Parola hiçbir durumda taşınmaz (`password: None`).
+fn retry_parse_options(
+    stored: Option<&dim_storage::queue::JobParseOptions>,
+) -> (ParseOptions, RetryApplied) {
+    match stored {
+        Some(options) => (
+            ParseOptions {
+                ocr: Some(options.ocr),
+                ocr_lang: Some(options.ocr_lang.clone()),
+                text_encoding: Some(options.text_encoding.clone()),
+                password: None,
+            },
+            RetryApplied {
+                ocr: options.ocr,
+                ocr_lang: options.ocr_lang.clone(),
+                text_encoding: options.text_encoding.clone(),
+                restored: true,
+            },
+        ),
+        None => (
+            ParseOptions {
+                ocr: None,
+                ocr_lang: None,
+                text_encoding: None,
+                password: None,
+            },
+            RetryApplied {
+                ocr: false,
+                ocr_lang: "eng".to_string(),
+                text_encoding: "auto".to_string(),
+                restored: false,
+            },
+        ),
+    }
+}
+
+/// **Erken düşüş** (sürüm/blob yok): `prepare_parse` sahiplenmeden önce döndüğü
+/// için iş satırı hâlâ `queued`. Burada yazılmazsa satır sonsuza kadar
+/// "Sırada" kalır — düğme yine ölü olurdu. Yalnız **kendi** bıraktığımız durumu
+/// kapatırız: satır `running` ise (başka bir yürütücü sahiplendi) dokunulmaz.
+fn finalize_failed_retry(
+    hub: &Arc<Mutex<VaultState>>,
+    job_id: &str,
+    version_id: &str,
+    error_code: &str,
+) {
+    let guard = lock_vault(hub);
+    let Some(db) = guard.db.as_ref() else {
+        return;
+    };
+    if !db
+        .get_job(job_id)
+        .ok()
+        .flatten()
+        .is_some_and(|job| job.state == "queued")
+    {
+        return;
+    }
+    let owner = format!(
+        "retry-{}-{}",
+        std::process::id(),
+        PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let now = time::OffsetDateTime::now_utc();
+    let claimed = db
+        .claim_job_by_key(
+            &format!("parse:{version_id}"),
+            &owner,
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            now,
+        )
+        .ok()
+        .flatten()
+        .is_some();
+    if claimed {
+        let _ = db.fail_job(job_id, &owner, error_code, false, now);
+    }
+}
+
+/// Başarısız işi kullanıcı isteğiyle yeniden sıraya alır (`failed → queued`) ve
+/// **yürütülebilir işte gerçekten başlatır** (§17.2 yeniden deneme denetimi).
+///
+/// Eski davranış yalnız satırı `queued` yazıyordu: kuyrukta yürütücü olmadığı
+/// için iş sonsuza kadar "Sırada" kalıyor, düğme çalışıyor gibi görünüyordu.
+/// Ayrıştırma işinde bu komut aynı üç aşamalı yolu (`run_parse`) arka planda
+/// başlatır; arayüz iş parçacığı beklemez, ilerleme `parse-progress` olayı ve
+/// `jobs.progress_*` sütunlarından gelir.
+///
+/// **Ayarlar:** yeniden deneme, iş satırına yazılmış **aynı ayarlarla** koşar
+/// (OCR, dil, kodlama). Kayıt yoksa (0023 öncesi iş) varsayılanlar kullanılır ve
+/// yanıt `applied.restored=false` ile bunu bildirir — sessizce "aynı iş" denmez.
+/// **Parola saklanmaz:** parola ile açılmış belgede yeniden deneme
+/// kendiliğinden başlatılmaz (`skipped=password_required`, satır `failed`
+/// kalır); kullanıcı parolayı belge ekranından girer.
+#[tauri::command]
+pub async fn job_retry(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+) -> Result<JobRetryView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.workers_handle();
+    let pool = state.parse_pool_handle();
+
+    let plan = plan_retry(&hub, &job_id)?;
+    let (row, version_id) = (plan.job, plan.version_id);
+
+    let Some(version_id) = version_id else {
+        // `password_required` dışındaki durum: yürütücüsü olmayan iş türü ya da
+        // girdisi çözülemeyen ayrıştırma. Satır sıraya alındı ama "başladı" denmez.
+        let skipped = match plan.skipped {
+            Some(reason) => reason.to_string(),
+            None if row.job_type == "parse_document" => "no_input".to_string(),
+            None => "type_not_runnable".to_string(),
+        };
+        return Ok(JobRetryView {
+            job: row,
+            started: false,
+            skipped: Some(skipped),
+            version_id: None,
+            applied: None,
+        });
+    };
+
+    // Ayarlar iş satırından geri yüklenir (F04-T07 kapanışı): aynı belge, aynı
+    // ayar. Kayıt yoksa varsayılan + `restored=false` (arayüz dürüstçe yazar).
+    let (parse_options, applied) = retry_parse_options(plan.options.as_ref());
+
+    // Aşama B — kilit yok: gerçek ayrıştırma arka planda koşar. Sonuç kuyruk
+    // satırına yazılır (`completed`/`partial`/`failed`/`blocked`); komut onu
+    // beklemez, arayüz satırı canlı tazeler.
+    let run_version = version_id.clone();
+    let emit_version = version_id.clone();
+    let retry_job_id = row.id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut emit = |progress: &ParseProgress| {
+            let event = ParseProgressEvent::new(&emit_version, progress);
+            let _ = app.emit("parse-progress", event);
+        };
+        let outcome = run_parse(&hub, &slot, &pool, &run_version, parse_options, &mut emit);
+        if let Err(error) = outcome {
+            finalize_failed_retry(&hub, &retry_job_id, &run_version, &error.code);
+        }
+    });
+
+    Ok(JobRetryView {
+        job: row,
+        started: true,
+        skipped: None,
+        version_id: Some(version_id),
+        applied: Some(applied),
+    })
+}
+
+/// Engellenen işin engelini kaldırır (`blocked → queued`).
+#[tauri::command]
+pub fn job_unblock(state: State<'_, AppState>, job_id: String) -> Result<JobRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let row = db.unblock_job(&job_id, time::OffsetDateTime::now_utc())?;
+    db.append_audit(
+        "job_queue",
+        None,
+        "unblock",
+        "local-user",
+        &serde_json::json!({ "state": row.state }),
+    )?;
+    Ok(row)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupView {
+    pub path: String,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub manifest_hash: String,
+    /// Tek dosyalık `.dimbak` arşivi (içerik zaten şifreli).
+    pub archive_path: Option<String>,
+}
+
+/// Klasörü tek dosyalık arşive paketler. Arşiv şifrelemez; içindeki DB ve
+/// blob'lar zaten kasa anahtarıyla şifreli olduğu için açık metin sızmaz.
+///
+/// Arşiv **geçici ada** yazılır ve bitince yerleştirilir: yarıda kalan bir
+/// `.dimbak` dosyası geçerli arşiv sanılmasın (F15-T06).
+fn zip_dir(src: &Path, dest: &Path) -> Result<(), ApiError> {
+    use std::io::Write as _;
+
+    dim_storage::atomic::write_atomic_with(dest, |file| {
+        let io_err = |err: zip::result::ZipError| std::io::Error::other(err.to_string());
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut stack = vec![src.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(src)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                writer.start_file(name, options).map_err(io_err)?;
+                writer.write_all(&std::fs::read(&path)?)?;
+            }
+        }
+        writer.finish().map(|_| ()).map_err(io_err)
+    })
+    .map_err(ApiError::from)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreView {
+    pub vault_path: String,
+    pub file_count: usize,
+    /// Kopyalamadan **önce** doğrulanan dosya sayısı ve bayt (manifest sha256).
+    pub verified_files: usize,
+    pub verified_bytes: u64,
+    pub verify_ms: u64,
+    /// Yedekte olup manifestte sayılmayan dosyalar (kasaya kopyalanmadı).
+    pub unlisted_blobs: Vec<String>,
+}
+
+fn sha256_file(path: &Path) -> Result<String, ApiError> {
+    let data = std::fs::read(path)?;
+    Ok(hex::encode(Sha256::digest(&data)))
+}
+
+/// Kasa dizinini (başlık + SQLCipher DB + şifreli blob'lar) tutarlı bir
+/// klasöre yedekler. DB `sqlcipher_export` ile alınır; açık metin yazılmaz.
+///
+/// Yedek **hazırlık dizininde** üretilir, manifestle doğrulanır ve tek
+/// `rename` ile yerleşir. Disk dolması ya da kesinti hâlinde geriye yarım
+/// bir "DimYedek-…" klasörü kalmaz; kullanıcı `E_DISK_FULL` görür (F15-T06).
+#[tauri::command]
+pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<BackupView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_id = guard
+        .vault_id
+        .clone()
+        .ok_or_else(|| ApiError::new("E_VAULT_LOCKED", "Kasa kimliği yok."))?;
+
+    if dest_dir.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Yedek konumu boş olamaz."));
+    }
+    let root = PathBuf::from(dest_dir.trim());
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string())
+        .replace([':', '-'], "")
+        .replace('T', "-")
+        .chars()
+        .take(15)
+        .collect::<String>();
+    let backup_dir = root.join(format!("DimYedek-{stamp}"));
+    if backup_dir.exists() {
+        return Err(ApiError::new(
+            "E_BACKUP_EXISTS",
+            "Aynı adlı yedek klasörü zaten var.",
+        ));
+    }
+    let archive = root.join(format!("DimYedek-{stamp}.dimbak"));
+
+    let staging = dim_storage::atomic::temp_sibling(&backup_dir, "dimpart");
+    dim_storage::atomic::remove_tree(&staging);
+    let built = build_backup_staging(&staging, db, vault_path, &vault_id, vault.master_key());
+    let (file_count, total_bytes, manifest_hash) = match built {
+        Ok(done) => done,
+        Err(err) => {
+            dim_storage::atomic::remove_tree(&staging);
+            return Err(err);
+        }
+    };
+    if let Err(err) = dim_storage::atomic::commit_dir(&staging, &backup_dir) {
+        dim_storage::atomic::remove_tree(&staging);
+        return Err(err.into());
+    }
+    if let Err(err) = zip_dir(&backup_dir, &archive) {
+        // Klasör yedeği geçerli ve yerinde; yalnız tek dosyalık arşiv yazılamadı.
+        return Err(ApiError::new(
+            "E_BACKUP_ZIP",
+            &format!(
+                "Yedek klasörü hazır ama tek dosya arşivi yazılamadı: {}. Klasörü olduğu gibi kullanabilirsiniz.",
+                err.message
+            ),
+        ));
+    }
+
+    let _ = db.append_audit(
+        "backup",
+        None,
+        "create",
+        "local-user",
+        &serde_json::json!({"files": file_count}),
+    );
+    Ok(BackupView {
+        path: backup_dir.to_string_lossy().to_string(),
+        file_count,
+        total_bytes,
+        manifest_hash,
+        archive_path: Some(archive.to_string_lossy().to_string()),
+    })
+}
+
+/// Hazırlık dizinine yedeği yazar, manifesti üretir ve yedeğin açıldığını
+/// doğrular. Dönüş: (dosya sayısı, toplam bayt, manifest sha256).
+///
+/// Tüm yazımlar atomiktir; hata hâlinde çağıran hazırlık dizinini siler.
+fn build_backup_staging(
+    staging: &Path,
+    db: &Database,
+    vault_path: &Path,
+    vault_id: &str,
+    master_key: &[u8; 32],
+) -> Result<(usize, u64, String), ApiError> {
+    std::fs::create_dir_all(staging.join(dim_storage::backup::BLOBS_DIR))?;
+    let key = DatabaseKey::derive_from_master(master_key, vault_id)?;
+    let backup_db = staging.join(dim_storage::backup::DB_FILE);
+    db.backup_to(&backup_db, &key)?;
+    let mut total = dim_storage::atomic::copy_atomic(
+        vault_path,
+        &staging.join(dim_storage::backup::VAULT_FILE),
+    )?;
+
+    let mut blob_count = 0usize;
+    let blob_src = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs");
+    if blob_src.is_dir() {
+        for entry in std::fs::read_dir(&blob_src)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let dest = staging
+                .join(dim_storage::backup::BLOBS_DIR)
+                .join(entry.file_name());
+            total += dim_storage::atomic::copy_atomic(&entry.path(), &dest)?;
+            blob_count += 1;
+        }
+    }
+
+    let written = dim_storage::backup::write_backup_manifest(staging)?;
+    total += std::fs::metadata(&backup_db)?.len();
+
+    // Yedeğin gerçekten açıldığını doğrula: bozuk yedek "başarılı" sayılmaz.
+    {
+        let verify = Database::open(&backup_db, &key)?;
+        verify.integrity_check()?;
+    }
+
+    Ok((blob_count + 3, total, written.manifest_sha256))
+}
+
+/// Yedek klasörünü yeni bir kasa dizinine kopyalar. Hedef boş olmalıdır;
+/// mevcut kasanın üzerine yazılmaz. Açma işlemi kullanıcı parolasıyla yapılır.
+///
+/// Kural `dim_storage::backup::restore_backup_dir` içinde: **önce doğrula**
+/// (manifest boyut/sha256), sonra hazırlık dizinine kopyala, en son tek
+/// `rename`. Komut yalnız kapıları (boş yol) ve görünümü taşır (F15-T06).
+#[tauri::command]
+pub fn vault_restore(backup_dir: String, dest_dir: String) -> Result<RestoreView, ApiError> {
+    if backup_dir.trim().is_empty() || dest_dir.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Yedek ve hedef konumu zorunlu."));
+    }
+    let dest = PathBuf::from(dest_dir.trim());
+    let outcome =
+        dim_storage::backup::restore_backup_dir(&PathBuf::from(backup_dir.trim()), &dest)?;
+    Ok(RestoreView {
+        vault_path: dest.to_string_lossy().to_string(),
+        file_count: outcome.blob_count + 3,
+        verified_files: outcome.verified_files,
+        verified_bytes: outcome.verified_bytes,
+        verify_ms: outcome.verify_ms,
+        unlisted_blobs: outcome.unlisted,
+    })
+}
+
+#[tauri::command]
+pub fn claim_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewClaim,
+) -> Result<ClaimRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_claim(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn claim_list(state: State<'_, AppState>, case_id: String) -> Result<Vec<ClaimRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_claims(&case_id)?)
+}
+
+/// Metin içi alıntı denetimi (F12-T14): metindeki çift tırnaklı pasajları
+/// dosyanın güncel belge sürümlerinde doğrular. Okuma dışında yazım yapmaz;
+/// metin ve alıntı denetime yazılmaz.
+#[tauri::command]
+pub fn in_text_quote_check(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: InTextQuoteInput,
+) -> Result<InTextQuoteCheck, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.check_in_text_quotes(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn evidence_link_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewEvidenceLink,
+) -> Result<EvidenceLinkRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.link_evidence(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn evidence_link_list(
+    state: State<'_, AppState>,
+    claim_id: String,
+) -> Result<Vec<EvidenceLinkRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_evidence_links(&claim_id)?)
+}
+
+#[tauri::command]
+pub fn claim_relation_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    claim_id: String,
+    input: NewClaimRelation,
+) -> Result<ClaimRelationRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.link_claim_relation(&case_id, &claim_id, &input)?)
+}
+
+#[tauri::command]
+pub fn claim_relation_list(
+    state: State<'_, AppState>,
+    claim_id: String,
+) -> Result<Vec<ClaimRelationRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_claim_relations(&claim_id)?)
+}
+
+#[tauri::command]
+pub fn review_supersede(
+    state: State<'_, AppState>,
+    item_id: String,
+    superseded_by_item_id: String,
+) -> Result<ReviewItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.supersede_review_item(&item_id, &superseded_by_item_id)?)
+}
+
+#[tauri::command]
+pub fn contradiction_assess(
+    state: State<'_, AppState>,
+    case_id: String,
+    item_id: String,
+    verdict: String,
+    rationale: String,
+    reviewer: String,
+) -> Result<ContradictionAssessmentRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.assess_contradiction(&case_id, &item_id, &verdict, &rationale, &reviewer)?)
+}
+
+#[tauri::command]
+pub fn contradiction_assessments(
+    state: State<'_, AppState>,
+    item_id: String,
+) -> Result<Vec<ContradictionAssessmentRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_contradiction_assessments(&item_id)?)
+}
+
+#[tauri::command]
+pub fn review_item_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    input: NewReviewItem,
+) -> Result<ReviewItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_review_item(&case_id, &input)?)
+}
+
+#[tauri::command]
+pub fn review_item_list(
+    state: State<'_, AppState>,
+    case_id: String,
+    review_state: Option<String>,
+) -> Result<Vec<ReviewItemRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_review_items(&case_id, review_state.as_deref())?)
+}
+
+#[tauri::command]
+pub fn review_decide(
+    state: State<'_, AppState>,
+    item_id: String,
+    decision: String,
+    edited_payload: Option<serde_json::Value>,
+    reviewer: String,
+    rationale: String,
+) -> Result<ReviewItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.decide_review_item(
+        &item_id,
+        &decision,
+        edited_payload.as_ref(),
+        &reviewer,
+        &rationale,
+    )?)
+}
+
+#[tauri::command]
+pub fn review_commit(
+    state: State<'_, AppState>,
+    item_id: String,
+    decision: String,
+    target: ReviewTarget,
+    reviewer: String,
+    rationale: String,
+) -> Result<ReviewCommitResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.commit_review_decision(&item_id, &decision, &target, &reviewer, &rationale)?)
+}
+
+#[tauri::command]
+pub fn review_outbox_pending(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<OutboxEventRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_outbox_events(Some(&case_id), true)?)
+}
+
+#[tauri::command]
+pub fn review_history(
+    state: State<'_, AppState>,
+    item_id: String,
+) -> Result<Vec<ReviewDecisionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.review_history(&item_id)?)
+}
+
+/// Katalogdaki lisanslı kontrol listeleri (F08-T11).
+#[tauri::command]
+pub fn checklist_templates(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<ChecklistTemplateRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_checklist_templates(&case_id)?)
+}
+
+/// Şablonu sürüm ve lisans künyesiyle dosyaya kopyalar (idempotent).
+#[tauri::command]
+pub fn checklist_copy(
+    state: State<'_, AppState>,
+    case_id: String,
+    template_id: String,
+) -> Result<ChecklistCopyResult, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.copy_checklist_to_case(&case_id, &template_id)?)
+}
+
+#[tauri::command]
+pub fn checklist_items(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<CaseChecklistItemRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_checklist(&case_id)?)
+}
+
+/// Öğe durumu: `present` belge bağı, `missing`/`not_applicable` gerekçe ister;
+/// yazma `expected_row_version` ile korunur.
+#[tauri::command]
+pub fn checklist_item_state(
+    state: State<'_, AppState>,
+    item_id: String,
+    new_state: String,
+    linked_document_ids: Vec<String>,
+    note: String,
+    expected_row_version: i64,
+) -> Result<CaseChecklistItemRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.set_case_checklist_state(
+        &item_id,
+        &new_state,
+        &linked_document_ids,
+        &note,
+        expected_row_version,
+    )?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterArchView {
+    pub format: &'static str,
+    pub format_label: &'static str,
+    pub architectures: Vec<String>,
+    pub comparison: &'static str,
+    pub comparison_label: &'static str,
+    pub contains_app_arch: Option<bool>,
+    pub reason: Option<&'static str>,
+    pub summary: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdapterView {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+    pub state: &'static str,
+    pub version: Option<String>,
+    pub auth_mode: &'static str,
+    pub batch_forbidden: bool,
+    pub allowed_args: &'static [&'static str],
+    /// PATH'te bulunan yürütülebilir (varsa); bağ çözümüyle birlikte.
+    pub path: Option<String>,
+    /// Başlık baytlarından okunan mimari (F10-T01). Kurulu değilse `None`.
+    pub architecture: Option<AdapterArchView>,
+}
+
+fn adapter_arch_view(report: &dim_cli_adapters::ArchReport) -> AdapterArchView {
+    AdapterArchView {
+        format: report.format.as_str(),
+        format_label: report.format.label(),
+        architectures: report.architectures.iter().map(|a| a.as_str()).collect(),
+        comparison: report.comparison.as_str(),
+        comparison_label: report.comparison.label(),
+        contains_app_arch: report.contains_app_arch,
+        reason: report.reason,
+        summary: report.summary(),
+    }
+}
+
+/// CLI adaptörlerini yoklar: yalnız `--version` çalıştırılır. Kimlik dosyası
+/// okunmaz, oturum açılmaz, istek gönderilmez. Yürütülebilirin mimarisi
+/// **başlık baytlarından** okunur (F10-T01); süreç başlatılmaz.
+#[tauri::command]
+pub fn provider_probe() -> Vec<AdapterView> {
+    SPECS
+        .iter()
+        .map(|spec| {
+            let discovery = discover(spec);
+            let (state, version, path) = match discovery.state {
+                DiscoveryState::Installed { version, path } => {
+                    ("installed", Some(version), Some(path))
+                }
+                DiscoveryState::Unverified { path, .. } => ("unverified", None, Some(path)),
+                DiscoveryState::NotInstalled => ("not_installed", None, None),
+            };
+            let architecture = path
+                .as_ref()
+                .map(|executable| adapter_arch_view(&dim_cli_adapters::inspect_path(executable)));
+            AdapterView {
+                id: spec.id,
+                display_name: spec.display_name,
+                command: spec.command,
+                state,
+                version,
+                auth_mode: match spec.auth_mode {
+                    dim_cli_adapters::AuthMode::Subscription => "subscription",
+                    dim_cli_adapters::AuthMode::ApiKey => "api_key",
+                    dim_cli_adapters::AuthMode::InteractiveOnly => "interactive_only",
+                },
+                batch_forbidden: spec.batch_forbidden,
+                allowed_args: spec.allowed_args,
+                path: path.map(|p| p.to_string_lossy().to_string()),
+                architecture,
+            }
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeInput {
+    pub adapter_id: String,
+}
+
+/// Kapsam kanıtı: iş dizini izni, `HOME`/`TMPDIR` politikası, stdin boyutu ve
+/// alt sürecin kum havuzunda bıraktığı dosyalar. **Dosya içeriği taşınmaz.**
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeSandboxView {
+    pub workdir: String,
+    pub workdir_mode: Option<String>,
+    pub home: Option<String>,
+    pub tmp: Option<String>,
+    pub home_isolation: &'static str,
+    pub stdin_bytes: usize,
+    pub stdin_limit_bytes: usize,
+    pub files: Vec<CliProbeSandboxFile>,
+    pub files_truncated: bool,
+    pub total_bytes: u64,
+    pub size_limit_bytes: u64,
+    pub entry_limit: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeSandboxFile {
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// Arayüzdeki "Bağlantıyı sına" düğmesinin gördüğü sonuç. Hangi argv ile,
+/// hangi ortam anahtarlarıyla, nerede ve ne kadar süre çalıştığı açıkça yazılır.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeView {
+    pub adapter_id: String,
+    pub display_name: String,
+    pub executable: String,
+    pub args: Vec<String>,
+    pub env_keys: Vec<String>,
+    pub workdir: String,
+    pub timeout_ms: u64,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout_head: String,
+    pub stderr_head: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub sandbox: CliProbeSandboxView,
+}
+
+fn probe_status_label(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Exited(_) => "exited",
+        RunStatus::TimedOut => "timed_out",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Signaled => "signaled",
+    }
+}
+
+/// **Gerçek** bağlantı sınaması: sürüm yoklaması yürütme çekirdeğinden geçer
+/// (izinli argv, allowlist ortam, boş geçici iş dizini, 15 sn sınır, iptal).
+/// İstem gönderilmez, kimlik dosyası okunmaz, model çağrılmaz.
+#[tauri::command]
+pub async fn provider_probe_run(
+    state: State<'_, AppState>,
+    input: CliProbeInput,
+) -> Result<CliProbeView, ApiError> {
+    let spec = adapter_spec(&input.adapter_id)
+        .ok_or_else(|| ApiError::new("E_CLI_UNKNOWN", "Bilinmeyen adaptör kimliği."))?;
+    if spec.batch_forbidden {
+        return Err(ApiError::new(
+            "E_CLI_BATCH_FORBIDDEN",
+            "Bu sağlayıcıda otomatik yürütme kapalı; yalnız etkileşimli kullanım var.",
+        ));
+    }
+    let executable = find_on_path(spec.command).ok_or_else(|| {
+        ApiError::new(
+            "E_CLI_NOT_INSTALLED",
+            "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
+        )
+    })?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir bağlantı sınaması var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+
+    let run_cancel = Arc::clone(&cancel);
+    let joined =
+        tauri::async_runtime::spawn_blocking(move || run_probe(spec, executable, &run_cancel))
+            .await;
+
+    // Yuva her durumda boşaltılır; iptal edilen ya da düşen koşu yeniyi engellemez.
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+
+    let report = match joined {
+        Ok(Ok(report)) => report,
+        Ok(Err(err)) => return Err(ApiError::new(err.code(), &err.to_string())),
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Sınama görevi tamamlanamadı.",
+            ))
+        }
+    };
+
+    let exit_code = match report.outcome.status {
+        RunStatus::Exited(code) => Some(code),
+        _ => None,
+    };
+    let scope = &report.outcome.scope;
+    let sandbox = CliProbeSandboxView {
+        workdir: scope.workdir.to_string_lossy().to_string(),
+        workdir_mode: scope.workdir_mode.map(|mode| format!("{mode:04o}")),
+        home: scope.home.as_ref().map(|p| p.to_string_lossy().to_string()),
+        tmp: scope.tmp.as_ref().map(|p| p.to_string_lossy().to_string()),
+        home_isolation: scope.home_isolation.as_str(),
+        stdin_bytes: scope.stdin_bytes,
+        stdin_limit_bytes: scope.stdin_limit,
+        files: scope
+            .inventory
+            .iter()
+            .map(|entry| CliProbeSandboxFile {
+                name: entry.name.clone(),
+                bytes: entry.bytes,
+            })
+            .collect(),
+        files_truncated: scope.inventory_truncated,
+        total_bytes: scope.inventory_total_bytes,
+        size_limit_bytes: scope.sandbox_size_limit,
+        entry_limit: scope.inventory_limit_entries,
+    };
+    let view = CliProbeView {
+        adapter_id: spec.id.to_string(),
+        display_name: spec.display_name.to_string(),
+        executable: report.executable.to_string_lossy().to_string(),
+        args: report.args.clone(),
+        env_keys: report.env_keys.clone(),
+        workdir: report.workdir.to_string_lossy().to_string(),
+        timeout_ms: u64::try_from(report.timeout.as_millis()).unwrap_or(u64::MAX),
+        status: probe_status_label(&report.outcome.status),
+        exit_code,
+        duration_ms: report.outcome.duration_ms,
+        stdout_head: report.outcome.stdout_head.clone(),
+        stderr_head: report.outcome.stderr_head.clone(),
+        stdout_truncated: report.outcome.stdout_truncated,
+        stderr_truncated: report.outcome.stderr_truncated,
+        sandbox,
+    };
+
+    // Kasa açıksa sınama denetime yazılır; **çıktı metni ve dosya adları
+    // denetime yazılmaz** (yalnız izin, politika ve sayılar).
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": view.adapter_id,
+                "args": view.args,
+                "envKeys": view.env_keys,
+                "status": view.status,
+                "exitCode": view.exit_code,
+                "durationMs": view.duration_ms,
+                "stdoutTruncated": view.stdout_truncated,
+                "stderrTruncated": view.stderr_truncated,
+                "workdirMode": view.sandbox.workdir_mode,
+                "homeIsolation": view.sandbox.home_isolation,
+                "stdinBytes": view.sandbox.stdin_bytes,
+                "stdinLimitBytes": view.sandbox.stdin_limit_bytes,
+                "sandboxFileCount": view.sandbox.files.len(),
+                "sandboxTotalBytes": view.sandbox.total_bytes,
+                "sandboxFilesTruncated": view.sandbox.files_truncated,
+            });
+            db.append_audit("cli_probe", None, "run", "local-user", &metadata)?;
+        }
+    }
+
+    Ok(view)
+}
+
+/// Süren sınamayı iptal eder: alt süreç öldürülür, kısmi çıktı raporlanır.
+/// `true` = işaretlenecek bir koşu vardı.
+#[tauri::command]
+pub fn provider_probe_cancel(state: State<'_, AppState>) -> bool {
+    let slot = state.cli_probe_lock();
+    match slot.as_ref() {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            true
+        }
+        None => false,
+    }
+}
+
+// --- F10-T01: mimari uyum denetimi ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliArchInterpreterView {
+    pub command: String,
+    pub path: Option<String>,
+    pub resolved: Option<String>,
+    pub format: &'static str,
+    pub architectures: Vec<String>,
+    pub comparison: &'static str,
+    pub reason: Option<&'static str>,
+}
+
+/// Adaptör başına mimari denetimi. Yalnız başlık baytları okunur; dosya
+/// **çalıştırılmaz**, süreç başlatılmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliArchAdapterView {
+    pub adapter_id: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+    pub installed: bool,
+    pub path: Option<String>,
+    pub resolved: Option<String>,
+    pub symlink: bool,
+    pub format: &'static str,
+    pub format_label: &'static str,
+    pub architectures: Vec<String>,
+    pub comparison: &'static str,
+    pub comparison_label: &'static str,
+    pub contains_app_arch: Option<bool>,
+    pub summary: String,
+    pub interpreter: Option<CliArchInterpreterView>,
+    pub reason: Option<&'static str>,
+    pub header_bytes: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliArchReportView {
+    pub app_arch: String,
+    pub probed_at_unix: u64,
+    pub adapters: Vec<CliArchAdapterView>,
+    pub same: usize,
+    pub different: usize,
+    pub fat: usize,
+    pub unknown: usize,
+    pub notes: Vec<&'static str>,
+}
+
+/// **Gerçek** mimari denetimi (F10-T01): her adaptörün PATH'te bulunan
+/// yürütülebiliri başlık baytlarından okunur (Mach-O thin/fat, ELF, PE,
+/// `#!` betiği → shebang yorumlayıcısı) ve uygulamanın süreç mimarisiyle
+/// karşılaştırılır. Sonuç `same` / `different` / `fat` / `unknown`.
+/// Süreç başlatılmaz, dosya çalıştırılmaz, ağ kullanılmaz.
+#[tauri::command]
+pub fn cli_arch_report(state: State<'_, AppState>) -> Result<CliArchReportView, ApiError> {
+    let mut adapters: Vec<CliArchAdapterView> = Vec::new();
+    for adapter in SPECS {
+        let executable = find_on_path(adapter.command);
+        let Some(path) = executable else {
+            adapters.push(CliArchAdapterView {
+                adapter_id: adapter.id,
+                display_name: adapter.display_name,
+                command: adapter.command,
+                installed: false,
+                path: None,
+                resolved: None,
+                symlink: false,
+                format: "unknown",
+                format_label: "bilinmiyor",
+                architectures: Vec::new(),
+                comparison: "unknown",
+                comparison_label: "mimari doğrulanamadı",
+                contains_app_arch: None,
+                summary: "PATH üzerinde bulunamadı".to_string(),
+                interpreter: None,
+                reason: Some("not_found"),
+                header_bytes: 0,
+            });
+            continue;
+        };
+        let report = dim_cli_adapters::inspect_path(&path);
+        adapters.push(CliArchAdapterView {
+            adapter_id: adapter.id,
+            display_name: adapter.display_name,
+            command: adapter.command,
+            installed: true,
+            path: Some(path.to_string_lossy().to_string()),
+            resolved: report
+                .resolved
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            symlink: report.symlink,
+            format: report.format.as_str(),
+            format_label: report.format.label(),
+            architectures: report.architectures.iter().map(|a| a.as_str()).collect(),
+            comparison: report.comparison.as_str(),
+            comparison_label: report.comparison.label(),
+            contains_app_arch: report.contains_app_arch,
+            summary: report.summary(),
+            interpreter: report
+                .interpreter
+                .as_ref()
+                .map(|interp| CliArchInterpreterView {
+                    command: interp.command.clone(),
+                    path: interp
+                        .path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    resolved: interp
+                        .resolved
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
+                    format: interp.format.as_str(),
+                    architectures: interp.architectures.iter().map(|a| a.as_str()).collect(),
+                    comparison: interp.comparison.as_str(),
+                    reason: interp.reason,
+                }),
+            reason: report.reason,
+            header_bytes: report.header_bytes,
+        });
+    }
+
+    let count = |wanted: &str| {
+        adapters
+            .iter()
+            .filter(|row| row.comparison == wanted)
+            .count()
+    };
+
+    // Denetime yalnız kimlik, biçim ve karar yazılır; yol ve shebang yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "appArch": dim_cli_adapters::app_arch_label(),
+                "adapters": adapters
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "adapterId": a.adapter_id,
+                        "installed": a.installed,
+                        "format": a.format,
+                        "comparison": a.comparison,
+                        "reason": a.reason,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            db.append_audit("cli_arch", None, "probe", "local-user", &metadata)?;
+        }
+    }
+
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(CliArchReportView {
+        app_arch: dim_cli_adapters::app_arch_label(),
+        probed_at_unix,
+        same: count("same"),
+        different: count("different"),
+        fat: count("fat"),
+        unknown: count("unknown"),
+        adapters,
+        notes: vec![
+            "Yalnız başlık baytları okunur (en çok 4 KiB; PE başlığı ilerideyse o bölüm). Dosya çalıştırılmaz, süreç başlatılmaz.",
+            "Karşılaştırma uygulamanın süreç mimarisiyle yapılır (std::env::consts::ARCH). Rosetta altında çalışan x86_64 süreç kendini x86_64 bildirir; donanım mimarisi ayrıca okunmaz.",
+            "Betiğin kendi mimarisi yoktur: sonuç shebang yorumlayıcısından gelir. Yorumlayıcı bulunamazsa mimari 'bilinmiyor' kalır.",
+            "Evrensel (fat) ikili ayrı durumdur; uygulama mimarisini içerip içermediği ayrıca yazılır.",
+            "Mimari uyumu tek başına güvenlik kanıtı değildir; sürüm, yetenek kapısı (T11) ve kapsam (T05) ayrı denetlenir.",
+        ],
+    })
+}
+
+// --- F10-T11: yetenek matrisi ve bağlantı durumu ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCapabilityRowView {
+    pub capability: &'static str,
+    pub label: &'static str,
+    pub required: bool,
+    pub note: &'static str,
+    pub state: &'static str,
+    pub state_label: &'static str,
+    /// Bildirilen bayraklar (`declared`) ya da eksik olanlar (`missing`).
+    pub flags: Vec<String>,
+    /// Durumun ayrıntısı: bayrak listesi, eksik bayraklar ya da neden kodu.
+    pub detail: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCapabilityAdapterView {
+    pub adapter_id: &'static str,
+    pub display_name: &'static str,
+    pub command: &'static str,
+    pub version: Option<String>,
+    pub help_args: Vec<String>,
+    pub help_read: bool,
+    pub help_error: Option<String>,
+    pub link: &'static str,
+    pub link_label: &'static str,
+    pub gate_open: bool,
+    pub gate_reasons: Vec<String>,
+    pub rows: Vec<CliCapabilityRowView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliCapabilityMatrixView {
+    pub adapters: Vec<CliCapabilityAdapterView>,
+    pub probed_at_unix: u64,
+    pub help_timeout_ms: u64,
+    pub notes: Vec<&'static str>,
+}
+
+fn capability_rows(report: &dim_cli_adapters::CapabilityReport) -> Vec<CliCapabilityRowView> {
+    report
+        .rows
+        .iter()
+        .map(|row| {
+            let (flags, detail) = match &row.state {
+                dim_cli_adapters::CapabilityState::Declared { flags } => (
+                    flags.iter().map(|f| (*f).to_string()).collect::<Vec<_>>(),
+                    flags.join(" "),
+                ),
+                dim_cli_adapters::CapabilityState::Missing { absent } => (
+                    absent.iter().map(|f| (*f).to_string()).collect::<Vec<_>>(),
+                    format!("eksik: {}", absent.join(" ")),
+                ),
+                dim_cli_adapters::CapabilityState::NoPath { reason } => {
+                    (Vec::new(), (*reason).to_string())
+                }
+                dim_cli_adapters::CapabilityState::Unread { reason } => {
+                    (Vec::new(), reason.clone())
+                }
+            };
+            CliCapabilityRowView {
+                capability: row.capability.id(),
+                label: row.capability.label(),
+                required: row.required,
+                note: row.note,
+                state: row.state.id(),
+                state_label: row.state.label(),
+                flags,
+                detail,
+            }
+        })
+        .collect()
+}
+
+/// Dört adaptörün **yetenek matrisini** yoklar: kurulu sürüm + o sürümün kendi
+/// `--help` metni. Gerekli bir yetenek yoksa bağlantı **uyumsuz**, doğrulanamıyorsa
+/// **sınırlı** olur ve yetenek kapısı kapanır. İstem gönderilmez; yardım metni
+/// denetime yazılmaz, yalnız durumlar ve bayrak adları yazılır.
+#[tauri::command]
+pub async fn cli_capability_matrix(
+    state: State<'_, AppState>,
+) -> Result<CliCapabilityMatrixView, ApiError> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::with_capacity(SPECS.len());
+        for adapter in SPECS {
+            let discovery = discover(adapter);
+            let version = match &discovery.state {
+                DiscoveryState::Installed { version, .. } => Some(version.clone()),
+                _ => None,
+            };
+            // Yardım yalnız kurulu ve otomatik yürütmeye açık adaptörde yoklanır
+            // (`help_probe=false` → etkileşimli-only, süreç başlatılmaz).
+            let (help, help_error) =
+                match (&discovery.state, dim_cli_adapters::capabilities(adapter.id)) {
+                    (DiscoveryState::Installed { .. }, Some(caps)) if caps.help_probe => {
+                        match find_on_path(adapter.command) {
+                            Some(executable) => {
+                                match dim_cli_adapters::run_help_probe(
+                                    adapter,
+                                    &executable,
+                                    &run_cancel,
+                                ) {
+                                    Ok(probe) => match dim_cli_adapters::help_text_of(&probe) {
+                                        Ok(text) => (Some(text.to_string()), None),
+                                        Err(reason) => (None, Some(reason.to_string())),
+                                    },
+                                    Err(err) => (None, Some(err.code().to_string())),
+                                }
+                            }
+                            None => (None, Some("not_installed".to_string())),
+                        }
+                    }
+                    _ => (None, None),
+                };
+            let Some(report) = dim_cli_adapters::evaluate(
+                adapter.id,
+                version.as_deref(),
+                help.as_deref(),
+                help_error.as_deref(),
+            ) else {
+                continue;
+            };
+            out.push(CliCapabilityAdapterView {
+                adapter_id: report.adapter_id,
+                display_name: adapter.display_name,
+                command: adapter.command,
+                version: report.installed_version.clone(),
+                help_args: report.help_args.clone(),
+                help_read: report.help_read,
+                help_error: report.help_error.clone(),
+                link: report.link.id(),
+                link_label: report.link.label(),
+                gate_open: report.gate_open,
+                gate_reasons: report.gate_reasons.clone(),
+                rows: capability_rows(&report),
+            });
+        }
+        out
+    })
+    .await;
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+    let adapters = match joined {
+        Ok(adapters) => adapters,
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Yetenek yoklaması tamamlanamadı.",
+            ))
+        }
+    };
+
+    // Denetime yalnız durum ve bayrak adları yazılır; yardım metni yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapters": adapters
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "adapterId": a.adapter_id,
+                        "version": a.version,
+                        "link": a.link,
+                        "gateOpen": a.gate_open,
+                        "gateReasons": a.gate_reasons,
+                        "helpRead": a.help_read,
+                        "helpError": a.help_error,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            db.append_audit("cli_capability", None, "probe", "local-user", &metadata)?;
+        }
+    }
+
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(CliCapabilityMatrixView {
+        adapters,
+        probed_at_unix,
+        help_timeout_ms: u64::try_from(dim_cli_adapters::HELP_TIMEOUT.as_millis())
+            .unwrap_or(u64::MAX),
+        notes: vec![
+            "Yetenek kanıtı kurulu sürümün kendi --help metnidir; davranış (araç çağrısı, oturum yazımı) ölçülmedi.",
+            "Gerekli bir yetenek yardım metninde yoksa bağlantı uyumsuz, doğrulanamıyorsa sınırlı olur ve yetenek kapısı kapanır.",
+            "Kesilmiş, boş ya da sıfır olmayan çıkışlı yardım çıktısı kanıt sayılmaz.",
+        ],
+    })
+}
+
+// --- F10-T12: başlangıç saldırıları (hook, MCP, proje talimatı, kapsam dışı canary) ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackVectorView {
+    pub vector: &'static str,
+    pub label: &'static str,
+    pub note: &'static str,
+    pub guard: &'static str,
+    pub guard_label: &'static str,
+    pub guard_flags: Vec<&'static str>,
+    pub hit: bool,
+    pub source: &'static str,
+    pub source_label: &'static str,
+    pub verdict: &'static str,
+    pub verdict_label: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackProductView {
+    pub vector: &'static str,
+    pub label: &'static str,
+    pub hit: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackFixtureView {
+    pub detector_proven: bool,
+    pub detector_control_clean: bool,
+    pub polluted_hits: usize,
+    pub clean_hits: usize,
+    pub vector_total: usize,
+    pub gate_rejected: bool,
+    pub gate_code: Option<&'static str>,
+    pub product_config: Vec<CliAttackProductView>,
+    pub canary_read_in_product_config: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackAdapterView {
+    pub adapter_id: String,
+    pub display_name: &'static str,
+    pub version: Option<String>,
+    pub argv: Vec<String>,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub hits: usize,
+    pub help_read: bool,
+    pub help_error: Option<String>,
+    pub link: &'static str,
+    pub link_label: &'static str,
+    pub gate_reasons: Vec<String>,
+    pub vectors: Vec<CliAttackVectorView>,
+    /// Koşu yapılmadıysa nedeni (`not_installed`, `interactive_only`,
+    /// `executable_missing` ya da hata kodu).
+    pub skipped: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliAttackView {
+    pub fixture: CliAttackFixtureView,
+    pub adapters: Vec<CliAttackAdapterView>,
+    pub probed_at_unix: u64,
+    pub notes: Vec<&'static str>,
+}
+
+fn run_status_id(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Exited(0) => "exited_ok",
+        RunStatus::Exited(_) => "exited_error",
+        RunStatus::TimedOut => "timed_out",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Signaled => "signaled",
+    }
+}
+
+fn attack_vector_views(outcomes: &[dim_cli_adapters::AttackOutcome]) -> Vec<CliAttackVectorView> {
+    outcomes
+        .iter()
+        .map(|outcome| CliAttackVectorView {
+            vector: outcome.vector.id(),
+            label: outcome.vector.label(),
+            note: outcome.vector.note(),
+            guard: outcome.guard.id(),
+            guard_label: outcome.guard.label(),
+            guard_flags: outcome.guard.flags().to_vec(),
+            hit: outcome.observation.hit,
+            source: outcome.observation.source.id(),
+            source_label: outcome.observation.source.label(),
+            verdict: outcome.verdict.id(),
+            verdict_label: outcome.verdict.label(),
+        })
+        .collect()
+}
+
+/// **Başlangıç saldırılarını** ölçer (F10-T12): fikstür dedektör kanıtı + kirli
+/// proje dizininin iş dizini olarak reddi + kurulu CLI'larda sertleştirme
+/// bayraklarıyla gerçek koşu. İstem gönderilmez; kimlik dosyası okunmaz; fikstür
+/// belirteci ve yardım metni denetime **yazılmaz**.
+#[tauri::command]
+pub async fn cli_attack_probe(state: State<'_, AppState>) -> Result<CliAttackView, ApiError> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let joined = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let fixture =
+            dim_cli_adapters::AttackFixture::create().map_err(|err| err.code().to_string())?;
+        let result = fixture.run().map_err(|err| err.code().to_string())?;
+        let mut adapters = Vec::with_capacity(SPECS.len());
+        for adapter in SPECS {
+            let discovery = discover(adapter);
+            let version = match &discovery.state {
+                DiscoveryState::Installed { version, .. } => Some(version.clone()),
+                _ => None,
+            };
+            let mut row = CliAttackAdapterView {
+                adapter_id: adapter.id.to_string(),
+                display_name: adapter.display_name,
+                version: version.clone(),
+                argv: Vec::new(),
+                status: "skipped",
+                exit_code: None,
+                duration_ms: 0,
+                hits: 0,
+                help_read: false,
+                help_error: None,
+                link: "not_checked",
+                link_label: "koşulmadı",
+                gate_reasons: Vec::new(),
+                vectors: Vec::new(),
+                skipped: None,
+            };
+            let caps = dim_cli_adapters::capabilities(adapter.id);
+            if version.is_none() {
+                row.skipped = Some("not_installed");
+                adapters.push(row);
+                continue;
+            }
+            if caps.is_none_or(|caps| caps.help_args.is_empty()) {
+                row.skipped = Some("interactive_only");
+                adapters.push(row);
+                continue;
+            }
+            let Some(executable) = find_on_path(adapter.command) else {
+                row.skipped = Some("executable_missing");
+                adapters.push(row);
+                continue;
+            };
+            match dim_cli_adapters::run_real_attack(&fixture, adapter, &executable, &run_cancel) {
+                Ok(run) => {
+                    let probe = dim_cli_adapters::HelpProbe {
+                        args: run.argv.clone(),
+                        stdout: run.stdout_head.clone(),
+                        stderr: run.stderr_head.clone(),
+                        status: run.status.clone(),
+                        duration_ms: run.duration_ms,
+                        truncated: run.truncated,
+                    };
+                    let help = dim_cli_adapters::help_text_of(&probe).ok();
+                    let report =
+                        dim_cli_adapters::evaluate(adapter.id, version.as_deref(), help, None);
+                    row.argv = run.argv.clone();
+                    row.status = run_status_id(&run.status);
+                    row.exit_code = run.exit_code;
+                    row.duration_ms = run.duration_ms;
+                    row.hits = run.observations.iter().filter(|o| o.hit).count();
+                    row.help_read = run.help_read;
+                    row.help_error = run.help_error.map(str::to_string);
+                    if let Some(report) = &report {
+                        row.link = report.link.id();
+                        row.link_label = report.link.label();
+                        row.gate_reasons = report.gate_reasons.clone();
+                        row.vectors = attack_vector_views(&dim_cli_adapters::outcomes(
+                            report,
+                            &run.observations,
+                            result.detector.proven,
+                        ));
+                    }
+                    if !matches!(run.status, RunStatus::Exited(0)) {
+                        // Sıfır dışı çıkışta yardım metni kanıt değildir; vektör
+                        // kararları yine de "ölçülemedi"ye düşer.
+                        row.skipped = Some("run_failed");
+                        row.vectors.clear();
+                    }
+                    adapters.push(row);
+                }
+                Err(err) => {
+                    row.skipped = Some(err.code());
+                    adapters.push(row);
+                }
+            }
+        }
+        Ok((result, adapters))
+    })
+    .await;
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+    let (result, adapters) = match joined {
+        Ok(Ok(value)) => value,
+        Ok(Err(code)) => return Err(ApiError::new(&code, "Saldırı fikstürü hazırlanamadı.")),
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Saldırı testi tamamlanamadı.",
+            ))
+        }
+    };
+
+    // Denetime yalnız sayı/durum yazılır: fikstür belirteci, dosya adı ve yardım
+    // metni yazılmaz.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "detectorProven": result.detector.proven,
+                "detectorControlClean": result.detector.control_clean,
+                "pollutedHits": result.detector.polluted_hits,
+                "cleanHits": result.detector.clean_hits,
+                "gateRejected": result.gate.rejected,
+                "gateCode": result.gate.code,
+                "canaryReadInProductConfig": result.canary_read_in_product_config(),
+                "adapters": adapters
+                    .iter()
+                    .map(|a| serde_json::json!({
+                        "adapterId": a.adapter_id,
+                        "version": a.version,
+                        "status": a.status,
+                        "exitCode": a.exit_code,
+                        "hits": a.hits,
+                        "skipped": a.skipped,
+                        "verdicts": a
+                            .vectors
+                            .iter()
+                            .map(|v| serde_json::json!({
+                                "vector": v.vector,
+                                "verdict": v.verdict,
+                                "hit": v.hit,
+                                "source": v.source,
+                            }))
+                            .collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            db.append_audit("cli_attack", None, "probe", "local-user", &metadata)?;
+        }
+    }
+
+    let fixture = CliAttackFixtureView {
+        detector_proven: result.detector.proven,
+        detector_control_clean: result.detector.control_clean,
+        polluted_hits: result.detector.polluted_hits,
+        clean_hits: result.detector.clean_hits,
+        vector_total: dim_cli_adapters::AttackVector::ALL.len(),
+        gate_rejected: result.gate.rejected,
+        gate_code: result.gate.code,
+        product_config: result
+            .product_config
+            .iter()
+            .map(|observation| CliAttackProductView {
+                vector: observation.vector.id(),
+                label: observation.vector.label(),
+                hit: observation.hit,
+            })
+            .collect(),
+        canary_read_in_product_config: result.canary_read_in_product_config(),
+    };
+
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(CliAttackView {
+        fixture,
+        adapters,
+        probed_at_unix,
+        notes: vec![
+            "Vektörler geçici bir fikstürde kurulur; gerçek CLI'ya istem gönderilmez, kimlik dosyası okunmaz.",
+            "Dedektör kanıtı: kirli fikstürde naif yükleyici taklidi dört vektörün hepsinde işaret bıraktı, temiz fikstürde hiçbirinde. Vekil gerçek CLI kodu değildir.",
+            "Sessizlik davranış kanıtı değildir: hook/MCP/proje talimatı ancak bir oturum açıldığında yüklenir; bu çağrıda oturum açılmadı.",
+            "Kirli proje dizini iş dizini olarak reddedilir; ürün CLI'ya proje dizini vermez, iş dizini her zaman boş kum havuzudur.",
+            "Kapsam dışı canary: mutlak yolla okuma işletim sistemi düzeyinde engellenmiyor; koruma istem/araç yolunun yokluğuna dayanır.",
+            "Kimi etkileşimli-only olduğu için otomatik saldırı koşusu yapılmaz.",
+        ],
+    })
+}
+
+// --- F10-T13: CLI kalıntı envanteri, ölçümü ve yalnız uygulamaya ait temizlik ---
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResiduePathView {
+    pub relative: String,
+    pub kind: &'static str,
+    pub note: &'static str,
+    pub exists: bool,
+    pub files: usize,
+    pub bytes: u64,
+    pub truncated: bool,
+    pub newest_age_secs: Option<u64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueScanView {
+    pub adapter_id: String,
+    pub root: String,
+    pub paths: Vec<CliResiduePathView>,
+    pub total_files: usize,
+    pub total_bytes: u64,
+    pub truncated: bool,
+    pub file_limit: usize,
+    /// Oturum kalıcılığını kapatma bayrağı (yalnız `--help` ile doğrulandıysa).
+    pub persistence_flag: Option<&'static str>,
+    pub persistence_applies_to: &'static str,
+    pub persistence_verified_with: Option<&'static str>,
+}
+
+fn residue_scan_view(root: &Path, adapter_id: &str) -> CliResidueScanView {
+    let scan = dim_cli_adapters::scan_residue(root, adapter_id, SystemTime::now());
+    residue_scan_view_of(scan)
+}
+
+fn residue_scan_view_of(scan: dim_cli_adapters::ResidueScan) -> CliResidueScanView {
+    let control = dim_cli_adapters::persistence_control(&scan.adapter);
+    CliResidueScanView {
+        adapter_id: scan.adapter,
+        root: scan.root.to_string_lossy().to_string(),
+        paths: scan
+            .entries
+            .into_iter()
+            .map(|entry| CliResiduePathView {
+                relative: entry.relative,
+                kind: entry.kind,
+                note: entry.note,
+                exists: entry.exists,
+                files: entry.files,
+                bytes: entry.bytes,
+                truncated: entry.truncated,
+                newest_age_secs: entry.newest_age_secs,
+            })
+            .collect(),
+        total_files: scan.total_files,
+        total_bytes: scan.total_bytes,
+        truncated: scan.truncated,
+        file_limit: dim_cli_adapters::MAX_RESIDUE_FILES,
+        persistence_flag: control.flag,
+        persistence_applies_to: control.applies_to,
+        persistence_verified_with: control.verified_with,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueFileView {
+    pub relative: String,
+    pub bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueSkipView {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueMeasureView {
+    pub adapter_id: String,
+    pub root: String,
+    pub measured_at_unix: u64,
+    pub used_user_home: bool,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub args: Vec<String>,
+    pub before: CliResidueScanView,
+    pub after: CliResidueScanView,
+    pub created: Vec<CliResidueFileView>,
+    pub modified: Vec<CliResidueFileView>,
+    pub removed: Vec<String>,
+    pub created_dirs: Vec<String>,
+    pub bytes_added: u64,
+    pub cleanup_hint: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueCleanupView {
+    pub removed_files: usize,
+    pub removed_bytes: u64,
+    pub removed_dirs: usize,
+    pub skipped: Vec<CliResidueSkipView>,
+    pub errors: Vec<CliResidueSkipView>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliSandboxSweepView {
+    pub considered: usize,
+    pub removed: Vec<String>,
+    pub skipped: Vec<CliResidueSkipView>,
+    pub min_age_secs: u64,
+}
+
+fn user_home() -> Result<PathBuf, ApiError> {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .map_err(|_| ApiError::new("E_CLI_RESIDUE_IO", "Ev dizini belirlenemedi."))
+}
+
+/// Bildirilen kalıntı yollarını **üst veriyle** tarar: dosya içeriği açılmaz,
+/// sembolik bağ izlenmez, kullanıcı ev dizini genel olarak taranmaz.
+#[tauri::command]
+pub fn cli_residue_scan(input: CliProbeInput) -> Result<CliResidueScanView, ApiError> {
+    if adapter_spec(&input.adapter_id).is_none() {
+        return Err(ApiError::new(
+            "E_CLI_UNKNOWN",
+            "Bilinmeyen adaptör kimliği.",
+        ));
+    }
+    let home = user_home()?;
+    Ok(residue_scan_view(&home, &input.adapter_id))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueMeasureInput {
+    pub adapter_id: String,
+    /// Gerçek ev dizininde çalıştırma **açık onay** ister.
+    pub confirm_user_home: bool,
+}
+
+/// Kalıntı ölçümü: sürüm yoklaması **gerçek ev dizininde** çalışır, önce/sonra
+/// farkı yalnız bildirilen yollarda hesaplanır. İstem gönderilmez.
+#[tauri::command]
+pub async fn cli_residue_measure(
+    state: State<'_, AppState>,
+    input: CliResidueMeasureInput,
+) -> Result<CliResidueMeasureView, ApiError> {
+    if !input.confirm_user_home {
+        return Err(ApiError::new(
+            "E_CLI_RESIDUE_CONFIRM",
+            "Kalıntı ölçümü gerçek ev dizininde çalışır; açık onay gerekir.",
+        ));
+    }
+    let spec = adapter_spec(&input.adapter_id)
+        .ok_or_else(|| ApiError::new("E_CLI_UNKNOWN", "Bilinmeyen adaptör kimliği."))?;
+    if spec.batch_forbidden {
+        return Err(ApiError::new(
+            "E_CLI_BATCH_FORBIDDEN",
+            "Bu sağlayıcıda otomatik yürütme kapalı; ölçüm yapılmaz.",
+        ));
+    }
+    let executable = find_on_path(spec.command).ok_or_else(|| {
+        ApiError::new(
+            "E_CLI_NOT_INSTALLED",
+            "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
+        )
+    })?;
+    let home = user_home()?;
+    let measured_at = SystemTime::now();
+    let measured_at_unix = measured_at
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let home_for_run = home.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        dim_cli_adapters::measure_residue(spec, &executable, &home_for_run, &run_cancel)
+    })
+    .await;
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+    let measurement = match joined {
+        Ok(Ok(measurement)) => measurement,
+        Ok(Err(err)) => return Err(ApiError::new(err.code(), &err.to_string())),
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Ölçüm görevi tamamlanamadı.",
+            ))
+        }
+    };
+
+    let view = CliResidueMeasureView {
+        adapter_id: measurement.adapter.clone(),
+        root: measurement.root.to_string_lossy().to_string(),
+        measured_at_unix,
+        used_user_home: measurement.used_user_home,
+        status: probe_status_label(&measurement.status),
+        exit_code: measurement.exit_code,
+        duration_ms: measurement.duration_ms,
+        args: measurement.args.clone(),
+        before: residue_scan_view_of(measurement.scan_before),
+        after: residue_scan_view_of(measurement.scan_after),
+        created: measurement
+            .delta
+            .created
+            .iter()
+            .map(|stamp| CliResidueFileView {
+                relative: stamp.relative.clone(),
+                bytes: stamp.bytes,
+            })
+            .collect(),
+        modified: measurement
+            .delta
+            .modified
+            .iter()
+            .map(|stamp| CliResidueFileView {
+                relative: stamp.relative.clone(),
+                bytes: stamp.bytes,
+            })
+            .collect(),
+        removed: measurement.delta.removed.clone(),
+        created_dirs: measurement.delta.created_dirs.clone(),
+        bytes_added: measurement.delta.bytes_added,
+        cleanup_hint:
+            "Yalnız bu ölçümde oluşan dosyalar silinebilir; önceden var olan dosyalara dokunulmaz.",
+    };
+
+    // Denetime yalnız sayılar ve politika yazılır; **dosya adı ve içerik yok**.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": view.adapter_id,
+                "status": view.status,
+                "exitCode": view.exit_code,
+                "durationMs": view.duration_ms,
+                "homeIsolation": "user_home",
+                "createdFiles": view.created.len(),
+                "modifiedFiles": view.modified.len(),
+                "createdDirs": view.created_dirs.len(),
+                "bytesAdded": view.bytes_added,
+                "scanTruncated": view.after.truncated,
+            });
+            db.append_audit("cli_residue", None, "measure", "local-user", &metadata)?;
+        }
+    }
+
+    Ok(view)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliResidueCleanupInput {
+    pub adapter_id: String,
+    /// Ölçümün başladığı an (saniye). Bundan eski dosyalar silinmez.
+    pub measured_at_unix: u64,
+    pub paths: Vec<String>,
+}
+
+/// **Yalnız** ölçümde oluştuğu bildirilen dosyaları siler. Dosya bildirilen
+/// kapsamda değilse, sembolik bağsa ya da ölçümden önce yazıldıysa atlanır.
+#[tauri::command]
+pub fn cli_residue_cleanup(
+    state: State<'_, AppState>,
+    input: CliResidueCleanupInput,
+) -> Result<CliResidueCleanupView, ApiError> {
+    if adapter_spec(&input.adapter_id).is_none() {
+        return Err(ApiError::new(
+            "E_CLI_UNKNOWN",
+            "Bilinmeyen adaptör kimliği.",
+        ));
+    }
+    let home = user_home()?;
+    let since = std::time::UNIX_EPOCH + std::time::Duration::from_secs(input.measured_at_unix);
+    let report =
+        dim_cli_adapters::cleanup_created_since(&home, &input.adapter_id, since, &input.paths);
+    let view = CliResidueCleanupView {
+        removed_files: report.removed_files,
+        removed_bytes: report.removed_bytes,
+        removed_dirs: report.removed_dirs,
+        skipped: report
+            .skipped
+            .into_iter()
+            .map(|(path, reason)| CliResidueSkipView { path, reason })
+            .collect(),
+        errors: report
+            .errors
+            .into_iter()
+            .map(|(path, reason)| CliResidueSkipView { path, reason })
+            .collect(),
+    };
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": input.adapter_id,
+                "removedFiles": view.removed_files,
+                "removedBytes": view.removed_bytes,
+                "removedDirs": view.removed_dirs,
+                "skipped": view.skipped.len(),
+                "errors": view.errors.len(),
+            });
+            db.append_audit("cli_residue", None, "cleanup", "local-user", &metadata)?;
+        }
+    }
+    Ok(view)
+}
+
+/// Çökme sonrası kalan **uygulamaya ait** kum havuzlarını süpürür: yalnız
+/// `dim-cli-sandbox-` öneki, `0700`, sahibi biz ve yaş eşiğini geçmiş dizinler.
+#[tauri::command]
+pub fn cli_stale_sandbox_sweep() -> CliSandboxSweepView {
+    let report = dim_cli_adapters::sweep_stale_sandboxes(
+        &std::env::temp_dir(),
+        dim_cli_adapters::STALE_SANDBOX_AGE,
+        SystemTime::now(),
+    );
+    CliSandboxSweepView {
+        considered: report.considered,
+        removed: report.removed,
+        skipped: report
+            .skipped
+            .into_iter()
+            .map(|(path, reason)| CliResidueSkipView { path, reason })
+            .collect(),
+        min_age_secs: dim_cli_adapters::STALE_SANDBOX_AGE.as_secs(),
+    }
+}
+
+#[tauri::command]
+pub fn precedent_create(
+    state: State<'_, AppState>,
+    input: NewPrecedent,
+) -> Result<PrecedentRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_precedent(&input)?)
+}
+
+#[tauri::command]
+pub fn precedent_list(state: State<'_, AppState>) -> Result<Vec<PrecedentRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_precedents()?)
+}
+
+#[tauri::command]
+pub fn precedent_note_create(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: NewPrecedentNote,
+) -> Result<PrecedentNoteRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_precedent_note(&precedent_id, &input)?)
+}
+
+#[tauri::command]
+pub fn precedent_note_list(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<Vec<PrecedentNoteRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_precedent_notes(&precedent_id)?)
+}
+
+#[tauri::command]
+pub fn citation_check_create(
+    state: State<'_, AppState>,
+    input: NewCitationCheck,
+) -> Result<CitationCheckRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.record_citation_check(&input)?)
+}
+
+#[tauri::command]
+pub fn citation_check_list(
+    state: State<'_, AppState>,
+    version_id: String,
+) -> Result<Vec<CitationCheckRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_citation_checks(&version_id)?)
+}
+
+/// Karar tam metnini kasaya kaydeder (F12-T05). Metin şifreli veritabanında
+/// kalır; arayüze yalnız hash ve karakter sayısı döner.
+#[tauri::command]
+pub fn precedent_text_add(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: NewPrecedentText,
+) -> Result<PrecedentVersionRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.add_precedent_text(&precedent_id, &input)?)
+}
+
+/// Kasadaki bir belge sürümünün çıkarılmış metninden emsal tam metni üretir
+/// (F12-T13). Ayrıştırma yoksa / metin boşsa metin **yazılmaz**
+/// (`E_PRECEDENT_SOURCE`); aynı SHA-256 zaten kayıtlıysa yeni sürüm yazılmaz.
+#[tauri::command]
+pub fn precedent_text_from_document(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    document_version_id: String,
+) -> Result<PrecedentDocumentText, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_text_from_document(&precedent_id, &document_version_id)?)
+}
+
+#[tauri::command]
+pub fn precedent_version_list(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<Vec<PrecedentVersionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_versions(&precedent_id)?)
+}
+
+/// Metin içi alıntıyı emsalin en yeni tam metninde doğrular. Sonuç
+/// `match`/`mismatch`/`not_checked`; hiçbiri "uydurulmuş" hükmü değildir.
+#[tauri::command]
+pub fn precedent_quote_verify(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    quote: String,
+) -> Result<QuoteVerification, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.verify_precedent_quote(&precedent_id, &quote)?)
+}
+
+/// Bibliyografik künye (F12-T12): künye, kaynak bağlantısı ve erişim tarihi.
+/// Eksik alanlar `missing` listesinde döner; hiçbir alan tahmin edilmez.
+#[tauri::command]
+pub fn precedent_bibliography(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<PrecedentBibliography, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_bibliography(&precedent_id)?)
+}
+
+/// Emsal kütüphanesi araması (F12-T10). Kapsam yalnız kütüphanedir; aktif
+/// dosyanın belge segmentleri bu komutta hiç okunmaz.
+#[tauri::command]
+pub fn precedent_search(
+    state: State<'_, AppState>,
+    input: PrecedentSearchQuery,
+) -> Result<PrecedentSearchPage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.search_precedents(&input)?)
+}
+
+/// Kaynak kullanım koşulu (F12-T11). Kayıt yoksa `unknown` döner; bu "izin
+/// var" demek değildir.
+#[tauri::command]
+pub fn precedent_terms_get(
+    state: State<'_, AppState>,
+    precedent_id: String,
+) -> Result<PrecedentUsageTerms, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_usage_terms(&precedent_id)?)
+}
+
+/// Kullanım koşulunu kaydeder. `allowed` için yazılı dayanak zorunlu; kapı
+/// Rust tarafında (`E_TERMS`), arayüzde gizlenen bir kontrol değil.
+#[tauri::command]
+pub fn precedent_terms_set(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: SetUsageTermsInput,
+) -> Result<PrecedentUsageTerms, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.set_precedent_usage_terms(&precedent_id, &input)?)
+}
+
+/// Dağıtım kapısının gördüğü tablo: toplam, metinli, izinli, izinsiz,
+/// bilinmiyor. Arayüz bu sayıları gizlemeden gösterir.
+#[tauri::command]
+pub fn precedent_corpus_coverage(state: State<'_, AppState>) -> Result<CorpusCoverage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.precedent_corpus_coverage()?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorpusExportView {
+    pub path: String,
+    pub bytes: usize,
+    pub sha256: String,
+    pub exported: usize,
+    pub excluded: usize,
+    pub content_hash: String,
+}
+
+/// Toplu karar korpusu dışa aktarımı (F12-T11). İzin kaydı olmayan metin
+/// dosyaya **yazılmaz**; `all` kipinde tek izinsiz kayıt varsa istek reddedilir
+/// ve ret denemesi denetime düşer. Ağ isteği yok; dosya kullanıcının seçtiği
+/// konuma yazılır.
+#[tauri::command]
+pub fn precedent_corpus_export(
+    state: State<'_, AppState>,
+    mode: String,
+    dest_path: String,
+) -> Result<CorpusExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let mode = CorpusMode::parse(&mode)?;
+    let export = match db.build_precedent_corpus(mode) {
+        Ok(export) => export,
+        Err(error) => {
+            if matches!(error, dim_storage::StorageError::CorpusNotPermitted(_)) {
+                let _ = db.append_audit(
+                    "precedent_corpus",
+                    None,
+                    "export_denied",
+                    "local-user",
+                    &serde_json::json!({
+                        "mode": mode.as_str(),
+                        "reason": error.to_string(),
+                    }),
+                );
+            }
+            return Err(error.into());
+        }
+    };
+    if export.items.is_empty() {
+        return Err(ApiError::new(
+            "E_CORPUS_EMPTY",
+            "Dışa aktarılacak izinli tam metin yok; dosya yazılmadı.",
+        ));
+    }
+    let payload = serde_json::json!({
+        "format": "dim-precedent-corpus",
+        "version": 1,
+        "createdAt": dim_storage::now_iso(),
+        "mode": mode.as_str(),
+        "contentHash": export.content_hash,
+        "coverage": export.coverage,
+        "notes": export.notes,
+        "items": export.items,
+    });
+    let bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    db.append_audit(
+        "precedent_corpus",
+        None,
+        "export",
+        "local-user",
+        &serde_json::json!({
+            "mode": mode.as_str(),
+            "exported": export.exported,
+            "excluded": export.excluded,
+            "sha256": sha,
+        }),
+    )?;
+    Ok(CorpusExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        exported: export.exported,
+        excluded: export.excluded,
+        content_hash: export.content_hash,
+    })
+}
+
+/// Tek turda içe alınabilecek dosya sayısı. Daha büyük seçim sessizce
+/// kırpılmaz; kullanıcı seçimini böler.
+const MAX_BULK_FILES: usize = 200;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportDefaults {
+    #[serde(default)]
+    pub court: String,
+    #[serde(default)]
+    pub chamber: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub legal_issue: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportRequest {
+    /// Kullanıcının dosya seçiciden seçtiği **mutlak** yollar.
+    pub files: Vec<String>,
+    /// İsteğe bağlı künye listesi (CSV) yolu.
+    #[serde(default)]
+    pub manifest_path: Option<String>,
+    #[serde(default)]
+    pub defaults: BulkImportDefaults,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportItemView {
+    pub file_name: String,
+    /// `created` | `duplicate` | `conflict` | `error`
+    pub outcome: String,
+    pub precedent_id: Option<String>,
+    pub version_id: Option<String>,
+    pub body_hash: Option<String>,
+    pub char_count: i64,
+    /// Aynı künye farklı metin: iki nüsha karşılaştırılmalı.
+    pub needs_review: bool,
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportReport {
+    pub manifest_hash: Option<String>,
+    pub manifest_warnings: Vec<String>,
+    pub items: Vec<BulkImportItemView>,
+    pub created: usize,
+    pub duplicates: usize,
+    pub conflicts: usize,
+    pub failed: usize,
+}
+
+fn bulk_error(file_name: &str, code: &str, message: &str) -> BulkImportItemView {
+    BulkImportItemView {
+        file_name: file_name.to_string(),
+        outcome: "error".into(),
+        precedent_id: None,
+        version_id: None,
+        body_hash: None,
+        char_count: 0,
+        needs_review: false,
+        code: Some(code.to_string()),
+        message: Some(message.to_string()),
+    }
+}
+
+/// **Toplu içe alma** (F12-T06): seçilen dosyaların metni belge worker'ında
+/// çıkarılır, künye listesi/varsayılanlarla eşlenir ve kasadaki emsal
+/// kütüphanesine yazılır. Ağ isteği yoktur; künye **tahmin edilmez**.
+/// Bir dosyanın hatası diğerlerini durdurmaz, sonuçta tek tek raporlanır.
+#[tauri::command]
+pub fn precedent_bulk_import(
+    state: State<'_, AppState>,
+    input: BulkImportRequest,
+) -> Result<BulkImportReport, ApiError> {
+    if input.files.is_empty() {
+        return Err(ApiError::new(
+            "E_BULK_EMPTY",
+            "İçe alınacak dosya seçilmedi.",
+        ));
+    }
+    if input.files.len() > MAX_BULK_FILES {
+        return Err(ApiError::new(
+            "E_BULK_TOO_MANY",
+            "Tek turda en çok 200 dosya içe alınır; seçimi bölün.",
+        ));
+    }
+
+    // Künye listesi kasadan bağımsız okunur; hatalı liste hiçbir dosyaya yazmaz.
+    let mut manifest_hash = None;
+    let mut manifest_warnings = Vec::new();
+    let mut manifest: Option<dim_storage::Manifest> = None;
+    if let Some(path) = input
+        .manifest_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        let path = Path::new(path);
+        let meta = std::fs::metadata(path)
+            .map_err(|_| ApiError::new("E_MANIFEST", "Künye listesi okunamadı; yol geçerli mi?"))?;
+        if !meta.is_file() {
+            return Err(ApiError::new(
+                "E_MANIFEST",
+                "Künye listesi bir dosya olmalı.",
+            ));
+        }
+        if meta.len() > dim_storage::MANIFEST_MAX_BYTES as u64 {
+            return Err(ApiError::new(
+                "E_MANIFEST",
+                "Künye listesi 4 MiB sınırını aşıyor.",
+            ));
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|_| ApiError::new("E_MANIFEST", "Künye listesi UTF-8 okunamadı."))?;
+        let parsed = dim_storage::parse_manifest(&text)
+            .map_err(|err| ApiError::new(err.code(), &err.to_string()))?;
+        manifest_hash = Some(parsed.hash.clone());
+        manifest_warnings = parsed.warnings.clone();
+        manifest = Some(parsed);
+    }
+
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let mut worker = spawn_worker(WorkerKind::Extract)?;
+
+    let mut items = Vec::with_capacity(input.files.len());
+    for raw in &input.files {
+        let path = Path::new(raw);
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("belge")
+            .to_string();
+        let outcome = import_one_precedent(
+            &file_name,
+            path,
+            &input.defaults,
+            manifest.as_ref(),
+            &mut worker,
+            db,
+        );
+        items.push(outcome);
+    }
+    worker.shutdown();
+
+    let mut report = BulkImportReport {
+        manifest_hash,
+        manifest_warnings,
+        items,
+        created: 0,
+        duplicates: 0,
+        conflicts: 0,
+        failed: 0,
+    };
+    for item in &report.items {
+        match item.outcome.as_str() {
+            "created" => report.created += 1,
+            "duplicate" => report.duplicates += 1,
+            "conflict" => report.conflicts += 1,
+            _ => report.failed += 1,
+        }
+    }
+    Ok(report)
+}
+
+fn import_one_precedent(
+    file_name: &str,
+    path: &Path,
+    defaults: &BulkImportDefaults,
+    manifest: Option<&dim_storage::Manifest>,
+    worker: &mut WorkerClient,
+    db: &Database,
+) -> BulkImportItemView {
+    if !path.is_absolute() {
+        return bulk_error(
+            file_name,
+            "E_BULK_PATH",
+            "Dosya yolu mutlak olmalı; göreli yol kabul edilmez.",
+        );
+    }
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(_) => {
+            return bulk_error(
+                file_name,
+                "E_IO",
+                "Dosya okunamadı (taşınmış veya izin yok).",
+            )
+        }
+    };
+    if !meta.is_file() {
+        return bulk_error(
+            file_name,
+            "E_IMPORT_UNSUPPORTED",
+            "Yalnız dosyalar içe alınır.",
+        );
+    }
+    if meta.len() > dim_storage::MAX_DOCUMENT_BYTES {
+        return bulk_error(
+            file_name,
+            "E_IMPORT_TOO_LARGE",
+            "Dosya 250 MiB sınırını aşıyor.",
+        );
+    }
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(_) => return bulk_error(file_name, "E_IO", "Dosya içeriği okunamadı."),
+    };
+    let Some(kind) = dim_ingest::detect(&data, file_name) else {
+        return bulk_error(
+            file_name,
+            "E_IMPORT_UNSUPPORTED",
+            "Desteklenmeyen dosya türü; PDF, DOCX, UDF veya düz metin kullanın.",
+        );
+    };
+    if matches!(
+        kind,
+        dim_ingest::FileKind::Png | dim_ingest::FileKind::Jpeg | dim_ingest::FileKind::Tiff
+    ) {
+        return bulk_error(
+            file_name,
+            "E_BULK_IMAGE",
+            "Görüntü dosyasından karar metni çıkarılmaz; OCR'li PDF kullanın.",
+        );
+    }
+    let is_text = kind == dim_ingest::FileKind::Text;
+    let extraction = match worker.extract_text(
+        &data,
+        kind.mime(),
+        false,
+        "tur",
+        is_text.then_some("auto"),
+        None,
+    ) {
+        Ok(extraction) => extraction,
+        Err(err) => {
+            return bulk_error(file_name, err.code(), "Metin çıkarılamadı.");
+        }
+    };
+    let text = extraction
+        .pages
+        .iter()
+        .map(|page| page.text.trim())
+        .filter(|page| !page.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if text.trim().is_empty() {
+        return bulk_error(
+            file_name,
+            "E_BULK_EMPTY_TEXT",
+            "Dosyadan metin çıkmadı (taranmış olabilir); alıntı doğrulanamayacağı için yazılmadı.",
+        );
+    }
+
+    let row = manifest.and_then(|value| value.row_for(file_name));
+    let court = row
+        .and_then(|r| r.court.clone())
+        .or_else(|| Some(defaults.court.trim().to_string()).filter(|v| !v.is_empty()));
+    let Some(court) = court else {
+        return bulk_error(
+            file_name,
+            "E_BULK_COURT",
+            "Mahkeme bilinmiyor: varsayılan mahkeme girin veya künye listesinde belirtin.",
+        );
+    };
+    let title = row.and_then(|r| r.title.clone()).or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+    });
+    let tags = match row.map(|r| r.user_tags.clone()) {
+        Some(tags) if !tags.is_empty() => tags,
+        _ => defaults.tags.clone(),
+    };
+    let citation = NewPrecedent {
+        court,
+        chamber: row
+            .and_then(|r| r.chamber.clone())
+            .or_else(|| Some(defaults.chamber.trim().to_string()).filter(|v| !v.is_empty())),
+        docket_no: row.and_then(|r| r.docket_no.clone()),
+        decision_no: row.and_then(|r| r.decision_no.clone()),
+        application_no: None,
+        decision_date: row.and_then(|r| r.decision_date.clone()),
+        title,
+        source_url: row
+            .and_then(|r| r.source_url.clone())
+            .or_else(|| Some(defaults.source_url.trim().to_string()).filter(|v| !v.is_empty())),
+        user_tags: tags,
+        legal_issue: row
+            .and_then(|r| r.legal_issue.clone())
+            .or_else(|| Some(defaults.legal_issue.trim().to_string()).filter(|v| !v.is_empty())),
+    };
+    let input = dim_storage::PrecedentCopyInput {
+        citation,
+        text,
+        source_kind: Some("file".into()),
+        document_version_id: None,
+    };
+    match db.import_precedent_copy(&input) {
+        Ok(result) => BulkImportItemView {
+            file_name: file_name.to_string(),
+            outcome: result.outcome,
+            precedent_id: Some(result.precedent_id),
+            version_id: result.version_id,
+            body_hash: Some(result.body_hash),
+            char_count: result.char_count,
+            needs_review: result.needs_review,
+            code: None,
+            message: None,
+        },
+        Err(err) => bulk_error(file_name, err.code(), &err.to_string()),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorCatalogView {
+    pub catalog_hash: String,
+    pub connectors: Vec<dim_storage::ConnectorInfo>,
+    pub note: String,
+}
+
+/// Dış bağlayıcı **sicili** (F12-T06). Kaynakların koşulları belgelenmiştir;
+/// hiçbiri etkin değildir ve ürün bu kaynaklara ağ isteği göndermez.
+#[tauri::command]
+pub fn precedent_connector_list() -> Result<ConnectorCatalogView, ApiError> {
+    let catalog_hash = dim_storage::connector_catalog_hash()
+        .map_err(|err| ApiError::new(err.code(), &err.to_string()))?;
+    Ok(ConnectorCatalogView {
+        catalog_hash,
+        connectors: dim_storage::connector_catalog(),
+        note: "Sicil yalnız belgelenmiş kaynakları listeler. Hiçbiri etkin değil: ürün bu\
+               adreslere istek göndermez; içe alma kullanıcının kendi indirdiği dosyayla yapılır."
+            .into(),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactionView {
+    pub document: Document,
+    pub version: DocumentVersion,
+    pub plan: RedactionPlanRow,
+    pub hits: usize,
+    pub remaining: Vec<String>,
+    pub ocr_verified: bool,
+    pub engines: Vec<String>,
+    /// Bağımsız doğrulama sayıları (F01-T05): arayüz "doğrulandı" iddiasını
+    /// bunlarla birlikte gösterir.
+    pub streams_scanned: u32,
+    pub streams_binary: u32,
+    pub streams_unreadable: u32,
+    pub annotations_removed: u32,
+    pub offpage_spans_removed: u32,
+    pub scripts_removed: u32,
+    pub warnings: Vec<String>,
+}
+
+/// Maskeleme isteği: terim listesi ya da seçili bölgeler (F04-T07).
+///
+/// İki komut (`document_redact`, `document_redact_regions`) aynı iş hattını
+/// kullanır; fark yalnız worker yöntemi ve plan bölgelerinin türetilmesidir.
+#[derive(Clone, Debug)]
+enum RedactRequest {
+    Terms(Vec<String>),
+    Regions(Vec<(u32, [f64; 4])>),
+}
+
+impl RedactRequest {
+    /// Kuyruk parmak izi: **aynı istek** aynı anahtarı üretir (idempotent ekleme).
+    /// Terim sırası anlamlıdır; bölge sırası da öyle (kullanıcı seçimi).
+    fn fingerprint(&self) -> String {
+        let mut hasher = Sha256::new();
+        match self {
+            Self::Terms(terms) => {
+                hasher.update(b"terms");
+                for term in terms {
+                    hasher.update([0x1f]);
+                    hasher.update(term.as_bytes());
+                }
+            }
+            Self::Regions(regions) => {
+                hasher.update(b"regions");
+                for (page, rect) in regions {
+                    hasher.update([0x1f]);
+                    hasher.update(page.to_le_bytes());
+                    for value in rect {
+                        hasher.update(value.to_le_bytes());
+                    }
+                }
+            }
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    fn label_suffix(&self) -> &'static str {
+        match self {
+            Self::Terms(_) => "maskeli",
+            Self::Regions(_) => "bölge maskeli",
+        }
+    }
+
+    fn verify_message(&self) -> &'static str {
+        match self {
+            Self::Terms(_) => "Maskeli çıktıda hâlâ aranan metin var; dosya kaydedilmedi.",
+            Self::Regions(_) => "Seçilen bölgede metin kaldı; dosya kaydedilmedi.",
+        }
+    }
+
+    /// Worker'da gerçek maskeleme. İlerleme çerçeveleri aynen iletilir.
+    fn run(
+        &self,
+        worker: &mut WorkerClient,
+        data: &[u8],
+        progress: &mut dyn FnMut(ParseProgress),
+    ) -> Result<RedactionOutcome, WorkerError> {
+        match self {
+            Self::Terms(terms) => worker.redact_with_progress(data, terms, progress),
+            Self::Regions(regions) => worker.redact_regions_with_progress(data, regions, progress),
+        }
+    }
+
+    /// Plan bölgeleri: terim maskesinde **gerçek isabetler**, bölge maskesinde
+    /// kullanıcının seçtiği dikdörtgenler (worker'ın isabet listesinden).
+    fn plan_regions(&self, outcome: &RedactionOutcome) -> Vec<RedactionRegionInput> {
+        outcome
+            .hits
+            .iter()
+            .map(|hit| RedactionRegionInput {
+                page_index: i64::from(hit.page),
+                rect: hit.rect,
+                term_hash: match self {
+                    Self::Terms(_) => hex::encode(Sha256::digest(hit.term.as_bytes())),
+                    Self::Regions(_) => hex::encode(Sha256::digest(
+                        format!("region:{}:{:?}", hit.page, hit.rect).as_bytes(),
+                    )),
+                },
+            })
+            .collect()
+    }
+}
+
+/// **Aşama A çıktısı:** kilit bırakıldıktan sonra worker'ın ihtiyaç duyduğu
+/// her şey (çözülmüş bayt, sürüm, iş kaydı) burada taşınır.
+struct RedactPrep {
+    version: DocumentVersion,
+    job: Option<JobRow>,
+    owner: String,
+    data: Vec<u8>,
+    vault_path: PathBuf,
+    request: RedactRequest,
+}
+
+fn canceled_redaction_error() -> ApiError {
+    ApiError::new(
+        "E_WORKER_CANCELED",
+        "Maskeleme iptal edildi; yarım çıktı kasaya yazılmadı. Belge yeniden maskelenebilir.",
+    )
+}
+
+/// **Aşama A — kilit altında hazırlık.** Sürüm, kuyruk sahiplenmesi ve şifreli
+/// blob çözümü. Ağır iş (worker) bu bloğun **dışında** koşar.
+///
+/// Maskeleme uzun sürebilir; kilit worker boyunca tutulursa bütün arayüz
+/// kilitlenir ve iptal düğmesine basılamaz (ayrıştırmada ölçülen sınıf).
+fn prepare_redaction(
+    guard: &crate::state::VaultState,
+    version_id: &str,
+    request: &RedactRequest,
+) -> Result<RedactPrep, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let version = db
+        .get_version(version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge sürümü bulunamadı."))?;
+    let fingerprint = request.fingerprint();
+    let base_key = format!("redact:{}:{}", version.id, fingerprint);
+    let owner = format!(
+        "redact-{}-{}",
+        std::process::id(),
+        PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+
+    // Kuyruk: iş **açılır** (idempotent) ve sahiplenilir. Şartname §17.1
+    // maskelemeyi ayrı iş türü sayar; ilerleme/sayaç/iptal bu satırda yaşar.
+    db.enqueue_job_with_priority(
+        "redaction",
+        Some(&version.case_id),
+        &fingerprint,
+        &base_key,
+        0,
+    )?;
+    let mut job_key = base_key.clone();
+    if let Some(state) = db.job_by_key(&job_key)?.map(|row| row.state) {
+        if !dim_storage::job_state::CLAIMABLE.contains(&state.as_str()) {
+            if matches!(state.as_str(), "running" | "validating" | "canceling") {
+                return Err(ApiError::new(
+                    "E_REDACT_BUSY",
+                    "Bu maskeleme zaten çalışıyor; bitmesini bekleyin.",
+                ));
+            }
+            // Aynı maskeleme daha önce koşup bitmiş: yeni niyet = **yeni iş
+            // satırı**. Terminal iş yeniden açılamaz (şartname §17.2).
+            job_key = format!(
+                "{base_key}#{}-{}",
+                std::process::id(),
+                PARSE_SEQ.fetch_add(1, Ordering::Relaxed)
+            );
+            db.enqueue_job_with_priority(
+                "redaction",
+                Some(&version.case_id),
+                &fingerprint,
+                &job_key,
+                0,
+            )?;
+        }
+    }
+    let job = db
+        .claim_job_by_key(
+            &job_key,
+            &owner,
+            dim_storage::DEFAULT_LEASE_SECONDS,
+            time::OffsetDateTime::now_utc(),
+        )
+        .ok()
+        .flatten();
+
+    let blob = db
+        .blob_for_version(version_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge içeriği bulunamadı."))?;
+    let blob_path = vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blobs")
+        .join(format!("{}.blb", blob.storage_id));
+    let data = vault.read_blob(&blob_path, blob.aad_ref.as_bytes())?;
+
+    Ok(RedactPrep {
+        version,
+        job,
+        owner,
+        data,
+        vault_path: vault_path.clone(),
+        request: request.clone(),
+    })
+}
+
+/// **Aşama C — kilit altında yazma.** Kasa kapanmış, başka kasaya geçilmiş
+/// veya iş iptal edilmiş olabilir; üçü de "yarım çıktı yaz" ile sonuçlanmaz
+/// (§17.2 `canceled`).
+fn commit_redaction(
+    guard: &crate::state::VaultState,
+    prep: &RedactPrep,
+    outcome: RedactionOutcome,
+) -> Result<RedactionView, ApiError> {
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault = guard.unlocked.as_ref().ok_or_else(ApiError::vault_locked)?;
+    if guard.path.as_ref() != Some(&prep.vault_path) {
+        return Err(ApiError::new(
+            "E_VAULT_LOCKED",
+            "Kasa bu arada kapandı; maskeleme çıktısı yazılmadı.",
+        ));
+    }
+    if let Some(job) = prep.job.as_ref() {
+        let still_ours = db
+            .get_job(&job.id)?
+            .map(|row| {
+                row.state == "running" && row.lease_owner.as_deref() == Some(prep.owner.as_str())
+            })
+            .unwrap_or(false);
+        if !still_ours {
+            return Err(canceled_redaction_error());
+        }
+    }
+    // Ürün değişmezi: bağımsız doğrulama kalan terim bulduysa dosya yazılmaz.
+    if !outcome.remaining.is_empty() {
+        return Err(ApiError::new(
+            "E_REDACT_VERIFY",
+            prep.request.verify_message(),
+        ));
+    }
+
+    let version = &prep.version;
+    let out_sha = hex::encode(Sha256::digest(&outcome.pdf));
+    let aad = format!("{}:redacted:{out_sha}", version.case_id);
+    let out_path = vault.write_blob(
+        &prep
+            .vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs"),
+        &outcome.pdf,
+        aad.as_bytes(),
+    )?;
+    let out_size = i64::try_from(std::fs::metadata(&out_path)?.len()).unwrap_or(i64::MAX);
+    let storage_id = out_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("blob")
+        .to_string();
+    let out_blob_id = db.create_blob_record(&storage_id, out_size, &aad)?;
+
+    let source_doc = db
+        .get_document(&version.document_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Belge bulunamadı."))?;
+    let new_doc = db.create_document(
+        &version.case_id,
+        &format!(
+            "{} ({})",
+            source_doc.display_name,
+            prep.request.label_suffix()
+        ),
+        "pdf",
+        None,
+        "unknown",
+    )?;
+    let new_version = db.add_version_with_parent(
+        &new_doc.id,
+        &version.case_id,
+        &out_blob_id,
+        &out_sha,
+        i64::try_from(outcome.pdf.len()).unwrap_or(i64::MAX),
+        "application/pdf",
+        Some(&version.id),
+    )?;
+
+    let plan = db.create_redaction_plan(
+        &version.case_id,
+        &NewRedactionPlan {
+            document_version_id: version.id.clone(),
+            parse_run_id: None,
+            render_hash: version.original_sha256.clone(),
+            output_profile: "share".to_string(),
+        },
+    )?;
+    let regions = prep.request.plan_regions(&outcome);
+    db.add_redaction_regions(&plan.id, &regions)?;
+
+    Ok(RedactionView {
+        document: new_doc,
+        version: new_version,
+        plan,
+        hits: outcome.hits.len(),
+        remaining: outcome.remaining,
+        ocr_verified: outcome.ocr_verified,
+        engines: outcome.engines,
+        streams_scanned: outcome.streams_scanned,
+        streams_binary: outcome.streams_binary,
+        streams_unreadable: outcome.streams_unreadable,
+        annotations_removed: outcome.annotations_removed,
+        offpage_spans_removed: outcome.offpage_spans_removed,
+        scripts_removed: outcome.scripts_removed,
+        warnings: outcome.warnings,
+    })
+}
+
+/// Maskelenin üç aşamalı gövdesi (bloklayan iş parçacığında koşar).
+///
+/// **Aşama A** kilit altında hazırlık, **B** kilit yokken worker (kaynak bütçesi
+/// ve §17.3 kapısı), **C** kilit altında yazma. İlerleme hem `redact-progress`
+/// olayına hem kuyruk satırına yazılır; olay düşerse maskeleme etkilenmez.
+fn run_redaction(
+    hub: &Arc<Mutex<VaultState>>,
+    slot: &Arc<Mutex<Vec<RunningWorker>>>,
+    pool: &Arc<crate::parse_pool::ParsePool>,
+    version_id: &str,
+    request: RedactRequest,
+    progress: &mut dyn FnMut(&ParseProgress),
+) -> Result<RedactionView, ApiError> {
+    progress(&ParseProgress {
+        stage: "start".to_string(),
+        done: 0,
+        total: None,
+    });
+    let prep = {
+        let guard = lock_vault(hub);
+        prepare_redaction(&guard, version_id, &request)?
+    };
+
+    let mut sink = JobProgressSink::new(
+        prep.job.as_ref().map(|job| job.id.clone()),
+        prep.owner.clone(),
+        progress,
+    );
+
+    let outcome: Result<RedactionView, ApiError> = (|| {
+        let weight = crate::parse_pool::ParseWeight::for_bytes(
+            u64::try_from(prep.data.len()).unwrap_or(u64::MAX),
+        );
+        let (permit, _waited) = {
+            let mut notice = || sink.record(&queued_frame(), &mut ProgressStore::Locked(hub));
+            pool.acquire_noticing(weight, &mut notice)
+        };
+        let redacted = (|| {
+            let mut worker = spawn_worker(WorkerKind::Redaction)?;
+            let killer = worker.killer();
+            // İptal tutamağı yuvaya yazılır: `job_cancel` kasa kilidini
+            // beklemeden süreci öldürür (F04-T07 ile aynı yol).
+            let _slot = WorkerSlotGuard::register(
+                Arc::clone(slot),
+                RunningWorker {
+                    kind: "redact",
+                    version_id: version_id.to_string(),
+                    job_id: prep.job.as_ref().map(|job| job.id.clone()),
+                    killer: killer.clone(),
+                },
+            );
+            let mut store = ProgressStore::Locked(hub);
+            let mut forward = |update: ParseProgress| sink.record(&update, &mut store);
+            let outcome = prep.request.run(&mut worker, &prep.data, &mut forward)?;
+            worker.shutdown();
+            // İptal, çıktı yazılmadan **önce** denetlenir: hiçbir şey yazılmaz.
+            if killer.is_canceled() {
+                return Err(canceled_redaction_error());
+            }
+            Ok::<_, ApiError>(outcome)
+        })()?;
+        drop(permit);
+        let guard = lock_vault(hub);
+        commit_redaction(&guard, &prep, redacted)
+    })();
+
+    // Denetim + kuyruk sonucu ayrı ve kısa bir kilitle yazılır.
+    {
+        let guard = lock_vault(hub);
+        if let Some(db) = guard.db.as_ref() {
+            if prep.job.is_some() {
+                let _ = db.append_audit(
+                    "document_redact",
+                    None,
+                    "progress",
+                    "local-user",
+                    &sink.audit_metadata(),
+                );
+            }
+            if let Some(job) = prep.job.as_ref() {
+                let now = time::OffsetDateTime::now_utc();
+                match &outcome {
+                    Ok(_) => {
+                        let _ = db.begin_validation(&job.id, &prep.owner, now);
+                        let _ = db.complete_job(&job.id, &prep.owner, now);
+                    }
+                    Err(err) if err.code == "E_WORKER_CANCELED" => {
+                        let _ = db.cancel_job(&job.id, now);
+                        let _ = db.fail_job(&job.id, &prep.owner, "E_WORKER_CANCELED", false, now);
+                    }
+                    Err(err) => {
+                        let _ = db.fail_job(
+                            &job.id,
+                            &prep.owner,
+                            &err.code,
+                            parse_failure_is_retryable(&err.code),
+                            now,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Maskelemeyi arayüz iş parçacığı dışında koşar (uzun belgede pencere
+/// kilitlenmez) ve işi kuyruğa yazar.
+async fn redact_command(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    request: RedactRequest,
+) -> Result<RedactionView, ApiError> {
+    let hub = state.vault_handle();
+    let slot = state.workers_handle();
+    let pool = state.parse_pool_handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut emit = |progress: &ParseProgress| {
+            let event = ParseProgressEvent::new(&version_id, progress);
+            // Pencere kapalıysa olay düşer; maskeleme sürer.
+            let _ = app.emit("redact-progress", event);
+        };
+        run_redaction(&hub, &slot, &pool, &version_id, request, &mut emit)
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            "E_REDACT",
+            "Maskeleme işi beklenmedik biçimde sona erdi; kasa durumu değişmedi.",
+        )
+    })?
+}
+
+/// Terimleri belgeden gerçekten çıkarır, çıktıyı yeni bir sürüm olarak kaydeder.
+///
+/// Kasa kilidi worker boyunca **tutulmaz**: uzun maskede pencere donmaz ve
+/// iptal düğmesi çalışır. Doğrulama geçmezse hiçbir çıktı kaydedilmez.
+#[tauri::command]
+pub async fn document_redact(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    terms: Vec<String>,
+) -> Result<RedactionView, ApiError> {
+    redact_command(app, state, version_id, RedactRequest::Terms(terms)).await
+}
+
+/// Kullanıcının seçtiği sayfa bölgelerini gerçekten kaldırır (aynı iş hattı).
+#[tauri::command]
+pub async fn document_redact_regions(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    version_id: String,
+    regions: Vec<RedactRegionInput>,
+) -> Result<RedactionView, ApiError> {
+    if regions.is_empty() {
+        return Err(ApiError::new("E_REDACT_REGIONS", "En az bir bölge seçin."));
+    }
+    let pairs: Vec<(u32, [f64; 4])> = regions.iter().map(|r| (r.page_index, r.rect)).collect();
+    redact_command(app, state, version_id, RedactRequest::Regions(pairs)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportView {
+    pub path: String,
+    pub bytes: usize,
+    pub sha256: String,
+    pub record: ExportRow,
+    /// Çıktının içine gömülen kapsam bloğu (F11-T06). Arayüz "ne yazıldı"
+    /// iddiasını buradan gösterir; ölçüm kasadan gelir.
+    pub coverage: ExportCoverage,
+}
+
+fn write_export(path: &str, bytes: &[u8]) -> Result<(), ApiError> {
+    let target = PathBuf::from(path.trim());
+    if path.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Çıktı konumu boş olamaz."));
+    }
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&target, bytes)?;
+    Ok(())
+}
+
+fn case_payload(
+    db: &Database,
+    case_id: &str,
+    coverage: &ExportCoverage,
+) -> Result<serde_json::Value, ApiError> {
+    let case = db
+        .get_case(case_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let documents = db.list_documents(case_id)?;
+    let events = db.list_events(case_id)?;
+    let claims = db.list_claims(case_id)?;
+    let notes = db.list_notes(case_id)?;
+    let tasks = db.list_tasks(case_id, true)?;
+    let anchors = db.list_anchors(case_id)?;
+    let mut evidence = Vec::new();
+    for claim in &claims {
+        for link in db.list_evidence_links(&claim.id)? {
+            evidence.push(serde_json::json!({
+                "claimId": link.claim_id,
+                "anchorId": link.source_anchor_id,
+                "relation": link.relation,
+                "rationale": link.rationale,
+            }));
+        }
+    }
+    Ok(serde_json::json!({
+        "format": "dim-case-export",
+        "version": 1,
+        "exportedAt": dim_storage::now_iso(),
+        "case": case,
+        // Kapsam her çıktıda taşınır: "incelenmedi ≠ temiz".
+        "coverage": coverage,
+        "documents": documents,
+        "events": events,
+        "claims": claims,
+        "evidenceLinks": evidence,
+        "notes": notes,
+        "tasks": tasks,
+        "anchors": anchors,
+    }))
+}
+
+/// Dosyanın o anki kapsam raporu (dışa aktarmadan önce arayüzde göstermek için).
+#[tauri::command]
+pub fn case_coverage(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<ExportCoverage, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(ExportCoverage::from_report(&db.coverage_report(&case_id)?))
+}
+
+#[tauri::command]
+pub fn export_json(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    let payload = case_payload(db, &case_id, &coverage)?;
+    let bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "json", &[], "user_selected_path", &sha)?;
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+        coverage,
+    })
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+#[tauri::command]
+pub fn export_csv(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    // Kapsam bloğu tablo satırlarına karışmasın diye `#` yorum satırı olarak
+    // başa yazılır; sayılar kasadan gelir.
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    let mut out = coverage.csv_comment_block();
+    out.push_str("kayit,tarih,tur,baslik,durum\n");
+    for event in db.list_events(&case_id)? {
+        out.push_str(&format!(
+            "olay,{},{},{},{}\n",
+            csv_escape(event.sortable_date.as_deref().unwrap_or("")),
+            csv_escape(&event.date_role),
+            csv_escape(&event.title),
+            csv_escape(&event.status)
+        ));
+    }
+    for task in db.list_tasks(&case_id, true)? {
+        out.push_str(&format!(
+            "gorev,{},{},{},{}\n",
+            csv_escape(task.user_due_date.as_deref().unwrap_or("")),
+            csv_escape("gorev"),
+            csv_escape(&task.title),
+            csv_escape(&task.status)
+        ));
+    }
+    let bytes = out.into_bytes();
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &sha)?;
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+        coverage,
+    })
+}
+
+/// DOCX/PDF raporuna eklenen kapsam bölümü: sayım tablosu + uyarı/sınır
+/// satırları. Bölüm **ilk** sırada yer alır ki okuyucu içeriğe geçmeden
+/// kapsamın sınırını görsün.
+fn coverage_section(coverage: &ExportCoverage) -> serde_json::Value {
+    let mut rows: Vec<Vec<String>> = vec![vec!["Ölçü".to_string(), "Değer".to_string()]];
+    for (label, value) in coverage.rows() {
+        rows.push(vec![label.to_string(), value.to_string()]);
+    }
+    serde_json::json!({
+        "heading": "İncelenen kapsam",
+        "rows": rows,
+        "lines": coverage.lines(),
+    })
+}
+
+#[tauri::command]
+pub fn export_docx(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let case = db
+        .get_case(&case_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let events = db.list_events(&case_id)?;
+    let claims = db.list_claims(&case_id)?;
+    let documents = db.list_documents(&case_id)?;
+    let notes = db.list_notes(&case_id)?;
+    let tasks = db.list_tasks(&case_id, true)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+
+    let event_rows: Vec<Vec<String>> = std::iter::once(vec![
+        "Tarih".to_string(),
+        "Tür".to_string(),
+        "Başlık".to_string(),
+        "Kesinlik".to_string(),
+        "Durum".to_string(),
+    ])
+    .chain(events.iter().map(|e| {
+        vec![
+            e.sortable_date
+                .clone()
+                .unwrap_or_else(|| "bilinmiyor".into()),
+            e.date_role.clone(),
+            e.title.clone(),
+            e.date_precision.clone(),
+            e.status.clone(),
+        ]
+    }))
+    .collect();
+    let claim_rows: Vec<Vec<String>> =
+        std::iter::once(vec!["İddia".to_string(), "Tür".to_string()])
+            .chain(
+                claims
+                    .iter()
+                    .map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()]),
+            )
+            .collect();
+    let document_rows: Vec<Vec<String>> = std::iter::once(vec![
+        "Belge".to_string(),
+        "Tür".to_string(),
+        "Durum".to_string(),
+    ])
+    .chain(documents.iter().map(|d| {
+        vec![
+            d.display_name.clone(),
+            d.document_type.clone(),
+            d.status.clone(),
+        ]
+    }))
+    .collect();
+    let task_rows: Vec<Vec<String>> = std::iter::once(vec![
+        "Görev".to_string(),
+        "Tarih".to_string(),
+        "Durum".to_string(),
+    ])
+    .chain(tasks.iter().map(|t| {
+        vec![
+            t.title.clone(),
+            t.user_due_date.clone().unwrap_or_default(),
+            t.status.clone(),
+        ]
+    }))
+    .collect();
+
+    let payload = serde_json::json!({
+        "title": format!("{} — dosya raporu", case.title),
+        "meta": {
+            "Dosya": case.title,
+            "Esas/referans": case.reference_code.clone().unwrap_or_default(),
+            "Tür": case.case_kind,
+            "Hassasiyet": case.sensitivity,
+            "Oluşturma": case.created_at,
+            "Kapsam": coverage.headline(),
+        },
+        "sections": [
+            coverage_section(&coverage),
+            {"heading": "Kronoloji", "rows": event_rows},
+            {"heading": "İddialar", "rows": claim_rows},
+            {"heading": "Belge dizini", "rows": document_rows},
+            {"heading": "Görevler", "rows": task_rows},
+            {"heading": "Notlar", "lines": notes.iter().map(|n| format!("{}: {}", if n.title.is_empty() { "Not" } else { &n.title }, n.body)).collect::<Vec<_>>()},
+        ],
+    });
+
+    let mut worker = spawn_worker(WorkerKind::Render)?;
+    let bytes = worker.render_report(&payload)?;
+    worker.shutdown();
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "docx", &[], "user_selected_path", &sha)?;
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+        coverage,
+    })
+}
+
+#[tauri::command]
+pub fn export_pdf(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_path: String,
+) -> Result<ExportView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let case = db
+        .get_case(&case_id)?
+        .ok_or_else(|| ApiError::new("E_NOT_FOUND", "Dosya bulunamadı."))?;
+    let events = db.list_events(&case_id)?;
+    let claims = db.list_claims(&case_id)?;
+    let documents = db.list_documents(&case_id)?;
+    let notes = db.list_notes(&case_id)?;
+    let tasks = db.list_tasks(&case_id, true)?;
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+
+    let payload = serde_json::json!({
+        "title": format!("{} — dosya raporu", case.title),
+        "meta": {
+            "Dosya": case.title,
+            "Esas/referans": case.reference_code.clone().unwrap_or_default(),
+            "Tür": case.case_kind,
+            "Hassasiyet": case.sensitivity,
+            "Oluşturma": case.created_at,
+            "Kapsam": coverage.headline(),
+        },
+        "sections": [
+            coverage_section(&coverage),
+            {"heading": "Kronoloji", "rows": std::iter::once(vec!["Tarih".to_string(),"Tür".to_string(),"Başlık".to_string(),"Kesinlik".to_string(),"Durum".to_string()]).chain(events.iter().map(|e| vec![e.sortable_date.clone().unwrap_or_else(|| "bilinmiyor".into()), e.date_role.clone(), e.title.clone(), e.date_precision.clone(), e.status.clone()])).collect::<Vec<_>>()},
+            {"heading": "İddialar", "rows": std::iter::once(vec!["İddia".to_string(),"Tür".to_string()]).chain(claims.iter().map(|c| vec![c.claim_text.clone(), c.claim_kind.clone()])).collect::<Vec<_>>()},
+            {"heading": "Belge dizini", "rows": std::iter::once(vec!["Belge".to_string(),"Tür".to_string(),"Durum".to_string()]).chain(documents.iter().map(|d| vec![d.display_name.clone(), d.document_type.clone(), d.status.clone()])).collect::<Vec<_>>()},
+            {"heading": "Görevler", "rows": std::iter::once(vec!["Görev".to_string(),"Tarih".to_string(),"Durum".to_string()]).chain(tasks.iter().map(|t| vec![t.title.clone(), t.user_due_date.clone().unwrap_or_default(), t.status.clone()])).collect::<Vec<_>>()},
+            {"heading": "Notlar", "lines": notes.iter().map(|n| format!("{}: {}", if n.title.is_empty() { "Not" } else { &n.title }, n.body)).collect::<Vec<_>>()},
+        ],
+    });
+
+    let mut worker = spawn_worker(WorkerKind::Render)?;
+    let bytes = worker.render_report_pdf(&payload)?;
+    worker.shutdown();
+    write_export(&dest_path, &bytes)?;
+    let sha = hex::encode(Sha256::digest(&bytes));
+    let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &sha)?;
+    Ok(ExportView {
+        path: dest_path,
+        bytes: bytes.len(),
+        sha256: sha,
+        record,
+        coverage,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageView {
+    pub path: String,
+    pub files: usize,
+    pub sha256: String,
+    pub record: ExportRow,
+    /// Parola verildiyse üretilen şifreli `.dimpak` dosyası.
+    pub sealed_path: Option<String>,
+    /// Pakete gömülen kapsam bloğu (F11-T06).
+    pub coverage: ExportCoverage,
+}
+
+/// Devir paketi: dosya metadatası + rapor iskeleti + manifest. Belge baytları
+/// pakete otomatik konmaz; kullanıcı maskeli kopyaları ayrıca ekler.
+#[tauri::command]
+pub fn export_package(
+    state: State<'_, AppState>,
+    case_id: String,
+    dest_dir: String,
+    password: Option<String>,
+) -> Result<PackageView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    if dest_dir.trim().is_empty() {
+        return Err(ApiError::new("E_PATH", "Paket konumu boş olamaz."));
+    }
+    let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    let payload = case_payload(db, &case_id, &coverage)?;
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+        .replace([':', '-'], "")
+        .chars()
+        .take(13)
+        .collect::<String>();
+    let dir = PathBuf::from(dest_dir.trim()).join(format!("DimDevir-{stamp}"));
+    if dir.exists() {
+        return Err(ApiError::new(
+            "E_PACKAGE_EXISTS",
+            "Aynı adlı paket klasörü var.",
+        ));
+    }
+    std::fs::create_dir_all(&dir)?;
+
+    let case_bytes = serde_json::to_vec_pretty(&payload)
+        .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
+    std::fs::write(dir.join("case.json"), &case_bytes)?;
+    // Kapsam manifesti: paketin hangi belge/sayfa kapsamıyla üretildiğini yazar
+    // (okunabilir markdown). "İncelenmedi ≠ temiz" cümlesi paketin içinde kalır.
+    let coverage_md = coverage.markdown(payload["case"]["title"].as_str().unwrap_or("Dosya"));
+    std::fs::write(dir.join("KAPSAM.md"), coverage_md.as_bytes())?;
+    let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json), inceleme kapsamını (KAPSAM.md)\nve manifest'i taşır. Belge baytları kasa dışına otomatik çıkarılmaz;\npaylaşılacak belgeler için Maskeleme ekranından maskeli kopya üretip bu\nklasöre ekleyin.\n\nKAPSAM.md zorunlu okumadır: hangi belge ve sayfaların gerçekten\nayrıştırıldığını, kaç sayfanın OCR ile okunduğunu ve kaç belgenin hiç\nincelenmediğini yazar. Kapsam dışı içerik \"temiz\" sayılmaz.\n\nPaket açık metindir; şifreli taşıma F16 kapsamındadır.\n";
+    std::fs::write(dir.join("README.txt"), readme)?;
+
+    let files = [
+        ("case.json", sha256_file(&dir.join("case.json"))?),
+        ("KAPSAM.md", sha256_file(&dir.join("KAPSAM.md"))?),
+        ("README.txt", sha256_file(&dir.join("README.txt"))?),
+    ];
+    let manifest = serde_json::json!({
+        "format": "dim-handoff",
+        "version": 1,
+        "createdAt": dim_storage::now_iso(),
+        "coverage": coverage,
+        "files": files.iter().map(|(name, hash)| serde_json::json!({"name": name, "sha256": hash})).collect::<Vec<_>>(),
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| ApiError::new("E_EXPORT", "Manifest üretilemedi."))?;
+    std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
+    let sha = hex::encode(Sha256::digest(&manifest_bytes));
+    let record = db.record_export(&case_id, "package", &[], "user_selected_path", &sha)?;
+
+    // Parola verildiyse klasör tek şifreli dosyaya paketlenir; alıcıya kasa
+    // anahtarı verilmez, yalnız paket parolası söylenir.
+    let mut sealed_path = None;
+    if let Some(secret) = password.filter(|p| p.chars().count() >= 10) {
+        let archive = dir.with_extension("zip");
+        zip_dir(&dir, &archive)?;
+        let zip_bytes = std::fs::read(&archive)?;
+        let sealed = dim_vault::package::seal(&zip_bytes, &secret)?;
+        let target = dir.with_extension("dimpak");
+        std::fs::write(&target, &sealed)?;
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_dir_all(&dir);
+        sealed_path = Some(target.to_string_lossy().to_string());
+    }
+
+    Ok(PackageView {
+        path: dir.to_string_lossy().to_string(),
+        files: files.len(),
+        sha256: sha,
+        record,
+        sealed_path,
+        coverage,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiOverview {
+    pub providers: Vec<ProviderProfileRow>,
+    pub runs: Vec<AiRunRow>,
+    pub coverage: CoverageReport,
+}
+
+#[tauri::command]
+pub fn ai_overview(state: State<'_, AppState>, case_id: String) -> Result<AiOverview, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.ensure_off_provider()?;
+    Ok(AiOverview {
+        providers: db.list_provider_profiles()?,
+        runs: db.list_ai_runs(&case_id)?,
+        coverage: db.coverage_report(&case_id)?,
+    })
+}
+
+#[tauri::command]
+pub fn ai_consent_create(
+    state: State<'_, AppState>,
+    case_id: String,
+    provider_snapshot: String,
+    purpose: String,
+    document_ids: Vec<String>,
+) -> Result<TransferConsentRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.create_transfer_consent(&NewTransferConsent {
+        provider_snapshot,
+        case_scope: case_id,
+        purpose,
+        selected_document_ids: document_ids,
+        expires_at: None,
+        consent_text_version: "1".into(),
+    })?)
+}
+
+#[tauri::command]
+pub fn ai_consent_revoke(state: State<'_, AppState>, consent_id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.revoke_transfer_consent(&consent_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn ai_run_start(
+    state: State<'_, AppState>,
+    case_id: String,
+    provider_id: String,
+    consent_id: String,
+    task_type: String,
+) -> Result<AiRunRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let profile = db
+        .list_provider_profiles()?
+        .into_iter()
+        .find(|p| p.id == provider_id)
+        .ok_or_else(|| ApiError::new("E_AI_PROVIDER", "Sağlayıcı profili bulunamadı."))?;
+    if profile.provider_type == "off" {
+        return Err(ApiError::new(
+            "E_AI_OFF",
+            "AI kapalı. Sağlayıcı bağlanmadan hiçbir içerik cihazdan çıkmaz.",
+        ));
+    }
+    Ok(db.start_ai_run(
+        &case_id,
+        &dim_storage::NewAiRun {
+            task_type,
+            provider_id,
+            model_snapshot: "unknown".into(),
+            input_manifest_hash: "pending".into(),
+            prompt_version: "1".into(),
+            output_schema_version: "1".into(),
+            consent_id,
+        },
+    )?)
+}
+
+#[tauri::command]
+pub fn ai_candidates_list(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AiCandidateRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_ai_candidates(&run_id)?)
+}
+
+#[tauri::command]
+pub fn ai_candidate_promote(
+    state: State<'_, AppState>,
+    candidate_id: String,
+    case_id: String,
+) -> Result<String, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.promote_candidate(&candidate_id, &case_id)?)
+}
+
+/// Adayı **yazmadan** doğrular (şema + alıntı eşleştirmesi); denetim kaydı
+/// oluşturmaz. Kalıcı kayıt `ai_candidate_record` ile yapılır.
+#[tauri::command]
+pub fn ai_candidate_validate(
+    state: State<'_, AppState>,
+    run_id: String,
+    candidate_type: String,
+    payload: String,
+) -> Result<CandidateReport, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.validate_ai_candidate(&run_id, &candidate_type, &payload)?)
+}
+
+/// Adayı doğrular ve **hesaplanan** durumla kaydeder. Çağıran `valid`
+/// yazdıramaz.
+#[tauri::command]
+pub fn ai_candidate_record(
+    state: State<'_, AppState>,
+    run_id: String,
+    candidate_type: String,
+    payload: String,
+) -> Result<AiCandidateRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.record_ai_candidate(&run_id, &candidate_type, &payload)?)
+}
+
+/// Belge yeniden ayrıştırıldıysa adayı güncel metne göre yeniden doğrular.
+#[tauri::command]
+pub fn ai_candidate_revalidate(
+    state: State<'_, AppState>,
+    candidate_id: String,
+) -> Result<AiCandidateRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.revalidate_ai_candidate(&candidate_id)?)
+}
+
+#[tauri::command]
+pub fn event_sources(
+    state: State<'_, AppState>,
+    event_id: String,
+) -> Result<Vec<EventSourceRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_event_sources(&event_id)?)
+}
+
+#[tauri::command]
+pub fn event_link_source(
+    state: State<'_, AppState>,
+    event_id: String,
+    anchor_id: String,
+    relation: String,
+) -> Result<EventSourceRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.link_event_source(&event_id, &anchor_id, &relation)?)
+}
+
+#[tauri::command]
+pub fn event_unlink_source(state: State<'_, AppState>, id: String) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    db.unlink_event_source(&id)?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultGcView {
+    pub dry_run: bool,
+    pub candidates: Vec<dim_storage::GcBlobRow>,
+    pub deleted: Vec<dim_storage::GcBlobRow>,
+    pub freed_bytes: i64,
+    pub missing_files: Vec<String>,
+}
+
+/// Referanssız blob kayıtlarını (isteğe bağlı olarak dosyalarıyla) temizler.
+/// Önce kuru çalıştırma yapılması önerilir; arayüz iki adımlı akış sunar.
+#[tauri::command]
+pub fn vault_gc(state: State<'_, AppState>, dry_run: bool) -> Result<VaultGcView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+
+    let report: GcReport = db.garbage_collect_blobs(dry_run)?;
+    let mut missing_files = Vec::new();
+    if !dry_run {
+        let blob_dir = vault_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs");
+        for blob in &report.deleted {
+            let path = blob_dir.join(format!("{}.blb", blob.storage_id));
+            if path.exists() {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    missing_files.push(format!("{}: {error}", blob.storage_id));
+                }
+            } else {
+                missing_files.push(format!("{}: dosya yok", blob.storage_id));
+            }
+        }
+    }
+
+    Ok(VaultGcView {
+        dry_run: report.dry_run,
+        candidates: report.candidates,
+        deleted: report.deleted,
+        freed_bytes: report.freed_bytes,
+        missing_files,
+    })
+}
+
+/// Parolayı değiştirir. Yalnız parola yuvası yeniden sarılır; ana anahtar ve
+/// veritabanı anahtarı değişmez, açık oturum ve kurtarma anahtarı geçerli kalır.
+#[tauri::command]
+pub fn vault_change_password(
+    state: State<'_, AppState>,
+    old_password: String,
+    new_password: String,
+) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    VaultFile::change_password(path, &old_password, &new_password)?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactRegionInput {
+    pub page_index: u32,
+    pub rect: [f64; 4],
+}
+
+/// Kullanıcının sayfa üzerinde seçtiği bölgeleri gerçekten kaldırır ve yeni
+/// sürüm olarak kaydeder. Doğrulama geçmezse hiçbir çıktı yazılmaz.
+#[tauri::command]
+pub fn citation_meaning_review(
+    state: State<'_, AppState>,
+    check_id: String,
+    review: String,
+    note: String,
+) -> Result<CitationCheckRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.review_citation_meaning(&check_id, &review, &note)?)
+}
+
+#[tauri::command]
+pub fn citation_context(
+    state: State<'_, AppState>,
+    check_id: String,
+    radius: Option<u32>,
+) -> Result<CitationContext, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let radius = radius.unwrap_or(120).clamp(10, 500);
+    Ok(db.citation_context(&check_id, radius as usize)?)
+}
+
+#[tauri::command]
+pub fn provider_api_profile_save(
+    state: State<'_, AppState>,
+    endpoint: String,
+    model: String,
+) -> Result<ProviderProfileRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.register_api_profile(&endpoint, &model)?)
+}
+
+#[tauri::command]
+pub fn ai_consent_preview(
+    state: State<'_, AppState>,
+    case_id: String,
+    document_ids: Vec<String>,
+) -> Result<ConsentPreview, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.consent_preview(&case_id, &document_ids)?)
+}
+
+/// Onaylı aktarımı **gerçekten** yürütür: context segmentleri toplar, API
+/// sağlayıcısına gönderir, dönen adayı doğrulayıp kaydeder. Onay yoksa veya
+/// profil tanımlı değilse çağrı hiç kurulmaz.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn ai_run_execute(
+    state: State<'_, AppState>,
+    case_id: String,
+    provider_id: String,
+    consent_id: String,
+    task_type: String,
+    document_ids: Vec<String>,
+) -> Result<AiCandidateRow, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let (endpoint, model) = db
+        .api_profile_endpoint()?
+        .ok_or_else(|| ApiError::new("E_AI_OFF", "API profili tanımlı değil."))?;
+    let segments = db.context_segments(&case_id, &document_ids)?;
+    if segments.is_empty() {
+        return Err(ApiError::new(
+            "E_AI_UNSUPPORTED",
+            "Gönderilecek ayrıştırılmış metin yok.",
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    for (id, text) in &segments {
+        hasher.update(id.as_bytes());
+        hasher.update(text.as_bytes());
+    }
+    let manifest: String = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    let run = db.start_ai_run(
+        &case_id,
+        &NewAiRun {
+            task_type: task_type.clone(),
+            provider_id,
+            model_snapshot: model.clone(),
+            input_manifest_hash: manifest,
+            prompt_version: "1".to_string(),
+            output_schema_version: "candidate.v1".to_string(),
+            consent_id,
+        },
+    )?;
+
+    let request = AiRequest {
+        case_id,
+        task_type: task_type.clone(),
+        prompt_version: "1".to_string(),
+        output_schema_version: "candidate.v1".to_string(),
+        segments: segments
+            .iter()
+            .map(|(id, text)| ContextSegment {
+                segment_id: id.clone(),
+                text: text.clone(),
+                source_ref_json: None,
+            })
+            .collect(),
+    };
+    let bytes = request.outbound_bytes();
+    let mut provider = ApiProvider::new(&endpoint, &model)?;
+    let candidate = match provider.propose(&request) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            let report = serde_json::json!({"error": error.code()}).to_string();
+            db.finish_ai_run(&run.id, "failed", &report)?;
+            return Err(error.into());
+        }
+    };
+    let payload = serde_json::to_string(&candidate.payload).unwrap_or_else(|_| "{}".to_string());
+    let row = db.record_ai_candidate(&run.id, &task_type, &payload)?;
+    let report = serde_json::json!({"segments": segments.len(), "bytes": bytes}).to_string();
+    db.finish_ai_run(&run.id, "succeeded", &report)?;
+    Ok(row)
+}
