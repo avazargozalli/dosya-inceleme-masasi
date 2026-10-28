@@ -57,6 +57,9 @@ export const tr = {
     tagline: "yerel · şifreli",
     unlocked: "Kasa açık",
     locked: "Kasa kilitli",
+    lockedHint:
+      "Kasa kilitli. Bu ekrandaki içerik gösterilmez ve bellekte tutulmaz.",
+    goVault: "Kasa ekranına git",
     lock: "Kasayı kilitle",
     crumbRoot: "Kasa",
     version: "v{version}",

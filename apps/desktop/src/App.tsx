@@ -258,12 +258,10 @@ function LockedNotice({ onUnlock }: { onUnlock: () => void }) {
       <div className="card-head">
         <div>
           <h2>{t("shell.locked")}</h2>
-          <p className="card-sub">
-            Kasa kilitli. Bu ekrandaki içerik gösterilmez ve bellekte tutulmaz.
-          </p>
+          <p className="card-sub">{t("shell.lockedHint")}</p>
         </div>
         <button className="btn primary" onClick={onUnlock}>
-          Kasa ekranına git
+          {t("shell.goVault")}
         </button>
       </div>
     </div>
