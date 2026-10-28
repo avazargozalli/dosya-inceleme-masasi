@@ -249,7 +249,7 @@ export function App() {
   );
 }
 
-/// Kasa kilitliyken `vault` dışındaki ekranlar **render edilmez**: bileşen
+/// Kilitliyken `vault` dışındaki ekranlar **render edilmez**: bileşen
 /// ağacı sökülür, yüklenmiş belge/segment state'i bellekte kalmaz. Yalnız bu
 /// ekran gösterilir; "Kasa"ya dönüp parola girilir.
 function LockedNotice({ onUnlock }: { onUnlock: () => void }) {
