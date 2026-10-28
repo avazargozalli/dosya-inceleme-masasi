@@ -20,7 +20,10 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 cd "$ROOT"
+# Kök çalışma alanı + Tauri kabuğu **ayrı** çalışma alanıdır: ikinci manifest
+# taranmazsa `src-tauri` bağımlılıkları SBOM'a hiç girmez.
 cargo metadata --format-version 1 --all-features > "$TMP/cargo.json"
+cargo metadata --manifest-path apps/desktop/src-tauri/Cargo.toml --format-version 1 --all-features > "$TMP/cargo-tauri.json"
 # `--depth Infinity` geçişli bağımlılıkları da verir; `-r` bütün çalışma alanını gezer.
 pnpm list -r --depth Infinity --json > "$TMP/pnpm.json"
 
@@ -44,8 +47,9 @@ def sha256(path):
 
 # --- Rust ---------------------------------------------------------------
 cargo = json.loads((tmp / "cargo.json").read_text())
+cargo_tauri = json.loads((tmp / "cargo-tauri.json").read_text())
 rust, rust_workspace = set(), set()
-for pkg in cargo.get("packages", []):
+for pkg in cargo.get("packages", []) + cargo_tauri.get("packages", []):
     source = pkg.get("source") or ""
     if not source:
         # Yol/çalışma alanı üyesi: ürünün kendi kodu, üçüncü taraf bileşen değil.
