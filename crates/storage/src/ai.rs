@@ -225,13 +225,21 @@ impl Database {
                 return Err(StorageError::AiConsent);
             }
         }
-        let provider_exists: i64 = self.conn().query_row(
-            "SELECT count(*) FROM provider_profiles WHERE id=?1",
-            [&new.provider_id],
-            |r| r.get(0),
-        )?;
-        if provider_exists == 0 {
+        // Onay **sağlayıcıya** da bağlıdır: başka bir profille (yeni uç nokta/model)
+        // aynı onay kullanılamaz — şartname "mevcut izin kendiliğinden genişlemez".
+        let provider_snapshot: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT adapter_id || '@' || policy_version FROM provider_profiles WHERE id=?1",
+                [&new.provider_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(provider_snapshot) = provider_snapshot else {
             return Err(StorageError::AiProvider);
+        };
+        if consent.provider_snapshot.trim() != provider_snapshot {
+            return Err(StorageError::AiConsent);
         }
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
@@ -1022,7 +1030,7 @@ mod tests {
     fn consent(db: &Database, case_id: &str) -> TransferConsentRow {
         let (document_id, _) = document_with_text(db, case_id, "Belge", &["Sözleşme metni"]);
         db.create_transfer_consent(&NewTransferConsent {
-            provider_snapshot: "claude-code@2.1".into(),
+            provider_snapshot: "claude-code@1".into(),
             case_scope: case_id.into(),
             purpose: "ozet".into(),
             selected_document_ids: vec![document_id],
@@ -1066,7 +1074,7 @@ mod tests {
         let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
         let row = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id],
@@ -1102,6 +1110,38 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "E_AI_CONSENT"
+        );
+    }
+
+    /// Onay sağlayıcıya bağlıdır: farklı profille (yeni uç nokta/model) aynı onay
+    /// kullanılamaz; izin kendiliğinden genişlemez.
+    #[test]
+    fn consent_is_provider_scoped() {
+        let (db, case_id, _) = setup();
+        db.conn()
+            .execute(
+                "INSERT INTO provider_profiles (id,provider_type,adapter_id,policy_version,created_at,updated_at)
+                 VALUES ('p2','api','openai-compatible','1','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("ikinci sağlayıcı");
+        let c = consent(&db, &case_id);
+        // Aynı sağlayıcı: geçer.
+        db.start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("aynı sağlayıcı");
+        // Başka sağlayıcı: onay kapsamaz.
+        let mut other = run(&case_id, &c.id);
+        other.provider_id = "p2".into();
+        assert_eq!(
+            db.start_ai_run(&case_id, &other).unwrap_err().code(),
+            "E_AI_CONSENT"
+        );
+        // Hiç olmayan sağlayıcı: ayrı kod.
+        let mut missing = run(&case_id, &c.id);
+        missing.provider_id = "yok".into();
+        assert_eq!(
+            db.start_ai_run(&case_id, &missing).unwrap_err().code(),
+            "E_AI_PROVIDER"
         );
     }
 
@@ -1349,7 +1389,7 @@ mod tests {
         // Aynı belge kümesiyle onay: gönderim kapsamı önizlemeyle **birebir** olmalı.
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: ids,
@@ -1395,7 +1435,7 @@ mod tests {
             .expect("bitir");
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id],
@@ -1418,7 +1458,7 @@ mod tests {
         let (_other, _) = document_with_text(&db, &case_id, "Onaysız", &["ONAYSIZ METİN"]);
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![approved],
@@ -1439,7 +1479,7 @@ mod tests {
         let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id.clone()],
@@ -1502,7 +1542,7 @@ mod tests {
         let (document_id, _) = document_with_text(&db, &case_id, "Belge", &[canary]);
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id],
@@ -1564,7 +1604,7 @@ mod tests {
         ] {
             let err = db
                 .create_transfer_consent(&NewTransferConsent {
-                    provider_snapshot: "claude-code@2.1".into(),
+                    provider_snapshot: "claude-code@1".into(),
                     case_scope: case_id.clone(),
                     purpose: "ozet".into(),
                     selected_document_ids: ids,
@@ -1582,7 +1622,7 @@ mod tests {
         let (db, case_id, _) = setup();
         let err = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case_id,
                 purpose: "ozet".into(),
                 selected_document_ids: vec![],

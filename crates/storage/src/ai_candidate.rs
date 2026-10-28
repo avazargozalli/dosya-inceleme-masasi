@@ -1241,7 +1241,7 @@ mod tests {
         // Onay **belge kümesine** bağlıdır: belge oluştuktan sonra onaylanır.
         let consent = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@2.1".into(),
+                provider_snapshot: "claude-code@1".into(),
                 case_scope: case.id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document.id.clone()],

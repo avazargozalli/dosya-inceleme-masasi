@@ -55,6 +55,9 @@ Yukarıdaki `✅` işaretleri **kanıtsızdı**; bu tur ölçüldü ve üç kusu
   Önizleme ve gönderim **aynı** işlevi kullanır → ikisi ayrışamaz.
 - Kapsam **onaydan** çözülür: `consent_scope_segments(case_id, consent_id)`;
   Tauri komutu artık `document_ids` **almaz** (çağıran kapsamı genişletemez).
+- Onay **sağlayıcıya** da bağlı: `start_ai_run` profilün `adapter_id@policy_version`
+  değerini onayın `provider_snapshot`'ı ile karşılaştırır; başka uç nokta/model
+  `E_AI_CONSENT`, hiç olmayan profil `E_AI_PROVIDER`.
 - Onay oluşturma doğrulaması: boş liste, başka dosyanın belgesi ve silinmiş
   belge `E_AI_CONSENT`; yinelenen kimlik tekilleştirilir. `start_ai_run` ayrıca
   onaydan sonra silinmiş belgeyi yakalar (izin daralmışsa çalıştırma açılmaz).
@@ -70,10 +73,10 @@ Yukarıdaki `✅` işaretleri **kanıtsızdı**; bu tur ölçüldü ve üç kusu
   gönderilecek: M belge, K segment, B bayt" ve kapsam dışı belgelerin **nedeni**
   yazılır (`lib/transferScope.ts`).
 
-**Kanıt (ölçüldü):** `ai` testleri **9 → 16** (7 yeni: önizleme/gönderim
-birebirliği, güncel sürüm + sayfa üreten koşu, kapsam yalnız onaydan, silinmiş
-belge kapısı, boş seçim, başka dosyanın belgesi, sicilde metin yok);
-`cargo test -p dim-storage --lib` **379/379**; tauri lib **31 geçti / 5 ignored**;
+**Kanıt (ölçüldü):** `ai` testleri **9 → 17** (8 yeni: önizleme/gönderim
+birebirliği, güncel sürüm + sayfa üreten koşu, kapsam yalnız onaydan, sağlayıcı
+kapsamı, silinmiş belge kapısı, boş seçim, başka dosyanın belgesi, sicilde metin yok);
+`cargo test -p dim-storage --lib` **380/380**; tauri lib **31 geçti / 5 ignored**;
 `vitest` **426/426** (33 dosya, +3 `transferScope`); `tsc --noEmit` temiz;
 clippy `dim-storage` + tauri `--all-targets -D warnings` temiz.
 
