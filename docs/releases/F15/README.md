@@ -159,11 +159,18 @@ kaynaklarla denetleniyor. Üretim sırasında **beş sessiz kusur** ölçüldü:
   (`--sbom`, `--strict-texts`), `--self-test`.
 - `scripts/spdx-ids.json` — SPDX **3.29.0** kimlik listesi (740 lisans, 86 istisna);
   depoda durur ki kapı çevrimdışı ve deterministik çalışsın.
-- `THIRD_PARTY_NOTICES.md` — **356** bileşen kapsamda: **269 ölçülen** +
-  **87 lisansı ölçülemeyen**; **101 benzersiz lisans metni** gömülü (1,0 MB),
-  **1** bileşen metin taşımıyor. Gruplar: Rust 159 (91 metin) · Node dağıtılan 7
-  (5) · Node geliştirme 98 (metin **bilinçli** gömülmez — dağıtılmıyor) ·
-  Python 5 (5). **21** farklı lisans ifadesi.
+- `THIRD_PARTY_NOTICES.md` — **665** bileşen kapsamda: **578 ölçülen** +
+  **87 lisansı ölçülemeyen**; **224 benzersiz lisans metni** gömülü (2,0 MB),
+  **36** bileşen metin taşımıyor (çoğu macOS/Windows'a özgü kabuk crate'i:
+  `objc2*`, `webview2-com`, `tauri-plugin`…). Gruplar: **Rust 485** (iki cargo
+  çalışma alanı: kök + `apps/desktop/src-tauri`) · Node dağıtılan 7 · Node
+  geliştirme 175 (metin **bilinçli** gömülmez — dağıtılmıyor) · Python 5.
+  **21** farklı lisans ifadesi.
+- **Kapsam düzeltmesi (aynı gün, paralel ajan):** `scripts/sbom.sh` Tauri
+  çalışma alanını da taramaya başlayınca rust bileşeni **159 → 485** oldu; üreteç
+  de iki manifesti tarayacak şekilde güncellendi ve bildirim yeniden üretildi.
+  Bu, kapının **gerçekten** kapsamı zorladığının kanıtı: eski bildirim (159) yeni
+  SBOM (485) ile eşleşmediği için CI `SBOM` işi kırmızı oldu.
 - **Kapı (10 kural):** biçim/ürün sürümü · rust kapsamı · node kapsamı (kilit
   ağacı) · python pinleri · SPDX geçerliliği · yasaklı lisans (`SSPL`, `BUSL`,
   `Commons-Clause`, `CC-BY-NC`, `Elastic`; ayrıca AGPL ile uyumsuz

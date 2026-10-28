@@ -264,13 +264,37 @@ def crate_archive_texts(name: str, version: str) -> list[tuple[str, str]]:
     return []
 
 
+def _license_id_set() -> set[str]:
+    return load_spdx()[0]
+
+
 def classify(declared: str) -> tuple[str, str]:
-    """Ham lisans ifadesini SPDX'e çevirir: (spdx, kaynak etiketi)."""
+    """Ham lisans ifadesini SPDX'e çevirir: (spdx, kaynak etiketi).
+
+    İki eski biçim var: (a) tabloda yazılı özel eşlemeler, (b) cargo'nun `/` ile
+    yazdığı çift lisans (`MIT/Apache-2.0`, `Apache-2.0 / MIT`, `Unlicense/MIT`…).
+    `/` biçimi **yalnız her parça geçerli SPDX kimliğiyse** `OR`'a çevrilir; değilse
+    olduğu gibi bırakılır ve SPDX kapısı kırmızı olur (uydurma normalleştirme yok).
+    """
     raw = (declared or "").strip()
     if raw in LEGACY_EXPRESSIONS:
         mapped, _note = LEGACY_EXPRESSIONS[raw]
         return (mapped or ""), ("normalleştirildi" if mapped else "çıkarıldı")
+    if "/" in raw:
+        parts = [part.strip() for part in raw.split("/") if part.strip()]
+        ids = _license_id_set()
+        if len(parts) > 1 and all(part in ids for part in parts):
+            return " OR ".join(parts), "normalleştirildi"
     return raw, "bildirildi"
+
+
+def legacy_reason(declared: str) -> str:
+    """Normalleştirme gerekçesi (bildirimde insan okunur satır)."""
+    if declared in LEGACY_EXPRESSIONS:
+        return LEGACY_EXPRESSIONS[declared][1]
+    if "/" in declared:
+        return "cargo eski `/` çift lisans biçimi; parçalar SPDX kimliği → `OR` ile yazıldı"
+    return "kaynaktan çıkarıldı"
 
 
 def _merge_texts(texts: list[tuple[str, str]]) -> str:
@@ -293,28 +317,40 @@ def _attach_text(comp: Component, texts: list[tuple[str, str]]) -> Component:
 
 
 def collect_rust() -> tuple[list[Component], list[str]]:
-    meta = json.loads(run(["cargo", "metadata", "--format-version", "1", "--all-features"]))
+    # İki ayrı cargo çalışma alanı var: kök ve Tauri kabuğu (`apps/desktop/src-tauri`).
+    # Yalnız kök tararsa kabuk bağımlılıkları (tauri/wry/tao…) SBOM'da olur, bildirimde
+    # olmaz — `--check --sbom` bunu kırmızı gösterir (2026-10-28'de ölçüldü).
+    manifests = (None, "apps/desktop/src-tauri/Cargo.toml")
     components: list[Component] = []
     notes: list[str] = []
-    for pkg in meta["packages"]:
-        if not pkg.get("source"):
-            continue  # çalışma alanı: ürünün kendi kodu
-        declared = pkg.get("license") or ""
-        spdx, origin = classify(declared)
-        if not declared and pkg.get("license_file"):
-            spdx, origin = "", "çıkarıldı"
-            notes.append(f"{pkg['name']}: yalnız `license-file` bildiriyor ({pkg['license_file']})")
-        comp = Component("rust", pkg["name"], pkg["version"], spdx, declared, origin, "shipped")
-        source_dir = Path(pkg["manifest_path"]).parent
-        texts = [(f.name, f.read_text(encoding="utf-8", errors="replace"))
-                 for f in license_texts_in(source_dir)] if source_dir.is_dir() else []
-        if not texts:
-            texts = crate_archive_texts(pkg["name"], pkg["version"])
-        if not texts and not source_dir.is_dir():
-            # Kaynak paketi bu ortamda yok (CI'da registry `src/` indirilmemiş):
-            # "metin yok" ile "metin okunamadı" aynı şey değildir.
-            comp.text_measured = False
-        components.append(_attach_text(comp, texts))
+    seen: set[tuple[str, str]] = set()
+    for manifest in manifests:
+        cmd = ["cargo", "metadata", "--format-version", "1", "--all-features"]
+        if manifest:
+            cmd += ["--manifest-path", manifest]
+        meta = json.loads(run(cmd))
+        for pkg in meta["packages"]:
+            if not pkg.get("source"):
+                continue  # çalışma alanı: ürünün kendi kodu
+            if (pkg["name"], pkg["version"]) in seen:
+                continue  # iki çalışma alanında ortak crate: tek kez yazılır
+            seen.add((pkg["name"], pkg["version"]))
+            declared = pkg.get("license") or ""
+            spdx, origin = classify(declared)
+            if not declared and pkg.get("license_file"):
+                spdx, origin = "", "çıkarıldı"
+                notes.append(f"{pkg['name']}: yalnız `license-file` bildiriyor ({pkg['license_file']})")
+            comp = Component("rust", pkg["name"], pkg["version"], spdx, declared, origin, "shipped")
+            source_dir = Path(pkg["manifest_path"]).parent
+            texts = [(f.name, f.read_text(encoding="utf-8", errors="replace"))
+                     for f in license_texts_in(source_dir)] if source_dir.is_dir() else []
+            if not texts:
+                texts = crate_archive_texts(pkg["name"], pkg["version"])
+            if not texts and not source_dir.is_dir():
+                # Kaynak paketi bu ortamda yok (CI'da registry `src/` indirilmemiş):
+                # "metin yok" ile "metin okunamadı" aynı şey değildir.
+                comp.text_measured = False
+            components.append(_attach_text(comp, texts))
     return components, notes
 
 
@@ -641,7 +677,7 @@ def render(notices: Notices) -> str:
         for comp in normalized:
             seen.setdefault((comp.declared, comp.license), []).append(comp.key)
         for (declared, spdx), names in sorted(seen.items()):
-            reason = LEGACY_EXPRESSIONS.get(declared, (None, "kaynaktan çıkarıldı"))[1]
+            reason = legacy_reason(declared)
             out.append(f"- `{declared or '(boş)'}` → `{spdx}` · {len(names)} bileşen · {reason}")
             out.append(f"  - {', '.join(sorted(names))}")
     out.append("")
