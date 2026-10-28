@@ -11,7 +11,7 @@ Her tehdit, onu **gerçekten** sınayan test ya da kanıtla eşleşir. Boş hüc
 | T4 | Yedekten sızıntı | `vault_backup` | `sqlcipher_export` + şifreli blob kopyası; manifest hash | ✅ |
 | T5 | Arayüzün veri katmanına doğrudan erişimi | `apps/desktop` | Yalnız Tauri komutları; her komut `case_id` kapsamı doğrular | ✅ |
 | T6 | Worker'ın dosya sistemine/ağa erişimi | `crates/ingest` | Worker'a dosya yolu değil bayt verilir; NDJSON protokolü | ✅ |
-| T7 | Onaysız AI aktarımı | `crates/storage/src/ai.rs` | Onay yok/iptal/süresi geçmiş → `E_AI_CONSENT` (5 test) | ✅ |
+| T7 | Onaysız AI aktarımı | `crates/storage/src/ai.rs` | Onay yok/iptal/süresi geçmiş → `E_AI_CONSENT`; **onay belge kümesine bağlı** (boş seçim, başka dosyanın belgesi, onaydan sonra silinmiş belge reddedilir); gönderim kapsamı **onaydan** çözülür (`consent_scope_segments`), çağıran genişletemez; önizleme ve gönderim aynı çözümleyiciyi kullanır. `ai` testleri **16** (7'si kapsam/sicil). Ayrıca canary testi: `audit_log`/`ai_runs`/`ai_context_items`/`transfer_receipts`/`transfer_consents` belge metnini **saklamaz** (pozitif kontrol `text_segments`) | ✅ |
 | T8 | CLI kimliğinin kopyalanması | `crates/cli-adapters` | Yalnız `--version`; token/oturum okunmaz | ✅ |
 | T9 | Maskeli dosyada metin kalması | `workers/document` | `apply_redactions` + pypdf bağımsız okuma + OCR kontrolü | ✅ |
 | T10 | Dışa aktarmanın izsiz kalması | `exports` | Her çıktı `exports` kaydı + sha256 | ✅ |

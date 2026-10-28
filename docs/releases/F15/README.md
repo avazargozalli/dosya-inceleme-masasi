@@ -234,8 +234,13 @@ kanıtı yanlış işe bağlıyordu. Şartname karşılıkları (ölçüldü, ta
   uyku/uyanma ve harici disk **yok**.
 - **F15-T07** bağımsız güvenlik incelemesi → **yok** (insan).
 - **F15-T08** prompt injection, dosyalar arası sızıntı, gizli log işaretleyicisi →
-  **yok**: yalnız CLI araç-yalıtımı canary'leri var (F10), dolaylı prompt
-  injection ölçülmedi.
+  **kısmi (2026-10-28):** "gizli log işaretleyicisi" ve "dosyalar arası sızıntı"
+  başlıklarının **veri kapsamı** tarafı ölçüldü: `transfer_consents` artık belge
+  kümesine bağlı (başka dosyanın belgesi onaya yazılamaz), gönderim kapsamı
+  onaydan çözülür ve canary testi denetim/sicil tablolarında belge metni
+  **bulunmadığını** doğrular (`ai` testleri 16, `docs/security/test-matrix.md` T7).
+  **Prompt injection ve model davranışı ölçülmedi** (gerçek sağlayıcı bağlı
+  değil); CLI araç-yalıtımı canary'leri F10'da. Yani T08 hâlâ **açık**.
 - **F15-T09** VoiceOver/NVDA + %200 ölçek + yalnız klavye → statik a11y testi var,
   **gerçek tur yok** (insan).
 - **F15-T10** 5–8 avukat pilotu, **F15-T11** yardım ihtiyacı/ikinci kullanım

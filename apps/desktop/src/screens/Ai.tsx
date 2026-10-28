@@ -11,6 +11,7 @@ import {
   type TransferConsentRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
+import { consentScopeLine, skippedSummary } from "../lib/transferScope";
 import {
   CANDIDATE_KINDS,
   candidateKindLabel,
@@ -79,8 +80,13 @@ export function Ai() {
     setBusy(true);
     setError(null);
     try {
+      // Onay **somut belge kümesine** bağlanır: kullanıcı neyi onayladıysa
+      // gönderim yalnız onu kapsar; sonradan belge eklenirse yeniden onay gerekir.
+      const docs = await api.documentList(caseId);
+      const ids = docs.map((doc) => doc.id);
+      setPreview(await api.aiConsentPreview(caseId, ids));
       setConsent(
-        await api.aiConsentCreate(caseId, `${provider.adapterId}@${provider.policyVersion}`, purpose, []),
+        await api.aiConsentCreate(caseId, `${provider.adapterId}@${provider.policyVersion}`, purpose, ids),
       );
     } catch (e) {
       setError(toApiError(e));
@@ -94,14 +100,8 @@ export function Ai() {
     setBusy(true);
     setError(null);
     try {
-      const docs = await api.documentList(caseId);
-      await api.aiRunExecute(
-        caseId,
-        provider.id,
-        consent.id,
-        "summarize",
-        docs.map((doc) => doc.id),
-      );
+      // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
+      await api.aiRunExecute(caseId, provider.id, consent.id, "summarize");
       setOverview(await api.aiOverview(caseId));
     } catch (e) {
       setError(toApiError(e));
@@ -266,6 +266,11 @@ export function Ai() {
                 </p>
               </div>
             </div>
+            {skippedSummary(preview.skipped) ? (
+              <p className="hint" style={{ margin: 0 }}>
+                {skippedSummary(preview.skipped)} — bu belgeler gönderilmez.
+              </p>
+            ) : null}
             <pre style={{ maxHeight: 140, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
               {preview.sample || "ayrıştırılmış metin yok — bu dosyada gönderilecek içerik bulunmuyor"}
             </pre>
@@ -273,7 +278,8 @@ export function Ai() {
         ) : null}
         {consent ? (
           <p className="hint" style={{ margin: 0 }}>
-            Onay {consent.id.slice(0, 8)}… · {consent.providerSnapshot} · iptal edilene kadar geçerli.
+            {consentScopeLine(consent.selectedDocumentIds.length, preview)} · Onay{" "}
+            {consent.id.slice(0, 8)}… · {consent.providerSnapshot} · iptal edilene kadar geçerli.
             <button
               className="btn ghost"
               style={{ marginLeft: 8 }}

@@ -285,11 +285,18 @@ export type TransferConsentRow = {
   revokedAt: string | null;
 };
 
+export type ScopeSkip = {
+  documentId: string;
+  reason: "missing" | "no_current_version" | "not_parsed" | "empty_text" | string;
+};
+
 export type ConsentPreview = {
   documents: number;
   segments: number;
   bytes: number;
   sample: string;
+  /** Kapsam dışı kalan belgeler; sessiz atlama yok. */
+  skipped: ScopeSkip[];
 };
 
 export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
@@ -1816,19 +1823,12 @@ export const api = {
   aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
     invoke<TransferConsentRow>("ai_consent_create", { caseId, providerSnapshot, purpose, documentIds }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
-  aiRunExecute: (
-    caseId: string,
-    providerId: string,
-    consentId: string,
-    taskType: string,
-    documentIds: string[],
-  ) =>
+  aiRunExecute: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiCandidateRow>("ai_run_execute", {
       caseId,
       providerId,
       consentId,
       taskType,
-      documentIds,
     }),
   aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),
