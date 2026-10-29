@@ -66,6 +66,29 @@ const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
   { name: "tr-TR sabiti", pattern: /["']tr-TR["']/ },
 ];
 
+/** Sözlüğe taşınmış dosyalar: gömülü Türkçe metin taşımaz. */
+const MIGRATED = [
+  "App.tsx",
+  "screens/Unlock.tsx",
+  "screens/Workspace.tsx",
+  "screens/Tasks.tsx",
+  "screens/Exports.tsx",
+  "screens/Redaction.tsx",
+];
+
+const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;
+
+/** Yorumlar ayıklandıktan sonra Türkçe harf taşıyan satır numaraları. */
+export function turkishLines(source: string): number[] {
+  const out: number[] = [];
+  stripComments(source)
+    .split("\n")
+    .forEach((line, index) => {
+      if (TURKISH_LETTER.test(line)) out.push(index + 1);
+    });
+  return out;
+}
+
 describe("yerelleştirme kapısı", () => {
   it("tarih/sayı biçimlendirmesi yalnız lib/format.ts içinde", () => {
     const offences: string[] = [];
@@ -94,27 +117,21 @@ describe("yerelleştirme kapısı", () => {
     expect(unused).toEqual([]);
   });
 
-  it("sözlüğe taşınmış ekranlara gömülü metin geri sızmaz", () => {
-    const migrated = ["App.tsx", "screens/Unlock.tsx", "screens/Workspace.tsx"];
-    const leakedLiterals = [
-      "Kasa açık",
-      "Kasa kilitli",
-      "Kasayı kilitle",
-      "Kurtarma anahtarını şimdi kaydet",
-      "Kullanmaya başla",
-      "Anahtarı güvenli bir yere kaydettim.",
-      "Bu fazda ne çalışıyor?",
-      "Hazır değil — sahte veri veya pasif buton üretilmez",
-    ];
+  it("sözlüğe taşınmış ekranlarda gömülü Türkçe metin kalmaz", () => {
     const leaks: string[] = [];
     for (const { rel, source } of files) {
-      if (!migrated.includes(rel)) continue;
-      const code = stripComments(source);
-      for (const literal of leakedLiterals) {
-        if (code.includes(literal)) leaks.push(`${rel}: ${literal}`);
-      }
+      if (!MIGRATED.includes(rel)) continue;
+      for (const line of turkishLines(source)) leaks.push(`${rel}:${line}`);
     }
     expect(leaks).toEqual([]);
+  });
+
+  it("gömülü metin dedektörü gerçekten yakalar (canary)", () => {
+    // Geçmişte tek tek metin listesiyle aranıyordu ve yeni bir metin sızınca
+    // kapı sessiz kalıyordu. Bu ölçüm dedektörün kör olmadığını gösterir.
+    expect(turkishLines('const label = "Görev listesi";')).toEqual([1]);
+    expect(turkishLines('const label = {t("tasks.listTitle")};')).toEqual([]);
+    expect(turkishLines('// yorumda Türkçe serbest\nconst x = 1;')).toEqual([]);
   });
 
   it("kabuk sürümü paketten okunur, gömülü sürüm etiketi yok", () => {

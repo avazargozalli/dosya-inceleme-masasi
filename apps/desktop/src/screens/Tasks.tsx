@@ -7,6 +7,7 @@ import {
   type ReminderRow,
   type TaskRow,
 } from "../lib/api";
+import { t } from "../lib/i18n";
 import { localIsoDay, REMINDER_POLICY_LABEL, REMINDER_TEXT, reminderLabel } from "../lib/reminders";
 
 export function Tasks() {
@@ -54,7 +55,7 @@ export function Tasks() {
 
   async function add() {
     if (!caseId || title.trim().length === 0) {
-      setError({ code: "E_TITLE", message: "Görev başlığı zorunlu.", retryable: false });
+      setError({ code: "E_TITLE", message: t("tasks.titleRequired"), retryable: false });
       return;
     }
     setBusy(true);
@@ -96,8 +97,8 @@ export function Tasks() {
       const result = await api.taskRemindersEnqueue(caseId, localIsoDay());
       setReminderNote(
         result.queued === 0
-          ? "Yeni hatırlatıcı yok (bugün için zaten kuyrukta)."
-          : `${result.queued} hatırlatıcı yerel bildirim kuyruğuna yazıldı.`,
+          ? t("tasks.noNewReminders")
+          : t("tasks.remindersQueued", { queued: result.queued }),
       );
       await load(caseId, includeDone);
     } catch (e) {
@@ -128,11 +129,8 @@ export function Tasks() {
   return (
     <div className="page" style={{ maxWidth: 900 }}>
       <div className="page-head">
-        <h1>Görevler</h1>
-        <p className="lead">
-          Tarihi kullanıcı girer ve doğrular. Uygulama hukuki son gün hesaplamaz; tarih kaynağı
-          “kullanıcı girdisi” olarak işaretlenir.
-        </p>
+        <h1>{t("nav.tasks")}</h1>
+        <p className="lead">{t("tasks.lead")}</p>
       </div>
 
       {error ? (
@@ -144,29 +142,29 @@ export function Tasks() {
       <div className="card">
         <div className="row">
           <div className="field" style={{ flex: "1 1 240px" }}>
-            <label htmlFor="task-case">Dosya</label>
+            <label htmlFor="task-case">{t("common.case")}</label>
             <select id="task-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
-              {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+              {cases.length === 0 ? <option value="">{t("common.noCase")}</option> : null}
               {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
           <div className="field" style={{ flex: "2 1 280px" }}>
-            <label htmlFor="task-title">Görev</label>
+            <label htmlFor="task-title">{t("tasks.taskLabel")}</label>
             <input
               id="task-title"
               className="input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void add()}
-              placeholder="Örn. Tebliğ tarihini kontrol et"
+              placeholder={t("tasks.titlePlaceholder")}
             />
           </div>
           <div className="field" style={{ flex: "0 1 170px" }}>
-            <label htmlFor="task-due">Tarih (isteğe bağlı)</label>
+            <label htmlFor="task-due">{t("tasks.dueLabel")}</label>
             <input id="task-due" className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
           </div>
           <div className="field" style={{ flex: "0 1 170px" }}>
-            <label htmlFor="task-policy">Hatırlatma</label>
+            <label htmlFor="task-policy">{t("tasks.reminderLabel")}</label>
             <select
               id="task-policy"
               className="input"
@@ -179,15 +177,15 @@ export function Tasks() {
               ))}
             </select>
           </div>
-          <button className="btn primary" disabled={busy} onClick={() => void add()}>Ekle</button>
+          <button className="btn primary" disabled={busy} onClick={() => void add()}>{t("tasks.add")}</button>
         </div>
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Görev listesi</h2>
-            <p className="card-sub">{rows.length} kayıt</p>
+            <h2>{t("tasks.listTitle")}</h2>
+            <p className="card-sub">{t("tasks.recordCount", { count: rows.length })}</p>
           </div>
           <label className="row" style={{ alignItems: "center", gap: 6 }}>
             <input
@@ -196,12 +194,12 @@ export function Tasks() {
               onChange={(e) => setIncludeDone(e.target.checked)}
               style={{ width: 15, height: 15 }}
             />
-            <span className="small muted">Tamamlananlar</span>
+            <span className="small muted">{t("tasks.includeDone")}</span>
           </label>
         </div>
 
         {rows.length === 0 ? (
-          <div className="empty"><p style={{ margin: 0 }}>Görev yok.</p></div>
+          <div className="empty"><p style={{ margin: 0 }}>{t("tasks.empty")}</p></div>
         ) : (
           <div style={{ border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
             {rows.map((task, index) => (
@@ -220,53 +218,52 @@ export function Tasks() {
                   {task.title}
                 </span>
                 <span className="muted small">
-                  {task.userDueDate ?? "tarih yok"}
+                  {task.userDueDate ?? t("tasks.noDate")}
                   {task.userDueDate ? (
                     <span className={`badge ${task.dateConfirmedAt ? "ok" : "warn"}`} style={{ marginLeft: 6 }}>
-                      {task.dateConfirmedAt ? "onaylı" : "onay bekliyor"}
+                      {task.dateConfirmedAt ? t("tasks.confirmed") : t("tasks.pendingConfirm")}
                     </span>
                   ) : null}
                 </span>
                 <span className={`badge ${task.status === "done" ? "ok" : "plain"}`}>
-                  {task.status === "done" ? "tamamlandı" : "açık"}
+                  {task.status === "done" ? t("tasks.done") : t("tasks.open")}
                 </span>
                 <span style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                   {task.status === "open" && task.userDueDate && !task.dateConfirmedAt ? (
                     <button className="btn ghost" disabled={busy} onClick={() => void confirmDate(task.id)}>
-                      Tarihi onayla
+                      {t("tasks.confirmDate")}
                     </button>
                   ) : null}
                   {task.status === "open" ? (
-                    <button className="btn ghost" onClick={() => void complete(task.id)}>Bitti</button>
+                    <button className="btn ghost" onClick={() => void complete(task.id)}>{t("tasks.complete")}</button>
                   ) : null}
-                  <button className="btn ghost" onClick={() => void remove(task.id)}>Sil</button>
+                  <button className="btn ghost" onClick={() => void remove(task.id)}>{t("tasks.remove")}</button>
                 </span>
               </div>
             ))}
           </div>
         )}
         <p className="hint" style={{ margin: 0 }}>
-          Hatırlatıcı yalnız kullanıcının açıkça onayladığı tarih için kurulur; “Tarihi onayla”
-          denmedikçe bildirim üretilmez.
+          {t("tasks.reminderHint")}
         </p>
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Yerel hatırlatıcılar</h2>
-            <p className="card-sub">{reminders.length} hatırlatıcı · {localIsoDay()}</p>
+            <h2>{t("tasks.remindersTitle")}</h2>
+            <p className="card-sub">
+              {t("tasks.remindersSub", { count: reminders.length, day: localIsoDay() })}
+            </p>
           </div>
           <button className="btn" disabled={busy || !caseId} onClick={() => void enqueueReminders()}>
-            Bildirim kuyruğuna yaz
+            {t("tasks.enqueue")}
           </button>
         </div>
 
         {reminders.length === 0 ? (
           <div className="empty">
-            <p style={{ margin: 0 }}>
-              Bugün için hatırlatıcı yok. Göreve tarih ve hatırlatma seçilip tarih onaylanmalı.
-            </p>
+            <p style={{ margin: 0 }}>{t("tasks.noReminders")}</p>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -285,7 +282,7 @@ export function Tasks() {
                 >
                   <span className="small">{REMINDER_TEXT}</span>
                   <span className="muted small">
-                    {reminderLabel(r.policy)} · {r.dueDate} · {task?.title ?? "görev"}
+                    {reminderLabel(r.policy)} · {r.dueDate} · {task?.title ?? t("tasks.taskFallback")}
                   </span>
                 </div>
               );
@@ -294,8 +291,7 @@ export function Tasks() {
         )}
         {reminderNote ? <p className="hint" style={{ margin: 0 }}>{reminderNote}</p> : null}
         <p className="hint" style={{ margin: 0 }}>
-          Bildirim metni müvekkil adı, dosya adı veya görev başlığı taşımaz; ayrıntı yalnız kasa
-          açıkken uygulamada görünür.
+          {t("tasks.privacyHint")}
         </p>
       </div>
     </div>

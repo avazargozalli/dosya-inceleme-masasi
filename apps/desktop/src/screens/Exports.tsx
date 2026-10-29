@@ -16,6 +16,8 @@ import {
   coverageState,
   emptyCoverageWarning,
 } from "../lib/export-coverage";
+import { fileStem } from "../lib/filename";
+import { t } from "../lib/i18n";
 
 const FORMATS: Array<{
   id: "json" | "csv" | "docx" | "pdf";
@@ -23,10 +25,10 @@ const FORMATS: Array<{
   description: string;
   ext: string;
 }> = [
-  { id: "json", title: "JSON", description: "Tam metadata: dosya, belgeler, olaylar, iddialar, notlar, görevler, anchor'lar", ext: "json" },
-  { id: "csv", title: "CSV", description: "Kronoloji ve görevler; tablo programlarında açılır", ext: "csv" },
-  { id: "docx", title: "DOCX", description: "Duruşma/devir raporu; düzenlenebilir belge", ext: "docx" },
-  { id: "pdf", title: "PDF", description: "Aynı raporun salt-okunur çıktısı", ext: "pdf" },
+  { id: "json", title: "JSON", description: t("exports.formatJson"), ext: "json" },
+  { id: "csv", title: "CSV", description: t("exports.formatCsv"), ext: "csv" },
+  { id: "docx", title: "DOCX", description: t("exports.formatDocx"), ext: "docx" },
+  { id: "pdf", title: "PDF", description: t("exports.formatPdf"), ext: "pdf" },
 ];
 
 export function Exports() {
@@ -75,8 +77,8 @@ export function Exports() {
     const selected = cases.find((c) => c.id === caseId);
     if (!selected) return;
     const target = await saveFile({
-      title: "Çıktıyı kaydet",
-      defaultPath: `${selected.title.replace(/[^\w\- ığüşöçİĞÜŞÖÇ]+/g, "_")}.${format}`,
+      title: t("exports.saveDialog"),
+      defaultPath: `${fileStem(selected.title)}.${format}`,
       filters: [{ name: format.toUpperCase(), extensions: [format] }],
     });
     if (typeof target !== "string") return;
@@ -99,7 +101,7 @@ export function Exports() {
 
   async function runPackage() {
     if (!caseId) return;
-    const dir = await openDirectory({ directory: true, multiple: false, title: "Devir paketi klasörünü seç" });
+    const dir = await openDirectory({ directory: true, multiple: false, title: t("exports.dirDialog") });
     if (typeof dir !== "string") return;
     setBusy("package");
     setError(null);
@@ -134,11 +136,8 @@ export function Exports() {
   return (
     <div className="page" style={{ maxWidth: 900 }}>
       <div className="page-head">
-        <h1>Çıktılar</h1>
-        <p className="lead">
-          Her dışa aktarma kasa içinde kayda alınır: tür, hedef ve çıktı hash'i. Belge baytları
-          yalnız açıkça seçilen formatta ve yalnız kullanıcı seçtiği yola yazılır.
-        </p>
+        <h1>{t("nav.exports")}</h1>
+        <p className="lead">{t("exports.lead")}</p>
       </div>
 
       {error ? (
@@ -149,23 +148,20 @@ export function Exports() {
 
       <div className="card">
         <div className="field" style={{ maxWidth: 420 }}>
-          <label htmlFor="ex-case">Dosya</label>
+          <label htmlFor="ex-case">{t("common.case")}</label>
           <select id="ex-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
-            {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+            {cases.length === 0 ? <option value="">{t("common.noCase")}</option> : null}
             {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
           </select>
         </div>
 
         <div className="card-head" style={{ marginTop: "var(--space-4)" }}>
           <div>
-            <h2>İncelenen kapsam</h2>
-            <p className="card-sub">
-              Sayılar kasadan okunur ve her çıktının içine gömülür. Kapsam dışı belge/sayfa
-              “temiz” sayılmaz.
-            </p>
+            <h2>{t("exports.coverageTitle")}</h2>
+            <p className="card-sub">{t("exports.coverageSub")}</p>
           </div>
           <button className="btn ghost" disabled={!caseId || busy !== null} onClick={() => void refreshCoverage()}>
-            Kapsamı tazele
+            {t("exports.refresh")}
           </button>
         </div>
         {coverage && coverageInfo ? (
@@ -193,7 +189,7 @@ export function Exports() {
             </div>
             {coverage.warnings.length > 0 ? (
               <div className="notice" style={{ marginTop: "var(--space-3)" }}>
-                <strong>Kapsam uyarıları</strong>
+                <strong>{t("exports.coverageWarnings")}</strong>
                 <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
                   {coverage.warnings.map((warning) => (
                     <li key={warning}>{warning}</li>
@@ -205,7 +201,7 @@ export function Exports() {
             <p className="hint" style={{ margin: "8px 0 0" }}>{coverage.statement}</p>
           </div>
         ) : (
-          <p className="hint" style={{ margin: 0 }}>Kapsam okunamadı; dışa aktarma yine kapsamı yazar.</p>
+          <p className="hint" style={{ margin: 0 }}>{t("exports.coverageUnreadable")}</p>
         )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
@@ -217,7 +213,7 @@ export function Exports() {
                   <p className="card-sub">{format.description}</p>
                 </div>
                 <button className="btn" disabled={!caseId || busy !== null} onClick={() => void run(format.id)}>
-                  {busy === format.id ? "Yazılıyor…" : "Kaydet"}
+                  {busy === format.id ? t("exports.writing") : t("common.save")}
                 </button>
               </div>
             </div>
@@ -226,9 +222,9 @@ export function Exports() {
 
         {result ? (
           <div className="notice ok">
-            <strong>{result.record.exportType.toUpperCase()}</strong> yazıldı: {result.path}
+            <strong>{result.record.exportType.toUpperCase()}</strong> {t("exports.written")} {result.path}
             <br />
-            {result.bytes} bayt · sha256 {result.sha256.slice(0, 16)}…
+            {result.bytes} {t("units.byte")} · sha256 {result.sha256.slice(0, 16)}…
             <br />
             {coverageEmbedNote(result.record.exportType, result.coverage)}
           </div>
@@ -238,15 +234,15 @@ export function Exports() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Devir paketi</h2>
-            <p className="card-sub">case.json + KAPSAM.md + manifest + README; belge baytları otomatik eklenmez</p>
+            <h2>{t("exports.packageTitle")}</h2>
+            <p className="card-sub">{t("exports.packageSub")}</p>
           </div>
           <button className="btn" disabled={!caseId || busy !== null} onClick={() => void runPackage()}>
-            {busy === "package" ? "Oluşturuluyor…" : "Paket oluştur"}
+            {busy === "package" ? t("exports.packageBusy") : t("exports.packageCreate")}
           </button>
         </div>
         <div className="field" style={{ maxWidth: 360 }}>
-          <label htmlFor="pkg-password">Paket parolası (en az 10 karakter, isteğe bağlı)</label>
+          <label htmlFor="pkg-password">{t("exports.packagePassword")}</label>
           <input
             id="pkg-password"
             className="input"
@@ -254,25 +250,23 @@ export function Exports() {
             autoComplete="new-password"
             value={packagePassword}
             onChange={(e) => setPackagePassword(e.target.value)}
-            placeholder="Boş bırakılırsa klasör açık metin kalır"
+            placeholder={t("exports.packagePasswordPlaceholder")}
           />
         </div>
         <p className="hint" style={{ margin: 0 }}>
-          Parola girilirse klasör Argon2id + AES-256-GCM ile şifrelenip tek `.dimpak`
-          dosyasına dönüşür. Paylaşılacak belgeler için önce Maskeleme ekranından maskeli
-          kopya üretin.
+          {t("exports.packageHint")}
         </p>
         {pkg ? (
           <div className="notice ok">
-            Paket hazır: {pkg.path}
+            {t("exports.packageReady", { path: pkg.path })}
             <br />
-            {pkg.files} dosya · manifest {pkg.sha256.slice(0, 16)}…
+            {t("exports.packageFiles", { files: pkg.files, hash: pkg.sha256.slice(0, 16) })}
             <br />
             {coverageEmbedNote("package", pkg.coverage)}
             {pkg.sealedPath ? (
               <>
                 <br />
-                Şifreli paket: <code>{pkg.sealedPath}</code>
+                {t("exports.sealed")} <code>{pkg.sealedPath}</code>
               </>
             ) : null}
           </div>

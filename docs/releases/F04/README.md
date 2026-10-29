@@ -11,7 +11,61 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** (kabuk, Kasa/Workspace/Unlock ekranları taşındı; 11 ekran açık) — 2026-10-28 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme** ekranları taşındı; **9 ekran açık**; kapı artık **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: Görevler, Çıktılar, Maskeleme (2026-10-30)
+
+**Neden:** F04-T08'in açık kaydı "11 ekran taşınmadı"ydı ve taşıma mekanik olduğu
+için sürekli erteleniyordu. Bu turda üç ekran **birebir metinle** sözlüğe taşındı
+(metinler değişmedi; yalnız kaynakları tek yere alındı).
+
+**Yazılanlar**
+
+- `lib/i18n.ts`: yeni `tasks` (26), `exports` (27) ve `redaction` (37) bölümleri +
+  `common` içine `case/noCase/none/save/select`. Parametreli metinler
+  (`{count}`, `{page}`, `{scanned}`, `{files}`) `t(key, params)` ile doldurulur —
+  eksik parametre yine **hata atar** (yarım cümle gösterilmez).
+- `screens/Tasks.tsx` (30 değişiklik), `screens/Exports.tsx` (29),
+  `screens/Redaction.tsx` (39): tüm gömülü metin, etiket, düğme, uyarı ve hata
+  iletisi sözlükten geliyor.
+- **Yeni `lib/filename.ts`** (`fileStem`): dışa aktarma dosya adı gövdesi. Ekranda
+  kalan **tek Türkçe harf kümesi** buydu (`/[^\w\- ığüşöçİĞÜŞÖÇ]+/g`) ve kapı onu
+  "gömülü metin" sayacaktı; yardımcı saf fonksiyona taşındı, davranış birebir.
+  4 birim testi (Türkçe harf korunur, izinli küme dışı karakter kalmaz, tire/alt
+  çizgi/boşluk korunur, boş başlık boş gövde verir).
+
+**Kapı genelleştirildi (ölçülen kusur sınıfı kapandı)**
+
+- Eski kapı taşınmış ekranlarda **sabit bir metin listesi** arıyordu
+  (`"Kasa açık"`, `"Kasa kilitli"`, …) → yeni bir ekranda yeni bir metin sızarsa
+  **sessiz** kalırdı (aynı sınıf #62'de yorumlarda yaşanmıştı).
+- Yeni kural: `MIGRATED` listesindeki her dosyada, **yorumlar ayıklandıktan sonra
+  Türkçe harf (`ığüşöçİĞÜŞÖÇ`) bulunamaz**. Gömülü Türkçe metin = kırmızı; sözlük
+  anahtarı (`t("tasks.listTitle")`) = temiz.
+- **Kanıt (kırmızı→yeşil, ölçüldü):** `Tasks.tsx`e geçici olarak
+  `const _leak = "Görev listesi";` eklendi → `localization.test.ts`
+  **1 failed | 7 passed**; satır geri alındı → **8/8 yeşil**. Dedektör ayrıca
+  "canary" testiyle kanıtlandı (`Görev listesi` yakalanır, `t(...)` yakalanmaz,
+  yorumdaki Türkçe yakalanmaz).
+- Kapsam: `App.tsx`, `Unlock.tsx`, `Workspace.tsx`, `Tasks.tsx`, `Exports.tsx`,
+  `Redaction.tsx` — altısında da **0** Türkçe harf (ölçüldü).
+
+**Test/derleme:** `tsc --noEmit` temiz · `vitest run` **442/442** (35 dosya; +5:
+`filename` 4 + canary 1) · `vite build` temiz (**88** modül, 492,62 kB).
+
+**Dürüst sınırlar**
+
+- Sözlüğe **9 ekran taşınmadı**: Dosyalar/Cases, Arama, İnceleme, Emsal, AI,
+  Sağlayıcılar, Ayarlar, Kronoloji, Kontrol listesi. F04-T08 **🚧 kaldı**.
+- Yardımcı **lib metinleri** hâlâ kendi dosyalarında: `lib/reminders.ts`
+  (`REMINDER_TEXT`, `REMINDER_POLICY_LABEL`, `reminderLabel`) ve
+  `lib/export-coverage.ts` (kapsam satırları/uyarı cümleleri). Yani "Görevler" ve
+  "Çıktılar" **ekran dosyaları** taşındı; bu iki ekranın bazı satırları hâlâ lib'den
+  geliyor. Kapı bu dosyaları taramıyor (yalnız `MIGRATED` ekranları).
+- Metinler **birebir aynı**: davranış değişmedi, görsel fark beklenmiyor; Tauri
+  penceresi açılmadı → **görsel QA yok**. Windows denenmedi.
+- `fileStem` davranışı eskisiyle aynı (Türkçe harf korunur, diğerleri `_`); dosya
+  adı çakışması/uzunluk sınırı bu yardımcının işi değil.
 
 ## Ayrıştırma ayarları yeniden denemede korunur (2026-10-28, F04-T07 kapanışı — kusur #58)
 
@@ -153,9 +207,11 @@ dokunulmadı).
 
 **Dürüst sınırlar**
 
-- Sözlüğe **11 ekran taşınmadı** (Dosyalar/Cases, Arama, İnceleme, Emsal, Maskeleme,
+- Sözlüğe **11 ekran taşınmamıştı** (Dosyalar/Cases, Arama, İnceleme, Emsal, Maskeleme,
   Çıktılar, AI, Sağlayıcılar, Ayarlar, Kronoloji, Görevler, Kontrol listesi).
-  F04-T08 bu yüzden **🚧 kaldı**; kalan taşıma mekanik ama dosya dosya yapılmalı.
+  **2026-10-30 itibarıyla 9 ekran kaldı**: Maskeleme, Çıktılar ve Görevler taşındı
+  (bkz. yukarıdaki "F04-T08 — sözlük taşıması" bölümü). F04-T08 hâlâ **🚧**;
+  kalan taşıma mekanik ama dosya dosya yapılmalı.
 - Sözlük **tek dilli**: dil değiştirme düğmesi yok, ürün Türkçe sabit. Sözlüğün
   değeri çeviri değil, **tek kaynak + derleme zamanı anahtar denetimi**.
 - `package.json`/`tauri.conf.json`/`Cargo.toml` sürümü hâlâ **0.1.0**, F04 belgesi

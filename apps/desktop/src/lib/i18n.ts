@@ -8,10 +8,12 @@
  * Parametreli metinlerde eksik parametre sessizce `{ad}` bırakmaz — `t()` hata atar;
  * ekranda yarım cümle görünmesindense hata görünmesi yeğdir (uydurma metin yok).
  *
- * **Dürüst sınır:** F04-T08'in ilk yarısı (merkezi sözlük) bu turda *çekirdek +
- * kabuk + kasa ekranları* için tamamlandı; kalan ekranlar (Dosyalar, Arama,
- * İnceleme, Emsal, Maskeleme, Çıktılar, AI, Ayarlar, Kronoloji, Görevler, Kontrol
- * listesi) metinlerini hâlâ kendi dosyalarında taşır. Taşıma sırası ve sayısı
+ * **Dürüst sınır:** F04-T08 sürüyor. Taşınan dosyalar: `App.tsx`,
+ * `screens/Unlock.tsx`, `screens/Workspace.tsx`, `screens/Tasks.tsx`,
+ * `screens/Exports.tsx`, `screens/Redaction.tsx`. Kalan ekranlar (Dosyalar/Cases,
+ * Arama, İnceleme, Emsal, AI, Sağlayıcılar, Ayarlar, Kronoloji, Kontrol listesi)
+ * metinlerini hâlâ kendi dosyalarında taşır; `lib/reminders.ts` ve
+ * `lib/export-coverage.ts` de kendi metinlerini taşır. Taşıma sırası ve sayısı
  * `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır — burada "bitti"
  * denmez.
  */
@@ -21,6 +23,11 @@ export const tr = {
     back: "Geri",
     busy: "İşleniyor…",
     retryableSuffix: "yeniden denenebilir",
+    case: "Dosya",
+    noCase: "Dosya yok",
+    none: "yok",
+    save: "Kaydet",
+    select: "Seçin…",
   },
   units: {
     byte: "bayt",
@@ -132,6 +139,109 @@ export const tr = {
     recoveryValue: "parola yuvası + kurtarma yuvası ayrı sarılmış",
     nextTitle: "Sıradaki",
     nextBody: "F03: SQLCipher şeması, migrasyonlar, kilit ve yedek. F04: dosya çalışma alanı.",
+  },
+  tasks: {
+    lead: "Tarihi kullanıcı girer ve doğrular. Uygulama hukuki son gün hesaplamaz; tarih kaynağı “kullanıcı girdisi” olarak işaretlenir.",
+    taskLabel: "Görev",
+    titlePlaceholder: "Örn. Tebliğ tarihini kontrol et",
+    dueLabel: "Tarih (isteğe bağlı)",
+    reminderLabel: "Hatırlatma",
+    add: "Ekle",
+    titleRequired: "Görev başlığı zorunlu.",
+    listTitle: "Görev listesi",
+    recordCount: "{count} kayıt",
+    includeDone: "Tamamlananlar",
+    empty: "Görev yok.",
+    noDate: "tarih yok",
+    confirmed: "onaylı",
+    pendingConfirm: "onay bekliyor",
+    done: "tamamlandı",
+    open: "açık",
+    confirmDate: "Tarihi onayla",
+    complete: "Bitti",
+    remove: "Sil",
+    reminderHint:
+      "Hatırlatıcı yalnız kullanıcının açıkça onayladığı tarih için kurulur; “Tarihi onayla” denmedikçe bildirim üretilmez.",
+    remindersTitle: "Yerel hatırlatıcılar",
+    remindersSub: "{count} hatırlatıcı · {day}",
+    enqueue: "Bildirim kuyruğuna yaz",
+    noReminders:
+      "Bugün için hatırlatıcı yok. Göreve tarih ve hatırlatma seçilip tarih onaylanmalı.",
+    noNewReminders: "Yeni hatırlatıcı yok (bugün için zaten kuyrukta).",
+    remindersQueued: "{queued} hatırlatıcı yerel bildirim kuyruğuna yazıldı.",
+    taskFallback: "görev",
+    privacyHint:
+      "Bildirim metni müvekkil adı, dosya adı veya görev başlığı taşımaz; ayrıntı yalnız kasa açıkken uygulamada görünür.",
+  },
+  exports: {
+    lead: "Her dışa aktarma kasa içinde kayda alınır: tür, hedef ve çıktı hash'i. Belge baytları yalnız açıkça seçilen formatta ve yalnız kullanıcı seçtiği yola yazılır.",
+    formatJson: "Tam metadata: dosya, belgeler, olaylar, iddialar, notlar, görevler, anchor'lar",
+    formatCsv: "Kronoloji ve görevler; tablo programlarında açılır",
+    formatDocx: "Duruşma/devir raporu; düzenlenebilir belge",
+    formatPdf: "Aynı raporun salt-okunur çıktısı",
+    saveDialog: "Çıktıyı kaydet",
+    coverageTitle: "İncelenen kapsam",
+    coverageSub:
+      "Sayılar kasadan okunur ve her çıktının içine gömülür. Kapsam dışı belge/sayfa “temiz” sayılmaz.",
+    refresh: "Kapsamı tazele",
+    coverageWarnings: "Kapsam uyarıları",
+    coverageUnreadable: "Kapsam okunamadı; dışa aktarma yine kapsamı yazar.",
+    writing: "Yazılıyor…",
+    written: "yazıldı:",
+    packageTitle: "Devir paketi",
+    packageSub:
+      "case.json + KAPSAM.md + manifest + README; belge baytları otomatik eklenmez",
+    packageBusy: "Oluşturuluyor…",
+    packageCreate: "Paket oluştur",
+    packagePassword: "Paket parolası (en az 10 karakter, isteğe bağlı)",
+    packagePasswordPlaceholder: "Boş bırakılırsa klasör açık metin kalır",
+    packageHint:
+      "Parola girilirse klasör Argon2id + AES-256-GCM ile şifrelenip tek `.dimpak` dosyasına dönüşür. Paylaşılacak belgeler için önce Maskeleme ekranından maskeli kopya üretin.",
+    packageReady: "Paket hazır: {path}",
+    packageFiles: "{files} dosya · manifest {hash}…",
+    sealed: "Şifreli paket:",
+    dirDialog: "Devir paketi klasörünü seç",
+  },
+  redaction: {
+    lead: "Terimler belgenin metin katmanından ve görüntüsünden gerçekten çıkarılır; siyah kutu çizmek yeterli sayılmaz. Çıktı yeniden açılıp doğrulanmadan kaydedilmez.",
+    modeTerms: "Terimle maskele",
+    modeRegions: "Bölge seçerek maskele",
+    docLabel: "Belge",
+    termsLabel: "Maskelenecek terimler (her satır veya virgül ayrı)",
+    termsHint: "Terimler birebir aranır; eşleşme yoksa o terim için bölge oluşmaz.",
+    pageLabel: "Sayfa (0'dan)",
+    loadPage: "Sayfayı getir",
+    clearRegions: "Seçimleri temizle ({count})",
+    previewAlt: "Sayfa {page} önizleme",
+    previewHint:
+      "Sayfayı getirin, fareyle dikdörtgen çizin. Seçimler punto koordinatına çevrilir.",
+    runTerms: "Maskeli kopya üret",
+    runRegions: "Seçili {count} bölgeyi maskele",
+    masking: "Maskeleniyor…",
+    preparing: "Maskeleme hazırlanıyor…",
+    busyHint:
+      "Maskeleme uzun belgede sürebilir; pencere donmaz. İş kuyruğundan iptal edilirse yarım çıktı kasaya yazılmaz.",
+    regionsRequired: "En az bir bölge seçin.",
+    termsRequired: "Belge ve en az bir terim gerekli.",
+    resultTitle: "Maskeli kopya hazır",
+    resultSub: "Yeni sürüm olarak kaydedildi; özgün sürüm değişmedi.",
+    verified: "doğrulandı",
+    newDocument: "Yeni belge",
+    version: "Sürüm",
+    maskedRegions: "Maskelenen bölge",
+    remaining: "Kalan terim",
+    engines: "Doğrulayan motorlar",
+    streams: "Bağımsız tarama",
+    streamsLine: "{scanned} akış açıldı · {binary} ikili akış",
+    unreadableStreams: "{count} akış açılamadı",
+    hiddenObjects: "Gizli nesne temizliği",
+    hiddenObjectsLine: "{annotations} açıklama · {offpage} sayfa dışı metin · {scripts} JavaScript",
+    ocrTitle: "Görüntü (OCR) doğrulaması",
+    ocrYes: "evet",
+    ocrNo: "hayır — tesseract yok, yalnız metin katmanı doğrulandı",
+    warnings: "Doğrulama uyarıları",
+    plan: "Plan",
+    shareHint: "Bu kopya paylaşım içindir. Özgün belge ve eski sürümler kasadan silinmedi.",
   },
   labels: {
     caseKind: {

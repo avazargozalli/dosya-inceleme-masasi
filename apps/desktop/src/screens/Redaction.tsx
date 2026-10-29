@@ -9,6 +9,7 @@ import {
   type ParseProgressEvent,
   type RedactionResult,
 } from "../lib/api";
+import { t } from "../lib/i18n";
 import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
 
 export function Redaction() {
@@ -90,7 +91,7 @@ export function Redaction() {
 
   async function applyRegions() {
     if (regions.length === 0) {
-      setError({ code: "E_REDACT_REGIONS", message: "En az bir bölge seçin.", retryable: false });
+      setError({ code: "E_REDACT_REGIONS", message: t("redaction.regionsRequired"), retryable: false });
       return;
     }
     setBusy(true);
@@ -148,7 +149,7 @@ export function Redaction() {
       .map((t) => t.trim())
       .filter(Boolean);
     if (!versionId || list.length === 0) {
-      setError({ code: "E_TERMS", message: "Belge ve en az bir terim gerekli.", retryable: false });
+      setError({ code: "E_TERMS", message: t("redaction.termsRequired"), retryable: false });
       return;
     }
     setBusy(true);
@@ -170,11 +171,8 @@ export function Redaction() {
   return (
     <div className="page" style={{ maxWidth: 860 }}>
       <div className="page-head">
-        <h1>Maskeleme</h1>
-        <p className="lead">
-          Terimler belgenin metin katmanından ve görüntüsünden gerçekten çıkarılır; siyah kutu
-          çizmek yeterli sayılmaz. Çıktı yeniden açılıp doğrulanmadan kaydedilmez.
-        </p>
+        <h1>{t("nav.redaction")}</h1>
+        <p className="lead">{t("redaction.lead")}</p>
       </div>
 
       {error ? (
@@ -189,26 +187,26 @@ export function Redaction() {
             className={`btn ${mode === "terms" ? "primary" : "ghost"}`}
             onClick={() => setMode("terms")}
           >
-            Terimle maskele
+            {t("redaction.modeTerms")}
           </button>
           <button
             className={`btn ${mode === "regions" ? "primary" : "ghost"}`}
             onClick={() => setMode("regions")}
           >
-            Bölge seçerek maskele
+            {t("redaction.modeRegions")}
           </button>
         </div>
         <div className="row">
           <div className="field">
-            <label htmlFor="rd-case">Dosya</label>
+            <label htmlFor="rd-case">{t("common.case")}</label>
             <select id="rd-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
               {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="rd-doc">Belge</label>
+            <label htmlFor="rd-doc">{t("redaction.docLabel")}</label>
             <select id="rd-doc" className="input" value={versionId} onChange={(e) => setVersionId(e.target.value)}>
-              <option value="">Seçin…</option>
+              <option value="">{t("common.select")}</option>
               {docs.filter((d) => d.currentVersionId).map((d) => (
                 <option key={d.id} value={d.currentVersionId!}>{d.displayName}</option>
               ))}
@@ -217,7 +215,7 @@ export function Redaction() {
         </div>
         {mode === "terms" ? (
         <div className="field">
-          <label htmlFor="rd-terms">Maskelenecek terimler (her satır veya virgül ayrı)</label>
+          <label htmlFor="rd-terms">{t("redaction.termsLabel")}</label>
           <textarea
             id="rd-terms"
             className="input"
@@ -226,13 +224,13 @@ export function Redaction() {
             onChange={(e) => setTerms(e.target.value)}
             placeholder={"Ahmet Yilmaz\n00000000000"}
           />
-          <span className="hint">Terimler birebir aranır; eşleşme yoksa o terim için bölge oluşmaz.</span>
+          <span className="hint">{t("redaction.termsHint")}</span>
         </div>
         ) : (
           <div>
             <div className="row" style={{ alignItems: "flex-end", gap: 8 }}>
               <div className="field" style={{ maxWidth: 120 }}>
-                <label htmlFor="rd-page">Sayfa (0'dan)</label>
+                <label htmlFor="rd-page">{t("redaction.pageLabel")}</label>
                 <input
                   id="rd-page"
                   className="input"
@@ -243,14 +241,14 @@ export function Redaction() {
                 />
               </div>
               <button className="btn" disabled={busy || !versionId} onClick={() => void loadPage()}>
-                Sayfayı getir
+                {t("redaction.loadPage")}
               </button>
               <button
                 className="btn ghost"
                 disabled={regions.length === 0}
                 onClick={() => setRegions([])}
               >
-                Seçimleri temizle ({regions.length})
+                {t("redaction.clearRegions", { count: regions.length })}
               </button>
             </div>
             {preview ? (
@@ -261,7 +259,7 @@ export function Redaction() {
                 onPointerMove={moveDrag}
                 onPointerUp={endDrag}
               >
-                <img src={preview.src} alt={`Sayfa ${page + 1} önizleme`} style={{ display: "block", maxWidth: "100%" }} />
+                <img src={preview.src} alt={t("redaction.previewAlt", { page: page + 1 })} style={{ display: "block", maxWidth: "100%" }} />
                 {regions
                   .filter((region) => region.pageIndex === page)
                   .map((region, index) => {
@@ -298,7 +296,7 @@ export function Redaction() {
               </div>
             ) : (
               <p className="hint" style={{ marginTop: 8 }}>
-                Sayfayı getirin, fareyle dikdörtgen çizin. Seçimler punto koordinatına çevrilir.
+                {t("redaction.previewHint")}
               </p>
             )}
           </div>
@@ -306,18 +304,18 @@ export function Redaction() {
         <div className="row" style={{ justifyContent: "flex-end" }}>
           {mode === "terms" ? (
             <button className="btn primary" disabled={busy || !versionId} onClick={() => void run()}>
-              {busy ? "Maskeleniyor…" : "Maskeli kopya üret"}
+              {busy ? t("redaction.masking") : t("redaction.runTerms")}
             </button>
           ) : (
             <button className="btn primary" disabled={busy || !versionId || regions.length === 0} onClick={() => void applyRegions()}>
-              {busy ? "Maskeleniyor…" : `Seçili ${regions.length} bölgeyi maskele`}
+              {busy ? t("redaction.masking") : t("redaction.runRegions", { count: regions.length })}
             </button>
           )}
         </div>
         {busy ? (
           <div style={{ marginTop: 10 }}>
             <div className="hint" role="status" style={{ marginBottom: 4 }}>
-              {parseProgressLine(progress) ?? "Maskeleme hazırlanıyor…"}
+              {parseProgressLine(progress) ?? t("redaction.preparing")}
             </div>
             {parseProgressWidth(progress) === null ? null : (
               <div
@@ -338,8 +336,7 @@ export function Redaction() {
               </div>
             )}
             <p className="hint" style={{ marginTop: 4, marginBottom: 0 }}>
-              Maskeleme uzun belgede sürebilir; pencere donmaz. İş kuyruğundan iptal
-              edilirse yarım çıktı kasaya yazılmaz.
+              {t("redaction.busyHint")}
             </p>
           </div>
         ) : null}
@@ -349,25 +346,25 @@ export function Redaction() {
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Maskeli kopya hazır</h2>
-              <p className="card-sub">Yeni sürüm olarak kaydedildi; özgün sürüm değişmedi.</p>
+              <h2>{t("redaction.resultTitle")}</h2>
+              <p className="card-sub">{t("redaction.resultSub")}</p>
             </div>
-            <span className="badge ok">doğrulandı</span>
+            <span className="badge ok">{t("redaction.verified")}</span>
           </div>
           <dl className="kv">
-            <dt>Yeni belge</dt><dd>{result.document.displayName}</dd>
-            <dt>Sürüm</dt><dd>{result.version.versionNo}</dd>
-            <dt>Maskelenen bölge</dt><dd>{result.hits}</dd>
-            <dt>Kalan terim</dt><dd>{result.remaining.length === 0 ? "yok" : result.remaining.join(", ")}</dd>
-            <dt>Doğrulayan motorlar</dt><dd>{result.engines.join(", ")}</dd>
-            <dt>Bağımsız tarama</dt>
+            <dt>{t("redaction.newDocument")}</dt><dd>{result.document.displayName}</dd>
+            <dt>{t("redaction.version")}</dt><dd>{result.version.versionNo}</dd>
+            <dt>{t("redaction.maskedRegions")}</dt><dd>{result.hits}</dd>
+            <dt>{t("redaction.remaining")}</dt><dd>{result.remaining.length === 0 ? t("common.none") : result.remaining.join(", ")}</dd>
+            <dt>{t("redaction.engines")}</dt><dd>{result.engines.join(", ")}</dd>
+            <dt>{t("redaction.streams")}</dt>
             <dd>
-              {result.streamsScanned} akış açıldı · {result.streamsBinary} ikili akış
+              {t("redaction.streamsLine", { scanned: result.streamsScanned, binary: result.streamsBinary })}
               {result.streamsUnreadable > 0 ? (
                 <>
                   {" · "}
                   <span style={{ color: "var(--danger)" }}>
-                    {result.streamsUnreadable} akış açılamadı
+                    {t("redaction.unreadableStreams", { count: result.streamsUnreadable })}
                   </span>
                 </>
               ) : null}
@@ -377,18 +374,21 @@ export function Redaction() {
               result.scriptsRemoved >
             0 ? (
               <>
-                <dt>Gizli nesne temizliği</dt>
+                <dt>{t("redaction.hiddenObjects")}</dt>
                 <dd>
-                  {result.annotationsRemoved} açıklama · {result.offpageSpansRemoved} sayfa dışı
-                  metin · {result.scriptsRemoved} JavaScript
+                  {t("redaction.hiddenObjectsLine", {
+                    annotations: result.annotationsRemoved,
+                    offpage: result.offpageSpansRemoved,
+                    scripts: result.scriptsRemoved,
+                  })}
                 </dd>
               </>
             ) : null}
-            <dt>Görüntü (OCR) doğrulaması</dt>
-            <dd>{result.ocrVerified ? "evet" : "hayır — tesseract yok, yalnız metin katmanı doğrulandı"}</dd>
+            <dt>{t("redaction.ocrTitle")}</dt>
+            <dd>{result.ocrVerified ? t("redaction.ocrYes") : t("redaction.ocrNo")}</dd>
             {result.warnings.length > 0 ? (
               <>
-                <dt>Doğrulama uyarıları</dt>
+                <dt>{t("redaction.warnings")}</dt>
                 <dd>
                   <ul style={{ margin: 0, paddingLeft: 16 }}>
                     {result.warnings.map((warning) => (
@@ -398,10 +398,10 @@ export function Redaction() {
                 </dd>
               </>
             ) : null}
-            <dt>Plan</dt><dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{result.plan.id}</dd>
+            <dt>{t("redaction.plan")}</dt><dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{result.plan.id}</dd>
           </dl>
           <p className="hint" style={{ margin: 0 }}>
-            Bu kopya paylaşım içindir. Özgün belge ve eski sürümler kasadan silinmedi.
+            {t("redaction.shareHint")}
           </p>
         </div>
       ) : null}
