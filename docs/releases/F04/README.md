@@ -54,8 +54,9 @@ sınıfını gerçekten yakalıyor.
 
 **Test/derleme:** `tsc --noEmit` temiz · `vitest run` **445/445** (35 dosya; +3:
 sözlük bağı 2 + parametreli sayaç 1) · `vite build` temiz (**88** modül, 497,44 kB).
-Altı taşınmış dosyada (`Timeline`, `Checklists`, `checklist.ts`) yorum dışı **0** Türkçe
-harf satırı.
+Dokuz taşınmış dosyanın **tümünde** (`App`, `Unlock`, `Workspace`, `Tasks`, `Exports`,
+`Redaction`, `Timeline`, `Checklists`, `lib/checklist.ts`) yorum dışı **0** Türkçe harf
+satırı (betikle sayıldı: 9/9 temiz).
 
 **Dürüst sınırlar**
 
