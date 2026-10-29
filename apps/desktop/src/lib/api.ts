@@ -617,7 +617,7 @@ export type QuoteVerificationRow = {
   precedentId: string;
   versionId: string | null;
   state: "match" | "mismatch" | "not_checked";
-  method: "exact" | "whitespace" | "turkish_fold" | "dehyphenated" | null;
+  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | null;
   matchedStart: number | null;
   matchedLength: number | null;
   occurrences: number;
@@ -987,7 +987,7 @@ export type InTextQuotePosition = {
   isCurrentVersion: boolean;
   charStart: number;
   charEnd: number;
-  matchKind: "exact" | "whitespace" | "turkish_fold" | "dehyphenated";
+  matchKind: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated";
   textOrigin: string;
   sourceText: string;
 };
@@ -1030,6 +1030,8 @@ export type InTextQuoteCheck = {
   foundInOldVersion: number;
   /** Yalnız tire ile bölünmüş kelime birleştirilerek bulunan alıntı sayısı. */
   dehyphenated: number;
+  /** Yalnız bitişik yazı (ligatür) açılarak bulunan alıntı sayısı. */
+  ligature: number;
   notes: string[];
   checkedAt: string;
 };

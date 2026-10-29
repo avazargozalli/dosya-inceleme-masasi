@@ -77,6 +77,7 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     historicalVersionsScanned: 0,
     foundInOldVersion: 0,
     dehyphenated: 0,
+    ligature: 0,
     notes: [],
     checkedAt: "2026-10-25T10:00:00Z",
     ...overrides,
@@ -271,6 +272,29 @@ describe("metin içi alıntı yardımcıları", () => {
         matchKind: "dehyphenated",
       }),
     ).toBe("Rapor · s. 1 · karakter 5 · tire birleştirme");
+  });
+
+  it("ligatür açılarak bulunan alıntıyı ayrı etiketler ve bağlanamama nedenini yazar", () => {
+    const ligature = finding({
+      state: "normalized",
+      position: position({
+        matchKind: "ligature",
+        charStart: 9,
+        charEnd: 38,
+        sourceText: "taraﬂar arasındaki sözleşme",
+      }),
+    });
+    expect(positionLabel(ligature)).toBe(
+      "Dilekçe · s. 1 · bitişik yazı (ligatür) · metin katmanı",
+    );
+    expect(canBind(ligature)).toBe(false);
+    expect(bindHint(ligature)).toBe(
+      "Alıntı ancak bitişik yazı (ligatür) açılarak bulundu — PDF fontu `fl`/`fi` çiftini tek glif yazmış; birebir sayılmaz, kaynağa bağlanmaz.",
+    );
+    expect(quoteCheckSummary(check({ exact: 0, normalized: 1, ligature: 1 }))).toBe(
+      "1 alıntı · 0 birebir · 1 birebir değil · 0 belirsiz · 0 bulunamadı · 0 doğrulanamadı · 1 ligatür açma",
+    );
+    expect(quoteCheckSummary(check())).not.toContain("ligatür açma");
   });
 
   it("sürüm sayacı eski sürüm taramasını yazar", () => {

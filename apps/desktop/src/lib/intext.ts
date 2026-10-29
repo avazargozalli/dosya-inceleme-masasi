@@ -12,6 +12,7 @@ export const QUOTE_STATE_LABEL: Record<string, string> = {
 export const MATCH_KIND_LABEL: Record<string, string> = {
   exact: "birebir",
   whitespace: "boşluk farkı",
+  ligature: "bitişik yazı (ligatür)",
   turkish_fold: "harf farkı",
   dehyphenated: "tire birleştirme",
 };
@@ -48,6 +49,9 @@ export function quoteCheckSummary(check: InTextQuoteCheck): string {
   if (check.dehyphenated > 0) {
     parts.push(`${check.dehyphenated} tire birleştirme`);
   }
+  if (check.ligature > 0) {
+    parts.push(`${check.ligature} ligatür açma`);
+  }
   return parts.join(" · ");
 }
 
@@ -77,6 +81,12 @@ export function bindHint(finding: InTextQuoteFinding): string {
   if (canBind(finding)) return "";
   if (finding.state === "exact" && finding.position?.spansPages) {
     return "Alıntı sayfa sınırını aşıyor; tek sayfalık anchor'a bağlanmaz.";
+  }
+  if (
+    finding.position?.matchKind === "ligature" ||
+    finding.candidates.some((candidate) => candidate.matchKind === "ligature")
+  ) {
+    return "Alıntı ancak bitişik yazı (ligatür) açılarak bulundu — PDF fontu `fl`/`fi` çiftini tek glif yazmış; birebir sayılmaz, kaynağa bağlanmaz.";
   }
   if (
     finding.position?.matchKind === "dehyphenated" ||

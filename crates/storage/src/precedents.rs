@@ -8,6 +8,8 @@ use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use dim_evidence::ligature_expansion;
+
 use crate::parsing::{docket_match, DocketNumber, MatchScratch, SearchMatcher, SearchQuery};
 use crate::{now_iso, Database, SearchMode, StorageError};
 
@@ -341,14 +343,17 @@ struct TextScope {
 enum QuoteTier {
     Exact,
     Whitespace,
+    /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`) açılır; harfler korunur.
+    Ligature,
     TurkishFold,
     Dehyphenated,
 }
 
 impl QuoteTier {
-    const ORDER: [QuoteTier; 4] = [
+    const ORDER: [QuoteTier; 5] = [
         QuoteTier::Exact,
         QuoteTier::Whitespace,
+        QuoteTier::Ligature,
         QuoteTier::TurkishFold,
         QuoteTier::Dehyphenated,
     ];
@@ -357,6 +362,7 @@ impl QuoteTier {
         match self {
             QuoteTier::Exact => "exact",
             QuoteTier::Whitespace => "whitespace",
+            QuoteTier::Ligature => "ligature",
             QuoteTier::TurkishFold => "turkish_fold",
             QuoteTier::Dehyphenated => "dehyphenated",
         }
@@ -367,6 +373,7 @@ impl QuoteTier {
 fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
     match tier {
         QuoteTier::Whitespace => collapse_ws_with_map(text),
+        QuoteTier::Ligature => ligature_with_map(text),
         QuoteTier::TurkishFold => normalize_with_map(text),
         // `exact` bu yolu kullanmaz; en zayıf katman tire birleştirmedir.
         QuoteTier::Exact | QuoteTier::Dehyphenated => dehyphenate_with_map(text),
@@ -428,6 +435,16 @@ pub(crate) fn normalize_with_map(input: &str) -> MappedText {
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
     for (index, ch) in input.chars().enumerate() {
+        // Ligatür (`ﬂ`/`ﬁ`) bir yazım farkı değil **sunum** artefaktıdır: iki
+        // harfe açılır, ikisi de aynı kaynak indeksini taşır.
+        if let Some(expansion) = ligature_expansion(ch) {
+            for letter in expansion.chars() {
+                out.push(letter);
+                map.push(index);
+            }
+            last_space = false;
+            continue;
+        }
         let mapped = fold_char(ch);
         if mapped.is_whitespace() {
             if !last_space && !out.is_empty() {
@@ -437,6 +454,43 @@ pub(crate) fn normalize_with_map(input: &str) -> MappedText {
             last_space = true;
         } else {
             out.push(mapped);
+            map.push(index);
+            last_space = false;
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+        map.pop();
+    }
+    MappedText { text: out, map }
+}
+
+/// Boşluk sadeleştirmesi + **ligatür açma**; harfler korunur.
+///
+/// `normalize_with_map`den daha güçlüdür (Türkçe harf sadeleştirmesi yapmaz):
+/// yalnız font kaynaklı bitişik yazıyı düzeltir, bu yüzden `fold` katmanından
+/// önce denenir ve nedeni arayüzde ayrı gösterilir.
+pub(crate) fn ligature_with_map(input: &str) -> MappedText {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    let mut last_space = false;
+    for (index, ch) in input.chars().enumerate() {
+        if let Some(expansion) = ligature_expansion(ch) {
+            for letter in expansion.chars() {
+                out.push(letter);
+                map.push(index);
+            }
+            last_space = false;
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+                map.push(index);
+            }
+            last_space = true;
+        } else {
+            out.push(ch);
             map.push(index);
             last_space = false;
         }
@@ -526,6 +580,15 @@ pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
                     continue;
                 }
             }
+        }
+        if let Some(expansion) = ligature_expansion(ch) {
+            for letter in expansion.chars() {
+                out.push(letter);
+                map.push(index);
+            }
+            last_space = false;
+            index += 1;
+            continue;
         }
         let mapped = fold_char(ch);
         if mapped.is_whitespace() {
@@ -2124,6 +2187,28 @@ mod tests {
         // yazılan alıntı 30 karakterdir. Uzunluk alıntıdan türetilmez.
         assert_eq!(result.matched_length, Some(32));
         assert_eq!(result.occurrences, 1);
+    }
+
+    /// Karar metni PDF'ten geldiğinde font `fl` ligatürü (`taraﬂar`) üretir.
+    /// Alıntı düz harflerle yazılmış olsa da **kendi katmanında** bulunur ve
+    /// kaynak aralık ligatürü **tek karakter** olarak kapsar.
+    #[test]
+    fn ligature_in_the_decision_text_is_found_as_a_loose_match() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/9"), Some("2025/10")))
+            .expect("emsal");
+        let body = "Sözleşme taraﬂar arasında kurulmuştur.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "taraflar arasında kurulmuştur")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("ligature"));
+        let start = usize::try_from(result.matched_start.expect("başlangıç")).expect("start");
+        let length = usize::try_from(result.matched_length.expect("uzunluk")).expect("uzunluk");
+        let sliced: String = body.chars().skip(start).take(length).collect();
+        assert_eq!(sliced, "taraﬂar arasında kurulmuştur");
     }
 
     #[test]

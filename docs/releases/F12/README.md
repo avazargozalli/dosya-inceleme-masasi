@@ -17,7 +17,7 @@
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
-| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır; **satır/sayfa sonunda tire ile bölünmüş kelime** birleştirilerek aranır (en zayıf katman, bağlanmaz) |
+| F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır; **satır/sayfa sonunda tire ile bölünmüş kelime** birleştirilerek aranır (en zayıf katman, bağlanmaz); **font ligatürü** (`ﬂ`) açılarak aranır (kendi katmanı, bağlanmaz). Gerçek PDF + gerçek worker ile uçtan uca (2026-10-30) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -678,3 +678,68 @@ yeşil**; `6628f23` (render kapısı + belge) → CI **`40731762280` 7/7 yeşil*
 (sözleşmeler, arayüz tsc+vitest+build, rust macos-14 + ubuntu-latest, masaüstü kabuk,
 belge worker'ı, SBOM). `774a650` (yalnız belge) koşusu yeni push'un eşzamanlılık
 grubuyla **cancelled** oldu — yeşil olan koşu HEAD'i kapsar.
+
+## Gerçek PDF düzeniyle uçtan uca alıntı doğrulaması (2026-10-30, kusur #74–#75)
+
+**Neden:** F12'nin her ölçümü **elle yazılmış sayfa metinleriyle** koşuyordu; dürüst
+sınır olarak “gerçek PDF/worker ile uçtan uca denenmedi” yazılıydı. Bu tur o boşluk
+kapatıldı ve **iki gerçek yanlış negatif** ölçüldü.
+
+**Fikstür ve kayıt.** `fixtures/synthetic/intext-layout.pdf` — 3 sayfa, **74.295 bayt**,
+gömülü Unicode font (MuPDF `Story` hattı; Türkçe diyakritik ve tipografik tırnak
+korunur). Vakalar: sayfa içi satır sonu tiresi (`bedel-\nlini`), sayfa sonunda tire
+(`karar ve-` → `rilmiştir`), tiresiz sayfa sınırı (`gerekçesi` → `şöyledir`) ve font
+ligatürü (`taraﬂar`, U+FB02). Üretici `fixtures/synthetic/generate_intext.py`; aynı
+komut ürün worker'ının çıktısını `fixtures/synthetic/intext-layout.extracted.json`
+olarak yazar (PyMuPDF 1.24.14). Rust testi CI'da bu **kaydı** yükler; canlı çıkarımla
+birebirliğini `#[ignore]` testi ölçer.
+
+**ÖLÇÜLEN KUSUR #74 (yanlış negatif, sayfa sonu tiresi).** Sayfa metni `… karar ve-\n`
+ile bitiyordu; sayfa-sınırı penceresi araya **bir `\n` daha** koyuyordu → tire kuralı
+iki satır sonunu “paragraf ayrımı” sayıp birleştirmiyordu. Ölçüm (gerçek PDF + gerçek
+worker): `“reddine karar verilmiştir”` → **`not_found`** (alıntı metinde duruyor).
+Düzeltme: ayırıcı yalnız taşınan metin satır sonuyla **bitmiyorsa** eklenir; sınır,
+yeni sayfanın ilk karakterinin indeksidir (`end > boundary`).
+
+**ÖLÇÜLEN KUSUR #75 (yanlış negatif, ligatür).** Font `fl` çiftini tek glif yazıyor;
+PyMuPDF `U+FB02` döndürüyor. `normalize` ligatürü açmadığı için avukatın `taraflar`
+yazdığı alıntı **hiçbir katmanda** bulunmuyordu. Ölçüm: `“taraflar arasındaki
+sözleşme”` → **`not_found`**. Düzeltme: (a) `dim_evidence::normalize` ligatürleri
+açar (`U+FB00–U+FB06`), (b) belge tarafında **`ligature`** katmanı eklendi
+(`exact → whitespace → ligature → turkish_fold → dehyphenated`), (c) emsal tarafında
+aynı katman (`QuoteTier::Ligature`), (d) arayüz etiketi + sayaç + neden satırı.
+
+**Kanıt (gerçek çıkarım, 7 alıntı — `crates/storage/tests/intext_real_layout.rs`):**
+
+| Alıntı | Hüküm | Katman | Sayfa |
+|---|---|---|---|
+| `KARAR GEREKÇESİ` | exact | exact | 1 |
+| `bedellini ödemediğini` | normalized | dehyphenated | 1 |
+| `reddine karar verilmiştir` | normalized | dehyphenated | 1→2 (sınırı aşıyor) |
+| `gerekçesi şöyledir` | normalized | whitespace | 2→3 (sınırı aşıyor) |
+| `ödeme yapılmadığı sabit olup` | normalized | whitespace | 2 |
+| `taraflar arasındaki sözleşme` | normalized | **ligature** | 3 |
+| `faiz işletilmesine yer vardır` | not_found | — | — |
+
+Sayaçlar: `exact=1 · normalized=5 · ambiguous=0 · not_found=1 · dehyphenated=2 ·
+ligature=1`. Birebir tek konum gerçekten bağlanıyor (`create_anchor` →
+`locate_anchor`, `quote_intact`, s. 1); ligatür ve tire eşleşmeleri bağlanmıyor
+(kaynak metin ham hâli gösterir: `bedel-\nlini ödemediğini`, `taraﬂar…`).
+
+**Testler:** `intext_quotes` **37** (+2: ligatür katmanı, sayfa sonu tiresi),
+`precedents` **47** (+1: karar metninde ligatür, kaynak aralık ligatürü **tek
+karakter** kapsar), `dim-evidence` **8** (+1: `normalize` ligatür açma),
+`crates/storage/tests/intext_real_layout.rs` **1/1** (CI'da kayıtla koşar).
+Canlı ölçüm (elle): `DIM_WORKER_PYTHON=… cargo test -p dim-ingest --test
+intext_layout_live -- --ignored --nocapture` → canlı çıkarım kayıtla **birebir**.
+Arayüz: `tsc --noEmit` temiz, `vitest run` **437/437** (34 dosya; +2 test).
+
+**Dürüst sınırlar:** tek font (MuPDF'in gömülü serif'i) ve tek düzen; gerçek
+tarama/eğim/çok kolon denenmedi. Ligatür listesi `U+FB00–U+FB06` ile sınırlı
+(başka sunum karakterleri — ör. `U+2019` tırnak, `U+00A0` boşluk — kapsam dışı;
+boşluk katmanı NBSP'yi zaten tekler). Tire kuralı **iki satır sonu**nu hâlâ paragraf
+ayrımı sayar: gerçek paragraf sonunda tireyle bölünmüş kelime birleşmez (bilinçli,
+yanlış pozitif kapısı). Sayfa-sınırı penceresi ~1.064 karakter taşır. Canlı test
+Python/PyMuPDF ister (CI'da `#[ignore]`); kayıt PyMuPDF sürümüne bağlıdır — sürüm
+değişince üretici yeniden koşmalıdır, aksi hâlde canlı test **düşer**. Tauri
+penceresi açılmadı → yeni etiketin görsel QA'si yok; Windows denenmedi.

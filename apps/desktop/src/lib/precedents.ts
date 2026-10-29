@@ -32,6 +32,8 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
         return `Alıntı yalnız satır/boşluk farkıyla ${where} bulundu${at}${repeated}. Birebir değil.${oldNote}`;
       if (verification.method === "dehyphenated")
         return `Alıntı yalnız satır sonunda tire ile bölünmüş kelime birleştirilerek ${where} bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.${oldNote}`;
+      if (verification.method === "ligature")
+        return `Alıntı yalnız bitişik yazı (ligatür) açılarak ${where} bulundu${at}${repeated}. PDF fontu “fl”/“fi” çiftini tek glif yazmış; birebir değil, gözle doğrulayın.${oldNote}`;
       return `Alıntı Türkçe harf farkıyla ${where} bulundu${at}${repeated}. Birebir değil, gözle doğrulayın.${oldNote}`;
     }
     case "mismatch": {

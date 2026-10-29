@@ -4,8 +4,10 @@
 //! dosyadaki belgelerin güncel sürümlerinin metin katmanında doğrular.
 //!
 //! Üç eşleşme katmanı ayrı raporlanır: `exact` (birebir), `whitespace` (yalnız
-//! boşluk/satır farkı) ve `turkish_fold` (harf sadeleştirmesi). Katmanlar
-//! sırayla denenir; üst katman bulunduysa alt katman aranmaz.
+//! boşluk/satır farkı), `ligature` (font kaynaklı bitişik yazı: `ﬂ`→`fl`),
+//! `turkish_fold` (harf sadeleştirmesi) ve `dehyphenated` (satır/sayfa sonunda
+//! tire ile bölünmüş kelime). Katmanlar sırayla denenir; üst katman bulunduysa
+//! alt katman aranmaz.
 //!
 //! `not_found` sonucu "uydurma" hükmü değildir: yalnız taranan metin
 //! katmanında bulunmadığını söyler. Taranmış (OCR'sız) sayfada görünen metin
@@ -28,8 +30,8 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
-    char_offset, collapse_ws_with_map, dehyphenate_with_map, normalize_with_map, MappedText,
-    MIN_QUOTE_CHARS,
+    char_offset, collapse_ws_with_map, dehyphenate_with_map, ligature_with_map, normalize_with_map,
+    MappedText, MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -225,6 +227,9 @@ pub struct InTextQuoteCheck {
     /// Yalnız **tire ile bölünmüş kelime** birleştirilerek bulunan alıntı
     /// sayısı (kaynakta `kelime-\nsatır`). Birebir sayılmaz.
     pub dehyphenated: usize,
+    /// Yalnız **bitişik yazı (ligatür)** açılarak bulunan alıntı sayısı
+    /// (kaynakta `taraﬂar`, alıntıda `taraflar`). Birebir sayılmaz.
+    pub ligature: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
 }
@@ -233,6 +238,10 @@ pub struct InTextQuoteCheck {
 enum MatchTier {
     Exact,
     Whitespace,
+    /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`, `ﬁ`→`fi`) açılır ve
+    /// boşluklar teklenir; harfler korunur. PDF'ten gelen metinde `taraﬂar`
+    /// yazarken avukat `taraflar` yazar — bu bir yazım farkı değildir.
+    Ligature,
     Fold,
     /// En zayıf katman: harf sadeleştirmesi + **satır/sayfa sonunda tire ile
     /// bölünmüş** kelimenin birleştirilmesi. Kaynakta `bedel-\nlini` yazıyorsa
@@ -246,6 +255,7 @@ impl MatchTier {
         match self {
             Self::Exact => "exact",
             Self::Whitespace => "whitespace",
+            Self::Ligature => "ligature",
             Self::Fold => "turkish_fold",
             Self::Dehyphenated => "dehyphenated",
         }
@@ -506,6 +516,7 @@ impl Database {
             for tier in [
                 MatchTier::Exact,
                 MatchTier::Whitespace,
+                MatchTier::Ligature,
                 MatchTier::Fold,
                 MatchTier::Dehyphenated,
             ] {
@@ -584,6 +595,7 @@ impl Database {
         let mut bindable = 0usize;
         let mut found_in_old_version = 0usize;
         let mut dehyphenated = 0usize;
+        let mut ligature = 0usize;
         let mut collapsed_version_copies = 0usize;
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         for (index, span) in extracted.quotes.iter().enumerate() {
@@ -659,6 +671,17 @@ impl Database {
             {
                 dehyphenated += 1;
             }
+            if finding
+                .position
+                .as_ref()
+                .is_some_and(|position| position.match_kind == MatchTier::Ligature.kind())
+                || finding
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.match_kind == MatchTier::Ligature.kind())
+            {
+                ligature += 1;
+            }
             quotes.push(finding);
         }
         if dehyphenated > 0 {
@@ -666,6 +689,13 @@ impl Database {
                 "{dehyphenated} alıntı yalnız **tire ile bölünmüş kelime** birleştirilerek \
                  bulundu (kaynakta `kelime-\\nsatır` gibi); birebir sayılmaz ve anchor'a \
                  bağlanmaz, kaynak metin gösterilir."
+            ));
+        }
+        if ligature > 0 {
+            notes.push(format!(
+                "{ligature} alıntı yalnız **bitişik yazı (ligatür)** açılarak bulundu \
+                 (kaynakta `taraﬂar` gibi tek glif, alıntıda `taraflar`); birebir sayılmaz \
+                 ve anchor'a bağlanmaz, kaynak metin gösterilir."
             ));
         }
         if found_in_old_version > 0 {
@@ -748,6 +778,7 @@ impl Database {
             historical_versions_scanned,
             found_in_old_version,
             dehyphenated,
+            ligature,
             notes,
             checked_at: now_iso(),
         })
@@ -937,6 +968,7 @@ impl Database {
             .map(|span| match tier {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
+                MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Fold => Some(normalize_with_map(&span.text)),
                 MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
             })
@@ -999,9 +1031,13 @@ impl Database {
                             }
                         }
                     }
-                    MatchTier::Whitespace | MatchTier::Fold | MatchTier::Dehyphenated => {
+                    MatchTier::Whitespace
+                    | MatchTier::Ligature
+                    | MatchTier::Fold
+                    | MatchTier::Dehyphenated => {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&text),
+                            MatchTier::Ligature => ligature_with_map(&text),
                             MatchTier::Fold => normalize_with_map(&text),
                             _ => dehyphenate_with_map(&text),
                         };
@@ -1075,6 +1111,7 @@ impl Database {
             .map(|span| match tier {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
+                MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Fold => Some(normalize_with_map(&span.text)),
                 MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
             })
@@ -1115,15 +1152,27 @@ impl Database {
                 if text.is_empty() {
                     continue;
                 }
-                let boundary = carry.len();
                 let mut window: Vec<WindowChar> =
-                    Vec::with_capacity(boundary + 1 + text.chars().count());
+                    Vec::with_capacity(carry.len() + 1 + text.chars().count());
                 window.extend(carry.iter().cloned());
-                window.push(WindowChar {
-                    page_index: None,
-                    char_in_page: 0,
-                    ch: '\n',
-                });
+                // Sayfa ayırıcısı **yalnız gerekiyorsa** eklenir. Worker her
+                // satırın sonuna `\n` yazdığı için sayfa metni genelde satır
+                // sonuyla biter; o durumda ikinci bir `\n` eklemek gerçek bir
+                // sayfa sonu tiresini (`ve-` + `\n` + `\n` + `rilmiştir`)
+                // "paragraf ayrımı" gibi gösterip birleştirmeyi engelliyordu
+                // (ölçüldü: gerçek PDF, F12). Ayırıcı yoksa sınır, yeni
+                // sayfanın **ilk karakterinin** indeksidir.
+                if window
+                    .last()
+                    .is_some_and(|item| !matches!(item.ch, '\n' | '\r'))
+                {
+                    window.push(WindowChar {
+                        page_index: None,
+                        char_in_page: 0,
+                        ch: '\n',
+                    });
+                }
+                let boundary = window.len();
                 for (index, ch) in text.chars().enumerate() {
                     window.push(WindowChar {
                         page_index: Some(page_index),
@@ -1168,9 +1217,13 @@ impl Database {
                             }
                         }
                     }
-                    MatchTier::Whitespace | MatchTier::Fold | MatchTier::Dehyphenated => {
+                    MatchTier::Whitespace
+                    | MatchTier::Ligature
+                    | MatchTier::Fold
+                    | MatchTier::Dehyphenated => {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&joined),
+                            MatchTier::Ligature => ligature_with_map(&joined),
                             MatchTier::Fold => normalize_with_map(&joined),
                             _ => dehyphenate_with_map(&joined),
                         };
@@ -1236,10 +1289,12 @@ struct PageMeta {
 
 /// Pencere içindeki eşleşmeyi sayfa sınırını aşan bir konuma çevirir.
 ///
-/// Yalnız **iki tarafında da** gerçek sayfa karakteri bulunan eşleşmeler
-/// kabul edilir: `start` ayırıcıdan önce, `end` ayırıcıdan en az bir karakter
-/// sonra olmalıdır. Aksi hâlde eşleşme tek sayfa içindedir ve birinci
-/// taramada bulunmuştur (yinelenmez).
+/// `boundary`, yeni sayfanın **ilk karakterinin** indeksidir (pencereye ayırıcı
+/// eklendiyse ayırıcıdan sonra). Yalnız **iki tarafında da** gerçek sayfa
+/// karakteri bulunan eşleşmeler kabul edilir: `start` sınırdan önce, `end`
+/// sınırı **aşmış** olmalı (`end > boundary`). Aksi hâlde eşleşme tek sayfa
+/// içindedir ve birinci taramada bulunmuştur (yinelenmez). Ayırıcı karakterin
+/// kendisi (hiçbir sayfaya ait değil) eşleşmenin ucu olamaz.
 // Gerekçe: pencere bağlamı (kapsam, kimlik, sınır, eşleşme) tek çağrıda
 // taşınıyor; ara yapı kurmak kuralı iki yere kopyalardı.
 #[allow(clippy::too_many_arguments)]
@@ -1253,7 +1308,7 @@ fn page_break_hit(
     end: usize,
     match_kind: &'static str,
 ) -> Option<RawHit> {
-    if start >= boundary || end <= boundary + 1 || end > window.len() {
+    if start >= boundary || end <= boundary || end > window.len() {
         return None;
     }
     let first = window.get(start)?;
@@ -2251,6 +2306,74 @@ mod tests {
         assert!(
             position.source_text.contains("bedel-\nlini"),
             "kaynak metin tire + satır sonunu göstermeli: {}",
+            position.source_text
+        );
+    }
+
+    /// Font kaynaklı bitişik yazı (`ﬂ`) **kendi katmanında** bulunur: birebir
+    /// sayılmaz, nedeni notta yazılır, kaynak metin ligatürü gösterir.
+    #[test]
+    fn ligature_from_the_font_is_found_in_its_own_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Ligatür");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Sözleşme taraﬂar arasında kurulmuştur."],
+        );
+
+        let report = check(&db, &case_id, "“taraflar arasında kurulmuştur”", None);
+
+        assert_eq!(report.not_found, 0, "ligatür eşleşmeyi engelledi");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(report.ligature, 1);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "ligature");
+        assert_eq!(position.char_start, 9);
+        assert!(
+            position.source_text.contains('\u{FB02}'),
+            "kaynak metin ligatürü göstermeli: {}",
+            position.source_text
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("bitişik yazı (ligatür)")),
+            "notlar ligatürü yazmalı: {:?}",
+            report.notes
+        );
+    }
+
+    /// Sayfa metni satır sonuyla bitiyorsa (`worker` her satıra `\n` yazar)
+    /// sayfa sonundaki tire **birleşir**; fazladan bir ayırıcı `\n` eklenmez.
+    #[test]
+    fn hyphen_at_page_end_is_joined_across_the_page_boundary() {
+        let db = db();
+        let case_id = new_case(&db, "Sayfa sonu tiresi");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &[
+                "İtirazın reddine karar ve-\n",
+                "rilmiştir. Hüküm tebliğ edildi.",
+            ],
+        );
+
+        let report = check(&db, &case_id, "“reddine karar verilmiştir”", None);
+
+        assert_eq!(report.not_found, 0, "sayfa sonu tiresi birleşmedi");
+        assert_eq!(report.dehyphenated, 1);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "dehyphenated");
+        assert!(position.spans_pages, "eşleşme sayfa sınırını aşmalı");
+        assert_eq!(position.page_index, 0);
+        assert_eq!(position.end_page_index, 1);
+        assert!(
+            position.source_text.contains("ve-"),
+            "kaynak metin tireyi göstermeli: {}",
             position.source_text
         );
     }

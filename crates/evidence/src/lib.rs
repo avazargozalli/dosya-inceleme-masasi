@@ -82,13 +82,43 @@ pub fn verify_quote(
     }
 }
 
-/// Arama ve OCR karşılaştırması için sadeleştirme. Kaynak alıntı gösterimi
-/// ham metinden yapılır; bu fonksiyon yalnız eşleştirme içindir.
+/// Bitişik yazı (ligatür) karakterinin harf karşılığı.
+///
+/// PDF fontları `fi`/`fl` gibi çiftleri **tek glif** olarak yazar; metin
+/// katmanından `U+FB01`/`U+FB02` döner. Bu bir yazım farkı değil **sunum**
+/// artefaktıdır: `taraﬂar` ile `taraflar` aynı kelimedir. Ligatür açılmazsa
+/// avukatın yazdığı alıntı `fiili`, `tasfiye`, `taraflar` gibi kelimelerde
+/// sessizce "bulunamadı" olur (ölçüldü: gerçek PDF, F12).
+#[must_use]
+pub fn ligature_expansion(ch: char) -> Option<&'static str> {
+    match ch {
+        '\u{FB00}' => Some("ff"),
+        '\u{FB01}' => Some("fi"),
+        '\u{FB02}' => Some("fl"),
+        '\u{FB03}' => Some("ffi"),
+        '\u{FB04}' => Some("ffl"),
+        '\u{FB05}' => Some("ft"),
+        '\u{FB06}' => Some("st"),
+        _ => None,
+    }
+}
+
+/// Metni karşılaştırma için sadeleştirir: Türkçe harfleri ASCII'ye indirger,
+/// şapkalı harfleri sadeleştirir, boşlukları tekler ve **ligatürleri açar**.
+/// Kaynak alıntı gösterimi ham metinden yapılır; bu fonksiyon yalnız
+/// eşleştirme içindir.
 #[must_use]
 pub fn normalize(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut last_space = false;
     for ch in input.chars() {
+        if let Some(expansion) = ligature_expansion(ch) {
+            for letter in expansion.chars() {
+                out.push(letter);
+            }
+            last_space = false;
+            continue;
+        }
         let mapped = match ch {
             'İ' | 'I' => 'i',
             'ı' => 'i',
@@ -190,6 +220,25 @@ mod tests {
             "itirazin reddine karar"
         );
         assert_eq!(normalize("Şişli'deki ğ harfi"), "sisli'deki g harfi");
+    }
+
+    #[test]
+    fn ligatures_from_the_pdf_font_are_expanded() {
+        // Font `fl`/`fi` çiftini tek glif yazar; metin katmanından U+FB01/02
+        // döner. Bu bir yazım farkı değildir: eşleştirmede açılmalı.
+        assert_eq!(normalize("taraﬂar"), "taraflar");
+        assert_eq!(normalize("ﬁili tasfiye"), "fiili tasfiye");
+        assert_eq!(normalize("aﬀedilen"), "affedilen");
+        // Uçtan uca: alıntı düz harflerle yazılmış, kaynak ligatürlü.
+        assert_eq!(
+            verify_quote(
+                "Sözleşme taraﬂar arasında kurulmuştur",
+                "taraflar arasında kurulmuştur",
+                None,
+                None
+            ),
+            QuoteMatch::Normalized
+        );
     }
 
     #[test]

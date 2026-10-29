@@ -107,6 +107,16 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     expect(quoteStateTone(verification({ state: "match", method: "dehyphenated" }))).toBe("warn");
   });
 
+  it("ligatür açılarak bulunan alıntıyı ayrı ve zayıf bir eşleşme olarak yazar", () => {
+    const ligature = quoteStateText(
+      verification({ state: "match", method: "ligature", matchedStart: 9, occurrences: 1 }),
+    );
+    expect(ligature).toContain("bitişik yazı (ligatür)");
+    expect(ligature).toContain("birebir değil");
+    expect(ligature).not.toContain("tire ile bölünmüş");
+    expect(quoteStateTone(verification({ state: "match", method: "ligature" }))).toBe("warn");
+  });
+
   it("tekrarlanan alıntıda kaç kez geçtiğini yazar", () => {
     const text = quoteStateText(
       verification({ state: "match", method: "exact", matchedStart: 0, occurrences: 3 }),

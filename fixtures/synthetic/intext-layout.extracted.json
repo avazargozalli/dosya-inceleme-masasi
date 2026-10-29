@@ -1,0 +1,37 @@
+{
+  "fixture": "intext-layout.pdf",
+  "fixtureBytes": 74295,
+  "fixtureSha256": "338f2479864a48dbf32ffbaeac865340b91e4d476f6c14cec75f31848c4d9bee",
+  "producer": "fixtures/synthetic/generate_intext.py",
+  "engine": "pymupdf",
+  "engineVersion": "1.24.14",
+  "pages": [
+    {
+      "index": 0,
+      "text": "KARAR GEREKÇESİ\nDavacı vekili 12.03.2026 tarihli dilekçesinde “bedel-\nlini ödemediğini” ileri sürmüştür.\nMahkeme dosyadaki delilleri değerlendirmiş, itirazın\nreddine karar ve-\n",
+      "width": 595.0,
+      "height": 842.0,
+      "rotation": 0,
+      "coordinateSpace": "unrotated_cropbox_points",
+      "label": null
+    },
+    {
+      "index": 1,
+      "text": "rilmiştir. Hüküm davalı tarafa 20.04.2026 tarihinde\ntebliğ edilmiştir.\nGerekçenin tamamı aşağıdadır: ödeme yapılmadığı\nsabit olup faiz işletilmesine yer olmadığına karar\nverilmiştir.\nKararın gerekçesi\n",
+      "width": 595.0,
+      "height": 842.0,
+      "rotation": 0,
+      "coordinateSpace": "unrotated_cropbox_points",
+      "label": null
+    },
+    {
+      "index": 2,
+      "text": "şöyledir: taraﬂar arasındaki sözleşme 01.02.2026\ntarihinde kurulmuştur.\n",
+      "width": 595.0,
+      "height": 842.0,
+      "rotation": 0,
+      "coordinateSpace": "unrotated_cropbox_points",
+      "label": null
+    }
+  ]
+}
