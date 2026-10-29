@@ -255,8 +255,9 @@ Ham rapor: `docs/releases/F15/bench-window-2026-10-26.json`.
 - **Sıcak önbellek**, iki koşu; soğuk başlangıç ve boş disk önbelleği ölçülmedi.
   İki koşu arasındaki p95 farkı (1,53 → 2,18 sn) tekrarların ne kadar oynadığını
   gösterir.
-- **OCR ve iş kuyruğu gecikmesi ölçülmedi** (worker devrede değil); 8 GB çekirdek
-  profili ve 100.000 **belge**/1 milyon sayfa kapasite testi (F15-T04) yapılmadı.
+- **İş kuyruğu gecikmesi ölçüldü** (2026-10-26, aşağıdaki bölüm); **OCR gecikmesi
+  ölçüldü** (2026-10-29, aşağıdaki bölüm). 8 GB çekirdek profili ve 100.000
+  **belge**/1 milyon sayfa kapasite testi (F15-T04) yapılmadı.
 - **Bellek** yalnız süreç RSS'i; SQLite sayfa önbelleği ve işletim sistemi
   önbelleği ayrı raporlanmaz. Örnekleme 2 sn aralıkla (tepe değer yaklaşık).
 - **Ertelenmiş sayım komutu senkron** (`search_segments_total`), tıpkı
@@ -491,6 +492,15 @@ Rapor JSON'u: `machine` (CPU modeli, RAM, çekirdek), `corpus`,
 `ingest.phaseMs`, `search`, `searchPageOnly`, `searchByGroup`, `firstPage`,
 `pageLookupAb`, `memory`, `b01`, `storage`.
 
+OCR gecikmesi (aşağıdaki bölümün sayıları; yol **depo köküne** göre çözülür):
+
+```bash
+DIM_WORKER_PYTHON="$PWD/workers/document/.venv/bin/python" \
+  DIM_BENCH_OCR_RUNS=10 DIM_BENCH_OCR_SINGLE_RUNS=5 \
+  DIM_BENCH_OUT=docs/releases/F15/bench-ocr-2026-10-29.json \
+  cargo test -p dim-ingest --test bench_ocr -- --ignored --nocapture
+```
+
 **Kanıt dosyası:** `docs/releases/F15/bench-b01-2026-10-25.json` — bu belgedeki
 koşu 2'nin ham raporu (200 sorgu, sorgu bazında süreler, donanım kimliği,
 `queryListSha256`). Koşu 1 aynı komutun tekrarıdır; p50/p95/max değerleri yukarıdaki
@@ -631,3 +641,66 @@ koşusu olmadan bu ölçümde yanıltıcıdır.
 **Sınırlar:** debug derleme; küçük belgeler; tek makine; iş parçacığı/veritabanı
 yazımı ölçümün parçası değil (yazımlar kasa kilidi altında seri — kural, ölçüm
 değil). Windows/Linux ve release derleme ölçülmedi.
+
+## OCR gecikmesi (F15-T05 "OCR" maddesi) — 2026-10-29
+
+**Neden bu bölüm var:** yukarıdaki dürüst sınırlar listesi "OCR ve iş kuyruğu
+gecikmesi ölçülmedi (worker devrede değil)" diyordu. İş kuyruğu 2026-10-26'da
+ölçüldü; OCR maddesi **açık kaldı**. OCR, ürünün en pahalı yerel işi (sayfa
+başına 300 dpi rasterleştirme + Tesseract) ve tek sayfalık fikstür toplam
+maliyeti göstermiyordu.
+
+**Koşucu:** `crates/ingest/tests/bench_ocr.rs` (elle, `#[ignore]`).
+**Fikstür:** `fixtures/synthetic/scanned-pages.pdf` — 6 sayfa, **244.129 bayt**,
+sha256 `fe71877b9579…cb3b2`, **metin katmanı yok**; her sayfa farklı metinle
+(`MADDE 1` … `MADDE 6`, tutar 1000→2250 TL) 300 dpi gri raster olarak gömülü.
+Farklı metin bilinçli: koşucu **her sayfanın kendi başlığını** okuduğunu
+doğrular (`assert`), yoksa "hızlı ama boş" rapor üretilmez.
+
+**Yöntem**
+
+- Her koşu **yeni worker süreci** (`python -m dim_worker.worker`) → süreç
+  başlatma + PyMuPDF importu ölçüme **dahil** (kullanıcının gördüğü süre).
+- Gerçek OCR bütçesi (`WorkerKind::Ocr`: 600 s CPU, 2048 MiB, 48 MiB çıktı,
+  900 s duvar saati); bütçe ihlali koşuyu **düşürür**.
+- 10 koşu çok sayfalı belge, 5 koşu tek sayfa fikstürü
+  (`scanned-page.pdf`), 1 koşu **OCR kapalı** taban çizgisi.
+- Taban çizgisi kapısı: OCR kapalıyken aynı taramadan **0 karakter** gelmeli —
+  yani "OCR pahalı" iddiası, OCR'ın gerçekten çalıştığı ölçülmüş halde söylenir.
+
+**Sonuç (Apple M2, macOS 26.6.2, Tesseract 5.5.3 `tur`, dil paketi kurulu)**
+
+| Ölçüm | p50 | p95 | max | min | Not |
+|---|---|---|---|---|---|
+| 6 sayfalık tarama (n=10) | **6.398 ms** | **8.140 ms** | 8.290 ms | 5.705 ms | süreç başlatma dahil |
+| sayfa başına (p50/6) | **1.066 ms** | — | — | — | türetilmiş |
+| tek sayfa (n=5) | **1.054 ms** | 1.062 ms | 1.063 ms | 1.048 ms | ayrı ölçüm |
+| OCR kapalı taban (6 sayfa) | 425 ms | — | — | — | metin **0 karakter** |
+
+- **Bellek:** çok sayfalı koşuda tepe **224,3 MiB** (bütçe 2048 MiB → %11),
+  tek sayfada 171,0 MiB. Fark, PyMuPDF/Tesseract'ın sayfa başına ek yükü.
+- **Yanıt:** 3.495 bayt/koşu; sayfa başına OCR güven notu (6 uyarı), güven
+  **83–94/100**.
+- **Ayrıştırma:** marjinal sayfa maliyeti ≈ (6.398 − 425) / 6 ≈ **995 ms**;
+  sabit maliyet ≈ 425 ms (süreç + import). 100 sayfalık bir tarama, tek
+  worker'da sayfa sıralı koştuğu için ≈ **0,43 + 100 × 1,0 ≈ 100 s** olur
+  (türetilmiş, ölçülmedi — aşağıdaki sınırlar).
+
+**Dürüst sınırlar**
+
+- Ölçülen katman **çekirdek worker**: Tauri IPC, kasa yazımı ve arayüz
+  gösterimi yok → raporlanan süre **alt sınırdır**.
+- Fikstür metni **ASCII** ve her sayfa aynı düzende; gerçek taramalarda
+  eğim, gürültü, gölge ve yoğun metin OCR'ı **hem yavaşlatır hem kaliteyi
+  düşürür**. Kalite (dil modeli) bu koşucuda **ölçülmez**.
+- Rust koşucusu **debug** derleme; ölçülen iş Python/Tesseract sürecinde
+  olduğu için Rust profilinin etkisi ihmal edilebilir — yine de release
+  karşılaştırması yapılmadı.
+- Tek makine, tek Tesseract sürümü, 300 dpi sabit. DPI artışı maliyeti
+  yaklaşık doğrusal büyütür; **ölçülmedi**.
+- Belleğin sayfa sayısıyla büyümesi ölçülmedi (6 sayfa → 224 MiB). 100
+  sayfalık belgede 2048 MiB tavanının payı bilinmiyor.
+- Sayfalar sıralı koşar; iki belgenin paralel OCR'ında (havuz tavanı 2)
+  gecikme davranışı ölçülmedi.
+- Ham rapor: `docs/releases/F15/bench-ocr-2026-10-29.json` (makine üretir,
+  elle düzenlenmez).

@@ -470,6 +470,56 @@ def generate_scanned_pdf(path: Path) -> Path:
     return path
 
 
+# --- F15-T05 OCR gecikme fikstürü -----------------------------------------
+# Metin katmanı olmayan **çok sayfalı** tarama: her sayfa ayrı metinle 300
+# dpi'e render edilip gömülür. Amaç sayfa başına OCR maliyetini gerçek
+# belgede ölçmek (tek sayfalık `scanned-page.pdf` bunu veremiyor). Sayfa
+# metinleri birbirinden farklı ki OCR'ın gerçekten her sayfayı okuduğu
+# doğrulanabilsin; metin ASCII (WinAnsi'de Türkçe karakter yok).
+# Bayt düzeyinde deterministik **değildir**: PyMuPDF belge kimliğini (`/ID`)
+# rastgele üretir (tek sayfalık fikstürde de aynı). Depoda duran dosya esastır;
+# yeniden üretim gerekirse aynı PyMuPDF sürümü kullanılmalı.
+SCANNED_PAGES = 6
+
+
+def build_scanned_pages_pdf(pages: int = SCANNED_PAGES) -> bytes:
+    import io
+
+    import fitz  # PyMuPDF — yalnız bu fikstür için
+
+    document = fitz.open()
+    for index in range(pages):
+        source = fitz.open()
+        page = source.new_page(width=595, height=842)
+        heading = f"MADDE {index + 1}"
+        page.insert_text((72, 200), heading, fontsize=44, fontname="helv")
+        page.insert_text(
+            (72, 280), f"Kira sozlesmesi 2026 - sayfa {index + 1}", fontsize=28,
+            fontname="helv",
+        )
+        page.insert_text(
+            (72, 340),
+            f"Odeme yapilmadi. Tutar {1000 + index * 250} TL.",
+            fontsize=24,
+            fontname="helv",
+        )
+        pixmap = page.get_pixmap(dpi=300, colorspace=fitz.csGRAY)
+        target = document.new_page(width=595, height=842)
+        target.insert_image(target.rect, pixmap=pixmap)
+        source.close()
+    buffer = io.BytesIO()
+    document.save(buffer, deflate=True)
+    return buffer.getvalue()
+
+
+def generate_scanned_pages_pdf(path: Path, pages: int = SCANNED_PAGES) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    path.write_bytes(build_scanned_pages_pdf(pages))
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kurgu test belgesi üret")
     parser.add_argument("--out", default="fixtures/generated", help="çıktı klasörü")
@@ -485,6 +535,10 @@ def main() -> None:
     try:
         scanned = generate_scanned_pdf(Path("fixtures/synthetic/scanned-page.pdf"))
         print(f"üretildi: {scanned} ({os.path.getsize(scanned)} bayt)")
+        scanned_pages = generate_scanned_pages_pdf(
+            Path("fixtures/synthetic/scanned-pages.pdf")
+        )
+        print(f"üretildi: {scanned_pages} ({os.path.getsize(scanned_pages)} bayt)")
     except ImportError:
         print("scanned-page.pdf atlandı: PyMuPDF (fitz) kurulu değil")
     print(f"üretildi: {pdf} ({os.path.getsize(pdf)} bayt)")
