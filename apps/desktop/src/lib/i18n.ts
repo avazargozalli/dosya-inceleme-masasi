@@ -10,10 +10,12 @@
  *
  * **Dürüst sınır:** F04-T08 sürüyor. Taşınan dosyalar: `App.tsx`,
  * `screens/Unlock.tsx`, `screens/Workspace.tsx`, `screens/Tasks.tsx`,
- * `screens/Exports.tsx`, `screens/Redaction.tsx`. Kalan ekranlar (Dosyalar/Cases,
- * Arama, İnceleme, Emsal, AI, Sağlayıcılar, Ayarlar, Kronoloji, Kontrol listesi)
- * metinlerini hâlâ kendi dosyalarında taşır; `lib/reminders.ts` ve
- * `lib/export-coverage.ts` de kendi metinlerini taşır. Taşıma sırası ve sayısı
+ * `screens/Exports.tsx`, `screens/Redaction.tsx`, `screens/Timeline.tsx`,
+ * `screens/Checklists.tsx` ve `lib/checklist.ts`. Kalan ekranlar (Dosyalar/Cases,
+ * Arama, İnceleme, Emsal, AI, Sağlayıcılar, Ayarlar) metinlerini hâlâ kendi
+ * dosyalarında taşır; `lib/jobs.ts`, `lib/reader.ts`, `lib/providers.ts`,
+ * `lib/search.ts`, `lib/reminders.ts`, `lib/export-coverage.ts` ve diğer yardımcı
+ * lib'ler de kendi metinlerini taşır. Taşıma sırası ve sayısı
  * `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır — burada "bitti"
  * denmez.
  */
@@ -242,6 +244,141 @@ export const tr = {
     warnings: "Doğrulama uyarıları",
     plan: "Plan",
     shareHint: "Bu kopya paylaşım içindir. Özgün belge ve eski sürümler kasadan silinmedi.",
+  },
+  timeline: {
+    lead:
+      "Olay, belge ve tebliğ tarihleri ayrı türlerdir. Ay/yıl veya bilinmeyen tarih desteklenir; " +
+      "eksik gün uydurulmaz. Tarihi bilinmeyen olaylar ayrı grupta durur.",
+    titleRequired: "Olay başlığı zorunlu.",
+    confirmed: "onaylandı",
+    draft: "taslak",
+    rawNote: "ham: {raw}",
+    confirm: "Onayla",
+    edit: "Düzenle",
+    closeEdit: "Düzenlemeyi kapat",
+    sources: "Kaynaklar",
+    closeSources: "Kaynakları kapat",
+    remove: "Sil",
+    fieldTitle: "Başlık",
+    fieldDate: "Tarih",
+    fieldPrecision: "Kesinlik",
+    fieldRole: "Tarih türü",
+    fieldDescription: "Açıklama",
+    cancel: "Vazgeç",
+    versionHint:
+      "Kayıt sürümü {version}. Kayıt başka bir pencerede değiştiyse kaydetme reddedilir, " +
+      "güncel sürüm yüklenir; eski veri sessizce ezilmez.",
+    noSources: "Bu olaya bağlı kaynak yok.",
+    removeLink: "Kaldır",
+    sourceQuote: "Kaynak alıntı",
+    noAnchors: "Anchor yok — okuyucuda alıntı oluşturun",
+    relation: "İlişki",
+    attach: "Bağla",
+    eventTitle: "Olay başlığı",
+    eventTitlePlaceholder: "Örn. Kira ödemesi yapılmadı",
+    addEvent: "Olay ekle",
+    userAssertionHint:
+      "Bu kayıtlar kullanıcı beyanıdır; otomatik hukuki süre hesabı yapılmaz (ADR-0008).",
+    knownTitle: "Tarihli olaylar",
+    knownSub: "{count} olay · eskiden yeniye",
+    knownEmpty: "Henüz tarihli olay yok.",
+    unknownTitle: "Tarihi bilinmeyenler",
+    unknownSub: "{count} olay · sıralamaya sokulmaz",
+    role: {
+      event: "Olay tarihi",
+      document: "Belge tarihi",
+      notification: "Tebliğ tarihi",
+      contract: "Sözleşme tarihi",
+      hearing: "Duruşma",
+      deadline_candidate: "Süre adayı",
+      unknown: "Rol bilinmiyor",
+    },
+    precision: {
+      day: "Gün",
+      month: "Ay",
+      year: "Yıl",
+      range: "Aralık",
+      approximate: "Yaklaşık",
+      unknown: "Bilinmiyor",
+    },
+    relationKind: {
+      states: "belirtir",
+      supports: "destekler",
+      contradicts: "çelişir",
+      context: "bağlam",
+    },
+  },
+  checklists: {
+    lead:
+      "Lisanslı şablonlar sürüm, yazar ve içerik hash'iyle dosyaya kopyalanır. Öğe durumu " +
+      "belgeye veya gerekçeye bağlanır; “bulunamadı” yalnız incelenen kapsamı anlatır.",
+    reload: "Güncel kaydı yükle",
+    state: "Durum",
+    summary:
+      "{total} öğe · {open} açık · {present} bulundu · {missing} incelenen kapsamda bulunamadı · " +
+      "{notApplicable} uygulanamaz",
+    catalogTitle: "Şablon kataloğu",
+    catalogSub: "İçerik lisansı yazılım lisansından ayrıdır; kopyada sürüm ve kaynak korunur.",
+    catalogEmpty: "Katalog boş.",
+    practiceUnknown: "alan belirtilmemiş",
+    templateItems: "{count} madde · içerik",
+    sourceLabel: "kaynak:",
+    verifyCopy: "Kopyayı doğrula",
+    copyToCase: "Dosyaya kopyala",
+    copyHint:
+      "Aynı şablon sürümü ikinci kez kopyalanmaz; “Kopyayı doğrula” yinelenen öğe üretmeden " +
+      "mevcut kopyayı denetler.",
+    caseListTitle: "Dosya kontrol listesi",
+    itemsSub: "{count} öğe",
+    foundBadge: "{count} bulundu",
+    missingBadge: "{count} bulunamadı",
+    notApplicableBadge: "{count} uygulanamaz",
+    empty: "Bu dosyada kontrol listesi yok. Katalogdan bir şablon kopyalayın.",
+    itemMeta: "{ordinal}. madde · {category}",
+    categoryGeneral: "genel",
+    licenseUnknown: "lisans belirtilmemiş",
+    templateMeta: "{title} sürüm {version} · {license} · içerik",
+    noTemplateMeta: "şablon künyesi yok (kopya metni korunuyor)",
+    linkedDocuments: "Bağlı belgeler ({count})",
+    noDocuments: "Bu dosyada belge yok; önce belge içe aktarın.",
+    noteMissing: "İncelenen kapsam",
+    noteNotApplicable: "Gerekçe",
+    noteOptional: "Not (isteğe bağlı)",
+    notePlaceholderMissing: "Örn. 2020-2024 arası kira sözleşmeleri incelendi",
+    notePlaceholder: "Kısa açıklama",
+    removeLink: "kaldır",
+    staleLinks: "Listede görünmeyen bağlar (belge silinmiş veya arşivlenmiş olabilir):",
+    savedNote: "Kayıtlı not: {note}",
+    missingScopeNote:
+      "“İncelenen kapsamda bulunamadı” yalnız bakılan aralığı anlatır; dosyanın tamamında " +
+      "belge yok anlamına gelmez.",
+    stateLabel: {
+      open: "Açık",
+      present: "Bulundu",
+      missing: "İncelenen kapsamda bulunamadı",
+      not_applicable: "Uygulanamaz",
+    },
+    stateHelp: {
+      open: "Henüz değerlendirilmedi.",
+      present: "En az bir belge bağı gerekir.",
+      missing: "İncelenen kapsam yazılmalı; “dosyada yok” iddiası üretilmez.",
+      not_applicable: "Gerekçe yazılmalı.",
+    },
+    rule: {
+      presentNeedsDocument: "“Bulundu” için en az bir belge seçin.",
+      linksOnlyPresent: "Belge bağı yalnız “Bulundu” durumunda kullanılır.",
+      missingNeedsScope: "İncelenen kapsamı yazın (örn. 2020-2024 arası sözleşmeler).",
+      notApplicableNeedsReason: "“Uygulanamaz” için gerekçe yazın.",
+      openClearsLinks: "Açık duruma dönerken belge bağlarını kaldırın.",
+    },
+    license: {
+      version: "sürüm {version}",
+      review: "gözden geçirme {date}",
+    },
+    copiedCount: "{count} öğe dosyada",
+    noticeCopied: "{title} sürüm {version} dosyaya kopyalandı ({count} öğe, {license}).",
+    noticeAlready: "{title} bu dosyada zaten var; yinelenen öğe eklenmedi.",
+    noticeUpdated: "“{item}” güncellendi.",
   },
   labels: {
     caseKind: {

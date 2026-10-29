@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CHECKLIST_STATE_HELP,
   CHECKLIST_STATE_LABEL,
   checklistLicenseLabel,
   copiedLabel,
@@ -9,6 +10,7 @@ import {
   summarizeChecklist,
   validateChecklistEntry,
 } from "./checklist";
+import { t } from "./i18n";
 
 describe("validateChecklistEntry", () => {
   it("bulundu durumunda belge bağı ister", () => {
@@ -109,5 +111,45 @@ describe("künye", () => {
     expect(CHECKLIST_STATE_LABEL.missing).toBe("İncelenen kapsamda bulunamadı");
     expect(CHECKLIST_STATE_LABEL.missing.toLowerCase()).not.toContain("dosyada yok");
     expect(MISSING_SCOPE_NOTE).toContain("yalnız bakılan aralığı");
+  });
+});
+
+describe("sözlük bağı (F04-T08)", () => {
+  // Etiketler `lib/i18n.ts`ten gelir. Bu test, kopyanın sözlükten koptuğu
+  // durumu (lib'de yeniden gömülü metin) yakalar: değerler anahtardan gelmeli.
+  it("durum etiketleri ve yardım metinleri sözlükten gelir", () => {
+    expect(CHECKLIST_STATE_LABEL).toEqual({
+      open: t("checklists.stateLabel.open"),
+      present: t("checklists.stateLabel.present"),
+      missing: t("checklists.stateLabel.missing"),
+      not_applicable: t("checklists.stateLabel.not_applicable"),
+    });
+    expect(CHECKLIST_STATE_HELP.present).toBe(t("checklists.stateHelp.present"));
+    expect(MISSING_SCOPE_NOTE).toBe(t("checklists.missingScopeNote"));
+  });
+
+  it("kural iletileri sözlükten gelir ve parametresiz anahtar hata atmaz", () => {
+    expect(validateChecklistEntry({ state: "present", linkedDocumentIds: [], note: "" })).toBe(
+      t("checklists.rule.presentNeedsDocument"),
+    );
+    expect(
+      validateChecklistEntry({ state: "open", linkedDocumentIds: ["doc-1"], note: "" }),
+    ).toBe(t("checklists.rule.openClearsLinks"));
+  });
+
+  it("parametreli metin sayaçları gerçekten doldurur", () => {
+    const summary = t("checklists.summary", {
+      total: 7,
+      open: 1,
+      present: 2,
+      missing: 3,
+      notApplicable: 1,
+    });
+    expect(summary).toContain("7 öğe");
+    expect(summary).toContain("1 açık");
+    expect(summary).toContain("2 bulundu");
+    expect(summary).toContain("3 incelenen kapsamda bulunamadı");
+    expect(summary).toContain("1 uygulanamaz");
+    expect(summary).not.toContain("{");
   });
 });

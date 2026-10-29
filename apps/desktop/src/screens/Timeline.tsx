@@ -8,25 +8,26 @@ import {
   type EventRow,
   type EventSourceRow,
 } from "../lib/api";
+import { t } from "../lib/i18n";
 
 
 const DATE_ROLE_LABEL: Record<string, string> = {
-  event: "Olay tarihi",
-  document: "Belge tarihi",
-  notification: "Tebliğ tarihi",
-  contract: "Sözleşme tarihi",
-  hearing: "Duruşma",
-  deadline_candidate: "Süre adayı",
-  unknown: "Rol bilinmiyor",
+  event: t("timeline.role.event"),
+  document: t("timeline.role.document"),
+  notification: t("timeline.role.notification"),
+  contract: t("timeline.role.contract"),
+  hearing: t("timeline.role.hearing"),
+  deadline_candidate: t("timeline.role.deadline_candidate"),
+  unknown: t("timeline.role.unknown"),
 };
 
 const PRECISION_LABEL: Record<string, string> = {
-  day: "Gün",
-  month: "Ay",
-  year: "Yıl",
-  range: "Aralık",
-  approximate: "Yaklaşık",
-  unknown: "Bilinmiyor",
+  day: t("timeline.precision.day"),
+  month: t("timeline.precision.month"),
+  year: t("timeline.precision.year"),
+  range: t("timeline.precision.range"),
+  approximate: t("timeline.precision.approximate"),
+  unknown: t("timeline.precision.unknown"),
 };
 
 type Draft = {
@@ -92,7 +93,7 @@ export function Timeline() {
 
   async function add() {
     if (!caseId || draft.title.trim().length === 0) {
-      setError({ code: "E_TITLE", message: "Olay başlığı zorunlu.", retryable: false });
+      setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
     setBusy(true);
@@ -134,7 +135,7 @@ export function Timeline() {
   async function saveEdit() {
     if (!editing) return;
     if (editing.draft.title.trim().length === 0) {
-      setError({ code: "E_TITLE", message: "Olay başlığı zorunlu.", retryable: false });
+      setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
     setBusy(true);
@@ -221,29 +222,36 @@ export function Timeline() {
               <strong style={{ fontWeight: 500 }}>{event.title}</strong>
               <span className="badge plain">{DATE_ROLE_LABEL[event.dateRole] ?? event.dateRole}</span>
               <span className={`badge ${event.status === "confirmed" ? "ok" : "warn"}`}>
-                {event.status === "confirmed" ? "onaylandı" : "taslak"}
+                {event.status === "confirmed" ? t("timeline.confirmed") : t("timeline.draft")}
               </span>
             </div>
             <div className="muted small" style={{ marginTop: 4 }}>
-              {event.sortableDate ?? "tarih bilinmiyor"} · {PRECISION_LABEL[event.datePrecision] ?? event.datePrecision}
-              {event.dateRaw && event.dateRaw !== event.sortableDate ? ` · ham: ${event.dateRaw}` : ""}
+              {event.sortableDate ?? t("dates.missing")} ·{" "}
+              {PRECISION_LABEL[event.datePrecision] ?? event.datePrecision}
+              {event.dateRaw && event.dateRaw !== event.sortableDate
+                ? ` · ${t("timeline.rawNote", { raw: event.dateRaw })}`
+                : ""}
             </div>
             {event.description ? <p style={{ margin: "6px 0 0" }}>{event.description}</p> : null}
           </div>
           <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
             {event.status === "draft" ? (
-              <button className="btn ghost" onClick={() => void confirm(event.id)}>Onayla</button>
+              <button className="btn ghost" onClick={() => void confirm(event.id)}>
+                {t("timeline.confirm")}
+              </button>
             ) : null}
             <button
               className="btn ghost"
               onClick={() => (editing?.id === event.id ? setEditing(null) : startEdit(event))}
             >
-              {editing?.id === event.id ? "Düzenlemeyi kapat" : "Düzenle"}
+              {editing?.id === event.id ? t("timeline.closeEdit") : t("timeline.edit")}
             </button>
             <button className="btn ghost" onClick={() => void openLink(event.id)}>
-              {linkFor === event.id ? "Kaynakları kapat" : "Kaynaklar"}
+              {linkFor === event.id ? t("timeline.closeSources") : t("timeline.sources")}
             </button>
-            <button className="btn ghost" onClick={() => void remove(event.id)}>Sil</button>
+            <button className="btn ghost" onClick={() => void remove(event.id)}>
+              {t("timeline.remove")}
+            </button>
           </div>
         </div>
 
@@ -251,7 +259,7 @@ export function Timeline() {
           <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
             <div className="row">
               <div className="field" style={{ flex: "2 1 240px" }}>
-                <label htmlFor={`edit-title-${event.id}`}>Başlık</label>
+                <label htmlFor={`edit-title-${event.id}`}>{t("timeline.fieldTitle")}</label>
                 <input
                   id={`edit-title-${event.id}`}
                   className="input"
@@ -262,7 +270,7 @@ export function Timeline() {
                 />
               </div>
               <div className="field">
-                <label htmlFor={`edit-date-${event.id}`}>Tarih</label>
+                <label htmlFor={`edit-date-${event.id}`}>{t("timeline.fieldDate")}</label>
                 <input
                   id={`edit-date-${event.id}`}
                   className="input"
@@ -275,7 +283,7 @@ export function Timeline() {
                 />
               </div>
               <div className="field">
-                <label htmlFor={`edit-precision-${event.id}`}>Kesinlik</label>
+                <label htmlFor={`edit-precision-${event.id}`}>{t("timeline.fieldPrecision")}</label>
                 <select
                   id={`edit-precision-${event.id}`}
                   className="input"
@@ -292,7 +300,7 @@ export function Timeline() {
                 </select>
               </div>
               <div className="field">
-                <label htmlFor={`edit-role-${event.id}`}>Tarih türü</label>
+                <label htmlFor={`edit-role-${event.id}`}>{t("timeline.fieldRole")}</label>
                 <select
                   id={`edit-role-${event.id}`}
                   className="input"
@@ -311,7 +319,7 @@ export function Timeline() {
             </div>
             <div className="row">
               <div className="field" style={{ flex: "1 1 320px" }}>
-                <label htmlFor={`edit-desc-${event.id}`}>Açıklama</label>
+                <label htmlFor={`edit-desc-${event.id}`}>{t("timeline.fieldDescription")}</label>
                 <input
                   id={`edit-desc-${event.id}`}
                   className="input"
@@ -325,15 +333,14 @@ export function Timeline() {
                 />
               </div>
               <button className="btn primary" disabled={busy} onClick={() => void saveEdit()}>
-                Kaydet
+                {t("common.save")}
               </button>
               <button className="btn ghost" onClick={() => setEditing(null)}>
-                Vazgeç
+                {t("timeline.cancel")}
               </button>
             </div>
             <p className="hint" style={{ margin: 0 }}>
-              Kayıt sürümü {editing.rowVersion}. Kayıt başka bir pencerede değiştiyse kaydetme
-              reddedilir, güncel sürüm yüklenir; eski veri sessizce ezilmez.
+              {t("timeline.versionHint", { version: editing.rowVersion })}
             </p>
           </div>
         ) : null}
@@ -346,23 +353,25 @@ export function Timeline() {
                   <li key={link.id} className="muted small" style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <span className="badge plain">{link.relation}</span>
                     <code style={{ fontSize: 11 }}>{link.sourceAnchorId.slice(0, 8)}…</code>
-                    <button className="btn ghost" onClick={() => void detach(link.id, event.id)}>Kaldır</button>
+                    <button className="btn ghost" onClick={() => void detach(link.id, event.id)}>
+                      {t("timeline.removeLink")}
+                    </button>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="hint" style={{ margin: "0 0 8px" }}>Bu olaya bağlı kaynak yok.</p>
+              <p className="hint" style={{ margin: "0 0 8px" }}>{t("timeline.noSources")}</p>
             )}
             <div className="row" style={{ gap: 6, alignItems: "flex-end" }}>
               <div className="field" style={{ flex: "1 1 260px" }}>
-                <label htmlFor={`src-${event.id}`}>Kaynak alıntı</label>
+                <label htmlFor={`src-${event.id}`}>{t("timeline.sourceQuote")}</label>
                 <select
                   id={`src-${event.id}`}
                   className="input"
                   value={linkAnchor}
                   onChange={(e) => setLinkAnchor(e.target.value)}
                 >
-                  {anchors.length === 0 ? <option value="">Anchor yok — okuyucuda alıntı oluşturun</option> : null}
+                  {anchors.length === 0 ? <option value="">{t("timeline.noAnchors")}</option> : null}
                   {anchors.map((anchor) => (
                     <option key={anchor.id} value={anchor.id}>
                       {anchor.exactQuote.slice(0, 60)}
@@ -371,20 +380,22 @@ export function Timeline() {
                 </select>
               </div>
               <div className="field" style={{ flex: "0 0 160px" }}>
-                <label htmlFor={`rel-${event.id}`}>İlişki</label>
+                <label htmlFor={`rel-${event.id}`}>{t("timeline.relation")}</label>
                 <select
                   id={`rel-${event.id}`}
                   className="input"
                   value={linkRelation}
                   onChange={(e) => setLinkRelation(e.target.value)}
                 >
-                  <option value="states">belirtir</option>
-                  <option value="supports">destekler</option>
-                  <option value="contradicts">çelişir</option>
-                  <option value="context">bağlam</option>
+                  <option value="states">{t("timeline.relationKind.states")}</option>
+                  <option value="supports">{t("timeline.relationKind.supports")}</option>
+                  <option value="contradicts">{t("timeline.relationKind.contradicts")}</option>
+                  <option value="context">{t("timeline.relationKind.context")}</option>
                 </select>
               </div>
-              <button className="btn" disabled={!linkAnchor} onClick={() => void attach(event.id)}>Bağla</button>
+              <button className="btn" disabled={!linkAnchor} onClick={() => void attach(event.id)}>
+                {t("timeline.attach")}
+              </button>
             </div>
           </div>
         ) : null}
@@ -395,11 +406,8 @@ export function Timeline() {
   return (
     <div className="page" style={{ maxWidth: 940 }}>
       <div className="page-head">
-        <h1>Kronoloji</h1>
-        <p className="lead">
-          Olay, belge ve tebliğ tarihleri ayrı türlerdir. Ay/yıl veya bilinmeyen tarih desteklenir;
-          eksik gün uydurulmaz. Tarihi bilinmeyen olaylar ayrı grupta durur.
-        </p>
+        <h1>{t("nav.timeline")}</h1>
+        <p className="lead">{t("timeline.lead")}</p>
       </div>
 
       {error ? (
@@ -411,26 +419,26 @@ export function Timeline() {
       <div className="card">
         <div className="row">
           <div className="field" style={{ flex: "1 1 260px" }}>
-            <label htmlFor="tl-case">Dosya</label>
+            <label htmlFor="tl-case">{t("common.case")}</label>
             <select id="tl-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
-              {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+              {cases.length === 0 ? <option value="">{t("common.noCase")}</option> : null}
               {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
           <div className="field" style={{ flex: "2 1 300px" }}>
-            <label htmlFor="tl-title">Olay başlığı</label>
+            <label htmlFor="tl-title">{t("timeline.eventTitle")}</label>
             <input
               id="tl-title"
               className="input"
               value={draft.title}
               onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-              placeholder="Örn. Kira ödemesi yapılmadı"
+              placeholder={t("timeline.eventTitlePlaceholder")}
             />
           </div>
         </div>
         <div className="row">
           <div className="field">
-            <label htmlFor="tl-date">Tarih</label>
+            <label htmlFor="tl-date">{t("timeline.fieldDate")}</label>
             <input
               id="tl-date"
               className="input"
@@ -441,7 +449,7 @@ export function Timeline() {
             />
           </div>
           <div className="field">
-            <label htmlFor="tl-precision">Kesinlik</label>
+            <label htmlFor="tl-precision">{t("timeline.fieldPrecision")}</label>
             <select
               id="tl-precision"
               className="input"
@@ -452,27 +460,29 @@ export function Timeline() {
             </select>
           </div>
           <div className="field">
-            <label htmlFor="tl-role">Tarih türü</label>
+            <label htmlFor="tl-role">{t("timeline.fieldRole")}</label>
             <select id="tl-role" className="input" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })}>
               {Object.entries(DATE_ROLE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
-          <button className="btn primary" disabled={busy} onClick={() => void add()}>Olay ekle</button>
+          <button className="btn primary" disabled={busy} onClick={() => void add()}>
+            {t("timeline.addEvent")}
+          </button>
         </div>
         <p className="hint" style={{ margin: 0 }}>
-          Bu kayıtlar kullanıcı beyanıdır; otomatik hukuki süre hesabı yapılmaz (ADR-0008).
+          {t("timeline.userAssertionHint")}
         </p>
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Tarihli olaylar</h2>
-            <p className="card-sub">{known.length} olay · eskiden yeniye</p>
+            <h2>{t("timeline.knownTitle")}</h2>
+            <p className="card-sub">{t("timeline.knownSub", { count: known.length })}</p>
           </div>
         </div>
         {known.length === 0 ? (
-          <div className="empty"><p style={{ margin: 0 }}>Henüz tarihli olay yok.</p></div>
+          <div className="empty"><p style={{ margin: 0 }}>{t("timeline.knownEmpty")}</p></div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>{known.map(row)}</div>
         )}
@@ -482,8 +492,8 @@ export function Timeline() {
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Tarihi bilinmeyenler</h2>
-              <p className="card-sub">{unknown.length} olay · sıralamaya sokulmaz</p>
+              <h2>{t("timeline.unknownTitle")}</h2>
+              <p className="card-sub">{t("timeline.unknownSub", { count: unknown.length })}</p>
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>{unknown.map(row)}</div>

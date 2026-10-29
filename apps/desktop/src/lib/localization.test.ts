@@ -74,6 +74,9 @@ const MIGRATED = [
   "screens/Tasks.tsx",
   "screens/Exports.tsx",
   "screens/Redaction.tsx",
+  "screens/Timeline.tsx",
+  "screens/Checklists.tsx",
+  "lib/checklist.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;

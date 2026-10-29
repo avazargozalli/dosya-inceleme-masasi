@@ -20,6 +20,7 @@ import {
   summarizeChecklist,
   validateChecklistEntry,
 } from "../lib/checklist";
+import { t } from "../lib/i18n";
 
 type Draft = {
   state: ChecklistItemState;
@@ -126,8 +127,13 @@ export function Checklists() {
       const result = await api.checklistCopy(caseId, template.id);
       setNotice(
         result.created
-          ? `${result.templateTitle} sürüm ${result.templateVersion} dosyaya kopyalandı (${result.itemCount} öğe, ${result.licenseId ?? "lisans belirtilmemiş"}).`
-          : `${result.templateTitle} bu dosyada zaten var; yinelenen öğe eklenmedi.`,
+          ? t("checklists.noticeCopied", {
+              title: result.templateTitle,
+              version: result.templateVersion,
+              count: result.itemCount,
+              license: result.licenseId ?? t("checklists.licenseUnknown"),
+            })
+          : t("checklists.noticeAlready", { title: result.templateTitle }),
       );
       await load(caseId);
     } catch (e) {
@@ -155,7 +161,7 @@ export function Checklists() {
         item.rowVersion,
       );
       await load(caseId);
-      setNotice(`“${item.itemText}” güncellendi.`);
+      setNotice(t("checklists.noticeUpdated", { item: item.itemText }));
     } catch (e) {
       const apiError = toApiError(e);
       if (apiError.code === "E_ROW_VERSION") setConflictItem(item.id);
@@ -170,11 +176,8 @@ export function Checklists() {
   return (
     <div className="page" style={{ maxWidth: 1000 }}>
       <div className="page-head">
-        <h1>Kontrol listesi</h1>
-        <p className="lead">
-          Lisanslı şablonlar sürüm, yazar ve içerik hash'iyle dosyaya kopyalanır. Öğe durumu
-          belgeye veya gerekçeye bağlanır; “bulunamadı” yalnız incelenen kapsamı anlatır.
-        </p>
+        <h1>{t("nav.checklists")}</h1>
+        <p className="lead">{t("checklists.lead")}</p>
       </div>
 
       {error ? (
@@ -186,7 +189,7 @@ export function Checklists() {
               style={{ marginLeft: 8 }}
               onClick={() => void load(caseId)}
             >
-              Güncel kaydı yükle
+              {t("checklists.reload")}
             </button>
           ) : null}
         </div>
@@ -196,14 +199,14 @@ export function Checklists() {
       <div className="card">
         <div className="row">
           <div className="field" style={{ flex: "1 1 320px" }}>
-            <label htmlFor="checklist-case">Dosya</label>
+            <label htmlFor="checklist-case">{t("common.case")}</label>
             <select
               id="checklist-case"
               className="input"
               value={caseId}
               onChange={(e) => setCaseId(e.target.value)}
             >
-              {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+              {cases.length === 0 ? <option value="">{t("common.noCase")}</option> : null}
               {cases.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.title}
@@ -212,10 +215,15 @@ export function Checklists() {
             </select>
           </div>
           <div className="field" style={{ flex: "0 1 auto" }}>
-            <label>Durum</label>
+            <label>{t("checklists.state")}</label>
             <span className="small muted">
-              {summary.total} öğe · {summary.open} açık · {summary.present} bulundu ·{" "}
-              {summary.missing} incelenen kapsamda bulunamadı · {summary.notApplicable} uygulanamaz
+              {t("checklists.summary", {
+                total: summary.total,
+                open: summary.open,
+                present: summary.present,
+                missing: summary.missing,
+                notApplicable: summary.notApplicable,
+              })}
             </span>
           </div>
         </div>
@@ -224,16 +232,14 @@ export function Checklists() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Şablon kataloğu</h2>
-            <p className="card-sub">
-              İçerik lisansı yazılım lisansından ayrıdır; kopyada sürüm ve kaynak korunur.
-            </p>
+            <h2>{t("checklists.catalogTitle")}</h2>
+            <p className="card-sub">{t("checklists.catalogSub")}</p>
           </div>
         </div>
 
         {templates.length === 0 ? (
           <div className="empty">
-            <p style={{ margin: 0 }}>Katalog boş.</p>
+            <p style={{ margin: 0 }}>{t("checklists.catalogEmpty")}</p>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -252,18 +258,18 @@ export function Checklists() {
                     <div>
                       <strong>{template.title}</strong>
                       <div className="small muted">
-                        {template.practiceArea ?? "alan belirtilmemiş"} ·{" "}
+                        {template.practiceArea ?? t("checklists.practiceUnknown")} ·{" "}
                         {checklistLicenseLabel(template)}
                       </div>
                       <div className="small muted">
-                        {template.itemCount} madde · içerik{" "}
+                        {t("checklists.templateItems", { count: template.itemCount })}{" "}
                         <span style={{ fontFamily: "var(--mono)" }}>
                           {shortContentHash(template.contentHash)}
                         </span>
                         {template.sourceUrl ? (
                           <>
                             {" "}
-                            · kaynak:{" "}
+                            · {t("checklists.sourceLabel")}{" "}
                             <span style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
                               {template.sourceUrl}
                             </span>
@@ -278,7 +284,7 @@ export function Checklists() {
                         disabled={busy || !caseId}
                         onClick={() => void copyTemplate(template)}
                       >
-                        {copied ? "Kopyayı doğrula" : "Dosyaya kopyala"}
+                        {copied ? t("checklists.verifyCopy") : t("checklists.copyToCase")}
                       </button>
                     </div>
                   </div>
@@ -288,31 +294,34 @@ export function Checklists() {
           </div>
         )}
         <p className="hint" style={{ margin: 0 }}>
-          Aynı şablon sürümü ikinci kez kopyalanmaz; “Kopyayı doğrula” yinelenen öğe üretmeden
-          mevcut kopyayı denetler.
+          {t("checklists.copyHint")}
         </p>
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Dosya kontrol listesi</h2>
-            <p className="card-sub">{items.length} öğe</p>
+            <h2>{t("checklists.caseListTitle")}</h2>
+            <p className="card-sub">{t("checklists.itemsSub", { count: items.length })}</p>
           </div>
           {items.length > 0 ? (
             <div style={{ display: "flex", gap: 6 }}>
-              <span className="badge ok">{summary.present} bulundu</span>
-              <span className="badge warn">{summary.missing} bulunamadı</span>
-              <span className="badge plain">{summary.notApplicable} uygulanamaz</span>
+              <span className="badge ok">
+                {t("checklists.foundBadge", { count: summary.present })}
+              </span>
+              <span className="badge warn">
+                {t("checklists.missingBadge", { count: summary.missing })}
+              </span>
+              <span className="badge plain">
+                {t("checklists.notApplicableBadge", { count: summary.notApplicable })}
+              </span>
             </div>
           ) : null}
         </div>
 
         {items.length === 0 ? (
           <div className="empty">
-            <p style={{ margin: 0 }}>
-              Bu dosyada kontrol listesi yok. Katalogdan bir şablon kopyalayın.
-            </p>
+            <p style={{ margin: 0 }}>{t("checklists.empty")}</p>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -340,16 +349,26 @@ export function Checklists() {
                   <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
                     <div style={{ flex: "1 1 420px" }}>
                       <div className="small muted">
-                        {item.ordinal + 1}. madde · {item.category || "genel"}
+                        {t("checklists.itemMeta", {
+                          ordinal: item.ordinal + 1,
+                          category: item.category || t("checklists.categoryGeneral"),
+                        })}
                         {item.template ? (
                           <>
                             {" "}
-                            · {item.template.title} sürüm {item.template.version} ·{" "}
-                            {item.template.licenseId ?? "lisans belirtilmemiş"} · içerik{" "}
+                            ·{" "}
+                            {t("checklists.templateMeta", {
+                              title: item.template.title,
+                              version: item.template.version,
+                              license: item.template.licenseId ?? t("checklists.licenseUnknown"),
+                            })}{" "}
                             {shortContentHash(item.template.contentHash)}
                           </>
                         ) : (
-                          " · şablon künyesi yok (kopya metni korunuyor)"
+                          <>
+                            {" · "}
+                            {t("checklists.noTemplateMeta")}
+                          </>
                         )}
                       </div>
                       <div style={{ marginTop: 2 }}>{item.itemText}</div>
@@ -369,7 +388,7 @@ export function Checklists() {
 
                   <div className="row" style={{ alignItems: "flex-start" }}>
                     <div className="field" style={{ flex: "0 1 240px" }}>
-                      <label htmlFor={`state-${item.id}`}>Durum</label>
+                      <label htmlFor={`state-${item.id}`}>{t("checklists.state")}</label>
                       <select
                         id={`state-${item.id}`}
                         className="input"
@@ -389,11 +408,11 @@ export function Checklists() {
 
                     {draft.state === "present" ? (
                       <div className="field" style={{ flex: "1 1 320px" }}>
-                        <label>Bağlı belgeler ({draft.links.length})</label>
+                        <label>
+                          {t("checklists.linkedDocuments", { count: draft.links.length })}
+                        </label>
                         {documents.length === 0 ? (
-                          <span className="hint">
-                            Bu dosyada belge yok; önce belge içe aktarın.
-                          </span>
+                          <span className="hint">{t("checklists.noDocuments")}</span>
                         ) : (
                           <div
                             style={{
@@ -427,10 +446,10 @@ export function Checklists() {
                     <div className="field" style={{ flex: "1 1 260px" }}>
                       <label htmlFor={`note-${item.id}`}>
                         {draft.state === "missing"
-                          ? "İncelenen kapsam"
+                          ? t("checklists.noteMissing")
                           : draft.state === "not_applicable"
-                            ? "Gerekçe"
-                            : "Not (isteğe bağlı)"}
+                            ? t("checklists.noteNotApplicable")
+                            : t("checklists.noteOptional")}
                       </label>
                       <input
                         id={`note-${item.id}`}
@@ -439,8 +458,8 @@ export function Checklists() {
                         onChange={(e) => updateDraft(item, { note: e.target.value })}
                         placeholder={
                           draft.state === "missing"
-                            ? "Örn. 2020-2024 arası kira sözleşmeleri incelendi"
-                            : "Kısa açıklama"
+                            ? t("checklists.notePlaceholderMissing")
+                            : t("checklists.notePlaceholder")
                         }
                       />
                     </div>
@@ -451,14 +470,14 @@ export function Checklists() {
                       onClick={() => void save(item)}
                       title={rule ?? undefined}
                     >
-                      Kaydet
+                      {t("common.save")}
                     </button>
                   </div>
 
                   {rule ? <p className="hint error" style={{ margin: 0 }}>{rule}</p> : null}
                   {staleLinks.length > 0 ? (
                     <div className="hint">
-                      Listede görünmeyen bağlar (belge silinmiş veya arşivlenmiş olabilir):{" "}
+                      {t("checklists.staleLinks")}{" "}
                       {staleLinks.map((id) => {
                         const name =
                           item.linkedDocuments.find((document) => document.id === id)?.displayName ??
@@ -471,7 +490,7 @@ export function Checklists() {
                               style={{ padding: "0 4px" }}
                               onClick={() => toggleDocument(item, id, false)}
                             >
-                              kaldır
+                              {t("checklists.removeLink")}
                             </button>
                           </span>
                         );
@@ -480,7 +499,7 @@ export function Checklists() {
                   ) : null}
                   {item.note && draft.note.trim() !== item.note ? (
                     <p className="hint" style={{ margin: 0 }}>
-                      Kayıtlı not: {item.note}
+                      {t("checklists.savedNote", { note: item.note })}
                     </p>
                   ) : null}
                 </div>

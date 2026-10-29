@@ -11,7 +11,66 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme** ekranları taşındı; **9 ekran açık**; kapı artık **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi** ekranları ve **`lib/checklist.ts`** taşındı; **7 ekran açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: Kronoloji + Kontrol listesi (+ `lib/checklist.ts`) (2026-10-30, ikinci tur)
+
+**Neden:** önceki turun açık kaydı "9 ekran taşınmadı"ydı. Sıradaki en küçük iki ekran
+(Kronoloji 494 satır/37 Türkçe satır, Kontrol listesi 498/33) seçildi; Kontrol listesi
+**kendi metnini taşımayan** bir yardımcıya (`lib/checklist.ts`, 23 satır) bağlı olduğu için
+o dosya da taşındı — yoksa ekran "temiz" görünürken etiketler lib'de kalırdı.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **104 yeni anahtar**: `timeline` (50: tarih rolü 7, kesinlik 6, ilişki 4,
+  düğme/etiket/ipucu 33) ve `checklists` (54: durum etiketi 4, durum yardımı 4, kural
+  iletisi 5, lisans künyesi 2, katalog/öğe metinleri 39). Sözlük toplamı **298** anahtar.
+- `screens/Timeline.tsx`: `DATE_ROLE_LABEL`/`PRECISION_LABEL` haritaları sözlükten türetilir
+  (`t()`); başlık `nav.timeline`dan. Tüm düğme, alan etiketi, yer tutucu, uyarı ve boş
+  durum metni sözlükten.
+- `screens/Checklists.tsx` + **`lib/checklist.ts`**: `CHECKLIST_STATE_LABEL`,
+  `CHECKLIST_STATE_HELP`, `MISSING_SCOPE_NOTE`, `validateChecklistEntry` iletileri,
+  `checklistLicenseLabel` ve `copiedLabel` artık `t()` ile sözlükten okur. Böylece ekran
+  metni ile **yardımcı lib metni tek yerde**.
+- **Kapı kapsamı büyüdü:** `localization.test.ts` `MIGRATED` listesine
+  `screens/Timeline.tsx`, `screens/Checklists.tsx`, `lib/checklist.ts` eklendi → kapı artık
+  **lib dosyalarını da** tarıyor (önceki turun açık kaydı "kapı yalnız ekranları tarıyor"un
+  ilk adımı).
+
+**Ölçülen kusur (mevcut kapı yakaladı):** `i18n.test.ts` sözlükte **baş/son boşluk**
+bırakmayı yasaklıyor; `checklists.noTemplateMeta` değerini `" · şablon künyesi yok …"`
+diye yazmıştım → **1 failed** (`checklists.noTemplateMeta: boşluk`). Ayırıcı (`{" · "}`)
+JSX'e taşındı, değer kırpıldı → yeşil. Yani kapı, "metni sözlüğe taşırken biçimi bozma"
+sınıfını gerçekten yakalıyor.
+
+**Kanıt (kırmızı→yeşil, ölçüldü)**
+
+- `screens/Timeline.tsx`e geçici `const _leak = "Kronoloji başlığı";` →
+  `localization.test.ts` **1 failed | 7 passed**, rapor:
+  `expected [ 'screens/Timeline.tsx:506' ] to deeply equal []`; satır geri alındı → **8/8**.
+- Aynı anda `lib/checklist.ts`e `export const _LEAK2 = "İncelenen kapsam";` →
+  rapor iki dosyayı birlikte gösterdi (`lib/checklist.ts:111` + Timeline satırı) → lib
+  kapsamı **ölçülerek** doğrulandı.
+
+**Test/derleme:** `tsc --noEmit` temiz · `vitest run` **445/445** (35 dosya; +3:
+sözlük bağı 2 + parametreli sayaç 1) · `vite build` temiz (**88** modül, 497,44 kB).
+Altı taşınmış dosyada (`Timeline`, `Checklists`, `checklist.ts`) yorum dışı **0** Türkçe
+harf satırı.
+
+**Dürüst sınırlar**
+
+- **7 ekran taşınmadı:** Dosyalar/Cases, Arama, İnceleme, Emsal, AI, Sağlayıcılar, Ayarlar.
+  F04-T08 **🚧 kaldı**.
+- Yardımcı lib metinleri hâlâ kendi dosyalarında: `lib/jobs.ts` (80 Türkçe satır),
+  `lib/reader.ts` (84), `lib/providers.ts` (77), `lib/search.ts` (61), `lib/arch.ts` (52),
+  `lib/candidate.ts` (47), `lib/intext.ts` (45), `lib/precedents.ts` (41),
+  `lib/attack.ts` (41), `lib/rollback.ts` (30), `lib/export-coverage.ts` (30). Yani
+  taşınmış ekranların bazı satırları hâlâ bu lib'lerden geliyor; kapı onları taramıyor.
+- Metinler **birebir aynı** (yalnız kaynak değişti) → görsel fark beklenmiyor; Tauri
+  penceresi açılmadı → **görsel QA yok**. Windows denenmedi.
+- `t()` modül yüklenirken değil **çağrı anında** çalışır; `CHECKLIST_STATE_LABEL` gibi
+  modül düzeyi sabitler import anında çözülür (sözlük `as const`, dil değiştirme yok —
+  tek dilli ürün kararı sürüyor).
 
 ## F04-T08 — sözlük taşıması: Görevler, Çıktılar, Maskeleme (2026-10-30)
 
