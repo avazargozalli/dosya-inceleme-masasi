@@ -11,7 +11,71 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar, Emsal** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **17 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`, `precedents`, `precedent-terms`, `precedent-document`) taşındı (**33 dosya**); **2 ekran + 1 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar, Emsal, Sağlayıcılar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **22 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`, `precedents`, `precedent-terms`, `precedent-document`, `providers`, `arch`, `package`, `attack`) taşındı (**38 dosya**); **1 ekran + 1 bileşen açık** (İnceleme, `DualReader`); kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+
+## F04-T08 — sözlük taşıması: `screens/Providers.tsx` + dört sağlayıcı lib'i (2026-10-31, onuncu tur)
+
+**Önceki turun açık işi kapandı:** `257d3fd` + `901b26e` → CI `41139371524` ve `41140449934`
+**7/7 yeşil** (doğrulandı; bu turda ek doğrulama gerekmedi).
+
+**Neden bu dilim (ölçüldü):** kalan yüzeyde en büyük **kapalı küme** Sağlayıcılar çevresiydi:
+`screens/Providers.tsx` (110 Türkçe satır) + metninin bir kısmını taşıyan dört lib —
+`lib/providers.ts` (42), `lib/arch.ts` (36), `lib/package.ts` (31), `lib/attack.ts` (24) =
+**243 satır**. Import taraması: `arch`, `package`, `attack` lib'lerini **yalnız**
+`Providers.tsx` (kendi testleri dışında) import ediyor; `lib/providers.ts`'i ayrıca
+**`lib/inventory.ts`** import ediyor — ama **yalnız `formatBytes`** (saf yeniden dışa aktarım,
+metin yok) → küme **kapalı** sayıldı ve beşi birlikte taşındı. `inventory.ts` bu turda
+taşınmadı (kendi metnini taşımaya devam ediyor, açık kayıt).
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **5 yeni bölüm / 315 anahtar** (`providers` 142, `probe` 65, `arch` 38,
+  `attack` 31, `package` 39) → sözlük **1191 → 1506** (`messageKeys()` ile ölçüldü).
+- **Modül sabitleri fonksiyona çevrildi:** ekrandaki `AUTH_LABEL` → `authLabel(mode)`,
+  `lib/package.ts`'teki `ROLE_LABELS` → `ROLE_KEYS` + `roleLabel(role)`,
+  `PROBLEM_LABELS` → `PROBLEM_KEYS` + `problemText`, `PACKAGE_LIMITS` → **`packageLimits()`**
+  (sabit harita/sabit metin sözlüğü **import anında** okuyordu — Notlar/Emsal dersinin aynısı;
+  `lib/arch.ts`'te 19 kodluk neden haritası da `REASON_KEYS` tablosuna çevrildi).
+- `screens/Providers.tsx`: API profili kartı, başlık/lead, "AI kapalı" bildirimi, yetenek
+  matrisi (kapı rozeti, `{row.label} · gerekli`, sınırlar), worker paketi (üç sayaç, roller,
+  manifestle uyuşmayan/fazla dosya, Tesseract satırı, sınır cümlesi), saldırı testi (fikstür
+  özeti + 4 uyarı, vektör kararları, kapatma yolu), mimari denetimi (5 `dt` + yorumlayıcı +
+  neden + başlık baytı), CLI kartları (durum rozetleri, 5 `dt`, toplu kullanım yasağı,
+  "Bağlantıyı sına"/"İptal", kum havuzu dosyaları, çıktılar) ve **`ResiduePanel`**
+  (envanter tablosu 5 sütun, onay kutusu, ölçüm öncesi/sonrası, temizlik, süpürme).
+- **Ayırıcı kararı (sürüyor):** `" · "` ve baştaki tek boşluk **değerlere gömülmedi**
+  (kapı baş/son boşluk + çift boşluk yasaklıyor); birleştirme kodda tek yerde
+  (`join(" · ")`, `{" "}`). Cümle içi ayırıcılar (`{at} · {pages} …`) şablonun parçası —
+  metin birebir.
+
+**Doğrulama (ölçüldü)**
+
+- **Kırmızı→yeşil:** `Providers.tsx`e `const _LEAK_SCREEN = "Sağlayıcı profili";` **ve**
+  `arch.ts`e `export const _LEAK_LIB = "mimari farklı";` aynı anda → `localization`
+  **1 failed | 8 passed**, rapor **iki dosyayı birlikte**:
+  `[ "lib/arch.ts:14", "screens/Providers.tsx:87" ]`; geri alındı, `shasum -c` **birebir OK**
+  → 9/9.
+- **Yeni 6 test** (`i18n-bindings.test.ts`): mimari (rozet/en kötü/özet/uyarı/neden/shebang),
+  paket (durum/özet/rol/uyum/uyarı/sınır cümlesi), saldırı (karar/fikstür/skip/ürün/komut/en
+  kötü), yoklama (durum/özet/kapsam satırları/kalıntı yaşı/ölçüm özeti/süpürme/yetenek kapısı),
+  **10 parametreli satırın hiçbiri `{` bırakmaz**, ve **ekran + dört lib'in `t()` ile çağırdığı
+  281 benzersiz anahtarın (295 çağrı) hepsi sözlükte** (dosya bazlı tarama).
+- Mevcut `arch` (15), `attack` (26), `package` (18), `providers` (18), `capability` (8)
+  testleri **birebir `.toBe`** karşılaştırması yapıyor ve **değişmeden geçti** (yalnız
+  `package.test.ts`'te `PACKAGE_LIMITS` → `packageLimits()` çağrısı güncellendi) → metinler
+  byte düzeyinde aynı.
+- `tsc --noEmit` temiz · `vitest` **489/489** (36 dosya; 483 → +6) · `vite build` temiz
+  (**552,09 kB**; 537,32 → sözlük büyüdü, Vite 500 kB uyarısı sürüyor).
+- Kalan yüzey **277 Türkçe satır / 11 dosya** (kapının kendi mantığıyla; 1 satırlıklar
+  satır sonu yorumu: `api.ts`, `backup-schedule.ts`, `filename.ts`, `main.tsx`).
+
+**Dürüst sınırlar:** **1 ekran + 1 bileşen** kaldı (`screens/Review.tsx` 100,
+`components/DualReader.tsx` 93) + **4 yardımcı lib** (`intext` 35, `inventory` 32, `reader` 8,
+`reviewTarget` 2) + `PageMap` 3 → F04-T08 **🚧**. `lib/providers.ts`'i `lib/inventory.ts` de
+import ediyor (yalnız `formatBytes`); `inventory.ts` kendi metnini taşımaya devam ediyor.
+Tauri penceresi açılmadı → **görsel QA yok** (JSX boşlukları `{" "}` ile açıkça yazıldı ama
+ekranda görülmedi). Windows denenmedi.
+
 
 ## F04-T08 — sözlük taşıması: `screens/Precedents.tsx` + üç künye lib'i (2026-10-31, dokuzuncu tur)
 

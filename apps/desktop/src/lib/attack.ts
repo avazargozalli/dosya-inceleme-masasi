@@ -1,5 +1,6 @@
 // Başlangıç saldırı testi (F10-T12) sunumu. Saf fonksiyonlar: ekran yalnız
 // bunları çağırır, böylece karar/uyarı mantığı DOM olmadan test edilir.
+// Metinler F04-T08 gereği merkezi sözlükten gelir (`lib/i18n.ts`).
 
 import type {
   CliAttackAdapter,
@@ -9,6 +10,7 @@ import type {
   CliAttackVector,
   CliAttackVerdict,
 } from "./api";
+import { t } from "./i18n";
 
 export type AttackTone = "ok" | "warn" | "danger" | "plain";
 
@@ -34,13 +36,13 @@ export function attackVerdictText(
 ): string {
   switch (view.verdict) {
     case "triggered":
-      return `tetiklendi · ${view.sourceLabel}`;
+      return t("attack.verdictTriggered", { source: view.sourceLabel });
     case "silent_guarded":
-      return "işaret yok · kapatma yolu bildirildi (davranış denenmedi)";
+      return t("attack.verdictSilentGuarded");
     case "silent_unguarded":
-      return "işaret yok · koruma kanıtlanmadı";
+      return t("attack.verdictSilentUnguarded");
     case "inconclusive":
-      return "ölçülemedi · dedektör kanıtlanmadı";
+      return t("attack.verdictInconclusive");
     default:
       return view.verdictLabel;
   }
@@ -63,7 +65,7 @@ export function attackCommand(
   const argv =
     adapter.argv.length > 0
       ? adapter.argv.map((arg) => (arg === "" ? '""' : arg)).join(" ")
-      : "—";
+      : t("common.unknown");
   return adapter.version ? `${adapter.version} · ${argv}` : argv;
 }
 
@@ -72,55 +74,62 @@ export function attackSkipText(skipped: string | null): string | null {
   if (!skipped) return null;
   switch (skipped) {
     case "not_installed":
-      return "kurulu değil · saldırı koşusu yapılmadı";
+      return t("attack.skipNotInstalled");
     case "interactive_only":
-      return "etkileşimli-only · otomatik saldırı koşusu yapılmadı";
+      return t("attack.skipInteractiveOnly");
     case "executable_missing":
-      return "yürütülebilir bulunamadı · saldırı koşusu yapılmadı";
+      return t("attack.skipExecutableMissing");
     case "run_failed":
-      return "koşu sıfır dışı bitti · kararlar kanıt sayılmaz";
+      return t("attack.skipRunFailed");
     default:
-      return `saldırı koşusu yapılmadı (${skipped})`;
+      return t("attack.skipOther", { code: skipped });
   }
 }
 
 /** Fikstür özeti: dedektör kanıtı ve iş dizini kapısı. */
 export function attackFixtureSummary(fixture: CliAttackFixture): string {
-  const proven = fixture.detectorProven ? "kanıtlı" : "kanıtsız";
+  const proven = fixture.detectorProven ? t("attack.provenYes") : t("attack.provenNo");
   const gate = fixture.gateRejected
-    ? `reddedildi${fixture.gateCode ? ` (${fixture.gateCode})` : ""}`
-    : "kabul edildi";
-  return `Dedektör ${proven}: kirli ${fixture.pollutedHits}/${fixture.vectorTotal} · temiz ${fixture.cleanHits}/${fixture.vectorTotal} · kirli proje dizini iş dizini olarak ${gate}`;
+    ? fixture.gateCode
+      ? t("attack.gateRejectedCode", { code: fixture.gateCode })
+      : t("attack.gateRejected")
+    : t("attack.gateAccepted");
+  return t("attack.fixtureSummary", {
+    proven,
+    polluted: fixture.pollutedHits,
+    total: fixture.vectorTotal,
+    clean: fixture.cleanHits,
+    gate,
+  });
 }
 
 /** Ürün yapılandırmasındaki vektör satırı. */
 export function attackProductText(item: CliAttackProduct): string {
-  return `${item.label}: ${item.hit ? "ulaşıldı" : "ulaşılamadı"}`;
+  return t("attack.productLine", {
+    label: item.label,
+    state: item.hit ? t("attack.productHit") : t("attack.productMiss"),
+  });
 }
 
 /** Fikstür düzeyinde uyarılar (boş dizi = uyarı yok). */
 export function attackFixtureWarnings(fixture: CliAttackFixture): string[] {
   const warnings: string[] = [];
   if (!fixture.detectorProven) {
-    warnings.push(
-      "Dedektör kanıtlanmadı: kirli fikstürde vekil yükleyici işaret bırakmadı, “işaret yok” sonuçları anlamsız.",
-    );
+    warnings.push(t("attack.warnDetectorUnproven"));
   }
   if (!fixture.detectorControlClean) {
-    warnings.push("Temiz fikstürde işaret oluştu: dedektör yanlış pozitif üretiyor.");
+    warnings.push(t("attack.warnControlDirty"));
   }
   if (!fixture.gateRejected) {
-    warnings.push("Kirli proje dizini iş dizini olarak kabul edildi (beklenmiyordu).");
+    warnings.push(t("attack.warnGateAccepted"));
   }
   for (const item of fixture.productConfig) {
     if (item.hit && item.vector !== "canary") {
-      warnings.push(`Ürün yapılandırmasında “${item.label}” vektörü tetiklendi.`);
+      warnings.push(t("attack.warnProductVector", { label: item.label }));
     }
   }
   if (fixture.canaryReadInProductConfig) {
-    warnings.push(
-      "Kapsam dışı canary ürün yapılandırmasında mutlak yolla okunabildi; bu sınır kapatılmadı, koruma istem/araç yolunun yokluğuna dayanıyor.",
-    );
+    warnings.push(t("attack.warnCanary"));
   }
   return warnings;
 }
@@ -129,18 +138,14 @@ export function attackFixtureWarnings(fixture: CliAttackFixture): string[] {
 export function attackAdapterWarnings(adapter: CliAttackAdapter): string[] {
   const warnings: string[] = [];
   if (adapter.hits > 0) {
-    warnings.push(
-      `${adapter.hits} vektör tetiklendi: bu adaptörle otomatik inceleme açılmamalı.`,
-    );
+    warnings.push(t("attack.warnHits", { count: adapter.hits }));
   }
   const unguarded = adapter.vectors.filter((v) => v.verdict === "silent_unguarded").length;
   if (unguarded > 0) {
-    warnings.push(
-      `${unguarded} vektörde kapatma yolu bildirilmedi; işaret olmaması koruma kanıtı değil.`,
-    );
+    warnings.push(t("attack.warnUnguarded", { count: unguarded }));
   }
   if (adapter.vectors.length > 0 && !adapter.helpRead) {
-    warnings.push("Yardım metni okunamadı; kapatma yolu doğrulanamadı.");
+    warnings.push(t("attack.warnHelpUnread"));
   }
   const skip = attackSkipText(adapter.skipped);
   if (skip) {
@@ -172,18 +177,18 @@ export function attackWorstVerdict(adapters: CliAttackAdapter[]): {
 } {
   const counts = attackCounts(adapters);
   if (counts.triggered > 0) {
-    return { label: `${counts.triggered} vektör tetiklendi`, tone: "danger" };
+    return { label: t("attack.worstTriggered", { count: counts.triggered }), tone: "danger" };
   }
   if (counts.silent_unguarded > 0) {
-    return { label: `${counts.silent_unguarded} vektörde koruma kanıtlanmadı`, tone: "warn" };
+    return { label: t("attack.worstUnguarded", { count: counts.silent_unguarded }), tone: "warn" };
   }
   if (counts.inconclusive > 0) {
-    return { label: `${counts.inconclusive} vektör ölçülemedi`, tone: "plain" };
+    return { label: t("attack.worstInconclusive", { count: counts.inconclusive }), tone: "plain" };
   }
   if (counts.silent_guarded > 0) {
-    return { label: "işaret yok · kapatma yolları bildirildi", tone: "warn" };
+    return { label: t("attack.worstGuarded"), tone: "warn" };
   }
-  return { label: "koşu yapılmadı", tone: "plain" };
+  return { label: t("attack.worstNone"), tone: "plain" };
 }
 
 /** Raporun toplam işaret sayısı. */

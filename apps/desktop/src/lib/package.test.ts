@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkerPackageView } from "./api";
 import {
-  PACKAGE_LIMITS,
+  packageLimits,
   packageStatusText,
   packageSummary,
   packageTone,
@@ -164,7 +164,7 @@ describe("packageWarnings", () => {
   });
 
   it("sınır cümlesi imza iddiası taşımaz", () => {
-    expect(PACKAGE_LIMITS).toContain("imza değildir");
-    expect(PACKAGE_LIMITS).toContain("Tesseract");
+    expect(packageLimits()).toContain("imza değildir");
+    expect(packageLimits()).toContain("Tesseract");
   });
 });

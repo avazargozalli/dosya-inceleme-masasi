@@ -1,7 +1,9 @@
 // "Bağlantıyı sına" sonucunun sunumu. Saf fonksiyonlar: ekran yalnız bunları
 // çağırır, böylece etiket/uyarı mantığı DOM olmadan test edilir.
+// Metinler F04-T08 gereği merkezi sözlükten gelir (`lib/i18n.ts`).
 
 import { formatSize } from "./format";
+import { t } from "./i18n";
 import type {
   CliCapabilityAdapter,
   CliCapabilityMatrix,
@@ -23,16 +25,16 @@ export function probeStatusLabel(
   switch (view.status) {
     case "exited":
       return view.exitCode === 0
-        ? { label: "tamamlandı", tone: "ok" }
-        : { label: `çıkış ${view.exitCode ?? "?"}`, tone: "danger" };
+        ? { label: t("probe.statusDone"), tone: "ok" }
+        : { label: t("probe.statusExit", { code: view.exitCode ?? "?" }), tone: "danger" };
     case "timed_out":
-      return { label: "süre doldu", tone: "warn" };
+      return { label: t("probe.statusTimedOut"), tone: "warn" };
     case "cancelled":
-      return { label: "iptal edildi", tone: "warn" };
+      return { label: t("probe.statusCancelled"), tone: "warn" };
     case "signaled":
-      return { label: "sinyalle bitti", tone: "warn" };
+      return { label: t("probe.statusSignaled"), tone: "warn" };
     default:
-      return { label: "bilinmiyor", tone: "plain" };
+      return { label: t("probe.statusUnknown"), tone: "plain" };
   }
 }
 
@@ -45,9 +47,9 @@ export function probeArgv(view: Pick<CliProbeView, "executable" | "args">): stri
 export function probeSummary(
   view: Pick<CliProbeView, "exitCode" | "durationMs" | "timeoutMs">,
 ): string {
-  const parts = [`${view.durationMs} ms`];
-  if (view.exitCode !== null) parts.push(`çıkış kodu ${view.exitCode}`);
-  parts.push(`sınır ${Math.round(view.timeoutMs / 1000)} sn`);
+  const parts = [t("probe.summaryDuration", { ms: view.durationMs })];
+  if (view.exitCode !== null) parts.push(t("probe.summaryExit", { code: view.exitCode }));
+  parts.push(t("probe.summaryTimeout", { seconds: Math.round(view.timeoutMs / 1000) }));
   return parts.join(" · ");
 }
 
@@ -56,8 +58,8 @@ export function probeWarnings(
   view: Pick<CliProbeView, "stdoutTruncated" | "stderrTruncated">,
 ): string[] {
   const out: string[] = [];
-  if (view.stdoutTruncated) out.push("stdout 64 KiB'te kesildi; çıktı tam değil.");
-  if (view.stderrTruncated) out.push("stderr 64 KiB'te kesildi; çıktı tam değil.");
+  if (view.stdoutTruncated) out.push(t("probe.warnStdoutTruncated"));
+  if (view.stderrTruncated) out.push(t("probe.warnStderrTruncated"));
   return out;
 }
 
@@ -97,19 +99,31 @@ export function probeScopeLines(
   const box = view.sandbox;
   const files =
     box.files.length === 0
-      ? "yok"
-      : `${box.files.length} dosya · ${formatBytes(box.totalBytes)}`;
+      ? t("probe.filesNone")
+      : t("probe.filesWithSize", {
+          count: box.files.length,
+          size: formatBytes(box.totalBytes),
+        });
   return [
     {
-      label: "İzin",
-      value: box.workdirMode === null ? "doğrulanamadı (Unix dışı)" : `${box.workdirMode} yalnız kullanıcı`,
+      label: t("probe.scopePermLabel"),
+      value:
+        box.workdirMode === null
+          ? t("probe.scopePermUnknown")
+          : t("probe.scopePermValue", { mode: box.workdirMode }),
     },
     {
-      label: "HOME / TMPDIR",
-      value: box.homeIsolation === "sandbox" ? "kum havuzunda" : "kullanıcı ev dizini (açık seçim)",
+      label: t("probe.scopeHomeLabel"),
+      value: box.homeIsolation === "sandbox" ? t("probe.scopeHomeSandbox") : t("probe.scopeHomeUser"),
     },
-    { label: "stdin", value: `${formatBytes(box.stdinBytes)} / ${formatBytes(box.stdinLimitBytes)}` },
-    { label: "Bırakılan dosya", value: files },
+    {
+      label: t("probe.scopeStdinLabel"),
+      value: t("probe.scopeStdinValue", {
+        used: formatBytes(box.stdinBytes),
+        limit: formatBytes(box.stdinLimitBytes),
+      }),
+    },
+    { label: t("probe.scopeFilesLabel"), value: files },
   ];
 }
 
@@ -119,21 +133,20 @@ export function probeScopeWarnings(view: Pick<CliProbeView, "sandbox">): string[
   const out: string[] = [];
   if (box.sizeLimitBytes > 0 && box.totalBytes > box.sizeLimitBytes) {
     out.push(
-      `Kum havuzunda ${formatBytes(box.totalBytes)} dosya var; ${formatBytes(box.sizeLimitBytes)} sınırı aşıldı. Sınır sonradan ölçülür, süreç durdurulmadı.`,
+      t("probe.warnSizeLimit", {
+        total: formatBytes(box.totalBytes),
+        limit: formatBytes(box.sizeLimitBytes),
+      }),
     );
   }
   if (box.filesTruncated) {
-    out.push(
-      `Dosya listesi ${box.entryLimit} girdide kesildi; toplam bayt yalnız listelenen dosyaları kapsar.`,
-    );
+    out.push(t("probe.warnListTruncated", { entries: box.entryLimit }));
   }
   if (box.homeIsolation === "user_home") {
-    out.push(
-      "HOME/TMPDIR kullanıcı ev dizininde: alt süreç varsayılan yollarda kişisel yapılandırmayı görebilir.",
-    );
+    out.push(t("probe.warnUserHome"));
   }
   if (box.workdirMode === null) {
-    out.push("İş dizini izni bu platformda doğrulanamadı.");
+    out.push(t("probe.warnWorkdirUnknown"));
   }
   return out;
 }
@@ -142,21 +155,21 @@ export function probeScopeWarnings(view: Pick<CliProbeView, "sandbox">): string[
 
 /** Kalıntının yaşı: "az önce", "12 dk", "3 sa", "5 gün". */
 export function residueAge(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "—";
-  if (seconds < 60) return "az önce";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} dk`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} sa`;
-  return `${Math.floor(seconds / 86400)} gün`;
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return t("common.unknown");
+  if (seconds < 60) return t("probe.residueAgeNow");
+  if (seconds < 3600) return t("probe.residueAgeMinutes", { count: Math.floor(seconds / 60) });
+  if (seconds < 86400) return t("probe.residueAgeHours", { count: Math.floor(seconds / 3600) });
+  return t("probe.residueAgeDays", { count: Math.floor(seconds / 86400) });
 }
 
 /** Bildirilen tek yolun satır özeti; "yok" ile "boş" ayrı gösterilir. */
 export function residuePathLine(
   entry: Pick<CliResiduePath, "exists" | "files" | "bytes" | "truncated">,
 ): string {
-  if (!entry.exists) return "yok";
-  if (entry.files === 0) return "boş";
-  const suffix = entry.truncated ? " · liste kesik" : "";
-  return `${entry.files} dosya · ${formatBytes(entry.bytes)}${suffix}`;
+  if (!entry.exists) return t("probe.residuePathMissing");
+  if (entry.files === 0) return t("probe.residuePathEmpty");
+  const suffix = entry.truncated ? ` · ${t("probe.residuePathTruncated")}` : "";
+  return `${t("probe.filesWithSize", { count: entry.files, size: formatBytes(entry.bytes) })}${suffix}`;
 }
 
 /** Oturum kalıcılığını kapatma yolu; doğrulanmadıysa bunu açıkça söyler. */
@@ -167,10 +180,13 @@ export function persistenceText(
   >,
 ): string {
   if (scan.persistenceFlag === null) {
-    return "doğrulanmış kapatma bayrağı yok — kalıntı yalnız kum havuzuyla sınırlanır";
+    return t("probe.persistenceNone");
   }
-  const version = scan.persistenceVerifiedWith ?? "?";
-  return `${scan.persistenceFlag} (yalnız ${scan.persistenceAppliesTo}; ${version} --help ile doğrulandı)`;
+  return t("probe.persistenceLine", {
+    flag: scan.persistenceFlag,
+    scope: scan.persistenceAppliesTo ?? "?",
+    version: scan.persistenceVerifiedWith ?? "?",
+  });
 }
 
 /** Tarama sınırına takılma ve eksik envanter uyarıları. */
@@ -179,13 +195,10 @@ export function residueScanWarnings(
 ): string[] {
   const out: string[] = [];
   if (scan.truncated) {
-    out.push(
-      `Tarama ${scan.fileLimit} dosyada kesildi; toplamlar eksik olabilir. ` +
-        "Envanter yalnız bildirilen yolları kapsar, ev dizini genel olarak taranmaz.",
-    );
+    out.push(t("probe.scanTruncated", { limit: scan.fileLimit }));
   }
   if (scan.paths.some((path) => path.truncated)) {
-    out.push("Bir ya da daha çok yolun dosya listesi kesildi; bayt toplamı eksik.");
+    out.push(t("probe.scanPathTruncated"));
   }
   return out;
 }
@@ -199,25 +212,19 @@ export function residueMeasureWarnings(
 ): string[] {
   const out: string[] = [];
   if (view.usedUserHome) {
-    out.push(
-      "Ölçüm gerçek ev dizininde yapıldı: CLI kendi yapılandırma dizinlerini gördü. İstem gönderilmedi.",
-    );
+    out.push(t("probe.measureUserHome"));
   }
   if (view.created.length > 0) {
-    out.push(
-      `Bu koşuda ${view.created.length} yeni dosya oluştu; bunlar uygulamaya ait sayılır ve silinebilir.`,
-    );
+    out.push(t("probe.measureCreated", { count: view.created.length }));
   }
   if (view.modified.length > 0) {
-    out.push(
-      `${view.modified.length} dosya değişti; önceden var oldukları için silinmez, yalnız raporlanır.`,
-    );
+    out.push(t("probe.measureModified", { count: view.modified.length }));
   }
   if (view.status !== "exited") {
-    out.push("Yoklama tamamlanmadı; kalıntı ölçümü eksik olabilir.");
+    out.push(t("probe.measureIncomplete"));
   }
   if (view.after.truncated) {
-    out.push("Ölçüm sonrası tarama kesildi; fark eksik dosya içerebilir.");
+    out.push(t("probe.measureAfterTruncated"));
   }
   return out;
 }
@@ -232,10 +239,10 @@ export function residueMeasureSummary(
   view: Pick<CliResidueMeasure, "durationMs" | "created" | "modified" | "bytesAdded">,
 ): string {
   return [
-    `${view.durationMs} ms`,
-    `${view.created.length} yeni dosya`,
-    `${view.modified.length} değişen`,
-    `+${formatBytes(view.bytesAdded)}`,
+    t("probe.summaryDuration", { ms: view.durationMs }),
+    t("probe.summaryCreated", { count: view.created.length }),
+    t("probe.summaryModified", { count: view.modified.length }),
+    t("probe.summaryAdded", { size: formatBytes(view.bytesAdded) }),
   ].join(" · ");
 }
 
@@ -244,12 +251,12 @@ export function residueCleanupSummary(
   view: Pick<CliResidueCleanup, "removedFiles" | "removedBytes" | "removedDirs" | "skipped" | "errors">,
 ): string {
   const parts = [
-    `${view.removedFiles} dosya silindi`,
+    t("probe.cleanupRemoved", { count: view.removedFiles }),
     formatBytes(view.removedBytes),
-    `${view.removedDirs} boş dizin`,
+    t("probe.cleanupDirs", { count: view.removedDirs }),
   ];
-  if (view.skipped.length > 0) parts.push(`${view.skipped.length} atlandı`);
-  if (view.errors.length > 0) parts.push(`${view.errors.length} hata`);
+  if (view.skipped.length > 0) parts.push(t("probe.cleanupSkipped", { count: view.skipped.length }));
+  if (view.errors.length > 0) parts.push(t("probe.cleanupErrors", { count: view.errors.length }));
   return parts.join(" · ");
 }
 
@@ -257,8 +264,12 @@ export function residueCleanupSummary(
 export function sandboxSweepSummary(
   view: Pick<CliSandboxSweep, "considered" | "removed" | "skipped" | "minAgeSecs">,
 ): string {
-  const age = Math.round(view.minAgeSecs / 60);
-  return `${view.considered} aday · ${view.removed.length} silindi · ${view.skipped.length} atlandı · en az ${age} dk yaş`;
+  return t("probe.sweep", {
+    considered: view.considered,
+    removed: view.removed.length,
+    skipped: view.skipped.length,
+    minutes: Math.round(view.minAgeSecs / 60),
+  });
 }
 
 // --- F10-T11: yetenek matrisi ---
@@ -309,10 +320,10 @@ export function capabilitySummary(
   const declared = view.rows.filter((row) => row.state === "declared").length;
   const missing = view.rows.filter((row) => row.state === "missing").length;
   const unknown = total - declared - missing;
-  const parts = [`${declared}/${total} bildirildi`];
-  if (missing > 0) parts.push(`${missing} yok`);
-  if (unknown > 0) parts.push(`${unknown} doğrulanamadı`);
-  if (view.rows.some((row) => row.state === "declared")) parts.push("davranış denenmedi");
+  const parts = [t("probe.capabilityDeclared", { declared, total })];
+  if (missing > 0) parts.push(t("probe.capabilityMissing", { count: missing }));
+  if (unknown > 0) parts.push(t("probe.capabilityUnknown", { count: unknown }));
+  if (view.rows.some((row) => row.state === "declared")) parts.push(t("probe.capabilityUntested"));
   return parts.join(" · ");
 }
 
@@ -326,13 +337,13 @@ export function capabilityReasonLines(
     if (!row) return reason;
     const stateLabel =
       row.state === "missing"
-        ? "kurulu sürümde yok"
+        ? t("probe.reasonMissing")
         : row.state === "no_path"
-          ? "doğrulanmış yol yok"
+          ? t("probe.reasonNoPath")
           : row.state === "unread"
-            ? "okunamadı"
+            ? t("probe.reasonUnread")
             : row.stateLabel;
-    return `${row.label}: ${stateLabel}`;
+    return t("probe.reasonLine", { label: row.label, state: stateLabel });
   });
 }
 
@@ -341,14 +352,14 @@ export function capabilityGateText(
   view: Pick<CliCapabilityAdapter, "gateOpen" | "link" | "linkLabel" | "gateReasons" | "rows">,
 ): string {
   if (view.gateOpen) {
-    return "Yetenek kapısı açık: gerekli yeteneklerin hepsi kurulu sürümün yardım metninde bildirildi; davranış denenmedi.";
+    return t("probe.gateOpen");
   }
   if (view.link === "not_installed") {
-    return "Yetenek kapısı kapalı: araç kurulu değil, yetenek doğrulanamaz.";
+    return t("probe.gateNotInstalled");
   }
   const reasons = capabilityReasonLines(view);
   const detail = reasons.length > 0 ? ` — ${reasons.join("; ")}` : "";
-  return `Yetenek kapısı kapalı (${view.linkLabel})${detail}`;
+  return t("probe.gateClosed", { link: view.linkLabel, detail });
 }
 
 /** Dürüstlük uyarıları: okunamayan yardım, kesik çıktı, eksik bayrak. */
@@ -357,12 +368,12 @@ export function capabilityWarnings(
 ): string[] {
   const out: string[] = [];
   if (view.helpError !== null && view.helpError !== "") {
-    out.push(`Yardım metni okunamadı (${view.helpError}); yetenekler "okunamadı" kalır.`);
+    out.push(t("probe.warnHelpError", { error: view.helpError }));
   } else if (!view.helpRead && view.rows.some((row) => row.state === "unread")) {
-    out.push("Yardım metni okunamadı; yetenekler doğrulanmadı.");
+    out.push(t("probe.warnHelpUnread"));
   }
   for (const row of view.rows.filter((candidate) => candidate.state === "missing")) {
-    out.push(`${row.label}: kurulu sürümün yardım metninde ${row.flags.join(" ")} yok.`);
+    out.push(t("probe.warnFlagMissing", { label: row.label, flags: row.flags.join(" ") }));
   }
   return out;
 }
@@ -377,7 +388,10 @@ export function matrixWorstLink(
     limited: 2,
     incompatible: 3,
   };
-  let worst: { link: string; label: string } = { link: "unknown", label: "bilinmiyor" };
+  let worst: { link: string; label: string } = {
+    link: "unknown",
+    label: t("probe.worstUnknown"),
+  };
   let worstScore = -1;
   for (const adapter of view.adapters) {
     const score = severity[adapter.link] ?? 0;
@@ -391,5 +405,5 @@ export function matrixWorstLink(
 
 /** Satır ayrıntısı boşsa gösterilecek metin. */
 export function capabilityDetailText(row: Pick<CliCapabilityRow, "detail">): string {
-  return row.detail.trim() === "" ? "—" : row.detail;
+  return row.detail.trim() === "" ? t("common.unknown") : row.detail;
 }

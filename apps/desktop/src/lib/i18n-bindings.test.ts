@@ -15,6 +15,41 @@ import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
 import { formatTimestamp } from "./format";
 import { messageKeys, t } from "./i18n";
+import {
+  archBadgeText,
+  archFormatText,
+  archInterpreterText,
+  archReasonText,
+  archSummaryText,
+  archWarnings,
+  archWorst,
+} from "./arch";
+import {
+  attackCommand,
+  attackFixtureSummary,
+  attackProductText,
+  attackSkipText,
+  attackVerdictText,
+  attackWorstVerdict,
+} from "./attack";
+import {
+  packageLimits,
+  packageStatusText,
+  packageSummary,
+  packageWarnings,
+  problemText,
+  roleLabel,
+} from "./package";
+import {
+  capabilityGateText,
+  formatBytes,
+  probeScopeLines,
+  probeStatusLabel,
+  probeSummary,
+  residueAge,
+  residueMeasureSummary,
+  sandboxSweepSummary,
+} from "./providers";
 import { defaultOcrLanguageLabel } from "./ocr";
 import { MIN_PASSWORD_LENGTH, checkPassword, checkPasswordConfirmation } from "./vault-input";
 import {
@@ -927,5 +962,270 @@ describe("Emsal kümesi (ekran + üç yardımcı lib) sözlükten gelir", () => 
     const known = new Set(messageKeys());
     const missing = used.filter((key) => !known.has(key as never));
     expect(missing).toEqual([]);
+  });
+});
+
+describe("Sağlayıcılar kümesi (F04-T08)", () => {
+  it("mimari denetimi metinleri sözlükten gelir", () => {
+    expect(archBadgeText({ comparison: "same", containsAppArch: true })).toBe(t("arch.badgeSame"));
+    expect(archBadgeText({ comparison: "fat", containsAppArch: false })).toBe(
+      t("arch.badgeFatWithoutApp"),
+    );
+    expect(archBadgeText({ comparison: "bilinmeyen", containsAppArch: null })).toBe(
+      t("arch.badgeUnknown"),
+    );
+    expect(archWorst({ same: 0, different: 1, fat: 0, unknown: 0 }).label).toBe(
+      t("arch.worstDifferent"),
+    );
+    expect(archWorst({ same: 0, different: 0, fat: 0, unknown: 0 }).label).toBe(t("arch.worstNone"));
+
+    const summary = archSummaryText({
+      appArch: "aarch64",
+      same: 2,
+      different: 1,
+      fat: 0,
+      unknown: 0,
+      adapters: [{}, {}] as never,
+    });
+    expect(summary).toBe(
+      t("arch.summary", {
+        appArch: "aarch64",
+        adapters: 2,
+        same: 2,
+        different: 1,
+        fat: 0,
+        unknown: 0,
+      }),
+    );
+    expect(summary).not.toContain("{");
+
+    expect(
+      archWarnings({
+        adapters: [
+          { displayName: "claude", comparison: "different", containsAppArch: null },
+        ] as never,
+        different: 1,
+        unknown: 0,
+        fat: 0,
+      }),
+    ).toEqual([t("arch.warnDifferent", { count: 1, names: "claude" })]);
+
+    expect(archReasonText("magic_unrecognized")).toBe(t("arch.reasonMagicUnrecognized"));
+    expect(archReasonText("yeni_kod")).toBe("yeni_kod");
+    expect(archFormatText({ formatLabel: "Mach-O", symlink: true })).toBe(
+      `Mach-O · ${t("arch.symlink")}`,
+    );
+    expect(
+      archInterpreterText({
+        interpreter: {
+          command: "/usr/bin/env",
+          path: null,
+          resolved: "/usr/bin/python3",
+          architectures: ["arm64"],
+        },
+      } as never),
+    ).toBe(
+      `${t("arch.interpreterLine", {
+        command: "/usr/bin/env",
+        target: "/usr/bin/python3",
+      })} · arm64`,
+    );
+  });
+
+  it("paket doğrulama metinleri sözlükten gelir", () => {
+    expect(packageStatusText(null)).toBe(t("package.statusUnverified"));
+    expect(
+      packageSummary({
+        totals: { files: 118, symlinks: 18, bytes: 4096 },
+        roles: {},
+      } as never),
+    ).toBe(
+      t("package.summaryLine", {
+        head: t("package.summaryFilesLinks", { files: 118, links: 18 }),
+        size: formatBytes(4096),
+      }),
+    );
+    expect(roleLabel("bootloader")).toBe(t("package.role.bootloader"));
+    expect(roleLabel("bilinmeyen_rol")).toBe("bilinmeyen_rol");
+    expect(problemText({ problem: "hashChanged", detail: null } as never)).toBe(
+      t("package.problem.hashChanged"),
+    );
+    expect(problemText({ problem: "hashChanged", detail: "12 B" } as never)).toBe(
+      t("package.problemWithDetail", {
+        label: t("package.problem.hashChanged"),
+        detail: "12 B",
+      }),
+    );
+    expect(
+      packageWarnings({
+        found: true,
+        note: null,
+        manifest: null,
+        packageDir: null,
+        tesseractOnPath: true,
+        verification: {
+          ok: false,
+          truncated: false,
+          verified: 3,
+          problemCount: 2,
+          extraCount: 0,
+          entryPointPresent: true,
+          problems: [
+            { path: "dim-worker", problem: "hashChanged" },
+            { path: "libx.so", problem: "missing" },
+          ],
+        },
+      } as never),
+    ).toEqual([t("package.warnProblems", { count: 2 })]);
+    expect(packageLimits()).toBe(t("package.limits"));
+  });
+
+  it("saldırı testi metinleri sözlükten gelir", () => {
+    expect(
+      attackVerdictText({
+        verdict: "triggered",
+        verdictLabel: "ham",
+        sourceLabel: "işaretçi dosyası",
+        hit: true,
+      }),
+    ).toBe(t("attack.verdictTriggered", { source: "işaretçi dosyası" }));
+    expect(
+      attackVerdictText({
+        verdict: "silent_guarded",
+        verdictLabel: "ham",
+        sourceLabel: "x",
+        hit: false,
+      }),
+    ).toBe(t("attack.verdictSilentGuarded"));
+    expect(
+      attackFixtureSummary({
+        detectorProven: true,
+        pollutedHits: 3,
+        cleanHits: 0,
+        vectorTotal: 4,
+        gateRejected: true,
+        gateCode: "E_SCOPE",
+        detectorControlClean: true,
+        productConfig: [],
+        canaryReadInProductConfig: false,
+      } as never),
+    ).toBe(
+      t("attack.fixtureSummary", {
+        proven: t("attack.provenYes"),
+        polluted: 3,
+        total: 4,
+        clean: 0,
+        gate: t("attack.gateRejectedCode", { code: "E_SCOPE" }),
+      }),
+    );
+    expect(attackSkipText("not_installed")).toBe(t("attack.skipNotInstalled"));
+    expect(attackSkipText("beklenmeyen")).toBe(t("attack.skipOther", { code: "beklenmeyen" }));
+    expect(attackSkipText(null)).toBeNull();
+    expect(attackProductText({ label: "Hook", hit: true, vector: "hook" } as never)).toBe(
+      t("attack.productLine", { label: "Hook", state: t("attack.productHit") }),
+    );
+    expect(attackCommand({ version: "2.1.303", argv: ["--x", ""] } as never)).toBe(
+      '2.1.303 · --x ""',
+    );
+    expect(attackWorstVerdict([]).label).toBe(t("attack.worstNone"));
+  });
+
+  it("yoklama, kalıntı ve yetenek metinleri sözlükten gelir", () => {
+    expect(probeStatusLabel({ status: "exited", exitCode: 0 })).toEqual({
+      label: t("probe.statusDone"),
+      tone: "ok",
+    });
+    expect(probeStatusLabel({ status: "exited", exitCode: 3 }).label).toBe(
+      t("probe.statusExit", { code: 3 }),
+    );
+    expect(probeSummary({ exitCode: null, durationMs: 120, timeoutMs: 15000 })).toBe(
+      [t("probe.summaryDuration", { ms: 120 }), t("probe.summaryTimeout", { seconds: 15 })].join(
+        " · ",
+      ),
+    );
+
+    const sandbox = {
+      workdirMode: "700",
+      homeIsolation: "sandbox",
+      stdinBytes: 0,
+      stdinLimitBytes: 1_048_576,
+      files: [],
+      totalBytes: 0,
+      sizeLimitBytes: 0,
+      entryLimit: 100,
+      filesTruncated: false,
+    };
+    expect(probeScopeLines({ sandbox } as never).map((line) => line.label)).toEqual([
+      t("probe.scopePermLabel"),
+      t("probe.scopeHomeLabel"),
+      t("probe.scopeStdinLabel"),
+      t("probe.scopeFilesLabel"),
+    ]);
+    expect(probeScopeLines({ sandbox } as never)[3]?.value).toBe(t("probe.filesNone"));
+
+    expect(residueAge(30)).toBe(t("probe.residueAgeNow"));
+    expect(residueAge(7200)).toBe(t("probe.residueAgeHours", { count: 2 }));
+    expect(residueAge(null)).toBe(t("common.unknown"));
+
+    expect(
+      residueMeasureSummary({
+        durationMs: 1200,
+        created: [{ relative: "a" }],
+        modified: [],
+        bytesAdded: 2048,
+      } as never),
+    ).toBe(
+      [
+        t("probe.summaryDuration", { ms: 1200 }),
+        t("probe.summaryCreated", { count: 1 }),
+        t("probe.summaryModified", { count: 0 }),
+        t("probe.summaryAdded", { size: formatBytes(2048) }),
+      ].join(" · "),
+    );
+    expect(
+      sandboxSweepSummary({ considered: 4, removed: [], skipped: [], minAgeSecs: 3600 } as never),
+    ).toBe(t("probe.sweep", { considered: 4, removed: 0, skipped: 0, minutes: 60 }));
+    expect(capabilityGateText({ gateOpen: true } as never)).toBe(t("probe.gateOpen"));
+    expect(capabilityGateText({ gateOpen: false, link: "not_installed" } as never)).toBe(
+      t("probe.gateNotInstalled"),
+    );
+  });
+
+  it("parametreli sağlayıcı satırları yarım yer tutucu bırakmaz", () => {
+    const lines = [
+      t("providers.matrixProbed", { at: "10:42", seconds: 10 }),
+      t("providers.archProbed", { at: "10:42", summary: "özet" }),
+      t("providers.roleRow", { label: "Modül", count: 7 }),
+      t("providers.cleanupRun", { count: 3 }),
+      t("providers.createdFiles", { count: 2 }),
+      t("providers.headerBytes", { bytes: 32 }),
+      t("providers.sandboxFiles", { count: 1 }),
+      t("package.warnListCut", { listed: 5, total: 9 }),
+      t("arch.warnUnknown", { names: "x, y" }),
+      t("probe.persistenceLine", { flag: "--no-session", scope: "claude", version: "2.1" }),
+    ];
+    for (const line of lines) {
+      expect(line).not.toContain("{");
+      expect(line.trim().length).toBeGreaterThan(0);
+      expect(line).not.toContain("  ");
+    }
+  });
+
+  it("Sağlayıcılar ekranı ve dört lib'in sözlük anahtarları eksiksizdir", () => {
+    const targets: Array<[string, RegExp]> = [
+      ["../screens/Providers.tsx", /t\("((?:providers|probe)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/providers.ts", /t\("((?:probe|common)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/arch.ts", /t\("((?:arch|common)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/package.ts", /t\("((?:package|common)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/attack.ts", /t\("((?:attack|common)\.[a-zA-Z0-9_.]+)"/g],
+    ];
+    const known = new Set(messageKeys());
+    for (const [relative, pattern] of targets) {
+      const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+      const used = [...source.matchAll(pattern)].map((match) => match[1]!);
+      expect(used.length).toBeGreaterThan(10);
+      const missing = used.filter((key) => !known.has(key as never));
+      expect({ relative, missing }).toEqual({ relative, missing: [] });
+    }
   });
 });

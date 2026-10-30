@@ -5,6 +5,7 @@ import type {
   WorkerPackageManifest,
   WorkerPackageView,
 } from "./api";
+import { t, type MessageKey } from "./i18n";
 import { formatBytes } from "./providers";
 
 /** Paket durumunun tek satır etiketi. `found=false` hata değil, geliştirme kipi. */
@@ -19,43 +20,47 @@ export function packageTone(view: WorkerPackageView | null): PackageTone {
 }
 
 export function packageStatusText(view: WorkerPackageView | null): string {
-  if (!view) return "Doğrulanmadı";
-  if (!view.found) return "Paket yok";
+  if (!view) return t("package.statusUnverified");
+  if (!view.found) return t("package.statusMissing");
   const verification = view.verification;
-  if (!verification) return "Doğrulanmadı";
-  if (verification.truncated) return "Sınırda kesildi";
-  if (verification.ok) return "Bütünlük doğrulandı";
-  return "Kusurlu";
+  if (!verification) return t("package.statusUnverified");
+  if (verification.truncated) return t("package.statusTruncated");
+  if (verification.ok) return t("package.statusOk");
+  return t("package.statusBroken");
 }
 
-/** `118 dosya + 18 bağ · 75,6 MB` gibi tek satır. */
+/** `118 dosya + 18 bağ · 75,6 MiB` gibi tek satır. */
 export function packageSummary(manifest: WorkerPackageManifest | null): string {
-  if (!manifest) return "—";
+  if (!manifest) return t("common.unknown");
   const totals = manifest.totals;
   const head =
-    totals.symlinks > 0 ? `${totals.files} dosya + ${totals.symlinks} bağ` : `${totals.files} dosya`;
-  return `${head} · ${formatBytes(totals.bytes)}`;
+    totals.symlinks > 0
+      ? t("package.summaryFilesLinks", { files: totals.files, links: totals.symlinks })
+      : t("package.summaryFiles", { files: totals.files });
+  return t("package.summaryLine", { head, size: formatBytes(totals.bytes) });
 }
 
-export const ROLE_LABELS: Record<string, string> = {
-  bootloader: "Başlatıcı",
-  python_runtime: "Python çalışma zamanı",
-  stdlib_archive: "Standart kitaplık",
-  pdf_engine: "PDF motoru",
-  docx_engine: "DOCX motoru",
-  image_lib: "Görüntü kitaplığı",
-  ocr_bridge: "OCR köprüsü",
-  native_library: "Yerel kitaplık",
-  python_module: "Python modülü",
-  package_metadata: "Paket künyesi",
-  data_file: "Veri dosyası",
-  font: "Yazı tipi",
-  other: "Diğer",
-  unreadable: "Okunamadı",
+/** Rol kodu → sözlük anahtarı (modül düzeyinde metin yok: `t()` çağrı anında). */
+const ROLE_KEYS: Record<string, MessageKey> = {
+  bootloader: "package.role.bootloader",
+  python_runtime: "package.role.python_runtime",
+  stdlib_archive: "package.role.stdlib_archive",
+  pdf_engine: "package.role.pdf_engine",
+  docx_engine: "package.role.docx_engine",
+  image_lib: "package.role.image_lib",
+  ocr_bridge: "package.role.ocr_bridge",
+  native_library: "package.role.native_library",
+  python_module: "package.role.python_module",
+  package_metadata: "package.role.package_metadata",
+  data_file: "package.role.data_file",
+  font: "package.role.font",
+  other: "package.role.other",
+  unreadable: "package.role.unreadable",
 };
 
 export function roleLabel(role: string): string {
-  return ROLE_LABELS[role] ?? role;
+  const key = ROLE_KEYS[role];
+  return key === undefined ? role : t(key);
 }
 
 /** Roller: adetçe büyükten küçüğe, eşitse ada göre (deterministik). */
@@ -67,20 +72,21 @@ export function roleRows(manifest: WorkerPackageManifest | null): { role: string
     .sort((a, b) => (b.count - a.count) || a.role.localeCompare(b.role, "tr"));
 }
 
-export const PROBLEM_LABELS: Record<PackageProblemKind, string> = {
-  missing: "eksik",
-  sizeChanged: "boyut değişti",
-  hashChanged: "içerik değişti",
-  linkTargetChanged: "bağ hedefi değişti",
-  unverifiable: "doğrulanamaz",
-  wrongKind: "tür uyuşmuyor",
-  unreadable: "okunamadı",
-  unsafeLink: "güvensiz bağ",
+const PROBLEM_KEYS: Record<PackageProblemKind, MessageKey> = {
+  missing: "package.problem.missing",
+  sizeChanged: "package.problem.sizeChanged",
+  hashChanged: "package.problem.hashChanged",
+  linkTargetChanged: "package.problem.linkTargetChanged",
+  unverifiable: "package.problem.unverifiable",
+  wrongKind: "package.problem.wrongKind",
+  unreadable: "package.problem.unreadable",
+  unsafeLink: "package.problem.unsafeLink",
 };
 
 export function problemText(problem: PackageProblem): string {
-  const label = PROBLEM_LABELS[problem.problem] ?? problem.problem;
-  return problem.detail ? `${label} (${problem.detail})` : label;
+  const key = PROBLEM_KEYS[problem.problem];
+  const label = key === undefined ? problem.problem : t(key);
+  return problem.detail ? t("package.problemWithDetail", { label, detail: problem.detail }) : label;
 }
 
 export function verificationCounts(verification: PackageVerification | null): {
@@ -105,34 +111,38 @@ export function packageWarnings(view: WorkerPackageView | null): string[] {
   if (!view) return [];
   const warnings: string[] = [];
   if (!view.found) {
-    warnings.push(view.note ?? "Paketlenmiş worker bulunamadı.");
+    warnings.push(view.note ?? t("package.warnNotFound"));
   }
   const verification = view.verification;
   if (verification) {
     if (verification.problemCount > 0) {
-      warnings.push(`${verification.problemCount} dosya manifestle uyuşmuyor.`);
+      warnings.push(t("package.warnProblems", { count: verification.problemCount }));
     }
     if (verification.extraCount > 0) {
-      warnings.push(`Manifestte olmayan ${verification.extraCount} dosya var (paket beklenenden fazla).`);
+      warnings.push(t("package.warnExtra", { count: verification.extraCount }));
     }
     if (!verification.entryPointPresent) {
-      warnings.push("Giriş noktası ikilisi diskte yok.");
+      warnings.push(t("package.warnEntryPoint"));
     }
     if (verification.truncated) {
-      warnings.push("Tarama girdi sınırına takıldı: sonuç eksik olabilir.");
+      warnings.push(t("package.warnTruncated"));
     }
     if (verification.problems.length < verification.problemCount) {
       warnings.push(
-        `Sorunların yalnız ilk ${verification.problems.length} tanesi listeleniyor (toplam ${verification.problemCount}).`,
+        t("package.warnListCut", {
+          listed: verification.problems.length,
+          total: verification.problemCount,
+        }),
       );
     }
   }
   if (view.found && !view.tesseractOnPath) {
-    warnings.push("Tesseract sistemde bulunamadı: OCR çalışmaz (paket Tesseract içermez).");
+    warnings.push(t("package.warnNoTesseract"));
   }
   return warnings;
 }
 
-/** Arayüzün altındaki sınır cümlesi (tek yerde). */
-export const PACKAGE_LIMITS =
-  "Doğrulama bütünlük kanıtıdır, imza değildir: manifesti üreten süreçle doğrulayan süreç aynı güven sınırındadır. Tesseract ikilisi ve dil verisi pakete gömülmez; OCR için sistemde kurulu olmalı. Paket yalnız bu makinenin mimarisi için üretilir.";
+/** Arayüzün altındaki sınır cümlesi (tek yerde; çağrı anında sözlükten). */
+export function packageLimits(): string {
+  return t("package.limits");
+}

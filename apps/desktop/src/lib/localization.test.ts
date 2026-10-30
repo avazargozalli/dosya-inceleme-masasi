@@ -101,6 +101,11 @@ const MIGRATED = [
   "lib/notes.ts",
   "lib/ocr.ts",
   "lib/vault-input.ts",
+  "screens/Providers.tsx",
+  "lib/providers.ts",
+  "lib/arch.ts",
+  "lib/package.ts",
+  "lib/attack.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;

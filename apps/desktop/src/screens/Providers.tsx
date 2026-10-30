@@ -42,8 +42,9 @@ import {
   attackWorstVerdict,
 } from "../lib/attack";
 import { formatUnixSeconds } from "../lib/format";
+import { t } from "../lib/i18n";
 import {
-  PACKAGE_LIMITS,
+  packageLimits,
   packageStatusText,
   packageSummary,
   packageTone,
@@ -82,11 +83,19 @@ import {
   sandboxSweepSummary,
 } from "../lib/providers";
 
-const AUTH_LABEL: Record<string, string> = {
-  subscription: "Abonelik (CLI kendi oturumunu yönetir)",
-  api_key: "API anahtarı (yalnız OS secret ref)",
-  interactive_only: "Etkileşimli kullanım",
-};
+/** Kimlik kipi → etiket. Sözlük çağrı anında okunur (modül sabiti metin taşımaz). */
+function authLabel(mode: string): string {
+  switch (mode) {
+    case "subscription":
+      return t("providers.authSubscription");
+    case "api_key":
+      return t("providers.authApiKey");
+    case "interactive_only":
+      return t("providers.authInteractiveOnly");
+    default:
+      return mode;
+  }
+}
 
 const MONO: CSSProperties = { fontFamily: "var(--mono)", fontSize: 11, wordBreak: "break-all" };
 
@@ -163,9 +172,7 @@ export function Providers() {
     try {
       const signalled = await api.providerProbeCancel();
       setCancelHint(
-        signalled
-          ? "İptal istendi; alt süreç öldürülüyor ve kısmi çıktı raporlanacak."
-          : "İptal edilecek bir koşu yok.",
+        signalled ? t("providers.cancelSignalled") : t("providers.cancelNothing"),
       );
     } catch (e) {
       setError(toApiError(e));
@@ -229,24 +236,25 @@ export function Providers() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>API sağlayıcı profili</h2>
+            <h2>{t("providers.apiProfileTitle")}</h2>
             <p className="card-sub">
-              Anahtar <strong>saklanmaz</strong>; yalnız <code>DIM_API_KEY</code> ortam
-              değişkeninden okunur. Uç nokta https olmalı.
+              {t("providers.apiKeySubBefore")} <strong>{t("providers.apiKeySubStrong")}</strong>
+              {t("providers.apiKeySubAfter")} <code>DIM_API_KEY</code>{" "}
+              {t("providers.apiKeySubTail")}
             </p>
           </div>
         </div>
         <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
           <input
-            aria-label="Uç nokta"
-            placeholder="https://api.ornek.com/v1"
+            aria-label={t("providers.endpointAria")}
+            placeholder={t("providers.endpointPlaceholder")}
             value={apiEndpoint}
             onChange={(event) => setApiEndpoint(event.target.value)}
             style={{ minWidth: 260 }}
           />
           <input
-            aria-label="Model"
-            placeholder="model-adı"
+            aria-label={t("providers.modelAria")}
+            placeholder={t("providers.modelPlaceholder")}
             value={apiModel}
             onChange={(event) => setApiModel(event.target.value)}
           />
@@ -256,25 +264,23 @@ export function Providers() {
             onClick={async () => {
               try {
                 await api.providerApiProfileSave(apiEndpoint, apiModel);
-                setApiMessage("Profil kaydedildi. Anahtar yalnız DIM_API_KEY'den okunur.");
+                setApiMessage(t("providers.profileSaved"));
               } catch (error) {
                 setApiMessage(error instanceof Error ? error.message : String(error));
               }
             }}
           >
-            Kaydet
+            {t("common.save")}
           </button>
         </div>
         {apiMessage ? <p className="card-sub">{apiMessage}</p> : null}
       </div>
 
       <div className="page-head">
-        <h1>AI bağlantıları</h1>
+        <h1>{t("nav.ai")}</h1>
         <p className="lead">
-          Uygulama, sağlayıcı kimlik dosyalarını okumaz ve token kopyalamaz. Bu ekran araçların
-          kurulu olup olmadığını yoklar; <strong>“Bağlantıyı sına” düğmesi aracı gerçekten
-          çalıştırır</strong> (izinli argv, allowlist ortam, boş geçici iş dizini, 15 sn sınır,
-          iptal). İstem gönderilmez, model çağrılmaz; AI bu sürümde kapalıdır.
+          {t("providers.leadBefore")} <strong>{t("providers.leadStrong")}</strong>{" "}
+          {t("providers.leadAfter")}
         </p>
       </div>
 
@@ -284,18 +290,15 @@ export function Providers() {
         </div>
       ) : null}
 
-      <div className="notice">
-        AI bağlantısı F09–F11 işidir. Şu anda “AI kapalı” modu geçerlidir: belge, arama, kronoloji,
-        iddia ve inceleme akışları tamamen AI olmadan çalışır.
-      </div>
+      <div className="notice">{t("providers.aiOffNotice")}</div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Yetenek matrisi</h2>
+            <h2>{t("providers.matrixTitle")}</h2>
             <p className="card-sub">
-              Gerekli yetenek doğrulanmadan bağlantı “hazır” sayılmaz. Kanıt, kurulu sürümün kendi{" "}
-              <code>--help</code> metnidir; davranış (araç çağrısı, oturum yazımı) ölçülmez.
+              {t("providers.matrixSubBefore")} <code>--help</code>{" "}
+              {t("providers.matrixSubAfter")}
             </p>
           </div>
           <button
@@ -303,7 +306,7 @@ export function Providers() {
             disabled={matrixBusy || running !== null}
             onClick={() => void runMatrix()}
           >
-            {matrixBusy ? "Yoklanıyor…" : "Yetenekleri sına"}
+            {matrixBusy ? t("providers.matrixBusy") : t("providers.matrixRun")}
           </button>
         </div>
 
@@ -316,8 +319,10 @@ export function Providers() {
         {matrix ? (
           <>
             <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
-              Yoklandı: {formatUnixSeconds(matrix.probedAtUnix)} · yardım sınırı{" "}
-              {Math.round(matrix.helpTimeoutMs / 1000)} sn · en kötü durum:{" "}
+              {t("providers.matrixProbed", {
+                at: formatUnixSeconds(matrix.probedAtUnix),
+                seconds: Math.round(matrix.helpTimeoutMs / 1000),
+              })}{" "}
               <strong>{matrixWorstLink(matrix).label}</strong>
             </div>
             <div style={{ display: "grid", gap: "var(--space-3)" }}>
@@ -333,13 +338,14 @@ export function Providers() {
                       <div>
                         <h3 style={{ margin: 0, fontSize: 14 }}>{adapter.displayName}</h3>
                         <p className="card-sub" style={MONO}>
-                          {adapter.version ?? "sürüm okunamadı"} · {capabilityHelpCommand(adapter)}
+                          {adapter.version ?? t("providers.versionUnknown")} ·{" "}
+                          {capabilityHelpCommand(adapter)}
                         </p>
                       </div>
                       <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
                         <span className={`badge ${linkTone(adapter.link)}`}>{adapter.linkLabel}</span>
                         <span className={`badge ${adapter.gateOpen ? "warn" : "plain"}`}>
-                          {adapter.gateOpen ? "kapı açık" : "kapı kapalı"}
+                          {adapter.gateOpen ? t("providers.gateOpen") : t("providers.gateClosed")}
                         </span>
                       </div>
                     </div>
@@ -359,7 +365,12 @@ export function Providers() {
                         >
                           <div>
                             <strong style={{ fontWeight: 600 }}>{row.label}</strong>
-                            {row.required ? <span className="muted small"> · gerekli</span> : null}
+                            {row.required ? (
+                              <span className="muted small">
+                                {" "}
+                                {t("providers.requiredSuffix")}
+                              </span>
+                            ) : null}
                             <div style={MONO}>{capabilityDetailText(row)}</div>
                             <div className="muted small">{row.note}</div>
                           </div>
@@ -381,7 +392,7 @@ export function Providers() {
             </div>
             <details style={{ marginTop: "var(--space-3)" }}>
               <summary className="muted small" style={{ cursor: "pointer" }}>
-                Matrisin sınırları
+                {t("providers.matrixLimits")}
               </summary>
               <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                 {matrix.notes.map((note) => (
@@ -392,8 +403,8 @@ export function Providers() {
           </>
         ) : (
           <p className="muted small">
-            Henüz yoklanmadı. “Yetenekleri sına” dört adaptörün kurulu sürümünü ve <code>--help</code>{" "}
-            metnini yoklar; istem gönderilmez.
+            {t("providers.matrixIdleBefore")} <code>--help</code>{" "}
+            {t("providers.matrixIdleAfter")}
           </p>
         )}
       </div>
@@ -401,15 +412,15 @@ export function Providers() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Yerel worker paketi</h2>
+            <h2>{t("providers.packageTitle")}</h2>
             <p className="card-sub">
-              Belge worker'ı tek dosya değil, yüzlerce dosyalık bir ağaçtır. Bu düğme paketin
-              manifestini okur ve <strong>her dosyanın sha256'sını yeniden hesaplayarak</strong>{" "}
-              doğrular: eksik, değişmiş ya da manifestte olmayan dosya ayrı yazılır.
+              {t("providers.packageSubBefore")}{" "}
+              <strong>{t("providers.packageSubStrong")}</strong>{" "}
+              {t("providers.packageSubAfter")}
             </p>
           </div>
           <button className="btn" disabled={pkgBusy} onClick={() => void runPackage()}>
-            {pkgBusy ? "Doğrulanıyor…" : "Paketi doğrula"}
+            {pkgBusy ? t("providers.packageBusy") : t("providers.packageRun")}
           </button>
         </div>
 
@@ -429,8 +440,11 @@ export function Providers() {
               <span>{packageSummary(pkg.manifest)}</span>
               {pkg.manifest ? (
                 <span style={MONO}>
-                  {pkg.manifest.buildPlatform} · Python {pkg.manifest.pythonVersion} · PyInstaller{" "}
-                  {pkg.manifest.pyinstallerVersion}
+                  {pkg.manifest.buildPlatform} ·{" "}
+                  {t("providers.manifestLine", {
+                    python: pkg.manifest.pythonVersion,
+                    pyinstaller: pkg.manifest.pyinstallerVersion,
+                  })}
                 </span>
               ) : null}
             </div>
@@ -449,17 +463,17 @@ export function Providers() {
                   return (
                     <>
                       <div className="card tight">
-                        <div className="muted small">Doğrulanan</div>
+                        <div className="muted small">{t("providers.countVerified")}</div>
                         <strong>{counts.verified}</strong>
                       </div>
                       <div className="card tight">
-                        <div className="muted small">Uyuşmayan</div>
+                        <div className="muted small">{t("providers.countProblems")}</div>
                         <strong style={{ color: counts.problems > 0 ? "var(--danger)" : undefined }}>
                           {counts.problems}
                         </strong>
                       </div>
                       <div className="card tight">
-                        <div className="muted small">Fazla dosya</div>
+                        <div className="muted small">{t("providers.countExtra")}</div>
                         <strong style={{ color: counts.extra > 0 ? "var(--danger)" : undefined }}>
                           {counts.extra}
                         </strong>
@@ -479,12 +493,12 @@ export function Providers() {
             {roleRows(pkg.manifest).length > 0 ? (
               <details style={{ marginTop: "var(--space-3)" }}>
                 <summary className="muted small" style={{ cursor: "pointer" }}>
-                  Paket içeriği (roller)
+                  {t("providers.rolesSummary")}
                 </summary>
                 <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                   {roleRows(pkg.manifest).map((row) => (
                     <li key={row.role}>
-                      {row.label} — {row.count}
+                      {t("providers.roleRow", { label: row.label, count: row.count })}
                     </li>
                   ))}
                 </ul>
@@ -493,7 +507,7 @@ export function Providers() {
 
             {pkg.verification && pkg.verification.problems.length > 0 ? (
               <div className="notice danger" style={{ marginTop: "var(--space-2)" }}>
-                <strong>Manifestle uyuşmayan dosyalar</strong>
+                <strong>{t("providers.problemsTitle")}</strong>
                 <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                   {pkg.verification.problems.map((problem) => (
                     <li key={`${problem.path}-${problem.problem}`}>
@@ -506,7 +520,7 @@ export function Providers() {
 
             {pkg.verification && pkg.verification.extra.length > 0 ? (
               <div className="notice" style={{ marginTop: "var(--space-2)" }}>
-                <strong>Manifestte olmayan dosyalar</strong>
+                <strong>{t("providers.extraTitle")}</strong>
                 <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                   {pkg.verification.extra.map((path) => (
                     <li key={path}>
@@ -518,9 +532,14 @@ export function Providers() {
             ) : null}
 
             <div className="muted small" style={{ marginTop: "var(--space-2)" }}>
-              Tesseract:{" "}
-              <strong>{pkg.tesseractOnPath ? "sistemde bulundu" : "bulunamadı"}</strong> · pakete
-              gömülmez{pkg.manifest?.tesseract.note ? ` — ${pkg.manifest.tesseract.note}` : ""}
+              {t("providers.tesseractLabel")}{" "}
+              <strong>
+                {pkg.tesseractOnPath
+                  ? t("providers.tesseractFound")
+                  : t("providers.tesseractMissing")}
+              </strong>{" "}
+              · {t("providers.tesseractNoEmbed")}
+              {pkg.manifest?.tesseract.note ? ` — ${pkg.manifest.tesseract.note}` : ""}
             </div>
 
             {packageWarnings(pkg).map((warning) => (
@@ -535,29 +554,26 @@ export function Providers() {
 
             <details style={{ marginTop: "var(--space-3)" }}>
               <summary className="muted small" style={{ cursor: "pointer" }}>
-                Doğrulamanın sınırları
+                {t("providers.packageLimits")}
               </summary>
               <p className="muted small" style={{ margin: "var(--space-1) 0 0" }}>
-                {PACKAGE_LIMITS}
+                {packageLimits()}
               </p>
             </details>
           </>
         ) : (
-          <p className="muted small">
-            Henüz doğrulanmadı. Paket yoksa (geliştirme kipi) bu bir hata değildir: uygulama
-            worker'ı kaynak ağacından çalıştırır ve kart gerekçeyi yazar.
-          </p>
+          <p className="muted small">{t("providers.packageIdle")}</p>
         )}
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Başlangıç saldırı testi</h2>
+            <h2>{t("providers.attackTitle")}</h2>
             <p className="card-sub">
-              Hook, MCP, proje talimatı ve kapsam dışı canary vektörleri geçici bir fikstürde
-              kurulur; kurulu CLI'lar sertleştirme bayrakları + <code>--help</code> ile boş kum
-              havuzunda, <code>HOME</code> sahte ev dizininde çalıştırılır. İstem gönderilmez.
+              {t("providers.attackSubBefore")} <code>--help</code>{" "}
+              {t("providers.attackSubMid")} <code>HOME</code>{" "}
+              {t("providers.attackSubAfter")}
             </p>
           </div>
           <button
@@ -565,7 +581,7 @@ export function Providers() {
             disabled={attackBusy || running !== null || matrixBusy}
             onClick={() => void runAttack()}
           >
-            {attackBusy ? "Sınanıyor…" : "Saldırıları sına"}
+            {attackBusy ? t("providers.attackBusy") : t("providers.attackRun")}
           </button>
         </div>
 
@@ -578,13 +594,14 @@ export function Providers() {
         {attack ? (
           <>
             <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
-              Sınandı: {formatUnixSeconds(attack.probedAtUnix)} · en kötü
-              karar: <strong>{attackWorstVerdict(attack.adapters).label}</strong> · toplam işaret:{" "}
-              <strong>{attackTotalHits(attack)}</strong>
+              {t("providers.attackProbed", { at: formatUnixSeconds(attack.probedAtUnix) })}{" "}
+              <strong>{attackWorstVerdict(attack.adapters).label}</strong> ·{" "}
+              {t("providers.attackHitsLabel")} <strong>{attackTotalHits(attack)}</strong>
             </div>
 
             <div className="notice" style={{ fontSize: 12 }}>
-              <strong>Fikstür:</strong> {attackFixtureSummary(attack.fixture)}
+              <strong>{t("providers.fixtureLabel")}</strong>{" "}
+              {attackFixtureSummary(attack.fixture)}
               <ul style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                 {attack.fixture.productConfig.map((item) => (
                   <li key={item.vector}>{attackProductText(item)}</li>
@@ -616,7 +633,9 @@ export function Providers() {
                       <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
                         <span className={`badge ${linkTone(adapter.link)}`}>{adapter.linkLabel}</span>
                         <span className={`badge ${adapter.hits > 0 ? "danger" : "plain"}`}>
-                          {adapter.hits > 0 ? `${adapter.hits} işaret` : "işaret yok"}
+                          {adapter.hits > 0
+                            ? t("providers.hitsBadge", { count: adapter.hits })
+                            : t("providers.noHits")}
                         </span>
                         {adapter.skipped ? (
                           <span className="badge plain">{attackSkipText(adapter.skipped)}</span>
@@ -640,7 +659,9 @@ export function Providers() {
                           >
                             <div>
                               <strong style={{ fontWeight: 600 }}>{vector.label}</strong>
-                              <div style={MONO}>kapatma: {attackGuardText(vector)}</div>
+                              <div style={MONO}>
+                                {t("providers.guardPrefix")} {attackGuardText(vector)}
+                              </div>
                               <div className="muted small">{vector.note}</div>
                             </div>
                             <span className={`badge ${attackVerdictTone(vector.verdict)}`}>
@@ -666,7 +687,7 @@ export function Providers() {
 
             <details style={{ marginTop: "var(--space-3)" }}>
               <summary className="muted small" style={{ cursor: "pointer" }}>
-                Saldırı testinin sınırları
+                {t("providers.attackLimits")}
               </summary>
               <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                 {attack.notes.map((note) => (
@@ -676,22 +697,17 @@ export function Providers() {
             </details>
           </>
         ) : (
-          <p className="muted small">
-            Henüz sınanmadı. “Saldırıları sına” dört vektörü geçici bir fikstürde kurar, dedektörün
-            kör olmadığını kanıtlar ve kurulu CLI'ları sertleştirme bayraklarıyla çalıştırır; istem
-            gönderilmez.
-          </p>
+          <p className="muted small">{t("providers.attackIdle")}</p>
         )}
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Mimari uyum denetimi</h2>
+            <h2>{t("providers.archTitle")}</h2>
             <p className="card-sub">
-              Yürütülebilirin başlık baytları okunur (Mach-O thin/fat, ELF, PE,{" "}
-              <code>#!</code> betiği → shebang yorumlayıcısı) ve uygulamanın süreç
-              mimarisiyle karşılaştırılır. Süreç başlatılmaz, dosya çalıştırılmaz.
+              {t("providers.archSubBefore")} <code>#!</code>{" "}
+              {t("providers.archSubAfter")}
             </p>
           </div>
           <button
@@ -699,7 +715,7 @@ export function Providers() {
             disabled={archBusy || running !== null || matrixBusy || attackBusy}
             onClick={() => void runArch()}
           >
-            {archBusy ? "Denetleniyor…" : "Mimarileri denetle"}
+            {archBusy ? t("providers.archBusy") : t("providers.archRun")}
           </button>
         </div>
 
@@ -712,8 +728,11 @@ export function Providers() {
         {arch ? (
           <>
             <div className="muted small" style={{ marginBottom: "var(--space-3)" }}>
-              Denetlendi: {archProbedAt(arch.probedAtUnix)} · {archSummaryText(arch)} · en kötü
-              durum: <strong>{archWorst(arch).label}</strong>
+              {t("providers.archProbed", {
+                at: archProbedAt(arch.probedAtUnix),
+                summary: archSummaryText(arch),
+              })}{" "}
+              <strong>{archWorst(arch).label}</strong>
             </div>
             <div style={{ display: "grid", gap: "var(--space-3)" }}>
               {arch.adapters.map((adapter) => {
@@ -737,29 +756,29 @@ export function Providers() {
                       </span>
                     </div>
                     <dl className="kv" style={{ gridTemplateColumns: "110px 1fr" }}>
-                      <dt>Yol</dt>
+                      <dt>{t("providers.pathLabel")}</dt>
                       <dd style={MONO}>{archPathText(adapter)}</dd>
-                      <dt>Mimari</dt>
+                      <dt>{t("providers.archLabel")}</dt>
                       <dd style={MONO}>
                         {archList(adapter.architectures)} · {adapter.comparisonLabel}
                       </dd>
                       {interpreter ? (
                         <>
-                          <dt>Yorumlayıcı</dt>
+                          <dt>{t("providers.interpreterLabel")}</dt>
                           <dd style={MONO}>{interpreter}</dd>
                         </>
                       ) : null}
                       {reason ? (
                         <>
-                          <dt>Neden</dt>
+                          <dt>{t("providers.reasonLabel")}</dt>
                           <dd>{reason}</dd>
                         </>
                       ) : null}
-                      <dt>Başlık</dt>
+                      <dt>{t("providers.headerLabel")}</dt>
                       <dd>
                         {adapter.headerBytes > 0
-                          ? `${adapter.headerBytes} bayt okundu`
-                          : "—"}
+                          ? t("providers.headerBytes", { bytes: adapter.headerBytes })
+                          : t("common.unknown")}
                       </dd>
                     </dl>
                   </div>
@@ -773,7 +792,7 @@ export function Providers() {
             ))}
             <details style={{ marginTop: "var(--space-3)" }}>
               <summary className="muted small" style={{ cursor: "pointer" }}>
-                Denetimin sınırları
+                {t("providers.archLimits")}
               </summary>
               <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                 {arch.notes.map((note) => (
@@ -783,21 +802,18 @@ export function Providers() {
             </details>
           </>
         ) : (
-          <p className="muted small">
-            Henüz denetlenmedi. “Mimarileri denetle” her adaptörün PATH'te bulunan
-            yürütülebilirini başlık baytlarından okur; mimari uydurulmaz, dosya çalıştırılmaz.
-          </p>
+          <p className="muted small">{t("providers.archIdle")}</p>
         )}
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Resmî komut satırı araçları</h2>
-            <p className="card-sub">Kurulu olmak güvenli kabul değildir; sürüm ve yetenek kapısı ayrıdır.</p>
+            <h2>{t("providers.cliTitle")}</h2>
+            <p className="card-sub">{t("providers.cliSub")}</p>
           </div>
           <button className="btn" disabled={busy} onClick={() => void refresh()}>
-            {busy ? "Yoklanıyor…" : "Yenile"}
+            {busy ? t("providers.refreshBusy") : t("providers.refresh")}
           </button>
         </div>
 
@@ -823,7 +839,11 @@ export function Providers() {
                         row.state === "installed" ? "ok" : row.state === "unverified" ? "warn" : "plain"
                       }`}
                     >
-                      {row.state === "installed" ? "kurulu" : row.state === "unverified" ? "sınırlı" : "kurulu değil"}
+                      {row.state === "installed"
+                        ? t("providers.stateInstalled")
+                        : row.state === "unverified"
+                          ? t("providers.stateLimited")
+                          : t("providers.stateMissing")}
                     </span>
                     {row.architecture ? (
                       <span className={`badge ${adapterArchBadge(row.architecture).tone}`}>
@@ -833,28 +853,27 @@ export function Providers() {
                   </div>
                 </div>
                 <dl className="kv" style={{ gridTemplateColumns: "100px 1fr" }}>
-                  <dt>Sürüm</dt><dd>{row.version ?? "—"}</dd>
-                  <dt>Yol</dt>
-                  <dd style={MONO}>{row.path ?? "PATH üzerinde bulunamadı"}</dd>
-                  <dt>Mimari</dt>
+                  <dt>{t("providers.versionLabel")}</dt><dd>{row.version ?? t("common.unknown")}</dd>
+                  <dt>{t("providers.pathLabel")}</dt>
+                  <dd style={MONO}>{row.path ?? t("providers.pathNotOnPath")}</dd>
+                  <dt>{t("providers.archLabel")}</dt>
                   <dd style={MONO}>
                     {row.architecture
                       ? `${archList(row.architecture.architectures)} · ${archBadgeText(row.architecture)}`
-                      : "—"}
+                      : t("common.unknown")}
                   </dd>
-                  <dt>Kimlik</dt><dd>{AUTH_LABEL[row.authMode] ?? row.authMode}</dd>
-                  <dt>İzinli</dt>
-                  <dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{row.allowedArgs.join(" ") || "—"}</dd>
+                  <dt>{t("providers.identityLabel")}</dt><dd>{authLabel(row.authMode)}</dd>
+                  <dt>{t("providers.allowedLabel")}</dt>
+                  <dd style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{row.allowedArgs.join(" ") || t("common.unknown")}</dd>
                 </dl>
                 {row.batchForbidden ? (
                   <div className="notice" style={{ fontSize: 12 }}>
-                    Bu sağlayıcıda otomatik/toplu kullanım engellenir; yalnız etkileşimli kullanım.
-                    Sınama düğmesi bu yüzden kapalı.
+                    {t("providers.batchForbidden")}
                   </div>
                 ) : null}
                 {row.state !== "installed" && !row.batchForbidden ? (
                   <div className="muted small" style={{ marginTop: "var(--space-2)" }}>
-                    Araç PATH üzerinde bulunamadı ya da sürümü okunamadı; sınama çalıştırılamaz.
+                    {t("providers.probeUnavailable")}
                   </div>
                 ) : null}
 
@@ -872,14 +891,14 @@ export function Providers() {
                     disabled={!probeCanRun(row, running)}
                     onClick={() => void runProbe(row.id)}
                   >
-                    {running === row.id ? "Çalışıyor…" : "Bağlantıyı sına"}
+                    {running === row.id ? t("providers.probing") : t("providers.probeRun")}
                   </button>
                   {running === row.id ? (
                     <button className="btn ghost" onClick={() => void cancelProbe()}>
-                      İptal
+                      {t("providers.probeCancel")}
                     </button>
                   ) : null}
-                  <span className="muted small">gerçek süreç · 0700 kum havuzu · stdin ≤ 1 MiB · 15 sn</span>
+                  <span className="muted small">{t("providers.probeHint")}</span>
                 </div>
 
                 {runError ? (
@@ -901,24 +920,24 @@ export function Providers() {
                       <span className="muted small">{probeSummary(result)}</span>
                     </div>
                     <dl className="kv" style={{ gridTemplateColumns: "88px 1fr", marginTop: "var(--space-2)" }}>
-                      <dt>Komut</dt><dd style={MONO}>{probeArgv(result)}</dd>
-                      <dt>Ortam</dt><dd style={MONO}>{result.envKeys.join(", ") || "—"}</dd>
+                      <dt>{t("providers.commandLabel")}</dt><dd style={MONO}>{probeArgv(result)}</dd>
+                      <dt>{t("providers.envLabel")}</dt><dd style={MONO}>{result.envKeys.join(", ") || t("common.unknown")}</dd>
                       {probeScopeLines(result).map((line) => (
                         <Fragment key={line.label}>
                           <dt>{line.label}</dt>
                           <dd>{line.value}</dd>
                         </Fragment>
                       ))}
-                      <dt>İş dizini</dt>
+                      <dt>{t("providers.workdirLabel")}</dt>
                       <dd style={MONO}>
-                        {result.workdir} <span className="muted">(boş; çalıştırmadan sonra silindi)</span>
+                        {result.workdir} <span className="muted">{t("providers.workdirNote")}</span>
                       </dd>
                     </dl>
                     {result.sandbox.files.length > 0 ? (
                       <details style={{ marginTop: "var(--space-2)" }}>
                         <summary className="muted small" style={{ cursor: "pointer" }}>
-                          Çalıştırma sırasında kum havuzuna yazılan {result.sandbox.files.length} dosya
-                          {result.sandbox.filesTruncated ? " (liste kesik)" : ""}
+                          {t("providers.sandboxFiles", { count: result.sandbox.files.length })}
+                          {result.sandbox.filesTruncated ? t("providers.sandboxFilesCut") : ""}
                         </summary>
                         <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                           {result.sandbox.files.map((file) => (
@@ -936,7 +955,7 @@ export function Providers() {
                     ))}
                     {outputs.length === 0 ? (
                       <p className="muted small" style={{ margin: "var(--space-2) 0 0" }}>
-                        Çıktı yok.
+                        {t("providers.noOutput")}
                       </p>
                     ) : (
                       outputs.map((output) => (
@@ -952,7 +971,7 @@ export function Providers() {
             );
           })}
           {rows.length === 0 && !busy ? (
-            <div className="empty"><p style={{ margin: 0 }}>Keşif sonucu yok.</p></div>
+            <div className="empty"><p style={{ margin: 0 }}>{t("providers.probeEmpty")}</p></div>
           ) : null}
         </div>
         {cancelHint ? (
@@ -967,14 +986,13 @@ export function Providers() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Yerel model ve doğrudan API</h2>
-            <p className="card-sub">Bu sürümde yapılandırılmadı</p>
+            <h2>{t("providers.localModelTitle")}</h2>
+            <p className="card-sub">{t("providers.localModelSub")}</p>
           </div>
-          <span className="badge plain">kapalı</span>
+          <span className="badge plain">{t("providers.closedBadge")}</span>
         </div>
         <p className="muted small" style={{ margin: 0 }}>
-          Yerel model indirme/doğrulama ve API profili F09’un devamıdır. Yapılandırılmamış bir
-          sağlayıcı “hazır” gibi gösterilmez; gönderim onayı olmadan hiçbir içerik dışarı çıkmaz.
+          {t("providers.localModelNote")}
         </p>
       </div>
     </div>
@@ -1074,13 +1092,13 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
     <div className="card">
       <div className="card-head">
         <div>
-          <h2>CLI kalıntı denetimi</h2>
+          <h2>{t("providers.residueTitle")}</h2>
           <p className="card-sub">
-            Transcript, log ve oturum yolları sürüm bazlı envanterde. Yalnız <strong>üst veri</strong>{" "}
-            okunur (ad, bayt, zaman); dosya içeriği açılmaz, ev dizini genel olarak taranmaz.
+            {t("providers.residueSubBefore")} <strong>{t("providers.residueSubStrong")}</strong>{" "}
+            {t("providers.residueSubAfter")}
           </p>
         </div>
-        <span className="badge plain">ölçüm</span>
+        <span className="badge plain">{t("providers.residueBadge")}</span>
       </div>
 
       <div
@@ -1101,7 +1119,7 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
             setCleanup(null);
             setConfirmHome(false);
           }}
-          aria-label="Kalıntısı denetlenecek adaptör"
+          aria-label={t("providers.residueSelectAria")}
         >
           {rows.map((row) => (
             <option key={row.id} value={row.id}>
@@ -1110,15 +1128,15 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
           ))}
         </select>
         <button className="btn" disabled={busy !== null} onClick={() => void runScan()}>
-          {busy === "scan" ? "Taranıyor…" : "Envanteri tara"}
+          {busy === "scan" ? t("providers.residueScanBusy") : t("providers.residueScan")}
         </button>
         <button
           className="btn ghost"
           disabled={busy !== null}
           onClick={() => void runSweep()}
-          title="Yalnız uygulamanın açtığı, 1 saatten eski 0700 kum havuzları"
+          title={t("providers.residueSweepTitle")}
         >
-          {busy === "sweep" ? "Süpürülüyor…" : "Bekleyen kum havuzlarını temizle"}
+          {busy === "sweep" ? t("providers.residueSweepBusy") : t("providers.residueSweep")}
         </button>
       </div>
 
@@ -1131,23 +1149,26 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
       {scan ? (
         <>
           <dl className="kv" style={{ gridTemplateColumns: "110px 1fr" }}>
-            <dt>Kök</dt>
+            <dt>{t("providers.rootLabel")}</dt>
             <dd style={MONO}>{scan.root}</dd>
-            <dt>Toplam</dt>
+            <dt>{t("providers.totalLabel")}</dt>
             <dd>
-              {scan.totalFiles} dosya · {formatBytes(scan.totalBytes)}
+              {t("probe.filesWithSize", {
+                count: scan.totalFiles,
+                size: formatBytes(scan.totalBytes),
+              })}
             </dd>
-            <dt>Kalıcılık</dt>
+            <dt>{t("providers.persistenceLabel")}</dt>
             <dd>{persistenceText(scan)}</dd>
           </dl>
           <table className="small" style={{ width: "100%", borderCollapse: "collapse", marginTop: "var(--space-2)" }}>
             <thead>
               <tr>
-                <th style={RESIDUE_TH}>Yol</th>
-                <th style={RESIDUE_TH}>Tür</th>
-                <th style={RESIDUE_TH}>Durum</th>
-                <th style={RESIDUE_TH}>Yaş</th>
-                <th style={RESIDUE_TH}>Not</th>
+                <th style={RESIDUE_TH}>{t("providers.thPath")}</th>
+                <th style={RESIDUE_TH}>{t("providers.thKind")}</th>
+                <th style={RESIDUE_TH}>{t("providers.thState")}</th>
+                <th style={RESIDUE_TH}>{t("providers.thAge")}</th>
+                <th style={RESIDUE_TH}>{t("providers.thNote")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1180,7 +1201,7 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
                 checked={confirmHome}
                 onChange={(event) => setConfirmHome(event.target.checked)}
               />
-              Gerçek ev dizininde tek sürüm yoklaması çalıştırmayı onaylıyorum (istem gönderilmez).
+              {t("providers.confirmHome")}
             </label>
             <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", marginTop: "var(--space-2)", flexWrap: "wrap" }}>
               <button
@@ -1188,22 +1209,22 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
                 disabled={!confirmHome || !runnable || busy !== null}
                 onClick={() => void runMeasure()}
               >
-                {busy === "measure" ? "Ölçülüyor…" : "Kalıntıyı ölç"}
+                {busy === "measure" ? t("providers.measureBusy") : t("providers.measureRun")}
               </button>
-              <span className="muted small">gerçek CLI · 15 sn · yalnız bildirilen yollar</span>
+              <span className="muted small">{t("providers.measureHint")}</span>
             </div>
             {!runnable && selected ? (
               <p className="muted small" style={{ margin: "var(--space-2) 0 0" }}>
                 {selected.batchForbidden
-                  ? "Bu sağlayıcıda otomatik yürütme kapalı; ölçüm çalıştırılamaz."
-                  : "Araç kurulu değil; ölçüm çalıştırılamaz."}
+                  ? t("providers.measureForbidden")
+                  : t("providers.measureNotInstalled")}
               </p>
             ) : null}
           </div>
         </>
       ) : (
         <p className="muted small" style={{ margin: 0 }}>
-          Envanteri görmek için “Envanteri tara” düğmesine basın.
+          {t("providers.residueIdle")}
         </p>
       )}
 
@@ -1216,25 +1237,31 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
           }}
         >
           <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap" }}>
-            <span className="badge ok">ölçüm tamam</span>
+            <span className="badge ok">{t("providers.measureDone")}</span>
             <span className="muted small">{residueMeasureSummary(measure)}</span>
           </div>
           <dl className="kv" style={{ gridTemplateColumns: "110px 1fr", marginTop: "var(--space-2)" }}>
-            <dt>Komut</dt>
+            <dt>{t("providers.commandLabel")}</dt>
             <dd style={MONO}>{[measure.root, ...measure.args].join(" ")}</dd>
-            <dt>Öncesi</dt>
+            <dt>{t("providers.beforeLabel")}</dt>
             <dd>
-              {measure.before.totalFiles} dosya · {formatBytes(measure.before.totalBytes)}
+              {t("probe.filesWithSize", {
+                count: measure.before.totalFiles,
+                size: formatBytes(measure.before.totalBytes),
+              })}
             </dd>
-            <dt>Sonrası</dt>
+            <dt>{t("providers.afterLabel")}</dt>
             <dd>
-              {measure.after.totalFiles} dosya · {formatBytes(measure.after.totalBytes)}
+              {t("probe.filesWithSize", {
+                count: measure.after.totalFiles,
+                size: formatBytes(measure.after.totalBytes),
+              })}
             </dd>
           </dl>
           {measure.created.length > 0 ? (
             <details open style={{ marginTop: "var(--space-2)" }}>
               <summary className="muted small" style={{ cursor: "pointer" }}>
-                Bu koşuda oluşan {measure.created.length} dosya
+                {t("providers.createdFiles", { count: measure.created.length })}
               </summary>
               <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                 {measure.created.map((file) => (
@@ -1248,7 +1275,7 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
           {measure.modified.length > 0 ? (
             <details style={{ marginTop: "var(--space-2)" }}>
               <summary className="muted small" style={{ cursor: "pointer" }}>
-                Değişen {measure.modified.length} dosya (silinmez)
+                {t("providers.modifiedFiles", { count: measure.modified.length })}
               </summary>
               <ul className="small" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                 {measure.modified.map((file) => (
@@ -1270,7 +1297,9 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
               disabled={measure.created.length === 0 || busy !== null}
               onClick={() => void runCleanup()}
             >
-              {busy === "cleanup" ? "Siliniyor…" : `Yalnız bu ölçümde oluşanları sil (${measure.created.length})`}
+              {busy === "cleanup"
+                ? t("providers.cleanupBusy")
+                : t("providers.cleanupRun", { count: measure.created.length })}
             </button>
             <span className="muted small">{measure.cleanupHint}</span>
           </div>
