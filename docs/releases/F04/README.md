@@ -11,7 +11,72 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **13 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `vault-input`) taşındı (**27 dosya**); **4 ekran + 1 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **14 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`) taşındı (**29 dosya**); **3 ekran + 1 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+
+## F04-T08 — sözlük taşıması: `screens/Cases.tsx` + `lib/ocr.ts` (2026-10-31, sekizinci tur)
+
+**Önceki turun açık işi kapandı:** `c669f53` → CI `41120779239` yalnız iki macOS işi
+0 s'de düştü (brownout); bu turda **`ci.yml` `macos-14` → `macos-15`** taşındı (matris
+satır 52 + `masaüstü kabuk` satır 74). Önceki turların `ci.yml`'a dokunamama gerekçesi
+(başka ajanın staged değişikliği) **ortadan kalktı**: o iş `39a1adb` ile commit edildi,
+çalışma ağacı temiz.
+
+**Neden bu dilim:** kalan yüzeyde en küçük ekran **Dosyalar/Cases (60 satır)**; önceki
+turlar bu dosyayı başka ajanın OCR dil işi yüzünden bilinçli atlıyordu. Ölçüldü:
+`Cases.tsx` metninin bir kısmı **`lib/ocr.ts`**ten geliyor (dil adları: Türkçe/İngilizce/
+Almanca/Fransızca) ve o lib'i **yalnız** `Cases.tsx` import ediyor → ikisi birlikte taşındı
+(yoksa OCR ipucu taşınmış ekranın dışında Türkçe kalmaya devam ederdi).
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **82 anahtar** (`cases` 78, `ocrLang` 4) → sözlük **862 → 944**
+  (`messageKeys()` ile ölçüldü).
+- `screens/Cases.tsx`: sayfa başlığı (`nav.files`), lead (INV-05), liste başlığı/alt satırı
+  (`{count} kayıt · {scope}` + `arşiv dahil`/`yalnız aktif`), arşiv onay kutusu, yeni
+  dosya/vazgeç, form (başlık/tür/esas/alan + iki yer tutucu + tür seçenekleri
+  `labels.caseKind.*`), boş liste (iki durum), satır künyesi (`referans yok`/`alan
+  belirtilmedi`), seçili dosya künyesi (yedi `dt`), üç mutasyon düğmesi, ilerleme
+  `aria-label`, kaynak alıntılar kartı (başlık/alt satır/boş durum/`title`/okuyucuda aç),
+  belgeler kartı (başlık/alt satır/toplu ayrıştırma `title`/belge ekle/boş durum/etiket
+  `title` + `aria-label` + yer tutucu/Oku/Ayrıştır/OCR), toplu sonuç bloğu, kodlama
+  seçimi (4 seçenek + ipucu), PDF parolası (etiket + yer tutucu) ve dipnot.
+  Parametreli: `{count}`, `{scope}`, `{name}`, `{version}`, `{status}`, `{pages}`,
+  `{segments}`, `{peak}`, `{succeeded}`, `{requested}`, `{tag}`, `{quote}`, `{title}`,
+  `{lang}`. **Ayırıcılar (`" · "`) sözlükte değil kodda**: sözlük baş/son boşluk
+  yasaklıyor ve parça birleştirme `parts.join(" · ")` ile tek yerde.
+- `lib/ocr.ts`: dört dil adı `ocrLang.*`ten; `DEFAULT_OCR_LANG` ("tur+eng") **kaynak
+  sabiti olarak kaldı** (Rust `queue.rs` ve Python `engines.py` aynası; `ocr.test.ts`
+  üçünü karşılaştırmaya devam ediyor).
+- **Kapı kapsamı:** `MIGRATED` += `screens/Cases.tsx`, `lib/ocr.ts` → **29** dosya.
+
+**Kanıt (kırmızı→yeşil, ölçüldü)**
+
+- `Cases.tsx`e `const _leak = "İnceleme dosyaları";` **ve** `ocr.ts`e
+  `export const _LEAK2 = "Türkçe";` aynı anda → `localization.test.ts`
+  **1 failed | 8 passed**, rapor iki dosyayı birlikte: `["lib/ocr.ts:16",
+  "screens/Cases.tsx:35"]`; ikisi de geri alındı → `sha256sum -c` **birebir OK** → **9/9**.
+- **Yeni 3 test** (`i18n-bindings.test.ts`): Dosyalar satırları parametreleri doldurur
+  (`listSubtitle` iki kapsamla farklı, `parseSummary`/`batchDetail`/`batchResult` yarım
+  `{` bırakmaz, `imported`/`removeTagTitle`/`tagAria` birebir) · OCR ipucu dil adını
+  sözlükten alır (`Taranmış sayfalar için OCR (Türkçe + İngilizce)`) · **ekranda geçen
+  her `cases.*` anahtarı sözlükte var** (78 anahtar; silinen anahtar ekranı çalışma
+  zamanında patlatırdı). `ocr.test.ts` dil adlarını artık `t("ocrLang.*")` ile
+  karşılaştırıyor (harfsiz "OCR" sözcüğünü kapı yakalayamaz, bağ testi kapatır).
+- **Kendi hatam (test yakaladı, uygulama doğruydu):** anahtar-varlık testini önce
+  `t(key)` çağırarak yazdım; parametre isteyen anahtarlar bilinçli olarak hata attığı
+  için test kırmızı oldu → `messageKeys()` kümesiyle karşılaştırıldı. Kod değişmedi.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **476/476** (36 dosya; 473 → +3 net) ·
+`vite build` temiz (**525,36 kB**; önceki 522,08 kB — sözlük büyüdü, Vite 500 kB uyarısı
+sürüyor) · taşınmış iki dosyada yorum dışı **0** Türkçe harf satırı (betikle).
+
+**Kalan yüzey:** **3 ekran + 1 bileşen** (Precedents 136, Providers 110, Review 100,
+DualReader 93) + **9 yardımcı lib** (providers 42, arch 36, intext 35, inventory 32,
+package 31, precedents 26, attack 24, precedent-terms 15, precedent-document 7, reader 8)
+→ F04-T08 **🚧**. Metinler birebir aynı; Tauri penceresi açılmadı → **görsel QA yok**;
+Windows denenmedi.
+
+**CI (bu tur):** aşağıdaki "CI" bölümünde ölçülen koşu.
 
 ## F04-T08 — sözlük taşıması: `components/Notes.tsx` + `lib/notes.ts` + `lib/vault-input.ts` (2026-10-30, yedinci tur)
 

@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { t } from "./i18n";
 import { DEFAULT_OCR_LANG, defaultOcrLanguageLabel, ocrLanguageLabel } from "./ocr";
 
 const REPO = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -53,12 +54,18 @@ describe("OCR dili tek kaynak", () => {
 });
 
 describe("OCR dili etiketi", () => {
-  it("birleşik dili okunur yazar", () => {
+  // F04-T08: dil adları sözlükten gelir. Kapı yalnız Türkçe *harf* arıyor;
+  // "OCR" gibi harfsiz sözcükleri kaçırır — bu bağ testi o boşluğu kapatır.
+  it("birleşik dili okunur yazar (adlar sözlükten)", () => {
+    expect(ocrLanguageLabel("tur+eng")).toBe(`${t("ocrLang.tur")} + ${t("ocrLang.eng")}`);
     expect(ocrLanguageLabel("tur+eng")).toBe("Türkçe + İngilizce");
   });
 
   it("tek dili okunur yazar", () => {
-    expect(ocrLanguageLabel("tur")).toBe("Türkçe");
+    expect(ocrLanguageLabel("tur")).toBe(t("ocrLang.tur"));
+    expect(ocrLanguageLabel("eng")).toBe(t("ocrLang.eng"));
+    expect(ocrLanguageLabel("deu")).toBe(t("ocrLang.deu"));
+    expect(ocrLanguageLabel("fra")).toBe(t("ocrLang.fra"));
   });
 
   it("tanınmayan kodu uydurmadan olduğu gibi yazar", () => {
@@ -66,6 +73,6 @@ describe("OCR dili etiketi", () => {
   });
 
   it("varsayılan etiket Türkçe'yi adıyla söyler", () => {
-    expect(defaultOcrLanguageLabel()).toBe("Türkçe + İngilizce");
+    expect(defaultOcrLanguageLabel()).toBe(`${t("ocrLang.tur")} + ${t("ocrLang.eng")}`);
   });
 });

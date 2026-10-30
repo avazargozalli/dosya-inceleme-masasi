@@ -73,6 +73,7 @@ const MIGRATED = [
   "components/Notes.tsx",
   "components/WorkerBudgetCard.tsx",
   "screens/Unlock.tsx",
+  "screens/Cases.tsx",
   "screens/Workspace.tsx",
   "screens/Tasks.tsx",
   "screens/Exports.tsx",
@@ -94,6 +95,7 @@ const MIGRATED = [
   "lib/search-scope.ts",
   "lib/rollback.ts",
   "lib/notes.ts",
+  "lib/ocr.ts",
   "lib/vault-input.ts",
 ];
 

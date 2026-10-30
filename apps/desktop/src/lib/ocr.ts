@@ -11,6 +11,8 @@
  * %82,8); `tur` ve `tur+eng` **79/79** (%100). `tur+eng` karışık belgeler için
  * seçildi; bedeli ölçüldü: 2 sayfada +183 ms (~%8).
  */
+import { t } from "./i18n";
+
 export const DEFAULT_OCR_LANG = "tur+eng";
 
 /** Tesseract dil kodunun insan okunur adı; tanınmayan kod **olduğu gibi** yazılır. */
@@ -23,13 +25,13 @@ export function ocrLanguageLabel(lang: string): string {
   const names = codes.map((code) => {
     switch (code) {
       case "tur":
-        return "Türkçe";
+        return t("ocrLang.tur");
       case "eng":
-        return "İngilizce";
+        return t("ocrLang.eng");
       case "deu":
-        return "Almanca";
+        return t("ocrLang.deu");
       case "fra":
-        return "Fransızca";
+        return t("ocrLang.fra");
       default:
         return code;
     }

@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 import type { ExportCoverage, JobRetryView, JobRow, PrecedentSearchHit, PrecedentSearchPage, PreUpdateBackup, SearchPage } from "./api";
 import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
-import { t } from "./i18n";
+import { messageKeys, t } from "./i18n";
+import { defaultOcrLanguageLabel } from "./ocr";
 import { MIN_PASSWORD_LENGTH, checkPassword, checkPasswordConfirmation } from "./vault-input";
 import {
   blockedReasonLabel,
@@ -550,5 +551,64 @@ describe("Notlar bileşeni ve yardımcıları sözlükten gelir", () => {
     expect(checkPassword("1234567890123")).toEqual({ ok: false, reason: t("vaultInput.digitsOnly") });
     expect(checkPasswordConfirmation("a", "b")).toEqual({ ok: false, reason: t("vaultInput.mismatch") });
     expect(checkPassword("Kira-2026-dosya")).toEqual({ ok: true });
+  });
+
+  // Dosyalar ekranı (F04-T08): satırların hepsi parametreli; eksik parametre
+  // `t()` tarafından hata olarak atılır, ekranda yarım cümle kalmaz.
+  it("Dosyalar ekranı satırları sözlükten ve parametreleri doldurulmuş gelir", () => {
+    const sub = t("cases.listSubtitle", { count: 7, scope: t("cases.scopeActive") });
+    expect(sub.startsWith("7 ")).toBe(true);
+    expect(sub).toContain("·");
+    expect(sub).toContain(t("cases.scopeActive"));
+    expect(sub).not.toContain("{");
+
+    const scopeAll = t("cases.listSubtitle", { count: 2, scope: t("cases.scopeArchived") });
+    expect(scopeAll).toContain(t("cases.scopeArchived"));
+    expect(scopeAll).not.toBe(sub);
+
+    const summary = t("cases.parseSummary", { status: "completed", pages: 3, segments: 12 });
+    expect(summary).toContain("3");
+    expect(summary).toContain("12");
+    expect(summary).not.toContain("{");
+
+    const detail = t("cases.batchDetail", { pages: 4, peak: 2 });
+    expect(detail).toContain("4");
+    expect(detail).toContain("(en fazla 2)");
+    expect(detail).not.toContain("{");
+
+    const result = t("cases.batchResult", { succeeded: 2, requested: 3 });
+    expect(result).toContain("2");
+    expect(result).toContain("3");
+    expect(result).not.toContain("{");
+
+    const imported = t("cases.imported", { name: "kira.pdf", version: 3 });
+    expect(imported).toBe("“kira.pdf” içe alındı (sürüm 3).");
+
+    const tagTitle = t("cases.removeTagTitle", { tag: "kira" });
+    expect(tagTitle).toBe("“kira” etiketini kaldır");
+    expect(t("cases.tagAria", { name: "kira.pdf" })).toBe("kira.pdf için etiket");
+  });
+
+  it("Dosyalar ekranı OCR ipucu dil adını sözlükten alır", () => {
+    const title = t("cases.ocrTitle", { lang: defaultOcrLanguageLabel() });
+    expect(title).toBe("Taranmış sayfalar için OCR (Türkçe + İngilizce)");
+    expect(title).not.toContain("{");
+  });
+
+  it("Dosyalar ekranının sözlük anahtarları eksiksizdir", () => {
+    // Ekranda geçen her `cases.*` anahtarı sözlükte var olmalı; silinen bir
+    // anahtar ekranı çalışma zamanında patlatırdı.
+    const source = readFileSync(
+      fileURLToPath(new URL("../screens/Cases.tsx", import.meta.url)),
+      "utf8",
+    );
+    const used = [...source.matchAll(/t\("(cases\.[a-zA-Z0-9_.]+)"/g)].map((m) => m[1]!);
+    expect(used.length).toBeGreaterThan(40);
+    // Parametre isteyen anahtarlar parametresiz çağrıldığında bilinçli olarak
+    // hata atar; burada aranan şey **varlık**, o yüzden sözlük anahtar listesi
+    // kullanılır.
+    const known = new Set(messageKeys());
+    const missing = used.filter((key) => !known.has(key as never));
+    expect(missing).toEqual([]);
   });
 });
