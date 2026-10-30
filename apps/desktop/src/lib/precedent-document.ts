@@ -1,5 +1,6 @@
 import type { DocumentVersionRow, PrecedentDocumentText } from "./api";
 import { formatTimestamp } from "./format";
+import { t } from "./i18n";
 
 /**
  * F12-T13 — kasadaki belgeden emsale tam metin aktarma metinleri.
@@ -13,7 +14,10 @@ import { formatTimestamp } from "./format";
 export function versionOptionLabel(
   version: Pick<DocumentVersionRow, "versionNo" | "importedAt">,
 ): string {
-  return `v${version.versionNo} · ${formatTimestamp(version.importedAt)}`;
+  return t("precedentDoc.versionOption", {
+    version: `v${version.versionNo}`,
+    at: formatTimestamp(version.importedAt),
+  });
 }
 
 /**
@@ -28,10 +32,10 @@ export function transferBlockedReason(input: {
   versionCount: number;
   selectedVersionId: string;
 }): string | null {
-  if (!input.hasPrecedent) return "Önce bir emsal seçin.";
-  if (input.documentCount === 0) return "Kasadaki bu dosyada belge yok.";
-  if (input.versionCount === 0) return "Seçilen belgenin sürümü yok.";
-  if (input.selectedVersionId.trim().length === 0) return "Aktarılacak sürümü seçin.";
+  if (!input.hasPrecedent) return t("precedentDoc.blockedNoPrecedent");
+  if (input.documentCount === 0) return t("precedentDoc.blockedNoDocument");
+  if (input.versionCount === 0) return t("precedentDoc.blockedNoVersion");
+  if (input.selectedVersionId.trim().length === 0) return t("precedentDoc.blockedNoSelection");
   return null;
 }
 
@@ -41,26 +45,28 @@ export function transferBlockedReason(input: {
  * dört hanesi "v3" gibi okunurdu (uydurma numara).
  */
 export function documentTextSummary(result: PrecedentDocumentText): string {
-  const hash = result.version.bodyHash.slice(0, 12);
-  return `${formatTimestamp(result.version.acquiredAt)} · ${result.pages} sayfa · ${result.charCount} karakter · sha256 ${hash}…`;
+  return t("precedentDoc.summary", {
+    at: formatTimestamp(result.version.acquiredAt),
+    pages: result.pages,
+    characters: result.charCount,
+    hash: result.version.bodyHash.slice(0, 12),
+  });
 }
 
 /** Kısmi ayrıştırma / OCR / metinsiz sayfa uyarıları; yoksa boş dizi. */
 export function documentTextWarnings(result: PrecedentDocumentText): string[] {
   const warnings: string[] = [];
   if (result.parseStatus === "partial") {
-    warnings.push("Ayrıştırma kısmi (partial): eksik sayfa olabilir.");
+    warnings.push(t("precedentDoc.warnPartial"));
   }
   if (result.ocrPages > 0) {
-    warnings.push(
-      `${result.ocrPages} sayfa OCR ile çıkarıldı; metin görüntüden okundu, yazım hataları olabilir.`,
-    );
+    warnings.push(t("precedentDoc.warnOcr", { pages: result.ocrPages }));
   }
   if (result.emptyPages > 0) {
-    warnings.push(`${result.emptyPages} sayfa metinsizdi ve birleştirmeye alınmadı.`);
+    warnings.push(t("precedentDoc.warnEmpty", { pages: result.emptyPages }));
   }
   if (!result.written) {
-    warnings.push("Aynı metin (aynı SHA-256) zaten kayıtlıydı; yeni sürüm yazılmadı.");
+    warnings.push(t("precedentDoc.warnDuplicate"));
   }
   return warnings;
 }

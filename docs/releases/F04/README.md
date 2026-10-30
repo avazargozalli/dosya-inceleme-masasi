@@ -11,7 +11,63 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **14 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`) taşındı (**29 dosya**); **3 ekran + 1 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar, Emsal** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **17 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`, `precedents`, `precedent-terms`, `precedent-document`) taşındı (**33 dosya**); **2 ekran + 1 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+
+## F04-T08 — sözlük taşıması: `screens/Precedents.tsx` + üç künye lib'i (2026-10-31, dokuzuncu tur)
+
+**Önceki turun açık işi kapandı:** `edf986b` → CI `41131595392` **7/7 yeşil** (doğrulandı;
+macOS işleri `macos-15` migrasyonundan sonra gerçekten koşuyor).
+
+**Neden bu dilim:** kalan yüzeyde en büyük **tek ekran Emsal (136 satır)** ve metninin
+**48 satırı** üç yardımcı lib'de duruyordu: `lib/precedents.ts` (26), `lib/precedent-terms.ts`
+(15), `lib/precedent-document.ts` (7). ÖLÇÜLDÜ: bu üç lib'i **yalnız** `Precedents.tsx`
+(kendi testleri dışında) import ediyor → dördü **kapalı bir küme**; ekranı tek başına taşımak
+“temiz görünen ama metni lib'de kalan” dört dosya üretirdi (önceki turların ölçülmüş kusur
+sınıfı). Bu turda **dört dosya birlikte** taşındı.
+
+**Yazılanlar:** `lib/i18n.ts` + **4 yeni bölüm, 247 anahtar** (`precedents` 174,
+`precedentLib` 37, `terms` 26, `precedentDoc` 10) → sözlük **944 → 1191** (`messageKeys()`
+ile ölçüldü). `Precedents.tsx`: sayfa başlığı/lead/üç parçalı ipucu, kütüphane kartı (10 alan
+etiketi + 4 yer tutucu + satır künyesi), toplu içe alma (düğmeler, 4 alan, sütun ipucu,
+çakışma notu, liste hash'i), toplu korpus dağıtımı (kip, kapı rozeti, gerekçeler, sonuç),
+kaynak kullanım koşulu (7 seçenek + 3 etiket + yazılı dayanak uyarısı + sorumluluk notu),
+bibliyografya, kullanım notu, tam metin + alıntı doğrulama (aktarma bloğu, 3 seçim kutusu,
+uyarılar, koşu etiketi), atıf kontrolü (6 alan + 3 rozet + anlam incelemesi + bağlam) ve
+dış bağlayıcılar; 11 hata/dialog metni. **Modül sabitleri fonksiyona çevrildi**
+(`EMPTY` → `emptyDraft()`, `MEANING_LABEL` → `meaningLabel(value)`): sabit harita sözlüğü
+**import anında** okuyordu (Notlar turundaki `EMPTY_BODY_ERROR` dersinin aynısı).
+
+**Ayırıcı kararı (sürüyor):** `" · "` ve baştaki tek boşluk sözlük **değerlerine** gömülmedi
+(sözlük baş/son boşluk ve çift boşluk yasaklıyor); birleştirme kodda tek yerde:
+`parts.join(" · ")`, `` ` ${t(...)}` ``. Cümle içi ayırıcılar (`{at} · {pages} sayfa …`)
+şablonun parçası olarak kaldı — metin birebir korundu.
+
+**Kapı kapsamı:** `MIGRATED` += 4 → **33** dosya.
+
+**Kanıt (kırmızı→yeşil, ölçüldü):** `Precedents.tsx`e `_leak = "Emsal kütüphanesi"` **ve**
+`precedent-terms.ts`e `_LEAK2 = "yeniden dağıtım izinsiz"` aynı anda → `localization.test.ts`
+**1 failed | 8 passed**, rapor `["lib/precedent-terms.ts:18","screens/Precedents.tsx:74"]`;
+ikisi de geri alındı, `sha256sum -c` **birebir OK** → **9/9**.
+
+**Yeni 7 test** (`i18n-bindings.test.ts`): kullanım koşulu etiketleri; kapsam satırının
+**parçalardan birleşmesi** (`join(" · ")` birebir); aktarım sonucu (sayı + hash); **alıntı
+durumu cümlesi** (konum + tekrar + eski sürüm eki ile birlikte kurulur); tarama/kaynak/toplu
+içe alma etiketleri; kasadan aktarma metinleri (4 engel gerekçesi, özet, 4 uyarı); **ekranda
+`t()` ile çağrılan 175 benzersiz anahtarın hepsi sözlükte var** (186 çağrı — bazı anahtarlar
+iki yerde). Mevcut `precedents.test.ts` /
+`precedent-terms.test.ts` / `precedent-document.test.ts` **birebir** karşılaştırma yapıyor ve
+değişmeden geçti → metinlerin byte düzeyinde aynı olduğunun kanıtı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **483/483** (36 dosya; 476 → +7) · `vite build`
+temiz (**537,32 kB**; önceki 525,36 kB — Vite 500 kB uyarısı sürüyor). Taşınmış dört dosyada
+yorum dışı **0** Türkçe harf satırı (kapının kendi mantığıyla ölçüldü).
+
+**Dürüst sınırlar:** **2 ekran + 1 bileşen** kaldı (Providers 110, Review 100,
+`components/DualReader` 93) + **8 yardımcı lib** (`providers` 42, `arch` 36, `intext` 35,
+`inventory` 32, `package` 31, `attack` 24, `reader` 8, `reviewTarget` 2) → F04-T08 **🚧**.
+Metinler birebir aynı; Tauri penceresi açılmadı → **görsel QA yok** (JSX parçalarının
+boşlukları `{" "}` ile açıkça yazıldı ama ekranda görülmedi). Windows denenmedi.
+
 
 ## F04-T08 — sözlük taşıması: `screens/Cases.tsx` + `lib/ocr.ts` (2026-10-31, sekizinci tur)
 

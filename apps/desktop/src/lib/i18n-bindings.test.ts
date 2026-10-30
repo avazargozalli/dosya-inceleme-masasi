@@ -10,9 +10,10 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type { ExportCoverage, JobRetryView, JobRow, PrecedentSearchHit, PrecedentSearchPage, PreUpdateBackup, SearchPage } from "./api";
+import type { CorpusCoverage, ExportCoverage, JobRetryView, JobRow, PrecedentDocumentText, PrecedentSearchHit, PrecedentSearchPage, PrecedentUsageTerms, PreUpdateBackup, QuoteVerificationRow, SearchPage } from "./api";
 import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
+import { formatTimestamp } from "./format";
 import { messageKeys, t } from "./i18n";
 import { defaultOcrLanguageLabel } from "./ocr";
 import { MIN_PASSWORD_LENGTH, checkPassword, checkPasswordConfirmation } from "./vault-input";
@@ -26,6 +27,33 @@ import {
   retryOutcomeLine,
 } from "./jobs";
 import { parseProgressLine, parseStageLabel } from "./parseProgress";
+import {
+  documentTextSummary,
+  documentTextWarnings,
+  transferBlockedReason,
+  versionOptionLabel,
+} from "./precedent-document";
+import {
+  corpusGateText,
+  corpusResultText,
+  coverageText,
+  exclusionReasonLabel,
+  redistributionLabel,
+  termsBadge,
+  termsRecordedText,
+  usageBasisLabel,
+} from "./precedent-terms";
+import {
+  accessBasisLabel,
+  bibliographyMissingText,
+  bulkOutcomeLabel,
+  bulkReportSummary,
+  quoteScanNote,
+  quoteStateText,
+  versionConflictText,
+  versionSourceLabel,
+  versionStateText,
+} from "./precedents";
 import {
   CONFLICT_HINT,
   DRAFT_STATUS_LABEL,
@@ -607,6 +635,295 @@ describe("Notlar bileşeni ve yardımcıları sözlükten gelir", () => {
     // Parametre isteyen anahtarlar parametresiz çağrıldığında bilinçli olarak
     // hata atar; burada aranan şey **varlık**, o yüzden sözlük anahtar listesi
     // kullanılır.
+    const known = new Set(messageKeys());
+    const missing = used.filter((key) => !known.has(key as never));
+    expect(missing).toEqual([]);
+  });
+});
+
+describe("Emsal kümesi (ekran + üç yardımcı lib) sözlükten gelir", () => {
+  function termsRow(overrides: Partial<PrecedentUsageTerms>): PrecedentUsageTerms {
+    return {
+      precedentId: "p1",
+      usageBasis: "unknown",
+      redistribution: "unknown",
+      termsUrl: null,
+      termsNote: "",
+      termsRecordedAt: null,
+      ...overrides,
+    };
+  }
+
+  function coverage(overrides: Partial<CorpusCoverage>): CorpusCoverage {
+    return {
+      total: 0,
+      withText: 0,
+      allowed: 0,
+      notAllowed: 0,
+      unknown: 0,
+      blockedTotal: 0,
+      blocked: [],
+      ...overrides,
+    };
+  }
+
+  function verification(overrides: Partial<QuoteVerificationRow>): QuoteVerificationRow {
+    return {
+      precedentId: "p1",
+      versionId: "pv1",
+      state: "not_checked",
+      method: null,
+      matchedStart: null,
+      matchedLength: null,
+      occurrences: 0,
+      reason: null,
+      versionsScanned: 0,
+      historicalVersionsScanned: 0,
+      foundInOldVersion: false,
+      historicalTruncated: false,
+      quote: "itirazın reddine",
+      checkedAt: "2026-10-24T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  function documentText(overrides: Partial<PrecedentDocumentText>): PrecedentDocumentText {
+    return {
+      version: {
+        id: "pv1",
+        precedentId: "p1",
+        documentVersionId: "dv1",
+        acquiredAt: "2026-10-24T09:15:00Z",
+        sourceKind: "document",
+        bodyHash: "abcd1234ef567890".padEnd(64, "0"),
+        verificationState: "text_verified",
+        charCount: 8412,
+        hasText: true,
+        identityConflict: false,
+        conflictWithVersionId: null,
+      },
+      parseRunId: "run-1",
+      engine: "pymupdf",
+      parseStatus: "succeeded",
+      pages: 12,
+      ocrPages: 0,
+      emptyPages: 0,
+      charCount: 8412,
+      written: true,
+      notes: [],
+      ...overrides,
+    };
+  }
+
+  it("kullanım koşulu metinleri sözlükten kurulur", () => {
+    expect(usageBasisLabel("licence")).toBe(t("terms.basisLicence"));
+    expect(usageBasisLabel("internal_only")).toBe(t("terms.basisInternalOnly"));
+    expect(redistributionLabel("allowed")).toBe(t("terms.redistributionAllowed"));
+    expect(termsBadge({ redistribution: "not_allowed" }).text).toBe(t("terms.badgeNotAllowed"));
+    // Kayıt yokluğu izin sayılmaz; metin sözlükten gelir, uydurulmaz.
+    expect(termsRecordedText(termsRow({}))).toBe(t("terms.recordedNone"));
+    expect(termsRecordedText(termsRow({ termsRecordedAt: "2026-10-24T15:03:21+03:00" }))).toBe(
+      t("terms.recordedAt", { at: "2026-10-24 15:03" }),
+    );
+  });
+
+  it("kapsam ve kapı cümleleri sözlük parçalarından birleşir", () => {
+    const covered = coverage({
+      total: 5,
+      withText: 3,
+      allowed: 1,
+      notAllowed: 1,
+      unknown: 1,
+      blockedTotal: 2,
+    });
+    expect(coverageText(covered)).toBe(
+      [
+        t("terms.coverageTotal", { total: 5 }),
+        t("terms.coverageWithText", { withText: 3 }),
+        t("terms.coverageAllowed", { allowed: 1 }),
+        t("terms.coverageNotAllowed", { notAllowed: 1 }),
+        t("terms.coverageUnknown", { unknown: 1 }),
+      ].join(" · "),
+    );
+    expect(corpusGateText(coverage({ withText: 0 }))).toBe(t("terms.gateNoText"));
+    expect(
+      corpusGateText(coverage({ total: 3, withText: 3, allowed: 1, unknown: 2, blockedTotal: 2 })),
+    ).toBe(t("terms.gateBlocked", { blocked: 2 }));
+    expect(exclusionReasonLabel("redistribution_not_allowed")).toBe(
+      t("terms.exclusionNotAllowed"),
+    );
+    expect(exclusionReasonLabel("redistribution_unknown")).toBe(t("terms.exclusionUnknown"));
+  });
+
+  it("aktarım sonucu sayı ve hash ile sözlükten yazılır", () => {
+    expect(
+      corpusResultText({
+        path: "/tmp/k.json",
+        bytes: 1,
+        sha256: "abcdef0123456789",
+        exported: 2,
+        excluded: 1,
+        contentHash: "ffff",
+      }),
+    ).toBe(
+      [
+        t("terms.resultExported", { exported: 2 }),
+        t("terms.resultExcluded", { excluded: 1 }),
+        t("terms.resultHash", { hash: "abcdef012345" }),
+      ].join(" · "),
+    );
+  });
+
+  it("alıntı durumu cümlesi sözlük parçalarından kurulur", () => {
+    expect(quoteStateText(verification({ state: "match", method: "exact" }))).toBe(
+      t("precedentLib.quoteExact", {
+        where: t("precedentLib.quoteWhereCurrent"),
+        at: "",
+        repeated: "",
+        old: "",
+      }),
+    );
+
+    // Eski sürümde bulunan alıntı: konum, tekrar ve uyarı eki birlikte kurulur.
+    expect(
+      quoteStateText(
+        verification({
+          state: "match",
+          method: "exact",
+          matchedStart: 4,
+          occurrences: 2,
+          foundInOldVersion: true,
+        }),
+      ),
+    ).toBe(
+      t("precedentLib.quoteExact", {
+        where: t("precedentLib.quoteWhereOld"),
+        at: ` ${t("precedentLib.quoteAt", { position: "5" })}`,
+        repeated: ` · ${t("precedentLib.quoteRepeated", { count: 2 })}`,
+        old: ` ${t("precedentLib.quoteOldSuffix")}`,
+      }),
+    );
+
+    expect(quoteStateText(verification({ state: "mismatch" }))).toBe(
+      t("precedentLib.quoteMismatch", {
+        scope: t("precedentLib.quoteMismatchCurrent"),
+        cut: "",
+      }),
+    );
+    expect(
+      quoteStateText(verification({ state: "not_checked", reason: "quote_too_short" })),
+    ).toBe(t("precedentLib.quoteTooShort"));
+    expect(quoteStateText(verification({ state: "not_checked", reason: "no_full_text" }))).toBe(
+      t("precedentLib.quoteNoText"),
+    );
+  });
+
+  it("tarama, kaynak ve toplu içe alma etiketleri sözlükten", () => {
+    expect(
+      quoteScanNote(
+        verification({ state: "mismatch", versionsScanned: 3, historicalVersionsScanned: 2 }),
+      ),
+    ).toBe(
+      [
+        t("precedentLib.scanVersions", { count: 3 }),
+        t("precedentLib.scanHistorical", { count: 2 }),
+      ].join(" · "),
+    );
+    expect(versionSourceLabel({ sourceKind: "document" })).toBe(
+      t("precedentLib.sourceDocument"),
+    );
+    expect(
+      bulkOutcomeLabel({ outcome: "duplicate", code: null, message: null, charCount: 1 }),
+    ).toBe(t("precedentLib.bulkDuplicate"));
+    expect(
+      bulkReportSummary({ created: 3, duplicates: 1, conflicts: 1, failed: 0 }),
+    ).toBe(
+      [
+        t("precedentLib.bulkReportCreated", { count: 3 }),
+        t("precedentLib.bulkReportDuplicates", { count: 1 }),
+        t("precedentLib.bulkReportConflicts", { count: 1 }),
+      ].join(" · "),
+    );
+    expect(versionConflictText({ identityConflict: true })).toBe(t("precedentLib.conflictText"));
+    expect(bibliographyMissingText([])).toBe(t("precedentLib.bibliographyComplete"));
+    expect(bibliographyMissingText(["karar tarihi"])).toBe(
+      t("precedentLib.bibliographyMissing", { fields: "karar tarihi" }),
+    );
+    expect(accessBasisLabel("version")).toBe(t("precedentLib.accessBasisVersion"));
+    expect(versionStateText({ hasText: false, charCount: 0 })).toBe(
+      t("precedentLib.versionNoText"),
+    );
+  });
+
+  it("kasadan aktarma metinleri sözlükten", () => {
+    expect(versionOptionLabel({ versionNo: 7, importedAt: "bozuk" })).toBe(
+      t("precedentDoc.versionOption", { version: "v7", at: "—" }),
+    );
+    expect(
+      transferBlockedReason({
+        hasPrecedent: false,
+        documentCount: 1,
+        versionCount: 1,
+        selectedVersionId: "x",
+      }),
+    ).toBe(t("precedentDoc.blockedNoPrecedent"));
+    expect(
+      transferBlockedReason({
+        hasPrecedent: true,
+        documentCount: 0,
+        versionCount: 1,
+        selectedVersionId: "x",
+      }),
+    ).toBe(t("precedentDoc.blockedNoDocument"));
+    expect(
+      transferBlockedReason({
+        hasPrecedent: true,
+        documentCount: 1,
+        versionCount: 0,
+        selectedVersionId: "x",
+      }),
+    ).toBe(t("precedentDoc.blockedNoVersion"));
+    expect(
+      transferBlockedReason({
+        hasPrecedent: true,
+        documentCount: 1,
+        versionCount: 1,
+        selectedVersionId: "   ",
+      }),
+    ).toBe(t("precedentDoc.blockedNoSelection"));
+    expect(documentTextSummary(documentText({}))).toBe(
+      t("precedentDoc.summary", {
+        at: formatTimestamp("2026-10-24T09:15:00Z"),
+        pages: 12,
+        characters: 8412,
+        hash: "abcd1234ef56",
+      }),
+    );
+    expect(documentTextWarnings(documentText({ parseStatus: "partial" }))).toEqual([
+      t("precedentDoc.warnPartial"),
+    ]);
+    expect(documentTextWarnings(documentText({ ocrPages: 3 }))).toEqual([
+      t("precedentDoc.warnOcr", { pages: 3 }),
+    ]);
+    expect(documentTextWarnings(documentText({ emptyPages: 2 }))).toEqual([
+      t("precedentDoc.warnEmpty", { pages: 2 }),
+    ]);
+    expect(documentTextWarnings(documentText({ written: false }))).toEqual([
+      t("precedentDoc.warnDuplicate"),
+    ]);
+  });
+
+  it("Emsal ekranının sözlük anahtarları eksiksizdir", () => {
+    // Ekranda `t("…")` ile çağrılan her anahtar sözlükte var olmalı; silinen bir
+    // anahtar ekranı çalışma zamanında patlatırdı.
+    const source = readFileSync(
+      fileURLToPath(new URL("../screens/Precedents.tsx", import.meta.url)),
+      "utf8",
+    );
+    const used = [
+      ...source.matchAll(/t\("((?:precedents|precedentLib|terms|precedentDoc)\.[a-zA-Z0-9_.]+)"/g),
+    ].map((match) => match[1]!);
+    expect(used.length).toBeGreaterThan(100);
     const known = new Set(messageKeys());
     const missing = used.filter((key) => !known.has(key as never));
     expect(missing).toEqual([]);

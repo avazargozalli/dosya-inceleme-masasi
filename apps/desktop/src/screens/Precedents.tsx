@@ -24,6 +24,7 @@ import {
   type UsageBasis,
 } from "../lib/api";
 import { formatSize, formatTimestamp } from "../lib/format";
+import { t } from "../lib/i18n";
 import {
   accessBasisLabel,
   bibliographyMissingText,
@@ -70,30 +71,41 @@ type Draft = {
   legalIssue: string;
 };
 
-const EMPTY: Draft = {
-  court: "Yargıtay",
-  chamber: "",
-  docketNo: "",
-  decisionNo: "",
-  decisionDate: "",
-  title: "",
-  sourceUrl: "",
-  tags: "",
-  legalIssue: "",
-};
+function emptyDraft(): Draft {
+  return {
+    court: t("precedents.defaultCourt"),
+    chamber: "",
+    docketNo: "",
+    decisionNo: "",
+    decisionDate: "",
+    title: "",
+    sourceUrl: "",
+    tags: "",
+    legalIssue: "",
+  };
+}
 
-const MEANING_LABEL: Record<string, string> = {
-  not_reviewed: "incelenmedi",
-  accurate: "kararı yansıtıyor",
-  misleading: "yanıltıcı",
-  off_context: "bağlam dışı",
-};
+/** Anlam incelemesi rozeti; bilinmeyen değer olduğu gibi görünür (uydurulmaz). */
+function meaningLabel(value: string): string {
+  switch (value) {
+    case "not_reviewed":
+      return t("precedents.meaningNotReviewed");
+    case "accurate":
+      return t("precedents.meaningAccurateBadge");
+    case "misleading":
+      return t("precedents.meaningMisleadingBadge");
+    case "off_context":
+      return t("precedents.meaningOffContextBadge");
+    default:
+      return value;
+  }
+}
 
 export function Precedents() {
   const [rows, setRows] = useState<PrecedentRow[]>([]);
   const [selected, setSelected] = useState<PrecedentRow | null>(null);
   const [notes, setNotes] = useState<PrecedentNoteRow[]>([]);
-  const [draft, setDraft] = useState<Draft>(EMPTY);
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [similarity, setSimilarity] = useState("");
   const [distinguishing, setDistinguishing] = useState("");
   const [conclusion, setConclusion] = useState("");
@@ -135,7 +147,7 @@ export function Precedents() {
   // Toplu içe alma (F12-T06)
   const [bulkFiles, setBulkFiles] = useState<string[]>([]);
   const [manifestPath, setManifestPath] = useState<string | null>(null);
-  const [bulkCourt, setBulkCourt] = useState("Yargıtay");
+  const [bulkCourt, setBulkCourt] = useState(t("precedents.defaultCourt"));
   const [bulkChamber, setBulkChamber] = useState("");
   const [bulkSourceUrl, setBulkSourceUrl] = useState("");
   const [bulkTags, setBulkTags] = useState("");
@@ -270,7 +282,7 @@ export function Precedents() {
 
   async function add() {
     if (draft.court.trim().length === 0) {
-      setError({ code: "E_COURT", message: "Mahkeme zorunlu.", retryable: false });
+      setError({ code: "E_COURT", message: t("precedents.errorCourt"), retryable: false });
       return;
     }
     setBusy(true);
@@ -287,7 +299,7 @@ export function Precedents() {
         userTags: draft.tags.split(",").map((t) => t.trim()).filter(Boolean),
         legalIssue: draft.legalIssue.trim() || null,
       });
-      setDraft(EMPTY);
+      setDraft(emptyDraft());
       await load();
     } catch (e) {
       setError(toApiError(e));
@@ -321,7 +333,7 @@ export function Precedents() {
   async function addFullText() {
     if (!selected) return;
     if (fullText.trim().length === 0) {
-      setError({ code: "E_TEXT", message: "Tam metin boş olamaz.", retryable: false });
+      setError({ code: "E_TEXT", message: t("precedents.errorEmptyText"), retryable: false });
       return;
     }
     setBusy(true);
@@ -406,7 +418,7 @@ export function Precedents() {
 
   async function exportCorpus() {
     const target = await saveFile({
-      title: "Karar korpusunu kaydet",
+      title: t("precedents.dialogSaveCorpus"),
       defaultPath: "emsal-korpusu.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
@@ -428,7 +440,11 @@ export function Precedents() {
   async function verifyQuote() {
     if (!selected) return;
     if (quoteInput.trim().length === 0) {
-      setError({ code: "E_QUOTE", message: "Doğrulanacak alıntı boş olamaz.", retryable: false });
+      setError({
+        code: "E_QUOTE",
+        message: t("precedents.errorEmptyQuote"),
+        retryable: false,
+      });
       return;
     }
     setBusy(true);
@@ -449,7 +465,7 @@ export function Precedents() {
     } catch {
       setError({
         code: "E_CLIPBOARD",
-        message: "Metin panoya kopyalanamadı; künyeyi seçip elle kopyalayabilirsiniz.",
+        message: t("precedents.errorClipboard"),
         retryable: false,
       });
     }
@@ -459,8 +475,13 @@ export function Precedents() {
     try {
       const picked = await openFiles({
         multiple: true,
-        title: "Karar dosyalarını seç",
-        filters: [{ name: "Karar dosyaları", extensions: ["pdf", "docx", "udf", "txt", "md"] }],
+        title: t("precedents.dialogPickFiles"),
+        filters: [
+          {
+            name: t("precedents.filterDecisionFiles"),
+            extensions: ["pdf", "docx", "udf", "txt", "md"],
+          },
+        ],
       });
       if (!picked) return;
       setBulkFiles(Array.isArray(picked) ? picked : [picked]);
@@ -474,8 +495,8 @@ export function Precedents() {
     try {
       const picked = await openFiles({
         multiple: false,
-        title: "Künye listesi (CSV)",
-        filters: [{ name: "Künye listesi", extensions: ["csv", "txt"] }],
+        title: t("precedents.dialogManifest"),
+        filters: [{ name: t("precedents.filterManifest"), extensions: ["csv", "txt"] }],
       });
       if (!picked) return;
       setManifestPath(Array.isArray(picked) ? (picked[0] ?? null) : picked);
@@ -487,7 +508,11 @@ export function Precedents() {
 
   async function runBulkImport() {
     if (bulkFiles.length === 0) {
-      setError({ code: "E_BULK_EMPTY", message: "Önce dosya seçin.", retryable: false });
+      setError({
+        code: "E_BULK_EMPTY",
+        message: t("precedents.errorBulkEmpty"),
+        retryable: false,
+      });
       return;
     }
     setBulkBusy(true);
@@ -539,7 +564,11 @@ export function Precedents() {
 
   async function addCheck() {
     if (!versionId || citation.trim().length === 0) {
-      setError({ code: "E_CITATION", message: "Belge sürümü ve atıf metni zorunlu.", retryable: false });
+      setError({
+        code: "E_CITATION",
+        message: t("precedents.errorCitation"),
+        retryable: false,
+      });
       return;
     }
     setBusy(true);
@@ -565,15 +594,14 @@ export function Precedents() {
   return (
     <div className="page" style={{ maxWidth: 1000 }}>
       <div className="page-head">
-        <h1>Emsal ve atıf kontrolü</h1>
-        <p className="lead">
-          Künye eksikse karar “incomplete” işaretlenir. “Bulunamadı” ile “uydurulmuş” aynı şey
-          değildir; hiçbir kontrol tek başına sahte hükmü üretmez.
-        </p>
+        <h1>{t("precedents.title")}</h1>
+        <p className="lead">{t("precedents.lead")}</p>
         <p className="hint">
-          Bu ekran yalnız <strong>emsal kütüphanesini</strong> yönetir; dosya belgelerinde arama
-          “Arama” ekranındaki <em>Dosya belgeleri</em> kapsamındadır. Kütüphane araması da ayrı
-          kapsamdır (<em>Emsal kütüphanesi</em>); sonuçlar dosyaya delil olarak eklenmez.
+          {t("precedents.hintIntro")} <strong>{t("precedents.hintLibrary")}</strong>{" "}
+          {t("precedents.hintMid")} <em>{t("precedents.hintDocScope")}</em>{" "}
+          {t("precedents.hintMid2")}
+          <em>{t("precedents.hintPrecedentScope")}</em>
+          {t("precedents.hintTail")}
         </p>
       </div>
 
@@ -586,26 +614,28 @@ export function Precedents() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Emsal kütüphanesi</h2>
-            <p className="card-sub">{rows.length} karar</p>
+            <h2>{t("precedents.libraryTitle")}</h2>
+            <p className="card-sub">
+              {t("precedents.libraryCount", { count: rows.length })}
+            </p>
           </div>
         </div>
         <div className="row">
-          <div className="field"><label htmlFor="p-court">Mahkeme</label><input id="p-court" className="input" value={draft.court} onChange={(e) => setDraft({ ...draft, court: e.target.value })} /></div>
-          <div className="field"><label htmlFor="p-chamber">Daire</label><input id="p-chamber" className="input" value={draft.chamber} onChange={(e) => setDraft({ ...draft, chamber: e.target.value })} /></div>
-          <div className="field"><label htmlFor="p-docket">Esas</label><input id="p-docket" className="input" value={draft.docketNo} onChange={(e) => setDraft({ ...draft, docketNo: e.target.value })} placeholder="2024/123" /></div>
-          <div className="field"><label htmlFor="p-decision">Karar</label><input id="p-decision" className="input" value={draft.decisionNo} onChange={(e) => setDraft({ ...draft, decisionNo: e.target.value })} placeholder="2025/456" /></div>
-          <div className="field"><label htmlFor="p-date">Tarih</label><input id="p-date" className="input" type="date" value={draft.decisionDate} onChange={(e) => setDraft({ ...draft, decisionDate: e.target.value })} /></div>
+          <div className="field"><label htmlFor="p-court">{t("precedents.fieldCourt")}</label><input id="p-court" className="input" value={draft.court} onChange={(e) => setDraft({ ...draft, court: e.target.value })} /></div>
+          <div className="field"><label htmlFor="p-chamber">{t("precedents.fieldChamber")}</label><input id="p-chamber" className="input" value={draft.chamber} onChange={(e) => setDraft({ ...draft, chamber: e.target.value })} /></div>
+          <div className="field"><label htmlFor="p-docket">{t("precedents.fieldDocket")}</label><input id="p-docket" className="input" value={draft.docketNo} onChange={(e) => setDraft({ ...draft, docketNo: e.target.value })} placeholder={t("precedents.phDocket")} /></div>
+          <div className="field"><label htmlFor="p-decision">{t("precedents.fieldDecision")}</label><input id="p-decision" className="input" value={draft.decisionNo} onChange={(e) => setDraft({ ...draft, decisionNo: e.target.value })} placeholder={t("precedents.phDecision")} /></div>
+          <div className="field"><label htmlFor="p-date">{t("precedents.fieldDate")}</label><input id="p-date" className="input" type="date" value={draft.decisionDate} onChange={(e) => setDraft({ ...draft, decisionDate: e.target.value })} /></div>
         </div>
         <div className="row">
-          <div className="field" style={{ flex: "2 1 300px" }}><label htmlFor="p-title">Başlık</label><input id="p-title" className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></div>
-          <div className="field" style={{ flex: "2 1 300px" }}><label htmlFor="p-url">Kaynak URL</label><input id="p-url" className="input" value={draft.sourceUrl} onChange={(e) => setDraft({ ...draft, sourceUrl: e.target.value })} placeholder="https://…" /></div>
-          <div className="field"><label htmlFor="p-tags">Etiketler</label><input id="p-tags" className="input" value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} placeholder="kira, temerrüt" /></div>
-          <button className="btn primary" disabled={busy} onClick={() => void add()}>Ekle</button>
+          <div className="field" style={{ flex: "2 1 300px" }}><label htmlFor="p-title">{t("precedents.fieldTitle")}</label><input id="p-title" className="input" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} /></div>
+          <div className="field" style={{ flex: "2 1 300px" }}><label htmlFor="p-url">{t("precedents.fieldUrl")}</label><input id="p-url" className="input" value={draft.sourceUrl} onChange={(e) => setDraft({ ...draft, sourceUrl: e.target.value })} placeholder={t("precedents.phUrl")} /></div>
+          <div className="field"><label htmlFor="p-tags">{t("precedents.fieldTags")}</label><input id="p-tags" className="input" value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} placeholder={t("precedents.phTags")} /></div>
+          <button className="btn primary" disabled={busy} onClick={() => void add()}>{t("precedents.add")}</button>
         </div>
 
         {rows.length === 0 ? (
-          <div className="empty"><p style={{ margin: 0 }}>Henüz emsal yok.</p></div>
+          <div className="empty"><p style={{ margin: 0 }}>{t("precedents.emptyLibrary")}</p></div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {rows.map((row) => (
@@ -623,14 +653,20 @@ export function Precedents() {
               >
                 <span style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                   <strong style={{ fontWeight: 500 }}>
-                    {row.court} {row.chamber ?? ""} {row.docketNo ?? ""} {row.decisionNo ? `K.${row.decisionNo}` : ""}
+                    {row.court} {row.chamber ?? ""} {row.docketNo ?? ""}{" "}
+                    {row.decisionNo
+                      ? t("precedents.decisionShort", { no: row.decisionNo })
+                      : ""}
                   </strong>
                   <span style={{ display: "flex", gap: 4 }}>
                     <span className={`badge ${termsBadge(row).tone}`}>{termsBadge(row).text}</span>
                     <span className={`badge ${row.completeness === "complete" ? "ok" : "warn"}`}>{row.completeness}</span>
                   </span>
                 </span>
-                <span className="muted small">{row.title ?? "başlıksız"} · {row.decisionDate ?? "tarih yok"}</span>
+                <span className="muted small">
+                  {row.title ?? t("precedents.untitled")} ·{" "}
+                  {row.decisionDate ?? t("precedents.noDate")}
+                </span>
               </button>
             ))}
           </div>
@@ -640,18 +676,22 @@ export function Precedents() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Toplu içe alma</h2>
-            <p className="card-sub">
-              Dosyalar + isteğe bağlı künye listesi (CSV) · metin belge worker'ında çıkarılır, ağ isteği yok
-            </p>
+            <h2>{t("precedents.bulkTitle")}</h2>
+            <p className="card-sub">{t("precedents.bulkSub")}</p>
           </div>
         </div>
         <div className="row">
           <button className="btn" disabled={bulkBusy} onClick={() => void pickBulkFiles()}>
-            {bulkFiles.length === 0 ? "Dosyaları seç…" : `${bulkFiles.length} dosya seçildi`}
+            {bulkFiles.length === 0
+              ? t("precedents.bulkPick")
+              : t("precedents.bulkPicked", { count: bulkFiles.length })}
           </button>
           <button className="btn ghost" disabled={bulkBusy} onClick={() => void pickManifest()}>
-            {manifestPath ? `Künye listesi: ${manifestPath.split("/").pop()}` : "Künye listesi (CSV) seç…"}
+            {manifestPath
+              ? t("precedents.bulkManifestChosen", {
+                  name: manifestPath.split("/").pop() ?? "",
+                })
+              : t("precedents.bulkPickManifest")}
           </button>
           {bulkFiles.length > 0 ? (
             <button
@@ -662,15 +702,15 @@ export function Precedents() {
                 setBulkReport(null);
               }}
             >
-              Seçimi temizle
+              {t("precedents.bulkClear")}
             </button>
           ) : null}
         </div>
         <div className="row">
-          <div className="field"><label htmlFor="b-court">Varsayılan mahkeme</label><input id="b-court" className="input" value={bulkCourt} onChange={(e) => setBulkCourt(e.target.value)} /></div>
-          <div className="field"><label htmlFor="b-chamber">Varsayılan daire</label><input id="b-chamber" className="input" value={bulkChamber} onChange={(e) => setBulkChamber(e.target.value)} /></div>
-          <div className="field"><label htmlFor="b-url">Kaynak URL</label><input id="b-url" className="input" value={bulkSourceUrl} onChange={(e) => setBulkSourceUrl(e.target.value)} placeholder="https://…" /></div>
-          <div className="field"><label htmlFor="b-tags">Etiketler</label><input id="b-tags" className="input" value={bulkTags} onChange={(e) => setBulkTags(e.target.value)} placeholder="kira, temerrüt" /></div>
+          <div className="field"><label htmlFor="b-court">{t("precedents.bulkDefaultCourt")}</label><input id="b-court" className="input" value={bulkCourt} onChange={(e) => setBulkCourt(e.target.value)} /></div>
+          <div className="field"><label htmlFor="b-chamber">{t("precedents.bulkDefaultChamber")}</label><input id="b-chamber" className="input" value={bulkChamber} onChange={(e) => setBulkChamber(e.target.value)} /></div>
+          <div className="field"><label htmlFor="b-url">{t("precedents.fieldUrl")}</label><input id="b-url" className="input" value={bulkSourceUrl} onChange={(e) => setBulkSourceUrl(e.target.value)} placeholder={t("precedents.phUrl")} /></div>
+          <div className="field"><label htmlFor="b-tags">{t("precedents.fieldTags")}</label><input id="b-tags" className="input" value={bulkTags} onChange={(e) => setBulkTags(e.target.value)} placeholder={t("precedents.phTags")} /></div>
         </div>
         <div className="row">
           <button
@@ -678,18 +718,21 @@ export function Precedents() {
             disabled={bulkBusy || bulkFiles.length === 0}
             onClick={() => void runBulkImport()}
           >
-            {bulkBusy ? "İçe alınıyor…" : "İçe al"}
+            {bulkBusy ? t("precedents.bulkBusy") : t("precedents.bulkRun")}
           </button>
           <span className="hint" style={{ flex: "1 1 280px", margin: 0 }}>
-            Liste sütunları: dosya, mahkeme, daire, esas, karar, tarih, başlık, kaynak url, etiketler, konu.
-            Liste yoksa varsayılan künye kullanılır; eksik künye “incomplete” kalır, numara tahmin edilmez.
+            {t("precedents.bulkColumns")}
           </span>
         </div>
         {bulkReport ? (
           <div role="status">
             <p className="small" style={{ margin: "4px 0" }}>
               {bulkReportSummary(bulkReport)}
-              {bulkReport.manifestHash ? ` · liste sha256 ${bulkReport.manifestHash.slice(0, 12)}…` : ""}
+              {bulkReport.manifestHash
+                ? ` · ${t("precedents.bulkManifestHash", {
+                    hash: bulkReport.manifestHash.slice(0, 12),
+                  })}`
+                : ""}
             </p>
             {bulkReport.manifestWarnings.map((warning) => (
               <p key={warning} className="hint" style={{ margin: 0 }}>{warning}</p>
@@ -708,8 +751,7 @@ export function Precedents() {
             </div>
             {bulkReport.conflicts > 0 ? (
               <p className="hint" style={{ margin: 0 }}>
-                Çakışan nüshalar ayrı sürüm olarak eklendi ve “farklı metin” rozetiyle işaretlendi;
-                sessiz birleştirme yapılmadı. İki metni karşılaştırmadan biri silinmemelidir.
+                {t("precedents.bulkConflictNote")}
               </p>
             ) : null}
           </div>
@@ -719,14 +761,14 @@ export function Precedents() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Toplu korpus dağıtımı</h2>
-            <p className="card-sub">
-              Yalnız yeniden dağıtım izni kayıtlı tam metinler · ağ isteği yok, dosya seçilen konuma yazılır
-            </p>
+            <h2>{t("precedents.corpusTitle")}</h2>
+            <p className="card-sub">{t("precedents.corpusSub")}</p>
           </div>
           {coverage ? (
             <span className={`badge ${corpusGateOpen(coverage) ? "ok" : "warn"}`}>
-              {corpusGateOpen(coverage) ? "tümü açık" : "yalnız izinliler"}
+              {corpusGateOpen(coverage)
+                ? t("precedents.corpusGateOpen")
+                : t("precedents.corpusGateClosed")}
             </span>
           ) : null}
         </div>
@@ -748,22 +790,24 @@ export function Precedents() {
                 ))}
                 {coverage.blockedTotal > coverage.blocked.length ? (
                   <p className="hint" style={{ margin: 0 }}>
-                    {coverage.blockedTotal - coverage.blocked.length} kayıt daha listede gösterilmiyor.
+                    {t("precedents.corpusMoreBlocked", {
+                      count: coverage.blockedTotal - coverage.blocked.length,
+                    })}
                   </p>
                 ) : null}
               </div>
             ) : null}
             <div className="row">
               <div className="field">
-                <label htmlFor="corpus-mode">Kip</label>
+                <label htmlFor="corpus-mode">{t("precedents.modeLabel")}</label>
                 <select
                   id="corpus-mode"
                   className="input"
                   value={corpusMode}
                   onChange={(e) => setCorpusMode(e.target.value as "permitted_only" | "all")}
                 >
-                  <option value="permitted_only">Yalnız izinli kararlar</option>
-                  <option value="all">Tümü (hepsi izinliyse)</option>
+                  <option value="permitted_only">{t("precedents.modePermitted")}</option>
+                  <option value="all">{t("precedents.modeAll")}</option>
                 </select>
               </div>
               <button
@@ -771,13 +815,12 @@ export function Precedents() {
                 disabled={corpusBusy || coverage.allowed === 0}
                 onClick={() => void exportCorpus()}
               >
-                {corpusBusy ? "Aktarılıyor…" : "Korpusu dışa aktar…"}
+                {corpusBusy ? t("precedents.corpusBusy") : t("precedents.corpusExport")}
               </button>
             </div>
             {corpusMode === "all" && !corpusGateOpen(coverage) ? (
               <p className="hint" style={{ margin: 0 }}>
-                “Tümü” kipi kapalı: {coverage.blockedTotal} tam metinli kayıt için izin kaydı yok.
-                İzin kaydı olmadan hiçbir metin dosyaya yazılmaz.
+                {t("precedents.corpusClosedNote", { blocked: coverage.blockedTotal })}
               </p>
             ) : null}
             {corpusResult ? (
@@ -790,7 +833,7 @@ export function Precedents() {
             ) : null}
           </>
         ) : (
-          <p className="hint" style={{ margin: 0 }}>kapsam yükleniyor…</p>
+          <p className="hint" style={{ margin: 0 }}>{t("precedents.coverageLoading")}</p>
         )}
       </div>
 
@@ -799,57 +842,55 @@ export function Precedents() {
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Kaynak kullanım koşulu</h2>
-              <p className="card-sub">
-                Kullanım dayanağı ve yeniden dağıtım izni ayrı kaydedilir · kayıt yokluğu izin sayılmaz
-              </p>
+              <h2>{t("precedents.termsTitle")}</h2>
+              <p className="card-sub">{t("precedents.termsSub")}</p>
             </div>
             <span className={`badge ${terms ? termsBadge(terms).tone : "warn"}`}>
-              {terms ? termsBadge(terms).text : "kayıt yok"}
+              {terms ? termsBadge(terms).text : t("precedents.termsNoRecord")}
             </span>
           </div>
           <div className="row">
             <div className="field">
-              <label htmlFor="t-basis">Kullanım dayanağı</label>
+              <label htmlFor="t-basis">{t("precedents.termsBasis")}</label>
               <select
                 id="t-basis"
                 className="input"
                 value={termsBasis}
                 onChange={(e) => setTermsBasis(e.target.value as UsageBasis)}
               >
-                <option value="unknown">Bilinmiyor</option>
-                <option value="official_public">Resmî yayın (kamuya açık)</option>
-                <option value="licence">Açık lisans</option>
-                <option value="permission">Yazılı izin</option>
-                <option value="internal_only">Yalnız iç kullanım</option>
+                <option value="unknown">{t("precedents.basisUnknown")}</option>
+                <option value="official_public">{t("precedents.basisOfficial")}</option>
+                <option value="licence">{t("precedents.basisLicence")}</option>
+                <option value="permission">{t("precedents.basisPermission")}</option>
+                <option value="internal_only">{t("precedents.basisInternal")}</option>
               </select>
             </div>
             <div className="field">
-              <label htmlFor="t-redistribution">Yeniden dağıtım</label>
+              <label htmlFor="t-redistribution">{t("precedents.termsRedistribution")}</label>
               <select
                 id="t-redistribution"
                 className="input"
                 value={termsRedistribution}
                 onChange={(e) => setTermsRedistribution(e.target.value as Redistribution)}
               >
-                <option value="unknown">İzin bilinmiyor</option>
-                <option value="allowed">İzinli</option>
-                <option value="not_allowed">İzinsiz</option>
+                <option value="unknown">{t("precedents.redistributionUnknown")}</option>
+                <option value="allowed">{t("precedents.redistributionAllowed")}</option>
+                <option value="not_allowed">{t("precedents.redistributionNotAllowed")}</option>
               </select>
             </div>
             <div className="field" style={{ flex: "2 1 300px" }}>
-              <label htmlFor="t-url">Koşul bağlantısı</label>
+              <label htmlFor="t-url">{t("precedents.termsUrl")}</label>
               <input
                 id="t-url"
                 className="input"
                 value={termsUrl}
                 onChange={(e) => setTermsUrl(e.target.value)}
-                placeholder="https://…"
+                placeholder={t("precedents.phUrl")}
               />
             </div>
           </div>
           <div className="field">
-            <label htmlFor="t-note">Yazılı dayanak notu</label>
+            <label htmlFor="t-note">{t("precedents.termsNote")}</label>
             <textarea
               id="t-note"
               className="input"
@@ -857,41 +898,38 @@ export function Precedents() {
               style={{ height: "auto", minHeight: 70, padding: "8px 10px", resize: "vertical" }}
               value={termsNote}
               onChange={(e) => setTermsNote(e.target.value)}
-              placeholder="Örn. Resmî Gazete 12.05.2025; kurumdan yazılı izin 03.06.2026"
+              placeholder={t("precedents.phTermsNote")}
             />
           </div>
           <div className="row">
             <button className="btn primary" disabled={busy} onClick={() => void saveTerms()}>
-              Koşulu kaydet
+              {t("precedents.termsSave")}
             </button>
             <span className="hint" style={{ flex: "1 1 280px", margin: 0 }}>
-              {terms ? termsRecordedText(terms) : "koşul kaydı yok — izin varsayılmaz"}
+              {terms ? termsRecordedText(terms) : t("terms.recordedNone")}
               {terms ? ` · ${usageBasisLabel(terms.usageBasis)} · ${redistributionLabel(terms.redistribution)}` : ""}
             </span>
           </div>
           {needsWrittenBasis(termsRedistribution) && !termsUrl.trim() && !termsNote.trim() ? (
             <p className="hint" style={{ margin: 0 }}>
-              “İzinli” işaretlemek için kaynak bağlantısı veya not gerekir; aksi hâlde kayıt{" "}
-              <code>E_TERMS</code> ile reddedilir ve izin bilinmiyor kalır.
+              {t("precedents.termsBasisNeeded")} <code>E_TERMS</code>{" "}
+              {t("precedents.termsBasisNeededTail")}
             </p>
           ) : null}
           <p className="hint" style={{ margin: 0 }}>
-            Bu kayıt hukuki görüş değildir; hangi dayanakla kütüphaneye alındığını belgeler. “İzinli”
-            yalnız resmî yayın, açık lisans veya yazılı izinle işaretlenebilir; iç kullanım kararı dağıtılamaz.
+            {t("precedents.termsDisclaimer")}
           </p>
         </div>
 
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Bibliyografik künye</h2>
-              <p className="card-sub">
-                Dilekçeye kopyalanabilir künye · kaynak bağlantısı ve erişim tarihi
-              </p>
+              <h2>{t("precedents.bibTitle")}</h2>
+              <p className="card-sub">{t("precedents.bibSub")}</p>
             </div>
             {bibliography ? (
               <button className="btn ghost" onClick={() => void copyBibliography()}>
-                {copied ? "Kopyalandı" : "Künyeyi kopyala"}
+                {copied ? t("precedents.bibCopied") : t("precedents.bibCopy")}
               </button>
             ) : null}
           </div>
@@ -914,9 +952,13 @@ export function Precedents() {
                 <span className={`badge ${bibliography.missing.length === 0 ? "ok" : "warn"}`}>
                   {bibliographyMissingText(bibliography.missing)}
                 </span>
-                <span className="badge plain">erişim: {bibliography.accessedAt}</span>
+                <span className="badge plain">
+                  {t("precedents.bibAccessed", { at: bibliography.accessedAt })}
+                </span>
                 <span className={`badge ${bibliography.hasFullText ? "ok" : "warn"}`}>
-                  {bibliography.hasFullText ? "tam metin var" : "tam metin yok"}
+                  {bibliography.hasFullText
+                    ? t("precedents.bibHasText")
+                    : t("precedents.bibNoText")}
                 </span>
               </div>
               <p className="hint" style={{ margin: "6px 0 0" }}>
@@ -928,54 +970,66 @@ export function Precedents() {
               {bibliography.sourceUrl ? (
                 <p className="hint" style={{ margin: 0 }}>
                   <a href={bibliography.sourceUrl} target="_blank" rel="noreferrer">
-                    Kaynak bağlantısını aç
+                    {t("precedents.bibOpenSource")}
                   </a>
                 </p>
               ) : null}
             </>
           ) : (
-            <p className="hint" style={{ margin: 0 }}>Künye yükleniyor…</p>
+            <p className="hint" style={{ margin: 0 }}>{t("precedents.bibLoading")}</p>
           )}
         </div>
 
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Kullanım notu</h2>
-              <p className="card-sub">{notes.length} not · dosyaya özel veya kütüphane notu</p>
+              <h2>{t("precedents.notesTitle")}</h2>
+              <p className="card-sub">{t("precedents.notesSub", { count: notes.length })}</p>
             </div>
-            <button className="btn ghost" onClick={() => setSelected(null)}>Kapat</button>
+            <button className="btn ghost" onClick={() => setSelected(null)}>
+              {t("precedents.close")}
+            </button>
           </div>
           {notes.map((note) => (
             <div key={note.id} className="card tight" style={{ background: "var(--surface)" }}>
-              <div className="muted small">{note.caseIdOptional ? "dosyaya özel" : "kütüphane notu"} · {formatTimestamp(note.createdAt)}</div>
-              {note.similarityNote ? <p style={{ margin: "4px 0" }}><strong>Benzerlik:</strong> {note.similarityNote}</p> : null}
-              {note.distinguishingNote ? <p style={{ margin: "4px 0" }}><strong>Ayrışan:</strong> {note.distinguishingNote}</p> : null}
-              {note.userConclusion ? <p style={{ margin: "4px 0" }}><strong>Sonuç:</strong> {note.userConclusion}</p> : null}
+              <div className="muted small">
+                {note.caseIdOptional
+                  ? t("precedents.noteCaseScoped")
+                  : t("precedents.noteLibrary")}{" "}
+                · {formatTimestamp(note.createdAt)}
+              </div>
+              {note.similarityNote ? <p style={{ margin: "4px 0" }}><strong>{t("precedents.noteSimilarity")}</strong> {note.similarityNote}</p> : null}
+              {note.distinguishingNote ? <p style={{ margin: "4px 0" }}><strong>{t("precedents.noteDistinguishing")}</strong> {note.distinguishingNote}</p> : null}
+              {note.userConclusion ? <p style={{ margin: "4px 0" }}><strong>{t("precedents.noteConclusion")}</strong> {note.userConclusion}</p> : null}
             </div>
           ))}
           <div className="row">
-            <div className="field"><label htmlFor="n-sim">Benzerlik</label><input id="n-sim" className="input" value={similarity} onChange={(e) => setSimilarity(e.target.value)} /></div>
-            <div className="field"><label htmlFor="n-dist">Ayrışan nokta</label><input id="n-dist" className="input" value={distinguishing} onChange={(e) => setDistinguishing(e.target.value)} /></div>
-            <div className="field"><label htmlFor="n-conc">Sonuç</label><input id="n-conc" className="input" value={conclusion} onChange={(e) => setConclusion(e.target.value)} /></div>
-            <button className="btn" disabled={busy} onClick={() => void addNote()}>Not ekle</button>
+            <div className="field"><label htmlFor="n-sim">{t("precedents.fieldSimilarity")}</label><input id="n-sim" className="input" value={similarity} onChange={(e) => setSimilarity(e.target.value)} /></div>
+            <div className="field"><label htmlFor="n-dist">{t("precedents.fieldDistinguishing")}</label><input id="n-dist" className="input" value={distinguishing} onChange={(e) => setDistinguishing(e.target.value)} /></div>
+            <div className="field"><label htmlFor="n-conc">{t("precedents.fieldConclusion")}</label><input id="n-conc" className="input" value={conclusion} onChange={(e) => setConclusion(e.target.value)} /></div>
+            <button className="btn" disabled={busy} onClick={() => void addNote()}>{t("precedents.noteAdd")}</button>
           </div>
-          <p className="hint" style={{ margin: 0 }}>Hukuki uygunluk değerlendirmesi kullanıcıya aittir.</p>
+          <p className="hint" style={{ margin: 0 }}>{t("precedents.noteDisclaimer")}</p>
         </div>
 
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Tam metin ve alıntı doğrulama</h2>
+              <h2>{t("precedents.textTitle")}</h2>
               <p className="card-sub">
-                {versions.length} sürüm · {versionSummary.withText} metinli
-                {versions.length > 0 && !versionSummary.latestHasText ? " · en yeni sürümde metin yok" : ""}
+                {t("precedents.textSub", {
+                  versions: versions.length,
+                  withText: versionSummary.withText,
+                })}
+                {versions.length > 0 && !versionSummary.latestHasText
+                  ? ` · ${t("precedents.textSubNoLatest")}`
+                  : ""}
               </p>
             </div>
           </div>
 
           {versions.length === 0 ? (
-            <div className="empty"><p style={{ margin: 0 }}>Bu kararın tam metni yok; alıntı doğrulanamaz.</p></div>
+            <div className="empty"><p style={{ margin: 0 }}>{t("precedents.textEmpty")}</p></div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {versions.map((version) => (
@@ -986,7 +1040,10 @@ export function Precedents() {
                 >
                   <span className="small">
                     {versionSourceLabel(version)} · {formatTimestamp(version.acquiredAt)}
-                    <span className="muted"> · sha256 {version.bodyHash.slice(0, 12)}…</span>
+                    <span className="muted">
+                      {" "}
+                      · {t("precedents.textHash", { hash: version.bodyHash.slice(0, 12) })}
+                    </span>
                   </span>
                   <span style={{ display: "flex", gap: 6 }}>
                     {versionConflictText(version) ? (
@@ -1009,15 +1066,15 @@ export function Precedents() {
             }}
           >
             <div>
-              <strong style={{ fontSize: 13 }}>Kasadaki belgeden aktar</strong>
+              <strong style={{ fontSize: 13 }}>{t("precedents.transferTitle")}</strong>
               <p className="hint" style={{ margin: "2px 0 0" }}>
-                Belgenin <b>ayrıştırılmış sayfa metni</b> birleştirilir; dosyanın kendisi
-                kopyalanmaz. Hangi sürümden aktarılacağını sen seçersin.
+                {t("precedents.transferLead1")} <b>{t("precedents.transferLeadStrong")}</b>{" "}
+                {t("precedents.transferLead2")}
               </p>
             </div>
             <div className="row">
               <div className="field" style={{ flex: "1 1 180px" }}>
-                <label htmlFor="src-case">Dosya</label>
+                <label htmlFor="src-case">{t("precedents.fieldCase")}</label>
                 <select
                   id="src-case"
                   className="input"
@@ -1028,7 +1085,9 @@ export function Precedents() {
                   }}
                   disabled={cases.length === 0}
                 >
-                  {cases.length === 0 ? <option value="">Dosya yok</option> : null}
+                  {cases.length === 0 ? (
+                    <option value="">{t("precedents.noCaseOption")}</option>
+                  ) : null}
                   {cases.map((row) => (
                     <option key={row.id} value={row.id}>
                       {row.title}
@@ -1037,7 +1096,7 @@ export function Precedents() {
                 </select>
               </div>
               <div className="field" style={{ flex: "1 1 200px" }}>
-                <label htmlFor="src-doc">Belge</label>
+                <label htmlFor="src-doc">{t("precedents.fieldDocument")}</label>
                 <select
                   id="src-doc"
                   className="input"
@@ -1048,7 +1107,9 @@ export function Precedents() {
                   }}
                   disabled={srcDocs.length === 0}
                 >
-                  {srcDocs.length === 0 ? <option value="">Belge yok</option> : null}
+                  {srcDocs.length === 0 ? (
+                    <option value="">{t("precedents.noDocumentOption")}</option>
+                  ) : null}
                   {srcDocs.map((row) => (
                     <option key={row.id} value={row.id}>
                       {row.displayName}
@@ -1057,7 +1118,7 @@ export function Precedents() {
                 </select>
               </div>
               <div className="field" style={{ flex: "1 1 170px" }}>
-                <label htmlFor="src-version">Sürüm</label>
+                <label htmlFor="src-version">{t("precedents.fieldVersion")}</label>
                 <select
                   id="src-version"
                   className="input"
@@ -1068,7 +1129,9 @@ export function Precedents() {
                   }}
                   disabled={srcVersions.length === 0}
                 >
-                  {srcVersions.length === 0 ? <option value="">Sürüm yok</option> : null}
+                  {srcVersions.length === 0 ? (
+                    <option value="">{t("precedents.noVersionOption")}</option>
+                  ) : null}
                   {srcVersions.map((row) => (
                     <option key={row.id} value={row.id}>
                       {versionOptionLabel(row)}
@@ -1089,7 +1152,7 @@ export function Precedents() {
                 }
                 onClick={() => void transferFromDocument()}
               >
-                {srcBusy ? "Aktarılıyor…" : "Bu belgeden tam metni aktar"}
+                {srcBusy ? t("precedents.transferBusy") : t("precedents.transferRun")}
               </button>
             </div>
             {srcResult ? (
@@ -1105,13 +1168,15 @@ export function Precedents() {
               >
                 <span className="small">{documentTextSummary(srcResult)}</span>
                 <span className="small muted">
-                  {srcResult.engine} · {srcResult.parseStatus} · ayrıştırma koşusu{" "}
-                  {srcResult.parseRunId.slice(0, 8)}…
+                  {srcResult.engine} · {srcResult.parseStatus} ·{" "}
+                  {t("precedents.transferRunLabel", {
+                    id: srcResult.parseRunId.slice(0, 8),
+                  })}
                 </span>
                 <span className="small">
                   {srcResult.written
-                    ? "Yeni sürüm yazıldı ve alıntı doğrulaması bu metne göre yapılır."
-                    : "Yeni sürüm yazılmadı; var olan sürüm gösteriliyor."}
+                    ? t("precedents.transferWritten")
+                    : t("precedents.transferUnchanged")}
                 </span>
                 {documentTextWarnings(srcResult).map((warning) => (
                   <span key={warning} className="small" style={{ color: "var(--warn)" }}>
@@ -1131,13 +1196,13 @@ export function Precedents() {
                   documentCount: srcDocs.length,
                   versionCount: srcVersions.length,
                   selectedVersionId: srcVersionId,
-                }) ?? "Seçili sürümün sayfa metni aktarılacak; ayrıştırma yoksa metin yazılmaz."}
+                }) ?? t("precedents.transferHint")}
               </span>
             )}
           </div>
 
           <div className="field">
-            <label htmlFor="p-fulltext">Karar tam metnini yapıştır</label>
+            <label htmlFor="p-fulltext">{t("precedents.fullTextLabel")}</label>
             <textarea
               id="p-fulltext"
               className="input"
@@ -1145,27 +1210,27 @@ export function Precedents() {
               style={{ height: "auto", minHeight: 110, padding: "8px 10px", resize: "vertical" }}
               value={fullText}
               onChange={(e) => setFullText(e.target.value)}
-              placeholder="Kararın tam metni (kaynağından kopyalanan hâli)…"
+              placeholder={t("precedents.phFullText")}
             />
           </div>
           <div className="row">
             <button className="btn" disabled={busy || fullText.trim().length === 0} onClick={() => void addFullText()}>
-              Tam metni kaydet
+              {t("precedents.fullTextSave")}
             </button>
             <span className="hint" style={{ flex: "1 1 260px", margin: 0 }}>
-              Metin kasanın şifreli veritabanında tutulur; listeye yalnız SHA-256 ve karakter sayısı çıkar.
+              {t("precedents.fullTextHint")}
             </span>
           </div>
 
           <div className="row">
             <div className="field" style={{ flex: "2 1 320px" }}>
-              <label htmlFor="p-quote">Karardan alıntı</label>
+              <label htmlFor="p-quote">{t("precedents.quoteLabel")}</label>
               <input
                 id="p-quote"
                 className="input"
                 value={quoteInput}
                 onChange={(e) => setQuoteInput(e.target.value)}
-                placeholder="Doğrulanacak cümle (en az 8 karakter)"
+                placeholder={t("precedents.phQuote")}
               />
             </div>
             <button
@@ -1173,7 +1238,7 @@ export function Precedents() {
               disabled={busy || versionSummary.withText === 0 || quoteInput.trim().length === 0}
               onClick={() => void verifyQuote()}
             >
-              Alıntıyı doğrula
+              {t("precedents.quoteVerify")}
             </button>
           </div>
 
@@ -1190,15 +1255,16 @@ export function Precedents() {
                     style={{ height: 26 }}
                     onClick={() => setQuoteMatch(quoteToCitationMatch(verification))}
                   >
-                    Atıf kontrolü alanına taşı ({quoteToCitationMatch(verification)})
+                    {t("precedents.quoteToCitation", {
+                      state: quoteToCitationMatch(verification),
+                    })}
                   </button>
                 </div>
               ) : null}
             </div>
           ) : null}
           <p className="hint" style={{ margin: 0 }}>
-            Doğrulama yalnız metin eşleşmesidir; anlam/bağlam incelemesi ayrı boyuttur. “Bulunamadı”
-            sonucu tek başına “uydurulmuş” hükmü değildir.
+            {t("precedents.quoteHint")}
           </p>
         </div>
         </>
@@ -1207,57 +1273,57 @@ export function Precedents() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Atıf kontrolü</h2>
-            <p className="card-sub">{checks.length} kayıt · boyutlar ayrı tutulur</p>
+            <h2>{t("precedents.checkTitle")}</h2>
+            <p className="card-sub">{t("precedents.checkSub", { count: checks.length })}</p>
           </div>
         </div>
         <div className="row">
           <div className="field">
-            <label htmlFor="c-case">Dosya</label>
+            <label htmlFor="c-case">{t("precedents.fieldCase")}</label>
             <select id="c-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
               {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="c-doc">Belge sürümü</label>
+            <label htmlFor="c-doc">{t("precedents.fieldDocVersion")}</label>
             <select id="c-doc" className="input" value={versionId} onChange={(e) => setVersionId(e.target.value)}>
-              <option value="">Seçin…</option>
+              <option value="">{t("common.select")}</option>
               {docs.filter((d) => d.currentVersionId).map((d) => (
                 <option key={d.id} value={d.currentVersionId!}>{d.displayName}</option>
               ))}
             </select>
           </div>
           <div className="field" style={{ flex: "2 1 260px" }}>
-            <label htmlFor="c-text">Atıf metni</label>
-            <input id="c-text" className="input" value={citation} onChange={(e) => setCitation(e.target.value)} placeholder="Yargıtay 1. HD 2024/123" />
+            <label htmlFor="c-text">{t("precedents.fieldCitation")}</label>
+            <input id="c-text" className="input" value={citation} onChange={(e) => setCitation(e.target.value)} placeholder={t("precedents.phCitation")} />
           </div>
         </div>
         <div className="row">
           <div className="field">
-            <label htmlFor="c-cand">Aday karar</label>
+            <label htmlFor="c-cand">{t("precedents.fieldCandidate")}</label>
             <select id="c-cand" className="input" value={candidate} onChange={(e) => setCandidate(e.target.value)}>
-              <option value="">Eşleşme yok</option>
+              <option value="">{t("precedents.noCandidate")}</option>
               {rows.map((r) => <option key={r.id} value={r.id}>{r.court} {r.docketNo ?? ""}</option>)}
             </select>
           </div>
           <div className="field">
-            <label htmlFor="c-id">Künye</label>
+            <label htmlFor="c-id">{t("precedents.fieldIdentity")}</label>
             <select id="c-id" className="input" value={identity} onChange={(e) => setIdentity(e.target.value as typeof identity)}>
-              <option value="unknown">Bilinmiyor</option>
-              <option value="match">Eşleşti</option>
-              <option value="mismatch">Eşleşmedi</option>
+              <option value="unknown">{t("precedents.identityUnknown")}</option>
+              <option value="match">{t("precedents.identityMatch")}</option>
+              <option value="mismatch">{t("precedents.identityMismatch")}</option>
             </select>
           </div>
           <div className="field">
-            <label htmlFor="c-quote">Alıntı</label>
+            <label htmlFor="c-quote">{t("precedents.fieldQuote")}</label>
             <select id="c-quote" className="input" value={quoteMatch} onChange={(e) => setQuoteMatch(e.target.value as typeof quoteMatch)}>
-              <option value="not_checked">Kontrol edilmedi</option>
-              <option value="unknown">Bilinmiyor</option>
-              <option value="match">Eşleşti</option>
-              <option value="mismatch">Eşleşmedi</option>
+              <option value="not_checked">{t("precedents.quoteNotChecked")}</option>
+              <option value="unknown">{t("precedents.identityUnknown")}</option>
+              <option value="match">{t("precedents.identityMatch")}</option>
+              <option value="mismatch">{t("precedents.identityMismatch")}</option>
             </select>
           </div>
-          <button className="btn" disabled={busy} onClick={() => void addCheck()}>Kontrolü kaydet</button>
+          <button className="btn" disabled={busy} onClick={() => void addCheck()}>{t("precedents.checkSave")}</button>
         </div>
         {checks.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1266,13 +1332,21 @@ export function Precedents() {
                 <div className="row" style={{ justifyContent: "space-between" }}>
                   <span className="small">{check.extractedCitation}</span>
                   <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span className="badge plain">künye: {check.identityMatch}</span>
-                    <span className="badge plain">alıntı: {check.quoteMatch}</span>
+                    <span className="badge plain">
+                      {t("precedents.badgeIdentity", { value: check.identityMatch })}
+                    </span>
+                    <span className="badge plain">
+                      {t("precedents.badgeQuote", { value: check.quoteMatch })}
+                    </span>
                     <span className={`badge ${check.meaningReview === "accurate" ? "ok" : check.meaningReview === "not_reviewed" ? "plain" : "warn"}`}>
-                      anlam: {MEANING_LABEL[check.meaningReview] ?? check.meaningReview}
+                      {t("precedents.badgeMeaning", {
+                        value: meaningLabel(check.meaningReview),
+                      })}
                     </span>
                     <button className="btn ghost" onClick={() => void openMeaning(check.id)}>
-                      {meaningFor === check.id ? "Kapat" : "Anlam"}
+                      {meaningFor === check.id
+                        ? t("precedents.close")
+                        : t("precedents.meaning")}
                     </button>
                   </span>
                 </div>
@@ -1287,27 +1361,38 @@ export function Precedents() {
                         </p>
                       ) : (
                         <p className="hint" style={{ margin: "0 0 6px" }}>
-                          Tam metin/bağlam yok ({meaningContext.reason ?? meaningContext.state}); uydurma bağlam
-                          gösterilmez.
+                          {t("precedents.contextMissing", {
+                            reason: meaningContext.reason ?? meaningContext.state,
+                          })}
                         </p>
                       )
                     ) : (
-                      <p className="hint" style={{ margin: "0 0 6px" }}>Bağlam yükleniyor…</p>
+                      <p className="hint" style={{ margin: "0 0 6px" }}>
+                        {t("precedents.contextLoading")}
+                      </p>
                     )}
                     <div className="field">
-                      <label htmlFor={`mn-${check.id}`}>Gerekçe (yanıltıcı/bağlam dışı için zorunlu)</label>
+                      <label htmlFor={`mn-${check.id}`}>
+                        {t("precedents.meaningNoteLabel")}
+                      </label>
                       <input
                         id={`mn-${check.id}`}
                         className="input"
                         value={meaningNote}
                         onChange={(e) => setMeaningNote(e.target.value)}
-                        placeholder="Örn. kararın sonucu tersine çevrilmiş"
+                        placeholder={t("precedents.phMeaningNote")}
                       />
                     </div>
                     <div className="row" style={{ gap: 6 }}>
-                      <button className="btn" onClick={() => void reviewMeaning(check.id, "accurate")}>Anlam doğru</button>
-                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "misleading")}>Yanıltıcı</button>
-                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "off_context")}>Bağlam dışı</button>
+                      <button className="btn" onClick={() => void reviewMeaning(check.id, "accurate")}>
+                        {t("precedents.meaningAccurate")}
+                      </button>
+                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "misleading")}>
+                        {t("precedents.meaningMisleading")}
+                      </button>
+                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "off_context")}>
+                        {t("precedents.meaningOffContext")}
+                      </button>
                     </div>
                   </div>
                 ) : null}
@@ -1316,19 +1401,20 @@ export function Precedents() {
           </div>
         ) : null}
         <p className="hint" style={{ margin: 0 }}>
-          Karar metni olmadan alıntı doğrulanamaz; bu durum “kontrol edilmedi” olarak kalır ve
-          “uydurulmuş” anlamına gelmez.
+          {t("precedents.checkHint")}
         </p>
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Dış bağlayıcılar</h2>
+            <h2>{t("precedents.connectorsTitle")}</h2>
             <p className="card-sub">
               {connectors
-                ? `${connectors.connectors.length} kaynak belgelendi · hiçbiri etkin değil`
-                : "sicil yükleniyor…"}
+                ? t("precedents.connectorsCount", {
+                    count: connectors.connectors.length,
+                  })
+                : t("precedents.connectorsLoading")}
             </p>
           </div>
         </div>
@@ -1338,18 +1424,26 @@ export function Precedents() {
               <div key={connector.id} className="card tight" style={{ background: "var(--surface)" }}>
                 <div className="row" style={{ justifyContent: "space-between" }}>
                   <strong style={{ fontWeight: 500 }}>{connector.name}</strong>
-                  <span className="badge warn">etkin değil</span>
+                  <span className="badge warn">{t("precedents.connectorInactive")}</span>
                 </div>
                 <p className="muted small" style={{ margin: "2px 0" }}>{connector.operator}</p>
                 <p className="small" style={{ margin: "4px 0" }}>{connector.scope}</p>
                 <p className="small" style={{ margin: "4px 0" }}>{connector.reuseNote}</p>
                 <p className="hint" style={{ margin: 0 }}>
-                  {connector.accessMethod} <a href={connector.termsUrl} target="_blank" rel="noreferrer">koşullar</a>
+                  {connector.accessMethod}{" "}
+                  <a href={connector.termsUrl} target="_blank" rel="noreferrer">
+                    {t("precedents.connectorTerms")}
+                  </a>
                 </p>
               </div>
             ))}
             <p className="hint" style={{ margin: 0 }}>
-              {connectors.note} <span className="muted">sicil sha256 {connectors.catalogHash.slice(0, 12)}…</span>
+              {connectors.note}{" "}
+              <span className="muted">
+                {t("precedents.connectorHash", {
+                  hash: connectors.catalogHash.slice(0, 12),
+                })}
+              </span>
             </p>
           </>
         ) : null}

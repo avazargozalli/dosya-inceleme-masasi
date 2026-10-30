@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type {
   CorpusCoverage,
   CorpusExportResult,
@@ -17,15 +18,15 @@ import type {
 export function usageBasisLabel(basis: UsageBasis | string): string {
   switch (basis) {
     case "official_public":
-      return "resmî yayın (kamuya açık)";
+      return t("terms.basisOfficialPublic");
     case "licence":
-      return "açık lisans";
+      return t("terms.basisLicence");
     case "permission":
-      return "yazılı izin";
+      return t("terms.basisPermission");
     case "internal_only":
-      return "yalnız iç kullanım";
+      return t("terms.basisInternalOnly");
     case "unknown":
-      return "bilinmiyor";
+      return t("terms.basisUnknown");
     default:
       return basis;
   }
@@ -34,11 +35,11 @@ export function usageBasisLabel(basis: UsageBasis | string): string {
 export function redistributionLabel(value: Redistribution | string): string {
   switch (value) {
     case "allowed":
-      return "yeniden dağıtım izinli";
+      return t("terms.redistributionAllowed");
     case "not_allowed":
-      return "yeniden dağıtım izinsiz";
+      return t("terms.redistributionNotAllowed");
     default:
-      return "izin bilinmiyor";
+      return t("terms.redistributionUnknown");
   }
 }
 
@@ -56,10 +57,10 @@ export function termsBadge(row: Pick<PrecedentRow, "redistribution">): {
   return {
     text:
       row.redistribution === "allowed"
-        ? "izinli"
+        ? t("terms.badgeAllowed")
         : row.redistribution === "not_allowed"
-          ? "izinsiz"
-          : "izin bilinmiyor",
+          ? t("terms.badgeNotAllowed")
+          : t("terms.badgeUnknown"),
     // Kayıt yokluğu uyarıdır: sessizce "sorun yok" görünmez.
     tone:
       row.redistribution === "allowed"
@@ -72,19 +73,22 @@ export function termsBadge(row: Pick<PrecedentRow, "redistribution">): {
 
 /** Koşul kaydının zamanı; kayıt yoksa bunu açıkça söyler. */
 export function termsRecordedText(terms: PrecedentUsageTerms): string {
-  if (!terms.termsRecordedAt) return "koşul kaydı yok — izin varsayılmaz";
-  return `koşul kaydı: ${terms.termsRecordedAt.slice(0, 16).replace("T", " ")}`;
+  if (!terms.termsRecordedAt) return t("terms.recordedNone");
+  return t("terms.recordedAt", {
+    at: terms.termsRecordedAt.slice(0, 16).replace("T", " "),
+  });
 }
 
 /** Dağıtım tablosunun tek satırlık, gizlemesiz özeti. */
 export function coverageText(coverage: CorpusCoverage): string {
   const parts = [
-    `${coverage.total} karar`,
-    `${coverage.withText} tam metinli`,
-    `${coverage.allowed} izinli`,
+    t("terms.coverageTotal", { total: coverage.total }),
+    t("terms.coverageWithText", { withText: coverage.withText }),
+    t("terms.coverageAllowed", { allowed: coverage.allowed }),
   ];
-  if (coverage.notAllowed > 0) parts.push(`${coverage.notAllowed} izinsiz`);
-  parts.push(`${coverage.unknown} izin bilinmiyor`);
+  if (coverage.notAllowed > 0)
+    parts.push(t("terms.coverageNotAllowed", { notAllowed: coverage.notAllowed }));
+  parts.push(t("terms.coverageUnknown", { unknown: coverage.unknown }));
   return parts.join(" · ");
 }
 
@@ -99,24 +103,26 @@ export function corpusGateOpen(coverage: CorpusCoverage): boolean {
 /** Kapının durumunu gerekçesiyle yazar; "izinli" görünen ama metinsiz kütüphane yoktur. */
 export function corpusGateText(coverage: CorpusCoverage): string {
   if (coverage.withText === 0) {
-    return "Tam metinli karar yok; aktarılacak korpus oluşmaz.";
+    return t("terms.gateNoText");
   }
   if (corpusGateOpen(coverage)) {
-    return "Tam metinli tüm kararlar için izin kaydı var; toplu korpus aktarılabilir.";
+    return t("terms.gateOpen");
   }
-  return `${coverage.blockedTotal} tam metinli kayıtta yeniden dağıtım izni yok; “tümü” kipi kapalı, yalnız izinli kararlar aktarılabilir.`;
+  return t("terms.gateBlocked", { blocked: coverage.blockedTotal });
 }
 
 export function exclusionReasonLabel(reason: string): string {
   return reason === "redistribution_not_allowed"
-    ? "yeniden dağıtım izinsiz"
-    : "izin kaydı yok";
+    ? t("terms.exclusionNotAllowed")
+    : t("terms.exclusionUnknown");
 }
 
 /** Aktarım sonucu: yazılan dosya, sayılar ve içerik hash'i. */
 export function corpusResultText(result: CorpusExportResult): string {
-  const excluded = result.excluded > 0 ? ` · ${result.excluded} kayıt izin nedeniyle dışarıda` : "";
-  return `${result.exported} karar aktarıldı${excluded} · sha256 ${result.sha256.slice(0, 12)}…`;
+  const parts = [t("terms.resultExported", { exported: result.exported })];
+  if (result.excluded > 0) parts.push(t("terms.resultExcluded", { excluded: result.excluded }));
+  parts.push(t("terms.resultHash", { hash: result.sha256.slice(0, 12) }));
+  return parts.join(" · ");
 }
 
 /**
