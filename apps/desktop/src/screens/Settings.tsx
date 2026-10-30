@@ -13,6 +13,8 @@ import {
 } from "../lib/api";
 import type { VaultGcResult } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
+import { t } from "../lib/i18n";
+import { version as appVersion } from "../../package.json";
 import {
   BACKUP_DAYS_KEY,
   BACKUP_DIR_KEY,
@@ -131,7 +133,7 @@ export function Settings() {
   }
 
   async function runBackup() {
-    const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörünü seç" });
+    const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.pickDirTitle") });
     if (typeof picked !== "string") return;
     setBusy(true);
     setError(null);
@@ -146,7 +148,7 @@ export function Settings() {
 
   async function changePassword() {
     if (newPassword !== newPassword2) {
-      setError({ code: "E_PASSWORD_MISMATCH", message: "Yeni parolalar eşleşmiyor.", retryable: false });
+      setError({ code: "E_PASSWORD_MISMATCH", message: t("settings.passwordMismatch"), retryable: false });
       return;
     }
     setBusy(true);
@@ -178,13 +180,13 @@ export function Settings() {
   }
 
   async function runRestore() {
-    const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörünü seç" });
+    const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.pickDirTitle") });
     if (typeof picked !== "string") {
       return;
     }
     setRestoreDir(picked);
     if (!destDir.trim()) {
-      setError({ code: "E_PATH", message: "Geri yükleme için hedef konum girin.", retryable: false });
+      setError({ code: "E_PATH", message: t("settings.restoreDestRequired"), retryable: false });
       return;
     }
     setBusy(true);
@@ -208,11 +210,8 @@ export function Settings() {
   return (
     <div className="page" style={{ maxWidth: 820 }}>
       <div className="page-head">
-        <h1>Ayarlar ve yedek</h1>
-        <p className="lead">
-          Yedek, kasa başlığını, SQLCipher veritabanını ve şifreli blob'ları tek klasöre kopyalar.
-          Açık metin üretilmez; yedeği açmak için kasa parolası veya kurtarma anahtarı gerekir.
-        </p>
+        <h1>{t("settings.title")}</h1>
+        <p className="lead">{t("settings.lead")}</p>
       </div>
 
       {error ? (
@@ -224,27 +223,29 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Kasa</h2>
-            <p className="card-sub">{status?.unlocked ? "açık" : "kilitli"}</p>
+            <h2>{t("settings.vaultTitle")}</h2>
+            <p className="card-sub">
+              {status?.unlocked ? t("settings.vaultOpenShort") : t("settings.vaultLockedShort")}
+            </p>
           </div>
           <span className={`badge ${status?.unlocked ? "ok" : "warn"}`}>
-            {status?.unlocked ? "kasa açık" : "kasa kilitli"}
+            {status?.unlocked ? t("settings.vaultOpenBadge") : t("settings.vaultLockedBadge")}
           </span>
         </div>
         <dl className="kv">
-          <dt>Kimlik</dt><dd>{status?.vaultId ?? "—"}</dd>
-          <dt>Konum</dt>
+          <dt>{t("settings.vaultId")}</dt><dd>{status?.vaultId ?? "—"}</dd>
+          <dt>{t("settings.vaultPath")}</dt>
           <dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{status?.vaultPath ?? "—"}</dd>
-          <dt>Şema sürümü</dt><dd>{status?.schemaVersion ?? "—"}</dd>
-          <dt>Sürüm</dt><dd>0.2.0 (pre-alpha)</dd>
+          <dt>{t("settings.schemaVersion")}</dt><dd>{status?.schemaVersion ?? t("common.unknown")}</dd>
+          <dt>{t("settings.appVersion")}</dt>
+          <dd>{t("settings.versionValue", { version: appVersion })}</dd>
         </dl>
         {status?.preUpdateBackup ? (
           <div className="notice ok">
-            <strong>Güncelleme öncesi yedek alındı.</strong> Bu kasa yeni şemaya
-            geçirilmeden önce doğrulanmış bir kopya yazıldı:{" "}
+            <strong>{t("settings.preUpdateTitle")}</strong>{" "}
+            {t("settings.preUpdateLead")}{" "}
             <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{status.preUpdateBackup}</span>
-            . Güncelleme yarıda kalırsa bu dosya geri konur; uygulama yedek
-            alınamadıysa güncellemeyi başlatmaz.
+            . {t("settings.preUpdateTail")}
           </div>
         ) : null}
       </div>
@@ -252,28 +253,25 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Güncelleme öncesi yedeğe dön</h2>
-            <p className="card-sub">
-              Kasa dosyasının güncellemeden önceki doğrulanmış kopyası; veriyi geri alır.
-            </p>
+            <h2>{t("settings.rollbackTitle")}</h2>
+            <p className="card-sub">{t("settings.rollbackSub")}</p>
           </div>
           <button
             className="btn"
             disabled={busy || !unlocked}
             onClick={() => void refreshPreUpdate()}
           >
-            Yedekleri tara
+            {t("settings.scanBackups")}
           </button>
         </div>
         {!unlocked ? (
           <p className="hint" style={{ margin: 0 }}>
-            Kasa kilitliyken yedek listesi okunamaz.
+            {t("settings.rollbackLocked")}
           </p>
         ) : null}
         {unlocked && preUpdateLoaded && preUpdate.length === 0 ? (
           <p className="hint" style={{ margin: 0 }}>
-            Kasa klasöründe güncelleme öncesi yedek yok. Bu yedek yalnız şema
-            güncellemesi sırasında, doğrulanmış olarak yazılır.
+            {t("settings.rollbackEmpty")}
           </p>
         ) : null}
         {preUpdate.map((item) => (
@@ -295,7 +293,7 @@ export function Settings() {
             <span style={{ flex: 1 }}>
               <strong>{backupVersionLabel(item)}</strong>{" "}
               <span className={`badge ${item.usable ? "ok" : "danger"}`}>
-                {item.usable ? "kullanılabilir" : "kullanılamaz"}
+                {item.usable ? t("rollback.usable") : t("rollback.unusable")}
               </span>
               <br />
               <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{item.fileName}</span>
@@ -320,7 +318,9 @@ export function Settings() {
               ))}
             </ul>
             <div className="field" style={{ marginTop: 10 }}>
-              <label htmlFor="rollback-confirm">Onay için “GERİ DÖN” yazın</label>
+              <label htmlFor="rollback-confirm">
+                {t("settings.rollbackConfirmLabel", { token: t("rollback.confirmToken") })}
+              </label>
               <input
                 id="rollback-confirm"
                 className="input"
@@ -339,7 +339,7 @@ export function Settings() {
                 }
                 onClick={() => void runRollback()}
               >
-                Seçili yedeğe dön
+                {t("settings.rollbackSubmit")}
               </button>
             </div>
             {rollbackDisabledReason(preUpdate, preUpdateSelected, rollbackConfirm) ? (
@@ -349,19 +349,19 @@ export function Settings() {
             ) : null}
             {rollbackDone ? (
               <div className="notice ok">
-                <strong>Geri dönüş tamamlandı.</strong> {rollbackSummary(rollbackDone)}
+                <strong>{t("settings.rollbackDoneTitle")}</strong> {rollbackSummary(rollbackDone)}
                 <br />
-                Yedek:{" "}
+                {t("settings.rollbackDoneBackup")}{" "}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
                   {rollbackDone.backupFile}
                 </span>
                 <br />
-                Güvenlik kopyası:{" "}
+                {t("settings.rollbackDoneSafety")}{" "}
                 <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
                   {rollbackDone.safetyCopy}
                 </span>
                 <br />
-                Kasa açık; ekranlar tazelendiğinde geri dönen veri görünür.
+                {t("settings.rollbackDoneHint")}
               </div>
             ) : null}
           </>
@@ -371,28 +371,33 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Yedek al</h2>
-            <p className="card-sub">Tutarlı snapshot; yedek açılmadan önce doğrulanır.</p>
+            <h2>{t("settings.backupTitle")}</h2>
+            <p className="card-sub">{t("settings.backupSub")}</p>
           </div>
           <button className="btn primary" disabled={busy || !status?.unlocked} onClick={() => void runBackup()}>
-            Yedek klasörü seç
+            {t("settings.backupPick")}
           </button>
         </div>
         {backup ? (
           <div className="notice ok">
-            Yedek hazır: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{backup.path}</span>
+            {t("settings.backupReady")}{" "}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{backup.path}</span>
             <br />
-            {backup.fileCount} dosya · {formatSize(backup.totalBytes)} · manifest {backup.manifestHash.slice(0, 16)}…
+            {t("settings.backupSummary", {
+              count: backup.fileCount,
+              size: formatSize(backup.totalBytes),
+              hash: backup.manifestHash.slice(0, 16),
+            })}
             {backup.archivePath ? (
               <>
                 <br />
-                Tek dosya: <code>{backup.archivePath}</code>
+                {t("settings.backupArchive")} <code>{backup.archivePath}</code>
               </>
             ) : null}
           </div>
         ) : (
           <p className="hint" style={{ margin: 0 }}>
-            Kasa kilitliyken yedek alınamaz. Yedeği kasa dosyasından ayrı bir diskte saklayın.
+            {t("settings.backupLocked")}
           </p>
         )}
       </div>
@@ -400,31 +405,29 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Otomatik yedek</h2>
-            <p className="card-sub">
-              Klasör seçilirse kasa açıkken süresi dolunca yedek alınır; sonuç kayda geçer.
-            </p>
+            <h2>{t("settings.autoTitle")}</h2>
+            <p className="card-sub">{t("settings.autoSub")}</p>
           </div>
           <button
             className="btn"
             onClick={async () => {
-              const picked = await openDirectory({ directory: true, multiple: false, title: "Yedek klasörü seç" });
+              const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.backupPick") });
               if (typeof picked !== "string") return;
               localStorage.setItem(BACKUP_DIR_KEY, picked);
               localStorage.setItem(BACKUP_DAYS_KEY, "7");
               setAutoBackup(readBackupSettings());
             }}
           >
-            Klasör seç
+            {t("settings.autoPick")}
           </button>
         </div>
         <dl className="kv">
-          <dt>Klasör</dt>
-          <dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{autoBackup.dir || "seçilmedi"}</dd>
-          <dt>Aralık</dt>
-          <dd>{autoBackup.days} gün</dd>
-          <dt>Son yedek</dt>
-          <dd>{autoBackup.last ? formatDateTime(autoBackup.last) : "hiç"}</dd>
+          <dt>{t("settings.autoDir")}</dt>
+          <dd style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{autoBackup.dir || t("settings.autoDirNone")}</dd>
+          <dt>{t("settings.autoDays")}</dt>
+          <dd>{t("settings.autoDaysValue", { days: autoBackup.days })}</dd>
+          <dt>{t("settings.autoLast")}</dt>
+          <dd>{autoBackup.last ? formatDateTime(autoBackup.last) : t("settings.autoLastNone")}</dd>
         </dl>
         <div className="row" style={{ gap: 6 }}>
           <button
@@ -435,7 +438,7 @@ export function Settings() {
               setAutoBackup(readBackupSettings());
             }}
           >
-            Otomatik yedeği kapat
+            {t("settings.autoDisable")}
           </button>
           <button
             className="btn ghost"
@@ -444,9 +447,9 @@ export function Settings() {
               localStorage.removeItem(BACKUP_LAST_KEY);
               setAutoBackup(readBackupSettings());
             }}
-            title="Bir sonraki kontrolde yeniden yedek alınır"
+            title={t("settings.autoResetTitle")}
           >
-            Sıfırla
+            {t("settings.autoReset")}
           </button>
         </div>
       </div>
@@ -454,39 +457,43 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Kullanılmayan veriler</h2>
-            <p className="card-sub">
-              Hiçbir belge sürümüne veya türev sayfaya bağlı olmayan şifreli blob'lar.
-            </p>
+            <h2>{t("settings.gcTitle")}</h2>
+            <p className="card-sub">{t("settings.gcSub")}</p>
           </div>
           <div className="row" style={{ gap: 6 }}>
             <button className="btn" disabled={busy} onClick={() => void runGc(true)}>
-              Tara
+              {t("settings.gcScan")}
             </button>
             <button
               className="btn"
               disabled={busy || !gc || gc.candidates.length === 0}
               onClick={() => void runGc(false)}
             >
-              Temizle
+              {t("settings.gcClean")}
             </button>
           </div>
         </div>
         {gc ? (
           <div className={gc.deleted.length > 0 ? "notice ok" : "notice"}>
             {gc.dryRun
-              ? `${gc.candidates.length} aday · ${formatSize(gc.candidates.reduce((sum, b) => sum + b.encryptedSize, 0))}`
-              : `${gc.deleted.length} kayıt silindi · ${formatSize(gc.freedBytes)} boşaldı`}
+              ? t("settings.gcCandidates", {
+                  count: gc.candidates.length,
+                  size: formatSize(gc.candidates.reduce((sum, b) => sum + b.encryptedSize, 0)),
+                })
+              : t("settings.gcDeleted", {
+                  count: gc.deleted.length,
+                  size: formatSize(gc.freedBytes),
+                })}
             {gc.missingFiles.length > 0 ? (
               <>
                 <br />
-                Dosya uyarısı: {gc.missingFiles.join("; ")}
+                {t("settings.gcMissing", { files: gc.missingFiles.join("; ") })}
               </>
             ) : null}
           </div>
         ) : (
           <p className="hint" style={{ margin: 0 }}>
-            Önce "Tara" ile adayları görün; silme yalnız referanssız kayıtlara dokunur.
+            {t("settings.gcHint")}
           </p>
         )}
       </div>
@@ -494,38 +501,46 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Yedekten geri yükle</h2>
-            <p className="card-sub">Yeni bir kasaya kopyalar; mevcut kasanın üzerine yazmaz.</p>
+            <h2>{t("settings.restoreTitle")}</h2>
+            <p className="card-sub">{t("settings.restoreSub")}</p>
           </div>
         </div>
         <div className="field">
-          <label htmlFor="restore-dest">Yeni kasa konumu</label>
+          <label htmlFor="restore-dest">{t("settings.restoreDest")}</label>
           <input
             id="restore-dest"
             className="input"
             value={destDir}
             onChange={(e) => setDestDir(e.target.value)}
-            placeholder="~/Dosyalar/GeriYuklenenKasa"
+            placeholder={t("settings.restoreDestPlaceholder")}
           />
         </div>
         <div className="row" style={{ justifyContent: "flex-end" }}>
           <button className="btn" disabled={busy || !destDir.trim()} onClick={() => void runRestore()}>
-            Yedek seç ve geri yükle
+            {t("settings.restorePick")}
           </button>
         </div>
-        {restoreDir ? <p className="hint" style={{ margin: 0 }}>Seçilen yedek: {restoreDir}</p> : null}
+        {restoreDir ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {t("settings.restoreSelected", { dir: restoreDir })}
+          </p>
+        ) : null}
         {restored ? (
           <div className="notice ok">
-            Geri yükleme tamamlandı: <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{restored}</span>
+            {t("settings.restoreDone")}{" "}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{restored}</span>
             {restoreInfo ? (
               <>
                 <br />
-                Kopyalamadan önce <strong>{restoreInfo.verifiedFiles}</strong> dosya ·{" "}
-                {formatSize(restoreInfo.verifiedBytes)} manifest sha256 ile doğrulandı ({restoreInfo.verifyMs} ms).
+                {t("settings.restoreVerifiedLead")} <strong>{restoreInfo.verifiedFiles}</strong>{" "}
+                {t("settings.restoreVerifiedTail", {
+                  size: formatSize(restoreInfo.verifiedBytes),
+                  ms: restoreInfo.verifyMs,
+                })}
                 {restoreInfo.unlistedBlobs.length > 0 ? (
                   <>
                     {" "}
-                    Yedekte sayılmayan {restoreInfo.unlistedBlobs.length} dosya kasaya kopyalanmadı:{" "}
+                    {t("settings.restoreUnlisted", { count: restoreInfo.unlistedBlobs.length })}{" "}
                     {restoreInfo.unlistedBlobs.slice(0, 5).join(", ")}
                     {restoreInfo.unlistedBlobs.length > 5 ? "…" : ""}
                   </>
@@ -533,7 +548,7 @@ export function Settings() {
               </>
             ) : null}
             <br />
-            Şimdi Kasa ekranından bu konumu ve parolanızı girerek açın.
+            {t("settings.restoreOpenHint")}
           </div>
         ) : null}
       </div>
@@ -541,15 +556,13 @@ export function Settings() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Parola değiştir</h2>
-            <p className="card-sub">
-              Yalnız parola yuvası yeniden sarılır; kasa içeriği ve kurtarma anahtarı değişmez.
-            </p>
+            <h2>{t("settings.passwordTitle")}</h2>
+            <p className="card-sub">{t("settings.passwordSub")}</p>
           </div>
         </div>
         <div className="row">
           <div className="field" style={{ flex: "1 1 200px" }}>
-            <label htmlFor="pw-old">Mevcut parola</label>
+            <label htmlFor="pw-old">{t("settings.passwordOld")}</label>
             <input
               id="pw-old"
               className="input"
@@ -560,7 +573,7 @@ export function Settings() {
             />
           </div>
           <div className="field" style={{ flex: "1 1 200px" }}>
-            <label htmlFor="pw-new">Yeni parola (en az 10 karakter)</label>
+            <label htmlFor="pw-new">{t("settings.passwordNew")}</label>
             <input
               id="pw-new"
               className="input"
@@ -571,7 +584,7 @@ export function Settings() {
             />
           </div>
           <div className="field" style={{ flex: "1 1 200px" }}>
-            <label htmlFor="pw-new2">Yeni parola (tekrar)</label>
+            <label htmlFor="pw-new2">{t("settings.passwordNew2")}</label>
             <input
               id="pw-new2"
               className="input"
@@ -588,11 +601,11 @@ export function Settings() {
             disabled={busy || !oldPassword || newPassword.length < 10}
             onClick={() => void changePassword()}
           >
-            Parolayı değiştir
+            {t("settings.passwordSubmit")}
           </button>
         </div>
         {passwordChanged ? (
-          <div className="notice ok">Parola değiştirildi. Kurtarma anahtarınız hâlâ geçerli.</div>
+          <div className="notice ok">{t("settings.passwordDone")}</div>
         ) : null}
       </div>
 
@@ -601,10 +614,9 @@ export function Settings() {
       <WorkerBudgetCard unlocked={unlocked} />
 
       <div className="card tight">
-        <h2>Teşhis</h2>
+        <h2>{t("settings.diagnosticsTitle")}</h2>
         <p className="muted small" style={{ margin: 0 }}>
-          Uygulama belge içeriğini günlüğe yazmaz; yalnız hata kodları ve sürüm bilgisi tutulur.
-          Destek için hata kodu yeterlidir.
+          {t("settings.diagnosticsBody")}
         </p>
       </div>
     </div>

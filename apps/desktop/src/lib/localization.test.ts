@@ -80,6 +80,7 @@ const MIGRATED = [
   "screens/Checklists.tsx",
   "screens/Ai.tsx",
   "screens/Search.tsx",
+  "screens/Settings.tsx",
   "lib/checklist.ts",
   "lib/candidate.ts",
   "lib/transferScope.ts",
@@ -90,6 +91,7 @@ const MIGRATED = [
   "lib/reminders.ts",
   "lib/search.ts",
   "lib/search-scope.ts",
+  "lib/rollback.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;
@@ -155,6 +157,16 @@ describe("yerelleştirme kapısı", () => {
     expect(app).toBeDefined();
     expect(app!.source).toContain('from "../package.json"');
     expect(stripComments(app!.source)).not.toContain("v0.1.0 · F02");
+  });
+
+  it("Ayarlar ekranı sürüm etiketini paketten okur, gömülü sürüm yazmaz", () => {
+    // Ölçülen kusur: ekranda `0.2.0 (pre-alpha)` gömülüydü; kök package.json
+    // 0.2.0, uygulama 0.1.0 olduğu için kabuk "v0.1.0", Ayarlar "0.2.0"
+    // yazıyordu — aynı ürün iki sürüm gösteriyordu.
+    const settings = files.find(({ rel }) => rel === "screens/Settings.tsx");
+    expect(settings).toBeDefined();
+    expect(settings!.source).toContain('from "../../package.json"');
+    expect(stripComments(settings!.source)).not.toContain("0.2.0");
   });
 });
 

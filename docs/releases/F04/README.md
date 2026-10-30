@@ -11,7 +11,72 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama** ekranları + **`JobQueueCard`/`WorkerBudgetCard`**; **10 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`) taşındı (**22 dosya**); **5 ekran + 2 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`**; **11 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`) taşındı (**24 dosya**); **4 ekran + 2 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: Ayarlar ekranı + `lib/rollback.ts` (2026-10-30, altıncı tur)
+
+**Önceki turun açık işi kapandı:** `e036ccd` → CI **`41093744784` 7/7 yeşil** (doğrulandı).
+
+**Neden bu dilim:** kalan yüzeyde en küçük ekranlar **Ayarlar (60)** ve **Cases (60)**;
+`Cases.tsx` başka ajanın OCR dil işinde değişiklik taşıyor → çakışmamak için **Ayarlar**
+seçildi. Ölçüldü: ekranın metninin **17 satırı** `lib/rollback.ts`te ve o lib'i **yalnız**
+`Settings.tsx` import ediyor → ikisi birlikte taşındı (yoksa "temiz görünen ama metni
+lib'de kalan" dosya kalırdı). `lib/backup-schedule.ts` **bilinçli olarak kapsam dışı**:
+tek Türkçe harfi satır **sonu** yorumunda, kapı satır sonu yorumlarını ayıklamıyor.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **95 anahtar** (`settings` 76, `rollback` 19) → sözlük **713 → 808**.
+- `screens/Settings.tsx`: başlık/lead, Kasa kartı (rozet + kimlik/konum/şema/sürüm),
+  güncelleme öncesi yedek bildirimi, geri dönüş kartı (tarama, boş durum, radyo
+  rozetleri, onay etiketi, sonuç bloğu), yedek al, otomatik yedek, kullanılmayan
+  veriler (GC), geri yükleme, parola, teşhis + **üç hata iletisi** + **üç klasör seçici
+  başlığı**. Parametreli metinler `t(key,{…})`: `{version}`, `{count}`, `{size}`,
+  `{hash}`, `{dir}`, `{days}`, `{files}`, `{ms}`, `{token}`.
+- `lib/rollback.ts`: onay belirteci, rozet, durum satırı, ad uyuşmazlığı uyarısı,
+  **altı sınır satırı**, dört düğme gerekçesi ve sonuç cümlesi sözlükten.
+  `ROLLBACK_CONFIRMATION` artık `t("rollback.confirmToken")`den türer → arayüz
+  tarafında **tek kaynak** (önceden: lib sabiti + ekran etiketi + Rust sabiti).
+- **Kapı kapsamı:** `MIGRATED` += `screens/Settings.tsx`, `lib/rollback.ts` → **24** dosya.
+
+**Ölçülen kusur #76 (yanlış sürüm etiketi):** Ayarlar "Sürüm" satırı gömülü
+`0.2.0 (pre-alpha)` yazıyordu; uygulama `package.json` **0.1.0** ve kabuk `v0.1.0`
+gösteriyor → aynı ürün iki sürüm yazıyordu. Düzeltme:
+`import { version } from "../../package.json"` + `settings.versionValue`. Kapıya test
+eklendi: Ayarlar sürümü paketten okur, gövdesinde `0.2.0` **yok**. (Kök `0.2.0` ↔
+uygulama `0.1.0` uyuşmazlığı **ayrı iş** olarak duruyor; bu tur onu hizalamadı.)
+
+**Kanıt (kırmızı→yeşil, ölçüldü)**
+
+- `lib/rollback.ts`e `_LEAK2 = "doğrulanmadı"` → `localization.test.ts`
+  **1 failed | 8 passed**, rapor `[ "lib/rollback.ts:13" ]`; geri alındı → **9/9**.
+- `Settings.tsx`e `_leak = "Güncelleme öncesi yedek"` → **1 failed | 8 passed**,
+  rapor `[ "screens/Settings.tsx:34" ]`; geri alındı (sha256 **birebir**) → **9/9**.
+- **Kapının dürüst sınırı (ölçüldü):** aynı deneme `"Ayarlar ve yedek"` metniyle
+  yapıldığında kapı **yeşil kaldı** — o metinde `ığüşöçİĞÜŞÖÇ` yok. Kapı harf tabanlı
+  olduğu için Türkçe harf taşımayan gömülü metni kaçırır (bilinen sınıf; `i18n-bindings`
+  yalnız **üretilen** metnin sözlükten geldiğini bağlar). Açık kayıt.
+
+**Yeni 5 test:** rozet/durum satırı sözlükten; altı sınır + dört gerekçe + sonuç cümlesi
+sözlükten (parametreler dolar, `{` kalmaz); **onay belirteci `commands.rs`teki
+`ROLLBACK_CONFIRMATION` sabitiyle birebir** (test Rust dosyasını okur — sözlük kayması
+geri dönüşü sessizce öldüremez); Ayarlar parametreli metinleri; Ayarlar sürümü paketten.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **470/470** (36 dosya; 465 → +5) ·
+`vite build` temiz (**520,11 kB**; önceki 515,86 kB — Vite 500 kB uyarısı sürüyor).
+
+**Dürüst sınırlar:** **4 ekran + 2 bileşen** taşınmadı (Precedents 136, Providers 110,
+Review 100, DualReader 93, Cases 60, Notes 35) ve **12 yardımcı lib** kendi metnini
+taşıyor (providers 42, arch 36, intext 35, inventory 32, package 31, precedents 26,
+attack 24, precedent-terms 15, reader 8, precedent-document 7, vault-input 5, notes 5)
+→ F04-T08 **🚧**; kalan yüzey **812 satır / 25 dosya** (bir kısmı satır sonu yorumu:
+`api.ts`, `main.tsx`, `filename.ts`, `backup-schedule.ts`). Metinler birebir aynı;
+Tauri penceresi açılmadı → **görsel QA yok**; Windows denenmedi.
+
+**Dokunulmayanlar:** başka ajanın **18 dosyalık** OCR dil işi (staged) aynen duruyor;
+commit path-limited (yalnız bu turun 6 dosyası).
+
+**Disk:** tur başında **5,9 G**, tur sonu **5,6 G**; `disk-guard` temiz.
 
 ## F04-T08 — sözlük taşıması: Arama ekranı + iki kapsam lib'i (2026-10-30, beşinci tur)
 

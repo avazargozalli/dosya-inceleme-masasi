@@ -5,8 +5,12 @@ import { t } from "./i18n";
 /**
  * Onay metni çekirdekteki `ROLLBACK_CONFIRMATION` ile birebir aynı olmalı.
  * Arayüz yalnız kolaylık sağlar; kapı Rust tarafındadır.
+ *
+ * Metin sözlükten gelir (F04-T08: arayüz metni tek yerde); `rollback.test.ts`
+ * hem değeri hem de `commands.rs`teki sabiti okuyup eşleşmeyi doğrular, böylece
+ * sözlük değişikliği sessizce çekirdekten ayrışamaz.
  */
-export const ROLLBACK_CONFIRMATION = "GERİ DÖN";
+export const ROLLBACK_CONFIRMATION = t("rollback.confirmToken");
 
 /** Onay metni yeterli mi? Çekirdek kırpar, karşılaştırma birebirdir. */
 export function canConfirmRollback(text: string): boolean {
@@ -16,7 +20,7 @@ export function canConfirmRollback(text: string): boolean {
 /** Rozet metni: doğrulanmış sürüm varsa o, yoksa addan okunan (iddia) sürüm. */
 export function backupVersionLabel(backup: PreUpdateBackup): string {
   if (backup.verifiedVersion !== null) return `v${backup.verifiedVersion}`;
-  return `v${backup.claimedVersion} · doğrulanmadı`;
+  return t("rollback.versionUnverified", { version: backup.claimedVersion });
 }
 
 /**
@@ -25,11 +29,16 @@ export function backupVersionLabel(backup: PreUpdateBackup): string {
  */
 export function backupStatusText(backup: PreUpdateBackup): string {
   if (!backup.usable) {
-    return backup.problem ? `kullanılamaz — ${backup.problem}` : "kullanılamaz";
+    return backup.problem
+      ? t("rollback.unusableProblem", { problem: backup.problem })
+      : t("rollback.unusable");
   }
   return backup.verifiedVersion === backup.claimedVersion
-    ? `doğrulandı · şema v${backup.verifiedVersion}`
-    : `doğrulandı · dosya v${backup.verifiedVersion}, ad v${backup.claimedVersion}`;
+    ? t("rollback.verifiedSchema", { version: String(backup.verifiedVersion) })
+    : t("rollback.verifiedMismatch", {
+        verified: String(backup.verifiedVersion),
+        claimed: backup.claimedVersion,
+      });
 }
 
 /** Kullanıcının bilmesi gereken uyarılar; boş dizi = uyarı yok. */
@@ -37,7 +46,10 @@ export function backupWarnings(backup: PreUpdateBackup): string[] {
   const warnings: string[] = [];
   if (backup.nameMismatch) {
     warnings.push(
-      `Dosya adı v${backup.claimedVersion} diyor, dosya v${backup.verifiedVersion} taşıyor; ad yeniden adlandırılmış olabilir.`,
+      t("rollback.nameMismatch", {
+        claimed: backup.claimedVersion,
+        verified: String(backup.verifiedVersion),
+      }),
     );
   }
   if (backup.problem && backup.usable) {
@@ -60,12 +72,12 @@ export function formatBackupDate(iso: string | null): string {
  */
 export function rollbackConsequences(): string[] {
   return [
-    "Kasa kilitlenir; açık kasadaki tüm bağlantılar kapatılır.",
-    "Kasa dosyası seçilen güncelleme öncesi yedekle değiştirilir; güncelleme sonrası kayıtlar kasadan çıkar.",
-    "Değiştirilen dosya silinmez: aynı klasörde `vault.db.rollback-<zaman>.safety` güvenlik kopyası olarak kalır.",
-    "Kasa yeniden açılır ve bu uygulamanın şema sürümüne ilerletilir; ikili (uygulama) sürümü düşürülmez.",
-    "Geri dönüş ortasında süreç ölürse kasa dosyası yerinde kalır; yarım kalan geçici dosya bir sonraki denemede silinir.",
-    "Disk doluysa geri dönüş başlamaz (`E_DISK_FULL`); kasa ve yedek olduğu gibi kalır. Kasa başka bir süreçte açıksa (dolu `-wal`) da başlamaz.",
+    t("rollback.consequence1"),
+    t("rollback.consequence2"),
+    t("rollback.consequence3"),
+    t("rollback.consequence4"),
+    t("rollback.consequence5"),
+    t("rollback.consequence6"),
   ];
 }
 
@@ -78,15 +90,20 @@ export function rollbackDisabledReason(
   selected: string,
   confirmation: string,
 ): string | null {
-  if (backups.length === 0) return "Kasa klasöründe güncelleme öncesi yedek yok.";
+  if (backups.length === 0) return t("rollback.noBackups");
   const backup = backups.find((b) => b.fileName === selected);
-  if (!backup) return "Önce bir yedek seçin.";
-  if (!backup.usable) return "Seçilen yedek doğrulanamadı; geri dönüş yapılmaz.";
-  if (!canConfirmRollback(confirmation)) return "Onay için “GERİ DÖN” yazın.";
+  if (!backup) return t("rollback.selectFirst");
+  if (!backup.usable) return t("rollback.notVerifiedSelected");
+  if (!canConfirmRollback(confirmation)) {
+    return t("rollback.confirmRequired", { token: ROLLBACK_CONFIRMATION });
+  }
   return null;
 }
 
 /** Sonuç cümlesi: hangi sürüm geri kondu, kasa hangi sürümde açıldı. */
 export function rollbackSummary(result: RollbackResult): string {
-  return `Veri v${result.restoredVersion} sürümüne döndü; kasa güncel şema v${result.resumedVersion} olarak yeniden açıldı.`;
+  return t("rollback.summary", {
+    restored: result.restoredVersion,
+    resumed: result.resumedVersion,
+  });
 }

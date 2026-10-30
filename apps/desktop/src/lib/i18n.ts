@@ -12,17 +12,18 @@
  * `screens/Unlock.tsx`, `screens/Workspace.tsx`, `screens/Tasks.tsx`,
  * `screens/Exports.tsx`, `screens/Redaction.tsx`, `screens/Timeline.tsx`,
  * `screens/Checklists.tsx`, `screens/Ai.tsx`, `screens/Search.tsx`,
- * `components/JobQueueCard.tsx`, `components/WorkerBudgetCard.tsx`,
- * `lib/checklist.ts`, `lib/candidate.ts`, `lib/transferScope.ts`, `lib/jobs.ts`,
- * `lib/parseProgress.ts`, `lib/budget.ts`, `lib/export-coverage.ts`,
- * `lib/reminders.ts`, `lib/search.ts` ve `lib/search-scope.ts`. Kalan ekranlar
- * (Dosyalar/Cases, İnceleme, Emsal, Sağlayıcılar, Ayarlar) ve yardımcı
- * bileşenler (`DualReader`, `Notes`) metinlerini hâlâ kendi dosyalarında taşır;
+ * `screens/Settings.tsx`, `components/JobQueueCard.tsx`,
+ * `components/WorkerBudgetCard.tsx`, `lib/checklist.ts`, `lib/candidate.ts`,
+ * `lib/transferScope.ts`, `lib/jobs.ts`, `lib/parseProgress.ts`, `lib/budget.ts`,
+ * `lib/export-coverage.ts`, `lib/reminders.ts`, `lib/search.ts`,
+ * `lib/search-scope.ts` ve `lib/rollback.ts`. Kalan ekranlar
+ * (Dosyalar/Cases, İnceleme, Emsal, Sağlayıcılar) ve yardımcı bileşenler
+ * (`DualReader`, `Notes`) metinlerini hâlâ kendi dosyalarında taşır;
  * `lib/providers.ts`, `lib/arch.ts`, `lib/intext.ts`, `lib/inventory.ts`,
- * `lib/package.ts`, `lib/precedents.ts`, `lib/attack.ts`, `lib/rollback.ts`,
- * `lib/reader.ts` ve diğer yardımcı lib'ler de kendi metinlerini taşır. Taşıma
- * sırası ve sayısı `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır —
- * burada "bitti" denmez.
+ * `lib/package.ts`, `lib/precedents.ts`, `lib/attack.ts`, `lib/reader.ts` ve
+ * diğer yardımcı lib'ler de kendi metinlerini taşır. Taşıma sırası ve sayısı
+ * `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır — burada "bitti"
+ * denmez.
  */
 export const tr = {
   common: {
@@ -948,6 +949,114 @@ export const tr = {
       "Bu sonuçlar aktif dosyaya delil olarak eklenmez. Alıntı, emsal kaydındaki tam metinle doğrulanmalıdır; tam metni olmayan kayıtlar metin aramasında taranmaz.",
     errorNoVersion: "Sonuç belge sürümü taşımıyor; okuyucuda açılamaz. Belgeyi yeniden ayrıştırın.",
     errorClipboard: "Panoya kopyalama izni yok; metni seçip elle kopyalayın.",
+  },
+  settings: {
+    title: "Ayarlar ve yedek",
+    lead: "Yedek, kasa başlığını, SQLCipher veritabanını ve şifreli blob'ları tek klasöre kopyalar. Açık metin üretilmez; yedeği açmak için kasa parolası veya kurtarma anahtarı gerekir.",
+    pickDirTitle: "Yedek klasörünü seç",
+    passwordMismatch: "Yeni parolalar eşleşmiyor.",
+    restoreDestRequired: "Geri yükleme için hedef konum girin.",
+    vaultTitle: "Kasa",
+    vaultOpenShort: "açık",
+    vaultLockedShort: "kilitli",
+    vaultOpenBadge: "kasa açık",
+    vaultLockedBadge: "kasa kilitli",
+    vaultId: "Kimlik",
+    vaultPath: "Konum",
+    schemaVersion: "Şema sürümü",
+    appVersion: "Sürüm",
+    versionValue: "{version} (pre-alpha)",
+    preUpdateTitle: "Güncelleme öncesi yedek alındı.",
+    preUpdateLead: "Bu kasa yeni şemaya geçirilmeden önce doğrulanmış bir kopya yazıldı:",
+    preUpdateTail:
+      "Güncelleme yarıda kalırsa bu dosya geri konur; uygulama yedek alınamadıysa güncellemeyi başlatmaz.",
+    rollbackTitle: "Güncelleme öncesi yedeğe dön",
+    rollbackSub: "Kasa dosyasının güncellemeden önceki doğrulanmış kopyası; veriyi geri alır.",
+    scanBackups: "Yedekleri tara",
+    rollbackLocked: "Kasa kilitliyken yedek listesi okunamaz.",
+    rollbackEmpty:
+      "Kasa klasöründe güncelleme öncesi yedek yok. Bu yedek yalnız şema güncellemesi sırasında, doğrulanmış olarak yazılır.",
+    rollbackConfirmLabel: "Onay için “{token}” yazın",
+    rollbackSubmit: "Seçili yedeğe dön",
+    rollbackDoneTitle: "Geri dönüş tamamlandı.",
+    rollbackDoneBackup: "Yedek:",
+    rollbackDoneSafety: "Güvenlik kopyası:",
+    rollbackDoneHint: "Kasa açık; ekranlar tazelendiğinde geri dönen veri görünür.",
+    backupTitle: "Yedek al",
+    backupSub: "Tutarlı snapshot; yedek açılmadan önce doğrulanır.",
+    backupPick: "Yedek klasörü seç",
+    backupReady: "Yedek hazır:",
+    backupSummary: "{count} dosya · {size} · manifest {hash}…",
+    backupArchive: "Tek dosya:",
+    backupLocked: "Kasa kilitliyken yedek alınamaz. Yedeği kasa dosyasından ayrı bir diskte saklayın.",
+    autoTitle: "Otomatik yedek",
+    autoSub: "Klasör seçilirse kasa açıkken süresi dolunca yedek alınır; sonuç kayda geçer.",
+    autoPick: "Klasör seç",
+    autoDir: "Klasör",
+    autoDirNone: "seçilmedi",
+    autoDays: "Aralık",
+    autoDaysValue: "{days} gün",
+    autoLast: "Son yedek",
+    autoLastNone: "hiç",
+    autoDisable: "Otomatik yedeği kapat",
+    autoReset: "Sıfırla",
+    autoResetTitle: "Bir sonraki kontrolde yeniden yedek alınır",
+    gcTitle: "Kullanılmayan veriler",
+    gcSub: "Hiçbir belge sürümüne veya türev sayfaya bağlı olmayan şifreli blob'lar.",
+    gcScan: "Tara",
+    gcClean: "Temizle",
+    gcCandidates: "{count} aday · {size}",
+    gcDeleted: "{count} kayıt silindi · {size} boşaldı",
+    gcMissing: "Dosya uyarısı: {files}",
+    gcHint: "Önce \"Tara\" ile adayları görün; silme yalnız referanssız kayıtlara dokunur.",
+    restoreTitle: "Yedekten geri yükle",
+    restoreSub: "Yeni bir kasaya kopyalar; mevcut kasanın üzerine yazmaz.",
+    restoreDest: "Yeni kasa konumu",
+    restoreDestPlaceholder: "~/Dosyalar/GeriYuklenenKasa",
+    restorePick: "Yedek seç ve geri yükle",
+    restoreSelected: "Seçilen yedek: {dir}",
+    restoreDone: "Geri yükleme tamamlandı:",
+    restoreVerifiedLead: "Kopyalamadan önce",
+    restoreVerifiedTail: "dosya · {size} manifest sha256 ile doğrulandı ({ms} ms).",
+    restoreUnlisted: "Yedekte sayılmayan {count} dosya kasaya kopyalanmadı:",
+    restoreOpenHint: "Şimdi Kasa ekranından bu konumu ve parolanızı girerek açın.",
+    passwordTitle: "Parola değiştir",
+    passwordSub: "Yalnız parola yuvası yeniden sarılır; kasa içeriği ve kurtarma anahtarı değişmez.",
+    passwordOld: "Mevcut parola",
+    passwordNew: "Yeni parola (en az 10 karakter)",
+    passwordNew2: "Yeni parola (tekrar)",
+    passwordSubmit: "Parolayı değiştir",
+    passwordDone: "Parola değiştirildi. Kurtarma anahtarınız hâlâ geçerli.",
+    diagnosticsTitle: "Teşhis",
+    diagnosticsBody:
+      "Uygulama belge içeriğini günlüğe yazmaz; yalnız hata kodları ve sürüm bilgisi tutulur. Destek için hata kodu yeterlidir.",
+  },
+  rollback: {
+    confirmToken: "GERİ DÖN",
+    versionUnverified: "v{version} · doğrulanmadı",
+    verifiedSchema: "doğrulandı · şema v{version}",
+    verifiedMismatch: "doğrulandı · dosya v{verified}, ad v{claimed}",
+    usable: "kullanılabilir",
+    unusable: "kullanılamaz",
+    unusableProblem: "kullanılamaz — {problem}",
+    nameMismatch:
+      "Dosya adı v{claimed} diyor, dosya v{verified} taşıyor; ad yeniden adlandırılmış olabilir.",
+    consequence1: "Kasa kilitlenir; açık kasadaki tüm bağlantılar kapatılır.",
+    consequence2:
+      "Kasa dosyası seçilen güncelleme öncesi yedekle değiştirilir; güncelleme sonrası kayıtlar kasadan çıkar.",
+    consequence3:
+      "Değiştirilen dosya silinmez: aynı klasörde `vault.db.rollback-<zaman>.safety` güvenlik kopyası olarak kalır.",
+    consequence4:
+      "Kasa yeniden açılır ve bu uygulamanın şema sürümüne ilerletilir; ikili (uygulama) sürümü düşürülmez.",
+    consequence5:
+      "Geri dönüş ortasında süreç ölürse kasa dosyası yerinde kalır; yarım kalan geçici dosya bir sonraki denemede silinir.",
+    consequence6:
+      "Disk doluysa geri dönüş başlamaz (`E_DISK_FULL`); kasa ve yedek olduğu gibi kalır. Kasa başka bir süreçte açıksa (dolu `-wal`) da başlamaz.",
+    noBackups: "Kasa klasöründe güncelleme öncesi yedek yok.",
+    selectFirst: "Önce bir yedek seçin.",
+    notVerifiedSelected: "Seçilen yedek doğrulanamadı; geri dönüş yapılmaz.",
+    confirmRequired: "Onay için “{token}” yazın.",
+    summary: "Veri v{restored} sürümüne döndü; kasa güncel şema v{resumed} olarak yeniden açıldı.",
   },
   labels: {
     caseKind: {

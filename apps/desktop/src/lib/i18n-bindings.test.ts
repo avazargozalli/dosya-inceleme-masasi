@@ -7,8 +7,10 @@
  * Türkçe harf içermeyen sözcükler kaçar) bu test kırmızı olur.
  */
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import type { ExportCoverage, JobRetryView, JobRow, PrecedentSearchHit, PrecedentSearchPage, SearchPage } from "./api";
+import type { ExportCoverage, JobRetryView, JobRow, PrecedentSearchHit, PrecedentSearchPage, PreUpdateBackup, SearchPage } from "./api";
 import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
 import { t } from "./i18n";
@@ -23,6 +25,15 @@ import {
 } from "./jobs";
 import { parseProgressLine, parseStageLabel } from "./parseProgress";
 import { REMINDER_POLICY_LABEL, REMINDER_TEXT } from "./reminders";
+import {
+  ROLLBACK_CONFIRMATION,
+  backupStatusText,
+  backupVersionLabel,
+  backupWarnings,
+  rollbackConsequences,
+  rollbackDisabledReason,
+  rollbackSummary,
+} from "./rollback";
 import {
   DATE_ROLE_LABELS,
   OCR_STATUS_LABELS,
@@ -398,5 +409,92 @@ describe("arama metinleri sözlükten gelir", () => {
     expect(searchModeHint('"kira bedeli"', "auto")).toContain(t("searchFilters.mode.phrase"));
     expect(searchModeHint("2024/123 E.", "auto")).toContain(t("searchFilters.mode.docket"));
     expect(searchModeHint("ödeme", "exact")).toBe(t("searchFilters.modeHint.exact"));
+  });
+});
+
+describe("Ayarlar ekranı ve geri dönüş yardımcıları sözlükten gelir", () => {
+  // Ekranın kendi metni `localization.test.ts`te (Türkçe harf kapısı) ve
+  // `tsc`te (anahtar tipi) tutuluyor; burada **üretilen** metnin birebir
+  // sözlükten geldiği sınanır. Metin lib'e geri gömülürse kırmızı olur.
+  function preUpdate(overrides: Partial<PreUpdateBackup> = {}): PreUpdateBackup {
+    return {
+      fileName: "vault.db.v12-pre-update.bak",
+      claimedVersion: 12,
+      verifiedVersion: 12,
+      sizeBytes: 4096,
+      modifiedAt: "2026-10-24T09:00:00Z",
+      problem: null,
+      usable: true,
+      nameMismatch: false,
+      ...overrides,
+    };
+  }
+
+  it("rozet ve durum satırı sözlükten kurulur", () => {
+    expect(backupVersionLabel(preUpdate({ verifiedVersion: null }))).toBe(
+      t("rollback.versionUnverified", { version: 12 }),
+    );
+    expect(backupStatusText(preUpdate())).toBe(t("rollback.verifiedSchema", { version: 12 }));
+    expect(backupStatusText(preUpdate({ claimedVersion: 3, verifiedVersion: 17, nameMismatch: true }))).toBe(
+      t("rollback.verifiedMismatch", { verified: 17, claimed: 3 }),
+    );
+    expect(backupStatusText(preUpdate({ usable: false, problem: "E_DB_MIGRATION_BACKUP" }))).toBe(
+      t("rollback.unusableProblem", { problem: "E_DB_MIGRATION_BACKUP" }),
+    );
+    expect(backupStatusText(preUpdate({ usable: false, verifiedVersion: null }))).toBe(
+      t("rollback.unusable"),
+    );
+    expect(backupWarnings(preUpdate({ claimedVersion: 3, verifiedVersion: 17, nameMismatch: true }))[0]).toBe(
+      t("rollback.nameMismatch", { claimed: 3, verified: 17 }),
+    );
+  });
+
+  it("geri dönüş sınırları ve gerekçeler sözlükten, parametreler dolar", () => {
+    const lines = rollbackConsequences();
+    expect(lines).toHaveLength(6);
+    expect(lines[0]).toBe(t("rollback.consequence1"));
+    expect(lines[5]).toBe(t("rollback.consequence6"));
+    expect(lines.join(" ")).not.toContain("{");
+
+    expect(rollbackDisabledReason([], "", "")).toBe(t("rollback.noBackups"));
+    expect(rollbackDisabledReason([preUpdate()], "", "")).toBe(t("rollback.selectFirst"));
+    expect(rollbackDisabledReason([preUpdate({ usable: false })], preUpdate().fileName, "")).toBe(
+      t("rollback.notVerifiedSelected"),
+    );
+    const confirmLine = rollbackDisabledReason([preUpdate()], preUpdate().fileName, "");
+    expect(confirmLine).toBe(t("rollback.confirmRequired", { token: ROLLBACK_CONFIRMATION }));
+    expect(confirmLine).not.toContain("{");
+    expect(rollbackDisabledReason([preUpdate()], preUpdate().fileName, ROLLBACK_CONFIRMATION)).toBeNull();
+
+    expect(
+      rollbackSummary({
+        backupFile: "vault.db.v12-pre-update.bak",
+        restoredVersion: 12,
+        resumedVersion: 17,
+        safetyCopy: "/tmp/vault.db.rollback-1.safety",
+      }),
+    ).toBe(t("rollback.summary", { restored: 12, resumed: 17 }));
+  });
+
+  it("onay belirteci çekirdekteki sabitle birebir aynı (sözlük kayması yakalanır)", () => {
+    // Sözlük tek kaynak olduğu için belirteç artık buradan gelir; Rust tarafı
+    // `commands.rs`te sabittir. İkisi ayrışırsa geri dönüş **hiç** çalışmazdı.
+    const rust = readFileSync(
+      fileURLToPath(new URL("../../src-tauri/src/commands.rs", import.meta.url)),
+      "utf8",
+    );
+    expect(rust).toContain(`pub const ROLLBACK_CONFIRMATION: &str = "${ROLLBACK_CONFIRMATION}";`);
+  });
+
+  it("Ayarlar metinleri parametreleri doldurur, yarım yer tutucu bırakmaz", () => {
+    expect(t("settings.versionValue", { version: "0.1.0" })).toBe("0.1.0 (pre-alpha)");
+    expect(t("settings.autoDaysValue", { days: 7 })).toBe("7 gün");
+    expect(t("settings.gcCandidates", { count: 3, size: "1,5 KiB" })).toBe("3 aday · 1,5 KiB");
+    const summary = t("settings.backupSummary", { count: 12, size: "2,0 MiB", hash: "abcdef0123456789" });
+    expect(summary).toContain("abcdef0123456789");
+    expect(summary).not.toContain("{");
+    const restored = t("settings.restoreVerifiedTail", { size: "2,0 MiB", ms: 8 });
+    expect(restored).toContain("sha256");
+    expect(restored).not.toContain("{");
   });
 });
