@@ -169,9 +169,13 @@ describe("yardımcı lib metinleri sözlükten gelir", () => {
 
   it("kapsam satırları ve gömme hedefleri sözlükten", () => {
     const rows = coverageRows(coverage({ documents: 2, pages: 5 }));
-    expect(rows[0].label).toBe(t("exportCoverage.row.documents"));
-    expect(rows[rows.length - 1].label).toBe(t("exportCoverage.row.failedRuns"));
-    expect(COVERAGE_EMBED_TARGETS[0].label).toBe(t("exportCoverage.embedTarget.json"));
+    // Boş liste sessizce geçmesin: indeks erişimi `noUncheckedIndexedAccess`
+    // altında `undefined` olabilir, bu yüzden uzunluk ayrıca kapıya bağlanır.
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0]?.label).toBe(t("exportCoverage.row.documents"));
+    expect(rows[rows.length - 1]?.label).toBe(t("exportCoverage.row.failedRuns"));
+    expect(COVERAGE_EMBED_TARGETS.length).toBeGreaterThan(0);
+    expect(COVERAGE_EMBED_TARGETS[0]?.label).toBe(t("exportCoverage.embedTarget.json"));
     const headline = coverageHeadline(coverage({ documents: 2, pages: 5, textPages: 4, ocrPages: 1 }));
     expect(headline).toBe(
       t("exportCoverage.headline", {
