@@ -11,7 +11,74 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI** ekranları; **`lib/checklist.ts`, `lib/candidate.ts`, `lib/transferScope.ts`** taşındı; **6 ekran + 4 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI** ekranları + **`JobQueueCard`/`WorkerBudgetCard`**; **`lib/checklist.ts`, `lib/candidate.ts`, `lib/transferScope.ts`, `lib/jobs.ts`, `lib/parseProgress.ts`, `lib/budget.ts`, `lib/export-coverage.ts`, `lib/reminders.ts`** taşındı (**19 dosya**); **6 ekran + 2 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: iş kuyruğu/bütçe kartları + beş yardımcı lib (2026-10-30, dördüncü tur)
+
+**Neden:** önceki turun sıradaki adayı "Search (45) / Settings (60) / Cases (60)" ya da
+"küçük aile" idi. Küçük aile seçildi çünkü asıl açık, **taşınmış ekranların metni hâlâ
+yardımcı lib'lerden almasıydı**: `Exports.tsx` kapsam cümlelerini `lib/export-coverage.ts`ten,
+`Tasks.tsx` hatırlatıcı etiketlerini `lib/reminders.ts`ten, `Redaction.tsx` ilerleme
+aşamalarını `lib/parseProgress.ts`ten okuyordu — kapı bu dosyaları taramıyordu.
+
+**Ölçüm (kapının kendi mantığı, yorumlar ayıklanmış):** kalan toplam **1079** Türkçe satır /
+37 dosya. Bu dilimin yüzeyi: `lib/jobs.ts` **42**, `components/JobQueueCard.tsx` **19**,
+`lib/export-coverage.ts` **17**, `components/WorkerBudgetCard.tsx` **13**, `lib/budget.ts`
+**8**, `lib/parseProgress.ts` **7**, `lib/reminders.ts` **7** = **113**.
+
+**Bağ (ölçüldü, varsayılmadı):** `lib/jobs.ts` yalnız `JobQueueCard`'ı besliyor;
+`lib/parseProgress.ts` → `jobs.ts` + **`Redaction.tsx`** (taşınmış) + `Cases.tsx`;
+`lib/budget.ts` → `WorkerBudgetCard` + `Cases.tsx`; `lib/export-coverage.ts` → `Exports.tsx`;
+`lib/reminders.ts` → `Tasks.tsx`. Yani beş lib birlikte taşınınca **üç taşınmış ekranın**
+metin kaynağı da sözlüğe girdi.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **179 anahtar**: `jobs` (76), `exportCoverage` (30), `budget` (21),
+  `jobQueue` (17), `workerBudget` (16), `parseProgress` (12), `reminders` (7).
+  Sözlük **419 → 598** anahtar.
+- `lib/jobs.ts`: 14 durum etiketi (`succeeded`/`cancelled`/`leased` eski adları dahil),
+  **küçük harfli** özet biçimleri (`stateLower` — `toLocaleLowerCase("tr")` çağrısı kalktı,
+  biçim sözlükte), tür/engel/eylem etiketleri, iptal·dikkat·kurtarma·yeniden deneme
+  cümleleri `t()`den.
+- `lib/parseProgress.ts`: 9 aşama etiketi + "Ayrıştırılıyor" + sayaç satırı.
+- `lib/budget.ts`: MiB/sn/ms metinleri `t()`den; **ondalık biçimi artık
+  `lib/format.ts`** (`formatDecimal`, gruplamasız) — burada `replace(".", ",")` kalmadı.
+- `lib/export-coverage.ts`: 10 satır etiketi, özet, 3 rozet + ayrıntı, gömme hedefleri.
+- `lib/reminders.ts`: bildirim gövdesi + ilke/etiket haritaları.
+- `components/JobQueueCard.tsx`, `components/WorkerBudgetCard.tsx`: tüm başlık, alt yazı,
+  tablo başlığı, düğme, boş durum, sınır paragrafı ve `aria-label` sözlükten (JSX içindeki
+  `<code>` parçaları korundu; cümle parçaları `subLead/subTail`, `limitLead/Middle/Tail`).
+- **Kapı kapsamı:** `MIGRATED` += 7 dosya → taşınmış **19** dosya taranıyor. Ayrıca yeni
+  `lib/i18n-bindings.test.ts` (**8 test**): üretilen metnin **birebir sözlükten** geldiğini
+  doğrular (kapı yalnız Türkçe *harf* aradığı için `bellek`, `dosya`, `OCR` gibi harfsiz
+  sözcükler kaçardı).
+
+**Kanıt (kırmızı→yeşil, ölçüldü)**
+
+- Aynı anda `JobQueueCard.tsx`e `const _leak = "Kuyruk okunamadı";` ve `lib/budget.ts`e
+  `export const _LEAK2 = "Bütçe aşıldı";` → `localization.test.ts` **1 failed | 7 passed**,
+  rapor iki dosyayı birlikte gösterdi: `[ "components/JobQueueCard.tsx:28", "lib/budget.ts:17" ]`;
+  satırlar geri alındı → **8/8**.
+- **Kendi kusurum (test yakaladı):** `profileLimits` içindeki "süre" satırından birimi
+  (`sn`) düşürmüştüm → `budget.test.ts` **kırmızı** (`"süre 300 sn"` beklenirken
+  `"süre 300"`). Sözlük değeri `süre {value} sn` yapıldı → yeşil. Metin taşırken birim
+  kaybı sınıfı: **sözlük bağı testi** bunu kalıcı olarak yakalıyor.
+- **Ölçüm:** `tsc --noEmit` temiz · `vitest` **458/458** (36 dosya; 450 → +8) ·
+  `vite build` temiz (**510,43 kB**; önceki 502,48 kB) · taşınmış 7 dosyada yorum dışı
+  **0** Türkçe harf satırı (betikle; toplam kalan **1079 → 966**).
+
+**Dürüst sınırlar:** hâlâ **6 ekran + 2 bileşen** taşınmadı (Precedents 136, Providers 110,
+Review 100, DualReader 93, Cases 60, Settings 60, Search 45, Notes 35) → F04-T08 **🚧**.
+`lib/providers.ts` (42), `lib/arch.ts` (36), `lib/intext.ts` (35), `lib/inventory.ts` (32),
+`lib/package.ts` (31) taşınmış ekranların bazı satırlarını hâlâ besliyor ve kapı o dosyaları
+taramıyor. Metinler **birebir aynı** (yalnız kaynak değişti; JSX'teki `<code>` parçaları
+korundu, cümle parçaları ayrı anahtarlarda). `formatDecimal` yeni: MiB satırının ondalık
+biçimi artık `Intl` üzerinden (önce `String(...).replace(".", ",")`); **100 MiB ve üstünde
+tam sayı** kuralı korundu. Sözlük modül düzeyinde kurulduğu için `t()` **import anında**
+çözülür (tek dilli ürün kararı). Tauri penceresi açılmadı → **görsel QA yok**; Windows
+denenmedi. Vite'ın **500 kB** chunk uyarısı sürüyor (hata değil; kod bölme insan kararı).
+
 
 ## F04-T08 — sözlük taşıması: AI ekranı + aday/kapsam yardımcıları (2026-10-30, üçüncü tur)
 

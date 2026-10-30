@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, toApiError, type ApiError, type JobQueueView, type JobRow } from "../lib/api";
+import { t } from "../lib/i18n";
 import {
   cancelOutcomeLine,
   jobActionLabel,
@@ -30,6 +31,8 @@ const LIVE_REFRESH_MS = 1200;
  * sağlayıcı bilgisi taşımaz. Bütün düğmeler gerçek çekirdek komutunu çağırır
  * (`job_queue_recover`, `job_cancel`, `job_retry`, `job_unblock`) — sadece
  * görünen bir düğme yoktur.
+ *
+ * Metinler F04-T08 gereği `lib/i18n.ts`ten gelir.
  */
 export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
   const [view, setView] = useState<JobQueueView | null>(null);
@@ -132,7 +135,7 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
           if (result.started) setWatchJobId(job.id);
         } else {
           await api.jobUnblock(job.id);
-          setMessage("Engel kaldırıldı; iş yeniden sıraya alındı.");
+          setMessage(t("jobQueue.unblocked"));
         }
         setView(await api.jobQueueStatus());
       } catch (e) {
@@ -151,20 +154,17 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
     <div className="card">
       <div className="card-head">
         <div>
-          <h2>İş kuyruğu</h2>
-          <p className="card-sub">
-            Ayrıştırma ve uzun işler kalıcı kayıtta tutulur. Uygulama çökerse yarıda
-            kalan iş açılışta yeniden sıraya alınır; "Başlat" ile hemen sürdürülür.
-          </p>
+          <h2>{t("jobQueue.title")}</h2>
+          <p className="card-sub">{t("jobQueue.sub")}</p>
         </div>
         <button className="btn" disabled={busy || !unlocked} onClick={() => void refresh()}>
-          Yenile
+          {t("jobQueue.refresh")}
         </button>
       </div>
 
       {!unlocked ? (
         <p className="muted small" style={{ margin: 0 }}>
-          Kuyruk kasa açılınca görünür.
+          {t("jobQueue.locked")}
         </p>
       ) : error ? (
         <div className="notice danger" role="alert">
@@ -178,11 +178,11 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Tür</th>
-                  <th>Durum</th>
-                  <th>İlerleme</th>
-                  <th>Deneme</th>
-                  <th>Eylem</th>
+                  <th>{t("jobQueue.colType")}</th>
+                  <th>{t("jobQueue.colState")}</th>
+                  <th>{t("jobQueue.colProgress")}</th>
+                  <th>{t("jobQueue.colAttempt")}</th>
+                  <th>{t("jobQueue.colAction")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -210,7 +210,7 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
                                 aria-valuemin={0}
                                 aria-valuemax={100}
                                 aria-valuenow={progressWidth}
-                                aria-label={`İş ilerlemesi: ${progressLine}`}
+                                aria-label={t("jobQueue.progressAria", { line: progressLine })}
                                 style={{
                                   height: 4,
                                   borderRadius: 2,
@@ -259,31 +259,23 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
             </table>
           ) : (
             <p className="muted small" style={{ margin: 0 }}>
-              Kayıtlı iş yok.
+              {t("jobQueue.empty")}
             </p>
           )}
           <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
             <button className="btn" disabled={busy} onClick={() => void recover()}>
-              Bekleyen işleri kurtar
+              {t("jobQueue.recover")}
             </button>
-            <span className="muted small">
-              Kurtarma, kesintiye uğramış işleri yeniden sıraya alır; iptal istenmiş
-              işleri kapatır.
-            </span>
+            <span className="muted small">{t("jobQueue.recoverNote")}</span>
           </div>
           {message ? <div className="notice ok">{message}</div> : null}
           <p className="muted small" style={{ marginBottom: 0 }}>
-            Sınır: kuyruk yürütücüsü tek süreçlidir (kasa başına tek yazıcı). Parola
-            bekleyen belge işi "Engelli" kalır; parolayla yeniden ayrıştırınca sıraya
-            döner. İlerleme sütunu ayrıştırma sırasında yazılır (en çok 0,3 sn'de bir
-            güncellenir, kart 1,2 sn'de bir tazelenir) — çok kısa belgede sayaç
-            0'dan %100'e atlayabilir; bitmiş işte sayaç gösterilmez. Kuyruk gecikmesi
-            ölçümü release derlemesinde yapılır.
+            {t("jobQueue.limit")}
           </p>
         </>
       ) : (
         <p className="muted small" style={{ margin: 0 }}>
-          {busy ? "Kuyruk okunuyor…" : "Kuyruk okunamadı."}
+          {busy ? t("jobQueue.busy") : t("jobQueue.unavailable")}
         </p>
       )}
     </div>

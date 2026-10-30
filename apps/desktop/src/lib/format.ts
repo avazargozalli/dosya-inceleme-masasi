@@ -50,6 +50,13 @@ const PERCENT = new Intl.NumberFormat(LOCALE, {
   maximumFractionDigits: 0,
 });
 
+/** Ondalıklı, **gruplama yok**: "1,5" · "3600" (kaynak bütçesi satırları). */
+const DECIMAL_PLAIN = new Intl.NumberFormat(LOCALE, {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 0,
+  useGrouping: false,
+});
+
 function parseInstant(value: string | null | undefined): Date | null {
   if (!value) return null;
   const date = new Date(value);
@@ -121,6 +128,17 @@ export function formatPercent(ratio: number | null | undefined): string {
     return t("common.unknown");
   }
   return PERCENT.format(ratio);
+}
+
+/**
+ * Ondalıklı sayı, **gruplama yok** ("1,5" · "3600"). Kaynak bütçesi satırları
+ * gibi birim eki alan değerler için: gruplama olmadan da Türkçe ondalık
+ * virgülü korunur ve kural tek dosyada kalır (başka yerde `replace(".", ",")`
+ * yazılmaz — aynı değer iki biçimde görünmesin).
+ */
+export function formatDecimal(value: number): string {
+  if (!Number.isFinite(value)) return t("common.unknown");
+  return DECIMAL_PLAIN.format(value);
 }
 
 /** Bayt → "512 bayt" / "1,5 KiB" / "2,3 MiB" (1024 tabanı, Türkçe ondalık). */

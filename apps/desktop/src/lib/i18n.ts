@@ -11,15 +11,16 @@
  * **Dürüst sınır:** F04-T08 sürüyor. Taşınan dosyalar: `App.tsx`,
  * `screens/Unlock.tsx`, `screens/Workspace.tsx`, `screens/Tasks.tsx`,
  * `screens/Exports.tsx`, `screens/Redaction.tsx`, `screens/Timeline.tsx`,
- * `screens/Checklists.tsx`, `screens/Ai.tsx`, `lib/checklist.ts`,
- * `lib/candidate.ts` ve `lib/transferScope.ts`. Kalan ekranlar (Dosyalar/Cases,
+ * `screens/Checklists.tsx`, `screens/Ai.tsx`, `components/JobQueueCard.tsx`,
+ * `components/WorkerBudgetCard.tsx`, `lib/checklist.ts`, `lib/candidate.ts`,
+ * `lib/transferScope.ts`, `lib/jobs.ts`, `lib/parseProgress.ts`, `lib/budget.ts`,
+ * `lib/export-coverage.ts` ve `lib/reminders.ts`. Kalan ekranlar (Dosyalar/Cases,
  * Arama, İnceleme, Emsal, Sağlayıcılar, Ayarlar) ve yardımcı bileşenler
- * (`DualReader`, `Notes`, `JobQueueCard`, `WorkerBudgetCard`) metinlerini hâlâ
- * kendi dosyalarında taşır; `lib/jobs.ts`, `lib/reader.ts`, `lib/providers.ts`,
- * `lib/search.ts`, `lib/reminders.ts`, `lib/export-coverage.ts` ve diğer yardımcı
- * lib'ler de kendi metinlerini taşır. Taşıma sırası ve sayısı
- * `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır — burada "bitti"
- * denmez.
+ * (`DualReader`, `Notes`) metinlerini hâlâ kendi dosyalarında taşır;
+ * `lib/providers.ts`, `lib/arch.ts`, `lib/intext.ts`, `lib/reader.ts`,
+ * `lib/search.ts` ve diğer yardımcı lib'ler de kendi metinlerini taşır. Taşıma
+ * sırası ve sayısı `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır —
+ * burada "bitti" denmez.
  */
 export const tr = {
   common: {
@@ -545,6 +546,250 @@ export const tr = {
     noticeInvalid: "Aday kaydedildi ama geçersiz; incelemeye gönderilemez.",
     noticePromoted:
       "Aday inceleme kuyruğuna gönderildi; kabul edilene kadar hukuki kayıt değil.",
+  },
+  jobQueue: {
+    title: "İş kuyruğu",
+    sub: "Ayrıştırma ve uzun işler kalıcı kayıtta tutulur. Uygulama çökerse yarıda kalan iş açılışta yeniden sıraya alınır; \"Başlat\" ile hemen sürdürülür.",
+    refresh: "Yenile",
+    locked: "Kuyruk kasa açılınca görünür.",
+    colType: "Tür",
+    colState: "Durum",
+    colProgress: "İlerleme",
+    colAttempt: "Deneme",
+    colAction: "Eylem",
+    empty: "Kayıtlı iş yok.",
+    progressAria: "İş ilerlemesi: {line}",
+    recover: "Bekleyen işleri kurtar",
+    recoverNote:
+      "Kurtarma, kesintiye uğramış işleri yeniden sıraya alır; iptal istenmiş işleri kapatır.",
+    unblocked: "Engel kaldırıldı; iş yeniden sıraya alındı.",
+    limit:
+      "Sınır: kuyruk yürütücüsü tek süreçlidir (kasa başına tek yazıcı). Parola bekleyen belge işi \"Engelli\" kalır; parolayla yeniden ayrıştırınca sıraya döner. İlerleme sütunu ayrıştırma sırasında yazılır (en çok 0,3 sn'de bir güncellenir, kart 1,2 sn'de bir tazelenir) — çok kısa belgede sayaç 0'dan %100'e atlayabilir; bitmiş işte sayaç gösterilmez. Kuyruk gecikmesi ölçümü release derlemesinde yapılır.",
+    busy: "Kuyruk okunuyor…",
+    unavailable: "Kuyruk okunamadı.",
+  },
+  workerBudget: {
+    title: "Kaynak bütçeleri",
+    subLead:
+      "Her worker türü kendi CPU, bellek, çıktı, açık dosya ve süre sınırıyla koşar; aşım ayrı hata koduyla (",
+    subTail: ") raporlanır.",
+    refresh: "Yenile",
+    locked: "Bütçe profilleri kasa açılınca okunur.",
+    colProfile: "Profil",
+    colCpu: "CPU",
+    colMemory: "Bellek",
+    colOutput: "Çıktı",
+    colFiles: "Dosya",
+    colTime: "Süre",
+    busy: "Profiller okunuyor…",
+    notFound: "Profil bulunamadı.",
+    limitLead: "Sınır: CPU süresi ve açık dosya sayısı POSIX kabuğunda",
+    limitMiddle:
+      "ile uygulanır — Windows'ta bu ikisi uygulanmaz (süre ve çıktı bütçesi uygulanır). Bellek gözcüsü 500 ms'de bir örnek alır; sınır örnekler arasında aşılabilir, aşımda süreç durdurulur ve iş",
+    limitTail:
+      "ile kapanır. AI profilinde CPU sınırı yoktur: çağrı yerel süreç değildir, duvar saati ve yanıt boyutu ölçülür. Bu değerler başlangıç ayarlarıdır; F15 ölçümüyle güncellenir.",
+  },
+  jobs: {
+    state: {
+      queued: "Bekliyor",
+      blocked: "Engelli",
+      running: "Yürüyor",
+      validating: "Doğrulanıyor",
+      retry_wait: "Tekrar bekliyor",
+      canceling: "İptal ediliyor",
+      interrupted: "Kesildi",
+      partial: "Kısmi bitti",
+      completed: "Bitti",
+      failed: "Başarısız",
+      canceled: "İptal edildi",
+      leased: "Sahiplenildi",
+      succeeded: "Bitti",
+      cancelled: "İptal edildi",
+    },
+    stateLower: {
+      running: "yürüyor",
+      validating: "doğrulanıyor",
+      queued: "bekliyor",
+      blocked: "engelli",
+      retry_wait: "tekrar bekliyor",
+      canceling: "iptal ediliyor",
+      interrupted: "kesildi",
+      partial: "kısmi bitti",
+      completed: "bitti",
+      failed: "başarısız",
+      canceled: "iptal edildi",
+    },
+    type: {
+      parse_document: "Belge ayrıştırma",
+      import: "İçe aktarma",
+      ocr_page: "OCR",
+      index: "Dizinleme",
+      export: "Çıktı",
+      backup: "Yedek",
+    },
+    blockedReason: {
+      password: "parola bekliyor",
+      dependency: "bağımlılık bekliyor",
+      quota: "kota bekliyor",
+      permission: "izin bekliyor",
+      vault_locked: "kasa kilitli",
+    },
+    unknownState: "bilinmeyen ({state})",
+    unknownBlocked: "engel: {reason}",
+    action: {
+      cancel: "İptal et",
+      retry: "Yeniden dene",
+      run: "Başlat",
+      unblock: "Engeli kaldır",
+    },
+    cancelNeverRan: "İş iptal edildi (hiç çalışmadı).",
+    cancelStopped: "Çalışan süreç durduruldu; iş iptal ediliyor, sonuç yazılmayacak.",
+    cancelRequested:
+      "İptal istendi; iş sonucu bekleniyor — süreç durmadan \"iptal tamam\" denmez.",
+    summaryEmpty: "Kuyruk boş — bekleyen iş yok.",
+    summaryTotal: "{count} iş",
+    summaryPart: "{count} {state}",
+    attentionFailed:
+      "{count} iş başarısız. Hata kodu iş listesinde; \"Yeniden dene\" yeni bir deneme açar.",
+    attentionBlocked:
+      "{count} iş engelli (parola/bağımlılık/kota). Engel kalkınca \"Engeli kaldır\" ile sıraya döner.",
+    attentionDependency:
+      "{count} iş bağımlılığı bittiği için hiç çalıştırılmadı (sessizce beklemez).",
+    attentionRetry: "{count} iş tekrar denemesi bekliyor; süresi gelince kendiliğinden alınır.",
+    attentionInterrupted:
+      "{count} iş kesintiye uğradı; \"Bekleyen işleri kurtar\" ile yeniden sıraya alınır.",
+    metaAttempt: "deneme {attempt}",
+    start: {
+      verbRetry: "Yeniden deneme",
+      verbRun: "İş",
+      line: "{verb} başladı — kaynak: {source} · {settings}; sonucu satırda göreceksiniz.",
+      sourceStored: "kaydedilmiş ayarlar",
+      sourceDefault: "varsayılanlar (özgün ayar bu işte kayıtlı değil)",
+      settings: "OCR {ocr}, kodlama {encoding}",
+      settingsDefault: "varsayılan ayarlar",
+      ocrOn: "açık ({lang})",
+      ocrOff: "kapalı",
+      passwordRetry:
+        "Belge parola ile açılmıştı; parola saklanmaz. Yeniden deneme başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın.",
+      passwordRun:
+        "Belge parola ile açılmıştı; parola saklanmaz. İş başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın.",
+      notRunnableRetry:
+        "İş yeniden sıraya alındı, ama bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan yeniden çalıştırın.",
+      notRunnableRun:
+        "Bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan çalıştırın.",
+      noInputRetry:
+        "İş yeniden sıraya alındı, ama girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın.",
+      noInputRun:
+        "İş başlatılamadı: girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın.",
+      fallbackRetry: "İş yeniden sıraya alındı.",
+      fallbackRun: "İş başlatılamadı.",
+    },
+    recovery: {
+      requeued: "{count} iş yeniden sıraya alındı",
+      canceled: "{count} iş iptal edildi",
+      failed: "{count} iş tekrar bütçesi bittiği için kapandı",
+      interruptedOnly:
+        "{count} iş kesildi olarak işaretlendi; yeniden sıraya alınacak bir şey yok.",
+      none: "Yarıda kalmış iş yok; yeniden sıraya alınacak bir şey bulunmadı.",
+    },
+  },
+  parseProgress: {
+    stage: {
+      start: "Hazırlanıyor",
+      queued: "Sırada (en fazla 2 ayrıştırma)",
+      open: "Belge açıldı",
+      pages: "Sayfalar okunuyor",
+      store: "Kasaya yazılıyor",
+      redact: "Sayfalar maskeleniyor",
+      pack: "PDF paketleniyor",
+      verify: "Çıktı doğrulanıyor",
+      scan: "Bağımsız tarama",
+    },
+    fallback: "Ayrıştırılıyor",
+    line: "{label}: {done} / {total} · %{percent}",
+    countLine: "{label}: {done}",
+  },
+  budget: {
+    zeroMib: "0 MiB",
+    mib: "{value} MiB",
+    notApplicable: "uygulanmaz",
+    seconds: "{value} sn",
+    zeroMs: "0 ms",
+    milliseconds: "{value} ms",
+    cpuLine: "CPU {value}",
+    memoryLine: "bellek {value}",
+    outputLine: "çıktı {value}",
+    filesLine: "dosya {value}",
+    timeLine: "süre {value} sn",
+    peakMemory: "tepe bellek {value}",
+    response: "yanıt {value}",
+    openFiles: "{count} dosya",
+    dimension: {
+      cpu: "CPU süresi",
+      memory: "bellek",
+      output: "çıktı boyutu",
+      open_files: "açık dosya sayısı",
+      time: "süre",
+    },
+    warningLimit: "Bütçe aşıldı: {label} (sınır {limit})",
+    warning: "Bütçe aşıldı: {label}",
+  },
+  exportCoverage: {
+    row: {
+      documents: "Belge",
+      versions: "Belge sürümü",
+      parseRuns: "Ayrıştırma koşusu",
+      pages: "Sayfa",
+      textPages: "Metinli sayfa",
+      ocrPages: "OCR ile okunan sayfa",
+      emptyPages: "Boş sayfa",
+      segments: "Metin segmenti",
+      unparsed: "Ayrıştırılmamış belge",
+      failedRuns: "Başarısız ayrıştırma koşusu",
+    },
+    headline:
+      "{documents} belge · {pages} sayfa ({textPages} metinli, {ocrPages} OCR, {emptyPages} boş) · {unparsed} ayrıştırılmamış belge",
+    state: {
+      none: "Kapsam yok",
+      full: "Kapsam tam",
+      partial: "Kapsam kısmi",
+    },
+    stateDetail: {
+      none: "Dosyada belge yok; bu çıktı hiçbir incelemeyi kapsamaz.",
+      full: "Her belge ayrıştırıldı ve her sayfada metin var.",
+      partial: "Kapsam dışı içerik var ({count} uyarı); incelenmedi ≠ temiz.",
+    },
+    embedWhere: {
+      json: "coverage bloğu",
+      csv: "baştaki # yorum satırları",
+      docx: "“İncelenen kapsam” bölümü",
+      pdf: "“İncelenen kapsam” bölümü",
+      package: "KAPSAM.md + manifest.coverage",
+    },
+    embedTarget: {
+      json: "JSON",
+      csv: "CSV",
+      docx: "DOCX",
+      pdf: "PDF",
+      package: "Devir paketi",
+    },
+    embedNote: "Kapsam çıktıya gömüldü: {headline}",
+    embedNoteWhere: "Kapsam çıktıya gömüldü ({where}): {headline}",
+    emptyWarning:
+      "Belgesiz dosya: çıktı yalnız dosya künyesini taşır, hiçbir belge incelenmiş sayılmaz.",
+  },
+  reminders: {
+    notification: "Bu dosyada yaklaşan bir görev tarihi var.",
+    label: {
+      day_before: "Yarın için hatırlatıcı",
+      on_day: "Bugün için hatırlatıcı",
+      off: "Hatırlatıcı kapalı",
+    },
+    policy: {
+      none: "Hatırlatma yok",
+      on_day: "Günü gelince",
+      day_before: "Bir gün önce",
+    },
   },
   labels: {
     caseKind: {

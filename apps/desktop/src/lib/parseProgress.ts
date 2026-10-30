@@ -1,4 +1,5 @@
 import type { ParseProgressEvent } from "./api";
+import { t } from "./i18n";
 
 /**
  * Ayrıştırma ilerlemesinin arayüz dili (F04-T07).
@@ -6,26 +7,29 @@ import type { ParseProgressEvent } from "./api";
  * Worker `parse-progress` olayıyla aşama ve sayaç bildirir; buradaki yardımcılar
  * yalnız **gösterim** üretir. Sayaç uydurulmaz: `total` yoksa oran hesaplanmaz,
  * `done` toplamı aşarsa toplam gösterilir (olay bozuksa bile "5 / 3" yazılmaz).
+ *
+ * Metinler F04-T08 gereği `lib/i18n.ts`ten gelir (harita modül düzeyinde kurulur,
+ * `t()` import anında çözülür — tek dilli ürün kararı).
  */
 
 /** Worker'ın bildirdiği aşamalar; bilinmeyen aşama olduğu gibi gösterilir. */
 const STAGE_LABEL: Record<string, string> = {
-  start: "Hazırlanıyor",
+  start: t("parseProgress.stage.start"),
   // §17.3: eşzamanlılık kapısı doluysa iş sırada bekler — sessiz bekleyiş yok.
-  queued: "Sırada (en fazla 2 ayrıştırma)",
-  open: "Belge açıldı",
-  pages: "Sayfalar okunuyor",
-  store: "Kasaya yazılıyor",
+  queued: t("parseProgress.stage.queued"),
+  open: t("parseProgress.stage.open"),
+  pages: t("parseProgress.stage.pages"),
+  store: t("parseProgress.stage.store"),
   // F04-T07 maskeleme aşamaları (aynı kuyruk satırı ve olay biçimi).
-  redact: "Sayfalar maskeleniyor",
-  pack: "PDF paketleniyor",
-  verify: "Çıktı doğrulanıyor",
-  scan: "Bağımsız tarama",
+  redact: t("parseProgress.stage.redact"),
+  pack: t("parseProgress.stage.pack"),
+  verify: t("parseProgress.stage.verify"),
+  scan: t("parseProgress.stage.scan"),
 };
 
 export function parseStageLabel(stage: string): string {
   const key = stage.trim();
-  if (!key) return "Ayrıştırılıyor";
+  if (!key) return t("parseProgress.fallback");
   return STAGE_LABEL[key] ?? key;
 }
 
@@ -54,10 +58,10 @@ export function parseProgressLine(event: ProgressCounters | null): string | null
   const label = parseStageLabel(event.stage);
   const percent = parseProgressPercent(event);
   if (percent === null || event.total === null) {
-    return event.done > 0 ? `${label}: ${event.done}` : label;
+    return event.done > 0 ? t("parseProgress.countLine", { label, done: event.done }) : label;
   }
   const done = Math.min(Math.max(event.done, 0), event.total);
-  return `${label}: ${done} / ${event.total} · %${percent}`;
+  return t("parseProgress.line", { label, done, total: event.total, percent });
 }
 
 /** İlerleme çubuğu için 0–100; oran yoksa `null`. */

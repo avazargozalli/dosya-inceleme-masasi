@@ -69,6 +69,8 @@ const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
 /** Sözlüğe taşınmış dosyalar: gömülü Türkçe metin taşımaz. */
 const MIGRATED = [
   "App.tsx",
+  "components/JobQueueCard.tsx",
+  "components/WorkerBudgetCard.tsx",
   "screens/Unlock.tsx",
   "screens/Workspace.tsx",
   "screens/Tasks.tsx",
@@ -80,6 +82,11 @@ const MIGRATED = [
   "lib/checklist.ts",
   "lib/candidate.ts",
   "lib/transferScope.ts",
+  "lib/jobs.ts",
+  "lib/parseProgress.ts",
+  "lib/budget.ts",
+  "lib/export-coverage.ts",
+  "lib/reminders.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;

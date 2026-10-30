@@ -8,44 +8,68 @@
  * Durum adları şartname §17.2'nin kümesidir (`completed`, `canceled`,
  * `blocked`, `validating`, `canceling`, `interrupted`, `partial`). Eski
  * kasalardan gelen `succeeded`/`cancelled`/`leased` adları da okunur.
+ *
+ * Metinler F04-T08 gereği `lib/i18n.ts`ten gelir; haritalar modül düzeyinde
+ * kurulduğu için `t()` **import anında** çözülür (sözlük `as const`, tek dilli
+ * ürün kararı — dil değiştirme yok).
  */
 import type { JobQueueSummary, JobRetryView, JobRow } from "./api";
+import { t } from "./i18n";
 import { parseProgressLine, parseProgressWidth, type ProgressCounters } from "./parseProgress";
 
 const STATE_LABELS: Record<string, string> = {
-  queued: "Bekliyor",
-  blocked: "Engelli",
-  running: "Yürüyor",
-  validating: "Doğrulanıyor",
-  retry_wait: "Tekrar bekliyor",
-  canceling: "İptal ediliyor",
-  interrupted: "Kesildi",
-  partial: "Kısmi bitti",
-  completed: "Bitti",
-  failed: "Başarısız",
-  canceled: "İptal edildi",
+  queued: t("jobs.state.queued"),
+  blocked: t("jobs.state.blocked"),
+  running: t("jobs.state.running"),
+  validating: t("jobs.state.validating"),
+  retry_wait: t("jobs.state.retry_wait"),
+  canceling: t("jobs.state.canceling"),
+  interrupted: t("jobs.state.interrupted"),
+  partial: t("jobs.state.partial"),
+  completed: t("jobs.state.completed"),
+  failed: t("jobs.state.failed"),
+  canceled: t("jobs.state.canceled"),
   // Eski adlar (0001–0020): veritabanı 0021 ile yeniden yazılır; görünümde
   // karşılaşılırsa gizlenmez.
-  leased: "Sahiplenildi",
-  succeeded: "Bitti",
-  cancelled: "İptal edildi",
+  leased: t("jobs.state.leased"),
+  succeeded: t("jobs.state.succeeded"),
+  cancelled: t("jobs.state.cancelled"),
+};
+
+/**
+ * Özet satırında durum adı **cümle içinde** küçük harfle yazılır
+ * ("3 bekliyor"). Küçük harfli biçim sözlükte tutulur: `toLocaleLowerCase("tr")`
+ * çağrısı biçim katmanını böler ve tek harfli İ/ı dönüşümünü dil ayarına bırakırdı.
+ */
+const STATE_LOWER: Record<string, string> = {
+  running: t("jobs.stateLower.running"),
+  validating: t("jobs.stateLower.validating"),
+  queued: t("jobs.stateLower.queued"),
+  blocked: t("jobs.stateLower.blocked"),
+  retry_wait: t("jobs.stateLower.retry_wait"),
+  canceling: t("jobs.stateLower.canceling"),
+  interrupted: t("jobs.stateLower.interrupted"),
+  partial: t("jobs.stateLower.partial"),
+  completed: t("jobs.stateLower.completed"),
+  failed: t("jobs.stateLower.failed"),
+  canceled: t("jobs.stateLower.canceled"),
 };
 
 const TYPE_LABELS: Record<string, string> = {
-  parse_document: "Belge ayrıştırma",
-  import: "İçe aktarma",
-  ocr_page: "OCR",
-  index: "Dizinleme",
-  export: "Çıktı",
-  backup: "Yedek",
+  parse_document: t("jobs.type.parse_document"),
+  import: t("jobs.type.import"),
+  ocr_page: t("jobs.type.ocr_page"),
+  index: t("jobs.type.index"),
+  export: t("jobs.type.export"),
+  backup: t("jobs.type.backup"),
 };
 
 const BLOCKED_REASONS: Record<string, string> = {
-  password: "parola bekliyor",
-  dependency: "bağımlılık bekliyor",
-  quota: "kota bekliyor",
-  permission: "izin bekliyor",
-  vault_locked: "kasa kilitli",
+  password: t("jobs.blockedReason.password"),
+  dependency: t("jobs.blockedReason.dependency"),
+  quota: t("jobs.blockedReason.quota"),
+  permission: t("jobs.blockedReason.permission"),
+  vault_locked: t("jobs.blockedReason.vault_locked"),
 };
 
 /** Yeni adlara indirger: `succeeded` → `completed`, `leased` → `running`. */
@@ -57,7 +81,7 @@ export function canonicalJobState(state: string): string {
 }
 
 export function jobStateLabel(state: string): string {
-  return STATE_LABELS[state] ?? `bilinmeyen (${state})`;
+  return STATE_LABELS[state] ?? t("jobs.unknownState", { state });
 }
 
 export function jobTypeLabel(jobType: string): string {
@@ -84,7 +108,7 @@ export function jobStateBadgeClass(state: string): string {
 /** Engelli işin nedeni okunur metne çevrilir; bilinmeyen neden gizlenmez. */
 export function blockedReasonLabel(reason: string | null): string | null {
   if (!reason) return null;
-  return BLOCKED_REASONS[reason] ?? `engel: ${reason}`;
+  return BLOCKED_REASONS[reason] ?? t("jobs.unknownBlocked", { reason });
 }
 
 /** Satırda hangi eylem gösterilmeli? Sunucu durumu belirler, buton uydurulmaz. */
@@ -114,10 +138,10 @@ export function jobActions(job: JobRow): JobAction[] {
 }
 
 export function jobActionLabel(action: JobAction): string {
-  if (action === "cancel") return "İptal et";
-  if (action === "retry") return "Yeniden dene";
-  if (action === "run") return "Başlat";
-  return "Engeli kaldır";
+  if (action === "cancel") return t("jobs.action.cancel");
+  if (action === "retry") return t("jobs.action.retry");
+  if (action === "run") return t("jobs.action.run");
+  return t("jobs.action.unblock");
 }
 
 /**
@@ -130,12 +154,12 @@ export function cancelOutcomeLine(result: {
   workerStopped: boolean;
 }): string {
   if (result.outcome === "canceled") {
-    return "İş iptal edildi (hiç çalışmadı).";
+    return t("jobs.cancelNeverRan");
   }
   if (result.workerStopped) {
-    return "Çalışan süreç durduruldu; iş iptal ediliyor, sonuç yazılmayacak.";
+    return t("jobs.cancelStopped");
   }
-  return 'İptal istendi; iş sonucu bekleniyor — süreç durmadan "iptal tamam" denmez.';
+  return t("jobs.cancelRequested");
 }
 
 export function countOf(summary: JobQueueSummary, state: string): number {
@@ -147,8 +171,8 @@ export function countOf(summary: JobQueueSummary, state: string): number {
 
 /** Tek satır özet: "12 iş · 3 bekliyor · 1 başarısız". */
 export function queueSummaryLine(summary: JobQueueSummary): string {
-  if (summary.total === 0) return "Kuyruk boş — bekleyen iş yok.";
-  const parts: string[] = [`${summary.total} iş`];
+  if (summary.total === 0) return t("jobs.summaryEmpty");
+  const parts: string[] = [t("jobs.summaryTotal", { count: summary.total })];
   const order = [
     "running",
     "validating",
@@ -164,7 +188,9 @@ export function queueSummaryLine(summary: JobQueueSummary): string {
   ];
   for (const state of order) {
     const count = countOf(summary, state);
-    if (count > 0) parts.push(`${count} ${jobStateLabel(state).toLocaleLowerCase("tr")}`);
+    if (count > 0) {
+      parts.push(t("jobs.summaryPart", { count, state: STATE_LOWER[state] ?? jobStateLabel(state) }));
+    }
   }
   return parts.join(" · ");
 }
@@ -180,27 +206,19 @@ export function queueAttention(summary: JobQueueSummary): string | null {
   const interrupted = countOf(summary, "interrupted");
   const lines: string[] = [];
   if (failed > 0) {
-    lines.push(
-      `${failed} iş başarısız. Hata kodu iş listesinde; "Yeniden dene" yeni bir deneme açar.`,
-    );
+    lines.push(t("jobs.attentionFailed", { count: failed }));
   }
   if (blocked > 0) {
-    lines.push(
-      `${blocked} iş engelli (parola/bağımlılık/kota). Engel kalkınca "Engeli kaldır" ile sıraya döner.`,
-    );
+    lines.push(t("jobs.attentionBlocked", { count: blocked }));
   }
   if (summary.blockedByDependency > 0) {
-    lines.push(
-      `${summary.blockedByDependency} iş bağımlılığı bittiği için hiç çalıştırılmadı (sessizce beklemez).`,
-    );
+    lines.push(t("jobs.attentionDependency", { count: summary.blockedByDependency }));
   }
   if (retry > 0) {
-    lines.push(`${retry} iş tekrar denemesi bekliyor; süresi gelince kendiliğinden alınır.`);
+    lines.push(t("jobs.attentionRetry", { count: retry }));
   }
   if (interrupted > 0) {
-    lines.push(
-      `${interrupted} iş kesintiye uğradı; "Bekleyen işleri kurtar" ile yeniden sıraya alınır.`,
-    );
+    lines.push(t("jobs.attentionInterrupted", { count: interrupted }));
   }
   return lines.length > 0 ? lines.join(" ") : null;
 }
@@ -212,7 +230,7 @@ export function jobMetaLine(job: JobRow): string {
   const code = job.errorCode ? ` · ${job.errorCode}` : "";
   const blocked = blockedReasonLabel(job.blockedReason);
   const reason = blocked ? ` · ${blocked}` : "";
-  return `deneme ${attempt} · ${stamp}${code}${reason}`;
+  return `${t("jobs.metaAttempt", { attempt })} · ${stamp}${code}${reason}`;
 }
 
 export function jobProgressPercent(job: JobRow): number {
@@ -291,7 +309,7 @@ export function shouldPollQueue(jobs: JobRow[], watchJobId: string | null): bool
  * ayrılır; başlamadıysa neden yazılır (sahte "çalışıyor" görüntüsü yok).
  */
 export function retryOutcomeLine(view: JobRetryView): string {
-  return startOutcomeLine(view, { verb: "Yeniden deneme", requeued: true });
+  return startOutcomeLine(view, { verb: t("jobs.start.verbRetry"), requeued: true });
 }
 
 /**
@@ -300,7 +318,7 @@ export function retryOutcomeLine(view: JobRetryView): string {
  * "yeniden sıraya alındı" gibi **olmayan** bir geçiş yazılmaz.
  */
 export function runOutcomeLine(view: JobRetryView): string {
-  return startOutcomeLine(view, { verb: "İş", requeued: false });
+  return startOutcomeLine(view, { verb: t("jobs.start.verbRun"), requeued: false });
 }
 
 function startOutcomeLine(
@@ -310,31 +328,30 @@ function startOutcomeLine(
   if (view.started) {
     const applied = view.applied;
     const settings = applied
-      ? `OCR ${applied.ocr ? `açık (${applied.ocrLang})` : "kapalı"}, kodlama ${applied.textEncoding}`
-      : "varsayılan ayarlar";
+      ? t("jobs.start.settings", {
+          ocr: applied.ocr
+            ? t("jobs.start.ocrOn", { lang: applied.ocrLang })
+            : t("jobs.start.ocrOff"),
+          encoding: applied.textEncoding,
+        })
+      : t("jobs.start.settingsDefault");
     // Kayıt yoksa bunu **söyle**: "aynı ayarla koştu" demek yanlış olurdu.
     const source = applied?.restored
-      ? "kaydedilmiş ayarlar"
-      : "varsayılanlar (özgün ayar bu işte kayıtlı değil)";
-    return `${wording.verb} başladı — kaynak: ${source} · ${settings}; sonucu satırda göreceksiniz.`;
+      ? t("jobs.start.sourceStored")
+      : t("jobs.start.sourceDefault");
+    return t("jobs.start.line", { verb: wording.verb, source, settings });
   }
   const requeued = wording.requeued;
   if (view.skipped === "password_required") {
-    return requeued
-      ? "Belge parola ile açılmıştı; parola saklanmaz. Yeniden deneme başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın."
-      : "Belge parola ile açılmıştı; parola saklanmaz. İş başlatılmadı — Dosyalar ekranından parolayı girip yeniden ayrıştırın.";
+    return requeued ? t("jobs.start.passwordRetry") : t("jobs.start.passwordRun");
   }
   if (view.skipped === "type_not_runnable") {
-    return requeued
-      ? "İş yeniden sıraya alındı, ama bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan yeniden çalıştırın."
-      : "Bu iş türünü kendiliğinden başlatan yürütücü yok; ilgili ekrandan çalıştırın.";
+    return requeued ? t("jobs.start.notRunnableRetry") : t("jobs.start.notRunnableRun");
   }
   if (view.skipped === "no_input") {
-    return requeued
-      ? "İş yeniden sıraya alındı, ama girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın."
-      : "İş başlatılamadı: girdisi (belge sürümü) çözülemedi; belgeyi belge ekranından yeniden ayrıştırın.";
+    return requeued ? t("jobs.start.noInputRetry") : t("jobs.start.noInputRun");
   }
-  return requeued ? "İş yeniden sıraya alındı." : "İş başlatılamadı.";
+  return requeued ? t("jobs.start.fallbackRetry") : t("jobs.start.fallbackRun");
 }
 
 export type RecoveryReport = {
@@ -347,14 +364,14 @@ export type RecoveryReport = {
 /** Kurtarma sonucu tek satır; sayı sıfırsa "yarıda kalmış iş yok". */
 export function recoveryLine(report: RecoveryReport): string {
   const parts: string[] = [];
-  if (report.requeued > 0) parts.push(`${report.requeued} iş yeniden sıraya alındı`);
-  if (report.canceled > 0) parts.push(`${report.canceled} iş iptal edildi`);
-  if (report.failed > 0) parts.push(`${report.failed} iş tekrar bütçesi bittiği için kapandı`);
+  if (report.requeued > 0) parts.push(t("jobs.recovery.requeued", { count: report.requeued }));
+  if (report.canceled > 0) parts.push(t("jobs.recovery.canceled", { count: report.canceled }));
+  if (report.failed > 0) parts.push(t("jobs.recovery.failed", { count: report.failed }));
   if (parts.length === 0) {
     if (report.interrupted > 0) {
-      return `${report.interrupted} iş kesildi olarak işaretlendi; yeniden sıraya alınacak bir şey yok.`;
+      return t("jobs.recovery.interruptedOnly", { count: report.interrupted });
     }
-    return "Yarıda kalmış iş yok; yeniden sıraya alınacak bir şey bulunmadı.";
+    return t("jobs.recovery.none");
   }
   return `${parts.join(", ")}.`;
 }
