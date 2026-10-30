@@ -73,6 +73,19 @@ attack 24, precedent-terms 15, reader 8, precedent-document 7, vault-input 5, no
 `api.ts`, `main.tsx`, `filename.ts`, `backup-schedule.ts`). Metinler birebir aynı;
 Tauri penceresi açılmadı → **görsel QA yok**; Windows denenmedi.
 
+**Commit/CI:** `5697d9e` (6 dosya, +432/−119) push edildi; `HEAD == origin/main`.
+
+- CI **`41107936580`**: **5 iş yeşil** — `arayüz (tsc+vitest+build)` 35 dosya /
+  **462 test** (yeni `i18n-bindings` **19**, `localization` **9**), `rust (ubuntu-latest)`,
+  `belge worker'ı`, `SBOM`, `sözleşmeler`. **2 iş (rust macos-14 + masaüstü kabuk)
+  başlamadan (0 s) düştü** — neden **GitHub macOS-14 brownout'u** (30 Eki 14:00 –
+  31 Eki 00:00 UTC; imaj **2 Kasım 2026**'da emekli). Yani CI **kırmızı ama sebep
+  altyapı**; bu değişikliğin kapsadığı TS işi **yeşil**. Düzeltme `macos-14` →
+  `macos-15`/`macos-latest`; `ci.yml` başka ajanın staged değişikliğiyle **aynı dosyada**
+  olduğu için **dokunulmadı** (TEK AJAN KURALI) → sıradaki turların ilk maddesi.
+- **Yerel/CI test sayısı farkı (dürüst kayıt):** yerel 470/36 dosya, CI 462/35 dosya;
+  fark **başka ajanın commit edilmemiş `src/lib/ocr.test.ts`** dosyası (8 test).
+
 **Dokunulmayanlar:** başka ajanın **18 dosyalık** OCR dil işi (staged) aynen duruyor;
 commit path-limited (yalnız bu turun 6 dosyası).
 
