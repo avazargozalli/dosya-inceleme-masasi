@@ -14,6 +14,7 @@ import type { ExportCoverage, JobRetryView, JobRow, PrecedentSearchHit, Preceden
 import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
 import { t } from "./i18n";
+import { MIN_PASSWORD_LENGTH, checkPassword, checkPasswordConfirmation } from "./vault-input";
 import {
   blockedReasonLabel,
   jobActionLabel,
@@ -24,6 +25,12 @@ import {
   retryOutcomeLine,
 } from "./jobs";
 import { parseProgressLine, parseStageLabel } from "./parseProgress";
+import {
+  CONFLICT_HINT,
+  DRAFT_STATUS_LABEL,
+  REVISION_ORIGIN_LABEL,
+  revisionOriginLabel,
+} from "./notes";
 import { REMINDER_POLICY_LABEL, REMINDER_TEXT } from "./reminders";
 import {
   ROLLBACK_CONFIRMATION,
@@ -496,5 +503,52 @@ describe("Ayarlar ekranı ve geri dönüş yardımcıları sözlükten gelir", (
     const restored = t("settings.restoreVerifiedTail", { size: "2,0 MiB", ms: 8 });
     expect(restored).toContain("sha256");
     expect(restored).not.toContain("{");
+  });
+});
+
+describe("Notlar bileşeni ve yardımcıları sözlükten gelir", () => {
+  it("taslak durumu ve revizyon kaynağı etiketleri sözlükten kurulur", () => {
+    // `DRAFT_STATUS_LABEL` / `REVISION_ORIGIN_LABEL` modül sabitleri de sözlükten
+    // türetilir; metin lib'e geri gömülürse burada kırmızı olur.
+    expect(DRAFT_STATUS_LABEL.idle).toBe(t("notes.draftIdle"));
+    expect(DRAFT_STATUS_LABEL.saving).toBe(t("notes.draftSaving"));
+    expect(DRAFT_STATUS_LABEL.saved).toBe(t("notes.draftSaved"));
+    expect(DRAFT_STATUS_LABEL.failed).toBe(t("notes.draftFailed"));
+    expect(REVISION_ORIGIN_LABEL.create).toBe(t("notes.originCreate"));
+    expect(REVISION_ORIGIN_LABEL.edit).toBe(t("notes.originEdit"));
+    expect(REVISION_ORIGIN_LABEL.undo).toBe(t("notes.originUndo"));
+    expect(REVISION_ORIGIN_LABEL.redo).toBe(t("notes.originRedo"));
+    expect(revisionOriginLabel("bilinmeyen")).toBe(t("notes.originUnknown"));
+    expect(CONFLICT_HINT).toBe(t("notes.conflictHint"));
+  });
+
+  it("çakışma ve sürüm satırları parametreleri doldurur", () => {
+    const stats = t("notes.conflictStats", { mine: 3, theirs: 2 });
+    expect(stats).toContain("3");
+    expect(stats).toContain("2");
+    expect(stats).not.toContain("{");
+    const meta = t("notes.editMeta", { version: 4, revision: 2, time: "24.10.2026 09:00" });
+    expect(meta).toContain("24.10.2026 09:00");
+    expect(meta).not.toContain("{");
+    const current = t("notes.currentVersion", { version: 4, time: "24.10.2026 09:00" });
+    expect(current).toContain("4");
+    expect(current).not.toContain("{");
+    const draftDiffers = t("notes.draftDiffers", { time: "24.10.2026 09:00" });
+    expect(draftDiffers).toContain("24.10.2026 09:00");
+    expect(draftDiffers).not.toContain("{");
+    const cardSub = t("notes.cardSub", { count: 7 });
+    expect(cardSub.startsWith("7 ")).toBe(true);
+    expect(cardSub).not.toContain("{");
+    expect(t("notes.versionLabel", { version: 12 })).toBe("sürüm 12");
+  });
+
+  it("kasa girişi gerekçeleri sözlükten gelir (Unlock ekranıyla tek kaynak)", () => {
+    const short = checkPassword("kisa");
+    expect(short).toEqual({ ok: false, reason: t("vaultInput.tooShort", { min: MIN_PASSWORD_LENGTH }) });
+    expect(checkPassword("avukat123456")).toEqual({ ok: false, reason: t("vaultInput.common") });
+    expect(checkPassword("aaaaaaaaaaaaaa")).toEqual({ ok: false, reason: t("vaultInput.repeated") });
+    expect(checkPassword("1234567890123")).toEqual({ ok: false, reason: t("vaultInput.digitsOnly") });
+    expect(checkPasswordConfirmation("a", "b")).toEqual({ ok: false, reason: t("vaultInput.mismatch") });
+    expect(checkPassword("Kira-2026-dosya")).toEqual({ ok: true });
   });
 });

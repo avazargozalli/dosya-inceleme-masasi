@@ -16,9 +16,10 @@
  * `components/WorkerBudgetCard.tsx`, `lib/checklist.ts`, `lib/candidate.ts`,
  * `lib/transferScope.ts`, `lib/jobs.ts`, `lib/parseProgress.ts`, `lib/budget.ts`,
  * `lib/export-coverage.ts`, `lib/reminders.ts`, `lib/search.ts`,
- * `lib/search-scope.ts` ve `lib/rollback.ts`. Kalan ekranlar
+ * `lib/search-scope.ts`, `lib/rollback.ts`, `components/Notes.tsx`,
+ * `lib/notes.ts` ve `lib/vault-input.ts`. Kalan ekranlar
  * (Dosyalar/Cases, İnceleme, Emsal, Sağlayıcılar) ve yardımcı bileşenler
- * (`DualReader`, `Notes`) metinlerini hâlâ kendi dosyalarında taşır;
+ * (`DualReader`) metinlerini hâlâ kendi dosyalarında taşır;
  * `lib/providers.ts`, `lib/arch.ts`, `lib/intext.ts`, `lib/inventory.ts`,
  * `lib/package.ts`, `lib/precedents.ts`, `lib/attack.ts`, `lib/reader.ts` ve
  * diğer yardımcı lib'ler de kendi metinlerini taşır. Taşıma sırası ve sayısı
@@ -1057,6 +1058,67 @@ export const tr = {
     notVerifiedSelected: "Seçilen yedek doğrulanamadı; geri dönüş yapılmaz.",
     confirmRequired: "Onay için “{token}” yazın.",
     summary: "Veri v{restored} sürümüne döndü; kasa güncel şema v{resumed} olarak yeniden açıldı.",
+  },
+  notes: {
+    title: "Notlar",
+    cardSub: "{count} not · taslak ve düzenleme geçmişi kasa içinde tutulur",
+    emptyBody: "Not metni boş olamaz.",
+    notFound: "Not bulunamadı; liste yenilendi.",
+    noAnchors: "Kaynak alıntı yok. Okuyucuda metin seçip “Seçimi kaynak olarak kaydet” deyin.",
+    titleOptional: "Başlık (isteğe bağlı)",
+    sourceAnchors: "Kaynak alıntılar",
+    body: "Not",
+    bodyPlaceholder: "Gözlem, eksik belge, duruşma notu…",
+    lockedDraft: "kasa kilitliyse taslak yazılamaz",
+    discardDraft: "Taslağı sil",
+    add: "Notu ekle",
+    untitled: "Başlıksız not",
+    versionLabel: "sürüm {version}",
+    edit: "Düzenle",
+    delete: "Sil",
+    editTitle: "Notu düzenle",
+    editMeta: "sürüm {version} · revizyon {revision} · {time}",
+    close: "Kapat",
+    draftDiffers: "Kasadaki taslak bu nottan farklı ({time}).",
+    draftStaleShort: "Taslak eski bir sürüme dayanıyor.",
+    draftStaleLong:
+      "Taslak daha eski bir sürüme dayanıyor; kaydederken çakışma ekranı açılabilir.",
+    loadDraft: "Taslağı yükle",
+    conflictTitle: "Sürüm çakışması",
+    conflictHint:
+      "Not başka bir pencerede değişmiş. Eski görünümün üzerine sessizce yazılmaz; farkı görüp seçim yapın.",
+    conflictStats: "Benim metnim {mine} satırda farklı, kasadaki metin {theirs} satırda farklı.",
+    keepMine: "Benim metnimi kaydet",
+    keepCurrent: "Güncel metni koru",
+    currentVersion: "Kasadaki güncel sürüm {version} · {time}",
+    editTitleLabel: "Başlık",
+    editBodyLabel: "Metin",
+    unsaved: "Kaydedilmemiş değişiklik",
+    saveFirst: "Önce kaydedin",
+    undoTitle: "Son kaydı geri al",
+    redoTitle: "Geri alınan kaydı ileri al",
+    undo: "Geri al",
+    redo: "İleri al",
+    historyTitle: "Sürüm geçmişi",
+    historyEmpty: "Kayıt yok.",
+    footnote:
+      "Notlar düz metindir; HTML çalıştırılmaz. Taslak yalnız açık kasaya yazılır, tarayıcı deposuna kaydedilmez. Geri/ileri al kasa içindeki gerçek revizyonları kullanır.",
+    draftIdle: "Taslak yok",
+    draftSaving: "Kaydediliyor…",
+    draftSaved: "Taslak kasaya kaydedildi",
+    draftFailed: "Taslak kaydedilemedi",
+    originCreate: "Oluşturuldu",
+    originEdit: "Düzenlendi",
+    originUndo: "Geri alındı",
+    originRedo: "İleri alındı",
+    originUnknown: "Bilinmeyen kaynak",
+  },
+  vaultInput: {
+    tooShort: "Parola en az {min} karakter olmalı.",
+    common: "Bu parola çok yaygın; farklı bir parola seçin.",
+    repeated: "Tek karakterin tekrarı parola olarak kullanılamaz.",
+    digitsOnly: "Yalnız rakamlardan oluşan parola kullanılamaz.",
+    mismatch: "Parolalar eşleşmiyor.",
   },
   labels: {
     caseKind: {

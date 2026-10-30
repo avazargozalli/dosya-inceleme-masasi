@@ -9,6 +9,7 @@ import {
   type NoteRow,
 } from "../lib/api";
 import { formatTimestamp } from "../lib/format";
+import { t } from "../lib/i18n";
 import {
   CONFLICT_HINT,
   diffNoteText,
@@ -28,11 +29,9 @@ type ConflictState = {
   theirs: NoteRow;
 };
 
-const EMPTY_BODY_ERROR: ApiError = {
-  code: "E_NOTE",
-  message: "Not metni boş olamaz.",
-  retryable: false,
-};
+function emptyBodyError(): ApiError {
+  return { code: "E_NOTE", message: t("notes.emptyBody"), retryable: false };
+}
 
 function AnchorPicker({
   anchors,
@@ -48,7 +47,7 @@ function AnchorPicker({
   if (anchors.length === 0) {
     return (
       <p className="hint" style={{ margin: 0 }}>
-        Kaynak alıntı yok. Okuyucuda metin seçip “Seçimi kaynak olarak kaydet” deyin.
+        {t("notes.noAnchors")}
       </p>
     );
   }
@@ -226,7 +225,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
 
   async function addNote() {
     if (body.trim().length === 0) {
-      setError(EMPTY_BODY_ERROR);
+      setError(emptyBodyError());
       return;
     }
     setBusy(true);
@@ -296,7 +295,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setEditBaseVersion(editPendingDraft.baseRowVersion);
     setHistoryNote(
       draftIsStale(editPendingDraft.baseRowVersion, editNote?.rowVersion ?? 0)
-        ? "Taslak daha eski bir sürüme dayanıyor; kaydederken çakışma ekranı açılabilir."
+        ? t("notes.draftStaleLong")
         : null,
     );
     setEditPendingDraft(null);
@@ -328,7 +327,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     try {
       const theirs = await api.noteGet(noteId);
       if (!theirs) {
-        setError({ code: "E_NOT_FOUND", message: "Not bulunamadı; liste yenilendi.", retryable: false });
+        setError({ code: "E_NOT_FOUND", message: t("notes.notFound"), retryable: false });
         await load();
         return;
       }
@@ -347,7 +346,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   async function saveEdit() {
     if (!editNote) return;
     if (editBody.trim().length === 0) {
-      setError(EMPTY_BODY_ERROR);
+      setError(emptyBodyError());
       return;
     }
     setBusy(true);
@@ -385,7 +384,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     try {
       if (keepMine) {
         if (conflict.mineBody.trim().length === 0) {
-          setError(EMPTY_BODY_ERROR);
+          setError(emptyBodyError());
           return;
         }
         const updated = await api.noteUpdate(conflict.noteId, conflict.theirs.rowVersion, {
@@ -478,10 +477,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     <div className="card tight" style={{ background: "var(--surface)" }}>
       <div className="card-head">
         <div>
-          <h2>Notlar</h2>
-          <p className="card-sub">
-            {rows.length} not · taslak ve düzenleme geçmişi kasa içinde tutulur
-          </p>
+          <h2>{t("notes.title")}</h2>
+          <p className="card-sub">{t("notes.cardSub", { count: rows.length })}</p>
         </div>
       </div>
 
@@ -492,11 +489,11 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       ) : null}
 
       <div className="field">
-        <label htmlFor="note-title">Başlık (isteğe bağlı)</label>
+        <label htmlFor="note-title">{t("notes.titleOptional")}</label>
         <input id="note-title" className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
       <div className="field">
-        <label>Kaynak alıntılar</label>
+        <label>{t("notes.sourceAnchors")}</label>
         <AnchorPicker
           anchors={anchors}
           picked={picked}
@@ -505,21 +502,21 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
         />
       </div>
       <div className="field">
-        <label htmlFor="note-body">Not</label>
+        <label htmlFor="note-body">{t("notes.body")}</label>
         <textarea
           id="note-body"
           className="input"
           style={{ height: 92, padding: 10, resize: "vertical" }}
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="Gözlem, eksik belge, duruşma notu…"
+          placeholder={t("notes.bodyPlaceholder")}
         />
       </div>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <span className="hint" role="status">
           {draftStatusLabel(composerStatus)}
           {restoredDraftAt ? ` · ${formatTimestamp(restoredDraftAt)}` : ""}
-          {composerStatus === "failed" ? " · kasa kilitliyse taslak yazılamaz" : ""}
+          {composerStatus === "failed" ? ` · ${t("notes.lockedDraft")}` : ""}
         </span>
         <span style={{ display: "flex", gap: 8 }}>
           <button
@@ -527,10 +524,10 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
             disabled={busy || (body.trim().length === 0 && title.trim().length === 0)}
             onClick={() => void discardComposerDraft()}
           >
-            Taslağı sil
+            {t("notes.discardDraft")}
           </button>
           <button className="btn primary" disabled={busy} onClick={() => void addNote()}>
-            Notu ekle
+            {t("notes.add")}
           </button>
         </span>
       </div>
@@ -548,16 +545,16 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
               }}
             >
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <strong style={{ fontWeight: 500 }}>{note.title || "Başlıksız not"}</strong>
+                <strong style={{ fontWeight: 500 }}>{note.title || t("notes.untitled")}</strong>
                 <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span className="muted small">
-                    {formatTimestamp(note.updatedAt)} · sürüm {note.rowVersion}
+                    {formatTimestamp(note.updatedAt)} · {t("notes.versionLabel", { version: note.rowVersion })}
                   </span>
                   <button className="btn ghost" style={{ height: 24 }} onClick={() => void openEdit(note)}>
-                    Düzenle
+                    {t("notes.edit")}
                   </button>
                   <button className="btn ghost" style={{ height: 24 }} onClick={() => void remove(note.id)}>
-                    Sil
+                    {t("notes.delete")}
                   </button>
                 </span>
               </div>
@@ -581,13 +578,17 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
         >
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
             <div>
-              <strong style={{ fontWeight: 500 }}>Notu düzenle</strong>
+              <strong style={{ fontWeight: 500 }}>{t("notes.editTitle")}</strong>
               <p className="card-sub" style={{ margin: 0 }}>
-                sürüm {editNote.rowVersion} · revizyon {editNote.revisionNo} · {formatTimestamp(editNote.updatedAt)}
+                {t("notes.editMeta", {
+                  version: editNote.rowVersion,
+                  revision: editNote.revisionNo,
+                  time: formatTimestamp(editNote.updatedAt),
+                })}
               </p>
             </div>
             <button className="btn ghost" style={{ height: 24 }} onClick={closeEdit}>
-              Kapat
+              {t("notes.close")}
             </button>
           </div>
 
@@ -595,17 +596,17 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
             <div className="notice" role="status">
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span>
-                  Kasadaki taslak bu nottan farklı ({formatTimestamp(editPendingDraft.updatedAt)}).
+                  {t("notes.draftDiffers", { time: formatTimestamp(editPendingDraft.updatedAt) })}
                   {draftIsStale(editPendingDraft.baseRowVersion, editNote.rowVersion)
-                    ? " Taslak eski bir sürüme dayanıyor."
+                    ? ` ${t("notes.draftStaleShort")}`
                     : ""}
                 </span>
                 <span style={{ display: "flex", gap: 8 }}>
                   <button className="btn" style={{ height: 26 }} onClick={applyPendingDraft}>
-                    Taslağı yükle
+                    {t("notes.loadDraft")}
                   </button>
                   <button className="btn ghost" style={{ height: 26 }} onClick={() => void dropPendingDraft()}>
-                    Taslağı sil
+                    {t("notes.discardDraft")}
                   </button>
                 </span>
               </div>
@@ -615,11 +616,13 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
           {conflict ? (
             <div className="notice danger" role="alert">
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <strong>Sürüm çakışması</strong>
+                <strong>{t("notes.conflictTitle")}</strong>
                 <span>{CONFLICT_HINT}</span>
                 <span className="small">
-                  Benim metnim {conflictStats.mineOnly} satırda farklı, kasadaki metin{" "}
-                  {conflictStats.theirsOnly} satırda farklı.
+                  {t("notes.conflictStats", {
+                    mine: conflictStats.mineOnly,
+                    theirs: conflictStats.theirsOnly,
+                  })}
                 </span>
                 <div
                   style={{
@@ -657,14 +660,17 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
                 </div>
                 <span style={{ display: "flex", gap: 8 }}>
                   <button className="btn" disabled={busy} onClick={() => void resolveConflict(true)}>
-                    Benim metnimi kaydet
+                    {t("notes.keepMine")}
                   </button>
                   <button className="btn" disabled={busy} onClick={() => void resolveConflict(false)}>
-                    Güncel metni koru
+                    {t("notes.keepCurrent")}
                   </button>
                 </span>
                 <span className="small">
-                  Kasadaki güncel sürüm {conflict.theirs.rowVersion} · {formatTimestamp(conflict.theirs.updatedAt)}
+                  {t("notes.currentVersion", {
+                    version: conflict.theirs.rowVersion,
+                    time: formatTimestamp(conflict.theirs.updatedAt),
+                  })}
                 </span>
               </div>
             </div>
@@ -677,7 +683,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
           ) : null}
 
           <div className="field">
-            <label htmlFor="note-edit-title">Başlık</label>
+            <label htmlFor="note-edit-title">{t("notes.editTitleLabel")}</label>
             <input
               id="note-edit-title"
               className="input"
@@ -687,7 +693,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
             />
           </div>
           <div className="field">
-            <label>Kaynak alıntılar</label>
+            <label>{t("notes.sourceAnchors")}</label>
             <AnchorPicker
               anchors={anchors}
               picked={editAnchors}
@@ -696,7 +702,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
             />
           </div>
           <div className="field">
-            <label htmlFor="note-edit-body">Metin</label>
+            <label htmlFor="note-edit-body">{t("notes.editBodyLabel")}</label>
             <textarea
               id="note-edit-body"
               className="input"
@@ -708,31 +714,31 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
           </div>
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
             <span className="hint" role="status">
-              {editDirty ? "Kaydedilmemiş değişiklik · " : ""}
+              {editDirty ? `${t("notes.unsaved")} · ` : ""}
               {draftStatusLabel(editStatus)}
             </span>
             <span style={{ display: "flex", gap: 8 }}>
               <button
                 className="btn"
                 disabled={busy || editDirty || !editNote.canUndo}
-                title={editDirty ? "Önce kaydedin" : "Son kaydı geri al"}
+                title={editDirty ? t("notes.saveFirst") : t("notes.undoTitle")}
                 onClick={() => void stepHistory("undo")}
               >
-                Geri al
+                {t("notes.undo")}
               </button>
               <button
                 className="btn"
                 disabled={busy || editDirty || !editNote.canRedo}
-                title={editDirty ? "Önce kaydedin" : "Geri alınan kaydı ileri al"}
+                title={editDirty ? t("notes.saveFirst") : t("notes.redoTitle")}
                 onClick={() => void stepHistory("redo")}
               >
-                İleri al
+                {t("notes.redo")}
               </button>
               <button className="btn" disabled={busy} onClick={() => void showRevisions(editNote.id)}>
-                Sürüm geçmişi
+                {t("notes.historyTitle")}
               </button>
               <button className="btn primary" disabled={busy || !editDirty} onClick={() => void saveEdit()}>
-                Kaydet
+                {t("common.save")}
               </button>
             </span>
           </div>
@@ -749,9 +755,9 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
                 gap: 4,
               }}
             >
-              <strong style={{ fontWeight: 500, fontSize: 13 }}>Sürüm geçmişi</strong>
+              <strong style={{ fontWeight: 500, fontSize: 13 }}>{t("notes.historyTitle")}</strong>
               {revisions.rows.length === 0 ? (
-                <span className="hint">Kayıt yok.</span>
+                <span className="hint">{t("notes.historyEmpty")}</span>
               ) : (
                 revisions.rows.map((revision) => (
                   <span key={revision.revisionNo} className="small" style={{ display: "flex", gap: 8 }}>
@@ -769,8 +775,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       ) : null}
 
       <p className="hint" style={{ margin: 0 }}>
-        Notlar düz metindir; HTML çalıştırılmaz. Taslak yalnız açık kasaya yazılır, tarayıcı
-        deposuna kaydedilmez. Geri/ileri al kasa içindeki gerçek revizyonları kullanır.
+        {t("notes.footnote")}
       </p>
     </div>
   );

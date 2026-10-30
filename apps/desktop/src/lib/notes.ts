@@ -5,13 +5,16 @@
  * içerikle yapılır; çakışma ekranı uydurma metin göstermez.
  */
 
+/** Metinler sözlükten (`lib/i18n.ts`) — F04-T08. */
+import { t } from "./i18n";
+
 export type DraftStatus = "idle" | "saving" | "saved" | "failed";
 
 export const DRAFT_STATUS_LABEL: Record<DraftStatus, string> = {
-  idle: "Taslak yok",
-  saving: "Kaydediliyor…",
-  saved: "Taslak kasaya kaydedildi",
-  failed: "Taslak kaydedilemedi",
+  idle: t("notes.draftIdle"),
+  saving: t("notes.draftSaving"),
+  saved: t("notes.draftSaved"),
+  failed: t("notes.draftFailed"),
 };
 
 export function draftStatusLabel(status: DraftStatus): string {
@@ -19,14 +22,14 @@ export function draftStatusLabel(status: DraftStatus): string {
 }
 
 export const REVISION_ORIGIN_LABEL: Record<string, string> = {
-  create: "Oluşturuldu",
-  edit: "Düzenlendi",
-  undo: "Geri alındı",
-  redo: "İleri alındı",
+  create: t("notes.originCreate"),
+  edit: t("notes.originEdit"),
+  undo: t("notes.originUndo"),
+  redo: t("notes.originRedo"),
 };
 
 export function revisionOriginLabel(origin: string): string {
-  return REVISION_ORIGIN_LABEL[origin] ?? "Bilinmeyen kaynak";
+  return REVISION_ORIGIN_LABEL[origin] ?? t("notes.originUnknown");
 }
 
 export type NoteDiffLine = { kind: "same" | "mine" | "theirs"; text: string };
@@ -132,8 +135,7 @@ export function draftIsStale(draftBaseRowVersion: number | null, currentRowVersi
   return draftBaseRowVersion !== currentRowVersion;
 }
 
-export const CONFLICT_HINT =
-  "Not başka bir pencerede değişmiş. Eski görünümün üzerine sessizce yazılmaz; farkı görüp seçim yapın.";
+export const CONFLICT_HINT = t("notes.conflictHint");
 
 export function noteEditDirty(
   current: { title: string; body: string; sourceAnchorIds: string[] },

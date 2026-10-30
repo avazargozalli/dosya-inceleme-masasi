@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { t } from "./i18n";
 import {
   CONFLICT_HINT,
   MAX_DIFF_LINES,
@@ -11,15 +12,13 @@ import {
 } from "./notes";
 
 describe("taslak durumu", () => {
-  it("durum etiketlerini Türkçe verir", () => {
-    expect(draftStatusLabel("idle")).toBe("Taslak yok");
-    expect(draftStatusLabel("saving")).toBe("Kaydediliyor…");
-    expect(draftStatusLabel("saved")).toBe("Taslak kasaya kaydedildi");
-    expect(draftStatusLabel("failed")).toBe("Taslak kaydedilemedi");
-  });
-
-  it("kasaya yazılamadığında uydurma başarı demez", () => {
-    expect(draftStatusLabel("failed")).not.toMatch(/kaydedildi$/);
+  it("durum etiketlerini sözlükten verir", () => {
+    expect(draftStatusLabel("idle")).toBe(t("notes.draftIdle"));
+    expect(draftStatusLabel("saving")).toBe(t("notes.draftSaving"));
+    expect(draftStatusLabel("saved")).toBe(t("notes.draftSaved"));
+    expect(draftStatusLabel("failed")).toBe(t("notes.draftFailed"));
+    // Metin sözlükten gelse de anlamı korunmalı: başarısız durum "kaydedildi" demez.
+    expect(t("notes.draftFailed")).not.toMatch(/kaydedildi$/);
   });
 
   it("taslağın dayandığı sürüm ilerlediyse bayat sayar", () => {
@@ -30,15 +29,15 @@ describe("taslak durumu", () => {
 });
 
 describe("sürüm kaynağı etiketi", () => {
-  it("bilinen kaynakları çevirir", () => {
-    expect(revisionOriginLabel("create")).toBe("Oluşturuldu");
-    expect(revisionOriginLabel("edit")).toBe("Düzenlendi");
-    expect(revisionOriginLabel("undo")).toBe("Geri alındı");
-    expect(revisionOriginLabel("redo")).toBe("İleri alındı");
+  it("bilinen kaynakları sözlükten çevirir", () => {
+    expect(revisionOriginLabel("create")).toBe(t("notes.originCreate"));
+    expect(revisionOriginLabel("edit")).toBe(t("notes.originEdit"));
+    expect(revisionOriginLabel("undo")).toBe(t("notes.originUndo"));
+    expect(revisionOriginLabel("redo")).toBe(t("notes.originRedo"));
   });
 
   it("bilinmeyen kaynağı uydurmaz", () => {
-    expect(revisionOriginLabel("merge")).toBe("Bilinmeyen kaynak");
+    expect(revisionOriginLabel("merge")).toBe(t("notes.originUnknown"));
   });
 });
 
@@ -102,6 +101,7 @@ describe("not farkı", () => {
   });
 
   it("fark yoksa çakışma uyarısı metni yanıltmaz", () => {
+    expect(CONFLICT_HINT).toBe(t("notes.conflictHint"));
     expect(CONFLICT_HINT).toMatch(/sessizce yazılmaz/);
     expect(diffSummary(diffNoteText("aynı", "aynı")).hasChanges).toBe(false);
   });

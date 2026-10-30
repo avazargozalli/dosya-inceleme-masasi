@@ -70,6 +70,7 @@ const FORBIDDEN: Array<{ name: string; pattern: RegExp }> = [
 const MIGRATED = [
   "App.tsx",
   "components/JobQueueCard.tsx",
+  "components/Notes.tsx",
   "components/WorkerBudgetCard.tsx",
   "screens/Unlock.tsx",
   "screens/Workspace.tsx",
@@ -92,6 +93,8 @@ const MIGRATED = [
   "lib/search.ts",
   "lib/search-scope.ts",
   "lib/rollback.ts",
+  "lib/notes.ts",
+  "lib/vault-input.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;

@@ -11,7 +11,79 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`**; **11 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`) taşındı (**24 dosya**); **4 ekran + 2 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **13 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `vault-input`) taşındı (**27 dosya**); **4 ekran + 1 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: `components/Notes.tsx` + `lib/notes.ts` + `lib/vault-input.ts` (2026-10-30, yedinci tur)
+
+**Neden bu dilim:** kalan yüzeyde en küçük ekran **Notes (35)**; `Cases.tsx` (60) hâlâ
+başka ajanın OCR dil işinde değişiklik taşıyor → çakışmamak için seçilmedi. **Ölçüldü:**
+`Notes.tsx` kendi metnini taşımıyordu ama taslak/revizyon etiketleri, çakışma uyarısı ve
+"bilinmeyen kaynak" **`lib/notes.ts`**ten (5 satır) geliyordu ve o lib'i **yalnız**
+`Notes.tsx` import ediyor → ikisi birlikte taşındı. Aynı turda **`lib/vault-input.ts`**
+(5 satır) de taşındı: o lib'i **yalnız** `screens/Unlock.tsx` import ediyor ve Unlock
+**altıncı turdan beri taşınmış** — yani parola hata iletileri taşınmış ekranın dışında
+kalıyordu (gerçek sızıntı, mekanik tamamlama).
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **54 anahtar** (`notes` 49, `vaultInput` 5) → sözlük **808 → 862**
+  (`messageKeys()` ile ölçüldü).
+- `components/Notes.tsx`: kart başlığı/alt satırı (`{count} not · …`), boş alıntı uyarısı,
+  başlık/gövde etiketleri + yer tutucu, üç taslak durumu satırı, düğmeler (taslağı sil,
+  notu ekle, düzenle, sil, kapat, taslağı yükle/koru, geri/ileri al, sürüm geçmişi,
+  kaydet = `common.save`), `title` metinleri, çakışma bloğu (başlık, ipucu, sayaç,
+  iki karar düğmesi, güncel sürüm satırı), revizyon geçmişi (başlık + boş durum) ve alt
+  bilgi notu. Parametreli metinler `t(key,{…})`: `{count}`, `{version}`, `{revision}`,
+  `{time}`, `{mine}`, `{theirs}`. **`EMPTY_BODY_ERROR` sabiti fonksiyona çevrildi**
+  (`emptyBodyError()`) — modül düzeyi sabit sözlüğü import anında okuyordu, hata iletisi
+  çağrı anında kurulur.
+- `lib/notes.ts`: `DRAFT_STATUS_LABEL` (4) ve `REVISION_ORIGIN_LABEL` (4) sözlükten
+  türetilir; `revisionOriginLabel` bilinmeyen kaynağı da sözlükten verir; `CONFLICT_HINT`
+  tek kaynak.
+- `lib/vault-input.ts`: beş gerekçe sözlükten; kısa parola iletisi
+  `t("vaultInput.tooShort", { min: MIN_PASSWORD_LENGTH })` — **sabit metinden çıktığı
+  için uzunluk artık iki yerde ayrışamaz** (önce `` `Parola en az ${MIN_PASSWORD_LENGTH} …` ``
+  gömülüydü).
+- **Kapı kapsamı:** `MIGRATED` += `components/Notes.tsx`, `lib/notes.ts`,
+  `lib/vault-input.ts` → **27** dosya.
+
+**Kanıt (kırmızı→yeşil, ölçüldü)**
+
+- `components/Notes.tsx`e `<p>Gözlem notu</p>` → `localization.test.ts` **1 failed |
+  8 passed**, rapor `[ "components/Notes.tsx:784" ]`; geri alındı (sha256 **birebir**) → **9/9**.
+- `lib/vault-input.ts`e `_LEAK = "parola çok kısa"` → **1 failed | 8 passed**, rapor
+  `[ "lib/vault-input.ts:45" ]`; geri alındı (sha256 **birebir**) → **9/9**.
+- **`lib/notes.ts` — kapının sınırı bu turda ikinci kez ölçüldü:** `_LEAK = "taslak
+  kaydedildi"` sızıntısı **yakalanmadı** (kapı yeşil): metinde `ığüşöçİĞÜŞÇ` yok (bilinen
+  sınıf, altıncı turda da yazıldı). Türkçe harf taşıyan `"sürüm geçmişi"` ile aynı deneme
+  → **1 failed | 8 passed**, rapor `[ "lib/notes.ts:150" ]`. **Harf taşımayan gömülü
+  metin** için ikinci kapı ölçüldü: `idle: t("notes.draftIdle")` yerine düz
+  `idle: "Taslak yok."` → `localization` **kırmızı** ("sözlükte kullanılmayan anahtar:
+  `notes.draftIdle`") **ve** `i18n-bindings` **kırmızı** (`'Taslak yok.' ≠ 'Taslak yok'`).
+  Yani harf kapısının kaçırdığı sınıfı bu dosyada sözlük-bağı testi kapatıyor; **birebir
+  aynı metni geri gömmek** ise yalnız "kullanılmayan anahtar" kuralıyla yakalanır
+  (değer eşit olduğu için bağ testi yeşil kalır) — açık kayıt.
+
+**Yeni testler (+4):** `notes.test.ts` etiketleri artık sözlükle karşılaştırıyor
+(literal metin yerine `t(key)`), `vault-input.test.ts` beş gerekçenin hepsini sözlükten
+doğruluyor (parametreli ileti `{` bırakmaz, uzunluğu taşır), `i18n-bindings.test.ts`e üç
+test: (1) iki modül sabit haritası + bilinmeyen kaynak + `CONFLICT_HINT` birebir sözlükten,
+(2) altı parametreli Notlar satırı (`{mine}/{theirs}/{version}/{revision}/{time}/{count}`)
+doluyor ve `{` kalmıyor, (3) beş parola gerekçesi sözlükten + güçlü parola kabul.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **473/473** (36 dosya; 470 → +3 net) ·
+`pnpm build` temiz (**522,08 kB**; önceki 520,11 kB — sözlük büyüdü, Vite 500 kB uyarısı
+sürüyor). Taşınmış üç dosyada yorum dışı **0** Türkçe harf satırı (kapının kendi
+mantığıyla ölçüldü); kalan yüzey **812 → 767 satır / 25 → 22 dosya**.
+
+**Dürüst sınırlar:** **4 ekran + 1 bileşen** taşınmadı (Precedents 136, Providers 110,
+Review 100, DualReader 93, Cases 60 — sonuncusu başka ajanın dosyası) ve **9 yardımcı lib**
+kendi metnini taşıyor (providers 42, arch 36, intext 35, inventory 32, package 31,
+precedents 26, attack 24, precedent-terms 15, precedent-document 7, reader 8, ocr 3)
+→ F04-T08 **🚧**. Metinler birebir aynı; Tauri penceresi açılmadı → **görsel QA yok**;
+Windows denenmedi.
+
+**Commit/CI:** aşağıdaki "CI" satırında ölçülen koşu.
 
 ## F04-T08 — sözlük taşıması: Ayarlar ekranı + `lib/rollback.ts` (2026-10-30, altıncı tur)
 
