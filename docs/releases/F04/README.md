@@ -62,6 +62,13 @@ değişmeden geçti → metinlerin byte düzeyinde aynı olduğunun kanıtı.
 temiz (**537,32 kB**; önceki 525,36 kB — Vite 500 kB uyarısı sürüyor). Taşınmış dört dosyada
 yorum dışı **0** Türkçe harf satırı (kapının kendi mantığıyla ölçüldü).
 
+**Commit/push:** `257d3fd` (8 dosya, +1030/−281) → `origin/main == 257d3fd`.
+
+**CI `41139371524` — 7/7 YEŞİL (ölçüldü):** `sözleşmeler` 6 s · `arayüz`
+**36 dosya / 483 test** + tsc + build (30 s) · `SBOM` 30 s · `belge worker'ı` 30 s ·
+`masaüstü kabuk` 34 s · **`rust (macos-15)` 4 dk 52 s** · **`rust (ubuntu-latest)` 9 dk**.
+Yerel ve CI test sayısı **birebir** (483/483, 36 dosya).
+
 **Dürüst sınırlar:** **2 ekran + 1 bileşen** kaldı (Providers 110, Review 100,
 `components/DualReader` 93) + **8 yardımcı lib** (`providers` 42, `arch` 36, `intext` 35,
 `inventory` 32, `package` 31, `attack` 24, `reader` 8, `reviewTarget` 2) → F04-T08 **🚧**.
