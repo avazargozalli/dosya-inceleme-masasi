@@ -76,7 +76,13 @@ package 31, precedents 26, attack 24, precedent-terms 15, precedent-document 7, 
 → F04-T08 **🚧**. Metinler birebir aynı; Tauri penceresi açılmadı → **görsel QA yok**;
 Windows denenmedi.
 
-**CI (bu tur):** aşağıdaki "CI" bölümünde ölçülen koşu.
+**CI (bu tur, ölçüldü):** `1bbe35d` + `9f34ac1` → koşu **`41130514700` 7/7 YEŞİL**
+(sözleşmeler 7 s · SBOM 26 s · `belge worker'ı` 31 s · `arayüz` **36 dosya / 476 test**
+(34 s) · `rust (ubuntu-latest)` 5 dk · **`rust (macos-15)` 7 dk 48 s** ·
+**`masaüstü kabuk (cargo check)` 2 dk 8 s**). macOS işleri **ilk kez gerçekten koştu**:
+`macos-14` brownout'u (30 Eki 14:00 – 31 Eki 00:00 UTC) `macos-15`e taşınınca bitti.
+Yerel/CI test sayısı **birebir** (476/476, 36 dosya) — önceki turlardaki fark başka ajanın
+commit edilmemiş `ocr.test.ts` dosyasıydı, artık `39a1adb` ile depoda.
 
 ## F04-T08 — sözlük taşıması: `components/Notes.tsx` + `lib/notes.ts` + `lib/vault-input.ts` (2026-10-30, yedinci tur)
 
