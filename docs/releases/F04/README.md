@@ -11,7 +11,82 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI** ekranları + **`JobQueueCard`/`WorkerBudgetCard`**; **`lib/checklist.ts`, `lib/candidate.ts`, `lib/transferScope.ts`, `lib/jobs.ts`, `lib/parseProgress.ts`, `lib/budget.ts`, `lib/export-coverage.ts`, `lib/reminders.ts`** taşındı (**19 dosya**); **6 ekran + 2 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama** ekranları + **`JobQueueCard`/`WorkerBudgetCard`**; **10 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`) taşındı (**22 dosya**); **5 ekran + 2 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: Arama ekranı + iki kapsam lib'i (2026-10-30, beşinci tur)
+
+**Önceki turun açık işi kapandı (kırmızı CI düzeltildi):** dördüncü turun `0696aac`
+commit'i CI `40989194507`'de **kırmızıydı** — `arayüz (tsc + vitest + build)` işi
+`i18n-bindings.test.ts(172-174) TS2532` ile düştü: `noUncheckedIndexedAccess`
+altında `rows[0].label`, `rows[rows.length-1].label` ve `COVERAGE_EMBED_TARGETS[0].label`.
+Yani dördüncü turun "tsc temiz" kaydı **yanlıştı** (test dosyası yazıldıktan sonra
+tsc koşulmamış). Düzeltme `c94dd30`: indeks erişimleri `?.` ile, üstüne **boş liste
+kapısı** (`rows.length > 1`, `COVERAGE_EMBED_TARGETS.length > 0`) → CI
+**`41091865894` 7/7 yeşil** (doğrulandı). Hata yerelde **birebir** yeniden üretildi
+(`npx tsc --noEmit` → aynı üç satır) ve düzeltmeden sonra temizlendi.
+
+**Neden bu dilim:** kalan ekranların en küçüğü **Arama** (45 Türkçe satır) ama metnin
+**32 satırı** iki yardımcı lib'de: `lib/search.ts` (24) + `lib/search-scope.ts` (8).
+Ölçüldü: ikisini **yalnız** `Search.tsx` import ediyor (başka ekran yok) → üçü birlikte
+taşındı; yoksa "temiz görünen ama metni lib'de kalan" bir dosya kalırdı.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **115 anahtar** (`searchFilters` 39, `search` 64, `searchScope` 12)
+  → sözlük **598 → 713**.
+- `screens/Search.tsx`: başlık `nav.search`dan; kapsam düğmeleri ve kalıcı kapsam
+  uyarısı, dosya/metin/kip alanları, filtre etiketleri, etiket çipleri (ipucu dahil),
+  iki boş durum, "sonuçlar önceki ayara ait" uyarısı, sonuç ve emsal kartı başlıkları,
+  düğme/`title` metinleri, `E_SEARCH_VERSION` ve `E_CLIPBOARD` iletileri sözlükten.
+  Parametreli metinler `t(key,{…})`: `{size}`, `{count}`, `{title}`, `{page}`,
+  `{segment}`, `{version}`, `{summary}`, `{mode}`, `{query}`, `{label}`, `{position}`,
+  `{date}`.
+- `lib/search.ts`: tarih rolü / OCR durumu / metin kaynağı etiketleri, filtre açıklama
+  satırları, sonuç özeti, ertelenmiş toplamın **dört** durumu, aday penceresi satırı,
+  kip etiketleri ve kip ipuçları `t()`den.
+- `lib/search-scope.ts`: kapsam etiketleri + uyarıları, künye satırı (`E.`/`K.`/tarih),
+  eşleşme kaynağı, sonuç özeti ve **kopyalama metni** — üç satırlık şablon **tek**
+  anahtar (`{citation}\n…{snippet}\n(kaynak: emsal kütüphanesi, sürüm {version})`).
+- **Kapı kapsamı:** `MIGRATED` += `screens/Search.tsx`, `lib/search.ts`,
+  `lib/search-scope.ts` → taşınmış **22** dosya taranıyor.
+
+**Kanıt (kırmızı→yeşil, ölçüldü):** aynı anda `Search.tsx`e
+`const _leak = "Arama sonuçları";` ve `search.ts`e `export const _LEAK2 = "eşleşme";`
+→ `localization.test.ts` **1 failed | 7 passed**, rapor **iki dosyayı birlikte**:
+`[ "lib/search.ts:16", "screens/Search.tsx:49" ]`; geri alındı → **8/8**.
+
+**Yeni 7 test** (`i18n-bindings.test.ts`): kip/filtre etiketleri (bilinmeyen metin
+kaynağı sabit metne düşer), filtre satırları (parametreler dolar, `{` kalmaz), sonuç/
+toplam/doğrulama sayaç satırları (bayat sorgu sayı göstermez), aday penceresi
+(kesildi/tükendi), kapsam + künye + eşleşme kaynağı, emsal özeti + kopyalama şablonu
+(**üç satır** korunur), kip ipucunun otomatik çözümü.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **465/465** (36 dosya; 458 → +7) ·
+`vite build` temiz (**515,86 kB**; önceki 510,43 kB — Vite'ın 500 kB uyarısı sürüyor).
+
+**Kendi kusurlarım (testler yakaladı; uygulama doğruydu):** (a) `describeFilters`
+türleri `canonicalFilters` yüzünden **sıralı** döndürür — beklentiyi sırasız yazmıştım;
+(b) `SearchVerification.windows` zorunlu alanı fixture'da yoktu; (c) "Künye eksik"
+vakasında yalnız mahkeme alanını boşaltmıştım, künye numaraları dolu kaldığı için satır
+yine yazıldı. Üçü de **test literali** hatasıydı, kod değişmedi.
+
+**Kendi hatam (kayıt):** kanıt için yedek alırken `/tmp/Search.bak` ile `/tmp/search.bak`
+macOS'un **büyük/küçük harf duyarsız** biriminde **aynı dosya** oldu → `Search.tsx`
+`search.ts` içeriğiyle ezildi. Dosya `git show HEAD:`dan geri alındı ve **39 parça**
+birebir (her parça "tam 1 kez bulundu" kapısıyla) yeniden uygulandı; sonuç `tsc`,
+`vitest` ve Türkçe harf sayımıyla yeniden doğrulandı. Ders: yedek adı **ayırt edici**
+olmalı (`SearchScreen.bak` / `searchLib.bak`).
+
+**Dürüst sınırlar:** hâlâ **5 ekran + 2 bileşen** taşınmadı (Precedents 136, Providers 110,
+Review 100, DualReader 93, Cases 60, Settings 60, Notes 35) ve **8 yardımcı lib**
+(`providers` 42, `arch` 36, `intext` 35, `inventory` 32, `package` 31, `precedents` 26,
+`attack` 24, `rollback` 17) kendi metnini taşıyor → F04-T08 **🚧**. Kalan yüzey
+**966 → 889** Türkçe satır (`i18n.ts` hariç, kapının kendi mantığıyla). Metinler
+**birebir aynı**; ayırıcılar (`" · "`, `{" "}`) JSX'te kaldı. Tauri penceresi açılmadı →
+**görsel QA yok**; Windows denenmedi. `t()` **import anında** çözülür (tek dilli ürün
+kararı). `search-scope` kopyalama şablonundaki `\n` sözlük değerinde; test üç satırı
+doğruluyor.
+
 
 ## F04-T08 — sözlük taşıması: iş kuyruğu/bütçe kartları + beş yardımcı lib (2026-10-30, dördüncü tur)
 

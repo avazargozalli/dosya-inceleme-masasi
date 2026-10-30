@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { ExportCoverage, JobRetryView, JobRow } from "./api";
+import type { ExportCoverage, JobRetryView, JobRow, PrecedentSearchHit, PrecedentSearchPage, SearchPage } from "./api";
 import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
 import { t } from "./i18n";
@@ -23,6 +23,25 @@ import {
 } from "./jobs";
 import { parseProgressLine, parseStageLabel } from "./parseProgress";
 import { REMINDER_POLICY_LABEL, REMINDER_TEXT } from "./reminders";
+import {
+  DATE_ROLE_LABELS,
+  OCR_STATUS_LABELS,
+  SEARCH_MODE_LABELS,
+  describeFilters,
+  resultSummary,
+  searchModeHint,
+  textOriginLabel,
+  totalSummary,
+  verificationSummary,
+} from "./search";
+import {
+  SEARCH_SCOPE_LABELS,
+  precedentCitation,
+  precedentMatchLabel,
+  precedentSearchSummary,
+  precedentSnippetForCopy,
+  scopeNotice,
+} from "./search-scope";
 
 function profile(partial: Partial<JobRow> = {}): JobRow {
   return {
@@ -194,5 +213,190 @@ describe("yardımcı lib metinleri sözlükten gelir", () => {
     expect(REMINDER_TEXT).toBe(t("reminders.notification"));
     expect(REMINDER_POLICY_LABEL.none).toBe(t("reminders.policy.none"));
     expect(REMINDER_POLICY_LABEL.day_before).toBe(t("reminders.policy.day_before"));
+  });
+});
+
+function searchPage(partial: Partial<SearchPage> = {}): SearchPage {
+  return {
+    caseId: "case-1",
+    query: "ödeme",
+    resolvedQuery: "ödeme",
+    mode: "flexible",
+    scope: "case",
+    limit: 25,
+    returned: 3,
+    hasMore: false,
+    nextCursor: null,
+    total: null,
+    filters: { documentTypes: [], dateRole: null, tags: [], ocrStatus: "any" },
+    hits: [],
+    ...partial,
+  };
+}
+
+function precedentPage(partial: Partial<PrecedentSearchPage> = {}): PrecedentSearchPage {
+  return {
+    scope: "precedent_library",
+    mode: "flexible",
+    query: "ödeme",
+    resolvedQuery: "ödeme",
+    hits: [],
+    scanned: 4,
+    matched: 2,
+    withoutText: 0,
+    limit: 25,
+    truncated: false,
+    notes: [],
+    ...partial,
+  };
+}
+
+function precedentHit(partial: Partial<PrecedentSearchHit> = {}): PrecedentSearchHit {
+  return {
+    precedentId: "prec-1",
+    court: "Yargıtay",
+    chamber: "1. Hukuk Dairesi",
+    docketNo: "2024/123",
+    decisionNo: "2025/45",
+    decisionDate: "2025-02-03",
+    title: null,
+    versionId: "1234567890abcdef",
+    acquiredAt: "2026-01-02T03:04:05Z",
+    sourceKind: "manual",
+    snippet: "ödeme yapılmadığı",
+    snippetStart: 10,
+    matchStart: 10,
+    matchLength: 17,
+    matchSource: "full_text",
+    ...partial,
+  };
+}
+
+describe("arama metinleri sözlükten gelir", () => {
+  it("kip ve filtre etiketleri sözlükten", () => {
+    expect(SEARCH_MODE_LABELS.auto).toBe(t("searchFilters.mode.auto"));
+    expect(SEARCH_MODE_LABELS.exact).toBe(t("searchFilters.mode.exact"));
+    expect(SEARCH_MODE_LABELS.flexible).toBe(t("searchFilters.mode.flexible"));
+    expect(SEARCH_MODE_LABELS.phrase).toBe(t("searchFilters.mode.phrase"));
+    expect(SEARCH_MODE_LABELS.docket).toBe(t("searchFilters.mode.docket"));
+    expect(DATE_ROLE_LABELS.deadline_candidate).toBe(t("searchFilters.dateRole.deadline_candidate"));
+    expect(DATE_ROLE_LABELS.unknown).toBe(t("searchFilters.dateRole.unknown"));
+    expect(OCR_STATUS_LABELS.native).toBe(t("searchFilters.ocrStatus.native"));
+    expect(textOriginLabel("mixed")).toBe(t("searchFilters.textOrigin.mixed"));
+    // Bilinmeyen kaynak uydurulmaz: sabit "bilinmiyor" metni sözlükten gelir.
+    expect(textOriginLabel(null)).toBe(t("searchFilters.textOrigin.unknown"));
+    expect(textOriginLabel("something_else")).toBe(t("searchFilters.textOrigin.unknown"));
+  });
+
+  it("filtre satırları sözlükten ve parametreler doldurulur", () => {
+    const lines = describeFilters({
+      documentTypes: ["Vekaletname", "Bilirkişi raporu"],
+      dateRole: "notification",
+      tags: ["kira", "ödeme"],
+      ocrStatus: "ocr",
+    });
+    expect(lines).toEqual([
+      // `canonicalFilters` türleri sıralar: çıktı sıralı gelir (davranış aynı).
+      t("searchFilters.describe.documentTypes", { types: "Bilirkişi raporu, Vekaletname" }),
+      t("searchFilters.describe.dateRole", { role: t("searchFilters.dateRole.notification") }),
+      t("searchFilters.describe.tags", { tags: "kira, ödeme" }),
+      t("searchFilters.describe.ocrStatus", { label: t("searchFilters.ocrStatus.ocr") }),
+    ]);
+    for (const line of lines) expect(line).not.toContain("{");
+  });
+
+  it("sonuç/toplam/doğrulama sayaç satırları sözlükten", () => {
+    expect(resultSummary(searchPage({ returned: 3 }))).toBe(
+      t("searchFilters.result.shown", { returned: 3 }),
+    );
+    expect(resultSummary(searchPage({ returned: 3, hasMore: true }))).toBe(
+      t("searchFilters.result.shownMore", {
+        shown: t("searchFilters.result.shown", { returned: 3 }),
+      }),
+    );
+    expect(resultSummary(searchPage({ returned: 3, total: 9 }))).toBe(
+      t("searchFilters.result.withTotal", { total: 9, shown: t("searchFilters.result.shown", { returned: 3 }) }),
+    );
+
+    const page = searchPage({ resolvedQuery: "ödeme", mode: "exact" });
+    expect(totalSummary(page, { status: "counting" })).toBe(t("searchFilters.total.counting"));
+    expect(totalSummary(page, { status: "failed", message: "zaman aşımı" })).toBe(
+      t("searchFilters.total.failed", { message: "zaman aşımı" }),
+    );
+    expect(
+      totalSummary(page, { status: "done", total: 7, tookMs: 12.6, resolvedQuery: "kira", mode: "exact" }),
+    ).toBe(t("searchFilters.total.staleQuery"));
+    const done = totalSummary(page, {
+      status: "done",
+      total: 7,
+      tookMs: 12.6,
+      resolvedQuery: "ödeme",
+      mode: "exact",
+    });
+    expect(done).toBe(t("searchFilters.total.done", { total: 7, ms: 13 }));
+    expect(done).not.toContain("{");
+  });
+
+  it("aday penceresi satırı ölçümü sözlükten yazar", () => {
+    const base = t("searchFilters.verification.base", { candidates: 40, ms: 12 });
+    expect(
+      verificationSummary(
+        searchPage({ verification: { candidatesExamined: 40, windows: 2, scanMs: 12.4, stoppedEarly: false } }),
+      ),
+    ).toBe(t("searchFilters.verification.exhausted", { base }));
+    expect(
+      verificationSummary(
+        searchPage({ verification: { candidatesExamined: 40, windows: 2, scanMs: 12.4, stoppedEarly: true } }),
+      ),
+    ).toBe(t("searchFilters.verification.stoppedEarly", { base }));
+    expect(verificationSummary(searchPage())).toBeNull();
+  });
+
+  it("kapsam etiketleri, künye ve özet sözlükten", () => {
+    expect(SEARCH_SCOPE_LABELS.case_documents).toBe(t("searchScope.label.case_documents"));
+    expect(SEARCH_SCOPE_LABELS.precedent_library).toBe(t("searchScope.label.precedent_library"));
+    expect(scopeNotice("precedent_library")).toBe(t("searchScope.notice.precedent_library"));
+    expect(scopeNotice("case_documents")).toBe(t("searchScope.notice.case_documents"));
+
+    const hit = precedentHit();
+    const docket = t("searchScope.citationDocket", { no: "2024/123" });
+    const decision = t("searchScope.citationDecision", { no: "2025/45" });
+    expect(precedentCitation(hit)).toBe(`Yargıtay 1. Hukuk Dairesi, ${docket}, ${decision}, 2025-02-03`);
+    expect(
+      precedentCitation(precedentHit({ court: "  ", chamber: null, docketNo: null, decisionNo: null, decisionDate: null })),
+    ).toBe(t("searchScope.citationMissing"));
+    expect(precedentMatchLabel(hit)).toBe(t("searchScope.matchSource.text"));
+    expect(precedentMatchLabel(precedentHit({ matchSource: "metadata" }))).toBe(
+      t("searchScope.matchSource.metadata"),
+    );
+  });
+
+  it("emsal özeti ve kopyalama metni sözlükten kurulur", () => {
+    const base = t("searchScope.summary.base", { matched: 2, scanned: 4 });
+    expect(precedentSearchSummary(precedentPage())).toBe(base);
+    expect(precedentSearchSummary(precedentPage({ withoutText: 3 }))).toBe(
+      t("searchScope.summary.withoutText", { base, count: 3 }),
+    );
+    const hit = precedentHit();
+    const snippet = precedentSnippetForCopy(hit);
+    expect(snippet).toBe(
+      t("searchScope.snippetForCopy", {
+        citation: precedentCitation(hit),
+        snippet: hit.snippet,
+        version: "12345678",
+      }),
+    );
+    // Üç satır korunur: künye + pencere + kaynak; tek satıra inmez.
+    expect(snippet.split("\n")).toHaveLength(3);
+    expect(snippet).not.toContain("{");
+  });
+
+  it("kip ipucu otomatik çözümü sözlükten yazar", () => {
+    expect(searchModeHint("ödeme", "auto")).toBe(
+      `${t("searchFilters.modeHint.autoPrefix", { label: SEARCH_MODE_LABELS.flexible })} ${t("searchFilters.modeHint.flexible")}`,
+    );
+    expect(searchModeHint('"kira bedeli"', "auto")).toContain(t("searchFilters.mode.phrase"));
+    expect(searchModeHint("2024/123 E.", "auto")).toContain(t("searchFilters.mode.docket"));
+    expect(searchModeHint("ödeme", "exact")).toBe(t("searchFilters.modeHint.exact"));
   });
 });

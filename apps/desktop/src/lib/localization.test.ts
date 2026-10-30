@@ -79,6 +79,7 @@ const MIGRATED = [
   "screens/Timeline.tsx",
   "screens/Checklists.tsx",
   "screens/Ai.tsx",
+  "screens/Search.tsx",
   "lib/checklist.ts",
   "lib/candidate.ts",
   "lib/transferScope.ts",
@@ -87,6 +88,8 @@ const MIGRATED = [
   "lib/budget.ts",
   "lib/export-coverage.ts",
   "lib/reminders.ts",
+  "lib/search.ts",
+  "lib/search-scope.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;

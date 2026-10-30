@@ -1,4 +1,5 @@
 import type { SearchFilters, SearchHit, SearchMode, SearchPage } from "./api";
+import { t } from "./i18n";
 
 /**
  * Arama filtresi yardımcıları (F07-T03/T05).
@@ -7,6 +8,9 @@ import type { SearchFilters, SearchHit, SearchMode, SearchPage } from "./api";
  * `ocrStatus: "any"` filtre sayılmaz, "daha fazla" yalnız sunucunun verdiği
  * imleçle çağrılır. Arayüz "kaç sonuç var" iddiasını yalnız sunucudan gelen
  * sayıyla kurar; tahmin üretmez.
+ *
+ * Metinler F04-T08 gereği `lib/i18n.ts`ten gelir (modül düzeyi sabitler import
+ * anında çözülür — tek dilli ürün kararı).
  */
 
 export const EMPTY_SEARCH_FILTERS: SearchFilters = {
@@ -17,34 +21,34 @@ export const EMPTY_SEARCH_FILTERS: SearchFilters = {
 };
 
 export const DATE_ROLE_LABELS: Record<string, string> = {
-  event: "Olay",
-  document: "Belge",
-  notification: "Tebliğ",
-  contract: "Sözleşme",
-  hearing: "Duruşma",
-  deadline_candidate: "Süre adayı",
-  unknown: "Bilinmiyor",
+  event: t("searchFilters.dateRole.event"),
+  document: t("searchFilters.dateRole.document"),
+  notification: t("searchFilters.dateRole.notification"),
+  contract: t("searchFilters.dateRole.contract"),
+  hearing: t("searchFilters.dateRole.hearing"),
+  deadline_candidate: t("searchFilters.dateRole.deadline_candidate"),
+  unknown: t("searchFilters.dateRole.unknown"),
 };
 
 export const OCR_STATUS_LABELS: Record<string, string> = {
-  any: "Tümü",
-  ocr: "OCR ile çıkarıldı",
-  native: "Belgeden (yerel) metin",
+  any: t("searchFilters.ocrStatus.any"),
+  ocr: t("searchFilters.ocrStatus.ocr"),
+  native: t("searchFilters.ocrStatus.native"),
 };
 
 /** `pages.text_origin` → okunur etiket. Bilinmeyen değer olduğu gibi gösterilir. */
 export function textOriginLabel(origin: string | null): string {
   switch (origin) {
     case "native":
-      return "Yerel metin";
+      return t("searchFilters.textOrigin.native");
     case "ocr":
-      return "OCR";
+      return t("searchFilters.textOrigin.ocr");
     case "mixed":
-      return "Karma (OCR + metin)";
+      return t("searchFilters.textOrigin.mixed");
     case "none":
-      return "Metin yok";
+      return t("searchFilters.textOrigin.none");
     default:
-      return "Kaynak bilinmiyor";
+      return t("searchFilters.textOrigin.unknown");
   }
 }
 
@@ -110,16 +114,26 @@ export function describeFilters(filters: SearchFilters): string[] {
   const canonical = canonicalFilters(filters);
   const out: string[] = [];
   if (canonical.documentTypes.length > 0) {
-    out.push(`Belge türü: ${canonical.documentTypes.join(", ")}`);
+    out.push(
+      t("searchFilters.describe.documentTypes", { types: canonical.documentTypes.join(", ") }),
+    );
   }
   if (canonical.dateRole) {
-    out.push(`Tarih rolü: ${DATE_ROLE_LABELS[canonical.dateRole] ?? canonical.dateRole}`);
+    out.push(
+      t("searchFilters.describe.dateRole", {
+        role: DATE_ROLE_LABELS[canonical.dateRole] ?? canonical.dateRole,
+      }),
+    );
   }
   if (canonical.tags.length > 0) {
-    out.push(`Etiket (hepsi): ${canonical.tags.join(", ")}`);
+    out.push(t("searchFilters.describe.tags", { tags: canonical.tags.join(", ") }));
   }
   if (canonical.ocrStatus) {
-    out.push(`Metin kaynağı: ${OCR_STATUS_LABELS[canonical.ocrStatus] ?? canonical.ocrStatus}`);
+    out.push(
+      t("searchFilters.describe.ocrStatus", {
+        label: OCR_STATUS_LABELS[canonical.ocrStatus] ?? canonical.ocrStatus,
+      }),
+    );
   }
   return out;
 }
@@ -134,11 +148,11 @@ export function toggleValue(values: string[], value: string): string[] {
  * zaman gerçek `returned` değeridir.
  */
 export function resultSummary(page: SearchPage): string {
-  const shown = `${page.returned} sonuç gösteriliyor`;
+  const shown = t("searchFilters.result.shown", { returned: page.returned });
   if (page.total === null) {
-    return page.hasMore ? `${shown} · devamı var` : shown;
+    return page.hasMore ? t("searchFilters.result.shownMore", { shown }) : shown;
   }
-  return `${page.total} eşleşme · ${shown}`;
+  return t("searchFilters.result.withTotal", { total: page.total, shown });
 }
 
 export function canLoadMore(page: SearchPage | null): boolean {
@@ -175,12 +189,17 @@ export function totalSummary(page: SearchPage | null, probe: TotalProbe): string
   if (!page) return null;
   if (page.total !== null) return null;
   if (probe.status === "idle") return null;
-  if (probe.status === "counting") return "Eşleşme sayısı hesaplanıyor…";
-  if (probe.status === "failed") return `Eşleşme sayısı alınamadı: ${probe.message}`;
-  if (probe.resolvedQuery !== page.resolvedQuery || probe.mode !== page.mode) {
-    return "Sayı önceki sorguya ait; yeni aramada tazelenir.";
+  if (probe.status === "counting") return t("searchFilters.total.counting");
+  if (probe.status === "failed") {
+    return t("searchFilters.total.failed", { message: probe.message });
   }
-  return `${probe.total} eşleşme · sayım ${Math.round(probe.tookMs)} ms sürdü`;
+  if (probe.resolvedQuery !== page.resolvedQuery || probe.mode !== page.mode) {
+    return t("searchFilters.total.staleQuery");
+  }
+  return t("searchFilters.total.done", {
+    total: probe.total,
+    ms: Math.round(probe.tookMs),
+  });
 }
 
 /**
@@ -192,12 +211,13 @@ export function verificationSummary(page: SearchPage | null): string | null {
   if (!page) return null;
   const verification = page.verification;
   if (!verification || verification.candidatesExamined <= 0) return null;
-  const base = `${verification.candidatesExamined} aday doğrulandı · ${Math.round(
-    verification.scanMs,
-  )} ms`;
+  const base = t("searchFilters.verification.base", {
+    candidates: verification.candidatesExamined,
+    ms: Math.round(verification.scanMs),
+  });
   return verification.stoppedEarly
-    ? `${base} · sayfa doldu, tarama kesildi`
-    : `${base} · adaylar tükendi`;
+    ? t("searchFilters.verification.stoppedEarly", { base })
+    : t("searchFilters.verification.exhausted", { base });
 }
 
 /**
@@ -231,18 +251,18 @@ export function filtersStale(page: SearchPage | null, draft: SearchFilters): boo
 // ---------------------------------------------------------------------------
 
 export const SEARCH_MODE_LABELS: Record<SearchMode, string> = {
-  auto: "Otomatik",
-  exact: "Tam",
-  flexible: "Esnek",
-  phrase: "İfade",
-  docket: "E./K. numarası",
+  auto: t("searchFilters.mode.auto"),
+  exact: t("searchFilters.mode.exact"),
+  flexible: t("searchFilters.mode.flexible"),
+  phrase: t("searchFilters.mode.phrase"),
+  docket: t("searchFilters.mode.docket"),
 };
 
 export const SEARCH_MODE_HINTS: Record<Exclude<SearchMode, "auto">, string> = {
-  exact: "Türkçe karakterler korunur (ı ≠ i, ş ≠ s); kelimeler bitişik geçmeli, son kelime önek olabilir.",
-  flexible: "Türkçe karakterler sadeleşir (ı→i, ş→s); noktalama önemsiz, son kelime önek olabilir.",
-  phrase: "Kelimeler aynı sırada; araya noktalama girebilir, son kelime tam olmalı.",
-  docket: "2024/123 E. biçimi; baştaki sıfırlar yok sayılır, E./K. rolü eşleşir.",
+  exact: t("searchFilters.modeHint.exact"),
+  flexible: t("searchFilters.modeHint.flexible"),
+  phrase: t("searchFilters.modeHint.phrase"),
+  docket: t("searchFilters.modeHint.docket"),
 };
 
 /** Yıl/numara: çekirdeğin `parse_docket` kuralıyla aynı (4 hane yıl, 1–7 hane no). */
@@ -277,6 +297,9 @@ export function resolveSearchMode(
 /** Ne aranacağını önizler; sunucu kararıyla aynı dili kullanır. */
 export function searchModeHint(text: string, mode: SearchMode): string {
   const resolved = resolveSearchMode(text, mode);
-  const prefix = mode === "auto" ? `Otomatik: ${SEARCH_MODE_LABELS[resolved]} — ` : "";
+  const prefix =
+    mode === "auto"
+      ? `${t("searchFilters.modeHint.autoPrefix", { label: SEARCH_MODE_LABELS[resolved] })} `
+      : "";
   return `${prefix}${SEARCH_MODE_HINTS[resolved]}`;
 }

@@ -11,14 +11,16 @@
  * **Dürüst sınır:** F04-T08 sürüyor. Taşınan dosyalar: `App.tsx`,
  * `screens/Unlock.tsx`, `screens/Workspace.tsx`, `screens/Tasks.tsx`,
  * `screens/Exports.tsx`, `screens/Redaction.tsx`, `screens/Timeline.tsx`,
- * `screens/Checklists.tsx`, `screens/Ai.tsx`, `components/JobQueueCard.tsx`,
- * `components/WorkerBudgetCard.tsx`, `lib/checklist.ts`, `lib/candidate.ts`,
- * `lib/transferScope.ts`, `lib/jobs.ts`, `lib/parseProgress.ts`, `lib/budget.ts`,
- * `lib/export-coverage.ts` ve `lib/reminders.ts`. Kalan ekranlar (Dosyalar/Cases,
- * Arama, İnceleme, Emsal, Sağlayıcılar, Ayarlar) ve yardımcı bileşenler
- * (`DualReader`, `Notes`) metinlerini hâlâ kendi dosyalarında taşır;
- * `lib/providers.ts`, `lib/arch.ts`, `lib/intext.ts`, `lib/reader.ts`,
- * `lib/search.ts` ve diğer yardımcı lib'ler de kendi metinlerini taşır. Taşıma
+ * `screens/Checklists.tsx`, `screens/Ai.tsx`, `screens/Search.tsx`,
+ * `components/JobQueueCard.tsx`, `components/WorkerBudgetCard.tsx`,
+ * `lib/checklist.ts`, `lib/candidate.ts`, `lib/transferScope.ts`, `lib/jobs.ts`,
+ * `lib/parseProgress.ts`, `lib/budget.ts`, `lib/export-coverage.ts`,
+ * `lib/reminders.ts`, `lib/search.ts` ve `lib/search-scope.ts`. Kalan ekranlar
+ * (Dosyalar/Cases, İnceleme, Emsal, Sağlayıcılar, Ayarlar) ve yardımcı
+ * bileşenler (`DualReader`, `Notes`) metinlerini hâlâ kendi dosyalarında taşır;
+ * `lib/providers.ts`, `lib/arch.ts`, `lib/intext.ts`, `lib/inventory.ts`,
+ * `lib/package.ts`, `lib/precedents.ts`, `lib/attack.ts`, `lib/rollback.ts`,
+ * `lib/reader.ts` ve diğer yardımcı lib'ler de kendi metinlerini taşır. Taşıma
  * sırası ve sayısı `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır —
  * burada "bitti" denmez.
  */
@@ -790,6 +792,162 @@ export const tr = {
       on_day: "Günü gelince",
       day_before: "Bir gün önce",
     },
+  },
+  searchFilters: {
+    dateRole: {
+      event: "Olay",
+      document: "Belge",
+      notification: "Tebliğ",
+      contract: "Sözleşme",
+      hearing: "Duruşma",
+      deadline_candidate: "Süre adayı",
+      unknown: "Bilinmiyor",
+    },
+    ocrStatus: {
+      any: "Tümü",
+      ocr: "OCR ile çıkarıldı",
+      native: "Belgeden (yerel) metin",
+    },
+    textOrigin: {
+      native: "Yerel metin",
+      ocr: "OCR",
+      mixed: "Karma (OCR + metin)",
+      none: "Metin yok",
+      unknown: "Kaynak bilinmiyor",
+    },
+    describe: {
+      documentTypes: "Belge türü: {types}",
+      dateRole: "Tarih rolü: {role}",
+      tags: "Etiket (hepsi): {tags}",
+      ocrStatus: "Metin kaynağı: {label}",
+    },
+    result: {
+      shown: "{returned} sonuç gösteriliyor",
+      shownMore: "{shown} · devamı var",
+      withTotal: "{total} eşleşme · {shown}",
+    },
+    total: {
+      counting: "Eşleşme sayısı hesaplanıyor…",
+      failed: "Eşleşme sayısı alınamadı: {message}",
+      staleQuery: "Sayı önceki sorguya ait; yeni aramada tazelenir.",
+      done: "{total} eşleşme · sayım {ms} ms sürdü",
+    },
+    verification: {
+      base: "{candidates} aday doğrulandı · {ms} ms",
+      stoppedEarly: "{base} · sayfa doldu, tarama kesildi",
+      exhausted: "{base} · adaylar tükendi",
+    },
+    mode: {
+      auto: "Otomatik",
+      exact: "Tam",
+      flexible: "Esnek",
+      phrase: "İfade",
+      docket: "E./K. numarası",
+    },
+    modeHint: {
+      exact:
+        "Türkçe karakterler korunur (ı ≠ i, ş ≠ s); kelimeler bitişik geçmeli, son kelime önek olabilir.",
+      flexible:
+        "Türkçe karakterler sadeleşir (ı→i, ş→s); noktalama önemsiz, son kelime önek olabilir.",
+      phrase: "Kelimeler aynı sırada; araya noktalama girebilir, son kelime tam olmalı.",
+      docket: "2024/123 E. biçimi; baştaki sıfırlar yok sayılır, E./K. rolü eşleşir.",
+      autoPrefix: "Otomatik: {label} —",
+    },
+  },
+  searchScope: {
+    label: {
+      case_documents: "Dosya belgeleri",
+      precedent_library: "Emsal kütüphanesi",
+    },
+    notice: {
+      case_documents:
+        "Kapsam: yalnız aktif dosyanın belgeleri. Emsal kütüphanesi bu aramaya dahil edilmez.",
+      precedent_library:
+        "Kapsam: emsal kütüphanesi. Sonuçlar aktif dosyanın belgelerinden gelmez; dosya aramasına karışmaz ve delil sayılmaz.",
+    },
+    citationMissing: "Künye eksik",
+    citationDocket: "E. {no}",
+    citationDecision: "K. {no}",
+    matchSource: {
+      metadata: "künye numarası",
+      text: "karar metni",
+    },
+    summary: {
+      base: "{matched} eşleşme · {scanned} tam metin tarandı",
+      withoutText: "{base} · {count} kayıt tam metinsiz (aranmadı)",
+    },
+    snippetForCopy: "{citation}\n…{snippet}\n(kaynak: emsal kütüphanesi, sürüm {version})",
+  },
+  search: {
+    leadStart: "İki kapsam vardır ve",
+    leadEmphasis: "karışmaz",
+    leadRest:
+      ": dosya belgeleri (yalnız seçili dosya) ve emsal kütüphanesi (yalnız emsal kayıtlarının tam metinleri). Her sonuç kendi kapsamıyla etiketlenir; emsal sonucu dosyaya delil olarak eklenmez.",
+    scopeGroup: "Arama kapsamı",
+    queryLabel: "Aranan metin",
+    queryPlaceholder: "Örn. ödeme, \"kira bedeli\", 2024/123 E.",
+    modeLabel: "Arama kipi",
+    searching: "Aranıyor…",
+    submit: "Ara",
+    filterType: "Belge türü",
+    filterTypeAll: "Tüm türler",
+    filterOcr: "Metin kaynağı",
+    filterDateRole: "Tarih rolü (belgeye bağlı olay)",
+    filterDateRoleAll: "Tüm roller",
+    tagsLabelStart: "Etiketler (seçilenlerin",
+    tagsLabelEmphasis: "hepsi",
+    tagsLabelRest: "belgede olmalı)",
+    tagsEmpty: "Bu dosyada henüz etiket yok. Belge listesinden (Dosyalar ekranı) etiket ekleyin.",
+    tagCount: "{count} belgede",
+    searchingIn: "{title} içinde aranıyor.",
+    noCaseYet: "Önce bir dosya oluşturun.",
+    serverFilters: "Filtreler sunucuda uygulanır; sayfa başına {size} sonuç gelir.",
+    clearFilters: "Filtreleri temizle",
+    libraryFiltersNote:
+      "Emsal kütüphanesi kapsamında dosya seçimi ve belge filtreleri (tür, etiket, metin kaynağı, tarih rolü) uygulanmaz. Kütüphane yalnız emsal kayıtlarının tam metnini ve künye numaralarını tarar; sayfa başına {size} sonuç gelir.",
+    staleFilters: "Filtreler",
+    staleMode: "Arama kipi",
+    staleTail: "değişti; aşağıdaki sonuçlar",
+    staleEmphasis: "önceki",
+    staleRest: "ayarlarla alındı.",
+    searchAgain: "Yeni ayarlarla ara",
+    resultsTitle: "Sonuçlar",
+    resultsSub: "{summary} · kapsam: yalnız bu dosya (emsal kütüphanesi hariç) · kip: {mode}",
+    filterCount: "{count} filtre",
+    emptyNoMatch: "Eşleşme yok.",
+    emptyRelax: "Filtreleri gevşetmeyi deneyin.",
+    emptyParsed: "Belgeleri “Ayrıştır” ile metne çevirdiniz mi?",
+    unknownDocument: "belge bilinmiyor",
+    pageBadge: "sayfa {page}",
+    openLeft: "Solda aç",
+    openLeftTitle: "Sonucu sol panelde aç",
+    openRight: "Sağda aç",
+    openRightTitle: "Sonucu sağ panelde aç",
+    noVersionTitle: "Sonuçta sürüm kimliği yok",
+    hitMeta: "segment {segment} · sürüm {version}",
+    loadingMore: "Yükleniyor…",
+    loadMore: "Daha fazla sonuç",
+    cursorMissing: "Devamı var ancak imleç gelmedi; yeniden arayın.",
+    allShown: "Tüm sonuçlar gösterildi.",
+    openExplain:
+      "“Solda aç / Sağda aç” sonucun kaydedildiği sürümü açar; iki sonucu yan yana koyup karşılaştırabilirsiniz.",
+    libraryTitle: "Emsal kütüphanesi sonuçları",
+    librarySubPrefix: "{summary} · kapsam:",
+    librarySubSuffix: "· kip: {mode}",
+    libraryQuery: "Sorgu: “{query}”",
+    libraryEmpty:
+      "Emsal kütüphanesinde eşleşme yok. Bu sonuç “karar yok” hükmü değildir; künyeyi esas/karar numarasıyla da arayabilirsiniz.",
+    libraryBadge: "emsal",
+    matchBadge: "eşleşme: {label}",
+    copied: "Kopyalandı",
+    copyQuote: "Alıntıyı kopyala",
+    libraryMeta: "sürüm {version} · edinim {date}",
+    positionLine: "konum {position}",
+    positionMissing: "konum yok (künye eşleşmesi)",
+    libraryNote:
+      "Bu sonuçlar aktif dosyaya delil olarak eklenmez. Alıntı, emsal kaydındaki tam metinle doğrulanmalıdır; tam metni olmayan kayıtlar metin aramasında taranmaz.",
+    errorNoVersion: "Sonuç belge sürümü taşımıyor; okuyucuda açılamaz. Belgeyi yeniden ayrıştırın.",
+    errorClipboard: "Panoya kopyalama izni yok; metni seçip elle kopyalayın.",
   },
   labels: {
     caseKind: {
