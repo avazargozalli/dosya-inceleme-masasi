@@ -704,3 +704,60 @@ doğrular (`assert`), yoksa "hızlı ama boş" rapor üretilmez.
   gecikme davranışı ölçülmedi.
 - Ham rapor: `docs/releases/F15/bench-ocr-2026-10-29.json` (makine üretir,
   elle düzenlenmez).
+
+## OCR **dil modeli** kalitesi — 2026-10-29 (Tesseract 5.5.3)
+
+Önceki bölüm OCR'ın **gecikmesini** ölçüyordu; fikstür ASCII olduğu için dil
+modelinin **kaliteye** etkisini göremezdi (İngilizce modeli ASCII metni zaten
+doğru okur). Ürün Türkçe hukuk belgeleri için yapıldığı hâlde varsayılan dil
+yolun birinde `eng` kalmıştı; bu bölüm o kararın **ölçülmüş** gerekçesidir.
+
+- **Koşucu:** `scripts/ocr_lang_bench.py` (`--self-test` 15 kontrol; CI'da
+  saf yardımcılar sınanır, ölçüm elle koşar) — **gerçek worker süreci**, her
+  dil için **yeni süreç** (başlatma dahil), gerçek OCR bütçesi.
+- **Fikstür:** `fixtures/synthetic/turkish-scan.pdf` — 2 sayfa, **146.289
+  bayt**, **metin katmanı yok**, 300 dpi gri raster, ş ğ ı İ ç ö ü yoğun
+  hukuki cümleler (79 Türkçe harf). Üretici `fixtures/synthetic/generate.py`
+  (`build_turkish_scan_pdf`); Türkçe glifli TTF yoksa **açık hata** verir,
+  ASCII'ye düşmez. Gövde metin kutusuna yazılır: uzun cümle sayfa kenarında
+  kırpılırsa karşılaştırma haksız olur (ilk üretimde **ölçüldü**: cümleler
+  "keşide e" gibi ortadan kesiliyordu; düzeltildi).
+- **Ölçüm (Apple M2, macOS 26.6.2, Tesseract 5.5.3, n=5/dil):**
+
+| Dil | Karakter doğruluğu (medyan) | Türkçe harf korundu | Güven | Süre (medyan) |
+|---|---|---|---|---|
+| `eng` | **%82,78** (5/5 koşuda aynı) | **0 / 79** | 78,0 | **2.462 ms** |
+| `tur` | **%100** | **79 / 79** | 94,0 | **2.326 ms** |
+| `tur+eng` | **%100** | **79 / 79** | 94,5 | **2.509 ms** |
+
+- **Okunan metin farkı (gerçek çıktı, `eng`):**
+  `Supheli, israrla One surdugu iddiay! ispatlayamadi.` ·
+  `Sirketin odeme guglugu cektigi ddnemde cek keside edilmisti.` ·
+  `Uctincii kisi, 6demenin islak imzayla yapildigint soyledi.`
+  Aynı sayfa `tur` ile birebir: `Şüpheli, ısrarla öne sürdüğü iddiayı
+  ıspatlayamadı.` Yani hata yalnız diyakritik değil: `İ→I`, `ı→i`, `ş→s`,
+  `ğ→g`, ayrıca `ü→u`/`ö→o` karışmaları ve noktalama kaybı.
+- **Karar:** varsayılan **`tur+eng`** (tek kaynak:
+  `dim_storage::queue::DEFAULT_OCR_LANG`; aynası `dim_worker.engines.
+  DEFAULT_OCR_LANG` ve `apps/desktop/src/lib/ocr.ts`, üçü testle bağlı).
+  Saf Türkçe metinde `tur` ile **aynı kalite**, `tur+eng` 2 sayfada
+  **+183 ms (~%8)**; karışık (Türkçe + İngilizce terim) belgeler için
+  birleşik model seçildi. **Karışık dil ölçülmedi** — bu bir tercih, ölçüm
+  değil.
+
+**Dürüst sınırlar**
+
+- Tek makine, tek Tesseract (5.5.3), tek yazı tipi (Arial), 300 dpi, temiz
+  raster: eğim/gürültü/çok sütun yok. Gerçek taramada her iki modelin de
+  doğruluğu düşer; **farkın yönü** ölçüldü, büyüklüğü bu fikstüre özgüdür.
+- Karakter doğruluğu **düzenleme mesafesi** ile hesaplanır (boşluk-duyarsız,
+  noktalama duyarlı); kelime düzeyinde F1 veya hukuki anlam doğruluğu
+  ölçülmedi.
+- `tur`/`tur+eng` bu fikstürde **%100** çıktı; bu "her Türkçe taramada
+  %100" demek değildir — tavan etkisi (fikstür kendi ürettiğimiz temiz
+  raster). Ölçüm **hedef değil rapor**.
+- **Dil paketi kurulu olmalı:** Tesseract ve `tur` verisi uygulamayla
+  paketlenmiyor (F02). Eksikse OCR artık **`E_OCR_LANG_MISSING`** ile eksik
+  kodun adını ve kurulu dilleri yazar (eskiden `E_OCR_FAILED` +
+  "dil paketi eksik olabilir" **tahminiydi**).
+- Ham rapor: `docs/releases/F15/bench-ocr-lang-2026-10-29.json`.

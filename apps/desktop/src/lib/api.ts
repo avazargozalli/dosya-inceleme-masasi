@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { DEFAULT_OCR_LANG } from "./ocr";
 import type { ReviewTargetInput } from "./reviewTarget";
 
 export type ApiError = { code: string; message: string; retryable: boolean };
@@ -1697,7 +1698,7 @@ export const api = {
   documentParse: (
     versionId: string,
     ocr = false,
-    ocrLang = "eng",
+    ocrLang = DEFAULT_OCR_LANG,
     textEncoding = "auto",
     password?: string,
   ) =>

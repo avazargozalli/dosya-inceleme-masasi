@@ -25,6 +25,7 @@ from typing import Any
 from . import PROTOCOL_VERSION
 from .engines import (
     MAX_BLOCKS_PER_PAGE,
+    DEFAULT_OCR_LANG,
     EngineError,
     capabilities,
     decode_content,
@@ -320,7 +321,7 @@ def handle(
     if not isinstance(mime, str) or not mime:
         raise ProtocolError("E_PARAMS", "mime zorunlu")
     ocr = bool(params.get("ocr", False))
-    ocr_lang = str(params.get("ocrLang") or "eng")
+    ocr_lang = str(params.get("ocrLang") or DEFAULT_OCR_LANG)
     password = params.get("password")
     if password is not None and not isinstance(password, str):
         raise ProtocolError("E_PARAMS", "password metin olmalı")

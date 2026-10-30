@@ -10,7 +10,7 @@
 | F06-T02 | ✅ | PyMuPDF metin çıkarma (worker), `text_origin` |
 | F06-T03 | ✅ | worker istemcisi: 1 MiB çerçeve, parçalı yanıt (`part`/`parts`) birleştirme, zaman aşımı, süreç ölümü |
 | F06-T04 | ✅ | ayrıştırma durumu (`succeeded`/`partial`), uyarılar |
-| F06-T05 | ✅ | OCR: Tesseract (`tur+eng`), 300 dpi, dil paketi keşfi; yoksa açık hata |
+| F06-T05 | ✅ | OCR: Tesseract (`tur+eng` — tek kaynak `DEFAULT_OCR_LANG`), 300 dpi; dil keşfi + eksik pakette **adıyla** `E_OCR_LANG_MISSING` |
 | F06-T06 | ✅ | DOCX (python-docx): paragraf, tablo, üst/alt bilgi; UDF ayrı işte (`c1c9603`) |
 | F06-T07 | ✅ | çok kareli TIFF + piksel bütçesi (mevcut); **düz metin kodlaması**: BOM + katı UTF-8 + Türkçe tek baytlık otomatik seçim, açık seçim |
 | F06-T08 | ✅ | blok/satır kutuları, ortak koordinat uzayı, döndürme + kırpma kutusu, okuyucuda konum haritası |
@@ -49,6 +49,23 @@ yeşil. CI: bu turda doğrulanır (commit sonrası `ci.yml`).
   `tests/test_docx_annotations.py` (2).
 - **T05 karma PDF**: metin katmanı olan sayfa yeniden OCR edilmez; yalnız
   metinsiz sayfa OCR'a gider. Çağrı sayısı ölçülerek kanıtlandı.
+- **T05 OCR dili (2026-10-29, ölçülen kusur):** dil **yolun birinde** `eng`
+  kalıyordu: tek belge ayrıştırması `tur+eng` gönderiyordu ama çekirdek
+  varsayılan (`run_parse` fallback), eski iş yeniden denemesi ve kasa okuması
+  (`job_parse_options`) `eng` yazıyordu. Ölçüm (`scripts/ocr_lang_bench.py`,
+  `fixtures/synthetic/turkish-scan.pdf`, 2 sayfa, Tesseract 5.5.3):
+  `eng` → karakter doğruluğu **%82,78**, Türkçe harf **0/79**;
+  `tur` / `tur+eng` → **%100**, **79/79**. Düzeltme: tek kaynak
+  `dim_storage::queue::DEFAULT_OCR_LANG = "tur+eng"`; Rust, worker
+  (`dim_worker.engines.DEFAULT_OCR_LANG`) ve arayüz
+  (`apps/desktop/src/lib/ocr.ts`) **testle** birbirine bağlı.
+- **T05 dil paketi kapısı:** eksik dilde eskiden `E_OCR_FAILED` +
+  "dil paketi eksik olabilir" **tahmini** dönüyordu (her OCR arızası aynı
+  cümleye düşüyordu). Artık `_ensure_ocr_languages()` çağrıdan **önce**
+  kurulu listeyi (`tesseract --list-langs`, süreç başına bir kez) okur ve
+  `E_OCR_LANG_MISSING` ile **eksik kodu + kurulu dilleri** yazar. Liste hiç
+  alınamıyorsa suçlama yapılmaz; **sessiz `eng`e düşme yok** (düşmek tam da
+  ölçülen diyakritik kaybını üretirdi).
 - **T06 ayar özeti**: `settings_hash` artık MIME + OCR bayrağı + dil + motor
   sürümü + `tessdataHash` taşır. Tesseract 5 `--print-tessdata-dir`, Tesseract 4
   `--list-langs` başlığı (tırnaklı yol) ile bulunur; bulunamazsa `null`.

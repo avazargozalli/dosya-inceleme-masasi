@@ -234,7 +234,9 @@ kanıtı yanlış işe bağlıyordu. Şartname karşılıkları (ölçüldü, ta
 - **F15-T03** 8 GB cihaz / 16 GB SSD ölçümü → **yok** (donanım).
 - **F15-T04** 100.000 belge / 1 milyon sayfa kapasite → **yok** (donanım/disk).
 - **F15-T05** p50/p95 yayımla → "performans benchmark" + "iş kuyruğu ölçümü"
-  satırları. Arama/ilk sayfa/bellek/kuyruk yayımlandı; **OCR yayımlanmadı**.
+  satırları. Arama/ilk sayfa/bellek/kuyruk yayımlandı; **OCR yayımlandı**
+  (2026-10-29: gecikme p50 6,398 ms/6 sayfa + **dil modeli kalitesi**
+  `eng` %82,78 · 0/79 harf, `tur`/`tur+eng` %100 · 79/79).
 - **F15-T06** süreç öldürme, disk dolması, uyku/uyanma, harici disk → disk
   dolması **ölçüldü**; süreç öldürme kısmi (F01-T10 + geri dönüş tatbikatı);
   uyku/uyanma ve harici disk **yok**.

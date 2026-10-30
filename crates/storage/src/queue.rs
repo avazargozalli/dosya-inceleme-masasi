@@ -697,7 +697,10 @@ impl Database {
         };
         Ok(Some(JobParseOptions {
             ocr: ocr != 0,
-            ocr_lang: stored.lang.unwrap_or_else(|| "eng".to_string()),
+            // Dil sütunu boşsa ürün varsayılanı yazılır: eski kasada `eng`
+            // yazmak, yeniden denemede Türkçe diyakritikleri sessizce
+            // kaybettiriyordu (ölçüm: 0/79 harf).
+            ocr_lang: stored.lang.unwrap_or_else(|| DEFAULT_OCR_LANG.to_string()),
             text_encoding: stored.encoding.unwrap_or_else(|| "auto".to_string()),
             requires_password: stored.requires_password != 0,
         }))
@@ -1237,6 +1240,19 @@ pub struct JobParseOptions {
     pub text_encoding: String,
     pub requires_password: bool,
 }
+
+/// Ürünün varsayılan OCR dili — **tek kaynak**.
+///
+/// Neden `tur+eng`: ölçüm (F15, `scripts/ocr_lang_bench.py`, 2 sayfa Türkçe
+/// diyakritik taraması, Tesseract 5.5.3) `eng` modelinin Türkçe harflerin
+/// **0/79**'ını koruduğunu (karakter doğruluğu %82,8) gösterdi; `tur` ve
+/// `tur+eng` **79/79** (%100). `tur+eng` karışık (Türkçe + İngilizce terim)
+/// belgeler için seçildi; bedeli ölçüldü: 2 sayfada **+183 ms** (~%8).
+///
+/// Aynı değer arayüzde (`apps/desktop/src/lib/ocr.ts`) ve worker'da
+/// (`dim_worker.engines.DEFAULT_OCR_LANG`) aynalanır; ikisi de bu sabitle
+/// testle karşılaştırılır — biri değişip diğeri kalırsa test kırmızı olur.
+pub const DEFAULT_OCR_LANG: &str = "tur+eng";
 
 /// `jobs` satırındaki **ham** ayar sütunları (SQL okuması).
 ///
@@ -2112,6 +2128,32 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("satır");
         assert_eq!(attempt_nos, vec![1, 2], "numara artar, sıfırdan başlamaz");
+    }
+
+    /// Eski kasada (`0023` öncesi) dil sütunu **boş** olabilir. O durumda ürün
+    /// varsayılanı okunur — `eng` yazmak yeniden denemede Türkçe diyakritikleri
+    /// sessizce kaybettiriyordu (ölçüm: `eng` 0/79 harf, `tur+eng` 79/79).
+    #[test]
+    fn legacy_job_without_recorded_language_reads_the_product_default() {
+        let (db, case_id) = db();
+        let job = enqueue(&db, &case_id, "opt-legacy", 0);
+        // Kayıt var ama dil sütunu NULL: 0023 öncesi satırların biçimi.
+        db.conn()
+            .execute(
+                "UPDATE jobs SET parse_ocr=1, parse_ocr_lang=NULL, parse_text_encoding=NULL \
+                 WHERE id=?1",
+                [&job],
+            )
+            .expect("eski satır");
+
+        let options = db
+            .job_parse_options(&job)
+            .expect("oku")
+            .expect("kayıt var (parse_ocr dolu)");
+        assert!(options.ocr);
+        assert_eq!(options.ocr_lang, DEFAULT_OCR_LANG);
+        assert_eq!(options.ocr_lang, "tur+eng", "varsayılan dil sabit");
+        assert_eq!(options.text_encoding, "auto");
     }
 
     /// **F04-T07 kapanışı:** ayrıştırma ayarları iş satırında saklanır; yeniden

@@ -92,11 +92,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Tesseract (OCR)
+        # `tur` **ürün varsayılanı** (`tur+eng`); kurulmazsa varsayılan OCR
+        # dil paketi kapısında `E_OCR_LANG_MISSING` verir ve ürün yolu CI'da
+        # hiç denenmemiş olur.
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-tur
       - run: pip install -e "workers/document[all,dev]"
       - run: python -m pytest workers/document/tests -q
+      - name: OCR dil ölçüm koşucusu (saf yardımcılar)
+        run: python3 scripts/ocr_lang_bench.py --self-test
       - name: Uçtan uca duman testi (gerçek worker + sentetik PDF)
         run: python tests/smoke/worker_smoke.py
 

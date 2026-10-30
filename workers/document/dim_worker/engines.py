@@ -30,6 +30,18 @@ MAX_IMAGE_PIXELS = 50_000_000
 OCR_DPI = 300
 OCR_MIN_CONFIDENCE = 60.0
 
+# Ürünün varsayılan OCR dili. **Tek kaynak Rust tarafıdır**
+# (`dim_storage::queue::DEFAULT_OCR_LANG`); buradaki değer onun aynasıdır ve
+# `tests/test_ocr_lang.py` iki değeri karşılaştırır — biri değişip diğeri
+# kalırsa test kırmızı olur. Ölçüm (F15, `scripts/ocr_lang_bench.py`):
+# `eng` modeli Türkçe diyakritiklerin **0/79**'ını korur (doğruluk %82,8),
+# `tur` ve `tur+eng` **79/79** (doğruluk %100). `tur+eng` karışık belgeler
+# için seçildi; bedeli ölçüldü (+183 ms / 2 sayfa, ~%8).
+DEFAULT_OCR_LANG = "tur+eng"
+
+# `tesseract --list-langs` sonucu süreç başına bir kez okunur.
+_AVAILABLE_LANGS: list[str] | None = None
+
 # Ortak koordinat uzayları. Okuyucu, kırmızı çizim ve redaksiyon aynı uzayı
 # kullanır; uzay adı kayıtla birlikte taşınır (F06-T08).
 COORDINATE_SPACE_PDF = "unrotated_cropbox_points"
@@ -171,6 +183,50 @@ def _tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
+def available_ocr_languages() -> list[str]:
+    """Kurulu Tesseract dil kodları (süreç başına bir kez okunur).
+
+    Liste alınamazsa **boş** döner: bu durumda dil kapısı suçlama yapmaz
+    (ölçülemeyen şey hakkında hüküm verilmez)."""
+    global _AVAILABLE_LANGS
+    if _AVAILABLE_LANGS is None:
+        try:
+            import pytesseract  # type: ignore
+        except ImportError:
+            return []
+        try:
+            _AVAILABLE_LANGS = sorted(pytesseract.get_languages(config=""))
+        except Exception:  # noqa: BLE001 - motor yoksa liste de yok
+            return []
+    return _AVAILABLE_LANGS
+
+
+def _ensure_ocr_languages(lang: str) -> None:
+    """İstenen dil paketleri kurulu mu? Eksikse **adını söyleyen** hata.
+
+    Önce `E_OCR_FAILED` + "dil paketi eksik olabilir" deniyordu: kullanıcı
+    hangi paketin eksik olduğunu öğrenemiyordu ve *her* OCR arızası aynı
+    tahmine düşüyordu. Burada ölçülen liste ile karşılaştırılır; eksik kod
+    ve kurulu diller yazılır. Sessiz geri düşme **yok**: `tur` istendiğinde
+    `eng`e düşmek tam olarak ölçülen kusuru (diyakritik kaybı) üretirdi.
+    """
+    requested = [part.strip() for part in (lang or "").split("+") if part.strip()]
+    if not requested:
+        raise EngineError("E_OCR_LANG", "OCR dili boş olamaz")
+    available = available_ocr_languages()
+    if not available:
+        return
+    missing = [code for code in requested if code not in available]
+    if not missing:
+        return
+    shown = ", ".join(available[:10])
+    more = f" … (+{len(available) - 10})" if len(available) > 10 else ""
+    raise EngineError(
+        "E_OCR_LANG_MISSING",
+        f"OCR dil paketi eksik: {', '.join(missing)} · kurulu diller: {shown}{more}",
+    )
+
+
 def _ocr_text_confidence_and_blocks(
     image, lang: str, scale: float = 1.0
 ) -> tuple[str, float | None, list[TextBlock]]:
@@ -188,10 +244,14 @@ def _ocr_text_confidence_and_blocks(
     if shutil.which("tesseract") is None:
         raise EngineError("E_OCR_MISSING", "Tesseract yürütülebilir dosyası bulunamadı")
 
+    # Dil paketi kapısı **çağrıdan önce**: eksikse adı söylenir (E_OCR_LANG_MISSING).
+    _ensure_ocr_languages(lang)
+
     try:
         data = pytesseract.image_to_data(image, lang=lang, output_type=pytesseract.Output.DICT)
     except Exception as exc:  # noqa: BLE001 - motor hatası normalize edilir
-        raise EngineError("E_OCR_FAILED", "OCR çalıştırılamadı (dil paketi eksik olabilir)") from exc
+        detail = str(exc).strip().splitlines()[0][:200] if str(exc).strip() else "ayrıntı yok"
+        raise EngineError("E_OCR_FAILED", f"OCR çalıştırılamadı: {detail}") from exc
 
     words = data.get("text") or []
     confidences = data.get("conf") or []
@@ -358,7 +418,7 @@ def _page_label(page: Any, *, defined: bool) -> str | None:
 def extract_pdf(
     data: bytes,
     ocr: bool = False,
-    ocr_lang: str = "eng",
+    ocr_lang: str = DEFAULT_OCR_LANG,
     password: str | None = None,
     progress: Callable[[str, int, int | None], None] | None = None,
 ) -> Extraction:
@@ -779,7 +839,7 @@ def _check_pixel_budget(width: int, height: int) -> None:
 def extract_image(
     data: bytes,
     ocr: bool = False,
-    ocr_lang: str = "eng",
+    ocr_lang: str = DEFAULT_OCR_LANG,
     progress: Callable[[str, int, int | None], None] | None = None,
 ) -> Extraction:
     """PNG/JPEG/TIFF görüntüsünü sayfalara ayırır. OCR kapalıysa metin
@@ -989,7 +1049,7 @@ def extract(
     data: bytes,
     mime: str,
     ocr: bool = False,
-    ocr_lang: str = "eng",
+    ocr_lang: str = DEFAULT_OCR_LANG,
     encoding: str = "auto",
     password: str | None = None,
     progress: Callable[[str, int, int | None], None] | None = None,

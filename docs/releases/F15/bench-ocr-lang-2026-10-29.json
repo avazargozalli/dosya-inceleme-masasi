@@ -1,0 +1,240 @@
+{
+  "generatedAt": "2026-10-29T04:23:15+0300",
+  "fixture": "fixtures/synthetic/turkish-scan.pdf",
+  "fixtureBytes": 146289,
+  "tesseract": "tesseract 5.5.3",
+  "pages": 2,
+  "reps": 5,
+  "summary": {
+    "eng": {
+      "runs": 5,
+      "pages": 2,
+      "charsMedian": 487,
+      "emptyPages": 0,
+      "accuracyMedian": 0.8278,
+      "accuracyMin": 0.8278,
+      "accuracyMax": 0.8278,
+      "turkishLettersExpected": 79,
+      "turkishLettersFound": 0,
+      "confidenceMedian": 78.0,
+      "elapsedMs": {
+        "median": 2462.2,
+        "min": 2227.9,
+        "max": 2516.8
+      },
+      "observedText": [
+        "MADDE 1\nSupheli, israrla One surdugu iddiay! ispatlayamadi.\nSirketin odeme guglugu cektigi ddnemde cek\nkeside edilmisti.\nUctincii kisi, 6demenin islak imzayla yapildigint\nsoyledi.\nGogusleme ve curutme talepleri suresinde\nsunulmadi.\n",
+        "MADDE 2\nSozlesmenin isiginda iskonto oran! yuzde 12\nolarak belirlendi.\nOlcti 1250,00 TL; 6deme sarti ic glin icinde yerine\ngetirilmelidir.\nIsci, kidem tazminati ve ihbar tazminati talebinde\nbulundu.\nSuphesiz ki iskat karar! Oncesinde savunma\nalinmaltydi.\n"
+      ]
+    },
+    "tur": {
+      "runs": 5,
+      "pages": 2,
+      "charsMedian": 483,
+      "emptyPages": 0,
+      "accuracyMedian": 1.0,
+      "accuracyMin": 1.0,
+      "accuracyMax": 1.0,
+      "turkishLettersExpected": 79,
+      "turkishLettersFound": 79,
+      "confidenceMedian": 94.0,
+      "elapsedMs": {
+        "median": 2326.2,
+        "min": 2199.7,
+        "max": 2553.1
+      },
+      "observedText": [
+        "MADDE 1\nŞüpheli, ısrarla öne sürdüğü iddiayı ıspatlayamadı.\nŞirketin ödeme güçlüğü çektiği dönemde çek\nkeşide edilmişti.\nÜçüncü kişi, ödemenin ıslak imzayla yapıldığını\nsöyledi.\nGöğüsleme ve çürütme talepleri süresinde\nsunulmadı.\n",
+        "MADDE 2\nSözleşmenin ışığında ıskonto oranı yüzde 12\nolarak belirlendi.\nÖlçü 1250,00 TL; ödeme şartı üç gün içinde yerine\ngetirilmelidir.\nİşçi, kıdem tazminatı ve ihbar tazminatı talebinde\nbulundu.\nŞüphesiz ki ıskat kararı öncesinde savunma\nalınmalıydı.\n"
+      ]
+    },
+    "tur+eng": {
+      "runs": 5,
+      "pages": 2,
+      "charsMedian": 483,
+      "emptyPages": 0,
+      "accuracyMedian": 1.0,
+      "accuracyMin": 1.0,
+      "accuracyMax": 1.0,
+      "turkishLettersExpected": 79,
+      "turkishLettersFound": 79,
+      "confidenceMedian": 94.5,
+      "elapsedMs": {
+        "median": 2509.3,
+        "min": 2388.0,
+        "max": 2774.6
+      },
+      "observedText": [
+        "MADDE 1\nŞüpheli, ısrarla öne sürdüğü iddiayı ıspatlayamadı.\nŞirketin ödeme güçlüğü çektiği dönemde çek\nkeşide edilmişti.\nÜçüncü kişi, ödemenin ıslak imzayla yapıldığını\nsöyledi.\nGöğüsleme ve çürütme talepleri süresinde\nsunulmadı.\n",
+        "MADDE 2\nSözleşmenin ışığında ıskonto oranı yüzde 12\nolarak belirlendi.\nÖlçü 1250,00 TL; ödeme şartı üç gün içinde yerine\ngetirilmelidir.\nİşçi, kıdem tazminatı ve ihbar tazminatı talebinde\nbulundu.\nŞüphesiz ki ıskat kararı öncesinde savunma\nalınmalıydı.\n"
+      ]
+    }
+  },
+  "runs": [
+    {
+      "lang": "eng",
+      "elapsedMs": 2462.2,
+      "pages": 2,
+      "chars": 487,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (eng); güven skoru 73/100",
+        "sayfa 2: OCR ile okundu (eng); güven skoru 83/100"
+      ],
+      "confidence": 78.0
+    },
+    {
+      "lang": "eng",
+      "elapsedMs": 2227.9,
+      "pages": 2,
+      "chars": 487,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (eng); güven skoru 73/100",
+        "sayfa 2: OCR ile okundu (eng); güven skoru 83/100"
+      ],
+      "confidence": 78.0
+    },
+    {
+      "lang": "eng",
+      "elapsedMs": 2471.0,
+      "pages": 2,
+      "chars": 487,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (eng); güven skoru 73/100",
+        "sayfa 2: OCR ile okundu (eng); güven skoru 83/100"
+      ],
+      "confidence": 78.0
+    },
+    {
+      "lang": "eng",
+      "elapsedMs": 2516.8,
+      "pages": 2,
+      "chars": 487,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (eng); güven skoru 73/100",
+        "sayfa 2: OCR ile okundu (eng); güven skoru 83/100"
+      ],
+      "confidence": 78.0
+    },
+    {
+      "lang": "eng",
+      "elapsedMs": 2335.3,
+      "pages": 2,
+      "chars": 487,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (eng); güven skoru 73/100",
+        "sayfa 2: OCR ile okundu (eng); güven skoru 83/100"
+      ],
+      "confidence": 78.0
+    },
+    {
+      "lang": "tur",
+      "elapsedMs": 2374.1,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur); güven skoru 94/100",
+        "sayfa 2: OCR ile okundu (tur); güven skoru 94/100"
+      ],
+      "confidence": 94.0
+    },
+    {
+      "lang": "tur",
+      "elapsedMs": 2326.2,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur); güven skoru 94/100",
+        "sayfa 2: OCR ile okundu (tur); güven skoru 94/100"
+      ],
+      "confidence": 94.0
+    },
+    {
+      "lang": "tur",
+      "elapsedMs": 2199.7,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur); güven skoru 94/100",
+        "sayfa 2: OCR ile okundu (tur); güven skoru 94/100"
+      ],
+      "confidence": 94.0
+    },
+    {
+      "lang": "tur",
+      "elapsedMs": 2315.4,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur); güven skoru 94/100",
+        "sayfa 2: OCR ile okundu (tur); güven skoru 94/100"
+      ],
+      "confidence": 94.0
+    },
+    {
+      "lang": "tur",
+      "elapsedMs": 2553.1,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur); güven skoru 94/100",
+        "sayfa 2: OCR ile okundu (tur); güven skoru 94/100"
+      ],
+      "confidence": 94.0
+    },
+    {
+      "lang": "tur+eng",
+      "elapsedMs": 2774.6,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur+eng); güven skoru 95/100",
+        "sayfa 2: OCR ile okundu (tur+eng); güven skoru 94/100"
+      ],
+      "confidence": 94.5
+    },
+    {
+      "lang": "tur+eng",
+      "elapsedMs": 2481.8,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur+eng); güven skoru 95/100",
+        "sayfa 2: OCR ile okundu (tur+eng); güven skoru 94/100"
+      ],
+      "confidence": 94.5
+    },
+    {
+      "lang": "tur+eng",
+      "elapsedMs": 2596.3,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur+eng); güven skoru 95/100",
+        "sayfa 2: OCR ile okundu (tur+eng); güven skoru 94/100"
+      ],
+      "confidence": 94.5
+    },
+    {
+      "lang": "tur+eng",
+      "elapsedMs": 2509.3,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur+eng); güven skoru 95/100",
+        "sayfa 2: OCR ile okundu (tur+eng); güven skoru 94/100"
+      ],
+      "confidence": 94.5
+    },
+    {
+      "lang": "tur+eng",
+      "elapsedMs": 2388.0,
+      "pages": 2,
+      "chars": 483,
+      "warnings": [
+        "sayfa 1: OCR ile okundu (tur+eng); güven skoru 95/100",
+        "sayfa 2: OCR ile okundu (tur+eng); güven skoru 94/100"
+      ],
+      "confidence": 94.5
+    }
+  ]
+}

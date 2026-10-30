@@ -2018,7 +2018,7 @@ fn run_parse(
     let lang = options
         .ocr_lang
         .clone()
-        .unwrap_or_else(|| "eng".to_string());
+        .unwrap_or_else(|| dim_storage::queue::DEFAULT_OCR_LANG.to_string());
     // Kodlama yalnız düz metinde anlamlıdır; PDF/DOCX/UDF'te yok sayılır.
     let encoding = if is_text {
         options
@@ -2611,7 +2611,7 @@ fn retry_parse_options(
             },
             RetryApplied {
                 ocr: false,
-                ocr_lang: "eng".to_string(),
+                ocr_lang: dim_storage::queue::DEFAULT_OCR_LANG.to_string(),
                 text_encoding: "auto".to_string(),
                 restored: false,
             },

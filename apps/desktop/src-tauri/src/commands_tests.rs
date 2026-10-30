@@ -615,7 +615,12 @@ fn retry_options_come_from_the_recorded_job_row() {
     assert!(defaults.password.is_none());
     assert!(!applied.restored, "kayıt yokluğu dürüstçe bildirilir");
     assert!(!applied.ocr);
-    assert_eq!(applied.ocr_lang, "eng");
+    assert_eq!(
+        applied.ocr_lang,
+        dim_storage::queue::DEFAULT_OCR_LANG,
+        "kayıt yoksa ürün varsayılanı yazılır; `eng` Türkçe diyakritikleri kaybettirir"
+    );
+    assert_eq!(applied.ocr_lang, "tur+eng");
     assert_eq!(applied.text_encoding, "auto");
 }
 

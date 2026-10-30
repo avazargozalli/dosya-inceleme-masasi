@@ -14,6 +14,7 @@ import {
   type ParseProgressEvent,
 } from "../lib/api";
 import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
+import { DEFAULT_OCR_LANG, defaultOcrLanguageLabel } from "../lib/ocr";
 import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
 import { budgetSummary, budgetWarning } from "../lib/budget";
 import { Notes } from "../components/Notes";
@@ -214,7 +215,7 @@ export function Cases() {
       const result = await api.documentParse(
         versionId,
         ocr,
-        "tur+eng",
+        DEFAULT_OCR_LANG,
         txtEncoding,
         pdfPassword.trim() === "" ? undefined : pdfPassword,
       );
@@ -699,7 +700,7 @@ export function Cases() {
                         className="btn ghost"
                         disabled={!doc.currentVersionId || busy}
                         onClick={() => void parseDocument(doc.currentVersionId!, true)}
-                        title="Taranmış sayfalar için OCR"
+                        title={`Taranmış sayfalar için OCR (${defaultOcrLanguageLabel()})`}
                       >
                         OCR
                       </button>

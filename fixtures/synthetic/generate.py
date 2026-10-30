@@ -520,6 +520,103 @@ def generate_scanned_pages_pdf(path: Path, pages: int = SCANNED_PAGES) -> Path:
     return path
 
 
+# --- OCR dil modeli kalite fikstürü (F06-T05 / F15-T05) --------------------
+# Türkçe **diyakritik** metinli tarama. Yukarıdaki fikstür ASCII olduğu için
+# `eng` ile `tur` modeli arasındaki farkı **ölçemiyordu**; bu belge tam da o
+# farkı görünür kılmak için var: ş ğ ı İ ç ö ü yoğun, hukuki cümleler.
+#
+# Yazı tipi sistemden gelir (WinAnsi'de Türkçe glif yok, base14 Helvetica
+# yetersiz). Bu yüzden üretici macOS/Linux'ta kurulu bir TTF arar; bulamazsa
+# **açık hata** verir — sessizce ASCII'ye düşüp ölçümü yanıltmaz.
+TURKISH_SCAN_PAGES: tuple[tuple[str, ...], ...] = (
+    (
+        "MADDE 1",
+        "Şüpheli, ısrarla öne sürdüğü iddiayı ıspatlayamadı.",
+        "Şirketin ödeme güçlüğü çektiği dönemde çek keşide edilmişti.",
+        "Üçüncü kişi, ödemenin ıslak imzayla yapıldığını söyledi.",
+        "Göğüsleme ve çürütme talepleri süresinde sunulmadı.",
+    ),
+    (
+        "MADDE 2",
+        "Sözleşmenin ışığında ıskonto oranı yüzde 12 olarak belirlendi.",
+        "Ölçü 1250,00 TL; ödeme şartı üç gün içinde yerine getirilmelidir.",
+        "İşçi, kıdem tazminatı ve ihbar tazminatı talebinde bulundu.",
+        "Şüphesiz ki ıskat kararı öncesinde savunma alınmalıydı.",
+    ),
+)
+
+# Türkçe'ye özgü harfler: ölçümde "kaç tanesi korundu" sayılır.
+TURKISH_LETTERS = "şğıİçöüŞĞÇÖÜ"
+
+_FONT_CANDIDATES = (
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+)
+
+
+def _turkish_font() -> str:
+    """Türkçe glif taşıyan bir TTF yolu; yoksa açık hata."""
+    for candidate in _FONT_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "Türkçe glifli TTF bulunamadı; fikstür ASCII'ye düşürülmez. "
+        f"Aranan yerler: {', '.join(_FONT_CANDIDATES)}"
+    )
+
+
+def build_turkish_scan_pdf(pages: tuple[tuple[str, ...], ...] = TURKISH_SCAN_PAGES) -> bytes:
+    import io
+
+    import fitz  # PyMuPDF — yalnız bu fikstür için
+
+    font_file = _turkish_font()
+    document = fitz.open()
+    for lines in pages:
+        source = fitz.open()
+        page = source.new_page(width=595, height=842)
+        page.insert_font(fontname="TR", fontfile=font_file)
+        page.insert_text((72, 110), lines[0], fontsize=34, fontname="TR")
+        # Gövde **metin kutusuna** yazılır: uzun cümle sayfa kenarında
+        # kırpılırsa OCR karşılaştırması haksız olur (ölçümde görüldü:
+        # cümleler "keşide e" gibi ortadan kesiliyordu).
+        rect = fitz.Rect(72, 160, 523, 760)
+        leftover = page.insert_textbox(
+            rect, "\n".join(lines[1:]), fontsize=20, fontname="TR", lineheight=1.6
+        )
+        if leftover < 0:
+            raise ValueError(
+                f"Türkçe fikstür metni sayfaya sığmadı (kalan {leftover:.1f} pt); "
+                "satırlar kırpılmadan ölçüm yapılmaz"
+            )
+        pixmap = page.get_pixmap(dpi=300, colorspace=fitz.csGRAY)
+        target = document.new_page(width=595, height=842)
+        target.insert_image(target.rect, pixmap=pixmap)
+        source.close()
+    buffer = io.BytesIO()
+    document.save(buffer, deflate=True)
+    return buffer.getvalue()
+
+
+def generate_turkish_scan_pdf(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    path.write_bytes(build_turkish_scan_pdf())
+    return path
+
+
+def turkish_scan_truth(pages: tuple[tuple[str, ...], ...] = TURKISH_SCAN_PAGES) -> list[str]:
+    """Fikstürün **beklenen** metni: sayfa başına satırlar boşlukla birleşik.
+
+    OCR çıktısı satır sonlarını kendisi koyar; karşılaştırma boşluk-duyarsız
+    yapılır (bkz. `scripts/ocr_lang_bench.py`)."""
+    return [" ".join(lines) for lines in pages]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kurgu test belgesi üret")
     parser.add_argument("--out", default="fixtures/generated", help="çıktı klasörü")
@@ -539,8 +636,10 @@ def main() -> None:
             Path("fixtures/synthetic/scanned-pages.pdf")
         )
         print(f"üretildi: {scanned_pages} ({os.path.getsize(scanned_pages)} bayt)")
+        turkish = generate_turkish_scan_pdf(Path("fixtures/synthetic/turkish-scan.pdf"))
+        print(f"üretildi: {turkish} ({os.path.getsize(turkish)} bayt)")
     except ImportError:
-        print("scanned-page.pdf atlandı: PyMuPDF (fitz) kurulu değil")
+        print("taranmış fikstürler atlandı: PyMuPDF (fitz) kurulu değil")
     print(f"üretildi: {pdf} ({os.path.getsize(pdf)} bayt)")
     print(f"üretildi: {txt} ({os.path.getsize(txt)} bayt)")
     print(f"üretildi: {redaction} ({os.path.getsize(redaction)} bayt)")
