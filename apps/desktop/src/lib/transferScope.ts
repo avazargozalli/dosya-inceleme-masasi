@@ -1,5 +1,6 @@
 import type { ConsentPreview, ScopeSkip } from "./api";
 import { formatSize } from "./format";
+import { t } from "./i18n";
 
 /**
  * Kapsam dışı kalma nedeninin okunur etiketi. Sunucu yeni bir neden eklerse
@@ -8,15 +9,15 @@ import { formatSize } from "./format";
 export function skipReasonLabel(reason: string): string {
   switch (reason) {
     case "not_parsed":
-      return "ayrıştırılmamış";
+      return t("transferScope.skip.notParsed");
     case "empty_text":
-      return "metin yok";
+      return t("transferScope.skip.emptyText");
     case "no_current_version":
-      return "sürüm yok";
+      return t("transferScope.skip.noVersion");
     case "missing":
-      return "bulunamadı";
+      return t("transferScope.skip.missing");
     default:
-      return "bulunamadı";
+      return t("transferScope.skip.missing");
   }
 }
 
@@ -29,7 +30,7 @@ export function skippedSummary(skipped: readonly ScopeSkip[]): string {
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   const parts = [...counts.entries()].map(([label, count]) => `${count} ${label}`);
-  return `Gönderilmeyen ${skipped.length} belge: ${parts.join(", ")}`;
+  return t("transferScope.skippedSummary", { total: skipped.length, parts: parts.join(", ") });
 }
 
 /**
@@ -42,7 +43,12 @@ export function consentScopeLine(
   preview: ConsentPreview | null,
 ): string {
   if (!preview) {
-    return `Onay kapsamı: ${selectedDocuments} belge · içerik önizlemesi alınmadı`;
+    return t("transferScope.scopeNoPreview", { documents: selectedDocuments });
   }
-  return `Onay kapsamı: ${selectedDocuments} belge · gönderilecek: ${preview.documents} belge, ${preview.segments} segment, ${formatSize(preview.bytes)}`;
+  return t("transferScope.scopeWithPreview", {
+    documents: selectedDocuments,
+    previewDocuments: preview.documents,
+    segments: preview.segments,
+    bytes: formatSize(preview.bytes),
+  });
 }

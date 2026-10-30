@@ -11,6 +11,7 @@ import {
   type TransferConsentRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
+import { t } from "../lib/i18n";
 import { consentScopeLine, skippedSummary } from "../lib/transferScope";
 import {
   CANDIDATE_KINDS,
@@ -138,10 +139,10 @@ export function Ai() {
         await loadCandidates(runId);
         setNotice(
           result.state === "valid"
-            ? "Aday doğrulandı ve kaydedildi (geçerli)."
+            ? t("ai.noticeValid")
             : result.state === "partial"
-              ? "Aday kaydedildi; kısmi — kaynakları eksik veya alıntılar tam doğrulanmadı."
-              : "Aday kaydedildi ama geçersiz; incelemeye gönderilemez.",
+              ? t("ai.noticePartial")
+              : t("ai.noticeInvalid"),
         );
       }
     } catch (e) {
@@ -171,7 +172,7 @@ export function Ai() {
     setNotice(null);
     try {
       await api.aiCandidatePromote(candidateId, caseId);
-      setNotice("Aday inceleme kuyruğuna gönderildi; kabul edilene kadar hukuki kayıt değil.");
+      setNotice(t("ai.noticePromoted"));
     } catch (e) {
       setError(toApiError(e));
     }
@@ -180,11 +181,8 @@ export function Ai() {
   return (
     <div className="page" style={{ maxWidth: 1000 }}>
       <div className="page-head">
-        <h1>AI inceleme</h1>
-        <p className="lead">
-          AI yalnız aday üretir. İçerik cihazdan ancak dosya kapsamlı, süreli ve iptal edilebilir
-          bir aktarım onayıyla çıkar; her gönderim makbuzla kayda alınır.
-        </p>
+        <h1>{t("nav.aiReview")}</h1>
+        <p className="lead">{t("ai.lead")}</p>
       </div>
 
       {error ? (
@@ -197,7 +195,7 @@ export function Ai() {
 
       <div className="card">
         <div className="field" style={{ maxWidth: 420 }}>
-          <label htmlFor="ai-case">Dosya</label>
+          <label htmlFor="ai-case">{t("common.case")}</label>
           <select id="ai-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
             {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
           </select>
@@ -205,36 +203,40 @@ export function Ai() {
 
         {offOnly ? (
           <div className="notice warn">
-            <strong>AI kapalı.</strong> Kayıtlı sağlayıcı yalnız <code>off</code>. Bu durumda hiçbir
-            içerik gönderilmez; <code>E_AI_OFF</code> döner.
+            <strong>{t("ai.offTitle")}</strong> {t("ai.offLead")} <code>off</code>.{" "}
+            {t("ai.offTail")} <code>E_AI_OFF</code> {t("ai.offEnd")}
           </div>
         ) : null}
 
         <dl className="kv">
-          <dt>Sağlayıcı</dt>
-          <dd>{provider ? `${provider.adapterId} (${provider.providerType})` : "yok — yalnız off"}</dd>
-          <dt>Kapsam</dt>
+          <dt>{t("ai.provider")}</dt>
+          <dd>{provider ? `${provider.adapterId} (${provider.providerType})` : t("ai.providerNone")}</dd>
+          <dt>{t("ai.coverage")}</dt>
           <dd>
             {overview
-              ? `${overview.coverage.documents} belge · ${overview.coverage.pages} sayfa · ` +
-                `${overview.coverage.ocrPages} OCR · ${overview.coverage.emptyPages} boş sayfa · ` +
-                `${overview.coverage.unparsedDocuments} ayrıştırılmamış`
-              : "—"}
+              ? t("ai.coverageLine", {
+                  documents: overview.coverage.documents,
+                  pages: overview.coverage.pages,
+                  ocrPages: overview.coverage.ocrPages,
+                  emptyPages: overview.coverage.emptyPages,
+                  unparsed: overview.coverage.unparsedDocuments,
+                })
+              : t("common.unknown")}
           </dd>
         </dl>
 
         <div className="row">
           <div className="field" style={{ maxWidth: 220 }}>
-            <label htmlFor="ai-purpose">Amaç</label>
+            <label htmlFor="ai-purpose">{t("ai.purpose")}</label>
             <select id="ai-purpose" className="input" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
-              <option value="ozet">Özet</option>
-              <option value="olay_cikarimi">Olay çıkarımı</option>
-              <option value="iddia_cikarimi">İddia çıkarımı</option>
+              <option value="ozet">{t("ai.purposeSummary")}</option>
+              <option value="olay_cikarimi">{t("ai.purposeEvents")}</option>
+              <option value="iddia_cikarimi">{t("ai.purposeClaims")}</option>
             </select>
           </div>
           <div className="row" style={{ alignItems: "flex-end", gap: "var(--space-2)" }}>
             <button className="btn" disabled={!provider || busy} onClick={() => void approve()}>
-              Aktarım onayı ver
+              {t("ai.approve")}
             </button>
             <button
               className="btn ghost"
@@ -247,10 +249,10 @@ export function Ai() {
                 }
               }}
             >
-              Gönderilecek içeriği göster
+              {t("ai.showContent")}
             </button>
             <button className="btn primary" disabled={!provider || !consent || busy} onClick={() => void start()}>
-              Çalıştır
+              {t("ai.run")}
             </button>
           </div>
         </div>
@@ -259,27 +261,33 @@ export function Ai() {
           <div className="card" style={{ marginTop: 8 }}>
             <div className="card-head">
               <div>
-                <h3>Gönderilecek içerik</h3>
+                <h3>{t("ai.previewTitle")}</h3>
                 <p className="card-sub">
-                  {preview.documents} belge · {preview.segments} segment ·{" "}
-                  {formatSize(preview.bytes)}
+                  {t("ai.previewSub", {
+                    documents: preview.documents,
+                    segments: preview.segments,
+                    bytes: formatSize(preview.bytes),
+                  })}
                 </p>
               </div>
             </div>
             {skippedSummary(preview.skipped) ? (
               <p className="hint" style={{ margin: 0 }}>
-                {skippedSummary(preview.skipped)} — bu belgeler gönderilmez.
+                {skippedSummary(preview.skipped)} {t("ai.skippedSuffix")}
               </p>
             ) : null}
             <pre style={{ maxHeight: 140, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
-              {preview.sample || "ayrıştırılmış metin yok — bu dosyada gönderilecek içerik bulunmuyor"}
+              {preview.sample || t("ai.previewEmpty")}
             </pre>
           </div>
         ) : null}
         {consent ? (
           <p className="hint" style={{ margin: 0 }}>
-            {consentScopeLine(consent.selectedDocumentIds.length, preview)} · Onay{" "}
-            {consent.id.slice(0, 8)}… · {consent.providerSnapshot} · iptal edilene kadar geçerli.
+            {consentScopeLine(consent.selectedDocumentIds.length, preview)}{" · "}
+            {t("ai.consentTail", {
+              id: consent.id.slice(0, 8),
+              provider: consent.providerSnapshot,
+            })}
             <button
               className="btn ghost"
               style={{ marginLeft: 8 }}
@@ -290,7 +298,7 @@ export function Ai() {
                   .catch((e) => setError(toApiError(e)))
               }
             >
-              İptal et
+              {t("ai.revoke")}
             </button>
           </p>
         ) : null}
@@ -299,14 +307,19 @@ export function Ai() {
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Çalıştırmalar</h2>
-            <p className="card-sub">Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada</p>
+            <h2>{t("ai.runsTitle")}</h2>
+            <p className="card-sub">{t("ai.runsSub")}</p>
           </div>
         </div>
         {overview && overview.runs.length > 0 ? (
           <table className="table">
             <thead>
-              <tr><th>Tür</th><th>Durum</th><th>Başlangıç</th><th>Adaylar</th></tr>
+              <tr>
+                <th>{t("ai.colKind")}</th>
+                <th>{t("ai.colState")}</th>
+                <th>{t("ai.colStarted")}</th>
+                <th>{t("ai.colCandidates")}</th>
+              </tr>
             </thead>
             <tbody>
               {overview.runs.map((run) => (
@@ -316,7 +329,7 @@ export function Ai() {
                   <td>{formatDateTime(run.createdAt)}</td>
                   <td>
                     <button className="btn ghost" onClick={() => void selectRun(run.id)}>
-                      {runId === run.id ? "Seçili · adayları yenile" : "Seç ve adayları gör"}
+                      {runId === run.id ? t("ai.selectedRun") : t("ai.selectRun")}
                     </button>
                   </td>
                 </tr>
@@ -324,34 +337,29 @@ export function Ai() {
             </tbody>
           </table>
         ) : (
-          <p className="hint" style={{ margin: 0 }}>Henüz çalıştırma yok. Sağlayıcı bağlanınca burada görünür.</p>
+          <p className="hint" style={{ margin: 0 }}>{t("ai.runsEmpty")}</p>
         )}
       </div>
 
       <div className="card">
         <div className="card-head">
           <div>
-            <h2>Aday doğrula ve kaydet</h2>
-            <p className="card-sub">
-              Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum
-              hesaplanır — elle “geçerli” yazılamaz.
-            </p>
+            <h2>{t("ai.validateTitle")}</h2>
+            <p className="card-sub">{t("ai.validateSub")}</p>
           </div>
         </div>
 
         {runId ? (
           <p className="hint" style={{ marginTop: 0 }}>
-            Seçili çalıştırma: <code>{runId.slice(0, 8)}…</code>
+            {t("ai.currentRun")} <code>{runId.slice(0, 8)}…</code>
           </p>
         ) : (
-          <div className="notice warn">
-            Önce yukarıdaki tablodan bir çalıştırma seçin; aday o çalıştırmaya bağlanır.
-          </div>
+          <div className="notice warn">{t("ai.noRun")}</div>
         )}
 
         <div className="row">
           <div className="field" style={{ maxWidth: 260 }}>
-            <label htmlFor="ai-kind">Aday türü</label>
+            <label htmlFor="ai-kind">{t("ai.kindLabel")}</label>
             <select
               id="ai-kind"
               className="input"
@@ -373,7 +381,7 @@ export function Ai() {
         </div>
 
         <div className="field">
-          <label htmlFor="ai-draft">Aday yükü (JSON)</label>
+          <label htmlFor="ai-draft">{t("ai.draftLabel")}</label>
           <textarea
             id="ai-draft"
             className="input"
@@ -391,14 +399,14 @@ export function Ai() {
             disabled={!runId || busy || draftError !== null}
             onClick={() => void validateDraft(false)}
           >
-            Doğrula
+            {t("ai.validate")}
           </button>
           <button
             className="btn primary"
             disabled={!runId || busy || draftError !== null}
             onClick={() => void validateDraft(true)}
           >
-            Doğrula ve kaydet
+            {t("ai.validateAndSave")}
           </button>
         </div>
 
@@ -413,17 +421,28 @@ export function Ai() {
               </span>
               <span className="badge plain">{quoteSummary(report)}</span>
               {errorCount(report.issues) > 0 ? (
-                <span className="badge danger">{errorCount(report.issues)} hata</span>
+                <span className="badge danger">
+                  {t("ai.errorBadge", { count: errorCount(report.issues) })}
+                </span>
               ) : null}
               {warningCount(report.issues) > 0 ? (
-                <span className="badge warn">{warningCount(report.issues)} uyarı</span>
+                <span className="badge warn">
+                  {t("ai.warningBadge", { count: warningCount(report.issues) })}
+                </span>
               ) : null}
             </div>
 
             {report.quotes.length > 0 ? (
               <table className="table" style={{ marginTop: "var(--space-2)" }}>
                 <thead>
-                  <tr><th>#</th><th>Alıntı</th><th>Durum</th><th>Konum</th><th>Tekrar</th><th>Metin</th></tr>
+                  <tr>
+                    <th>#</th>
+                    <th>{t("ai.colQuote")}</th>
+                    <th>{t("ai.colState")}</th>
+                    <th>{t("ai.colPosition")}</th>
+                    <th>{t("ai.colOccurrences")}</th>
+                    <th>{t("ai.colText")}</th>
+                  </tr>
                 </thead>
                 <tbody>
                   {report.quotes.map((quote) => (
@@ -438,11 +457,11 @@ export function Ai() {
                       <td>{quotePositionLabel(quote)}</td>
                       <td>{quote.occurrences}</td>
                       <td>
-                        {quote.textOrigin ?? "—"}
+                        {quote.textOrigin ?? t("common.unknown")}
                         {quote.claimedPageIndex !== null && quote.pageIndex !== null
                           && quote.claimedPageIndex !== quote.pageIndex ? (
                           <span className="hint" style={{ display: "block" }}>
-                            model sayfa {quote.claimedPageIndex + 1} dedi
+                            {t("ai.claimedPage", { page: quote.claimedPageIndex + 1 })}
                           </span>
                         ) : null}
                       </td>
@@ -454,7 +473,7 @@ export function Ai() {
 
             {report.issues.length > 0 ? (
               <details style={{ marginTop: "var(--space-2)" }} open>
-                <summary>Doğrulama sorunları ({report.issues.length})</summary>
+                <summary>{t("ai.issuesSummary", { count: report.issues.length })}</summary>
                 <ul className="hint" style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
                   {report.issues.map((issue, index) => (
                     <li key={`${issue.code}-${issue.field}-${index}`}>
@@ -471,11 +490,7 @@ export function Ai() {
               </ul>
             ) : null}
 
-            <p className="hint" style={{ marginBottom: 0 }}>
-              Doğrulamanın sınırları: yalnız kasada ayrıştırılmış metin aranır; OCR yazım hatası
-              eşleşmeyi etkileyebilir, maskeli bağlamın özgün kaynağa geri eşlenmesi bu adımda
-              yapılmaz. Aday metni modelin ürettiği hâliyle saklanır.
-            </p>
+            <p className="hint" style={{ marginBottom: 0 }}>{t("ai.limits")}</p>
           </div>
         ) : null}
       </div>
@@ -484,13 +499,19 @@ export function Ai() {
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Adaylar</h2>
-              <p className="card-sub">Kabul edilene kadar hukuki kayıt sayılmaz</p>
+              <h2>{t("ai.candidatesTitle")}</h2>
+              <p className="card-sub">{t("ai.candidatesSub")}</p>
             </div>
           </div>
           <table className="table">
             <thead>
-              <tr><th>Tür</th><th>Şema</th><th>Alıntı</th><th>İçerik</th><th /></tr>
+              <tr>
+                <th>{t("ai.colKind")}</th>
+                <th>{t("ai.colSchema")}</th>
+                <th>{t("ai.colQuote")}</th>
+                <th>{t("ai.colContent")}</th>
+                <th />
+              </tr>
             </thead>
             <tbody>
               {candidates.map((candidate) => {
@@ -503,7 +524,7 @@ export function Ai() {
                       <span className="hint" style={{ display: "block" }}>
                         {candidate.checkedAt
                           ? formatDateTime(candidate.checkedAt)
-                          : "denetlenmemiş"}
+                          : t("ai.neverChecked")}
                       </span>
                     </td>
                     <td>
@@ -511,7 +532,9 @@ export function Ai() {
                         {candidateStateLabel(candidate.schemaState)}
                       </span>
                       <span className={`badge ${candidateStateTone(candidate.validationState)}`} style={{ marginLeft: 4 }}>
-                        aday: {candidateStateLabel(candidate.validationState)}
+                        {t("ai.candidateBadge", {
+                          state: candidateStateLabel(candidate.validationState),
+                        })}
                       </span>
                     </td>
                     <td>
@@ -520,7 +543,9 @@ export function Ai() {
                       </span>
                       {candidate.quoteReport.length > 0 ? (
                         <details style={{ marginTop: 4 }}>
-                          <summary className="hint">{candidate.quoteReport.length} alıntı</summary>
+                          <summary className="hint">
+                            {t("ai.quotesToggle", { count: candidate.quoteReport.length })}
+                          </summary>
                           <ul className="hint" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
                             {candidate.quoteReport.map((quote) => (
                               <li key={`${quote.documentVersionId}-${quote.index}`}>
@@ -538,7 +563,9 @@ export function Ai() {
                       {candidate.structuredPayload.slice(0, 80)}
                       {issues.length > 0 ? (
                         <details style={{ marginTop: 4 }}>
-                          <summary className="hint">{issues.length} sorun</summary>
+                          <summary className="hint">
+                            {t("ai.issuesToggle", { count: issues.length })}
+                          </summary>
                           <ul className="hint" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
                             {issues.map((issue, index) => (
                               <li key={`${issue.code}-${index}`}>
@@ -552,15 +579,15 @@ export function Ai() {
                     <td>
                       <div className="row" style={{ gap: 6 }}>
                         <button className="btn ghost" disabled={busy} onClick={() => void revalidate(candidate.id)}>
-                          Yeniden doğrula
+                          {t("ai.revalidate")}
                         </button>
                         <button
                           className="btn ghost"
                           disabled={busy || blocked !== null}
-                          title={blocked ?? "İnceleme kuyruğuna gönder"}
+                          title={blocked ?? t("ai.promoteTitle")}
                           onClick={() => void promote(candidate.id)}
                         >
-                          İncelemeye gönder
+                          {t("ai.promote")}
                         </button>
                       </div>
                       {blocked ? <span className="hint">{blocked}</span> : null}

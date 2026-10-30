@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConsentPreview } from "./api";
+import { tr } from "./i18n";
 import { consentScopeLine, skipReasonLabel, skippedSummary } from "./transferScope";
 
 function preview(overrides: Partial<ConsentPreview> = {}): ConsentPreview {
@@ -34,5 +35,24 @@ describe("aktarım kapsamı", () => {
     expect(consentScopeLine(3, preview())).toBe(
       "Onay kapsamı: 3 belge · gönderilecek: 2 belge, 5 segment, 120 bayt",
     );
+  });
+});
+
+describe("sözlük bağı (F04-T08)", () => {
+  it("kapsam dışı nedenleri sözlükten gelir", () => {
+    expect(skipReasonLabel("not_parsed")).toBe(tr.transferScope.skip.notParsed);
+    expect(skipReasonLabel("empty_text")).toBe(tr.transferScope.skip.emptyText);
+    expect(skipReasonLabel("no_current_version")).toBe(tr.transferScope.skip.noVersion);
+    expect(skipReasonLabel("missing")).toBe(tr.transferScope.skip.missing);
+  });
+
+  it("parametreli satırlarda yer tutucu kalmaz", () => {
+    const line = consentScopeLine(3, preview());
+    expect(line).not.toContain("{");
+    expect(line).toContain("3 belge");
+    expect(line).toContain("120 bayt");
+    const skipped = skippedSummary([{ documentId: "d1", reason: "not_parsed" }]);
+    expect(skipped).not.toContain("{");
+    expect(skipped).toBe(`Gönderilmeyen 1 belge: 1 ${tr.transferScope.skip.notParsed}`);
   });
 });

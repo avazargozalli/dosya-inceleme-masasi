@@ -11,9 +11,11 @@
  * **Dürüst sınır:** F04-T08 sürüyor. Taşınan dosyalar: `App.tsx`,
  * `screens/Unlock.tsx`, `screens/Workspace.tsx`, `screens/Tasks.tsx`,
  * `screens/Exports.tsx`, `screens/Redaction.tsx`, `screens/Timeline.tsx`,
- * `screens/Checklists.tsx` ve `lib/checklist.ts`. Kalan ekranlar (Dosyalar/Cases,
- * Arama, İnceleme, Emsal, AI, Sağlayıcılar, Ayarlar) metinlerini hâlâ kendi
- * dosyalarında taşır; `lib/jobs.ts`, `lib/reader.ts`, `lib/providers.ts`,
+ * `screens/Checklists.tsx`, `screens/Ai.tsx`, `lib/checklist.ts`,
+ * `lib/candidate.ts` ve `lib/transferScope.ts`. Kalan ekranlar (Dosyalar/Cases,
+ * Arama, İnceleme, Emsal, Sağlayıcılar, Ayarlar) ve yardımcı bileşenler
+ * (`DualReader`, `Notes`, `JobQueueCard`, `WorkerBudgetCard`) metinlerini hâlâ
+ * kendi dosyalarında taşır; `lib/jobs.ts`, `lib/reader.ts`, `lib/providers.ts`,
  * `lib/search.ts`, `lib/reminders.ts`, `lib/export-coverage.ts` ve diğer yardımcı
  * lib'ler de kendi metinlerini taşır. Taşıma sırası ve sayısı
  * `docs/releases/F04/README.md` (F04-T08) içinde yazılıdır — burada "bitti"
@@ -379,6 +381,170 @@ export const tr = {
     noticeCopied: "{title} sürüm {version} dosyaya kopyalandı ({count} öğe, {license}).",
     noticeAlready: "{title} bu dosyada zaten var; yinelenen öğe eklenmedi.",
     noticeUpdated: "“{item}” güncellendi.",
+  },
+  transferScope: {
+    skip: {
+      notParsed: "ayrıştırılmamış",
+      emptyText: "metin yok",
+      noVersion: "sürüm yok",
+      missing: "bulunamadı",
+    },
+    skippedSummary: "Gönderilmeyen {total} belge: {parts}",
+    scopeNoPreview: "Onay kapsamı: {documents} belge · içerik önizlemesi alınmadı",
+    scopeWithPreview:
+      "Onay kapsamı: {documents} belge · gönderilecek: {previewDocuments} belge, " +
+      "{segments} segment, {bytes}",
+  },
+  candidate: {
+    kind: {
+      event: "Olay",
+      person: "Kişi",
+      date: "Tarih",
+      claim: "İddia",
+      summary: "Özet",
+      answer: "Yanıt",
+    },
+    kindHint: {
+      event: "title zorunlu; date, participants, description isteğe bağlı.",
+      person: "name zorunlu; role, organization isteğe bağlı.",
+      date: "rawText + kind zorunlu; isoDate yalnız gün kesinse (YYYY-AA-GG).",
+      claim: "text zorunlu; assertedBy, amountText isteğe bağlı.",
+      summary: "text zorunlu; en az bir alıntı taşımalı.",
+      answer: "text zorunlu; question isteğe bağlı.",
+    },
+    sample: {
+      eventTitle: "Ödeme yapılmadı",
+      eventDate: "12 Mart 2024",
+      personName: "Ahmet Yılmaz",
+      personRole: "davaci",
+      dateRaw: "12 Mart 2024",
+      claimText: "Kira bedeli ödenmedi.",
+      summaryText: "Dosyada ödeme yapılmadığı ileri sürülüyor.",
+      answerText: "Ödeme yapıldığına dair belge yok.",
+    },
+    state: {
+      valid: "geçerli",
+      partial: "kısmi",
+      invalid: "geçersiz",
+      legacy: "doğrulanmamış (eski kayıt)",
+    },
+    quoteState: {
+      verified: "alıntılar birebir doğrulandı",
+      partial: "alıntı kısmen doğrulandı",
+      failed: "alıntı doğrulanamadı",
+      noQuotes: "alıntı yok",
+      notChecked: "alıntı denetlenmedi",
+      legacy: "denetlenmemiş (eski kayıt)",
+    },
+    line: {
+      exact: "birebir bulundu",
+      normalized: "normalizasyonla eşleşti",
+      ambiguous: "birden fazla yerde",
+      pageMismatch: "başka sayfada bulundu",
+      notFound: "metinde yok",
+      unverifiable: "doğrulanamadı",
+    },
+    unverifiableReason: {
+      versionNotFound: "belge sürümü bulunamadı",
+      caseMismatch: "belge başka dosyaya ait",
+      noText: "belgenin metni yok",
+    },
+    position: {
+      missing: "konum yok",
+      page: "sayfa {page}",
+      pageChar: "sayfa {page} · karakter {char}",
+    },
+    summary: {
+      none: "alıntı yok",
+      exact: "{exact}/{total} alıntı birebir",
+    },
+    draft: {
+      empty: "Aday yükü boş.",
+      notObject: "Aday yükü bir JSON nesnesi olmalı.",
+      unparsable: "JSON çözülemedi: {message}",
+      unknownError: "bilinmeyen hata",
+    },
+    blocked: {
+      legacy: "Aday bu sürümde doğrulanmamış; önce yeniden doğrulayın.",
+      quoteFailed: "Adaydaki alıntı belge metninde bulunamadı; kaynak olarak kullanılamaz.",
+      invalidSchema: "Aday şeması geçersiz; yükü düzeltin.",
+    },
+  },
+  ai: {
+    lead:
+      "AI yalnız aday üretir. İçerik cihazdan ancak dosya kapsamlı, süreli ve iptal " +
+      "edilebilir bir aktarım onayıyla çıkar; her gönderim makbuzla kayda alınır.",
+    offTitle: "AI kapalı.",
+    offLead: "Kayıtlı sağlayıcı yalnız",
+    offTail: "Bu durumda hiçbir içerik gönderilmez;",
+    offEnd: "döner.",
+    provider: "Sağlayıcı",
+    providerNone: "yok — yalnız off",
+    coverage: "Kapsam",
+    coverageLine:
+      "{documents} belge · {pages} sayfa · {ocrPages} OCR · {emptyPages} boş sayfa · " +
+      "{unparsed} ayrıştırılmamış",
+    purpose: "Amaç",
+    purposeSummary: "Özet",
+    purposeEvents: "Olay çıkarımı",
+    purposeClaims: "İddia çıkarımı",
+    approve: "Aktarım onayı ver",
+    showContent: "Gönderilecek içeriği göster",
+    run: "Çalıştır",
+    revoke: "İptal et",
+    previewTitle: "Gönderilecek içerik",
+    previewSub: "{documents} belge · {segments} segment · {bytes}",
+    skippedSuffix: "— bu belgeler gönderilmez.",
+    previewEmpty: "ayrıştırılmış metin yok — bu dosyada gönderilecek içerik bulunmuyor",
+    consentTail: "Onay {id}… · {provider} · iptal edilene kadar geçerli.",
+    runsTitle: "Çalıştırmalar",
+    runsSub: "Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada",
+    colKind: "Tür",
+    colState: "Durum",
+    colStarted: "Başlangıç",
+    colCandidates: "Adaylar",
+    runsEmpty: "Henüz çalıştırma yok. Sağlayıcı bağlanınca burada görünür.",
+    selectRun: "Seç ve adayları gör",
+    selectedRun: "Seçili · adayları yenile",
+    validateTitle: "Aday doğrula ve kaydet",
+    validateSub:
+      "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +
+      "hesaplanır — elle “geçerli” yazılamaz.",
+    currentRun: "Seçili çalıştırma:",
+    noRun: "Önce yukarıdaki tablodan bir çalıştırma seçin; aday o çalıştırmaya bağlanır.",
+    kindLabel: "Aday türü",
+    draftLabel: "Aday yükü (JSON)",
+    validate: "Doğrula",
+    validateAndSave: "Doğrula ve kaydet",
+    errorBadge: "{count} hata",
+    warningBadge: "{count} uyarı",
+    colQuote: "Alıntı",
+    colPosition: "Konum",
+    colOccurrences: "Tekrar",
+    colText: "Metin",
+    claimedPage: "model sayfa {page} dedi",
+    issuesSummary: "Doğrulama sorunları ({count})",
+    limits:
+      "Doğrulamanın sınırları: yalnız kasada ayrıştırılmış metin aranır; OCR yazım hatası " +
+      "eşleşmeyi etkileyebilir, maskeli bağlamın özgün kaynağa geri eşlenmesi bu adımda " +
+      "yapılmaz. Aday metni modelin ürettiği hâliyle saklanır.",
+    candidatesTitle: "Adaylar",
+    candidatesSub: "Kabul edilene kadar hukuki kayıt sayılmaz",
+    colSchema: "Şema",
+    colContent: "İçerik",
+    neverChecked: "denetlenmemiş",
+    candidateBadge: "aday: {state}",
+    quotesToggle: "{count} alıntı",
+    issuesToggle: "{count} sorun",
+    revalidate: "Yeniden doğrula",
+    promote: "İncelemeye gönder",
+    promoteTitle: "İnceleme kuyruğuna gönder",
+    noticeValid: "Aday doğrulandı ve kaydedildi (geçerli).",
+    noticePartial:
+      "Aday kaydedildi; kısmi — kaynakları eksik veya alıntılar tam doğrulanmadı.",
+    noticeInvalid: "Aday kaydedildi ama geçersiz; incelemeye gönderilemez.",
+    noticePromoted:
+      "Aday inceleme kuyruğuna gönderildi; kabul edilene kadar hukuki kayıt değil.",
   },
   labels: {
     caseKind: {

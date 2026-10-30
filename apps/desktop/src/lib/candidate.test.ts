@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CandidateReport, QuoteMatchReport } from "./api";
+import { tr } from "./i18n";
 import {
   CANDIDATE_KINDS,
   candidateKindLabel,
@@ -181,5 +182,46 @@ describe("taslak ve terfi kapısı", () => {
     expect(
       promoteBlockedReason({ validationState: "valid", quoteState: "legacy", schemaState: "legacy" }),
     ).toContain("yeniden doğrulayın");
+  });
+});
+
+describe("sözlük bağı (F04-T08)", () => {
+  it("etiket, ipucu ve kapı metinleri doğrudan sözlükten gelir", () => {
+    expect(candidateKindLabel("event_candidate")).toBe(tr.candidate.kind.event);
+    expect(candidateKindLabel("answer_candidate")).toBe(tr.candidate.kind.answer);
+    expect(candidateStateLabel("legacy")).toBe(tr.candidate.state.legacy);
+    expect(quoteStateLabel("verified")).toBe(tr.candidate.quoteState.verified);
+    expect(quoteLineStateLabel(quote({ state: "not_found" }))).toBe(tr.candidate.line.notFound);
+    expect(
+      quoteLineStateLabel(quote({ state: "unverifiable", reason: "case_mismatch" })),
+    ).toBe(tr.candidate.unverifiableReason.caseMismatch);
+    expect(
+      promoteBlockedReason({
+        validationState: "invalid",
+        quoteState: "not_checked",
+        schemaState: "valid",
+      }),
+    ).toBe(tr.candidate.blocked.invalidSchema);
+    expect(draftJsonError("")).toBe(tr.candidate.draft.empty);
+    expect(draftJsonError("[")?.startsWith(tr.candidate.draft.unparsable.split("{")[0]!)).toBe(true);
+  });
+
+  it("modül düzeyi sabitler de sözlükten kurulur (metin lib'e geri gömülemez)", () => {
+    const claim = CANDIDATE_KINDS.find((option) => option.value === "claim_candidate")!;
+    expect(claim.label).toBe(tr.candidate.kind.claim);
+    expect(claim.hint).toBe(tr.candidate.kindHint.claim);
+    expect(claim.template).toContain(tr.candidate.sample.claimText);
+    const person = CANDIDATE_KINDS.find((option) => option.value === "person_candidate")!;
+    expect(person.template).toContain(tr.candidate.sample.personName);
+  });
+
+  it("parametreli metinlerde yer tutucu kalmaz", () => {
+    const position = quotePositionLabel(quote({ pageIndex: 2, charStart: 45 }));
+    expect(position).toContain("3");
+    expect(position).toContain("45");
+    expect(position).not.toContain("{");
+    expect(quotePositionLabel(quote({ pageIndex: 4, charStart: null }))).not.toContain("{");
+    expect(quoteSummary(report({}))).not.toContain("{");
+    expect(quoteSummary(report({ quotes: [] }))).toBe(tr.candidate.summary.none);
   });
 });

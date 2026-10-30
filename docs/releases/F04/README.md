@@ -11,7 +11,67 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi** ekranları ve **`lib/checklist.ts`** taşındı; **7 ekran açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) — 2026-10-30 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI** ekranları; **`lib/checklist.ts`, `lib/candidate.ts`, `lib/transferScope.ts`** taşındı; **6 ekran + 4 bileşen açık**; kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) — 2026-10-30 |
+
+## F04-T08 — sözlük taşıması: AI ekranı + aday/kapsam yardımcıları (2026-10-30, üçüncü tur)
+
+**Neden:** kalan iş listesindeki diğer maddeler insan/donanım bekliyor (F17/F02 Windows,
+Kimi/Antigravity hesabı, notarization, pilot). Kodla ölçülebilir tek sınıf F04-T08'di.
+Sıradaki en küçük ekran **AI** ölçüldü (578 satır / **51** Türkçe satır) ama ekran tek
+başına taşınsaydı metnin çoğu iki yardımcı lib'de kalırdı: `lib/candidate.ts` **38**,
+`lib/transferScope.ts` **7** Türkçe satır — ikisi de yalnız bu ekran tarafından
+kullanılıyor (ölçüldü: başka ekran import etmiyor). Üçü birlikte taşındı.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **121 yeni anahtar**: `ai` (63), `candidate` (51), `transferScope` (7).
+  Sözlük toplamı **298 → 419** anahtar.
+- `screens/Ai.tsx`: başlık `nav.aiReview`dan; tüm alan etiketi, düğme, tablo başlığı,
+  uyarı, boş durum, bildirim ve "doğrulamanın sınırları" metni sözlükten. Parametreli
+  metinler `t(key,{…})`: `{count}`, `{page}`, `{documents}`, `{segments}`, `{bytes}`,
+  `{state}`, `{id}`, `{provider}`.
+- `lib/candidate.ts`: durum/etiket/konum/özet/engel metinleri `t()`den;
+  `CANDIDATE_KINDS` (tür etiketi + ipucu + **örnek JSON şablonu**) modül düzeyinde
+  sözlükten kurulur.
+- `lib/transferScope.ts`: kapsam dışı neden etiketleri, "Gönderilmeyen N belge: …" ve
+  onay kapsamı satırı sözlükten (`formatSize` çağrısı korunur — biçim tek katmanda).
+- **Kapı kapsamı:** `localization.test.ts` `MIGRATED` += `screens/Ai.tsx`,
+  `lib/candidate.ts`, `lib/transferScope.ts` → taşınmış **12** dosya taranıyor.
+
+**Kanıt (kırmızı→yeşil, ölçüldü)**
+
+- Aynı anda `Ai.tsx`e `const _leak = "Aday doğrulama paneli";` ve `candidate.ts`e
+  `export const _LEAK2 = "geçerli oldu";` → `localization.test.ts` **1 failed | 7 passed**,
+  rapor iki dosyayı birlikte gösterdi: `[ "lib/candidate.ts:80", "screens/Ai.tsx:34" ]`;
+  satırlar geri alındı → **8/8**.
+- Yeni **3 test** (toplam +5 assert grubu): (a) `candidate.ts` etiket/ipucu/şablon
+  metinlerinin **birebir sözlükten** geldiği (metin lib'e geri gömülürse kırmızı),
+  (b) `transferScope.ts` neden etiketleri + parametreli satırlarda `{` kalmadığı,
+  (c) modül düzeyi sabitlerin (`CANDIDATE_KINDS`) sözlükten kurulduğu.
+
+**Test/derleme:** `tsc --noEmit` temiz · `vitest run` **450/450** (35 dosya; 445 → +5) ·
+`vite build` temiz (**502,48 kB**; önceki 497,44 kB — sözlük büyüdü, Vite'ın 500 kB
+uyarısı **artık tetikleniyor**, hata değil). Taşınmış **12** dosyanın tümünde yorum dışı
+**0** Türkçe harf satırı (betikle sayıldı: 12/12).
+
+**Dürüst sınırlar**
+
+- **6 ekran + 4 yardımcı bileşen taşınmadı:** Dosyalar/Cases (60 Türkçe satır), Arama (45),
+  İnceleme (100), Emsal (136), Sağlayıcılar (110), Ayarlar (60); `components/DualReader.tsx`
+  (93), `Notes.tsx` (35), `JobQueueCard.tsx` (19), `WorkerBudgetCard.tsx` (13). F04-T08
+  **🚧 kaldı**. (Ölçüm: yorumlar ayıklanıp Türkçe harf taşıyan **yorum dışı** satır sayıldı;
+  önceki turların sayıları ham `grep`ten geldiği için daha yüksekti.)
+- Yardımcı lib metinleri hâlâ kendi dosyalarında: `lib/jobs.ts` (42), `lib/providers.ts` (42),
+  `lib/reader.ts` (8 — diğer 76 satır yorum), `lib/search.ts` (24), `lib/arch.ts` (36),
+  `lib/intext.ts` (35), `lib/reminders.ts` (7), `lib/export-coverage.ts` (17), `lib/attack.ts`
+  (24), `lib/rollback.ts` (17) → taşınmış ekranların bazı satırları hâlâ oradan geliyor ve
+  kapı o dosyaları taramıyor.
+- Metinler **birebir aynı** (yalnız kaynak değişti); tek istisna `AI kapalı.` uyarısının
+  JSX bölünmesi (ayırıcı nokta/boşluk JSX'te, cümle sözlükte) — görünür metin aynı.
+- Tauri penceresi açılmadı → **görsel QA yok**; Windows denenmedi.
+- `CANDIDATE_KINDS` modül düzeyinde kurulduğu için `t()` **import anında** çözülür (sözlük
+  `as const`, dil değiştirme yok — tek dilli ürün kararı sürüyor).
+
 
 ## F04-T08 — sözlük taşıması: Kronoloji + Kontrol listesi (+ `lib/checklist.ts`) (2026-10-30, ikinci tur)
 

@@ -1,4 +1,5 @@
 import type { AiCandidateRow, CandidateReport, QuoteMatchReport, ValidationIssue } from "./api";
+import { t } from "./i18n";
 
 /**
  * F11-T05 — aday şema doğrulaması ve alıntı eşleştirmesi metinleri.
@@ -6,6 +7,10 @@ import type { AiCandidateRow, CandidateReport, QuoteMatchReport, ValidationIssue
  * Kural: doğrulama durumu **hesaplanır**; arayüz yalnız gösterir. Şeması
  * geçersiz aday `valid` gibi çizilmez, metinde bulunmayan alıntı kaynak
  * sayılmaz. Sayfa numaraları veride 0 tabanlıdır; insan için 1 tabanlı yazılır.
+ *
+ * Metinler F04-T08 gereği `lib/i18n.ts`ten gelir. `CANDIDATE_KINDS` modül
+ * düzeyinde kurulduğu için `t()` **import anında** çözülür (sözlük `as const`,
+ * tek dilli ürün kararı — dil değiştirme yok).
  */
 
 export type CandidateKindOption = {
@@ -22,22 +27,30 @@ function template(fields: Record<string, unknown>): string {
 export const CANDIDATE_KINDS: CandidateKindOption[] = [
   {
     value: "event_candidate",
-    label: "Olay",
-    hint: "title zorunlu; date, participants, description isteğe bağlı.",
-    template: template({ title: "Ödeme yapılmadı", date: "12 Mart 2024", quotes: [] }),
+    label: t("candidate.kind.event"),
+    hint: t("candidate.kindHint.event"),
+    template: template({
+      title: t("candidate.sample.eventTitle"),
+      date: t("candidate.sample.eventDate"),
+      quotes: [],
+    }),
   },
   {
     value: "person_candidate",
-    label: "Kişi",
-    hint: "name zorunlu; role, organization isteğe bağlı.",
-    template: template({ name: "Ahmet Yılmaz", role: "davaci", quotes: [] }),
+    label: t("candidate.kind.person"),
+    hint: t("candidate.kindHint.person"),
+    template: template({
+      name: t("candidate.sample.personName"),
+      role: t("candidate.sample.personRole"),
+      quotes: [],
+    }),
   },
   {
     value: "date_candidate",
-    label: "Tarih",
-    hint: "rawText + kind zorunlu; isoDate yalnız gün kesinse (YYYY-AA-GG).",
+    label: t("candidate.kind.date"),
+    hint: t("candidate.kindHint.date"),
     template: template({
-      rawText: "12 Mart 2024",
+      rawText: t("candidate.sample.dateRaw"),
       kind: "document",
       isoDate: "2024-03-12",
       precision: "day",
@@ -46,21 +59,21 @@ export const CANDIDATE_KINDS: CandidateKindOption[] = [
   },
   {
     value: "claim_candidate",
-    label: "İddia",
-    hint: "text zorunlu; assertedBy, amountText isteğe bağlı.",
-    template: template({ text: "Kira bedeli ödenmedi.", quotes: [] }),
+    label: t("candidate.kind.claim"),
+    hint: t("candidate.kindHint.claim"),
+    template: template({ text: t("candidate.sample.claimText"), quotes: [] }),
   },
   {
     value: "summary_candidate",
-    label: "Özet",
-    hint: "text zorunlu; en az bir alıntı taşımalı.",
-    template: template({ text: "Dosyada ödeme yapılmadığı ileri sürülüyor.", quotes: [] }),
+    label: t("candidate.kind.summary"),
+    hint: t("candidate.kindHint.summary"),
+    template: template({ text: t("candidate.sample.summaryText"), quotes: [] }),
   },
   {
     value: "answer_candidate",
-    label: "Yanıt",
-    hint: "text zorunlu; question isteğe bağlı.",
-    template: template({ text: "Ödeme yapıldığına dair belge yok.", quotes: [] }),
+    label: t("candidate.kind.answer"),
+    hint: t("candidate.kindHint.answer"),
+    template: template({ text: t("candidate.sample.answerText"), quotes: [] }),
   },
 ];
 
@@ -71,13 +84,13 @@ export function candidateKindLabel(value: string): string {
 export function candidateStateLabel(state: string): string {
   switch (state) {
     case "valid":
-      return "geçerli";
+      return t("candidate.state.valid");
     case "partial":
-      return "kısmi";
+      return t("candidate.state.partial");
     case "invalid":
-      return "geçersiz";
+      return t("candidate.state.invalid");
     case "legacy":
-      return "doğrulanmamış (eski kayıt)";
+      return t("candidate.state.legacy");
     default:
       return state;
   }
@@ -99,17 +112,17 @@ export function candidateStateTone(state: string): "ok" | "warn" | "danger" | "p
 export function quoteStateLabel(state: string): string {
   switch (state) {
     case "verified":
-      return "alıntılar birebir doğrulandı";
+      return t("candidate.quoteState.verified");
     case "partial":
-      return "alıntı kısmen doğrulandı";
+      return t("candidate.quoteState.partial");
     case "failed":
-      return "alıntı doğrulanamadı";
+      return t("candidate.quoteState.failed");
     case "no_quotes":
-      return "alıntı yok";
+      return t("candidate.quoteState.noQuotes");
     case "not_checked":
-      return "alıntı denetlenmedi";
+      return t("candidate.quoteState.notChecked");
     case "legacy":
-      return "denetlenmemiş (eski kayıt)";
+      return t("candidate.quoteState.legacy");
     default:
       return state;
   }
@@ -131,25 +144,25 @@ export function quoteStateTone(state: string): "ok" | "warn" | "danger" | "plain
 export function quoteLineStateLabel(report: QuoteMatchReport): string {
   switch (report.state) {
     case "exact":
-      return "birebir bulundu";
+      return t("candidate.line.exact");
     case "normalized":
-      return "normalizasyonla eşleşti";
+      return t("candidate.line.normalized");
     case "ambiguous":
-      return "birden fazla yerde";
+      return t("candidate.line.ambiguous");
     case "page_mismatch":
-      return "başka sayfada bulundu";
+      return t("candidate.line.pageMismatch");
     case "not_found":
-      return "metinde yok";
+      return t("candidate.line.notFound");
     case "unverifiable":
       switch (report.reason) {
         case "version_not_found":
-          return "belge sürümü bulunamadı";
+          return t("candidate.unverifiableReason.versionNotFound");
         case "case_mismatch":
-          return "belge başka dosyaya ait";
+          return t("candidate.unverifiableReason.caseMismatch");
         case "no_text":
-          return "belgenin metni yok";
+          return t("candidate.unverifiableReason.noText");
         default:
-          return "doğrulanamadı";
+          return t("candidate.line.unverifiable");
       }
     default:
       return report.state;
@@ -172,24 +185,24 @@ export function quoteLineTone(state: string): "ok" | "warn" | "danger" | "plain"
   }
 }
 
-/** Alıntının insan okur konumu; konum bilinmiyorsa "konum bilinmiyor". */
+/** Alıntının insan okur konumu; konum bilinmiyorsa "konum yok". */
 export function quotePositionLabel(report: QuoteMatchReport): string {
   if (report.pageIndex === null) {
-    return "konum yok";
+    return t("candidate.position.missing");
   }
-  const page = `sayfa ${report.pageIndex + 1}`;
+  const page = report.pageIndex + 1;
   if (report.charStart === null) {
-    return page;
+    return t("candidate.position.page", { page });
   }
-  return `${page} · karakter ${report.charStart}`;
+  return t("candidate.position.pageChar", { page, char: report.charStart });
 }
 
 export function quoteSummary(report: CandidateReport): string {
   if (report.quotes.length === 0) {
-    return "alıntı yok";
+    return t("candidate.summary.none");
   }
   const exact = report.quotes.filter((quote) => quote.state === "exact").length;
-  return `${exact}/${report.quotes.length} alıntı birebir`;
+  return t("candidate.summary.exact", { exact, total: report.quotes.length });
 }
 
 /** `validation_errors` metni bozuk/boş olsa da arayüz çökmez. */
@@ -230,16 +243,18 @@ export function warningCount(issues: ValidationIssue[]): number {
 /** Taslak JSON'ı göndermeden önce yerel biçim denetimi (şema değil). */
 export function draftJsonError(text: string): string | null {
   if (!text.trim()) {
-    return "Aday yükü boş.";
+    return t("candidate.draft.empty");
   }
   try {
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return "Aday yükü bir JSON nesnesi olmalı.";
+      return t("candidate.draft.notObject");
     }
     return null;
   } catch (error) {
-    return `JSON çözülemedi: ${error instanceof Error ? error.message : "bilinmeyen hata"}`;
+    return t("candidate.draft.unparsable", {
+      message: error instanceof Error ? error.message : t("candidate.draft.unknownError"),
+    });
   }
 }
 
@@ -251,13 +266,13 @@ export function promoteBlockedReason(
   row: Pick<AiCandidateRow, "validationState" | "quoteState" | "schemaState">,
 ): string | null {
   if (row.schemaState === "legacy" || row.quoteState === "legacy") {
-    return "Aday bu sürümde doğrulanmamış; önce yeniden doğrulayın.";
+    return t("candidate.blocked.legacy");
   }
   if (row.quoteState === "failed") {
-    return "Adaydaki alıntı belge metninde bulunamadı; kaynak olarak kullanılamaz.";
+    return t("candidate.blocked.quoteFailed");
   }
   if (row.validationState === "invalid") {
-    return "Aday şeması geçersiz; yükü düzeltin.";
+    return t("candidate.blocked.invalidSchema");
   }
   return null;
 }
