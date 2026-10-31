@@ -11,7 +11,7 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
 
 ## Okuyucu davranış testi — `components/DualReader.test.tsx` (2026-10-31)
 
@@ -174,6 +174,102 @@ tsc + vitest + build — yerel/CI **birebir**, aynı derleme özeti `index-CcOd0
 testte koşmaz. Kapsam dışı: sonucu `DualReader`da açma (hedefin kendi sürümü — lib
 düzeyinde `reader` testleri var), panoya kopyalama, vurgu kaydırma/uzun metin kırpma,
 klavye gezinmesi, kütüphane notları. Windows denenmedi.
+
+## Dosyalar ekranı davranış testi — `screens/Cases.test.tsx` (2026-11-01)
+
+Sıradaki dürüst sınır “**`screens/Cases.tsx` (811 satır) davranış testi yok**”tu. Ekran
+F04-T01/T02 (liste, oluşturma, arşivle/geri al/sil), F04-T07 (ayrıştırma + canlı ilerleme)
+ve §17.3 toplu ayrıştırmanın kullanıcıya görünen yüzü; bugüne dek hiç render edilmemişti.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` **kısmen**
+mock'lanır (17 fonksiyon); `t()`, `budgetSummary`, `DEFAULT_OCR_LANG` ve `format` **gerçek**
+çalışır. Tauri sınırı üç modülle taklit edilir (`@tauri-apps/plugin-dialog`,
+`@tauri-apps/api/webview`, `@tauri-apps/api/event`) — jsdom'da pencere/olay yok, ekran bu
+üçünü çağırıyor.
+
+**Ölçülen on üç davranış (hepsi ürün kararı):**
+
+1. **Liste kapsamı:** “Arşiv” kutusu isteği `caseList(true)` yapar; alt satır sayıyı ve
+   kapsamı **sunucudan gelen listeyle** yazar (1 → 0 kayıt, “yalnız aktif” → “arşiv dahil”);
+   kapsam değişince öteki boş durum metni kalmaz.
+2. **Oluşturma:** boş başlık **sunucuya gitmez** (`E_TITLE` + sözlük iletisi); geçerli başlık
+   `trim`lenir, boş `referenceCode` **`null`** olur (boş dizgi değil), form kapanır ve yeni
+   dosya seçilir.
+3. **Arşivle / sil:** düğme dosyanın `status`una göre çıkar; işlem sonrası seçim kapanır ve
+   liste tazelenir (`caseList` ikinci kez).
+4. **Geri al:** arşivli dosyada “Geri al” çıkar, “Arşivle” **çıkmaz**.
+5. **Belge satırı:** sürümü olmayan belgenin **Oku / Ayrıştır / OCR** düğmeleri kapalıdır
+   (açılamayan belge için düğme sunulmaz); sürüm öneki (ilk 8 hane) ve “sürüm yok” yazılır.
+6. **Ayrıştırma sözleşmesi:** `documentParse(versionId, ocr, lang, encoding, password)` —
+   “Ayrıştır” `ocr=false`, “OCR” `ocr=true`; kodlama seçimden; **parola yalnız doluyken**
+   ve **kırpılmadan** (boşluk parolanın parçası olabilir), boşken `undefined`.
+7. **Ayrıştırma özeti:** `parseSummary` + uyarı sayısı + **worker'ın kodlama notu** +
+   `budgetSummary` **birebir** birleşir (` · `).
+8. **Uydurma yok:** kodlama uyarısı yoksa kodlama notu **yazılmaz**; `budget: null` ise bütçe
+   satırı yazılmaz — özet tam olarak iki parçadır.
+9. **Toplu ayrıştırma:** `requested: 0` → “bekleyen yok” açıkça yazılır; kısmi başarı
+   `1 / 2`, `1 başarısız`, sayfa/eşzamanlılık ve **belge başına** sonuç (kod + neden) ile
+   gösterilir.
+10. **Etiketler:** sunucudan **belgeye göre gruplanır**; Enter ile eklenir (kırpılmış),
+    sunucunun döndürdüğü liste yazılır ve giriş temizlenir; `×` ile kaldırılır.
+11. **Kaynak alıntı:** metin ve `karakter 120–139` aralığı görünür; “Okuyucuda aç” gerçek
+    konumu çeker ve okuyucuyu **o sürümle** açar (`documentPages(anchor.documentVersionId)`);
+    kayıt yoksa okuyucu **açılmaz**, `E_ANCHOR_MISSING` yazılır.
+12. **Dosya değişimi (kusur — aşağıda):** önceki dosyanın belgeleri, kaynakları, toplu
+    sonucu ve bildirimi **ekranda kalmaz**; yeni dosyanın verisi gelince kart gerçekten dolar.
+13. **Çelişkili ekran yok:** başarısız ayrıştırmadan sonra başarılı ayrıştırma eski
+    **kırmızı hata bildirimini bırakmaz**.
+
+**Kapı kanıtı (mutasyon, ölçüldü).** Üç mutasyon; her biri **1 failed | 12 skipped**,
+geri alma `shasum -a 256` **birebir** (`Cases.tsx = 76fe4bf4…`):
+
+| Mutasyon | Düşen test | Ölçülen hata |
+|---|---|---|
+| Temizlik effect'inden `setBatchResult(null)` silindi | “dosya değişince … kalmaz” | `expected [ <li>…(1)</li> ] to have a length of +0 but got 1` |
+| Temizlik effect'inden `setNotice(null)` silindi | “dosya değişince … kalmaz” | `expected 'Ayrıştırma parsed: 3 sayfa, 12 metin …' to be null` |
+| `parseDocument`tan `setError(null)` silindi | “başarısız ayrıştırmadan sonra …” | `expected <strong></strong> to be null` |
+
+Mutasyon öncesi tam ölçüm de kayıtlı: düzeltme yokken **2 failed | 11 passed** (12 ve 13).
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **541/541** (40 dosya; 528 → **+13**) ·
+`vite build` temiz (**568,65 kB**, `index-BWvnxFq8.js`; Vite 500 kB uyarısı sürüyor) ·
+`disk-guard` tur sonunda çalıştırıldı.
+
+**Commit/CI (doğrulandı):** `85d999f` (test + düzeltme; 2 dosya, +651/−1) → CI
+**`41250763361` 7/7 YEŞİL**: `arayüz` **40 dosya / 541 test** (34 s; yerel/CI **birebir**,
+aynı derleme özeti `index-BWvnxFq8.js` 568,65 kB), `rust (macos-15)` 4 dk 03 s,
+`rust (ubuntu-latest)` 8 dk 49 s, `masaüstü kabuk` 40 s, `belge worker'ı` 45 s,
+`SBOM` 21 s, `sözleşmeler` 6 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC ve **görsel QA yok**; `api` mock'lu olduğu için çekirdek SQL/worker yolu bu
+testte koşmaz. Kapsam dışı: dosya seçici ile içe aktarma (yalnız `openFileDialog` mock'u
+var), sürükle-bırak, gerçek `parse-progress` olayı (ekranın aboneliği kurulur ama olay
+gönderilmez), aynı belgenin ikinci kez eklenmesi (duplicate) bildirimi, okuyucuda seçim →
+bağ/işaret/not, `Notes` paneli davranışı (kendi lib testleri var). Windows denenmedi.
+
+## Ölçülen kusur — dosya değişince **önceki dosyanın verisi** ekranda kalıyordu (2026-11-01)
+
+`selected` değiştiğinde ekran yalnız `reader` hedeflerini sıfırlıyordu; `docs`, `anchors`,
+`tagsByDoc`, `batchResult` ve `notice` **yeni dosyanın verisi gelene kadar** (ve istek
+hatalı/askıda kalırsa **süresiz**) ekranda kalıyordu. Sonuç, hukuk ürününde veri karışması:
+yeni dosyanın künyesi açıkken **önceki dosyanın belge listesi, alıntıları ve “1 / 2 belge
+ayrıştırıldı” özeti** görünüyordu; “Okuyucuda aç” önceki dosyanın anchor'ını yeni dosyanın
+künyesi altında açabiliyordu (okuyucuya `caseId` yeni dosya, hedef sürüm eski dosya gider).
+INV-05'in (“bir dosyanın verisi başka dosyanın sorgusuna örtük olarak eklenmez”) arayüz
+düzeyindeki ihlali.
+
+**Düzeltme (`Cases.tsx`, +11/−1):** `[selected?.id]` effect'i artık `reader` ile birlikte
+`docs`, `anchors`, `tagsByDoc`, `batchResult`, `notice` ve `parseProgress` alanlarını da
+temizler; temizlik **istekten önce** koşar, yeni veri gelince kart dolar (test bunu da
+doğrular: askıdaki istek çözülünce “İhtar mektubu.pdf” görünür).
+
+**İkinci kusur (aynı sınıf, ölçüldü):** `parseDocument` hata durumunu **temizlemiyordu** →
+başarısız ayrıştırmadan sonra başarılı ayrıştırma **kırmızı hata bildirimini** ekranda
+bırakıyordu (“E_PARSE” + yeşil “Ayrıştırma parsed: 3 sayfa…” aynı anda). Düzeltme:
+`parseDocument` başında `setError(null)`. **Açık kayıt:** aynı desen `importFromPath`,
+`addTag`, `removeTag` ve `mutate` içinde de var (başarılı işlem eski hata bildirimini
+temizlemez); bu turda **ölçülmedi ve değiştirilmedi** — sıradaki turların adayı.
 
 ## İnceleme ekranı davranış testi — `screens/Review.test.tsx` (2026-10-31)
 
