@@ -11,7 +11,7 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
 
 ## Okuyucu davranış testi — `components/DualReader.test.tsx` (2026-10-31)
 
@@ -99,6 +99,89 @@ tsc + vitest + build — yerel/CI **birebir**), `rust (macos-15)` 3 dk 36 s,
 `rust (ubuntu-latest)` 8 dk 55 s, `masaüstü kabuk` 40 s, `belge worker'ı` 52 s,
 `SBOM` 22 s, `sözleşmeler` 5 s. Koşu **iki commit'i birlikte** kapsıyor
 (`4db4eb1` davranış testi + `f2e0b19` etiket düzeltmesi).
+
+
+## İnceleme ekranı davranış testi — `screens/Review.test.tsx` (2026-10-31)
+
+Önceki turun dürüst sınırı “**diğer ekranların (Review/Search/Cases) davranış testi yok**”
+idi. İnceleme ekranı (1116 satır) ürünün amiral gemisi: kabul/ret kararları, alıntı
+denetimi ve çelişki değerlendirmesi buradan yazılıyor, ama hiç render edilmemişti.
+`api` kısmen mock'landı (`caseList`, `claimList`, `reviewItemList`, `anchorList`,
+`documentList`, `reviewOutboxPending`, `contradictionAssessments`, `inTextQuoteCheck`,
+`anchorCreate`, `reviewCommit`, `reviewDecide`, `reviewItemCreate`, `reviewSupersede`);
+`t()`, `quoteCheckSummary`, `buildReviewTarget`, `canBind` **gerçek** çalışır — test,
+sözlükten gelen gerçek etiketlerle sorgular.
+
+**Ölçülen yedi davranış (hepsi ürün kararı):**
+
+1. **Kuyruk sayımı** ek kanıt bekleyenleri “bekleyen” sayar (`pending` +
+   `needs_more_evidence` = 3, karar = 2, bildirim = 1) ve **hedef kaydı üretilmiş onaylı
+   öğe “yerine geç” listesine girmez**; hedef kimliği karar listesinde rozet olarak görünür.
+2. **Kabul, hedef kayıt seçilmeden açılmaz**: kayıt türü yokken düğme kapalı, “iddia”
+   seçilince iddia türü de istenir; seçim tamamlanınca kabul **`reviewCommit` ile tek
+   işlemde** yazılır (`{kind:"claim", claimText, claimKind}`) ve `reviewDecide("accept")`
+   **hiç çağrılmaz** — hedefsiz onay yoluna sessizce düşmediği ölçülür (F08-T08).
+3. **Alıntı denetimi seçilen kapsamla koşar** (`documentId: null` → belge seçilince o
+   belge) ve **kapsam değişince eski sonuç ekranda kalmaz** (bayat hüküm gösterilmez).
+4. **“Kaynağa bağla” yalnız bağlanabilir alıntıda çıkar**: sayfa sınırını aşan eşleşmede
+   düğme yerine nedeni (`intext.bindSpansPages`) yazılır; bağlama `anchorCreate`e
+   **gerçek offset'lerle** gider (`segmentId`, `charStart/charEnd`, `exactQuote`) ve
+   başarılı bağ rozet olarak görünür.
+5. **Çelişki adayı iki farklı kaynak ister**: tek kaynakta ekleme kapalı; ikinci kaynak
+   birinciye eşitlenince yeniden kapanır; iki farklı kaynakla `reviewItemCreate`
+   `sourceAnchorIds: [a1, a2]` alır (tek kaynaklı “çelişki” üretilemez).
+6. **Dosya değişince önceki dosyanın alıntı hükmü ve belge kapsamı temizlenir** (bu turda
+   ölçülen kusur — aşağıda).
+7. **Geçersiz JSON düzeltmesi gönderilmez**: `{bozuk` kaydedilince hata görünür ve
+   `reviewDecide` hiç çağrılmaz (bozuk payload yazılmaz).
+
+**Kapı kanıtı (kırmızı→yeşil, ölçüldü).** Testin süs olmadığı **dört mutasyonla**
+ölçüldü; her mutasyon **1 failed | 5 passed** (o an 6 test vardı; yedinci test sonradan
+eklendi), geri alma `sha256` ile **birebir** (`c5c49299…`):
+
+| Mutasyon | Düşen test | Ölçülen sonuç |
+|---|---|---|
+| `api.reviewCommit(...)` → `api.reviewDecide(..., target)` | “kabul, hedef kayıt seçilmeden açılmaz…” | 1 failed \| 5 passed |
+| `replaceable` filtresinden `&& !i.targetEntityId` kaldırıldı | “kuyruk sayımı … yerine geçmez” | 1 failed \| 5 passed |
+| kapsam `onChange`inden `setQuoteCheck(null)` kaldırıldı | “alıntı denetimi seçilen kapsamla koşar…” | 1 failed \| 5 passed |
+| `canBind(finding)` → `true` | “yalnız bağlanabilir alıntı düğme alır…” | 1 failed \| 5 passed |
+
+## Ölçülen kusur — dosya değişince **bayat alıntı hükmü** ekranda kalıyordu (2026-10-31)
+
+Test yazılırken ölçüldü: `caseId` değişince `load()` yeni dosyanın iddialarını/öğelerini
+getiriyor ama **alıntı denetimi durumu temizlenmiyordu**. Sonuç: avukat başka dosyaya
+geçtiğinde önceki dosyanın hükmü (“3 alıntı · 1 birebir … s. 3 · Kira sözleşmesi”)
+**ekranda kalıyordu**; daha kötüsü `rv-qscope` seçicisi önceki dosyanın `documentId`ini
+taşıdığı için yeni dosyada çalıştırılan denetim **başka dosyanın belgesine daraltılmış**
+gidiyordu (`inTextQuoteCheck(caseId=yeni, documentId=eski belge)`) — yanlış kapsam, sessiz.
+
+**Kırmızı ölçüm (düzeltmeden önce):** yeni test
+`expected <strong class="small"></strong> to be null` verdi — özet düğümü DOM'da kaldı.
+
+**Düzeltme (`screens/Review.tsx`, +11 satır):** `caseId` değişiminde `quoteCheck`,
+`quoteBindings`, `quoteSource`, `quoteScope` temizlenir; **yazılan alıntı metni silinmez**
+(kullanıcının girdisidir, yeni dosyada açıkça çalıştırılır). Aynı test artık yeşil ve
+yeni dosyada denetimin `documentId: null` ile gittiğini doğruluyor.
+
+**Ölçüm (bu adımdan sonra):** `tsc --noEmit` temiz · `vitest` **518/518** (38 dosya;
+511 → **+7**) · `vite build` temiz (**568,57 kB**, `index-BOywGpWz.js`; Vite 500 kB
+uyarısı sürüyor — kod bölme kararı **insan**).
+
+**CI `41194857655` — 7/7 YEŞİL (ölçüldü):** `arayüz` **38 dosya / 518 test** (27 s;
+tsc + vitest + build — yerel/CI **birebir**), `rust (macos-15)` 4 dk 28 s,
+`rust (ubuntu-latest)` 8 dk 53 s, `masaüstü kabuk` 27 s, `belge worker'ı` 47 s,
+`SBOM` 24 s, `sözleşmeler` 5 s. Tek commit: `9eb3f64` (test + düzeltme birlikte —
+test düzeltme olmadan **kırmızı** olduğu için ayrılamaz).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değildir** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC ve **görsel QA yok**. `api` mock'lu olduğu için çekirdek komut yolu (SQL,
+kasa, Rust) bu testte koşmaz; onlar Rust testlerinde. Kapsam dışı: kanıt bağı/iddia
+ilişkisi **oluşturma** formları, çelişki değerlendirmesinin **kalıcılaşması**, “yerine geç”
+eyleminin kendisi, karar geçmişi, iddia oluşturma, klavye gezinmesi. Alıntı denetimi bu
+testte **worker'a gitmez** (gerçek PDF/worker uçtan uca F12 canlı testinde). Windows'ta
+koşulmadı. **Açık gözlem (ölçülmedi):** `decide(..., "edit")` içinde `edited ?? undefined`
+— JSON olarak `null` yazan bir düzeltme, payload'sız “edit” kararı olarak gider; bu
+ölçülmedi ve bu turda değiştirilmedi.
 
 
 ## F04-T08 — sözlük taşıması: `components/DualReader.tsx` + `PageMap.tsx` + `lib/reader.ts` + `lib/inventory.ts` (2026-10-31, on ikinci tur)
