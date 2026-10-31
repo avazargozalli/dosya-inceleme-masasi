@@ -212,6 +212,10 @@ export function Search() {
           setLibraryPage(library);
         } catch (e) {
           setError(toApiError(e));
+          // Başarısız arama önceki sorgunun sonucunu ekranda bırakmaz:
+          // eski kütüphane sonucu yeni sorgunun sonucu sanılmamalı.
+          setLibraryPage(null);
+          setSearchedQuery("");
         } finally {
           setBusy(false);
         }
@@ -249,6 +253,10 @@ export function Search() {
       } catch (e) {
         setError(toApiError(e));
         if (kind === "fresh") {
+          // Başarısız yeni arama: önceki sorgunun sonuçları ekranda kalmaz
+          // (yeni sorgunun sonucu sanılmasın). "Daha fazla" hatasında sayfa korunur.
+          setPage(null);
+          setSearchedQuery("");
           totalSeq.current += 1;
           setTotalProbe(TOTAL_PROBE_IDLE);
         }
