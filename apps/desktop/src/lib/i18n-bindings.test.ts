@@ -16,6 +16,20 @@ import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export
 import { formatTimestamp } from "./format";
 import { messageKeys, t } from "./i18n";
 import {
+  bindHint,
+  candidateLabel,
+  MATCH_KIND_LABEL,
+  oldVersionNote,
+  pageSpanLabel,
+  positionLabel,
+  QUOTE_STATE_LABEL,
+  quoteCheckSummary,
+  scopeLabel,
+  skippedLabel,
+  versionsLabel,
+} from "./intext";
+import { TARGET_KIND_LABEL } from "./reviewTarget";
+import {
   archBadgeText,
   archFormatText,
   archInterpreterText,
@@ -1224,6 +1238,217 @@ describe("Sağlayıcılar kümesi (F04-T08)", () => {
       const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
       const used = [...source.matchAll(pattern)].map((match) => match[1]!);
       expect(used.length).toBeGreaterThan(10);
+      const missing = used.filter((key) => !known.has(key as never));
+      expect({ relative, missing }).toEqual({ relative, missing: [] });
+    }
+  });
+});
+
+describe("İnceleme ekranı ve alıntı yardımcıları sözlükten gelir", () => {
+  // Alıntı denetimi raporunun yalnız metin üreten alanları; tip daraltması
+  // `as never` ile yapılır (test yalnız çıktı metnini ölçer).
+  const check = {
+    scope: "case",
+    scopeDocumentName: null,
+    documentsWithText: 2,
+    pagesScanned: 7,
+    spansFound: 5,
+    exact: 1,
+    normalized: 2,
+    ambiguous: 1,
+    notFound: 1,
+    unverifiable: 0,
+    dehyphenated: 2,
+    ligature: 1,
+    skippedShort: 2,
+    skippedLong: 1,
+    unclosed: 3,
+    versionsScanned: 3,
+    historicalVersionsScanned: 1,
+    quotes: [],
+    notes: [],
+  } as never;
+
+  const position = {
+    documentId: "doc1",
+    documentName: "Dilekçe",
+    documentVersionId: "ver1",
+    parseRunId: "run1",
+    pageId: "page1",
+    segmentId: "seg1",
+    pageIndex: 0,
+    endPageIndex: 0,
+    spansPages: false,
+    versionNo: 1,
+    isCurrentVersion: true,
+    charStart: 19,
+    charEnd: 56,
+    matchKind: "exact",
+    textOrigin: "native",
+    sourceText: "kira bedelini ödemediğini tespit etti",
+  };
+
+  it("alıntı durum ve eşleşme etiketleri sözlükten gelir", () => {
+    expect(QUOTE_STATE_LABEL["exact"]).toBe(t("intext.stateExact"));
+    expect(QUOTE_STATE_LABEL["not_found"]).toBe(t("intext.stateNotFound"));
+    expect(MATCH_KIND_LABEL["dehyphenated"]).toBe(t("intext.matchDehyphenated"));
+    expect(MATCH_KIND_LABEL["ligature"]).toBe(t("intext.matchLigature"));
+  });
+
+  it("sayfa aralığı ve özet satırı sözlükten kurulur", () => {
+    expect(pageSpanLabel(2, 3)).toBe(t("intext.pageSpanRange", { page: 3, end: 4 }));
+    expect(pageSpanLabel(2, 2)).toBe(t("intext.pageSpanSingle", { page: 3 }));
+    expect(quoteCheckSummary(check)).toBe(
+      [
+        t("intext.summaryQuotes", { count: 5 }),
+        t("intext.summaryExact", { count: 1 }),
+        t("intext.summaryNormalized", { count: 2 }),
+        t("intext.summaryAmbiguous", { count: 1 }),
+        t("intext.summaryNotFound", { count: 1 }),
+        t("intext.summaryUnverifiable", { count: 0 }),
+        t("intext.summaryDehyphenated", { count: 2 }),
+        t("intext.summaryLigature", { count: 1 }),
+      ].join(" · "),
+    );
+  });
+
+  it("konum, aday ve eski sürüm satırları sözlükten kurulur", () => {
+    expect(positionLabel({ index: 0, state: "exact", position, candidates: [] } as never)).toBe(
+      [
+        position.documentName,
+        pageSpanLabel(0, 0),
+        MATCH_KIND_LABEL["exact"],
+        t("intext.originNative"),
+      ].join(" · "),
+    );
+    expect(
+      positionLabel({
+        index: 0,
+        state: "exact",
+        position: { ...position, versionNo: 1, isCurrentVersion: false },
+        candidates: [],
+      } as never),
+    ).toBe(
+      [
+        position.documentName,
+        pageSpanLabel(0, 0),
+        MATCH_KIND_LABEL["exact"],
+        t("intext.originNative"),
+        t("intext.oldVersionSuffix", { version: 1 }),
+      ].join(" · "),
+    );
+    expect(
+      candidateLabel({
+        documentName: "Rapor",
+        pageIndex: 2,
+        charStart: 120,
+        matchKind: "whitespace",
+      }),
+    ).toBe(
+      [
+        "Rapor",
+        pageSpanLabel(2, 2),
+        t("intext.charAt", { char: 120 }),
+        MATCH_KIND_LABEL["whitespace"],
+      ].join(" · "),
+    );
+    expect(
+      oldVersionNote({
+        index: 0,
+        state: "exact",
+        position: { ...position, versionNo: 3, isCurrentVersion: false },
+        candidates: [],
+      } as never),
+    ).toBe(t("intext.oldOnlyBinds", { version: 3 }));
+  });
+
+  it("bağlanamama nedeni, kapsam ve sayılan sürüm satırı sözlükten", () => {
+    expect(
+      bindHint({
+        index: 0,
+        state: "exact",
+        position: { ...position, spansPages: true },
+        candidates: [],
+      } as never),
+    ).toBe(t("intext.bindSpansPages"));
+    expect(
+      bindHint({
+        index: 0,
+        state: "normalized",
+        position: { ...position, matchKind: "whitespace" },
+        candidates: [],
+      } as never),
+    ).toBe(t("intext.bindOnlyExact"));
+    expect(scopeLabel(check)).toBe(t("intext.scopeCase", { count: 2 }));
+    expect(
+      scopeLabel({ scope: "document", scopeDocumentName: "Rapor", documentsWithText: 1 } as never),
+    ).toBe(t("intext.scopeDocument", { name: "Rapor" }));
+    expect(versionsLabel(check)).toBe(
+      [
+        t("intext.versionsScanned", { count: 3 }),
+        t("intext.historicalVersions", { count: 1 }),
+      ].join(" · "),
+    );
+    expect(skippedLabel(check)).toBe(
+      t("intext.notCounted", {
+        parts: [
+          t("intext.skippedShort", { count: 2 }),
+          t("intext.skippedLong", { count: 1 }),
+          t("intext.skippedUnclosed", { count: 3 }),
+        ].join(", "),
+      }),
+    );
+  });
+
+  it("İnceleme hedef türü etiketleri sözlükten gelir", () => {
+    const kinds = [
+      ["claim", "reviewTarget.claim"],
+      ["note", "reviewTarget.note"],
+      ["task", "reviewTarget.task"],
+      ["event", "reviewTarget.event"],
+    ] as const;
+    for (const [kind, key] of kinds) {
+      expect(TARGET_KIND_LABEL[kind]).toBe(t(key));
+    }
+  });
+
+  it("parametreli alıntı ve inceleme satırları yarım yer tutucu bırakmaz", () => {
+    const lines = [
+      t("intext.summaryQuotes", { count: 3 }),
+      t("intext.pageSpanRange", { page: 3, end: 4 }),
+      t("intext.oldVersionSuffix", { version: 2 }),
+      t("intext.oldOnlyCandidates", {
+        where: t("intext.oldWhereMany", { versions: "v3, v2" }),
+        occurrences: 2,
+      }),
+      t("review.queueSummary", { pending: 1, decided: 2, outbox: 3 }),
+      t("review.claimsCount", { count: 4 }),
+      t("review.sourceQuotes", { count: 1 }),
+      t("review.targetBadge", { id: "ab12cd34" }),
+      t("review.boundBadge", { id: "ab12cd34" }),
+      t("review.spanPagesHint", { start: 2, end: 3 }),
+      t("review.notesSummary", { count: 1 }),
+      t("review.rationaleDash", { text: "gerekçe" }),
+      t("review.sourcePrefix", { text: "alıntı" }),
+    ];
+    for (const line of lines) {
+      expect(line).not.toContain("{");
+      expect(line.trim().length).toBeGreaterThan(0);
+      expect(line).not.toContain("  ");
+    }
+  });
+
+  it("İnceleme ekranı ve iki lib'in sözlük anahtarları eksiksizdir", () => {
+    const targets: Array<[string, RegExp]> = [
+      ["../screens/Review.tsx", /t\("((?:review|nav|common|intext)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/intext.ts", /t\("((?:intext|common)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/reviewTarget.ts", /t\("((?:reviewTarget)\.[a-zA-Z0-9_.]+)"/g],
+    ];
+    const known = new Set(messageKeys());
+    for (const [relative, pattern] of targets) {
+      const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+      const used = [...source.matchAll(pattern)].map((match) => match[1]!);
+      expect(used.length).toBeGreaterThan(3);
       const missing = used.filter((key) => !known.has(key as never));
       expect({ relative, missing }).toEqual({ relative, missing: [] });
     }

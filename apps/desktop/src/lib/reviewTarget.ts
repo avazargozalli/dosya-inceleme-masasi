@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 /**
  * İnceleme kararının hedef kaydını **açık seçimden** üretir (F08-T08).
  *
@@ -26,10 +28,10 @@ export type ReviewTargetInput =
     };
 
 export const TARGET_KIND_LABEL: Record<Exclude<ReviewTargetKind, "">, string> = {
-  claim: "İddia",
-  note: "Not",
-  task: "Görev",
-  event: "Olay",
+  claim: t("reviewTarget.claim"),
+  note: t("reviewTarget.note"),
+  task: t("reviewTarget.task"),
+  event: t("reviewTarget.event"),
 };
 
 /** Adayın payload'ından düz metni çıkarır; yoksa boş dize. */

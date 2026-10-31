@@ -106,6 +106,9 @@ const MIGRATED = [
   "lib/arch.ts",
   "lib/package.ts",
   "lib/attack.ts",
+  "screens/Review.tsx",
+  "lib/intext.ts",
+  "lib/reviewTarget.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;
