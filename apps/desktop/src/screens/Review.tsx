@@ -173,6 +173,17 @@ export function Review() {
     void load(caseId);
   }, [caseId, load]);
 
+  // Dosya değişince önceki dosyanın alıntı **hükmü** ve **belge kapsamı**
+  // temizlenir: bayat sonuç ekranda kalmaz ve kapsam yeni dosyaya taşınırsa
+  // denetim başka dosyanın belgesine daraltılmış gitmez. Yazılan alıntı
+  // metni kullanıcının girdisidir; silinmez, yeni dosyada açıkça çalıştırılır.
+  useEffect(() => {
+    setQuoteCheck(null);
+    setQuoteBindings({});
+    setQuoteSource("");
+    setQuoteScope("");
+  }, [caseId]);
+
   useEffect(() => {
     if (!selectedClaim) {
       setLinks([]);
