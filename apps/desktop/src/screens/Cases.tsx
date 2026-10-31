@@ -122,9 +122,18 @@ export function Cases() {
     }
   }, [selected, loadDocs]);
 
-  // Dosya değişince önceki dosyanın okuyucu hedefleri taşınmaz.
+  // Dosya değişince önceki dosyanın okuyucu hedefleri ve verisi taşınmaz:
+  // belge listesi, kaynak alıntılar, etiketler, toplu ayrıştırma sonucu ve
+  // bildirim yeni dosyanın verisi sanılmasın (INV-05). Temizlik istekten
+  // **önce** yapılır; yeni dosyanın verisi gelene kadar boş durum gösterilir.
   useEffect(() => {
     setReader(null);
+    setDocs([]);
+    setAnchors([]);
+    setTagsByDoc({});
+    setBatchResult(null);
+    setNotice(null);
+    setParseProgress(null);
   }, [selected?.id]);
 
   async function create() {
@@ -212,6 +221,7 @@ export function Cases() {
 
   async function parseDocument(versionId: string, ocr = false) {
     setBusy(true);
+    setError(null);
     setNotice(null);
     setParseProgress(null);
     activeParseVersion.current = versionId;
