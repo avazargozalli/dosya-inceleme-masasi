@@ -11,7 +11,87 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar, Emsal, Sağlayıcılar, İnceleme** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **23 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`, `precedents`, `precedent-terms`, `precedent-document`, `providers`, `arch`, `package`, `attack`, `intext`, `reviewTarget`) taşındı (**41 dosya**); **1 bileşen + 2 yardımcı lib açık** (`DualReader`/`PageMap`, `inventory`, `reader`); kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) — 2026-10-31 |
+
+## F04-T08 — sözlük taşıması: `components/DualReader.tsx` + `PageMap.tsx` + `lib/reader.ts` + `lib/inventory.ts` (2026-10-31, on ikinci tur)
+
+**Önceki turun açık işi kapandı:** `b1cbb22` + `7b21d99` → CI `41153883057` ve `41154773683`
+**7/7 yeşil** (önceki turda doğrulanmıştı; bu turda yeniden koşmadı).
+
+**Neden bu dilim (ölçüldü):** kalan yüzeyin **tamamı** dört dosyadaydı: `components/DualReader.tsx`
+(93 Türkçe satır) + `lib/inventory.ts` (32) + `lib/reader.ts` (8) + `components/PageMap.tsx` (3)
+= **136 satır**. Import taraması: `DualReader`'ı **`Search.tsx` + `Cases.tsx`**,
+`PageMap`'i yalnız `DualReader` import ediyor; **`lib/reader.ts`** ise `DualReader`, `PageMap`,
+`Search.tsx` ve `Cases.tsx` tarafından — yani **zaten taşınmış iki ekranın nokta etiketi,
+yakınlaştırma alt yazısı ve eski sürüm rozeti hâlâ lib'den** geliyordu (gerçek sızıntı).
+`lib/inventory.ts`'i yalnız `DualReader` import ediyor. Dördü **kapalı küme** → birlikte taşındı.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **5 bölüm / 200 anahtar** (`readerUi` 122, `inventory` 58, `pageMap` 7,
+  `readerLib` 12, `api` 1) → sözlük **1664 → 1864** (`messageKeys()` ile ölçüldü).
+  Kapı kapsamı **41 → 46** dosya.
+- **Sessiz kırılganlık ölçüldü ve kaldırıldı:** `const paneKey = label === "Sol belge" ? "sol" : "sag";`
+  satırı panel kimliğini **görünen metne** bağlıyordu; metin sözlüğe taşınsaydı karşılaştırma
+  sessizce `"sag"`a düşecekti (form `id`'leri çakışır, iki panel aynı alanı paylaşır).
+  Bu satır **Türkçe harf taşımadığı için harf kapısı onu hiç görmezdi**. Yerine `pane`
+  prop'u (`"left" | "right"`) geldi; etiket `t()`den türetiliyor.
+- **Etiket haritaları anahtar haritasına çevrildi:** `STRUCTURE_LABELS`/`ATTACHMENT_KIND_LABELS`
+  → `STRUCTURE_KEYS`/`ATTACHMENT_KIND_KEYS` (`Record<string, MessageKey>`) + `structureLabel()`;
+  `t()` **çağrı anında** çözülür (import anında donma yok). Bilinmeyen anahtar kendi adıyla yazılır.
+- **Ayırıcı kararı sürüyor:** `" · "` değerlere gömülmedi; `candidateTitle`, `noteSource`,
+  `viewHint` + `rotationSuffix`, `pageMap` alt yazısı, `inventorySummary`, `changeSummary`
+  ve ekranın “Seçim: … · karakter …” satırı **parçalardan** kurulur (`join(" · ")` veya şablon).
+  `pageButtons*`, `viewHintRest`, `keyboard*` parçaları `<strong>`/`<code>` öğeleri arasına
+  `{" "}` ile yerleştirildi (JSX boşluk tuzağı).
+- **Ölçülen kusur (belge düzeltmesi):** önceki turların “`api.ts`teki satır **satır sonu
+  yorumu**” notu yanlıştı — `lib/api.ts`teki satır `toApiError`nun **kullanıcıya gösterilen**
+  yedek iletisiydi (`"Beklenmeyen bir hata oluştu."`, `E_UI_UNKNOWN`). Sözlüğe alındı
+  (`api.unexpectedError`) ve `lib/api.ts` **kapıya eklendi**; `main.tsx`teki `"kök düğüm yok"`
+  ise gerçekten geliştirici iddiası (kullanıcıya render edilmez) → istisna olarak yazıldı.
+
+**Doğrulama (ölçüldü)**
+
+- **Kırmızı→yeşil (harf kapısı, dört dosya birlikte):** `DualReader`a `_LEAK_DR = "Okuyucu görünümü"`,
+  `PageMap`e `_LEAK_PM = "konum haritası"`, `reader.ts`e `_LEAK_R = "yeni üretildi"`,
+  `inventory.ts`e `_LEAK_I = "Gömülü paket"` aynı anda → `localization` **1 failed | 8 passed**,
+  rapor **dördünü birlikte**:
+  `["components/DualReader.tsx:1565","components/PageMap.tsx:9","lib/inventory.ts:60","lib/reader.ts:328"]`;
+  geri alındı, `shasum -a 256 -c` **birebir OK** → 9/9.
+- **İkinci kapı (iki vaka ayrı ayrı ölçüldü):**
+  (a) `runBadge` dönüşü `t("readerLib.oldRunBadge")` yerine **harfsiz** `"eski ayristirma"` →
+  `i18n-bindings` **1 failed | 51 passed** (`Expected: "eski ayrıştırma" / Received: "eski ayristirma"`)
+  **ve** `localization` kırmızı (sebep harf değil, “kullanılmayan anahtar”).
+  (b) `attachmentSummary` dönüşü `t("inventory.noAttachments")` yerine **birebir aynı** `"Ek yok"` →
+  `i18n-bindings` **YEŞİL** kaldı (değer eşit), yalnız “kullanılmayan anahtar” kuralı yakaladı —
+  bilinen sınır **yeni bir vakayla yeniden ölçüldü** (harfsiz + aynı metin iki kapının da dışında).
+- **Yeni 8 test** (`i18n-bindings.test.ts`): önizleme alt yazısı + üç sürüm rozeti; yeniden bağlama
+  durumunun **dört vakası**; yapı/ek etiketleri + bilinmeyen anahtarın kendi adıyla yazılması;
+  envanter özetleri (ek yok / ek sayısı+boyut / üç parçalı değişiklik izi / iz yok);
+  künye satırları + **sıralı** sınır uyarıları + düğme kapısı; **42 parametreli satır `{` bırakmaz**;
+  dört dosyanın `t()` anahtarları sözlükte eksiksiz; `toApiError` ham hata metnini sızdırmaz.
+- Mevcut `reader` **62** ve `inventory` **14** testi **birebir `.toBe`** karşılaştırıyor ve
+  **değişmeden geçti** (76/76, iki test dosyasında `git diff` boş) → metinler byte düzeyinde aynı.
+- `tsc --noEmit` temiz · `vitest` **504/504** (36 dosya; 496 → +8) · `vite build` temiz
+  (**568,46 kB**; 559,31 → sözlük büyüdü, Vite 500 kB uyarısı sürüyor).
+- Taşınmış dört dosyada yorum dışı **0** Türkçe harf satırı. Kalan yüzey: **3 dosyada 1 satır**
+  (`main.tsx` geliştirici iddiası, `lib/filename.ts` dosya adı regex'i, `lib/backup-schedule.ts`
+  satır sonu yorumu) + sözlüğün kendisi.
+
+**Commit/CI:** `3545f12` (kod, 8 dosya, +791/−221) → **CI `41160138998` 7/7 YEŞİL**: `arayüz`
+**36 dosya / 504 test** (tsc + vitest + build, 35 s; yerel/CI **birebir** — aynı derleme özeti
+`index-DiHv4aE5.js`, 568,50 kB), `rust (macos-15)` 4 dk 29 s, `rust (ubuntu-latest)` 6 dk 52 s,
+`masaüstü kabuk` 41 s, `belge worker'ı` 37 s, `SBOM` 21 s, `sözleşmeler` 5 s. `HEAD == origin/main`.
+
+**Dürüst sınırlar:** F04-T08 kod tarafı **tamam** ama satır hâlâ **🚧**: **görsel QA yok** (Tauri
+penceresi hiç açılmadı; iki panelin yeni etiketleri ekranda görülmedi), **DualReader'ın
+render/etkileşim testi yok** (eşitlik lib düzeyinde + JSX'te birebir taşımayla sağlandı), Vite
+**500 kB** kod bölme kararı **insan** işi, Windows denenmedi. `readerUi` metinleri tek dilde
+(Türkçe) — sözlük çeviri katmanı değil, tek kaynak.
+
+**Sıradaki aday:** kalan iş listesindeki kodla ölçülebilir maddeler (F10 izinli argümanlarla CLI,
+F16 atomik geri dönüş tatbikatı, F15 benchmark harness genişletmesi) + **Vite kod bölme kararı
+(insan)**; F17/F02 Windows, pilot, VoiceOver, notarization insan/donanım bekliyor.
 
 ## F04-T08 — sözlük taşıması: `screens/Review.tsx` + `lib/intext.ts` + `lib/reviewTarget.ts` (2026-10-31, on birinci tur)
 
