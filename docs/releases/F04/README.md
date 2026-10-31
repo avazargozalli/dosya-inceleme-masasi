@@ -69,6 +69,15 @@ taşınmadı (kendi metnini taşımaya devam ediyor, açık kayıt).
 - Kalan yüzey **277 Türkçe satır / 11 dosya** (kapının kendi mantığıyla; 1 satırlıklar
   satır sonu yorumu: `api.ts`, `backup-schedule.ts`, `filename.ts`, `main.tsx`).
 
+**Commit/CI:** `1949cf5` (kod, 9 dosya, +1124/−331) · **CI `41147576596` 7/7 yeşil**:
+`arayüz` **36 dosya / 489 test** (tsc + vitest + build; yerel/CI **birebir**), `rust (macos-15)`
+4 dk 09 s, `rust (ubuntu-latest)` 6 dk 05 s, `masaüstü kabuk` 31 s, `belge worker'ı` 37 s,
+`SBOM` 24 s, `sözleşmeler` 7 s. `HEAD == origin/main`.
+
+**Disk:** tur başında **3,6 G** (eşik altı) → güvenli önbellek temizliği (Chrome 355 M,
+cargo registry src/cache 326 M, macOS duvar kağıdı videoları 2,0 G, GeoServices/helpd 85 M)
+→ **6,2 G**; yalnız TS işi koştu (Rust derlemesi yok); tur sonu `disk-guard` temiz.
+
 **Dürüst sınırlar:** **1 ekran + 1 bileşen** kaldı (`screens/Review.tsx` 100,
 `components/DualReader.tsx` 93) + **4 yardımcı lib** (`intext` 35, `inventory` 32, `reader` 8,
 `reviewTarget` 2) + `PageMap` 3 → F04-T08 **🚧**. `lib/providers.ts`'i `lib/inventory.ts` de
