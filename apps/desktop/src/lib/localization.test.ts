@@ -109,6 +109,11 @@ const MIGRATED = [
   "screens/Review.tsx",
   "lib/intext.ts",
   "lib/reviewTarget.ts",
+  "components/DualReader.tsx",
+  "components/PageMap.tsx",
+  "lib/reader.ts",
+  "lib/inventory.ts",
+  "lib/api.ts",
 ];
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;

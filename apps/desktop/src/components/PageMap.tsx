@@ -1,4 +1,5 @@
 import type { PageRow } from "../lib/api";
+import { t } from "../lib/i18n";
 import { displayPageSize, mapRectForDisplay, pageLabelInfo } from "../lib/reader";
 
 /** Sayfa haritası: ayrıştırıcının **gerçekten ürettiği** blok kutuları.
@@ -20,14 +21,18 @@ function PageMap({
   const height = page.height ?? 0;
   if (width <= 0 || height <= 0) return null;
   const display = displayPageSize(width, height, rotation);
-  const unit = page.coordinateSpace === "image_pixels" ? "piksel" : "punto";
+  const unit =
+    page.coordinateSpace === "image_pixels" ? t("pageMap.unitPixel") : t("pageMap.unitPoint");
   const label = pageLabelInfo(page);
   return (
     <figure style={{ margin: 0 }}>
       <svg
         viewBox={`0 0 ${display.width} ${display.height}`}
         role="img"
-        aria-label={`${label.physical} konum haritası: ${page.blocks.length} metin bloğu`}
+        aria-label={t("pageMap.aria", {
+          physical: label.physical,
+          count: page.blocks.length,
+        })}
         style={{
           display: "block",
           width: "100%",
@@ -90,8 +95,14 @@ function PageMap({
         })}
       </svg>
       <figcaption className="hint" style={{ marginTop: 4 }}>
-        konum haritası (sayfa görüntüsü değil) · {Math.round(width)}×{Math.round(height)} {unit}
-        {rotation ? ` · ${rotation}° döndürülmüş` : ""} · {page.blocks.length} blok
+        {t("pageMap.captionLead")} ·{" "}
+        {t("pageMap.dimensions", {
+          width: Math.round(width),
+          height: Math.round(height),
+          unit,
+        })}
+        {rotation ? ` · ${t("pageMap.rotated", { rotation })}` : ""} ·{" "}
+        {t("pageMap.blocks", { count: page.blocks.length })}
       </figcaption>
     </figure>
   );

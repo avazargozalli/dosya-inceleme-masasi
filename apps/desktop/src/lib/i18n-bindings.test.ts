@@ -10,11 +10,23 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type { CorpusCoverage, ExportCoverage, JobRetryView, JobRow, PrecedentDocumentText, PrecedentSearchHit, PrecedentSearchPage, PrecedentUsageTerms, PreUpdateBackup, QuoteVerificationRow, SearchPage } from "./api";
+import type { CorpusCoverage, DocumentInventory, ExportCoverage, JobRetryView, JobRow, PrecedentDocumentText, PrecedentSearchHit, PrecedentSearchPage, PrecedentUsageTerms, PreUpdateBackup, QuoteVerificationRow, SearchPage } from "./api";
 import { elapsedText, mibText, profileLimits, secondsText } from "./budget";
+import { toApiError } from "./api";
 import { COVERAGE_EMBED_TARGETS, coverageHeadline, coverageRows } from "./export-coverage";
-import { formatTimestamp } from "./format";
-import { messageKeys, t } from "./i18n";
+import { formatSize, formatTimestamp } from "./format";
+import { messageKeys, t, type MessageKey } from "./i18n";
+import {
+  attachmentKindLabel,
+  attachmentSummary,
+  changeRows,
+  changeSummary,
+  inventoryGateReason,
+  inventoryNotices,
+  structureLabel,
+  structureRows,
+} from "./inventory";
+import { previewCaption, rebindStatusText, runBadge, versionBadge } from "./reader";
 import {
   bindHint,
   candidateLabel,
@@ -1452,5 +1464,244 @@ describe("İnceleme ekranı ve alıntı yardımcıları sözlükten gelir", () =
       const missing = used.filter((key) => !known.has(key as never));
       expect({ relative, missing }).toEqual({ relative, missing: [] });
     }
+  });
+});
+
+describe("Okuyucu kümesi (DualReader + PageMap + reader + inventory) sözlükten gelir", () => {
+  function inventory(overrides: Partial<DocumentInventory> = {}): DocumentInventory {
+    return {
+      kind: "docx",
+      structure: { paragraphs: 9, tables: 1, cells: 2 },
+      attachments: [
+        { name: "word/media/image1.png", kind: "image", size: 82 },
+        {
+          name: "word/embeddings/oleObject1.bin",
+          kind: "ole_object",
+          size: 84,
+          detail: "Excel.Sheet.12",
+        },
+      ],
+      attachmentCount: 2,
+      attachmentBytes: 166,
+      changes: {
+        insertions: 2,
+        deletions: 1,
+        comments: 1,
+        authors: ["Av. Deneme"],
+        firstDate: "2026-10-01T09:00:00Z",
+        lastDate: "2026-10-02T09:00:00Z",
+        revision: "12",
+        lastModifiedBy: "Av. Karsi",
+        creator: "Av. Deneme",
+        created: "2026-09-01T09:00:00Z",
+        modified: "2026-10-02T10:00:00Z",
+        trackRevisions: true,
+        protection: "readOnly",
+        signatures: 1,
+      },
+      externalLinks: 2,
+      notes: ["metin kutusu içeriği sayıldı", "altChunk görüldü"],
+      truncated: true,
+      ...overrides,
+    };
+  }
+
+  it("önizleme alt yazısı ve sürüm rozetleri sözlükten kurulur", () => {
+    expect(previewCaption({ cached: true, byteSize: 2048, dpi: 96 })).toBe(
+      t("readerLib.caption", {
+        source: t("readerLib.cachedSource"),
+        size: formatSize(2048),
+        dpi: 96,
+      }),
+    );
+    // Kaynak sözcüğü sözlükten gelmezse (lib'e geri gömülürse) bu satır kırmızı olur.
+    expect(previewCaption({ cached: false, byteSize: 2048, dpi: 96 })).toContain(
+      t("readerLib.freshSource"),
+    );
+    expect(versionBadge({ isCurrentVersion: false, versionNo: 1, currentVersionNo: 3 })).toBe(
+      t("readerLib.versionBadge", { from: "v1", to: "v3" }),
+    );
+    expect(
+      versionBadge({ isCurrentVersion: false, versionNo: null, currentVersionNo: null }),
+    ).toBe(
+      t("readerLib.versionBadge", {
+        from: t("readerLib.unknownVersion"),
+        to: t("readerLib.unknownVersion"),
+      }),
+    );
+    expect(runBadge({ isCurrentVersion: true, isCurrentRun: false })).toBe(
+      t("readerLib.oldRunBadge"),
+    );
+  });
+
+  it("yeniden bağlama durumu dört vakada sözlükten kurulur", () => {
+    expect(rebindStatusText({ status: "current", candidates: [], isCurrentRun: true })).toBe(
+      t("readerLib.alreadyCurrent"),
+    );
+    expect(rebindStatusText({ status: "exact", candidates: [{}], isCurrentRun: true })).toBe(
+      t("readerLib.exact", { scope: t("readerLib.scopeVersion") }),
+    );
+    expect(rebindStatusText({ status: "exact", candidates: [{}], isCurrentRun: false })).toBe(
+      t("readerLib.exact", { scope: t("readerLib.scopeRun") }),
+    );
+    expect(
+      rebindStatusText({ status: "ambiguous", candidates: [{}, {}, {}], isCurrentRun: true }),
+    ).toBe(t("readerLib.ambiguous", { scope: t("readerLib.scopeVersion"), count: 3 }));
+    expect(rebindStatusText({ status: "unresolved", candidates: [], isCurrentRun: false })).toBe(
+      t("readerLib.unresolved", { scope: t("readerLib.scopeRun") }),
+    );
+  });
+
+  it("envanter yapı ve ek etiketleri sözlükten; bilinmeyen anahtar kendi adıyla", () => {
+    const paragraphs = structureRows(inventory()).find((row) => row.key === "paragraphs");
+    expect(paragraphs?.label).toBe(t("inventory.structure.paragraphs"));
+    expect(structureLabel("cells")).toBe(t("inventory.structure.cells"));
+    expect(structureLabel("olmayan_anahtar")).toBe("olmayan_anahtar");
+    expect(attachmentKindLabel("ole_object")).toBe(t("inventory.attachmentKind.ole_object"));
+    expect(attachmentKindLabel("bilinmeyen_tur")).toBe("bilinmeyen_tur");
+  });
+
+  it("envanter özet satırları sözlükten ve parametreleri doldurur", () => {
+    expect(attachmentSummary(inventory({ attachmentCount: 0 }))).toBe(
+      t("inventory.noAttachments"),
+    );
+    expect(attachmentSummary(inventory())).toBe(
+      t("inventory.attachmentSummary", { count: 2, size: formatSize(166) }),
+    );
+    expect(changeSummary(inventory().changes)).toBe(
+      [
+        t("inventory.insertions", { count: 2 }),
+        t("inventory.deletions", { count: 1 }),
+        t("inventory.comments", { count: 1 }),
+      ].join(" · "),
+    );
+    expect(changeSummary(undefined)).toBe(t("inventory.noChanges"));
+    expect(
+      changeSummary({ ...inventory().changes, insertions: 0, deletions: 0, comments: 0 }),
+    ).toBe(t("inventory.noTrackedChanges"));
+  });
+
+  it("envanter künye satırları ve sınır uyarıları sözlükten", () => {
+    const rows = changeRows(inventory());
+    const labels = rows.map((row) => row.label);
+    const changeKeys = [
+      "authors",
+      "firstDate",
+      "lastDate",
+      "revision",
+      "lastModifiedBy",
+      "creator",
+      "created",
+      "modified",
+      "protection",
+      "tracking",
+      "signaturePart",
+    ] as const;
+    for (const key of changeKeys) {
+      expect(labels).toContain(t(`inventory.change.${key}` as MessageKey));
+    }
+    expect(rows.find((row) => row.label === t("inventory.change.signaturePart"))?.value).toBe(
+      t("inventory.change.signatureUnverified", { count: 1 }),
+    );
+    expect(rows.find((row) => row.label === t("inventory.change.tracking"))?.value).toBe(
+      t("inventory.change.on"),
+    );
+    // Sıra sabit: çekirdek uyarıları ekranda bu sırayla görünür.
+    expect(inventoryNotices(inventory())).toEqual([
+      t("inventory.notice.truncated"),
+      t("inventory.notice.externalLinks", { count: 2 }),
+      t("inventory.notice.signature"),
+      t("inventory.notice.textBox"),
+      t("inventory.notice.altChunk"),
+    ]);
+    expect(inventoryNotices(inventory({ kind: "udf" }))).toContain(t("inventory.notice.udf"));
+    expect(inventoryGateReason(null)).toBe(t("inventory.gateUnknown"));
+    expect(inventoryGateReason("pdf")).toBe(t("inventory.gateUnsupported", { type: "pdf" }));
+  });
+
+  it("okuyucu ve envanter parametreli satırları { bırakmaz", () => {
+    const lines = [
+      t("readerUi.documentPickerAria", { label: "Sol belge" }),
+      t("readerUi.previewRegionAria", { label: "Sol belge" }),
+      t("readerUi.previewImageAlt", { label: "Sol belge", page: 3 }),
+      t("readerUi.candidateTitle", { segment: "ab12cd34", offset: 12 }),
+      t("readerUi.recordVersionLabel", { name: "Dava dilekçesi" }),
+      t("readerUi.inventorySummary", { kind: "DOCX", count: 9 }),
+      t("readerUi.attachmentsLine", { summary: "2 ek" }),
+      t("readerUi.changesLine", { summary: "1 ekleme" }),
+      t("readerUi.printedLabel", { label: "iv" }),
+      t("readerUi.partialParse", { status: "failed" }),
+      t("readerUi.rotationBadgeTitle", { doc: 90, view: 180 }),
+      t("readerUi.rotationBadge", { rotation: 90 }),
+      t("readerUi.rotationSuffix", { rotation: 90 }),
+      t("readerUi.noteSource", { physical: "1. sayfa", start: 3, end: 9 }),
+      t("readerUi.noteCreated", { title: "Not" }),
+      t("readerUi.viewHint", { page: 1, total: 5, zoom: 100 }),
+      t("readerUi.structureSummary", { count: 4 }),
+      t("readerUi.moreEntries", { count: 12 }),
+      t("readerUi.textAria", { physical: "1. sayfa" }),
+      t("readerUi.warningsSummary", { count: 2 }),
+      t("readerUi.moreWarnings", { count: 3 }),
+      t("readerUi.marksSummary", { count: 2 }),
+      t("readerUi.regionMarkLabel", { count: 2 }),
+      t("readerUi.selectionLine", { quote: "alıntı" }),
+      t("readerUi.selectionRange", { start: 1, end: 4 }),
+      t("readerUi.sourceSaved", { quote: "alıntı" }),
+      t("pageMap.aria", { physical: "1. sayfa", count: 12 }),
+      t("pageMap.dimensions", { width: 612, height: 792, unit: "punto" }),
+      t("pageMap.rotated", { rotation: 90 }),
+      t("pageMap.blocks", { count: 12 }),
+      t("readerLib.versionBadge", { from: "v1", to: "v2" }),
+      t("readerLib.caption", { source: "x", size: "1 KiB", dpi: 96 }),
+      t("readerLib.exact", { scope: "Güncel sürümde" }),
+      t("readerLib.ambiguous", { scope: "Güncel sürümde", count: 2 }),
+      t("readerLib.unresolved", { scope: "Güncel sürümde" }),
+      t("inventory.attachmentSummary", { count: 2, size: "166 bayt" }),
+      t("inventory.insertions", { count: 1 }),
+      t("inventory.deletions", { count: 1 }),
+      t("inventory.comments", { count: 1 }),
+      t("inventory.change.signatureUnverified", { count: 1 }),
+      t("inventory.notice.externalLinks", { count: 2 }),
+      t("inventory.gateUnsupported", { type: "pdf" }),
+    ];
+    for (const line of lines) {
+      expect(line).not.toContain("{");
+      expect(line.trim().length).toBeGreaterThan(0);
+      expect(line).not.toContain("  ");
+    }
+  });
+
+  it("okuyucu kümesinin t() anahtarları sözlükte eksiksizdir", () => {
+    const targets: Array<[string, RegExp]> = [
+      ["../components/DualReader.tsx", /t\(\s*"((?:readerUi)\.[a-zA-Z0-9_.]+)"/g],
+      ["../components/PageMap.tsx", /t\(\s*"((?:pageMap)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/reader.ts", /t\(\s*"((?:readerLib)\.[a-zA-Z0-9_.]+)"/g],
+      ["../lib/inventory.ts", /t\(\s*"((?:inventory)\.[a-zA-Z0-9_.]+)"/g],
+    ];
+    const known = new Set(messageKeys());
+    for (const [relative, pattern] of targets) {
+      const source = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+      const used = [...source.matchAll(pattern)].map((match) => match[1]!);
+      expect({ relative, used: used.length > 3 }).toEqual({ relative, used: true });
+      const missing = used.filter((key) => !known.has(key as never));
+      expect({ relative, missing }).toEqual({ relative, missing: [] });
+    }
+  });
+});
+
+describe("IPC hata indirgemesi (lib/api.ts) sözlükten metin üretir", () => {
+  it("ham hata metni arayüze sızmaz; bilinmeyen hata sözlükten yazılır", () => {
+    expect(toApiError(new Error("boom"))).toEqual({
+      code: "E_UI_UNKNOWN",
+      message: t("api.unexpectedError"),
+      retryable: false,
+    });
+    expect(toApiError(new Error("boom")).message).not.toContain("boom");
+    // Çekirdekten gelen yapısal hata olduğu gibi taşınır (uydurma yok).
+    expect(toApiError({ code: "E_X", message: "a", retryable: true })).toEqual({
+      code: "E_X",
+      message: "a",
+      retryable: true,
+    });
   });
 });

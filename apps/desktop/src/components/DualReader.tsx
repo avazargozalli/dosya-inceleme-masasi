@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { PageMap } from "./PageMap";
+import { t } from "../lib/i18n";
 import {
   api,
   toApiError,
@@ -65,7 +66,7 @@ import {
  *  Bir panelde belge değiştirmek diğerini etkilemez (F07-T08). */
 function ReaderPane({
   caseId,
-  label,
+  pane,
   documents,
   versionId,
   target,
@@ -76,7 +77,8 @@ function ReaderPane({
   onNote,
 }: {
   caseId: string;
-  label: string;
+  /** Panel kimliği: etiket metni sözlükten gelir, karşılaştırma metne bağlı değildir. */
+  pane: "left" | "right";
   documents: DocumentRow[];
   versionId: string | null;
   target: ReaderTarget | null;
@@ -155,7 +157,8 @@ function ReaderPane({
         ? target
         : null;
   // İki panel aynı anda açıkken form alanı kimlikleri çakışmasın.
-  const paneKey = label === "Sol belge" ? "sol" : "sag";
+  const label = pane === "left" ? t("readerUi.leftDocument") : t("readerUi.rightDocument");
+  const paneKey = pane === "left" ? "sol" : "sag";
 
   // Boş panel kendiliğinden bir belge açar; diğer panelde açık sürümü seçmez,
   // böylece yan yana iki farklı belge gelir (tek belge varsa ona döner).
@@ -372,9 +375,11 @@ function ReaderPane({
   const labeledEntries = entries.filter((entry) => entry.path);
   const pageCaption = currentInfo
     ? structureMode
-      ? `Türev sayfa ${current?.pageIndex !== undefined ? current.pageIndex + 1 : "?"}`
+      ? t("readerUi.derivedPage", {
+          page: current?.pageIndex !== undefined ? current.pageIndex + 1 : "?",
+        })
       : currentInfo.physical
-    : "Fiziksel sayfa ?";
+    : t("readerUi.physicalPageUnknown");
   const slice = current ? sliceForPage(current.text, paneTarget, current) : null;
   const highlightRange = current ? rangeForPage(current.text, paneTarget, current) : null;
   // F07-T09: bu sayfadaki metin işaretleri ve hedef aralık tek geçişte
@@ -521,7 +526,7 @@ function ReaderPane({
     try {
       const created = await api.markCreateFromSelection(input, "");
       setMarks((prev) => (prev.some((mark) => mark.id === created.mark.id) ? prev : [...prev, created.mark]));
-      setMarkInfo("İşaret kaydedildi.");
+      setMarkInfo(t("readerUi.markSaved"));
       window.getSelection()?.removeAllRanges();
       dropSelection();
     } catch (e) {
@@ -551,7 +556,9 @@ function ReaderPane({
         body: noteDraft.body,
       });
       setNoteDraft(null);
-      setNoteInfo(`Not oluşturuldu: “${saved.note.title || saved.note.body.slice(0, 40)}”`);
+      setNoteInfo(
+        t("readerUi.noteCreated", { title: saved.note.title || saved.note.body.slice(0, 40) }),
+      );
       window.getSelection()?.removeAllRanges();
       dropSelection();
       onNote?.(saved.note);
@@ -566,7 +573,7 @@ function ReaderPane({
     try {
       await api.markDelete(markId);
       setMarks((prev) => prev.filter((mark) => mark.id !== markId));
-      setMarkInfo("İşaret silindi.");
+      setMarkInfo(t("readerUi.markDeleted"));
     } catch (e) {
       setError(toApiError(e));
     }
@@ -597,7 +604,7 @@ function ReaderPane({
         setAnchorInfo(location);
         setReboundTarget(targetFromAnchor(location));
         onPickVersion(location.documentVersionId);
-        setRebindNotice("Kaynak güncel sürüme bağlandı; sayfa yeni konumdan açıldı.");
+        setRebindNotice(t("readerUi.rebindNotice"));
       }
       onAnchorRebound?.(location ?? anchorInfo);
     } catch (e) {
@@ -680,7 +687,7 @@ function ReaderPane({
       });
       setMarks((prev) => [...prev, mark]);
       setDragRegion(null);
-      setMarkInfo("Bölge işareti kaydedildi.");
+      setMarkInfo(t("readerUi.regionMarkSaved"));
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -697,7 +704,9 @@ function ReaderPane({
   if (versionId && !options.some((option) => option.versionId === versionId)) {
     options.unshift({
       versionId,
-      label: `${target?.documentName ?? "Seçili sürüm"} (kayıt sürümü)`,
+      label: t("readerUi.recordVersionLabel", {
+        name: target?.documentName ?? t("readerUi.selectedVersion"),
+      }),
     });
   }
 
@@ -725,19 +734,19 @@ function ReaderPane({
         {focused ? (
           <span
             className="badge ok"
-            title="Klavye gezinmesi bu panelde; diğer panelin sayfası ve seçimi değişmez"
+            title={t("readerUi.keyboardScopeTitle")}
           >
-            etkin panel
+            {t("readerUi.activePane")}
           </span>
         ) : null}
         <select
           className="input"
-          aria-label={`${label} belgesi`}
+          aria-label={t("readerUi.documentPickerAria", { label })}
           style={{ flex: "1 1 160px", height: 30, maxWidth: 320 }}
           value={versionId ?? ""}
           onChange={(e) => onPickVersion(e.target.value)}
         >
-          {options.length === 0 ? <option value="">Belge yok</option> : null}
+          {options.length === 0 ? <option value="">{t("readerUi.noDocument")}</option> : null}
           {options.map((option) => (
             <option key={option.versionId} value={option.versionId}>
               {option.label}
@@ -756,20 +765,17 @@ function ReaderPane({
         <div className={anchorInfo.quoteIntact ? "notice" : "notice warn"} role="status">
           <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {!anchorInfo.quoteIntact ? (
-              <span>
-                Kaynak kopmuş: alıntı segmentte birebir bulunamadı. Anchor silinmedi; sayfa yine
-                açıldı.
-              </span>
+              <span>{t("readerUi.anchorBroken")}</span>
             ) : null}
             {versionBadge(anchorInfo) ? (
-              <span className="badge warn" title="Kaynak eski sürüme bağlı; güncel sürümde yeniden aranabilir">
+              <span className="badge warn" title={t("readerUi.oldVersionBadgeTitle")}>
                 {versionBadge(anchorInfo)}
               </span>
             ) : null}
             {runBadge(anchorInfo) ? (
               <span
                 className="badge warn"
-                title="Belge yeniden ayrıştırıldı; kaynak eski ayrıştırmaya bağlı. Güncel ayrıştırmada yeniden aranabilir."
+                title={t("readerUi.oldRunBadgeTitle")}
               >
                 {runBadge(anchorInfo)}
               </span>
@@ -780,9 +786,9 @@ function ReaderPane({
                 style={{ height: 24 }}
                 disabled={rebindBusy}
                 onClick={() => void loadRebindSuggestion(anchorInfo.anchorId)}
-                title="Güncel sürümde alıntıyı ara; öneri kullanıcı onayıyla uygulanır"
+                title={t("readerUi.rebindSearchTitle")}
               >
-                {rebindBusy ? "Aranıyor…" : "Güncel sürümde ara"}
+                {rebindBusy ? t("readerUi.searching") : t("readerUi.rebindSearch")}
               </button>
             ) : null}
           </span>
@@ -792,7 +798,7 @@ function ReaderPane({
       {rebindSuggestion ? (
         <div className="card tight" style={{ background: "var(--surface)" }}>
           <p className="hint" style={{ margin: 0 }}>
-            {rebindStatusText(rebindSuggestion)} · alıntı “{rebindSuggestion.quote.slice(0, 60)}”
+            {`${rebindStatusText(rebindSuggestion)} · ${t("readerUi.quoteLabel")} “${rebindSuggestion.quote.slice(0, 60)}”`}
           </p>
           {rebindSuggestion.candidates.length > 0 ? (
             <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 6 }}>
@@ -803,18 +809,21 @@ function ReaderPane({
                   style={{ height: 26 }}
                   disabled={rebindBusy}
                   onClick={() => void rebindTo(candidate)}
-                  title={`segment ${candidate.segmentId.slice(0, 8)} · karakter ${candidate.startOffset}`}
+                  title={t("readerUi.candidateTitle", {
+                    segment: candidate.segmentId.slice(0, 8),
+                    offset: candidate.startOffset,
+                  })}
                 >
                   {candidate.pageIndex !== null
-                    ? `Fiziksel sayfa ${candidate.pageIndex + 1}`
-                    : "sayfa bilinmiyor"}
+                    ? t("readerUi.physicalPage", { page: candidate.pageIndex + 1 })
+                    : t("readerUi.pageUnknown")}
                 </button>
               ))}
             </div>
           ) : null}
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 6 }}>
             <button className="btn ghost" onClick={() => setRebindSuggestion(null)}>
-              Kapat
+              {t("readerUi.close")}
             </button>
           </div>
         </div>
@@ -824,13 +833,13 @@ function ReaderPane({
 
       {!versionId ? (
         <div className="empty" style={{ padding: "var(--space-4)" }}>
-          <p style={{ margin: 0 }}>Bu panelde açılacak belge seçin.</p>
+          <p style={{ margin: 0 }}>{t("readerUi.pickDocument")}</p>
         </div>
       ) : loading && !data ? (
-        <p className="hint" style={{ margin: 0 }}>Yükleniyor…</p>
+        <p className="hint" style={{ margin: 0 }}>{t("readerUi.loading")}</p>
       ) : !data ? (
         <div className="empty" style={{ padding: "var(--space-4)" }}>
-          <p style={{ margin: 0 }}>Ayrıştırılmış metin yok. Önce “Ayrıştır” çalıştırın.</p>
+          <p style={{ margin: 0 }}>{t("readerUi.noText")}</p>
         </div>
       ) : (
         <>
@@ -846,10 +855,14 @@ function ReaderPane({
                   aria-label={info.showsLabel ? `${info.physical} (${info.label})` : info.physical}
                   title={
                     info.showsLabel
-                      ? `${info.label} · ${p.textOrigin === "none" ? "metin katmanı yok" : "metin var"}`
+                      ? `${info.label} · ${
+                          p.textOrigin === "none"
+                            ? t("readerUi.noTextLayer")
+                            : t("readerUi.hasText")
+                        }`
                       : p.textOrigin === "none"
-                        ? "metin katmanı yok"
-                        : "metin var"
+                        ? t("readerUi.noTextLayer")
+                        : t("readerUi.hasText")
                   }
                 >
                   {p.pageIndex + 1}
@@ -866,15 +879,13 @@ function ReaderPane({
                 </div>
               ) : null}
               {previewBusy && !preview ? (
-                <p className="hint" style={{ margin: 0 }}>
-                  Sayfa görüntüsü hazırlanıyor…
-                </p>
+                <p className="hint" style={{ margin: 0 }}>{t("readerUi.previewPreparing")}</p>
               ) : null}
               {preview && preview.pageIndex === page ? (
                 <>
                   <div
                     role="group"
-                    aria-label={`${label}: sayfa görüntüsü üzerinde bölge seçimi`}
+                    aria-label={t("readerUi.previewRegionAria", { label })}
                     style={{
                       position: "relative",
                       display: "inline-block",
@@ -890,7 +901,7 @@ function ReaderPane({
                   >
                     <img
                       src={preview.dataUrl}
-                      alt={`${label}: fiziksel sayfa ${page + 1} görüntüsü`}
+                      alt={t("readerUi.previewImageAlt", { label, page: page + 1 })}
                       draggable={false}
                       style={{
                         display: "block",
@@ -944,9 +955,9 @@ function ReaderPane({
                         dragRegion.y1 - dragRegion.y0 < 0.01
                       }
                       onClick={() => void createRegionMark()}
-                      title="Görüntü üzerinde sürüklediğiniz bölgeyi sayfa koordinatında işaret olarak sakla"
+                      title={t("readerUi.regionMarkTitle")}
                     >
-                      {markBusy ? "İşaretleniyor…" : "Seçili bölgeyi işaretle"}
+                      {markBusy ? t("readerUi.marking") : t("readerUi.markRegion")}
                     </button>
                     <button
                       className="btn ghost"
@@ -954,10 +965,10 @@ function ReaderPane({
                       disabled={!dragRegion}
                       onClick={() => setDragRegion(null)}
                     >
-                      Bölge seçimini temizle
+                      {t("readerUi.clearRegion")}
                     </button>
                     <span className="hint" style={{ margin: 0 }}>
-                      İşaretler sayfa koordinatında saklanır; yakınlaştırma/döndürme konumu kaydırmaz.
+                      {t("readerUi.regionHint")}
                     </span>
                   </div>
                   <figcaption className="hint" style={{ marginTop: 4 }}>
@@ -970,13 +981,13 @@ function ReaderPane({
 
           <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             <span className="hint" style={{ margin: 0 }}>
-              Görünüm:
+              {t("readerUi.viewLabel")}
             </span>
             <button
               className="btn"
               style={{ height: 26, minWidth: 26, padding: "0 6px" }}
-              aria-label={`${label}: uzaklaştır`}
-              title="Uzaklaştır"
+              aria-label={t("readerUi.zoomOutAria", { label })}
+              title={t("readerUi.zoomOut")}
               disabled={nextZoom(zoom, -1) === clampZoom(zoom)}
               onClick={() => setView((state) => ({ ...state, zoom: nextZoom(state.zoom, -1) }))}
             >
@@ -992,8 +1003,8 @@ function ReaderPane({
             <button
               className="btn"
               style={{ height: 26, minWidth: 26, padding: "0 6px" }}
-              aria-label={`${label}: yakınlaştır`}
-              title="Yakınlaştır"
+              aria-label={t("readerUi.zoomInAria", { label })}
+              title={t("readerUi.zoomIn")}
               disabled={nextZoom(zoom, 1) === clampZoom(zoom)}
               onClick={() => setView((state) => ({ ...state, zoom: nextZoom(state.zoom, 1) }))}
             >
@@ -1004,7 +1015,7 @@ function ReaderPane({
               style={{ height: 26 }}
               disabled={zoom === 1}
               onClick={() => setView((state) => ({ ...state, zoom: 1 }))}
-              title="Yakınlaştırmayı %100'e döndür"
+              title={t("readerUi.zoomResetTitle")}
             >
               %100
             </button>
@@ -1015,8 +1026,8 @@ function ReaderPane({
             <button
               className="btn"
               style={{ height: 26, minWidth: 26, padding: "0 6px" }}
-              aria-label={`${label}: sola döndür`}
-              title="Sola döndür (90°)"
+              aria-label={t("readerUi.rotateLeftAria", { label })}
+              title={t("readerUi.rotateLeft")}
               onClick={() => setView((state) => ({ ...state, rotation: rotateView(state.rotation, -90) }))}
             >
               ⟲
@@ -1024,8 +1035,8 @@ function ReaderPane({
             <button
               className="btn"
               style={{ height: 26, minWidth: 26, padding: "0 6px" }}
-              aria-label={`${label}: sağa döndür`}
-              title="Sağa döndür (90°)"
+              aria-label={t("readerUi.rotateRightAria", { label })}
+              title={t("readerUi.rotateRight")}
               onClick={() => setView((state) => ({ ...state, rotation: rotateView(state.rotation, 90) }))}
             >
               ⟳
@@ -1035,9 +1046,9 @@ function ReaderPane({
               style={{ height: 26 }}
               disabled={viewRotation === 0}
               onClick={() => setView((state) => ({ ...state, rotation: 0 }))}
-              title="Görünüm döndürmesini sıfırla (belgenin kendi döndürmesi kalır)"
+              title={t("readerUi.rotationResetTitle")}
             >
-              Döndürmeyi sıfırla
+              {t("readerUi.rotationReset")}
             </button>
             <span
               aria-hidden
@@ -1047,23 +1058,20 @@ function ReaderPane({
               className={previewOn ? "btn primary" : "btn"}
               style={{ height: 26 }}
               aria-pressed={previewOn}
-              title="Sayfanın gerçek görüntüsünü göster (yalnız PDF; önbellek şifreli tutulur)"
+              title={t("readerUi.previewToggleTitle")}
               onClick={() => setPreviewOn((value) => !value)}
             >
-              {previewOn ? "Görüntü açık" : "Sayfa görüntüsü"}
+              {previewOn ? t("readerUi.previewOn") : t("readerUi.previewOff")}
             </button>
             <button
               className={inventoryOn ? "btn primary" : "btn"}
               style={{ height: 26 }}
               aria-pressed={inventoryOn}
               disabled={inventoryGate !== null}
-              title={
-                inventoryGate ??
-                "Belgenin yapısını, eklerini ve değişiklik izini çıkar (DOCX/UDF; kasaya yazmaz)"
-              }
+              title={inventoryGate ?? t("readerUi.inventoryToggleTitle")}
               onClick={() => setInventoryOn((value) => !value)}
             >
-              {inventoryOn ? "Envanter açık" : "Belge envanteri"}
+              {inventoryOn ? t("readerUi.inventoryOn") : t("readerUi.inventoryOff")}
             </button>
           </div>
 
@@ -1071,7 +1079,7 @@ function ReaderPane({
               izi. Sayılar çekirdekten gelir; burada türetilmez. */}
           {inventoryOn ? (
             <section
-              aria-label={`${label}: belge envanteri`}
+              aria-label={t("readerUi.inventoryAria", { label })}
               style={{
                 border: "1px solid var(--line)",
                 borderRadius: "var(--radius)",
@@ -1081,12 +1089,15 @@ function ReaderPane({
               }}
             >
               <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                <strong style={{ fontSize: 13 }}>Belge envanteri</strong>
+                <strong style={{ fontSize: 13 }}>{t("readerUi.inventoryHeading")}</strong>
                 <span className="badge plain">
                   {inventoryBusy
-                    ? "çıkarılıyor…"
+                    ? t("readerUi.inventoryExtracting")
                     : inventoryData
-                      ? `${inventoryData.kind.toUpperCase()} · ${structureTotal(inventoryData)} öğe`
+                      ? t("readerUi.inventorySummary", {
+                          kind: inventoryData.kind.toUpperCase(),
+                          count: structureTotal(inventoryData),
+                        })
                       : inventoryGate ?? "—"}
                 </span>
               </div>
@@ -1122,16 +1133,18 @@ function ReaderPane({
                     </div>
                   ) : (
                     <p className="hint" style={{ margin: 0 }}>
-                      Yapı öğesi bulunamadı.
+                      {t("readerUi.noStructure")}
                     </p>
                   )}
                   <div className="muted" style={{ fontSize: 12 }}>
-                    Ekler: {attachmentSummary(inventoryData)}
+                    {t("readerUi.attachmentsLine", {
+                      summary: attachmentSummary(inventoryData),
+                    })}
                   </div>
                   {inventoryAttachments.length > 0 ? (
                     <details>
                       <summary style={{ cursor: "pointer", fontSize: 12 }}>
-                        Ek listesi ({inventoryAttachments.length})
+                        {t("readerUi.attachmentList", { count: inventoryAttachments.length })}
                       </summary>
                       <ul style={{ margin: "4px 0 0", paddingLeft: 16, fontSize: 12 }}>
                         {inventoryAttachments.map((row) => (
@@ -1144,7 +1157,9 @@ function ReaderPane({
                     </details>
                   ) : null}
                   <div className="muted" style={{ fontSize: 12 }}>
-                    Değişiklik izi: {changeSummary(inventoryData.changes)}
+                    {t("readerUi.changesLine", {
+                      summary: changeSummary(inventoryData.changes),
+                    })}
                   </div>
                   {inventoryChanges.length > 0 ? (
                     <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>
@@ -1161,8 +1176,7 @@ function ReaderPane({
                     </p>
                   ))}
                   <p className="hint" style={{ margin: 0 }}>
-                    Envanter belge baytlarından istek üzerine çıkarılır: gövde metni göstermez,
-                    kasaya kayıt yazmaz; gömülü nesnelerin ve altChunk'ın içeriği çıkarılmaz.
+                    {t("readerUi.inventoryNote")}
                   </p>
                 </>
               ) : null}
@@ -1177,31 +1191,36 @@ function ReaderPane({
               {structureMode ? (
                 <span
                   className="badge plain"
-                  title="DOCX/UDF: sayfa ayrımı doğrulanmadı; kaynak paragraf bazlıdır"
+                  title={t("readerUi.structureBadgeTitle")}
                 >
-                  yapısal belge · paragraf bazlı
+                  {t("readerUi.structureBadge")}
                 </span>
               ) : null}
               {currentInfo?.showsLabel ? (
                 <span
                   className="badge"
-                  title="PDF /PageLabels ağacından gelen basılı etiket; fiziksel sıradan ayrıdır"
+                  title={t("readerUi.printedLabelTitle")}
                 >
-                  basılı etiket “{currentInfo.label}”
+                  {t("readerUi.printedLabel", { label: currentInfo.label ?? "" })}
                 </span>
               ) : null}
               {data.parseRun.status === "succeeded" ? null : (
-                <span className="badge warn">kısmi ayrıştırma · {data.parseRun.status}</span>
+                <span className="badge warn">
+                  {t("readerUi.partialParse", { status: data.parseRun.status })}
+                </span>
               )}
               {current && current.textOrigin !== "native" ? (
-                <span className="badge warn">metin yok / OCR</span>
+                <span className="badge warn">{t("readerUi.noTextOcr")}</span>
               ) : null}
               {current && rotation ? (
                 <span
                   className="badge plain"
-                  title={`belge ${current.rotation}° + görünüm ${viewRotation}°; koordinatlar döndürme öncesi uzaydadır`}
+                  title={t("readerUi.rotationBadgeTitle", {
+                    doc: current.rotation,
+                    view: viewRotation,
+                  })}
                 >
-                  görünüm {rotation}° döndürülmüş
+                  {t("readerUi.rotationBadge", { rotation })}
                 </span>
               ) : null}
             </span>
@@ -1211,27 +1230,31 @@ function ReaderPane({
                 style={{ height: 26 }}
                 disabled={!selection || !current?.segmentId}
                 onClick={() => void saveAnchor()}
-                title={current?.segmentId ? "Seçili metni kaynak olarak kaydet" : "bu sayfada metin segmenti yok"}
+                title={
+                  current?.segmentId
+                    ? t("readerUi.bindSelectionTitle")
+                    : t("readerUi.noSegmentTitle")
+                }
               >
-                Seçimi kaynağa bağla
+                {t("readerUi.bindSelection")}
               </button>
               <button
                 className="btn"
                 style={{ height: 26 }}
                 disabled={!selection || !current?.segmentId || markBusy}
                 onClick={() => void createMark()}
-                title="Seçili metni bu belgede kalıcı işaret olarak sakla (alıntı çekirdekte doğrulanır)"
+                title={t("readerUi.markTitle")}
               >
-                {markBusy ? "İşaretleniyor…" : "İşaretle"}
+                {markBusy ? t("readerUi.marking") : t("readerUi.mark")}
               </button>
               <button
                 className="btn"
                 style={{ height: 26 }}
                 disabled={!selection || !current?.segmentId || noteBusy}
                 onClick={startNoteFromSelection}
-                title="Seçili metinden kaynaklı not oluştur"
+                title={t("readerUi.noteFromSelectionTitle")}
               >
-                Seçimden not
+                {t("readerUi.noteFromSelection")}
               </button>
             </span>
           </div>
@@ -1240,14 +1263,18 @@ function ReaderPane({
             <div className="card tight" style={{ background: "var(--surface)" }}>
               <div className="card-head">
                 <div>
-                  <h2 style={{ fontSize: 14 }}>Seçimden not</h2>
+                  <h2 style={{ fontSize: 14 }}>{t("readerUi.noteFromSelection")}</h2>
                   <p className="card-sub">
-                    Kaynak: {currentInfo?.physical ?? "sayfa"} · alıntı {selection?.start}–{selection?.end}
+                    {t("readerUi.noteSource", {
+                      physical: currentInfo?.physical ?? t("readerUi.page"),
+                      start: selection?.start ?? "",
+                      end: selection?.end ?? "",
+                    })}
                   </p>
                 </div>
               </div>
               <div className="field">
-                <label htmlFor={`note-title-${paneKey}`}>Başlık</label>
+                <label htmlFor={`note-title-${paneKey}`}>{t("readerUi.titleLabel")}</label>
                 <input
                   id={`note-title-${paneKey}`}
                   className="input"
@@ -1257,7 +1284,7 @@ function ReaderPane({
                 />
               </div>
               <div className="field">
-                <label htmlFor={`note-body-${paneKey}`}>Not</label>
+                <label htmlFor={`note-body-${paneKey}`}>{t("readerUi.noteLabel")}</label>
                 <textarea
                   id={`note-body-${paneKey}`}
                   className="input"
@@ -1268,14 +1295,14 @@ function ReaderPane({
               </div>
               <div className="row" style={{ justifyContent: "flex-end" }}>
                 <button className="btn ghost" onClick={() => setNoteDraft(null)}>
-                  Vazgeç
+                  {t("readerUi.cancel")}
                 </button>
                 <button
                   className="btn primary"
                   disabled={noteBusy || !noteDraft.body.trim()}
                   onClick={() => void saveNoteFromSelection()}
                 >
-                  {noteBusy ? "Kaydediliyor…" : "Notu kaydet"}
+                  {noteBusy ? t("readerUi.saving") : t("readerUi.saveNote")}
                 </button>
               </div>
             </div>
@@ -1285,12 +1312,19 @@ function ReaderPane({
           {noteInfo ? <div className="notice ok">{noteInfo}</div> : null}
 
           <p className="hint" style={{ margin: 0 }}>
-            Bu panelin görünümü: sayfa {view.page + 1}/{data.pages.length} · %{zoomPercent}
-            {view.rotation ? ` · ${view.rotation}° döndürülmüş` : ""}. Belge değiştirip geri
-            dönerseniz bu konum ve seçim geri yüklenir; diğer panelin görünümü değişmez. Klavye:
-            <code>Alt</code>+<code>←</code>/<code>→</code> veya <code>Alt</code>+<code>PageUp</code>/
-            <code>PageDown</code> sayfa değiştirir, <code>Alt</code>+<code>Home</code>/<code>End</code>{" "}
-            ilk/son sayfaya gider.
+            {t("readerUi.viewHint", {
+              page: view.page + 1,
+              total: data.pages.length,
+              zoom: zoomPercent,
+            })}
+            {view.rotation
+              ? ` · ${t("readerUi.rotationSuffix", { rotation: view.rotation })}`
+              : ""}
+            {t("readerUi.viewHintRest")}{" "}
+            <code>Alt</code>+<code>←</code>/<code>→</code> {t("readerUi.keyboardOr")}{" "}
+            <code>Alt</code>+<code>PageUp</code>/<code>PageDown</code>{" "}
+            {t("readerUi.keyboardPages")} <code>Alt</code>+<code>Home</code>/<code>End</code>{" "}
+            {t("readerUi.keyboardFirstLast")}
           </p>
 
           {current && current.coordinateSpace && current.coordinateSpace !== "structure" && current.blocks.length > 0 ? (
@@ -1305,7 +1339,7 @@ function ReaderPane({
           {structureMode && labeledEntries.length > 0 ? (
             <details style={{ fontSize: 12 }}>
               <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
-                Yapı — {labeledEntries.length} paragraf/bölüm (türev sayfadan ayrı)
+                {t("readerUi.structureSummary", { count: labeledEntries.length })}
               </summary>
               <ol style={{ margin: "6px 0 0", paddingLeft: 18, maxHeight: 160, overflow: "auto" }}>
                 {labeledEntries.slice(0, 200).map((entry) => (
@@ -1329,7 +1363,7 @@ function ReaderPane({
               </ol>
               {labeledEntries.length > 200 ? (
                 <p className="hint" style={{ margin: 0 }}>
-                  +{labeledEntries.length - 200} kayıt daha var; metin içinde gezinin.
+                  {t("readerUi.moreEntries", { count: labeledEntries.length - 200 })}
                 </p>
               ) : null}
             </details>
@@ -1340,7 +1374,11 @@ function ReaderPane({
             onMouseUp={readSelection}
             onKeyUp={readSelection}
             tabIndex={0}
-            aria-label={currentInfo ? `${currentInfo.physical} metni` : "sayfa metni"}
+            aria-label={
+              currentInfo
+                ? t("readerUi.textAria", { physical: currentInfo.physical })
+                : t("readerUi.pageText")
+            }
             style={{
               background: "var(--surface)",
               border: "1px solid var(--line)",
@@ -1405,7 +1443,7 @@ function ReaderPane({
                     <span
                       key={`seg-${index}`}
                       style={{ background: "var(--warn-soft)", borderRadius: 2 }}
-                      title="kalıcı işaret"
+                      title={t("readerUi.markSpanTitle")}
                     >
                       {segment.text}
                     </span>
@@ -1414,21 +1452,21 @@ function ReaderPane({
                   ),
                 )
               ) : (
-                current.text.trim() || "(bu sayfada metin katmanı yok)"
+                current.text.trim() || t("readerUi.noTextLayerParen")
               )
             ) : null}
           </div>
 
           {paneTarget && page === targetPage && !slice && (paneTarget.startOffset !== null || Boolean(paneTarget.query)) ? (
             <p className="hint" style={{ margin: 0 }}>
-              İşaretlenecek alıntı bu sayfada bulunamadı; sayfa numarası yine de kaynaktan geldi.
+              {t("readerUi.quoteNotOnPage")}
             </p>
           ) : null}
 
           {parseWarningsList.length > 0 ? (
             <details style={{ fontSize: 12 }}>
               <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
-                {parseWarningsList.length} ayrıştırma uyarısı (imza, bilinmeyen öğe, sayfa…)
+                {t("readerUi.warningsSummary", { count: parseWarningsList.length })}
               </summary>
               <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
                 {parseWarningsList.slice(0, 20).map((warning, index) => (
@@ -1437,7 +1475,7 @@ function ReaderPane({
               </ul>
               {parseWarningsList.length > 20 ? (
                 <p className="hint" style={{ margin: 0 }}>
-                  +{parseWarningsList.length - 20} uyarı daha var.
+                  {t("readerUi.moreWarnings", { count: parseWarningsList.length - 20 })}
                 </p>
               ) : null}
             </details>
@@ -1446,35 +1484,44 @@ function ReaderPane({
           {marks.length > 0 ? (
             <details style={{ fontSize: 12 }}>
               <summary style={{ cursor: "pointer", color: "var(--ink-3)" }}>
-                {marks.length} kalıcı işaret (bu belgede)
+                {t("readerUi.marksSummary", { count: marks.length })}
               </summary>
               <ul style={{ margin: "6px 0 0", paddingLeft: 18, maxHeight: 160, overflow: "auto" }}>
                 {marks.map((mark) => {
                   const markPage = data.pages.find((p) => p.id === mark.pageId);
-                  const caption = markPage ? pageLabelInfo(markPage).physical : "sayfa bilinmiyor";
+                  const caption = markPage
+                    ? pageLabelInfo(markPage).physical
+                    : t("readerUi.pageUnknown");
                   return (
                     <li key={mark.id} style={{ marginBottom: 4 }}>
                       <span className="muted small">
-                        {caption} · {mark.markKind === "text" ? "metin" : "bölge"}
+                        {caption} ·{" "}
+                        {mark.markKind === "text"
+                          ? t("readerUi.kindText")
+                          : t("readerUi.kindRegion")}
                       </span>{" "}
                       <button
                         className="btn ghost"
                         style={{ height: "auto", padding: "0 6px" }}
                         disabled={!markPage}
                         onClick={() => jumpToMark(mark)}
-                        title={mark.markKind === "text" ? mark.quotedText : "bölge işaretini göster"}
+                        title={
+                          mark.markKind === "text"
+                            ? mark.quotedText
+                            : t("readerUi.showRegionTitle")
+                        }
                       >
                         {mark.markKind === "text"
                           ? `“${mark.quotedText.slice(0, 50)}${mark.quotedText.length > 50 ? "…" : ""}”`
-                          : `bölge · ${mark.rects.length} kutu`}
+                          : t("readerUi.regionMarkLabel", { count: mark.rects.length })}
                       </button>
                       <button
                         className="btn ghost"
                         style={{ height: 22, padding: "0 6px" }}
-                        aria-label="işareti sil"
+                        aria-label={t("readerUi.deleteMarkAria")}
                         onClick={() => void removeMark(mark.id)}
                       >
-                        Sil
+                        {t("readerUi.delete")}
                       </button>
                     </li>
                   );
@@ -1485,17 +1532,26 @@ function ReaderPane({
 
           {selectionDropped ? (
             <p className="hint" style={{ margin: 0 }}>
-              Önceki seçim bu sayfada doğrulanamadı (metin değişmiş olabilir); seçim geri
-              yüklenmedi, yanlış alıntı işaretlenmez.
+              {t("readerUi.selectionDropped")}
             </p>
           ) : null}
           {selection ? (
             <div className="notice">
-              Seçim: “{selection.quote.length > 90 ? `${selection.quote.slice(0, 90)}…` : selection.quote}”
-              {" · "}karakter {selection.start}–{selection.end}
+              {t("readerUi.selectionLine", {
+                quote:
+                  selection.quote.length > 90
+                    ? `${selection.quote.slice(0, 90)}…`
+                    : selection.quote,
+              })}
+              {" · "}
+              {t("readerUi.selectionRange", { start: selection.start, end: selection.end })}
             </div>
           ) : null}
-          {savedQuote ? <div className="notice ok">Kaynak kaydedildi: “{savedQuote.slice(0, 80)}”</div> : null}
+          {savedQuote ? (
+            <div className="notice ok">
+              {t("readerUi.sourceSaved", { quote: savedQuote.slice(0, 80) })}
+            </div>
+          ) : null}
         </>
       )}
     </section>
@@ -1539,19 +1595,18 @@ export function DualReader({
     <div className="card" style={{ borderColor: "var(--line-strong)" }}>
       <div className="card-head">
         <div>
-          <h2>Okuyucu — yan yana</h2>
-          <p className="card-sub">
-            Her panel kendi belgesini, sayfasını, yakınlaştırmasını ve metin seçimini korur.
-            Bir panelde belge değiştirmek diğerini etkilemez; alıntı seçip kaynağa bağlayabilirsiniz.
-          </p>
+          <h2>{t("readerUi.heading")}</h2>
+          <p className="card-sub">{t("readerUi.lead")}</p>
         </div>
-        <button className="btn ghost" onClick={onClose}>Kapat</button>
+        <button className="btn ghost" onClick={onClose}>
+          {t("readerUi.close")}
+        </button>
       </div>
 
       <div className="reader-dual">
         <ReaderPane
           caseId={caseId}
-          label="Sol belge"
+          pane="left"
           documents={documents}
           versionId={leftVersion}
           target={left}
@@ -1563,7 +1618,7 @@ export function DualReader({
         />
         <ReaderPane
           caseId={caseId}
-          label="Sağ belge"
+          pane="right"
           documents={documents}
           versionId={rightVersion}
           target={right}
@@ -1575,11 +1630,10 @@ export function DualReader({
         />
       </div>
       <p className="hint" style={{ margin: 0 }}>
-        Sayfa düğmeleri <strong>fiziksel sırayı</strong> gösterir. PDF&apos;te{" "}
-        <code>/PageLabels</code> tanımlıysa basılı etiket ayrıca yazılır; tanımlı değilse etiket
-        uydurulmaz. DOCX/UDF belgede sayfa <strong>türevdir</strong>; paragraf/bölüm yolu ayrı
-        gösterilir. Yakınlaştırma ve döndürme yalnız görünümü etkiler; kayıtlı sayfa verisi ve
-        alıntı offsetleri değişmez. Alıntı segment metninde birebir bulunamazsa kaydedilmez.
+        {t("readerUi.pageButtonsLead")}{" "}
+        <strong>{t("readerUi.physicalOrder")}</strong> {t("readerUi.pageButtonsMid")}{" "}
+        <code>/PageLabels</code> {t("readerUi.pageButtonsRest")}{" "}
+        <strong>{t("readerUi.derived")}</strong> {t("readerUi.pageButtonsTail")}
       </p>
     </div>
   );

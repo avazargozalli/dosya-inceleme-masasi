@@ -1,5 +1,6 @@
 import type { AnchorLocationRow, DocumentRow, PageBlock, PageRow, SearchHit } from "./api";
 import { formatSize } from "./format";
+import { t } from "./i18n";
 
 /** Okuyucunun açılacağı yer. `versionId` zorunludur: sonuç/bağ, doğru
  *  sürümü açar; "en son sürüm" tahmini yapılmaz (F07 kabul testi). */
@@ -328,9 +329,8 @@ export type PreviewMeta = { cached: boolean; byteSize: number; dpi: number };
 
 /** Önizleme alt yazısı: kaynağı (şifreli önbellek/yeni) ve boyutunu dürüstçe yazar. */
 export function previewCaption(meta: PreviewMeta): string {
-  const size = formatSize(meta.byteSize);
-  const source = meta.cached ? "şifreli önbellekten" : "yeni üretildi";
-  return `${source} · ${size} · ${meta.dpi} dpi`;
+  const source = meta.cached ? t("readerLib.cachedSource") : t("readerLib.freshSource");
+  return t("readerLib.caption", { source, size: formatSize(meta.byteSize), dpi: meta.dpi });
 }
 
 /** Paneldeki metin seçimi: sayfa metnine göre Unicode scalar aralığı. */
@@ -555,9 +555,13 @@ export function versionBadge(location: {
   currentVersionNo: number | null;
 }): string | null {
   if (location.isCurrentVersion) return null;
-  const from = location.versionNo !== null ? `v${location.versionNo}` : "bilinmeyen";
-  const to = location.currentVersionNo !== null ? `v${location.currentVersionNo}` : "bilinmeyen";
-  return `eski sürüm ${from} · güncel ${to}`;
+  const from =
+    location.versionNo !== null ? `v${location.versionNo}` : t("readerLib.unknownVersion");
+  const to =
+    location.currentVersionNo !== null
+      ? `v${location.currentVersionNo}`
+      : t("readerLib.unknownVersion");
+  return t("readerLib.versionBadge", { from, to });
 }
 
 /** Yeniden bağlama durum metni. Sayı uydurulmaz; eşleşme sayısı
@@ -568,16 +572,18 @@ export function rebindStatusText(suggestion: {
   candidates: unknown[];
   isCurrentRun: boolean;
 }): string {
-  const scope = suggestion.isCurrentRun ? "Güncel sürümde" : "Güncel ayrıştırmada";
+  const scope = suggestion.isCurrentRun
+    ? t("readerLib.scopeVersion")
+    : t("readerLib.scopeRun");
   switch (suggestion.status) {
     case "current":
-      return "Kaynak zaten güncel ayrıştırmada.";
+      return t("readerLib.alreadyCurrent");
     case "exact":
-      return `${scope} tek eşleşme bulundu; bağlanabilir.`;
+      return t("readerLib.exact", { scope });
     case "ambiguous":
-      return `${scope} ${suggestion.candidates.length} eşleşme var (belirsiz); birini seçin.`;
+      return t("readerLib.ambiguous", { scope, count: suggestion.candidates.length });
     default:
-      return `${scope} bulunamadı (çözümlenemedi); eski konum korunuyor.`;
+      return t("readerLib.unresolved", { scope });
   }
 }
 
@@ -588,5 +594,5 @@ export function runBadge(location: {
   isCurrentRun: boolean;
 }): string | null {
   if (!location.isCurrentVersion || location.isCurrentRun) return null;
-  return "eski ayrıştırma";
+  return t("readerLib.oldRunBadge");
 }

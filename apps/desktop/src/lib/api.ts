@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { t } from "./i18n";
 import { DEFAULT_OCR_LANG } from "./ocr";
 import type { ReviewTargetInput } from "./reviewTarget";
 
@@ -1656,7 +1657,7 @@ export function toApiError(error: unknown): ApiError {
       retryable: Boolean(e.retryable),
     };
   }
-  return { code: "E_UI_UNKNOWN", message: "Beklenmeyen bir hata oluştu.", retryable: false };
+  return { code: "E_UI_UNKNOWN", message: t("api.unexpectedError"), retryable: false };
 }
 
 export const api = {
