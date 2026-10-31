@@ -224,7 +224,10 @@ export function pageLabelInfo(page: {
   pageLabel?: string | null;
 }): { label: string | null; physical: string; showsLabel: boolean } {
   const raw = (page.pageLabel ?? "").trim();
-  const physical = `Fiziksel sayfa ${page.pageIndex + 1}`;
+  // Metin **sözlükten** gelir: aynı etiket DualReader'da `readerUi.physicalPage`
+  // ile de yazılıyordu (iki kaynak). Gömülü hâli harf kapısından kaçar çünkü
+  // "Fiziksel sayfa" Türkçeye özgü harf (ığüşöç) taşımaz.
+  const physical = t("readerUi.physicalPage", { page: page.pageIndex + 1 });
   const label = raw.length > 0 ? raw : null;
   return {
     label,

@@ -26,7 +26,7 @@ import {
   structureLabel,
   structureRows,
 } from "./inventory";
-import { previewCaption, rebindStatusText, runBadge, versionBadge } from "./reader";
+import { pageLabelInfo, previewCaption, rebindStatusText, runBadge, versionBadge } from "./reader";
 import {
   bindHint,
   candidateLabel,
@@ -1505,6 +1505,27 @@ describe("Okuyucu kümesi (DualReader + PageMap + reader + inventory) sözlükte
       ...overrides,
     };
   }
+
+  it("sayfa etiketi sözlükten gelir; gömülü kopya geri sızamaz", () => {
+    // "Fiziksel sayfa" Türkçeye özgü harf (ığüşöç) taşımadığı için **harf kapısı
+    // bunu göremez** (bilinen sınır, 2026-10-31'de ölçüldü). Etiket lib'de
+    // gömülüyken aynı metin DualReader'da `readerUi.physicalPage` ile ikinci kez
+    // yazılıyordu; sözlük değişse lib sessizce eski metni gösterecekti.
+    for (const pageIndex of [0, 3, 40]) {
+      expect(pageLabelInfo({ pageIndex }).physical).toBe(
+        t("readerUi.physicalPage", { page: pageIndex + 1 }),
+      );
+    }
+    const source = readFileSync(fileURLToPath(new URL("./reader.ts", import.meta.url)), "utf8");
+    // Yorumlar ayıklanır (kapı yorumu metin saymaz); kodda gömülü kopya aranır.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+    expect(code).toContain('t("readerUi.physicalPage"');
+    expect(code.includes("Fiziksel sayfa")).toBe(false);
+  });
 
   it("önizleme alt yazısı ve sürüm rozetleri sözlükten kurulur", () => {
     expect(previewCaption({ cached: true, byteSize: 2048, dpi: 96 })).toBe(
