@@ -11,7 +11,95 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) — 2026-10-31 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Okuyucu davranış testi — `components/DualReader.test.tsx` (2026-10-31)
+
+Önceki turun dürüst sınırı şuydu: “**`DualReader` render/etkileşim testi yok** (eşitlik
+lib düzeyinde + JSX'te birebir taşımayla sağlandı)”. Depoda tek bileşen davranış testi
+`src/lock-behavior.test.tsx`ti; paylaşılan okuyucu (1640 satır, `Search.tsx` + `Cases.tsx`
+tarafından kullanılıyor) hiç render edilmiyordu. Bu turda kapatıldı.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react` (ikisi de depoda vardı).
+`lib/api` modülü kısmen mock'lanır (`documentPages`, `marksForVersion`, `anchorLocate`,
+`documentPagePreview`, `documentInventory`); `t()` ve saf yardımcılar **gerçek** çalışır —
+yani test, sözlükten gelen gerçek etiketlerle sorgular (metin kopyası yok).
+
+**Ölçülen altı davranış (hepsi ürün kararı):**
+
+1. İki panel **kendi** belgesini açar, kendi sayfa metnini gösterir; her panel yalnız kendi
+   sürümü için `documentPages` çağırır (çapraz istek yok, seçiciler `v1`/`v2` ile doğru).
+2. Bir panelde sayfa değişince **diğer panel yerinde kalır** (sayfa 2’ye geçen sol panel,
+   sağda sayfa 1’i bırakır).
+3. **Yakınlaştırma panel başınadır**: iki tık `100% → 125% → 150%` (mevcut değerden
+   ilerler, sabit kademeye dönmez), bir geri `150% → 125%`; sağ panel `100%` kalır.
+4. **Sayfa haritası yalnız gerçek blok kutusu varken** çizilir: `bbox` taşıyan sayfada
+   `role="img"` + `pageMap.aria` etiketi; bloksuz sayfada hiç `img` yok.
+5. **Sayfa ölçüsü yoksa harita çizilmez** (`width/height` null + blok kutusu olsa bile) —
+   “konum uydurulmaz” kuralının render düzeyinde kanıtı.
+6. **Boş panel, diğer panelde açık sürümü seçmez**: `documents` listesinde ilk sırada
+   diğer panelin belgesi olsa bile boş panel öteki sürümü değil, kalan belgeyi açar
+   (`pickInitialVersion(documents, otherVersionId)`).
+
+**Kapı kanıtı (kırmızı→yeşil, ölçüldü).** Testin süs olmadığı üç mutasyonla ölçüldü;
+her mutasyon **1 failed | 5 passed**, geri alma `shasum -a 256` ile **birebir**:
+
+| Mutasyon | Düşen test | Ölçülen hata |
+|---|---|---|
+| `pickInitialVersion(documents, otherVersionId)` → `(documents, null)` | “boş panel diğer panelde açık sürümü seçmez” | `expected 'v2' to be 'v1'` |
+| `PageMap`: `page.width ?? 0` / `page.height ?? 0` → `?? 600` / `?? 800` | “sayfa ölçüsü yoksa … harita çizilmez” | beklenmeyen `role="img"` bulundu |
+| `goToPage`: gövde `setView((state) => state)` | “bir panelde sayfa değişince diğer panel yerinde kalır” | `Unable to find … /Sol belge ikinci sayfa/` |
+
+**Ölçülen bir sınır (dürüst):** yalnız `width` mutasyonu (`?? 600`, `height` 0 kalırken)
+testi **düşürmedi**, çünkü `PageMap` iki boyutu birlikte istiyor (`width <= 0 || height <= 0`
+→ null). Yani kapı iki ölçünün **birlikte** uydurulmasını yakalar; tek boyut zaten
+çizilmiyor. Bu, testin değil davranışın sınırı; raporda böyle yazıldı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **510/510** (37 dosya; 504 → **+6**) ·
+`vite build` temiz (**568,50 kB**, 88 modül — önceki turla aynı; sözlük/JSX değişmedi).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değildir** — CSS yerleşimi, gerçek `Tauri` penceresi,
+`invoke`/IPC ve görsel QA hâlâ yok; `api` mock'lu olduğu için çekirdek komut yolu bu testte
+koşmaz (o yol Rust testlerinde). 1640 satırlık bileşenin yalnız altı davranışı sabitlendi:
+klavye gezinmesi (`Alt`+ok/`PageUp`), metin seçimi → bağ/işaret/not oluşturma, bölge
+işaretleme, görüntü önizlemesi ve envanter paneli bu turda **kapsam dışı** (ayrı dilimler).
+Windows'ta koşulmadı.
+
+## Ölçülen kusur — “Fiziksel sayfa” etiketi **iki kaynaktı** (2026-10-31)
+
+Okuyucu testi yazılırken ölçüldü: `lib/reader.ts` içinde kullanıcıya görünen sayfa etiketi
+**gömülü** üretiliyordu (`` `Fiziksel sayfa ${page.pageIndex + 1}` ``), oysa sözlükte
+`readerUi.physicalPage` **zaten vardı** ve `DualReader.tsx` sayfa düğmelerinde onu
+kullanıyordu. Yani aynı etiket iki kaynaktan geliyordu: sözlük değişse sayfa düğmeleri
+güncellenir, **rozetler/`aria-label`/not kaynağı satırı eski metni göstermeye devam ederdi**
+(sessiz ayrışma). Harf kapısı bunu göremez: “Fiziksel sayfa” Türkçeye özgü harf
+(`ığüşöç`) taşımaz — bilinen sınırın yeni bir vakası.
+
+**Düzeltme:** `pageLabelInfo` artık `t("readerUi.physicalPage", { page: … })` kullanıyor;
+üretilen metin **bayt düzeyinde aynı** (mevcut `reader` 62 testi değişmeden geçti).
+
+**Yeni kapı (2 kural, `i18n-bindings.test.ts`):**
+
+1. **Bağ:** `pageLabelInfo({pageIndex})` çıktısı `t("readerUi.physicalPage")` ile birebir
+   (`pageIndex` 0, 3, 40).
+2. **Kaynak taraması:** `lib/reader.ts`te `t("readerUi.physicalPage"` **var** ve yorumlar
+   ayıklandıktan sonra `Fiziksel sayfa` gömülü **yok** — geri gömme sessizce yeşil kalamaz.
+
+**Kırmızı→yeşil (ölçüldü):** etiket şablon literaline geri gömüldüğünde
+`i18n-bindings` **1 failed | 53 passed**; geri alma `shasum -a 256` **birebir**
+(`4b10db0c…`). Dürüst kayıt: kırmızıyı `toContain('t("readerUi.physicalPage"')` kuralı
+verdi; literal taraması, `t()` çağrısı yerinde kalıp metin başka bir satıra kopyalanırsa
+devreye giren **yedek** kuraldır.
+
+**Ölçüm (bu adımdan sonra):** `tsc --noEmit` temiz · `vitest` **511/511** (37 dosya) ·
+`vite build` temiz (**568,52 kB**, `index-D3zDHRzL.js`, 88 modül).
+
+**CI `41189990335` — 7/7 YEŞİL (ölçüldü):** `arayüz` **37 dosya / 511 test** (30 s;
+tsc + vitest + build — yerel/CI **birebir**), `rust (macos-15)` 3 dk 36 s,
+`rust (ubuntu-latest)` 8 dk 55 s, `masaüstü kabuk` 40 s, `belge worker'ı` 52 s,
+`SBOM` 22 s, `sözleşmeler` 5 s. Koşu **iki commit'i birlikte** kapsıyor
+(`4db4eb1` davranış testi + `f2e0b19` etiket düzeltmesi).
+
 
 ## F04-T08 — sözlük taşıması: `components/DualReader.tsx` + `PageMap.tsx` + `lib/reader.ts` + `lib/inventory.ts` (2026-10-31, on ikinci tur)
 
