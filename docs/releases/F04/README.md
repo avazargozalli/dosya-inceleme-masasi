@@ -11,7 +11,97 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar, Emsal, Sağlayıcılar** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **22 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`, `precedents`, `precedent-terms`, `precedent-document`, `providers`, `arch`, `package`, `attack`) taşındı (**38 dosya**); **1 ekran + 1 bileşen açık** (İnceleme, `DualReader`); kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk, Kasa/Workspace/Unlock + **Görevler, Çıktılar, Maskeleme, Kronoloji, Kontrol listesi, AI, Arama, Ayarlar, Dosyalar, Emsal, Sağlayıcılar, İnceleme** ekranları + **`JobQueueCard`/`WorkerBudgetCard`/`Notes`** bileşenleri; **23 yardımcı lib** (`checklist`, `candidate`, `transferScope`, `jobs`, `parseProgress`, `budget`, `export-coverage`, `reminders`, `search`, `search-scope`, `rollback`, `notes`, `ocr`, `vault-input`, `precedents`, `precedent-terms`, `precedent-document`, `providers`, `arch`, `package`, `attack`, `intext`, `reviewTarget`) taşındı (**41 dosya**); **1 bileşen + 2 yardımcı lib açık** (`DualReader`/`PageMap`, `inventory`, `reader`); kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi — 2026-10-31 |
+
+## F04-T08 — sözlük taşıması: `screens/Review.tsx` + `lib/intext.ts` + `lib/reviewTarget.ts` (2026-10-31, on birinci tur)
+
+**Önceki turun açık işi kapandı:** `1949cf5` + `541c962` → CI `41147576596` ve `41148242123`
+**7/7 yeşil** (önceki turda doğrulanmıştı; bu turda yeniden koşmadı).
+
+**Neden bu dilim (ölçüldü):** kalan yüzeyin en büyük **kapalı kümesi** İnceleme çevresiydi:
+`screens/Review.tsx` (100 Türkçe satır) + metninin bir kısmını taşıyan `lib/intext.ts` (35) +
+`lib/reviewTarget.ts` (2) = **137 satır**. Import taraması: `intext`'i **yalnız** `Review.tsx`
+(kendi testi dışında) import ediyor; `reviewTarget`'ı `Review.tsx` + **`lib/api.ts`** import
+ediyor ama **yalnız tip** (`import type { ReviewTargetInput }` — çalışma zamanı metni yok) →
+küme **kapalı** sayıldı, üçü birlikte taşındı. `components/DualReader.tsx` (93) ve
+`components/PageMap.tsx` (3) bu dilime **girmedi**: `DualReader`'ı `Search.tsx` ve `Cases.tsx`
+de import ediyor (paylaşılan bileşen); ayrı dilim.
+
+**Yazılanlar**
+
+- `lib/i18n.ts` + **3 yeni bölüm / 158 anahtar** (`review` 109, `intext` 45, `reviewTarget` 4)
+  → sözlük **1506 → 1664** (`messageKeys()` ile ölçüldü). Kapı kapsamı **38 → 41** dosya.
+- **Etiket haritaları sözlükten türetildi:** ekrandaki altı harita (`CLAIM_KIND`, `RELATION`,
+  `CLAIM_RELATION`, `ITEM_KIND`, `VERDICT`, `ITEM_STATE`), `intext.ts`teki
+  `QUOTE_STATE_LABEL`/`MATCH_KIND_LABEL`/`TEXT_ORIGIN_LABEL` ve `reviewTarget.ts`teki
+  `TARGET_KIND_LABEL` artık `t()`den kuruluyor. (Tek dilli ürün: değerler **import anında**
+  çözülür, dil değiştirme yok — açık kayıt.)
+- `Review.tsx`: başlık (`nav.review`), lead, dosya/iddia formu, iddia listesi + künyesi,
+  delil bağı ve **iddia ilişkileri** (iki boş durum, ilişki türleri, gerekçe), **inceleme
+  kuyruğu** (özet sayacı, aday formu, çelişki değerlendirmesi, hedef kayıt türü/iddia türü,
+  düzenleme, yerine geçme, karar verilmiş listesi) ve **metin içi alıntı denetimi** (kapsam
+  seçimi, bulgu kartı, sayfa sınırı notu, eski sürüm rozeti, bağlama düğmesi, denetim
+  sınırları) — **125 `t()` çağrısı / 115 benzersiz anahtar**. Üç hata iletisi ve iki
+  **denetim metni** (`kullanıcı düzeltmesi`, `kullanıcı onayı`) de sözlükten; değerler birebir.
+- `lib/intext.ts`: durum/eşleşme/kaynak etiketleri, özet satırı, sayfa aralığı, bağlanamama
+  nedenleri (4), eski sürüm notları (3 biçim), taranan sürüm satırı, sayılmayanlar, kapsam
+  satırı — 46 çağrı / 44 anahtar.
+- **Ayırıcı kararı sürüyor:** `" · "` parçaları sözlük **değerlerine gömülmedi** (kapı baş/son
+  boşluk + çift boşluk yasaklıyor); `positionLabel`, `candidateLabel`, `quoteCheckSummary`,
+  `versionsLabel` ve ekrandaki `` `{kapsam} · {sayfa} · {sürüm}` `` satırı `join(" · ")` ile
+  **tek yerde** kurulur. Bilinçli istisna: `intext.stateExact` = "Birebir · tek konum" —
+  bu bir **etiket metnidir**, ayırıcı değil.
+
+**Doğrulama (ölçüldü)**
+
+- **Kırmızı→yeşil (harf kapısı):** `Review.tsx`e `const _LEAK_SCREEN = "İnceleme kuyruğu";`
+  **ve** `intext.ts`e `export const _LEAK_LIB = "Alıntı sayfası";` aynı anda → `localization`
+  **1 failed | 8 passed**, rapor **iki dosyayı birlikte**: `["lib/intext.ts:4","screens/Review.tsx:40"]`;
+  geri alındı, `shasum -c` **birebir OK** → 9/9.
+- **İkinci kapı (ölçüldü):** `intext.ts`te dönüş `t("intext.bindOnlyExact")` yerine
+  **Türkçe harf taşımayan** `"Sadece birebir tek konum kaynaga baglanir."` yazıldı →
+  `i18n-bindings` **1 failed | 44 passed** (`Expected: "Yalnız birebir tek konum kaynağa
+  bağlanır." / Received: "Sadece birebir…"`). Aynı anda `localization` de kırmızıydı ama
+  sebep **harf değil**, "kullanılmayan anahtar" (`intext.bindOnlyExact`) — dürüst kayıt:
+  harf kapısı harfsiz metni kaçırır, bağ kapısı yakalar.
+- **Yeni 7 test** (`i18n-bindings.test.ts`): durum/eşleşme etiketleri; sayfa aralığı + özet
+  satırı; konum/aday/eski sürüm satırları (parçalardan **birebir** birleşir); bağlanamama
+  nedeni + kapsam + taranan sürüm + sayılmayanlar; `TARGET_KIND_LABEL` eşlemesi; **13
+  parametreli satır `{` bırakmaz**; ve **ekran + iki lib'in `t()` çağrıları (175 çağrı /
+  163 benzersiz anahtar; Review 125, intext 46, reviewTarget 4) hepsi sözlükte**.
+- Mevcut `intext` **13** ve `reviewTarget` **8** testi **birebir `.toBe`** karşılaştırıyor ve
+  **değişmeden geçti** (21/21) → metinler byte düzeyinde aynı; `reviewTarget.test.ts`te tek
+  satır bile değişmedi.
+- `tsc --noEmit` temiz · `vitest` **496/496** (36 dosya; 489 → +7) · `vite build` temiz
+  (**559,31 kB**; 552,09 → sözlük büyüdü, Vite 500 kB uyarısı sürüyor).
+- Taşınmış üç dosyada yorum dışı **0** Türkçe harf satırı (kapının mantığıyla).
+  Kalan yüzey **136 Türkçe satır / 4 dosya** (`DualReader` 93, `inventory` 32, `reader` 8,
+  `PageMap` 3) + 4 dosyada satır sonu yorumu (`api.ts`, `backup-schedule.ts`, `filename.ts`,
+  `main.tsx`).
+
+**Commit/CI:** `b1cbb22` (kod, 6 dosya, +623/−199) → **CI `41153883057` 7/7 YEŞİL**:
+`arayüz` **36 dosya / 496 test** (tsc + vitest + build, 34 s; yerel/CI **birebir**),
+`rust (macos-15)` 4 dk 46 s, `rust (ubuntu-latest)` **6 dk 08 s**, `masaüstü kabuk` 31 s,
+`belge worker'ı` 37 s, `SBOM` 25 s, `sözleşmeler` 7 s. `HEAD == origin/main`.
+
+**Disk (ölçüldü):** tur başında **4,8 G** (< 5 G eşiği) → güvenli önbellek temizliği (macOS
+aerial duvar kağıdı videoları 4,1 G, Chrome `Service Worker/CacheStorage` 821 M, Google
+uygulama önbelleği 116 M, cargo registry 368 M) → **10,4 G**; yalnız TS işi koştu (Rust
+derlemesi yok); `disk-guard` commit sonrası temiz (**6,9 G** boş).
+
+**Dürüst sınırlar:** `components/DualReader.tsx` (93) + `components/PageMap.tsx` (3) ve
+`lib/inventory.ts` (32) + `lib/reader.ts` (8) kaldı → F04-T08 **🚧**. `DualReader` paylaşılan
+bileşen (`Search.tsx` ve `Cases.tsx` de kullanıyor). Etiket haritaları **import anında**
+`t()` çağırıyor (tek dilli ürün; dil değiştirme yok). Metinler birebir aynı (21 mevcut test
+değişmeden geçti), ama **Review ekranının render/etkileşim testi yok** — eşitlik lib
+düzeyinde ve JSX'te birebir taşımayla sağlandı; Tauri penceresi açılmadı → **görsel QA yok**;
+Windows denenmedi.
+
+**Sıradaki aday:** **`DualReader` kümesi** (`components/DualReader.tsx` 93 +
+`components/PageMap.tsx` 3 + paylaştığı `lib/reader.ts` 8 = **104 satır**; `reader.ts`'i
+başka ekranlar da kullanıyor — ölçülecek); sonra `lib/inventory.ts` (32). Ardından
+F04-T08 kapanışı için Vite 500 kB kod bölme kararı (**insan**).
+
 
 ## F04-T08 — sözlük taşıması: `screens/Providers.tsx` + dört sağlayıcı lib'i (2026-10-31, onuncu tur)
 
