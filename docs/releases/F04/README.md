@@ -101,6 +101,80 @@ tsc + vitest + build — yerel/CI **birebir**), `rust (macos-15)` 3 dk 36 s,
 (`4db4eb1` davranış testi + `f2e0b19` etiket düzeltmesi).
 
 
+## Arama ekranı davranış testi — `screens/Search.test.tsx` (2026-11-01)
+
+`Review` diliminin dürüst sınırı “**diğer ekranların (Search/Cases) davranış testi yok**”
+idi. Arama ekranı (720 satır) F07'nin kullanıcıya görünen yüzü: sorgu, kapsam, filtre,
+kip, sayfalama ve toplam sayımı buradan yönetiliyor. `api` kısmen mock'landı
+(`caseList`, `documentList`, `caseTags`, `searchPage`, `searchTotal`, `precedentSearch`);
+`t()`, `lib/search` ve `lib/search-scope` **gerçek** çalışır — test, sözlükten gelen
+gerçek etiketlerle sorgular.
+
+**Ölçülen on davranış (hepsi ürün kararı):**
+
+1. **Boş sorguda arama kapalı**; sorgu yazılınca açılır ve Enter aramayı başlatır.
+   İstek sunucu sözleşmesine **tam** gider: `includeTotal: false` (toplam sayı sayfayı
+   bekletmez, F15), `limit: 25`, `cursor: null`, `mode: "auto"`.
+2. **İlk arama taslak filtrelerle koşar** (`ocrStatus: "any"` arayüzde), sonuç ekranda
+   **sunucunun döndürdüğü** filtrelerle etiketlenir (`ocrStatus: null`) ve toplam
+   **aynı** filtrelerle ayrı istekte istenir — iki kaynak aynı anda gösterilmez.
+3. **Bayatlık iki ayrı kapı**: filtre değişimi ve kip değişimi ayrı ayrı uyarı üretir;
+   “yeni ayarlarla ara” **yeni** filtreyle koşar (eski sonuç yeni filtreyle gösterilmez).
+4. **“Daha fazla” yalnız sunucunun imleciyle** çağrılır (`cursor: "cur-1"`); gelen sayfa
+   öncekiyle **tekilleştirilerek** birleşir (aynı `segmentId` iki kez görünmez).
+5. **Kapsam değişince öteki kapsamın sonuçları silinir**; emsal kütüphanesi araması ayrı
+   yoldan gider (`precedentSearch({text, mode, limit})`) ve **sayfalanmaz**.
+6. **Dosya değişince** önceki dosyanın sonuçları ve aranan metin temizlenir; sayım
+   yeniden istenmez (eski sayı yeni dosyaya taşınmaz).
+7. **Toplam sayımı başarısız olursa sayı uydurulmaz**: gerçek hata metni yazılır.
+8. **Sürümü olmayan sonuç açılamaz** (`disabled`) ve **vurgu aranan metne bağlı kalır**:
+   kutu değişse de eski sonuç eski sorguya ait kalır (canlı kutuya bağlanmaz).
+9. **Başarısız yeni arama önceki sonuçları bırakmaz** (dosya kapsamı — bu turda ölçülen
+   kusur, aşağıda).
+10. **Başarısız kütüphane araması önceki kütüphane sonucunu bırakmaz**.
+
+**Kapı kanıtı (kırmızı→yeşil, ölçüldü).** Testin süs olmadığı **dokuz mutasyonla**
+ölçüldü; her mutasyon **1 failed | 7 skipped**, geri alma `sha256` ile **birebir**
+(`Search.tsx=6b1bd79af0ff…`, `search.ts=4efe9f1af4c1…`):
+
+| Mutasyon | Düşen test | Ölçülen sonuç |
+|---|---|---|
+| `includeTotal: false` → `true` | “boş sorguda arama kapalıdır…” | 1 failed \| 7 skipped |
+| `requestTotal(..., next.filters, ...)` → `appliedFilters` | “ilk arama taslak filtreyle koşar…” | 1 failed \| 7 skipped |
+| `filtersStale` → `return false` | “filtre/kip değişince bayat uyarısı…” | 1 failed \| 7 skipped |
+| `mergeHits` → düz `[...page.hits, ...next.hits]` | “daha fazla sonuç imleçle istenir…” | 1 failed \| 7 skipped |
+| kapsam effect'inden `setPage(null)` kaldırıldı | “kapsam değişince önceki sonuçlar silinir” | 1 failed \| 7 skipped |
+| dosya effect'inden `setPage(null)` kaldırıldı | “dosya değişince önceki dosyanın sonuçları…” | 1 failed \| 7 skipped |
+| sayım hatası → `TOTAL_PROBE_IDLE` | “toplam sayımı başarısız olursa…” | 1 failed \| 7 skipped |
+| `disabled={!hit.documentVersionId}` → `false` (iki düğme) | “sürümü olmayan sonuç açılamaz…” | 1 failed \| 7 skipped |
+| vurgu `searchedQuery` → canlı `query` | “sürümü olmayan sonuç açılamaz…” | 1 failed \| 7 skipped |
+
+## Ölçülen kusur — başarısız yeni arama **önceki sorgunun sonuçlarını** ekranda bırakıyordu (2026-11-01)
+
+`run("fresh")` hatasında `page` (ve kütüphane dalında `libraryPage`) temizlenmiyordu.
+Sonuç kartı hangi sorguya ait olduğunu yazmadığı için kullanıcı, “ödeme” araması hata
+verdiğinde ekranda **“kira” aramasının** sonuçlarını görüyor ve bunları yeni sorgunun
+sonucu sanabiliyordu. Kırmızı ölçüm (iki test): `expected <h2></h2> to be null`.
+
+**Düzeltme (`screens/Search.tsx`, +8 satır):** dosya kapsamında catch yalnız
+`kind === "fresh"`te `setPage(null)` + `setSearchedQuery("")` yapar; **“daha fazla”
+hatasında sayfa korunur** (kullanıcı elde ettiği sonuçları kaybetmez). Kütüphane dalında
+`setLibraryPage(null)` + `setSearchedQuery("")`.
+
+**Ölçüm (bu adımdan sonra):** `tsc --noEmit` temiz · `vitest` **528/528** (39 dosya) ·
+`vite build` temiz (**568,60 kB**, `index-CcOd0w6z.js`; Vite 500 kB uyarısı sürüyor).
+
+**CI `41245447103` — 7/7 YEŞİL (ölçüldü):** `arayüz` **39 dosya / 528 test** (34 s;
+tsc + vitest + build — yerel/CI **birebir**, aynı derleme özeti `index-CcOd0w6z.js`),
+`rust (macos-15)` 4 dk 58 s, `rust (ubuntu-latest)` 8 dk 32 s, `masaüstü kabuk` 36 s,
+`belge worker'ı` 44 s, `SBOM` 19 s, `sözleşmeler` 7 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC ve **görsel QA yok**; `api` mock'lu olduğu için çekirdek SQL/arama motoru bu
+testte koşmaz. Kapsam dışı: sonucu `DualReader`da açma (hedefin kendi sürümü — lib
+düzeyinde `reader` testleri var), panoya kopyalama, vurgu kaydırma/uzun metin kırpma,
+klavye gezinmesi, kütüphane notları. Windows denenmedi.
+
 ## İnceleme ekranı davranış testi — `screens/Review.test.tsx` (2026-10-31)
 
 Önceki turun dürüst sınırı “**diğer ekranların (Review/Search/Cases) davranış testi yok**”
