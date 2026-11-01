@@ -11,7 +11,115 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Sağlayıcılar ekranı davranış testi — `screens/Providers.test.tsx` (2026-11-01)
+
+Önceki turun dürüst sınırı “**`screens/Providers.tsx` (1340 satır) davranış testi yok**”tu.
+Ekran F10 (izinli argümanlarla CLI yürütme) ve F06/F09 (sağlayıcı profili, yoklama,
+yetenek kapısı, saldırı sınaması) kararlarının kullanıcıya görünen yüzü ve bugüne dek
+**hiç render edilmemişti**; `providers`/`arch`/`attack`/`package` lib testleri yalnız metin
+parçalarını doğruluyordu.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(12 fonksiyon: liste, yoklama, iptal, profil kaydı, matris, saldırı, mimari, paket, kalıntı
+tarama/ölçüm/temizlik, süpürme); `t()` ve dört yardımcı lib **gerçek** çalışır — yani test
+sözlükten gelen gerçek etiketlerle sorgular. Tauri gerekmez (ekran doğrudan render edilir).
+
+**Sabitlenen 17 davranış (hepsi ürün kararı):**
+
+1. API profili iki alan dolmadan **kaydedilmez**; kaydetme tam sözleşmeyle gider; hata
+   sessiz yutulmaz.
+2. Sağlayıcı satırları **sunucudan** yazılır; eksik sürüm/yol/mimari/argüman **uydurulmaz**
+   (“bilinmiyor”, “PATH'te değil”).
+3. Yoklama kapısı: kurulu olmayan ve toplu çağrısı yasak satırda “Yokla” **kapalı**, nedeni
+   yazılı.
+4. Yoklama çalışırken **yalnız o satır** kilitlenir; “Vazgeç” çekirdeğe gider ve sonucu
+   (signalled / nothing) yazar.
+5. Yoklama sonucu **kapsam kanıtıyla** yazılır: komut, ortam anahtarları, izin kipi, `HOME`
+   politikası, stdin boyutu, kum havuzu dosyaları, çıktı akışları; çıktı yoksa açıkça söylenir.
+6. **Ölçülen kusur:** başarısız yoklama, önceki **başarılı** yoklamanın sonucunu ekranda
+   bırakıyordu (aynı satırda yeşil sonuç + kırmızı hata).
+7. **Ölçülen kusur:** “Yenile” hatası başarılı tazelemeden sonra silinmiyordu (sayfa kalıcı
+   kırmızı bildirimle kalıyordu).
+8. Yetenek matrisi çekirdekten gelir: sürüm/yardım komutu, satır durumları, kapı ve en kötü
+   bağ, sınırlar listesi; koşu sırasında diğer CLI koşuları kilitlidir.
+9. **Ölçülen kusur:** matris koşusu düşerse önceki matris raporu ekranda kalıyordu.
+10. **Ölçülen kusur (aynı sınıf):** sınama, mimari ve paket koşuları düşünce de önceki rapor
+    ekranda kalıyordu.
+11. Paket raporu: doğrulama sayaçları, sorunlar/fazlalıklar, roller, tesseract ve sınırlar;
+    `found=false` hata değil, geliştirme kipi olarak yazılır.
+12. Saldırı sınaması: fixture kanıtı, ürün yapılandırması, isabet/atlandı rozetleri, vektör
+    hükümleri ve kapatma bayrakları.
+13. Mimari raporu: biçim, mimari karşılaştırması, yorumlayıcı, neden ve başlık baytları
+    (0 ise “bilinmiyor”).
+14. Kalıntı taraması: kök, toplam, kalıcılık ve **satır başına** yol/durum/yaş/not.
+15. Kalıntı ölçümü **açık onay** ister; temizlik yalnız ölçümde oluşan dosyaları hedefler ve
+    sonrası yeniden taranır.
+16. Eski kum havuzu süpürmesi özetlenir; atlananlar gizlenmez.
+17. **Ölçülen kusur:** adaptör değişince kalıntı panelinin önceki hata bildirimi ekranda
+    kalıyordu; ayrıca düşen **ölçüm** eski temizlik hedeflerini, düşen **süpürme** eski özeti
+    bırakıyordu.
+
+**Ölçülen kusur #1 (bayat yeşil sonuç):** `runProbe` yalnız hata kaydını siliyordu; önceki
+`results[adapterId]` duruyordu → başarısız ikinci yoklamadan sonra kartta **hem** yeşil
+“başarılı” rozeti/komut satırı **hem** kırmızı `E_CLI_PROBE` görünüyordu. Kırmızı ölçüm:
+`expected <dd …> to be null`.
+
+**Ölçülen kusur #2 (kalıcı hata):** `refresh` hatayı yalnız `catch`te yazıyor, başarılı
+tazelemede temizlemiyordu → liste düzeldikten sonra sayfa kalıcı kırmızı bildirimle kalıyordu.
+Kırmızı ölçüm: `expected <div class="notice danger">…</div> to be null`.
+
+**Ölçülen kusur #3 (bayat rapor sınıfı):** `runMatrix`, `runAttack`, `runArch`,
+`runPackage` hata kaydını yazıp **önceki raporu** bırakıyordu → düşen koşudan sonra ekranda
+“güncel” gibi okunan eski rapor + kırmızı hata birlikte duruyordu (matris, sınama, mimari,
+paket). Kırmızı ölçüm: `expected <h3>Claude Code (matris)</h3> to be null`.
+
+**Ölçülen kusur #4 (kalıntı paneli):** adaptör `select`i `scan`/`measure`/`cleanup`/
+`confirmHome` alanlarını temizliyor ama **`failure`ı** temizlemiyordu → önceki adaptörün
+`E_CLI_RESIDUE` hatası yeni seçimin hatası gibi okunuyordu. Aynı sınıf `runMeasure` (eski
+temizlik hedefleri) ve `runSweep` (eski süpürme özeti) içinde de vardı. Kırmızı ölçüm:
+`expected <strong>E_CLI_RESIDUE</strong> to be null`.
+
+**Ölçülen kusur #5 (metin):** bayrak listesi boş olan “eksik yetenek” satırı için uyarı
+`probe.warnFlagMissing` ile kuruluyordu → cümle “**… yardım metninde  yok.**” (çift boşluk)
+oluyor ve **hangi bayrağın** eksik olduğunu yazmıyordu. Düzeltme: bayraksız satır için ayrı,
+tam cümle (`probe.warnCapabilityMissing` = “{label}: kurulu sürümün yardım metninde
+bildirilmedi.”).
+
+**Düzeltme:** `Providers.tsx` **+26 satır** (yoklama başında o satırın sonucu+hatası silinir;
+`refresh` başında `setError(null)`; dört rapor koşusunda rapor istekten **önce** temizlenir;
+kalıntı panelinde `setMeasure`/`setSweep`/adaptör değişiminde `setFailure`); `lib/providers.ts`
+**+8/−1** (bayraksız uyarı dalı); `lib/i18n.ts` **+1 anahtar**.
+
+**Kapı kanıtı (8 mutasyon; her biri `1 failed | 16 skipped`, geri alma sha256 birebir):**
+
+| Mutasyon | Düşen test |
+|---|---|
+| `refresh`ten `setError(null)` silindi | “yenileme hatası başarılı yenilemeden sonra silinir” |
+| `runProbe`tan `setResults` temizliği silindi | “başarısız yoklama önceki başarılı sonucu ekranda bırakmaz” |
+| `runMatrix`ten `setMatrix(null)` silindi | “matris koşusu başarısız olursa önceki matris ekranda kalmaz” |
+| `runAttack`tan `setAttack(null)` silindi | “sınama, mimari ve paket koşusu düşerse önceki rapor ekranda kalmaz” |
+| kalıntı `onChange`inden `setFailure(null)` silindi | “adaptör değişince kalıntı panelinin önceki hatası ekranda kalmaz” |
+| `runMeasure`dan `setMeasure(null)` silindi | aynı test (temizlik düğmesi bayat hedefle açık kalır) |
+| `runSweep`ten `setSweep(null)` silindi | aynı test (eski süpürme özeti kalır) |
+| `capabilityWarnings` bayraksız dalı eski tek satıra çevrildi | “eksik yetenek uyarısı bayraksız satırda tam cümle kurar” (`lib/providers.test.ts`) |
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **574/574** (42 dosya; 556 → **+18**:
+17 ekran testi + 1 lib testi) · `vite build` temiz (**569,03 kB**, `index-DqyWISYC.js`,
+88 modül; Vite 500 kB uyarısı sürüyor).
+
+**CI (ölçüldü):** `16e1a4a` → **`41336347311` 7/7 YEŞİL**; `f9c2d0f` → **`41337733321`
+7/7 YEŞİL** (`arayüz` **42 dosya / 574 test**, aynı derleme özeti `index-DqyWISYC.js`
+569,03 kB — yerel/CI birebir; `rust (macos-15)` 5 dk 17 s, `rust (ubuntu-latest)` 8 dk 44 s,
+`masaüstü kabuk` 34 s, `belge worker'ı` 30 s, `SBOM` 22 s, `sözleşmeler` 7 s).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC ve **görsel QA yok**; `api` mock'lu olduğu için çekirdeğin gerçek CLI süreç
+yolu (allowlist ortam, kum havuzu, sinyaller, Rust tarafı) bu testte **koşmaz**. Kapsam
+dışı: klavye gezinmesi, gerçek `cli_*` komutlarının süreleri, Windows. Açık kayıt:
+`providerApiProfileSave` hatası `toApiError`dan geçmiyor (kod alanı yok, ham ileti yazılıyor);
+`probeCanRun`/`probeScopeLines` metinleri lib testleriyle korunuyor.
 
 ## Okuyucu davranış testi — `components/DualReader.test.tsx` (2026-10-31)
 
