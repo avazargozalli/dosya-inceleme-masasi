@@ -194,6 +194,17 @@ export function Precedents() {
   }, [load, loadCoverage]);
 
   useEffect(() => {
+    // INV-05: seçim değişince önceki kararın türetilmiş verisi ekranda kalmaz.
+    // Aksi hâlde yeni kararın künyesi açıkken önceki kararın notları, sürümleri
+    // ve **izin kaydı** görünüyor; "Koşulu kaydet" o kaydı yeni karara yazıyordu.
+    setNotes([]);
+    setVersions([]);
+    setBibliography(null);
+    setTerms(null);
+    setTermsBasis("unknown");
+    setTermsRedistribution("unknown");
+    setTermsUrl("");
+    setTermsNote("");
     if (selected) {
       void api.precedentNoteList(selected.id).then(setNotes).catch((e) => setError(toApiError(e)));
       void api
@@ -214,11 +225,6 @@ export function Precedents() {
           setTermsNote(loaded.termsNote);
         })
         .catch((e) => setError(toApiError(e)));
-    } else {
-      setNotes([]);
-      setVersions([]);
-      setBibliography(null);
-      setTerms(null);
     }
     setCopied(false);
     setVerification(null);
@@ -227,6 +233,12 @@ export function Precedents() {
   }, [selected]);
 
   useEffect(() => {
+    // INV-05: dosya değişince belge listesi, sürüm seçimi ve atıf kontrolleri
+    // temizlenir. Aksi hâlde yeni liste gelene kadar "Kontrolü kaydet" **eski
+    // dosyanın** belge sürümüne yazıyordu.
+    setDocs([]);
+    setVersionId("");
+    setChecks([]);
     if (!caseId) return;
     void api.documentList(caseId).then((list) => {
       setDocs(list);
@@ -243,9 +255,11 @@ export function Precedents() {
   }, [cases]);
 
   useEffect(() => {
+    // Aynı sınıf: kaynak dosya değişince belge seçimi ve sürüm listesi eskisinden
+    // devralınmaz; aktarım yanlış dosyanın sürümüyle başlamaz.
+    setSrcDocs([]);
+    setSrcDocId("");
     if (!srcCaseId) {
-      setSrcDocs([]);
-      setSrcDocId("");
       return;
     }
     void api
@@ -258,9 +272,9 @@ export function Precedents() {
   }, [srcCaseId]);
 
   useEffect(() => {
+    setSrcVersions([]);
+    setSrcVersionId("");
     if (!srcDocId) {
-      setSrcVersions([]);
-      setSrcVersionId("");
       return;
     }
     void api
@@ -281,6 +295,7 @@ export function Precedents() {
   }, [versionId]);
 
   async function add() {
+    setError(null);
     if (draft.court.trim().length === 0) {
       setError({ code: "E_COURT", message: t("precedents.errorCourt"), retryable: false });
       return;
@@ -310,6 +325,7 @@ export function Precedents() {
 
   async function addNote() {
     if (!selected) return;
+    setError(null);
     setBusy(true);
     try {
       await api.precedentNoteCreate(selected.id, {
@@ -332,6 +348,7 @@ export function Precedents() {
 
   async function addFullText() {
     if (!selected) return;
+    setError(null);
     if (fullText.trim().length === 0) {
       setError({ code: "E_TEXT", message: t("precedents.errorEmptyText"), retryable: false });
       return;
@@ -439,6 +456,9 @@ export function Precedents() {
 
   async function verifyQuote() {
     if (!selected) return;
+    // Yeni doğrulama: önceki hüküm bu alıntıya ait değildir, ekranda kalmaz.
+    setError(null);
+    setVerification(null);
     if (quoteInput.trim().length === 0) {
       setError({
         code: "E_QUOTE",
@@ -472,6 +492,7 @@ export function Precedents() {
   }
 
   async function pickBulkFiles() {
+    setError(null);
     try {
       const picked = await openFiles({
         multiple: true,
@@ -492,6 +513,7 @@ export function Precedents() {
   }
 
   async function pickManifest() {
+    setError(null);
     try {
       const picked = await openFiles({
         multiple: false,
@@ -507,6 +529,7 @@ export function Precedents() {
   }
 
   async function runBulkImport() {
+    setError(null);
     if (bulkFiles.length === 0) {
       setError({
         code: "E_BULK_EMPTY",
@@ -531,7 +554,6 @@ export function Precedents() {
       });
       setBulkReport(report);
       await load();
-      setVersions((prev) => prev);
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -540,6 +562,7 @@ export function Precedents() {
   }
 
   async function openMeaning(id: string) {
+    setError(null);
     setMeaningFor((prev) => (prev === id ? null : id));
     setMeaningNote("");
     setMeaningContext(null);
@@ -551,6 +574,7 @@ export function Precedents() {
   }
 
   async function reviewMeaning(id: string, review: string) {
+    setError(null);
     try {
       await api.citationMeaningReview(id, review, meaningNote);
       setChecks(await api.citationCheckList(versionId));
@@ -563,6 +587,7 @@ export function Precedents() {
   }
 
   async function addCheck() {
+    setError(null);
     if (!versionId || citation.trim().length === 0) {
       setError({
         code: "E_CITATION",
