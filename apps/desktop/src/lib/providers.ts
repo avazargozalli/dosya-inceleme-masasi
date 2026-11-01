@@ -373,7 +373,13 @@ export function capabilityWarnings(
     out.push(t("probe.warnHelpUnread"));
   }
   for (const row of view.rows.filter((candidate) => candidate.state === "missing")) {
-    out.push(t("probe.warnFlagMissing", { label: row.label, flags: row.flags.join(" ") }));
+    // Bayrak listesi boşsa cümle "... metninde  yok." oluyordu (çift boşluk +
+    // hangi bayrağın eksik olduğu yazmıyordu) → ayrı, tam cümle.
+    out.push(
+      row.flags.length === 0
+        ? t("probe.warnCapabilityMissing", { label: row.label })
+        : t("probe.warnFlagMissing", { label: row.label, flags: row.flags.join(" ") }),
+    );
   }
   return out;
 }

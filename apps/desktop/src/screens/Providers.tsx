@@ -136,6 +136,9 @@ export function Providers() {
 
   async function refresh() {
     setBusy(true);
+    // Başarılı tazeleme eski kırmızı bildirimi bırakmaz: hata yalnız bu isteğin
+    // sonucudur.
+    setError(null);
     try {
       setRows(await api.providerProbe());
     } catch (e) {
@@ -152,6 +155,14 @@ export function Providers() {
   async function runProbe(adapterId: string) {
     setRunning(adapterId);
     setCancelHint(null);
+    // Önceki koşunun sonucu ve hatası bu satıra ait değildir: yeni koşu
+    // başlarken ikisi de silinir, böylece başarısız koşu eski yeşil sonucu
+    // (veya eski hatayı) ekranda bırakmaz.
+    setResults((prev) => {
+      const next = { ...prev };
+      delete next[adapterId];
+      return next;
+    });
     setRunErrors((prev) => {
       const next = { ...prev };
       delete next[adapterId];
@@ -182,6 +193,8 @@ export function Providers() {
   async function runMatrix() {
     setMatrixBusy(true);
     setMatrixError(null);
+    // Bayat rapor: yeni koşu düşerse önceki matris "güncel" gibi okunmamalı.
+    setMatrix(null);
     try {
       setMatrix(await api.cliCapabilityMatrix());
     } catch (e) {
@@ -194,6 +207,8 @@ export function Providers() {
   async function runAttack() {
     setAttackBusy(true);
     setAttackError(null);
+    // Bayat sınama raporu yeni hatayla birlikte görünmez.
+    setAttack(null);
     try {
       setAttack(await api.cliAttackProbe());
     } catch (e) {
@@ -206,6 +221,8 @@ export function Providers() {
   async function runArch() {
     setArchBusy(true);
     setArchError(null);
+    // Bayat mimari raporu yeni hatayla birlikte görünmez.
+    setArch(null);
     try {
       setArch(await api.cliArchReport());
     } catch (e) {
@@ -218,6 +235,8 @@ export function Providers() {
   async function runPackage() {
     setPkgBusy(true);
     setPkgError(null);
+    // Bayat paket raporu yeni hatayla birlikte görünmez.
+    setPkg(null);
     try {
       setPkg(await api.workerPackageReport());
     } catch (e) {
@@ -1118,6 +1137,8 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
             setMeasure(null);
             setCleanup(null);
             setConfirmHome(false);
+            // Önceki adaptörün hatası yeni seçimin hatası gibi okunmamalı.
+            setFailure(null);
           }}
           aria-label={t("providers.residueSelectAria")}
         >

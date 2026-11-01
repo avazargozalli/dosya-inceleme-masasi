@@ -1669,6 +1669,7 @@ export const tr = {
     warnHelpError: "Yardım metni okunamadı ({error}); yetenekler \"okunamadı\" kalır.",
     warnHelpUnread: "Yardım metni okunamadı; yetenekler doğrulanmadı.",
     warnFlagMissing: "{label}: kurulu sürümün yardım metninde {flags} yok.",
+    warnCapabilityMissing: "{label}: kurulu sürümün yardım metninde bildirilmedi.",
     worstUnknown: "bilinmiyor",
   },
   providers: {

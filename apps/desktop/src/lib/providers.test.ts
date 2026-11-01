@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CliProbeView, CliResidueMeasure, CliResidueScan } from "./api";
 import {
+  capabilityWarnings,
   formatBytes,
   persistenceText,
   probeArgv,
@@ -277,5 +278,52 @@ describe("residue", () => {
     expect(
       sandboxSweepSummary({ considered: 2, removed: ["a"], skipped: [], minAgeSecs: 3600 }),
     ).toBe("2 aday · 1 silindi · 0 atlandı · en az 60 dk yaş");
+  });
+
+  it("eksik yetenek uyarısı bayraksız satırda tam cümle kurar", () => {
+    const warnings = capabilityWarnings({
+      helpRead: true,
+      helpError: null,
+      rows: [
+        {
+          capability: "print",
+          label: "Toplu yazdırma",
+          required: true,
+          note: "",
+          state: "missing",
+          stateLabel: "okunamadı",
+          flags: [],
+          detail: "",
+        },
+        {
+          capability: "json",
+          label: "JSON çıktısı",
+          required: false,
+          note: "",
+          state: "missing",
+          stateLabel: "okunamadı",
+          flags: ["--json"],
+          detail: "",
+        },
+        {
+          capability: "stream",
+          label: "Akış",
+          required: true,
+          note: "",
+          state: "declared",
+          stateLabel: "bildirildi",
+          flags: ["--stream"],
+          detail: "",
+        },
+      ],
+    });
+    // Bayrak listesi boşken "{flags} yok" cümlesi çift boşluklu ve adsız
+    // kalıyordu; her iki vaka ayrı ayrı okunur.
+    expect(warnings).toEqual([
+      "Toplu yazdırma: kurulu sürümün yardım metninde bildirilmedi.",
+      "JSON çıktısı: kurulu sürümün yardım metninde --json yok.",
+    ]);
+    expect(warnings.join(" ")).not.toContain("  ");
+    expect(warnings.join(" ")).not.toContain("metninde  yok");
   });
 });
