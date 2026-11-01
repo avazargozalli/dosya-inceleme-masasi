@@ -65,6 +65,18 @@ export function Ai() {
 
   useEffect(() => {
     if (!caseId) return;
+    // Dosya değişimi türetilmiş durumu **devralmaz** (INV-05): onay başka dosyanın
+    // belgelerine aitti, önizleme/adaylar/seçili çalıştırma ve doğrulama raporu da
+    // önceki dosyanın. Hepsi istekten **önce** silinir; aksi hâlde yeni dosyanın
+    // künyesi açıkken eski dosyanın onayıyla çalıştırma başlatılabilir.
+    setOverview(null);
+    setConsent(null);
+    setPreview(null);
+    setCandidates([]);
+    setRunId("");
+    setReport(null);
+    setNotice(null);
+    setError(null);
     void api
       .aiOverview(caseId)
       .then(setOverview)
@@ -123,6 +135,9 @@ export function Ai() {
     setRunId(id);
     setReport(null);
     setNotice(null);
+    // Önceki çalıştırmanın adayları seçili çalıştırmanın adayı gibi okunmasın:
+    // liste istekten önce boşaltılır, düşerse boş kalır.
+    setCandidates([]);
     await loadCandidates(id);
   }
 
@@ -131,6 +146,8 @@ export function Ai() {
     setBusy(true);
     setError(null);
     setNotice(null);
+    // Düşen doğrulama önceki raporu "güncel" gibi bırakmaz.
+    setReport(null);
     try {
       const result = await api.aiCandidateValidate(runId, kind, draft);
       setReport(result);
@@ -244,8 +261,10 @@ export function Ai() {
                 try {
                   const docs = await api.documentList(caseId);
                   setPreview(await api.aiConsentPreview(caseId, docs.map((doc) => doc.id)));
-                } catch {
+                } catch (e) {
+                  // Sessiz yutma yok: istek düştüyse söylenir ve eski önizleme silinir.
                   setPreview(null);
+                  setError(toApiError(e));
                 }
               }}
             >
