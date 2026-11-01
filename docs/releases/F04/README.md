@@ -11,7 +11,7 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
 
 ## Okuyucu davranış testi — `components/DualReader.test.tsx` (2026-10-31)
 
@@ -270,6 +270,130 @@ bırakıyordu (“E_PARSE” + yeşil “Ayrıştırma parsed: 3 sayfa…” ayn
 `parseDocument` başında `setError(null)`. **Açık kayıt:** aynı desen `importFromPath`,
 `addTag`, `removeTag` ve `mutate` içinde de var (başarılı işlem eski hata bildirimini
 temizlemez); bu turda **ölçülmedi ve değiştirilmedi** — sıradaki turların adayı.
+
+## Emsal ekranı davranış testi — `screens/Precedents.test.tsx` (2026-11-01)
+
+Sıradaki dürüst sınır “**`screens/Precedents.tsx` (1453 satır) davranış testi yok**”tu.
+Ekran F12-T05/T06/T10–T13'ün (tam metin, kasadan aktarım, toplu içe alma, alıntı
+doğrulama, kullanım koşulları, korpus dağıtımı, atıf kontrolü) kullanıcıya görünen yüzü;
+bugüne dek hiç render edilmemişti.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` **kısmen**
+mock'lanır (23 fonksiyon); `t()` ve `precedents` / `precedent-terms` / `precedent-document`
+yardımcıları **gerçek** çalışır. Tauri sınırı yalnız `@tauri-apps/plugin-dialog` ile
+taklit edilir (dosya seç/kaydet) — ekran başka Tauri modülü çağırmıyor.
+
+**Ölçülen on beş davranış (hepsi ürün kararı):**
+
+1. **Kütüphane:** satır sayısı sunucudan (`{count} karar`); her satırda yeniden dağıtım
+   rozeti (**izinli / izinsiz / izin bilinmiyor**) ve künye tamlığı (`complete` /
+   `incomplete`) **sunucudan**; başlığı/tarihi olmayan satırda “başlıksız” / “tarih yok”
+   yazılır, uydurulmaz.
+2. **Karar ekleme:** boş mahkeme **gönderilmez** (`E_COURT`); künye `trim`lenir, boş
+   isteğe bağlı alanlar **`null`** olur, etiketler virgülden ayrılıp boşlar atılır; liste
+   tazelenir, form varsayılana döner.
+3. **Kullanım koşulu:** kayıt sunucudan forma yazılır; kaydetme tam sözleşmeyle gider
+   (bağlantı `trim`, boşsa `null`), liste **ve** dağıtım kapsamı tazelenir; “izinli”
+   işaretlemek yazılı dayanak ister (`E_TERMS` uyarısı görünür).
+4. **Korpus kapısı:** kapsam sunucudan; izinli < metinli ise kapı **kapalı** ve dışlanma
+   nedenleri satır satır yazılır; “tümü” kipi kapalıyken not düşülür; hedef seçilmeden
+   (dialog iptal) çekirdeğe **istek gitmez**; hiç izinli metin yoksa düğme kapalıdır.
+5. **Korpus dışa aktarımı:** seçilen kip ve hedef yolla çalışır; sonuç (sayı + sha256) ve
+   yazılan dosya/boyut gösterilir.
+6. **Bibliyografya:** eksik alanlar, erişim tarihi ve **dayanağı** (sürüm/kayıt), tam metin
+   durumu; “Künyeyi kopyala” panoya **gerçek metni** yazar ve “Kopyalandı” olur; pano
+   reddederse `E_CLIPBOARD` yazılır (sessiz yutma yok).
+7. **Tam metin:** yapıştırılan metin **olduğu gibi** (kırpılmadan) gider; sürümler, künye
+   ve dağıtım kapsamı tazelenir; metin değişince **önceki alıntı hükmü silinir**.
+8. **Alıntı doğrulama:** metinli sürüm yoksa **düğme kapalı** (“karar metni olmadan
+   doğrulanamaz”), girdi boşken de kapalı; sonuç lib'in dürüst cümlesi + **tarama notu**
+   (güncel/eski sürüm sayısı) ile yazılır; “Atıf kontrolü alanına taşı” hükmü `match`e
+   yazar.
+9. **Kasadan aktarım:** belge/sürüm yoksa **neden** yazılır ve düğme kapalı; aktarım
+   seçilen sürümle gider; kısmi ayrıştırma / OCR / metinsiz sayfa / aynı-metin uyarıları
+   **gizlenmez**; “yeni sürüm yazıldı” ile “yazılmadı” ayrı cümlelerdir.
+10. **Toplu içe alma:** seçilen dosyalar ve varsayılanlar (mahkeme, daire, url, etiketler,
+    `legalIssue: ""`) tam sözleşmeyle gider; rapor özeti, liste sha256'sı, belge başına
+    sonuç ve **çakışma notu** sunucudan gelir; liste tazelenir.
+11. **Atıf kontrolü:** künye ve alıntı boyutları **ayrı** rozetlerde; boş atıf gönderilmez
+    (`E_CITATION`); kontrol `reasonCodes: ["text_not_checked"]` ile kaydedilir (alıntı
+    “kontrol edilmedi” sessizce `match` sayılmaz), alıntı `match` ise neden kodu yazılmaz.
+12. **Anlam incelemesi:** bağlam **gerçek metinden** gelir ve alıntı `<mark>` ile işaretlenir;
+    bağlam yoksa nedeni yazılır, uydurulmaz; hüküm gerekçesiyle kaydedilir ve liste tazelenir.
+13. **Emsal değişimi (kusur — aşağıda):** önceki emsalin notları, sürümleri, künyesi ve
+    **koşul formu** ekranda kalmaz; yeni veri gelince kartlar dolar.
+14. **Dosya değişimi (kusur — aşağıda):** önceki dosyanın belge sürümü seçimi ve atıf
+    kontrolleri temizlenir; kaynak dosya değişince de belge/sürüm seçimi devralınmaz.
+15. **Çelişkili ekran yok (kusur — aşağıda):** başarısız alıntı doğrulaması eski sonucu,
+    başarılı doğrulama eski hata bildirimini bırakmaz.
+
+**Kapı kanıtı (mutasyon, ölçüldü).** Beş mutasyon; her biri **1 failed | 14 skipped**,
+geri alma `shasum -a 256` **birebir** (`Precedents.tsx = a8e0f5e8…`):
+
+| Mutasyon | Düşen test | Ölçülen hata |
+|---|---|---|
+| Temizlik effect'inden `setTermsBasis("unknown")` silindi | “emsal değişince … kalmaz” | `expected 'licence' to be 'unknown'` |
+| `[caseId]` effect'inden `setVersionId("")` silindi | “dosya değişince …” | `Unable to find an element with the text: E_CITATION` (kaydet **eski sürüme** gitti, `citationCheckCreate` çağrıldı) |
+| `verifyQuote`tan `setVerification(null)` silindi | “başarısız alıntı …” | `expected true to be false` |
+| Kaynak dosya effect'inden `setSrcDocs([])` silindi | “kasadan aktarım …” | `expected 'd1' to be ''` |
+| `addCheck`ten `setError(null)` silindi | “atıf kontrolü …” | `expected <strong></strong> to be null` |
+
+Mutasyon öncesi tam ölçüm de kayıtlı: düzeltme yokken **5 failed | 10 passed**.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **556/556** (41 dosya; 541 → **+15**) ·
+`vite build` temiz (**568,76 kB**, `index-a6m76__G.js`; Vite 500 kB uyarısı sürüyor) ·
+`disk-guard` tur sonunda çalıştırıldı.
+
+**Commit/CI (doğrulandı):** `7d552a8` (test + düzeltme; 2 dosya, +1237/−10) → CI
+**`41289200859` 7/7 YEŞİL**: `arayüz` **41 dosya / 556 test** (12,3 s; yerel/CI
+**birebir**, aynı derleme özeti `index-a6m76__G.js` 568,76 kB), `rust (macos-15)`
+3 dk 21 s, `rust (ubuntu-latest)` 6 dk 43 s, `masaüstü kabuk` 39 s, `belge worker'ı`
+47 s, `SBOM` 17 s, `sözleşmeler` 5 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC ve **görsel QA yok**; `api` mock'lu olduğu için çekirdek SQL/worker yolu bu
+testte koşmaz. Kapsam dışı: **kullanım notu ekleme** (`addNote`; yalnız notların
+gösterimi ve temizliği ölçüldü), toplu içe almada **künye CSV seçimi** (`pickManifest`),
+korpus dışa aktarım hatası, karar **silme/düzenleme** (ekranda yok), okuyucuya gitme
+(ekran okuyucu açmıyor), klavye gezinmesi. Windows denenmedi.
+
+## Ölçülen kusur — seçim değişince **başka kararın izin kaydı** yazılabiliyordu (2026-11-01)
+
+`selected` değiştiğinde ekran yalnız okuyucu alanlarını (`verification`, `quoteInput`,
+`srcResult`, `copied`) sıfırlıyordu; `notes`, `versions`, `bibliography`, `terms` ve
+**koşul formunun dört alanı** (`termsBasis`, `termsRedistribution`, `termsUrl`,
+`termsNote`) yeni emsalin verisi gelene kadar —istek hatalı/askıda kalırsa **süresiz**—
+ekranda kalıyordu. Sonuç, hukuk ürününde veri karışması: yeni emsalin künyesi açıkken
+önceki emsalin notları/sürümleri/künyesi görünüyor; daha ağırı, **“Koşulu kaydet” önceki
+emsalin izin kaydını yeni emsale yazıyordu** (ölçüm: `p2` için `usageBasis: "licence"`,
+`redistribution: "allowed"`, `termsNote: "A dayanağı"` gitti). Yeniden dağıtım izni
+hukuki bir beyandır; yanlış karara yazılması “izin sessizce genişledi” sınıfındadır.
+
+**Düzeltme (`Precedents.tsx`):** `[selected]` effect'i dört veri alanını ve koşul
+formunu **istekten önce** temizler; yeni veri gelince kartlar dolar (test bunu da
+doğrular).
+
+**İkinci kusur (aynı sınıf, ölçüldü):** `[caseId]` effect'i `docs`/`versionId`/`checks`
+temizlemiyordu → dosya değişince yeni belge listesi gelene kadar **eski dosyanın belge
+sürümü** seçili kalıyor, `#c-doc` eski belgeyi gösteriyor ve “Kontrolü kaydet” atfı
+**başka dosyanın belgesine** yazıyordu (mutasyonda `citationCheckCreate("v1")` çağrıldı).
+Aynı desen **kaynak dosya** zincirinde de vardı (`srcDocs`/`srcDocId`/`srcVersions`):
+“Bu belgeden tam metni aktar” yanlış dosyanın sürümüyle başlayabiliyordu. Üç effect de
+artık türetilmiş durumu istekten önce temizler.
+
+**Üçüncü kusur (çelişkili ekran, ölçüldü):** `verifyQuote` hata durumunu ve önceki hükmü
+temizlemiyordu → (a) başarısız doğrulamadan sonra **başka bir alıntının** yeşil hükmü
+ekranda kalıyordu, (b) başarılı doğrulamadan sonra eski kırmızı `E_QUOTE_VERIFY`
+bildirimi kalıyordu. Düzeltme: `verifyQuote` başında `setError(null)` +
+`setVerification(null)`. Aynı “bayat hata” deseni ekranın diğer eylemlerinde de vardı
+(`add`, `addNote`, `addFullText`, `addCheck`, `reviewMeaning`, `openMeaning`,
+`pickBulkFiles`, `pickManifest`, `runBulkImport`) — hepsi artık eylem başında hatayı
+temizler. `runBulkImport` içindeki ölü `setVersions((prev) => prev)` satırı kaldırıldı.
+
+**Açık kayıt (ölçülmedi, değiştirilmedi):** (a) `citationContext` isteği düşerse anlam
+panelinde **“Bağlam yükleniyor…”** yazısı kalır (hata bildirimi ayrı kutuda görünür;
+panel kendi hatasını göstermiyor); (b) `quoteInput` değişince önceki doğrulama sonucu
+silinmiyor — yalnız yeni doğrulama başlarken siliniyor.
 
 ## İnceleme ekranı davranış testi — `screens/Review.test.tsx` (2026-10-31)
 
