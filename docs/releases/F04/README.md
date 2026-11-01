@@ -11,7 +11,86 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## AI ekranı davranış testi — `screens/Ai.test.tsx` (2026-11-01)
+
+Önceki turun dürüst sınırı “**`screens/Ai.tsx` (604 satır) davranış testi yok**”tu. Ekran
+F11 (aday üretimi: aktarım onayı, çalıştırma, aday doğrulama, incelemeye gönderim)
+kararlarının kullanıcıya görünen yüzü ve bugüne dek **hiç render edilmemişti**;
+`lib/candidate` ve `lib/transferScope` testleri yalnız metin parçalarını doğruluyordu.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(12 fonksiyon); `t()`, `lib/candidate`, `lib/transferScope` **gerçek**. Tauri gerekmez.
+
+**Sabitlenen 20 davranış:**
+
+1. Dosya listesi sunucudan (`caseList(false)`), ilk dosya seçilir, özet o dosyadan istenir;
+   sağlayıcı satırı `adapterId (providerType)`.
+2. Yalnız `off` sağlayıcı varken hiçbir içerik gönderilemez (`E_AI_OFF`, iki düğme kapalı).
+3. Özet gelmeden kapsam **uydurulmaz** (“bilinmiyor”); sağlayıcı bilinmiyorken “AI kapalı”
+   uyarısı da yazılmaz.
+4. Aktarım onayı **somut belge kümesine** bağlanır: önizleme ve onay kaydı aynı kimlik
+   listesiyle gider, amaç seçimi taşınır (`purpose`).
+5. Onay yokken “Çalıştır” kapalı; çalıştırma **onay kimliğiyle** koşar (`aiRunExecute`,
+   `summarize`), belge listesi yeniden verilmez, özet tazelenir.
+6. Önizleme: kapsam dışı belgeler sayılır, boş örnek yerine dürüst cümle yazılır.
+7. Onay iptali çekirdeğe gider, onay satırı kalkar ve “Çalıştır” yeniden kapanır.
+8. Çalıştırma seçimi adayları **o** çalıştırmadan ister; düğme “Seçili”ye döner.
+9. Doğrulama kapıları: çalıştırma seçilmeden ve JSON bozukken iki düğme de kapalı.
+10. “Doğrula” **kaydetmez**; “Doğrula ve kaydet” kaydeder, adayları tazeler ve bildirimi
+    **hesaplanan** duruma göre yazar (geçerli/kısmi/geçersiz).
+11. Aday türü değişimi raporu ve taslağı tazeler.
+12. Rapor: alıntı tablosu (konum/tekrar/metin), model sayfa uyuşmazlığı notu, sorunlar
+    (alan · kod — ayrıntı), notlar ve doğrulamanın sınırları.
+13. Aday tablosu: şema/doğrulama/alıntı rozetleri, “denetlenmemiş”, alıntı/sorun açılırları,
+    **engel gerekçesi** düğmeyi kapatır.
+14. Yeniden doğrulama satırı **yerinde** tazeler (satır sayısı değişmez).
+15. İncelemeye gönderim dosya kimliğiyle gider ve bildirim yazar.
+
+**Ölçülen dört kusur (hepsi kırmızı ölçümle, düzeltme sonrası yeşil):**
+
+- **Kusur #1 (INV-05, en ağırı):** `[caseId]` effect'i yalnız `overview`ı tazeliyordu →
+  dosya değişince **önceki dosyanın aktarım onayı, önizlemesi, adayları, seçili çalıştırması
+  ve doğrulama raporu** ekranda kalıyordu. Sonuç yalnız görsel değil: “Çalıştır” **A
+  dosyasının onay kimliğiyle B dosyasında** çalıştırma başlatabiliyor
+  (`aiRunExecute(B, provider, consent_A)`), “İncelemeye gönder” **A dosyasının adayını B
+  dosyasının kuyruğuna** yazabiliyordu. Kırmızı: `expected <h3></h3> to be null` (önizleme
+  kartı) + “Çalıştır” açık kalıyordu.
+- **Kusur #2:** `selectRun` aday listesini temizlemiyordu → düşen seçimde **önceki
+  çalıştırmanın adayları** yeni çalıştırmanın adayı gibi okunuyordu (satır eylemleri o
+  adaylara gidiyordu).
+- **Kusur #3:** `validateDraft` raporu temizlemiyordu → düşen doğrulamadan sonra **önceki
+  yeşil rapor** (“geçerli” rozeti, “2 alıntıdan 1 birebir”) kırmızı hatayla birlikte ekranda
+  kalıyordu. Kırmızı: `expected <span class="badge plain"></span> to be null`.
+- **Kusur #4 (sessiz yutma):** “Gönderilecek içeriği göster” isteği düşünce `catch {}` boştu →
+  kullanıcı düğmeye basıyor, **hiçbir şey olmuyordu** (ne önizleme ne hata). Aynı ekrandaki
+  onay yolu hatayı gösterirken bu yol göstermiyordu.
+
+**Düzeltme (`Ai.tsx` +20/−1):** `[caseId]` effect'i `overview`/`consent`/`preview`/
+`candidates`/`runId`/`report`/`notice`/`error`ı **istekten önce** temizler; `selectRun`
+`setCandidates([])`; `validateDraft` `setReport(null)`; önizleme `catch`i hatayı yazar.
+Kullanıcı girdisi (**taslak JSON**, aday türü, amaç) silinmez — yeni dosyada açıkça
+çalıştırılır (Review turundaki kararla aynı).
+
+**Kapı kanıtı (5 mutasyon; her biri `1 failed | 19 skipped`; geri alma sha256
+`b285a54abdba…` birebir):** `setConsent(null)`, `setOverview(null)`, `selectRun`daki
+`setCandidates([])`, `validateDraft`taki `setReport(null)`, sessiz `catch` — her biri
+**kendi** testini düşürdü.
+
+**Doğrulama:** `tsc --noEmit` temiz · `vitest` **594/594** (43 dosya; 574 → **+20**) ·
+`vite build` temiz (**569,11 kB**, `index-DjlOCbaz.js`, 88 modül; Vite 500 kB uyarısı sürüyor).
+
+**CI (ölçüldü):** `edd171c` → koşu **`41344436231` 7/7 YEŞİL**: `arayüz` **43 dosya / 594 test**
+(yerel/CI **birebir**), aynı derleme özeti `index-DjlOCbaz.js` 569,11 kB (gzip 153,29 kB) ·
+`rust (macos-15)` 3 dk 30 s · `rust (ubuntu-latest)` 5 dk 56 s · `masaüstü kabuk` 27 s ·
+`belge worker'ı` 42 s · `SBOM` 21 s · `sözleşmeler` 11 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi, `invoke`/IPC ve
+**görsel QA yok**; `api` mock'lu olduğu için çekirdeğin gerçek yolu (onay kaydı, sağlayıcı
+HTTP çağrısı, SHA-256 manifest, Rust tarafı) bu testte **koşmaz**. Kapsam dışı: aktarım
+onayının süre dolumu, gerçek `ai_run_execute` süresi/iptali, aday yükünün gerçek şema
+doğrulaması (çekirdekte), klavye gezinmesi, Windows.
 
 ## Sağlayıcılar ekranı davranış testi — `screens/Providers.test.tsx` (2026-11-01)
 
