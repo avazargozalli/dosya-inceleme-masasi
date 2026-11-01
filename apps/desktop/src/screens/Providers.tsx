@@ -1061,6 +1061,9 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
     setBusy("measure");
     setFailure(null);
     setCleanup(null);
+    // Yeni ölçüm düşerse önceki ölçüm "güncel" gibi okunmamalı: temizlik
+    // düğmesi bayat hedef listesiyle açık kalırdı.
+    setMeasure(null);
     try {
       const result = await api.cliResidueMeasure(adapterId, confirmHome);
       setMeasure(result);
@@ -1095,6 +1098,8 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
   async function runSweep() {
     setBusy("sweep");
     setFailure(null);
+    // Bayat süpürme özeti yeni hatayla birlikte görünmez.
+    setSweep(null);
     try {
       setSweep(await api.cliStaleSandboxSweep());
     } catch (e) {

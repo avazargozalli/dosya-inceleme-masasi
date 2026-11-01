@@ -966,6 +966,43 @@ describe("sağlayıcılar ekranı davranışı", () => {
     fireEvent.click(button(t("providers.packageRun")));
     expect(await screen.findByText("E_PKG")).toBeTruthy();
     expect(screen.queryByText(packageStatusText(PKG))).toBeNull();
+    cleanup();
+
+    // Kalıntı ölçümü: düşen yeni ölçüm, eski ölçümün temizlik hedeflerini
+    // ekranda bırakmamalı.
+    mocks.cliResidueMeasure
+      .mockResolvedValueOnce(MEASURE)
+      .mockRejectedValueOnce({ code: "E_CLI_MEASURE", message: "ölçüm düştü" });
+    setup();
+    await ready();
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    expect(await screen.findByText(residueMeasureSummary(MEASURE))).toBeTruthy();
+    await waitFor(() => expect(button(t("providers.measureRun")).disabled).toBe(false));
+    fireEvent.click(button(t("providers.measureRun")));
+    expect(await screen.findByText("E_CLI_MEASURE")).toBeTruthy();
+    expect(screen.queryByText(residueMeasureSummary(MEASURE))).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: t("providers.cleanupRun", { count: MEASURE.created.length }),
+      }),
+    ).toBeNull();
+    cleanup();
+
+    // Kum havuzu süpürmesi (adaptörden bağımsız rapor)
+    mocks.cliStaleSandboxSweep
+      .mockResolvedValueOnce(SWEEP)
+      .mockRejectedValueOnce({ code: "E_CLI_SWEEP", message: "süpürme düştü" });
+    setup();
+    await ready();
+    fireEvent.click(button(t("providers.residueSweep")));
+    expect(await screen.findByText(sandboxSweepSummary(SWEEP))).toBeTruthy();
+    await waitFor(() => expect(button(t("providers.residueSweep")).disabled).toBe(false));
+    fireEvent.click(button(t("providers.residueSweep")));
+    expect(await screen.findByText("E_CLI_SWEEP")).toBeTruthy();
+    expect(screen.queryByText(sandboxSweepSummary(SWEEP))).toBeNull();
   });
 
   it("paket raporu: doğrulama sayaçları, sorunlar, fazlalıklar, tesseract ve sınırlar", async () => {
