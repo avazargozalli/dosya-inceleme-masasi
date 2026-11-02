@@ -112,15 +112,56 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   const [revisions, setRevisions] = useState<{ noteId: string; rows: NoteRevisionRow[] } | null>(null);
   const editHydrated = useRef(false);
 
+  /** Liste okumalarının sırası: geç gelen eski yanıt yenisini ezmez. */
+  const listSeq = useRef(0);
+  /** Düzenleme paneli isteklerinin sırası: geç gelen taslak okuması paneli ele geçirmez. */
+  const editSeq = useRef(0);
+  /** Dosya kuşağı: dosya değişince uçuştaki yazmaların durum yazmasını engeller. */
+  const caseGen = useRef(0);
+  /** Uçuştaki besteci taslağı yazımı: temizlemeden önce beklenir (taslak geri gelmesin). */
+  const draftSaveChain = useRef<Promise<unknown>>(Promise.resolve());
+
   const load = useCallback(async () => {
+    const seq = listSeq.current + 1;
+    listSeq.current = seq;
+    setError(null);
     try {
-      setRows(await api.noteList(caseId));
+      const next = await api.noteList(caseId);
+      if (listSeq.current !== seq) return;
+      setRows(next);
     } catch (e) {
+      if (listSeq.current !== seq) return;
+      setRows([]);
       setError(toApiError(e));
     }
   }, [caseId]);
 
+  // Dosya değişimi: önceki dosyanın **bütün** türetilmiş durumu istekten önce kalkar (INV-05).
+  // Not, düzenleme paneli, çakışma, geçmiş ve besteci metni taşınırsa yanlış dosyaya yazılır.
   useEffect(() => {
+    caseGen.current += 1;
+    listSeq.current += 1;
+    editSeq.current += 1;
+    setRows([]);
+    setError(null);
+    setBusy(false);
+    setTitle("");
+    setBody("");
+    setPicked([]);
+    setComposerStatus("idle");
+    setRestoredDraftAt(null);
+    composerHydrated.current = false;
+    setEditNote(null);
+    setEditTitle("");
+    setEditBody("");
+    setEditAnchors([]);
+    setEditStatus("idle");
+    setEditPendingDraft(null);
+    setEditBaseVersion(null);
+    setHistoryNote(null);
+    setConflict(null);
+    setRevisions(null);
+    editHydrated.current = false;
     void load();
   }, [load]);
 
@@ -160,12 +201,14 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   useEffect(() => {
     if (!composerHydrated.current) return;
     const hasContent = body.trim().length > 0 || title.trim().length > 0;
+    const gen = caseGen.current;
     const timer = setTimeout(() => {
-      void (async () => {
+      const write = async () => {
         setComposerStatus("saving");
         try {
           if (!hasContent) {
             await api.noteDraftClear(caseId, null);
+            if (caseGen.current !== gen) return;
             setComposerStatus("idle");
             setRestoredDraftAt(null);
           } else {
@@ -175,13 +218,18 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
               sourceAnchorIds: picked,
               baseRowVersion: null,
             });
+            if (caseGen.current !== gen) return;
             setComposerStatus("saved");
             setRestoredDraftAt(saved.updatedAt);
           }
         } catch {
+          if (caseGen.current !== gen) return;
           setComposerStatus("failed");
         }
-      })();
+      };
+      // Yazmalar sıraya bağlanır: uçuştaki yazma bitmeden "temizle" çağrılmaz.
+      const task = draftSaveChain.current.then(write, write);
+      draftSaveChain.current = task.catch(() => undefined);
     }, 900);
     return () => clearTimeout(timer);
   }, [caseId, title, body, picked]);
@@ -196,6 +244,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   // Düzenleme taslağını kasaya kaydet: not kimliği + okunan sürümle birlikte.
   useEffect(() => {
     if (!editNote || !editHydrated.current) return;
+    // Savunma: dosya değiştiyse eski dosyanın notu için taslak **yazılmaz**.
+    if (editNote.caseId !== caseId) return;
     if (!editDirty) return;
     const note = editNote;
     const timer = setTimeout(() => {
@@ -232,6 +282,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setError(null);
     try {
       await api.noteCreate(caseId, { title: title.trim(), body: body.trim(), sourceAnchorIds: picked });
+      // Uçuştaki taslak yazımı bitmeden temizleme: geç dönen yazma taslağı geri getirirdi.
+      await draftSaveChain.current;
       await api.noteDraftClear(caseId, null);
       setTitle("");
       setBody("");
@@ -253,6 +305,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setComposerStatus("idle");
     setRestoredDraftAt(null);
     try {
+      await draftSaveChain.current;
       await api.noteDraftClear(caseId, null);
     } catch (e) {
       setError(toApiError(e));
@@ -260,6 +313,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   }
 
   async function openEdit(note: NoteRow) {
+    const seq = editSeq.current + 1;
+    editSeq.current = seq;
     setError(null);
     setConflict(null);
     setRevisions(null);
@@ -275,15 +330,20 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setBusy(true);
     try {
       const draft = await api.noteDraftGet(caseId, note.id);
+      // Geç gelen okuma başka bir notun panelini ele geçirmez.
+      if (editSeq.current !== seq) return;
       const differs =
         draft !== null && (draft.body !== note.body || draft.title !== note.title);
       setEditPendingDraft(differs ? draft : null);
       if (differs) setEditStatus("saved");
     } catch (e) {
+      if (editSeq.current !== seq) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
-      editHydrated.current = true;
+      if (editSeq.current === seq) {
+        setBusy(false);
+        editHydrated.current = true;
+      }
     }
   }
 
@@ -313,6 +373,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   }
 
   function closeEdit() {
+    editSeq.current += 1;
     setEditNote(null);
     setConflict(null);
     setRevisions(null);
@@ -320,6 +381,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setEditStatus("idle");
     setEditPendingDraft(null);
     setEditBaseVersion(null);
+    setBusy(false);
     editHydrated.current = false;
   }
 
@@ -452,6 +514,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   }
 
   async function showRevisions(noteId: string) {
+    setError(null);
     try {
       const list = await api.noteRevisions(noteId);
       setRevisions({ noteId, rows: list });
