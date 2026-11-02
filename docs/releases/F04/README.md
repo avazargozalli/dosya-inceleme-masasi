@@ -11,7 +11,110 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Ayarlar ekranı davranış testi — `screens/Settings.tsx` (2026-11-02)
+
+Önceki turun sıradaki aday listesinin başındaydı: “`screens/Settings.tsx` (624) davranış
+testi”. Ekran, F16'nın (güncelleme öncesi yedek, doğrulanmış geri dönüş, yedek/geri
+yükleme/GC/parola) kullanıcıya görünen yüzü ve bugüne dek **hiç render edilmemişti**;
+`lib/rollback.test.ts`, `lib/backup-schedule.test.ts` ve `i18n-bindings` yalnız kural ve
+metin düzeyini doğruluyordu. Ekranın altındaki `JobQueueCard` + `WorkerBudgetCard` de
+böylece ilk kez ana ekranla birlikte çizildi.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(9 fonksiyon: `status`, `vaultPreUpdateBackups`, `vaultRollbackPreUpdate`, `vaultBackup`,
+`vaultGc`, `vaultRestore`, `vaultChangePassword`, `jobQueueStatus`, `workerBudgets`);
+`@tauri-apps/plugin-dialog` sahtelendi; `t()`, `lib/rollback`, `lib/format`,
+`lib/backup-schedule` ve `package.json` sürümü **gerçek**.
+
+**Sabitlenen 17 davranış (özet):**
+
+1. Kasa kilitliyken künye “—/bilinmiyor”, geri dönüş/kuyruk/bütçe kartları kilitli yazar;
+   yedek taraması **istenmez** (`vaultPreUpdateBackups` çağrılmaz), yedek alma düğmesi kapalı.
+2. Açık kasa künyesi sunucudan; **sürüm `package.json`tan** (`versionValue`), gömülü “0.2.0”
+   ekranda yok. Yedek listesi kendiliğinden taranır, **ilk kullanılabilir** yedek seçilir.
+3. Yedek satırı: doğrulanmış sürüm rozeti (`v21`), durum cümlesi, tarih/boyut, ad uyuşmazlığı
+   uyarısı; tarih yoksa “tarih bilinmiyor”. Kullanılamayan yedeğin **nedeni** yazılır, radyosu kapalı.
+4. Geri dönüş kapısı: belirteç birebir yazılmadan düğme açılmaz, gerekçe düğmenin altında;
+   seçilebilir yedek yokken gerekçe “önce bir yedek seçin” ve doğru belirteç yazılsa da istek gitmez.
+5. Geri dönüş **seçilen dosya ve onayla** gider; kasa durumu + liste tazelenir, onay alanı temizlenir.
+6. Yedek alma: klasör seçilmezse istek **yok**; sonuç künyesi (dosya sayısı, boyut, 16 karakter
+   manifest hash'i) ve varsa “tek dosya” arşiv yolu yazılır.
+7. Otomatik yedek: klasör/aralık/son yedek yerel kayıttan okunur; “kapat” yalnız klasör anahtarını,
+   “sıfırla” yalnız son-yedek anahtarını siler (diğerine dokunmaz).
+8. GC: tarama `dryRun=true` ile koşar, aday sayısı+boyutu yazılır; aday yokken “Temizle” kapalı;
+   silme `dryRun=false` ile gider, silinen kayıt/boşalan boyut ve **eksik dosya uyarısı** yazılır.
+9. Geri yükleme: hedef konum boş/boşlukken kapalı, hedef **kırpılarak** ve seçilen yedekle gider;
+   iptal edilen seçim istek üretmez ve “seçilen yedek” satırı çizilmez.
+10. Sonuç: doğrulanan dosya sayısı/boyut/süre yazılır; sayılmayan dosyalar **ilk 5 + “…”**
+    (6. ad gizlenir ama sayı tamdır).
+11. Parola: mevcut parola boş veya yeni parola 10 karakterden kısa ise düğme kapalı; eşleşmeyen
+    parola **çekirdeğe gitmez** (`E_PASSWORD_MISMATCH` yerelde yazılır); başarı alanları temizler
+    ve yeşil bildirim yazar; **düşen** değişim yazılanları korur ve hata kodunu gösterir.
+12. Geri dönüş düşerse hata yazılır, başarı paneli kalmaz, kasa durumu **yeniden okunur**; kasa
+    kilitliye düştüyse yedek listesi ve onay metni temizlenir.
+
+**ÖLÇÜLEN KUSUR (A) — sonuç paneli yedek listesine bağlıydı (en ağırı):** “Geri dönüş
+tamamlandı” paneli `preUpdate.length > 0` bloğunun **içinde** çiziliyordu. Geri dönüş sonrası
+kod, kasa durumunu ve yedek listesini tazeliyor; çekirdek kullanılan yedeği listeden düşürünce
+liste boşalıyor ve **işlem gerçekten olmuş olsa da kullanıcı hiçbir onay görmüyordu** (panel
+DOM'dan kalkıyor, ekranda yalnız “güncelleme öncesi yedek yok” kalıyordu). Kırmızı:
+`expected '' to contain 'Geri dönüş tamamlandı.'`. Düzeltme: panel listenin **dışına** alındı.
+
+**ÖLÇÜLEN KUSUR (B) — düşen yedek alma önceki yeşil sonucu bırakıyordu:** `runBackup` başında
+`setBackup(null)` yoktu → `E_DISK_FULL` kırmızı bildirimi ile birlikte **“Yedek hazır: <önceki
+yol> · 12 dosya …”** satırı ekranda kalıyor, kullanıcı yeni yedeğin alındığını sanabiliyordu.
+Kırmızı: `expected 'E_DISK_FULL — Disk dolu.\nYedek hazır…' not to contain 'Yedek hazır:'`.
+
+**ÖLÇÜLEN KUSUR (C) — düşen GC önceki tarama/silme bildirimini bırakıyordu:** `runGc` başında
+`setGc(null)` yoktu → silme düşünce kırmızı `E_IO` ile birlikte **“2 aday · 1,5 MiB”** satırı
+“güncel sonuç” gibi duruyordu. Kırmızı: `expected 'E_IO — …\n2 aday · 1,5 MiB' not to contain '2 aday · 1,5 MiB'`.
+
+**ÖLÇÜLEN KUSUR (D) — düşen geri yükleme önceki tamamlanma panelini bırakıyordu:** yeni hedef
+seçilip `vaultRestore` düşünce **önceki** başarılı geri yüklemenin “Geri yükleme tamamlandı:
+<eski yol>” paneli (doğrulanan dosya/boyut/süre ile) ekranda kalıyordu. Kırmızı:
+`expected 'E_BACKUP_VERIFY — …' not to contain 'Geri yükleme tamamlandı:'`. Düzeltme: yeni hedef
+seçilirken `restored`/`restoreInfo` temizlenir.
+
+**ÖLÇÜLEN KUSUR (E) — başarılı parola değişimi sonrası bayat yeşil bildirim:** `changePassword`
+içindeki `setPasswordChanged(false)` **eşleşme denetiminden sonra** çağrılıyordu; erken dönüş
+yolunda çalışmıyordu → başarılı değişimden sonra eşleşmeyen yeni parola denemesinde kırmızı
+`E_PASSWORD_MISMATCH` ile birlikte **“Parola değiştirildi. Kurtarma anahtarınız hâlâ geçerli.”**
+satırı ekranda kalıyordu (kullanıcı parolanın iki kez değiştiğini sanabilir). Kırmızı:
+`expected 'E_PASSWORD_MISMATCH — …' not to contain 'Parola değiştirildi…'`. Düzeltme: temizlik
+denetimden **önce**.
+
+**Düzeltme (`Settings.tsx` +36/−18):** sonuç paneli liste koşulunun dışına; `runBackup`/`runGc`
+başında önceki sonuç silinir; `runRestore` yeni hedef seçildiğinde `restored`/`restoreInfo`
+temizlenir; `changePassword` başında `setPasswordChanged(false)`.
+
+**Kapı kanıtı (5 mutasyon; her biri kendi testini düşürdü; geri alma sha256
+`b75eccb9d7a5cfd6ff2b4c5921a2d92e48e553d6f72a5f33df8601673477db61` birebir):**
+(1) panel koşulu `rollbackDone && preUpdate.length > 0` → 1 failed; (2) `setBackup(null)` silindi →
+1 failed; (3) `setGc(null)` silindi → 1 failed; (4) `setRestored(null)`/`setRestoreInfo(null)`
+silindi → 1 failed; (5) `setPasswordChanged(false)` erken satırı silindi → 1 failed.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **641/641** (46 dosya; 624 → **+17**) ·
+`pnpm build` temiz (**569,31 kB**, `index-Bu-cAWPd.js`, 88 modül; Vite 500 kB uyarısı sürüyor).
+
+**CI (ölçüldü):** `3905d47` (2 dosya, +837/−18) → koşu **`41428118037` 7/7 YEŞİL**:
+`arayüz` **46 dosya / 641 test** (yerel/CI **birebir**), aynı derleme özeti `index-Bu-cAWPd.js`
+569,31 kB (gzip 153,40 kB), `rust (macos-15)` 4 dk 37 s, `rust (ubuntu-latest)` 9 dk 13 s,
+`masaüstü kabuk` 38 s, `belge worker'ı` 32 s, `SBOM` 22 s, `sözleşmeler` 6 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC, dosya seçici diyaloğu ve **görsel QA yok**; `api` mock'lu olduğu için çekirdeğin
+gerçek yolu (manifest doğrulama, `E_DB_ROLLBACK_REOPEN` sonrası kasa durumu, GC fiziksel silme,
+parola yuvası yeniden sarma, Rust) bu testte **koşmaz**. Kapsam dışı: `localStorage` yazımının
+`saveBackupSettings` ile gerçek zamanlamaya bağlanması, otomatik yedek zamanlayıcısının koşması,
+`restoreInfo.unlistedBlobs` sırası, Windows.
+
+**Açık kayıt (ölçülmedi, değiştirilmedi):** `runRollback` başarılı olup **liste tazelemesi
+düşerse** yeşil sonuç paneli ile kırmızı hata birlikte görünür (geri dönüş gerçekten yapıldı;
+liste bayat) — bilinçli olarak korundu: kullanıcı yeniden tarayabilir. `refreshPreUpdate`
+düşerse önceki liste ekranda kalır (hata yazılır). Kasa kilitliyken GC “Tara” düğmesi açıktır;
+istek çekirdekten hata döner ve hata kodu gösterilir (düğme kapatılmadı).
 
 ## Kontrol listesi ekranı davranış testi — `screens/Checklists.test.tsx` (2026-11-02)
 
