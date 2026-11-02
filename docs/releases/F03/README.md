@@ -145,6 +145,29 @@ edildi (yeni push), kırmızı değildi.
   regresyon testi eklendi (`crates/vault/tests/password_change.rs`, 3 test).
 - Ayarlar'da parola değiştirme formu (mevcut / yeni / tekrar).
 
+## Kasa kapısı (arayüz) — F03-T02'nin kullanıcıya görünen yüzü (2026-11-02)
+
+`apps/desktop/src/screens/Unlock.tsx` kasa oluşturma, mevcut kasayı açma ve
+kurtarma anahtarıyla açmayı yönetir. Bu turda ekranın **davranış testi** yazıldı
+(`src/screens/Unlock.test.tsx`, 14 test + `lock-behavior.test.tsx`te 1 App
+düzeyi; ayrıntı ve kusur listesi: `docs/releases/F04/README.md`).
+
+- **Kurtarma anahtarı artık `App`te tutulur** (`pendingKey`). Anahtar bir kez
+  gösterilir; `Unlock` ekranı yan menüde gezinirken yeniden bağlandığı için
+  bileşen içinde tutulsa ilk ekran değişiminde **siliniyordu** (ölçüldü).
+  `refresh` başarı döndürür: durum okunamazsa anahtar ekranı açık kalır.
+- **"Geri" iki adımlıdır**: "Kurtarma anahtarı bir daha gösterilmez…" uyarısı +
+  Vazgeç / Kaydetmeden devam et. Tek tıkla anahtarı düşürmek sessiz kayıptı.
+- **İstek sürerken** kip düğmeleri ve alanlar kilitlidir; kip değişimi önceki
+  kipin hatasını siler; seçili kip `aria-pressed` ile bildirilir.
+- **Ölçüm:** `tsc --noEmit` temiz · `vitest` **771/771** (54 dosya) ·
+  `pnpm build` temiz · CI **`41523031374` 7/7 YEŞİL**.
+- **Dürüst sınırlar:** jsdom tarayıcı değil — gerçek Tauri penceresi, Argon2id
+  süresi, dosya sistemi ve görsel QA yok; `api` mock'ludur. Kasa oluşturulduktan
+  sonra uygulama durumu "kilitli" kalır (yan menü "Kasa kilitli" gösterir) ve
+  "Kasayı aç" ile tazelenir — kullanıcı anahtarı onaylamadan çalışma alanına
+  geçmez (kabul edilen akış, kayıtlı).
+
 ## Hâlâ eksik
 
 - OS düzeyinde kilit (ekran kilidi) algılama.
