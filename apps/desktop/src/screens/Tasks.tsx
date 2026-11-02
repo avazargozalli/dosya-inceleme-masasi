@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -22,6 +22,9 @@ export function Tasks() {
   const [reminderNote, setReminderNote] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Askıdaki liste yanıtlarının sırası: geç gelen **eski** dosya yanıtı
+   *  yeni dosyanın listesini ezmemeli (bkz. `load`). */
+  const loadSeq = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -37,24 +40,45 @@ export function Tasks() {
 
   const load = useCallback(async (id: string, done: boolean) => {
     if (!id) return;
+    const seq = (loadSeq.current += 1);
     try {
       const [taskRows, reminderRows] = await Promise.all([
         api.taskList(id, done),
         api.taskReminders(id, localIsoDay()),
       ]);
+      if (seq !== loadSeq.current) return;
       setRows(taskRows);
       setReminders(reminderRows);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
+      // Düşen yükleme **önceki** listeyi güncel gibi bırakmaz.
+      setRows([]);
+      setReminders([]);
       setError(toApiError(e));
     }
   }, []);
 
   useEffect(() => {
+    // Dosya ya da süzgeç değişince önceki dosyanın görevleri, hatırlatıcıları ve
+    // bildirimi ekranda kalmamalı; istek askıdaysa eski veri yeni dosyanın
+    // altında görünürdü (INV-05).
+    // Askıdaki eski yanıtları geçersiz kıl.
+    loadSeq.current += 1;
+    setRows([]);
+    setReminders([]);
+    setReminderNote("");
+    setError(null);
     if (caseId) void load(caseId, includeDone);
   }, [caseId, includeDone, load]);
 
   async function add() {
-    if (!caseId || title.trim().length === 0) {
+    setError(null);
+    if (!caseId) {
+      // Eksik olan başlık değil dosyadır: gerekçe doğru yazılır.
+      setError({ code: "E_NO_CASE", message: t("tasks.caseRequired"), retryable: false });
+      return;
+    }
+    if (title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("tasks.titleRequired"), retryable: false });
       return;
     }
@@ -65,6 +89,8 @@ export function Tasks() {
         userDueDate: due || null,
         dateTimezone: "Europe/Istanbul",
         assigneeLabel: null,
+        // Tarih yoksa hatırlatıcı kurulamaz; seçim tarih silinince "none"a döner
+        // (aşağıdaki tarih alanı) — tarihsiz göreve politika taşınmaz.
         reminderPolicy: policy,
       });
       setTitle("");
@@ -80,6 +106,7 @@ export function Tasks() {
 
   /** Tarih yazmak onay değildir: kullanıcı ayrıca onaylar (F08-T10). */
   async function confirmDate(id: string) {
+    setError(null);
     setBusy(true);
     try {
       await api.taskConfirmDate(id);
@@ -92,6 +119,8 @@ export function Tasks() {
   }
 
   async function enqueueReminders() {
+    setError(null);
+    setReminderNote("");
     setBusy(true);
     try {
       const result = await api.taskRemindersEnqueue(caseId, localIsoDay());
@@ -109,6 +138,7 @@ export function Tasks() {
   }
 
   async function complete(id: string) {
+    setError(null);
     try {
       await api.taskComplete(id);
       await load(caseId, includeDone);
@@ -118,6 +148,7 @@ export function Tasks() {
   }
 
   async function remove(id: string) {
+    setError(null);
     try {
       await api.taskDelete(id);
       await load(caseId, includeDone);
@@ -161,7 +192,12 @@ export function Tasks() {
           </div>
           <div className="field" style={{ flex: "0 1 170px" }}>
             <label htmlFor="task-due">{t("tasks.dueLabel")}</label>
-            <input id="task-due" className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+            <input id="task-due" className="input" type="date" value={due} onChange={(e) => {
+              setDue(e.target.value);
+              // Tarih silinince hatırlatma seçimi anlamsız kalır; değeri
+              // "none"a döner ve tarihsiz göreve politika taşınmaz.
+              if (!e.target.value) setPolicy("none");
+            }} />
           </div>
           <div className="field" style={{ flex: "0 1 170px" }}>
             <label htmlFor="task-policy">{t("tasks.reminderLabel")}</label>

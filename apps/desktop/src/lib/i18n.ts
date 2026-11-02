@@ -162,6 +162,7 @@ export const tr = {
     reminderLabel: "Hatırlatma",
     add: "Ekle",
     titleRequired: "Görev başlığı zorunlu.",
+    caseRequired: "Önce bir dosya seçin.",
     listTitle: "Görev listesi",
     recordCount: "{count} kayıt",
     includeDone: "Tamamlananlar",
