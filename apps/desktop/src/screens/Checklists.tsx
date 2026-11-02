@@ -79,6 +79,9 @@ export function Checklists() {
 
   const load = useCallback(async (id: string) => {
     if (!id) return;
+    // Tazeleme hatası ekranda kalırsa çelişkili görünüm olur ("Güncel kaydı yükle"
+    // başarılı olsa da kırmızı `E_ROW_VERSION` dururdu); her yükleme hatayı siler.
+    setError(null);
     try {
       const [docRows, templateRows, itemRows] = await Promise.all([
         api.documentList(id),
@@ -96,7 +99,17 @@ export function Checklists() {
   }, []);
 
   useEffect(() => {
-    if (caseId) void load(caseId);
+    if (!caseId) return;
+    // Dosya değişince türetilmiş durum **istekten önce** temizlenir: aksi halde
+    // askıda/düşen istekte önceki dosyanın maddeleri ekranda kalır ve "Kaydet"
+    // o dosyanın maddesini yeni dosya seçiliyken yazabilir (INV-05).
+    setDocuments([]);
+    setTemplates([]);
+    setItems([]);
+    setDrafts({});
+    setNotice("");
+    setConflictItem(null);
+    void load(caseId);
   }, [caseId, load]);
 
   function updateDraft(item: CaseChecklistItemRow, patch: Partial<Draft>) {
@@ -123,6 +136,9 @@ export function Checklists() {
   async function copyTemplate(template: ChecklistTemplateRow) {
     setBusy(true);
     setError(null);
+    // Yeni işlem başlarken önceki başarı bildirimi silinir; başarısız işlemle
+    // birlikte yeşil "kopyalandı" satırı ekranda kalmaz.
+    setNotice("");
     try {
       const result = await api.checklistCopy(caseId, template.id);
       setNotice(
@@ -145,6 +161,7 @@ export function Checklists() {
 
   async function save(item: CaseChecklistItemRow) {
     const draft = drafts[item.id] ?? draftOf(item);
+    setNotice("");
     const rule = ruleFor(draft);
     if (rule) {
       setError({ code: "E_CHECKLIST_RULE", message: rule, retryable: false });
