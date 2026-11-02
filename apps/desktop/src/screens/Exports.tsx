@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openDirectory, save as saveFile } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -40,6 +40,9 @@ export function Exports() {
   const [busy, setBusy] = useState<string | null>(null);
   const [packagePassword, setPackagePassword] = useState("");
   const [coverage, setCoverage] = useState<ExportCoverage | null>(null);
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  // İstek sırası: dosya değişimi/uçuştaki istek eski yanıtı geçersiz kılar.
+  const seqRef = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -53,19 +56,30 @@ export function Exports() {
     })();
   }, []);
 
-  // Kapsam kasadan okunur; arayüz kendi sayısını üretmez.
+  // Kapsam kasadan okunur; arayüz kendi sayısını üretmez. Dosya değişince
+  // önceki dosyanın kapsamı **ve** çıktı/paket satırları ekranda kalmaz:
+  // yoksa yeni dosyanın isteği askıdayken başka dosyanın çıktısı güncel
+  // sanılır (INV-05).
   useEffect(() => {
+    const seq = ++seqRef.current;
+    setResult(null);
+    setPkg(null);
+    setCoverage(null);
+    setError(null);
     if (!caseId) {
-      setCoverage(null);
+      setCoverageLoading(false);
       return;
     }
     let alive = true;
+    setCoverageLoading(true);
     (async () => {
       try {
         const next = await api.caseCoverage(caseId);
-        if (alive) setCoverage(next);
+        if (alive && seq === seqRef.current) setCoverage(next);
       } catch (e) {
-        if (alive) setError(toApiError(e));
+        if (alive && seq === seqRef.current) setError(toApiError(e));
+      } finally {
+        if (alive && seq === seqRef.current) setCoverageLoading(false);
       }
     })();
     return () => {
@@ -82,6 +96,7 @@ export function Exports() {
       filters: [{ name: format.toUpperCase(), extensions: [format] }],
     });
     if (typeof target !== "string") return;
+    const seq = ++seqRef.current;
     setBusy(format);
     setError(null);
     setResult(null);
@@ -89,11 +104,13 @@ export function Exports() {
       const fn =
         format === "json" ? api.exportJson : format === "csv" ? api.exportCsv : format === "docx" ? api.exportDocx : api.exportPdf;
       const exported = await fn(caseId, target);
-      setResult(exported);
-      // Gösterilen kapsam, dosyaya gerçekten yazılan bloktur (yanıttan gelir).
-      setCoverage(exported.coverage);
+      if (seq === seqRef.current) {
+        setResult(exported);
+        // Gösterilen kapsam, dosyaya gerçekten yazılan bloktur (yanıttan gelir).
+        setCoverage(exported.coverage);
+      }
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === seqRef.current) setError(toApiError(e));
     } finally {
       setBusy(null);
     }
@@ -103,6 +120,7 @@ export function Exports() {
     if (!caseId) return;
     const dir = await openDirectory({ directory: true, multiple: false, title: t("exports.dirDialog") });
     if (typeof dir !== "string") return;
+    const seq = ++seqRef.current;
     setBusy("package");
     setError(null);
     setPkg(null);
@@ -112,10 +130,14 @@ export function Exports() {
         dir,
         packagePassword.trim().length >= 10 ? packagePassword : undefined,
       );
-      setPkg(created);
-      setCoverage(created.coverage);
+      if (seq === seqRef.current) {
+        setPkg(created);
+        setCoverage(created.coverage);
+        // Parola işi bitti: düz metin bellekte/DOM'da kalmaz.
+        setPackagePassword("");
+      }
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === seqRef.current) setError(toApiError(e));
     } finally {
       setBusy(null);
     }
@@ -123,12 +145,19 @@ export function Exports() {
 
   async function refreshCoverage() {
     if (!caseId) return;
+    const seq = ++seqRef.current;
+    setError(null);
+    setCoverageLoading(true);
     try {
-      setCoverage(await api.caseCoverage(caseId));
+      const next = await api.caseCoverage(caseId);
+      if (seq === seqRef.current) setCoverage(next);
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === seqRef.current) setError(toApiError(e));
+    } finally {
+      if (seq === seqRef.current) setCoverageLoading(false);
     }
   }
+
 
   const coverageInfo = coverage ? coverageState(coverage) : null;
   const emptyWarning = coverage ? emptyCoverageWarning(coverage) : null;
@@ -201,8 +230,11 @@ export function Exports() {
             <p className="hint" style={{ margin: "8px 0 0" }}>{coverage.statement}</p>
           </div>
         ) : (
-          <p className="hint" style={{ margin: 0 }}>{t("exports.coverageUnreadable")}</p>
+          <p className="hint" style={{ margin: 0 }}>
+            {coverageLoading ? t("exports.coverageLoading") : t("exports.coverageUnreadable")}
+          </p>
         )}
+
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
           {FORMATS.map((format) => (

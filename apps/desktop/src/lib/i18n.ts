@@ -201,6 +201,7 @@ export const tr = {
     refresh: "Kapsamı tazele",
     coverageWarnings: "Kapsam uyarıları",
     coverageUnreadable: "Kapsam okunamadı; dışa aktarma yine kapsamı yazar.",
+    coverageLoading: "Kapsam okunuyor…",
     writing: "Yazılıyor…",
     written: "yazıldı:",
     packageTitle: "Devir paketi",
