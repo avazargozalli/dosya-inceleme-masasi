@@ -30,6 +30,15 @@ const PRECISION_LABEL: Record<string, string> = {
   unknown: t("timeline.precision.unknown"),
 };
 
+// Bağlantı rozeti ile seçim aynı kaynaktan: ham anahtar ("contradicts") kullanıcıya
+// gösterilmez; sözlükte karşılığı olmayan değer dürüstçe ham yazılır.
+const RELATION_LABEL: Record<string, string> = {
+  states: t("timeline.relationKind.states"),
+  supports: t("timeline.relationKind.supports"),
+  contradicts: t("timeline.relationKind.contradicts"),
+  context: t("timeline.relationKind.context"),
+};
+
 type Draft = {
   title: string;
   date: string;
@@ -85,13 +94,25 @@ export function Timeline() {
   }, []);
 
   useEffect(() => {
-    if (caseId) void load(caseId);
+    if (!caseId) return;
+    // Dosya değişince türetilmiş durum **istekten önce** temizlenir (INV-05):
+    // önceki dosyanın olayları, açık düzenleme/kaynak paneli ve taşınan çapa
+    // yeni dosyada görünmez; "Kaydet"/"Bağla" eski dosyanın kaydına yazamaz.
+    setEvents([]);
+    setEditing(null);
+    setLinkFor(null);
+    setAnchors([]);
+    setLinks([]);
+    setLinkAnchor("");
+    setError(null);
+    void load(caseId);
   }, [caseId, load]);
 
   const known = useMemo(() => events.filter((e) => e.sortableDate), [events]);
   const unknown = useMemo(() => events.filter((e) => !e.sortableDate), [events]);
 
   async function add() {
+    setError(null);
     if (!caseId || draft.title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
@@ -134,6 +155,7 @@ export function Timeline() {
 
   async function saveEdit() {
     if (!editing) return;
+    setError(null);
     if (editing.draft.title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
@@ -162,6 +184,7 @@ export function Timeline() {
   }
 
   async function confirm(id: string) {
+    setError(null);
     try {
       await api.eventConfirm(id);
       await load(caseId);
@@ -171,6 +194,7 @@ export function Timeline() {
   }
 
   async function remove(id: string) {
+    setError(null);
     try {
       await api.eventDelete(id);
       await load(caseId);
@@ -180,7 +204,17 @@ export function Timeline() {
   }
 
   async function openLink(eventId: string) {
-    setLinkFor((prev) => (prev === eventId ? null : eventId));
+    if (linkFor === eventId) {
+      setLinkFor(null);
+      return;
+    }
+    setLinkFor(eventId);
+    // Panel açılırken önceki olayın bağlantıları/çapası taşınmaz: düşen istek
+    // eski kaynağı yeni olayın kaynağı gibi göstermez, "Bağla" eski çapayla açılmaz.
+    setAnchors([]);
+    setLinks([]);
+    setLinkAnchor("");
+    setError(null);
     try {
       const [anchorRows, linkRows] = await Promise.all([
         api.anchorList(caseId),
@@ -196,6 +230,7 @@ export function Timeline() {
 
   async function attach(eventId: string) {
     if (!linkAnchor) return;
+    setError(null);
     try {
       await api.eventLinkSource(eventId, linkAnchor, linkRelation);
       setLinks(await api.eventSources(eventId));
@@ -205,6 +240,7 @@ export function Timeline() {
   }
 
   async function detach(id: string, eventId: string) {
+    setError(null);
     try {
       await api.eventUnlinkSource(id);
       setLinks(await api.eventSources(eventId));
@@ -335,7 +371,13 @@ export function Timeline() {
               <button className="btn primary" disabled={busy} onClick={() => void saveEdit()}>
                 {t("common.save")}
               </button>
-              <button className="btn ghost" onClick={() => setEditing(null)}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setEditing(null);
+                  setError(null);
+                }}
+              >
                 {t("timeline.cancel")}
               </button>
             </div>
@@ -351,7 +393,9 @@ export function Timeline() {
               <ul style={{ listStyle: "none", padding: 0, margin: "0 0 8px", display: "grid", gap: 4 }}>
                 {links.map((link) => (
                   <li key={link.id} className="muted small" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span className="badge plain">{link.relation}</span>
+                    <span className="badge plain">
+                      {RELATION_LABEL[link.relation] ?? link.relation}
+                    </span>
                     <code style={{ fontSize: 11 }}>{link.sourceAnchorId.slice(0, 8)}…</code>
                     <button className="btn ghost" onClick={() => void detach(link.id, event.id)}>
                       {t("timeline.removeLink")}
@@ -387,10 +431,11 @@ export function Timeline() {
                   value={linkRelation}
                   onChange={(e) => setLinkRelation(e.target.value)}
                 >
-                  <option value="states">{t("timeline.relationKind.states")}</option>
-                  <option value="supports">{t("timeline.relationKind.supports")}</option>
-                  <option value="contradicts">{t("timeline.relationKind.contradicts")}</option>
-                  <option value="context">{t("timeline.relationKind.context")}</option>
+                  {Object.entries(RELATION_LABEL).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
                 </select>
               </div>
               <button className="btn" disabled={!linkAnchor} onClick={() => void attach(event.id)}>
