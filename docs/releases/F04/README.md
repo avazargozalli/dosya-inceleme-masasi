@@ -11,7 +11,90 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Kronoloji ekranı davranış testi — `screens/Timeline.test.tsx` (2026-11-02)
+
+Önceki turun sıradaki aday listesinin başındaydı: “**`screens/Timeline.tsx` (504 satır)** ve
+`Checklists.tsx` (517) davranış testi yok.” Kronoloji, F05 kararlarının (olay/delil tarihleri,
+tarihli–tarihsiz ayrımı, onay, kaynak bağlama, satır sürümüyle düzenleme) kullanıcıya görünen
+yüzü ve bugüne dek **hiç render edilmemişti**; `i18n-bindings` testleri yalnız metin parçalarını
+doğruluyordu.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(10 fonksiyon: `caseList`, `eventList/Create/Update/Confirm/Delete`,
+`eventSources/LinkSource/UnlinkSource`, `anchorList`); `t()` **gerçek**. Tauri gerekmez.
+
+**Sabitlenen 15 davranış:**
+
+1. Dosya listesi sunucudan (`caseList(false)`), ilk dosya seçilir, olaylar o dosyadan istenir.
+2. Olaylar **tarihli/tarihsiz** iki bölüme ayrılır; bölüm sayıları sunucu listesinden hesaplanır,
+   künye satırı tür/kesinlik ve **ham tarih** notuyla birlikte yazılır.
+3. Sözlükte karşılığı olmayan tarih türü/kesinliği **uydurulmaz**, sunucunun ham anahtarı görünür;
+   tarihsiz olay yoksa ikinci bölüm hiç çizilmez; tarihli olay yoksa dürüst boş durum yazılır.
+4. Boş başlıkla olay **gönderilmez** (`E_TITLE`); geçerli kayıt kırpılarak **tam sözleşmeyle**
+   gider (`assertionKind:"user"`), taslak temizlenir ve liste tazelenir.
+5. "Kesinlik bilinmiyor" seçilince tarih alanı kapanır; gönderimde `dateValue` ve `dateRaw` null.
+6. "Onayla" yalnız **taslak** olayda çıkar; onay çekirdeğe gider ve liste tazelenir.
+7. "Sil" çekirdeğe gider ve liste tazelenir.
+8. Düzenleme, kaydın **okunduğu `rowVersion`ı** taşır (ipucu "Kayıt sürümü 3"); kaydetme
+   `eventUpdate(id, 3, …)` ile gider ve panel kapanır.
+9. Düzenlemede boş başlık gönderilmez; panel açık kalır.
+10. Çakışan düzenleme kaydı **ezmez**: tek `eventUpdate`, panel kapanır, sunucunun taze kaydı
+    görünür ve `E_CONFLICT` yazılır.
+11. Kaynak paneli: çapa yokken dürüst boş durum, "Anchor yok" seçeneği ve **kapalı** "Bağla";
+    çapa varsa ilk çapa seçilir, uzun alıntı 60 karakterde kırpılır, ilişki taşınır, bağlama
+    sonrası liste tazelenir, "Kaldır" çekirdeğe gider.
+12. Dosya değişince önceki dosyanın olayları ve açık panelleri kalkar; geri dönüldüğünde panel
+    kendiliğinden açılmaz.
+
+**Ölçülen dört kusur (hepsi kırmızı ölçümle, düzeltme sonrası yeşil):**
+
+- **Kusur #1 (INV-05, en ağırı):** `[caseId]` effect'i yalnız `load(caseId)` çağırıyordu →
+  `events`/`editing`/`linkFor`/`anchors`/`links`/`linkAnchor` **temizlenmiyordu**. Yeni dosyanın
+  isteği askıdayken **önceki dosyanın olayları** yeni dosyanın altında görünüyordu; geri
+  dönüldüğünde açık kaynak paneli **kendiliğinden** yeniden açılıyor ve elde kalan çapa ile
+  "Bağla" **önceki dosyanın olayını önceki dosyanın çapasına** yazabiliyordu (çapraz dosya
+  bağı). Kırmızı: `expected <button class="btn ghost"></button> to be null` (geri dönüşte
+  "Kaynakları kapat") + askıda istek sırasında eski olay başlığı ekranda.
+- **Kusur #2 (bayat kaynak):** `openLink` yalnız `linkFor`u değiştiriyordu; `anchors`/`links`/
+  `linkAnchor` duruyordu → düşen (veya askıdaki) kaynak isteğinde yeni olayın panelinde
+  **önceki olayın bağlantısı** görünüyor, "Bağla" **önceki olayın çapasıyla açık** kalıyordu.
+  Kırmızı: `expected <li class="muted small">…</li> to be null`.
+- **Kusur #3 (bayat hata):** başarılı `add`/`confirm`/`remove`/kaynak işlemleri `setError(null)`
+  yapmıyordu → `E_TITLE` kırmızı bildirimi **başarılı kayıttan sonra** ekranda kalıyordu
+  (çelişkili ekran). Kırmızı: `expected <strong></strong> to be null`.
+- **Kusur #4 (metin):** bağlantı rozeti `{link.relation}` yazıyordu → kullanıcı **"contradicts"**
+  görüyordu; oysa aynı ekranın seçiminde sözlükten **"çelişir"** var. Kırmızı:
+  `expected 'contradictsanchor-1…Kaldır' to contain 'çelişir'`.
+
+**Düzeltme (`Timeline.tsx` +53/−8):** `[caseId]` effect'i `events`/`editing`/`linkFor`/`anchors`/
+`links`/`linkAnchor`/`error`ı **istekten önce** temizler; `openLink` kapalıyken isteği hiç
+yapmaz, açarken dört durumu temizler; `add`/`saveEdit`/`confirm`/`remove`/`attach`/`detach`
+başında `setError(null)`; düzenleme "Vazgeç"i de hatayı siler; `RELATION_LABEL` haritası rozet ve
+seçim için **tek kaynak** (bilinmeyen ilişki ham yazılır). Kullanıcı girdisi (olay taslağı)
+silinmez — önceki turların kararıyla aynı.
+
+**Kapı kanıtı (4 mutasyon; her biri `1 failed | 14 skipped`; geri alma sha256
+`e506f7f3adbee67af14cbc8ff15752f8089a74ee020a21d080850a4bb969c7cc` birebir):** dosya değişimi
+temizliği, `openLink` temizliği, `add`teki `setError(null)`, rozetteki `RELATION_LABEL` — her
+biri **kendi** testini düşürdü.
+
+**Doğrulama:** `tsc --noEmit` temiz · `vitest` **609/609** (44 dosya; 594 → **+15**) ·
+`vite build` temiz (**569,21 kB**, `index-CPCOSByz.js`, 88 modül; Vite 500 kB uyarısı sürüyor).
+
+**CI (ölçüldü):** `7d3ad03` → koşu **`41407111388` 7/7 YEŞİL**: `arayüz` **44 dosya / 609 test**
+(yerel/CI **birebir**), aynı derleme özeti `index-CPCOSByz.js` 569,21 kB (gzip 153,36 kB) ·
+`rust (macos-15)` 4 dk 00 s · `rust (ubuntu-latest)` 5 dk 29 s · `masaüstü kabuk` 27 s ·
+`belge worker'ı` 44 s · `SBOM` 18 s · `sözleşmeler` 8 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi, `invoke`/IPC ve
+**görsel QA yok**; `api` mock'lu olduğu için çekirdeğin gerçek yolu (SQL, olay sıralaması,
+`row_version` denetimi, tarih ayrıştırma/`sortable_date`, Rust tarafı) bu testte **koşmaz**.
+Kapsam dışı: gerçek çakışma yarışı, kaynak seçicide arama, klavye gezinmesi, Windows. Açık kayıt:
+kesinlik "bilinmiyor"a çevrilince tarih alanı kapanıyor ama daha önce yazılmış tarih `dateRaw`
+olarak gönderilmeye devam ediyor (çekirdek kabul ediyor; künyede "ham: …" görünür) — kod
+incelemesiyle görüldü, davranış değiştirilmedi.
 
 ## AI ekranı davranış testi — `screens/Ai.test.tsx` (2026-11-01)
 
