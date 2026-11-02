@@ -135,6 +135,9 @@ export function Settings() {
   async function runBackup() {
     const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.pickDirTitle") });
     if (typeof picked !== "string") return;
+    // Yeni deneme başlarken önceki sonucun künyesi silinir: başarısız yedekten
+    // sonra "Yedek hazır: <eski yol>" satırı kırmızı hatayla birlikte kalmamalı.
+    setBackup(null);
     setBusy(true);
     setError(null);
     try {
@@ -147,13 +150,16 @@ export function Settings() {
   }
 
   async function changePassword() {
+    // Önceki başarı bildirimi yeni denemeden önce silinir: eşleşmeyen parola
+    // erken dönüşle çıkıyor, yeşil "değiştirildi" satırı kırmızı hatayla
+    // birlikte ekranda kalmamalı.
+    setPasswordChanged(false);
     if (newPassword !== newPassword2) {
       setError({ code: "E_PASSWORD_MISMATCH", message: t("settings.passwordMismatch"), retryable: false });
       return;
     }
     setBusy(true);
     setError(null);
-    setPasswordChanged(false);
     try {
       await api.vaultChangePassword(oldPassword, newPassword);
       setPasswordChanged(true);
@@ -170,6 +176,9 @@ export function Settings() {
   async function runGc(dryRun: boolean) {
     setBusy(true);
     setError(null);
+    // Düşen işlem önceki tarama/silme bildirimini bırakmamalı: "2 aday" satırı
+    // kırmızı hatayla birlikte güncel sonuç gibi okunuyordu.
+    setGc(null);
     try {
       setGc(await api.vaultGc(dryRun));
     } catch (e) {
@@ -185,6 +194,10 @@ export function Settings() {
       return;
     }
     setRestoreDir(picked);
+    // Yeni hedef seçildi: önceki geri yüklemenin "tamamlandı" paneli artık bu
+    // denemenin sonucu değil; düşen denemede ekranda kalmamalı.
+    setRestored(null);
+    setRestoreInfo(null);
     if (!destDir.trim()) {
       setError({ code: "E_PATH", message: t("settings.restoreDestRequired"), retryable: false });
       return;
@@ -347,24 +360,29 @@ export function Settings() {
                 {rollbackDisabledReason(preUpdate, preUpdateSelected, rollbackConfirm)}
               </p>
             ) : null}
-            {rollbackDone ? (
-              <div className="notice ok">
-                <strong>{t("settings.rollbackDoneTitle")}</strong> {rollbackSummary(rollbackDone)}
-                <br />
-                {t("settings.rollbackDoneBackup")}{" "}
-                <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
-                  {rollbackDone.backupFile}
-                </span>
-                <br />
-                {t("settings.rollbackDoneSafety")}{" "}
-                <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
-                  {rollbackDone.safetyCopy}
-                </span>
-                <br />
-                {t("settings.rollbackDoneHint")}
-              </div>
-            ) : null}
           </>
+        ) : null}
+        {/*
+          Sonuç paneli listenin dışında: geri dönüş sonrası tazeleme, kullanılan
+          yedeği listeden düşürünce (liste boşalınca) işlemin **gerçekleştiği**
+          bilgisi kaybolmamalı. Kullanıcı "tamamlandı" panelini görmeli.
+        */}
+        {rollbackDone ? (
+          <div className="notice ok">
+            <strong>{t("settings.rollbackDoneTitle")}</strong> {rollbackSummary(rollbackDone)}
+            <br />
+            {t("settings.rollbackDoneBackup")}{" "}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+              {rollbackDone.backupFile}
+            </span>
+            <br />
+            {t("settings.rollbackDoneSafety")}{" "}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+              {rollbackDone.safetyCopy}
+            </span>
+            <br />
+            {t("settings.rollbackDoneHint")}
+          </div>
         ) : null}
       </div>
 
