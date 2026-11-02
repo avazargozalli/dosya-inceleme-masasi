@@ -209,6 +209,16 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/**
+ * Ekranın p1'i gerçekten yüklediğini bekler. "Henüz tarihli olay yok" boş durumu
+ * **yükleme öncesinde de** çizilir; tek başına hazır olma işareti değildir.
+ * (CI'da ölçüldü: boş durum metninden hemen sonra tıklanan "Olay ekle" hatası,
+ * dosya yüklenince çalışan `[caseId]` temizliğiyle siliniyordu.)
+ */
+async function caseLoaded() {
+  await waitFor(() => expect(mocks.eventList).toHaveBeenCalledWith("p1"));
+}
+
 describe("kronoloji ekranı davranışı", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -274,12 +284,14 @@ describe("kronoloji ekranı davranışı", () => {
 
   it("olay yoksa tarihli bölümde dürüst boş durum yazar", async () => {
     setup({ events: async () => [] });
+    await caseLoaded();
     expect(await screen.findByText(t("timeline.knownEmpty"))).toBeTruthy();
   });
 
   it("boş başlıkla olay gönderilmez; geçerli kayıt kırpılarak gider ve taslak temizlenir", async () => {
     setup({ events: async () => [] });
     await screen.findByText(t("timeline.knownEmpty"));
+    await caseLoaded();
 
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     expect(await screen.findByText("E_TITLE")).toBeTruthy();
@@ -312,6 +324,7 @@ describe("kronoloji ekranı davranışı", () => {
   it("kesinlik bilinmiyorken tarih alanı kapalı ve tarih gönderilmez", async () => {
     setup({ events: async () => [] });
     await screen.findByText(t("timeline.knownEmpty"));
+    await caseLoaded();
 
     fireEvent.change(byId<HTMLInputElement>("tl-title"), {
       target: { value: "Tarihi belirsiz olay" },
@@ -559,6 +572,7 @@ describe("kronoloji ekranı davranışı", () => {
   it("başarılı işlem önceki hata bildirimini siler", async () => {
     setup({ events: async () => [] });
     await screen.findByText(t("timeline.knownEmpty"));
+    await caseLoaded();
 
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     expect(await screen.findByText("E_TITLE")).toBeTruthy();
