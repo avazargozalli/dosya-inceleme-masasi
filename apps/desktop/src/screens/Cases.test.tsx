@@ -29,7 +29,7 @@
 // 11. Başarısız ayrıştırmadan sonra başarılı ayrıştırma eski hata bildirimini
 //     bırakmaz (çelişkili ekran: kırmızı hata + yeşil başarı).
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { budgetSummary } from "../lib/budget";
 import { t } from "../lib/i18n";
@@ -41,6 +41,7 @@ import type {
   CaseRow,
   DocumentRow,
   DocumentTagRow,
+  ParseProgressEvent,
   ParseResult,
   WorkerBudgetView,
 } from "../lib/api";
@@ -273,6 +274,8 @@ type SetupOptions = {
   documents?: (caseId: string) => Promise<DocumentRow[]>;
   anchors?: (caseId: string) => Promise<AnchorRow[]>;
   tags?: (caseId: string) => Promise<DocumentTagRow[]>;
+  /** `parse-progress` dinleyicisini yakalamak için: gerçek Tauri olayı yok. */
+  listen?: (handler: (event: { payload: ParseProgressEvent }) => void) => Promise<() => void>;
 };
 
 function setup(options: SetupOptions = {}) {
@@ -285,7 +288,14 @@ function setup(options: SetupOptions = {}) {
   mocks.noteDraftGet.mockResolvedValue(null);
   mocks.marksForVersion.mockResolvedValue([]);
   mocks.documentPages.mockResolvedValue(null);
-  mocks.listen.mockResolvedValue(() => undefined);
+  if (options.listen) {
+    mocks.listen.mockImplementation(
+      async (_name: string, handler: (event: { payload: ParseProgressEvent }) => void) =>
+        options.listen!(handler),
+    );
+  } else {
+    mocks.listen.mockResolvedValue(() => undefined);
+  }
   mocks.onDragDropEvent.mockResolvedValue(() => undefined);
   render(<Cases />);
 }
@@ -636,5 +646,327 @@ describe("dosyalar ekranı davranışı", () => {
     await waitFor(() => expect(noticeText()).not.toBeNull());
     // Aynı ekranda hem kırmızı hata hem yeşil başarı gösterilmez.
     expect(screen.queryByText("E_PARSE")).toBeNull();
+  });
+});
+
+// Bu blok, ilk dosyadaki akışları değil **uçuştaki yazmaları** ölçer: işlem
+// sürerken dosya değişirse yanıt hangi dosyaya yazılır, başarılı işlem bayat
+// kırmızı hatayı siler mi, düşen okuma önceki kapsamın listesini bırakır mı.
+describe("dosyalar ekranı — uçuştaki yazmalar ve bayat hata", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("düşen içe aktarmadan sonra başarılı etiket ekleme eski kırmızı hatayı bırakmaz", async () => {
+    mocks.openFileDialog.mockResolvedValue("/tmp/kira.pdf");
+    mocks.documentImport.mockRejectedValue({
+      code: "E_DOC",
+      message: "içe aktarılamadı",
+      retryable: true,
+    });
+    mocks.documentTagAdd.mockResolvedValue(["kira"]);
+    setup();
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(screen.getByText(DOC.displayName)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: t("cases.addDocument") }));
+    expect(await screen.findByText("E_DOC")).toBeTruthy();
+
+    const input = screen.getByLabelText(t("cases.tagAria", { name: DOC.displayName }));
+    fireEvent.change(input, { target: { value: "kira" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(mocks.documentTagAdd).toHaveBeenCalledWith("d1", "kira"));
+    expect(await screen.findByText("#kira")).toBeTruthy();
+    // Aynı ekranda kırmızı hata ile başarılı işlem birlikte durmaz.
+    expect(screen.queryByText("E_DOC")).toBeNull();
+  });
+
+  it("düşen etiket eklemeden sonra başarılı içe aktarma eski kırmızı hatayı bırakmaz", async () => {
+    mocks.documentTagAdd.mockRejectedValue({
+      code: "E_TAG",
+      message: "etiket yazılamadı",
+      retryable: true,
+    });
+    mocks.openFileDialog.mockResolvedValue("/tmp/kira-eki.pdf");
+    mocks.documentImport.mockResolvedValue({
+      kind: "imported",
+      document: { ...DOC, id: "d7", displayName: "Kira eki.pdf", currentVersionId: "v2" },
+      version: {
+        id: "v2",
+        documentId: "d7",
+        caseId: "c1",
+        versionNo: 2,
+        blobId: "b2",
+        originalSha256: "sha",
+        byteSize: 1024,
+        detectedMime: "application/pdf",
+        importedAt: ISO,
+      },
+    });
+    setup();
+
+    await selectCase(CASE.title);
+    const input = await screen.findByLabelText(t("cases.tagAria", { name: DOC.displayName }));
+    fireEvent.change(input, { target: { value: "kira" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("E_TAG")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("cases.addDocument") }));
+    expect(
+      await screen.findByText(t("cases.imported", { name: "Kira eki.pdf", version: 2 })),
+    ).toBeTruthy();
+    expect(screen.queryByText("E_TAG")).toBeNull();
+  });
+
+  it("düşen içe aktarmadan sonra başarılı etiket kaldırma eski kırmızı hatayı bırakmaz", async () => {
+    mocks.openFileDialog.mockResolvedValue("/tmp/kira.pdf");
+    mocks.documentImport.mockRejectedValue({
+      code: "E_DOC",
+      message: "içe aktarılamadı",
+      retryable: true,
+    });
+    mocks.documentTagRemove.mockResolvedValue([]);
+    setup({ tags: async () => [tagRow("d1", "kira")] });
+
+    await selectCase(CASE.title);
+    expect(await screen.findByText("#kira")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("cases.addDocument") }));
+    expect(await screen.findByText("E_DOC")).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle(t("cases.removeTagTitle", { tag: "kira" })));
+    await waitFor(() => expect(mocks.documentTagRemove).toHaveBeenCalledWith("d1", "kira"));
+    await waitFor(() => expect(screen.queryByText("#kira")).toBeNull());
+    expect(screen.queryByText("E_DOC")).toBeNull();
+  });
+
+  it("düşen arşivlemeden sonra başarılı oluşturma eski kırmızı hatayı bırakmaz", async () => {
+    mocks.caseArchive.mockRejectedValue({
+      code: "E_DB",
+      message: "yazılamadı",
+      retryable: true,
+    });
+    mocks.caseCreate.mockResolvedValue({
+      ...CASE,
+      id: "c9",
+      title: "Yeni dosya",
+      referenceCode: null,
+    });
+    setup();
+
+    await selectCase(CASE.title);
+    fireEvent.click(screen.getByRole("button", { name: t("cases.archive") }));
+    expect(await screen.findByText("E_DB")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("cases.newCase") }));
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "Yeni dosya" } });
+    fireEvent.click(screen.getByRole("button", { name: t("cases.create") }));
+
+    expect(await screen.findByRole("heading", { name: "Yeni dosya" })).toBeTruthy();
+    expect(screen.queryByText("E_DB")).toBeNull();
+  });
+
+  it("içe aktarma uçuşta dosya değişirse sonuç yeni dosyaya yazılmaz", async () => {
+    let resolveImport: (value: unknown) => void = () => undefined;
+    const pending = new Promise<unknown>((resolve) => {
+      resolveImport = resolve;
+    });
+    const imported: DocumentRow = {
+      ...DOC,
+      id: "d7",
+      displayName: "Kira eki.pdf",
+      currentVersionId: "v2",
+    };
+    mocks.openFileDialog.mockResolvedValue("/tmp/kira-eki.pdf");
+    mocks.documentImport.mockReturnValue(pending);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+    });
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(screen.getByText(DOC.displayName)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: t("cases.addDocument") }));
+    await waitFor(() =>
+      expect(mocks.documentImport).toHaveBeenCalledWith("c1", "/tmp/kira-eki.pdf"),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+    expect(await screen.findByText(t("cases.documentsEmpty"))).toBeTruthy();
+
+    await act(async () => {
+      resolveImport({
+        kind: "imported",
+        document: imported,
+        version: {
+          id: "v2",
+          documentId: "d7",
+          caseId: "c1",
+          versionNo: 2,
+          blobId: "b2",
+          originalSha256: "sha",
+          byteSize: 1024,
+          detectedMime: "application/pdf",
+          importedAt: ISO,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    // İçe aktarma **önceki** dosyaya yapıldı: yeni dosyanın bildirimi ve belge
+    // listesi olarak yazılmaz (INV-05). Belge listesi yeniden de istenmez.
+    expect(noticeText()).toBeNull();
+    expect(screen.queryByText(imported.displayName)).toBeNull();
+    expect(mocks.documentList.mock.calls.filter(([caseId]) => caseId === "c1")).toHaveLength(1);
+  });
+
+  it("ayrıştırma uçuşta dosya değişirse eski dosyanın özeti yeni dosyaya yazılmaz", async () => {
+    let resolveParse: (value: ParseResult) => void = () => undefined;
+    const pending = new Promise<ParseResult>((resolve) => {
+      resolveParse = resolve;
+    });
+    mocks.documentParse.mockReturnValue(pending);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    await act(async () => {
+      resolveParse(parseResult());
+      await Promise.resolve();
+    });
+
+    expect(noticeText()).toBeNull();
+    expect(
+      screen.queryByText(t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 })),
+    ).toBeNull();
+  });
+
+  it("toplu ayrıştırma uçuşta dosya değişirse eski dosyanın sonucu yeni dosyaya yazılmaz", async () => {
+    let resolveBatch: (value: BatchParseResult) => void = () => undefined;
+    const pending = new Promise<BatchParseResult>((resolve) => {
+      resolveBatch = resolve;
+    });
+    mocks.documentsParsePending.mockReturnValue(pending);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+    });
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(screen.getByText(DOC.displayName)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: t("cases.parsePending") }));
+    await waitFor(() => expect(mocks.documentsParsePending).toHaveBeenCalledWith("c1", 4));
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    await act(async () => {
+      resolveBatch(batchResult());
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(t("cases.batchResult", { succeeded: 1, requested: 2 }))).toBeNull();
+  });
+
+  it("ayrıştırma uçuşta dosya değişirse eski sürümün ilerleme olayı yeni dosyada gösterilmez", async () => {
+    let progress: ((event: { payload: ParseProgressEvent }) => void) | null = null;
+    let resolveParse: (value: ParseResult) => void = () => undefined;
+    const pending = new Promise<ParseResult>((resolve) => {
+      resolveParse = resolve;
+    });
+    mocks.documentParse.mockReturnValue(pending);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+      listen: async (handler) => {
+        progress = handler;
+        return () => undefined;
+      },
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+
+    // Süren ayrıştırmanın ilerlemesi görünür: sürüm kapısı gerçekten açık.
+    act(() => {
+      progress!({ payload: { versionId: "12345678-abcd", stage: "pages", done: 1, total: 3 } });
+    });
+    expect(screen.getByRole("progressbar")).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    // Aynı sürümün geç gelen olayı yeni dosyanın altında çizilmez.
+    act(() => {
+      progress!({ payload: { versionId: "12345678-abcd", stage: "pages", done: 2, total: 3 } });
+    });
+    expect(screen.queryByRole("progressbar")).toBeNull();
+
+    await act(async () => {
+      resolveParse(parseResult());
+      await Promise.resolve();
+    });
+  });
+
+  it("arşivleme uçuşta dosya değişirse yeni dosyanın seçimi kapanmaz", async () => {
+    let resolveArchive: (value: CaseRow) => void = () => undefined;
+    const pending = new Promise<CaseRow>((resolve) => {
+      resolveArchive = resolve;
+    });
+    mocks.caseArchive.mockReturnValue(pending);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(screen.getByRole("button", { name: t("cases.archive") }));
+    await waitFor(() => expect(mocks.caseArchive).toHaveBeenCalledWith("c1"));
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    await act(async () => {
+      resolveArchive({ ...CASE, status: "archived" });
+      await Promise.resolve();
+    });
+
+    // Kullanıcı başka dosyayı seçtiyse arşivleme onun seçimini kapatmaz.
+    expect(screen.queryByRole("heading", { name: CASE2.title })).toBeTruthy();
+  });
+
+  it("arşiv kapsamı okunamazsa önceki kapsamın dosyaları liste gibi gösterilmez", async () => {
+    let call = 0;
+    setup({
+      caseListImpl: async () => {
+        call += 1;
+        if (call === 1) return [CASE];
+        throw { code: "E_DB", message: "liste okunamadı", retryable: true };
+      },
+    });
+
+    expect(await screen.findByText(CASE.title)).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    expect(await screen.findByText("E_DB")).toBeTruthy();
+    expect(screen.queryByText(CASE.title)).toBeNull();
+    expect(
+      screen.getByText(t("cases.listSubtitle", { count: 0, scope: t("cases.scopeArchived") })),
+    ).toBeTruthy();
   });
 });

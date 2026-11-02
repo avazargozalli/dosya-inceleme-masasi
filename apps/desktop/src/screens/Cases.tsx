@@ -58,6 +58,21 @@ export function Cases() {
   // belge başına gerçektir; kaç belgenin gerçekten ayrıştığı yazılır.
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchParseResult | null>(null);
+  // Dosya kimliği nesli: seçim değişince artar. Uçuştaki isteklerin yanıtı
+  // yalnız kendi nesli için yazılır; aksi hâlde önceki dosyanın verisi yeni
+  // dosyanın altında görünür (INV-05: dosya verisi başka dosyaya eklenmez).
+  const caseGen = useRef(0);
+  // Belge listesi okumalarının sırası: geç gelen eski yanıt yeni listeyi ezmez.
+  const docsSeq = useRef(0);
+
+  // Nesil artışı **bütün yükleme effect'lerinden önce** koşar (kaynak sırası):
+  // aşağıdaki effect'ler yeni nesli yakalar, eski isteklerin yanıtı yazılmaz.
+  // Süren ayrıştırmanın sürüm kapısı da kapanır: eski sürümün ilerleme olayı
+  // yeni dosyanın altında gösterilmez.
+  useEffect(() => {
+    caseGen.current += 1;
+    activeParseVersion.current = null;
+  }, [selected?.id]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -85,6 +100,9 @@ export function Cases() {
       setError(null);
       setRows(await api.caseList(showArchived));
     } catch (e) {
+      // Düşen okuma önceki kapsamın listesini bırakmaz: alt satır "Arşiv"
+      // kapsamını yazarken aktif dosyalar liste gibi görünmez.
+      setRows([]);
       setError(toApiError(e));
     }
   }, [showArchived]);
@@ -93,28 +111,46 @@ export function Cases() {
     void load();
   }, [load]);
 
-  const loadDocs = useCallback(async (caseId: string) => {
+  /** Belge listesini okur. `gen` verilirse yalnız o dosya nesli için yazılır;
+   *  sıra numarası geç gelen eski yanıtın yeni listeyi ezmesini engeller. */
+  const loadDocs = useCallback(async (caseId: string, gen = caseGen.current) => {
+    const seq = ++docsSeq.current;
     try {
-      setDocs(await api.documentList(caseId));
+      const rows = await api.documentList(caseId);
+      if (seq !== docsSeq.current || gen !== caseGen.current) return;
+      setDocs(rows);
     } catch (e) {
+      if (seq !== docsSeq.current || gen !== caseGen.current) return;
+      setDocs([]);
       setError(toApiError(e));
     }
   }, []);
 
   useEffect(() => {
     if (selected) {
-      void loadDocs(selected.id);
-      void api.anchorList(selected.id).then(setAnchors).catch((e) => setError(toApiError(e)));
+      const gen = caseGen.current;
+      void loadDocs(selected.id, gen);
+      void api
+        .anchorList(selected.id)
+        .then((rows) => {
+          if (gen === caseGen.current) setAnchors(rows);
+        })
+        .catch((e) => {
+          if (gen === caseGen.current) setError(toApiError(e));
+        });
       void api
         .documentTagsForCase(selected.id)
         .then((rows) => {
+          if (gen !== caseGen.current) return;
           const grouped: Record<string, string[]> = {};
           for (const row of rows) {
             (grouped[row.documentId] ??= []).push(row.tag);
           }
           setTagsByDoc(grouped);
         })
-        .catch((e) => setError(toApiError(e)));
+        .catch((e) => {
+          if (gen === caseGen.current) setError(toApiError(e));
+        });
     } else {
       setDocs([]);
       setAnchors([]);
@@ -137,6 +173,7 @@ export function Cases() {
   }, [selected?.id]);
 
   async function create() {
+    setError(null);
     if (form.title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("cases.titleRequired"), retryable: false });
       return;
@@ -174,10 +211,15 @@ export function Cases() {
 
   async function importFromPath(path: string) {
     if (!selected) return;
+    const gen = caseGen.current;
     setBusy(true);
+    setError(null);
     setNotice(null);
     try {
       const outcome = await api.documentImport(selected.id, path);
+      // Dosya değiştiyse içe aktarma **önceki** dosyaya yapılmıştır; sonucu
+      // yeni dosyanın bildirimi/belge listesi olarak yazılmaz (INV-05).
+      if (gen !== caseGen.current) return;
       if (outcome.kind === "duplicate") {
         setNotice(t("cases.duplicateNotice", { name: outcome.displayName }));
       } else {
@@ -188,9 +230,9 @@ export function Cases() {
           }),
         );
       }
-      await loadDocs(selected.id);
+      await loadDocs(selected.id, gen);
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -201,25 +243,32 @@ export function Cases() {
   async function addTag(documentId: string) {
     const draft = (tagDrafts[documentId] ?? "").trim();
     if (!draft) return;
+    const gen = caseGen.current;
+    setError(null);
     try {
       const tags = await api.documentTagAdd(documentId, draft);
+      if (gen !== caseGen.current) return;
       setTagsByDoc((prev) => ({ ...prev, [documentId]: tags }));
       setTagDrafts((prev) => ({ ...prev, [documentId]: "" }));
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     }
   }
 
   async function removeTag(documentId: string, tag: string) {
+    const gen = caseGen.current;
+    setError(null);
     try {
       const tags = await api.documentTagRemove(documentId, tag);
+      if (gen !== caseGen.current) return;
       setTagsByDoc((prev) => ({ ...prev, [documentId]: tags }));
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     }
   }
 
   async function parseDocument(versionId: string, ocr = false) {
+    const gen = caseGen.current;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -233,6 +282,7 @@ export function Cases() {
         txtEncoding,
         pdfPassword.trim() === "" ? undefined : pdfPassword,
       );
+      if (gen !== caseGen.current) return;
       // Hangi kodlamanın kullanıldığı worker uyarısından okunur; tahmin edilmez.
       const encodingNote = result.warnings.find((warning) => warning.includes("kodlama"));
       // §17.3: uygulanan bütçe ve gözlenen tepe değerler çekirdekten gelir.
@@ -255,9 +305,10 @@ export function Cases() {
       if (budgetAlert) parts.push(budgetAlert);
       setNotice(parts.join(" · "));
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     } finally {
-      activeParseVersion.current = null;
+      // Eşzamanlı ikinci ayrıştırma varsa onun sürüm kapısı kapanmaz.
+      if (activeParseVersion.current === versionId) activeParseVersion.current = null;
       setParseProgress(null);
       setBusy(false);
     }
@@ -266,15 +317,17 @@ export function Cases() {
   /** §17.3: bekleyen belgeleri en fazla iki worker'la ayrıştırır. */
   async function parsePending() {
     if (!selected) return;
+    const gen = caseGen.current;
     setBatchBusy(true);
     setError(null);
     setBatchResult(null);
     try {
       const result = await api.documentsParsePending(selected.id, 4);
+      if (gen !== caseGen.current) return;
       setBatchResult(result);
-      await loadDocs(selected.id);
+      await loadDocs(selected.id, gen);
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     } finally {
       setBatchBusy(false);
     }
@@ -305,8 +358,10 @@ export function Cases() {
   /** Kaynağa geri dönüş: anchor'ın sayfasını ve alıntısını okuyucuda açar.
    *  Alıntı segmentten kopmuşsa okuyucu bunu "kopmuş kaynak" olarak gösterir. */
   async function openAnchor(anchorId: string) {
+    const gen = caseGen.current;
     try {
       const location = await api.anchorLocate(anchorId);
+      if (gen !== caseGen.current) return;
       if (!location) {
         setError({
           code: "E_ANCHOR_MISSING",
@@ -318,7 +373,7 @@ export function Cases() {
       setError(null);
       setReader((prev) => ({ left: targetFromAnchor(location), right: prev?.right ?? null }));
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     }
   }
 
@@ -344,15 +399,18 @@ export function Cases() {
 
   async function mutate(action: "archive" | "restore" | "delete") {
     if (!selected) return;
+    const gen = caseGen.current;
     setBusy(true);
+    setError(null);
     try {
       if (action === "archive") await api.caseArchive(selected.id);
       if (action === "restore") await api.caseRestore(selected.id);
       if (action === "delete") await api.caseDelete(selected.id);
-      setSelected(null);
+      // İşlem sürerken kullanıcı başka dosya seçtiyse **onun** seçimini kapatma.
+      if (gen === caseGen.current) setSelected(null);
       await load();
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === caseGen.current) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
