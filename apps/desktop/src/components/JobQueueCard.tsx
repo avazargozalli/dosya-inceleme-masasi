@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, toApiError, type ApiError, type JobQueueView, type JobRow } from "../lib/api";
 import { t } from "../lib/i18n";
@@ -41,18 +41,30 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
   const [message, setMessage] = useState<string | null>(null);
   /** Yeniden denemesi gerçekten başlatılan iş: terminal olana kadar izlenir. */
   const [watchJobId, setWatchJobId] = useState<string | null>(null);
+  /**
+   * İstek sırası. Sessiz tazeleme aralıkla çalışır ve yavaş bir yanıt, daha
+   * yeni bir yanıttan **sonra** gelebilir; o zaman ilerleme geriye sıçrar ya
+   * da biten iş yeniden "Yürüyor" görünür. Yalnız en son istenen yanıt yazar.
+   */
+  const seqRef = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!unlocked) {
+      // Kasa kapandı: önceki oturumun listesi, bildirimi ve izlemesi taşınmaz.
       setView(null);
+      setError(null);
+      setMessage(null);
+      setWatchJobId(null);
       return;
     }
+    const seq = ++seqRef.current;
     setBusy(true);
     setError(null);
     try {
-      setView(await api.jobQueueStatus());
+      const next = await api.jobQueueStatus();
+      if (seq === seqRef.current) setView(next);
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === seqRef.current) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -64,13 +76,32 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
    */
   const loadQuiet = useCallback(async () => {
     if (!unlocked) return;
+    const seq = ++seqRef.current;
     try {
-      setView(await api.jobQueueStatus());
+      const next = await api.jobQueueStatus();
+      if (seq !== seqRef.current) return;
+      setView(next);
       setError(null);
     } catch (e) {
+      if (seq !== seqRef.current) return;
       setError(toApiError(e));
     }
   }, [unlocked]);
+
+  /**
+   * Eylem sonrası liste tazelemesi. Hatası **eylemin bildirimini silmez**:
+   * iptal/başlatma gerçekten yapıldıysa kullanıcı sonucu görmeli, yalnız
+   * kırmızı bir tazeleme hatası değil.
+   */
+  const refetch = useCallback(async () => {
+    const seq = ++seqRef.current;
+    try {
+      const next = await api.jobQueueStatus();
+      if (seq === seqRef.current) setView(next);
+    } catch (e) {
+      if (seq === seqRef.current) setError(toApiError(e));
+    }
+  }, []);
 
   useEffect(() => {
     void refresh();
@@ -103,13 +134,13 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
     try {
       const report = await api.jobQueueRecover();
       setMessage(recoveryLine(report));
-      setView(await api.jobQueueStatus());
+      await refetch();
     } catch (e) {
       setError(toApiError(e));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [refetch]);
 
   const act = useCallback(
     async (job: JobRow, action: JobAction) => {
@@ -137,18 +168,17 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
           await api.jobUnblock(job.id);
           setMessage(t("jobQueue.unblocked"));
         }
-        setView(await api.jobQueueStatus());
+        await refetch();
       } catch (e) {
         setError(toApiError(e));
       } finally {
         setBusy(false);
       }
     },
-    [],
+    [refetch],
   );
 
-  const summary = view?.summary ?? null;
-  const attention = summary ? queueAttention(summary) : null;
+  const attention = view ? queueAttention(view.summary) : null;
 
   return (
     <div className="card">
@@ -166,117 +196,128 @@ export function JobQueueCard({ unlocked }: { unlocked: boolean }) {
         <p className="muted small" style={{ margin: 0 }}>
           {t("jobQueue.locked")}
         </p>
-      ) : error ? (
-        <div className="notice danger" role="alert">
-          <strong>{error.code}</strong> — {error.message}
-        </div>
-      ) : summary ? (
+      ) : (
         <>
-          <p style={{ marginTop: 0 }}>{queueSummaryLine(summary)}</p>
-          {attention ? <div className="notice">{attention}</div> : null}
-          {view && view.jobs.length > 0 ? (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>{t("jobQueue.colType")}</th>
-                  <th>{t("jobQueue.colState")}</th>
-                  <th>{t("jobQueue.colProgress")}</th>
-                  <th>{t("jobQueue.colAttempt")}</th>
-                  <th>{t("jobQueue.colAction")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {view.jobs.map((job) => {
-                  const actions = jobActions(job);
-                  const progressLine = jobProgressLine(job);
-                  const progressWidth = jobProgressWidth(job);
-                  return (
-                    <tr key={job.id}>
-                      <td>{jobTypeLabel(job.jobType)}</td>
-                      <td>
-                        <span className={`badge ${jobStateBadgeClass(job.state)}`}>
-                          {jobStateLabel(job.state)}
-                        </span>
-                      </td>
-                      <td>
-                        {progressLine === null ? (
-                          <span className="muted small">—</span>
-                        ) : (
-                          <div style={{ minWidth: 170 }} aria-live="polite">
-                            <span className="muted small">{progressLine}</span>
-                            {progressWidth !== null ? (
-                              <div
-                                role="progressbar"
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                                aria-valuenow={progressWidth}
-                                aria-label={t("jobQueue.progressAria", { line: progressLine })}
-                                style={{
-                                  height: 4,
-                                  borderRadius: 2,
-                                  background: "var(--line)",
-                                  overflow: "hidden",
-                                  marginTop: 4,
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    width: `${progressWidth}%`,
-                                    height: "100%",
-                                    background: "var(--accent)",
-                                  }}
-                                />
-                              </div>
-                            ) : null}
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
-                        {jobMetaLine(job)}
-                      </td>
-                      <td>
-                        {actions.length === 0 ? (
-                          <span className="muted small">—</span>
-                        ) : (
-                          <div className="row" style={{ gap: 4 }}>
-                            {actions.map((action) => (
-                              <button
-                                key={action}
-                                className="btn"
-                                disabled={busy}
-                                onClick={() => void act(job, action)}
-                              >
-                                {jobActionLabel(action)}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </td>
+          {/*
+           * Hata bir **uyarı**dır, veri değil: son okunan kuyruk ve yapılan
+           * işlemin sonucu ekranda kalır (tek bir okuma hatası çalışan işin
+           * ilerlemesini ya da gerçekten yapılmış iptali görünmez kılmaz).
+           */}
+          {error ? (
+            <div className="notice danger" role="alert">
+              <strong>{error.code}</strong> — {error.message}
+            </div>
+          ) : null}
+          {message ? <div className="notice ok">{message}</div> : null}
+
+          {view ? (
+            <>
+              <p style={{ marginTop: 0 }}>{queueSummaryLine(view.summary)}</p>
+              {attention ? <div className="notice">{attention}</div> : null}
+              {view.jobs.length > 0 ? (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t("jobQueue.colType")}</th>
+                      <th>{t("jobQueue.colState")}</th>
+                      <th>{t("jobQueue.colProgress")}</th>
+                      <th>{t("jobQueue.colAttempt")}</th>
+                      <th>{t("jobQueue.colAction")}</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ) : (
+                  </thead>
+                  <tbody>
+                    {view.jobs.map((job) => {
+                      const actions = jobActions(job);
+                      const progressLine = jobProgressLine(job);
+                      const progressWidth = jobProgressWidth(job);
+                      return (
+                        <tr key={job.id}>
+                          <td>{jobTypeLabel(job.jobType)}</td>
+                          <td>
+                            <span className={`badge ${jobStateBadgeClass(job.state)}`}>
+                              {jobStateLabel(job.state)}
+                            </span>
+                          </td>
+                          <td>
+                            {progressLine === null ? (
+                              <span className="muted small">—</span>
+                            ) : (
+                              <div style={{ minWidth: 170 }} aria-live="polite">
+                                <span className="muted small">{progressLine}</span>
+                                {progressWidth !== null ? (
+                                  <div
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={progressWidth}
+                                    aria-label={t("jobQueue.progressAria", { line: progressLine })}
+                                    style={{
+                                      height: 4,
+                                      borderRadius: 2,
+                                      background: "var(--line)",
+                                      overflow: "hidden",
+                                      marginTop: 4,
+                                    }}
+                                  >
+                                    <div
+                                      style={{
+                                        width: `${progressWidth}%`,
+                                        height: "100%",
+                                        background: "var(--accent)",
+                                      }}
+                                    />
+                                  </div>
+                                ) : null}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                            {jobMetaLine(job)}
+                          </td>
+                          <td>
+                            {actions.length === 0 ? (
+                              <span className="muted small">—</span>
+                            ) : (
+                              <div className="row" style={{ gap: 4 }}>
+                                {actions.map((action) => (
+                                  <button
+                                    key={action}
+                                    className="btn"
+                                    disabled={busy}
+                                    onClick={() => void act(job, action)}
+                                  >
+                                    {jobActionLabel(action)}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="muted small" style={{ margin: 0 }}>
+                  {t("jobQueue.empty")}
+                </p>
+              )}
+              <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
+                <button className="btn" disabled={busy} onClick={() => void recover()}>
+                  {t("jobQueue.recover")}
+                </button>
+                <span className="muted small">{t("jobQueue.recoverNote")}</span>
+              </div>
+              <p className="muted small" style={{ marginBottom: 0 }}>
+                {t("jobQueue.limit")}
+              </p>
+            </>
+          ) : error ? null : (
             <p className="muted small" style={{ margin: 0 }}>
-              {t("jobQueue.empty")}
+              {busy ? t("jobQueue.busy") : t("jobQueue.unavailable")}
             </p>
           )}
-          <div className="row" style={{ justifyContent: "space-between", marginTop: 8 }}>
-            <button className="btn" disabled={busy} onClick={() => void recover()}>
-              {t("jobQueue.recover")}
-            </button>
-            <span className="muted small">{t("jobQueue.recoverNote")}</span>
-          </div>
-          {message ? <div className="notice ok">{message}</div> : null}
-          <p className="muted small" style={{ marginBottom: 0 }}>
-            {t("jobQueue.limit")}
-          </p>
         </>
-      ) : (
-        <p className="muted small" style={{ margin: 0 }}>
-          {busy ? t("jobQueue.busy") : t("jobQueue.unavailable")}
-        </p>
       )}
     </div>
   );
