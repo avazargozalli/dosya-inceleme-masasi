@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   caseList: vi.fn(),
   documentList: vi.fn(),
   lockVault: vi.fn(),
+  createVault: vi.fn(),
 }));
 
 vi.mock("./lib/api", async (importOriginal) => {
@@ -25,6 +26,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       caseList: mocks.caseList,
       documentList: mocks.documentList,
       lockVault: mocks.lockVault,
+      createVault: mocks.createVault,
     },
   };
 });
@@ -77,5 +79,44 @@ describe("kilit ekran davranışı", () => {
 
     expect(await screen.findByRole("heading", { name: "Kasa kilitli" })).toBeTruthy();
     expect(screen.queryByText("Kira dosyası")).toBeNull();
+  });
+
+  it("oluşturulan kasanın kurtarma anahtarı gezinmeyle kaybolmaz", async () => {
+    // Ölçülen kusur: anahtar `Unlock`un içinde tutuluyordu; yan menüden başka
+    // ekrana gidip dönmek bileşeni yeniden bağlıyor ve **tek kopya** olan
+    // anahtarı yok ediyordu. Anahtar artık `App`te tutulur.
+    const KEY = "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567";
+    mocks.vaultStatus.mockResolvedValue(LOCKED);
+    mocks.createVault.mockResolvedValue({
+      vaultPath: "/Users/avukat/Dosyalar/DosyaIncelemeMasasi/vault.dimvault",
+      recoveryKey: KEY,
+      vaultId: "vault-1",
+    });
+
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Parola oluştur"), {
+      target: { value: "cok-guclu-parola-1" },
+    });
+    fireEvent.change(screen.getByLabelText("Parola (tekrar)"), { target: { value: "cok-guclu-parola-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Kasayı oluştur" }));
+
+    expect(await screen.findByText(KEY)).toBeTruthy();
+
+    // Başka ekrana gidip dönmek anahtarı düşürmemeli.
+    fireEvent.click(screen.getByRole("button", { name: /Dosyalar/ }));
+    expect(await screen.findByRole("heading", { name: "Kasa kilitli" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Kasa" }));
+    expect(await screen.findByText(KEY)).toBeTruthy();
+
+    // Onay kutusu işaretlenmeden kasayı açmak kapalı.
+    expect((screen.getByRole("button", { name: "Kasayı aç" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("Anahtarı güvenli bir yere kaydettim."));
+
+    mocks.vaultStatus.mockResolvedValue(UNLOCKED);
+    fireEvent.click(screen.getByRole("button", { name: "Kasayı aç" }));
+
+    expect(await screen.findByRole("heading", { name: "Kasa açık" })).toBeTruthy();
+    expect(screen.queryByText(KEY)).toBeNull();
   });
 });

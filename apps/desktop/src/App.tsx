@@ -70,12 +70,18 @@ export function App() {
     preUpdateBackup: null,
   });
   const [error, setError] = useState<ApiError | null>(null);
+  // Kasa oluşturulduktan sonra bir kez gösterilen kurtarma anahtarı burada
+  // tutulur: `Unlock` ekranı gezinmede yeniden bağlandığı için anahtar orada
+  // tutulsaydı ilk ekran değişiminde yok olurdu.
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       setStatus(await api.status());
+      return true;
     } catch (e) {
       setError(toApiError(e));
+      return false;
     }
   }, []);
 
@@ -203,11 +209,16 @@ export function App() {
           {!canShowScreen(screen, locked) ? (
             <LockedNotice onUnlock={() => setScreen("vault")} />
           ) : screen === "vault" ? (
-            locked ? (
+            pendingKey || locked ? (
               <Unlock
+                pendingKey={pendingKey}
+                onKeyCreated={setPendingKey}
+                onKeyDismissed={() => setPendingKey(null)}
                 onUnlocked={async () => {
                   setError(null);
-                  await refresh();
+                  // Durum okunamazsa anahtar ekranı açık kalır: tek kopyadır,
+                  // başarısız bir tazeleme yüzünden düşürülmez.
+                  if (await refresh()) setPendingKey(null);
                 }}
               />
             ) : (

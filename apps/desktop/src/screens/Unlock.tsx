@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, toApiError, type ApiError } from "../lib/api";
 import { t } from "../lib/i18n";
 import { checkPassword, checkPasswordConfirmation } from "../lib/vault-input";
@@ -7,7 +7,25 @@ type Mode = "open" | "create" | "recovery";
 
 const DEFAULT_DIR = "Dosyalar/DosyaIncelemeMasasi";
 
-export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
+export type UnlockProps = {
+  onUnlocked: () => Promise<void>;
+  /**
+   * Bir kez gösterilecek kurtarma anahtarı. Sahibi `App`: kasa oluşturulduktan
+   * sonra başka ekrana gidip dönmek bileşeni yeniden bağlar; anahtar burada
+   * tutulsaydı ilk gezinmede yok olurdu (tek kopya, bir daha gösterilmez).
+   */
+  pendingKey?: string | null;
+  /** Zorunlu: anahtarın nereye yazılacağına çağıran karar verir (sessiz kayıp yok). */
+  onKeyCreated: (recoveryKey: string) => void;
+  onKeyDismissed: () => void;
+};
+
+export function Unlock({
+  onUnlocked,
+  pendingKey = null,
+  onKeyCreated,
+  onKeyDismissed,
+}: UnlockProps) {
   const [mode, setMode] = useState<Mode>("create");
   const [path, setPath] = useState(DEFAULT_DIR);
   const [password, setPassword] = useState("");
@@ -15,12 +33,27 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
   const [recovery, setRecovery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
-  const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [keySaved, setKeySaved] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+
+  // Yeni bir anahtar ekranı eski onayı devralmaz: "kaydettim" işareti ve
+  // "kaydetmeden devam" onayı anahtar ekranıyla birlikte sıfırlanır.
+  useEffect(() => {
+    if (!pendingKey) {
+      setKeySaved(false);
+      setConfirmLeave(false);
+    }
+  }, [pendingKey]);
 
   const check = mode === "create" ? checkPasswordConfirmation(password, confirm) : checkPassword(password);
   const canSubmit =
     !busy && (mode === "recovery" ? recovery.trim().length > 0 : check.ok && path.trim().length > 0);
+
+  function changeMode(next: Mode) {
+    setMode(next);
+    // Kip değişince önceki kipin hatası ekranda kalmaz (çelişkili ekran yok).
+    setError(null);
+  }
 
   async function submit() {
     setError(null);
@@ -28,9 +61,9 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
     try {
       if (mode === "create") {
         const result = await api.createVault(path.trim(), password);
-        setCreatedKey(result.recoveryKey);
         setPassword("");
         setConfirm("");
+        onKeyCreated(result.recoveryKey);
       } else if (mode === "open") {
         await api.openVault(path.trim(), password);
         setPassword("");
@@ -47,7 +80,16 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
     }
   }
 
-  if (createdKey) {
+  async function openCreated() {
+    setBusy(true);
+    try {
+      await onUnlocked();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (pendingKey) {
     return (
       <div className="page" style={{ maxWidth: 720 }}>
         <div className="page-head">
@@ -61,7 +103,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
         </div>
 
         <div className="card">
-          <div className="recovery" aria-label={t("unlock.recoveryAria")}>{createdKey}</div>
+          <div className="recovery" aria-label={t("unlock.recoveryAria")}>{pendingKey}</div>
           <div className="hint">{t("unlock.recoveryHint")}</div>
           <label className="row" style={{ alignItems: "center", gap: 8 }}>
             <input
@@ -72,19 +114,31 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
             />
             <span>{t("unlock.savedCheck")}</span>
           </label>
+          {confirmLeave ? <div className="hint error">{t("unlock.leaveWarning")}</div> : null}
           <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button
-              className="btn ghost"
-              onClick={() => {
-                setCreatedKey(null);
-                setKeySaved(false);
-                setMode("open");
-              }}
-            >
-              {t("common.back")}
-            </button>
-            <button className="btn primary" disabled={!keySaved} onClick={() => void onUnlocked()}>
-              {t("unlock.openVault")}
+            {confirmLeave ? (
+              <>
+                <button className="btn ghost" onClick={() => setConfirmLeave(false)}>
+                  {t("unlock.leaveCancel")}
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setConfirmLeave(false);
+                    setMode("open");
+                    onKeyDismissed();
+                  }}
+                >
+                  {t("unlock.leaveConfirm")}
+                </button>
+              </>
+            ) : (
+              <button className="btn ghost" onClick={() => setConfirmLeave(true)}>
+                {t("common.back")}
+              </button>
+            )}
+            <button className="btn primary" disabled={!keySaved || busy} onClick={() => void openCreated()}>
+              {busy ? t("common.busy") : t("unlock.openVault")}
             </button>
           </div>
         </div>
@@ -102,13 +156,28 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
 
       <div className="card">
         <div className="steps" aria-label={t("unlock.modesAria")}>
-          <button className={mode === "create" ? "btn primary" : "btn"} onClick={() => setMode("create")}>
+          <button
+            className={mode === "create" ? "btn primary" : "btn"}
+            aria-pressed={mode === "create"}
+            disabled={busy}
+            onClick={() => changeMode("create")}
+          >
             {t("unlock.modeCreate")}
           </button>
-          <button className={mode === "open" ? "btn primary" : "btn"} onClick={() => setMode("open")}>
+          <button
+            className={mode === "open" ? "btn primary" : "btn"}
+            aria-pressed={mode === "open"}
+            disabled={busy}
+            onClick={() => changeMode("open")}
+          >
             {t("unlock.modeOpen")}
           </button>
-          <button className={mode === "recovery" ? "btn primary" : "btn"} onClick={() => setMode("recovery")}>
+          <button
+            className={mode === "recovery" ? "btn primary" : "btn"}
+            aria-pressed={mode === "recovery"}
+            disabled={busy}
+            onClick={() => changeMode("recovery")}
+          >
             {t("unlock.modeRecovery")}
           </button>
         </div>
@@ -123,6 +192,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
             placeholder={DEFAULT_DIR}
             autoComplete="off"
             spellCheck={false}
+            disabled={busy}
           />
           <span className="hint">{t("unlock.pathHint")}</span>
         </div>
@@ -139,6 +209,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
               autoComplete="off"
               spellCheck={false}
               style={{ fontFamily: "var(--mono)" }}
+              disabled={busy}
             />
             <span className="hint">{t("unlock.recoveryKeyHint")}</span>
           </div>
@@ -155,6 +226,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete={mode === "create" ? "new-password" : "current-password"}
+                disabled={busy}
               />
               {mode === "create" && password.length > 0 && !check.ok ? (
                 <span className="hint error">{check.reason}</span>
@@ -172,6 +244,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   autoComplete="new-password"
+                  disabled={busy}
                 />
               </div>
             ) : null}
@@ -208,7 +281,7 @@ export function Unlock({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
           <dt>{t("unlock.phaseRecovery")}</dt>
           <dd><span className="badge ok">{t("unlock.badgeReal")}</span> {t("unlock.phaseRecoveryValue")}</dd>
           <dt>{t("unlock.phaseImport")}</dt>
-          <dd><span className="badge plain">{t("unlock.badgePhase")}</span> {t("unlock.phaseImportValue")}</dd>
+          <dd><span className="badge ok">{t("unlock.badgeReal")}</span> {t("unlock.phaseImportValue")}</dd>
         </dl>
       </div>
     </div>

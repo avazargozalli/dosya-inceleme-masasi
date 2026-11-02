@@ -104,6 +104,10 @@ export const tr = {
     openVault: "Kasayı aç",
     recoveryNotice:
       "Anahtarı kaybetmediğinden emin olmadan bu ekranı kapatma. Uygulama anahtarı tekrar göstermez.",
+    leaveWarning:
+      "Kurtarma anahtarı bir daha gösterilmez. Kaydetmeden devam edersen parolanı unutman hâlinde kasa açılamaz.",
+    leaveCancel: "Vazgeç",
+    leaveConfirm: "Kaydetmeden devam et",
     title: "Kasa",
     lead:
       "Belgeler cihazında şifreli bir kasada durur. Kasa kapalıyken içerik okunamaz; arama " +
@@ -133,9 +137,8 @@ export const tr = {
     phaseRecovery: "Kurtarma anahtarı",
     phaseRecoveryValue: "32 bayt, base32 gösterim",
     phaseImport: "Belge içe aktarma",
-    phaseImportValue: "henüz yok",
+    phaseImportValue: "sürükle-bırak veya dosya seç",
     badgeReal: "gerçek",
-    badgePhase: "F05",
   },
   workspace: {
     title: "Kasa açık",
