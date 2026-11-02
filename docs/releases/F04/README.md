@@ -11,7 +11,89 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. **Çıktılar davranış testi eklendi** (`screens/Exports.test.tsx`, 22 test; 9 mutasyonla kanıtlandı; dosya değişiminde bayat kapsam/çıktı/paket satırı (INV-05), düşen kapsam isteğinde bayat kapsam, başarılı tazelemede silinmeyen kırmızı hata, uçuştaki dışa aktarma/tazeleme yanıtlarının yeni dosyayı ezmesi, devir paketi parolasının başarıdan sonra ekranda kalması ve “Kapsam okunamadı” ile “okunuyor”un karışması düzeltildi) — 2026-11-02. **Maskeleme davranış testi eklendi** (`screens/Redaction.test.tsx`, 20 test; 8 mutasyonla kanıtlandı; dosya değişiminde bayat sonuç/önizleme/bölge ve geç gelen belge listesinin yeni dosyayı ezmesi (INV-05), sürüm değişiminde bölgelerin **başka sürüme** taşınması (§13.5), önizlemenin yüklendiği sayfaya bağlı olmaması (yanlış sayfaya bölge yazımı), sayfa getirmenin “Maskeleniyor…” görünmesi, düşen belge listesinin önceki dosyanın belgelerini bırakması, maskeleme sürerken hedefin değiştirilebilmesi ve sözlük dışı yer tutucu düzeltildi) — 2026-11-02. **İş kuyruğu/bütçe kartı ve çalışma alanı davranış testleri eklendi** (`JobQueueCard` **20** + `WorkerBudgetCard` **7** + `Workspace` **4** = 33 test; 7 mutasyonla kanıtlandı; hata dalı bütün kartı siliyordu, üç asenkron yazma yolunda yanıt sırası yoktu, kasa kilitlenince önceki oturumun bildirimi/izlemesi taşınıyordu) — 2026-11-02. **Notlar davranış testi eklendi** (`components/Notes.test.tsx`, **23 test**; 9 mutasyonla kanıtlandı; dosya değişiminde önceki dosyanın notları/not paneli/taslak metni taşınıyor ve **eski dosyanın notuna yazılabiliyordu** (INV-05), düşen liste ve düşen tazeleme bayat satır bırakıyordu, liste/taslak okumalarında yanıt sırası yoktu, uçuştaki taslak yazımı not eklendikten sonra taslağı geri getiriyordu) — 2026-11-02. **Kasa kapısı davranış testi eklendi** (`screens/Unlock.test.tsx`, **14 test** + `lock-behavior.test.tsx`te 1 App düzeyi; 9 mutasyonla kanıtlandı; faz kartı çalışan belge içe aktarmayı "henüz yok" diye yazıyordu, "Geri" tek kopya kurtarma anahtarını onaysız düşürüyordu, **gezinme anahtarı yok ediyordu** (anahtar artık `App`te), istek sürerken kip/alanlar açıktı, kip değişiminde bayat hata kalıyordu ve seçili kip ekran okuyucuya bildirilmiyordu) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. **Çıktılar davranış testi eklendi** (`screens/Exports.test.tsx`, 22 test; 9 mutasyonla kanıtlandı; dosya değişiminde bayat kapsam/çıktı/paket satırı (INV-05), düşen kapsam isteğinde bayat kapsam, başarılı tazelemede silinmeyen kırmızı hata, uçuştaki dışa aktarma/tazeleme yanıtlarının yeni dosyayı ezmesi, devir paketi parolasının başarıdan sonra ekranda kalması ve “Kapsam okunamadı” ile “okunuyor”un karışması düzeltildi) — 2026-11-02. **Maskeleme davranış testi eklendi** (`screens/Redaction.test.tsx`, 20 test; 8 mutasyonla kanıtlandı; dosya değişiminde bayat sonuç/önizleme/bölge ve geç gelen belge listesinin yeni dosyayı ezmesi (INV-05), sürüm değişiminde bölgelerin **başka sürüme** taşınması (§13.5), önizlemenin yüklendiği sayfaya bağlı olmaması (yanlış sayfaya bölge yazımı), sayfa getirmenin “Maskeleniyor…” görünmesi, düşen belge listesinin önceki dosyanın belgelerini bırakması, maskeleme sürerken hedefin değiştirilebilmesi ve sözlük dışı yer tutucu düzeltildi) — 2026-11-02. **İş kuyruğu/bütçe kartı ve çalışma alanı davranış testleri eklendi** (`JobQueueCard` **20** + `WorkerBudgetCard` **7** + `Workspace` **4** = 33 test; 7 mutasyonla kanıtlandı; hata dalı bütün kartı siliyordu, üç asenkron yazma yolunda yanıt sırası yoktu, kasa kilitlenince önceki oturumun bildirimi/izlemesi taşınıyordu) — 2026-11-02. **Notlar davranış testi eklendi** (`components/Notes.test.tsx`, **23 test**; 9 mutasyonla kanıtlandı; dosya değişiminde önceki dosyanın notları/not paneli/taslak metni taşınıyor ve **eski dosyanın notuna yazılabiliyordu** (INV-05), düşen liste ve düşen tazeleme bayat satır bırakıyordu, liste/taslak okumalarında yanıt sırası yoktu, uçuştaki taslak yazımı not eklendikten sonra taslağı geri getiriyordu) — 2026-11-02. **Kasa kapısı davranış testi eklendi** (`screens/Unlock.test.tsx`, **14 test** + `lock-behavior.test.tsx`te 1 App düzeyi; 9 mutasyonla kanıtlandı; faz kartı çalışan belge içe aktarmayı "henüz yok" diye yazıyordu, "Geri" tek kopya kurtarma anahtarını onaysız düşürüyordu, **gezinme anahtarı yok ediyordu** (anahtar artık `App`te), istek sürerken kip/alanlar açıktı, kip değişiminde bayat hata kalıyordu ve seçili kip ekran okuyucuya bildirilmiyordu) — 2026-11-02. **Dosyalar ekranının yazma yolları genişletildi** (`screens/Cases.test.tsx`, **+10 test** = 23; 9 mutasyonla kanıtlandı; içe aktarma/etiket ekleme/etiket kaldırma **başarılarında bayat kırmızı hata** kalıyordu, işlem uçuşta dosya değişince içe aktarma sonucu/ayrıştırma özeti/toplu sonuç **yeni dosyaya** yazılıyordu, eski sürümün ilerleme olayı yeni dosyada çiziliyordu, arşivleme yeni seçimi kapatıyordu ve düşen kapsam okuması önceki kapsamın listesini bırakıyordu) — 2026-11-03. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Dosyalar ekranı — uçuştaki yazmalar ve bayat hata (2026-11-03)
+
+Önceki tur `screens/Cases.tsx`te dosya değişiminde bayat **veriyi** kapatmıştı
+(`[selected?.id]` effect'i); açık kalan kayıt **yazma yollarıydı**: `create`,
+`importFromPath`, `addTag`, `removeTag`, `mutate` başında önceki kırmızı hata
+silinmiyordu ve işlem sürerken dosya değişirse yanıt **yeni dosyanın** ekranına
+yazılabiliyordu.
+
+**Yazılanlar — `src/screens/Cases.test.tsx` (+10 test; 13 → 23):** mevcut harness
+(jsdom + RTL, `lib/api` kısmi mock) korundu; `listen` seçeneği eklendi — gerçek
+Tauri olayı yok, `parse-progress` işleyicisi testten çağrılıyor. Sabitlenenler:
+(1) düşen içe aktarmadan sonra başarılı **etiket ekleme** kırmızıyı siler;
+(2) düşen etiket eklemeden sonra başarılı **içe aktarma** siler; (3) düşen içe
+aktarmadan sonra başarılı **etiket kaldırma** siler; (4) içe aktarma uçuşta dosya
+değişirse sonuç (bildirim + belge listesi) yeni dosyaya yazılmaz ve belge listesi
+yeniden istenmez; (5) ayrıştırma özeti, (6) toplu ayrıştırma sonucu aynı nesil
+kapısından geçer; (7) eski sürümün ilerleme olayı yeni dosyanın altında çizilmez;
+(8) arşivleme uçuşta dosya değişirse yeni dosyanın seçimi kapanmaz; (9) arşiv
+kapsamı okunamazsa önceki kapsamın dosyaları liste gibi gösterilmez;
+(10) düşen arşivlemeden sonra başarılı oluşturma — bu test **düzeltme öncesinde
+de yeşildi** (aşağıdaki dürüst kayda bakınız).
+
+**Ölçülen kusurlar — ham koşu (düzeltme öncesi bileşen): 9 failed | 1 passed |
+13 skipped.**
+- **Bayat kırmızı hata (üç yol):** `importFromPath`, `addTag`, `removeTag`
+  başında `setError(null)` yoktu; düşen bir işlemden sonra başarılı işlem
+  **kırmızı `E_DOC`/`E_TAG`** bildirimini ekranda bırakıyordu (aynı ekranda
+  "içe aktarıldı" yeşil satırı + eski kırmızı hata).
+- **Çapraz dosya yazımı (INV-05, en ağırı):** `importFromPath` uçuştayken dosya
+  değişince `await loadDocs(selected.id)` **önceki dosyanın** belge listesini yeni
+  dosyanın kartına yazıyor, "içe aktarıldı" bildirimi yeni dosyanın altında
+  görünüyordu. Aynı kapı eksikliği `parseDocument` (özet), `parsePending` (toplu
+  sonuç) ve `openAnchor` (okuyucu hedefi / hata) içinde de vardı.
+- **Geç ilerleme olayı:** dosya değişince `activeParseVersion` kapatılmıyordu;
+  eski sürümün `parse-progress` çerçevesi yeni dosyanın altında ilerleme çubuğu
+  çiziyordu.
+- **Seçim kapanması:** `mutate` yanıtı, işlem sürerken başka dosya seçilmiş olsa
+  da `setSelected(null)` yapıyordu — kullanıcının yeni seçimi kapanıyordu.
+- **Kapsam etiketi yalanı:** `load` hatasında liste korunuyordu; "Arşiv" kapsamı
+  işaretlenip okuma düşünce alt satır **"N dosya · Arşiv"** yazıyor ama listede
+  **aktif** dosyalar duruyordu.
+
+**Düzeltme (`Cases.tsx` +74/−16):** dosya kimliği **nesli** (`caseGen` ref; seçim
+değişince artar, artış bütün yükleme effect'lerinden **önce** koşar) ve belge
+listesi **sıra numarası** (`docsSeq`) eklendi; altı asenkron yol (içe aktarma,
+etiket ekleme/kaldırma, ayrıştırma, toplu ayrıştırma, arşivleme, kaynağa dönüş)
+yanıtı yalnız kendi nesli için yazar. `load` hatasında liste boşaltılır. Dosya
+değişiminde `activeParseVersion` kapatılır; eşzamanlı ikinci ayrıştırma varsa
+birincinin `finally`'si onun sürüm kapısını kapatmaz. Üç yazma yoluna
+`setError(null)` eklendi.
+
+**Kapı kanıtı (9 mutasyon; her biri `1 failed | 22 skipped`; geri alma sha256
+`daaa9f91800f370396660cb6c043508465b7a7400512e5e5f563c0403492b82c` birebir):**
+`load` hatasında `setRows([])`; içe aktarma nesil kapısı; içe aktarmada
+`setError(null)`; `addTag`/`removeTag` `setError(null)`; ayrıştırma ve toplu
+ayrıştırma nesil kapıları; dosya değişiminde sürüm kapısını kapatma; arşivlemede
+seçim kapısı. **Dürüst:** `create` ve `mutate` başına eklenen `setError(null)`
+**kapı kanıtı taşımıyor** — başarılı oluşturma/arşivleme sonunda `load()` zaten
+hatayı siliyor, bu yüzden onuncu test düzeltme öncesinde de yeşildi; iki satır
+yedekli savunma olarak duruyor ve "ölçülen kusur" sayılmadı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **798/798** (55 dosya; 788 → **+10**) ·
+`pnpm build` temiz (yerel **574,80 kB**, `index-BuXOz30Y.js`, gzip **154,81 kB**).
+
+**CI (ölçüldü):** `49a9054` → koşu **`41546874411` 7/7 YEŞİL**: `arayüz`
+**55 dosya / 798 test** (yerel/CI **birebir**), aynı paket `index-BuXOz30Y.js`
+574,80 kB (gzip 154,81 kB), `rust (macos-15)`, `rust (ubuntu-latest)`,
+`masaüstü kabuk`, `belge worker'ı`, `SBOM`, `sözleşmeler` yeşil.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi,
+gerçek dosya seçici/sürükle-bırak ve **görsel QA yok**; `api` mock'lu olduğu için
+`document_import`, `document_tag_*`, `document_parse` ve `case_*` SQL'i, Rust
+tarafı **koşmaz**. Kapsam dışı: sürükle-bırak işleyicisinin kendisi (aynı
+`importFromPath`e gider, ayrı ölçülmedi), aynı anda iki ayrıştırmanın gerçek
+zamanlaması, klavye gezinmesi, Windows.
+
+**Açık kayıt:** (a) `tagDrafts` dosya değişiminde temizlenmiyor — belge kimliğine
+bağlı olduğu için görünmez, ama state'te kalıyor; (b) `Precedents` alıntı metni
+değişince eski doğrulama sonucu hâlâ silinmiyor; (c) `DualReader` bölge işareti
+akışı (`markCreateRegion`) kapsam dışı; (d) görsel QA ve gerçek Tauri penceresi
+insan bekliyor.
 
 ## Kasa kapısı davranış testi — `screens/Unlock.tsx` (2026-11-02)
 
