@@ -118,6 +118,30 @@ const MIGRATED = [
 
 const TURKISH_LETTER = /[ığüşöçİĞÜŞÖÇ]/;
 
+/**
+ * Harf kapısının kör noktası: Türkçeye özgü harf taşımayan (tamamen ASCII)
+ * arayüz kelimeleri gömülü metin olarak kalabiliyordu. Ölçülen vaka: okuyucuda
+ * not başlığı `` `${… ?? "Sayfa"} notu` `` idi — iki kelime de ASCII olduğu
+ * için kapı görmedi; ürün başka dile açıldığında başlık Türkçe kalırdı.
+ * Kural **dize/template literal** içeriği için geçerlidir (yorumlar ayıklanır,
+ * `t("…")` anahtarları kelime listesine girmez).
+ */
+const ASCII_TURKISH_WORDS = /\b(Sayfa|notu|Belge|Dosya|Kaydet|Tümü|Kapat|Liste)\b/;
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+
+/** Satır başına, dize literalinde ASCII Türkçe kelime taşıyanları döndürür. */
+export function literalLeaks(source: string): string[] {
+  const out: string[] = [];
+  stripComments(source)
+    .split("\n")
+    .forEach((line, index) => {
+      for (const literal of line.match(STRING_LITERAL) ?? []) {
+        if (ASCII_TURKISH_WORDS.test(literal)) out.push(`${index + 1}: ${literal.slice(0, 100)}`);
+      }
+    });
+  return out;
+}
+
 /** Yorumlar ayıklandıktan sonra Türkçe harf taşıyan satır numaraları. */
 export function turkishLines(source: string): number[] {
   const out: number[] = [];
@@ -172,6 +196,23 @@ describe("yerelleştirme kapısı", () => {
     expect(turkishLines('const label = "Görev listesi";')).toEqual([1]);
     expect(turkishLines('const label = {t("tasks.listTitle")};')).toEqual([]);
     expect(turkishLines('// yorumda Türkçe serbest\nconst x = 1;')).toEqual([]);
+  });
+
+  it("ASCII Türkçe arayüz kelimeleri de sızmaz (harf kapısının kör noktası)", () => {
+    // Ölçülen vaka: `const title = `${… ?? "Sayfa"} notu`` — iki kelime de
+    // Türkçeye özgü harf taşımadığı için harf kapısı görmedi.
+    expect(literalLeaks('const title = `${page ?? "Sayfa"} notu`;')).toEqual([
+      '1: `${page ?? "Sayfa"} notu`',
+    ]);
+    expect(literalLeaks('const label = t("readerUi.noteTitle", { page });')).toEqual([]);
+    expect(literalLeaks('// "Sayfa" yorumda serbest\nconst a = 1;')).toEqual([]);
+
+    const leaks: string[] = [];
+    for (const { rel, source } of files) {
+      if (!MIGRATED.includes(rel)) continue;
+      for (const leak of literalLeaks(source)) leaks.push(`${rel}:${leak}`);
+    }
+    expect(leaks).toEqual([]);
   });
 
   it("kabuk sürümü paketten okunur, gömülü sürüm etiketi yok", () => {

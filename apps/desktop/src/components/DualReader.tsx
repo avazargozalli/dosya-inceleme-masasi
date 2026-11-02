@@ -62,6 +62,28 @@ import {
 } from "../lib/inventory";
 
 
+/** Seçimden doğan not taslağının hedefi. Taslak açıldığı anda **dondurulur**:
+ *  kullanıcı yazarken belgede başka bir metin seçse ya da sayfa değişse bile not
+ *  ilk alıntıya yazılır — aksi hâlde gövde bir alıntıdan, çapa başka bir
+ *  alıntıdan geliyordu (`note_create_from_selection` yanlış alıntıya bağlanır). */
+type SelectionAnchor = {
+  caseId: string;
+  documentVersionId: string;
+  parseRunId: string;
+  segmentId: string;
+  startOffset: number;
+  endOffset: number;
+  exactQuote: string;
+};
+
+type NoteDraft = {
+  title: string;
+  body: string;
+  /** Taslağın açıldığı sayfanın etiketi: kaynak satırı sayfa değişince kaymaz. */
+  physical: string;
+  anchor: SelectionAnchor;
+};
+
 /** Tek okuyucu paneli: kendi belge sürümünü, sayfasını ve seçimini tutar.
  *  Bir panelde belge değiştirmek diğerini etkilemez (F07-T08). */
 function ReaderPane({
@@ -104,7 +126,8 @@ function ReaderPane({
   const [marks, setMarks] = useState<MarkRow[]>([]);
   const [markBusy, setMarkBusy] = useState(false);
   const [markInfo, setMarkInfo] = useState<string | null>(null);
-  const [noteDraft, setNoteDraft] = useState<{ title: string; body: string } | null>(null);
+  const [anchorBusy, setAnchorBusy] = useState(false);
+  const [noteDraft, setNoteDraft] = useState<NoteDraft | null>(null);
   const [noteBusy, setNoteBusy] = useState(false);
   const [noteInfo, setNoteInfo] = useState<string | null>(null);
   // F07-T12: hedef bir anchor ise güncel sürüm bilgisi ve yeniden bağlama
@@ -125,6 +148,13 @@ function ReaderPane({
   const restoredFromMemory = useRef(false);
   const viewRef = useRef(view);
   viewRef.current = view;
+  // Uçuştaki yazmaların kapısı: React durumu aynı tıkta henüz işlenmediği için
+  // çift tık **iki** istek üretiyordu (iki kaynak/iki not). Kapı ref'te tutulur.
+  const writeGate = useRef({ anchor: false, mark: false, note: false });
+  // Geç gelen yanıt yeni sürümün ekranına yazılmasın: istek hangi sürüm için
+  // başladıysa yanıt yalnız o sürüm hâlâ açıkken uygulanır.
+  const versionRef = useRef(versionId);
+  versionRef.current = versionId;
   const page = view.page;
   const zoom = view.zoom;
   const viewRotation = view.rotation;
@@ -482,28 +512,30 @@ function ReaderPane({
   }
 
   async function saveAnchor() {
-    if (!selection || !current?.segmentId || !data) return;
+    const input = selectionAnchor();
+    if (!input || writeGate.current.anchor) return;
+    const requestVersion = versionId;
+    writeGate.current.anchor = true;
+    setAnchorBusy(true);
+    setError(null);
+    setSavedQuote(null);
     try {
-      const anchor = await api.anchorCreate({
-        caseId,
-        documentVersionId: data.parseRun.documentVersionId,
-        parseRunId: data.parseRun.id,
-        segmentId: current.segmentId,
-        startOffset: selection.start,
-        endOffset: selection.end,
-        exactQuote: selection.quote,
-      });
+      const anchor = await api.anchorCreate(input);
+      if (versionRef.current !== requestVersion) return;
       setSavedQuote(anchor.exactQuote);
       onAnchor?.(anchor);
       window.getSelection()?.removeAllRanges();
       dropSelection();
     } catch (e) {
-      setError(toApiError(e));
+      if (versionRef.current === requestVersion) setError(toApiError(e));
+    } finally {
+      writeGate.current.anchor = false;
+      setAnchorBusy(false);
     }
   }
 
   /** Seçimden çekirdeğe gidecek anchor girdisi; kaynak doğrulaması çekirdekte. */
-  function selectionAnchor() {
+  function selectionAnchor(): SelectionAnchor | null {
     if (!selection || !current?.segmentId || !data) return null;
     return {
       caseId,
@@ -520,41 +552,57 @@ function ReaderPane({
    *  işlemde yazılır. Doğrulanamayan alıntı için işaret oluşmaz. */
   async function createMark() {
     const input = selectionAnchor();
-    if (!input) return;
+    if (!input || writeGate.current.mark) return;
+    const requestVersion = versionId;
+    writeGate.current.mark = true;
     setMarkBusy(true);
+    setError(null);
     setMarkInfo(null);
     try {
       const created = await api.markCreateFromSelection(input, "");
+      if (versionRef.current !== requestVersion) return;
       setMarks((prev) => (prev.some((mark) => mark.id === created.mark.id) ? prev : [...prev, created.mark]));
       setMarkInfo(t("readerUi.markSaved"));
       window.getSelection()?.removeAllRanges();
       dropSelection();
     } catch (e) {
-      setError(toApiError(e));
+      if (versionRef.current === requestVersion) setError(toApiError(e));
     } finally {
+      writeGate.current.mark = false;
       setMarkBusy(false);
     }
   }
 
-  /** Seçimden not taslağı açar; not yalnız “Notu kaydet” ile yazılır. */
+  /** Seçimden not taslağı açar; not yalnız “Notu kaydet” ile yazılır. Taslak,
+   *  açıldığı alıntıyı ve sayfayı **dondurur** (başka seçim hedefi kaydırmaz). */
   function startNoteFromSelection() {
     if (!selection) return;
+    const input = selectionAnchor();
+    if (!input) return;
+    const physical = currentInfo?.physical ?? t("readerUi.page");
     setNoteDraft({
-      title: `${currentInfo?.physical ?? "Sayfa"} notu`,
+      title: t("readerUi.noteTitle", { page: physical }),
       body: selection.quote,
+      physical,
+      anchor: input,
     });
     setNoteInfo(null);
   }
 
   async function saveNoteFromSelection() {
-    const input = selectionAnchor();
-    if (!input || !noteDraft) return;
+    const draft = noteDraft;
+    if (!draft || writeGate.current.note) return;
+    const requestVersion = versionId;
+    writeGate.current.note = true;
     setNoteBusy(true);
+    setError(null);
+    setNoteInfo(null);
     try {
-      const saved = await api.noteCreateFromSelection(input, {
-        title: noteDraft.title,
-        body: noteDraft.body,
+      const saved = await api.noteCreateFromSelection(draft.anchor, {
+        title: draft.title,
+        body: draft.body,
       });
+      if (versionRef.current !== requestVersion) return;
       setNoteDraft(null);
       setNoteInfo(
         t("readerUi.noteCreated", { title: saved.note.title || saved.note.body.slice(0, 40) }),
@@ -563,14 +611,16 @@ function ReaderPane({
       dropSelection();
       onNote?.(saved.note);
     } catch (e) {
-      setError(toApiError(e));
+      if (versionRef.current === requestVersion) setError(toApiError(e));
     } finally {
+      writeGate.current.note = false;
       setNoteBusy(false);
     }
   }
 
   async function removeMark(markId: string) {
     try {
+      setError(null);
       await api.markDelete(markId);
       setMarks((prev) => prev.filter((mark) => mark.id !== markId));
       setMarkInfo(t("readerUi.markDeleted"));
@@ -1228,7 +1278,7 @@ function ReaderPane({
               <button
                 className="btn ghost"
                 style={{ height: 26 }}
-                disabled={!selection || !current?.segmentId}
+                disabled={!selection || !current?.segmentId || anchorBusy}
                 onClick={() => void saveAnchor()}
                 title={
                   current?.segmentId
@@ -1266,9 +1316,9 @@ function ReaderPane({
                   <h2 style={{ fontSize: 14 }}>{t("readerUi.noteFromSelection")}</h2>
                   <p className="card-sub">
                     {t("readerUi.noteSource", {
-                      physical: currentInfo?.physical ?? t("readerUi.page"),
-                      start: selection?.start ?? "",
-                      end: selection?.end ?? "",
+                      physical: noteDraft.physical,
+                      start: noteDraft.anchor.startOffset,
+                      end: noteDraft.anchor.endOffset,
                     })}
                   </p>
                 </div>

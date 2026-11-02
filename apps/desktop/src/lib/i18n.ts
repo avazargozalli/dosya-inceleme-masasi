@@ -2089,6 +2089,7 @@ export const tr = {
     regionMarkSaved: "Bölge işareti kaydedildi.",
     noteFromSelection: "Seçimden not",
     noteFromSelectionTitle: "Seçili metinden kaynaklı not oluştur",
+    noteTitle: "{page} notu",
     noteSource: "Kaynak: {physical} · alıntı {start}–{end}",
     page: "sayfa",
     titleLabel: "Başlık",
