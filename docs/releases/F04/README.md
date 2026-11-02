@@ -11,7 +11,112 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Kontrol listesi ekranı davranış testi — `screens/Checklists.test.tsx` (2026-11-02)
+
+Önceki turun sıradaki aday listesinin başındaydı: “`screens/Checklists.tsx` (517) davranış
+testi”. Ekran, F04/F07 kararlarının (lisanslı şablonun sürüm/kaynak künyesiyle dosyaya
+kopyalanması, madde durumu, belge bağı, “incelenen kapsam” gerekçesi) kullanıcıya görünen yüzü
+ve bugüne dek **hiç render edilmemişti**; `lib/checklist.test.ts` (13 test) yalnız kural/özet
+metinlerini doğruluyordu.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(6 fonksiyon: `caseList`, `documentList`, `checklistTemplates`, `checklistItems`,
+`checklistCopy`, `checklistItemState`); `t()` ve `lib/checklist` **gerçek**. Tauri gerekmez.
+
+**Sabitlenen 15 davranış:**
+
+1. Dosya listesi (`caseList(false)`), belgeler, şablon kataloğu ve maddeler sunucudan yüklenir;
+   ilk dosya seçilir.
+2. Özet ve rozet sayıları **sunucu listesinden** hesaplanır; katalog künyesi (alan, lisans,
+   sürüm, gözden geçirme tarihi, 12 karakterlik içerik hash'i, kaynak URL) birebir yazılır.
+3. Eksik alan **uydurulmaz**: `practiceArea`/`licenseId` yoksa “alan/lisans belirtilmemiş”,
+   `sourceUrl` yoksa kaynak etiketi hiç çizilmez; kopya rozeti ve “Kopyayı doğrula” etiketi
+   `copiedItemCount`tan gelir.
+4. Madde künyesi (sıra numarası + kategori, şablon sürümü/lisansı/hash'i) sunucudan; şablon
+   künyesi olmayan maddede “şablon künyesi yok (kopya metni korunuyor)” yazar.
+5. Sözlükte olmayan durum **uydurulmaz**: “Açık” gösterilir, ham anahtar ekrana sızmaz, durum
+   seçimi yalnız dört bilinen değeri sunar.
+6. “Bulundu” kuralı belge seçmeden “Kaydet”i kapatır; kural metni düğme `title`ında da taşınır,
+   seçim kapıyı açar; belge listesi yalnız “Bulundu” maddesinde çizilir.
+7. Durum “Bulundu”dan çıkınca belge bağları **temizlenir**; “İncelenen kapsamda bulunamadı” ve
+   “Uygulanamaz” gerekçe ister, etiket/yer tutucu duruma göre değişir.
+8. Kaydetme, kaydın **okunduğu `rowVersion`ı** taşır ve tam sözleşmeyle gider
+   (`checklistItemState(id, state, links, note, rowVersion)`), listeyi tazeler ve bildirimi
+   madde metniyle yazar; tazelenen rozet sunucunun yeni durumunu gösterir.
+9. Şablon kopyalama (`checklistCopy(caseId, templateId)`) sürerken düğmeler kilitlenir;
+   `created:true` bildirimi başlık/sürüm/öğe sayısı/lisans taşır ve katalog tazelenir.
+10. `created:false` “yinelenen öğe eklenmedi” der; liste yine tazelenir.
+11. Listede görünmeyen belge bağı **adıyla** dürüstçe gösterilir; “kaldır” bağı düşürür ve kural
+    yeniden devreye girer; kalan belgeyle kaydetme o belgeyle gider.
+12. Dosya yokken dürüst boş durum yazar, yükleme isteği **atılmaz** (`documentList` çağrılmaz).
+13. Çakışmada (`E_ROW_VERSION`) “Güncel kaydı yükle” çıkar, tazeleme sunucunun yeni kaydını
+    gösterir **ve hatayı siler**.
+14. Başarısız kayıt/kopyalama, önceki **yeşil** “güncellendi/kopyalandı” bildirimini ekranda
+    bırakmaz.
+15. Dosya değişince önceki dosyanın maddeleri, kataloğu, belgeleri ve bildirimi **kalkar**; geri
+    dönüşte kendiliğinden geri gelmez; düşen yükleme de önceki veriyi bırakmaz (INV-05).
+
+**Ölçülen dört kusur (düzeltildi, `Checklists.tsx` +18/−1):**
+
+1. **INV-05 (en ağırı):** `[caseId]` effect'i yalnız `load(caseId)` çağırıyordu →
+   `documents`/`templates`/`items`/`drafts`/`notice`/`conflictItem` temizlenmiyordu. Yeni dosyanın
+   isteği askıdayken **önceki dosyanın maddeleri** yeni dosyanın altında görünüyor, “Kaydet” o
+   dosyanın maddesini yeni dosya seçiliyken yazabiliyor, özet/rozetler eski listeyi sayıyordu;
+   “kopyalandı” bildirimi de dosya değişince ekranda kalıyordu. Kırmızı:
+   `expected <div style="margin-top: 2px;"></div> to be null` + eski bildirim ekranda.
+2. **Düşen yükleme:** `Promise.all` düşünce `load` hiçbir alanı yazmıyor, effect de temizlemediği
+   için önceki dosyanın maddeleri/kataloğu kırmızı `E_DOC` ile birlikte ekranda kalıyordu.
+3. **Bayat hata:** `load` `setError(null)` yapmıyordu → çakışma sonrası “Güncel kaydı yükle”
+   başarılı olsa da kırmızı `E_ROW_VERSION` ekranda kalıyordu (düğme de yalnız hataya bağlı
+   çizildiği için yanıltıcıydı).
+4. **Bayat başarı bildirimi:** `save`/`copyTemplate` başında `setNotice("")` yoktu → başarısız
+   kayıt/kopyalama sonrası **yeşil** “«…» güncellendi.” / “… kopyalandı” satırı kırmızı hatanın
+   yanında duruyordu.
+
+**Düzeltme:** `[caseId]` effect'i altı durumu **istekten önce** temizler; `load` başında
+`setError(null)`; `save` ve `copyTemplate` başında `setNotice("")`. Kullanıcı girdisi (madde
+taslakları) yalnız dosya değişiminde sıfırlanır.
+
+**Kapı kanıtı (5 mutasyon; her biri kendi testini düşürdü; geri alma sha256
+`b5f6b083079de717ac6178c8e56152bf345182aa719295467f14019a08f59fc5` birebir):** `load`daki
+`setError(null)` → 1 failed (çakışma); effect temizlik bloğu → 2 failed (INV-05 + düşen yükleme);
+effectteki `setNotice("")` → 1 failed; `save`deki `setNotice("")` → 1 failed; `copyTemplate`teki
+`setNotice("")` → 1 failed. İlk ham koşu **7 failed | 7 passed**ti: **4'ü gerçek kusurdu**, 3'ü
+testin kendi sorgu hatasıydı (rozet ile `<select>` `<option>` aynı metni taşıyor → “Found multiple
+elements”; bilinmeyen durumda “Kaydet kapalı” beklentisi yanlıştı — taslak “açık” olduğu için
+kirli sayılıyor).
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **624/624** (45 dosya; 609 → +15) · `vite build` temiz
+(**569,28 kB**, `index-da5BOp93.js`, 88 modül). Yerel/CI **birebir** (aşağıdaki koşu).
+
+**CI — ilk koşu kırmızı, sebep bu turun kodu değildi:** `703bd82` → koşu **`41415448789`**: 6 iş
+yeşil, `arayüz` **1 failed** — bir önceki turun testi `Timeline.test.tsx:285` (`E_TITLE`). Kök
+neden **hazır olma yarışı**: “Henüz tarihli olay yok” boş durumu **yükleme öncesinde de** çizildiği
+için `findByText` dosya yüklenmeden dönüyor; hemen tıklanan “Olay ekle”nin `E_TITLE` hatası,
+dosya yüklenince çalışan `[caseId]` temizliğiyle siliniyordu. Yerelde **deterministik üretildi**:
+`caseList` 50 ms geciktirilince bariyersiz test **1 failed | 14 passed**, aynı gecikmeyle bariyer
+(`eventList("p1")` çağrısını bekler) **15/15 passed**. Düzeltme `eb6ebfd` (yalnız test dosyası,
++14): üç testte `caseLoaded()` bariyeri. `703bd82`'nin kod kapsamı (TS) bu hatadan **bağımsız**;
+koşu yine de kırmızı sayılır ve öyle kaydedilir.
+
+**CI — düzeltme sonrası:** `eb6ebfd` → koşu **`41417020026` 7/7 YEŞİL**: `arayüz` **45 dosya /
+624 test** (50 s; yerel/CI **birebir**), aynı derleme özeti `index-da5BOp93.js` 569,28 kB
+(gzip 153,39 kB), `rust (macos-15)` 5 dk 11 s, `rust (ubuntu-latest)` 6 dk 27 s,
+`masaüstü kabuk` 36 s, `belge worker'ı` 63 s, `SBOM` 21 s, `sözleşmeler` 5 s.
+
+**Dürüst sınırlar:**
+
+- jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi, `invoke`/IPC ve **görsel QA
+  yok**; `api` mock'lu olduğu için çekirdeğin gerçek yolu (SQL, `row_version` denetimi,
+  `checklist_copy` şablon sürümü, Rust) bu testte **koşmaz**.
+- Kapsam dışı: gerçek şablon içe aktarma/paketleme (katalog sunucudan geldiği varsayılır), çoklu
+  maddenin eşzamanlı düzenlenmesi, klavye gezinmesi, Windows.
+- **Açık kayıt (ölçülmedi, değiştirilmedi):** kayıt başarılı olup **tazeleme düşerse** yeşil
+  “güncellendi” bildirimi yine yazılır (kayıt gerçekten yapıldı; liste bayat); `copyTemplate` aynı
+  desende; `conflictItem` yalnız başarılı `load`da temizlenir (düşen yeniden yüklemede “Güncel
+  kaydı yükle” düğmesi görünür kalır — yeniden deneme için yararlı).
 
 ## Kronoloji ekranı davranış testi — `screens/Timeline.test.tsx` (2026-11-02)
 
