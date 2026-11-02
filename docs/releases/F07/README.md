@@ -322,6 +322,60 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
 - **Sınırlama**: gerçek Tauri penceresinde sürükleme, tıklama ve görsel QA
   yapılmadı; kanıt birim testleri + typecheck + üretim derlemesi.
 
+## Doğrulama (F07-T09 — seçim akışı, 2026-11-03)
+
+- Web: `DualReader.selection.test.tsx` **16** davranış testi (jsdom + RTL). Seçim
+  gerçek `window.getSelection()` aralığıyla kurulur, `mouseup` tetiklenir;
+  `lib/api` kısmi mock (`anchorCreate`, `markCreateFromSelection`,
+  `noteCreateFromSelection`, `markDelete`), `t()` ve `lib/reader` **gerçek**.
+  `DualReader.test.tsx` yalnız panel/sayfa/yakınlaştırma davranışını ölçüyordu;
+  metinden **çekirdeğe giden** üç komut (kaynak, işaret, kaynaklı not) bugüne
+  dek hiç ölçülmemişti.
+- Sabitlenenler: seçim yokken üç düğme kapalı; aralık **skaler** offsetle yazılır
+  (emoji tek karakter: UTF-16 3 → skaler 2); kaynak kaydı tam sözleşmeyle gider,
+  başarıda seçim bırakılır ve `onAnchor` çağrılır; düşen kayıt seçimi korur;
+  çift tık tek istek üretir; işaret belgenin listesine girer, düşen işaret satır
+  eklemez; not taslağı alıntı + sayfa etiketiyle açılır; kayıt çapa ve gövdeyi
+  tek istekte gönderir; düşen kayıt yazılanı korur; boş gövde gönderilmez;
+  taslak açıkken başka metin seçmek ya da sayfa değiştirmek hedefi kaydırmaz;
+  başarılı işlem bayat hatayı siler; ikinci kaynak denemesi düşünce önceki yeşil
+  satır kalkar; sürüm değişince geç gelen işaret yanıtı yeni sürüme yazılmaz.
+- **Ölçülen kusurlar (düzeltme öncesi ham koşu: 5 failed | 10 passed; ilk ham
+  koşu 8 failed | 7 passed ve 3'ü testin kendi sorgu hatasıydı):**
+  1. `saveAnchor` uçuş kilidi taşımıyordu → hızlı çift tık **iki kaynak** yazıyordu.
+  2. Not taslağı hedefini dondurmuyordu: gövde ilk alıntıdan, çapa **yeni**
+     seçimden gidiyordu (`note_create_from_selection` yanlış alıntıya bağlanır).
+  3. Kaynak satırı canlı seçimden okunuyordu: sayfa değişince "Fiziksel sayfa 2 ·
+     alıntı –" yazıyor ve "Notu kaydet" **sessizce hiçbir şey yapmıyordu**.
+  4. Üç yazma yolu başında `setError(null)` yoktu → başarılı işaretten sonra
+     önceki `E_QUOTE` kırmızısı ekranda kalıyordu.
+  5. `createMark` geç gelen yanıtı sürüm kapısından geçirmiyordu → eski sürümün
+     işareti **yeni sürümün** listesine ekleniyordu.
+  6. `saveAnchor` önceki yeşil "Kaynak kaydedildi" satırını silmiyordu.
+- **Yerelleştirme sızıntısı (harf kapısının kör noktası):** not başlığı
+  `` `${… ?? "Sayfa"} notu` `` idi; iki kelime de Türkçeye özgü harf taşımadığı
+  için mevcut kapı görmedi. `readerUi.noteTitle` sözlüğe eklendi;
+  `localization.test.ts`e **ASCII Türkçe kelime** kapısı (dize/template literal,
+  canary dahil) eklendi — kapı eski hâli yakalıyor.
+- **Kapı kanıtı (9 mutasyon):** **M1** (ref kapısı) ve **M2** (düğme kilidi) tek
+  tek kaldırıldığında test **yeşil kaldı** — iki kapı birbirini yedekliyor;
+  **M1b** ikisi birlikte kaldırılınca kırmızı (dürüst kayıt: tek başına hiçbiri
+  zorunlu değil, ikisi birlikte zorunlu). M3 (taslak dondurma), M4 (kaynak
+  satırı), M5 (bayat hata), M6 (sürüm kapısı), M7 (bayat yeşil satır) kendi
+  testlerini düşürdü; M8 (gömülü başlık geri kondu) **iki** testi düşürdü (yeni
+  kapı + kullanılmayan anahtar). Geri alma sha256 `11240d8d…` birebir.
+- `tsc --noEmit` temiz · `vitest` **788/788** (55 dosya; 771 → +17) ·
+  `pnpm build` temiz (**574,05 kB**, `index-3NzDNOKe.js`, gzip **154,60 kB**).
+- CI: `b548a27` → `ci.yml` **41536355799**, **7/7 yeşil** (`arayüz` **55 dosya /
+  788 test**, aynı paket `index-3NzDNOKe.js` 574,05 kB — yerel/CI **birebir**;
+  `rust (macos-15)` 5 dk 12 s, `rust (ubuntu-latest)` 5 dk 56 s, `masaüstü kabuk`
+  35 s, `belge worker'ı` 44 s, `SBOM` 20 s, `sözleşmeler` 7 s).
+- **Sınırlama:** jsdom tarayıcı değil — CSS, gerçek Tauri penceresi, gerçek
+  işaretçiyle metin seçimi ve **görsel QA yok**; `api` mock'lu olduğu için
+  çekirdeğin gerçek yolu (`anchor_create` doğrulaması, `note_create_from_selection`
+  SQL'i, `row_version`, Rust) **koşmaz**. jsdom `Selection` API'si gerçek tarayıcı
+  seçiminin yerine geçmez (sürükleme, çift tık kelime seçimi, dokunmatik ölçülmedi).
+
 ## Doğrulama (F07-T08)
 
 - Web: `tsc` + `vitest` **123** (16 yeni) + `vite build` yeşil. Yeni testler:
