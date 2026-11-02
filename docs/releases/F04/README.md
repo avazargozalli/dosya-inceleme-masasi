@@ -11,7 +11,132 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. **Çıktılar davranış testi eklendi** (`screens/Exports.test.tsx`, 22 test; 9 mutasyonla kanıtlandı; dosya değişiminde bayat kapsam/çıktı/paket satırı (INV-05), düşen kapsam isteğinde bayat kapsam, başarılı tazelemede silinmeyen kırmızı hata, uçuştaki dışa aktarma/tazeleme yanıtlarının yeni dosyayı ezmesi, devir paketi parolasının başarıdan sonra ekranda kalması ve “Kapsam okunamadı” ile “okunuyor”un karışması düzeltildi) — 2026-11-02. **Maskeleme davranış testi eklendi** (`screens/Redaction.test.tsx`, 20 test; 8 mutasyonla kanıtlandı; dosya değişiminde bayat sonuç/önizleme/bölge ve geç gelen belge listesinin yeni dosyayı ezmesi (INV-05), sürüm değişiminde bölgelerin **başka sürüme** taşınması (§13.5), önizlemenin yüklendiği sayfaya bağlı olmaması (yanlış sayfaya bölge yazımı), sayfa getirmenin “Maskeleniyor…” görünmesi, düşen belge listesinin önceki dosyanın belgelerini bırakması, maskeleme sürerken hedefin değiştirilebilmesi ve sözlük dışı yer tutucu düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. **Çıktılar davranış testi eklendi** (`screens/Exports.test.tsx`, 22 test; 9 mutasyonla kanıtlandı; dosya değişiminde bayat kapsam/çıktı/paket satırı (INV-05), düşen kapsam isteğinde bayat kapsam, başarılı tazelemede silinmeyen kırmızı hata, uçuştaki dışa aktarma/tazeleme yanıtlarının yeni dosyayı ezmesi, devir paketi parolasının başarıdan sonra ekranda kalması ve “Kapsam okunamadı” ile “okunuyor”un karışması düzeltildi) — 2026-11-02. **Maskeleme davranış testi eklendi** (`screens/Redaction.test.tsx`, 20 test; 8 mutasyonla kanıtlandı; dosya değişiminde bayat sonuç/önizleme/bölge ve geç gelen belge listesinin yeni dosyayı ezmesi (INV-05), sürüm değişiminde bölgelerin **başka sürüme** taşınması (§13.5), önizlemenin yüklendiği sayfaya bağlı olmaması (yanlış sayfaya bölge yazımı), sayfa getirmenin “Maskeleniyor…” görünmesi, düşen belge listesinin önceki dosyanın belgelerini bırakması, maskeleme sürerken hedefin değiştirilebilmesi ve sözlük dışı yer tutucu düzeltildi) — 2026-11-02. **İş kuyruğu/bütçe kartı ve çalışma alanı davranış testleri eklendi** (`JobQueueCard` **20** + `WorkerBudgetCard` **7** + `Workspace` **4** = 33 test; 7 mutasyonla kanıtlandı; hata dalı bütün kartı siliyordu, üç asenkron yazma yolunda yanıt sırası yoktu, kasa kilitlenince önceki oturumun bildirimi/izlemesi taşınıyordu) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## İş kuyruğu/bütçe kartı ve çalışma alanı davranış testleri (2026-11-02)
+
+Sıradaki aday listesinin başındaydı. `components/JobQueueCard.tsx` (283) F03-T07/T08'in,
+`components/WorkerBudgetCard.tsx` (109) §17.3'ün kullanıcıya görünen yüzü; `lib/jobs` ve
+`lib/budget` testleri yalnız **saf** yardımcıları doğruluyordu ve iki kart bugüne dek yalnız
+**kilit/açık** durumuyla (Ayarlar turunda) ölçülmüştü — hangi düğmenin hangi çekirdek komutunu
+çağırdığı, kartın kendini ne zaman tazelediği ve bir istek düştüğünde ekranda ne kaldığı
+ölçülmemişti. `screens/Workspace.tsx` (49) ise kasa künyesini sunucudan yazan görünüm.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmi mock
+(`jobQueueStatus/Recover/Cancel/Retry/Run/Unblock`, `workerBudgets`); `t()`, `lib/jobs`,
+`lib/parseProgress`, `lib/budget` ve `lib/format` **gerçek**. Kuyruk kartında sahte zamanlayıcı
+(`vi.useFakeTimers`) kullanılır: kartın 1,2 sn'lik canlı tazelemesi ve yanıt sırası ancak böyle
+deterministik ölçülür; `waitFor`/`findBy` yerine mikro görev boşaltması (`flush`) var.
+
+**Yazılanlar — 33 test / 3 dosya:**
+
+- `components/JobQueueCard.test.tsx` (**20 test**): (1) kasa kilitliyken kuyruk **okunmaz**,
+  düğmeler kapalı; (2) okuma düşerse sahte özet/tablo yok, kod+ileti yazılır; (3) özet satırı,
+  dikkat uyarısı, satır künyesi (tür/durum rozeti/deneme+hata kodu+engel nedeni/zaman), canlı
+  sayaç satırı ve `progressbar` (`aria-valuenow`, `aria-label`) **sunucudan**; (4) boş kuyruk
+  dürüst boş durum, kurtarma düğmesi durur; (5) "İptal et" `job_cancel`u çağırır, sonuç cümlesi
+  çekirdeğin `outcome`/`workerStopped` alanından yazılır (`cancelStopped` ≠ "iptal tamam");
+  (6) yeniden denemesi **başlayan** iş terminal olana kadar izlenir (satır `queued` görünürken
+  donmaz); (7) "Başlat" yalnız `queued` **parse_document** işinde ve `job_run`u çağırır —
+  yürütücüsü olmayan türde düğme yok; (8) "Engeli kaldır" `job_unblock`u çağırır; (9) işlem
+  sürerken satır düğmeleri ve "Yenile" kilitli; (10) canlı iş yokken kart tazelenmez, varken
+  sessiz tazeleme düğmeleri **kilitlemez** ve sayacı günceller; (11) kurtarma `job_queue_recover`
+  + rapor satırı; (12) "Yenile" çekirdekten yeniden okur; (13) toplam yoksa ilerleme **çubuğu**
+  çizilmez, yalnız sayılan birim yazılır.
+- `components/WorkerBudgetCard.test.tsx` (**7 test**): kilit; altı sütun ve hücreler birebir
+  (`120 sn`, `256 MiB`, `64 MiB`, `64`, `300 sn`); her profil için tek satırlık sınır özeti;
+  sıfır sınır uydurulmaz (CPU `0 → "uygulanmaz"`, bellek `0 → "0 MiB"`); okuma sürerken
+  "okunuyor" ile boş liste "bulunamadı" **karıştırılmaz**; düşen okuma sahte profil üretmez;
+  "Yenile" çekirdeği yeniden okur ve eski profiller ekranda kalmaz.
+- `screens/Workspace.test.tsx` (**4 test**): kurulum adımları (`aria-label`, 2 tamam + 1 etkin),
+  kasa kimliği/konumu **status**tan, eksikte boş hücre değil "—", şifreleme/kurtarma/"Sıradaki"
+  metinleri sözlükten.
+
+**ÖLÇÜLEN KUSUR 1 — hata, verinin yerine geçiyordu (A + C).** `error` dalı bütün kartı
+değiştiriyordu (`) : error ? (` önceliği). İki ayrı kullanıcı yolu bundan etkileniyordu:
+
+- **(A) Arka plan tazelemesi:** iş yürürken kart 1,2 sn'de bir sessizce tazelenir; tek bir okuma
+  hatası **çalışan işin ilerlemesini ve tabloyu** ekrandan siliyor, yerine yalnız kırmızı bant
+  kalıyordu (1,2 sn sonra geri gelse de kullanıcı "kuyruk kayboldu" görür). Kırmızı ölçüm:
+  `getByRole("table")` **bulunamadı**, `alert` vardı. SQLite'ta iş yazarken geçici `BUSY`
+  gerçekçidir.
+- **(C) İşlem sonrası tazeleme:** iptal/başlatma **başarılı olduktan sonra** atılan
+  `job_queue_status` düşerse, `setMessage(...)` yazılmış olmasına rağmen sonuç satırı hiç
+  çizilmiyordu — iş gerçekten yapılmış, kullanıcı yalnız `E_DB` görüyordu. Kırmızı ölçüm:
+  `getByText(t("jobs.cancelRequested"))` **bulunamadı**; DOM dökümünde yalnız `notice danger`.
+
+Düzeltme: hata artık **uyarı bandı**dır; son okunan kuyruk, satırlar ve işlemin bildirimi
+ekranda kalır (view yoksa davranış değişmedi: yalnız hata yazılır). `recover`/`act` içindeki
+liste tazelemesi `refetch`e ayrıldı; `refetch` hatası eylemin bildirimini silmez.
+
+**ÖLÇÜLEN KUSUR 2 — yanıt sırası yoktu (B, B2–B5).** Üç asenkron yazma yolu (sessiz tazeleme,
+elle tazeleme, eylem sonrası tazeleme) hiçbir sıra kapısı taşımıyordu. Yavaş kalan **eski**
+yanıt sonra gelince daha yeni durumu eziyordu; beş ayrı çakışma ölçüldü: (B) iki sessiz tazeleme
+→ ilerleme `%70`ten `%30`a düştü; (B2) askıdaki sessiz tazeleme, elle "Yenile"nin biten iş
+bilgisini ezdi; (B3) askıdaki sessiz tazeleme, iptal sonrası tazelemenin "İptal ediliyor"
+durumunu "Yürüyor"a geri çevirdi; (B4) askıda kalan elle tazeleme daha yeni sayacı ezdi;
+(B5) askıda kalan eylem sonrası tazeleme iptal istemini geri aldı. Düzeltme: tek `seqRef`
+sayacı; her yanıt **yalnız kendisi en son istenen** ise yazar (üç yol da kapıdan geçer).
+Kırmızı ölçüm örneği: `expected <span class="muted small"></span> to be null` (eski `3 / 10`
+satırı ekranda).
+
+**ÖLÇÜLEN KUSUR 3 — kasa kilitlenince durum taşınıyordu (D).** `refresh` kilitliyken yalnız
+`setView(null)` yapıyordu; önceki oturumun başarı bildirimi ve izlenen iş kimliği duruyordu.
+Kasa kilitlenip yeniden açıldığında eski bir sonuç ("İş iptal edildi…") yeni oturumda "az önce
+oldu" gibi okunuyor, izleme de eski iş kimliğine bağlı kalıyordu. Kırmızı ölçüm:
+`expected <div class="notice ok"></div> to be null`. Düzeltme: kilitli dalda görünüm, hata,
+bildirim ve izleme birlikte temizlenir.
+
+**Kapı kanıtı (7 mutasyon; her biri **kendi** testini düşürdü; geri alma sha256 birebir):**
+
+| Mutasyon | Düşen test |
+|---|---|
+| M1 `loadQuiet` sıra kapısı kaldırıldı | B, B2, B3 |
+| M2 `refresh` sıra kapısı kaldırıldı | B4 |
+| M3 hata önceliği eski hâline döndü (`!error && view`) | A |
+| M4 kilitte bildirim temizliği kaldırıldı | D |
+| M5 `refetch` sıra kapısı kaldırıldı | B5 |
+| M6 bütçe tablosunda bellek sütunu çıktı baytına bağlandı | 2 test |
+| M7 `vaultId ?? "—"` yerine `?? ""` | "eksik kimlik/konum" testi |
+
+**Dürüst:** ilk kapı koşusunda M2/M5 **yeşil** göründü — mutasyon betiği 2. eşleşmeyi değil
+dosya sonunu değiştiriyordu (1 tabanlı sıra hatası); betik düzeltilip yeniden ölçüldü, sonuç
+yukarıdaki gibidir. Düzeltme öncesi **ham koşu** (son 22 testlik küme, eski bileşen):
+**8 failed | 14 passed** — A, B, B2, B3, B4, B5, C, D. Testlerin kendi hataları da düzeltildi:
+`—` hücresi iki satırda birden geçiyordu (`getByText` çoklu eşleşme) → hücre indeksiyle
+ölçüldü; "8,0 MiB" beklentim yanlıştı (`formatDecimal` gereksiz sıfırı atar → "8 MiB").
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **733/733** (52 dosya; 700 → **+33**) ·
+`pnpm build` temiz (**571,87 kB**, `index-nL005tGL.js`, gzip 154,02 kB, 88 modül; Vite 500 kB
+uyarısı sürüyor).
+
+**CI (ölçüldü):** `18dd9a5` (4 dosya, +1099/−115) → koşu **`41498778041` 7/7 YEŞİL**:
+`arayüz` **52 dosya / 733 test** (yerel/CI **birebir**), aynı bundle `index-nL005tGL.js`
+571,87 kB (gzip 154,02 kB), `rust (macos-15)` 4 dk 31 s, `rust (ubuntu-latest)` 9 dk 04 s,
+`masaüstü kabuk` 33 s, `belge worker'ı` 36 s, `SBOM` 21 s, `sözleşmeler` 6 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi ve **görsel QA yok**;
+`api` mock'lu olduğu için çekirdeğin gerçek yolu (`job_queue_status` SQL'i, `job_cancel`ın
+süreç sinyali, `job_retry`nin yürütücüyü sahiplenmesi, `worker_budgets` tablosu, Rust) bu
+testlerde **koşmaz**. Sahte zamanlayıcı gerçek 1,2 sn'lik aralığın **davranışını** ölçer,
+gerçek zamanlamasını değil. Kapsam dışı: kuyruk gecikmesi ölçümü, çok kasa, Windows, klavye
+gezinmesi, ekran okuyucu.
+
+**Açık kayıt (ölçülmedi, değiştirilmedi):** (a) `WorkerBudgetCard` duvar saati sütunu
+`budget.seconds` ile `0 → "0 sn"` yazar, CPU sütunu ise `secondsText` ile `0 → "uygulanmaz"`;
+çekirdeğin 0'ı "sınırsız" mı yoksa "sıfır" mı saydığı koddan doğrulanmadı — **davranış
+değiştirilmedi**. (b) `LIVE_REFRESH_MS` aralığı, okuma 1,2 sn'den uzun sürerse istekleri
+biriktirir (yazmalar artık sıralı, ama uçuşta birden çok istek olabilir; tek uçuşlu kapı yok).
+(c) Görünüm hiç okunamadıysa "Kurtar" düğmesi çizilmez (kuyruk okunamazken kurtarma anlamsız —
+bilinçli). (d) Elle "Yenile" önceki işlem bildirimini silmez (sonuç satırı bilinçli korunur).
+(e) `jobProgressPercent` `JobQueueCard`ta kullanılmıyor (ölü import; davranış değil).
+(f) `Cases.tsx` bayat-hata deseni ve `Precedents` alıntı temizliği hâlâ açık.
+
+**Sıradaki aday:** `components/Notes.tsx` (**782** — kalan en büyük render edilmemiş bileşen;
+`lib/notes` testleri yalnız metin yardımcılarını doğruluyor), ardından `screens/Unlock.tsx`
+(216). İnsan/donanım bekleyenler aynı: F17 Windows ARM64, F02 Windows MSI, F12 gerçek
+tarama/eğim, F10 Antigravity hesabı, F16 notarization/updater anahtarı, F15 100k kapasite,
+pilot + VoiceOver.
 
 ## Maskeleme ekranı davranış testi — `screens/Redaction.tsx` (2026-11-02)
 
