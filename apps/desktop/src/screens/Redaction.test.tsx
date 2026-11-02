@@ -1,0 +1,674 @@
+// @vitest-environment jsdom
+//
+// Maskeleme ekranı davranış testi. `lib/parseProgress` testleri yalnız sayaç
+// biçimini doğrular; burada 410 satırlık ekran gerçekten render edilip
+// F13'ün (terim/bölge maskeleme, önizleme, bağımsız doğrulama sonucu) ve
+// §13.5'in ("maskeleme planı özgün sürüme bağlanır; farklı sürüme
+// kendiliğinden uygulanmaz") arayüzde **uygulandığı** ölçülür. `api` kısmi
+// mock; `t()` ve `lib/parseProgress` gerçektir.
+//
+// Sabitlenen davranışlar:
+//
+// 1. Dosya listesi `caseList(false)`, ilk dosya ve ilk **sürümlü** belge
+//    seçilir; sürümsüz belge seçeneklere girmez (maskelenecek sürüm yok).
+// 2. Boş/yalnız ayırıcı terim listesi çekirdeğe **gitmez** (`E_TERMS`).
+// 3. Terimler satır/virgülle ayrılır, kırpılır, boşlar atılır ve çekirdeğe
+//    tam listeyle gider; çalışırken düğme “Maskeleniyor…” olur.
+// 4. Sonuç künyesi **yanıttan** yazılır: yeni belge, sürüm no, isabet,
+//    kalan terim (yoksa “yok”), motorlar, akışlar, açılamayan akış (kırmızı),
+//    gizli nesne temizliği (yalnız >0), OCR durumu, uyarılar ve plan kimliği.
+// 5. Düşen maskeleme önceki yeşil sonucu bırakmaz; başarılı koşu hatayı siler.
+// 6. Sayfa önizlemesi istenen sürüm/sayfa için istenir, dönüş `dpi`siyle
+//    ölçeklenir; görüntü **hangi sayfaya aitse** onunla etiketlenir.
+// 7. **Ölçülen kusur (D):** sayfa getirilirken paylaşılan `busy` yüzünden
+//    “Maskeleniyor…” yazıyor ve maskeleme ilerleme satırı çiziliyordu; sayfa
+//    yükleme ayrı durumdur, maskeleme varmış gibi gösterilmez.
+// 8. **Ölçülen kusur (C):** önizleme yüklendiği sayfaya bağlı değildi; sayfa
+//    alanı değiştirilince eski görüntü **yeni sayfa** gibi etiketleniyor ve
+//    üzerine çizilen bölge **yanlış sayfa indeksine** yazılıyordu (başka
+//    sayfanın alanı maskelenir). Bölge her zaman görüntünün sayfasına gider.
+// 9. Sürükleme punto koordinatına çevrilir (`72 / dpi`); 2 puntodan küçük
+//    seçim bölge üretmez; “Seçimleri temizle” sayıyı sıfırlar.
+// 10. **Ölçülen kusur (B):** dosya değişince önceki dosyanın sonucu,
+//     önizlemesi ve bölgeleri ekranda kalıyordu → bölgeler **başka sürüme**
+//     uygulanabiliyordu (§13.5 ihlali). Dosya/sürüm değişimi bunları temizler.
+// 11. **Ölçülen kusur (A, INV-05):** geç gelen eski `documentList` yanıtı yeni
+//     dosyanın belgelerini/sürümünü eziyordu; düşen istek önceki dosyanın
+//     belgelerini bırakıyordu. İstek sırası korunur, düşen istek listeyi boşaltır.
+// 12. Maskeleme sürerken hedef (dosya/belge) değiştirilemez: sonuç başka
+//     dosyanın künyesi altında görünmez.
+// 13. İlerleme olayı yalnız **çalışan sürüm** için yazılır; olay yoksa sayaç
+//     uydurulmaz (“hazırlanıyor…”), olay varsa aşama/sayı/% çizilir.
+// 14. Dosya listesi düşerse dürüst hata yazılır, sahte liste üretilmez.
+
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { t } from "../lib/i18n";
+import { parseProgressLine } from "../lib/parseProgress";
+import type {
+  CaseRow,
+  DocumentRow,
+  DocumentVersionRow,
+  ParseProgressEvent,
+  RedactionResult,
+} from "../lib/api";
+
+const mocks = vi.hoisted(() => ({
+  caseList: vi.fn(),
+  documentList: vi.fn(),
+  documentPagePreview: vi.fn(),
+  documentRedact: vi.fn(),
+  documentRedactRegions: vi.fn(),
+}));
+
+const events = vi.hoisted(() => ({ listen: vi.fn() }));
+
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api")>();
+  return { ...actual, api: { ...actual.api, ...mocks } };
+});
+
+// Tauri olmadan ekranı ölçmek için olay dinleyicisi sahtelenir; yakalanan
+// işleyici ile `redact-progress` çerçeveleri testten gönderilir.
+vi.mock("@tauri-apps/api/event", () => ({ listen: events.listen }));
+
+const { Redaction } = await import("./Redaction");
+
+/* ------------------------------------------------------------------ fixtures */
+
+const ISO = "2026-11-02T09:00:00.000Z";
+
+function caseRow(id: string, title: string): CaseRow {
+  return {
+    caseKind: "review",
+    referenceCode: null,
+    jurisdictionLabel: null,
+    practiceArea: null,
+    status: "active",
+    sensitivity: "normal",
+    defaultAiPolicy: "local_only",
+    archivedAt: null,
+    retentionHold: false,
+    createdAt: ISO,
+    updatedAt: ISO,
+    rowVersion: 1,
+    id,
+    title,
+  };
+}
+
+const P1 = caseRow("p1", "Kira uyuşmazlığı");
+const P2 = caseRow("p2", "Ceza dosyası");
+
+function docRow(id: string, displayName: string, currentVersionId: string | null): DocumentRow {
+  return {
+    id,
+    caseId: "p1",
+    displayName,
+    documentType: "pdf",
+    status: "active",
+    currentVersionId,
+    declaredDocumentDate: null,
+    createdAt: ISO,
+    updatedAt: ISO,
+    rowVersion: 1,
+  };
+}
+
+const D1 = docRow("d1", "Kira sözleşmesi.pdf", "v1");
+const D2 = docRow("d2", "Ödeme makbuzu.pdf", "v2");
+const D3 = docRow("d3", "Sürümsüz belge.pdf", null);
+const D4 = docRow("d4", "Ceza dosyası belgesi.pdf", "v9");
+
+function versionRow(overrides: Partial<DocumentVersionRow> = {}): DocumentVersionRow {
+  return {
+    id: "v9",
+    documentId: "d9",
+    caseId: "p1",
+    versionNo: 2,
+    blobId: "blob-9",
+    originalSha256: "a".repeat(64),
+    byteSize: 4096,
+    detectedMime: "application/pdf",
+    importedAt: ISO,
+    ...overrides,
+  };
+}
+
+function redactionResult(overrides: Partial<RedactionResult> = {}): RedactionResult {
+  return {
+    document: docRow("d9", "Kira sözleşmesi (maskeli).pdf", "v9"),
+    version: versionRow(),
+    plan: { id: "plan-1", state: "applied", outputProfile: "share" },
+    hits: 3,
+    remaining: [],
+    ocrVerified: true,
+    engines: ["pypdf", "ocr"],
+    streamsScanned: 4,
+    streamsBinary: 1,
+    streamsUnreadable: 0,
+    annotationsRemoved: 0,
+    offpageSpansRemoved: 0,
+    scriptsRemoved: 0,
+    warnings: [],
+    ...overrides,
+  };
+}
+
+type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function apiError(code: string, message: string, retryable = false) {
+  return { code, message, retryable };
+}
+
+function preview(dpi = 144, pngBase64 = "iVBORw0KGgo=") {
+  return {
+    versionId: "v1",
+    pageIndex: 0,
+    dpi,
+    pngBase64,
+    byteSize: 68,
+    cached: false,
+  };
+}
+
+let progressHandlers: Array<(event: { payload: ParseProgressEvent }) => void> = [];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  progressHandlers = [];
+  events.listen.mockImplementation(
+    async (_name: string, handler: (event: { payload: ParseProgressEvent }) => void) => {
+      progressHandlers.push(handler);
+      return () => undefined;
+    },
+  );
+  mocks.caseList.mockResolvedValue([P1, P2]);
+  mocks.documentList.mockImplementation((caseId: string) =>
+    Promise.resolve(caseId === "p1" ? [D1, D2, D3] : [D4]),
+  );
+  mocks.documentPagePreview.mockResolvedValue(preview());
+  mocks.documentRedact.mockResolvedValue(redactionResult());
+  mocks.documentRedactRegions.mockResolvedValue(
+    redactionResult({ document: docRow("d9", "Kira sözleşmesi (bölge maskeli).pdf", "v9") }),
+  );
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+async function renderScreen() {
+  render(<Redaction />);
+  await screen.findByRole("option", { name: D1.displayName });
+}
+
+function caseSelect(): HTMLSelectElement {
+  return screen.getByLabelText(t("common.case")) as HTMLSelectElement;
+}
+
+function docSelect(): HTMLSelectElement {
+  return screen.getByLabelText(t("redaction.docLabel")) as HTMLSelectElement;
+}
+
+function termsArea(): HTMLTextAreaElement {
+  return screen.getByLabelText(t("redaction.termsLabel")) as HTMLTextAreaElement;
+}
+
+function runButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: t("redaction.runTerms") }) as HTMLButtonElement;
+}
+
+function regionsRunButton(count: number): HTMLButtonElement {
+  return screen.getByRole("button", {
+    name: t("redaction.runRegions", { count }),
+  }) as HTMLButtonElement;
+}
+
+async function resultCard(): Promise<HTMLElement> {
+  await screen.findByText(t("redaction.resultTitle"));
+  return screen.getByText(t("redaction.resultTitle")).closest(".card") as HTMLElement;
+}
+
+/** Önizlemeyi açar ve görüntüyü döndürür (bölge çizmek için kapsayıcı gerekir). */
+async function loadPreview(page = 0): Promise<{ image: HTMLElement; box: HTMLElement }> {
+  fireEvent.click(screen.getByRole("button", { name: t("redaction.modeRegions") }));
+  const pageInput = screen.getByLabelText(t("redaction.pageLabel"));
+  fireEvent.change(pageInput, { target: { value: String(page) } });
+  fireEvent.click(screen.getByRole("button", { name: t("redaction.loadPage") }));
+  const image = await screen.findByAltText(t("redaction.previewAlt", { page: page + 1 }));
+  return { image, box: image.parentElement as HTMLElement };
+}
+
+function drag(box: HTMLElement, from: [number, number], to: [number, number]) {
+  // jsdom `PointerEvent` üretmez; React `pointerdown` dinleyicisi için
+  // `clientX/clientY` taşıyan bir olay yeterlidir.
+  fireEvent(box, new MouseEvent("pointerdown", { bubbles: true, clientX: from[0], clientY: from[1] }));
+  fireEvent(box, new MouseEvent("pointermove", { bubbles: true, clientX: to[0], clientY: to[1] }));
+  fireEvent(box, new MouseEvent("pointerup", { bubbles: true, clientX: to[0], clientY: to[1] }));
+}
+
+/* -------------------------------------------------------------------- tests */
+
+describe("Maskeleme ekranı", () => {
+  it("dosya ve belge listesini kasadan ister, ilk sürümlü belgeyi seçer", async () => {
+    await renderScreen();
+
+    expect(mocks.caseList).toHaveBeenCalledWith(false);
+    expect(mocks.documentList).toHaveBeenCalledWith("p1");
+    expect(caseSelect().value).toBe("p1");
+    expect(docSelect().value).toBe("v1");
+
+    const docOptions = within(docSelect()).getAllByRole("option");
+    expect(docOptions).toHaveLength(3); // “Seçin…” + iki sürümlü belge
+    expect(screen.getByRole("option", { name: D1.displayName })).toBeTruthy();
+    expect(screen.getByRole("option", { name: D2.displayName })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: D3.displayName })).toBeNull();
+
+    expect(runButton().disabled).toBe(false);
+    expect(screen.getByText(t("redaction.termsHint"))).toBeTruthy();
+
+    // Önizleme alanı yalnız bölge kipinde çizilir; orada dürüst ipucu görünür.
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.modeRegions") }));
+    expect(screen.getByText(t("redaction.previewHint"))).toBeTruthy();
+  });
+
+  it("boş veya yalnız ayırıcıdan oluşan terim listesini çekirdeğe göndermez", async () => {
+    await renderScreen();
+
+    fireEvent.change(termsArea(), { target: { value: " , \n ,, " } });
+    fireEvent.click(runButton());
+
+    expect(mocks.documentRedact).not.toHaveBeenCalled();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("E_TERMS");
+    expect(alert.textContent).toContain(t("redaction.termsRequired"));
+  });
+
+  it("terimleri satır/virgülle ayırır, kırpar ve tam listeyle gönderir", async () => {
+    await renderScreen();
+
+    fireEvent.change(termsArea(), {
+      target: { value: "  Ahmet Yılmaz \n\n00000000000, TCKN ,\n " },
+    });
+    fireEvent.click(runButton());
+
+    expect(mocks.documentRedact).toHaveBeenCalledTimes(1);
+    expect(mocks.documentRedact).toHaveBeenCalledWith("v1", [
+      "Ahmet Yılmaz",
+      "00000000000",
+      "TCKN",
+    ]);
+  });
+
+  it("sonuç künyesini yanıttan yazar; kalan terim ve akış ayrıntıları uydurulmaz", async () => {
+    mocks.documentRedact.mockResolvedValue(
+      redactionResult({
+        remaining: ["Veli Kaya"],
+        engines: ["pypdf"],
+        streamsScanned: 4,
+        streamsBinary: 1,
+        streamsUnreadable: 2,
+        annotationsRemoved: 1,
+        offpageSpansRemoved: 2,
+        scriptsRemoved: 1,
+        ocrVerified: false,
+        warnings: ["iki akış okunamadı", "gömülü yazı tipi"],
+        hits: 5,
+        version: versionRow({ id: "v10", versionNo: 3 }),
+        document: docRow("d10", "Kira sözleşmesi (maskeli).pdf", "v10"),
+      }),
+    );
+
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+
+    const card = await resultCard();
+    const q = within(card);
+    expect(q.getByText("Kira sözleşmesi (maskeli).pdf")).toBeTruthy();
+    expect(q.getByText("3")).toBeTruthy(); // sürüm no
+    expect(q.getByText("5")).toBeTruthy(); // maskelenen bölge
+    expect(q.getByText("Veli Kaya")).toBeTruthy(); // kalan terim
+    expect(q.getByText("pypdf")).toBeTruthy();
+    expect(q.getByText(/4 akış açıldı · 1 ikili akış/)).toBeTruthy();
+    expect(q.getByText(t("redaction.unreadableStreams", { count: 2 }))).toBeTruthy();
+    expect(
+      q.getByText(
+        t("redaction.hiddenObjectsLine", { annotations: 1, offpage: 2, scripts: 1 }),
+      ),
+    ).toBeTruthy();
+    expect(q.getByText(t("redaction.ocrNo"))).toBeTruthy();
+    expect(q.getByText("iki akış okunamadı")).toBeTruthy();
+    expect(q.getByText("gömülü yazı tipi")).toBeTruthy();
+    expect(q.getByText("plan-1")).toBeTruthy();
+    expect(q.getByText(t("redaction.verified"))).toBeTruthy();
+  });
+
+  it("kalan terim yoksa “yok” yazar; sıfır gizli nesne satırı çizilmez", async () => {
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+
+    const card = await resultCard();
+    const q = within(card);
+    expect(q.getByText(t("common.none"))).toBeTruthy();
+    expect(q.queryByText(t("redaction.hiddenObjects"))).toBeNull();
+    expect(q.getByText(t("redaction.ocrYes"))).toBeTruthy();
+  });
+
+  it("düşen maskeleme önceki yeşil sonucu bırakmaz, başarılı koşu hatayı siler", async () => {
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+    await resultCard();
+
+    mocks.documentRedact.mockRejectedValueOnce(
+      apiError("E_REDACT_VERIFY", "Maskeli çıktıda hâlâ aranan metin var."),
+    );
+    fireEvent.click(runButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_REDACT_VERIFY");
+    expect(screen.queryByText(t("redaction.resultTitle"))).toBeNull();
+
+    fireEvent.click(runButton());
+    await resultCard();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("sayfa önizlemesini seçilen sürüm ve sayfa için ister, dönüş dpi'sini taşır", async () => {
+    await renderScreen();
+    const { image } = await loadPreview(3);
+
+    expect(mocks.documentPagePreview).toHaveBeenCalledTimes(1);
+    expect(mocks.documentPagePreview).toHaveBeenCalledWith("v1", 3);
+    expect(image.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+    expect(screen.getByText(t("redaction.previewCaption", { page: 4 }))).toBeTruthy();
+    expect(screen.queryByText(t("redaction.previewHint"))).toBeNull();
+  });
+
+  it("sayfa getirilirken “Maskeleniyor…” yazmaz, maskeleme ilerlemesi çizmez", async () => {
+    const pending = deferred<ReturnType<typeof preview>>();
+    mocks.documentPagePreview.mockReturnValue(pending.promise);
+
+    await renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.modeRegions") }));
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.loadPage") }));
+
+    // Buton “Sayfa getiriliyor…” olur; maskeleme düğmesi ve ilerleme satırı
+    // maskeleme yapılmadığı hâlde maskeleme iddia etmez.
+    expect(
+      screen.getByRole("button", { name: t("redaction.loadingPage") }),
+    ).toBeTruthy();
+    expect(regionsRunButton(0).disabled).toBe(true);
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.queryByText(t("redaction.preparing"))).toBeNull();
+    expect(screen.queryByText(t("redaction.masking"))).toBeNull();
+
+    await act(async () => {
+      pending.resolve(preview());
+      await pending.promise;
+    });
+    await screen.findByAltText(t("redaction.previewAlt", { page: 1 }));
+  });
+
+  it("önizleme yüklendiği sayfaya bağlı kalır; sayfa alanı değişince eski görüntü yeni sayfa gibi etiketlenmez", async () => {
+    await renderScreen();
+    await loadPreview(0);
+
+    fireEvent.change(screen.getByLabelText(t("redaction.pageLabel")), {
+      target: { value: "4" },
+    });
+
+    // Görüntü hâlâ sayfa 1'in; alt/caption bunu söyler, seçili sayfa ayrı yazılır.
+    expect(screen.getByAltText(t("redaction.previewAlt", { page: 1 }))).toBeTruthy();
+    expect(screen.getByText(t("redaction.previewCaption", { page: 1 }))).toBeTruthy();
+    expect(
+      screen.getByText(t("redaction.previewMismatch", { selected: 5 })),
+    ).toBeTruthy();
+
+    // Düşen yeniden yükleme de eski görüntüyü yeni sayfa gibi etiketlemez.
+    mocks.documentPagePreview.mockRejectedValueOnce(apiError("E_PDF", "Sayfa okunamadı."));
+    fireEvent.change(screen.getByLabelText(t("redaction.pageLabel")), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.loadPage") }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_PDF");
+    expect(screen.getByAltText(t("redaction.previewAlt", { page: 1 }))).toBeTruthy();
+    expect(screen.getByText(t("redaction.previewCaption", { page: 1 }))).toBeTruthy();
+  });
+
+  it("sürüklenen bölgeyi punto koordinatına çevirir ve görüntünün sayfasıyla gönderir", async () => {
+    await renderScreen();
+    const { box } = await loadPreview(0);
+
+    drag(box, [100, 50], [300, 150]);
+
+    expect(regionsRunButton(1).disabled).toBe(false);
+    const overlay = box.querySelector("span") as HTMLElement;
+    expect(overlay).toBeTruthy();
+    // Görüntü 144 dpi: punto → piksel çarpanı dpi/72 = 2.
+    expect(overlay.style.left).toBe("100px");
+    expect(overlay.style.top).toBe("50px");
+    expect(overlay.style.width).toBe("200px");
+    expect(overlay.style.height).toBe("100px");
+
+    fireEvent.click(regionsRunButton(1));
+
+    expect(mocks.documentRedactRegions).toHaveBeenCalledTimes(1);
+    expect(mocks.documentRedactRegions).toHaveBeenCalledWith("v1", [
+      { pageIndex: 0, rect: [50, 25, 150, 75] },
+    ]);
+    const card = await resultCard();
+    expect(within(card).getByText("Kira sözleşmesi (bölge maskeli).pdf")).toBeTruthy();
+    // Başarılı maskeden sonra seçim temizlenir.
+    expect(regionsRunButton(0).disabled).toBe(true);
+    expect(screen.queryByText(t("redaction.clearRegions", { count: 1 }))).toBeNull();
+  });
+
+  it("2 puntodan küçük sürüklemeyi bölge saymaz", async () => {
+    await renderScreen();
+    const { box } = await loadPreview(0);
+
+    drag(box, [10, 10], [11, 11]);
+
+    expect(regionsRunButton(0).disabled).toBe(true);
+    expect(box.querySelector("span")).toBeNull();
+    expect(mocks.documentRedactRegions).not.toHaveBeenCalled();
+  });
+
+  it("sayfa alanı değiştirilip yüklemeden çizilen bölgeyi görüntünün sayfasına yazar", async () => {
+    await renderScreen();
+    const { box } = await loadPreview(0);
+
+    fireEvent.change(screen.getByLabelText(t("redaction.pageLabel")), {
+      target: { value: "4" },
+    });
+    drag(box, [10, 10], [110, 110]);
+    fireEvent.click(regionsRunButton(1));
+
+    expect(mocks.documentRedactRegions).toHaveBeenCalledWith("v1", [
+      { pageIndex: 0, rect: [5, 5, 55, 55] }, // 10 * 72/144
+    ]);
+  });
+
+  it("belge değişince önceki belgenin sonucu, önizlemesi ve bölgeleri kalkar", async () => {
+    await renderScreen();
+    // v1 üzerinde sonuç + önizleme + bölge biriktir.
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+    await resultCard();
+    const { box } = await loadPreview(0);
+    drag(box, [10, 10], [110, 110]);
+    expect(regionsRunButton(1)).toBeTruthy();
+
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+
+    expect(docSelect().value).toBe("v2");
+    expect(screen.queryByText(t("redaction.resultTitle"))).toBeNull();
+    expect(screen.queryByAltText(t("redaction.previewAlt", { page: 1 }))).toBeNull();
+    expect(screen.getByText(t("redaction.previewHint"))).toBeTruthy();
+    expect(regionsRunButton(0).disabled).toBe(true);
+    expect((screen.getByLabelText(t("redaction.pageLabel")) as HTMLInputElement).value).toBe("0");
+  });
+
+  it("dosya değişince önceki dosyanın sonucu, önizlemesi ve bölgeleri kalkar (INV-05)", async () => {
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+    await resultCard();
+    const { box } = await loadPreview(0);
+    drag(box, [10, 10], [110, 110]);
+
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+
+    expect(mocks.documentList).toHaveBeenCalledWith("p2");
+    await waitFor(() => expect(docSelect().value).toBe("v9"));
+    expect(screen.queryByText(t("redaction.resultTitle"))).toBeNull();
+    expect(screen.queryByAltText(t("redaction.previewAlt", { page: 1 }))).toBeNull();
+    expect(regionsRunButton(0).disabled).toBe(true);
+    expect((screen.getByLabelText(t("redaction.pageLabel")) as HTMLInputElement).value).toBe("0");
+  });
+
+  it("geç gelen eski dosya listesi yeni dosyanın belgelerini ve sürümünü ezmez", async () => {
+    let resolveP2: ((rows: DocumentRow[]) => void) | null = null;
+    mocks.documentList.mockImplementation((caseId: string) => {
+      if (caseId === "p1") return Promise.resolve([D1]);
+      return new Promise<DocumentRow[]>((resolve) => {
+        resolveP2 = resolve;
+      });
+    });
+
+    await renderScreen();
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("p2"));
+
+    // p2 askıdayken p1'e dön: p1 yanıtı hemen gelir.
+    fireEvent.change(caseSelect(), { target: { value: "p1" } });
+    await waitFor(() => expect(docSelect().value).toBe("v1"));
+
+    // Şimdi eski (p2) yanıtı geç gelir; seçili dosya p1, belgeler p1 kalmalı.
+    await act(async () => {
+      resolveP2!([D4]);
+      await Promise.resolve();
+    });
+
+    expect(caseSelect().value).toBe("p1");
+    expect(docSelect().value).toBe("v1");
+    expect(screen.getByRole("option", { name: D1.displayName })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: D4.displayName })).toBeNull();
+  });
+
+  it("düşen belge listesi önceki dosyanın belgelerini bırakmaz", async () => {
+    mocks.documentList.mockImplementation((caseId: string) => {
+      if (caseId === "p1") return Promise.resolve([D1, D2]);
+      return Promise.reject(apiError("E_DB", "Kasa okunamadı."));
+    });
+
+    await renderScreen();
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DB");
+    expect(within(docSelect()).getAllByRole("option")).toHaveLength(1); // yalnız “Seçin…”
+    expect(docSelect().value).toBe("");
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it("sürümlü belgesi olmayan dosyada maskeleme düğmeleri kapalıdır", async () => {
+    mocks.documentList.mockImplementation((caseId: string) =>
+      Promise.resolve(caseId === "p1" ? [D1] : [D3]),
+    );
+
+    await renderScreen();
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+
+    await waitFor(() => expect(docSelect().value).toBe(""));
+    expect(runButton().disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.modeRegions") }));
+    const load = screen.getByRole("button", { name: t("redaction.loadPage") }) as HTMLButtonElement;
+    expect(load.disabled).toBe(true);
+    expect(regionsRunButton(0).disabled).toBe(true);
+  });
+
+  it("dosya listesi düşerse dürüst hata yazar, istek üretmez", async () => {
+    mocks.caseList.mockRejectedValue(apiError("E_VAULT_LOCKED", "Kasa kilitli."));
+    render(<Redaction />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_VAULT_LOCKED");
+    expect(mocks.documentList).not.toHaveBeenCalled();
+    expect(caseSelect().value).toBe("");
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it("ilerleme olayını yalnız çalışan sürüm için yazar; olay yoksa sayaç uydurmaz", async () => {
+    const pending = deferred<RedactionResult>();
+    mocks.documentRedact.mockReturnValue(pending.promise);
+
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+
+    // Henüz olay yok: sayaç yok, dürüst “hazırlanıyor…”.
+    expect(screen.getByRole("status").textContent).toBe(t("redaction.preparing"));
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    // Maskeleme sürerken hedef değiştirilemez (sonuç başka dosyaya yazılmasın).
+    expect(caseSelect().disabled).toBe(true);
+    expect(docSelect().disabled).toBe(true);
+    expect(screen.getByRole("button", { name: t("redaction.masking") })).toBeTruthy();
+
+    // Başka sürümün olayı yok sayılır.
+    act(() => {
+      for (const handler of progressHandlers) {
+        handler({
+          payload: { versionId: "v2", stage: "redact", done: 9, total: 9 },
+        });
+      }
+    });
+    expect(screen.getByRole("status").textContent).toBe(t("redaction.preparing"));
+
+    const event: ParseProgressEvent = {
+      versionId: "v1",
+      stage: "redact",
+      done: 2,
+      total: 4,
+    };
+    act(() => {
+      for (const handler of progressHandlers) handler({ payload: event });
+    });
+    expect(screen.getByRole("status").textContent).toBe(
+      parseProgressLine({ stage: "redact", done: 2, total: 4 }),
+    );
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("50");
+
+    await act(async () => {
+      pending.resolve(redactionResult());
+      await pending.promise;
+    });
+    await resultCard();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("terim yer tutucusu sözlükten gelir", async () => {
+    await renderScreen();
+    expect(termsArea().placeholder).toBe(t("redaction.termsPlaceholder"));
+    expect(termsArea().placeholder).toContain("Ahmet Yılmaz");
+  });
+});

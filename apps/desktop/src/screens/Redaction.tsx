@@ -27,10 +27,17 @@ export function Redaction() {
   const activeVersion = useRef<string | null>(null);
   const [mode, setMode] = useState<"terms" | "regions">("terms");
   const [page, setPage] = useState(0);
-  const [preview, setPreview] = useState<{ src: string; dpi: number } | null>(null);
+  // Önizleme **hangi sayfaya aitse** onunla taşınır: sayfa alanı değişince eski
+  // görüntü yeni sayfa gibi etiketlenmez ve bölgeler görüntünün sayfasına yazılır.
+  const [preview, setPreview] = useState<{ src: string; dpi: number; pageIndex: number } | null>(null);
   const [regions, setRegions] = useState<Array<{ pageIndex: number; rect: [number, number, number, number] }>>([]);
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const imageRef = useRef<HTMLDivElement | null>(null);
+  // Sayfa getirme maskeleme değildir: ayrı durum, ayrı etiket.
+  const [pageBusy, setPageBusy] = useState(false);
+  // Dosya/sürüm değişimi uçuştaki yanıtları geçersiz kılar (INV-05).
+  const genRef = useRef(0);
+  const pageSeq = useRef(0);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -66,26 +73,55 @@ export function Redaction() {
 
   useEffect(() => {
     if (!caseId) return;
+    // INV-05: yeni dosyanın isteği askıdayken **önceki dosyanın** belgeleri,
+    // sürümü, sonucu, önizlemesi ve bölgeleri ekranda kalmasın. Temizlik
+    // istekten önce koşar; `gen` geç gelen yanıtı geçersiz kılar.
+    genRef.current += 1;
+    pageSeq.current += 1;
+    const gen = genRef.current;
+    setDocs([]);
+    setVersionId("");
+    setResult(null);
+    setRegions([]);
+    setPreview(null);
+    setPage(0);
+    setProgress(null);
+    setError(null);
     void api
       .documentList(caseId)
       .then((list) => {
+        if (gen !== genRef.current) return;
         setDocs(list);
         setVersionId(list.find((d) => d.currentVersionId)?.currentVersionId ?? "");
       })
-      .catch((e) => setError(toApiError(e)));
+      .catch((e) => {
+        if (gen !== genRef.current) return;
+        setDocs([]);
+        setVersionId("");
+        setError(toApiError(e));
+      });
   }, [caseId]);
 
   async function loadPage() {
     if (!versionId) return;
-    setBusy(true);
+    const gen = genRef.current;
+    const requested = page;
+    const seq = ++pageSeq.current;
+    setPageBusy(true);
     setError(null);
     try {
-      const result = await api.documentPagePreview(versionId, page);
-      setPreview({ src: `data:image/png;base64,${result.pngBase64}`, dpi: result.dpi });
+      const result = await api.documentPagePreview(versionId, requested);
+      if (gen !== genRef.current || seq !== pageSeq.current) return;
+      setPreview({
+        src: `data:image/png;base64,${result.pngBase64}`,
+        dpi: result.dpi,
+        pageIndex: requested,
+      });
     } catch (e) {
+      if (gen !== genRef.current || seq !== pageSeq.current) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      setPageBusy(false);
     }
   }
 
@@ -94,15 +130,20 @@ export function Redaction() {
       setError({ code: "E_REDACT_REGIONS", message: t("redaction.regionsRequired"), retryable: false });
       return;
     }
+    const gen = genRef.current;
+    const version = versionId;
     setBusy(true);
     setError(null);
     setResult(null);
-    activeVersion.current = versionId;
+    activeVersion.current = version;
     setProgress(null);
     try {
-      setResult(await api.documentRedactRegions(versionId, regions));
+      const result = await api.documentRedactRegions(version, regions);
+      if (gen !== genRef.current) return;
+      setResult(result);
       setRegions([]);
     } catch (e) {
+      if (gen !== genRef.current) return;
       setError(toApiError(e));
     } finally {
       activeVersion.current = null;
@@ -130,6 +171,9 @@ export function Redaction() {
 
   function endDrag() {
     if (!drag || !preview) return;
+    // Bölge, **görüntünün ait olduğu sayfaya** yazılır; sayfa alanı sonradan
+    // değişmiş olsa bile eski görüntüdeki seçim yeni sayfaya taşınmaz.
+    const pageIndex = preview.pageIndex;
     const scale = 72 / preview.dpi;
     const rect: [number, number, number, number] = [
       Math.min(drag.x0, drag.x1) * scale,
@@ -138,7 +182,7 @@ export function Redaction() {
       Math.max(drag.y0, drag.y1) * scale,
     ];
     if (rect[2] - rect[0] >= 2 && rect[3] - rect[1] >= 2) {
-      setRegions((prev) => [...prev, { pageIndex: page, rect }]);
+      setRegions((prev) => [...prev, { pageIndex, rect }]);
     }
     setDrag(null);
   }
@@ -152,14 +196,19 @@ export function Redaction() {
       setError({ code: "E_TERMS", message: t("redaction.termsRequired"), retryable: false });
       return;
     }
+    const gen = genRef.current;
+    const version = versionId;
     setBusy(true);
     setError(null);
     setResult(null);
-    activeVersion.current = versionId;
+    activeVersion.current = version;
     setProgress(null);
     try {
-      setResult(await api.documentRedact(versionId, list));
+      const result = await api.documentRedact(version, list);
+      if (gen !== genRef.current) return;
+      setResult(result);
     } catch (e) {
+      if (gen !== genRef.current) return;
       setError(toApiError(e));
     } finally {
       activeVersion.current = null;
@@ -199,13 +248,34 @@ export function Redaction() {
         <div className="row">
           <div className="field">
             <label htmlFor="rd-case">{t("common.case")}</label>
-            <select id="rd-case" className="input" value={caseId} onChange={(e) => setCaseId(e.target.value)}>
+            <select id="rd-case" className="input" value={caseId} disabled={busy}
+              onChange={(e) => {
+                // Hedef hemen geçersizleşir: uçuştaki belge/sayfa/maskeleme
+                // yanıtı yeni dosyanın altına yazılmaz (INV-05).
+                genRef.current += 1;
+                pageSeq.current += 1;
+                setCaseId(e.target.value);
+              }}>
               {cases.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
           <div className="field">
             <label htmlFor="rd-doc">{t("redaction.docLabel")}</label>
-            <select id="rd-doc" className="input" value={versionId} onChange={(e) => setVersionId(e.target.value)}>
+            <select id="rd-doc" className="input" value={versionId} disabled={busy}
+              onChange={(e) => {
+                // §13.5: maskeleme planı özgün sürüme bağlıdır; farklı sürüme
+                // kendiliğinden uygulanmaz. Seçim değişince eski bölgeler/
+                // önizleme/sonuç taşınmaz.
+                genRef.current += 1;
+                pageSeq.current += 1;
+                setVersionId(e.target.value);
+                setResult(null);
+                setRegions([]);
+                setPreview(null);
+                setPage(0);
+                setProgress(null);
+                setError(null);
+              }}>
               <option value="">{t("common.select")}</option>
               {docs.filter((d) => d.currentVersionId).map((d) => (
                 <option key={d.id} value={d.currentVersionId!}>{d.displayName}</option>
@@ -222,7 +292,7 @@ export function Redaction() {
             style={{ height: 90, padding: 10, fontFamily: "var(--mono)", fontSize: 12 }}
             value={terms}
             onChange={(e) => setTerms(e.target.value)}
-            placeholder={"Ahmet Yilmaz\n00000000000"}
+            placeholder={t("redaction.termsPlaceholder")}
           />
           <span className="hint">{t("redaction.termsHint")}</span>
         </div>
@@ -240,8 +310,8 @@ export function Redaction() {
                   onChange={(e) => setPage(Math.max(0, Number(e.target.value)))}
                 />
               </div>
-              <button className="btn" disabled={busy || !versionId} onClick={() => void loadPage()}>
-                {t("redaction.loadPage")}
+              <button className="btn" disabled={busy || pageBusy || !versionId} onClick={() => void loadPage()}>
+                {pageBusy ? t("redaction.loadingPage") : t("redaction.loadPage")}
               </button>
               <button
                 className="btn ghost"
@@ -252,48 +322,56 @@ export function Redaction() {
               </button>
             </div>
             {preview ? (
-              <div
-                ref={imageRef}
-                style={{ position: "relative", display: "inline-block", marginTop: 8, touchAction: "none", cursor: "crosshair" }}
-                onPointerDown={startDrag}
-                onPointerMove={moveDrag}
-                onPointerUp={endDrag}
-              >
-                <img src={preview.src} alt={t("redaction.previewAlt", { page: page + 1 })} style={{ display: "block", maxWidth: "100%" }} />
-                {regions
-                  .filter((region) => region.pageIndex === page)
-                  .map((region, index) => {
-                    const scale = preview.dpi / 72;
-                    const left = region.rect[0] * scale;
-                    const top = region.rect[1] * scale;
-                    return (
-                      <span
-                        key={`${region.pageIndex}-${index}`}
-                        style={{
-                          position: "absolute",
-                          left,
-                          top,
-                          width: (region.rect[2] - region.rect[0]) * scale,
-                          height: (region.rect[3] - region.rect[1]) * scale,
-                          border: "1px solid var(--accent)",
-                          background: "rgba(0,0,0,0.35)",
-                        }}
-                      />
-                    );
-                  })}
-                {drag ? (
-                  <span
-                    style={{
-                      position: "absolute",
-                      left: Math.min(drag.x0, drag.x1),
-                      top: Math.min(drag.y0, drag.y1),
-                      width: Math.abs(drag.x1 - drag.x0),
-                      height: Math.abs(drag.y1 - drag.y0),
-                      border: "1px dashed var(--foreground)",
-                    }}
-                  />
-                ) : null}
-              </div>
+              <>
+                <div
+                  ref={imageRef}
+                  style={{ position: "relative", display: "inline-block", marginTop: 8, touchAction: "none", cursor: "crosshair" }}
+                  onPointerDown={startDrag}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
+                >
+                  <img src={preview.src} alt={t("redaction.previewAlt", { page: preview.pageIndex + 1 })} style={{ display: "block", maxWidth: "100%" }} />
+                  {regions
+                    .filter((region) => region.pageIndex === preview.pageIndex)
+                    .map((region, index) => {
+                      const scale = preview.dpi / 72;
+                      const left = region.rect[0] * scale;
+                      const top = region.rect[1] * scale;
+                      return (
+                        <span
+                          key={`${region.pageIndex}-${index}`}
+                          style={{
+                            position: "absolute",
+                            left,
+                            top,
+                            width: (region.rect[2] - region.rect[0]) * scale,
+                            height: (region.rect[3] - region.rect[1]) * scale,
+                            border: "1px solid var(--accent)",
+                            background: "rgba(0,0,0,0.35)",
+                          }}
+                        />
+                      );
+                    })}
+                  {drag ? (
+                    <span
+                      style={{
+                        position: "absolute",
+                        left: Math.min(drag.x0, drag.x1),
+                        top: Math.min(drag.y0, drag.y1),
+                        width: Math.abs(drag.x1 - drag.x0),
+                        height: Math.abs(drag.y1 - drag.y0),
+                        border: "1px dashed var(--foreground)",
+                      }}
+                    />
+                  ) : null}
+                </div>
+                <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+                  <span>{t("redaction.previewCaption", { page: preview.pageIndex + 1 })}</span>
+                  {preview.pageIndex !== page ? (
+                    <span>{" "}{t("redaction.previewMismatch", { selected: page + 1 })}</span>
+                  ) : null}
+                </p>
+              </>
             ) : (
               <p className="hint" style={{ marginTop: 8 }}>
                 {t("redaction.previewHint")}
@@ -303,11 +381,11 @@ export function Redaction() {
         )}
         <div className="row" style={{ justifyContent: "flex-end" }}>
           {mode === "terms" ? (
-            <button className="btn primary" disabled={busy || !versionId} onClick={() => void run()}>
+            <button className="btn primary" disabled={busy || pageBusy || !versionId} onClick={() => void run()}>
               {busy ? t("redaction.masking") : t("redaction.runTerms")}
             </button>
           ) : (
-            <button className="btn primary" disabled={busy || !versionId || regions.length === 0} onClick={() => void applyRegions()}>
+            <button className="btn primary" disabled={busy || pageBusy || !versionId || regions.length === 0} onClick={() => void applyRegions()}>
               {busy ? t("redaction.masking") : t("redaction.runRegions", { count: regions.length })}
             </button>
           )}
