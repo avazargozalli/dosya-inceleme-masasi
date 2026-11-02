@@ -11,7 +11,125 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. **Çıktılar davranış testi eklendi** (`screens/Exports.test.tsx`, 22 test; 9 mutasyonla kanıtlandı; dosya değişiminde bayat kapsam/çıktı/paket satırı (INV-05), düşen kapsam isteğinde bayat kapsam, başarılı tazelemede silinmeyen kırmızı hata, uçuştaki dışa aktarma/tazeleme yanıtlarının yeni dosyayı ezmesi, devir paketi parolasının başarıdan sonra ekranda kalması ve “Kapsam okunamadı” ile “okunuyor”un karışması düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+
+## Çıktılar ekranı davranış testi — `screens/Exports.tsx` (2026-11-02)
+
+Önceki turun sıradaki aday listesinin başındaydı. Ekran, F11-T06'nın (kasadan okunan
+kapsam, dört biçimde dışa aktarma, devir paketi) kullanıcıya görünen yüzü ve bugüne dek
+**hiç render edilmemişti**; `lib/export-coverage` testleri yalnız metin yardımcılarını
+doğruluyordu (sayıların nereden geldiğini, düğme kapılarını veya yarışları değil).
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(7 fonksiyon: `caseList`, `caseCoverage`, `exportJson`, `exportCsv`, `exportDocx`,
+`exportPdf`, `exportPackage`); `@tauri-apps/plugin-dialog` (`save` + `open`) sahtelendi;
+`t()`, `lib/export-coverage`, `lib/filename` **gerçek**.
+
+**Sabitlenen 22 davranış (özet):**
+
+1. Dosya listesi `caseList(false)` ile gelir, ilk dosya seçilir, kapsam **o dosya** için
+   istenir; rozet + tek satır özet + on satır + cümle sunucudan yazılır, arayüz sayı üretmez.
+2. Kısmi kapsamda “Kapsam kısmi”, uyarı listesi ve “incelenmedi ≠ temiz” cümlesi; belgesiz
+   dosyada “Kapsam yok” + dürüst uyarı.
+3. Dosya yokken kapsam isteği **gitmez**, altı düğmenin hepsi kapalı.
+4. Kaydet diyaloğu adı dosya **başlığından** üretir (`fileStem`), uzantı/filtre seçilen biçim;
+   çekirdeğe `(caseId, hedef yol)` gider, öteki biçim çağrılmaz.
+5. Sonuç künyesi tür + yol + bayt + sha256'nın ilk 16 karakteri + **yanıttan gelen** kapsamın
+   gömüldüğü yeri yazar.
+6. İptal edilen diyalog istek üretmez, “Yazılıyor…” durumu kalmaz.
+7. Düşen dışa aktarma önceki yeşil sonucu bırakmaz.
+8. Yazarken düğme “Yazılıyor…” olur; öteki üç çıktı, paket ve tazeleme düğmeleri kilitlenir.
+9. Kapsam tazeleme yeni değerleri yazar; düşen tazelemenin kırmızısı **sonraki başarılı
+   tazelemede** silinir (eski hata kalıcı değil).
+10. Devir paketi klasör ister; parola **10 karakterden kısaysa gönderilmez** (açık metin
+    klasör), eşik aşılırsa olduğu gibi gider.
+11. Paket künyesi yol + dosya sayısı + manifest öneki + varsa şifreli `.dimpak` yolunu yazar.
+12. İptal edilen klasör seçimi paket isteği üretmez; düşen paket isteği önceki paket satırını
+    bırakmaz.
+13. **(A)** Paket başarısından sonra parola alanı temizlenir (düz metin bellekte/DOM'da kalmaz).
+14. **(B, INV-05)** Dosya değişince önceki dosyanın kapsamı, çıktı satırı **ve** paket satırı
+    kalkar; yeni dosyanın isteği askıdayken “Kapsam okunuyor…” yazar.
+15. Dosya değişince önceki dosyanın **hatası** da kalkar (bayat kırmızı bildirim taşınmaz).
+16. **(C)** Düşen kapsam isteği önceki dosyanın kapsamını “okunmuş” gibi bırakmaz.
+17. **(D)** Kapsam okunurken “Kapsam okunamadı” yazılmaz — okunmadı ≠ okunamadı.
+18. Uçuştaki dışa aktarma dosya değişince yeni dosyanın altına “yazıldı” satırı yazmaz.
+19. Uçuştaki kapsam tazeleme dosya değişince yeni dosyanın kapsamını ezmez.
+20. Geç gelen **eski** dosya kapsamı yeni dosyanın kapsamını ezmez.
+21. Dosya listesi düşerse dürüst hata yazılır, sahte liste/`Dosya yok` uydurulmaz.
+22. Sözlükten gelen metinler (`exports.*`, `common.*`) kullanılır; yeni `exports.coverageLoading`
+    anahtarı eklendi.
+
+**ÖLÇÜLEN KUSUR (B) — dosya değişiminde bayat kapsam ve çıktı (en ağırı, INV-05):**
+`caseId` effect'i yalnız kapsamı yeniden istiyordu; `result`/`pkg`/`coverage` **temizlenmiyordu**.
+A dosyasında JSON çıktısı alıp B dosyasına geçildiğinde, B'nin kapsam isteği askıdayken ekranda
+**A'nın kapsamı ve “JSON yazıldı: …/A.json” satırı** duruyordu; bunlar B'nin künyesi altında
+“güncel sonuç” gibi okunuyor. Kırmızı: `expected <div class="notice ok">…(3)</div> to be null`,
+`expected <span class="muted"></span> to be null`.
+
+**ÖLÇÜLEN KUSUR (C) — düşen kapsam isteği bayat kapsamı bırakıyordu:** effect hata dalında
+hiçbir alan yazmıyordu; A'nın kapsamı B'nin kırmızı `E_DB` hatasıyla birlikte ekranda kalıyordu.
+Kırmızı: `expected <span class="muted"></span> to be null`.
+
+**ÖLÇÜLEN KUSUR (D) — “okunamadı” ile “okunuyor” karışıyordu:** `coverage === null` tek dal
+olduğu için ilk yükleme sırasında ve dosya değişiminde “Kapsam okunamadı; dışa aktarma yine
+kapsamı yazar.” yazıyordu (henüz okunmadı). Kırmızı: `expected <p class="hint">…</p> to be null`.
+
+**ÖLÇÜLEN KUSUR (A) — paket parolası başarıdan sonra ekranda kalıyordu:** `runPackage` parolayı
+temizlemiyordu; `.dimpak` üretildikten sonra bile düz metin parola `value` olarak duruyordu.
+Kırmızı: `expected 'cok-guclu-parola' to be ''`.
+
+**ÖLÇÜLEN KUSUR (E) — tazeleme hatası kalıcıydı:** `refreshCoverage` başında `setError(null)`
+yoktu → bir kez düşen tazelemenin kırmızısı, sonraki **başarılı** tazelemeden sonra da ekranda
+kalıyordu. Kırmızı: `expected <div class="notice danger">…</div> to be null`.
+
+**Yarışlar (bu turda kapatıldı):** kapsam **effect**'i eski kodda da `alive` ile korunuyordu
+(yani ilk yükleme yarışı zaten kapalıydı — test bunu kilitliyor), ama iki yol **korunmuyordu**:
+dosya değişikliğinden önce başlamış bir **tazeleme** yanıtı yeni dosyanın kapsamını ezebiliyor,
+uçuştaki bir **dışa aktarma** yanıtı yeni dosyanın künyesi altına “yazıldı” satırı yazabiliyordu
+(ikisi de mutasyonla kanıtlandı: M7, M8). Tek `seqRef` sayacı dosya değişimini, tazelemeyi ve
+dışa aktarmayı sıraya bağlar.
+
+**Düzeltme (`Exports.tsx` +62/−15, `i18n.ts` +1):** effect dosya değişiminde `result`/`pkg`/
+`coverage`/`error`ı **istekten önce** temizler; `coverageLoading` ile dürüst yükleme metni;
+tazeleme başında hata silinir; paket başarısında parola temizlenir; dört async yol `seqRef`
+kapısından geçer. Kullanıcı girdisi (parola) yalnız **başarıdan sonra** silinir — dosya
+değişiminde kullanıcının yazdığı değer korunur.
+
+**Kapı kanıtı (9 mutasyon; her biri kendi testini düşürdü, geri alma sha256
+`f1d5271b9f6eef625d924f0c0c0dda9ccfa63d761b87181eff1644d5a579d108` birebir):**
+effect'teki `setResult(null)` → 1 failed (B); `setPkg(null)` → 1 failed (B); `setCoverage(null)`
+→ 2 failed (B + C); `setError(null)` → 1 failed (bayat hata); `refreshCoverage`'daki
+`setError(null)` → 1 failed (tazeleme); `setPackagePassword("")` → 1 failed (A);
+`run` içindeki seq kapısı → 1 failed (uçuştaki dışa aktarma); `refreshCoverage` içindeki seq
+kapısı → 1 failed (uçuştaki tazeleme); yükleme metni dalı → 2 failed (B + D).
+**Dürüst:** effect'teki `alive` bayrağı ile `seq` kapısı birlikte durur — `alive` unmount
+sonrası yazmayı, `seq` sıra dışı yanıtı engeller; `alive`'ın tek başına kaldırılması **ayrı**
+bir test düşürmez (bu yüzden ayrı mutasyon olarak sayılmadı).
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **680/680** (48 dosya; 658 → **+22**) ·
+`pnpm build` temiz (**570,15 kB**, `index-J7C4gi0z.js`, gzip 153,62 kB, 88 modül;
+Vite 500 kB uyarısı sürüyor). İlk ham koşu **10 failed | 9 passed**ti: 5'i gerçek kusur,
+5'i testin kendi sorgu/mock hatasıydı (bildirim metni `<strong>` ile bölünüyor → düğüm olarak
+aranmalı; dört export mock'u varsayılan `undefined` döndürüyordu) — düzeltildi, kalan
+**5 failed** gerçek kusurları gösterdi.
+
+**CI (ölçüldü):** `ec082a2` (3 dosya, +625/−15) → koşu **`41451261859` 7/7 YEŞİL**:
+`arayüz` **48 dosya / 680 test** (yerel/CI **birebir**), aynı derleme özeti
+`index-J7C4gi0z.js` 570,15 kB (gzip 153,62 kB), `rust (macos-15)` 4 dk 37 s,
+`rust (ubuntu-latest)` 8 dk 50 s, `masaüstü kabuk` 39 s, `belge worker'ı` 49 s,
+`SBOM` 19 s, `sözleşmeler` 5 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi, `invoke`/IPC,
+dosya/klasör seçici diyaloğu ve **görsel QA yok**; `api` mock'lu olduğu için çekirdeğin gerçek
+yolu (SQL kapsam sorgusu, JSON/CSV/DOCX/PDF yazımı, ZIP + Argon2id + AES-256-GCM paketleme,
+`exports` kaydı, Rust) **koşmaz**. Kapsam dışı: gerçek `.dimpak` şifrelemesi ve parola
+doğrulaması, çok büyük dosyalarda ilerleme/iptal, klavye gezinmesi, Windows.
+
+**Açık kayıt (ölçülmedi, değiştirilmedi):** `busy` kilidi diyalog açıldıktan **sonra**
+kurulur — diyalog açıkken ikinci tıklama ikinci diyalog açabilir (dosya seçici modal olduğu
+için pratikte engellenir, ölçülmedi); dışa aktarma başarılı olup kapsam yanıttan yazıldıktan
+sonra ayrıca tazelenmez (bilinçli: dosyaya yazılan blok esastır); `Cases.tsx` bayat-hata
+deseni ve `Precedents` alıntı metni temizliği hâlâ açık.
 
 ## Ayarlar ekranı davranış testi — `screens/Settings.tsx` (2026-11-02)
 
