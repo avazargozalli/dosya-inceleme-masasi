@@ -11,7 +11,7 @@
 | F04-T03 | ✅ | `row_version` çakışmasında `E_ROW_VERSION` |
 | F04-T04 | ✅ | saklama kilidi (`retention_hold`) silmeyi engeller |
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
-| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
+| F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
 
 ## Ayarlar ekranı davranış testi — `screens/Settings.tsx` (2026-11-02)
 
@@ -115,6 +115,131 @@ düşerse** yeşil sonuç paneli ile kırmızı hata birlikte görünür (geri d
 liste bayat) — bilinçli olarak korundu: kullanıcı yeniden tarayabilir. `refreshPreUpdate`
 düşerse önceki liste ekranda kalır (hata yazılır). Kasa kilitliyken GC “Tara” düğmesi açıktır;
 istek çekirdekten hata döner ve hata kodu gösterilir (düğme kapatılmadı).
+
+## Görevler ekranı davranış testi — `screens/Tasks.tsx` (2026-11-02)
+
+Önceki turun sıradaki aday listesinin başındaydı: “`screens/Tasks.tsx` (299) davranış
+testi”. Ekran, F08-T10'un (kullanıcı tarihi, **açık onay**, yerel hatırlatıcı kuyruğu) ve
+görev yaşam döngüsünün kullanıcıya görünen yüzü ve bugüne dek **hiç render edilmemişti**;
+`lib/reminders.test.ts` yalnız metin/saat yardımcılarını doğruluyordu.
+
+**Ortam:** `@vitest-environment jsdom` + `@testing-library/react`. `lib/api` kısmen mock
+(8 fonksiyon: `caseList`, `taskList`, `taskCreate`, `taskConfirmDate`, `taskComplete`,
+`taskDelete`, `taskReminders`, `taskRemindersEnqueue`); `t()` ve `lib/reminders` **gerçek**.
+
+**Sabitlenen 17 davranış:**
+
+1. Dosya listesi (`caseList(false)`), ilk dosya seçimi; görevler `taskList(p1, false)` ve
+   hatırlatıcılar **bugünün yerel günü** ile istenir (`localIsoDay()`).
+2. Satır künyesi sunucudan: tarih, “onay bekliyor”/“onaylı” rozeti, “açık”/“tamamlandı”;
+   tarihsiz görevde “tarih yok” yazılır ve onay rozeti **uydurulmaz**.
+3. Düğme kapıları: “Tarihi onayla” yalnız **açık + tarihli + onaysız** görevde, “Bitti”
+   yalnız açık görevde, “Sil” her görevde.
+4. Dosya yokken dürüst boş durum; görev/hatırlatıcı isteği **gitmez**, kuyruk düğmesi kapalı.
+5. Boş/boşluktan oluşan başlık çekirdeğe **gitmez** (`E_TITLE`).
+6. Geçerli başlık **kırpılarak** tam sözleşmeyle gider (`userDueDate:null`,
+   `dateTimezone:"Europe/Istanbul"`, `assigneeLabel:null`, `reminderPolicy:"none"`), form
+   temizlenir ve liste tazelenir; **Enter** de ekler.
+7. Hatırlatma seçimi tarih ister: tarih yokken kapalı, tarih seçilince açılır; seçilen
+   politika ve tarih sözleşmeye taşınır.
+8. “Tarihi onayla” çekirdeğe gider ve listeyi tazeler (tarih yazmak onay değildir).
+9. “Bitti”/“Sil” çekirdeğe gider, liste tazelenir.
+10. Hatırlatıcı kuyruğu sonucu **0 / N** için ayrı cümlelerle yazılır, liste tazelenir;
+    önceki bildirim yenisinin yerine geçer.
+11. Hatırlatıcı satırı sözlükten etiket + tarih + görev başlığını yazar; listede olmayan
+    görev “görev” der, bilinmeyen politika “kapalı” sayılır (ham anahtar sızmaz).
+12. **Ölçülen kusur (D):** başarılı işlem önceki kırmızı hatayı ekranda bırakmaz.
+13. **Ölçülen kusur (E):** düşen kuyruk isteği önceki yeşil “N hatırlatıcı yazıldı” satırını
+    bırakmaz.
+14. **Ölçülen kusur (A, INV-05):** dosya değişince önceki dosyanın görevleri, hatırlatıcıları
+    ve bildirimi kalkar; askıdaki istek sırasında eski veri görünmez.
+15. **Ölçülen kusur (B):** düşen yükleme önceki listeyi göstermez — hem dosya değişiminde hem
+    de **başarılı işlemden sonraki tazeleme** düştüğünde.
+16. **Ölçülen kusur (C):** geç gelen **eski** dosya yanıtı yeni dosyanın listesini ezmez.
+17. **Ölçülen kusur (F, G):** tarih silinince hatırlatma politikası “none”a döner ve tarihsiz
+    göreve taşınmaz; dosya seçili değilken “Ekle” başlık değil **dosya** gerekçesi yazar.
+
+**ÖLÇÜLEN KUSUR (A — dosya değişiminde bayat veri, INV-05):** `[caseId]` effect'i yalnız
+`load(caseId, includeDone)` çağırıyordu → `rows`/`reminders`/`reminderNote` **temizlenmiyordu**.
+Yeni dosyanın isteği askıdayken (ya da düşerken) **önceki dosyanın görevleri** yeni dosyanın
+altında görünüyor; satırdaki “Bitti”/“Sil” düğmeleri **önceki dosyanın görev kimliğiyle**
+çalışıyordu. Kırmızı: `expected <span …(1)> to be null` (eski görev başlığı).
+
+**ÖLÇÜLEN KUSUR (B — düşen yükleme listeyi bırakıyordu):** `load` hatasında hiçbir alan
+yazılmıyordu; effect de temizlemediği için **önceki dosyanın listesi** kırmızı hatayla birlikte
+ekranda kalıyordu. Aynı sınıf **başarılı işlemden sonraki tazeleme** düştüğünde de vardı:
+“Bitti” çekirdekte işlenmiş olmasına rağmen satır hâlâ “açık” listesinde duruyordu.
+
+**ÖLÇÜLEN KUSUR (C — istek sırası korunmuyordu):** `load` yanıtları sıraya bağlı değildi;
+kullanıcı hızla dosya değiştirip **eski** dosyanın yanıtı sonra gelince liste eskisiyle
+eziliyordu (ekranda seçili dosya p2, listede p1'in görevleri). Kırmızı: `Unable to find an
+element with the text: Ceza dosyası görevi.` (yeni dosyanın satırı kayboldu).
+
+**ÖLÇÜLEN KUSUR (D — başarılı işlem bayat kırmızı bırakıyordu):** `add`/`confirmDate`/
+`complete`/`remove`/`enqueueReminders` başında `setError(null)` yoktu → `E_TITLE` kırmızı
+bildirimi **başarılı eklemeden sonra** da ekranda kalıyordu. Kırmızı: `expected <strong></strong>
+to be null`.
+
+**ÖLÇÜLEN KUSUR (E — düşen kuyruk isteği bayat yeşil bırakıyordu):** `enqueueReminders`
+başında `setReminderNote("")` yoktu → başarılı “1 hatırlatıcı yerel bildirim kuyruğuna yazıldı.”
+satırı, sonraki **düşen** isteğin kırmızı hatasıyla birlikte “güncel sonuç” gibi duruyordu.
+
+**ÖLÇÜLEN KUSUR (F — tarihsiz göreve sessiz hatırlatma politikası):** tarih seçilip politika
+atandıktan sonra tarih silinince `<select>` **kapalı kalıyor ama değeri korunuyordu**; “Ekle”
+`userDueDate:null` ile birlikte `reminderPolicy:"day_before"` gönderiyordu. Çekirdek bu
+kombinasyonu kabul ediyor (`tasks.rs` yalnız politikayı doğrular) ama hatırlatıcı sorgusu
+`user_due_date IS NOT NULL` istediği için **hiçbir zaman kurulamaz** — kullanıcı hatırlatma
+kurduğunu sanıyordu. Kırmızı: `expected 'day_before' to be 'none'`. Düzeltme: tarih
+temizlenince politika “none”a döner (tek kaynak, arayüzde **görünen** değer).
+
+**ÖLÇÜLEN KUSUR (G — yanlış gerekçe):** `if (!caseId || title.trim().length === 0)` tek dala
+bağlıydı → dosya seçili değilken “Ekle” **“Görev başlığı zorunlu.”** (`E_TITLE`) yazıyordu;
+eksik olan başlık değil dosyaydı. Düzeltme: ayrı `E_NO_CASE` + `tasks.caseRequired`
+(“Önce bir dosya seçin.”) — sözlüğe eklendi.
+
+**Düzeltme (`Tasks.tsx` +42/−3, `i18n.ts` +1):** effect dosya/süzgeç değişiminde `rows`,
+`reminders`, `reminderNote`, `error`ı **istekten önce** temizler; `load` bir sıra numarası
+(`useRef`) taşır ve **geç gelen** yanıtı yok sayar, hatasında listeyi boşaltır; `add`/
+`confirmDate`/`complete`/`remove`/`enqueueReminders` başında hata (kuyrukta ayrıca bildirim)
+silinir; tarih alanı boşaltılınca politika “none”; dosya yokken ayrı gerekçe. Kullanıcı
+girdisi (başlık/tarih/politika) hata durumunda **korunur** — önceki turların kararıyla aynı.
+
+**Kapı kanıtı (7 mutasyon; her biri kendi testini düşürdü; geri alma sha256
+`b0818b5fac5113cd60a4a8f54619dcdf506eaa1c7b43c0d4c27b00051481b1cf` birebir):**
+(1) effect temizliği silindi → 1 failed (`dosya değişince…`); (2) `load` hatasındaki
+`setRows([])`/`setReminders([])` silindi → 1 failed (`başarılı işlemden sonra düşen tazeleme…`);
+(3) `if (seq !== loadSeq.current) return;` silindi → 1 failed (`geç gelen eski dosya…`);
+(4) `add`teki `setError(null)` silindi → 1 failed (`başarılı işlem önceki kırmızı hatayı…`);
+(5) `enqueueReminders`taki `setReminderNote("")` silindi → 1 failed (`düşen kuyruk isteği…`);
+(6) tarih alanındaki `setPolicy("none")` silindi → 1 failed (`tarih silinince…`);
+(7) `E_NO_CASE` dalı eski tek koşula geri alındı → 1 failed (`dosya seçili değilken…`).
+
+**İlk ham koşu (düzeltme öncesi): 8 failed | 8 passed.** Beşi gerçek kusurdu (A, C, D, F, G);
+üçü testin kendi sorgu hatasıydı (bildirim metni `<strong>` ile aynı `<div>` içinde **metin
+düğümü** olduğu için `getByText` bulamıyordu → `role="alert"` + `textContent` ile ölçüldü).
+Sorgular düzeltildikten sonra B ve E'nin kırmızısı **kapı mutasyonlarıyla** (2 ve 5) kanıtlandı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **658/658** (47 dosya; 641 → **+17**) ·
+`pnpm build` temiz (**569,69 kB**, `index-Dzfk3wVy.js`, gzip 153,51 kB, 88 modül;
+Vite 500 kB uyarısı sürüyor).
+
+**CI (ölçüldü):** `106a95b` (3 dosya, +553/−3) → koşu **`41439211687` 7/7 YEŞİL**:
+`arayüz` **47 dosya / 658 test** (yerel/CI **birebir**), aynı derleme özeti
+`index-Dzfk3wVy.js` 569,69 kB (gzip 153,51 kB), `rust (macos-15)` 4 dk 27 s,
+`rust (ubuntu-latest)` 8 dk 45 s, `masaüstü kabuk` 34 s, `belge worker'ı` 32 s,
+`SBOM` 22 s, `sözleşmeler` 7 s.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS yerleşimi, gerçek Tauri penceresi,
+`invoke`/IPC ve **görsel QA yok**; `api` mock'lu olduğu için çekirdeğin gerçek yolu (SQL,
+`task_reminders` sorgusu, yerel bildirim kuyruğu, Rust) bu testte **koşmaz**. Kapsam dışı:
+otomatik yedek/hatırlatıcı **zamanlayıcısı**, gerçek işletim sistemi bildirimi, klavye
+gezinmesi, Windows.
+
+**Açık kayıt (ölçülmedi, değiştirilmedi):** `complete`/`remove` `busy` kilidi kullanmaz
+(çift tıklama ikinci isteği gönderir; ikincisi çekirdekten `E_NOT_FOUND` alır); `add`
+başarılı olup **tazeleme düşerse** form temizlenmiş olur, liste boşalır ve hata yazılır
+(görev gerçekten oluştu). `Cases.tsx` bayat-hata deseni ve `Precedents` alıntı metni
+temizliği hâlâ açık.
 
 ## Kontrol listesi ekranı davranış testi — `screens/Checklists.test.tsx` (2026-11-02)
 
