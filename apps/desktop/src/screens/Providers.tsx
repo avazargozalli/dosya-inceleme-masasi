@@ -113,6 +113,20 @@ const PRE: CSSProperties = {
   overflow: "auto",
 };
 
+/**
+ * Profil kaydının hata iletisi. Çekirdek reddi `{code, message}` nesnesidir
+ * (Tauri `invoke`), bu yüzden `String(error)` ekrana "[object Object]" yazardı.
+ * `Error` atan yollar iletisini korur; tanınmayan değer `toApiError`nun
+ * "beklenmeyen hata" karşılığına düşer.
+ */
+function profileFailureText(error: unknown): string {
+  const failure = toApiError(error);
+  if (failure.code === "E_UI_UNKNOWN" && error instanceof Error && error.message.trim() !== "") {
+    return error.message;
+  }
+  return `${failure.code} — ${failure.message}`;
+}
+
 export function Providers() {
   const [rows, setRows] = useState<AdapterView[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
@@ -121,6 +135,7 @@ export function Providers() {
   const [results, setResults] = useState<Record<string, CliProbeView>>({});
   const [runErrors, setRunErrors] = useState<Record<string, ApiError>>({});
   const [cancelHint, setCancelHint] = useState<string | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [matrix, setMatrix] = useState<CliCapabilityMatrix | null>(null);
   const [matrixBusy, setMatrixBusy] = useState(false);
   const [matrixError, setMatrixError] = useState<ApiError | null>(null);
@@ -141,6 +156,12 @@ export function Providers() {
     setError(null);
     try {
       setRows(await api.providerProbe());
+      // Liste yeniden okundu: önceki yoklamalar **önceki** satırların kanıtıdır.
+      // Sürüm/yol değişmiş olabilir; eski komut ve çıktı yeni satırın altında
+      // "güncel" gibi durmamalı (matris/sınama/mimari raporları da yeni koşuda
+      // temizlenir).
+      setResults({});
+      setRunErrors({});
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -180,6 +201,11 @@ export function Providers() {
   }
 
   async function cancelProbe() {
+    // İptal sinyali çekirdekte **tek** uçuştur: ikinci tık, o sırada başlatılan
+    // yeni bir koşuyu iptal edebilecek ikinci bir istek göndermemeli.
+    setCancelBusy(true);
+    // İleti tek bir denemenin sonucudur; yeni deneme eskisini bırakmaz.
+    setCancelHint(null);
     try {
       const signalled = await api.providerProbeCancel();
       setCancelHint(
@@ -187,6 +213,8 @@ export function Providers() {
       );
     } catch (e) {
       setError(toApiError(e));
+    } finally {
+      setCancelBusy(false);
     }
   }
 
@@ -249,6 +277,24 @@ export function Providers() {
   const [apiEndpoint, setApiEndpoint] = useState("");
   const [apiModel, setApiModel] = useState("");
   const [apiMessage, setApiMessage] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
+
+  // Yalnız boşluktan oluşan alan geçerli bir uç nokta/model değildir; çekirdeğe
+  // kırpılmış değer gider (kopyala-yapıştır boşluğu yazımı bozmasın).
+  const profileReady = apiEndpoint.trim() !== "" && apiModel.trim() !== "";
+
+  async function saveProfile() {
+    // Tek uçuş: ikinci tık ikinci bir yazma göndermez.
+    setProfileBusy(true);
+    try {
+      await api.providerApiProfileSave(apiEndpoint.trim(), apiModel.trim());
+      setApiMessage(t("providers.profileSaved"));
+    } catch (error) {
+      setApiMessage(profileFailureText(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
 
   return (
     <div className="page" style={{ maxWidth: 920 }}>
@@ -268,26 +314,28 @@ export function Providers() {
             aria-label={t("providers.endpointAria")}
             placeholder={t("providers.endpointPlaceholder")}
             value={apiEndpoint}
-            onChange={(event) => setApiEndpoint(event.target.value)}
+            disabled={profileBusy}
+            onChange={(event) => {
+              setApiEndpoint(event.target.value);
+              // Alan değişti: önceki kaydın yeşil satırı bu değeri anlatmaz.
+              setApiMessage("");
+            }}
             style={{ minWidth: 260 }}
           />
           <input
             aria-label={t("providers.modelAria")}
             placeholder={t("providers.modelPlaceholder")}
             value={apiModel}
-            onChange={(event) => setApiModel(event.target.value)}
+            disabled={profileBusy}
+            onChange={(event) => {
+              setApiModel(event.target.value);
+              setApiMessage("");
+            }}
           />
           <button
             className="btn"
-            disabled={!apiEndpoint || !apiModel}
-            onClick={async () => {
-              try {
-                await api.providerApiProfileSave(apiEndpoint, apiModel);
-                setApiMessage(t("providers.profileSaved"));
-              } catch (error) {
-                setApiMessage(error instanceof Error ? error.message : String(error));
-              }
-            }}
+            disabled={profileBusy || !profileReady}
+            onClick={() => void saveProfile()}
           >
             {t("common.save")}
           </button>
@@ -913,7 +961,7 @@ export function Providers() {
                     {running === row.id ? t("providers.probing") : t("providers.probeRun")}
                   </button>
                   {running === row.id ? (
-                    <button className="btn ghost" onClick={() => void cancelProbe()}>
+                    <button className="btn ghost" disabled={cancelBusy} onClick={() => void cancelProbe()}>
                       {t("providers.probeCancel")}
                     </button>
                   ) : null}

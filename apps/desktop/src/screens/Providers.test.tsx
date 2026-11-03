@@ -37,7 +37,7 @@
 // 16. Eski kum havuzu süpürmesi özetlenir; atlananlar gizlenmez.
 // 17. **Ölçülen kusur:** adaptör değişince kalıntı panelinin önceki hata
 //     bildirimi ekranda kalıyordu.
-// 18. **Ölçülen kusur (bu tur):** uçuştaki kalıntı taraması adaptör kimliği
+// 18. **Ölçülen kusur:** uçuştaki kalıntı taraması adaptör kimliği
 //     taşımıyordu → başka adaptöre geçilince eski adaptörün envanteri yeni
 //     adaptörün panelinde çiziliyordu; hatası da yeni adaptöre yazılıyordu.
 // 19. **Ölçülen kusur:** uçuştaki ölçüm yanıtı `measure` **ve** `scan`ı
@@ -55,6 +55,24 @@
 //     değişirse eski adaptörün envanteri yeni adaptörün panelinde çiziliyordu.
 // 24. Sabitleme: yeni adaptörün kendi ölçümü/temizliği çalışır (kapılar meşru
 //     yazmayı engellemez) ve başarılı tarama önceki kırmızıyı siler.
+// 25. **Ölçülen kusur (bu tur):** başarılı "Yenile" önceki yoklamaların kanıtını
+//     temizlemiyordu → liste yeniden okunup sürüm/yol değişince eski komut ve
+//     çıktı yeni satırın altında "güncel" gibi duruyordu.
+// 26. **Ölçülen kusur:** iptal düğmesinde uçuş kapısı yoktu → çift tık iki
+//     `provider_probe_cancel` gönderiyor, ikincisi o sırada başlatılan yeni bir
+//     koşuyu iptal edebiliyordu.
+// 27. **Ölçülen kusur:** düşen iptal önceki "İptal istendi…" satırını
+//     bırakıyordu (kırmızı hata + yeşil ileti aynı anda ekranda).
+// 28. **Ölçülen kusur:** profil kaydı reddi `String(error)` ile yazılıyordu →
+//     çekirdeğin `{code, message}` nesnesi ekrana "[object Object]" olarak
+//     düşüyor, hata kodu ve iletisi kayboluyordu.
+// 29. **Ölçülen kusur:** profil kaydında uçuş kilidi yoktu → çift tık iki yazma;
+//     alanlar uçuşta açık kaldığı için yanıt, ekrandaki (kaydedilmemiş)
+//     değerlerin kaydedildiği izlenimini veriyordu.
+// 30. **Ölçülen kusur:** alan değişince önceki "Profil kaydedildi." satırı
+//     kalıyordu → yeni (kaydedilmemiş) değerin altında yeşil onay görünüyordu.
+// 31. **Ölçülen kusur:** yalnız boşluktan oluşan uç nokta/model "dolu" sayılıp
+//     kaydetmeyi açıyordu; değerler kırpılmadan çekirdeğe gidiyordu.
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1726,5 +1744,182 @@ describe("kalıntı paneli: uçuştaki yanıtlar adaptör kimliğine bağlı", (
     fireEvent.click(button(t("providers.residueScan")));
     await screen.findByText(persistenceText(SCAN));
     expect(screen.queryByText("E_CLI_RESIDUE")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Üst panel: yenileme, iptal ve API profili kaydı
+//
+// Bu üç yol kısa ömürlüdür (liste okuması, iptal sinyali, profil yazımı) ve
+// bugüne dek yalnız "istek gitti / ileti geldi" düzeyinde ölçülmüştü. Burada
+// uçuş kilidi, bayat ileti ve hata sınıfı ölçülür.
+// ---------------------------------------------------------------------------
+
+/** Profil kartı (`providers.apiProfileTitle` başlığından yukarı). */
+function profileCard(): HTMLElement {
+  const heading = screen.getByRole("heading", { level: 2, name: t("providers.apiProfileTitle") });
+  const card = heading.closest(".card");
+  if (!(card instanceof HTMLElement)) throw new Error("profil kartı yok");
+  return card;
+}
+
+function profileField(label: string): HTMLInputElement {
+  return screen.getByLabelText(label) as HTMLInputElement;
+}
+
+function fillProfile(endpoint: string, model: string) {
+  fireEvent.change(profileField(t("providers.endpointAria")), { target: { value: endpoint } });
+  fireEvent.change(profileField(t("providers.modelAria")), { target: { value: model } });
+}
+
+function saveButton(): HTMLButtonElement {
+  return button(t("common.save"), profileCard());
+}
+
+/** İkinci liste okuması: aynı adaptör, yeni sürüm ve yol. */
+const CLAUDE_V2: AdapterView = { ...CLAUDE, version: "2.2.0", path: "/opt/homebrew/bin/claude-v2" };
+
+describe("üst panel: yenileme, iptal ve profil kaydı", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("başarılı yenileme önceki yoklama kanıtını güncel gibi bırakmaz", async () => {
+    mocks.providerProbe
+      .mockResolvedValueOnce([CLAUDE, ANTIGRAVITY, KIMI, GEMINI])
+      .mockResolvedValueOnce([CLAUDE_V2, ANTIGRAVITY, KIMI, GEMINI]);
+    setup();
+    await ready();
+
+    const claude = adapterCard("Claude Code");
+    fireEvent.click(button(t("providers.probeRun"), claude));
+    await within(claude).findByText(probeArgv(probe()));
+
+    // Liste yeniden okunur: sürüm ve yol değişir, eski yoklamanın kanıtı
+    // yeni satırın altında "güncel" gibi durmamalı.
+    fireEvent.click(button(t("providers.refresh")));
+    await waitFor(() => expect(screen.getByText("2.2.0")).toBeTruthy());
+    expect(screen.queryByText(probeArgv(probe()))).toBeNull();
+  });
+
+  it("iptale çift tık tek istek gönderir ve düğme uçuşta kapanır", async () => {
+    const run = deferred<CliProbeView>();
+    const cancel = deferred<boolean>();
+    setup({ probeRun: () => run.promise, probeCancel: () => cancel.promise });
+    await ready();
+
+    const claude = adapterCard("Claude Code");
+    fireEvent.click(button(t("providers.probeRun"), claude));
+    const cancelBtn = (await within(claude).findByRole("button", {
+      name: t("providers.probeCancel"),
+    })) as HTMLButtonElement;
+
+    fireEvent.click(cancelBtn);
+    await waitFor(() => expect(mocks.providerProbeCancel).toHaveBeenCalledTimes(1));
+    // Sinyal uçuşta: ikinci tık yeni bir iptal isteği göndermemeli.
+    expect(cancelBtn.disabled).toBe(true);
+    fireEvent.click(cancelBtn);
+    expect(mocks.providerProbeCancel).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      cancel.resolve(true);
+      run.resolve(probe());
+    });
+  });
+
+  it("düşen iptal önceki 'istendi' satırını ekranda bırakmaz", async () => {
+    const run = deferred<CliProbeView>();
+    const cancel = deferred<boolean>();
+    setup({ probeRun: () => run.promise, probeCancel: () => cancel.promise });
+    await ready();
+
+    const claude = adapterCard("Claude Code");
+    fireEvent.click(button(t("providers.probeRun"), claude));
+    const cancelBtn = (await within(claude).findByRole("button", {
+      name: t("providers.probeCancel"),
+    })) as HTMLButtonElement;
+
+    fireEvent.click(cancelBtn);
+    await waitFor(() => expect(mocks.providerProbeCancel).toHaveBeenCalledTimes(1));
+    await act(async () => cancel.resolve(true));
+    expect(await screen.findByText(t("providers.cancelSignalled"))).toBeTruthy();
+
+    // İkinci deneme düşer: kırmızı hata ile birlikte eski yeşil satır kalmaz.
+    mocks.providerProbeCancel.mockRejectedValueOnce({
+      code: "E_CLI_CANCEL",
+      message: "sinyal yazılamadı",
+    });
+    fireEvent.click(cancelBtn);
+    expect(await screen.findByText("E_CLI_CANCEL")).toBeTruthy();
+    expect(screen.queryByText(t("providers.cancelSignalled"))).toBeNull();
+
+    await act(async () => run.resolve(probe()));
+  });
+
+  it("profil kaydı çekirdeğin {code, message} reddini okunur yazar, [object Object] yazmaz", async () => {
+    setup();
+    await ready();
+    fillProfile("https://ai.test/v1", "model-x");
+
+    mocks.providerApiProfileSave.mockRejectedValueOnce({
+      code: "E_AI_PROFILE",
+      message: "uç nokta https olmalı",
+    });
+    fireEvent.click(saveButton());
+
+    expect(await screen.findByText(/E_AI_PROFILE/)).toBeTruthy();
+    expect(screen.getByText(/uç nokta https olmalı/)).toBeTruthy();
+    expect(screen.queryByText(/\[object Object\]/)).toBeNull();
+  });
+
+  it("profil kaydına çift tık tek yazma gönderir; alanlar ve düğme uçuşta kilitlenir", async () => {
+    const save = deferred<void>();
+    setup();
+    mocks.providerApiProfileSave.mockImplementation(() => save.promise);
+    await ready();
+    fillProfile("https://ai.test/v1", "model-x");
+
+    const submit = saveButton();
+    fireEvent.click(submit);
+    await waitFor(() => expect(mocks.providerApiProfileSave).toHaveBeenCalledTimes(1));
+    expect(submit.disabled).toBe(true);
+    expect(profileField(t("providers.endpointAria")).disabled).toBe(true);
+    expect(profileField(t("providers.modelAria")).disabled).toBe(true);
+
+    fireEvent.click(submit);
+    expect(mocks.providerApiProfileSave).toHaveBeenCalledTimes(1);
+
+    await act(async () => save.resolve());
+  });
+
+  it("profil alanı değişince eski 'kaydedildi' satırı kalkar", async () => {
+    setup();
+    await ready();
+    fillProfile("https://ai.test/v1", "model-x");
+    fireEvent.click(saveButton());
+    expect(await screen.findByText(t("providers.profileSaved"))).toBeTruthy();
+
+    // Alan yeni değeri taşırken eski kaydın yeşil satırı "bu değer kaydedildi"
+    // gibi okunmamalı.
+    fireEvent.change(profileField(t("providers.modelAria")), { target: { value: "model-y" } });
+    expect(screen.queryByText(t("providers.profileSaved"))).toBeNull();
+  });
+
+  it("profil kaydı yalnız boşluktan oluşan alanla açılmaz; değerler kırpılarak gider", async () => {
+    setup();
+    await ready();
+    fillProfile("   ", "  ");
+    expect(saveButton().disabled).toBe(true);
+
+    // Kopyala-yapıştırdan gelen boşluk çekirdeğe taşınmaz.
+    fillProfile("  https://ai.test/v1  ", "  model-x  ");
+    fireEvent.click(saveButton());
+    await waitFor(() =>
+      expect(mocks.providerApiProfileSave).toHaveBeenCalledWith("https://ai.test/v1", "model-x"),
+    );
   });
 });
