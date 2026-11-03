@@ -13,7 +13,7 @@
 | F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama; **tire ile bölünmüş kelime** katmanı ve gerçek kaynak aralığı (2026-10-27). **Arayüz davranış testi eklendi** (`screens/Precedents.test.tsx`, **18 test**; 3 yeni mutasyonla kanıtlandı; alıntı metni değişince **bayat hüküm + “atıf alanına taşı” düğmesi** ekranda kalıyordu, uçuştaki doğrulama yanıtı **yeni metnin** hükmü gibi yazılıyordu ve emsal değişiminde eski emsalin hükmü yeni emsalin alanında görünüyordu) — 2026-11-03 |
 | F12-T06 | ✅ | toplu içe alma (CSV künye listesi, çakışma işareti) + dış bağlayıcı sicili (etkin değil) |
 | F12-T07 | ✅ | alıntı çevresi + anlam incelemesi (şema v15; gerekçesiz olumsuz hüküm yok) |
-| F12-T10 | ✅ | kütüphane araması dosya aramasından ayrı (şema değişikliği yok; sızıntı testi) |
+| F12-T10 | ✅ | kütüphane araması dosya aramasından ayrı (şema değişikliği yok; sızıntı testi). **Alıntı kopyalama** etiketi kendi sonucuna bağlandı, geç yanıtlar yeni sonuç kümesine yazılmaz (**10 test**, 2026-11-03) |
 | F12-T11 | ✅ | kaynak kullanım koşulu (şema v16) + izinsiz toplu korpus dağıtım kapısı |
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
@@ -853,3 +853,65 @@ Not besteci alanları (`n-sim`/`n-dist`/`n-conc`) emsal değişiminde
 kullanıcı görür (sessiz yazım yok), ama bu bir **açık kayıt**tır.
 `addFullText` uçuşta aynı emsalde yazılan ek metni temizler (ölçülmedi).
 Kapsam dışı: klavye, Windows, gerçek zamanlama.
+
+## Emsal alıntısı kopyalama kendi sonucuna bağlanır (2026-11-03)
+
+Kütüphane panelindeki “Alıntıyı kopyala” yolu bugüne dek **hiç ölçülmemişti**:
+`copySnippet` panoya yazıyor, düğme “Kopyalandı” oluyordu; etiketin **hangi**
+sonuca ait olduğu, yeni aramada taşınıp taşınmadığı ve uçuştaki yanıtların
+nereye yazıldığı ölçülmemişti. Lib testleri (`search-scope`,
+`i18n-bindings`) yalnız kopyalanacak **metni** doğruluyordu.
+
+**Ölçülen kusurlar — ham koşu (düzeltme öncesi bileşen): 7 failed | 23 passed
+(30 test).**
+
+- **Bayat etiket:** `copiedHit` yalnız kapsam değişiminde temizleniyordu; yeni
+  kütüphane aramasında aynı sürüm yine “Kopyalandı” görünüyordu — oysa o kopya
+  **önceki** sonuç kümesinindi.
+- **Geç yanıt:** kopya uçuşta iken yeni arama başlarsa, dönen kopya **yeni**
+  sonuç kümesinin etiketini yazıyordu.
+- **Sıra:** iki sonuca hızlı kopyada geç çözülen **ilk** kopya, son tıklananın
+  etiketini eziyordu (pano ikinci metni taşırken etiket birincide kalıyordu).
+- **Bayat yeşil:** düşen kopya önceki “Kopyalandı” satırını bırakıyordu; kırmızı
+  `E_CLIPBOARD` ile yeşil etiket aynı anda ekranda duruyordu.
+- **Geç hata (iki bağlam):** kapsam değişince ya da yeni arama başlayınca düşen
+  kopya, o bağlama `E_CLIPBOARD` yazıyordu (dosya kapsamında kopyalama
+  yapılmadığı hâlde clipboard hatası).
+
+**Düzeltme (`Search.tsx` +16/−3):** tek `copySeq` sayacı; kopya denemesi
+başında etiket kaldırılır (`setCopiedHit("")`), yalnız **en son** deneme yazar
+(başarı ve hata yolu); yeni kütüphane araması ve kapsam değişimi sayacı artırır —
+geç yanıt ne etiketi ne de aramanın hatasını yazar. Arama başında `copiedHit`
+temizliği ayrıca yapılır.
+
+**Test (`screens/Search.test.tsx` +283; yeni `describe`: 10 test; 20 → 30):**
+`navigator.clipboard.writeText` testten kurulur (jsdom panosu yok). Sabitlenen:
+panoya sonucun **tam** alıntısı gider (`precedentSnippetForCopy`) ve etiket
+yalnız o karta konur; pano reddederse `E_CLIPBOARD` görünür, “Kopyalandı”
+yazılmaz; başarılı kopya bayat hatayı siler; yeni arama eski etiketi bırakmaz;
+uçuştaki kopyanın **başarısı** ve **hatası** yeni sonuç kümesine yazılmaz;
+kapsam değişiminde geç hata öteki kapsama yazılmaz; iki hızlı kopyada son
+tıklanan kazanır; düşen kopya önceki yeşili kaldırır; kopya sürerken düşen arama
+hatası kopya başarısıyla silinmez.
+
+**Kapı kanıtı (6 mutasyon; her biri en az bir testi düşürdü; geri alma sha256
+`493ede78601f…7153d` birebir):** M1 arama başında etiket/kopya nesli temizliği
+(**4** test), M2 başarı yolundaki sıra kapısı (**3**), M3 deneme başında eski
+etiketi kaldırma (1), M4 başarılı kopyanın bayat hatayı silmesi (1), M5 hata
+yolundaki sıra kapısı (**2**), M6 kapsam değişiminde kopya nesli artışı (1).
+**Dürüst:** ilk yazımda ayrıca bir `searchAt === searchSeq.current` kapısı
+denendi; mutasyonla **ölçülemedi** (her arama `copySeq`yi zaten artırdığı için
+ölü koddu) → koddan çıkarıldı, yedekli kapı bırakılmadı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **904/904** (59 dosya; 894 → +10) ·
+`pnpm build` temiz (**578,40 kB**, `index-B3CTekXV.js`, gzip **155,97 kB**).
+rustfmt iki manifestte fark üretmedi (Rust değişmedi).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek pano izni, gerçek Tauri
+penceresi ve **görsel QA yok**; pano sözleşmesi mock'ludur. Etiket bir
+**bildirim** gibi kalıcıdır: zamanlayıcıyla kendiliğinden silinmez, yalnız yeni
+deneme/arama/kapsam değişimi temizler. Snippet'i boş (tam metni olmayan) kayıtta
+“Alıntıyı kopyala” künye + boş alıntı satırı yazar; kayıt **açık** bırakıldı
+(metinsiz kayıt aramada künyeyle görünebilir). Kapsam dışı: klavye, Windows,
+gerçek zamanlama.
+
