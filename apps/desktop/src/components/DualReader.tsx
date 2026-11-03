@@ -213,12 +213,21 @@ function ReaderPane({
     restoredFromMemory.current = remembered !== null;
     setView(remembered ?? EMPTY_VIEW);
     setSavedQuote(null);
+    // Bölge seçimi çizildiği sürüme aittir; başka belgeye taşınmaz.
+    setDragRegion(null);
+    dragStart.current = null;
   }, [versionId]);
 
   /** Sayfa değişimi seçimi bırakır: seçim offsetleri sayfaya göredir, başka
    *  sayfaya taşınmaz. Aynı sayfaya dönüşte seçim korunur. */
   function goToPage(index: number) {
     setSavedQuote(null);
+    // Görüntü üzerindeki bölge de sayfaya bağlıdır; yeni sayfaya taşınmaz
+    // (aksi hâlde eski koordinatlar yeni sayfaya işaret olarak yazılabiliyordu).
+    if (index !== view.page) {
+      setDragRegion(null);
+      dragStart.current = null;
+    }
     setView((state) =>
       state.page === index ? state : { ...state, page: index, selection: null },
     );
@@ -725,7 +734,13 @@ function ReaderPane({
       dragRegion.y1 * display.height,
     ];
     const pageRect = rectFromDisplay(displayRect, width, height, rotation);
+    // İstek hangi sürüm ve hangi seçim için başladıysa yanıt yalnız onlara
+    // yazılır: sürüm değişince eski işaret yeni belgeye düşmez, kullanıcı bu
+    // sırada yeni bir bölge çizdiyse seçimi silinmez.
+    const captured = dragRegion;
+    const requestVersion = versionId;
     setMarkBusy(true);
+    setError(null);
     setMarkInfo(null);
     try {
       const mark = await api.markCreateRegion({
@@ -735,11 +750,12 @@ function ReaderPane({
         rects: [pageRect],
         label: "",
       });
-      setMarks((prev) => [...prev, mark]);
-      setDragRegion(null);
+      if (versionRef.current !== requestVersion) return;
+      setMarks((prev) => (prev.some((row) => row.id === mark.id) ? prev : [...prev, mark]));
+      setDragRegion((state) => (state === captured ? null : state));
       setMarkInfo(t("readerUi.regionMarkSaved"));
     } catch (e) {
-      setError(toApiError(e));
+      if (versionRef.current === requestVersion) setError(toApiError(e));
     } finally {
       setMarkBusy(false);
     }
