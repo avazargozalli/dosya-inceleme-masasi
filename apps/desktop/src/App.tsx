@@ -75,9 +75,19 @@ export function App() {
   // tutulsaydı ilk ekran değişiminde yok olurdu.
   const [pendingKey, setPendingKey] = useState<string | null>(null);
 
+  // Hareketsizlik sayacı ve uçuştaki kilit isteği ref'te tutulur: zamanlayıcı
+  // geri çağrısı render anındaki değerleri değil **güncel** olanları görmeli.
+  const lastActivity = useRef(Date.now());
+  const unlocked = useRef(false);
+  const lockingRef = useRef(false);
+  const [locking, setLocking] = useState(false);
+
   const refresh = useCallback(async () => {
     try {
       setStatus(await api.status());
+      // Başarılı okuma önceki durum/kilit hatasını siler: kırmızı bant bayat
+      // kalmaz (ör. bir kez düşen kilit denemesinden sonra başarılı kilit).
+      setError(null);
       return true;
     } catch (e) {
       setError(toApiError(e));
@@ -89,17 +99,19 @@ export function App() {
     void refresh();
   }, [refresh]);
 
-  // Hareketsizlik sayacı: kasa açıkken süre dolunca kendiliğinden kilitlenir.
-  const lastActivity = useRef(Date.now());
-  const unlocked = useRef(false);
+  // Kasa açıldığında hareketsizlik sayacı sıfırlanır: kilitliyken geçen süre
+  // "kasa açıkken hareketsizlik" sayılmaz. Aksi hâlde kasa açıldıktan hemen
+  // sonra yeniden kilitlenebilir.
   useEffect(() => {
     unlocked.current = status.unlocked;
+    if (status.unlocked) lastActivity.current = Date.now();
   }, [status.unlocked]);
 
   // Otomatik yedek: klasör seçilmişse ve süresi dolduysa kasa açıkken alınır.
+  // Kasa açıldığı anda ilk kontrol koşar; kilitliyken istek gönderilmez.
   useEffect(() => {
+    if (!status.unlocked) return;
     const run = async () => {
-      if (!unlocked.current) return;
       const settings = readBackupSettings();
       if (!settings.dir) return;
       if (!isBackupDue(settings.last, Date.now(), settings.days)) return;
@@ -113,8 +125,32 @@ export function App() {
     const timer = setInterval(() => void run(), BACKUP_CHECK_MS);
     void run();
     return () => clearInterval(timer);
-  }, []);
+  }, [status.unlocked]);
 
+  // Kilit tek kapıdan geçer (elle + otomatik): çift istek yok, başarıda durum
+  // **yerel olarak** kilitliye çekilir. Durum okuması düşse bile kasa kapalıyken
+  // açık ekran/içerik görünür kalmaz (fail-closed).
+  const lockNow = useCallback(async (): Promise<boolean> => {
+    if (lockingRef.current) return false;
+    lockingRef.current = true;
+    setLocking(true);
+    try {
+      await api.lockVault();
+      setStatus((s) => ({ ...s, unlocked: false }));
+      lastActivity.current = Date.now();
+      await refresh();
+      return true;
+    } catch (e) {
+      // Sayaç sıfırlanmaz: sonraki kontrol (30 sn) yeniden dener.
+      setError(toApiError(e));
+      return false;
+    } finally {
+      lockingRef.current = false;
+      setLocking(false);
+    }
+  }, [refresh]);
+
+  // Hareketsizlik sayacı: kasa açıkken süre dolunca kendiliğinden kilitlenir.
   useEffect(() => {
     const bump = () => {
       lastActivity.current = Date.now();
@@ -125,11 +161,7 @@ export function App() {
     const timer = setInterval(() => {
       if (!unlocked.current) return;
       if (!shouldAutoLock(lastActivity.current, Date.now())) return;
-      lastActivity.current = Date.now();
-      void api
-        .lockVault()
-        .then(() => refresh())
-        .catch(() => undefined);
+      void lockNow();
     }, AUTO_LOCK_CHECK_MS);
     return () => {
       window.removeEventListener("pointerdown", bump);
@@ -137,7 +169,7 @@ export function App() {
       window.removeEventListener("wheel", bump);
       clearInterval(timer);
     };
-  }, [refresh]);
+  }, [lockNow]);
 
   const locked = !status.unlocked;
 
@@ -183,17 +215,7 @@ export function App() {
             <strong>{t(NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot")}</strong>
           </div>
           {status.unlocked ? (
-            <button
-              className="btn"
-              onClick={async () => {
-                try {
-                  await api.lockVault();
-                  await refresh();
-                } catch (e) {
-                  setError(toApiError(e));
-                }
-              }}
-            >
+            <button className="btn" disabled={locking} onClick={() => void lockNow()}>
               {t("shell.lock")}
             </button>
           ) : null}
