@@ -10,7 +10,7 @@
 | F12-T02 | ✅ | kullanım notu: benzerlik / ayrışan nokta / kullanıcı sonucu |
 | F12-T03 | ✅ | atıf kontrolü: künye ve alıntı boyutları ayrı |
 | F12-T04 | ✅ | “bulunamadı” ile “uydurulmuş” ayrımı korunur; sahte hükmü yok |
-| F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama; **tire ile bölünmüş kelime** katmanı ve gerçek kaynak aralığı (2026-10-27) |
+| F12-T05 | ✅ | karar tam metni (şema v13) + metin içi alıntı doğrulama; **tire ile bölünmüş kelime** katmanı ve gerçek kaynak aralığı (2026-10-27). **Arayüz davranış testi eklendi** (`screens/Precedents.test.tsx`, **18 test**; 3 yeni mutasyonla kanıtlandı; alıntı metni değişince **bayat hüküm + “atıf alanına taşı” düğmesi** ekranda kalıyordu, uçuştaki doğrulama yanıtı **yeni metnin** hükmü gibi yazılıyordu ve emsal değişiminde eski emsalin hükmü yeni emsalin alanında görünüyordu) — 2026-11-03 |
 | F12-T06 | ✅ | toplu içe alma (CSV künye listesi, çakışma işareti) + dış bağlayıcı sicili (etkin değil) |
 | F12-T07 | ✅ | alıntı çevresi + anlam incelemesi (şema v15; gerekçesiz olumsuz hüküm yok) |
 | F12-T10 | ✅ | kütüphane araması dosya aramasından ayrı (şema değişikliği yok; sızıntı testi) |
@@ -743,3 +743,56 @@ yanlış pozitif kapısı). Sayfa-sınırı penceresi ~1.064 karakter taşır. C
 Python/PyMuPDF ister (CI'da `#[ignore]`); kayıt PyMuPDF sürümüne bağlıdır — sürüm
 değişince üretici yeniden koşmalıdır, aksi hâlde canlı test **düşer**. Tauri
 penceresi açılmadı → yeni etiketin görsel QA'si yok; Windows denenmedi.
+
+## Alıntı hükmü metne bağlanır (2026-11-03)
+
+Emsal ekranının alıntı doğrulama kartı 2026-11-01'de davranış testine alınmıştı;
+açık kayıt **`quoteInput` değişince önceki doğrulama sonucunun silinmemesiydi**.
+Bu turda kayıt kapatıldı ve aynı sınıfın iki yarışı ölçüldü.
+
+**Yazılanlar — `src/screens/Precedents.test.tsx` (+3 test; 15 → 18):** mevcut
+harness (jsdom + RTL, `lib/api` kısmi mock) korundu. Sabitlenenler:
+(1) başarılı doğrulamadan sonra alıntı metni değişince hüküm **ve** “atıf alanına
+taşı” düğmesi kalkar; düzenleme kendiliğinden yeni istek üretmez; alan
+boşaltılınca hüküm geri gelmez ve “Doğrula” kapalıdır; (2) doğrulama uçuşta
+iken metin değişirse geç yanıt yeni metnin hükmü gibi yazılmaz, kilit açılır ve
+yeni metin kendi isteğiyle doğrulanır; (3) doğrulama uçuşta iken başka emsal
+seçilirse eski emsalin hükmü yeni emsalin (boş) alanında görünmez.
+
+**Ölçülen kusurlar — ham koşu (düzeltme öncesi bileşen): 3 failed | 15 passed.**
+- **Bayat hüküm + yanlış atıf (asıl kayıt):** alıntı alanı her değiştiğinde
+  `verification` silinmiyordu. Kullanıcı yeni bir cümle yazdığında ekranda
+  **önceki cümlenin yeşil “birebir bulundu”** satırı ve “Atıf alanına taşı”
+  düğmesi kalıyordu; düğme, **doğrulanmamış** yeni metnin hükmünü atıf
+  kontrolünün `quote_match` alanına yazabiliyordu.
+- **Geç yanıt yeni metne yazılıyordu:** `verifyQuote` yanıtı istek anındaki
+  metne bağlamıyordu. İstek askıdayken metin değişince dönen hüküm yeni metnin
+  altında “güncel” gibi görünüyordu (yanlış alıntıya atıf taşıma riski).
+- **Emsal değişiminde eski hüküm (INV-05):** seçim değişince `verification`
+  sıfırlanıyordu ama uçuştaki yanıt sonradan yazıldığı için **önceki emsalin
+  hükmü** yeni emsalin alıntı alanında beliriyordu (alan boşken bile).
+
+**Düzeltme (`Precedents.tsx` +24/−5):** `quoteEdit` (her metin/emsal
+değişiminde artar) ve `quoteReq` (her doğrulama isteğinde artar) sayaçları;
+metin `onChange`’i `setVerification(null)` + sayaç artışı yapar; emsal değişimi
+de sayacı artırır; yanıt yalnız **en son istek** ve **aynı metin** için yazılır;
+kilidi yalnız en son istek açar. Hata bildirimi metin düzenlenince silinmez
+(gerçekleşmiş bir denemenin bildirimi; sonraki doğrulama siler).
+
+**Kapı kanıtı (3 mutasyon; her biri kendi testini düşürdü; geri alma sha256
+`921fcb75…d33b0` birebir):** M1 `onChange`’deki `setVerification(null)` →
+1 kırmızı; M2 yanıt yazımındaki `edit` kapısı → 2 kırmızı (metin + emsal
+mutasyonu); M3 emsal değişimindeki `quoteEdit` artışı → 1 kırmızı. **Dürüst:**
+ilk denemede M3 yeşil kaldı — test 3 yeni emsalde alanı doldurduğu için
+`onChange` sayacı zaten artıyordu; test, alanı **boş bırakıp** yanıtı `act` ile
+akıtacak şekilde düzeltildi, M3 de kırmızı verdi.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **801/801** (55 dosya; 798 → +3) ·
+`pnpm build` temiz (**575,01 kB**, `index-N8N1uwex.js`, gzip **154,88 kB**).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi,
+gerçek `invoke`, yazma hızı ve **görsel QA yok**; `api` mock’lu olduğu için
+`verify_precedent_quote` SQL’i ve dört katmanlı eşleştirme **koşmaz**. Hüküm
+metinle (sayaçlarla) bağlanır, karakter aralığıyla değil; aynı metni yeniden
+yazmak hükmü tazeler (yeniden “Doğrula” gerekir). Kapsam dışı: kopyala/yapıştır
+ile metin değişimi (aynı `onChange`), IME, klavye, Windows.
