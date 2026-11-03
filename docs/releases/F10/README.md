@@ -310,6 +310,49 @@ kullanıcının kendi oturumlarından geliyor ve **uygulama onlara dokunmuyor**.
 - Tauri penceresi açılmadı → kartın gerçek tıklaması/görsel QA'sı yok. Ölçüm ve
   temizlik çekirdeği gerçek süreçle test edildi (sentetik işaretçi testi).
 
+### Arayüz uçuş yarışları — yanıt adaptör kimliğine bağlı (2026-11-04)
+
+Kart dört çekirdek komutu çağırır (`cli_residue_scan`, `cli_residue_measure`,
+`cli_residue_cleanup`, `cli_stale_sandbox_sweep`). Adaptör seçimi değişince
+kart durumu temizliyordu; ancak **uçuştaki** yanıt hangi adaptör için
+istendiğini taşımıyordu. Ölçülen altı kusur:
+
+1. **Çapraz envanter:** tarama askıda iken başka adaptöre geçilince eski
+   adaptörün kökü/yolları yeni adaptörün panelinde çiziliyordu; hatası da
+   yeni adaptöre yazılıyordu.
+2. **Çapraz ölçüm + yanlış temizlik hedefi:** ölçüm yanıtı hem `measure`ı hem
+   `scan`ı (`after`) yazıyordu → yeni adaptörde “ölçüm bitti” ve temizlik
+   düğmesi açılıyor; temizlik **eski adaptörün** ölçüm zamanı ve dosya
+   listesiyle yeni adaptör adına gönderilebiliyordu.
+3. **Çapraz temizlik:** temizlik askıda iken adaptör değişince özet yeni
+   adaptörde çiziliyor, ardından **eski adaptör** yeniden taranıp sonucu yeni
+   adaptöre yazılıyordu.
+4. **Kilit devri yok:** adaptör değişimi `busy` bayrağını bırakmıyordu → eski
+   istek dönene kadar yeni adaptörün “Envanteri tara” düğmesi kapalıydı.
+5. **Erken açılan kilit:** tek `busy` bayrağı paylaşıldığı için eski isteğin
+   `finally`si yeni adaptörde başlatılan isteğin kilidini açıyordu (tarama,
+   ölçüm, temizlik ve süpürme için ayrı ayrı ölçüldü).
+6. **Bayat tazeleme:** temizlik sonrası yeniden tarama askıda iken adaptör
+   değişirse eski adaptörün envanteri yeni adaptörün panelinde çiziliyordu.
+
+Düzeltme: `contextSeq` sayacı. Her işlem istek anındaki adaptörü ve sırayı
+saklar; yanıt yalnız aynı bağlamda yazılır (başarı, hata ve `finally` yolu).
+Adaptör değişimi sayacı artırır ve kilidi bırakır. Temizlik hedefleri istek
+anında donar; tazeleme istek anındaki adaptör için koşar.
+
+Doğrulama: `Providers.test.tsx` 17 → 30 test (13 yeni). Düzeltme öncesi ham
+koşu **8 failed | 19 passed**; kapı kanıtı **13/13** mutasyon (ilk koşuda üç
+mutasyon hayatta kaldı — ölçüm/temizlik kilit kapıları ve temizlik tazeleme
+kapısı — üç test eklendi). `tsc --noEmit` temiz, vitest **929/929** (60 dosya),
+`npm run build` temiz (579,03 kB / gzip 156,06 kB). Kod `519be7d`.
+
+Dürüst sınırlar: jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek CLI
+süreçleri ve görsel QA yok; `api` mock'lu olduğu için `cli_residue_*` SQL/Rust
+tarafı ve gerçek dosya silme koşmaz. Testler yanıt **sırasını** (elle çözülen
+sözler) denetler, gerçek gecikmeyi değil. Süpürme adaptörden bağımsızdır ama
+adaptör değişiminde sonucu **bilinçli olarak** yazılmaz: tek bayrak kilidi
+paylaşıldığı için bağlam kapısına dahil edildi.
+
 ## Yetenek matrisi ve bağlantı durumu (F10-T11, 2026-10-24)
 
 `crates/cli-adapters/src/capability.rs`. Dört yetenek kaydedilir: **araçsız
@@ -491,7 +534,7 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` temiz;
   `clippy -p dim-cli-adapters --all-targets -D warnings` temiz; rustfmt iki
   manifest temiz.
-- Web: **246** test (F10-T01 turunda 15 yeni `arch.test.ts`: tonlar, evrensel rozet
+- Web: **929** test (F10-T01 turunda 15 yeni `arch.test.ts`: tonlar, evrensel rozet
   metni, mimari listesi, biçim/yol satırları, neden çevirisi, shebang satırı, özet,
   en kötü karar sırası, farklı/evrensel-uyumsuz/doğrulanamayan uyarıları, kart
   rozeti, zaman damgası; F10-T12 turunda 25 yeni `attack.test.ts`: karar tonları ve
@@ -499,7 +542,9 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
   uyarıları, adaptör uyarıları, karar sayımı/en kötü karar/toplam işaret;
   F10-T11 turunda 8 yeni `capability.test.ts`: durum/bağlantı
   tonları, özet sayıları, kapı metni, gerekçe çevirisi, uyarılar, en kötü durum,
-  yoklanan komut), `tsc --noEmit` + `vite build` yeşil.
+  yoklanan komut), `tsc --noEmit` + `vite build` yeşil. F10-T13 arayüz turunda
+  `Providers.test.tsx` 17 → 30 (13 yeni: uçuştaki kalıntı tarama/ölçüm/temizlik
+  yanıtları adaptör kimliğine bağlandı; kilit devri ve erken kilit açma ölçüldü).
 - Gerçek yetenek yoklaması (`cargo run -p dim-cli-adapters --example caps`):
   Claude 4/4 `declared` (kapı açık), Codex 3/4 (`tool_free` doğrulanamadı),
   Kimi uyumsuz, Antigravity kurulu değil — tablo yukarıda.
