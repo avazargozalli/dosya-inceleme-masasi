@@ -13,7 +13,7 @@
 // 4. Boş panel, diğer panelde açık sürümü seçmez (yan yana iki farklı belge).
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../lib/i18n";
 import type { DocumentPages, DocumentRow, PageRow } from "../lib/api";
 
@@ -41,6 +41,15 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 const { DualReader } = await import("./DualReader");
+
+// jsdom `scrollIntoView` sağlamaz; hedef aralık çizilince okuyucu çağırıyor.
+// Stub olmadan effect'teki hata React ağacını düşürüyor (test ortamı sınırı).
+beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
+afterEach(() => {
+  Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+});
 
 const ISO = "2026-10-01T00:00:00Z";
 
@@ -278,5 +287,90 @@ describe("okuyucu panel davranışı", () => {
     const left = pane(t("readerUi.leftDocument"));
     expect(await within(left).findByText(/Sol belge birinci sayfa/)).toBeTruthy();
     expect(within(left).queryByText(/Sag belge birinci sayfa/)).toBeNull();
+  });
+
+  it("hedef sayfadan başka sayfaya geçilince arama vurgusu haritaya taşınmaz", async () => {
+    const HIT = {
+      ...TARGET_A,
+      pageId: "v1-p1",
+      pageIndex: 0,
+      startOffset: 0,
+      endOffset: 5,
+      quote: "Kutulu",
+      // Kaynak kendi kutularını taşıyor: harita **bunları** çizmeli, blok
+      // kutusunu değil (ikisi aynı olsaydı hangi yolun kullanıldığı ölçülmezdi).
+      quads: [[20, 30, 140, 50]] as [number, number, number, number][],
+    };
+    mocks.documentPages.mockImplementation(async (versionId: string) =>
+      versionId === "v1"
+        ? {
+            ...PAIN_A,
+            pages: [
+              page({
+                id: "v1-p1",
+                pageIndex: 0,
+                text: "Kutulu sayfa",
+                blocks: [{ start: 0, end: 6, bbox: [10, 10, 200, 60] }],
+              }),
+              page({
+                id: "v1-p2",
+                pageIndex: 1,
+                text: "Ikinci sayfa",
+                blocks: [{ start: 0, end: 6, bbox: [10, 20, 180, 50] }],
+              }),
+            ],
+          }
+        : PAIN_B,
+    );
+    mocks.marksForVersion.mockResolvedValue([]);
+    render(
+      <DualReader caseId="c1" documents={[DOC_A, DOC_B]} left={HIT} right={TARGET_B} onClose={() => {}} />,
+    );
+
+    const left = pane(t("readerUi.leftDocument"));
+    const first = await within(left).findByRole("img", {
+      name: t("pageMap.aria", { physical: t("readerUi.physicalPage", { page: 1 }), count: 1 }),
+    });
+    expect(first.querySelectorAll('rect[fill="var(--accent-soft)"]')).toHaveLength(1);
+    const hit = first.querySelector('rect[fill="var(--accent-soft)"]')!;
+    expect([hit.getAttribute("x"), hit.getAttribute("y"), hit.getAttribute("width"), hit.getAttribute("height")])
+      .toEqual(["20", "30", "120", "20"]);
+
+    fireEvent.click(
+      within(left).getByRole("button", { name: t("readerUi.physicalPage", { page: 2 }) }),
+    );
+    const second = await within(left).findByRole("img", {
+      name: t("pageMap.aria", { physical: t("readerUi.physicalPage", { page: 2 }), count: 1 }),
+    });
+    // Hedef 1. sayfada; 2. sayfanın haritasında arama isabeti boyanmamalı.
+    expect(second.querySelectorAll('rect[fill="var(--accent-soft)"]')).toHaveLength(0);
+  });
+
+  it("vurgu aralığı yoksa blok kutuları isabet gibi boyanmaz", async () => {
+    mocks.documentPages.mockImplementation(async (versionId: string) =>
+      versionId === "v1"
+        ? {
+            ...PAIN_A,
+            pages: [
+              page({
+                id: "v1-p1",
+                pageIndex: 0,
+                text: "Vurgusuz sayfa",
+                blocks: [{ start: 0, end: 8, bbox: [10, 10, 200, 60] }],
+              }),
+            ],
+          }
+        : PAIN_B,
+    );
+    mocks.marksForVersion.mockResolvedValue([]);
+    // Hedefte aralık/uçuş yok: harita hiçbir kutuyu "bulundu" gibi boyamamalı.
+    render(
+      <DualReader caseId="c1" documents={[DOC_A, DOC_B]} left={TARGET_A} right={TARGET_B} onClose={() => {}} />,
+    );
+
+    await screen.findByText("Vurgusuz sayfa");
+    const map = within(pane(t("readerUi.leftDocument"))).getByRole("img");
+    expect(map.querySelectorAll("rect")).toHaveLength(1);
+    expect(map.querySelectorAll('rect[fill="var(--accent-soft)"]')).toHaveLength(0);
   });
 });

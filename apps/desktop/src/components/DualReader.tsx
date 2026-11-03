@@ -465,13 +465,18 @@ function ReaderPane({
             };
           })
       : [];
-  // Anchor kaydı kendi kutularını taşıyorsa onlar kullanılır; arama sonucunda
-  // bloklardan hesaplanır. Kutu yoksa harita vurgusuz kalır.
-  const highlightQuads =
-    paneTarget?.quads.length ? paneTarget.quads : current ? blocksForRange(current.blocks, highlightRange) : [];
-  // Kullanıcı hedef sayfadan başka sayfaya geçtiyse "bulunamadı" uyarısı
-  // yanıltıcı olur; yalnız hedefin sayfasında gösterilir.
+  // Hedef (arama sonucu veya kaynak bağ) hangi sayfadaysa harita vurgusu
+  // **yalnız o sayfada** çizilir; başka sayfaya geçilince eski sayfanın
+  // koordinatları yeni sayfanın haritasına taşınmaz.
   const targetPage = data ? resolvePageIndex(data.pages, paneTarget) : -1;
+  const highlightQuads =
+    current && page === targetPage
+      ? paneTarget?.quads.length
+        ? paneTarget.quads
+        : highlightRange
+          ? blocksForRange(current.blocks, highlightRange)
+          : []
+      : [];
   const parseWarningsList = data ? parseWarnings(data.parseRun.warnings) : [];
 
   useEffect(() => {

@@ -1,6 +1,11 @@
 import type { PageRow } from "../lib/api";
 import { t } from "../lib/i18n";
-import { displayPageSize, mapRectForDisplay, pageLabelInfo } from "../lib/reader";
+import {
+  displayPageSize,
+  mapRectForDisplay,
+  normalizeRotation,
+  pageLabelInfo,
+} from "../lib/reader";
 
 /** Sayfa haritası: ayrıştırıcının **gerçekten ürettiği** blok kutuları.
  *  Sayfanın görüntüsü değildir; kutu yoksa hiç çizilmez (konum uydurulmaz).
@@ -21,6 +26,11 @@ function PageMap({
   const height = page.height ?? 0;
   if (width <= 0 || height <= 0) return null;
   const display = displayPageSize(width, height, rotation);
+  const displayRotation = normalizeRotation(rotation);
+  // Harita yalnız **kutusu olan** blokları çizer; künye/erişilebilir ad da
+  // çizilen kutuları sayar (haritada görünmeyen blok "N blok" diye yazılırsa
+  // künye haritayla çelişirdi).
+  const drawnBlocks = page.blocks.filter((block) => block.bbox).length;
   const unit =
     page.coordinateSpace === "image_pixels" ? t("pageMap.unitPixel") : t("pageMap.unitPoint");
   const label = pageLabelInfo(page);
@@ -31,7 +41,7 @@ function PageMap({
         role="img"
         aria-label={t("pageMap.aria", {
           physical: label.physical,
-          count: page.blocks.length,
+          count: drawnBlocks,
         })}
         style={{
           display: "block",
@@ -101,8 +111,8 @@ function PageMap({
           height: Math.round(height),
           unit,
         })}
-        {rotation ? ` · ${t("pageMap.rotated", { rotation })}` : ""} ·{" "}
-        {t("pageMap.blocks", { count: page.blocks.length })}
+        {displayRotation ? ` · ${t("pageMap.rotated", { rotation: displayRotation })}` : ""} ·{" "}
+        {t("pageMap.blocks", { count: drawnBlocks })}
       </figcaption>
     </figure>
   );
