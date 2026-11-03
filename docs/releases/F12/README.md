@@ -796,3 +796,60 @@ gerçek `invoke`, yazma hızı ve **görsel QA yok**; `api` mock’lu olduğu i�
 metinle (sayaçlarla) bağlanır, karakter aralığıyla değil; aynı metni yeniden
 yazmak hükmü tazeler (yeniden “Doğrula” gerekir). Kapsam dışı: kopyala/yapıştır
 ile metin değişimi (aynı `onChange`), IME, klavye, Windows.
+
+## Türetilmiş okumalar seçim nesline bağlanır (2026-11-03)
+
+Emsal ekranı 1497 satırdı ve 18 testi yalnız **kütüphane/künye/izin/atıf**
+kararlarını ölçüyordu; türetilmiş okumaların **hangi emsale/dosyaya/sürüme**
+yazıldığı ölçülmemişti. Yeni `describe` 15 test ekledi (18 → 33).
+
+**Ölçülen kusurlar — ham koşu (düzeltme öncesi bileşen): 10 failed | 18 passed.**
+
+- **Geç yanıt yeni seçimin verisini eziyordu (dört okuma, tek kök):** notlar,
+  sürümler, künye ve **koşul kaydı** istekleri yalnız `selected` üzerinden
+  yazıyordu, nesil kapısı yoktu. A seçilip B'ye geçildiğinde A'nın geç yanıtı
+  B'nin altında çiziliyor; **koşul formu A'nın izin kaydıyla doluyor** ve
+  “Koşulu kaydet” o kaydı **B'ye** yazabiliyordu (rozet/kapsam yalanı).
+- **Belge listesi (dosya):** geç yanıt `docs` + `versionId`'yi eziyor →
+  “Kontrolü kaydet” **eski dosyanın** belge sürümüne yazıyordu (INV-05,
+  yalnız görsel değil **kapsam** ihlali).
+- **Kasadan aktarım zinciri (iki halka):** geç gelen kaynak dosya listesi
+  `srcDocId`'yi, geç gelen sürüm listesi `srcVersionId`'yi eziyor →
+  `precedentTextFromDocument` **başka dosyanın belgesinden** metin alabiliyordu
+  (kaynak izlenebilirliği — F12'nin çekirdek iddiası).
+- **Atıf kontrol listesi:** eski sürümün kontrolleri yeni sürümün altında
+  görünüyordu.
+- **Anlam bağlamı:** A kontrolünün bağlamı B'nin panelinde “B'nin alıntısı”
+  gibi çiziliyordu (hüküm yanlış metne bakılarak verilir).
+- **Yazma sonrası tazelemeler (beş yol):** not, tam metin, aktarım, koşul ve
+  anlam hükmü yanıtları seçim değiştikten sonra yeni emsalin kartlarını
+  yazıyordu; not yazımı ayrıca **uçuşta yazılan yeni metni** siliyordu.
+
+**Düzeltme (`Precedents.tsx` +160/−58):** altı kimlik ref'i (`selectedRef`,
+`caseRef`, `srcCaseRef`, `srcDocRef`, `versionRef`, `meaningForRef`) + iki yeni
+sayaç (`meaningSeq`, `citationRef`; `quoteReq` zaten vardı); her okuma yanıtı
+**yalnız kendi kimliği hâlâ seçiliyse** yazar (hata yolu dâhil), her yazma
+sonrası tazeleme aynı kapıdan geçer; anlam paneli sıra + açık kimlik kapısı
+taşır; `addCheck` yalnız kullanıcının yazdığı metin **değişmediyse** alanı
+temizler.
+
+**Kapı kanıtı (16 mutasyon; her biri `1 failed | 32 passed`, geri alma sha256
+`0b7a07f69e93…9cca43` birebir):** M1–M4 dört seçim okuması, M5 belge listesi,
+M6–M7 aktarım zinciri, M8 kontrol listesi, M9 anlam bağlamı, M10–M11 not
+tazeleme + taslak koruma, M12 atıf metni koruma, M13 anlam hükmü tazeleme,
+M14 aktarım sonucu, M15 koşul formu, M16 tam metin yanıtı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **856/856** (57 dosya; 841 → +15) ·
+`npm run build` temiz (**577,71 kB**, `index-Bdwv-vK5.js`, gzip **155,74 kB**).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi,
+gerçek `invoke` ve **görsel QA yok**; `api` mock'lu olduğu için
+`precedent_note_list`, `precedent_terms_get/set`, `document_list`,
+`precedent_text_from_document`, `citation_check_list`, `citation_context` SQL'i
+ve Rust **koşmaz**. Kapılar **kimlik** karşılaştırır (nesil sayacı değil): aynı
+emset yeniden seçilirse eski istek ayırt edilmez (pratikte aynı veri döner).
+Not besteci alanları (`n-sim`/`n-dist`/`n-conc`) emsal değişiminde
+**temizlenmez** — kullanıcı girdisi korunur; A için yazılan metin B'de duruyorsa
+kullanıcı görür (sessiz yazım yok), ama bu bir **açık kayıt**tır.
+`addFullText` uçuşta aynı emsalde yazılan ek metni temizler (ölçülmedi).
+Kapsam dışı: klavye, Windows, gerçek zamanlama.
