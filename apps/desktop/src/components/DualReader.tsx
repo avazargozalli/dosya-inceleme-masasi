@@ -125,6 +125,9 @@ function ReaderPane({
   // türetilmez); işaret/not oluşturma çekirdek komutlarıyla yapılır.
   const [marks, setMarks] = useState<MarkRow[]>([]);
   const [markBusy, setMarkBusy] = useState(false);
+  // Silme uçuşta olan işaret: düğme kapalı kalır, ikinci tık ikinci yazma
+  // üretmez (ikinci istek düşüp başarılı silmenin üstüne hata yazardı).
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [markInfo, setMarkInfo] = useState<string | null>(null);
   const [anchorBusy, setAnchorBusy] = useState(false);
   const [noteDraft, setNoteDraft] = useState<NoteDraft | null>(null);
@@ -643,13 +646,21 @@ function ReaderPane({
   }
 
   async function removeMark(markId: string) {
+    // Yanıt hangi sürüm için istendiyse yalnız o sürüm açıkken yazılır; aksi
+    // hâlde başka belgenin ekranında "işaret silindi" ya da hata görünürdü.
+    const requestVersion = versionRef.current;
+    setError(null);
+    setMarkInfo(null);
+    setRemovingId(markId);
     try {
-      setError(null);
       await api.markDelete(markId);
+      if (versionRef.current !== requestVersion) return;
       setMarks((prev) => prev.filter((mark) => mark.id !== markId));
       setMarkInfo(t("readerUi.markDeleted"));
     } catch (e) {
-      setError(toApiError(e));
+      if (versionRef.current === requestVersion) setError(toApiError(e));
+    } finally {
+      setRemovingId(null);
     }
   }
 
@@ -1614,6 +1625,7 @@ function ReaderPane({
                         className="btn ghost"
                         style={{ height: 22, padding: "0 6px" }}
                         aria-label={t("readerUi.deleteMarkAria")}
+                        disabled={removingId === mark.id}
                         onClick={() => void removeMark(mark.id)}
                       >
                         {t("readerUi.delete")}
