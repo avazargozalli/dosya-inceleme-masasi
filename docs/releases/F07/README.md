@@ -14,7 +14,7 @@
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
 | F07-T08 | ✅ | yan yana iki panel kendi sürümünü, sayfasını, yakınlaştırmasını ve seçimini korur; sürüm başına görünüm belleği |
-| F07-T09 | ✅ | metin seçimi doğrulanmış anchor'a bağlı kalıcı işaret ve kaynaklı not üretir; bölge işareti sayfa koordinatında saklanır |
+| F07-T09 | ✅ | metin seçimi doğrulanmış anchor'a bağlı kalıcı işaret ve kaynaklı not üretir; bölge işareti sayfa koordinatında saklanır. Kayıtlı bölgeler görüntü üzerinde **çizilir** (kutu yüzdeleri, belge döndürmesi) ve silme kendi sürümüne bağlıdır (**12 test**, 2026-11-03) |
 | F07-T12 | ✅ | kısmi ayrıştırma rozeti; kopmuş/eski kaynak bağlantısı görünür, güncel sürümde yeniden bağlama önerisi kullanıcı onayıyla uygulanır (arayüz davranış testi: **10 test**, yeniden bağlama hedef bağa bağlandı — 2026-11-03) |
 | F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
 | F07-T11 | ✅ | sayfa önizlemesi kasa anahtarıyla şifreli disk önbelleğinde; bellekteki çözülmüş sayfalar kilitta temizlenir |
@@ -554,6 +554,64 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   `heading | Kira Sözleşmesi › Ödeme`, `paragraph | … · p/4`. Offsetler metinle
   birebir eşleşiyor.
 - CI: `98d757a` → `ci.yml` **40034456417**, **7/7 yeşil** (SBOM dahil).
+
+## Doğrulama (F07-T09 — bölge katmanı, 2026-11-03)
+
+Okuyucuda **kayıtlı** bölge işaretlerinin sayfa görüntüsü üzerinde çizilmesi
+(`previewRegions`), sayfa haritasına (`PageMap`) verilmesi ve işaretin
+**silinmesi** bugüne dek hiç ölçülmemişti: `DualReader.region.test.tsx` yalnız
+sürükleyip **yazmayı**, `PageMap.test.tsx` yalnız haritanın kendi çizimini
+kapsıyordu.
+
+**Ölçülen kusurlar — ham koşu (düzeltme öncesi bileşen): 4 failed | 8 passed
+(12 test).**
+
+- **Bayat yeşil (silme):** silme denemesi başında `markInfo` temizlenmiyordu →
+  düşen silmeden sonra önceki "İşaret silindi." satırı kırmızı hatayla **aynı
+  anda** ekranda duruyordu.
+- **Geç başarı (sürüm):** uçuştaki `mark_delete` yanıtı sürüm kapısı
+  taşımıyordu → başka belgeye geçildikten sonra dönen yanıt **yeni sürüme**
+  "İşaret silindi." yazıyordu.
+- **Geç hata (sürüm):** hata yolu da kapısızdı → yeni sürüme `E_MARK`
+  yazılıyordu (o belgede silme yapılmadığı hâlde).
+- **Uçuş kapısı yok:** silme düğmesi istek sürerken açık kalıyordu; iki tık iki
+  `mark_delete` gönderiyor, ikincisi düşünce **başarılı** silmenin üstüne
+  kırmızı hata yazıyordu (kırmızı: `disabled` beklenen `true`, gelen `false`;
+  ikinci çağrı).
+
+**Düzeltme (`DualReader.tsx` +14/−2):** `removingId` durumu (silme uçuşta olan
+işaret; düğme yalnız o satırda kapalı), silme başında `setMarkInfo(null)`,
+yanıt **yalnız istek anındaki sürüm açıkken** yazılır (başarı ve hata yolu).
+
+**Test (yeni `components/DualReader.regionlayer.test.tsx`, 12 test):**
+kayıtlı bölge kutuları görünen uzaya çevrilip **yüzde** olarak çizilir
+(`[60,80,300,400]` / 600×800 → `10%/10%/40%/40%`); belge döndürmesi 90° iken
+kutu döndürme öncesi uzaydan çevrilir (`[60,80,300,480]` → `40%/10%/50%/40%`);
+başka sayfanın bölgesi ve metin işareti kutu olarak **çizilmez** (işaret listede
+kalır); sayfa haritasına yalnız o sayfanın dikdörtgenleri gider (sayfa 2'ye
+geçince öteki işaret); sayfa değişince ve önizleme kapanınca kutu kalkar,
+açılınca geri gelir; silme kutuyu ve satırı kaldırır; bayat yeşil, bayat
+kırmızı, uçuş kapısı, geç başarı ve geç hata.
+
+**Kapı kanıtı (9 mutasyon; dokuzu en az bir testi düşürdü; geri alma sha256
+`7cc195dfa13b…5e61` birebir):** M1 silme başında bildirim temizliği (1), M2
+başarı yolundaki sürüm kapısı (1), M3 hata yolundaki sürüm kapısı (1), M4
+düğmenin uçuş kapısı (1), M5 silinen işareti listeden çıkarma (1), M6 bayat hata
+temizliği (1), M7 önizleme katmanının çizimi (**5** — katman testleri boş
+değil), M8 haritaya bölge aktarımı (1), M9 bölgelerin sayfaya süzülmesi (**3**).
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **916/916** (60 dosya; 904 → +12) ·
+`npm run build` temiz (**578,65 kB**, `index-B8pexWq0.js`, gzip **156,00 kB**).
+Rust değişmedi (rustfmt iki manifestte fark üretmedi).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS/yerleşim, gerçek Tauri
+penceresi ve **görsel QA yok**; kutular yüzde **stilinden** okunur, tarayıcının
+çizimi ölçülmez. **Açık kayıt:** görünüm döndürmesi (`view.rotation`) önizleme
+**görüntüsünü** döndürmüyor (img üzerinde transform yok) ama bölge kutularını ve
+sürükleme dönüşümünü döndürüyor → döndürülmüş görünümde kutu görüntüdeki
+içerikten kayar. Düzeltme görsel/yerleşim kararı (görüntüyü döndürüp kapsayıcı
+ölçüsünü takas etmek) gerektirir ve jsdom'da doğrulanamaz; bu turda davranış
+**değiştirilmedi**, karar insan görsel QA'sına bırakıldı.
 
 ## Bilinen sınırlar
 
