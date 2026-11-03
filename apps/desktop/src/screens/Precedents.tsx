@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openFiles, save as saveFile } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -129,6 +129,11 @@ export function Precedents() {
   const [fullText, setFullText] = useState("");
   const [quoteInput, setQuoteInput] = useState("");
   const [verification, setVerification] = useState<QuoteVerificationRow | null>(null);
+  // Alıntı hükmü **girdiğin metne** bağlıdır: metin her değiştiğinde (ve emsal
+  // değiştiğinde) eski hüküm düşer; uçuştaki yanıt yalnız hâlâ aynı metne
+  // aitse yazılır. `quoteReq` eşzamanlı iki doğrulamanın kilidini ayırır.
+  const quoteEdit = useRef(0);
+  const quoteReq = useRef(0);
   const versionSummary = summarizeVersions(versions);
 
   // Kasadaki belgeden tam metin (F12-T13)
@@ -229,6 +234,8 @@ export function Precedents() {
     setCopied(false);
     setVerification(null);
     setQuoteInput("");
+    // Emsal değişti: uçuştaki doğrulama yanıtı yeni emsalin alıntısına yazılmaz.
+    quoteEdit.current += 1;
     setSrcResult(null);
   }, [selected]);
 
@@ -467,13 +474,20 @@ export function Precedents() {
       });
       return;
     }
+    // Yanıt, istek atıldığı andaki metne bağlanır: kullanıcı beklerken metni
+    // değiştirirse geç gelen hüküm yeni metnin altında görünmez.
+    const req = ++quoteReq.current;
+    const edit = quoteEdit.current;
     setBusy(true);
     try {
-      setVerification(await api.precedentQuoteVerify(selected.id, quoteInput));
+      const result = await api.precedentQuoteVerify(selected.id, quoteInput);
+      if (req === quoteReq.current && edit === quoteEdit.current) setVerification(result);
     } catch (e) {
-      setError(toApiError(e));
+      if (req === quoteReq.current && edit === quoteEdit.current) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      // Yalnız en son istek kilidi açar: eski yanıt yeni doğrulamanın düğmesini
+      // erken açmaz.
+      if (req === quoteReq.current) setBusy(false);
     }
   }
 
@@ -1254,7 +1268,12 @@ export function Precedents() {
                 id="p-quote"
                 className="input"
                 value={quoteInput}
-                onChange={(e) => setQuoteInput(e.target.value)}
+                onChange={(e) => {
+                  // Metin değişti: önceki hüküm artık bu alıntıya ait değil.
+                  quoteEdit.current += 1;
+                  setQuoteInput(e.target.value);
+                  setVerification(null);
+                }}
                 placeholder={t("precedents.phQuote")}
               />
             </div>

@@ -39,8 +39,17 @@
 //     belgesine** yazılıyordu.
 // 14. **Ölçülen kusur:** başarısız alıntı doğrulaması eski sonucu/hata
 //     bildirimini bırakmaz (çelişkili ekran).
+// 15. **Ölçülen kusur:** alıntı metni değişince önceki doğrulama hükmü ve
+//     "atıf alanına taşı" düğmesi ekranda kalıyordu — doğrulanmamış yeni
+//     metnin hükmü atıf kontrolüne taşınabiliyordu.
+// 16. **Ölçülen kusur:** uçuştaki doğrulama yanıtı, kullanıcı metni
+//     değiştirdikten sonra yeni alıntının hükmü gibi yazılıyordu (geç yanıt
+//     istek anındaki metne bağlı değildi).
+// 17. **Ölçülen kusur:** doğrulama uçuştayken başka emsal seçilirse eski
+//     emsalin hükmü yeni emsalin (boş) alıntı alanının altında görünüyordu
+//     (INV-05).
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -1198,5 +1207,119 @@ describe("emsal ekranı davranışı", () => {
       expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_OLD)))).toBe(true),
     );
     expect(screen.queryByText("E_QUOTE_VERIFY")).toBeNull();
+  });
+
+  it("alıntı metni değişince önceki doğrulama hükmü ve atıf aktarma düğmesi ekranda kalmaz", async () => {
+    mocks.precedentQuoteVerify.mockResolvedValue(VERIFY_MATCH);
+    setup({ precedentVersions: async () => [PV_TEXT] });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(screen.getByText(versionStateText(PV_TEXT))).toBeTruthy());
+
+    fireEvent.change(byId<HTMLInputElement>("p-quote"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.quoteVerify") }));
+    await waitFor(() =>
+      expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(true),
+    );
+    const toCitation = t("precedents.quoteToCitation", {
+      state: quoteToCitationMatch(VERIFY_MATCH),
+    });
+    expect(screen.getByRole("button", { name: toCitation })).toBeTruthy();
+
+    // Kullanıcı metni değiştirdi: hüküm artık bu alıntıya ait değil. "Atıf alanına
+    // taşı" düğmesi kalsaydı **doğrulanmamış** yeni metnin hükmünü atıf kontrolüne
+    // yazacaktı.
+    fireEvent.change(byId<HTMLInputElement>("p-quote"), {
+      target: { value: "kira bedeli ödenmedi mi" },
+    });
+    expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
+    expect(screen.queryByRole("button", { name: toCitation })).toBeNull();
+    // Düzenleme kendiliğinden yeni istek üretmez: kullanıcı açıkça "Doğrula" demeli.
+    expect(mocks.precedentQuoteVerify).toHaveBeenCalledTimes(1);
+
+    // Alan boşaltılınca da eski hüküm geri gelmez; boş alıntı doğrulanamaz.
+    fireEvent.change(byId<HTMLInputElement>("p-quote"), { target: { value: "   " } });
+    expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: t("precedents.quoteVerify") }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("uçuştaki doğrulama yanıtı metin değiştikten sonra yeni alıntının hükmü gibi yazılmaz", async () => {
+    let resolveVerify: (row: QuoteVerificationRow) => void = () => undefined;
+    const pendingVerify = new Promise<QuoteVerificationRow>((resolve) => {
+      resolveVerify = resolve;
+    });
+    mocks.precedentQuoteVerify.mockReturnValue(pendingVerify);
+    setup({ precedentVersions: async () => [PV_TEXT] });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(screen.getByText(versionStateText(PV_TEXT))).toBeTruthy());
+
+    fireEvent.change(byId<HTMLInputElement>("p-quote"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.quoteVerify") }));
+    expect(mocks.precedentQuoteVerify).toHaveBeenCalledWith("p1", "kira bedeli ödenmedi");
+
+    // İstek askıdayken kullanıcı metni değiştirdi; kilit sürerken ikinci istek açılmaz.
+    fireEvent.change(byId<HTMLInputElement>("p-quote"), {
+      target: { value: "kira bedeli ödendi" },
+    });
+    expect(
+      (screen.getByRole("button", { name: t("precedents.quoteVerify") }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    resolveVerify(VERIFY_MATCH);
+    // Geç yanıt **eski** metnin hükmüdür; yeni metnin altında görünmez. Kilit açılır,
+    // böylece kullanıcı yeni metni doğrulayabilir.
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: t("precedents.quoteVerify") }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
+
+    mocks.precedentQuoteVerify.mockResolvedValue(VERIFY_OLD);
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.quoteVerify") }));
+    await waitFor(() =>
+      expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_OLD)))).toBe(true),
+    );
+    expect(mocks.precedentQuoteVerify).toHaveBeenLastCalledWith("p1", "kira bedeli ödendi");
+  });
+
+  it("doğrulama uçuştayken başka emsal seçilirse geç yanıt yeni emsalin alıntısına yazılmaz", async () => {
+    let resolveVerify: (row: QuoteVerificationRow) => void = () => undefined;
+    const pendingVerify = new Promise<QuoteVerificationRow>((resolve) => {
+      resolveVerify = resolve;
+    });
+    mocks.precedentQuoteVerify.mockReturnValue(pendingVerify);
+    setup({ precedents: [PREC, PREC2], precedentVersions: async () => [PV_TEXT] });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p1"));
+
+    fireEvent.change(byId<HTMLInputElement>("p-quote"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.quoteVerify") }));
+    expect(mocks.precedentQuoteVerify).toHaveBeenCalledWith("p1", "kira bedeli ödenmedi");
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p2"));
+
+    resolveVerify(VERIFY_MATCH);
+    // Yanıt işlensin (durum güncellemesi act içinde akıtılır).
+    await act(async () => {
+      await pendingVerify;
+    });
+    // Eski emsalin hükmü yeni emsalin (henüz boş) alıntı alanının altında
+    // "güncel" gibi durmaz.
+    expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
   });
 });
