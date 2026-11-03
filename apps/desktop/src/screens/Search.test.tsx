@@ -23,10 +23,10 @@
 // 8. Sürümü olmayan sonuç açılamaz; vurgu **aranan** metne bağlı kalır
 //    (kutu değişse de sonuçlar eski sorguya aittir).
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../lib/i18n";
-import { SEARCH_SCOPE_LABELS } from "../lib/search-scope";
+import { precedentSnippetForCopy, SEARCH_SCOPE_LABELS } from "../lib/search-scope";
 import type {
   CaseRow,
   CaseTagRow,
@@ -800,5 +800,284 @@ describe("arama ekranında uçuş yarışları", () => {
     });
     const ready = (await screen.findByRole("button", { name: t("search.submit") })) as HTMLButtonElement;
     expect(ready.disabled).toBe(false);
+  });
+});
+
+/**
+ * Emsal kütüphanesi alıntısını kopyalama: panelin bugüne dek **hiç** ölçülmemiş
+ * yüzü.
+ *
+ * `copySnippet` panoya künye + pencere + sürüm yazar ve düğmeyi "Kopyalandı"
+ * yapar. Lib testleri (`search-scope`, `i18n-bindings`) yalnız **metni**
+ * doğruluyordu; burada ekranın kararları ölçülür: yazılan metin sonucun kendisi
+ * mi, etiket **hangi** karta konuyor, pano reddederse ne oluyor, yeni arama eski
+ * etiketi taşıyor mu, uçuştaki kopya yeni sonuç kümesine yazılıyor mu.
+ */
+describe("emsal alıntısını kopyalama", () => {
+  const clipboard = { writeText: vi.fn() };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+    clipboard.writeText.mockReset();
+    // jsdom `navigator.clipboard` sağlamaz: pano sözleşmesi testten kurulur.
+    Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  /** İki sonuçlu kütüphane sayfası: etiketin **hangi** karta konduğu ölçülebilsin. */
+  function twoHits(): PrecedentSearchPage {
+    const base = libraryPage();
+    const first = base.hits[0]!;
+    return {
+      ...base,
+      hits: [
+        first,
+        {
+          ...first,
+          precedentId: "pr2",
+          versionId: "pv-87654321",
+          title: "Ödeme emsali",
+          snippet: "ödeme yapılmadığında temerrüt",
+          matchStart: 0,
+          matchLength: 6,
+        },
+      ],
+      matched: 2,
+    };
+  }
+
+  /** Kütüphane kapsamına geçer, arar ve sonuç kartlarının kopyala düğmelerini verir. */
+  async function openLibrary(page: PrecedentSearchPage = twoHits()): Promise<HTMLElement[]> {
+    setup({ library: page });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.precedent_library }));
+    await searchFor("kira");
+    return screen.findAllByRole("button", { name: t("search.copyQuote") });
+  }
+
+  /** Kartın başlık rozetinden hangi sonuca ait olduğunu okur. */
+  function cardTitle(button: HTMLElement): string | null | undefined {
+    return button.closest(".card")?.textContent?.includes("Ödeme emsali") ? "Ödeme emsali" : "Kira alacağı";
+  }
+
+  it("panoya sonucun tam alıntısını yazar ve etiketi yalnız o sonuca koyar", async () => {
+    const hits = await openLibrary();
+    expect(hits).toHaveLength(2);
+    clipboard.writeText.mockResolvedValue(undefined);
+
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+
+    const page = twoHits();
+    expect(clipboard.writeText).toHaveBeenCalledTimes(1);
+    expect(clipboard.writeText).toHaveBeenCalledWith(precedentSnippetForCopy(page.hits[0]!));
+    const copied = await screen.findByRole("button", { name: t("search.copied") });
+    expect(cardTitle(copied)).toBe("Kira alacağı");
+    // Öteki sonucun düğmesi hâlâ kopyalanabilir durumda.
+    expect(screen.getAllByRole("button", { name: t("search.copyQuote") })).toHaveLength(1);
+  });
+
+  it("pano reddederse hata görünür ve Kopyalandı yazılmaz", async () => {
+    const hits = await openLibrary();
+    clipboard.writeText.mockRejectedValue(new Error("pano izni yok"));
+
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_CLIPBOARD");
+    expect(alert.textContent).toContain(t("search.errorClipboard"));
+    expect(screen.queryByRole("button", { name: t("search.copied") })).toBeNull();
+    expect(screen.getAllByRole("button", { name: t("search.copyQuote") })).toHaveLength(2);
+  });
+
+  it("düşen kopyadan sonra başarılı kopya bayat hatayı siler", async () => {
+    const hits = await openLibrary();
+    clipboard.writeText.mockRejectedValueOnce(new Error("pano izni yok"));
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+    expect(await screen.findByRole("alert")).toBeTruthy();
+
+    clipboard.writeText.mockResolvedValue(undefined);
+    await act(async () => {
+      fireEvent.click(hits[1]!);
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    const copied = await screen.findByRole("button", { name: t("search.copied") });
+    expect(cardTitle(copied)).toBe("Ödeme emsali");
+  });
+
+  it("yeni kütüphane araması eski Kopyalandı etiketini bırakmaz", async () => {
+    const hits = await openLibrary();
+    clipboard.writeText.mockResolvedValue(undefined);
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+    expect(await screen.findByRole("button", { name: t("search.copied") })).toBeTruthy();
+
+    // Aynı sürüm yeni aramada da döner: etiket **bu** aramanın kopyası değildir.
+    mocks.precedentSearch.mockResolvedValue({
+      ...twoHits(),
+      query: "ödeme",
+      resolvedQuery: "ödeme",
+    });
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(t("search.libraryQuery", { query: "ödeme" }))).toBeTruthy();
+
+    expect(screen.queryByRole("button", { name: t("search.copied") })).toBeNull();
+    expect(screen.getAllByRole("button", { name: t("search.copyQuote") })).toHaveLength(2);
+  });
+
+  it("kopya uçuşta iken yeni arama yapılırsa geç yanıt yeni sonuca yazılmaz", async () => {
+    const pending = deferred<void>();
+    const hits = await openLibrary();
+    clipboard.writeText.mockReturnValue(pending.promise);
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+
+    mocks.precedentSearch.mockResolvedValue({
+      ...twoHits(),
+      query: "ödeme",
+      resolvedQuery: "ödeme",
+    });
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(t("search.libraryQuery", { query: "ödeme" }))).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve();
+    });
+    expect(screen.queryByRole("button", { name: t("search.copied") })).toBeNull();
+  });
+
+  it("iki sonuca hızlı kopyada son tıklanan etiket olur; geç çözülen ilk kopya onu ezmez", async () => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const hits = await openLibrary();
+    clipboard.writeText.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+    await act(async () => {
+      fireEvent.click(hits[1]!);
+    });
+
+    // İkinci (son) kopya önce döner, birinci sonra: pano ikinci metni taşır.
+    await act(async () => {
+      second.resolve();
+    });
+    await act(async () => {
+      first.resolve();
+    });
+
+    const copied = await screen.findByRole("button", { name: t("search.copied") });
+    expect(cardTitle(copied)).toBe("Ödeme emsali");
+    expect(screen.getAllByRole("button", { name: t("search.copied") })).toHaveLength(1);
+  });
+
+  it("düşen kopya önceki Kopyalandı satırını bırakmaz", async () => {
+    const hits = await openLibrary();
+    clipboard.writeText.mockResolvedValueOnce(undefined);
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+    expect(await screen.findByRole("button", { name: t("search.copied") })).toBeTruthy();
+
+    clipboard.writeText.mockRejectedValueOnce(new Error("pano izni yok"));
+    await act(async () => {
+      fireEvent.click(hits[1]!);
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_CLIPBOARD");
+    // Yeşil etiket "bu deneme kopyalandı" diye okunmamalı.
+    expect(screen.queryByRole("button", { name: t("search.copied") })).toBeNull();
+  });
+
+  it("kopya uçuşta iken yeni arama yapılırsa geç gelen kopya hatası yeni sonuca yazılmaz", async () => {
+    const pending = deferred<void>();
+    const hits = await openLibrary();
+    clipboard.writeText.mockReturnValue(pending.promise);
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+
+    mocks.precedentSearch.mockResolvedValue({
+      ...twoHits(),
+      query: "ödeme",
+      resolvedQuery: "ödeme",
+    });
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(t("search.libraryQuery", { query: "ödeme" }))).toBeTruthy();
+
+    // Kopya **başarısız** döner ama ait olduğu sonuç kümesi artık ekranda değil.
+    await act(async () => {
+      pending.reject(new Error("pano izni yok"));
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("kopya uçuşta iken kapsam değişirse geç kopya hatası öteki kapsama yazılmaz", async () => {
+    const pending = deferred<void>();
+    const hits = await openLibrary();
+    clipboard.writeText.mockReturnValue(pending.promise);
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.case_documents }));
+    expect(screen.queryByText(t("search.libraryTitle"))).toBeNull();
+
+    await act(async () => {
+      pending.reject(new Error("pano izni yok"));
+    });
+    // Dosya kapsamında kopyalama yapılmadı: clipboard hatası orada görünmemeli.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("kopya sürerken düşen arama hatası kopya başarısıyla silinmez", async () => {
+    const pending = deferred<void>();
+    const hits = await openLibrary();
+    clipboard.writeText.mockReturnValue(pending.promise);
+    await act(async () => {
+      fireEvent.click(hits[0]!);
+    });
+
+    mocks.precedentSearch.mockRejectedValueOnce({
+      code: "E_DB",
+      message: "kütüphane hatası",
+      retryable: true,
+    });
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("kütüphane hatası");
+
+    // Kopya, aramadan **sonra** döner: aramanın hatasını silmemeli.
+    await act(async () => {
+      pending.resolve();
+    });
+    const after = screen.getByRole("alert");
+    expect(after.textContent).toContain("kütüphane hatası");
   });
 });

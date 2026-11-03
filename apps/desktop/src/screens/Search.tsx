@@ -99,6 +99,9 @@ export function Search() {
   /** Arama istek sırası: geç gelen yanıt **hangi** aramaya ait olduğunu bilir.
    *  Dosya/kapsam değişimi de sayacı artırır — uçuştaki yanıt yeni bağlama yazılmaz. */
   const searchSeq = useRef(0);
+  /** Kopya istek sırası: geç çözülen eski kopya **yeni** sonucun etiketini ezmez.
+   *  Yeni kütüphane araması ve kapsam değişimi de sayacı artırır. */
+  const copySeq = useRef(0);
 
   /**
    * Toplam sayıyı ilk boyamadan sonra ister (F15). Ölçüm: sayım sayfa
@@ -201,6 +204,8 @@ export function Search() {
     setPage(null);
     setLibraryPage(null);
     setSearchedQuery("");
+    // Uçuştaki kopya bu kapsama ait değil: yanıtı etiket yazmamalı.
+    copySeq.current += 1;
     setCopiedHit("");
     totalSeq.current += 1;
     setTotalProbe(TOTAL_PROBE_IDLE);
@@ -218,6 +223,10 @@ export function Search() {
       if (scope === "precedent_library") {
         if (kind === "more") return;
         const seq = ++searchSeq.current;
+        // Yeni arama yeni bir sonuç kümesidir: önceki kopyanın etiketi ve
+        // uçuştaki kopya yanıtı bu kümeye yazılmaz.
+        copySeq.current += 1;
+        setCopiedHit("");
         setBusy(true);
         try {
           const library = await api.precedentSearch({
@@ -327,13 +336,21 @@ export function Search() {
     }));
   }
 
-  /** Kütüphane sonucundan alıntı kopyalama; pano reddederse sessiz kalmaz. */
+  /** Kütüphane sonucundan alıntı kopyalama; pano reddederse sessiz kalmaz.
+   *  Etiket **bu** denemenin sonucudur: yeni deneme önceki "Kopyalandı" satırını
+   *  kaldırır, geç çözülen eski deneme yenisini ezmez. Kopya uçuşta iken yeni bir
+   *  arama başlarsa `copySeq` artar; geç yanıt ne etiketi ne de aramanın hatasını
+   *  yazar. */
   async function copySnippet(hit: PrecedentSearchHit) {
+    const seq = ++copySeq.current;
+    setCopiedHit("");
     try {
       await navigator.clipboard.writeText(precedentSnippetForCopy(hit));
+      if (seq !== copySeq.current) return;
       setCopiedHit(hit.versionId);
       setError(null);
     } catch {
+      if (seq !== copySeq.current) return;
       setError({
         code: "E_CLIPBOARD",
         message: t("search.errorClipboard"),
