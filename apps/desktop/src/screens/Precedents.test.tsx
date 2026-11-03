@@ -1323,3 +1323,537 @@ describe("emsal ekranı davranışı", () => {
     expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
   });
 });
+
+/** Askıda tutulabilen söz: geç yanıtı yarışa bırakmadan ölçmek için. */
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+const NOTE_B: PrecedentNoteRow = {
+  ...NOTE,
+  id: "n2",
+  precedentId: "p2",
+  similarityNote: "B notu: güncel emsal",
+};
+
+const NOTE_A_LATE: PrecedentNoteRow = {
+  ...NOTE,
+  id: "n9",
+  similarityNote: "A notu: geç gelen yanıt",
+};
+
+/** Metinsiz sürüm: etiketi PV_TEXT'ten farklı olsun ki karışmasın. */
+const PV_NO_TEXT: PrecedentVersionRow = {
+  ...PV_TEXT,
+  id: "pv9",
+  bodyHash: "b".repeat(16),
+  sourceKind: "document",
+  verificationState: "unverified",
+  charCount: 0,
+  hasText: false,
+};
+
+const BIB_B: PrecedentBibliography = {
+  ...BIB,
+  text: "Danıştay 2. Daire, E. 2025/9, K. 2025/10, 04.04.2025",
+};
+
+const CHECK_B: CitationCheckRow = {
+  ...CHECK,
+  id: "ch2",
+  inputDocumentVersionId: "v2",
+  extractedCitation: "Danıştay 2. Daire 2025/9",
+};
+
+const DOC_EK: DocumentRow = {
+  ...DOC,
+  id: "d2",
+  displayName: "İhtar mektubu.pdf",
+  currentVersionId: "v2",
+};
+
+const VERSION2: DocumentVersionRow = { ...VERSION, id: "v2", documentId: "d2" };
+
+const TERMS_B: PrecedentUsageTerms = {
+  precedentId: "p2",
+  usageBasis: "permission",
+  redistribution: "not_allowed",
+  termsUrl: null,
+  termsNote: "B dayanağı",
+  termsRecordedAt: null,
+};
+
+// Emsal ekranının **türetilmiş okumaları** hangi emsale/dosyaya/sürüme aitse ona
+// bağlıdır. Seçim değişince eski isteğin geç yanıtı yeni seçimin verisini
+// ezmemeli: aksi hâlde A'nın izin kaydı B'nin formuna yazılıp B'ye kaydedilebiliyor,
+// kasadan aktarım **başka dosyanın** belge sürümünden metin alabiliyordu.
+describe("emsal ekranı: geç yanıtlar seçim nesline bağlanır", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("geç gelen not yanıtı yeni emsalin altında çizilmez", async () => {
+    const a = deferred<PrecedentNoteRow[]>();
+    const b = deferred<PrecedentNoteRow[]>();
+    setup({ precedents: [PREC, PREC2], notes: (id) => (id === "p1" ? a.promise : b.promise) });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.precedentNoteList).toHaveBeenCalledWith("p1"));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentNoteList).toHaveBeenCalledWith("p2"));
+
+    b.resolve([NOTE_B]);
+    expect(await screen.findByText(NOTE_B.similarityNote)).toBeTruthy();
+    expect(screen.getByText(t("precedents.notesSub", { count: 1 }))).toBeTruthy();
+
+    a.resolve([NOTE_A_LATE]);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(screen.queryAllByText(NOTE_A_LATE.similarityNote)).toHaveLength(0);
+    expect(screen.getByText(NOTE_B.similarityNote)).toBeTruthy();
+    expect(screen.getByText(t("precedents.notesSub", { count: 1 }))).toBeTruthy();
+  });
+
+  it("geç gelen sürüm listesi yeni emsalin metin kartını ezmez", async () => {
+    const a = deferred<PrecedentVersionRow[]>();
+    const b = deferred<PrecedentVersionRow[]>();
+    setup({
+      precedents: [PREC, PREC2],
+      precedentVersions: (id) => (id === "p1" ? a.promise : b.promise),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p1"));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p2"));
+
+    b.resolve([PV_NO_TEXT]);
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(PV_NO_TEXT.bodyHash.slice(0, 12), { exact: false }).length,
+      ).toBeGreaterThan(0),
+    );
+
+    a.resolve([PV_TEXT]);
+    await act(async () => {
+      await a.promise;
+    });
+    // Geç yanıt yazılsaydı A'nın sürüm satırı (hash'iyle) B'nin kartında görünürdü.
+    expect(
+      screen.queryAllByText(PV_TEXT.bodyHash.slice(0, 12), { exact: false }),
+    ).toHaveLength(0);
+    expect(screen.queryAllByText(versionStateText(PV_TEXT))).toHaveLength(0);
+  });
+
+  it("geç gelen künye yanıtı yeni emsalin künyesini ezmez", async () => {
+    const a = deferred<PrecedentBibliography>();
+    const b = deferred<PrecedentBibliography>();
+    setup({
+      precedents: [PREC, PREC2],
+      bibliography: (id) => (id === "p1" ? a.promise : b.promise),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.precedentBibliography).toHaveBeenCalledWith("p1"));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentBibliography).toHaveBeenCalledWith("p2"));
+
+    b.resolve(BIB_B);
+    expect(await screen.findByText(BIB_B.text)).toBeTruthy();
+
+    a.resolve(BIB);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(screen.queryAllByText(BIB.text)).toHaveLength(0);
+    expect(screen.getByText(BIB_B.text)).toBeTruthy();
+  });
+
+  it("geç gelen koşul kaydı yeni emsalin formuna yazılmaz; kaydetme yeni emsale gider", async () => {
+    const a = deferred<PrecedentUsageTerms>();
+    const b = deferred<PrecedentUsageTerms>();
+    mocks.precedentTermsSet.mockResolvedValue(TERMS_B);
+    setup({
+      precedents: [PREC, PREC2],
+      terms: (id) => (id === "p1" ? a.promise : b.promise),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.precedentTermsGet).toHaveBeenCalledWith("p1"));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentTermsGet).toHaveBeenCalledWith("p2"));
+
+    b.resolve(TERMS_B);
+    await waitFor(() => expect(byId<HTMLTextAreaElement>("t-note").value).toBe("B dayanağı"));
+
+    a.resolve(TERMS_A);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(byId<HTMLTextAreaElement>("t-note").value).toBe("B dayanağı");
+    expect(byId<HTMLSelectElement>("t-basis").value).toBe("permission");
+    expect(byId<HTMLSelectElement>("t-redistribution").value).toBe("not_allowed");
+    expect(byId<HTMLInputElement>("t-url").value).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.termsSave") }));
+    await waitFor(() =>
+      expect(mocks.precedentTermsSet).toHaveBeenCalledWith("p2", {
+        usageBasis: "permission",
+        redistribution: "not_allowed",
+        termsUrl: null,
+        termsNote: "B dayanağı",
+      }),
+    );
+  });
+
+  it("geç gelen belge listesi yeni dosyanın sürüm seçimini ezmez", async () => {
+    const a = deferred<DocumentRow[]>();
+    const b = deferred<DocumentRow[]>();
+    setup({
+      cases: [CASE, CASE2],
+      documents: (id) => (id === "c1" ? a.promise : b.promise),
+    });
+
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.change(byId<HTMLSelectElement>("c-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c2"));
+
+    b.resolve([DOC2]);
+    await waitFor(() => expect(byId<HTMLSelectElement>("c-doc").value).toBe("v2"));
+
+    a.resolve([DOC]);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(byId<HTMLSelectElement>("c-doc").value).toBe("v2");
+
+    // Bu pencerede "Kontrolü kaydet" eski dosyanın sürümüne yazmaz.
+    fireEvent.change(byId<HTMLInputElement>("c-text"), {
+      target: { value: "Yargıtay 1. HD 2024/123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.checkSave") }));
+    await waitFor(() =>
+      expect(mocks.citationCheckCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ inputDocumentVersionId: "v2" }),
+      ),
+    );
+  });
+
+  it("geç gelen kaynak dosya listesi aktarımı eski dosyanın belgesine bağlamaz", async () => {
+    const a = deferred<DocumentRow[]>();
+    const b = deferred<DocumentRow[]>();
+    mocks.precedentTextFromDocument.mockResolvedValue(transferred());
+    setup({
+      precedents: [PREC],
+      cases: [CASE, CASE2],
+      documents: (id) => (id === "c1" ? a.promise : b.promise),
+      versions: async (documentId) => (documentId === "d2" ? [VERSION2] : [VERSION]),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.change(byId<HTMLSelectElement>("src-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c2"));
+
+    b.resolve([DOC2]);
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-doc").value).toBe("d2"));
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-version").value).toBe("v2"));
+
+    a.resolve([DOC]);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(byId<HTMLSelectElement>("src-doc").value).toBe("d2");
+    expect(byId<HTMLSelectElement>("src-version").value).toBe("v2");
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.transferRun") }));
+    await waitFor(() => expect(mocks.precedentTextFromDocument).toHaveBeenCalledWith("p1", "v2"));
+  });
+
+  it("geç gelen kaynak sürüm listesi seçili sürümü ezmez", async () => {
+    const a = deferred<DocumentVersionRow[]>();
+    const b = deferred<DocumentVersionRow[]>();
+    mocks.precedentTextFromDocument.mockResolvedValue(transferred());
+    setup({
+      precedents: [PREC],
+      documents: async () => [DOC, DOC_EK],
+      versions: (documentId) => (documentId === "d1" ? a.promise : b.promise),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.documentVersionList).toHaveBeenCalledWith("d1"));
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-doc").value).toBe("d1"));
+
+    fireEvent.change(byId<HTMLSelectElement>("src-doc"), { target: { value: "d2" } });
+    await waitFor(() => expect(mocks.documentVersionList).toHaveBeenCalledWith("d2"));
+    b.resolve([VERSION2]);
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-version").value).toBe("v2"));
+
+    a.resolve([VERSION]);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(byId<HTMLSelectElement>("src-version").value).toBe("v2");
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.transferRun") }));
+    await waitFor(() => expect(mocks.precedentTextFromDocument).toHaveBeenCalledWith("p1", "v2"));
+  });
+
+  it("geç gelen atıf kontrol listesi yeni sürümün altında görünmez", async () => {
+    const a = deferred<CitationCheckRow[]>();
+    const b = deferred<CitationCheckRow[]>();
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (id) => (id === "c1" ? [DOC] : [DOC2]),
+      checks: (versionId) => (versionId === "v1" ? a.promise : b.promise),
+    });
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    fireEvent.change(byId<HTMLSelectElement>("c-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v2"));
+
+    b.resolve([CHECK_B]);
+    expect(await screen.findByText(CHECK_B.extractedCitation)).toBeTruthy();
+
+    a.resolve([CHECK]);
+    await act(async () => {
+      await a.promise;
+    });
+    expect(screen.queryAllByText(CHECK.extractedCitation)).toHaveLength(0);
+    expect(screen.getByText(t("precedents.checkSub", { count: 1 }))).toBeTruthy();
+  });
+
+  it("geç gelen anlam bağlamı başka kontrolün panelinde görünmez", async () => {
+    const a = deferred<CitationContext>();
+    const b = deferred<CitationContext>();
+    setup({ checks: async () => [CHECK, CHECK_B] });
+    mocks.citationContext.mockImplementation((id: string) =>
+      id === "ch1" ? a.promise : b.promise,
+    );
+
+    await waitFor(() => expect(screen.getByText(CHECK.extractedCitation)).toBeTruthy());
+    fireEvent.click(screen.getAllByRole("button", { name: t("precedents.meaning") })[0]!);
+    await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
+    // İkinci kontrolün paneli açılır: bağlam isteği ona gider.
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaning") }));
+    await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch2"));
+
+    b.resolve({ ...CONTEXT, quote: "ikinci kontrolün alıntısı" });
+    expect(await screen.findByText("ikinci kontrolün alıntısı")).toBeTruthy();
+
+    a.resolve({ ...CONTEXT, quote: "birinci kontrolün alıntısı" });
+    await act(async () => {
+      await a.promise;
+    });
+    expect(screen.queryAllByText("birinci kontrolün alıntısı")).toHaveLength(0);
+    expect(screen.getByText("ikinci kontrolün alıntısı")).toBeTruthy();
+  });
+
+  it("not ekleme yanıtı uçuşta emsal değişirse eski notları yeni emsale yazmaz", async () => {
+    const created = deferred<PrecedentNoteRow>();
+    const lateList = deferred<PrecedentNoteRow[]>();
+    let listCalls = 0;
+    mocks.precedentNoteCreate.mockReturnValue(created.promise);
+    setup({
+      precedents: [PREC, PREC2],
+      notes: (id) => {
+        if (id === "p2") return Promise.resolve([NOTE_B]);
+        listCalls += 1;
+        // İlk yükleme boş; yazma sonrası tazeleme askıda kalır.
+        return listCalls === 1 ? Promise.resolve([]) : lateList.promise;
+      },
+    });
+
+    await selectPrecedent(PREC.title!);
+    fireEvent.change(byId<HTMLInputElement>("n-sim"), { target: { value: "yeni not" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.noteAdd") }));
+    await waitFor(() => expect(mocks.precedentNoteCreate).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    expect(await screen.findByText(NOTE_B.similarityNote)).toBeTruthy();
+    // Kullanıcı yeni emsalde yeni not yazmaya başlar: eski yazma bitince silinmez.
+    fireEvent.change(byId<HTMLInputElement>("n-sim"), { target: { value: "B için yazdım" } });
+
+    created.resolve({ ...NOTE, similarityNote: "yeni not" });
+    await act(async () => {
+      await created.promise;
+    });
+    expect(byId<HTMLInputElement>("n-sim").value).toBe("B için yazdım");
+    // Yazma sonrası tazeleme eski emsalin notlarını döndürür: yeni emsale yazılmaz.
+    lateList.resolve([NOTE_A_LATE]);
+    await act(async () => {
+      await lateList.promise;
+    });
+    expect(screen.queryAllByText(NOTE_A_LATE.similarityNote)).toHaveLength(0);
+    expect(screen.getByText(NOTE_B.similarityNote)).toBeTruthy();
+  });
+
+  it("kontrol kaydı uçuşta yazılan yeni atıf metnini silmez", async () => {
+    const created = deferred<CitationCheckRow>();
+    mocks.citationCheckCreate.mockReturnValue(created.promise);
+    setup({ checks: async () => [] });
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    fireEvent.change(byId<HTMLInputElement>("c-text"), {
+      target: { value: "Yargıtay 1. HD 2024/123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.checkSave") }));
+    await waitFor(() => expect(mocks.citationCheckCreate).toHaveBeenCalled());
+
+    fireEvent.change(byId<HTMLInputElement>("c-text"), {
+      target: { value: "Danıştay 5. Daire 2025/7" },
+    });
+    created.resolve(CHECK);
+    await act(async () => {
+      await created.promise;
+    });
+    expect(byId<HTMLInputElement>("c-text").value).toBe("Danıştay 5. Daire 2025/7");
+  });
+
+  it("tam metin yazma yanıtı uçuşta emsal değişirse yeni emsalin metin kartını ezmez", async () => {
+    const saved = deferred<PrecedentVersionRow>();
+    const lateVersions = deferred<PrecedentVersionRow[]>();
+    let p1Calls = 0;
+    mocks.precedentTextAdd.mockReturnValue(saved.promise);
+    setup({
+      precedents: [PREC, PREC2],
+      precedentVersions: (id) => {
+        if (id === "p2") return Promise.resolve([PV_NO_TEXT]);
+        p1Calls += 1;
+        return p1Calls === 1 ? Promise.resolve([]) : lateVersions.promise;
+      },
+      bibliography: async (id) => (id === "p2" ? BIB_B : BIB),
+    });
+
+    await selectPrecedent(PREC.title!);
+    fireEvent.change(byId<HTMLTextAreaElement>("p-fulltext"), {
+      target: { value: "karar metni" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.fullTextSave") }));
+    await waitFor(() => expect(mocks.precedentTextAdd).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p2"));
+
+    saved.resolve(PV_TEXT);
+    await act(async () => {
+      await saved.promise;
+    });
+    lateVersions.resolve([PV_TEXT]);
+    await act(async () => {
+      await lateVersions.promise;
+    });
+    // Eski emsalin yazması yeni emsalin kartlarına yazılmaz; kullanıcı girdisi korunur.
+    expect(
+      screen.queryAllByText(PV_TEXT.bodyHash.slice(0, 12), { exact: false }),
+    ).toHaveLength(0);
+    expect(screen.queryAllByText(BIB.text)).toHaveLength(0);
+    expect(byId<HTMLTextAreaElement>("p-fulltext").value).toBe("karar metni");
+  });
+
+  it("aktarım yanıtı uçuşta emsal değişirse yeni emsalin altında görünmez", async () => {
+    const run = deferred<PrecedentDocumentText>();
+    mocks.precedentTextFromDocument.mockReturnValue(run.promise);
+    setup({
+      precedents: [PREC, PREC2],
+      documents: async () => [DOC],
+      versions: async () => [VERSION],
+      bibliography: async (id) => (id === "p2" ? BIB_B : BIB),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-version").value).toBe("v1"));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.transferRun") }));
+    await waitFor(() => expect(mocks.precedentTextFromDocument).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p2"));
+
+    run.resolve(transferred());
+    await act(async () => {
+      await run.promise;
+    });
+    // "Aktarıldı" paneli yeni emsalin altında "az önce oldu" gibi görünmez.
+    expect(
+      screen.queryAllByText(documentTextSummary(transferred()), { exact: false }),
+    ).toHaveLength(0);
+  });
+
+  it("koşul kaydetme yanıtı uçuşta emsal değişirse yeni emsalin formunu yazmaz", async () => {
+    const saved = deferred<PrecedentUsageTerms>();
+    mocks.precedentTermsSet.mockReturnValue(saved.promise);
+    setup({
+      precedents: [PREC, PREC2],
+      terms: async (id) => (id === "p2" ? TERMS_B : TERMS_A),
+    });
+
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(byId<HTMLTextAreaElement>("t-note").value).toBe("A dayanağı"));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.termsSave") }));
+    await waitFor(() =>
+      expect(mocks.precedentTermsSet).toHaveBeenCalledWith("p1", expect.anything()),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(byId<HTMLTextAreaElement>("t-note").value).toBe("B dayanağı"));
+
+    saved.resolve({
+      precedentId: "p1",
+      usageBasis: "internal_only",
+      redistribution: "allowed",
+      termsUrl: "https://a.test/kosul",
+      termsNote: "A kaydı",
+      termsRecordedAt: ISO,
+    });
+    await act(async () => {
+      await saved.promise;
+    });
+    expect(byId<HTMLTextAreaElement>("t-note").value).toBe("B dayanağı");
+    expect(byId<HTMLSelectElement>("t-basis").value).toBe("permission");
+  });
+
+  it("anlam hükmü uçuşta dosya değişirse eski sürümün kontrol listesi yeni sürüme yazılmaz", async () => {
+    const reviewed = deferred<CitationCheckRow>();
+    const lateChecks = deferred<CitationCheckRow[]>();
+    let v1Calls = 0;
+    mocks.citationMeaningReview.mockReturnValue(reviewed.promise);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (id) => (id === "c1" ? [DOC] : [DOC2]),
+      checks: (versionId) => {
+        if (versionId !== "v1") return Promise.resolve([CHECK_B]);
+        v1Calls += 1;
+        return v1Calls === 1 ? Promise.resolve([CHECK]) : lateChecks.promise;
+      },
+    });
+
+    await waitFor(() => expect(screen.getByText(CHECK.extractedCitation)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaning") }));
+    await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaningAccurate") }));
+    await waitFor(() => expect(mocks.citationMeaningReview).toHaveBeenCalled());
+
+    fireEvent.change(byId<HTMLSelectElement>("c-case"), { target: { value: "c2" } });
+    expect(await screen.findByText(CHECK_B.extractedCitation)).toBeTruthy();
+
+    reviewed.resolve({ ...CHECK, meaningReview: "accurate" });
+    await act(async () => {
+      await reviewed.promise;
+    });
+    lateChecks.resolve([{ ...CHECK, id: "ch9", extractedCitation: "geç gelen kontrol" }]);
+    await act(async () => {
+      await lateChecks.promise;
+    });
+    expect(screen.queryAllByText("geç gelen kontrol")).toHaveLength(0);
+    expect(screen.getByText(CHECK_B.extractedCitation)).toBeTruthy();
+  });
+});

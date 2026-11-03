@@ -134,6 +134,16 @@ export function Precedents() {
   // aitse yazılır. `quoteReq` eşzamanlı iki doğrulamanın kilidini ayırır.
   const quoteEdit = useRef(0);
   const quoteReq = useRef(0);
+  // Türetilmiş okumalar **hangi emsale/dosyaya/sürüme** aitse ona bağlıdır:
+  // seçim değiştikten sonra gelen geç yanıt yeni seçimin verisini yazmaz.
+  const selectedRef = useRef<string | null>(null);
+  const caseRef = useRef("");
+  const srcCaseRef = useRef("");
+  const srcDocRef = useRef("");
+  const versionRef = useRef("");
+  const meaningForRef = useRef<string | null>(null);
+  const meaningSeq = useRef(0);
+  const citationRef = useRef("");
   const versionSummary = summarizeVersions(versions);
 
   // Kasadaki belgeden tam metin (F12-T13)
@@ -202,6 +212,9 @@ export function Precedents() {
     // INV-05: seçim değişince önceki kararın türetilmiş verisi ekranda kalmaz.
     // Aksi hâlde yeni kararın künyesi açıkken önceki kararın notları, sürümleri
     // ve **izin kaydı** görünüyor; "Koşulu kaydet" o kaydı yeni karara yazıyordu.
+    // Yanıtlar da seçime bağlıdır: uçuştaki istek geç dönerse yeni emsale yazılmaz.
+    const pid = selected?.id ?? null;
+    selectedRef.current = pid;
     setNotes([]);
     setVersions([]);
     setBibliography(null);
@@ -210,26 +223,45 @@ export function Precedents() {
     setTermsRedistribution("unknown");
     setTermsUrl("");
     setTermsNote("");
-    if (selected) {
-      void api.precedentNoteList(selected.id).then(setNotes).catch((e) => setError(toApiError(e)));
+    if (pid) {
+      const stillMine = () => selectedRef.current === pid;
       void api
-        .precedentVersionList(selected.id)
-        .then(setVersions)
-        .catch((e) => setError(toApiError(e)));
+        .precedentNoteList(pid)
+        .then((rows) => {
+          if (stillMine()) setNotes(rows);
+        })
+        .catch((e) => {
+          if (stillMine()) setError(toApiError(e));
+        });
       void api
-        .precedentBibliography(selected.id)
-        .then(setBibliography)
-        .catch((e) => setError(toApiError(e)));
+        .precedentVersionList(pid)
+        .then((rows) => {
+          if (stillMine()) setVersions(rows);
+        })
+        .catch((e) => {
+          if (stillMine()) setError(toApiError(e));
+        });
       void api
-        .precedentTermsGet(selected.id)
+        .precedentBibliography(pid)
+        .then((row) => {
+          if (stillMine()) setBibliography(row);
+        })
+        .catch((e) => {
+          if (stillMine()) setError(toApiError(e));
+        });
+      void api
+        .precedentTermsGet(pid)
         .then((loaded) => {
+          if (!stillMine()) return;
           setTerms(loaded);
           setTermsBasis(loaded.usageBasis);
           setTermsRedistribution(loaded.redistribution);
           setTermsUrl(loaded.termsUrl ?? "");
           setTermsNote(loaded.termsNote);
         })
-        .catch((e) => setError(toApiError(e)));
+        .catch((e) => {
+          if (stillMine()) setError(toApiError(e));
+        });
     }
     setCopied(false);
     setVerification(null);
@@ -242,15 +274,23 @@ export function Precedents() {
   useEffect(() => {
     // INV-05: dosya değişince belge listesi, sürüm seçimi ve atıf kontrolleri
     // temizlenir. Aksi hâlde yeni liste gelene kadar "Kontrolü kaydet" **eski
-    // dosyanın** belge sürümüne yazıyordu.
+    // dosyanın** belge sürümüne yazıyordu. Yanıt da dosyaya bağlıdır: geç gelen
+    // liste yeni dosyanın sürüm seçimini ezmez.
+    caseRef.current = caseId;
     setDocs([]);
     setVersionId("");
     setChecks([]);
     if (!caseId) return;
-    void api.documentList(caseId).then((list) => {
-      setDocs(list);
-      setVersionId(list.find((d) => d.currentVersionId)?.currentVersionId ?? "");
-    }).catch((e) => setError(toApiError(e)));
+    void api
+      .documentList(caseId)
+      .then((list) => {
+        if (caseRef.current !== caseId) return;
+        setDocs(list);
+        setVersionId(list.find((d) => d.currentVersionId)?.currentVersionId ?? "");
+      })
+      .catch((e) => {
+        if (caseRef.current === caseId) setError(toApiError(e));
+      });
   }, [caseId]);
 
   // F12-T13: kaynak belge seçimi — dosyalar `cases`, sürümler gerçek
@@ -263,7 +303,9 @@ export function Precedents() {
 
   useEffect(() => {
     // Aynı sınıf: kaynak dosya değişince belge seçimi ve sürüm listesi eskisinden
-    // devralınmaz; aktarım yanlış dosyanın sürümüyle başlamaz.
+    // devralınmaz; aktarım yanlış dosyanın sürümüyle başlamaz. Geç gelen liste
+    // yeni dosyanın belge seçimini de ezmez.
+    srcCaseRef.current = srcCaseId;
     setSrcDocs([]);
     setSrcDocId("");
     if (!srcCaseId) {
@@ -272,13 +314,17 @@ export function Precedents() {
     void api
       .documentList(srcCaseId)
       .then((list) => {
+        if (srcCaseRef.current !== srcCaseId) return;
         setSrcDocs(list);
         setSrcDocId((prev) => (list.some((d) => d.id === prev) ? prev : (list[0]?.id ?? "")));
       })
-      .catch((e) => setError(toApiError(e)));
+      .catch((e) => {
+        if (srcCaseRef.current === srcCaseId) setError(toApiError(e));
+      });
   }, [srcCaseId]);
 
   useEffect(() => {
+    srcDocRef.current = srcDocId;
     setSrcVersions([]);
     setSrcVersionId("");
     if (!srcDocId) {
@@ -287,18 +333,30 @@ export function Precedents() {
     void api
       .documentVersionList(srcDocId)
       .then((list) => {
+        if (srcDocRef.current !== srcDocId) return;
         setSrcVersions(list);
         setSrcVersionId((prev) => (list.some((v) => v.id === prev) ? prev : (list[0]?.id ?? "")));
       })
-      .catch((e) => setError(toApiError(e)));
+      .catch((e) => {
+        if (srcDocRef.current === srcDocId) setError(toApiError(e));
+      });
   }, [srcDocId]);
 
   useEffect(() => {
+    versionRef.current = versionId;
     if (!versionId) {
       setChecks([]);
       return;
     }
-    void api.citationCheckList(versionId).then(setChecks).catch((e) => setError(toApiError(e)));
+    // Geç gelen kontrol listesi yeni sürümün altında çizilmez.
+    void api
+      .citationCheckList(versionId)
+      .then((rows) => {
+        if (versionRef.current === versionId) setChecks(rows);
+      })
+      .catch((e) => {
+        if (versionRef.current === versionId) setError(toApiError(e));
+      });
   }, [versionId]);
 
   async function add() {
@@ -332,22 +390,29 @@ export function Precedents() {
 
   async function addNote() {
     if (!selected) return;
+    // Yanıt ve tazeleme, istek anındaki emsale bağlıdır: kullanıcı beklerken
+    // başka emsal seçerse eski notlar yeni emsalin altında yazılmaz.
+    const pid = selected.id;
+    const stillMine = () => selectedRef.current === pid;
     setError(null);
     setBusy(true);
     try {
-      await api.precedentNoteCreate(selected.id, {
+      await api.precedentNoteCreate(pid, {
         caseIdOptional: caseId || null,
         usefulPassageAnchor: null,
         similarityNote: similarity.trim(),
         distinguishingNote: distinguishing.trim(),
         userConclusion: conclusion.trim(),
       });
-      setSimilarity("");
-      setDistinguishing("");
-      setConclusion("");
-      setNotes(await api.precedentNoteList(selected.id));
+      if (stillMine()) {
+        setSimilarity("");
+        setDistinguishing("");
+        setConclusion("");
+      }
+      const rows = await api.precedentNoteList(pid);
+      if (stillMine()) setNotes(rows);
     } catch (e) {
-      setError(toApiError(e));
+      if (stillMine()) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -355,6 +420,8 @@ export function Precedents() {
 
   async function addFullText() {
     if (!selected) return;
+    const pid = selected.id;
+    const stillMine = () => selectedRef.current === pid;
     setError(null);
     if (fullText.trim().length === 0) {
       setError({ code: "E_TEXT", message: t("precedents.errorEmptyText"), retryable: false });
@@ -362,20 +429,24 @@ export function Precedents() {
     }
     setBusy(true);
     try {
-      await api.precedentTextAdd(selected.id, {
+      await api.precedentTextAdd(pid, {
         sourceKind: "paste",
         text: fullText,
         documentVersionId: null,
       });
-      setFullText("");
-      setVersions(await api.precedentVersionList(selected.id));
-      setBibliography(await api.precedentBibliography(selected.id));
-      // Metin değişti: önceki doğrulama bu sürüme ait değil.
-      setVerification(null);
+      const versions = await api.precedentVersionList(pid);
+      const bibliography = await api.precedentBibliography(pid);
+      if (stillMine()) {
+        setFullText("");
+        setVersions(versions);
+        setBibliography(bibliography);
+        // Metin değişti: önceki doğrulama bu sürüme ait değil.
+        setVerification(null);
+      }
       // Yeni tam metin dağıtım kapısının sayılarını değiştirir.
       await loadCoverage();
     } catch (e) {
-      setError(toApiError(e));
+      if (stillMine()) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -388,6 +459,8 @@ export function Precedents() {
    */
   async function transferFromDocument() {
     if (!selected) return;
+    const pid = selected.id;
+    const stillMine = () => selectedRef.current === pid;
     const blocked = transferBlockedReason({
       hasPrecedent: true,
       documentCount: srcDocs.length,
@@ -402,15 +475,19 @@ export function Precedents() {
     setError(null);
     setSrcResult(null);
     try {
-      const result = await api.precedentTextFromDocument(selected.id, srcVersionId);
-      setSrcResult(result);
-      setVersions(await api.precedentVersionList(selected.id));
-      setBibliography(await api.precedentBibliography(selected.id));
-      // Metin değişti: önceki alıntı doğrulaması bu sürüme ait değil.
-      setVerification(null);
+      const result = await api.precedentTextFromDocument(pid, srcVersionId);
+      const versions = await api.precedentVersionList(pid);
+      const bibliography = await api.precedentBibliography(pid);
+      if (stillMine()) {
+        setSrcResult(result);
+        setVersions(versions);
+        setBibliography(bibliography);
+        // Metin değişti: önceki alıntı doğrulaması bu sürüme ait değil.
+        setVerification(null);
+      }
       await loadCoverage();
     } catch (e) {
-      setError(toApiError(e));
+      if (stillMine()) setError(toApiError(e));
     } finally {
       setSrcBusy(false);
     }
@@ -418,23 +495,27 @@ export function Precedents() {
 
   async function saveTerms() {
     if (!selected) return;
+    const pid = selected.id;
+    const stillMine = () => selectedRef.current === pid;
     setBusy(true);
     setError(null);
     try {
-      const saved = await api.precedentTermsSet(selected.id, {
+      const saved = await api.precedentTermsSet(pid, {
         usageBasis: termsBasis,
         redistribution: termsRedistribution,
         termsUrl: termsUrl.trim() || null,
         termsNote: termsNote.trim(),
       });
-      setTerms(saved);
-      setTermsBasis(saved.usageBasis);
-      setTermsRedistribution(saved.redistribution);
-      setTermsUrl(saved.termsUrl ?? "");
-      setTermsNote(saved.termsNote);
+      if (stillMine()) {
+        setTerms(saved);
+        setTermsBasis(saved.usageBasis);
+        setTermsRedistribution(saved.redistribution);
+        setTermsUrl(saved.termsUrl ?? "");
+        setTermsNote(saved.termsNote);
+      }
       await Promise.all([load(), loadCoverage()]);
     } catch (e) {
-      setError(toApiError(e));
+      if (stillMine()) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -577,24 +658,37 @@ export function Precedents() {
 
   async function openMeaning(id: string) {
     setError(null);
-    setMeaningFor((prev) => (prev === id ? null : id));
+    // Tek panel: hangi kontrol açıksa bağlam **onun** olmalı; geç gelen bağlam
+    // başka kontrolün panelinde çizilmez.
+    const next = meaningForRef.current === id ? null : id;
+    meaningForRef.current = next;
+    setMeaningFor(next);
     setMeaningNote("");
     setMeaningContext(null);
+    const req = ++meaningSeq.current;
+    if (!next) return;
     try {
-      setMeaningContext(await api.citationContext(id));
+      const context = await api.citationContext(id);
+      if (req === meaningSeq.current && meaningForRef.current === id) setMeaningContext(context);
     } catch (e) {
-      setError(toApiError(e));
+      if (req === meaningSeq.current) setError(toApiError(e));
     }
   }
 
   async function reviewMeaning(id: string, review: string) {
     setError(null);
+    // Kabul/ret, istek anındaki belge sürümünün listesini tazeler.
+    const vid = versionId;
     try {
       await api.citationMeaningReview(id, review, meaningNote);
-      setChecks(await api.citationCheckList(versionId));
-      setMeaningFor(null);
-      setMeaningContext(null);
-      setMeaningNote("");
+      const rows = await api.citationCheckList(vid);
+      if (versionRef.current === vid) setChecks(rows);
+      if (meaningForRef.current === id) {
+        meaningForRef.current = null;
+        setMeaningFor(null);
+        setMeaningContext(null);
+        setMeaningNote("");
+      }
     } catch (e) {
       setError(toApiError(e));
     }
@@ -610,19 +704,27 @@ export function Precedents() {
       });
       return;
     }
+    // Kontrol, istek anındaki belge sürümüne yazılır; yanıt başka sürümün
+    // listesini ezmez.
+    const vid = versionId;
+    const sent = citation.trim();
     setBusy(true);
     try {
       await api.citationCheckCreate({
-        inputDocumentVersionId: versionId,
-        extractedCitation: citation.trim(),
+        inputDocumentVersionId: vid,
+        extractedCitation: sent,
         candidatePrecedentId: candidate || null,
         identityMatch: identity,
         quoteMatch,
         meaningReview: "not_reviewed",
         reasonCodes: quoteMatch === "not_checked" ? ["text_not_checked"] : [],
       });
-      setCitation("");
-      setChecks(await api.citationCheckList(versionId));
+      if (citationRef.current.trim() === sent) {
+        citationRef.current = "";
+        setCitation("");
+      }
+      const rows = await api.citationCheckList(vid);
+      if (versionRef.current === vid) setChecks(rows);
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -1339,7 +1441,7 @@ export function Precedents() {
           </div>
           <div className="field" style={{ flex: "2 1 260px" }}>
             <label htmlFor="c-text">{t("precedents.fieldCitation")}</label>
-            <input id="c-text" className="input" value={citation} onChange={(e) => setCitation(e.target.value)} placeholder={t("precedents.phCitation")} />
+            <input id="c-text" className="input" value={citation} onChange={(e) => { citationRef.current = e.target.value; setCitation(e.target.value); }} placeholder={t("precedents.phCitation")} />
           </div>
         </div>
         <div className="row">
