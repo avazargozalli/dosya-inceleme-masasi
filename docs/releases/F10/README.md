@@ -353,6 +353,59 @@ sözler) denetler, gerçek gecikmeyi değil. Süpürme adaptörden bağımsızd�
 adaptör değişiminde sonucu **bilinçli olarak** yazılmaz: tek bayrak kilidi
 paylaşıldığı için bağlam kapısına dahil edildi.
 
+## İptal, yenileme ve profil kaydı — üst panel uçuşları (F10-T14, 2026-11-04)
+
+Ekranın üst panelindeki üç kısa ömürlü yol — liste okuması (`provider_probe`),
+iptal sinyali (`provider_probe_cancel`) ve API profili yazımı
+(`provider_api_profile_save`) — bugüne dek yalnız “istek gitti / ileti geldi”
+düzeyinde ölçülmüştü. Bu turda uçuş kilidi, bayat ileti ve hata sınıfı ölçüldü;
+**yedi kusur** bulundu (hepsi düzeltme öncesi bileşende kırmızı verdi):
+
+1. **Bayat yoklama kanıtı:** başarılı “Yenile” önceki yoklamaların sonucunu
+   temizlemiyordu. Liste yeniden okunup adaptörün sürümü/yolu değişince eski
+   komut, ortam ve çıktı **yeni satırın altında “güncel”** gibi duruyordu
+   (matris, sınama, mimari ve paket raporları yeni koşuda zaten temizlenir).
+2. **Çift iptal:** iptal düğmesinde uçuş kapısı yoktu; çift tık iki
+   `provider_probe_cancel` gönderiyordu. Çekirdek iptali süreç geneli olduğu
+   için ikinci istek, o sırada başlatılan **yeni** bir koşuyu iptal edebilirdi.
+3. **Bayat yeşil ileti:** düşen iptal, önceki “İptal istendi…” satırını
+   ekranda bırakıyordu (kırmızı hata ile yeşil ileti aynı anda).
+4. **“[object Object]”:** profil kaydı reddi `String(error)` ile yazılıyordu.
+   Çekirdek reddi `{code, message}` nesnesidir (Tauri `invoke`), bu yüzden
+   ekrana hata kodu ve iletisi yerine `[object Object]` düşüyordu.
+5. **Çift yazma + açık alanlar:** profil kaydında uçuş kilidi yoktu (çift tık
+   iki yazma); alanlar uçuşta açık kaldığı için yanıt, ekrandaki
+   **kaydedilmemiş** değerlerin kaydedildiği izlenimini veriyordu.
+6. **Bayat onay:** alan değişince önceki “Profil kaydedildi.” satırı kalıyordu
+   → yeni değerin altında yeşil onay görünüyordu.
+7. **Boşluk kapısı:** yalnız boşluktan oluşan uç nokta/model “dolu” sayılıp
+   kaydetmeyi açıyordu; değerler kırpılmadan çekirdeğe gidiyordu.
+
+Düzeltme (`Providers.tsx` +60/−12): yenileme **başarısında** `results` ve
+`runErrors` temizlenir (liste yenidir, kanıt önceki listenin); iptal
+`cancelBusy` tek uçuş kilidi taşır (düğme uçuşta kapalı) ve deneme başında eski
+iletiyi siler; profil kaydı `saveProfile` içinde tek uçuştur, iki alan ve düğme
+uçuşta kilitlidir, `profileFailureText` çekirdek reddini `{code} — {message}`
+olarak yazar (`Error` yolu iletisini korur), alan değişiminde ileti temizlenir,
+`profileReady` boşluk kapısıdır ve çağrıda değerler `trim()` edilir.
+
+Doğrulama: `Providers.test.tsx` 30 → 37 test (7 yeni). Düzeltme öncesi ham koşu
+**7 failed | 30 passed** (her kusur kendi testini düşürdü: `<dd>` kalıntısı,
+`disabled` `false`, `muted small` satırı, `/E_AI_PROFILE/` bulunamadı, iki
+çağrı, `card-sub` onayı, `false`). Kapı kanıtı **9/9** mutasyon kırmızı; geri
+alma sha256 `7f2b3e5736ce…d1cf78` birebir. `tsc --noEmit` temiz, vitest
+**936/936** (60 dosya), `npm run build` temiz (**579,43 kB**, gzip **156,20 kB**).
+Rust değişmedi; rustfmt iki manifestte `--check` temiz. Kod `e77a104`.
+
+Dürüst sınırlar: jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek CLI
+süreçleri ve görsel QA yok; `api` mock'lu olduğu için `provider_probe`,
+`provider_probe_cancel` ve `provider_api_profile_save` komutlarının Rust tarafı
+**koşmaz**. Testler yanıt sırasını elle çözülen sözlerle denetler, gerçek
+gecikmeyi değil. Yenileme yoklamaları **başarılıysa** temizler: düşen yenileme
+listeyi ve kanıtı olduğu gibi bırakır (liste değişmedi). Profil iletisi hâlâ
+kart içinde düz satırdır (`role="alert"` yok) — ekran okuyucu duyurusu
+**insan** VoiceOver turunda doğrulanacak.
+
 ## Yetenek matrisi ve bağlantı durumu (F10-T11, 2026-10-24)
 
 `crates/cli-adapters/src/capability.rs`. Dört yetenek kaydedilir: **araçsız
