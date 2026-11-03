@@ -259,9 +259,19 @@ function ReaderPane({
     };
   }, [versionId]);
 
+  // Hedef bağ nesli: başka bağa geçilince artar. Uçuştaki öneri/bağlama yanıtı
+  // yalnız kendi nesli için yazılır; aksi hâlde önceki bağın adayları yeni bağın
+  // altında çiziliyor ve "Bağla" yeni bağa **eski adayın offset'ini** yazabiliyordu
+  // (INV-05'in okuyucu karşılığı).
+  const anchorGen = useRef(0);
+  // Bağlama isteklerinin sırası: geç gelen eski yanıt yeni denemenin kilidini
+  // açmaz, yeni yanıtı da ezmez.
+  const rebindSeq = useRef(0);
+
   // Hedef anchor ise konumu (güncel sürüm mü, alıntı duruyor mu) çekirdekten
   // okunur; eski hedef bilgisiyle rozet gösterilmez.
   useEffect(() => {
+    anchorGen.current += 1;
     setAnchorInfo(null);
     setRebindSuggestion(null);
     setRebindNotice(null);
@@ -638,26 +648,40 @@ function ReaderPane({
     }
   }
 
-  /** Güncel sürümde alıntıyı arar; sonuç çekirdekten gelir (uydurulmaz). */
+  /** Güncel sürümde alıntıyı arar; sonuç çekirdekten gelir (uydurulmaz).
+   *  Yanıt yalnız istendiği bağ ve en son istek için yazılır. */
   async function loadRebindSuggestion(anchorId: string) {
+    const gen = anchorGen.current;
+    const seq = ++rebindSeq.current;
     setRebindBusy(true);
     setRebindNotice(null);
+    setError(null);
     try {
-      setRebindSuggestion(await api.anchorRebindSuggestion(anchorId));
+      const suggestion = await api.anchorRebindSuggestion(anchorId);
+      if (gen !== anchorGen.current || seq !== rebindSeq.current) return;
+      setRebindSuggestion(suggestion);
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === anchorGen.current && seq === rebindSeq.current) setError(toApiError(e));
     } finally {
-      setRebindBusy(false);
+      if (seq === rebindSeq.current) setRebindBusy(false);
     }
   }
 
-  /** Seçilen adaya bağlar; çekirdek alıntıyı o offset'te birebir doğrular. */
+  /** Seçilen adaya bağlar; çekirdek alıntıyı o offset'te birebir doğrular.
+   *  İstek hangi bağ için başladıysa yanıt yalnız ona yazılır: kullanıcı bu
+   *  sırada başka bağa geçtiyse yeni bağın künyesi eski konumla ezilmez. */
   async function rebindTo(candidate: RebindCandidate) {
     if (!anchorInfo) return;
+    const anchorId = anchorInfo.anchorId;
+    const gen = anchorGen.current;
+    const seq = ++rebindSeq.current;
     setRebindBusy(true);
+    setRebindNotice(null);
+    setError(null);
     try {
-      await api.anchorRebind(anchorInfo.anchorId, candidate.segmentId, candidate.startOffset);
-      const location = await api.anchorLocate(anchorInfo.anchorId);
+      await api.anchorRebind(anchorId, candidate.segmentId, candidate.startOffset);
+      const location = await api.anchorLocate(anchorId);
+      if (gen !== anchorGen.current || seq !== rebindSeq.current) return;
       setRebindSuggestion(null);
       if (location) {
         setAnchorInfo(location);
@@ -667,9 +691,9 @@ function ReaderPane({
       }
       onAnchorRebound?.(location ?? anchorInfo);
     } catch (e) {
-      setError(toApiError(e));
+      if (gen === anchorGen.current && seq === rebindSeq.current) setError(toApiError(e));
     } finally {
-      setRebindBusy(false);
+      if (seq === rebindSeq.current) setRebindBusy(false);
     }
   }
 
