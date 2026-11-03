@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -125,6 +125,34 @@ export function Review() {
   const [targetClaimKinds, setTargetClaimKinds] = useState<Record<string, string>>({});
   const [outboxPending, setOutboxPending] = useState(0);
 
+  // Uçuştaki yanıtların kapısı: yanıt yalnız **hâlâ** aynı dosya, aynı iddia ve
+  // aynı alıntı hükmü için yazılır (INV-05). Değerler render dışında okunduğu
+  // için ref'te tutulur; sayaçlar aynı dosya için yarışan istekleri sıraya bağlar.
+  const caseRef = useRef(caseId);
+  const claimRef = useRef<ClaimRow | null>(selectedClaim);
+  const quoteRef = useRef<InTextQuoteCheck | null>(quoteCheck);
+  const editingRef = useRef<string | null>(editingId);
+  const loadSeq = useRef(0);
+  const linksSeq = useRef(0);
+  const linksClaimRef = useRef<string | null>(null);
+  const quoteSeq = useRef(0);
+
+  useEffect(() => {
+    caseRef.current = caseId;
+  }, [caseId]);
+
+  useEffect(() => {
+    claimRef.current = selectedClaim;
+  }, [selectedClaim]);
+
+  useEffect(() => {
+    quoteRef.current = quoteCheck;
+  }, [quoteCheck]);
+
+  useEffect(() => {
+    editingRef.current = editingId;
+  }, [editingId]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -139,6 +167,11 @@ export function Review() {
 
   const load = useCallback(async (id: string) => {
     if (!id) return;
+    const seq = ++loadSeq.current;
+    // Yanıt yalnız hâlâ aynı dosya için ve **en son** istekse yazılır: hızlı
+    // dosya değişiminde eski dosyanın geç yanıtı yeni dosyanın listesini ezmez.
+    const fresh = () => caseRef.current === id && loadSeq.current === seq;
+    setError(null);
     try {
       const [claimRows, itemRows, anchorRows, documentRows] = await Promise.all([
         api.claimList(id),
@@ -146,6 +179,7 @@ export function Review() {
         api.anchorList(id),
         api.documentList(id),
       ]);
+      if (!fresh()) return;
       setClaims(claimRows);
       setItems(itemRows);
       setAnchors(anchorRows);
@@ -161,11 +195,22 @@ export function Review() {
           ),
         ),
       ]);
+      if (!fresh()) return;
       setOutboxPending(outboxRows.length);
       setAssessments(Object.fromEntries(pairs));
       setSelectedClaim((prev) => (prev ? claimRows.find((c) => c.id === prev.id) ?? null : null));
     } catch (e) {
+      if (!fresh()) return;
       setError(toApiError(e));
+      // Okunamayan dosyanın yerine önceki dosyanın verisi gösterilmez: liste
+      // "yeni dosyanın verisi" gibi kalamaz.
+      setClaims([]);
+      setItems([]);
+      setAnchors([]);
+      setDocuments([]);
+      setOutboxPending(0);
+      setAssessments({});
+      setSelectedClaim(null);
     }
   }, []);
 
@@ -177,77 +222,116 @@ export function Review() {
   // temizlenir: bayat sonuç ekranda kalmaz ve kapsam yeni dosyaya taşınırsa
   // denetim başka dosyanın belgesine daraltılmış gitmez. Yazılan alıntı
   // metni kullanıcının girdisidir; silinmez, yeni dosyada açıkça çalıştırılır.
+  // Kaynak seçimleri birer **çapa kimliğidir**: taşınırsa aday/bağ yanlış
+  // dosyanın çapasına yazılır (INV-05), bu yüzden sıfırlanır. Açık düzenleyici
+  // de önceki dosyanın öğesine aittir; metniyle birlikte kapanır.
   useEffect(() => {
     setQuoteCheck(null);
     setQuoteBindings({});
     setQuoteSource("");
     setQuoteScope("");
+    setDraftAnchor("");
+    setDraftAnchor2("");
+    setLinkAnchor("");
+    setEditingId(null);
+    setEditJson("");
   }, [caseId]);
 
   useEffect(() => {
-    if (!selectedClaim) {
+    const seq = ++linksSeq.current;
+    const claimId = selectedClaim?.id ?? null;
+    // Başka iddiaya geçişte önceki iddianın bağları **hemen** kalkar; aynı
+    // iddianın tazelenmesinde liste korunur (titreme yok).
+    if (linksClaimRef.current !== claimId) {
+      linksClaimRef.current = claimId;
       setLinks([]);
       setRelations([]);
-      return;
     }
+    if (!selectedClaim) return;
     void Promise.all([
       api.evidenceLinkList(selectedClaim.id),
       api.claimRelationList(selectedClaim.id),
     ])
       .then(([linkRows, relationRows]) => {
+        // Geç gelen yanıt, o sırada seçilmiş **başka** iddianın panelini ezmez.
+        if (linksSeq.current !== seq) return;
         setLinks(linkRows);
         setRelations(relationRows);
       })
-      .catch((e) => setError(toApiError(e)));
+      .catch((e) => {
+        if (linksSeq.current !== seq) return;
+        setError(toApiError(e));
+      });
   }, [selectedClaim]);
 
   async function runQuoteCheck() {
     if (!caseId || quoteText.trim().length === 0) return;
+    const asked = caseId;
+    const seq = ++quoteSeq.current;
+    setError(null);
     setQuoteBusy(true);
     try {
-      const report = await api.inTextQuoteCheck(caseId, {
+      const report = await api.inTextQuoteCheck(asked, {
         text: quoteText,
         documentId: quoteScope === "" ? null : quoteScope,
       });
+      // Dosya değiştiyse hüküm artık ekrandaki dosyaya ait değildir.
+      if (caseRef.current !== asked) return;
       setQuoteCheck(report);
       setQuoteBindings({});
     } catch (e) {
+      if (caseRef.current !== asked) return;
       setError(toApiError(e));
     } finally {
-      setQuoteBusy(false);
+      if (quoteSeq.current === seq) setQuoteBusy(false);
     }
   }
 
   async function bindQuote(finding: InTextQuoteFinding) {
     const input = bindingInput(caseId, finding);
     if (!input) return;
+    const asked = caseId;
+    const captured = quoteCheck;
+    const seq = ++quoteSeq.current;
+    setError(null);
     setQuoteBusy(true);
     try {
       const anchor = await api.anchorCreate(input);
+      // Hedef dosya ya da alıntı hükmü (metin/kapsam) değiştiyse bu bağ
+      // ekrandaki alıntıya ait değildir: ne rozet ne kaynak listesi yazılır.
+      if (caseRef.current !== asked || quoteRef.current !== captured) return;
       setQuoteBindings((prev) => ({ ...prev, [finding.index]: anchor.id }));
       setAnchors((prev) => [anchor, ...prev]);
     } catch (e) {
+      if (caseRef.current !== asked) return;
       setError(toApiError(e));
     } finally {
-      setQuoteBusy(false);
+      if (quoteSeq.current === seq) setQuoteBusy(false);
     }
   }
 
   async function addClaim() {
-    if (!caseId || claimText.trim().length === 0 || claimKind === "") return;
+    const text = claimText;
+    const kind = claimKind;
+    if (!caseId || text.trim().length === 0 || kind === "") return;
+    const asked = caseId;
     setBusy(true);
     try {
-      await api.claimCreate(caseId, {
+      await api.claimCreate(asked, {
         claimantActorId: null,
-        claimText: claimText.trim(),
-        claimKind,
+        claimText: text.trim(),
+        claimKind: kind,
         sourceAnchorId: null,
       });
-      setClaimText("");
-      setClaimKind("");
-      await load(caseId);
+      // Girdi yalnız hâlâ aynı dosyada ve kullanıcı değiştirmediyse temizlenir:
+      // uçuşta yazılan yeni metin sessizce silinmez.
+      if (caseRef.current === asked) {
+        setClaimText((cur) => (cur === text ? "" : cur));
+        setClaimKind((cur) => (cur === kind ? "" : cur));
+      }
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -255,18 +339,28 @@ export function Review() {
 
   async function addLink() {
     if (!selectedClaim || !linkAnchor || linkRelation === "") return;
+    const asked = caseId;
+    const claimId = selectedClaim.id;
+    const anchorId = linkAnchor;
+    const rationale = linkRationale;
+    const relation = linkRelation;
+    setError(null);
     setBusy(true);
     try {
-      await api.evidenceLinkCreate(caseId, {
-        claimId: selectedClaim.id,
-        sourceAnchorId: linkAnchor,
-        relation: linkRelation,
-        rationale: linkRationale.trim(),
+      await api.evidenceLinkCreate(asked, {
+        claimId,
+        sourceAnchorId: anchorId,
+        relation,
+        rationale: rationale.trim(),
       });
-      setLinkRationale("");
-      setLinks(await api.evidenceLinkList(selectedClaim.id));
+      const rows = await api.evidenceLinkList(claimId);
+      // Başka iddiaya/dosyaya geçildiyse eski iddianın bağı yeni panelin bağı
+      // değildir.
+      if (claimRef.current?.id !== claimId || caseRef.current !== asked) return;
+      setLinkRationale((cur) => (cur === rationale ? "" : cur));
+      setLinks(rows);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -274,20 +368,28 @@ export function Review() {
 
   async function addClaimRelation() {
     if (!selectedClaim || relationTarget === "" || relationKind === "") return;
+    const asked = caseId;
+    const claimId = selectedClaim.id;
+    const target = relationTarget;
+    const kind = relationKind;
+    const note = relationNote;
     setBusy(true);
     try {
-      await api.claimRelationCreate(caseId, selectedClaim.id, {
-        relatedClaimId: relationTarget,
-        relation: relationKind,
-        rationale: relationNote.trim(),
+      await api.claimRelationCreate(asked, claimId, {
+        relatedClaimId: target,
+        relation: kind,
+        rationale: note.trim(),
       });
-      setRelationTarget("");
-      setRelationKind("");
-      setRelationNote("");
-      setRelations(await api.claimRelationList(selectedClaim.id));
-      await load(caseId);
+      const rows = await api.claimRelationList(claimId);
+      if (claimRef.current?.id === claimId && caseRef.current === asked) {
+        setRelationTarget((cur) => (cur === target ? "" : cur));
+        setRelationKind((cur) => (cur === kind ? "" : cur));
+        setRelationNote((cur) => (cur === note ? "" : cur));
+        setRelations(rows);
+      }
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -315,11 +417,15 @@ export function Review() {
         sourceAnchorIds: anchorIds,
         aiRunId: null,
       });
-      setDraftText("");
-      setDraftAnchor2("");
+      // Uçuşta dosya değiştiyse ya da kullanıcı taslağı değiştirdiyse yeni
+      // yazılan metin silinmez.
+      if (caseRef.current === caseId) {
+        setDraftText((cur) => (cur === draftText ? "" : cur));
+        setDraftAnchor2((cur) => (cur === draftAnchor2 ? "" : cur));
+      }
       await load(caseId);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === caseId) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -328,10 +434,12 @@ export function Review() {
   async function assess(item: ReviewItemRow) {
     const verdict = assessmentVerdicts[item.id];
     if (!verdict) return;
+    const asked = caseId;
+    setError(null);
     setBusy(true);
     try {
       await api.contradictionAssess(
-        caseId,
+        asked,
         item.id,
         verdict,
         (assessmentNotes[item.id] ?? "").trim(),
@@ -342,7 +450,7 @@ export function Review() {
       setAssessmentVerdicts((prev) => ({ ...prev, [item.id]: "" }));
       setAssessmentNotes((prev) => ({ ...prev, [item.id]: "" }));
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -362,8 +470,12 @@ export function Review() {
         }
       }
       await api.reviewDecide(item.id, decision, decision === "edit" ? t("review.auditUserEdit") : "", edited ?? undefined);
-      setEditingId(null);
-      setEditJson("");
+      // Düzenleyici yalnız **hâlâ bu** öğeyi gösteriyorsa kapanır: bu sırada
+      // başka öğe için açılan düzenleyici ve yazılan metin korunur.
+      if (editingRef.current === item.id) {
+        setEditingId(null);
+        setEditJson("");
+      }
       await load(caseId);
     } catch (e) {
       setError(toApiError(e));

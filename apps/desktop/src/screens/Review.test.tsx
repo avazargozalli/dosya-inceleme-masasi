@@ -20,7 +20,7 @@
 // 6. Geçersiz JSON düzeltmesi gönderilmez (bozuk payload yazılmaz).
 // 7. Kuyruk sayımı: bekleyen = `pending` + `needs_more_evidence`.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../lib/i18n";
 import { quoteCheckSummary } from "../lib/intext";
@@ -29,6 +29,7 @@ import type {
   CaseRow,
   ClaimRow,
   DocumentRow,
+  EvidenceLinkRow,
   InTextQuoteCheck,
   InTextQuoteFinding,
   InTextQuotePosition,
@@ -38,6 +39,7 @@ import type {
 const mocks = vi.hoisted(() => ({
   caseList: vi.fn(),
   claimList: vi.fn(),
+  claimCreate: vi.fn(),
   reviewItemList: vi.fn(),
   anchorList: vi.fn(),
   documentList: vi.fn(),
@@ -51,7 +53,9 @@ const mocks = vi.hoisted(() => ({
   reviewItemCreate: vi.fn(),
   contradictionAssess: vi.fn(),
   evidenceLinkList: vi.fn(),
+  evidenceLinkCreate: vi.fn(),
   claimRelationList: vi.fn(),
+  claimRelationCreate: vi.fn(),
 }));
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -62,6 +66,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       ...actual.api,
       caseList: mocks.caseList,
       claimList: mocks.claimList,
+      claimCreate: mocks.claimCreate,
       reviewItemList: mocks.reviewItemList,
       anchorList: mocks.anchorList,
       documentList: mocks.documentList,
@@ -75,7 +80,9 @@ vi.mock("../lib/api", async (importOriginal) => {
       reviewItemCreate: mocks.reviewItemCreate,
       contradictionAssess: mocks.contradictionAssess,
       evidenceLinkList: mocks.evidenceLinkList,
+      evidenceLinkCreate: mocks.evidenceLinkCreate,
       claimRelationList: mocks.claimRelationList,
+      claimRelationCreate: mocks.claimRelationCreate,
     },
   };
 });
@@ -271,18 +278,100 @@ function finding(overrides: Partial<InTextQuoteFinding> & { index: number; quote
   };
 }
 
-function setup(overrides: { quoteCheck?: InTextQuoteCheck } = {}) {
+/** İkinci iddia (aynı dosyada) ve ikinci dosyanın künyeleri. */
+const CLAIM_B: ClaimRow = {
+  ...CLAIMS[0]!,
+  id: "cl2",
+  claimText: "Ödeme dekontu sunuldu",
+  claimKind: "defense",
+};
+
+const CLAIM_C2: ClaimRow = {
+  ...CLAIMS[0]!,
+  id: "cl9",
+  caseId: "c2",
+  claimText: "İhtar bedeli ödenmedi",
+};
+
+const ITEM_C2: ReviewItemRow = item({
+  id: "i-c2",
+  itemKind: "note_candidate",
+  payload: { text: "İhtar notu" },
+  caseId: "c2",
+});
+
+const ANCHOR_C2: AnchorRow = {
+  ...anchor("b1", "İhtar 3 Ekimde gönderildi", 0),
+  caseId: "c2",
+};
+
+function link(id: string, claimId: string, anchorId: string, relation: string): EvidenceLinkRow {
+  return {
+    id,
+    caseId: "c1",
+    claimId,
+    sourceAnchorId: anchorId,
+    relation,
+    rationale: "",
+    reviewState: "pending",
+    createdAt: ISO,
+  };
+}
+
+/** "Bağlam · Kira bedeli ödenmedi" satırı. */
+const LINK_A = link("ln-a", "cl1", "a1", "context");
+/** "Sunuldu · Ödeme 3 Ekimde yapıldı" satırı. */
+const LINK_B = link("ln-b", "cl2", "a2", "submitted_for");
+
+/** İkinci dosyanın iddiası listede ve seçicide geçer; düğme rolüyle aranır. */
+const C2_CLAIM_BUTTON = /İhtar bedeli ödenmedi/;
+
+/** Askıda tutulabilen söz (uçuştaki istekleri ölçmek için). */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+type MaybeAsync<T> = T[] | Promise<T[]> | (() => Promise<T[]>);
+
+type CaseFixtures = {
+  claims?: MaybeAsync<ClaimRow>;
+  items?: MaybeAsync<ReviewItemRow>;
+  anchors?: MaybeAsync<AnchorRow>;
+  documents?: MaybeAsync<DocumentRow>;
+};
+
+async function resolveAs<T>(value: MaybeAsync<T> | undefined, fallback: T[]): Promise<T[]> {
+  if (value === undefined) return fallback;
+  if (typeof value === "function") return value();
+  return value;
+}
+
+function setup(
+  overrides: { quoteCheck?: InTextQuoteCheck; byCase?: Record<string, CaseFixtures> } = {},
+) {
+  const byCase = overrides.byCase ?? {};
   mocks.caseList.mockResolvedValue([CASE, CASE2]);
-  mocks.claimList.mockResolvedValue(CLAIMS);
-  mocks.reviewItemList.mockResolvedValue(ITEMS);
-  mocks.anchorList.mockResolvedValue(ANCHORS);
-  mocks.documentList.mockResolvedValue(DOCUMENTS);
+  mocks.claimList.mockImplementation(async (id: string) => resolveAs(byCase[id]?.claims, CLAIMS));
+  mocks.reviewItemList.mockImplementation(async (id: string) => resolveAs(byCase[id]?.items, ITEMS));
+  mocks.anchorList.mockImplementation(async (id: string) => resolveAs(byCase[id]?.anchors, ANCHORS));
+  mocks.documentList.mockImplementation(async (id: string) =>
+    resolveAs(byCase[id]?.documents, DOCUMENTS),
+  );
   mocks.reviewOutboxPending.mockResolvedValue([{ id: "o1" }]);
   mocks.contradictionAssessments.mockResolvedValue([]);
   mocks.evidenceLinkList.mockResolvedValue([]);
   mocks.claimRelationList.mockResolvedValue([]);
   mocks.inTextQuoteCheck.mockResolvedValue(overrides.quoteCheck ?? check());
   mocks.anchorCreate.mockResolvedValue(anchor("an-12345678", "kira bedeli ödenmedi", 10));
+  mocks.claimCreate.mockResolvedValue(CLAIMS[0]);
+  mocks.evidenceLinkCreate.mockResolvedValue(LINK_A);
+  mocks.claimRelationCreate.mockResolvedValue({ id: "rel-new" });
   mocks.reviewCommit.mockResolvedValue({});
   mocks.reviewDecide.mockResolvedValue({});
   mocks.reviewItemCreate.mockResolvedValue({});
@@ -508,5 +597,472 @@ describe("inceleme ekranı davranışı", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(t("review.errEditJson"));
     expect(mocks.reviewDecide).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Yazma yolları ve kapsam kapıları.
+//
+// Yukarıdaki blok ekranın **kararlarını** ölçüyor (hedefsiz kabul yok, bayat
+// alıntı hükmü yok...). Bu blok aynı ekranın **uçuştaki** davranışını ölçer:
+// hangi dosyaya/iddiaya hangi yanıtın yazıldığı (INV-05), bayat hata ve
+// kullanıcı girdisinin sessizce silinmesi.
+// ---------------------------------------------------------------------------
+describe("inceleme yazma yolları ve kapsam kapıları", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function addButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: t("review.queueAdd") }) as HTMLButtonElement;
+  }
+
+  function bindButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: t("review.bindAction") }) as HTMLButtonElement;
+  }
+
+  it("geç gelen eski dosya yanıtı yeni dosyanın listesini ezmez", async () => {
+    const slowClaims = deferred<ClaimRow[]>();
+    setup({
+      byCase: {
+        c1: { claims: slowClaims.promise },
+        c2: { claims: [CLAIM_C2], items: [ITEM_C2], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await waitFor(() => expect(mocks.claimList).toHaveBeenCalledWith("c1"));
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+    expect(screen.getByText(t("review.claimsCount", { count: 1 }))).toBeTruthy();
+
+    // Eski dosyanın yanıtı **sonra** gelir: yeni dosyanın listesini ezmemeli.
+    await act(async () => {
+      slowClaims.resolve([CLAIMS[0]!, CLAIM_B]);
+    });
+
+    expect(screen.getByText(t("review.claimsCount", { count: 1 }))).toBeTruthy();
+    expect(screen.queryByText(CLAIM_B.claimText)).toBeNull();
+  });
+
+  it("düşen yükleme önceki dosyanın iddia ve adaylarını ekranda bırakmaz", async () => {
+    setup({
+      byCase: {
+        c1: { claims: CLAIMS, items: ITEMS, anchors: ANCHORS, documents: DOCUMENTS },
+        c2: {
+          claims: () => Promise.reject(new Error("db down")),
+          items: [],
+          anchors: [],
+          documents: [],
+        },
+      },
+    });
+
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("alert");
+
+    // Yeni dosyanın verisi okunamadı: eski dosyanın listesi "yeni dosyanın
+    // verisi" gibi ekranda kalamaz.
+    expect(screen.getByText(t("review.claimsEmpty"))).toBeTruthy();
+    expect(screen.getByText(t("review.queueEmpty"))).toBeTruthy();
+    expect(screen.queryByText(t("review.claimsCount", { count: 1 }))).toBeNull();
+  });
+
+  it("iddia ekleme uçuşta dosya değişirse eski dosyanın listesi yeni dosyaya yazılmaz", async () => {
+    const slowCreate = deferred<ClaimRow>();
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!, CLAIM_B], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 2 }));
+    mocks.claimCreate.mockReturnValue(slowCreate.promise);
+    fireEvent.change(byId<HTMLInputElement>("rv-claim"), { target: { value: "Yeni iddia" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-kind"), { target: { value: "allegation" } });
+    fireEvent.click(screen.getByRole("button", { name: t("review.addAction") }));
+    await waitFor(() => expect(mocks.claimCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    // İşlem tamamlanınca eski dosya yeniden yüklenir; yeni dosyanın görünümü
+    // bundan etkilenmemeli.
+    await act(async () => {
+      slowCreate.resolve(CLAIMS[0]!);
+    });
+
+    expect(screen.getByText(t("review.claimsCount", { count: 1 }))).toBeTruthy();
+    expect(screen.queryByText(CLAIM_B.claimText)).toBeNull();
+  });
+
+  it("alıntı denetimi uçuşta dosya değişirse eski dosyanın hükmü yeni dosyada çizilmez", async () => {
+    const slowCheck = deferred<InTextQuoteCheck>();
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    mocks.inTextQuoteCheck.mockReturnValue(slowCheck.promise);
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    const summary = quoteCheckSummary(check());
+    await act(async () => {
+      slowCheck.resolve(check());
+    });
+
+    expect(screen.queryByText(summary)).toBeNull();
+  });
+
+  it("uçuşta bağlanan çapa yeni dosyanın kaynak listesine eklenmez", async () => {
+    const slowBind = deferred<AnchorRow>();
+    setup({
+      quoteCheck: check({ quotes: [finding({ index: 0, quote: "kira bedeli ödenmedi" })] }),
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    mocks.anchorCreate.mockReturnValue(slowBind.promise);
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    fireEvent.click(await screen.findByRole("button", { name: t("review.bindQuoteAction") }));
+    await waitFor(() => expect(mocks.anchorCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+    await act(async () => {
+      slowBind.resolve(anchor("an-99999999", "İhtar alıntısı", 0));
+    });
+
+    const values = Array.from(byId<HTMLSelectElement>("rv-danchor").options).map((o) => o.value);
+    expect(values).toEqual(["", "b1"]);
+  });
+
+  it("düşen alıntı bağlamadan sonra başarılı bağlama kırmızı hatayı siler", async () => {
+    setup({ quoteCheck: check({ quotes: [finding({ index: 0, quote: "kira bedeli ödenmedi" })] }) });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.anchorCreate.mockRejectedValueOnce(new Error("db down"));
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    fireEvent.click(await screen.findByRole("button", { name: t("review.bindQuoteAction") }));
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: t("review.bindQuoteAction") }));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("iddia değişince önceki iddianın delil bağları hemen kalkar", async () => {
+    const slowB = deferred<EvidenceLinkRow[]>();
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!, CLAIM_B], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+      },
+    });
+    mocks.evidenceLinkList.mockImplementation(async (claimId: string) =>
+      claimId === "cl1" ? [LINK_A] : slowB.promise,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Kira bedeli ödenmedi/ }));
+    await screen.findByText(/^Bağlam ·/);
+
+    fireEvent.click(screen.getByRole("button", { name: /Ödeme dekontu sunuldu/ }));
+
+    // Yeni iddianın bağları yüklenirken önceki iddianın bağı görünmemeli.
+    expect(screen.queryByText(/^Bağlam ·/)).toBeNull();
+  });
+
+  it("geç gelen eski iddia yanıtı yeni iddianın panelini ezmez", async () => {
+    const slowA = deferred<EvidenceLinkRow[]>();
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!, CLAIM_B], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+      },
+    });
+    mocks.evidenceLinkList.mockImplementation(async (claimId: string) =>
+      claimId === "cl1" ? slowA.promise : [LINK_B],
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Kira bedeli ödenmedi/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Ödeme dekontu sunuldu/ }));
+    await screen.findByText(/^Sunuldu ·/);
+
+    await act(async () => {
+      slowA.resolve([LINK_A]);
+    });
+
+    expect(screen.queryByText(/^Bağlam ·/)).toBeNull();
+    expect(screen.getByText(/^Sunuldu ·/)).toBeTruthy();
+  });
+
+  it("iddia bağı uçuşta iddia değişirse eski iddianın bağı yeni panelde görünmez", async () => {
+    const slowCreate = deferred<EvidenceLinkRow>();
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!, CLAIM_B], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+      },
+    });
+    let listCalls = 0;
+    mocks.evidenceLinkList.mockImplementation(async (claimId: string) => {
+      if (claimId !== "cl1") return [];
+      listCalls += 1;
+      return listCalls === 1 ? [] : [LINK_A];
+    });
+    mocks.evidenceLinkCreate.mockReturnValue(slowCreate.promise);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Kira bedeli ödenmedi/ }));
+    await waitFor(() => expect(mocks.evidenceLinkList).toHaveBeenCalledWith("cl1"));
+    fireEvent.change(byId<HTMLSelectElement>("rv-anchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-rel"), { target: { value: "context" } });
+    fireEvent.click(bindButton());
+    await waitFor(() => expect(mocks.evidenceLinkCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /Ödeme dekontu sunuldu/ }));
+    await screen.findByText(t("review.evidenceEmpty"));
+
+    await act(async () => {
+      slowCreate.resolve(LINK_A);
+    });
+
+    expect(screen.queryByText(/^Bağlam ·/)).toBeNull();
+    expect(screen.getByText(t("review.evidenceEmpty"))).toBeTruthy();
+  });
+
+  it("dosya değişince seçili kaynak taşınmaz: yeni dosyaya eski çapanın kimliği gönderilmez", async () => {
+    setup({
+      byCase: {
+        c1: { claims: CLAIMS, items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    fireEvent.change(byId<HTMLSelectElement>("rv-danchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLInputElement>("rv-dtext"), { target: { value: "Taslak aday" } });
+    expect(addButton().disabled).toBe(false);
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    // Kaynak seçimi önceki dosyanın çapasına bağlıydı: yeni dosyada seçim yok.
+    expect(addButton().disabled).toBe(true);
+  });
+
+  it("dosya değişince ikinci kaynak seçimi taşınmaz", async () => {
+    setup({
+      byCase: {
+        c1: { claims: CLAIMS, items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    fireEvent.change(byId<HTMLSelectElement>("rv-dkind"), {
+      target: { value: "contradiction_candidate" },
+    });
+    fireEvent.change(byId<HTMLSelectElement>("rv-danchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-danchor2"), { target: { value: "a2" } });
+    fireEvent.change(byId<HTMLInputElement>("rv-dtext"), { target: { value: "Çelişki adayı" } });
+    expect(addButton().disabled).toBe(false);
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+    fireEvent.change(byId<HTMLSelectElement>("rv-danchor"), { target: { value: "b1" } });
+
+    // İkinci kaynak boş: bayat "a2" ile çelişki adayı yazılabilir olmamalı.
+    expect(addButton().disabled).toBe(true);
+  });
+
+  it("dosya değişince kaynak alıntı seçimi taşınmaz", async () => {
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    fireEvent.click(await screen.findByRole("button", { name: /Kira bedeli ödenmedi/ }));
+    fireEvent.change(byId<HTMLSelectElement>("rv-anchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-rel"), { target: { value: "context" } });
+    expect(bindButton().disabled).toBe(false);
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    fireEvent.click(await screen.findByRole("button", { name: /İhtar bedeli ödenmedi/ }));
+
+    // Yeni dosyanın iddiasına eski dosyanın çapası bağlanabilir olmamalı.
+    expect(bindButton().disabled).toBe(true);
+  });
+
+  it("düşen iddia eklemeden sonra başarılı ekleme kırmızı hatayı siler", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.claimCreate.mockRejectedValueOnce(new Error("db down"));
+    fireEvent.change(byId<HTMLInputElement>("rv-claim"), { target: { value: "Yeni iddia" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-kind"), { target: { value: "allegation" } });
+    fireEvent.click(screen.getByRole("button", { name: t("review.addAction") }));
+    await screen.findByRole("alert");
+
+    fireEvent.change(byId<HTMLInputElement>("rv-claim"), { target: { value: "İkinci iddia" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-kind"), { target: { value: "allegation" } });
+    fireEvent.click(screen.getByRole("button", { name: t("review.addAction") }));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("düşen delil bağından sonra başarılı bağlama kırmızı hatayı siler", async () => {
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+      },
+    });
+    mocks.evidenceLinkCreate.mockRejectedValueOnce(new Error("db down"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Kira bedeli ödenmedi/ }));
+    fireEvent.change(byId<HTMLSelectElement>("rv-anchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-rel"), { target: { value: "context" } });
+    fireEvent.click(bindButton());
+    await screen.findByRole("alert");
+
+    fireEvent.click(bindButton());
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("düşen alıntı denetiminden sonra başarılı denetim kırmızı hatayı siler", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.inTextQuoteCheck.mockRejectedValueOnce(new Error("db down"));
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("düşen çelişki değerlendirmesinden sonra başarılı değerlendirme kırmızı hatayı siler", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.contradictionAssess.mockRejectedValueOnce(new Error("db down"));
+    fireEvent.change(byId<HTMLSelectElement>("verdict-i-contra"), { target: { value: "conflict" } });
+    fireEvent.click(screen.getByRole("button", { name: t("review.assessAction") }));
+    await screen.findByRole("alert");
+
+    fireEvent.change(byId<HTMLSelectElement>("verdict-i-contra"), { target: { value: "conflict" } });
+    fireEvent.click(screen.getByRole("button", { name: t("review.assessAction") }));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("karar uçuşta başka öğenin düzenleyicisi açılırsa kapanmaz", async () => {
+    const slowDecide = deferred<ReviewItemRow>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    mocks.reviewDecide.mockReturnValue(slowDecide.promise);
+
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", { name: t("review.editAction") }),
+    );
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", { name: t("common.save") }),
+    );
+    await waitFor(() => expect(mocks.reviewDecide).toHaveBeenCalledTimes(1));
+
+    // Bu sırada başka öğenin düzenleyicisi açılır ve metin yazılır.
+    fireEvent.click(
+      within(itemCard("Ödeme yapıldı")).getByRole("button", { name: t("review.editAction") }),
+    );
+    fireEvent.change(within(itemCard("Ödeme yapıldı")).getByLabelText(t("review.editJsonLabel")), {
+      target: { value: '{ "text": "elle düzeltildi" }' },
+    });
+
+    await act(async () => {
+      slowDecide.resolve(ITEMS[0]!);
+    });
+
+    // Eski kararın yanıtı, yeni açılan düzenleyiciyi kapatmamalı ve metnini
+    // silmemeli.
+    const kept = within(itemCard("Ödeme yapıldı")).getByLabelText(
+      t("review.editJsonLabel"),
+    ) as HTMLTextAreaElement;
+    expect(kept.value).toBe('{ "text": "elle düzeltildi" }');
+  });
+
+  it("aday ekleme uçuşta dosya değişirse yeni dosyanın taslağı silinmez", async () => {
+    const slowCreate = deferred<ReviewItemRow>();
+    setup({
+      byCase: {
+        c1: { claims: CLAIMS, items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    mocks.reviewItemCreate.mockReturnValue(slowCreate.promise);
+    fireEvent.change(byId<HTMLSelectElement>("rv-danchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLInputElement>("rv-dtext"), { target: { value: "İlk dosyanın adayı" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.reviewItemCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    await act(async () => {
+      slowCreate.resolve(ITEMS[0]!);
+    });
+
+    // Yeni dosyanın taslak kutusu, önceki dosyanın isteği tamamlandı diye
+    // boşaltılmaz: yazılan metin kullanıcınındır.
+    expect(byId<HTMLInputElement>("rv-dtext").value).toBe("İlk dosyanın adayı");
+  });
+
+  it("aday ekleme uçuşta taslak değiştirilirse yazılan metin silinmez", async () => {
+    const slowCreate = deferred<ReviewItemRow>();
+    setup({ byCase: { c1: { claims: CLAIMS, items: [], anchors: ANCHORS, documents: DOCUMENTS } } });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    mocks.reviewItemCreate.mockReturnValue(slowCreate.promise);
+    fireEvent.change(byId<HTMLSelectElement>("rv-danchor"), { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLInputElement>("rv-dtext"), { target: { value: "İlk aday" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.reviewItemCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLInputElement>("rv-dtext"), { target: { value: "Düzeltilmiş aday" } });
+
+    await act(async () => {
+      slowCreate.resolve(ITEMS[0]!);
+    });
+
+    expect(byId<HTMLInputElement>("rv-dtext").value).toBe("Düzeltilmiş aday");
   });
 });
