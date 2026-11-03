@@ -23,7 +23,7 @@
 // 8. Sürümü olmayan sonuç açılamaz; vurgu **aranan** metne bağlı kalır
 //    (kutu değişse de sonuçlar eski sorguya aittir).
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../lib/i18n";
 import { SEARCH_SCOPE_LABELS } from "../lib/search-scope";
@@ -214,6 +214,9 @@ type SetupOptions = {
 };
 
 function setup(options: SetupOptions = {}) {
+  // `mockResolvedValueOnce` kuyrukları testler arasında sızmasın: her kurulum
+  // kendi sözleşmesini sıfırdan kurar (yarış testleri çağrı sayısına duyarlı).
+  for (const mock of Object.values(mocks)) mock.mockReset();
   const pages = options.pages ?? [page()];
   mocks.caseList.mockResolvedValue([CASE, CASE2]);
   mocks.documentList.mockResolvedValue(DOCUMENTS);
@@ -506,5 +509,296 @@ describe("arama ekranı davranışı", () => {
 
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.queryByText(t("search.libraryTitle"))).toBeNull();
+  });
+});
+
+/**
+ * Uçuştaki aramalar: ekranın bugüne dek hiç ölçülmemiş yüzü.
+ *
+ * `Search` beş api çağrısı yapar ve hepsi **asenkron**; mevcut testler yalnız
+ * "istek gitti / sonuç geldi" sırasını ölçüyordu. Burada yanıtların **hangi
+ * aramaya** yazıldığı ölçülür: geç gelen yanıt, kullanıcı yeni bir arama
+ * başlattıysa ya da dosya/kapsam değiştiyse ekrana yazılmamalıdır.
+ */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("arama ekranında uçuş yarışları", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("geç gelen eski arama yanıtı yeni aramanın sonuçlarını ezmez", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+
+    const first = deferred<SearchPage>();
+    const second = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    // Düğme uçuşta kapalı ama **Enter** hâlâ aramayı başlatır: ikinci arama
+    // birincisi bitmeden uçuşa girer.
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(2));
+
+    const secondMeta = t("search.hitMeta", { segment: "bbbbbbbb", version: "v1" });
+    await act(async () => {
+      second.resolve(
+        page({
+          query: "ödeme",
+          resolvedQuery: "ödeme",
+          hits: [hit({ segmentId: "bbbbbbbb-2", rawText: "ödeme yapılmadı" })],
+        }),
+      );
+    });
+    expect(await screen.findByText(secondMeta)).toBeTruthy();
+
+    // Eski aramanın yanıtı **sonra** gelir: yeni sonucun üstüne yazılmamalı.
+    await act(async () => {
+      first.resolve(page({ hits: [hit({ segmentId: "aaaaaaaa-1", rawText: "kira bedeli ödenmedi" })] }));
+    });
+    expect(screen.queryByText(t("search.hitMeta", { segment: "aaaaaaaa", version: "v1" }))).toBeNull();
+    expect(screen.getByText(secondMeta)).toBeTruthy();
+  });
+
+  it("eski yanıt gelince kilit erken açılmaz; düğme ikinci arama bitene kadar kapalı", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+
+    const first = deferred<SearchPage>();
+    const second = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      first.resolve(page({ hits: [hit({ segmentId: "aaaaaaaa-1" })] }));
+    });
+    // İkinci arama hâlâ uçuşta: düğme "Aranıyor…" yazmalı ve kapalı kalmalı.
+    const busyButton = screen.getByRole("button", { name: t("search.searching") }) as HTMLButtonElement;
+    expect(busyButton.disabled).toBe(true);
+
+    await act(async () => {
+      second.resolve(page({ hits: [hit({ segmentId: "bbbbbbbb-2" })] }));
+    });
+    const ready = (await screen.findByRole("button", { name: t("search.submit") })) as HTMLButtonElement;
+    expect(ready.disabled).toBe(false);
+  });
+
+  it("arama uçuşta iken dosya değişirse eski dosyanın sonucu yeni dosyada çizilmez", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+
+    const pending = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(pending.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await act(async () => {
+      pending.resolve(page());
+    });
+
+    // Sonuç `c1`e ait; `c2` seçiliyken sonuç kartı çizilmemeli.
+    expect(screen.queryByText(t("search.resultsTitle"))).toBeNull();
+    expect(screen.queryByText(t("search.hitMeta", { segment: "aaaaaaaa", version: "v1" }))).toBeNull();
+  });
+
+  it("arama uçuşta iken kapsam değişirse sonuç kartı öteki kapsamda çizilmez", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+
+    const pending = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(pending.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.precedent_library }));
+    await act(async () => {
+      pending.resolve(page());
+    });
+
+    // Kapsam değişti: dosya sonuçları kütüphane kapsamında görünmemeli.
+    expect(screen.queryByText(t("search.resultsTitle"))).toBeNull();
+    expect(screen.queryByText(t("search.libraryTitle"))).toBeNull();
+  });
+
+  it("düşen belge listesi önceki dosyanın tür ve etiketlerini bırakmaz", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    // `c1`in belge türü (pdf) filtre seçeneğine, etiketi (kira) çipe düştü.
+    expect(byId<HTMLSelectElement>("filter-type").querySelectorAll("option")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: /kira/ })).toBeTruthy();
+
+    mocks.documentList.mockRejectedValueOnce({
+      code: "E_DB",
+      message: "belge hatası",
+      retryable: true,
+    });
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    expect(await screen.findByRole("alert")).toBeTruthy();
+
+    // Yeni dosyanın belgeleri okunamadı: önceki dosyanın türü/etiketi kalıntı olarak kalmaz.
+    expect(byId<HTMLSelectElement>("filter-type").querySelectorAll("option")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /kira/ })).toBeNull();
+    expect(screen.getByText(t("search.tagsEmpty"))).toBeTruthy();
+  });
+
+  it("\"daha fazla\" uçuşta iken dosya değişirse eski sayfa yeni dosyaya yazılmaz", async () => {
+    setup({ pages: [page({ hasMore: true, nextCursor: "cur-1" })] });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kira");
+
+    const more = await screen.findByRole("button", { name: t("search.loadMore") });
+    await waitFor(() => expect((more as HTMLButtonElement).disabled).toBe(false));
+    const pending = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(pending.promise);
+    fireEvent.click(more);
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    expect(mocks.searchPage).toHaveBeenLastCalledWith("c1", "kira", { ...SERVER_EMPTY }, {
+      limit: 25,
+      cursor: "cur-1",
+      includeTotal: false,
+      mode: "auto",
+    });
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await act(async () => {
+      pending.resolve(page({ hits: [hit({ segmentId: "cccccccc-3" })], hasMore: false, nextCursor: null }));
+    });
+
+    expect(screen.queryByText(t("search.resultsTitle"))).toBeNull();
+    expect(screen.queryByText(t("search.hitMeta", { segment: "cccccccc", version: "v1" }))).toBeNull();
+  });
+
+  it("uçuştaki aramanın hatası dosya değiştikten sonra yeni dosyaya yazılmaz", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+
+    const pending = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(pending.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await act(async () => {
+      pending.reject({ code: "E_SEARCH", message: "arama hatası", retryable: true });
+    });
+
+    // Eski dosyanın araması düştü: yeni dosyanın ekranında hata olarak görünmemeli.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("uçuşta kapsam değişince eski kütüphane aramasının hatası yeni kapsama yazılmaz", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.precedent_library }));
+
+    const pending = deferred<PrecedentSearchPage>();
+    mocks.precedentSearch.mockReset();
+    mocks.precedentSearch.mockReturnValueOnce(pending.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.case_documents }));
+    await act(async () => {
+      pending.reject({ code: "E_SEARCH", message: "kütüphane hatası", retryable: true });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(t("search.libraryTitle"))).toBeNull();
+  });
+
+  it("geç gelen eski kütüphane yanıtı yeni kütüphane aramasını ezmez", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.precedent_library }));
+
+    const first = deferred<PrecedentSearchPage>();
+    const second = deferred<PrecedentSearchPage>();
+    mocks.precedentSearch.mockReset();
+    mocks.precedentSearch.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(1));
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      second.resolve(libraryPage({ query: "ödeme", resolvedQuery: "ödeme" }));
+    });
+    expect(await screen.findByText(t("search.libraryQuery", { query: "ödeme" }))).toBeTruthy();
+
+    await act(async () => {
+      first.resolve(libraryPage({ query: "kira", resolvedQuery: "kira" }));
+    });
+    // Eski kütüphane yanıtı yeni sorgunun satırını ezmemeli.
+    expect(screen.queryByText(t("search.libraryQuery", { query: "kira" }))).toBeNull();
+    expect(screen.getByText(t("search.libraryQuery", { query: "ödeme" }))).toBeTruthy();
+  });
+
+  it("kütüphane aramasında eski yanıt gelince kilit erken açılmaz", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.precedent_library }));
+
+    const first = deferred<PrecedentSearchPage>();
+    const second = deferred<PrecedentSearchPage>();
+    mocks.precedentSearch.mockReset();
+    mocks.precedentSearch.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(1));
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.precedentSearch).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      first.resolve(libraryPage());
+    });
+    // İkinci kütüphane araması hâlâ uçuşta: düğme kapalı kalmalı.
+    const busyButton = screen.getByRole("button", { name: t("search.searching") }) as HTMLButtonElement;
+    expect(busyButton.disabled).toBe(true);
+
+    await act(async () => {
+      second.resolve(libraryPage({ query: "ödeme", resolvedQuery: "ödeme" }));
+    });
+    const ready = (await screen.findByRole("button", { name: t("search.submit") })) as HTMLButtonElement;
+    expect(ready.disabled).toBe(false);
   });
 });

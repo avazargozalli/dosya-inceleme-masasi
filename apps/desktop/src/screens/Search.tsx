@@ -96,6 +96,9 @@ export function Search() {
   const [totalProbe, setTotalProbe] = useState<TotalProbe>(TOTAL_PROBE_IDLE);
   /** Sayım istek sırası: geç gelen eski yanıt yeni sayıyı ezmesin. */
   const totalSeq = useRef(0);
+  /** Arama istek sırası: geç gelen yanıt **hangi** aramaya ait olduğunu bilir.
+   *  Dosya/kapsam değişimi de sayacı artırır — uçuştaki yanıt yeni bağlama yazılmaz. */
+  const searchSeq = useRef(0);
 
   /**
    * Toplam sayıyı ilk boyamadan sonra ister (F15). Ölçüm: sayım sayfa
@@ -164,7 +167,13 @@ export function Search() {
           setCaseTags(tags);
         }
       } catch (e) {
-        if (!cancelled) setError(toApiError(e));
+        if (!cancelled) {
+          // Okunamayan dosyanın belgeleri/etiketleri ekranda kalmaz: filtre
+          // seçenekleri ve etiket çipleri önceki dosyadan kalıntı taşımamalı.
+          setDocs([]);
+          setCaseTags([]);
+          setError(toApiError(e));
+        }
       }
     })();
     return () => {
@@ -179,6 +188,11 @@ export function Search() {
     setSearchedQuery("");
     totalSeq.current += 1;
     setTotalProbe(TOTAL_PROBE_IDLE);
+    // Uçuştaki arama artık bu dosyaya ait değil: yanıtı yazılmamalı, kilidi de
+    // erken açmamalı (kilit burada bırakılır, `finally` kapıya takılır).
+    searchSeq.current += 1;
+    setBusy(false);
+    setLoadingMore(false);
   }, [caseId]);
 
   // Kapsam değişince öteki kapsamın sonuçları ekranda kalmaz: her sonuç
@@ -190,6 +204,9 @@ export function Search() {
     setCopiedHit("");
     totalSeq.current += 1;
     setTotalProbe(TOTAL_PROBE_IDLE);
+    searchSeq.current += 1;
+    setBusy(false);
+    setLoadingMore(false);
   }, [scope]);
 
   const run = useCallback(
@@ -200,6 +217,7 @@ export function Search() {
       setError(null);
       if (scope === "precedent_library") {
         if (kind === "more") return;
+        const seq = ++searchSeq.current;
         setBusy(true);
         try {
           const library = await api.precedentSearch({
@@ -207,17 +225,20 @@ export function Search() {
             mode: askedMode,
             limit: PAGE_SIZE,
           });
+          // Kapsam/dosya değiştiyse ya da daha yeni bir arama başladıysa yazma.
+          if (seq !== searchSeq.current) return;
           setSearchedQuery(asked);
           setSearchedMode(askedMode);
           setLibraryPage(library);
         } catch (e) {
+          if (seq !== searchSeq.current) return;
           setError(toApiError(e));
           // Başarısız arama önceki sorgunun sonucunu ekranda bırakmaz:
           // eski kütüphane sonucu yeni sorgunun sonucu sanılmamalı.
           setLibraryPage(null);
           setSearchedQuery("");
         } finally {
-          setBusy(false);
+          if (seq === searchSeq.current) setBusy(false);
         }
         return;
       }
@@ -225,6 +246,7 @@ export function Search() {
       const applied = kind === "fresh" ? draftFilters : appliedFilters;
       const cursor = kind === "more" ? page?.nextCursor ?? null : null;
       if (kind === "more" && !cursor) return;
+      const seq = ++searchSeq.current;
 
       if (kind === "fresh") {
         setBusy(true);
@@ -240,6 +262,9 @@ export function Search() {
           includeTotal: false,
           mode: askedMode,
         });
+        // Uçuştaki yanıt yalnız **kendi** araması için yazılır: dosya değiştiyse
+        // ya da daha yeni bir arama başladıysa sonuç/etiket taşınmaz.
+        if (seq !== searchSeq.current) return;
         setAppliedFilters(next.filters);
         setSearchedQuery(asked);
         setSearchedMode(askedMode);
@@ -251,6 +276,7 @@ export function Search() {
           requestTotal(caseId, asked, next.filters, askedMode);
         }
       } catch (e) {
+        if (seq !== searchSeq.current) return;
         setError(toApiError(e));
         if (kind === "fresh") {
           // Başarısız yeni arama: önceki sorgunun sonuçları ekranda kalmaz
@@ -261,8 +287,11 @@ export function Search() {
           setTotalProbe(TOTAL_PROBE_IDLE);
         }
       } finally {
-        setBusy(false);
-        setLoadingMore(false);
+        // Kilidi yalnız en son arama açar: eski yanıt yeni aramanın kilidini bırakmaz.
+        if (seq === searchSeq.current) {
+          setBusy(false);
+          setLoadingMore(false);
+        }
       }
     },
     [
