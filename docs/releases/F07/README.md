@@ -15,7 +15,7 @@
 | F07-T07 | ✅ | DOCX başlık/paragraf yolu ve UDF paragraf sırası ayrı "Yapı" panelinde; sayfa türev olarak etiketlenir |
 | F07-T08 | ✅ | yan yana iki panel kendi sürümünü, sayfasını, yakınlaştırmasını ve seçimini korur; sürüm başına görünüm belleği |
 | F07-T09 | ✅ | metin seçimi doğrulanmış anchor'a bağlı kalıcı işaret ve kaynaklı not üretir; bölge işareti sayfa koordinatında saklanır |
-| F07-T12 | ✅ | kısmi ayrıştırma rozeti; kopmuş/eski kaynak bağlantısı görünür, güncel sürümde yeniden bağlama önerisi kullanıcı onayıyla uygulanır |
+| F07-T12 | ✅ | kısmi ayrıştırma rozeti; kopmuş/eski kaynak bağlantısı görünür, güncel sürümde yeniden bağlama önerisi kullanıcı onayıyla uygulanır (arayüz davranış testi: **10 test**, yeniden bağlama hedef bağa bağlandı — 2026-11-03) |
 | F07-T10 | ✅ | not taslağı kasada otomatik kaydedilir; geri/ileri al gerçek revizyonları kullanır; `row_version` çakışmasında fark gösterilip seçim istenir |
 | F07-T11 | ✅ | sayfa önizlemesi kasa anahtarıyla şifreli disk önbelleğinde; bellekteki çözülmüş sayfalar kilitta temizlenir |
 
@@ -307,6 +307,59 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
   yeniden bağlama durum metinleri) + `vite build` yeşil.
 - **Sınırlama**: gerçek Tauri penceresinde tıklama ve görsel QA yapılmadı; kanıt
   birim testleri + typecheck + üretim derlemesi.
+
+## Doğrulama (F07-T12 — yeniden bağlama akışı, 2026-11-03)
+
+- Web: `DualReader.rebind.test.tsx` **10** davranış testi (jsdom + RTL). Okuyucunun
+  **kopmuş/eski bağı yeniden bağlama** yolu (`anchorLocate` → `anchorRebindSuggestion`
+  → `anchorRebind`) bugüne dek hiç ölçülmemişti; bu yol kasaya **yazar** ve hangi
+  bağa hangi offset'in gideceğini belirler. `lib/api` kısmi mock (12 fonksiyon),
+  `t()` ve `lib/reader` **gerçek**. Sayfa sekmeleri de "Fiziksel sayfa N" adını
+  taşıdığı için aday düğmeleri **öneri kartına daraltılarak** sorgulanır.
+- Sabitlenenler: kopmuş bağın uyarısı + sürüm rozeti + arama düğmesi çekirdekten;
+  sağlam/güncel bağda düğme yok; öneri kendiliğinden uygulanmaz (durum metni +
+  alıntı + aday sayfası, "Kapat" listeyi kaldırır); seçilen aday
+  `anchorRebind(anchorId, segmentId, startOffset)` ile gider, ardından güncel konum
+  okunur, panel yeni sürüme geçer, yeşil bildirim çizilir, kopma uyarısı kalkar;
+  bağ bulunamazsa künye uydurulmaz (sessiz); çift tık tek yazma üretir.
+- **Ölçülen kusurlar (düzeltme öncesi ham koşu: 4 failed | 6 passed):**
+  1. **Uçuştaki öneri hedef bağa bağlı değildi:** kullanıcı öneri askıdayken başka
+     bağa geçince **önceki bağın adayları** yeni bağın altında çiziliyor ve
+     "Bağla" **yeni bağa eski adayın offset'ini** yazabiliyordu (INV-05'in
+     okuyucu karşılığı). Kırmızı: `expected <div class="card tight"> to be null`.
+  2. **Uçuştaki yeniden bağlama hedef bağa bağlı değildi:** geç yanıt yeni bağın
+     künyesini **önceki bağın konumuyla** eziyor, panel eski sürüme zıplıyor ve
+     yeşil "bağlandı" bildirimi yeni bağın altında görünüyordu. Kırmızı:
+     `expected 'v2' to be 'v1'`.
+  3. **Bayat hata (öneri araması):** başında `setError(null)` yoktu → düşen
+     denemeden sonra başarılı aramada kırmızı hata ekranda kalıyordu.
+  4. **Bayat hata (bağlama):** aynı sınıf → düşen bağlamadan sonra başarılı
+     bağlamada kırmızı `E_ANCHOR` satırı kalıyordu.
+- **Düzeltme (`DualReader.tsx` +34/−12):** `anchorGen` (hedef bağ değişince artar)
+  + `rebindSeq` (her istekte artar); öneri ve bağlama yanıtları yalnız kendi
+  nesli **ve** en son istek için yazılır, hata yolu da kapıdan geçer; iki işlem
+  başında hata silinir; bağlama isteği bağın kimliğini (`anchorId`) çağrı anında
+  saklar. Kilidi yalnız en son istek açar.
+- **Kapı kanıtı (5 mutasyon; her biri en az bir testi düşürdü; geri alma sha256
+  `682230d8…` birebir):** M1 hedef bağ nesli artışı (**2** kırmızı: kusur A + B;
+  aynı kökün iki yüzü), M2 konum okuma sonrası nesil kapısı (B), M3 öneride
+  `setError(null)` (C), M4 bağlamada `setError(null)` (D), M5 öneri yanıt kapısı
+  (A). **Dürüst:** yazma sonrasına konan nesil kapısı ölçülemedi (konum okuma
+  sonrasındaki kapı zaten kararı veriyor; tek başına kaldırılınca hiçbir test
+  düşmüyordu) → **koddan çıkarıldı**, yedekli kapı bırakılmadı.
+- `tsc --noEmit` temiz · `vitest` **822/822** (57 dosya; 812 → **+10**) ·
+  `pnpm build` temiz (**575,53 kB**, `index-D2S0cOCm.js`, gzip **155,04 kB**).
+- **Dürüst sınırlar:** jsdom **tarayıcı değil** — CSS, gerçek Tauri penceresi,
+  gerçek işaretçi ve **görsel QA yok**; `api` mock'lu olduğu için `anchor_rebind`in
+  birebir alıntı doğrulaması (`E_QUOTE_NOT_FOUND`), `anchor_locate` SQL'i ve Rust
+  **koşmaz**. Kapsam dışı: `ambiguous`/`unresolved` öneri metinleri (lib testleri
+  kapsıyor), otomatik toplu yeniden bağlama, klavye, Windows.
+- **Açık kayıt:** yeniden bağlama yazması çekirdekte başarılı olup kullanıcı bu
+  sırada başka bağa geçerse arayüz sonucu **bilinçli olarak yazmaz** (yeni bağın
+  künyesi korunur); kullanıcı eski bağa döndüğünde konum `anchor_locate` ile
+  tazelenir. Bağlama başarılı olup konum okuması düşerse kırmızı hata yazılır ve
+  önceki künye korunur (yazma gerçekleştiği hâlde arayüz bunu iddia etmez) —
+  dürüst sonuç, kullanıcı yeniden deneyebilir.
 
 ## Doğrulama (F07-T09 — bölge işareti akışı, 2026-11-03)
 
