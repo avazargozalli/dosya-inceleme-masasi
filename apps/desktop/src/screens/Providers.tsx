@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   api,
   toApiError,
@@ -1041,23 +1041,30 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
   const [busy, setBusy] = useState<"scan" | "measure" | "cleanup" | "sweep" | null>(null);
   const [failure, setFailure] = useState<ApiError | null>(null);
   const [confirmHome, setConfirmHome] = useState(false);
+  // Uçuştaki yanıt **istek anındaki adaptöre** aittir. Adaptör değişince sayaç
+  // artar: geç gelen tarama/ölçüm/temizlik yanıtı yeni adaptörün paneli gibi
+  // yazılmaz ve kilidi yeni adaptörün isteğinden çalmaz.
+  const contextSeq = useRef(0);
 
   const selected = rows.find((row) => row.id === adapterId) ?? null;
   const runnable = selected !== null && !selected.batchForbidden;
 
   async function runScan() {
+    const seq = ++contextSeq.current;
     setBusy("scan");
     setFailure(null);
     try {
-      setScan(await api.cliResidueScan(adapterId));
+      const result = await api.cliResidueScan(adapterId);
+      if (seq === contextSeq.current) setScan(result);
     } catch (e) {
-      setFailure(toApiError(e));
+      if (seq === contextSeq.current) setFailure(toApiError(e));
     } finally {
-      setBusy(null);
+      if (seq === contextSeq.current) setBusy(null);
     }
   }
 
   async function runMeasure() {
+    const seq = ++contextSeq.current;
     setBusy("measure");
     setFailure(null);
     setCleanup(null);
@@ -1066,46 +1073,57 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
     setMeasure(null);
     try {
       const result = await api.cliResidueMeasure(adapterId, confirmHome);
-      setMeasure(result);
-      setScan(result.after);
+      if (seq === contextSeq.current) {
+        setMeasure(result);
+        setScan(result.after);
+      }
     } catch (e) {
-      setFailure(toApiError(e));
+      if (seq === contextSeq.current) setFailure(toApiError(e));
     } finally {
-      setBusy(null);
+      if (seq === contextSeq.current) setBusy(null);
     }
   }
 
   async function runCleanup() {
     if (measure === null) return;
+    const seq = ++contextSeq.current;
+    // Hedefler istek anında donar: yanıt beklerken adaptör değişse bile
+    // temizlik başka adaptörün ölçümüyle eşleşmez.
+    const target = adapterId;
+    const measuredAt = measure.measuredAtUnix;
+    const targets = residueCleanupTargets(measure);
     setBusy("cleanup");
     setFailure(null);
     try {
-      const result = await api.cliResidueCleanup(
-        adapterId,
-        measure.measuredAtUnix,
-        residueCleanupTargets(measure),
-      );
+      const result = await api.cliResidueCleanup(target, measuredAt, targets);
+      if (seq !== contextSeq.current) return;
       setCleanup(result);
       setMeasure(null);
-      setScan(await api.cliResidueScan(adapterId));
+      // Tazeleme de istek anındaki adaptör için koşar.
+      const refreshed = await api.cliResidueScan(target);
+      if (seq === contextSeq.current) setScan(refreshed);
     } catch (e) {
-      setFailure(toApiError(e));
+      if (seq === contextSeq.current) setFailure(toApiError(e));
     } finally {
-      setBusy(null);
+      if (seq === contextSeq.current) setBusy(null);
     }
   }
 
   async function runSweep() {
+    // Süpürme adaptörden bağımsızdır ama tek `busy` bayrağını paylaşır:
+    // adaptör değişiminden sonra dönen eski istek yeni isteğin kilidini açmamalı.
+    const seq = ++contextSeq.current;
     setBusy("sweep");
     setFailure(null);
     // Bayat süpürme özeti yeni hatayla birlikte görünmez.
     setSweep(null);
     try {
-      setSweep(await api.cliStaleSandboxSweep());
+      const result = await api.cliStaleSandboxSweep();
+      if (seq === contextSeq.current) setSweep(result);
     } catch (e) {
-      setFailure(toApiError(e));
+      if (seq === contextSeq.current) setFailure(toApiError(e));
     } finally {
-      setBusy(null);
+      if (seq === contextSeq.current) setBusy(null);
     }
   }
 
@@ -1137,6 +1155,10 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
         <select
           value={adapterId}
           onChange={(event) => {
+            // Uçuştaki istek artık bu panelin bağlamına ait değil: sayacı artır
+            // ve kilidi bırak (yeni adaptörün isteği eski yanıtı beklemez).
+            contextSeq.current += 1;
+            setBusy(null);
             setAdapterId(event.target.value);
             setScan(null);
             setMeasure(null);

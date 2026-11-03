@@ -37,8 +37,26 @@
 // 16. Eski kum havuzu süpürmesi özetlenir; atlananlar gizlenmez.
 // 17. **Ölçülen kusur:** adaptör değişince kalıntı panelinin önceki hata
 //     bildirimi ekranda kalıyordu.
+// 18. **Ölçülen kusur (bu tur):** uçuştaki kalıntı taraması adaptör kimliği
+//     taşımıyordu → başka adaptöre geçilince eski adaptörün envanteri yeni
+//     adaptörün panelinde çiziliyordu; hatası da yeni adaptöre yazılıyordu.
+// 19. **Ölçülen kusur:** uçuştaki ölçüm yanıtı `measure` **ve** `scan`ı
+//     yazıyordu → yeni adaptörde "ölçüm bitti" + temizlik düğmesi açılıyor,
+//     temizlik **eski adaptörün hedefleriyle** yeni adaptör adına gidebiliyordu.
+// 20. **Ölçülen kusur:** uçuştaki temizlik yanıtı yeni adaptörün panelinde özet
+//     çiziyor ve **eski adaptörü** yeniden tarayıp sonucunu yeni adaptöre
+//     yazıyordu.
+// 21. **Ölçülen kusur:** adaptör değişimi kilidi bırakmıyordu → eski istek
+//     dönene kadar yeni adaptörün "Tara" düğmesi kapalı kalıyordu.
+// 22. **Ölçülen kusur:** kilit tek bayrak; eski isteğin `finally`si yeni
+//     adaptörde başlatılan isteğin kilidini **erken** açıyordu (tarama, ölçüm,
+//     temizlik ve süpürme için ayrı ayrı ölçüldü).
+// 23. **Ölçülen kusur:** temizlik sonrası tazeleme isteği uçuşta iken adaptör
+//     değişirse eski adaptörün envanteri yeni adaptörün panelinde çiziliyordu.
+// 24. Sabitleme: yeni adaptörün kendi ölçümü/temizliği çalışır (kapılar meşru
+//     yazmayı engellemez) ve başarılı tarama önceki kırmızıyı siler.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AdapterArch,
@@ -1278,5 +1296,435 @@ describe("sağlayıcılar ekranı davranışı", () => {
     });
     await waitFor(() => expect(screen.queryByText("E_CLI_RESIDUE")).toBeNull());
     expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+});
+
+/** Elle çözülen söz: uçuş sırası testler için. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** İkinci adaptörün envanteri: kök ve dosya sayısı birinciden ayrışır. */
+const SCAN_ANTI: CliResidueScan = {
+  ...SCAN,
+  adapterId: "antigravity",
+  root: "/Users/avukat/.antigravity",
+  totalFiles: 9,
+  totalBytes: 9216,
+  paths: [
+    {
+      relative: ".antigravity/sessions",
+      kind: "dizin",
+      note: "oturum dosyaları",
+      exists: true,
+      files: 9,
+      bytes: 9216,
+      truncated: false,
+      newestAgeSecs: 30,
+    },
+  ],
+};
+
+const MEASURE_ANTI: CliResidueMeasure = {
+  ...MEASURE,
+  adapterId: "antigravity",
+  root: "/Users/avukat/.antigravity",
+  measuredAtUnix: 1770002400,
+  before: SCAN_ANTI,
+  after: { ...SCAN_ANTI, totalFiles: 11, totalBytes: 11264 },
+  created: [{ relative: ".antigravity/sessions/b.jsonl", bytes: 2048 }],
+  bytesAdded: 2048,
+};
+
+function residueSelect(): HTMLSelectElement {
+  return screen.getByLabelText(t("providers.residueSelectAria")) as HTMLSelectElement;
+}
+
+function switchAdapter(value: string) {
+  fireEvent.change(residueSelect(), { target: { value } });
+}
+
+/** Önce tarama çizilir: ölçüm düğmesi ancak envanter görünürken açılır. */
+async function scanFirst() {
+  fireEvent.click(button(t("providers.residueScan")));
+  await screen.findByText(persistenceText(SCAN));
+}
+
+/**
+ * Kalıntı paneli uçuş yarışları (F10-T13). Tarama/ölçüm/temizlik yanıtları
+ * **hangi adaptör için** istendiğine bağlıdır: adaptör değişimi paneli temizler,
+ * geç gelen yanıt yeni adaptörün verisi gibi yazılmamalı; eski isteğin kilidi
+ * yeni adaptörün kilidini ne kilitler ne erken açar.
+ */
+describe("kalıntı paneli: uçuştaki yanıtlar adaptör kimliğine bağlı", () => {
+  beforeEach(() => {
+    // `clearAllMocks` tek seferlik (`mockResolvedValueOnce`) kuyruklarını
+    // temizlemez; bu blok çağrı sayısına duyarlı olduğu için tam sıfırlama şart.
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("uçuştaki tarama başka adaptörün panelinde çizilmez", async () => {
+    const pending = deferred<CliResidueScan>();
+    setup({ scan: () => pending.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledWith("claude-code"));
+
+    switchAdapter("antigravity");
+    await act(async () => {
+      pending.resolve(SCAN);
+      await pending.promise;
+    });
+
+    // Eski adaptörün envanteri yeni adaptörün panelinde görünmemeli.
+    expect(screen.queryByText(SCAN.root)).toBeNull();
+    expect(screen.queryByText(SCAN.paths[0]!.relative)).toBeNull();
+    expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+
+  it("adaptör değişince eski taramanın kilidi yeni adaptörü kilitlemez", async () => {
+    const pending = deferred<CliResidueScan>();
+    setup({ scan: () => pending.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledTimes(1));
+    expect(button(t("providers.residueScanBusy")).disabled).toBe(true);
+
+    switchAdapter("antigravity");
+
+    // Yeni adaptörün taraması eski isteği beklemeden başlatılabilmeli.
+    await waitFor(() => expect(button(t("providers.residueScan")).disabled).toBe(false));
+  });
+
+  it("uçuştaki taramanın hatası yeni adaptörün panelinde görünmez", async () => {
+    const pending = deferred<CliResidueScan>();
+    setup({ scan: () => pending.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledTimes(1));
+
+    switchAdapter("antigravity");
+    await act(async () => {
+      pending.reject({ code: "E_CLI_RESIDUE", message: "ev dizini okunamadı" });
+      await pending.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_CLI_RESIDUE")).toBeNull();
+    expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+
+  it("uçuştaki ölçüm yeni adaptörün panelinde çizilmez ve temizlik düğmesi açılmaz", async () => {
+    const pending = deferred<CliResidueMeasure>();
+    setup({ measure: () => pending.promise });
+    await ready();
+    await scanFirst();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await waitFor(() => expect(mocks.cliResidueMeasure).toHaveBeenCalledWith("claude-code", true));
+
+    switchAdapter("antigravity");
+    await act(async () => {
+      pending.resolve(MEASURE);
+      await pending.promise;
+    });
+
+    expect(screen.queryByText(residueMeasureSummary(MEASURE))).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: t("providers.cleanupRun", { count: MEASURE.created.length }),
+      }),
+    ).toBeNull();
+    expect(mocks.cliResidueCleanup).not.toHaveBeenCalled();
+    // Ölçümün `after` envanteri de yeni adaptöre yazılmamalı.
+    expect(
+      screen.queryByText(
+        t("probe.filesWithSize", {
+          count: MEASURE.after.totalFiles,
+          size: formatSize(MEASURE.after.totalBytes),
+        }),
+      ),
+    ).toBeNull();
+    expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+
+  it("uçuştaki ölçümün hatası yeni adaptöre yazılmaz", async () => {
+    const pending = deferred<CliResidueMeasure>();
+    setup({ measure: () => pending.promise });
+    await ready();
+    await scanFirst();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await waitFor(() => expect(mocks.cliResidueMeasure).toHaveBeenCalledTimes(1));
+
+    switchAdapter("antigravity");
+    await act(async () => {
+      pending.reject({ code: "E_CLI_RESIDUE_MEASURE", message: "kum havuzu yazılamadı" });
+      await pending.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_CLI_RESIDUE_MEASURE")).toBeNull();
+    expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+
+  it("uçuştaki temizlik yeni adaptörde özet çizmez ve eski adaptörü yeniden taramaz", async () => {
+    const pending = deferred<CliResidueCleanup>();
+    const scanned: string[] = [];
+    setup({
+      cleanup: () => pending.promise,
+      scan: async (adapterId) => {
+        scanned.push(adapterId);
+        return SCAN;
+      },
+    });
+    await ready();
+    await scanFirst();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await screen.findByText(residueMeasureSummary(MEASURE));
+    fireEvent.click(button(t("providers.cleanupRun", { count: MEASURE.created.length })));
+    await waitFor(() => expect(mocks.cliResidueCleanup).toHaveBeenCalledTimes(1));
+
+    switchAdapter("antigravity");
+    await act(async () => {
+      pending.resolve(CLEANUP);
+      await pending.promise;
+    });
+
+    expect(screen.queryByText(residueCleanupSummary(CLEANUP))).toBeNull();
+    // Temizlik sonrası tazeleme **eski** adaptör için koşmamalı.
+    expect(scanned).toEqual(["claude-code"]);
+    expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+
+  it("yeni adaptörde başlatılan taramanın kilidini eski yanıt erken açmaz", async () => {
+    const first = deferred<CliResidueScan>();
+    const second = deferred<CliResidueScan>();
+    let calls = 0;
+    setup({
+      scan: () => {
+        calls += 1;
+        return calls === 1 ? first.promise : second.promise;
+      },
+    });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledTimes(1));
+    switchAdapter("antigravity");
+
+    fireEvent.click(await screen.findByRole("button", { name: t("providers.residueScan") }));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledTimes(2));
+    expect(mocks.cliResidueScan).toHaveBeenLastCalledWith("antigravity");
+
+    // Eski istek döner: yeni adaptörün kilidi açılmamalı, verisi yazılmamalı.
+    await act(async () => {
+      first.resolve(SCAN);
+      await first.promise;
+    });
+    expect(screen.queryByText(SCAN.root)).toBeNull();
+    expect(button(t("providers.residueScanBusy")).disabled).toBe(true);
+
+    // Yeni istek dönünce kendi verisi çizilir ve kilit açılır.
+    await act(async () => {
+      second.resolve(SCAN_ANTI);
+      await second.promise;
+    });
+    expect(await screen.findByText(SCAN_ANTI.root)).toBeTruthy();
+    expect(button(t("providers.residueScan")).disabled).toBe(false);
+  });
+
+  it("uçuştaki süpürmenin kilidi yeni adaptörün taramasını erken açmaz", async () => {
+    const sweep = deferred<CliSandboxSweep>();
+    const scan = deferred<CliResidueScan>();
+    setup({
+      sweep: () => sweep.promise,
+      scan: () => scan.promise,
+    });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueSweep")));
+    await waitFor(() => expect(mocks.cliStaleSandboxSweep).toHaveBeenCalledTimes(1));
+
+    switchAdapter("antigravity");
+    fireEvent.click(await screen.findByRole("button", { name: t("providers.residueScan") }));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      sweep.resolve(SWEEP);
+      await sweep.promise;
+    });
+    // Süpürme bitti diye yeni taramanın kilidi açılmamalı.
+    expect(screen.queryByText(sandboxSweepSummary(SWEEP))).toBeNull();
+    expect(button(t("providers.residueScanBusy")).disabled).toBe(true);
+
+    await act(async () => {
+      scan.resolve(SCAN_ANTI);
+      await scan.promise;
+    });
+    expect(await screen.findByText(SCAN_ANTI.root)).toBeTruthy();
+  });
+
+  it("uçuştaki ölçümün kilidi yeni adaptörün taramasını erken açmaz", async () => {
+    const measure = deferred<CliResidueMeasure>();
+    const scanB = deferred<CliResidueScan>();
+    let scans = 0;
+    setup({
+      scan: () => {
+        scans += 1;
+        return scans === 1 ? Promise.resolve(SCAN) : scanB.promise;
+      },
+      measure: () => measure.promise,
+    });
+    await ready();
+    await scanFirst();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await waitFor(() => expect(mocks.cliResidueMeasure).toHaveBeenCalledTimes(1));
+
+    switchAdapter("antigravity");
+    fireEvent.click(button(t("providers.residueScan")));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledWith("antigravity"));
+
+    await act(async () => {
+      measure.resolve(MEASURE);
+      await measure.promise;
+    });
+
+    expect(screen.queryByText(residueMeasureSummary(MEASURE))).toBeNull();
+    expect(button(t("providers.residueScanBusy")).disabled).toBe(true);
+
+    await act(async () => {
+      scanB.resolve(SCAN_ANTI);
+      await scanB.promise;
+    });
+    expect(await screen.findByText(SCAN_ANTI.root)).toBeTruthy();
+  });
+
+  it("temizlik sonrası tazeleme uçuşta iken adaptör değişirse yeni panele yazılmaz", async () => {
+    const refresh = deferred<CliResidueScan>();
+    let scans = 0;
+    setup({
+      scan: () => {
+        scans += 1;
+        return scans === 1 ? Promise.resolve(SCAN) : refresh.promise;
+      },
+      cleanup: async () => CLEANUP,
+    });
+    await ready();
+    await scanFirst();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await screen.findByText(residueMeasureSummary(MEASURE));
+    fireEvent.click(button(t("providers.cleanupRun", { count: MEASURE.created.length })));
+    await waitFor(() => expect(mocks.cliResidueCleanup).toHaveBeenCalledTimes(1));
+    // Tazeleme isteği uçuşta: ikinci tarama henüz dönmedi.
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledTimes(2));
+
+    switchAdapter("antigravity");
+    await act(async () => {
+      refresh.resolve(SCAN);
+      await refresh.promise;
+    });
+
+    // Eski adaptörün tazeleme sonucu yeni adaptörün envanteri gibi çizilmemeli.
+    expect(screen.queryByText(SCAN.root)).toBeNull();
+    expect(screen.getByText(t("providers.residueIdle"))).toBeTruthy();
+  });
+
+  it("uçuştaki temizliğin kilidi yeni adaptörün taramasını erken açmaz", async () => {
+    const cleanup = deferred<CliResidueCleanup>();
+    const scanB = deferred<CliResidueScan>();
+    let scans = 0;
+    setup({
+      scan: () => {
+        scans += 1;
+        return scans === 1 ? Promise.resolve(SCAN) : scanB.promise;
+      },
+      cleanup: () => cleanup.promise,
+    });
+    await ready();
+    await scanFirst();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await screen.findByText(residueMeasureSummary(MEASURE));
+    fireEvent.click(button(t("providers.cleanupRun", { count: MEASURE.created.length })));
+    await waitFor(() => expect(mocks.cliResidueCleanup).toHaveBeenCalledTimes(1));
+
+    switchAdapter("antigravity");
+    fireEvent.click(button(t("providers.residueScan")));
+    await waitFor(() => expect(mocks.cliResidueScan).toHaveBeenCalledWith("antigravity"));
+
+    await act(async () => {
+      cleanup.resolve(CLEANUP);
+      await cleanup.promise;
+    });
+
+    expect(screen.queryByText(residueCleanupSummary(CLEANUP))).toBeNull();
+    expect(button(t("providers.residueScanBusy")).disabled).toBe(true);
+
+    await act(async () => {
+      scanB.resolve(SCAN_ANTI);
+      await scanB.promise;
+    });
+    expect(await screen.findByText(SCAN_ANTI.root)).toBeTruthy();
+  });
+
+  it("yeni adaptörün kendi ölçümü ve temizliği çalışır", async () => {
+    setup({
+      scan: async (adapterId) => (adapterId === "antigravity" ? SCAN_ANTI : SCAN),
+      measure: async (adapterId) => (adapterId === "antigravity" ? MEASURE_ANTI : MEASURE),
+    });
+    await ready();
+
+    switchAdapter("antigravity");
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(SCAN_ANTI.root);
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    expect(await screen.findByText(residueMeasureSummary(MEASURE_ANTI))).toBeTruthy();
+
+    fireEvent.click(button(t("providers.cleanupRun", { count: MEASURE_ANTI.created.length })));
+    await waitFor(() =>
+      expect(mocks.cliResidueCleanup).toHaveBeenCalledWith(
+        "antigravity",
+        MEASURE_ANTI.measuredAtUnix,
+        [MEASURE_ANTI.created[0]!.relative],
+      ),
+    );
+  });
+
+  it("başarılı tarama önceki kırmızı bildirimi siler", async () => {
+    mocks.cliResidueScan
+      .mockRejectedValueOnce({ code: "E_CLI_RESIDUE", message: "ev dizini okunamadı" })
+      .mockResolvedValueOnce(SCAN);
+    setup();
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    expect(await screen.findByText("E_CLI_RESIDUE")).toBeTruthy();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    expect(screen.queryByText("E_CLI_RESIDUE")).toBeNull();
   });
 });
