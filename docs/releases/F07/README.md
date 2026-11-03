@@ -308,6 +308,57 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
 - **Sınırlama**: gerçek Tauri penceresinde tıklama ve görsel QA yapılmadı; kanıt
   birim testleri + typecheck + üretim derlemesi.
 
+## Doğrulama (F07-T09 — bölge işareti akışı, 2026-11-03)
+
+- Web: `DualReader.region.test.tsx` **11** davranış testi (jsdom + RTL). Sayfa
+  görüntüsü üzerinde **sürüklenen bölge** (`markCreateRegion`) bugüne dek hiç
+  ölçülmemişti; `DualReader.selection.test.tsx` yalnız metin seçiminden giden üç
+  komutu kapsıyordu. `lib/api` kısmi mock (`markCreateRegion` + mevcut yollar),
+  `t()` ve `lib/reader` **gerçek**. jsdom `PointerEvent`/pointer capture
+  sağlamadığı için olaylar `clientX/clientY` taşıyan `MouseEvent` ile, yakalama
+  metotları no-op olarak kurulur; görünüm kutusu `getBoundingClientRect` ile
+  ölçülendirilir.
+- Sabitlenenler: seçim yokken işaret düğmesi kapalı, sürükleme açar, "temizle"
+  kaldırır; %1'den küçük sürükleme bölge sayılmaz; sürükleme **görünen uzaydan
+  sayfa uzayına** çevrilip tam sözleşmeyle gider (400×600 kutu → 600×800 punto,
+  `rects: [[60, 80, 300, 400]]`, `label: ""`); 90° döndürülmüş görünümde
+  koordinat döndürme öncesine çevrilir (`[[60, 400, 300, 720]]`); başarıda
+  işaret listeye girer, seçim bırakılır; sayfa ölçüsü yoksa istek üretilmez.
+- **Ölçülen kusurlar (düzeltme öncesi ham koşu: 5 failed | 5 passed; on birinci
+  test sonradan eklendi ve o da düzeltme öncesinde kırmızıydı):**
+  1. **Sayfa değişince bölge taşınıyordu:** `dragRegion` sayfa durumundan ayrı
+     tutulduğu için 1. sayfada çizilen kutu 2. sayfada duruyor ve "Seçili bölgeyi
+     işaretle" **önceki sayfanın koordinatlarını yeni sayfaya** yazabiliyordu.
+  2. **Sürüm değişince bölge taşınıyordu:** aynı sınıf — başka belgenin sayfasına
+     eski koordinatlar işaret olarak yazılabiliyordu (§13.5'in okuyucu karşılığı).
+  3. **Uçuştaki yanıt sürüm kapısı taşımıyordu:** `markCreateRegion` askıdayken
+     belge değişince eski sürümün işareti **yeni sürümün** listesine ekleniyordu.
+  4. **Bayat hata:** işlem başında `setError(null)` yoktu → düşen denemeden sonra
+     başarılı bölge işaretinde kırmızı hata ekranda kalıyordu.
+  5. **Uçuştaki yanıt yeni seçimi siliyordu:** istek sürerken çizilen bölge, geç
+     yanıtın koşulsuz `setDragRegion(null)` çağrısıyla sessizce kayboluyordu.
+  6. **Sürüm değiştikten sonra düşen istek** yeni sürüme hata yazıyordu (hata
+     yolu da sürüm kapısından geçmiyordu).
+- **Düzeltme (`DualReader.tsx` +19/−3):** sürüm effect'i ve sayfa değişimi
+  `dragRegion`/`dragStart`ı temizler; `createRegionMark` isteğin sürümünü ve
+  seçim nesnesini saklar; yanıt yalnız aynı sürümde yazılır, seçim yalnız hâlâ
+  **aynı** nesneyse bırakılır, liste kimlikle tekilleştirilir; işlem başında hata
+  silinir.
+- **Kapı kanıtı (6 mutasyon; her biri kendi testini düşürdü, `1 failed | 10
+  passed`; geri alma sha256 `7b6789c4…` birebir):** M1 sürüm temizliği,
+  M2 sayfa temizliği, M3 başarı yolundaki sürüm kapısı, M4 `setError(null)`,
+  M5 koşullu seçim temizliği, M6 hata yolundaki sürüm kapısı. **Dürüst:**
+  düğme kilidi (`markBusy`) tek başına çift tık testini yeşil tutuyordu
+  (seçim turundaki M1/M2 gibi yedekli kapı) — ayrı mutasyon sayılmadı,
+  `writeGate` eklenmedi.
+- `tsc --noEmit` temiz · `vitest` **812/812** (56 dosya; 801 → +11) ·
+  `pnpm build` temiz (**575,18 kB**, `index-CDKjIZEz.js`, gzip **154,94 kB**).
+- **Sınırlama:** jsdom tarayıcı değil — CSS, gerçek Tauri penceresi, gerçek
+  işaretçiyle sürükleme ve **görsel QA yok**; jsdom pointer capture'ı
+  sağlamadığı için testte no-op kuruldu. `api` mock'lu olduğu için çekirdeğin
+  gerçek yolu (`mark_create_region` geometri doğrulaması, SQL, Rust) **koşmaz**.
+  Kapsam dışı: dokunmatik, klavye, çok kutulu birikimli seçim, Windows.
+
 ## Doğrulama (F07-T09)
 
 - Rust: `cargo test --workspace --all-targets` → storage **155** (8 yeni: doğrulanmış
