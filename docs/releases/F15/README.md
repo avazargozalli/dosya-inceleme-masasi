@@ -38,6 +38,66 @@ durumu:
 Ayrıca 8 GB çekirdek profili ve anti-virüs/uyku gibi senaryolar (spec F15-T03/
 T06) bu makinede denenmedi; Windows/Linux ölçümü yok.
 
+## Ertelenmiş toplam sayımı — gönderim kapısı (2026-11-04, F15-T13)
+
+Ertelenmiş sayım (F15-T04) sayfayı bekletmiyor: sayı iki `requestAnimationFrame`
+sonrasına zamanlanır. Arayüzde **yanıt** sırası kapısı vardı (`totalSeq`), ama
+**gönderim** kapısı yoktu — geçersizleşen sayım yine de çekirdeğe gidiyordu.
+B-01 ölçümünde sayım, sayfa sorgusuna p50 **+643 ms** ekliyordu; bu yüzden boşa
+giden sayım yalnız kozmetik değil.
+
+**Ölçülen kusurlar (ham koşu: 3 failed | 32 passed / 35):**
+
+1. **Çerçeve beklerken geçersizleşen sayım yine gönderiliyordu.** Sayım
+   zamanlandıktan sonra dosya değişirse `fire` koşulsuz `search_total`
+   çağırıyordu; yalnız yanıtı atılıyordu → **eski dosya** için tam FTS sayımı
+   çekirdekte koşuyordu. Kırmızı: dosya değişiminden sonra `searchTotal` çağrısı.
+2. **Yeni arama bekleyen sayımı düşürmüyordu.** Aynı sorgu yeniden aranınca ilk
+   sayım çerçeve kuyruğundan çıkıp yine gidiyor, “Sayılıyor…” satırı yeni aramada
+   asılı kalabiliyor ve aynı sorgu **iki kez** sayılabiliyordu. Kırmızı:
+   çerçeveler akıtıldığında `searchTotal` 1 çağrı, ikinci arama bitince 2.
+3. **Sayfa kendi toplamını taşıyorsa ayrı sayım isteniyordu.** `totalSummary`
+   kural 1 iki kaynağı aynı anda göstermiyor; buna rağmen `search_total` yine
+   koşuyordu (saf israf). Kırmızı: `searchTotal` 1 çağrı.
+
+**Düzeltme (`Search.tsx` +16/−1):** `fire` içinde gönderim öncesi
+`seq !== totalSeq.current` kapısı; yeni aramada `totalProbe.status ===
+"counting"` ise nesil artırılır ve satır boşaltılır; sayfa `total !== null`
+taşıyorsa ayrı sayım istenmez. **Tamamlanmış** (başarılı/başarısız) sayı yeni
+arama başlarken **korunur** — ekranda duran eski sonuçların sayısıdır; iki
+sabitleme testi bunu ölçer (düzeltme öncesinde de yeşildiler).
+
+**Kapı kanıtı:** **6/6 mutasyon** en az bir testi düşürdü (gönderim kapısı, yeni
+arama bloğu, nesil artışı, satır temizliği, sayfa toplamı kapısı, “yalnız
+bekleyen” koşulu); geri alma sha256
+`eceab756d10d9de1fe25857279e9b8d6f74db15359f3cff6b3032b19340e8fd8` birebir.
+**Dürüst:** ilk yazımda “bekleyen sayım” için ayrı bir `ref` bayrağı vardı; tek
+başına mutasyonla **ölçülemedi** (davranışı durum makinesi zaten belirliyordu) →
+koddan çıkarıldı, yerine `totalProbe.status` kullanıldı; yedekli bayrak
+bırakılmadı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **956/956** (60 dosya; 951 → +5) ·
+`npm run build` temiz (**579,79 kB**, `index-BFEHlmtG.js`, gzip **156,29 kB**;
+CSS `index-CPW4QqlF.css`).
+
+**CI (ölçüldü):** `6838240` → koşu **`41763595794` 7/7 YEŞİL** (`arayüz` **60
+dosya / 956 test**, aynı paket `index-BFEHlmtG.js` 579,79 kB / gzip 156,29 kB —
+yerel/CI **birebir**; `rust (macos-15)`, `rust (ubuntu-latest)`, `masaüstü
+kabuk`, `belge worker'ı`, `SBOM`, `sözleşmeler`).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — `rAF` testte kuyruğa alınır,
+gerçek çerçeve süresi, gerçek Tauri/webview penceresi ve **görsel QA yok**;
+`search_total`in Rust/SQL tarafı **koşmaz**. Sayımın p50 **+643 ms** maliyeti
+B-01 ölçümünden alınır, bu turda yeniden ölçülmedi. Sayım satırı hâlâ **filtre
+kimliği** taşımıyor (`TotalProbe` yalnız çözümlenmiş sorgu + kipi karşılaştırır);
+sayfa ile sayım aynı istekten geldiği için pratikte ayrışmıyor — **açık kayıt**.
+Ayrıca “Daha fazla” sayımı yeniden istemez (aynı sorgu); bu davranış değişmedi.
+
+**Kimlik notu:** kod commit'i `6838240` yanlışlıkla **F15-T07** etiketiyle
+atıldı; bu defterde T07 = bağımsız güvenlik incelemesi (insan). Doğru kimlik
+**F15-T13** (şartnamede T12’den sonrası yok; defter numarası). Mesaj geri
+yazılamadı: bu cron profilinde force push engelli — düzeltme burada kayıtlı.
+
 ## Dürüst durum
 
 Otomatik erişilebilirlik kuralları yalnız yapısal hataları yakalar; gerçek ekran
