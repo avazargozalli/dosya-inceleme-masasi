@@ -161,3 +161,79 @@ kasadan gelen sayılar.
   edilenler: `case_payload` içindeki `coverage` bloğu, `ExportCoverage::markdown`
   çıktısı ve CSV/JSON biçimleri. Paket yolu kod incelemesi + CI derlemesiyle
   doğrulandı, gerçek paket üretilerek denenmedi.
+
+## F11-T04 — AI ekranı: uçuştaki yanıtlar dosya/çalıştırma bağlamına bağlandı (2026-11-04)
+
+AI ekranı (`apps/desktop/src/screens/Ai.tsx`, 623 satır) çekirdeğin onay,
+çalıştırma ve aday yollarını kullanır; hiçbir yanıt **hangi dosya/hangi
+çalıştırma** için istendiğini taşımıyordu. Aynı ekranın 20 testi yalnız çizimi
+ve tek adımlı akışları ölçüyordu; uçuşta dosya/çalıştırma değişimi hiç
+ölçülmemişti.
+
+**Ölçülen kusurlar (düzeltme öncesi, 11 test kırmızı):**
+
+- **Onay (en ağırı):** `approve()` p1 için `aiConsentCreate` uçuşta iken p2'ye
+  geçilirse p1'in onay satırı p2'de çiziliyor, “Çalıştır” **p1'in onay
+  kimliğiyle** açılıyordu → yeni dosyanın künyesiyle eski dosyanın onayı
+  birlikte görünüyordu (INV-05). Onay önizlemesi uçuşta kalırsa önizleme de
+  yeni dosyaya yazılıyordu.
+- **Çalıştırma:** `start()` sonrası özet tazelemesi p2 seçiliyken p1'in
+  sağlayıcı/kapsam künyesini yazıyordu (4 belge/132 sayfa, p2'nin 1/7'si
+  yerine).
+- **Aday listesi:** iki çalıştırma hızlı seçilince r1'in geç yanıtı r2'nin
+  listesini eziyor, seçili çalıştırma r2 görünürken r1'in adayları
+  çiziliyordu.
+- **Doğrulama:** `validateDraft()` yanıtı dosya değişse de yeni dosyaya rapor
+  yazıyordu; “Doğrula ve kaydet”te kayıt çekirdeğe gittikten sonra liste ve
+  bildirim de yeni dosyaya yazılıyordu.
+- **Geç onay iptali:** iptal uçuşta iken alınan **yeni** onay, geç dönen
+  iptalin `setConsent(null)`ı ile siliniyordu; “Çalıştır” nedensiz kapanıyordu.
+- **İncelemeye gönderim / yeniden doğrulama / önizleme:** geç başarı ve geç
+  hata yolları yeni dosyaya yazılıyordu (bildirim, `E_` bandı, önizleme
+  kartı).
+- **Hızlı dosya değişimi:** p2'nin özet isteği askıda iken p1'e dönülünce
+  p2'nin geç yanıtı p1'in künyesini eziyordu (başarı ve hata yolu).
+
+**Düzeltme (`Ai.tsx` +112/−37):** iki sayaç — `caseGen` (dosya değişiminde
+artar) ve `runSeq` (her çalıştırma seçiminde artar). Her yanıt istendiği andaki
+nesli/seçimi saklar ve yalnız **aynı bağlamda** yazar; hata yolu da aynı
+kapıdan geçer. Onay akışı önizleme ile onay kaydı arasında da kapı taşır (dosya
+değiştiyse onay **oluşturulmaz**). Onay iptali `consent.id` ile karşılaştırır:
+geç yanıt yeni onayı silmez. `aiCandidateRecord` bilinçli istisna: kullanıcının
+açık “kaydet” isteği bağlam değişse de çekirdeğe gider; yalnız liste ve bildirim
+yazılmaz.
+
+**Testler (`Ai.test.tsx` 20 → 38):** 18 yeni uçuş testi (11 başarı, 7 hata
+yolu). Düzeltme öncesi ilk 11 testin **11'i kırmızı**; hata yolu testlerinin
+düzeltme öncesi karşılığı tek-kapı mutasyonlarıyla ölçüldü (M14–M19, her biri
+`1 failed`).
+
+**Kapı kanıtı:** 20 tek-kapı mutasyonu, 20'si kırmızı. **Dürüst:** M1 (onay
+önizleme kapısı) ilk turda **yeşil kaldı** — mevcut senaryo önizlemeyi dosya
+değişmeden önce yazıyordu; eksik senaryo için ayrı test eklendi (önizleme
+askıda + dosya değişimi) ve M1 yeniden ölçüldü → `1 failed`. Mutasyon betiği
+her koşudan sonra dosyayı yedekten geri yükledi; geri yükleme sha256
+`f7b4a2c613aacf9b975bd622bdcebe1b7a3910cba7b1e66db6e2d958ef4aafb6` birebir.
+
+**Ölçüm:** `tsc --noEmit` temiz; `vitest` **974/974** (60 dosya; 956 → +18);
+`vite build` temiz (580,67 kB, `index-B2A0bn76.js`, gzip 156,48 kB). Rust
+değişmedi; rustfmt iki manifestte `--check` temiz.
+
+**Dürüst sınırlar:**
+
+- jsdom **tarayıcı değil**: gerçek Tauri penceresi, gerçek çekirdek komutları
+  (SQL/Argon2/CLI) ve **görsel QA yok**; `api` mock'ludur, yanıt **sırası**
+  elle çözülen sözlerle denetlenir, gerçek gecikme değil.
+- `busy` tek bayrak: dosya değişince eski istek bitene kadar yeni dosyanın
+  “Onayla/Doğrula” düğmeleri kapalı kalır (kilit devri yapılmadı; önceki
+  ekranlardaki tek-bayrak kararıyla aynı).
+- Aday kaydı (`aiCandidateRecord`) bağlam değişse de gider — bilinçli; “gönderim
+  yarıda kaldı” durumu arayüzde gösterilmez, kullanıcı yeniden doğrular.
+- `AiRunExecute` / `aiConsentCreate` çekirdek yazıları **geri alınmaz**: arayüz
+  yalnız yazmaz; istek zaten çekirdeğe iletilmiştir (yarıda kalan işlem
+  temizliği kapsam dışı).
+- Eşzamanlı iki işlem (ör. onay + doğrulama) aynı `busy` bayrağını paylaşır;
+  kapılar çakışmayı engeller, gerçek paralellik ölçülmedi.
+- Kimlik: yeni numara uydurulmadı — F11 README'nin mevcut iş listesindeki
+  **F11-T04** (gerçek model çağrısı: onay + çalıştırma yolu) kullanıldı; AI
+  ekranının aday/onay yolları bu işin arayüzüdür.
