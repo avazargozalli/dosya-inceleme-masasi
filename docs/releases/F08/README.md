@@ -84,7 +84,8 @@ başına yetiyordu; test, metin değiştirmeden dosya değiştirecek şekilde d�
 QA yok; `api` mock'lu olduğu için `claim_create`, `evidence_link_create`,
 `review_decide`, `review_commit`, `in_text_quote_check` SQL'i ve Rust **koşmaz**.
 `busy` tek bayrak: aynı anda iki yazma başlarsa ilk biten kilidi erken açar
-(ölçülmedi). Kapsam dışı: `claimRelationCreate` için ayrı test, klavye, Windows.
+(ölçüldü ve kapatıldı — aşağıdaki "uçuş kilidi ve geç yanıt kapıları" bölümü). Kapsam dışı:
+`claimRelationCreate` için ayrı test, klavye, Windows.
 
 
 ## Kronoloji ekranı — uçuş yolları (ek)
@@ -234,3 +235,88 @@ dosya için yazılan başlık yeni dosyada durur; (b) aynı başlık yeniden yaz
 "değişmedi" sayılır ve alan temizlenir (bilinçli); (c) kuyruk başarısı yazılıp tazeleme
 düşerse yeşil satır + kırmızı hata birlikte görünür (ikisi de doğru); (d) görsel QA
 insan bekliyor.
+
+## İnceleme ekranı — uçuş kilidi ve geç yanıt kapıları (ek)
+
+`Review.tsx` (1239 satır) ekranında önceki iki tur **dosya/iddia kimliği** ve **taslak
+koruması** yüzünü kapatmıştı; defterde açık kalan şey yazılıydı: *"`busy` tek bayrak: aynı
+anda iki yazma başlarsa ilk biten kilidi erken açar (ölçülmedi)"* ve karar/kabul/yerine
+geçme yollarının **geç hata** kapıları. Bu tur onu ölçtü. **9 yeni test** (26 → 35).
+
+Ölçülen ve düzeltilen 9 kusur (düzeltme öncesi bileşen + nihai test dosyası:
+**9 failed | 26 passed**; dokuzu da gerçek kusur, mevcut 26 test düzeltme öncesinde de
+yeşildi):
+
+1. **Kilit devri yok (en ağırı):** yazma uçuştayken dosya değişince `busy` bırakılmıyordu
+   → yeni dosyanın "Ekle" düğmesi eski isteğin yanıtına kadar, yanıt hiç gelmezse
+   **süresiz** kapalı kalıyordu. Kırmızı: beklenen `disabled=false`, gelen `true`.
+2. **Erken açılan kilit:** sekiz yazma yolunun `finally`si **koşulsuz** `setBusy(false)`
+   çağırıyordu → devredilen isteğin kapanışı, yeni dosyada başlatılan yazmanın kilidini
+   açıyordu (ikinci yazma kapısı kalkar).
+3. **Geç hata — karar:** `decide` hata yolunda dosya kapısı yoktu → eski dosyanın `E_DB`'si
+   yeni dosyanın altında kırmızı bant oluyordu.
+4. **Geç hata — kabul:** `commit` aynı kapıyı atlıyordu (`review_commit` reddi).
+5. **Geç hata — yerine geçme:** `supersede` de kapısızdı (`review_supersede` reddi).
+6. **Sessiz kayıp — değerlendirme:** `assess` başarısı hükmü **ve** gerekçeyi koşulsuz
+   temizliyordu → uçuşta seçilen yeni hüküm ve yazılan yeni gerekçe yanıtla siliniyordu.
+7. **Sessiz kayıp — kabul hedefi:** hedef kayıt türü seçicisi uçuşta açıktı, yanıt türü
+   koşulsuz sıfırlıyordu (iddia türü alanı dahil).
+8. **Sessiz kayıp — yerine geçme hedefi:** uçuşta başka eski kayıt seçilirse yanıt seçimi
+   sıfırlıyordu.
+9. **Bayat tazeleme hatayı siliyordu:** `load`ın başındaki `setError(null)` kapısızdı →
+   eski dosyanın **geç** tazelemesi (yazma sonrası) yeni dosyanın okuma hatası bandını
+   ekrandan siliyordu.
+
+Düzeltme (`Review.tsx` +77/−45): `busySeq` + `beginWrite()/endWrite(seq)` — kapanış yalnız
+**kendi** neslinde kilidi bırakır; dosya değişimi kilidi **devreder** (nesil artar);
+`decide`/`commit`/`supersede` istek anındaki dosyayı (`asked`) saklar ve hata yalnız o
+dosya hâlâ seçiliyse yazılır; değerlendirme hükmü/gerekçesi, kabul hedef türleri ve
+yerine geçme hedefi yalnız **gönderilen** değer hâlâ yazılıysa temizlenir; `load`
+başındaki hata temizliği `fresh()` kapısına alındı.
+
+Testler: `Review.test.tsx` **26 → 35** (+9; yeni `describe` "inceleme uçuş kilidi ve geç
+yanıt kapıları", `vi.resetAllMocks()` — bir kezlik kuyruk taşınmasın; `setupTwoCases()`,
+`switchToC2()`, `fillClaimForm()`).
+
+Kapı kanıtı (**11/11 tek kapı mutasyonu kırmızı**; geri yükleme sha256
+`1c7cb4e658ec85ce3decfc80ab2be0fae3b477146cb8215e5380373318f4154f` birebir): M1 kilit
+devri (**2** test), M2 `endWrite` kapısı (1), M3 `load` hata temizliği (1), M4 `decide`
+hata kapısı (1), M5a `commit` hata kapısı (1), M6a `supersede` hata kapısı (1), M7 hüküm
+temizliği (1), M8 gerekçe temizliği (1), M9 hedef türü (1), M10 iddia türü (1), M11
+yerine geçme hedefi (1). **Dürüst:** (a) M1'in düşürdüğü ikinci test **bağımlı** — kilit
+devri olmadan ikinci yazma hiç başlamıyor; asıl erken-açılma kapısını M2 ölçer. (b) İlk
+mutasyon koşusunda M5/M6 **iki kapıyı birden** değiştirdi (temizlik + hata kapısı) →
+tek kapı olarak M5a/M6a yeniden ölçüldü, her biri 1 kırmızı.
+
+**Dürüst ortam notu (CI):** kod commit'inin ilk koşusu (`41920314563`) `arayüz` işinde
+**kırmızı** düştü, ama düşen test bu ekranın değil `Ai.test.tsx`in **zamana bağlı
+yarışıydı**: künye okuması bir `effect`te başlıyor, seçicinin değeri ise render olur
+olmaz hazır — yüklü CI koşucusunda assertion istek gitmeden koştu (`0 calls`). Test
+yerelde 3/3 ve tam pakette **1080/1080** yeşildi; başarısız iş `gh run rerun --failed`
+ile **7/7 yeşile** döndü. Ayrı commit'te (`e35407d`) assertion `waitFor`a alındı;
+kapısı ölçüldü: ürün kodundan `aiOverview` çağrısı kaldırılınca o test **kırmızı**
+(1 failed | 37 skipped), geri yükleme sha256 `f7b4a2c6…4fafb6` birebir.
+
+Ölçüm: `tsc --noEmit` temiz · `vitest` **1080/1080** (60 dosya; 1071 → **+9**) · `pnpm
+build` temiz (**585,85 kB**, `index-B68vL9xk.js`, gzip **158,09 kB**; CSS
+`index-CPW4QqlF.css`). Rust değişmedi; rustfmt gerekmedi (Rust dosyası yok).
+
+**Kimlik:** şartnamedeki **F08-T04** (iddia–delil matrisi, inceleme kuyruğu,
+kabul/ret/düzelt geçmişi); ekranın yazma yolları bu maddenin arayüz yüzüdür.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek işaretçi
+çift tıklaması, gerçek klavye ve **görsel QA yok**; `api` mock'lu olduğu için
+`review_decide`, `review_commit`, `review_supersede`, `contradiction_assess`,
+`claim_create` SQL'i ve Rust **koşmaz**. Kilit **arayüz düzeyinde**: doğrudan IPC bu
+kapıları atlar. `busy` **tek bayrak** (kuyruk değil): uçuştaki ikinci yazma düğmede
+kapalı. Seçiciler uçuşta **bilinçli olarak açık** (yazılan kaybolmasın diye); ölçülen şey
+yanıtın **gönderilen değeri** ezmemesidir. Yanıt **sırası** elle çözülen sözlerle
+denetlenir, gerçek gecikmeyle değil.
+
+**Açık kayıt:** (a) `addLink`/`addClaimRelation` hata yolu yalnız **dosya** kapısı taşır —
+aynı dosyada başka iddiaya geçilirse eski iddianın bağ hatası yeni iddianın panelinde
+bant olarak görünür (ölçülmedi, kapatılmadı; bağ listesinin kendisi kapılı); (b)
+`assess`in `setAssessments` yazımı dosya kapısı taşımaz — öğe kimlikleri dosyalar arasında
+çakışmadığı için görünür etkisi yok (bilinçli); (c) dosya değişiminde form alanları
+(iddia metni, aday metni) korunur — kullanıcı girdisi; (d) görsel QA **insan bekliyor**.
+
