@@ -38,8 +38,29 @@
 //     (henüz okunmadı ≠ okunamadı).
 // 17. Geç gelen **eski** dosya yanıtı yeni dosyanın kapsamını ezmez.
 // 18. Dosya listesi düşerse dürüst hata yazılır, sahte liste üretilmez.
+//
+// Uçuş yolları (ikinci `describe`; 19–25):
+//
+// 19. **Ölçülen kusur (E):** dışa aktarma uçuştayken dosya değişince `busy`
+//     bırakılmıyordu → yeni dosyanın altı düğmesi eski isteğin yanıtına kadar
+//     (yanıt hiç gelmezse süresiz) kapalı kalıyordu.
+// 20. **Ölçülen kusur (F):** `run`/`runPackage` `finally`si **koşulsuz**
+//     `setBusy(null)` çağırıyordu → devredilen eski isteğin kapanışı yeni
+//     dosyada başlatılan yazmanın kilidini erken açıyordu.
+// 21. **Ölçülen kusur (G):** paket başarısı parola alanını koşulsuz
+//     temizliyordu → uçuşta yazılan yeni parola siliniyordu.
+// 22. **Ölçülen kusur (H):** kaydet diyaloğu açıkken düğmeler açıktı → ikinci
+//     tık ikinci diyalog + ikinci yazma üretiyordu.
+// 23. **Ölçülen kusur (I):** klasör seçimi açıkken paket düğmesi açıktı →
+//     ikinci seçim birincinin hedefini eziyordu.
+// 24. **Ölçülen kusur (J):** seçici reddi (`save`/`open` promise rejection)
+//     hiçbir yere yazılmıyordu — düğmeye basıp hiçbir şey olmaması.
+// 25. Uçuştaki **paket** yanıtı da dosya kapısı taşır (sabitleme): yeni
+//     dosyanın altına yazılmaz.
+// 26. Devredilen **paketin** kapanışı da yeni dosyada başlatılan yazmanın
+//     kilidini açmaz (iki yazma yolu ayrı ayrı ölçülür).
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { t } from "../lib/i18n";
@@ -188,21 +209,26 @@ function apiError(code: string, message: string) {
   return { code, message };
 }
 
-beforeEach(() => {
-  vi.clearAllMocks();
+const CSV_RESULT = exportResult({
+  path: "/Users/avukat/Cikti/kira.csv",
+  record: { id: "ex-2", exportType: "csv", status: "ok", outputHash: null, createdAt: ISO },
+});
+
+/** Her testin varsayılan çekirdek/seçici yanıtları (reset sonrası yeniden kurulur). */
+function setupDefaults() {
   mocks.caseList.mockResolvedValue([P1, P2]);
   mocks.caseCoverage.mockResolvedValue(FULL);
   mocks.exportJson.mockResolvedValue(exportResult());
-  mocks.exportCsv.mockResolvedValue(
-    exportResult({
-      path: "/Users/avukat/Cikti/kira.csv",
-      record: { id: "ex-2", exportType: "csv", status: "ok", outputHash: null, createdAt: ISO },
-    }),
-  );
+  mocks.exportCsv.mockResolvedValue(CSV_RESULT);
   mocks.exportDocx.mockResolvedValue(exportResult());
   mocks.exportPdf.mockResolvedValue(exportResult());
   dialog.save.mockResolvedValue("/Users/avukat/Cikti/kira.json");
   dialog.open.mockResolvedValue("/Users/avukat/Devir");
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  setupDefaults();
 });
 
 
@@ -568,10 +594,225 @@ describe("Çıktılar ekranı", () => {
   it("dosya listesi düşerse dürüst hata yazar, sahte liste üretmez", async () => {
     mocks.caseList.mockRejectedValue(apiError("E_DB", "Kasa açılamadı."));
     render(<Exports />);
-
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("E_DB");
     expect(screen.getByRole("option", { name: t("common.noCase") })).toBeTruthy();
     expect(mocks.caseCoverage).not.toHaveBeenCalled();
+  });
+});
+
+/* --------------------------------------------------- uçuş yolları (19–25) */
+
+describe("Çıktılar ekranı uçuş yolları", () => {
+  // Bir önceki blok `clearAllMocks` kullanır: bu **bir kezlik** (`...Once`)
+  // kuyruğunu bırakır ve düşen bir testin artığı sonraki testin yanıtını
+  // belirler. Burada sıfırdan kurulur.
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaults();
+  });
+
+  const saveButtons = () =>
+    screen.getAllByRole("button", { name: t("common.save") }) as HTMLButtonElement[];
+  const caseSelect = () => screen.getByLabelText(t("common.case")) as HTMLSelectElement;
+  const packageButton = () =>
+    screen.getByRole("button", { name: t("exports.packageCreate") }) as HTMLButtonElement;
+  const refreshButton = () =>
+    screen.getByRole("button", { name: t("exports.refresh") }) as HTMLButtonElement;
+  const passwordInput = () =>
+    screen.getByLabelText(t("exports.packagePassword")) as HTMLInputElement;
+
+  /** Dosya değiştirir ve yeni dosyanın kapsamını bekler. */
+  async function switchToP2() {
+    mocks.caseCoverage.mockResolvedValueOnce(PARTIAL);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await screen.findByText(coverageHeadline(PARTIAL));
+  }
+
+  it("uçuştaki dışa aktarma dosya değişince yeni dosyanın düğmelerini kilitlemez", async () => {
+    await renderScreen();
+    const pending = deferred<ExportResult>();
+    mocks.exportJson.mockReturnValue(pending.promise);
+
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
+    // Kilit gerçekten tutuluyor: JSON düğmesi "Yazılıyor…", ötekiler kapalı.
+    expect(saveButtons()).toHaveLength(3);
+    expect(refreshButton().disabled).toBe(true);
+
+    await switchToP2();
+
+    // Dosya değişti: kilit devredilir, yeni dosyanın altı düğmesi açılır.
+    expect(saveButtons()).toHaveLength(4);
+    for (const button of saveButtons()) expect(button.disabled).toBe(false);
+    expect(packageButton().disabled).toBe(false);
+    expect(refreshButton().disabled).toBe(false);
+
+    // Devredilen isteğin yanıtı yeni dosyanın altına yazılmaz.
+    await act(async () => {
+      pending.resolve(exportResult());
+      await pending.promise;
+    });
+    expect(document.querySelector(".notice.ok")).toBeNull();
+    expect(saveButtons()).toHaveLength(4);
+  });
+
+  it("devredilen yazmanın kapanışı yeni dosyada başlatılan yazmanın kilidini açmaz", async () => {
+    await renderScreen();
+    const stale = deferred<ExportResult>();
+    mocks.exportJson.mockReturnValue(stale.promise);
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    const second = deferred<ExportResult>();
+    mocks.exportCsv.mockReturnValue(second.promise);
+    fireEvent.click(saveButtons()[1]!);
+    await waitFor(() => expect(mocks.exportCsv).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: t("exports.writing") })).toBeTruthy();
+
+    // Eski istek döner: yeni yazmanın kilidi **açılmamalı**.
+    await act(async () => {
+      stale.resolve(exportResult());
+      await stale.promise;
+    });
+    const writing = screen.getByRole("button", { name: t("exports.writing") }) as HTMLButtonElement;
+    expect(writing.disabled).toBe(true);
+
+    await act(async () => {
+      second.resolve(CSV_RESULT);
+      await second.promise;
+    });
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain("CSV");
+    expect(notice.textContent).toContain(`/Users/avukat/Cikti/kira.csv`);
+  });
+
+  it("paket başarısı uçuşta yazılan yeni parolayı silmez", async () => {
+    await renderScreen();
+    const pending = deferred<PackageResult>();
+    mocks.exportPackage.mockReturnValue(pending.promise);
+
+    fireEvent.change(passwordInput(), { target: { value: "cok-guclu-parola" } });
+    fireEvent.click(packageButton());
+    await waitFor(() =>
+      expect(mocks.exportPackage).toHaveBeenCalledWith("p1", "/Users/avukat/Devir", "cok-guclu-parola"),
+    );
+
+    // Uçuşta yeni parola yazılır (bir sonraki paket için).
+    fireEvent.change(passwordInput(), { target: { value: "yeni-parola-1234" } });
+    await act(async () => {
+      pending.resolve(packageResult());
+      await pending.promise;
+    });
+
+    expect(passwordInput().value).toBe("yeni-parola-1234");
+  });
+
+  it("kaydet diyaloğu açıkken ikinci tıklama ikinci pencere ve ikinci yazma üretmez", async () => {
+    await renderScreen();
+    const picked = deferred<string | null>();
+    dialog.save.mockReturnValue(picked.promise);
+
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(dialog.save).toHaveBeenCalledTimes(1));
+    fireEvent.click(saveButtons()[1]!);
+    expect(dialog.save).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      picked.resolve("/Users/avukat/Cikti/kira.json");
+      await picked.promise;
+    });
+    await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
+    expect(mocks.exportCsv).not.toHaveBeenCalled();
+  });
+
+  it("klasör seçimi açıkken ikinci tıklama ikinci paket penceresi açmaz", async () => {
+    await renderScreen();
+    const picked = deferred<string | null>();
+    dialog.open.mockReturnValue(picked.promise);
+
+    fireEvent.click(packageButton());
+    await waitFor(() => expect(dialog.open).toHaveBeenCalledTimes(1));
+    fireEvent.click(packageButton());
+    expect(dialog.open).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      picked.resolve("/Users/avukat/Devir");
+      await picked.promise;
+    });
+    await waitFor(() => expect(mocks.exportPackage).toHaveBeenCalledTimes(1));
+  });
+
+  it("düşen kaydet diyaloğu sessiz kalmaz", async () => {
+    await renderScreen();
+    dialog.save.mockRejectedValue(new Error("seçici kapandı"));
+
+    fireEvent.click(saveButtons()[0]!);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DIALOG");
+    expect(alert.textContent).toContain(t("exports.savePickFailed"));
+    expect(mocks.exportJson).not.toHaveBeenCalled();
+  });
+
+  it("düşen klasör seçici sessiz kalmaz", async () => {
+    await renderScreen();
+    dialog.open.mockRejectedValue(new Error("seçici kapandı"));
+
+    fireEvent.click(packageButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DIALOG");
+    expect(alert.textContent).toContain(t("exports.dirPickFailed"));
+    expect(mocks.exportPackage).not.toHaveBeenCalled();
+  });
+
+  it("uçuştaki paket yanıtı dosya değişince yeni dosyanın altına yazılmaz", async () => {
+    await renderScreen();
+    const pending = deferred<PackageResult>();
+    mocks.exportPackage.mockReturnValue(pending.promise);
+    fireEvent.click(packageButton());
+    await waitFor(() => expect(mocks.exportPackage).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      pending.resolve(packageResult());
+      await pending.promise;
+    });
+    expect(document.querySelector(".notice.ok")).toBeNull();
+    expect(screen.queryByText(/Devir\/kira-paket/)).toBeNull();
+  });
+
+  it("devredilen paketin kapanışı yeni dosyada başlatılan yazmanın kilidini açmaz", async () => {
+    await renderScreen();
+    const stalePkg = deferred<PackageResult>();
+    mocks.exportPackage.mockReturnValue(stalePkg.promise);
+    fireEvent.click(packageButton());
+    await waitFor(() => expect(mocks.exportPackage).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    const second = deferred<ExportResult>();
+    mocks.exportJson.mockReturnValue(second.promise);
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: t("exports.writing") })).toBeTruthy();
+
+    // Eski paket isteği döner: yeni yazmanın kilidi **açılmamalı**.
+    await act(async () => {
+      stalePkg.resolve(packageResult());
+      await stalePkg.promise;
+    });
+    const writing = screen.getByRole("button", { name: t("exports.writing") }) as HTMLButtonElement;
+    expect(writing.disabled).toBe(true);
+
+    await act(async () => {
+      second.resolve(exportResult());
+      await second.promise;
+    });
+    expect(await findOkNotice()).toBeTruthy();
   });
 });

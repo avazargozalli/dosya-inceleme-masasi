@@ -220,6 +220,8 @@ export const tr = {
     packageFiles: "{files} dosya · manifest {hash}…",
     sealed: "Şifreli paket:",
     dirDialog: "Devir paketi klasörünü seç",
+    savePickFailed: "Kaydet diyaloğu açılamadı; çıktı yazılmadı.",
+    dirPickFailed: "Klasör seçici açılamadı; paket oluşturulmadı.",
   },
   redaction: {
     lead: "Terimler belgenin metin katmanından ve görüntüsünden gerçekten çıkarılır; siyah kutu çizmek yeterli sayılmaz. Çıktı yeniden açılıp doğrulanmadan kaydedilmez.",

@@ -38,6 +38,9 @@ export function Exports() {
   const [pkg, setPkg] = useState<PackageResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Seçici diyaloğu açıkken ikinci tıklama ikinci pencere açmasın: kilit yazma
+  // başlamadan devreye girer, düğme metni değişmez (henüz yazılmıyor).
+  const [pickBusy, setPickBusy] = useState(false);
   const [packagePassword, setPackagePassword] = useState("");
   const [coverage, setCoverage] = useState<ExportCoverage | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
@@ -66,6 +69,10 @@ export function Exports() {
     setPkg(null);
     setCoverage(null);
     setError(null);
+    // Kilit devri: yeni dosyanın altı düğmesi eski dosyanın isteğini beklemez
+    // (yanıt hiç gelmezse süresiz kilitli kalırdı). Devredilen isteğin
+    // kapanışı artık `seq` kapısından geçmediği için kilidi geri açamaz.
+    setBusy(null);
     if (!caseId) {
       setCoverageLoading(false);
       return;
@@ -90,11 +97,21 @@ export function Exports() {
   async function run(format: "json" | "csv" | "docx" | "pdf") {
     const selected = cases.find((c) => c.id === caseId);
     if (!selected) return;
-    const target = await saveFile({
-      title: t("exports.saveDialog"),
-      defaultPath: `${fileStem(selected.title)}.${format}`,
-      filters: [{ name: format.toUpperCase(), extensions: [format] }],
-    });
+    // Seçici uçuşu: ikinci tıklama ikinci pencere açmaz (hedefi ikincisi ezerdi).
+    setPickBusy(true);
+    let target: string | null = null;
+    try {
+      target = await saveFile({
+        title: t("exports.saveDialog"),
+        defaultPath: `${fileStem(selected.title)}.${format}`,
+        filters: [{ name: format.toUpperCase(), extensions: [format] }],
+      });
+    } catch {
+      // Seçici reddi sessiz kalmaz: düğmeye basıp hiçbir şey olmaması yalan olurdu.
+      setError({ code: "E_DIALOG", message: t("exports.savePickFailed"), retryable: true });
+    } finally {
+      setPickBusy(false);
+    }
     if (typeof target !== "string") return;
     const seq = ++seqRef.current;
     setBusy(format);
@@ -112,13 +129,26 @@ export function Exports() {
     } catch (e) {
       if (seq === seqRef.current) setError(toApiError(e));
     } finally {
-      setBusy(null);
+      // Yalnız **kendi** isteğinde kilidi bırakır: dosya değiştiyse kilit zaten
+      // devredilmiştir; yeni dosyada başlatılan yazmanın kilidi erken açılmaz.
+      if (seq === seqRef.current) setBusy(null);
     }
   }
 
   async function runPackage() {
     if (!caseId) return;
-    const dir = await openDirectory({ directory: true, multiple: false, title: t("exports.dirDialog") });
+    // Gönderilen parola donar: yanıt geldiğinde alanda **başka** bir parola
+    // yazılıysa silinmez (uçuşta yazılan kaybolmaz).
+    const submitted = packagePassword;
+    setPickBusy(true);
+    let dir: string | null = null;
+    try {
+      dir = await openDirectory({ directory: true, multiple: false, title: t("exports.dirDialog") });
+    } catch {
+      setError({ code: "E_DIALOG", message: t("exports.dirPickFailed"), retryable: true });
+    } finally {
+      setPickBusy(false);
+    }
     if (typeof dir !== "string") return;
     const seq = ++seqRef.current;
     setBusy("package");
@@ -128,18 +158,19 @@ export function Exports() {
       const created = await api.exportPackage(
         caseId,
         dir,
-        packagePassword.trim().length >= 10 ? packagePassword : undefined,
+        submitted.trim().length >= 10 ? submitted : undefined,
       );
       if (seq === seqRef.current) {
         setPkg(created);
         setCoverage(created.coverage);
-        // Parola işi bitti: düz metin bellekte/DOM'da kalmaz.
-        setPackagePassword("");
+        // Parola işi bitti: düz metin bellekte/DOM'da kalmaz — ama uçuşta
+        // yazılan yeni parola bu temizliğin kurbanı olmaz.
+        setPackagePassword((prev) => (prev === submitted ? "" : prev));
       }
     } catch (e) {
       if (seq === seqRef.current) setError(toApiError(e));
     } finally {
-      setBusy(null);
+      if (seq === seqRef.current) setBusy(null);
     }
   }
 
@@ -189,7 +220,7 @@ export function Exports() {
             <h2>{t("exports.coverageTitle")}</h2>
             <p className="card-sub">{t("exports.coverageSub")}</p>
           </div>
-          <button className="btn ghost" disabled={!caseId || busy !== null} onClick={() => void refreshCoverage()}>
+          <button className="btn ghost" disabled={!caseId || busy !== null || pickBusy} onClick={() => void refreshCoverage()}>
             {t("exports.refresh")}
           </button>
         </div>
@@ -244,7 +275,7 @@ export function Exports() {
                   <h2>{format.title}</h2>
                   <p className="card-sub">{format.description}</p>
                 </div>
-                <button className="btn" disabled={!caseId || busy !== null} onClick={() => void run(format.id)}>
+                <button className="btn" disabled={!caseId || busy !== null || pickBusy} onClick={() => void run(format.id)}>
                   {busy === format.id ? t("exports.writing") : t("common.save")}
                 </button>
               </div>
@@ -269,7 +300,7 @@ export function Exports() {
             <h2>{t("exports.packageTitle")}</h2>
             <p className="card-sub">{t("exports.packageSub")}</p>
           </div>
-          <button className="btn" disabled={!caseId || busy !== null} onClick={() => void runPackage()}>
+          <button className="btn" disabled={!caseId || busy !== null || pickBusy} onClick={() => void runPackage()}>
             {busy === "package" ? t("exports.packageBusy") : t("exports.packageCreate")}
           </button>
         </div>
