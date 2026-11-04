@@ -406,6 +406,62 @@ listeyi ve kanıtı olduğu gibi bırakır (liste değişmedi). Profil iletisi h
 kart içinde düz satırdır (`role="alert"` yok) — ekran okuyucu duyurusu
 **insan** VoiceOver turunda doğrulanacak.
 
+## Alt kartlar — çekirdeğin tek CLI kilidi (F10-T15, 2026-11-04)
+
+Çekirdekte CLI işlemleri **süreç geneli tek** slottan geçer
+(`AppState::cli_probe_lock`, `commands.rs`): `provider_probe_run`,
+`cli_capability_matrix`, `cli_attack_probe` ve `cli_residue_measure` aynı slotu
+ister, ikinci istek `E_CLI_BUSY` alır. Arayüz bu gerçeği **kart başına ayrı**
+bayraklarla ve tek yönlü kapılarla yansıtıyordu: kapı yalnız “sonradan başlayan”
+kartı kapatıyor, ters yön açık kalıyordu. Kullanıcı bunu sağlayıcı arızası gibi
+okuyordu — kart `setMatrix(null)` gibi “bayat kanıtı sil” adımını çoktan koşmuş,
+çekirdek isteği reddetmiş oluyordu.
+
+Ölçülen yedi kusur (yedisi de düzeltme öncesi bileşende kırmızı verdi):
+
+1. **Matris sürerken satır yoklaması açıktı** (`probeCanRun` yalnız `running`e
+   bakıyordu) → “Bağlantıyı sına” `E_CLI_BUSY` alır, satırın önceki kanıtı
+   silinirdi.
+2. **Saldırı sürerken matris açıktı** → matris `E_CLI_BUSY` alır ve **önceki
+   matris raporu** ekrandan kalkardı (rapor yeni koşunun başında temizlenir).
+3. **Saldırı sürerken satır yoklaması açıktı** (kusur 1'in ikinci yüzü).
+4. **Matris sürerken kalıntı ölçümü açıktı** (onay kutusu işaretliyken) → gerçek
+   ev dizininde koşan ölçüm reddedilir, panelde kırmızı `E_CLI_BUSY` çıkardı.
+5. **Ölçüm sürerken matris ve saldırı açıktı** — ölçüm kilidi üst panele hiç
+   bildirilmiyordu.
+6. **Ölçüm sürerken satır yoklaması açıktı.**
+7. **Yoklama sürerken ölçüm açıktı;** ayrıca **adaptör değişince** panel kendi
+   kilidini bırakıyor ama çekirdekteki ölçüm sürüyordu → yeni adaptörde “Ölç”
+   `E_CLI_BUSY` alırdı (kilit devri çekirdek kilidini yok sayıyordu).
+
+Düzeltme (`Providers.tsx` +45/−6): üst panelde tek `coreBusy` bayrağı; satır
+yoklaması, matris, saldırı ve **kalıntı ölçümü** (`ResiduePanel` `onCoreBusy` ile)
+bu bayrağı tutar. Kartın kendi `busy` değeri yalnız **etiket** içindir. Bayrak
+**adaptör değişiminde bırakılmaz**; ölçümün `finally`si adaptör değişse de kilidi
+açar (istek çekirdekte bitmiştir). Tarama, temizlik ve süpürme çekirdek kilidini
+tutmaz — bilinçli olarak açık bırakıldı (dosya üst verisi okur/siler, CLI süreci
+başlatmazlar).
+
+Doğrulama: `Providers.test.tsx` 37 → 45 (+8 test). Düzeltme öncesi ham koşu
+**7 failed | 37 skipped** (yedisi de `disabled` kapısıydı); sekizinci test
+(“yoklama sürerken ölçüm ve matris kapalı”) düzeltmeyle yazıldı, kapı kanıtı M4
+ile ölçüldü. Kapı kanıtı **10/10 mutasyon** kırmızı: M1 matris kapısı (2), M2
+saldırı kapısı (1), M3 yoklama kapısı (3), M4 ölçüm kapısı (3), M5
+`onCoreBusy(true)` (3), M6 `onCoreBusy(false)` (2), M7 yoklamada bayrak (1), M8
+matriste bayrak (2), M9 saldırıda bayrak (2), M10 ölçümde `setBusy(null)` (1);
+geri alma sha256 `3071e1d9c7e9…b5d89f9d` birebir. `tsc --noEmit` temiz, vitest
+**944/944** (60 dosya), `npm run build` temiz (**579,51 kB**,
+`index-DwnYvEqS.js`, gzip **156,27 kB**). Rust değişmedi.
+
+**Dürüst:** ilk M6 denemesi betikte yanlış satırı (`setBusy(null)`) kaldırdı ve
+**yeşil kaldı** → ölçümün `finally`si için “düğme yeniden açılır” assertion'ı
+eklendi, M10 kırmızı verdi (yedekli/ölçüsüz kapı bırakılmadı). Dürüst sınırlar:
+jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek CLI süreçleri ve görsel
+QA yok; `E_CLI_BUSY` gerçekte Rust'tan gelir, testler kapıyı `disabled` üzerinden
+ölçer. Ölçüm düğmesi ancak bir tarama çizildikten sonra görünür; ölçüm yarışları
+bu yüzden tarama üzerinden kuruldu. Mimari ve paket raporları çekirdek kilidini
+tutmaz; mimari düğmesi eski (aşırı) kapısını korur — bu turda değiştirilmedi.
+
 ## Yetenek matrisi ve bağlantı durumu (F10-T11, 2026-10-24)
 
 `crates/cli-adapters/src/capability.rs`. Dört yetenek kaydedilir: **araçsız
@@ -587,7 +643,7 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml` temiz;
   `clippy -p dim-cli-adapters --all-targets -D warnings` temiz; rustfmt iki
   manifest temiz.
-- Web: **929** test (F10-T01 turunda 15 yeni `arch.test.ts`: tonlar, evrensel rozet
+- Web: **944** test (F10-T01 turunda 15 yeni `arch.test.ts`: tonlar, evrensel rozet
   metni, mimari listesi, biçim/yol satırları, neden çevirisi, shebang satırı, özet,
   en kötü karar sırası, farklı/evrensel-uyumsuz/doğrulanamayan uyarıları, kart
   rozeti, zaman damgası; F10-T12 turunda 25 yeni `attack.test.ts`: karar tonları ve
@@ -598,6 +654,8 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
   yoklanan komut), `tsc --noEmit` + `vite build` yeşil. F10-T13 arayüz turunda
   `Providers.test.tsx` 17 → 30 (13 yeni: uçuştaki kalıntı tarama/ölçüm/temizlik
   yanıtları adaptör kimliğine bağlandı; kilit devri ve erken kilit açma ölçüldü).
+  F10-T15 turunda `Providers.test.tsx` 37 → 45 (8 yeni: çekirdeğin süreç-geneli
+  CLI kilidi tek `coreBusy` bayrağına taşındı; dört kartın simetrik kapıları).
 - Gerçek yetenek yoklaması (`cargo run -p dim-cli-adapters --example caps`):
   Claude 4/4 `declared` (kapı açık), Codex 3/4 (`tool_free` doğrulanamadı),
   Kimi uyumsuz, Antigravity kurulu değil — tablo yukarıda.
