@@ -25,8 +25,14 @@
 //     hata + başarılı liste aynı ekranda).
 // 12. **Ölçülen kusur (metin):** bağlantı rozeti ilişkiyi ham anahtarla ("contradicts")
 //     yazıyordu; sözlükte karşılığı varken kullanıcıya Türkçe etiket gösterilir.
+// 13. **Uçuş yolları (ek tur):** dosya değişirken geç gelen olay listesi/hatası yeni
+//     dosyaya yazılmaz; yazma sonrası tazeleme eski dosyanın kimliğiyle çağrılsa bile
+//     yeni dosyanın listesini ezmez; geç gelen kaynak/bağlama/kaldırma yanıtları
+//     sonradan açılan olayın panelini ezmez; onay/silme/bağla/kaldır uçuşta kilitlidir;
+//     yazma uçuşunda form alanları kilitlidir (sessiz kayıp yok); kaydetme yanıtı
+//     başka satırın düzenleyicisini kapatmaz.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../lib/i18n";
 import type {
@@ -203,10 +209,12 @@ function byId<T extends HTMLElement>(id: string): T {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 /**
@@ -582,5 +590,452 @@ describe("kronoloji ekranı davranışı", () => {
 
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByText("E_TITLE")).toBeNull());
+  });
+});
+
+/* ------------------------------------------------------ uçuş yolları (ek tur) */
+
+const LINK_B: EventSourceRow = {
+  id: "link-b",
+  eventId: "e1",
+  sourceAnchorId: A2.id,
+  relation: "supports",
+  userConfirmed: true,
+};
+
+const E_P2: EventRow = { ...E_UNKNOWN, id: "e2-p2", caseId: "p2", title: "Ceza olayı" };
+
+describe("kronoloji ekranı uçuş yolları", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("geç gelen olay listesi yeni dosyanın listesini ezmez (INV-05)", async () => {
+    const p1Events = deferred<EventRow[]>();
+    setup({
+      events: async (caseId) => (caseId === "p1" ? p1Events.promise : [E_P2]),
+    });
+    await waitFor(() => expect(mocks.eventList).toHaveBeenCalledWith("p1"));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    expect(await screen.findByText("Ceza olayı")).toBeTruthy();
+    expect(screen.getByText(t("timeline.unknownSub", { count: 1 }))).toBeTruthy();
+
+    await act(async () => {
+      p1Events.resolve([E_DRAFT]);
+      await p1Events.promise;
+    });
+
+    // Eski dosyanın geç yanıtı yeni dosyanın bölümlerine yazılmaz.
+    expect(screen.queryByText(E_DRAFT.title)).toBeNull();
+    expect(screen.queryByText(t("timeline.knownSub", { count: 1 }))).toBeNull();
+    expect(screen.getByText(t("timeline.unknownSub", { count: 1 }))).toBeTruthy();
+  });
+
+  it("geç gelen eski dosya hatası yeni dosyada görünmez", async () => {
+    const p1Events = deferred<EventRow[]>();
+    setup({
+      events: async (caseId) => (caseId === "p1" ? p1Events.promise : [E_P2]),
+    });
+    await waitFor(() => expect(mocks.eventList).toHaveBeenCalledWith("p1"));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    expect(await screen.findByText("Ceza olayı")).toBeTruthy();
+
+    await act(async () => {
+      p1Events.reject({ code: "E_IO", message: "Olaylar okunamadı.", retryable: true });
+      await p1Events.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_IO")).toBeNull();
+  });
+
+  it("yazma sonrası tazeleme eski dosyanın listesini yeni dosyaya yazmaz", async () => {
+    const created = deferred<EventRow>();
+    const refresh = deferred<EventRow[]>();
+    let p1Calls = 0;
+    setup({
+      events: async (caseId) => {
+        if (caseId !== "p1") return [E_P2];
+        p1Calls += 1;
+        return p1Calls === 1 ? [] : refresh.promise;
+      },
+    });
+    await caseLoaded();
+
+    mocks.eventCreate.mockReturnValue(created.promise);
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Yeni olay" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    expect(await screen.findByText("Ceza olayı")).toBeTruthy();
+
+    await act(async () => {
+      created.resolve(eventRow({ id: "e-new", title: "Yeni olay" }));
+      await created.promise;
+    });
+    // Taslak temizliği ekleme akışının bittiğini gösterir; tazeleme ondan sonra koşar.
+    await waitFor(() => expect(byId<HTMLInputElement>("tl-title").value).toBe(""));
+
+    await act(async () => {
+      refresh.resolve([E_DRAFT]);
+      await refresh.promise;
+    });
+
+    expect(screen.queryByText(E_DRAFT.title)).toBeNull();
+    expect(screen.getByText("Ceza olayı")).toBeTruthy();
+    // Eski dosya için ikinci bir liste isteği hiç gönderilmez (boşa çekirdek okuması yok).
+    const p1Loads = mocks.eventList.mock.calls.filter((call: unknown[]) => call[0] === "p1");
+    expect(p1Loads).toHaveLength(1);
+  });
+
+  it("geç gelen kaynak yanıtı sonra açılan olayın panelini ezmez", async () => {
+    const firstSources = deferred<EventSourceRow[]>();
+    setup({
+      events: async () => [E_DRAFT, E_UNKNOWN],
+      anchors: async () => [A1, A2],
+      sources: async (eventId) => (eventId === "e1" ? firstSources.promise : [LINK]),
+    });
+    await screen.findByText(E_DRAFT.title);
+    const row1 = rowOf(E_DRAFT.title);
+    const row2 = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledWith("e1"));
+
+    fireEvent.click(within(row2).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row2.querySelector("li")).not.toBeNull());
+    expect(row2.textContent).toContain(t("timeline.relationKind.contradicts"));
+
+    await act(async () => {
+      firstSources.resolve([LINK_B]);
+      await firstSources.promise;
+    });
+
+    // e2 paneli kendi bağlantısını korur; e1'in bağlantısı buraya yazılmaz.
+    expect(row2.querySelectorAll("li")).toHaveLength(1);
+    const item = row2.querySelector("li") as HTMLElement;
+    expect(item.textContent).toContain(t("timeline.relationKind.contradicts"));
+    expect(item.textContent).not.toContain(t("timeline.relationKind.supports"));
+  });
+
+  it("geç gelen kaynak hatası sonra açılan olayın panelinde görünmez", async () => {
+    const failing = deferred<EventSourceRow[]>();
+    setup({
+      events: async () => [E_DRAFT, E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async (eventId) => (eventId === "e1" ? failing.promise : []),
+    });
+    await screen.findByText(E_DRAFT.title);
+    const row1 = rowOf(E_DRAFT.title);
+    const row2 = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledWith("e1"));
+
+    fireEvent.click(within(row2).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row2.querySelector("p.hint")).not.toBeNull());
+
+    await act(async () => {
+      failing.reject({ code: "E_ANCHOR", message: "Çapalar yüklenemedi.", retryable: true });
+      await failing.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_ANCHOR")).toBeNull();
+  });
+
+  it("geç gelen bağlama hatası panel değiştiyse yeni olayda görünmez", async () => {
+    const failing = deferred<unknown>();
+    setup({
+      events: async () => [E_DRAFT, E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async () => [],
+    });
+    await screen.findByText(E_DRAFT.title);
+    const row1 = rowOf(E_DRAFT.title);
+    const row2 = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-e1").value).toBe(A1.id));
+
+    mocks.eventLinkSource.mockReturnValue(failing.promise);
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.attach") }));
+    await waitFor(() => expect(mocks.eventLinkSource).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(row2).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row2.querySelector("p.hint")).not.toBeNull());
+
+    await act(async () => {
+      failing.reject({ code: "E_ANCHOR", message: "Bağ kurulamadı.", retryable: true });
+      await failing.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_ANCHOR")).toBeNull();
+  });
+
+  it("bağlama sonrası tazeleme panel değiştiyse yeni olayın bağlantılarını yazmaz", async () => {
+    const linking = deferred<unknown>();
+    setup({
+      events: async () => [E_DRAFT, E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async (eventId) => (eventId === "e1" ? [] : [LINK]),
+    });
+    await screen.findByText(E_DRAFT.title);
+    const row1 = rowOf(E_DRAFT.title);
+    const row2 = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-e1").value).toBe(A1.id));
+
+    mocks.eventLinkSource.mockReturnValue(linking.promise);
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.attach") }));
+    await waitFor(() => expect(mocks.eventLinkSource).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(row2).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row2.querySelector("li")).not.toBeNull());
+
+    await act(async () => {
+      linking.resolve({});
+      await linking.promise;
+    });
+
+    // e1 için yapılan tazeleme ([]) e2 panelini boşaltmaz.
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledTimes(3));
+    expect(row2.querySelectorAll("li")).toHaveLength(1);
+    expect(row1.querySelector("li")).toBeNull();
+  });
+
+  it("kaldırma sonrası tazeleme panel değiştiyse yeni olayın bağlantılarını silmez", async () => {
+    const unlinking = deferred<void>();
+    setup({
+      events: async () => [E_DRAFT, E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async (eventId) => (eventId === "e1" ? [LINK_B] : [LINK]),
+    });
+    await screen.findByText(E_DRAFT.title);
+    const row1 = rowOf(E_DRAFT.title);
+    const row2 = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row1.querySelector("li")).not.toBeNull());
+
+    mocks.eventUnlinkSource.mockReturnValue(unlinking.promise);
+    const removeLink = within(row1.querySelector("li") as HTMLElement).getByRole("button", {
+      name: t("timeline.removeLink"),
+    });
+    fireEvent.click(removeLink);
+    await waitFor(() => expect(mocks.eventUnlinkSource).toHaveBeenCalledWith("link-b"));
+
+    fireEvent.click(within(row2).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row2.querySelector("li")).not.toBeNull());
+
+    await act(async () => {
+      unlinking.resolve();
+      await unlinking.promise;
+    });
+
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledTimes(3));
+    expect(row2.querySelectorAll("li")).toHaveLength(1);
+    const item = row2.querySelector("li") as HTMLElement;
+    expect(item.textContent).toContain(t("timeline.relationKind.contradicts"));
+    expect(item.textContent).not.toContain(t("timeline.relationKind.supports"));
+  });
+
+  it("aynı olay paneli yeniden açılınca eski isteğin geç yanıtı yenisini ezmez", async () => {
+    const firstOpen = deferred<EventSourceRow[]>();
+    const secondOpen = deferred<EventSourceRow[]>();
+    let calls = 0;
+    setup({
+      events: async () => [E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async () => {
+        calls += 1;
+        return calls === 1 ? firstOpen.promise : secondOpen.promise;
+      },
+    });
+    await screen.findByText(E_UNKNOWN.title);
+    const row = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.closeSources") }));
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      secondOpen.resolve([LINK]);
+      await secondOpen.promise;
+    });
+    expect((row.querySelector("li") as HTMLElement).textContent).toContain(
+      t("timeline.relationKind.contradicts"),
+    );
+
+    await act(async () => {
+      firstOpen.resolve([LINK_B]);
+      await firstOpen.promise;
+    });
+
+    // Eski açılışın geç yanıtı yeni paneli "destekler" bağlantısıyla ezmez.
+    const item = row.querySelector("li") as HTMLElement;
+    expect(item.textContent).toContain(t("timeline.relationKind.contradicts"));
+    expect(item.textContent).not.toContain(t("timeline.relationKind.supports"));
+  });
+
+  it("onay uçuşta kilitlidir: çift tık tek yazma", async () => {
+    const confirming = deferred<EventRow>();
+    setup({ events: async () => [E_DRAFT] });
+    await screen.findByText(E_DRAFT.title);
+    mocks.eventConfirm.mockReturnValue(confirming.promise);
+
+    const row = rowOf(E_DRAFT.title);
+    const button = within(row).getByRole("button", { name: t("timeline.confirm") });
+    fireEvent.click(button);
+    expect(button).toHaveProperty("disabled", true);
+    fireEvent.click(button);
+    expect(mocks.eventConfirm).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      confirming.resolve({ ...E_DRAFT, status: "confirmed" });
+      await confirming.promise;
+    });
+    await waitFor(() => expect(mocks.eventList).toHaveBeenCalledTimes(2));
+  });
+
+  it("silme uçuşta kilitlidir: çift tık tek yazma", async () => {
+    const deleting = deferred<void>();
+    setup({ events: async () => [E_DRAFT] });
+    await screen.findByText(E_DRAFT.title);
+    mocks.eventDelete.mockReturnValue(deleting.promise);
+
+    const row = rowOf(E_DRAFT.title);
+    const button = within(row).getByRole("button", { name: t("timeline.remove") });
+    fireEvent.click(button);
+    expect(button).toHaveProperty("disabled", true);
+    fireEvent.click(button);
+    expect(mocks.eventDelete).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      deleting.resolve();
+      await deleting.promise;
+    });
+    await waitFor(() => expect(mocks.eventList).toHaveBeenCalledTimes(2));
+  });
+
+  it("bağlama uçuşta kilitlidir: çift tık tek yazma", async () => {
+    const linking = deferred<unknown>();
+    setup({
+      events: async () => [E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async () => [],
+    });
+    await screen.findByText(E_UNKNOWN.title);
+    const row = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-e2").value).toBe(A1.id));
+
+    mocks.eventLinkSource.mockReturnValue(linking.promise);
+    const button = within(row).getByRole("button", { name: t("timeline.attach") });
+    fireEvent.click(button);
+    expect(button).toHaveProperty("disabled", true);
+    fireEvent.click(button);
+    expect(mocks.eventLinkSource).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      linking.resolve({});
+      await linking.promise;
+    });
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledTimes(2));
+  });
+
+  it("kaldırma uçuşta kilitlidir: çift tık tek yazma", async () => {
+    const unlinking = deferred<void>();
+    let sourceCalls = 0;
+    setup({
+      events: async () => [E_UNKNOWN],
+      anchors: async () => [A1],
+      sources: async () => {
+        sourceCalls += 1;
+        return sourceCalls === 1 ? [LINK] : [];
+      },
+    });
+    await screen.findByText(E_UNKNOWN.title);
+    const row = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(row.querySelector("li")).not.toBeNull());
+
+    mocks.eventUnlinkSource.mockReturnValue(unlinking.promise);
+    const button = within(row.querySelector("li") as HTMLElement).getByRole("button", {
+      name: t("timeline.removeLink"),
+    });
+    fireEvent.click(button);
+    expect(button).toHaveProperty("disabled", true);
+    fireEvent.click(button);
+    expect(mocks.eventUnlinkSource).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      unlinking.resolve();
+      await unlinking.promise;
+    });
+    await waitFor(() => expect(mocks.eventSources).toHaveBeenCalledTimes(2));
+    expect(row.querySelector("li")).toBeNull();
+  });
+
+  it("ekleme uçuşunda form alanları kilitlidir (sessiz kayıp yok)", async () => {
+    const created = deferred<EventRow>();
+    setup({ events: async () => [] });
+    await caseLoaded();
+    mocks.eventCreate.mockReturnValue(created.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Yeni olay" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
+
+    // Uçuşta yazılabilseydi yanıt geldiğinde taslak temizlenip metin sessizce silinirdi.
+    expect(byId<HTMLInputElement>("tl-title")).toHaveProperty("disabled", true);
+    expect(byId<HTMLInputElement>("tl-date")).toHaveProperty("disabled", true);
+    expect(byId<HTMLSelectElement>("tl-precision")).toHaveProperty("disabled", true);
+    expect(byId<HTMLSelectElement>("tl-role")).toHaveProperty("disabled", true);
+
+    await act(async () => {
+      created.resolve(eventRow({ id: "e-new", title: "Yeni olay" }));
+      await created.promise;
+    });
+    expect(byId<HTMLInputElement>("tl-title").value).toBe("");
+    await waitFor(() => expect(mocks.eventList).toHaveBeenCalledTimes(2));
+  });
+
+  it("kaydetme uçuşunda açılan başka satırın düzenleyicisi kapanmaz", async () => {
+    const updating = deferred<EventRow>();
+    setup({ events: async () => [E_DRAFT, E_UNKNOWN] });
+    await screen.findByText(E_DRAFT.title);
+    mocks.eventUpdate.mockReturnValue(updating.promise);
+
+    const row1 = rowOf(E_DRAFT.title);
+    fireEvent.click(within(row1).getByRole("button", { name: t("timeline.edit") }));
+    fireEvent.change(byId<HTMLInputElement>("edit-title-e1"), { target: { value: "Güncel" } });
+    fireEvent.click(within(row1).getByRole("button", { name: t("common.save") }));
+    await waitFor(() => expect(mocks.eventUpdate).toHaveBeenCalledTimes(1));
+
+    const row2 = rowOf(E_UNKNOWN.title);
+    fireEvent.click(within(row2).getByRole("button", { name: t("timeline.edit") }));
+    expect(document.getElementById("edit-title-e2")).not.toBeNull();
+    expect(byId<HTMLInputElement>("edit-title-e2")).toHaveProperty("disabled", true);
+    expect(byId<HTMLInputElement>("edit-desc-e2")).toHaveProperty("disabled", true);
+
+    await act(async () => {
+      updating.resolve({ ...E_DRAFT, title: "Güncel" });
+      await updating.promise;
+    });
+
+    // Geç yanıt, kullanıcının açtığı başka satırın düzenleyicisini kapatmaz.
+    expect(document.getElementById("edit-title-e2")).not.toBeNull();
+    expect(document.getElementById("edit-title-e1")).toBeNull();
   });
 });

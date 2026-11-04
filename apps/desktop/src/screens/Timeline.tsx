@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -71,6 +71,11 @@ export function Timeline() {
   const [editing, setEditing] = useState<{ id: string; rowVersion: number; draft: Draft } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  // Seçili dosya ve kaynak paneli istek sürerken değişebilir; yanıtlar **o anda
+  // ekranda duran** bağlama yazılır. Panel kimliği değil, nesil sayacı: aynı olay
+  // paneli kapatılıp yeniden açılsa bile eski isteğin geç yanıtı yenisini ezmez.
+  const caseRef = useRef("");
+  const linkSeq = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -85,16 +90,20 @@ export function Timeline() {
   }, []);
 
   const load = useCallback(async (id: string) => {
-    if (!id) return;
+    // Yazma sonrası tazeleme eski dosyanın kimliğiyle çağrılabilir (uçuşta dosya
+    // değiştiyse): o istek hiç gönderilmez, yeni dosyanın listesi ezilmez.
+    if (!id || id !== caseRef.current) return;
     try {
-      setEvents(await api.eventList(id));
+      const rows = await api.eventList(id);
+      if (id === caseRef.current) setEvents(rows);
     } catch (e) {
-      setError(toApiError(e));
+      if (id === caseRef.current) setError(toApiError(e));
     }
   }, []);
 
   useEffect(() => {
     if (!caseId) return;
+    caseRef.current = caseId;
     // Dosya değişince türetilmiş durum **istekten önce** temizlenir (INV-05):
     // önceki dosyanın olayları, açık düzenleme/kaynak paneli ve taşınan çapa
     // yeni dosyada görünmez; "Kaydet"/"Bağla" eski dosyanın kaydına yazamaz.
@@ -155,27 +164,30 @@ export function Timeline() {
 
   async function saveEdit() {
     if (!editing) return;
+    // Gönderilen kayıt ve değerler tıklama anında donar; uçuşta başka satırın
+    // düzenleyicisi açılırsa yanıt **onu** kapatmaz.
+    const target = editing;
     setError(null);
-    if (editing.draft.title.trim().length === 0) {
+    if (target.draft.title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
     setBusy(true);
     try {
-      await api.eventUpdate(editing.id, editing.rowVersion, {
-        eventKind: editing.draft.kind,
-        dateValue: editing.draft.precision === "unknown" ? null : editing.draft.date || null,
-        datePrecision: editing.draft.precision,
-        dateRole: editing.draft.role,
-        dateRaw: editing.draft.date || null,
-        title: editing.draft.title.trim(),
-        description: editing.draft.description.trim(),
+      await api.eventUpdate(target.id, target.rowVersion, {
+        eventKind: target.draft.kind,
+        dateValue: target.draft.precision === "unknown" ? null : target.draft.date || null,
+        datePrecision: target.draft.precision,
+        dateRole: target.draft.role,
+        dateRaw: target.draft.date || null,
+        title: target.draft.title.trim(),
+        description: target.draft.description.trim(),
       });
-      setEditing(null);
+      setEditing((current) => (current && current.id === target.id ? null : current));
       await load(caseId);
     } catch (e) {
       // Çatışmada kayıt ezilmedi: taze sürümü yükle, kullanıcı yeniden düzenlesin.
-      setEditing(null);
+      setEditing((current) => (current && current.id === target.id ? null : current));
       await load(caseId);
       setError(toApiError(e));
     } finally {
@@ -185,21 +197,27 @@ export function Timeline() {
 
   async function confirm(id: string) {
     setError(null);
+    setBusy(true);
     try {
       await api.eventConfirm(id);
       await load(caseId);
     } catch (e) {
       setError(toApiError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
   async function remove(id: string) {
     setError(null);
+    setBusy(true);
     try {
       await api.eventDelete(id);
       await load(caseId);
     } catch (e) {
       setError(toApiError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -208,6 +226,7 @@ export function Timeline() {
       setLinkFor(null);
       return;
     }
+    const seq = ++linkSeq.current;
     setLinkFor(eventId);
     // Panel açılırken önceki olayın bağlantıları/çapası taşınmaz: düşen istek
     // eski kaynağı yeni olayın kaynağı gibi göstermez, "Bağla" eski çapayla açılmaz.
@@ -220,32 +239,45 @@ export function Timeline() {
         api.anchorList(caseId),
         api.eventSources(eventId),
       ]);
+      // Yanıt yalnız panel hâlâ aynı açılışta ise yazılır: geç yanıt sonradan
+      // açılan (ya da yeniden açılan) paneli ezmez.
+      if (seq !== linkSeq.current) return;
       setAnchors(anchorRows);
       setLinks(linkRows);
       setLinkAnchor(anchorRows[0]?.id ?? "");
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === linkSeq.current) setError(toApiError(e));
     }
   }
 
   async function attach(eventId: string) {
     if (!linkAnchor) return;
+    const seq = linkSeq.current;
     setError(null);
+    setBusy(true);
     try {
       await api.eventLinkSource(eventId, linkAnchor, linkRelation);
-      setLinks(await api.eventSources(eventId));
+      const rows = await api.eventSources(eventId);
+      if (seq === linkSeq.current) setLinks(rows);
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === linkSeq.current) setError(toApiError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
   async function detach(id: string, eventId: string) {
+    const seq = linkSeq.current;
     setError(null);
+    setBusy(true);
     try {
       await api.eventUnlinkSource(id);
-      setLinks(await api.eventSources(eventId));
+      const rows = await api.eventSources(eventId);
+      if (seq === linkSeq.current) setLinks(rows);
     } catch (e) {
-      setError(toApiError(e));
+      if (seq === linkSeq.current) setError(toApiError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -272,7 +304,7 @@ export function Timeline() {
           </div>
           <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
             {event.status === "draft" ? (
-              <button className="btn ghost" onClick={() => void confirm(event.id)}>
+              <button className="btn ghost" disabled={busy} onClick={() => void confirm(event.id)}>
                 {t("timeline.confirm")}
               </button>
             ) : null}
@@ -285,7 +317,7 @@ export function Timeline() {
             <button className="btn ghost" onClick={() => void openLink(event.id)}>
               {linkFor === event.id ? t("timeline.closeSources") : t("timeline.sources")}
             </button>
-            <button className="btn ghost" onClick={() => void remove(event.id)}>
+            <button className="btn ghost" disabled={busy} onClick={() => void remove(event.id)}>
               {t("timeline.remove")}
             </button>
           </div>
@@ -300,6 +332,7 @@ export function Timeline() {
                   id={`edit-title-${event.id}`}
                   className="input"
                   value={editing.draft.title}
+                  disabled={busy}
                   onChange={(e) =>
                     setEditing({ ...editing, draft: { ...editing.draft, title: e.target.value } })
                   }
@@ -312,7 +345,7 @@ export function Timeline() {
                   className="input"
                   type="date"
                   value={editing.draft.date}
-                  disabled={editing.draft.precision === "unknown"}
+                  disabled={busy || editing.draft.precision === "unknown"}
                   onChange={(e) =>
                     setEditing({ ...editing, draft: { ...editing.draft, date: e.target.value } })
                   }
@@ -324,6 +357,7 @@ export function Timeline() {
                   id={`edit-precision-${event.id}`}
                   className="input"
                   value={editing.draft.precision}
+                  disabled={busy}
                   onChange={(e) =>
                     setEditing({ ...editing, draft: { ...editing.draft, precision: e.target.value } })
                   }
@@ -341,6 +375,7 @@ export function Timeline() {
                   id={`edit-role-${event.id}`}
                   className="input"
                   value={editing.draft.role}
+                  disabled={busy}
                   onChange={(e) =>
                     setEditing({ ...editing, draft: { ...editing.draft, role: e.target.value } })
                   }
@@ -360,6 +395,7 @@ export function Timeline() {
                   id={`edit-desc-${event.id}`}
                   className="input"
                   value={editing.draft.description}
+                  disabled={busy}
                   onChange={(e) =>
                     setEditing({
                       ...editing,
@@ -397,7 +433,7 @@ export function Timeline() {
                       {RELATION_LABEL[link.relation] ?? link.relation}
                     </span>
                     <code style={{ fontSize: 11 }}>{link.sourceAnchorId.slice(0, 8)}…</code>
-                    <button className="btn ghost" onClick={() => void detach(link.id, event.id)}>
+                    <button className="btn ghost" disabled={busy} onClick={() => void detach(link.id, event.id)}>
                       {t("timeline.removeLink")}
                     </button>
                   </li>
@@ -438,7 +474,7 @@ export function Timeline() {
                   ))}
                 </select>
               </div>
-              <button className="btn" disabled={!linkAnchor} onClick={() => void attach(event.id)}>
+              <button className="btn" disabled={!linkAnchor || busy} onClick={() => void attach(event.id)}>
                 {t("timeline.attach")}
               </button>
             </div>
@@ -476,6 +512,7 @@ export function Timeline() {
               id="tl-title"
               className="input"
               value={draft.title}
+              disabled={busy}
               onChange={(e) => setDraft({ ...draft, title: e.target.value })}
               placeholder={t("timeline.eventTitlePlaceholder")}
             />
@@ -489,7 +526,7 @@ export function Timeline() {
               className="input"
               type="date"
               value={draft.date}
-              disabled={draft.precision === "unknown"}
+              disabled={busy || draft.precision === "unknown"}
               onChange={(e) => setDraft({ ...draft, date: e.target.value })}
             />
           </div>
@@ -499,6 +536,7 @@ export function Timeline() {
               id="tl-precision"
               className="input"
               value={draft.precision}
+              disabled={busy}
               onChange={(e) => setDraft({ ...draft, precision: e.target.value })}
             >
               {Object.entries(PRECISION_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -506,7 +544,7 @@ export function Timeline() {
           </div>
           <div className="field">
             <label htmlFor="tl-role">{t("timeline.fieldRole")}</label>
-            <select id="tl-role" className="input" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })}>
+            <select id="tl-role" className="input" value={draft.role} disabled={busy} onChange={(e) => setDraft({ ...draft, role: e.target.value })}>
               {Object.entries(DATE_ROLE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
