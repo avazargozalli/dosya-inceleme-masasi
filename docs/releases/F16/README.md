@@ -64,7 +64,7 @@ Bugüne dek ölçülenler kararlar, çizim ve bayat bildirimlerdi; **uçuş** yo
   reddederse ekranda hiçbir şey olmuyordu (ne hata ne istek). İki seçici de
   (yedek, geri yükleme) artık `E_DIALOG` yazar.
 
-**Düzeltme (`Settings.tsx` +95/−23, `i18n.ts` +2):** `selectBackup()` —
+**Düzeltme (`Settings.tsx` +72/−23, `i18n.ts` +2):** `selectBackup()` —
 seçim değişince onay metni ve sonuç paneli düşer; radyo, tarama ve geri dönüş
 sonrası tazeleme **aynı** yardımcıdan geçer. Geri dönüşün tazelemesi ayrı
 `try` kapısında: işlem başarısı paneli korur, tazeleme düşerse liste boşaltılır.
