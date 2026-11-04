@@ -32,6 +32,18 @@ const EMPTY_FORM: NewCaseInput = {
   defaultAiPolicy: "off",
 };
 
+/** Oluşturma taslağının uçuş sırasında değişip değişmediği: form yalnız
+ *  **gönderilen** taslak hâlâ ekrandaysa kapanır. Alanlar kırpılmadan
+ *  karşılaştırılır (gönderim kırpar, form kırpmaz). */
+function sameDraft(a: NewCaseInput, b: NewCaseInput): boolean {
+  return (
+    a.title === b.title &&
+    a.caseKind === b.caseKind &&
+    (a.referenceCode ?? "") === (b.referenceCode ?? "") &&
+    (a.practiceArea ?? "") === (b.practiceArea ?? "")
+  );
+}
+
 export function Cases() {
   const [rows, setRows] = useState<CaseRow[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -76,6 +88,29 @@ export function Cases() {
   // çekirdek yazımı göndermez (ikinci yazım aynı etiketi yineler, kaldırmada
   // E_NOT_FOUND üretip başarılı işlemin üstüne kırmızı yazar).
   const tagBusy = useRef<Set<string>>(new Set());
+  // Yazma kilidi (busy) aynı anda tek çekirdek işlemi tutar. Sürükle-bırak
+  // dinleyicisi **render anındaki** durumu yakaladığı için kilit ayrıca ref'te
+  // tutulur: uçuştaki işlem sırasında bırakılan dosya paralel içe aktarılmaz.
+  const workingRef = useRef(false);
+  // Oluşturma formunun **güncel** taslağı: yanıt geldiğinde formun uçuşta
+  // değişip değişmediği bununla ölçülür (değiştiyse form kapanmaz).
+  const formRef = useRef<NewCaseInput>(form);
+  useEffect(() => {
+    formRef.current = form;
+  }, [form]);
+  // Oluşturma düğmesinin kendi uçuşu: `busy` diğer işlemlerle paylaşıldığı
+  // için düğme metni yalnız bu bayrakla "Oluşturuluyor…" yazar.
+  const [createBusy, setCreateBusy] = useState(false);
+
+  function beginWork() {
+    workingRef.current = true;
+    setBusy(true);
+  }
+
+  function endWork() {
+    workingRef.current = false;
+    setBusy(false);
+  }
 
   // Nesil artışı **bütün yükleme effect'lerinden önce** koşar (kaynak sırası):
   // aşağıdaki effect'ler yeni nesli yakalar, eski isteklerin yanıtı yazılmaz.
@@ -189,12 +224,16 @@ export function Cases() {
   }, [selected?.id]);
 
   async function create() {
+    if (createBusy) return;
     setError(null);
     if (form.title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("cases.titleRequired"), retryable: false });
       return;
     }
-    setBusy(true);
+    const gen = caseGen.current;
+    const submitted = form;
+    setCreateBusy(true);
+    beginWork();
     try {
       const created = await api.caseCreate({
         ...form,
@@ -202,14 +241,20 @@ export function Cases() {
         referenceCode: form.referenceCode?.trim() || null,
         practiceArea: form.practiceArea?.trim() || null,
       });
-      setCreating(false);
-      setForm(EMPTY_FORM);
+      // Oluşturma **gönderilen** taslağa aitti. Uçuşta forma yeni bir metin
+      // yazıldıysa o taslak kullanıcınındır: form kapanıp silinmez.
+      if (sameDraft(formRef.current, submitted)) {
+        setCreating(false);
+        setForm(EMPTY_FORM);
+      }
       await load();
-      setSelected(created);
+      // Kullanıcı bu sırada başka dosyaya geçtiyse **onun** seçimi çalınmaz.
+      if (gen === caseGen.current) setSelected(created);
     } catch (e) {
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      setCreateBusy(false);
+      endWork();
     }
   }
 
@@ -235,7 +280,7 @@ export function Cases() {
   async function importFromPath(path: string) {
     if (!selected) return;
     const gen = caseGen.current;
-    setBusy(true);
+    beginWork();
     setError(null);
     setNotice(null);
     try {
@@ -257,7 +302,7 @@ export function Cases() {
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWork();
     }
   }
 
@@ -303,7 +348,7 @@ export function Cases() {
 
   async function parseDocument(versionId: string, ocr = false) {
     const gen = caseGen.current;
-    setBusy(true);
+    beginWork();
     setError(null);
     setNotice(null);
     setParseProgress(null);
@@ -344,7 +389,7 @@ export function Cases() {
       // Eşzamanlı ikinci ayrıştırma varsa onun sürüm kapısı kapanmaz.
       if (activeParseVersion.current === versionId) activeParseVersion.current = null;
       setParseProgress(null);
-      setBusy(false);
+      endWork();
     }
   }
 
@@ -421,7 +466,19 @@ export function Cases() {
       .onDragDropEvent((event) => {
         if (event.payload.type !== "drop") return;
         const path = event.payload.paths[0];
-        if (path) void importFromPath(path);
+        if (!path) return;
+        // Uçuştaki yazma sırasında bırakılan dosya **paralel** içe aktarılmaz:
+        // aynı dosyaya iki `document_import` yazmak sürüm numarasını yarışa
+        // sokar. Sessiz kalmak yerine reddin nedeni yazılır.
+        if (workingRef.current) {
+          setError({
+            code: "E_DROP_BUSY",
+            message: t("cases.dropBusy"),
+            retryable: true,
+          });
+          return;
+        }
+        void importFromPath(path);
       })
       .then((fn) => {
         unlisten = fn;
@@ -436,7 +493,7 @@ export function Cases() {
   async function mutate(action: "archive" | "restore" | "delete") {
     if (!selected) return;
     const gen = caseGen.current;
-    setBusy(true);
+    beginWork();
     setError(null);
     try {
       if (action === "archive") await api.caseArchive(selected.id);
@@ -448,7 +505,7 @@ export function Cases() {
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWork();
     }
   }
 
@@ -542,8 +599,8 @@ export function Cases() {
               </div>
             </div>
             <div className="row" style={{ justifyContent: "flex-end" }}>
-              <button className="btn primary" disabled={busy} onClick={() => void create()}>
-                {busy ? t("cases.creating") : t("cases.create")}
+              <button className="btn primary" disabled={busy || createBusy} onClick={() => void create()}>
+                {createBusy ? t("cases.creating") : t("cases.create")}
               </button>
             </div>
           </div>

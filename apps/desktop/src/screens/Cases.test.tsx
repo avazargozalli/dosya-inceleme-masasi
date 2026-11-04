@@ -285,7 +285,12 @@ type SetupOptions = {
   tags?: (caseId: string) => Promise<DocumentTagRow[]>;
   /** `parse-progress` dinleyicisini yakalamak için: gerçek Tauri olayı yok. */
   listen?: (handler: (event: { payload: ParseProgressEvent }) => void) => Promise<() => void>;
+  /** Sürükle-bırak dinleyicisini yakalamak için: gerçek Tauri penceresi yok. */
+  onDrop?: (handler: DropHandler) => void;
 };
+
+/** Tauri sürükle-bırak olayı: jsdom'da yalnız elle tetiklenir. */
+type DropHandler = (event: { payload: { type: "drop"; paths: string[] } }) => void;
 
 function setup(options: SetupOptions = {}) {
   if (options.caseListImpl) mocks.caseList.mockImplementation(options.caseListImpl);
@@ -305,7 +310,14 @@ function setup(options: SetupOptions = {}) {
   } else {
     mocks.listen.mockResolvedValue(() => undefined);
   }
-  mocks.onDragDropEvent.mockResolvedValue(() => undefined);
+  if (options.onDrop) {
+    mocks.onDragDropEvent.mockImplementation(async (handler: DropHandler) => {
+      options.onDrop!(handler);
+      return () => undefined;
+    });
+  } else {
+    mocks.onDragDropEvent.mockResolvedValue(() => undefined);
+  }
   render(<Cases />);
 }
 
@@ -1263,5 +1275,202 @@ describe("dosyalar ekranı — eşzamanlı okumalar, çift yazma ve sessiz kayı
     expect(alert.textContent).toContain("E_DIALOG");
     expect(alert.textContent).toContain(t("cases.pickFailed"));
     expect(mocks.documentImport).not.toHaveBeenCalled();
+  });
+});
+
+describe("dosyalar ekranı — oluşturma ve sürükle-bırak uçuş yolları", () => {
+  beforeEach(() => {
+    // Önceki describe'ların `mockResolvedValueOnce`/`mockRejectedValue`
+    // uygulamaları sızmasın: her test kendi yanıtını kurar.
+    vi.resetAllMocks();
+    drop = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  /** Yakalanan Tauri sürükle-bırak dinleyicisi (render sonrası kurulur). */
+  let drop: DropHandler | null = null;
+
+  const IMPORTED = {
+    kind: "imported" as const,
+    document: { ...DOC, id: "d7", displayName: "Kira eki.pdf", currentVersionId: "v2" },
+    version: {
+      id: "v2",
+      documentId: "d7",
+      caseId: "c1",
+      versionNo: 2,
+      blobId: "b2",
+      originalSha256: "sha",
+      byteSize: 1024,
+      detectedMime: "application/pdf",
+      importedAt: ISO,
+    },
+  };
+
+  /** Sürükle-bırak olayını gerçek dinleyiciye verir. */
+  async function dropPath(path: string) {
+    await act(async () => {
+      drop!({ payload: { type: "drop", paths: [path] } });
+      await Promise.resolve();
+    });
+  }
+
+  it("oluşturma uçuşta forma yazılan başlığı silmez", async () => {
+    const create = deferred<CaseRow>();
+    mocks.caseCreate.mockReturnValue(create.promise);
+    setup();
+
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.newCase") }));
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "İlk dosya" } });
+    fireEvent.click(screen.getByRole("button", { name: t("cases.create") }));
+    await waitFor(() => expect(mocks.caseCreate).toHaveBeenCalledTimes(1));
+
+    // Yanıt beklerken kullanıcı **yeni** bir dosya taslağı yazmaya başlar.
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "İkinci dosya" } });
+
+    await act(async () => {
+      create.resolve({ ...CASE, id: "c9", title: "İlk dosya", referenceCode: null });
+      await Promise.resolve();
+    });
+
+    // Oluşturma gönderilen taslağa aitti; ekrandaki yeni taslak silinmez.
+    expect(await screen.findByRole("heading", { name: "İlk dosya" })).toBeTruthy();
+    expect(byId<HTMLInputElement>("case-title").value).toBe("İkinci dosya");
+  });
+
+  it("başka işlem sürerken oluşturma düğmesi “Oluşturuluyor…” yazmaz", async () => {
+    const importJob = deferred<typeof IMPORTED>();
+    mocks.openFileDialog.mockResolvedValue("/tmp/kira-eki.pdf");
+    mocks.documentImport.mockReturnValue(importJob.promise);
+    setup();
+
+    await selectCase(CASE.title);
+    fireEvent.click(screen.getByRole("button", { name: t("cases.newCase") }));
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "Yeni dosya" } });
+
+    fireEvent.click(screen.getByRole("button", { name: t("cases.addDocument") }));
+    await waitFor(() => expect(mocks.documentImport).toHaveBeenCalledTimes(1));
+
+    // İçe aktarma uçuşta; oluşturma **başlamadı** → düğme kendi metnini korur
+    // (yazma kilidi kapalı olduğu için tıklanamaz).
+    const createButton = screen.getByRole("button", { name: t("cases.create") }) as HTMLButtonElement;
+    expect(createButton.disabled).toBe(true);
+
+    await act(async () => {
+      importJob.resolve(IMPORTED);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(createButton.disabled).toBe(false));
+  });
+
+  it("içe aktarma sürerken bırakılan dosya paralel içe aktarılmaz", async () => {
+    const importJob = deferred<typeof IMPORTED>();
+    mocks.openFileDialog.mockResolvedValue("/tmp/bir.pdf");
+    mocks.documentImport.mockReturnValue(importJob.promise);
+    setup({ onDrop: (handler) => { drop = handler; } });
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(drop).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: t("cases.addDocument") }));
+    await waitFor(() => expect(mocks.documentImport).toHaveBeenCalledTimes(1));
+
+    await dropPath("/tmp/iki.pdf");
+
+    // Aynı dosyaya ikinci içe aktarma çekirdeğe gitmez; reddin nedeni yazılır.
+    expect(mocks.documentImport).toHaveBeenCalledTimes(1);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DROP_BUSY");
+    expect(alert.textContent).toContain(t("cases.dropBusy"));
+
+    await act(async () => {
+      importJob.resolve(IMPORTED);
+      await Promise.resolve();
+    });
+  });
+
+  it("oluşturma sürerken bırakılan dosya çekirdeğe yazılmaz", async () => {
+    const create = deferred<CaseRow>();
+    mocks.caseCreate.mockReturnValue(create.promise);
+    setup({ onDrop: (handler) => { drop = handler; } });
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(drop).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: t("cases.newCase") }));
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "Yeni dosya" } });
+    fireEvent.click(screen.getByRole("button", { name: t("cases.create") }));
+    await waitFor(() => expect(mocks.caseCreate).toHaveBeenCalledTimes(1));
+
+    await dropPath("/tmp/iki.pdf");
+
+    expect(mocks.documentImport).not.toHaveBeenCalled();
+    expect((await screen.findByRole("alert")).textContent).toContain("E_DROP_BUSY");
+
+    await act(async () => {
+      create.resolve({ ...CASE, id: "c9", title: "Yeni dosya", referenceCode: null });
+      await Promise.resolve();
+    });
+  });
+
+  it("oluşturma uçuşta başka dosyaya geçilirse o dosyanın seçimi korunur", async () => {
+    const create = deferred<CaseRow>();
+    mocks.caseCreate.mockReturnValue(create.promise);
+    setup({ cases: [CASE, CASE2] });
+
+    await selectCase(CASE.title);
+    fireEvent.click(screen.getByRole("button", { name: t("cases.newCase") }));
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "Yeni dosya" } });
+    fireEvent.click(screen.getByRole("button", { name: t("cases.create") }));
+    await waitFor(() => expect(mocks.caseCreate).toHaveBeenCalledTimes(1));
+
+    // Kullanıcı yanıt beklerken başka dosyayı açar.
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    await act(async () => {
+      create.resolve({ ...CASE, id: "c9", title: "Yeni dosya", referenceCode: null });
+      await Promise.resolve();
+    });
+
+    // Yanıt, kullanıcının açtığı dosyayı kapatıp yeni dosyaya atlamaz.
+    expect(screen.getByRole("heading", { name: CASE2.title })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Yeni dosya" })).toBeNull();
+  });
+
+  it("taslak değişmediyse başarılı oluşturma formu kapatır", async () => {
+    const create = deferred<CaseRow>();
+    mocks.caseCreate.mockReturnValue(create.promise);
+    setup();
+
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.newCase") }));
+    fireEvent.change(byId<HTMLInputElement>("case-title"), { target: { value: "Yeni dosya" } });
+    fireEvent.click(screen.getByRole("button", { name: t("cases.create") }));
+    await waitFor(() => expect(mocks.caseCreate).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      create.resolve({ ...CASE, id: "c9", title: "Yeni dosya", referenceCode: null });
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("heading", { name: "Yeni dosya" })).toBeTruthy();
+    expect(document.getElementById("case-title")).toBeNull();
+  });
+
+  it("işlem yokken bırakılan dosya içe aktarılır", async () => {
+    mocks.documentImport.mockResolvedValue(IMPORTED);
+    setup({ onDrop: (handler) => { drop = handler; } });
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(drop).not.toBeNull());
+
+    await dropPath("/tmp/kira-eki.pdf");
+
+    await waitFor(() => expect(mocks.documentImport).toHaveBeenCalledWith("c1", "/tmp/kira-eki.pdf"));
+    expect(
+      await screen.findByText(t("cases.imported", { name: "Kira eki.pdf", version: 2 })),
+    ).toBeTruthy();
   });
 });

@@ -1193,6 +1193,7 @@ export const tr = {
     parsePending: "Bekleyenleri ayrıştır",
     addDocument: "Belge ekle",
     pickFailed: "Dosya seçici açılamadı; belge eklenmedi.",
+    dropBusy: "İşlem sürerken bırakılan dosya alınmadı; işlem bitince yeniden bırakın.",
     documentsEmpty: "Henüz belge yok. PDF, DOCX, TXT veya görüntü ekleyin.",
     noVersion: "sürüm yok",
     removeTagTitle: "“{tag}” etiketini kaldır",
