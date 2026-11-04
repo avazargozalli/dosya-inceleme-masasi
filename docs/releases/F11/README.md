@@ -237,3 +237,115 @@ değişmedi; rustfmt iki manifestte `--check` temiz.
 - Kimlik: yeni numara uydurulmadı — F11 README'nin mevcut iş listesindeki
   **F11-T04** (gerçek model çağrısı: onay + çalıştırma yolu) kullanıldı; AI
   ekranının aday/onay yolları bu işin arayüzüdür.
+
+> **Bu sınırlardan biri bu turda kapandı:** “dosya değişince eski istek bitene
+> kadar yeni dosyanın düğmeleri kapalı kalır (kilit devri yapılmadı)” artık
+> geçerli değil — aşağıdaki 2026-11-05 bölümü kilit devrini ekledi.
+
+## F11-T04 — AI ekranı: yazma uçuşu, kilit devri ve geç yanıt kapıları (2026-11-05)
+
+Önceki tur yanıtların **hangi dosya/çalıştırmaya** yazıldığını kapatmıştı
+(`caseGen`, `runSeq`). Bu tur ekranın **yazma uçuşunu** ölçtü: `busy` tek
+bayrağının devri, iki yazma yolunun (gönderim, iptal) hiç kilidi olmaması ve
+bildirim/rapor/önizleme yanıtlarının **gönderilen değere** bağlanması.
+
+`Ai.tsx` yedi yazma yolu çağırıyor: `aiConsentCreate` (onay), `aiRunExecute`
+(çalıştırma), `aiCandidateValidate` + `aiCandidateRecord` (doğrula/kaydet),
+`aiCandidateRevalidate`, `aiCandidatePromote` (incelemeye gönder) ve
+`aiConsentRevoke` (iptal).
+
+### Ölçülen kusurlar (11; hepsi düzeltme öncesinde kırmızı)
+
+1. **Kilit devri yok (en ağırı):** onay/çalıştırma/doğrulama askıdayken dosya
+   değişince `busy` bırakılmıyordu → yeni dosyanın “Onayla/Çalıştır” düğmeleri
+   eski yanıta kadar, yanıt hiç gelmezse **süresiz** kapalı.
+2. **Erken açılan kilit:** dört yolun `finally`si koşulsuz `setBusy(false)` →
+   devredilen isteğin kapanışı yeni dosyada başlatılan yazmanın kilidini
+   açıyordu (kilit devri eklenince gerçek yarış hâline geliyor).
+3. **Gönderimde uçuş kilidi yok:** “İncelemeye gönder” düğmesi
+   `disabled={busy || ...}` idi ama `promote()` `busy`yi **hiç** kurmuyordu →
+   çift tık iki `aiCandidatePromote` (çekirdekte yinelenen terfi denemesi).
+4. **Onay iptalinde uçuş kilidi yok:** `revokeConsent()` bayrak kurmuyor,
+   düğme hiç `disabled` taşımıyordu → çift tık iki `aiConsentRevoke`; ikincisi
+   `E_NOT_FOUND` alıp **başarılı** iptalin üstüne kırmızı yazıyordu.
+5. **Geç bildirim (kayıt):** `same` yanıt **öncesinde** hesaplanıyordu →
+   `aiCandidateRecord` veya liste tazelemesi beklerken çalıştırma değişirse
+   “Aday kaydedildi” bildirimi **yeni** çalıştırmanın altına yazılıyordu.
+6. **Sessiz çapraz liste:** aynı senaryoda `loadCandidates(forRun)` eski
+   çalıştırmanın adaylarını yeni çalıştırmanın tablosuna yazıyordu (çağrı
+   bağlam değiştikten **sonra** yapıldığı için kendi iç kapısı işlemiyordu).
+   *Ölçüm:* testin bildirim assertion'ları kaldırılıp yalnız liste assertion'ı
+   koşuldu → düzeltme öncesi `1 failed` (`expected <td …> to be null`, r2'nin
+   tablosunda r1'in adayı); düzeltmeyle yeşil.
+7. **Geç bildirim (gönderim):** `promote()` yalnız `caseGen`e bakıyordu →
+   uçuşta başka çalıştırmaya geçilince “İncelemeye gönderildi.” bildirimi yeni
+   çalıştırmanın ekranına düşüyordu.
+8. **Önizleme sırası yok:** “İçeriği göster” bir **okuma**; iki tık iki istek
+   açıyor, **eskisinin** geç hatası yeni önizlemeyi siliyor ve kırmızı yazıyordu
+   (`documentList` + `aiConsentPreview` iki kez koşuyordu).
+9. **Bayat kırmızı:** başarılı önizleme önceki isteğin kırmızısını silmiyordu →
+   ekranda taze önizleme + eski hata yan yana.
+10. **Eski isteğin geç başarısı:** yeni istek düştüğünde eskisinin geç başarısı
+    önizlemeyi çizip hatayı eziyordu (sıra kapısı yalnız hata yolundaydı).
+11. **Rapor yanlış türün altında:** doğrulama askıdayken aday türü değişince
+    geç gelen rapor **yeni** türün taslağının altına “güncel” gibi yazılıyordu.
+
+### Düzeltme (`Ai.tsx` +94/−17)
+
+- `busySeq` + `beginWrite()/endWrite(seq)`: kapanış yalnız kendi neslinde
+  kilidi bırakır; dosya değişimi `busy`yi **devreder** (nesil artar).
+- `promoteSeq`/`revokeSeq` + ayrı `promoteBusy`/`revokeBusy` bayrakları: iki
+  yazma yolu **kendi** tek-uçuş kilidini taşır (biri askıdayken diğeri açık
+  kalır — onay iptali yeni onayı engellemez), dosya değişimi ikisini de
+  devreder; düğmeler bu bayraklarla kapalı.
+- `validateDraft`: `fresh()` (dosya + çalıştırma) kayıt sonrası **ve** liste
+  tazelemesi sonrası yeniden sorulur; rapor yalnız `kindRef` hâlâ **gönderilen**
+  türdeyse yazılır (`kind` değişimi `setReport(null)` yapıyordu; geç yanıt onu
+  geri getiriyordu).
+- `promote`: başarı/hata `caseGen` **ve** `runSeq` kapılı.
+- `showContent`: `previewSeq` — son istek kazanır; başarı kırmızıyı siler.
+- Rust değişmedi; yeni i18n anahtarı yok.
+
+### Testler ve kapı kanıtı
+
+- `Ai.test.tsx` **38 → 50** (+12; yeni `describe` “yazma uçuşu, kilit devri ve
+  geç yanıt kapıları”). Ham koşu (düzeltme öncesi bileşen, nihai 50 test):
+  **11 failed | 39 passed** — on biri de gerçek kusur; on ikinci test
+  (gönderim/iptal kilidinin devri) düzeltme öncesinde de yeşil (**sabitleme**),
+  kapısı M9 ile ölçüldü.
+- **Kapı kanıtı 11/11** tek kapı mutasyonu kırmızı: M1 gönderim düğmesi kilidi
+  (1), M2 iptal düğmesi kilidi (1), M3 dosya değişiminde `busy` devri (**2**),
+  M4 `endWrite` nesil kapısı (1), M5a kayıt sonrası tazelik (2), M5b tazeleme
+  sonrası tazelik (1), M6 gönderim çalıştırma kapısı (1), M7 önizleme sıra
+  kapısı (1), M8 rapor tür kapısı (1), M9 gönderim/iptal devri (1), M10
+  önizlemede kırmızı temizliği (1). Geri yükleme sha256
+  `dddbbb9be363474df3c109dc6f9f76e70abaf6eed28738d8ca1b210f6a547a46` birebir.
+  **Dürüst:** M7 ilk turda **yeşildi** (senaryo yoktu: eski isteğin geç
+  *başarısı* ölçülmüyordu) → sıra kuralını ölçen test eklendi (11. kusur),
+  M7 yeniden ölçüldü → `1 failed`.
+- **Ölçüm:** `tsc --noEmit` temiz · `vitest` **1092/1092** (60 dosya;
+  1080 → +12) · `vite build` temiz (**586,43 kB**, `index-BJVGyxJU.js`, gzip
+  **158,27 kB**; CSS `index-CPW4QqlF.css` 7,28 kB).
+
+### Sınırlamalar (dürüst)
+
+- jsdom **tarayıcı değil**: gerçek Tauri penceresi, gerçek işaretçi çift
+  tıklaması ve **görsel QA yok**; `api` mock'lu olduğu için `ai_consent_*`,
+  `ai_run_execute`, `ai_candidate_*` SQL'i ve Rust **koşmaz**.
+- Kapılar **arayüz düzeyinde**: doğrudan IPC bunları atlar. `busy` tek bayrak
+  (kuyruk değil): uçuştaki ikinci yazma düğmede kapalı; `promoteBusy` ve
+  `revokeBusy` ayrı bayraklar (düğme metni değişmez).
+- Çift tık `disabled` üzerinden ölçülür; gerçek işaretçi zamanlaması ölçülmedi.
+- **Açık kayıt — onay iptali ↔ çalıştırma:** iptal uçuşta iken “Çalıştır”
+  **açıktır**; iptal edilmekte olan onayla çalıştırma başlatılabilir (çekirdek
+  yarışı; ölçülmedi, kapatılmadı — `revokeBusy` çalıştırma kapısına eklenmedi,
+  çünkü yeni onay alındığında eski iptalin uçuşu yeni onayı engellememeli).
+- **Açık kayıt — rapor ↔ taslak metni:** tür değişimi raporu temizler; taslak
+  **metni** düzenlenince temizlemez (rapor gönderilen taslağın sorunlarını
+  gösterir, kullanıcı düzeltirken okumaya devam edebilsin — bilinçli).
+- **Açık kayıt:** `revalidate` başarısı bağlam kapısı taşımaz (aday kimlikleri
+  çakışmadığı için görünür etkisi yok — bilinçli); görsel QA **insan bekliyor**.
+- **Kimlik:** commit mesajı `F11-T05` ile atıldı; ekranın defter kimliği
+  **F11-T04** (T05 = şema doğrulama paneli). Bu turun kilit katmanı T05
+  panelinin yazma yollarını da kapsar; yeni numara uydurulmadı.
+
