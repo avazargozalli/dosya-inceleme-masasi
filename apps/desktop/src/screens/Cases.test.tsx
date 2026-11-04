@@ -168,6 +168,15 @@ const ANCHOR: AnchorRow = {
   createdAt: ISO,
 };
 
+/** İkinci kaynak: sıra kapısı iki tıklama arasında ayrım yapabilsin diye
+ *  farklı sürüm ve farklı alıntı taşır. */
+const ANCHOR_B: AnchorRow = {
+  ...ANCHOR,
+  id: "a2",
+  documentVersionId: "87654321-abcd",
+  exactQuote: "ihtar süresi doldu",
+};
+
 const BUDGET: WorkerBudgetView = {
   kind: "parse",
   label: "Ayrıştırma",
@@ -315,6 +324,24 @@ function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`#${id} yok`);
   return element as T;
+}
+
+/** Elle çözülen söz: yanıt **sırasını** test belirler (gerçek gecikme değil). */
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason?: unknown) => void = () => undefined;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Okuyucunun sol panelinde seçili sürüm kimliği. */
+function leftPicker(): HTMLSelectElement {
+  return screen.getByLabelText(
+    t("readerUi.documentPickerAria", { label: t("readerUi.leftDocument") }),
+  ) as HTMLSelectElement;
 }
 
 describe("dosyalar ekranı davranışı", () => {
@@ -968,5 +995,273 @@ describe("dosyalar ekranı — uçuştaki yazmalar ve bayat hata", () => {
     expect(
       screen.getByText(t("cases.listSubtitle", { count: 0, scope: t("cases.scopeArchived") })),
     ).toBeTruthy();
+  });
+});
+
+// Bu blok **eşzamanlı** yolları ölçer: iki okuma/yazma uçuştayken hangi yanıt
+// ekrana yazılır, çift tıklama çekirdeğe kaç yazma gönderir, uçuşta yazılan
+// kullanıcı metni silinir mi ve dosya seçici düşerse ekranda ne olur.
+describe("dosyalar ekranı — eşzamanlı okumalar, çift yazma ve sessiz kayıp", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("kapsam değişirken geç gelen eski liste yeni kapsamın listesini ezmez", async () => {
+    const firstLoad = deferred<CaseRow[]>();
+    let call = 0;
+    setup({
+      caseListImpl: () => {
+        call += 1;
+        return call === 1 ? firstLoad.promise : Promise.resolve([ARCHIVED]);
+      },
+    });
+
+    // İlk (aktif) okuma askıda: kullanıcı arşiv kapsamına geçer.
+    fireEvent.click(await screen.findByRole("checkbox"));
+    expect(await screen.findByText(ARCHIVED.title)).toBeTruthy();
+    expect(mocks.caseList).toHaveBeenLastCalledWith(true);
+
+    // Eski kapsamın yanıtı **sonra** gelir: yeni listeyi ve kapsam satırını ezmez.
+    await act(async () => {
+      firstLoad.resolve([CASE]);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(CASE.title)).toBeNull();
+    expect(screen.getByText(ARCHIVED.title)).toBeTruthy();
+    expect(
+      screen.getByText(t("cases.listSubtitle", { count: 1, scope: t("cases.scopeArchived") })),
+    ).toBeTruthy();
+  });
+
+  it("geç gelen eski kapsam hatası yeni kapsamın listesini boşaltmaz", async () => {
+    const firstLoad = deferred<CaseRow[]>();
+    let call = 0;
+    setup({
+      caseListImpl: () => {
+        call += 1;
+        return call === 1 ? firstLoad.promise : Promise.resolve([ARCHIVED]);
+      },
+    });
+
+    fireEvent.click(await screen.findByRole("checkbox"));
+    expect(await screen.findByText(ARCHIVED.title)).toBeTruthy();
+
+    await act(async () => {
+      firstLoad.reject({ code: "E_DB", message: "liste okunamadı", retryable: true });
+      await Promise.resolve();
+    });
+
+    // Eski kapsamın hatası yeni kapsamın ekranına yazılmaz; liste boşaltılmaz.
+    expect(screen.queryByText("E_DB")).toBeNull();
+    expect(screen.getByText(ARCHIVED.title)).toBeTruthy();
+  });
+
+  it("iki kaynağa hızlı tıklamada geç yanıt son tıklanan kaynağı ezmez", async () => {
+    const firstAnchor = deferred<AnchorLocationRow | null>();
+    const secondAnchor = deferred<AnchorLocationRow | null>();
+    mocks.anchorLocate.mockImplementation((id: string) =>
+      id === ANCHOR.id ? firstAnchor.promise : secondAnchor.promise,
+    );
+    setup({ anchors: async () => [ANCHOR, ANCHOR_B] });
+
+    await selectCase(CASE.title);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: t("cases.openInReader") })).toHaveLength(2),
+    );
+    const [openA, openB] = screen.getAllByRole("button", { name: t("cases.openInReader") });
+    fireEvent.click(openA!);
+    await waitFor(() => expect(mocks.anchorLocate).toHaveBeenCalledWith(ANCHOR.id));
+    fireEvent.click(openB!);
+    await waitFor(() => expect(mocks.anchorLocate).toHaveBeenCalledWith(ANCHOR_B.id));
+
+    // Son tıklanan (B) önce döner: okuyucu B'nin sürümüyle açılır.
+    await act(async () => {
+      secondAnchor.resolve(anchorLocation({ anchorId: ANCHOR_B.id, documentVersionId: ANCHOR_B.documentVersionId }));
+      await Promise.resolve();
+    });
+    expect(leftPicker().value).toBe(ANCHOR_B.documentVersionId);
+
+    // İlk tıklamanın yanıtı sonra gelir: kullanıcının son seçimini ezmez.
+    await act(async () => {
+      firstAnchor.resolve(anchorLocation());
+      await Promise.resolve();
+    });
+    expect(leftPicker().value).toBe(ANCHOR_B.documentVersionId);
+  });
+
+  it("geç gelen “kayıt bulunamadı” yanıtı sonradan açılan kaynağı düşürmez", async () => {
+    const firstAnchor = deferred<AnchorLocationRow | null>();
+    mocks.anchorLocate.mockImplementation((id: string) =>
+      id === ANCHOR.id
+        ? firstAnchor.promise
+        : Promise.resolve(
+            anchorLocation({ anchorId: ANCHOR_B.id, documentVersionId: ANCHOR_B.documentVersionId }),
+          ),
+    );
+    setup({ anchors: async () => [ANCHOR, ANCHOR_B] });
+
+    await selectCase(CASE.title);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: t("cases.openInReader") })).toHaveLength(2),
+    );
+    const [openA, openB] = screen.getAllByRole("button", { name: t("cases.openInReader") });
+    fireEvent.click(openA!);
+    await waitFor(() => expect(mocks.anchorLocate).toHaveBeenCalledWith(ANCHOR.id));
+    fireEvent.click(openB!);
+    await waitFor(() => expect(leftPicker().value).toBe(ANCHOR_B.documentVersionId));
+
+    await act(async () => {
+      firstAnchor.resolve(null);
+      await Promise.resolve();
+    });
+
+    // Eski tıklamanın "kayıt yok" hükmü, açılmış okuyucunun üstüne yazılmaz.
+    expect(screen.queryByText("E_ANCHOR_MISSING")).toBeNull();
+    expect(leftPicker().value).toBe(ANCHOR_B.documentVersionId);
+  });
+
+  it("geç gelen kaynak hatası sonradan açılan kaynağın ekranına yazılmaz", async () => {
+    const firstAnchor = deferred<AnchorLocationRow | null>();
+    mocks.anchorLocate.mockImplementation((id: string) =>
+      id === ANCHOR.id
+        ? firstAnchor.promise
+        : Promise.resolve(
+            anchorLocation({ anchorId: ANCHOR_B.id, documentVersionId: ANCHOR_B.documentVersionId }),
+          ),
+    );
+    setup({ anchors: async () => [ANCHOR, ANCHOR_B] });
+
+    await selectCase(CASE.title);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: t("cases.openInReader") })).toHaveLength(2),
+    );
+    const [openA, openB] = screen.getAllByRole("button", { name: t("cases.openInReader") });
+    fireEvent.click(openA!);
+    await waitFor(() => expect(mocks.anchorLocate).toHaveBeenCalledWith(ANCHOR.id));
+    fireEvent.click(openB!);
+    await waitFor(() => expect(leftPicker().value).toBe(ANCHOR_B.documentVersionId));
+
+    await act(async () => {
+      firstAnchor.reject({ code: "E_DB", message: "kaynak okunamadı", retryable: true });
+      await Promise.resolve();
+    });
+
+    // Eski tıklamanın hatası, açılmış okuyucunun üstünde kırmızı bant olmaz.
+    expect(screen.queryByText("E_DB")).toBeNull();
+    expect(leftPicker().value).toBe(ANCHOR_B.documentVersionId);
+  });
+
+  it("toplu ayrıştırma sürerken belge ayrıştırma düğmeleri kapalıdır", async () => {
+    const batch = deferred<BatchParseResult>();
+    mocks.documentsParsePending.mockReturnValue(batch.promise);
+    setup();
+
+    await selectCase(CASE.title);
+    await waitFor(() => expect(screen.getByText(DOC.displayName)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: t("cases.parsePending") }));
+    await waitFor(() => expect(mocks.documentsParsePending).toHaveBeenCalledTimes(1));
+
+    // Toplu ayrıştırma çekirdekte çalışırken aynı sürüm tekil ayrıştırmaya
+    // verilemez (iki worker aynı sürümü yazardı). Okuma serbest kalır.
+    const parse = screen.getAllByRole("button", { name: t("cases.parse") }) as HTMLButtonElement[];
+    const ocr = screen.getAllByRole("button", { name: t("cases.ocr") }) as HTMLButtonElement[];
+    expect([parse[0]!.disabled, ocr[0]!.disabled]).toEqual([true, true]);
+    expect((screen.getByRole("button", { name: t("cases.read") }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+
+    await act(async () => {
+      batch.resolve(batchResult({ requested: 0, succeeded: 0, failed: 0, pages: 0, peakParallel: 0, results: [] }));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        (screen.getAllByRole("button", { name: t("cases.parse") })[0] as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  it("etiket ekleme uçuşta yazılan yeni etiketi silmez", async () => {
+    const add = deferred<string[]>();
+    mocks.documentTagAdd.mockReturnValue(add.promise);
+    setup();
+
+    await selectCase(CASE.title);
+    const input = (await screen.findByLabelText(
+      t("cases.tagAria", { name: DOC.displayName }),
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "yeni" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(mocks.documentTagAdd).toHaveBeenCalledWith("d1", "yeni"));
+
+    // Yanıt beklerken kullanıcı **başka** bir etiket yazar.
+    fireEvent.change(input, { target: { value: "ikinci" } });
+
+    await act(async () => {
+      add.resolve(["yeni"]);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("#yeni")).toBeTruthy();
+    // Yalnız gönderilen değer temizlenir; yazılan yeni metin korunur.
+    expect(input.value).toBe("ikinci");
+  });
+
+  it("etiket ekleme çift Enter'da tek yazma gönderir", async () => {
+    const add = deferred<string[]>();
+    mocks.documentTagAdd.mockReturnValue(add.promise);
+    setup();
+
+    await selectCase(CASE.title);
+    const input = (await screen.findByLabelText(
+      t("cases.tagAria", { name: DOC.displayName }),
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "yeni" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(mocks.documentTagAdd).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      add.resolve(["yeni"]);
+      await Promise.resolve();
+    });
+    expect(mocks.documentTagAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("etiket kaldırma çift tıkta tek yazma gönderir", async () => {
+    const remove = deferred<string[]>();
+    mocks.documentTagRemove.mockReturnValue(remove.promise);
+    setup({ tags: async () => [tagRow("d1", "kira")] });
+
+    await selectCase(CASE.title);
+    const button = await screen.findByTitle(t("cases.removeTagTitle", { tag: "kira" }));
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(mocks.documentTagRemove).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      remove.resolve([]);
+      await Promise.resolve();
+    });
+    expect(mocks.documentTagRemove).toHaveBeenCalledTimes(1);
+    expect(await screen.queryByText("#kira")).toBeNull();
+  });
+
+  it("dosya seçici açılamazsa görünür hata yazar ve içe aktarma denemez", async () => {
+    mocks.openFileDialog.mockRejectedValue(new Error("seçici yok"));
+    setup();
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.addDocument") }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DIALOG");
+    expect(alert.textContent).toContain(t("cases.pickFailed"));
+    expect(mocks.documentImport).not.toHaveBeenCalled();
   });
 });

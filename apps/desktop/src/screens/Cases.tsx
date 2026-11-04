@@ -64,6 +64,18 @@ export function Cases() {
   const caseGen = useRef(0);
   // Belge listesi okumalarının sırası: geç gelen eski yanıt yeni listeyi ezmez.
   const docsSeq = useRef(0);
+  // Dosya listesi okumalarının sırası: kapsam (aktif/arşiv) hızla değişirse
+  // geç gelen eski kapsamın yanıtı — **ve hatası** — yeni kapsamın ekranına
+  // yazılmaz. Kapsam satırı her zaman son isteğin kapsamını yazar.
+  const listSeq = useRef(0);
+  // Kaynak açma okumalarının sırası: kullanıcı iki kaynağa hızlı tıklarsa
+  // okuyucu **son** tıklanan kaynağa açılır; geç yanıt (ve geç "kayıt yok"
+  // hükmü) son seçimi ezmez.
+  const anchorSeq = useRef(0);
+  // Etiket yazımlarının belge başına tek uçuşu: çift Enter / çift tık iki
+  // çekirdek yazımı göndermez (ikinci yazım aynı etiketi yineler, kaldırmada
+  // E_NOT_FOUND üretip başarılı işlemin üstüne kırmızı yazar).
+  const tagBusy = useRef<Set<string>>(new Set());
 
   // Nesil artışı **bütün yükleme effect'lerinden önce** koşar (kaynak sırası):
   // aşağıdaki effect'ler yeni nesli yakalar, eski isteklerin yanıtı yazılmaz.
@@ -96,10 +108,14 @@ export function Cases() {
   }, []);
 
   const load = useCallback(async () => {
+    const seq = ++listSeq.current;
     try {
+      const rows = await api.caseList(showArchived);
+      if (seq !== listSeq.current) return;
       setError(null);
-      setRows(await api.caseList(showArchived));
+      setRows(rows);
     } catch (e) {
+      if (seq !== listSeq.current) return;
       // Düşen okuma önceki kapsamın listesini bırakmaz: alt satır "Arşiv"
       // kapsamını yazarken aktif dosyalar liste gibi görünmez.
       setRows([]);
@@ -198,13 +214,20 @@ export function Cases() {
   }
 
   async function addDocument() {
-    const picked = await openFileDialog({
-      multiple: false,
-      directory: false,
-      filters: [
-        { name: t("cases.fileFilterDocuments"), extensions: ["pdf", "docx", "udf", "txt", "md", "csv", "png", "jpg", "jpeg", "tif", "tiff"] },
-      ],
-    });
+    let picked: string | string[] | null;
+    try {
+      picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: t("cases.fileFilterDocuments"), extensions: ["pdf", "docx", "udf", "txt", "md", "csv", "png", "jpg", "jpeg", "tif", "tiff"] },
+        ],
+      });
+    } catch {
+      // Seçici açılamazsa sessiz kalmaz: belge eklenmediği ekranda görünür.
+      setError({ code: "E_DIALOG", message: t("cases.pickFailed"), retryable: true });
+      return;
+    }
     if (typeof picked !== "string") return;
     await importFromPath(picked);
   }
@@ -239,23 +262,32 @@ export function Cases() {
   }
 
   /** Belge etiketi ekler; sunucunun döndürdüğü güncel listeyi yazar.
-   *  Etiket aramada filtre olarak kullanılır (F07-T03). */
+   *  Etiket aramada filtre olarak kullanılır (F07-T03). Yazma belge başına
+   *  tek uçuştur; giriş yalnız **gönderilen** değer hâlâ yazılıysa temizlenir. */
   async function addTag(documentId: string) {
     const draft = (tagDrafts[documentId] ?? "").trim();
     if (!draft) return;
+    if (tagBusy.current.has(documentId)) return;
+    tagBusy.current.add(documentId);
     const gen = caseGen.current;
     setError(null);
     try {
       const tags = await api.documentTagAdd(documentId, draft);
       if (gen !== caseGen.current) return;
       setTagsByDoc((prev) => ({ ...prev, [documentId]: tags }));
-      setTagDrafts((prev) => ({ ...prev, [documentId]: "" }));
+      setTagDrafts((prev) =>
+        (prev[documentId] ?? "").trim() === draft ? { ...prev, [documentId]: "" } : prev,
+      );
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
+    } finally {
+      tagBusy.current.delete(documentId);
     }
   }
 
   async function removeTag(documentId: string, tag: string) {
+    if (tagBusy.current.has(documentId)) return;
+    tagBusy.current.add(documentId);
     const gen = caseGen.current;
     setError(null);
     try {
@@ -264,6 +296,8 @@ export function Cases() {
       setTagsByDoc((prev) => ({ ...prev, [documentId]: tags }));
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
+    } finally {
+      tagBusy.current.delete(documentId);
     }
   }
 
@@ -356,12 +390,14 @@ export function Cases() {
   }
 
   /** Kaynağa geri dönüş: anchor'ın sayfasını ve alıntısını okuyucuda açar.
-   *  Alıntı segmentten kopmuşsa okuyucu bunu "kopmuş kaynak" olarak gösterir. */
+   *  Alıntı segmentten kopmuşsa okuyucu bunu "kopmuş kaynak" olarak gösterir.
+   *  Sıra kapısı: iki kaynağa hızlı tıklanırsa **son** tıklanan kazanır. */
   async function openAnchor(anchorId: string) {
     const gen = caseGen.current;
+    const seq = ++anchorSeq.current;
     try {
       const location = await api.anchorLocate(anchorId);
-      if (gen !== caseGen.current) return;
+      if (gen !== caseGen.current || seq !== anchorSeq.current) return;
       if (!location) {
         setError({
           code: "E_ANCHOR_MISSING",
@@ -373,7 +409,7 @@ export function Cases() {
       setError(null);
       setReader((prev) => ({ left: targetFromAnchor(location), right: prev?.right ?? null }));
     } catch (e) {
-      if (gen === caseGen.current) setError(toApiError(e));
+      if (gen === caseGen.current && seq === anchorSeq.current) setError(toApiError(e));
     }
   }
 
@@ -774,14 +810,14 @@ export function Cases() {
                       </button>
                       <button
                         className="btn ghost"
-                        disabled={!doc.currentVersionId || busy}
+                        disabled={!doc.currentVersionId || busy || batchBusy}
                         onClick={() => void parseDocument(doc.currentVersionId!, false)}
                       >
                         {t("cases.parse")}
                       </button>
                       <button
                         className="btn ghost"
-                        disabled={!doc.currentVersionId || busy}
+                        disabled={!doc.currentVersionId || busy || batchBusy}
                         onClick={() => void parseDocument(doc.currentVersionId!, true)}
                         title={t("cases.ocrTitle", { lang: defaultOcrLanguageLabel() })}
                       >
