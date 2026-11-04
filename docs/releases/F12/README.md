@@ -983,3 +983,70 @@ ama aynı kip içinde iki farklı aktarım ayırt edilmez (açık kayıt).
 `exportCorpus` sonrası `loadCoverage()` düşerse yeşil satır **ve** kırmızı hata
 birlikte görünür (ikisi de doğru: dosya yazıldı, kapsam okunamadı) — kabul
 edildi.
+
+## F12-T15 genişletmesi — emsal yazma yolları: taslak koruması, geç hata ve kopya etiketi (2026-11-04)
+
+`Precedents` ekranının (1686 satır, 50 test) kalan **yazma uçuşları** ölçüldü:
+emsal oluşturma, kullanım notu, tam metin, kullanım koşulu, atıf kontrolü ve
+anlam hükmü. Önceki turlar alıntı doğrulamayı, korpus aktarımını ve seçim
+neslini kapatmıştı; bu turda **yanıt beklerken forma yazılan metin** ve **eski
+sürümün geç hatası** hiç ölçülmemişti.
+
+**Ölçülen kusurlar (düzeltme öncesi bileşende 9/9 kırmızı, mevcut 40 test yeşil):**
+
+- **Sessiz kayıp (dört yol):** oluşturma başarısı `setDraft(emptyDraft())` ile
+  formu kapatıp uçuşta yazılan yeni künyeyi siliyordu; not kaydı üç alanı,
+  tam metin kaydı `setFullText("")` ile alanı, koşul kaydı sunucudan gelen
+  değerlerle dört alanı koşulsuz eziyordu.
+- **Geç hata (iki yol):** `citationCheckCreate` ve `citationMeaningReview`
+  hataları sürüm kapısı taşımıyordu → eski belge sürümünün `E_DB`'si yeni
+  sürümün/dosyanın altında görünüyordu.
+- **Kopya etiketi (üç yol):** künye kopyası seçim nesli taşımıyordu (başka
+  emsal seçilince geç başarı yeni künyeye "Kopyalandı" yazıyordu); düşen kopya
+  önceki yeşil etiketi bırakıyordu; künye tazelenince (tam metin ekleme) etiket
+  ekranda kalıyordu.
+
+**Düzeltme (`Precedents.tsx` +85/−21):** modül düzeyinde `sameDraft()`; dört
+yazma yanıtı gönderilen değere bağlandı (`setDraft`, üç not alanı,
+`setFullText`, dört koşul alanı yalnız değişmemişse yazılır);
+`citationCheckCreate`/`citationMeaningReview` hata yolları `versionRef`
+kapısına alındı; `copySeq` nesil sayacı + `bibliography` effect'i (kopya
+etiketi istek anındaki künyeye bağlı, künye tazelenince düşer).
+
+**Testler (`Precedents.test.tsx` 40 → 50, +10):** yeni describe;
+`deferredWithReject<T>()`, `BIB2`. Sabitlenenler: dört taslak koruması, iki geç
+hata kapısı, üç kopya etiketi kapısı + düşen kopyanın yeşili kaldırması.
+
+**Ham koşu (düzeltme öncesi bileşen, o günkü 49 test): 9 failed | 40 passed** —
+dokuzu da gerçek kusur; mevcut 40 test düzeltme öncesinde de yeşildi. Onuncu
+test (uçuştaki kopya **hatası** yeni emsale yazılmaz) düzeltmeden **sonra**
+eklendi; kapısı yalnız M10 mutasyonuyla ölçüldü (düzeltme öncesi koşuda yoktu).
+
+**Kapı kanıtı (10/10 tek kapı mutasyonu kırmızı; geri yükleme sha256
+`b567866b7f980fc29e8dbc2f9a5159e4b255c04f2149f77700b5f122f1cf4732` birebir):**
+M1 oluşturma taslağı (1), M2 not alanları (1), M3 tam metin (1), M4 koşul
+alanları (1), M5 atıf kontrolü hatası (1), M6 anlam hükmü hatası (1), M7 kopya
+başarı nesli (1), M8 kopya başında etiket temizliği (1), M9 künye tazeleme
+effect'i (**3**), M10 kopya hata nesli (1).
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **1043/1043** (60 dosya; 1033 → +10) ·
+`npm run build` temiz (**584,30 kB**, `index-C5DATuH7.js`, gzip **157,65 kB**;
+CSS `index-CPW4QqlF.css`). Rust değişmedi; rustfmt gerekmedi (Rust dosyası yok).
+
+**Commit/CI (ölçüldü):** kod `fa84763` (2 dosya, +388/−21) → **`41881781105`
+7/7 YEŞİL** (`arayüz` **60 dosya / 1043 test**, aynı paket `index-C5DATuH7.js`
+584,30 kB / gzip 157,65 kB → yerel/CI **birebir**). `HEAD == origin/main`,
+ağaç temiz.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek
+pano izni, gerçek işaretçi tıklaması ve **görsel QA yok**; `api` mock'lu olduğu
+için `precedent_*` ve `citation_*` SQL'i/Rust tarafı **koşmaz**. Taslak koruması
+**arayüz sezgisi**: alan metni gönderilen değerle karşılaştırılır; kullanıcı aynı
+metni yeniden yazdıysa temizlenir (anlam farkı yok). Kopya nesli **arayüz
+düzeyinde**; doğrudan IPC bu kapıyı atlar. `busy` tek bayrak: bu ekranda farklı
+yazmalar paralel başlamaz (düğmeler kapalı).
+
+**Açık kayıt:** (a) not/tam metin/koşul yanıtı düşerse uçuşta yazılan metin
+korunur ama kaydedilmemiş olabilir (hata görünür, kullanıcı yeniden dener);
+(b) aynı künye metni yeniden yazıldıysa "değişmedi" sayılır ve alan temizlenir
+(bilinçli); (c) görsel QA + gerçek Tauri penceresi **insan bekliyor**.
