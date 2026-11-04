@@ -85,6 +85,25 @@ function emptyDraft(): Draft {
   };
 }
 
+/**
+ * Formdaki taslak, gönderilen taslakla **birebir** aynı mı? Yanıt geldiğinde
+ * kullanıcı yeni bir künye yazmaya başladıysa form kapatılmaz; aksi hâlde
+ * uçuşta yazılan metin sessizce silinirdi.
+ */
+function sameDraft(a: Draft, b: Draft): boolean {
+  return (
+    a.court === b.court &&
+    a.chamber === b.chamber &&
+    a.docketNo === b.docketNo &&
+    a.decisionNo === b.decisionNo &&
+    a.decisionDate === b.decisionDate &&
+    a.title === b.title &&
+    a.sourceUrl === b.sourceUrl &&
+    a.tags === b.tags &&
+    a.legalIssue === b.legalIssue
+  );
+}
+
 /** Anlam incelemesi rozeti; bilinmeyen değer olduğu gibi görünür (uydurulmaz). */
 function meaningLabel(value: string): string {
   switch (value) {
@@ -134,6 +153,8 @@ export function Precedents() {
   // aitse yazılır. `quoteReq` eşzamanlı iki doğrulamanın kilidini ayırır.
   const quoteEdit = useRef(0);
   const quoteReq = useRef(0);
+  /** Künye kopyasının nesli: geç yanıt yeni künyeye etiket yazmaz. */
+  const copySeq = useRef(0);
   // Türetilmiş okumalar **hangi emsale/dosyaya/sürüme** aitse ona bağlıdır:
   // seçim değiştikten sonra gelen geç yanıt yeni seçimin verisini yazmaz.
   const selectedRef = useRef<string | null>(null);
@@ -275,6 +296,13 @@ export function Precedents() {
     setSrcResult(null);
   }, [selected]);
 
+  // Künye her tazelendiğinde kopya etiketi düşer: "Kopyalandı" ekrandaki
+  // metnin değil, panoya yazılan **önceki** metnin işaretidir.
+  useEffect(() => {
+    copySeq.current += 1;
+    setCopied(false);
+  }, [bibliography]);
+
   useEffect(() => {
     // INV-05: dosya değişince belge listesi, sürüm seçimi ve atıf kontrolleri
     // temizlenir. Aksi hâlde yeni liste gelene kadar "Kontrolü kaydet" **eski
@@ -369,6 +397,9 @@ export function Precedents() {
       setError({ code: "E_COURT", message: t("precedents.errorCourt"), retryable: false });
       return;
     }
+    // Yanıt, gönderilen taslağa bağlanır: uçuşta yeni künye yazıldıysa form
+    // kapatılıp taslak silinmez.
+    const sent = draft;
     setBusy(true);
     try {
       await api.precedentCreate({
@@ -383,7 +414,7 @@ export function Precedents() {
         userTags: draft.tags.split(",").map((t) => t.trim()).filter(Boolean),
         legalIssue: draft.legalIssue.trim() || null,
       });
-      setDraft(emptyDraft());
+      setDraft((current) => (sameDraft(current, sent) ? emptyDraft() : current));
       await load();
     } catch (e) {
       setError(toApiError(e));
@@ -398,6 +429,13 @@ export function Precedents() {
     // başka emsal seçerse eski notlar yeni emsalin altında yazılmaz.
     const pid = selected.id;
     const stillMine = () => selectedRef.current === pid;
+    // Yanıt, gönderilen not metinlerine bağlanır: uçuşta yazılan **yeni** not
+    // korunur, yalnız değişmeyen alanlar temizlenir.
+    const sent = {
+      similarity: similarity.trim(),
+      distinguishing: distinguishing.trim(),
+      conclusion: conclusion.trim(),
+    };
     setError(null);
     setBusy(true);
     try {
@@ -409,9 +447,11 @@ export function Precedents() {
         userConclusion: conclusion.trim(),
       });
       if (stillMine()) {
-        setSimilarity("");
-        setDistinguishing("");
-        setConclusion("");
+        setSimilarity((current) => (current.trim() === sent.similarity ? "" : current));
+        setDistinguishing((current) =>
+          current.trim() === sent.distinguishing ? "" : current,
+        );
+        setConclusion((current) => (current.trim() === sent.conclusion ? "" : current));
       }
       const rows = await api.precedentNoteList(pid);
       if (stillMine()) setNotes(rows);
@@ -431,6 +471,9 @@ export function Precedents() {
       setError({ code: "E_TEXT", message: t("precedents.errorEmptyText"), retryable: false });
       return;
     }
+    // Uçuşta yazılan yeni metin silinmez: yalnız gönderilen metin hâlâ
+    // ekrandaysa alan temizlenir.
+    const sentText = fullText;
     setBusy(true);
     try {
       await api.precedentTextAdd(pid, {
@@ -441,7 +484,7 @@ export function Precedents() {
       const versions = await api.precedentVersionList(pid);
       const bibliography = await api.precedentBibliography(pid);
       if (stillMine()) {
-        setFullText("");
+        setFullText((current) => (current === sentText ? "" : current));
         setVersions(versions);
         setBibliography(bibliography);
         // Metin değişti: önceki doğrulama bu sürüme ait değil.
@@ -501,21 +544,33 @@ export function Precedents() {
     if (!selected) return;
     const pid = selected.id;
     const stillMine = () => selectedRef.current === pid;
+    // Yanıt, gönderilen koşul değerlerine bağlanır: uçuşta düzenlenen alan
+    // sunucudan gelen eski değerle ezilmez.
+    const sent = {
+      usageBasis: termsBasis,
+      redistribution: termsRedistribution,
+      termsUrl: termsUrl.trim() || null,
+      termsNote: termsNote.trim(),
+    };
     setBusy(true);
     setError(null);
     try {
       const saved = await api.precedentTermsSet(pid, {
-        usageBasis: termsBasis,
-        redistribution: termsRedistribution,
-        termsUrl: termsUrl.trim() || null,
-        termsNote: termsNote.trim(),
+        usageBasis: sent.usageBasis,
+        redistribution: sent.redistribution,
+        termsUrl: sent.termsUrl,
+        termsNote: sent.termsNote,
       });
       if (stillMine()) {
         setTerms(saved);
-        setTermsBasis(saved.usageBasis);
-        setTermsRedistribution(saved.redistribution);
-        setTermsUrl(saved.termsUrl ?? "");
-        setTermsNote(saved.termsNote);
+        setTermsBasis((current) => (current === sent.usageBasis ? saved.usageBasis : current));
+        setTermsRedistribution((current) =>
+          current === sent.redistribution ? saved.redistribution : current,
+        );
+        setTermsUrl((current) =>
+          (current.trim() || null) === sent.termsUrl ? (saved.termsUrl ?? "") : current,
+        );
+        setTermsNote((current) => (current.trim() === sent.termsNote ? saved.termsNote : current));
       }
       await Promise.all([load(), loadCoverage()]);
     } catch (e) {
@@ -580,15 +635,21 @@ export function Precedents() {
 
   async function copyBibliography() {
     if (!bibliography) return;
+    // Kopya etiketi istek anındaki künyeye bağlıdır: uçuşta emsal değişirse
+    // geç yanıt yeni künyenin "Kopyalandı" etiketini yazmaz.
+    const seq = ++copySeq.current;
+    setCopied(false);
     try {
       await navigator.clipboard.writeText(bibliography.text);
-      setCopied(true);
+      if (seq === copySeq.current) setCopied(true);
     } catch {
-      setError({
-        code: "E_CLIPBOARD",
-        message: t("precedents.errorClipboard"),
-        retryable: false,
-      });
+      if (seq === copySeq.current) {
+        setError({
+          code: "E_CLIPBOARD",
+          message: t("precedents.errorClipboard"),
+          retryable: false,
+        });
+      }
     }
   }
 
@@ -705,7 +766,9 @@ export function Precedents() {
         setMeaningNote("");
       }
     } catch (e) {
-      setError(toApiError(e));
+      // Hüküm eski belge sürümünün listesine aitti: hatası yeni sürümün
+      // altında görünmez.
+      if (versionRef.current === vid) setError(toApiError(e));
     } finally {
       setReviewBusy(false);
     }
@@ -743,7 +806,8 @@ export function Precedents() {
       const rows = await api.citationCheckList(vid);
       if (versionRef.current === vid) setChecks(rows);
     } catch (e) {
-      setError(toApiError(e));
+      // Yazma eski sürüme aitti: hatası yeni sürümün altında görünmez.
+      if (versionRef.current === vid) setError(toApiError(e));
     } finally {
       setBusy(false);
     }

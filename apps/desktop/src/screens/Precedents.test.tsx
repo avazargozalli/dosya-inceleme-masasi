@@ -2051,3 +2051,306 @@ describe("emsal ekranı: korpus aktarımı ve anlam hükmü", () => {
     expect(mocks.openDialog).toHaveBeenCalledTimes(1);
   });
 });
+
+/** Askıda tutulabilen söz; reddetme yolu da ölçülebilsin diye `reject` taşır. */
+function deferredWithReject<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason?: unknown) => void = () => undefined;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const BIB2: PrecedentBibliography = {
+  ...BIB,
+  precedentId: "p2",
+  text: "Danıştay 1. Daire, E. 2025/7, K. 2025/9, 01.02.2025",
+  missing: [],
+};
+
+// Emsal ekranının **uçuştaki yazmaları** ve **geç etiketleri**: kullanıcı yanıt
+// beklerken formu dolduruyorsa metin korunur; eski isteğin hatası/yeşili yeni
+// seçimin altında görünmez.
+describe("emsal ekranı: uçuştaki yazmalar ve geç etiketler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("emsal oluşturma yanıtı uçuşta yazılan yeni künyeyi silmez", async () => {
+    const pending = deferredWithReject<PrecedentRow>();
+    mocks.precedentCreate.mockReturnValue(pending.promise);
+    setup();
+    await screen.findByRole("button", { name: new RegExp(PREC.title!) });
+
+    fireEvent.change(byId<HTMLInputElement>("p-court"), {
+      target: { value: "Yargıtay Hukuk Genel Kurulu" },
+    });
+    fireEvent.change(byId<HTMLInputElement>("p-docket"), { target: { value: "2024/123" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.add") }));
+
+    // Uçuşta kullanıcı **yeni** bir emsal künyesi yazmaya başlar.
+    fireEvent.change(byId<HTMLInputElement>("p-court"), { target: { value: "Danıştay" } });
+    fireEvent.change(byId<HTMLInputElement>("p-docket"), { target: { value: "2026/77" } });
+
+    await act(async () => {
+      pending.resolve({ ...PREC, id: "p9" });
+      await pending.promise;
+    });
+
+    await waitFor(() =>
+      expect(byId<HTMLInputElement>("p-court").value).toBe("Danıştay"),
+    );
+    expect(byId<HTMLInputElement>("p-docket").value).toBe("2026/77");
+  });
+
+  it("not yanıtı uçuşta yazılan yeni notu silmez; değişmeyen alanlar temizlenir", async () => {
+    const pending = deferredWithReject<PrecedentNoteRow>();
+    mocks.precedentNoteCreate.mockReturnValue(pending.promise);
+    setup();
+    await selectPrecedent(PREC.title!);
+
+    fireEvent.change(byId<HTMLInputElement>("n-sim"), { target: { value: "benzer gerekçe" } });
+    fireEvent.change(byId<HTMLInputElement>("n-dist"), { target: { value: "ayrışan yön" } });
+    fireEvent.change(byId<HTMLInputElement>("n-conc"), { target: { value: "uygulanabilir" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.noteAdd") }));
+
+    // Uçuşta kullanıcı benzerlik alanına **yeni** bir not yazar.
+    fireEvent.change(byId<HTMLInputElement>("n-sim"), { target: { value: "ikinci not" } });
+
+    await act(async () => {
+      pending.resolve(NOTE);
+      await pending.promise;
+    });
+
+    await waitFor(() => expect(byId<HTMLInputElement>("n-sim").value).toBe("ikinci not"));
+    expect(byId<HTMLInputElement>("n-dist").value).toBe("");
+    expect(byId<HTMLInputElement>("n-conc").value).toBe("");
+  });
+
+  it("tam metin yanıtı uçuşta yazılan yeni metni silmez", async () => {
+    const pending = deferredWithReject<PrecedentVersionRow>();
+    mocks.precedentTextAdd.mockReturnValue(pending.promise);
+    setup();
+    await selectPrecedent(PREC.title!);
+
+    fireEvent.change(byId<HTMLTextAreaElement>("p-fulltext"), {
+      target: { value: "ilk metin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.fullTextSave") }));
+
+    // Uçuşta kullanıcı yeni tam metni yazar.
+    fireEvent.change(byId<HTMLTextAreaElement>("p-fulltext"), {
+      target: { value: "ikinci metin" },
+    });
+
+    await act(async () => {
+      pending.resolve(PV_TEXT);
+      await pending.promise;
+    });
+
+    await waitFor(() =>
+      expect(byId<HTMLTextAreaElement>("p-fulltext").value).toBe("ikinci metin"),
+    );
+  });
+
+  it("koşul kaydı yanıtı uçuşta düzenlenen koşul alanlarını ezmez", async () => {
+    const pending = deferredWithReject<PrecedentUsageTerms>();
+    mocks.precedentTermsSet.mockReturnValue(pending.promise);
+    setup();
+    await selectPrecedent(PREC.title!);
+    await waitFor(() => expect(mocks.precedentTermsGet).toHaveBeenCalledWith("p1"));
+
+    fireEvent.change(byId<HTMLInputElement>("t-url"), {
+      target: { value: "https://a.test/kosul" },
+    });
+    fireEvent.change(byId<HTMLTextAreaElement>("t-note"), { target: { value: "A dayanağı" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.termsSave") }));
+
+    // Uçuşta kullanıcı bağlantıyı ve dağıtım seçimini değiştirir.
+    fireEvent.change(byId<HTMLInputElement>("t-url"), {
+      target: { value: "https://b.test/yeni" },
+    });
+    fireEvent.change(byId<HTMLSelectElement>("t-redistribution"), {
+      target: { value: "not_allowed" },
+    });
+
+    await act(async () => {
+      pending.resolve(TERMS_A);
+      await pending.promise;
+    });
+
+    await waitFor(() =>
+      expect(byId<HTMLInputElement>("t-url").value).toBe("https://b.test/yeni"),
+    );
+    expect(byId<HTMLSelectElement>("t-redistribution").value).toBe("not_allowed");
+    expect(byId<HTMLTextAreaElement>("t-note").value).toBe("A dayanağı");
+  });
+
+  it("atıf kontrolü hatası sürüm değiştikten sonra yeni sürüme yazılmaz", async () => {
+    const pending = deferredWithReject<CitationCheckRow>();
+    mocks.citationCheckCreate.mockReturnValue(pending.promise);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c2" ? [DOC2] : [DOC]),
+    });
+    await waitFor(() => expect(byId<HTMLSelectElement>("c-doc").value).toBe("v1"));
+
+    fireEvent.change(byId<HTMLInputElement>("c-text"), {
+      target: { value: "Yargıtay 1. HD 2024/123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.checkSave") }));
+
+    // Uçuşta dosya değişir: yeni dosyanın sürümü seçilir.
+    fireEvent.change(byId<HTMLSelectElement>("c-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(byId<HTMLSelectElement>("c-doc").value).toBe("v2"));
+
+    await act(async () => {
+      pending.reject({ code: "E_DB", message: "eski sürümün hatası", retryable: false });
+      await pending.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_DB")).toBeNull();
+    expect(screen.queryByText("eski sürümün hatası")).toBeNull();
+  });
+
+  it("anlam hükmü hatası dosya değiştikten sonra yeni dosyaya yazılmaz", async () => {
+    const pending = deferredWithReject<CitationCheckRow>();
+    mocks.citationMeaningReview.mockReturnValue(pending.promise);
+    setup({
+      cases: [CASE, CASE2],
+      checks: async (versionId) => (versionId === "v1" ? [CHECK] : []),
+      documents: async (caseId) => (caseId === "c2" ? [DOC2] : [DOC]),
+    });
+    expect(await screen.findByText(CHECK.extractedCitation)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaning") }));
+    expect(await screen.findByText(CONTEXT.quote)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaningAccurate") }));
+
+    // Uçuşta dosya değişir; eski sürümün kontrol listesi ekrandan kalkar.
+    fireEvent.change(byId<HTMLSelectElement>("c-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(byId<HTMLSelectElement>("c-doc").value).toBe("v2"));
+
+    await act(async () => {
+      pending.reject({ code: "E_DB", message: "eski hükmün hatası", retryable: false });
+      await pending.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_DB")).toBeNull();
+    expect(screen.queryByText("eski hükmün hatası")).toBeNull();
+  });
+
+  it("uçuştaki künye kopyasının başarısı yeni emsalin etiketine yazılmaz", async () => {
+    const pending = deferredWithReject<void>();
+    const writeText = vi.fn().mockReturnValue(pending.promise);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setup({
+      precedents: [PREC, PREC2],
+      bibliography: async (precedentId) => (precedentId === "p2" ? BIB2 : BIB),
+    });
+
+    await selectPrecedent(PREC.title!);
+    expect(await screen.findByText(BIB.text)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.bibCopy") }));
+
+    // Kopya uçuşta iken başka emsal seçilir.
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    expect(await screen.findByText(BIB2.text)).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve();
+      await pending.promise;
+    });
+
+    expect(screen.queryByRole("button", { name: t("precedents.bibCopied") })).toBeNull();
+    expect(screen.getByRole("button", { name: t("precedents.bibCopy") })).toBeTruthy();
+  });
+
+  it("uçuştaki künye kopyasının hatası yeni emsale yazılmaz", async () => {
+    const pending = deferredWithReject<void>();
+    const writeText = vi.fn().mockReturnValue(pending.promise);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setup({
+      precedents: [PREC, PREC2],
+      bibliography: async (precedentId) => (precedentId === "p2" ? BIB2 : BIB),
+    });
+
+    await selectPrecedent(PREC.title!);
+    expect(await screen.findByText(BIB.text)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.bibCopy") }));
+
+    // Kopya uçuşta iken başka emsal seçilir.
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    expect(await screen.findByText(BIB2.text)).toBeTruthy();
+
+    await act(async () => {
+      pending.reject(new Error("pano kapalı"));
+      await pending.promise.catch(() => undefined);
+    });
+
+    // Eski künyenin panosu düştü: yeni künyede hata bildirimi görünmez.
+    expect(screen.queryByText("E_CLIPBOARD")).toBeNull();
+    expect(screen.getByRole("button", { name: t("precedents.bibCopy") })).toBeTruthy();
+  });
+
+  it("düşen künye kopyası önceki yeşil etiketi ekranda bırakmaz", async () => {
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("pano kapalı"));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setup();
+    await selectPrecedent(PREC.title!);
+    expect(await screen.findByText(BIB.text)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.bibCopy") }));
+    const copied = await screen.findByRole("button", { name: t("precedents.bibCopied") });
+
+    fireEvent.click(copied);
+    expect(await screen.findByText("E_CLIPBOARD")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: t("precedents.bibCopied") })).toBeNull();
+  });
+
+  it("künye tazelenince önceki kopyanın etiketi kalkar", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    setup({
+      precedentVersions: async () => [PV_TEXT],
+      bibliography: async () => ({ ...BIB }),
+    });
+    await selectPrecedent(PREC.title!);
+    expect(await screen.findByText(BIB.text)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.bibCopy") }));
+    expect(await screen.findByRole("button", { name: t("precedents.bibCopied") })).toBeTruthy();
+
+    fireEvent.change(byId<HTMLTextAreaElement>("p-fulltext"), {
+      target: { value: "yeni tam metin" },
+    });
+    mocks.precedentTextAdd.mockResolvedValue(PV_TEXT);
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.fullTextSave") }));
+
+    await waitFor(() => expect(mocks.precedentBibliography.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: t("precedents.bibCopied") })).toBeNull(),
+    );
+  });
+});
