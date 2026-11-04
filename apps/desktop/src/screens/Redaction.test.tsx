@@ -186,7 +186,10 @@ function preview(dpi = 144, pngBase64 = "iVBORw0KGgo=") {
 let progressHandlers: Array<(event: { payload: ParseProgressEvent }) => void> = [];
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // `resetAllMocks`: `clearAllMocks` bir kezlik (`mockReturnValueOnce`)
+  // kuyruğunu bırakır; düşen bir testin artığı sonraki testin yanıtını
+  // sahte biçimde belirler. Tüm uygulamalar bu blokta yeniden kuruluyor.
+  vi.resetAllMocks();
   progressHandlers = [];
   events.listen.mockImplementation(
     async (_name: string, handler: (event: { payload: ParseProgressEvent }) => void) => {
@@ -670,5 +673,191 @@ describe("Maskeleme ekranı", () => {
     await renderScreen();
     expect(termsArea().placeholder).toBe(t("redaction.termsPlaceholder"));
     expect(termsArea().placeholder).toContain("Ahmet Yılmaz");
+  });
+});
+
+/* ------------------------------------------------- hedef değişimi / uçuş yolu */
+//
+// Bu blok, bir önceki bloğun kapsamadığı **uçuş** davranışını ölçer: sayfa
+// önizlemesi askıdayken hedef (dosya/belge) değişimi, maskeleme uçuşunda
+// çizilen yeni bölge ve yarım kalan sürükleme. Kusurlar düzeltme öncesi
+// bileşende ölçüldü (F13 README tur kaydı).
+
+describe("Maskeleme ekranı uçuş yolları", () => {
+  function openRegions() {
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.modeRegions") }));
+  }
+
+  function loadButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: t("redaction.loadPage") }) as HTMLButtonElement;
+  }
+
+  function loadingButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: t("redaction.loadingPage") }) as HTMLButtonElement;
+  }
+
+  function clearButton(count: number): HTMLButtonElement {
+    return screen.getByRole("button", {
+      name: t("redaction.clearRegions", { count }),
+    }) as HTMLButtonElement;
+  }
+
+  function dashedBox(box: HTMLElement): HTMLElement | undefined {
+    return Array.from(box.querySelectorAll("span")).find((el) =>
+      (el as HTMLElement).style.border.includes("dashed"),
+    ) as HTMLElement | undefined;
+  }
+
+  it("sayfa getirilirken belge değişince yeni belgenin sayfa düğmesi kilitli kalmaz", async () => {
+    const pending = deferred<ReturnType<typeof preview>>();
+    mocks.documentPagePreview.mockReturnValueOnce(pending.promise);
+
+    await renderScreen();
+    openRegions();
+    fireEvent.click(loadButton());
+    expect(loadingButton().disabled).toBe(true);
+
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+
+    // Kilit devredilir: yeni belgenin kendi sayfası istenebilir.
+    expect(loadButton().disabled).toBe(false);
+
+    // Eski yanıt yeni belgeye önizleme yazmaz.
+    await act(async () => {
+      pending.resolve(preview());
+      await pending.promise;
+    });
+    expect(screen.queryByAltText(t("redaction.previewAlt", { page: 1 }))).toBeNull();
+    expect(screen.getByText(t("redaction.previewHint"))).toBeTruthy();
+  });
+
+  it("sayfa getirilirken dosya değişince yeni dosyanın sayfa düğmesi kilitli kalmaz", async () => {
+    const pending = deferred<ReturnType<typeof preview>>();
+    mocks.documentPagePreview.mockReturnValueOnce(pending.promise);
+
+    await renderScreen();
+    openRegions();
+    fireEvent.click(loadButton());
+    expect(loadingButton().disabled).toBe(true);
+
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await waitFor(() => expect(docSelect().value).toBe("v9"));
+
+    expect(loadButton().disabled).toBe(false);
+
+    await act(async () => {
+      pending.resolve(preview());
+      await pending.promise;
+    });
+    expect(screen.queryByAltText(t("redaction.previewAlt", { page: 1 }))).toBeNull();
+  });
+
+  it("geç gelen sayfa yanıtı yeni isteğin kilidini erken açmaz", async () => {
+    const first = deferred<ReturnType<typeof preview>>();
+    const second = deferred<ReturnType<typeof preview>>();
+    mocks.documentPagePreview
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    await renderScreen();
+    openRegions();
+    fireEvent.click(loadButton()); // v1 sayfası
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+    fireEvent.click(loadButton()); // v2 sayfası
+
+    expect(mocks.documentPagePreview).toHaveBeenLastCalledWith("v2", 0);
+
+    // İlk istek geç döner: ikinci istek hâlâ uçuşta, kilit açılmamalı.
+    await act(async () => {
+      first.resolve(preview());
+      await first.promise;
+    });
+    expect(loadingButton().disabled).toBe(true);
+    expect(screen.queryByAltText(t("redaction.previewAlt", { page: 1 }))).toBeNull();
+
+    await act(async () => {
+      second.resolve(preview());
+      await second.promise;
+    });
+    await screen.findByAltText(t("redaction.previewAlt", { page: 1 }));
+    expect(loadButton().disabled).toBe(false);
+  });
+
+  it("devredilen sayfa isteğinin hatası yeni belgede görünmez", async () => {
+    const pending = deferred<ReturnType<typeof preview>>();
+    mocks.documentPagePreview.mockReturnValueOnce(pending.promise);
+
+    await renderScreen();
+    openRegions();
+    fireEvent.click(loadButton());
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+
+    await act(async () => {
+      pending.reject(apiError("E_PDF", "Sayfa okunamadı."));
+      await pending.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(loadButton().disabled).toBe(false);
+  });
+
+  it("maskeleme sürerken çizilen bölge başarı yanıtıyla silinmez", async () => {
+    const pending = deferred<RedactionResult>();
+    mocks.documentRedactRegions.mockReturnValueOnce(pending.promise);
+
+    await renderScreen();
+    const { box } = await loadPreview(0);
+    drag(box, [10, 10], [110, 110]);
+    fireEvent.click(regionsRunButton(1));
+
+    // Uçuşta ikinci bölge çizilir; gönderim yükü ilk bölgedir.
+    drag(box, [200, 200], [300, 300]);
+    expect(clearButton(2)).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve(redactionResult());
+      await pending.promise;
+    });
+
+    expect(mocks.documentRedactRegions).toHaveBeenCalledWith("v1", [
+      { pageIndex: 0, rect: [5, 5, 55, 55] },
+    ]);
+    // Yalnız **gönderilen** bölge temizlenir; uçuşta çizilen kalır.
+    expect(clearButton(1)).toBeTruthy();
+    expect(box.querySelectorAll("span")).toHaveLength(1);
+  });
+
+  it("maskeleme sürerken seçim planı kilitlidir", async () => {
+    const pending = deferred<RedactionResult>();
+    mocks.documentRedactRegions.mockReturnValueOnce(pending.promise);
+
+    await renderScreen();
+    const { box } = await loadPreview(0);
+    drag(box, [10, 10], [110, 110]);
+    expect(clearButton(1).disabled).toBe(false);
+
+    fireEvent.click(regionsRunButton(1));
+    expect(clearButton(1).disabled).toBe(true);
+
+    await act(async () => {
+      pending.resolve(redactionResult());
+      await pending.promise;
+    });
+  });
+
+  it("dosya değişince yarım kalan sürükleme yeni önizlemeye taşınmaz", async () => {
+    await renderScreen();
+    const { box } = await loadPreview(0);
+    fireEvent(box, new MouseEvent("pointerdown", { bubbles: true, clientX: 10, clientY: 10 }));
+    expect(dashedBox(box)).toBeTruthy();
+
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+    const { box: next } = await loadPreview(0);
+
+    expect(dashedBox(next)).toBeUndefined();
+    fireEvent(next, new MouseEvent("pointerup", { bubbles: true, clientX: 60, clientY: 60 }));
+    expect(
+      screen.queryByRole("button", { name: t("redaction.runRegions", { count: 1 }) }),
+    ).toBeNull();
   });
 });

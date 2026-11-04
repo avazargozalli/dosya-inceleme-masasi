@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
@@ -39,6 +39,25 @@ export function Redaction() {
   const genRef = useRef(0);
   const pageSeq = useRef(0);
 
+  // Hedef (dosya/belge) değişimi tek yerden geçer: uçuştaki yanıtlar
+  // geçersizleşir, sayfa kilidi **devredilir** (yeni hedef kendi sayfasını
+  // isteyebilir) ve yarım kalan sürükleme yeni önizlemeye taşınmaz.
+  const resetTargetState = useCallback(() => {
+    // Nesil artışı bütün uçuştaki yanıtları geçersiz kılar. `pageSeq` burada
+    // artırılmaz: sayfa isteğinin sırası `loadPage` içinde kendi `++`'ıyla
+    // ilerler, hedef değişiminde kapı zaten `gen`dir (ölçüldü: bu satır
+    // tek başına hiçbir testi düşürmüyordu → yedekli kapı bırakılmadı).
+    genRef.current += 1;
+    setResult(null);
+    setRegions([]);
+    setPreview(null);
+    setPage(0);
+    setProgress(null);
+    setError(null);
+    setPageBusy(false);
+    setDrag(null);
+  }, []);
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
@@ -76,17 +95,10 @@ export function Redaction() {
     // INV-05: yeni dosyanın isteği askıdayken **önceki dosyanın** belgeleri,
     // sürümü, sonucu, önizlemesi ve bölgeleri ekranda kalmasın. Temizlik
     // istekten önce koşar; `gen` geç gelen yanıtı geçersiz kılar.
-    genRef.current += 1;
-    pageSeq.current += 1;
+    resetTargetState();
     const gen = genRef.current;
     setDocs([]);
     setVersionId("");
-    setResult(null);
-    setRegions([]);
-    setPreview(null);
-    setPage(0);
-    setProgress(null);
-    setError(null);
     void api
       .documentList(caseId)
       .then((list) => {
@@ -100,7 +112,7 @@ export function Redaction() {
         setVersionId("");
         setError(toApiError(e));
       });
-  }, [caseId]);
+  }, [caseId, resetTargetState]);
 
   async function loadPage() {
     if (!versionId) return;
@@ -121,7 +133,9 @@ export function Redaction() {
       if (gen !== genRef.current || seq !== pageSeq.current) return;
       setError(toApiError(e));
     } finally {
-      setPageBusy(false);
+      // Kilit yalnız **kendi** isteğine aittir: hedef değişip yeni bir sayfa
+      // isteği başladıysa geç yanıt onun kilidini erken açmaz.
+      if (seq === pageSeq.current) setPageBusy(false);
     }
   }
 
@@ -132,6 +146,7 @@ export function Redaction() {
     }
     const gen = genRef.current;
     const version = versionId;
+    const submitted = regions;
     setBusy(true);
     setError(null);
     setResult(null);
@@ -141,7 +156,9 @@ export function Redaction() {
       const result = await api.documentRedactRegions(version, regions);
       if (gen !== genRef.current) return;
       setResult(result);
-      setRegions([]);
+      // Yalnız **gönderilen** bölgeler düşer: maskeleme sürerken çizilen yeni
+      // bölge sessizce silinmez (gönderim yükü tıklama anındaki listedir).
+      setRegions((prev) => prev.filter((region) => !submitted.includes(region)));
     } catch (e) {
       if (gen !== genRef.current) return;
       setError(toApiError(e));
@@ -265,16 +282,9 @@ export function Redaction() {
               onChange={(e) => {
                 // §13.5: maskeleme planı özgün sürüme bağlıdır; farklı sürüme
                 // kendiliğinden uygulanmaz. Seçim değişince eski bölgeler/
-                // önizleme/sonuç taşınmaz.
-                genRef.current += 1;
-                pageSeq.current += 1;
+                // önizleme/sonuç taşınmaz; uçuştaki sayfa isteği devredilir.
+                resetTargetState();
                 setVersionId(e.target.value);
-                setResult(null);
-                setRegions([]);
-                setPreview(null);
-                setPage(0);
-                setProgress(null);
-                setError(null);
               }}>
               <option value="">{t("common.select")}</option>
               {docs.filter((d) => d.currentVersionId).map((d) => (
@@ -315,7 +325,7 @@ export function Redaction() {
               </button>
               <button
                 className="btn ghost"
-                disabled={regions.length === 0}
+                disabled={busy || regions.length === 0}
                 onClick={() => setRegions([])}
               >
                 {t("redaction.clearRegions", { count: regions.length })}
