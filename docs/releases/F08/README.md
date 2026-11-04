@@ -86,3 +86,72 @@ QA yok; `api` mock'lu olduğu için `claim_create`, `evidence_link_create`,
 `busy` tek bayrak: aynı anda iki yazma başlarsa ilk biten kilidi erken açar
 (ölçülmedi). Kapsam dışı: `claimRelationCreate` için ayrı test, klavye, Windows.
 
+
+## Kronoloji ekranı — uçuş yolları (ek)
+
+`screens/Timeline.tsx` (549 satır, 10 api çağrısı) ekranının 15 testi kararları ve
+INV-05'in **dosya değişimi** yüzünü ölçüyordu; istek **uçuştayken** dosya/olay
+değişimini ve çift tıklamayı ölçen test yoktu. **15 yeni test** (15 → 30).
+
+Ölçülen ve düzeltilen kusurlar (düzeltme öncesi ham koşu: **15 failed | 15 passed**;
+on beşi de gerçek kusur, mevcut 15 test yeşil):
+
+1. **`load` kapısı yok — çapraz dosya yazımı (INV-05):** `eventList` yanıtı koşulsuz
+   yazılıyordu; p1 yüklenirken p2'ye geçilince p1'in **geç** yanıtı p2'nin listesini
+   eziyordu (tarihsiz bölüm tarihliye dönüyordu).
+2. **Geç hata:** aynı kapı hata yolunda da yoktu → okunamayan eski dosyanın `E_IO`'su
+   yeni dosyanın altında görünüyordu.
+3. **Yazma sonrası tazeleme:** `add`/`saveEdit`/`confirm`/`remove` tazelemesi **tıklama
+   anındaki** dosya kimliğiyle koşuyordu → uçuşta dosya değişince eski dosyanın listesi
+   yeni dosyaya yazılıyordu (ayrıca boşuna çekirdek okuması yapılıyordu).
+4. **Kaynak paneli yanıtı:** `openLink` sıra/kimlik taşımıyordu → e1'in geç yanıtı
+   sonradan açılan e2 panelinde çiziliyor, "Bağla" e1'in çapasıyla açılıyordu; aynı
+   panel kapatılıp yeniden açıldığında eski isteğin yanıtı yenisini eziyordu.
+5. **Kaynak paneli hatası:** geç `E_ANCHOR`, hiç istek yapılmamış panelde görünüyordu.
+6. **Bağlama/kaldırma tazelemesi:** `eventLinkSource`/`eventUnlinkSource` sonrası
+   `eventSources` tazelemesi panel değiştiyse **yeni olayın** bağlantı listesini
+   yazıyordu (e2 paneli boşalıyor; kaldırmada eski olayın bağı yeni panelde beliriyordu).
+7. **Bağlama hatası:** geç hata yeni panelde görünüyordu.
+8. **Çift tık (dört yol):** onay, sil, bağla ve kaldır düğmelerinde uçuş kilidi yoktu →
+   iki tık iki çekirdek yazımı gönderiyordu (ikinci istek yinelenen bağ/`E_NOT_FOUND`
+   üretip başarılı sonucun üstüne kırmızı yazabiliyordu).
+9. **Yazma uçuşunda form:** besteci ve düzenleyici alanları açıktı, yanıt taslağı
+   koşulsuz temizliyordu → uçuşta yazılan metin sessizce siliniyordu.
+10. **Kaydetme yanıtı:** `setEditing(null)` koşulsuzdu → uçuşta **başka** satırın
+    düzenleyicisi açılırsa yanıt onu kapatıyordu.
+
+Düzeltme (`Timeline.tsx` +65/−27): `caseRef` (dosya kimliği) ve `load` içinde iki kapı
+(istek öncesi kimlik, yanıt sonrası kimlik — liste **ve** hata yolu); kaynak paneli için
+tek `linkSeq` nesil sayacı (her açılışta artar; `openLink` başarı/hata ile `attach`/
+`detach` tazeleme ve hata yolları yalnız kendi neslinde yazar); `confirm`/`remove`/
+`attach`/`detach` tek `busy` yazma kilidine alındı (düğmeler `disabled`); besteci ve
+düzenleyici alanları yazma uçuşunda kilitli; `saveEdit` yalnız **kendi** kaydının
+düzenleyicisini kapatır.
+
+Kapı kanıtı: **17/17 tek-kapı mutasyonu** en az bir testi düşürdü (M4 nesil artışı 6,
+M5 yanıt kapısı 2, diğerleri 1). Geri yükleme sha256
+`5082303c9efd32ce8c6337ef4099d2830ec6cd6889c7cb57fff506dd7c0e5a4c` birebir.
+**Dürüst:** ilk tasarımda kaynak paneli kapısı **panel kimliği** (`linkForRef`)
+üzerindeydi; aynı panel yeniden açıldığında eski yanıt yenisini ezebildiği için kimlik
+yetmiyordu → nesil sayacına geçildi. İlk mutasyon betiği vitest çıktısını yanlış
+ayrıştırdı (0 kırmızı raporladı) ve `detach` blok sınırını bulamadı; betik düzeltilip
+17/17 **tek başına** yeniden ölçüldü.
+
+Ölçüm: `tsc --noEmit` temiz · `vitest` **997/997** (60 dosya; 982 → **+15**) ·
+`pnpm build` temiz (**581,77 kB**, `index-eLVoT5UJ.js`, gzip **156,84 kB**).
+Rust değişmedi; rustfmt iki manifestte `--check` temiz.
+
+**Kimlik:** şartnamedeki **F08-T04** (çok kaynaklı manuel olay oluşturma, düzenleme ve
+kaynak açma akışı). README tablosundaki numaralandırma şartnameden kayıktır; bu turda
+şartname numarası kullanıldı.
+
+**Dürüst sınırlar:** jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek işaretçi
+çift tıklaması ve **görsel QA yok**; `api` mock'lu olduğu için `event_list`,
+`event_link_source`, `event_unlink_source` SQL'i ve Rust **koşmaz**. `busy` tek bayrak:
+yazma uçuşunda besteci/düzenleyici alanları kilitlenir (sessiz kayıp yerine kısa
+bekleme), bu sırada **dosya seçici açık kalır** (kapılar ölçüldü). Panel nesli yalnız
+**açılışta** artar; paneli kapatmak tek başına eski yanıtı geçersiz kılmaz (kapalı panel
+çizilmediği için görünür etkisi yok; yeniden açılışta liste zaten temizlenir) — açık
+kayıt. Bağlama/kaldırma başarılı olup tazeleme düşerse arayüz kırmızı hata yazar ve
+liste eski kalır (yazma gerçekleşmiş olabilir; dürüst, yeniden denenebilir). Kapsam
+dışı: klavye, Windows.
