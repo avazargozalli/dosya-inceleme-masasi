@@ -23,7 +23,7 @@
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
 | F10-T12 | ✅ | başlangıç saldırıları: hook / MCP / proje talimatı / kapsam dışı canary vektörleri geçici fikstürde; **dedektör kanıtı** (kirli 4/4, temiz 0/4), kirli proje dizini iş dizini olarak **reddedilir**, kurulu CLI'larda sertleştirme bayrakları + `--help` ile gerçek koşu (işaret 0); arayüzde “Saldırıları sına” |
 | F10-T13 | ✅ | kalıntı envanteri (sürüm bazlı bildirilen yollar) + önce/sonra ölçüm + **yalnız uygulamaya ait** dosya temizliği + çökme kum havuzu süpürme; arayüzde “Kalıntı denetimi” kartı |
-| F10-T14 | ✅ | süre sınırı, iptal, alt süreç öldürme, kısmi çıktı — **arayüz düğmesinden uçtan uca** |
+| F10-T14 | ✅ | süre sınırı, iptal, alt süreç öldürme, kısmi çıktı — **arayüz düğmesinden uçtan uca**; ek tur: başlatma `ETXTBSY` yarışı — yalnız **meşgulken** yeniden dene (kontrol kanıtı dâhil, Linux'ta üretilir) |
 
 ## Arayüz bağlantısı — “Bağlantıyı sına” (2026-10-24)
 
@@ -567,9 +567,68 @@ Codex'te `--sandbox read-only` araçları kısıtlar ama kapatmaz; bu yüzden
 - **Çıktı**: stdout/stderr baş kısmı en çok **64 KiB**; kesildiği
   `stdoutTruncated`/`stderrTruncated` ile işaretlenir. Okuyucu boru kapanmazsa
   en çok 2 sn beklenir ve çıktı **tam sayılmaz**.
-- **Başlatma**: yeni yazılmış dosyayı hemen çalıştırmak Linux'ta `ETXTBSY`
-  verebildiği için spawn 6 kez (50 ms arayla) denenir; son hata metni
-  `E_CLI_EXEC_SPAWN` ile raporlanır.
+- **Başlatma**: yeni yazılmış dosyayı hemen çalıştırmak `ETXTBSY` ("text file
+  busy") verebildiği için spawn yalnız **bu** hatada 6 kez (50 ms arayla)
+  denenir; kalıcı hatalar (`NotFound`, `PermissionDenied`) ilk denemede döner,
+  son hata metni `E_CLI_EXEC_SPAWN` ile raporlanır (aşağıdaki "Başlatma
+  yarışı" bölümü).
+
+## Başlatma yarışı — yalnız `ETXTBSY` yeniden denenir (F10-T14 ek turu, 2026-11-04)
+
+**Neden bu dilim:** `41764725430` (yalnız belge değiştiren commit) `rust
+(ubuntu-latest)` işinde `tool_free_proof::
+control_run_without_hardening_shows_the_probe_is_not_blind` ile kırmızıya
+düştü: `Os { code: 26, kind: ExecutableFileBusy, "Text file busy" }`. Ürün yolu
+(`run_cli` → `spawn_with_retry`) bu hatayı yeniden deniyordu; **kontrol koşusu**
+ham `Command::new` kullanıyordu ve hiç yeniden denemiyordu. Sonuç: kod
+değişmemiş olsa da CI, yeni yazılmış betiğin yürütülmesine bağlı olarak
+rastgele kırmızıya düşebiliyordu.
+
+**Ölçülen kusur (ürün):** `spawn_with_retry` **her** spawn hatasını 6 kez (50 ms
+arayla) deniyordu → kalıcı hatalar (`NotFound`, `PermissionDenied`, biçim
+bozuk) sonucu değiştirmeyen **250 ms** bekleme ve 6 sistem çağrısıyla dönüyordu.
+
+**Düzeltme (`exec.rs` +`lib.rs` dışa aktarım, `tool_free_proof.rs`):**
+- `retry_while_busy` (yeni): `attempt` yalnız `ErrorKind::ExecutableFileBusy`
+  hatasında yeniden denenir; **ilk kalıcı hata hemen döner**; son denemede de
+  meşgulse **son** hata korunur.
+- `spawn_with_retry` artık bu yardımcıyı kullanır; `SPAWN_ATTEMPTS = 6`,
+  `SPAWN_RETRY_DELAY = 50 ms` (en kötü durum 250 ms, süre sınırından düşülür).
+- Kontrol koşusu `control_output()` üzerinden **aynı** politikayı kullanır;
+  ürün zarfını yine atlar (ADR-05: sertleştirmenin etkisini ölçmek için ham
+  çağrı gerekir).
+
+**Testler:**
+- `exec.rs` / `spawn_retry_tests` (3): kalıcı hata **tek** denemede döner;
+  meşgul hata başarıya kadar denenir (3. denemede döner); son denemede durur ve
+  **son** hata metnini korur (deneme sayısı = `SPAWN_ATTEMPTS`).
+- `tool_free_proof.rs` / Linux'a özgü üç test (`cfg(target_os = "linux")`):
+  (1) **üretim gerçek mi** — yazma tanıtıcısı açıkken ham `spawn` gerçekten
+  `ETXTBSY` (errno 26) alır; (2) kontrol yolu tanıtıcı bırakılınca yeniden
+  denemeyle başarır; (3) ürün yolu (`run_cli`) aynı pencereyi aşar.
+  macOS bu hata sınıfını **üretmiyor** (ölçüldü: yazma tanıtıcısı açıkken
+  `exec` başarılı, çıkış 0) — bu yüzden mod macOS'ta derlenmez.
+
+**Kapı kanıtı (yerel, 5 mutasyon / 3 kırmızı):** M1 yalnız-meşgul kapısı
+kaldırıldı (= eski politika) → `a_permanent_error_is_returned_after_a_single_attempt`
+kırmızı; M2 `SPAWN_ATTEMPTS = 1` → meşgul testi kırmızı; M3 son hata yerine ilk
+hata korunur → son-hata testi kırmızı. **Dürüst:** M4 (`spawn_with_retry`
+yardımcıyı atlar) ve M5 (`control_output` yardımcıyı atlar) macOS'ta **yeşil
+kaldı**; kapıları yalnız Linux testleridir, yani bu iki mutasyonun kanıtı bu
+turda **ölçülmedi**. Geri alma sha256: `exec.rs 8194e2f9…93e7ba`,
+`tool_free_proof.rs ed73d8e6…cedbe` (birebir).
+
+**Doğrulama:** `cargo fmt --all --check` temiz · `cargo clippy -p
+dim-cli-adapters --all-targets -- -D warnings` temiz (host **ve**
+`--target x86_64-unknown-linux-gnu`) · `cargo test -p dim-cli-adapters` **117
+birim geçti** + `tool_free_proof` **4 geçti / 1 yoksayıldı** (Linux'a özgü 3
+test macOS'ta derlenmez). `cargo check --target x86_64-unknown-linux-gnu
+--all-targets` temiz → cfg'li kod **derleniyor** (koştuğu yer Linux CI).
+
+**Dürüst sınır:** Linux testlerinin **koşma** kanıtı bu commit'in CI
+`rust (ubuntu-latest)` işidir; yerelde üretilemedi. Yeniden deneme gerçek
+zamanlamayı (çerçeve/çekirdek yarışını) ölçmez, yalnız "meşgulken bekle ve
+tekrar dene" politikasını sabitler.
 
 ## Gerçek CLI ile ölçüm (bu makine, macOS aarch64)
 
