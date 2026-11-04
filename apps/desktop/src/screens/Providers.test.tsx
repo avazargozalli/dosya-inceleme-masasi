@@ -73,6 +73,13 @@
 //     kalıyordu → yeni (kaydedilmemiş) değerin altında yeşil onay görünüyordu.
 // 31. **Ölçülen kusur:** yalnız boşluktan oluşan uç nokta/model "dolu" sayılıp
 //     kaydetmeyi açıyordu; değerler kırpılmadan çekirdeğe gidiyordu.
+// 32. **Ölçülen kusur (bu tur):** çekirdeğin **süreç-geneli** `cli_probe_lock`
+//     kilidi arayüzde tek bayrak değildi: matris sürerken satır yoklaması,
+//     saldırı sürerken matris (ve yoklama), ölçüm sürerken matris/saldırı/yoklama
+//     **açıktı** → ikinci istek `E_CLI_BUSY` alıyor, kartın önceki kanıtı
+//     siliniyor ve kullanıcı bunu sağlayıcı arızası gibi okuyordu.
+// 33. **Ölçülen kusur:** adaptör değişince kalıntı paneli kilidini bırakıyordu
+//     ama çekirdekteki ölçüm sürüyordu → yeni adaptörde "Ölç" `E_CLI_BUSY`.
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1921,5 +1928,186 @@ describe("üst panel: yenileme, iptal ve profil kaydı", () => {
     await waitFor(() =>
       expect(mocks.providerApiProfileSave).toHaveBeenCalledWith("https://ai.test/v1", "model-x"),
     );
+  });
+});
+
+/**
+ * Çekirdeğin **süreç-geneli** CLI kilidi (`cli_probe_lock`). Rust tarafında
+ * `provider_probe_run`, `cli_capability_matrix`, `cli_attack_probe` ve
+ * `cli_residue_measure` aynı slotu paylaşır; ikinci istek `E_CLI_BUSY` alır
+ * (bkz. `commands.rs`). Arayüz bu gerçeği **tek** bayrakla yansıtmalıdır:
+ * kartın kendi `busy` değeri yalnız etiket içindir, kapı değildir.
+ *
+ * Buradaki testler kilidi tutan dört yolun birbirini kapatmasını ölçer. Kapı
+ * yoksa ikinci tık çekirdekten `E_CLI_BUSY` alır, kart `setMatrix(null)` gibi
+ * "bayat kanıtı sil" adımlarını çoktan koşmuş olur ve kullanıcı sağlayıcı
+ * arızası okur.
+ */
+describe("alt kartlar: çekirdeğin tek CLI kilidi", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("matris sürerken satır yoklaması kapalıdır", async () => {
+    const matrix = deferred<CliCapabilityMatrix>();
+    setup({ matrix: () => matrix.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.matrixRun")));
+    // Matris çekirdek kilidini tutuyor: yoklama ikinci istek gönderirse
+    // `E_CLI_BUSY` alır ve satırın önceki kanıtı silinir.
+    expect(button(t("providers.probeRun"), adapterCard("Claude Code")).disabled).toBe(true);
+
+    await act(async () => {
+      matrix.resolve(MATRIX);
+    });
+    expect(button(t("providers.probeRun"), adapterCard("Claude Code")).disabled).toBe(false);
+  });
+
+  it("saldırı sürerken matris düğmesi kapalı; önceki matris raporu korunur", async () => {
+    const attack = deferred<CliAttackReport>();
+    setup({ attack: () => attack.promise });
+    await ready();
+
+    // Önce başarılı bir matris raporu: sonraki tıklama `E_CLI_BUSY` alırsa bu
+    // rapor `setMatrix(null)` ile silinmiş olurdu.
+    fireEvent.click(button(t("providers.matrixRun")));
+    await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" });
+
+    fireEvent.click(button(t("providers.attackRun")));
+    expect(button(t("providers.matrixRun")).disabled).toBe(true);
+    expect(screen.getByRole("heading", { level: 3, name: "Claude Code (matris)" })).toBeTruthy();
+
+    await act(async () => {
+      attack.resolve(ATTACK);
+    });
+    expect(button(t("providers.matrixRun")).disabled).toBe(false);
+  });
+
+  it("saldırı sürerken satır yoklaması kapalıdır", async () => {
+    const attack = deferred<CliAttackReport>();
+    setup({ attack: () => attack.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.attackRun")));
+    expect(button(t("providers.probeRun"), adapterCard("Claude Code")).disabled).toBe(true);
+
+    await act(async () => {
+      attack.resolve(ATTACK);
+    });
+    expect(button(t("providers.probeRun"), adapterCard("Claude Code")).disabled).toBe(false);
+  });
+
+  it("matris sürerken kalıntı ölçümü onay verilse bile kapalıdır", async () => {
+    const matrix = deferred<CliCapabilityMatrix>();
+    setup({ matrix: () => matrix.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    fireEvent.click(button(t("providers.matrixRun")));
+    expect(button(t("providers.measureRun")).disabled).toBe(true);
+
+    await act(async () => {
+      matrix.resolve(MATRIX);
+    });
+    expect(button(t("providers.measureRun")).disabled).toBe(false);
+  });
+
+  it("kalıntı ölçümü sürerken matris ve saldırı düğmeleri kapalıdır", async () => {
+    const measure = deferred<CliResidueMeasure>();
+    setup({ measure: () => measure.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await waitFor(() => expect(mocks.cliResidueMeasure).toHaveBeenCalledTimes(1));
+
+    expect(button(t("providers.matrixRun")).disabled).toBe(true);
+    expect(button(t("providers.attackRun")).disabled).toBe(true);
+
+    await act(async () => {
+      measure.resolve(MEASURE);
+    });
+    expect(button(t("providers.matrixRun")).disabled).toBe(false);
+    expect(button(t("providers.attackRun")).disabled).toBe(false);
+    // Ölçüm bitti: kendi düğmesi de yeniden açılır (yoksa ikinci ölçüm imkânsız).
+    expect(button(t("providers.measureRun")).disabled).toBe(false);
+  });
+
+  it("kalıntı ölçümü sürerken satır yoklaması kapalıdır", async () => {
+    const measure = deferred<CliResidueMeasure>();
+    setup({ measure: () => measure.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await waitFor(() => expect(mocks.cliResidueMeasure).toHaveBeenCalledTimes(1));
+
+    expect(button(t("providers.probeRun"), adapterCard("Claude Code")).disabled).toBe(true);
+
+    await act(async () => {
+      measure.resolve(MEASURE);
+    });
+  });
+
+  it("yoklama sürerken kalıntı ölçümü ve matris kapalıdır", async () => {
+    const run = deferred<CliProbeView>();
+    setup({ probeRun: () => run.promise });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    fireEvent.click(button(t("providers.probeRun"), adapterCard("Claude Code")));
+    // Yoklama da aynı çekirdek kilidini tutar: ölçüm `E_CLI_BUSY` almamalı.
+    expect(button(t("providers.measureRun")).disabled).toBe(true);
+    // Matris kapısı bu turda tek bayrağa taşındı; regresyon koruması.
+    expect(button(t("providers.matrixRun")).disabled).toBe(true);
+
+    await act(async () => {
+      run.resolve(probe());
+    });
+    expect(button(t("providers.measureRun")).disabled).toBe(false);
+    expect(button(t("providers.matrixRun")).disabled).toBe(false);
+  });
+
+  it("adaptör değişince ölçüm kilidi çekirdek işlemi bitmeden açılmaz", async () => {
+    const measure = deferred<CliResidueMeasure>();
+    setup({
+      measure: () => measure.promise,
+      scan: async (adapterId) => (adapterId === "antigravity" ? SCAN_ANTI : SCAN),
+    });
+    await ready();
+
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(persistenceText(SCAN));
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button(t("providers.measureRun")));
+    await waitFor(() => expect(mocks.cliResidueMeasure).toHaveBeenCalledTimes(1));
+
+    // Panel kendi kilidini bırakır (yeni adaptörün taraması eski yanıtı beklemez)
+    // ama çekirdekteki ölçüm hâlâ sürüyor: ikinci ölçüm `E_CLI_BUSY` alırdı.
+    switchAdapter("antigravity");
+    fireEvent.click(button(t("providers.residueScan")));
+    await screen.findByText(SCAN_ANTI.root);
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(button(t("providers.measureRun")).disabled).toBe(true);
+
+    await act(async () => {
+      measure.resolve(MEASURE);
+    });
+    expect(button(t("providers.measureRun")).disabled).toBe(false);
   });
 });

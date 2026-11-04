@@ -148,6 +148,14 @@ export function Providers() {
   const [pkg, setPkg] = useState<WorkerPackageView | null>(null);
   const [pkgBusy, setPkgBusy] = useState(false);
   const [pkgError, setPkgError] = useState<ApiError | null>(null);
+  /**
+   * Çekirdeğin **süreç-geneli** CLI kilidi (`cli_probe_lock`, `commands.rs`)
+   * tek uçuştur: satır yoklaması, yetenek matrisi, saldırı sınaması ve kalıntı
+   * ölçümü aynı slotu paylaşır; ikinci istek `E_CLI_BUSY` alır. Kartın kendi
+   * `busy` değeri yalnız **etiket** içindir — kapı bu tek bayraktır. Bayrak
+   * adaptör değişiminde bırakılmaz: çekirdekteki işlem hâlâ sürüyordur.
+   */
+  const [coreBusy, setCoreBusy] = useState(false);
 
   async function refresh() {
     setBusy(true);
@@ -174,6 +182,9 @@ export function Providers() {
   }, []);
 
   async function runProbe(adapterId: string) {
+    // Çekirdek kilidi bu istekle tutulur; yanıt dönene kadar diğer CLI
+    // komutları kapalıdır (ikisi de aynı `cli_probe_lock` slotunu ister).
+    setCoreBusy(true);
     setRunning(adapterId);
     setCancelHint(null);
     // Önceki koşunun sonucu ve hatası bu satıra ait değildir: yeni koşu
@@ -196,6 +207,7 @@ export function Providers() {
       const failure = toApiError(e);
       setRunErrors((prev) => ({ ...prev, [adapterId]: failure }));
     } finally {
+      setCoreBusy(false);
       setRunning(null);
     }
   }
@@ -219,6 +231,7 @@ export function Providers() {
   }
 
   async function runMatrix() {
+    setCoreBusy(true);
     setMatrixBusy(true);
     setMatrixError(null);
     // Bayat rapor: yeni koşu düşerse önceki matris "güncel" gibi okunmamalı.
@@ -228,11 +241,13 @@ export function Providers() {
     } catch (e) {
       setMatrixError(toApiError(e));
     } finally {
+      setCoreBusy(false);
       setMatrixBusy(false);
     }
   }
 
   async function runAttack() {
+    setCoreBusy(true);
     setAttackBusy(true);
     setAttackError(null);
     // Bayat sınama raporu yeni hatayla birlikte görünmez.
@@ -242,6 +257,7 @@ export function Providers() {
     } catch (e) {
       setAttackError(toApiError(e));
     } finally {
+      setCoreBusy(false);
       setAttackBusy(false);
     }
   }
@@ -370,7 +386,7 @@ export function Providers() {
           </div>
           <button
             className="btn"
-            disabled={matrixBusy || running !== null}
+            disabled={coreBusy}
             onClick={() => void runMatrix()}
           >
             {matrixBusy ? t("providers.matrixBusy") : t("providers.matrixRun")}
@@ -645,7 +661,7 @@ export function Providers() {
           </div>
           <button
             className="btn"
-            disabled={attackBusy || running !== null || matrixBusy}
+            disabled={coreBusy}
             onClick={() => void runAttack()}
           >
             {attackBusy ? t("providers.attackBusy") : t("providers.attackRun")}
@@ -955,7 +971,7 @@ export function Providers() {
                 >
                   <button
                     className="btn"
-                    disabled={!probeCanRun(row, running)}
+                    disabled={!probeCanRun(row, running) || coreBusy}
                     onClick={() => void runProbe(row.id)}
                   >
                     {running === row.id ? t("providers.probing") : t("providers.probeRun")}
@@ -1048,7 +1064,7 @@ export function Providers() {
         ) : null}
       </div>
 
-      <ResiduePanel rows={rows} />
+      <ResiduePanel rows={rows} coreBusy={coreBusy} onCoreBusy={setCoreBusy} />
 
       <div className="card">
         <div className="card-head">
@@ -1080,7 +1096,17 @@ const RESIDUE_TD: CSSProperties = { padding: "2px 8px 2px 0", verticalAlign: "to
  * temizliği. Tarama yalnız bildirilen yolları üst veriyle okur; dosya içeriği
  * açılmaz. Ölçüm gerçek ev dizininde çalışır ve açık onay ister.
  */
-function ResiduePanel({ rows }: { rows: AdapterView[] }) {
+function ResiduePanel({
+  rows,
+  coreBusy,
+  onCoreBusy,
+}: {
+  rows: AdapterView[];
+  /** Çekirdeğin süreç-geneli CLI kilidi başka bir kartta tutuluyor mu. */
+  coreBusy: boolean;
+  /** Ölçüm çekirdek kilidini tutarken üst panele bildirilir. */
+  onCoreBusy: (busy: boolean) => void;
+}) {
   const [adapterId, setAdapterId] = useState("claude-code");
   const [scan, setScan] = useState<CliResidueScan | null>(null);
   const [measure, setMeasure] = useState<CliResidueMeasure | null>(null);
@@ -1112,6 +1138,10 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
   }
 
   async function runMeasure() {
+    // Ölçüm çekirdekteki `cli_probe_lock` slotunu tutar: yanıt dönene kadar
+    // yoklama/matris/sınama kapalı, kendi adaptörü değişse bile yeni ölçüm
+    // kapalıdır (bitmemiş işlem ikinci isteğe `E_CLI_BUSY` verirdi).
+    onCoreBusy(true);
     const seq = ++contextSeq.current;
     setBusy("measure");
     setFailure(null);
@@ -1129,6 +1159,9 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
       if (seq === contextSeq.current) setFailure(toApiError(e));
     } finally {
       if (seq === contextSeq.current) setBusy(null);
+      // Çekirdek işlemi bitti: adaptör değişmiş olsa da kilit **burada** açılır
+      // (bayrak adaptör değişiminde bırakılmaz, yoksa ikinci istek `E_CLI_BUSY`).
+      onCoreBusy(false);
     }
   }
 
@@ -1302,7 +1335,7 @@ function ResiduePanel({ rows }: { rows: AdapterView[] }) {
             <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", marginTop: "var(--space-2)", flexWrap: "wrap" }}>
               <button
                 className="btn"
-                disabled={!confirmHome || !runnable || busy !== null}
+                disabled={!confirmHome || !runnable || busy !== null || coreBusy}
                 onClick={() => void runMeasure()}
               >
                 {busy === "measure" ? t("providers.measureBusy") : t("providers.measureRun")}
