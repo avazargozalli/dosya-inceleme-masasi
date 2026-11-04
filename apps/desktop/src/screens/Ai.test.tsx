@@ -477,7 +477,10 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
 
     await waitFor(() => expect(caseSelect().value).toBe("p1"));
     expect(mocks.caseList).toHaveBeenCalledWith(false);
-    expect(mocks.aiOverview).toHaveBeenCalledWith("p1");
+    // Künye okuması bir **effect**te başlar: seçicinin değeri render olduğu an
+    // hazır olabilir, istek henüz gitmemiş olabilir (CI'da yüklü koşucuda
+    // yarışıyordu). Çağrı da beklenir — çağrı hiç yapılmazsa test yine düşer.
+    await waitFor(() => expect(mocks.aiOverview).toHaveBeenCalledWith("p1"));
     expect(caseSelect().options).toHaveLength(2);
 
     const providerRow = OVERVIEW_A.providers[0]!;
