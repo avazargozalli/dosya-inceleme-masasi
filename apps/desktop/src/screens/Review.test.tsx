@@ -1066,3 +1066,280 @@ describe("inceleme yazma yolları ve kapsam kapıları", () => {
     expect(byId<HTMLInputElement>("rv-dtext").value).toBe("Düzeltilmiş aday");
   });
 });
+
+/**
+ * Uçuş kilidi (tek `busy` bayrağı) ve geç yanıt kapıları. Testler yanıt
+ * **sırasını** elle çözülen sözlerle denetler; gerçek gecikmeyi değil.
+ */
+describe("inceleme uçuş kilidi ve geç yanıt kapıları", () => {
+  beforeEach(() => {
+    // Bir kezlik (`mockReturnValueOnce`) kuyruğu önceki bloktan taşınmasın.
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function addButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: t("review.addAction") }) as HTMLButtonElement;
+  }
+
+  function switchToC2() {
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+  }
+
+  /** İki dosya: c1 tam, c2 boş liste (okumaları başarılı). */
+  function setupTwoCases() {
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: ITEMS, anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [ITEM_C2], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+  }
+
+  function fillClaimForm() {
+    fireEvent.change(byId<HTMLInputElement>("rv-claim"), { target: { value: "Yeni iddia" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-kind"), { target: { value: "allegation" } });
+  }
+
+  it("dışa yazma uçuştayken dosya değişirse yeni dosyanın düğmeleri eski yanıta kilitli kalmaz", async () => {
+    const slowCreate = deferred<ClaimRow>();
+    setupTwoCases();
+
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    mocks.claimCreate.mockReturnValue(slowCreate.promise);
+    fillClaimForm();
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.claimCreate).toHaveBeenCalledTimes(1));
+
+    switchToC2();
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    // Kilit devredilmeli: yeni dosyanın "Ekle" düğmesi eski dosyanın yanıtına
+    // bağlı kalmaz (yanıt hiç gelmezse süresiz kapalı kalırdı).
+    expect(addButton().disabled).toBe(false);
+  });
+
+  it("devredilen yazmanın kapanışı yeni dosyada başlatılan yazmanın kilidini açmaz", async () => {
+    const slowFirst = deferred<ClaimRow>();
+    const slowSecond = deferred<ClaimRow>();
+    setupTwoCases();
+
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    mocks.claimCreate.mockReturnValueOnce(slowFirst.promise);
+    fillClaimForm();
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.claimCreate).toHaveBeenCalledTimes(1));
+
+    switchToC2();
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    mocks.claimCreate.mockReturnValueOnce(slowSecond.promise);
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.claimCreate).toHaveBeenCalledTimes(2));
+
+    // Eski dosyanın yanıtı gelir: yeni dosyadaki yazma hâlâ uçuşta.
+    await act(async () => {
+      slowFirst.resolve(CLAIMS[0]!);
+    });
+    expect(addButton().disabled).toBe(true);
+
+    await act(async () => {
+      slowSecond.resolve(CLAIM_C2);
+    });
+    // Kendi yanıtı kilidi bırakır: form yeniden doldurulunca düğme açılır
+    // (başarı, gönderilen taslağı temizlediği için önce yeniden yazılır).
+    fireEvent.change(byId<HTMLInputElement>("rv-claim"), { target: { value: "Üçüncü iddia" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-kind"), { target: { value: "allegation" } });
+    await waitFor(() => expect(addButton().disabled).toBe(false));
+  });
+
+  it("uçuşta dosya değişirse eski dosyanın karar hatası yeni dosyada görünmez", async () => {
+    const slowDecide = deferred<ReviewItemRow>();
+    setupTwoCases();
+
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    mocks.reviewDecide.mockReturnValue(slowDecide.promise);
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", {
+        name: t("review.rejectAction"),
+      }),
+    );
+    await waitFor(() => expect(mocks.reviewDecide).toHaveBeenCalledTimes(1));
+
+    switchToC2();
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    await act(async () => {
+      slowDecide.reject(new Error("db down"));
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("uçuşta dosya değişirse eski dosyanın kabul hatası yeni dosyada görünmez", async () => {
+    const slowCommit = deferred<ReviewItemRow>();
+    setupTwoCases();
+
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    mocks.reviewCommit.mockReturnValue(slowCommit.promise);
+    fireEvent.change(byId<HTMLSelectElement>("rk-i-pend"), { target: { value: "note" } });
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", {
+        name: t("review.acceptCommit"),
+      }),
+    );
+    await waitFor(() => expect(mocks.reviewCommit).toHaveBeenCalledTimes(1));
+
+    switchToC2();
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    await act(async () => {
+      slowCommit.reject(new Error("db down"));
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("uçuşta dosya değişirse eski dosyanın yerine geçme hatası yeni dosyada görünmez", async () => {
+    const slowSupersede = deferred<ReviewItemRow>();
+    setupTwoCases();
+
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    mocks.reviewSupersede.mockReturnValue(slowSupersede.promise);
+    fireEvent.change(byId<HTMLSelectElement>("sup-i-pend"), { target: { value: "i-acc2" } });
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", {
+        name: t("review.supersedeAction"),
+      }),
+    );
+    await waitFor(() => expect(mocks.reviewSupersede).toHaveBeenCalledTimes(1));
+
+    switchToC2();
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+
+    await act(async () => {
+      slowSupersede.reject(new Error("db down"));
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("çelişki değerlendirmesi uçuştayken seçilen yeni hüküm ve gerekçe silinmez", async () => {
+    const slowAssess = deferred<Record<string, never>>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.contradictionAssess.mockReturnValue(slowAssess.promise);
+    fireEvent.change(byId<HTMLSelectElement>("verdict-i-contra"), { target: { value: "conflict" } });
+    fireEvent.click(screen.getByRole("button", { name: t("review.assessAction") }));
+    await waitFor(() => expect(mocks.contradictionAssess).toHaveBeenCalledTimes(1));
+
+    // Uçuşta kullanıcı başka hüküm seçer ve yeni gerekçe yazar.
+    fireEvent.change(byId<HTMLSelectElement>("verdict-i-contra"), {
+      target: { value: "explained" },
+    });
+    fireEvent.change(byId<HTMLInputElement>("verdict-note-i-contra"), {
+      target: { value: "yanıt beklerken yazıldı" },
+    });
+
+    await act(async () => {
+      slowAssess.resolve({});
+    });
+
+    expect(byId<HTMLSelectElement>("verdict-i-contra").value).toBe("explained");
+    expect(byId<HTMLInputElement>("verdict-note-i-contra").value).toBe("yanıt beklerken yazıldı");
+  });
+
+  it("kabul uçuştayken değiştirilen hedef kayıt türü silinmez", async () => {
+    const slowCommit = deferred<ReviewItemRow>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.reviewCommit.mockReturnValue(slowCommit.promise);
+    fireEvent.change(byId<HTMLSelectElement>("rk-i-pend"), { target: { value: "note" } });
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", {
+        name: t("review.acceptCommit"),
+      }),
+    );
+    await waitFor(() => expect(mocks.reviewCommit).toHaveBeenCalledTimes(1));
+
+    // Uçuşta hedef türü değiştirilir (iddia + iddia türü seçilir).
+    fireEvent.change(byId<HTMLSelectElement>("rk-i-pend"), { target: { value: "claim" } });
+    fireEvent.change(byId<HTMLSelectElement>("ck-i-pend"), { target: { value: "defense" } });
+
+    await act(async () => {
+      slowCommit.resolve(ITEMS[0]!);
+    });
+
+    expect(byId<HTMLSelectElement>("rk-i-pend").value).toBe("claim");
+    expect(byId<HTMLSelectElement>("ck-i-pend").value).toBe("defense");
+  });
+
+  it("yerine geçme uçuştayken seçilen yeni hedef kayıt silinmez", async () => {
+    const slowSupersede = deferred<ReviewItemRow>();
+    setup({
+      byCase: {
+        c1: {
+          claims: [CLAIMS[0]!],
+          items: [...ITEMS, item({ id: "i-acc3", itemKind: "note_candidate", payload: { text: "İkinci onaylı" }, state: "accepted" })],
+          anchors: ANCHORS,
+          documents: DOCUMENTS,
+        },
+      },
+    });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 3, outbox: 1 }));
+
+    mocks.reviewSupersede.mockReturnValue(slowSupersede.promise);
+    fireEvent.change(byId<HTMLSelectElement>("sup-i-pend"), { target: { value: "i-acc2" } });
+    fireEvent.click(
+      within(itemCard("Kira ödenmedi notu")).getByRole("button", {
+        name: t("review.supersedeAction"),
+      }),
+    );
+    await waitFor(() => expect(mocks.reviewSupersede).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("sup-i-pend"), { target: { value: "i-acc3" } });
+
+    await act(async () => {
+      slowSupersede.resolve(ITEMS[0]!);
+    });
+
+    expect(byId<HTMLSelectElement>("sup-i-pend").value).toBe("i-acc3");
+  });
+
+  it("eski dosyanın geç tazelemesi yeni dosyanın kırmızı bandını silmez", async () => {
+    const slowCreate = deferred<ClaimRow>();
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: [], anchors: ANCHORS, documents: DOCUMENTS },
+        c2: {
+          claims: () => Promise.reject(new Error("db down")),
+          items: [],
+          anchors: [],
+          documents: [],
+        },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    mocks.claimCreate.mockReturnValue(slowCreate.promise);
+    fillClaimForm();
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.claimCreate).toHaveBeenCalledTimes(1));
+
+    switchToC2();
+    await screen.findByRole("alert");
+
+    // Eski dosyanın yazması tamamlanınca kendi tazelemesini yapar; bu tazeleme
+    // yeni dosyanın okuma hatasını ekrandan silmemeli.
+    await act(async () => {
+      slowCreate.resolve(CLAIMS[0]!);
+    });
+
+    expect(screen.queryByRole("alert")).not.toBeNull();
+  });
+});

@@ -136,6 +136,20 @@ export function Review() {
   const linksSeq = useRef(0);
   const linksClaimRef = useRef<string | null>(null);
   const quoteSeq = useRef(0);
+  // Tek yazma kilidi: her yazma kendi **neslini** taşır. Dosya değişimi kilidi
+  // devreder; devredilen isteğin kapanışı, yeni dosyada başlatılan yazmanın
+  // kilidini erken açmaz.
+  const busySeq = useRef(0);
+
+  function beginWrite(): number {
+    const seq = ++busySeq.current;
+    setBusy(true);
+    return seq;
+  }
+
+  function endWrite(seq: number) {
+    if (busySeq.current === seq) setBusy(false);
+  }
 
   useEffect(() => {
     caseRef.current = caseId;
@@ -171,7 +185,9 @@ export function Review() {
     // Yanıt yalnız hâlâ aynı dosya için ve **en son** istekse yazılır: hızlı
     // dosya değişiminde eski dosyanın geç yanıtı yeni dosyanın listesini ezmez.
     const fresh = () => caseRef.current === id && loadSeq.current === seq;
-    setError(null);
+    // Bayat tazeleme (başka dosyanın geç okuması) yeni dosyanın kırmızı
+    // bandını silmez: temizlik yalnız hâlâ geçerli istekte yapılır.
+    if (fresh()) setError(null);
     try {
       const [claimRows, itemRows, anchorRows, documentRows] = await Promise.all([
         api.claimList(id),
@@ -226,6 +242,12 @@ export function Review() {
   // dosyanın çapasına yazılır (INV-05), bu yüzden sıfırlanır. Açık düzenleyici
   // de önceki dosyanın öğesine aittir; metniyle birlikte kapanır.
   useEffect(() => {
+    // Kilit devri: uçuştaki yazma **eski** dosyaya aittir. Yeni dosyanın
+    // düğmeleri eski yanıtı beklemez (yanıt hiç gelmezse süresiz kapalı
+    // kalırdı); nesil artırıldığı için devredilen isteğin kapanışı da yeni
+    // yazmanın kilidini açmaz.
+    busySeq.current += 1;
+    setBusy(false);
     setQuoteCheck(null);
     setQuoteBindings({});
     setQuoteSource("");
@@ -315,7 +337,7 @@ export function Review() {
     const kind = claimKind;
     if (!caseId || text.trim().length === 0 || kind === "") return;
     const asked = caseId;
-    setBusy(true);
+    const seq = beginWrite();
     try {
       await api.claimCreate(asked, {
         claimantActorId: null,
@@ -333,7 +355,7 @@ export function Review() {
     } catch (e) {
       if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -345,7 +367,7 @@ export function Review() {
     const rationale = linkRationale;
     const relation = linkRelation;
     setError(null);
-    setBusy(true);
+    const seq = beginWrite();
     try {
       await api.evidenceLinkCreate(asked, {
         claimId,
@@ -362,7 +384,7 @@ export function Review() {
     } catch (e) {
       if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -373,7 +395,7 @@ export function Review() {
     const target = relationTarget;
     const kind = relationKind;
     const note = relationNote;
-    setBusy(true);
+    const seq = beginWrite();
     try {
       await api.claimRelationCreate(asked, claimId, {
         relatedClaimId: target,
@@ -391,7 +413,7 @@ export function Review() {
     } catch (e) {
       if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -409,9 +431,10 @@ export function Review() {
       });
       return;
     }
-    setBusy(true);
+    const asked = caseId;
+    const seq = beginWrite();
     try {
-      await api.reviewItemCreate(caseId, {
+      await api.reviewItemCreate(asked, {
         itemKind: draftKind,
         payload: { text: draftText.trim() },
         sourceAnchorIds: anchorIds,
@@ -419,15 +442,15 @@ export function Review() {
       });
       // Uçuşta dosya değiştiyse ya da kullanıcı taslağı değiştirdiyse yeni
       // yazılan metin silinmez.
-      if (caseRef.current === caseId) {
+      if (caseRef.current === asked) {
         setDraftText((cur) => (cur === draftText ? "" : cur));
         setDraftAnchor2((cur) => (cur === draftAnchor2 ? "" : cur));
       }
-      await load(caseId);
+      await load(asked);
     } catch (e) {
-      if (caseRef.current === caseId) setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -435,29 +458,31 @@ export function Review() {
     const verdict = assessmentVerdicts[item.id];
     if (!verdict) return;
     const asked = caseId;
+    const note = assessmentNotes[item.id] ?? "";
+    const seq = beginWrite();
     setError(null);
-    setBusy(true);
     try {
-      await api.contradictionAssess(
-        asked,
-        item.id,
-        verdict,
-        (assessmentNotes[item.id] ?? "").trim(),
-        "local-user",
-      );
+      await api.contradictionAssess(asked, item.id, verdict, note.trim(), "local-user");
       const rows = await api.contradictionAssessments(item.id);
       setAssessments((prev) => ({ ...prev, [item.id]: rows }));
-      setAssessmentVerdicts((prev) => ({ ...prev, [item.id]: "" }));
-      setAssessmentNotes((prev) => ({ ...prev, [item.id]: "" }));
+      // Uçuşta seçilen **yeni** hüküm/gerekçe silinmez: alan yalnız gönderilen
+      // değer hâlâ yazılıysa temizlenir.
+      setAssessmentVerdicts((prev) =>
+        prev[item.id] === verdict ? { ...prev, [item.id]: "" } : prev,
+      );
+      setAssessmentNotes((prev) =>
+        (prev[item.id] ?? "") === note ? { ...prev, [item.id]: "" } : prev,
+      );
     } catch (e) {
       if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
   async function decide(item: ReviewItemRow, decision: "accept" | "reject" | "request_evidence" | "edit") {
-    setBusy(true);
+    const asked = caseId;
+    const seq = beginWrite();
     try {
       let edited: unknown = null;
       if (decision === "edit") {
@@ -465,7 +490,6 @@ export function Review() {
           edited = JSON.parse(editJson);
         } catch {
           setError({ code: "E_JSON", message: t("review.errEditJson"), retryable: false });
-          setBusy(false);
           return;
         }
       }
@@ -476,11 +500,12 @@ export function Review() {
         setEditingId(null);
         setEditJson("");
       }
-      await load(caseId);
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      // Uçuşta dosya değiştiyse eski dosyanın hatası yenisinin altında yazılmaz.
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -489,11 +514,9 @@ export function Review() {
    * Kayıt türü (iddiada ayrıca iddia türü) seçilmeden buton açılmaz.
    */
   async function commit(item: ReviewItemRow) {
-    const target = buildReviewTarget(
-      targetKinds[item.id] ?? "",
-      itemText(item.payload),
-      targetClaimKinds[item.id] ?? "",
-    );
+    const kind = targetKinds[item.id] ?? "";
+    const claimKind = targetClaimKinds[item.id] ?? "";
+    const target = buildReviewTarget(kind, itemText(item.payload), claimKind);
     if (!target) {
       setError({
         code: "E_FORM",
@@ -502,16 +525,21 @@ export function Review() {
       });
       return;
     }
-    setBusy(true);
+    const asked = caseId;
+    const seq = beginWrite();
     try {
       await api.reviewCommit(item.id, "accept", target, t("review.auditUserApproval"));
-      setTargetKinds((prev) => ({ ...prev, [item.id]: "" }));
-      setTargetClaimKinds((prev) => ({ ...prev, [item.id]: "" }));
-      await load(caseId);
+      // Uçuşta değiştirilen hedef seçimi silinmez: yalnız **gönderilen** tür
+      // hâlâ seçiliyse temizlenir.
+      setTargetKinds((prev) => (prev[item.id] === kind ? { ...prev, [item.id]: "" } : prev));
+      setTargetClaimKinds((prev) =>
+        (prev[item.id] ?? "") === claimKind ? { ...prev, [item.id]: "" } : prev,
+      );
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -525,15 +553,19 @@ export function Review() {
 
   async function supersede(item: ReviewItemRow, oldItemId: string) {
     if (!oldItemId) return;
-    setBusy(true);
+    const asked = caseId;
+    const seq = beginWrite();
     try {
       await api.reviewSupersede(oldItemId, item.id);
-      setSupersedeTargets((prev) => ({ ...prev, [item.id]: "" }));
-      await load(caseId);
+      // Uçuşta seçilen yeni hedef kayıt silinmez.
+      setSupersedeTargets((prev) =>
+        prev[item.id] === oldItemId ? { ...prev, [item.id]: "" } : prev,
+      );
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
