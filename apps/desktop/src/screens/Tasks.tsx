@@ -25,6 +25,15 @@ export function Tasks() {
   /** Askıdaki liste yanıtlarının sırası: geç gelen **eski** dosya yanıtı
    *  yeni dosyanın listesini ezmemeli (bkz. `load`). */
   const loadSeq = useRef(0);
+  /** Uçuştaki yazmanın kilidini devretmek için nesil sayacı: dosya değişince
+   *  yeni dosya eski isteği beklemez, eski kapanış yeni kilidi açamaz. */
+  const busySeq = useRef(0);
+  /** Yanıt anında dosya/süzgeç karşılaştırması; render değeri ref'e yazılır ki
+   *  effect'i beklemek arada gelen yanıtı eski dosyaya yazmasın. */
+  const caseRef = useRef(caseId);
+  caseRef.current = caseId;
+  const doneRef = useRef(includeDone);
+  doneRef.current = includeDone;
 
   useEffect(() => {
     (async () => {
@@ -64,6 +73,10 @@ export function Tasks() {
     // altında görünürdü (INV-05).
     // Askıdaki eski yanıtları geçersiz kıl.
     loadSeq.current += 1;
+    // Uçuştaki yazmanın kilidi devredilir: yeni dosyanın düğmeleri eski isteğin
+    // dönmesini beklemez. Eski yanıt `caseRef` kapısından yazmaz; eski kapanış
+    // kendi nesli (`busySeq`) yüzünden yeni kilidi açamaz.
+    setBusy(false);
     setRows([]);
     setReminders([]);
     setReminderNote("");
@@ -72,6 +85,8 @@ export function Tasks() {
   }, [caseId, includeDone, load]);
 
   async function add() {
+    // Kilit yalnız düğmede değil işleyicide de tutulur: Enter yolu düğmeyi atlar.
+    if (busy) return;
     setError(null);
     if (!caseId) {
       // Eksik olan başlık değil dosyadır: gerekçe doğru yazılır.
@@ -82,78 +97,110 @@ export function Tasks() {
       setError({ code: "E_TITLE", message: t("tasks.titleRequired"), retryable: false });
       return;
     }
+    const target = caseId;
+    const submitted = { title: title.trim(), due, policy };
+    const seq = ++busySeq.current;
     setBusy(true);
     try {
-      await api.taskCreate(caseId, {
-        title: title.trim(),
-        userDueDate: due || null,
+      await api.taskCreate(target, {
+        title: submitted.title,
+        userDueDate: submitted.due || null,
         dateTimezone: "Europe/Istanbul",
         assigneeLabel: null,
         // Tarih yoksa hatırlatıcı kurulamaz; seçim tarih silinince "none"a döner
         // (aşağıdaki tarih alanı) — tarihsiz göreve politika taşınmaz.
-        reminderPolicy: policy,
+        reminderPolicy: submitted.policy,
       });
-      setTitle("");
-      setDue("");
-      setPolicy("none");
-      await load(caseId, includeDone);
+      // Yanıt, isteğin başladığı dosya artık seçili değilse hiçbir yere yazılmaz.
+      if (caseRef.current !== target) return;
+      // Form yalnız **gönderilen** değerler hâlâ ekrandaysa temizlenir: yanıt
+      // beklerken yazılan yeni görev taslağı yanıtla birlikte silinmez.
+      setTitle((prev) => (prev.trim() === submitted.title ? "" : prev));
+      setDue((prev) => (prev === submitted.due ? "" : prev));
+      setPolicy((prev) => (prev === submitted.policy ? "none" : prev));
+      // Tazeleme o anki süzgeçle koşar: uçuşta "Tamamlananlar" değiştiyse eski
+      // süzgeç listeyi ezmez.
+      await load(target, doneRef.current);
     } catch (e) {
+      if (caseRef.current !== target) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
   /** Tarih yazmak onay değildir: kullanıcı ayrıca onaylar (F08-T10). */
   async function confirmDate(id: string) {
+    const target = caseId;
+    const seq = ++busySeq.current;
     setError(null);
     setBusy(true);
     try {
       await api.taskConfirmDate(id);
-      await load(caseId, includeDone);
+      if (caseRef.current !== target) return;
+      await load(target, doneRef.current);
     } catch (e) {
+      if (caseRef.current !== target) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
   async function enqueueReminders() {
+    const target = caseId;
+    const seq = ++busySeq.current;
     setError(null);
     setReminderNote("");
     setBusy(true);
     try {
-      const result = await api.taskRemindersEnqueue(caseId, localIsoDay());
+      const result = await api.taskRemindersEnqueue(target, localIsoDay());
+      if (caseRef.current !== target) return;
       setReminderNote(
         result.queued === 0
           ? t("tasks.noNewReminders")
           : t("tasks.remindersQueued", { queued: result.queued }),
       );
-      await load(caseId, includeDone);
+      await load(target, doneRef.current);
     } catch (e) {
+      if (caseRef.current !== target) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
   async function complete(id: string) {
+    const target = caseId;
+    const seq = ++busySeq.current;
     setError(null);
+    setBusy(true);
     try {
       await api.taskComplete(id);
-      await load(caseId, includeDone);
+      if (caseRef.current !== target) return;
+      await load(target, doneRef.current);
     } catch (e) {
+      if (caseRef.current !== target) return;
       setError(toApiError(e));
+    } finally {
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
   async function remove(id: string) {
+    const target = caseId;
+    const seq = ++busySeq.current;
     setError(null);
+    setBusy(true);
     try {
       await api.taskDelete(id);
-      await load(caseId, includeDone);
+      if (caseRef.current !== target) return;
+      await load(target, doneRef.current);
     } catch (e) {
+      if (caseRef.current !== target) return;
       setError(toApiError(e));
+    } finally {
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
@@ -271,9 +318,9 @@ export function Tasks() {
                     </button>
                   ) : null}
                   {task.status === "open" ? (
-                    <button className="btn ghost" onClick={() => void complete(task.id)}>{t("tasks.complete")}</button>
+                    <button className="btn ghost" disabled={busy} onClick={() => void complete(task.id)}>{t("tasks.complete")}</button>
                   ) : null}
-                  <button className="btn ghost" onClick={() => void remove(task.id)}>{t("tasks.remove")}</button>
+                  <button className="btn ghost" disabled={busy} onClick={() => void remove(task.id)}>{t("tasks.remove")}</button>
                 </span>
               </div>
             ))}

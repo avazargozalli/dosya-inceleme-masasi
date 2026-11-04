@@ -40,7 +40,7 @@
 //     yazıyordu ("Görev başlığı zorunlu") — eksik olan başlık değil dosyadır.
 // 16. "Tamamlananlar" kutusu sunucudan `includeDone:true` ile istenir.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { t } from "../lib/i18n";
@@ -509,5 +509,454 @@ describe("görevler ekranı davranışı", () => {
 
     await waitFor(() => expect(mocks.taskList).toHaveBeenLastCalledWith("p1", true));
     expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------- uçuş yolları */
+
+const P2_TASK = taskRow({ id: "t9", caseId: "p2", title: "Ceza dosyası görevi" });
+
+/** İki dosyalı kurulum: her dosya kendi görev listesini döndürür. */
+function setupTwoCases() {
+  mocks.caseList.mockResolvedValue([P1, P2]);
+  mocks.taskList.mockImplementation(async (id: string) =>
+    id === "p1" ? [T1, T2] : [P2_TASK],
+  );
+  mocks.taskReminders.mockResolvedValue([]);
+  mocks.taskCreate.mockResolvedValue(T1);
+  mocks.taskConfirmDate.mockResolvedValue(T1);
+  mocks.taskComplete.mockResolvedValue(T1);
+  mocks.taskDelete.mockResolvedValue(undefined);
+  mocks.taskRemindersEnqueue.mockResolvedValue({ queued: 0, reminders: [] });
+  render(<Tasks />);
+}
+
+function addButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: t("tasks.add") }) as HTMLButtonElement;
+}
+
+async function switchToP2() {
+  fireEvent.change(byId<HTMLSelectElement>("task-case"), { target: { value: "p2" } });
+  expect(await screen.findByText(P2_TASK.title)).toBeTruthy();
+}
+
+describe("görevler ekranı uçuş yolları", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("oluşturma yanıtı uçuşta yazılan yeni başlığı ve tarihi silmez", async () => {
+    const creating = deferred<TaskRow>();
+    setup();
+    await loaded();
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "İlk görev" } });
+    fireEvent.click(screen.getByText(t("tasks.add")));
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    // Yanıt beklerken **yeni** görev yazılır: yanıt bu metni silmemeli.
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "uçuşta yazıldı" } });
+    fireEvent.change(byId<HTMLInputElement>("task-due"), { target: { value: "2026-12-01" } });
+
+    await act(async () => {
+      creating.resolve(T1);
+    });
+
+    expect(byId<HTMLInputElement>("task-title").value).toBe("uçuşta yazıldı");
+    expect(byId<HTMLInputElement>("task-due").value).toBe("2026-12-01");
+  });
+
+  it("oluşturma yanıtı dosya değiştiyse yeni dosyanın listesini ve formunu ezmez", async () => {
+    const creating = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p1 görevi" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p2 için yazıldı" } });
+
+    await act(async () => {
+      creating.resolve(T1);
+    });
+
+    // Eski dosyanın listesi yeni dosyaya yazılmaz; uçuşta yazılan form metni korunur.
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+    expect(screen.queryByText(T1.title)).toBeNull();
+    expect(mocks.taskList).toHaveBeenLastCalledWith("p2", false);
+    expect(byId<HTMLInputElement>("task-title").value).toBe("p2 için yazıldı");
+  });
+
+  it("oluşturma hatası uçuşta dosya değişirse yeni dosyada görünmez", async () => {
+    const creating = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p1 görevi" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      creating.reject({ code: "E_DB", message: "Görev yazılamadı.", retryable: true });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+  });
+
+  it("'Bitti' çift tıkta tek yazma gönderir", async () => {
+    const finishing = deferred<TaskRow>();
+    setup();
+    await loaded();
+    mocks.taskComplete.mockReturnValue(finishing.promise);
+
+    const button = within(rowOf(T1.title)).getByRole("button", { name: t("tasks.complete") });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(mocks.taskComplete).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finishing.resolve({ ...T1, status: "done" });
+    });
+  });
+
+  it("'Sil' çift tıkta tek yazma gönderir", async () => {
+    const removing = deferred<void>();
+    setup();
+    await loaded();
+    mocks.taskDelete.mockReturnValue(removing.promise);
+
+    const button = within(rowOf(T2.title)).getByRole("button", { name: t("tasks.remove") });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(mocks.taskDelete).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      removing.resolve();
+    });
+  });
+
+  it("uçuşta Enter ikinci görev göndermez", async () => {
+    const creating = deferred<TaskRow>();
+    setup();
+    await loaded();
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    const title = byId<HTMLInputElement>("task-title");
+    fireEvent.change(title, { target: { value: "ilk görev" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(title, { target: { value: "ikinci görev" } });
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    expect(mocks.taskCreate).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      creating.resolve(T1);
+    });
+  });
+
+  it("oluşturma uçuşunda satır düğmeleri ikinci yazma göndermez", async () => {
+    const creating = deferred<TaskRow>();
+    setup();
+    await loaded();
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "yeni görev" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(rowOf(T1.title)).getByRole("button", { name: t("tasks.complete") }));
+    fireEvent.click(within(rowOf(T2.title)).getByRole("button", { name: t("tasks.remove") }));
+
+    expect(mocks.taskComplete).not.toHaveBeenCalled();
+    expect(mocks.taskDelete).not.toHaveBeenCalled();
+    await act(async () => {
+      creating.resolve(T1);
+    });
+  });
+
+  it("yazma sonrası tazeleme o anki süzgeci kullanır", async () => {
+    const finishing = deferred<TaskRow>();
+    mocks.caseList.mockResolvedValue([P1]);
+    mocks.taskList.mockImplementation(async (_id: string, done: boolean) =>
+      done ? [T1, T2, T3] : [T1, T2],
+    );
+    mocks.taskReminders.mockResolvedValue([]);
+    render(<Tasks />);
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+
+    mocks.taskComplete.mockReturnValue(finishing.promise);
+    fireEvent.click(within(rowOf(T1.title)).getByRole("button", { name: t("tasks.complete") }));
+    await waitFor(() => expect(mocks.taskComplete).toHaveBeenCalledTimes(1));
+
+    // Süzgeç, yazma uçuşta iken değişir.
+    fireEvent.click(screen.getByRole("checkbox"));
+    await waitFor(() => expect(mocks.taskList).toHaveBeenLastCalledWith("p1", true));
+    expect(await screen.findByText(T3.title)).toBeTruthy();
+
+    await act(async () => {
+      finishing.resolve({ ...T1, status: "done" });
+    });
+
+    // Tazeleme eski süzgeçle koşup "tamamlananlar" listesini ezmez.
+    expect(screen.getByText(T3.title)).toBeTruthy();
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+    expect(mocks.taskList).toHaveBeenLastCalledWith("p1", true);
+  });
+
+  it("dosya değişimi uçuştaki yazmanın kilidini devreder", async () => {
+    const creating = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p1 görevi" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+    expect(addButton().disabled).toBe(true);
+
+    await switchToP2();
+
+    // Yeni dosyanın düğmesi eski isteğin dönmesini beklemez.
+    expect(addButton().disabled).toBe(false);
+
+    await act(async () => {
+      creating.resolve(T1);
+    });
+  });
+
+  it("eski yazmanın kapanışı yeni dosyadaki kilidi erken açmaz", async () => {
+    const first = deferred<TaskRow>();
+    const second = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskCreate.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p1 görevi" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p2 görevi" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(2));
+    expect(addButton().disabled).toBe(true);
+
+    // Eski dosyanın yanıtı döner: yeni dosyanın kilidi **açılmamalı**.
+    await act(async () => {
+      first.resolve(T1);
+    });
+    expect(addButton().disabled).toBe(true);
+
+    await act(async () => {
+      second.resolve(P2_TASK);
+    });
+    await waitFor(() => expect(addButton().disabled).toBe(false));
+  });
+
+  it("kuyruk yanıtı dosya değiştiyse yeni dosyaya yazılmaz", async () => {
+    const queueing = deferred<{ queued: number; reminders: ReminderRow[] }>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskRemindersEnqueue.mockReturnValue(queueing.promise);
+
+    fireEvent.click(screen.getByText(t("tasks.enqueue")));
+    await waitFor(() => expect(mocks.taskRemindersEnqueue).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      queueing.resolve({ queued: 2, reminders: [R1] });
+    });
+
+    expect(screen.queryByText(t("tasks.remindersQueued", { queued: 2 }))).toBeNull();
+    expect(mocks.taskList).toHaveBeenLastCalledWith("p2", false);
+  });
+
+  it("kuyruk hatası dosya değiştiyse yeni dosyada görünmez", async () => {
+    const queueing = deferred<{ queued: number; reminders: ReminderRow[] }>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskRemindersEnqueue.mockReturnValue(queueing.promise);
+
+    fireEvent.click(screen.getByText(t("tasks.enqueue")));
+    await waitFor(() => expect(mocks.taskRemindersEnqueue).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      queueing.reject({ code: "E_DB", message: "Kuyruk yazılamadı.", retryable: true });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+  });
+
+  it("onay yanıtı dosya değiştiyse yeni dosyanın listesini ezmez", async () => {
+    const confirming = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskConfirmDate.mockReturnValue(confirming.promise);
+
+    fireEvent.click(within(rowOf(T1.title)).getByRole("button", { name: t("tasks.confirmDate") }));
+    await waitFor(() => expect(mocks.taskConfirmDate).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      confirming.resolve({ ...T1, dateConfirmedAt: ISO });
+    });
+
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+    expect(screen.queryByText(T1.title)).toBeNull();
+    expect(mocks.taskList).toHaveBeenLastCalledWith("p2", false);
+  });
+
+  it("onay hatası uçuşta dosya değişirse yeni dosyada görünmez", async () => {
+    const confirming = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskConfirmDate.mockReturnValue(confirming.promise);
+
+    fireEvent.click(within(rowOf(T1.title)).getByRole("button", { name: t("tasks.confirmDate") }));
+    await waitFor(() => expect(mocks.taskConfirmDate).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      confirming.reject({ code: "E_DB", message: "Tarih onaylanamadı.", retryable: true });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+  });
+
+  it("silme yanıtı dosya değiştiyse yeni dosyanın listesini ezmez", async () => {
+    const removing = deferred<void>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskDelete.mockReturnValue(removing.promise);
+
+    fireEvent.click(within(rowOf(T2.title)).getByRole("button", { name: t("tasks.remove") }));
+    await waitFor(() => expect(mocks.taskDelete).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      removing.resolve();
+    });
+
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+    expect(screen.queryByText(T1.title)).toBeNull();
+    expect(mocks.taskList).toHaveBeenLastCalledWith("p2", false);
+  });
+
+  it("silme hatası uçuşta dosya değişirse yeni dosyada görünmez", async () => {
+    const removing = deferred<void>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskDelete.mockReturnValue(removing.promise);
+
+    fireEvent.click(within(rowOf(T2.title)).getByRole("button", { name: t("tasks.remove") }));
+    await waitFor(() => expect(mocks.taskDelete).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      removing.reject({ code: "E_DB", message: "Görev silinemedi.", retryable: true });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+  });
+
+  it("satır yazmasının yanıtı ve kapanışı yeni dosyaya taşınmaz", async () => {
+    const finishing = deferred<TaskRow>();
+    const creating = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskComplete.mockReturnValue(finishing.promise);
+
+    fireEvent.click(within(rowOf(T1.title)).getByRole("button", { name: t("tasks.complete") }));
+    await waitFor(() => expect(mocks.taskComplete).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+    mocks.taskCreate.mockReturnValue(creating.promise);
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "p2 görevi" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+    expect(addButton().disabled).toBe(true);
+
+    // Eski dosyanın satır yazması döner: ne listesi ne kilidi yeni dosyaya taşınır.
+    await act(async () => {
+      finishing.resolve({ ...T1, status: "done" });
+    });
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+    expect(screen.queryByText(T1.title)).toBeNull();
+    expect(addButton().disabled).toBe(true);
+
+    await act(async () => {
+      creating.resolve(P2_TASK);
+    });
+    await waitFor(() => expect(addButton().disabled).toBe(false));
+  });
+
+  it("satır yazması hatası uçuşta dosya değişirse yeni dosyada görünmez", async () => {
+    const finishing = deferred<TaskRow>();
+    setupTwoCases();
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskComplete.mockReturnValue(finishing.promise);
+
+    fireEvent.click(within(rowOf(T1.title)).getByRole("button", { name: t("tasks.complete") }));
+    await waitFor(() => expect(mocks.taskComplete).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      finishing.reject({ code: "E_DB", message: "Görev tamamlanamadı.", retryable: true });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(P2_TASK.title)).toBeTruthy();
+  });
+
+  it("oluşturma tazelemesi de o anki süzgeci kullanır", async () => {
+    const creating = deferred<TaskRow>();
+    mocks.caseList.mockResolvedValue([P1]);
+    mocks.taskList.mockImplementation(async (_id: string, done: boolean) =>
+      done ? [T1, T2, T3] : [T1, T2],
+    );
+    mocks.taskReminders.mockResolvedValue([]);
+    render(<Tasks />);
+    await waitFor(() => expect(screen.getByText(T1.title)).toBeTruthy());
+    mocks.taskCreate.mockReturnValue(creating.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("task-title"), { target: { value: "yeni görev" } });
+    fireEvent.click(addButton());
+    await waitFor(() => expect(mocks.taskCreate).toHaveBeenCalledTimes(1));
+
+    // Süzgeç, oluşturma uçuşta iken değişir.
+    fireEvent.click(screen.getByRole("checkbox"));
+    await waitFor(() => expect(mocks.taskList).toHaveBeenLastCalledWith("p1", true));
+    expect(await screen.findByText(T3.title)).toBeTruthy();
+
+    await act(async () => {
+      creating.resolve(T1);
+    });
+
+    expect(screen.getByText(T3.title)).toBeTruthy();
+    expect(mocks.taskList).toHaveBeenLastCalledWith("p1", true);
   });
 });
