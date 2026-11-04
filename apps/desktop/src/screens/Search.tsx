@@ -113,6 +113,10 @@ export function Search() {
       const seq = ++totalSeq.current;
       setTotalProbe({ status: "counting" });
       const fire = () => {
+        // Gönderim öncesi kapı: iki çerçeve beklerken sayım geçersizleştiyse
+        // (yeni arama, dosya/kapsam değişimi, daha yeni sayım) istek çekirdeğe
+        // **hiç** gitmez; yalnız yanıtı değil, işin kendisi de düşer.
+        if (seq !== totalSeq.current) return;
         void api
           .searchTotal(targetCaseId, asked, applied, askedMode)
           .then((result) => {
@@ -255,6 +259,13 @@ export function Search() {
       const applied = kind === "fresh" ? draftFilters : appliedFilters;
       const cursor = kind === "more" ? page?.nextCursor ?? null : null;
       if (kind === "more" && !cursor) return;
+      if (kind === "fresh" && totalProbe.status === "counting") {
+        // Yeni arama yeni bir sonuç bağlamıdır: bekleyen (çerçeve kuyruğundaki
+        // ya da uçuştaki) sayım geçersizleşir ve çekirdeğe hiç gönderilmez.
+        // Tamamlanmış sayı korunur — ekranda duran eski sonuçların sayısıdır.
+        totalSeq.current += 1;
+        setTotalProbe(TOTAL_PROBE_IDLE);
+      }
       const seq = ++searchSeq.current;
 
       if (kind === "fresh") {
@@ -282,7 +293,9 @@ export function Search() {
           setPage({ ...next, hits: merged, returned: merged.length, total: page.total });
         } else {
           setPage(next);
-          requestTotal(caseId, asked, next.filters, askedMode);
+          // Sayfa toplamı zaten taşıyorsa ayrı sayım istenmez: iki kaynak aynı
+          // anda gösterilmez (totalSummary kural 1) ve çekirdek boşa saymaz.
+          if (next.total === null) requestTotal(caseId, asked, next.filters, askedMode);
         }
       } catch (e) {
         if (seq !== searchSeq.current) return;
@@ -314,6 +327,7 @@ export function Search() {
       scope,
       searchedMode,
       searchedQuery,
+      totalProbe.status,
     ],
   );
 

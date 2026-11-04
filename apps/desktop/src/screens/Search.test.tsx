@@ -1081,3 +1081,165 @@ describe("emsal alıntısını kopyalama", () => {
     expect(after.textContent).toContain("kütüphane hatası");
   });
 });
+
+/**
+ * Ertelenmiş toplam sayımı (F15): sayfa onu beklemez, sayım iki çerçeve
+ * sonrasına zamanlanır. Bu describe, çerçeve kuyruğunu testin eline verir —
+ * böylece **gönderim anı** ölçülür: geçersizleşen sayım yalnız yanıtta değil,
+ * çekirdeğe giden istekte de düşmelidir. Ayrıca yeni arama başlarken bekleyen
+ * sayımın düşmesi, tamamlanmış sayının korunması ve sayfa kendi toplamını
+ * taşıyorsa ayrı sayım istenmemesi ölçülür.
+ */
+describe("ertelenmiş toplam sayımı (F15)", () => {
+  let frames: FrameRequestCallback[] = [];
+
+  /** Kuyruktaki çerçeveleri (zincirleme iki `rAF` dâhil) akıtır. */
+  async function flushFrames(): Promise<void> {
+    for (let guard = 0; guard < 10 && frames.length > 0; guard += 1) {
+      const queued = frames;
+      frames = [];
+      await act(async () => {
+        for (const callback of queued) callback(0);
+      });
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    frames = [];
+    // İlk boyama gecikmesini taklit et: çerçeve hemen koşmaz, kuyruğa girer.
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("sayım çerçeve beklerken dosya değişirse eski dosyanın sayımı çekirdeğe gönderilmez", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(t("search.resultsTitle"))).toBeTruthy();
+    // Sayım iki çerçeve sonraya zamanlandı: henüz istek yok.
+    expect(mocks.searchTotal).not.toHaveBeenCalled();
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c2"));
+
+    await flushFrames();
+    // Dosya değişimi sayımı geçersiz kıldı: eski dosya için istek **gitmemeli**
+    // (yanıtın ekrana yazılmaması yetmez; çekirdek boşa saymamalı).
+    expect(mocks.searchTotal).not.toHaveBeenCalled();
+  });
+
+  it("sayım beklerken aynı sorgu yeniden aranırsa eski sayım düşer; sorgu iki kez sayılmaz", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(t("search.resultsTitle"))).toBeTruthy();
+    expect(mocks.searchTotal).not.toHaveBeenCalled();
+
+    const again = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(again.promise);
+
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    // İkinci arama uçuşta; ilk sayımın çerçeveleri şimdi akar. Yeni arama
+    // başlarken bekleyen sayım düşmeliydi.
+    await flushFrames();
+    expect(mocks.searchTotal).not.toHaveBeenCalled();
+    // Bekleyen sayım düştü: "Sayılıyor…" satırı da asılı kalmaz.
+    expect(screen.queryByText(t("searchFilters.total.counting"))).toBeNull();
+
+    await act(async () => {
+      again.resolve(page());
+    });
+    await flushFrames();
+    // Aynı sorgu için tek sayım: ne eski ne yeni sayım ikinci kez koşar.
+    expect(mocks.searchTotal).toHaveBeenCalledTimes(1);
+    expect(mocks.searchTotal).toHaveBeenCalledWith("c1", "kira", { ...SERVER_EMPTY }, "auto");
+  });
+
+  it("tamamlanmış sayım yeni arama başlarken korunur, yeni sayfa gelince yerini bırakır", async () => {
+    setup();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kira");
+    await flushFrames();
+    const done = t("searchFilters.total.done", { total: 1, ms: 3 });
+    expect(await screen.findByText(done)).toBeTruthy();
+
+    const again = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(again.promise);
+    mocks.searchTotal.mockResolvedValueOnce(
+      totalLine({ query: "ödeme", resolvedQuery: "ödeme", total: 9 }),
+    );
+
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    // Yeni arama uçuşta ama ekranda hâlâ **eski** sonuçlar var: onların sayısı
+    // da durur (yeni aramanın sayısı gibi gösterilmez, ama silinmez).
+    expect(screen.getByText(done)).toBeTruthy();
+
+    await act(async () => {
+      again.resolve(page({ query: "ödeme", resolvedQuery: "ödeme" }));
+    });
+    await flushFrames();
+    // İlk sayım (kira) + yeni sayım (ödeme): ikisi de birer kez koştu.
+    expect(mocks.searchTotal).toHaveBeenCalledTimes(2);
+    expect(mocks.searchTotal).toHaveBeenLastCalledWith("c1", "ödeme", { ...SERVER_EMPTY }, "auto");
+    // Yeni sayı geldi: eski satır kalktı, yenisi yazıldı.
+    expect(screen.queryByText(done)).toBeNull();
+    expect(
+      await screen.findByText(t("searchFilters.total.done", { total: 9, ms: 3 })),
+    ).toBeTruthy();
+  });
+
+  it("düşen sayım satırı yeni arama başlarken korunur", async () => {
+    setup({ totalError: { code: "E_DB", message: "sayım hatası", retryable: true } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kira");
+    await flushFrames();
+    const failed = t("searchFilters.total.failed", { message: "sayım hatası" });
+    expect(await screen.findByText(failed)).toBeTruthy();
+
+    const again = deferred<SearchPage>();
+    mocks.searchPage.mockReset();
+    mocks.searchPage.mockReturnValueOnce(again.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
+    fireEvent.keyDown(byId<HTMLInputElement>("search-q"), { key: "Enter" });
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+
+    // Düşen sayım da **tamamlanmış** bir sonuçtur: eski sonuçlar ekranda
+    // dururken satırı silinmez (yeni sayfa gelince yerini yenisine bırakır).
+    expect(screen.getByText(failed)).toBeTruthy();
+  });
+
+  it("sayfa kendi toplamını taşıyorsa ayrı sayım istenmez", async () => {
+    setup({ pages: [page({ total: 7 })] });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kira");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    await flushFrames();
+
+    // İki kaynak aynı anda gösterilmez: sayfa toplamı varken çekirdek boşa saymaz.
+    expect(mocks.searchTotal).not.toHaveBeenCalled();
+    const shown = t("searchFilters.result.shown", { returned: 1 });
+    expect(
+      await screen.findByText(t("searchFilters.result.withTotal", { total: 7, shown }), {
+        exact: false,
+      }),
+    ).toBeTruthy();
+  });
+});
