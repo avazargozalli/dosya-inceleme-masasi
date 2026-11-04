@@ -268,23 +268,49 @@ fn read_limited<R: Read>(mut reader: R) -> (String, bool) {
     (String::from_utf8_lossy(&buf).to_string(), truncated)
 }
 
-/// Yeni yazılmış bir dosyayı hemen yürütmek Linux'ta `ETXTBSY` ("text file
-/// busy") verebilir: başka bir iş parçacığının `fork`'u yazma tanıtıcısını bir an
-/// taşır. Kısa aralıklarla yeniden denenir; son hata metni korunur.
-fn spawn_with_retry(command: &mut Command) -> Result<std::process::Child, RunError> {
-    let mut last = String::new();
-    for attempt in 0..6 {
-        match command.spawn() {
-            Ok(child) => return Ok(child),
+/// Yeni yazılmış bir dosyayı hemen yürütmek `ETXTBSY` ("text file busy")
+/// verebilir: başka bir iş parçacığının `fork`'u yazma tanıtıcısını bir an
+/// taşır. Yalnız bu hata yeniden denenir; kalıcı hatalar (`NotFound`,
+/// `PermissionDenied`, biçim bozuk) **ilk denemede** döner — yeniden denemek
+/// sonucu değiştirmez, yalnız geciktirir.
+pub const SPAWN_ATTEMPTS: u32 = 6;
+
+/// Denemeler arası bekleme. En kötü durumda `(SPAWN_ATTEMPTS - 1) × 50 ms =
+/// 250 ms` beklenir; bu süre süreç sınırından düşülür (başlangıç saati
+/// spawn'dan önce alınır).
+pub const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+/// `ETXTBSY` — yürütülebilir dosya şu anda yazma için açık. Geçici olabilir.
+fn is_text_file_busy(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::ExecutableFileBusy
+}
+
+/// `attempt` yalnız **text file busy** hatasında yeniden denenir. Son denemede
+/// de meşgulse **son** hata döner (metni korunur, tanıtıcı çağırana geçer).
+pub fn retry_while_busy<T, F>(mut attempt: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    let mut last: Option<std::io::Error> = None;
+    for index in 0..SPAWN_ATTEMPTS {
+        match attempt() {
+            Ok(value) => return Ok(value),
             Err(err) => {
-                last = err.to_string();
-                if attempt < 5 {
-                    std::thread::sleep(Duration::from_millis(50));
+                if !is_text_file_busy(&err) {
+                    return Err(err);
+                }
+                last = Some(err);
+                if index + 1 < SPAWN_ATTEMPTS {
+                    std::thread::sleep(SPAWN_RETRY_DELAY);
                 }
             }
         }
     }
-    Err(RunError::SpawnFailed(last))
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)))
+}
+
+fn spawn_with_retry(command: &mut Command) -> Result<std::process::Child, RunError> {
+    retry_while_busy(|| command.spawn()).map_err(|err| RunError::SpawnFailed(err.to_string()))
 }
 
 /// CLI'yi çalıştırır. `cancel` işaretlenirse süreç öldürülür ve `Cancelled`
@@ -1148,5 +1174,61 @@ mod hardening_tests {
     fn adapters_without_hardening_rules_are_untouched() {
         let args = hardened_args("kimi-cli", vec!["--print".into()]);
         assert_eq!(args, vec!["--print".to_string()]);
+    }
+}
+
+/// `spawn_with_retry` politikası: yalnız "text file busy" yeniden denenir.
+/// Sahte hatalarla ölçülür — gerçek `ETXTBSY` üretmek platforma bağlıdır
+/// (Linux'a özgü uçtan uca kanıt `tests/tool_free_proof.rs` içinde).
+#[cfg(test)]
+mod spawn_retry_tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn a_permanent_error_is_returned_after_a_single_attempt() {
+        let mut attempts = 0;
+        let err = retry_while_busy::<(), _>(|| {
+            attempts += 1;
+            Err(std::io::Error::from(ErrorKind::NotFound))
+        })
+        .expect_err("kalıcı hata");
+        assert_eq!(attempts, 1, "kalıcı hata yeniden denendi");
+        assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_busy_executable_is_retried_until_it_succeeds() {
+        let mut attempts = 0;
+        let value = retry_while_busy(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::from(ErrorKind::ExecutableFileBusy))
+            } else {
+                Ok("koştu")
+            }
+        })
+        .expect("üçüncü denemede başarılı olmalı");
+        assert_eq!(value, "koştu");
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn the_retry_stops_at_the_last_attempt_and_keeps_the_last_error() {
+        let mut attempts = 0;
+        let err = retry_while_busy::<(), _>(|| {
+            attempts += 1;
+            Err(std::io::Error::new(
+                ErrorKind::ExecutableFileBusy,
+                format!("meşgul {attempts}"),
+            ))
+        })
+        .expect_err("son denemede de meşgul");
+        assert_eq!(attempts, SPAWN_ATTEMPTS, "deneme sayısı sabit değil");
+        assert!(
+            err.to_string()
+                .contains(&format!("meşgul {SPAWN_ATTEMPTS}")),
+            "son hata korunmadı: {err}"
+        );
     }
 }

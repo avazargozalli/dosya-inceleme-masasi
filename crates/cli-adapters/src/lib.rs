@@ -36,8 +36,9 @@ pub use capability::{
 };
 pub use events::{final_message, parse_codex_json_lines, CodexEvent, CodexUsage, EventError};
 pub use exec::{
-    clamp_timeout, default_env_allowlist, run_cli, sanitize_env, CliRunRequest, RunError,
-    RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
+    clamp_timeout, default_env_allowlist, retry_while_busy, run_cli, sanitize_env, CliRunRequest,
+    RunError, RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
+    SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
 };
 pub use probe::{probe_request, run_probe, ProbeReport, PROBE_TIMEOUT};
 pub use residue::{
