@@ -1857,3 +1857,197 @@ describe("emsal ekranı: geç yanıtlar seçim nesline bağlanır", () => {
     expect(screen.getByText(CHECK_B.extractedCitation)).toBeTruthy();
   });
 });
+
+// Kalan ölçülmemiş yollar: korpus dışa aktarma ve anlam hükmü.
+//
+// 1. Korpus dışa aktarımı **izin kapsamına** bağlıdır. Çekirdeğin sonucu hangi
+//    kiple yazıldığını taşımaz (`CorpusExportResult`ta kip alanı yok), bu yüzden
+//    kip değişince yeşil satır ekranda kalmamalı: "Tüm korpus" seçiliyken önceki
+//    "izinli" aktarımının sayısı tüm korpusun sayısı sanılır.
+// 2. Dışa aktarma sürerken kip kaydırılabilirse kullanıcı, sonucu olmayan bir
+//    kapsamı seçili görür; seçici uçuşta kilitlidir ve istek tıklama anındaki
+//    kiple gider.
+// 3. Anlam hükmü kasaya yazılan **hukuki bir karardır**: uçuş kilidi olmadan
+//    çift tık iki kez yazar (iki denetim kaydı, yarışta son söz).
+// 4. Toplu içe alma seçicisi kendi uçuşunda kilitli değil: çift tık iki yerel
+//    pencere açar, ikinci seçim birincinin seçimini ezer.
+describe("emsal ekranı: korpus aktarımı ve anlam hükmü", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("korpus kipi değişince önceki dışa aktarmanın yeşil sonucu ekranda kalmaz", async () => {
+    mocks.precedentCorpusExport.mockResolvedValue(EXPORT_RESULT);
+    setup({ coverage: coverage(), saveDialogResult: "/tmp/korpus.json" });
+
+    await screen.findByText(coverageText(coverage()));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.corpusExport") }));
+    await waitFor(() =>
+      expect(mocks.precedentCorpusExport).toHaveBeenCalledWith(
+        "permitted_only",
+        "/tmp/korpus.json",
+      ),
+    );
+    expect(await screen.findByText(corpusResultText(EXPORT_RESULT))).toBeTruthy();
+
+    // Sonuç hangi kiple yazıldığını taşımıyor: kip değişince satır kalkmalı.
+    fireEvent.change(byId<HTMLSelectElement>("corpus-mode"), { target: { value: "all" } });
+    expect(screen.queryByText(corpusResultText(EXPORT_RESULT))).toBeNull();
+    expect(
+      screen.queryByText(`${EXPORT_RESULT.path} · ${formatSize(EXPORT_RESULT.bytes)}`),
+    ).toBeNull();
+  });
+
+  it("dışa aktarma sürerken kip seçici ve düğme kilitlidir; istek ilk kiple gider", async () => {
+    const exporting = deferred<typeof EXPORT_RESULT>();
+    setup({ coverage: coverage(), saveDialogResult: "/tmp/korpus.json" });
+    mocks.precedentCorpusExport.mockReturnValue(exporting.promise);
+
+    await screen.findByText(coverageText(coverage()));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.corpusExport") }));
+    await waitFor(() => expect(mocks.precedentCorpusExport).toHaveBeenCalledTimes(1));
+
+    // Uçuşta kapsam kaydırılamaz: seçici ve düğme kapalı.
+    expect(byId<HTMLSelectElement>("corpus-mode").disabled).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: t("precedents.corpusBusy") }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      exporting.resolve(EXPORT_RESULT);
+      await exporting.promise;
+    });
+    expect(byId<HTMLSelectElement>("corpus-mode").disabled).toBe(false);
+    expect(await screen.findByText(corpusResultText(EXPORT_RESULT))).toBeTruthy();
+    expect(mocks.precedentCorpusExport).toHaveBeenCalledTimes(1);
+    expect(mocks.precedentCorpusExport.mock.calls[0]![0]).toBe("permitted_only");
+  });
+
+  it("dışa aktarma penceresi açıkken kip değişirse istek tıklama anındaki kiple gider", async () => {
+    const picking = deferred<string | null>();
+    setup({ coverage: coverage() });
+    mocks.saveDialog.mockReturnValue(picking.promise);
+    mocks.precedentCorpusExport.mockResolvedValue(EXPORT_RESULT);
+
+    await screen.findByText(coverageText(coverage()));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.corpusExport") }));
+    await waitFor(() => expect(mocks.saveDialog).toHaveBeenCalledTimes(1));
+
+    // Pencere açıkken kip "tümü"ne alınır: dosya yine tıklama anındaki kiple yazılır.
+    fireEvent.change(byId<HTMLSelectElement>("corpus-mode"), { target: { value: "all" } });
+    await act(async () => {
+      picking.resolve("/tmp/korpus.json");
+      await picking.promise;
+    });
+    await waitFor(() =>
+      expect(mocks.precedentCorpusExport).toHaveBeenCalledWith(
+        "permitted_only",
+        "/tmp/korpus.json",
+      ),
+    );
+    expect(mocks.precedentCorpusExport).toHaveBeenCalledTimes(1);
+  });
+
+  it("dışa aktarma düşerse önceki yeşil sonuç kalmaz, gerçek hata yazılır", async () => {
+    mocks.precedentCorpusExport
+      .mockResolvedValueOnce(EXPORT_RESULT)
+      .mockRejectedValueOnce({ code: "E_IO", message: "dosya yazılamadı", retryable: true });
+    setup({ coverage: coverage(), saveDialogResult: "/tmp/korpus.json" });
+
+    await screen.findByText(coverageText(coverage()));
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.corpusExport") }));
+    expect(await screen.findByText(corpusResultText(EXPORT_RESULT))).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.corpusExport") }));
+    expect(await screen.findByText("E_IO")).toBeTruthy();
+    expect(screen.queryByText(corpusResultText(EXPORT_RESULT))).toBeNull();
+  });
+
+  it("anlam hükmünde çift tık tek yazma üretir; üç karar düğmesi uçuşta kapalıdır", async () => {
+    const reviewed = deferred<CitationCheckRow>();
+    setup({ checks: async () => [CHECK] });
+    mocks.citationMeaningReview.mockReturnValue(reviewed.promise);
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
+    await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
+    expect(await screen.findByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
+
+    const misleading = screen.getByRole("button", {
+      name: t("precedents.meaningMisleading"),
+    }) as HTMLButtonElement;
+    fireEvent.click(misleading);
+    fireEvent.click(misleading);
+    expect(mocks.citationMeaningReview).toHaveBeenCalledTimes(1);
+
+    for (const key of ["meaningAccurate", "meaningMisleading", "meaningOffContext"] as const) {
+      expect(
+        (screen.getByRole("button", { name: t(`precedents.${key}`) }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    }
+
+    await act(async () => {
+      reviewed.resolve({ ...CHECK, meaningReview: "misleading" });
+      await reviewed.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: t("precedents.meaning") })).toBeTruthy(),
+    );
+    expect(mocks.citationMeaningReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("anlam hükmü düşerse panel ve gerekçe korunur, düğmeler yeniden açılır", async () => {
+    setup({ checks: async () => [CHECK] });
+    mocks.citationMeaningReview.mockRejectedValue({
+      code: "E_CITE",
+      message: "hüküm yazılamadı",
+      retryable: true,
+    });
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
+    await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
+    fireEvent.change(byId<HTMLInputElement>("mn-ch1"), { target: { value: "gerekçe metni" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaningMisleading") }));
+
+    expect(await screen.findByText("E_CITE")).toBeTruthy();
+    // Düşen hüküm kullanıcının gerekçesini silmez: panel açık, metin yerinde.
+    expect(byId<HTMLInputElement>("mn-ch1").value).toBe("gerekçe metni");
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: t("precedents.meaningMisleading") }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    // Başarısız yazma listeyi tazelemez: panel kapanmaz.
+    expect(screen.getByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
+  });
+
+  it("toplu içe alma dosya seçicisinde çift tık tek pencere açar", async () => {
+    const picking = deferred<string[] | null>();
+    setup();
+    mocks.openDialog.mockReturnValue(picking.promise);
+
+    const pick = (await screen.findByRole("button", {
+      name: t("precedents.bulkPick"),
+    })) as HTMLButtonElement;
+    fireEvent.click(pick);
+    fireEvent.click(pick);
+    expect(mocks.openDialog).toHaveBeenCalledTimes(1);
+    // Kullanıcı ekranda da görür: seçici uçuşta kapalı.
+    expect(pick.disabled).toBe(true);
+
+    await act(async () => {
+      picking.resolve(["/tmp/a.pdf"]);
+      await picking.promise;
+    });
+    expect(await screen.findByText(t("precedents.bulkPicked", { count: 1 }))).toBeTruthy();
+    expect(pick.disabled).toBe(false);
+    expect(mocks.openDialog).toHaveBeenCalledTimes(1);
+  });
+});

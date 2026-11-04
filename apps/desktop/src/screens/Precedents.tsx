@@ -168,6 +168,8 @@ export function Precedents() {
   const [bulkTags, setBulkTags] = useState("");
   const [bulkReport, setBulkReport] = useState<BulkImportReport | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  /** Yerel dosya penceresi uçuşu: çift tık iki pencere açmaz (seçim yarışmaz). */
+  const [pickBusy, setPickBusy] = useState(false);
   const [connectors, setConnectors] = useState<ConnectorCatalog | null>(null);
   const [terms, setTerms] = useState<PrecedentUsageTerms | null>(null);
   const [termsBasis, setTermsBasis] = useState<UsageBasis>("unknown");
@@ -178,6 +180,8 @@ export function Precedents() {
   const [corpusMode, setCorpusMode] = useState<"permitted_only" | "all">("permitted_only");
   const [corpusResult, setCorpusResult] = useState<CorpusExportResult | null>(null);
   const [corpusBusy, setCorpusBusy] = useState(false);
+  /** Anlam hükmü yazma uçuşu: hukuki karar çift tıkla iki kez yazılmaz. */
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -532,6 +536,8 @@ export function Precedents() {
     setError(null);
     setCorpusResult(null);
     try {
+      // `corpusMode` bu render'ın değeridir: pencere açıkken kip değişse bile
+      // dosya, düğmeye basıldığı anda görünen kiple yazılır.
       const result = await api.precedentCorpusExport(corpusMode, target);
       setCorpusResult(result);
       await loadCoverage();
@@ -587,6 +593,7 @@ export function Precedents() {
   }
 
   async function pickBulkFiles() {
+    setPickBusy(true);
     setError(null);
     try {
       const picked = await openFiles({
@@ -604,10 +611,13 @@ export function Precedents() {
       setBulkReport(null);
     } catch (e) {
       setError(toApiError(e));
+    } finally {
+      setPickBusy(false);
     }
   }
 
   async function pickManifest() {
+    setPickBusy(true);
     setError(null);
     try {
       const picked = await openFiles({
@@ -620,6 +630,8 @@ export function Precedents() {
       setBulkReport(null);
     } catch (e) {
       setError(toApiError(e));
+    } finally {
+      setPickBusy(false);
     }
   }
 
@@ -676,6 +688,9 @@ export function Precedents() {
   }
 
   async function reviewMeaning(id: string, review: string) {
+    // Hukuki karar tek uçuşta yazılır: düğmeler uçuş boyunca kapalı, ikinci
+    // tık ikinci bir hüküm göndermez.
+    setReviewBusy(true);
     setError(null);
     // Kabul/ret, istek anındaki belge sürümünün listesini tazeler.
     const vid = versionId;
@@ -691,6 +706,8 @@ export function Precedents() {
       }
     } catch (e) {
       setError(toApiError(e));
+    } finally {
+      setReviewBusy(false);
     }
   }
 
@@ -822,12 +839,12 @@ export function Precedents() {
           </div>
         </div>
         <div className="row">
-          <button className="btn" disabled={bulkBusy} onClick={() => void pickBulkFiles()}>
+          <button className="btn" disabled={pickBusy || bulkBusy} onClick={() => void pickBulkFiles()}>
             {bulkFiles.length === 0
               ? t("precedents.bulkPick")
               : t("precedents.bulkPicked", { count: bulkFiles.length })}
           </button>
-          <button className="btn ghost" disabled={bulkBusy} onClick={() => void pickManifest()}>
+          <button className="btn ghost" disabled={pickBusy || bulkBusy} onClick={() => void pickManifest()}>
             {manifestPath
               ? t("precedents.bulkManifestChosen", {
                   name: manifestPath.split("/").pop() ?? "",
@@ -945,7 +962,13 @@ export function Precedents() {
                   id="corpus-mode"
                   className="input"
                   value={corpusMode}
-                  onChange={(e) => setCorpusMode(e.target.value as "permitted_only" | "all")}
+                  disabled={corpusBusy}
+                  onChange={(e) => {
+                    setCorpusMode(e.target.value as "permitted_only" | "all");
+                    // Sonuç hangi kiple yazıldığını taşımıyor: kip değişince
+                    // önceki aktarımın yeşil satırı ekranda kalmaz.
+                    setCorpusResult(null);
+                  }}
                 >
                   <option value="permitted_only">{t("precedents.modePermitted")}</option>
                   <option value="all">{t("precedents.modeAll")}</option>
@@ -1530,13 +1553,13 @@ export function Precedents() {
                       />
                     </div>
                     <div className="row" style={{ gap: 6 }}>
-                      <button className="btn" onClick={() => void reviewMeaning(check.id, "accurate")}>
+                      <button className="btn" disabled={reviewBusy} onClick={() => void reviewMeaning(check.id, "accurate")}>
                         {t("precedents.meaningAccurate")}
                       </button>
-                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "misleading")}>
+                      <button className="btn ghost" disabled={reviewBusy} onClick={() => void reviewMeaning(check.id, "misleading")}>
                         {t("precedents.meaningMisleading")}
                       </button>
-                      <button className="btn ghost" onClick={() => void reviewMeaning(check.id, "off_context")}>
+                      <button className="btn ghost" disabled={reviewBusy} onClick={() => void reviewMeaning(check.id, "off_context")}>
                         {t("precedents.meaningOffContext")}
                       </button>
                     </div>
