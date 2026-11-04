@@ -90,6 +90,32 @@ export function Settings() {
     };
   }, [unlocked]);
 
+  /**
+   * Klasör seçici. Pencere açılamazsa sessiz kalmaz: seçim yapılmadığı
+   * ekranda görünür (E_DIALOG) — düğmeye basıp hiçbir şey olmaması yalan olurdu.
+   */
+  async function pickDirectory(title: string): Promise<string | null> {
+    try {
+      const picked = await openDirectory({ directory: true, multiple: false, title });
+      return typeof picked === "string" ? picked : null;
+    } catch {
+      setError({ code: "E_DIALOG", message: t("settings.pickDirFailed"), retryable: true });
+      return null;
+    }
+  }
+
+  /**
+   * Yedek seçimi **onay metnine bağlıdır**: onay, görünen hedef için yazılmış
+   * bir irade beyanıdır. Seçim değişince metin silinir — aksi hâlde bir yedek
+   * için yazılan "GERİ DÖN" başka bir (belki de yanlış sürümlü) yedeği geri
+   * koymaya yetki verirdi.
+   */
+  function selectBackup(fileName: string) {
+    setPreUpdateSelected(fileName);
+    setRollbackDone(null);
+    setRollbackConfirm("");
+  }
+
   async function refreshPreUpdate() {
     setBusy(true);
     setError(null);
@@ -97,7 +123,7 @@ export function Settings() {
       const list = await api.vaultPreUpdateBackups();
       setPreUpdate(list);
       setPreUpdateLoaded(true);
-      setPreUpdateSelected(list.find((b) => b.usable)?.fileName ?? "");
+      selectBackup(list.find((b) => b.usable)?.fileName ?? "");
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -118,10 +144,21 @@ export function Settings() {
       const result = await api.vaultRollbackPreUpdate(preUpdateSelected, rollbackConfirm);
       setRollbackDone(result);
       setRollbackConfirm("");
-      setStatus(await api.status());
-      const list = await api.vaultPreUpdateBackups();
-      setPreUpdate(list);
-      setPreUpdateSelected(list.find((b) => b.usable)?.fileName ?? "");
+      // Tazeleme ayrı kapıda: geri dönüş **gerçekleşti**, panel korunur.
+      try {
+        setStatus(await api.status());
+        const list = await api.vaultPreUpdateBackups();
+        setPreUpdate(list);
+        setPreUpdateSelected(list.find((b) => b.usable)?.fileName ?? "");
+      } catch (e) {
+        // Fail-closed: liste artık **bilinmiyor** (kullanılan yedek diskte
+        // olmayabilir). Eski satırları seçilebilir bırakmak, ikinci bir geri
+        // dönüşü var olmayan/yanlış bir ada göndermek olurdu.
+        setPreUpdate([]);
+        setPreUpdateSelected("");
+        setRollbackConfirm("");
+        setError(toApiError(e));
+      }
     } catch (e) {
       // Hata mesajı çekirdekten gelir: geri dönüş başlamadıysa kasa açık kalır,
       // E_DB_ROLLBACK_REOPEN ise hangi sürümün geri konduğunu yazar.
@@ -133,8 +170,8 @@ export function Settings() {
   }
 
   async function runBackup() {
-    const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.pickDirTitle") });
-    if (typeof picked !== "string") return;
+    const picked = await pickDirectory(t("settings.pickDirTitle"));
+    if (picked === null) return;
     // Yeni deneme başlarken önceki sonucun künyesi silinir: başarısız yedekten
     // sonra "Yedek hazır: <eski yol>" satırı kırmızı hatayla birlikte kalmamalı.
     setBackup(null);
@@ -158,14 +195,18 @@ export function Settings() {
       setError({ code: "E_PASSWORD_MISMATCH", message: t("settings.passwordMismatch"), retryable: false });
       return;
     }
+    const submitted = { old: oldPassword, next: newPassword, next2: newPassword2 };
     setBusy(true);
     setError(null);
     try {
-      await api.vaultChangePassword(oldPassword, newPassword);
+      await api.vaultChangePassword(submitted.old, submitted.next);
       setPasswordChanged(true);
-      setOldPassword("");
-      setNewPassword("");
-      setNewPassword2("");
+      // Alanlar yalnız **gönderilen değer** hâlâ oradaysa temizlenir: uçuş
+      // sürerken yazılan yeni parola sessizce silinmemeli (kullanıcı yeni bir
+      // deneme yazıyor olabilir).
+      setOldPassword((value) => (value === submitted.old ? "" : value));
+      setNewPassword((value) => (value === submitted.next ? "" : value));
+      setNewPassword2((value) => (value === submitted.next2 ? "" : value));
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -189,8 +230,8 @@ export function Settings() {
   }
 
   async function runRestore() {
-    const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.pickDirTitle") });
-    if (typeof picked !== "string") {
+    const picked = await pickDirectory(t("settings.pickDirTitle"));
+    if (picked === null) {
       return;
     }
     setRestoreDir(picked);
@@ -298,10 +339,7 @@ export function Settings() {
               name="pre-update-backup"
               checked={preUpdateSelected === item.fileName}
               disabled={!item.usable || busy}
-              onChange={() => {
-                setPreUpdateSelected(item.fileName);
-                setRollbackDone(null);
-              }}
+              onChange={() => selectBackup(item.fileName)}
             />
             <span style={{ flex: 1 }}>
               <strong>{backupVersionLabel(item)}</strong>{" "}
@@ -415,7 +453,7 @@ export function Settings() {
           </div>
         ) : (
           <p className="hint" style={{ margin: 0 }}>
-            {t("settings.backupLocked")}
+            {status?.unlocked ? t("settings.backupNone") : t("settings.backupLocked")}
           </p>
         )}
       </div>
@@ -429,8 +467,8 @@ export function Settings() {
           <button
             className="btn"
             onClick={async () => {
-              const picked = await openDirectory({ directory: true, multiple: false, title: t("settings.backupPick") });
-              if (typeof picked !== "string") return;
+              const picked = await pickDirectory(t("settings.backupPick"));
+              if (picked === null) return;
               localStorage.setItem(BACKUP_DIR_KEY, picked);
               localStorage.setItem(BACKUP_DAYS_KEY, "7");
               setAutoBackup(readBackupSettings());
@@ -587,7 +625,12 @@ export function Settings() {
               type="password"
               autoComplete="current-password"
               value={oldPassword}
-              onChange={(e) => setOldPassword(e.target.value)}
+              onChange={(e) => {
+                setOldPassword(e.target.value);
+                // Yazılan yeni parola, önceki değişimin "değiştirildi" satırını
+                // güncel sonuçmuş gibi bırakmaz.
+                setPasswordChanged(false);
+              }}
             />
           </div>
           <div className="field" style={{ flex: "1 1 200px" }}>
@@ -598,7 +641,10 @@ export function Settings() {
               type="password"
               autoComplete="new-password"
               value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                setPasswordChanged(false);
+              }}
             />
           </div>
           <div className="field" style={{ flex: "1 1 200px" }}>
@@ -609,7 +655,10 @@ export function Settings() {
               type="password"
               autoComplete="new-password"
               value={newPassword2}
-              onChange={(e) => setNewPassword2(e.target.value)}
+              onChange={(e) => {
+                setNewPassword2(e.target.value);
+                setPasswordChanged(false);
+              }}
             />
           </div>
         </div>

@@ -1004,6 +1004,8 @@ export const tr = {
     backupSummary: "{count} dosya · {size} · manifest {hash}…",
     backupArchive: "Tek dosya:",
     backupLocked: "Kasa kilitliyken yedek alınamaz. Yedeği kasa dosyasından ayrı bir diskte saklayın.",
+    backupNone: "Henüz yedek alınmadı. Yedeği kasa dosyasından ayrı bir diskte saklayın.",
+    pickDirFailed: "Klasör seçici açılamadı; seçim yapılmadı.",
     autoTitle: "Otomatik yedek",
     autoSub: "Klasör seçilirse kasa açıkken süresi dolunca yedek alınır; sonuç kayda geçer.",
     autoPick: "Klasör seç",

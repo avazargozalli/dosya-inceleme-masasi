@@ -44,6 +44,24 @@
 //     denemesinde yeşil "Parola değiştirildi" bildirimi kırmızı hatayla birlikte
 //     ekranda kalıyordu.
 // 18. Parola düşerse yazılanlar korunur ve hata kodu yazılır.
+//
+// Uçuş yolları (2026-11-04, F16-T03 ek turu):
+// 19. **Ölçülen kusur (F):** onay metni seçilen yedeğe bağlı değildi — bir yedek
+//     için yazılan "GERİ DÖN" başka yedeğe geçilince de düğmeyi açık tutuyor,
+//     tek tıkla **başka** yedek geri konabiliyordu. Seçim değişince metin düşer.
+// 20. **Ölçülen kusur (G):** "Yedekleri tara" seçimi (ilk kullanılabilir yedek)
+//     değiştirse de yazılan onay kalıyordu; aynı kapı taramada da geçerli.
+// 21. **Ölçülen kusur (H):** geri dönüş başarılı olup liste tazelenemezse eski
+//     satırlar seçilebilir kalıyordu (kullanılmış yedek yeniden hedef olabilir);
+//     liste fail-closed boşaltılır, "tamamlandı" paneli korunur.
+// 22. **Ölçülen kusur (I):** parola değişimi uçuşta iken yazılan yeni değerler
+//     başarı yanıtıyla siliniyordu; artık yalnız gönderilen değerler temizlenir.
+// 23. **Ölçülen kusur (J):** parola başarı satırı alan değişince kalkmıyordu.
+// 24. **Ölçülen kusur (K):** açık kasada yedek kartı "Kasa kilitliyken yedek
+//     alınamaz" yazıyordu (durum yalanı).
+// 25. **Ölçülen kusur (L):** klasör seçici açılamazsa ekranda hiçbir şey
+//     olmuyordu (sessiz başarısızlık); artık E_DIALOG yazılır, istek gitmez.
+
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -797,5 +815,219 @@ describe("ayarlar ekranı davranışı", () => {
     expect(byId<HTMLInputElement>("pw-old").value).toBe("yanlis-parola");
     expect(byId<HTMLInputElement>("pw-new").value).toBe("1234567890");
     expect(notices().join("\n")).not.toContain(t("settings.passwordDone"));
+  });
+});
+
+/* ------------------------------------------------------- uçuş yolları (F16-T03) */
+
+/** Elle çözülen söz: yanıt askıdayken ekranın ne yaptığını ölçmek için. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function rollbackSubmit(): HTMLButtonElement {
+  return within(cardOf(t("settings.rollbackTitle"))).getByRole("button", {
+    name: t("settings.rollbackSubmit"),
+  }) as HTMLButtonElement;
+}
+
+describe("ayarlar ekranı uçuş yolları", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("onay metni seçilen yedeğe bağlıdır: hedef değişince yeniden yazılmalı", async () => {
+    setup({ backups: [B_OK, B_RENAMED] });
+    expect(await screen.findByText(B_RENAMED.fileName)).toBeTruthy();
+
+    // A (ilk kullanılabilir) seçili; onay A için yazıldı.
+    fireEvent.change(byId("rollback-confirm"), { target: { value: t("rollback.confirmToken") } });
+    expect(rollbackSubmit().disabled).toBe(false);
+
+    // Hedef B'ye çevrilir: yazılan onay B için verilmemiş bir irade beyanıdır.
+    fireEvent.click(within(radioRow(B_RENAMED.fileName)).getByRole("radio"));
+    expect(byId<HTMLInputElement>("rollback-confirm").value).toBe("");
+    expect(rollbackSubmit().disabled).toBe(true);
+    fireEvent.click(rollbackSubmit());
+    expect(mocks.vaultRollbackPreUpdate).not.toHaveBeenCalled();
+
+    // Yeniden yazılınca istek **B** için gider.
+    mocks.vaultRollbackPreUpdate.mockResolvedValue({
+      ...ROLLBACK_RESULT,
+      backupFile: B_RENAMED.fileName,
+    });
+    fireEvent.change(byId("rollback-confirm"), { target: { value: t("rollback.confirmToken") } });
+    expect(rollbackSubmit().disabled).toBe(false);
+    fireEvent.click(rollbackSubmit());
+    await waitFor(() =>
+      expect(mocks.vaultRollbackPreUpdate).toHaveBeenCalledWith(
+        B_RENAMED.fileName,
+        t("rollback.confirmToken"),
+      ),
+    );
+  });
+
+  it("yeniden tarama seçimi değiştirirse yazılan onay düşer", async () => {
+    setup({ backups: [B_OK] });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    fireEvent.change(byId("rollback-confirm"), { target: { value: t("rollback.confirmToken") } });
+    expect(rollbackSubmit().disabled).toBe(false);
+
+    // Tarama başka bir kullanılabilir yedekle döner: seçim kendiliğinden B olur.
+    mocks.vaultPreUpdateBackups.mockResolvedValue([B_RENAMED]);
+    fireEvent.click(
+      within(cardOf(t("settings.rollbackTitle"))).getByRole("button", {
+        name: t("settings.scanBackups"),
+      }),
+    );
+
+    expect(await screen.findByText(B_RENAMED.fileName)).toBeTruthy();
+    expect(byId<HTMLInputElement>("rollback-confirm").value).toBe("");
+    expect(rollbackSubmit().disabled).toBe(true);
+  });
+
+  it("geri dönüş başarılı olup liste tazelenemezse eski satırlar seçilebilir kalmaz", async () => {
+    setup({ backups: [B_OK] });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    mocks.vaultRollbackPreUpdate.mockResolvedValue(ROLLBACK_RESULT);
+    mocks.vaultPreUpdateBackups.mockRejectedValue({
+      code: "E_IO",
+      message: "Yedek klasörü okunamadı.",
+      retryable: true,
+    });
+
+    fireEvent.change(byId("rollback-confirm"), { target: { value: t("rollback.confirmToken") } });
+    fireEvent.click(rollbackSubmit());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_IO");
+    // Liste bilinmiyor: satır kalmaz, hedef seçilemez, onay boş.
+    await waitFor(() =>
+      expect(
+        within(cardOf(t("settings.rollbackTitle"))).queryAllByRole("radio"),
+      ).toHaveLength(0),
+    );
+    const rollback = cardOf(t("settings.rollbackTitle"));
+    // Dosya adı yalnız **sonuç panelinde** (gerçekleşmiş işlemin künyesi) kalır;
+    // seçilebilir satır kalmadı.
+    expect(rollback.textContent).toContain(t("settings.rollbackEmpty"));
+    expect(within(rollback).queryAllByRole("radio")).toHaveLength(0);
+    // Liste boşken düğme hiç çizilmez: hedef yok.
+    expect(
+      within(rollback).queryByRole("button", { name: t("settings.rollbackSubmit") }),
+    ).toBeNull();
+    // İşlem gerçekten oldu: "tamamlandı" paneli ekranda kalır.
+    expect(notices().join("\n")).toContain(t("settings.rollbackDoneTitle"));
+  });
+
+  it("parola değişimi sürerken yazılan yeni değerler sessizce silinmez", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    const inFlight = deferred<undefined>();
+    mocks.vaultChangePassword.mockReturnValue(inFlight.promise);
+
+    fireEvent.change(byId("pw-old"), { target: { value: "eski-parola" } });
+    fireEvent.change(byId("pw-new"), { target: { value: "1234567890" } });
+    fireEvent.change(byId("pw-new2"), { target: { value: "1234567890" } });
+    fireEvent.click(
+      within(cardOf(t("settings.passwordTitle"))).getByRole("button", {
+        name: t("settings.passwordSubmit"),
+      }),
+    );
+    await waitFor(() => expect(mocks.vaultChangePassword).toHaveBeenCalledTimes(1));
+
+    // Uçuş sürerken kullanıcı yeni bir deneme yazıyor.
+    fireEvent.change(byId("pw-old"), { target: { value: "eski-parola-2" } });
+    fireEvent.change(byId("pw-new"), { target: { value: "yeni-parola-22" } });
+    fireEvent.change(byId("pw-new2"), { target: { value: "yeni-parola-22" } });
+
+    inFlight.resolve(undefined);
+    await waitFor(() => expect(notices().join("\n")).toContain(t("settings.passwordDone")));
+
+    expect(byId<HTMLInputElement>("pw-old").value).toBe("eski-parola-2");
+    expect(byId<HTMLInputElement>("pw-new").value).toBe("yeni-parola-22");
+    expect(byId<HTMLInputElement>("pw-new2").value).toBe("yeni-parola-22");
+  });
+
+  it("parola başarı bildirimi alan değişince kalkar, alanlar temizlenir", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    mocks.vaultChangePassword.mockResolvedValue(undefined);
+    fireEvent.change(byId("pw-old"), { target: { value: "eski-parola" } });
+    fireEvent.change(byId("pw-new"), { target: { value: "1234567890" } });
+    fireEvent.change(byId("pw-new2"), { target: { value: "1234567890" } });
+    fireEvent.click(
+      within(cardOf(t("settings.passwordTitle"))).getByRole("button", {
+        name: t("settings.passwordSubmit"),
+      }),
+    );
+
+    await waitFor(() => expect(notices().join("\n")).toContain(t("settings.passwordDone")));
+    expect(byId<HTMLInputElement>("pw-old").value).toBe("");
+    expect(byId<HTMLInputElement>("pw-new").value).toBe("");
+
+    // Yeni bir parola yazılmaya başlanınca eski başarı satırı güncel değildir.
+    fireEvent.change(byId("pw-old"), { target: { value: "baska-parola" } });
+    expect(notices().join("\n")).not.toContain(t("settings.passwordDone"));
+  });
+
+  it("açık kasada yedek kartı 'kasa kilitli' demez", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    const backupCard = cardOf(t("settings.backupTitle"));
+    expect(backupCard.textContent).toContain(t("settings.backupNone"));
+    expect(backupCard.textContent).not.toContain(t("settings.backupLocked"));
+  });
+
+  it("klasör seçici açılamazsa sessiz kalmaz ve istek üretmez", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    dialog.open.mockRejectedValue(new Error("seçici yok"));
+
+    fireEvent.click(
+      within(cardOf(t("settings.backupTitle"))).getByRole("button", {
+        name: t("settings.backupPick"),
+      }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DIALOG");
+    expect(alert.textContent).toContain(t("settings.pickDirFailed"));
+    expect(mocks.vaultBackup).not.toHaveBeenCalled();
+  });
+
+  it("geri yükleme seçicisi de düşerse sessiz kalmaz", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    dialog.open.mockRejectedValue(new Error("seçici yok"));
+
+    fireEvent.change(byId("restore-dest"), { target: { value: "/tmp/yeni-kasa" } });
+    fireEvent.click(
+      within(cardOf(t("settings.restoreTitle"))).getByRole("button", {
+        name: t("settings.restorePick"),
+      }),
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DIALOG");
+    expect(alert.textContent).toContain(t("settings.pickDirFailed"));
+    expect(mocks.vaultRestore).not.toHaveBeenCalled();
   });
 });
