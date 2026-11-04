@@ -155,3 +155,82 @@ bekleme), bu sırada **dosya seçici açık kalır** (kapılar ölçüldü). Pan
 kayıt. Bağlama/kaldırma başarılı olup tazeleme düşerse arayüz kırmızı hata yazar ve
 liste eski kalır (yazma gerçekleşmiş olabilir; dürüst, yeniden denenebilir). Kapsam
 dışı: klavye, Windows.
+
+## Görevler ekranı — yazma yolları ve uçuş kapıları (ek)
+
+`screens/Tasks.tsx` (299 satır, 17 test) bugüne dek kararları, çizimi ve bayat durumları
+ölçüyordu; **yazma yollarının uçuş davranışı** (hangi dosyaya/süzgeçe hangi yanıtın
+yazıldığı, uçuşta yazılan form metni, çift tık) hiç ölçülmemişti. **19 yeni test**
+(17 → 36).
+
+Ölçülen kusurlar (düzeltme öncesi bileşen, nihai 36 test: **19 failed | 17 passed** —
+on dokuzu da gerçek kusur; mevcut 17 test düzeltme öncesinde de yeşildi):
+
+1. **Sessiz kayıp (oluşturma):** `add()` başarısı başlık/tarih/politika alanlarını
+   **koşulsuz** temizliyordu → yanıt beklerken yazılan yeni görev taslağı siliniyordu.
+2. **Çapraz dosya yazımı (INV-05):** oluşturma sonrası tazeleme **tıklama anındaki**
+   dosyayla koşuyordu → uçuşta dosya değişince eski dosyanın listesi yeni dosyanın
+   ekranına yazılıyordu.
+3. **Geç hata:** oluşturma hatası dosya değiştikten sonra yeni dosyada görünüyordu.
+4. **Çift yazma ("Bitti"/"Sil"):** iki düğmede de uçuş kilidi yoktu → çift tık iki
+   `task_complete` / `task_delete` gönderiyordu.
+5. **Enter kilidi atlıyor:** `onKeyDown` `busy`yi sormuyordu → uçuşta ikinci
+   `task_create`.
+6. **Satır düğmeleri form yazması sürerken açıktı:** oluşturma uçuşunda "Bitti"/"Sil"
+   ikinci yazma gönderiyordu.
+7. **Donmuş süzgeç:** yazma sonrası tazeleme yakalanan `includeDone` ile koşuyordu →
+   uçuşta "Tamamlananlar" değişince liste eziliyordu.
+8. **Kilit devri yok:** dosya değişimi `busy`yi bırakmıyordu → yeni dosyanın "Ekle"
+   düğmesi eski isteğin dönmesini bekliyordu.
+9. **Erken açılan kilit:** eski yazmanın `finally`si koşulsuz `setBusy(false)`
+   çağırıyordu → yeni dosyada başlatılan yazmanın kilidini açıyordu.
+10. **Kuyruk yanıtı/hatası:** `taskRemindersEnqueue` yanıtı ve hatası dosya kapısı
+    taşımıyordu → geç yeşil "N hatırlatıcı yazıldı" ya da `E_DB` yeni dosyada.
+11. **Onay (tarih) yanıtı/hatası:** `taskConfirmDate` aynı kapıları atlıyordu.
+12. **Silme yanıtı/hatası:** `taskDelete` aynı kapıları atlıyordu.
+13. **Tamamlama yanıtı/hatası/kapanışı:** `taskComplete` aynı kapıları atlıyordu.
+
+Düzeltme (`Tasks.tsx` +65/−18): `caseRef` (dosya kimliği) + `doneRef` (o anki süzgeç);
+beş yazma yolu (oluştur/onayla/kuyruk/tamamla/sil) tek `busy` kilidine ve nesil
+sayacına (`busySeq`) bağlandı — yanıt yalnız isteğin dosyası hâlâ seçiliyse yazar,
+tazeleme o anki süzgeçle koşar, kapanış yalnız kendi neslinde kilidi bırakır;
+dosya/süzgeç değişimi kilidi devreder; oluşturma formu yalnız **gönderilen** değerler
+hâlâ ekrandaysa temizlenir; Enter yolu işleyici kapısından geçer; "Bitti"/"Sil"
+düğmeleri uçuşta kapalı.
+
+Testler: `Tasks.test.tsx` **17 → 36** (+19). Ham koşu (düzeltme öncesi bileşen, nihai
+36 test): **19 failed | 17 passed**.
+
+Kapı kanıtı: **19/19 tek kapı mutasyonu kırmızı**; geri yükleme sha256
+`4ae79c07fec6e7cdb934d78108c92e978baf8bf08f20ffd7e3f1f5e2acdcc204` birebir.
+M1 taslak koruması, M2 oluşturma başarı dosya kapısı, M3 oluşturma hata kapısı,
+M4/M5 "Bitti"/"Sil" düğme kilidi (2'şer test), M6 Enter kilidi, M7 tamamlama süzgeci,
+M8 kilit devri (**3**), M9 oluşturma kapanış nesli, M10/M11 kuyruk başarı/hata,
+M12/M13 onay başarı/hata, M14/M15 silme başarı/hata, M16/M17/M18 tamamlama
+başarı/hata/kapanış, M19 oluşturma tazeleme süzgeci. **Dürüst:** ilk yazımda
+`confirmDate`/`complete`/`remove`/`enqueue` işleyicilerinde ayrıca `if (busy) return;`
+ve effect'te `busySeq.current += 1` vardı; ikisi de tek başına mutasyonla **yeşil
+kaldı** (düğme `disabled` ve her yazmanın kendi nesli zaten kapsıyordu) → koddan
+çıkarıldı, yedekli kapı bırakılmadı. `doneRef` beş yolda aynı ifadedir; ikisi
+(oluşturma, tamamlama) ayrı testlerle ölçüldü, kalan üç yol aynı kodu taşır.
+
+Ölçüm: `tsc --noEmit` temiz · `vitest` **1062/1062** (60 dosya; 1043 → **+19**) ·
+`pnpm build` temiz (**585,05 kB**, `index-C8PZAXn7.js`, gzip **157,83 kB**; CSS
+`index-CPW4QqlF.css`). Rust değişmedi; rustfmt gerekmedi (Rust dosyası yok).
+
+**Kimlik:** şartnamedeki **F08-T10** (kullanıcı onaylı görev tarihi ve yerel
+hatırlatıcı); README tablosundaki numaralandırma şartnameden kayıktır.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek işaretçi
+çift tıklaması ve **görsel QA yok**; `api` mock'lu olduğu için `task_list`,
+`task_create`, `task_complete`, `task_delete`, `task_confirm_date`,
+`task_reminders_enqueue` SQL'i ve Rust **koşmaz**. `busy` **tek bayrak**: beş yazma
+yolu birbirini bekler (kuyruk değil; ikinci tıklama düğmede kapalı). Kilit devri
+**arayüz düzeyinde** — doğrudan IPC bu kapıları atlar. Çift tık `disabled` + işleyici
+kapısıyla ölçülür; gerçek işaretçi zamanlaması ölçülmedi.
+
+**Açık kayıt:** (a) dosya değişiminde form alanları korunur (kullanıcı girdisi) — eski
+dosya için yazılan başlık yeni dosyada durur; (b) aynı başlık yeniden yazıldıysa
+"değişmedi" sayılır ve alan temizlenir (bilinçli); (c) kuyruk başarısı yazılıp tazeleme
+düşerse yeşil satır + kırmızı hata birlikte görünür (ikisi de doğru); (d) görsel QA
+insan bekliyor.
