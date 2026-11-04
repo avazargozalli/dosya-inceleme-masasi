@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -51,6 +51,12 @@ export function Ai() {
   const [report, setReport] = useState<CandidateReport | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Uçuştaki yanıtlar **hangi bağlama** ait olduğunu taşır: dosya değişimi
+  // `caseGen`i, çalıştırma seçimi `runSeq`i artırır. Eski yanıt yeni bağlama
+  // yazılmaz (INV-05); yalnız kullanıcının açıkça istediği çekirdek yazısı gider.
+  const caseGen = useRef(0);
+  const runSeq = useRef(0);
+
   useEffect(() => {
     (async () => {
       try {
@@ -65,6 +71,8 @@ export function Ai() {
 
   useEffect(() => {
     if (!caseId) return;
+    caseGen.current += 1;
+    const gen = caseGen.current;
     // Dosya değişimi türetilmiş durumu **devralmaz** (INV-05): onay başka dosyanın
     // belgelerine aitti, önizleme/adaylar/seçili çalıştırma ve doğrulama raporu da
     // önceki dosyanın. Hepsi istekten **önce** silinir; aksi hâlde yeni dosyanın
@@ -79,8 +87,12 @@ export function Ai() {
     setError(null);
     void api
       .aiOverview(caseId)
-      .then(setOverview)
-      .catch((e) => setError(toApiError(e)));
+      .then((next) => {
+        if (caseGen.current === gen) setOverview(next);
+      })
+      .catch((e) => {
+        if (caseGen.current === gen) setError(toApiError(e));
+      });
   }, [caseId]);
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
@@ -90,6 +102,7 @@ export function Ai() {
 
   async function approve() {
     if (!provider) return;
+    const gen = caseGen.current;
     setBusy(true);
     setError(null);
     try {
@@ -97,12 +110,19 @@ export function Ai() {
       // gönderim yalnız onu kapsar; sonradan belge eklenirse yeniden onay gerekir.
       const docs = await api.documentList(caseId);
       const ids = docs.map((doc) => doc.id);
-      setPreview(await api.aiConsentPreview(caseId, ids));
-      setConsent(
-        await api.aiConsentCreate(caseId, `${provider.adapterId}@${provider.policyVersion}`, purpose, ids),
+      const nextPreview = await api.aiConsentPreview(caseId, ids);
+      if (caseGen.current !== gen) return;
+      setPreview(nextPreview);
+      const nextConsent = await api.aiConsentCreate(
+        caseId,
+        `${provider.adapterId}@${provider.policyVersion}`,
+        purpose,
+        ids,
       );
+      if (caseGen.current !== gen) return;
+      setConsent(nextConsent);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseGen.current === gen) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -110,28 +130,36 @@ export function Ai() {
 
   async function start() {
     if (!provider || !consent) return;
+    const gen = caseGen.current;
     setBusy(true);
     setError(null);
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
       await api.aiRunExecute(caseId, provider.id, consent.id, "summarize");
-      setOverview(await api.aiOverview(caseId));
+      const next = await api.aiOverview(caseId);
+      if (caseGen.current !== gen) return;
+      setOverview(next);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseGen.current === gen) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
   }
 
   async function loadCandidates(id: string) {
+    const gen = caseGen.current;
+    const seq = runSeq.current;
     try {
-      setCandidates(await api.aiCandidatesList(id));
+      const rows = await api.aiCandidatesList(id);
+      if (caseGen.current !== gen || runSeq.current !== seq) return;
+      setCandidates(rows);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseGen.current === gen && runSeq.current === seq) setError(toApiError(e));
     }
   }
 
   async function selectRun(id: string) {
+    runSeq.current += 1;
     setRunId(id);
     setReport(null);
     setNotice(null);
@@ -143,17 +171,23 @@ export function Ai() {
 
   async function validateDraft(persist: boolean) {
     if (!runId || draftError) return;
+    const gen = caseGen.current;
+    const seq = runSeq.current;
+    const forRun = runId;
     setBusy(true);
     setError(null);
     setNotice(null);
     // Düşen doğrulama önceki raporu "güncel" gibi bırakmaz.
     setReport(null);
     try {
-      const result = await api.aiCandidateValidate(runId, kind, draft);
-      setReport(result);
+      const result = await api.aiCandidateValidate(forRun, kind, draft);
+      const same = caseGen.current === gen && runSeq.current === seq;
+      if (same) setReport(result);
       if (persist) {
-        await api.aiCandidateRecord(runId, kind, draft);
-        await loadCandidates(runId);
+        // Kayıt kullanıcının açık isteğiydi: bağlam değişse de çekirdeğe gider.
+        await api.aiCandidateRecord(forRun, kind, draft);
+        if (!same) return;
+        await loadCandidates(forRun);
         setNotice(
           result.state === "valid"
             ? t("ai.noticeValid")
@@ -163,13 +197,15 @@ export function Ai() {
         );
       }
     } catch (e) {
-      setError(toApiError(e));
+      if (caseGen.current === gen && runSeq.current === seq) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
   }
 
   async function revalidate(candidateId: string) {
+    const gen = caseGen.current;
+    const seq = runSeq.current;
     setBusy(true);
     setError(null);
     try {
@@ -178,21 +214,52 @@ export function Ai() {
         rows.map((row) => (row.id === refreshed.id ? refreshed : row)),
       );
     } catch (e) {
-      setError(toApiError(e));
+      if (caseGen.current === gen && runSeq.current === seq) setError(toApiError(e));
     } finally {
       setBusy(false);
     }
   }
 
   async function promote(candidateId: string) {
+    const gen = caseGen.current;
     setError(null);
     setNotice(null);
     try {
       await api.aiCandidatePromote(candidateId, caseId);
+      if (caseGen.current !== gen) return;
       setNotice(t("ai.noticePromoted"));
     } catch (e) {
+      if (caseGen.current === gen) setError(toApiError(e));
+    }
+  }
+
+  async function showContent() {
+    const gen = caseGen.current;
+    try {
+      const docs = await api.documentList(caseId);
+      const next = await api.aiConsentPreview(caseId, docs.map((doc) => doc.id));
+      if (caseGen.current !== gen) return;
+      setPreview(next);
+    } catch (e) {
+      // Sessiz yutma yok: istek düştüyse söylenir ve eski önizleme silinir.
+      if (caseGen.current !== gen) return;
+      setPreview(null);
       setError(toApiError(e));
     }
+  }
+
+  async function revokeConsent() {
+    if (!consent) return;
+    const gen = caseGen.current;
+    const target = consent.id;
+    try {
+      await api.aiConsentRevoke(target);
+    } catch (e) {
+      if (caseGen.current === gen) setError(toApiError(e));
+      return;
+    }
+    // Geç dönen iptal, bu arada alınmış **yeni** onayı silmez.
+    setConsent((cur) => (cur && cur.id === target ? null : cur));
   }
 
   return (
@@ -255,19 +322,7 @@ export function Ai() {
             <button className="btn" disabled={!provider || busy} onClick={() => void approve()}>
               {t("ai.approve")}
             </button>
-            <button
-              className="btn ghost"
-              onClick={async () => {
-                try {
-                  const docs = await api.documentList(caseId);
-                  setPreview(await api.aiConsentPreview(caseId, docs.map((doc) => doc.id)));
-                } catch (e) {
-                  // Sessiz yutma yok: istek düştüyse söylenir ve eski önizleme silinir.
-                  setPreview(null);
-                  setError(toApiError(e));
-                }
-              }}
-            >
+            <button className="btn ghost" onClick={() => void showContent()}>
               {t("ai.showContent")}
             </button>
             <button className="btn primary" disabled={!provider || !consent || busy} onClick={() => void start()}>
@@ -310,12 +365,7 @@ export function Ai() {
             <button
               className="btn ghost"
               style={{ marginLeft: 8 }}
-              onClick={() =>
-                void api
-                  .aiConsentRevoke(consent.id)
-                  .then(() => setConsent(null))
-                  .catch((e) => setError(toApiError(e)))
-              }
+              onClick={() => void revokeConsent()}
             >
               {t("ai.revoke")}
             </button>
