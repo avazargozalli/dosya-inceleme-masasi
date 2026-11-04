@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   toApiError,
@@ -53,6 +53,15 @@ function ruleFor(draft: Draft): string | null {
   });
 }
 
+/** Taslak, sunucudaki satırdan farklı mı? (kaydet kapısı **ve** tazeleme koruması aynı kural) */
+function isDraftDirty(draft: Draft, item: CaseChecklistItemRow): boolean {
+  return (
+    draft.state !== item.state ||
+    draft.note.trim() !== item.note ||
+    !sameLinks(draft.links, item.linkedDocumentIds)
+  );
+}
+
 export function Checklists() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -64,6 +73,17 @@ export function Checklists() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [conflictItem, setConflictItem] = useState<string | null>(null);
+
+  /** Okuma nesli: her yükleme başında artar; geç yanıt (başarı **ve** hata) yazmaz. */
+  const loadSeq = useRef(0);
+  /** Uçuştaki yazmanın kilidini devretmek için: yeni dosya eski isteği beklemez. */
+  const busySeq = useRef(0);
+  /** Taslağın hangi sunucu satırından türediği: "kirli" kararı buna göre verilir. */
+  const itemsRef = useRef<CaseChecklistItemRow[]>([]);
+  // İsteğin hangi dosya için başladığını yanıt anında karşılaştırmak üzere render
+  // değeri ref'e yazılır: effect'i beklemek, arada gelen yanıtı eski dosyaya yazardı.
+  const caseRef = useRef(caseId);
+  caseRef.current = caseId;
 
   useEffect(() => {
     (async () => {
@@ -77,8 +97,13 @@ export function Checklists() {
     })();
   }, []);
 
-  const load = useCallback(async (id: string) => {
-    if (!id) return;
+  const load = useCallback(async (id: string, keepLocalEdits = true) => {
+    if (!id) {
+      // Dosya seçimi kalktıysa askıdaki okuma da geçersizdir.
+      loadSeq.current += 1;
+      return;
+    }
+    const seq = ++loadSeq.current;
     // Tazeleme hatası ekranda kalırsa çelişkili görünüm olur ("Güncel kaydı yükle"
     // başarılı olsa da kırmızı `E_ROW_VERSION` dururdu); her yükleme hatayı siler.
     setError(null);
@@ -88,28 +113,51 @@ export function Checklists() {
         api.checklistTemplates(id),
         api.checklistItems(id),
       ]);
+      if (seq !== loadSeq.current) return;
+      // Taslak hangi satırdan türediydi: "kirli" karşılaştırması **eski** sunucu
+      // satırına göre yapılır, yeni yanıta göre değil — yoksa sunucudaki her
+      // değişiklik "kullanıcı düzenledi" sanılır ve tazeleme hiç yazmaz.
+      const baseRows = new Map(itemsRef.current.map((row) => [row.id, row]));
       setDocuments(docRows);
       setTemplates(templateRows);
       setItems(itemRows);
-      setDrafts(Object.fromEntries(itemRows.map((item) => [item.id, draftOf(item)])));
+      itemsRef.current = itemRows;
+      // Tazeleme, uçuşta yazılan taslakları **silmez**: yalnız taban satırıyla
+      // aynı olan taslak tazelenir; kullanıcının değiştirdiği (kirli) taslak korunur.
+      // "Güncel kaydı yükle" (keepLocalEdits=false) bilinçli istisnadır.
+      setDrafts((prev) => {
+        const next: Record<string, Draft> = {};
+        for (const item of itemRows) {
+          const server = draftOf(item);
+          const local = prev[item.id];
+          const base = baseRows.get(item.id);
+          next[item.id] = keepLocalEdits && local && base && isDraftDirty(local, base) ? local : server;
+        }
+        return next;
+      });
       setConflictItem(null);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError(toApiError(e));
     }
   }, []);
 
   useEffect(() => {
-    if (!caseId) return;
     // Dosya değişince türetilmiş durum **istekten önce** temizlenir: aksi halde
     // askıda/düşen istekte önceki dosyanın maddeleri ekranda kalır ve "Kaydet"
     // o dosyanın maddesini yeni dosya seçiliyken yazabilir (INV-05).
     setDocuments([]);
     setTemplates([]);
     setItems([]);
+    itemsRef.current = [];
     setDrafts({});
     setNotice("");
     setConflictItem(null);
-    void load(caseId);
+    // Uçuştaki yazmanın kilidi devredilir: yeni dosyanın düğmeleri eski isteğin
+    // dönmesini beklemez. Bayat yanıtlar `caseRef` kapısından yazmaz; eski yazmanın
+    // `finally`si de `busySeq` kapısından yeni kilidi açamaz.
+    setBusy(false);
+    void load(caseId, false);
   }, [caseId, load]);
 
   function updateDraft(item: CaseChecklistItemRow, patch: Partial<Draft>) {
@@ -134,13 +182,18 @@ export function Checklists() {
   }
 
   async function copyTemplate(template: ChecklistTemplateRow) {
+    // İstek, tıklandığı andaki dosya için gider; yanıt yalnız o dosya hâlâ
+    // seçiliyse yazılır (dosya değiştiyse ne bildirim ne tazeleme yeni dosyaya düşer).
+    const target = caseId;
+    const seq = ++busySeq.current;
     setBusy(true);
     setError(null);
     // Yeni işlem başlarken önceki başarı bildirimi silinir; başarısız işlemle
     // birlikte yeşil "kopyalandı" satırı ekranda kalmaz.
     setNotice("");
     try {
-      const result = await api.checklistCopy(caseId, template.id);
+      const result = await api.checklistCopy(target, template.id);
+      if (caseRef.current !== target) return;
       setNotice(
         result.created
           ? t("checklists.noticeCopied", {
@@ -151,15 +204,19 @@ export function Checklists() {
             })
           : t("checklists.noticeAlready", { title: result.templateTitle }),
       );
-      await load(caseId);
+      await load(target);
     } catch (e) {
+      if (caseRef.current !== target) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      // Yalnız kendi uçuşu hâlâ güncelse kilidi bırakır: dosya değişiminde kilit
+      // devredilir, yeni dosyada başlatılan işlemin kilidi erken açılmaz.
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
   async function save(item: CaseChecklistItemRow) {
+    const target = caseId;
     const draft = drafts[item.id] ?? draftOf(item);
     setNotice("");
     const rule = ruleFor(draft);
@@ -167,6 +224,7 @@ export function Checklists() {
       setError({ code: "E_CHECKLIST_RULE", message: rule, retryable: false });
       return;
     }
+    const seq = ++busySeq.current;
     setBusy(true);
     setError(null);
     try {
@@ -177,14 +235,18 @@ export function Checklists() {
         draft.note,
         item.rowVersion,
       );
-      await load(caseId);
+      if (caseRef.current !== target) return;
+      await load(target);
+      // Tazeleme sırasında dosya değiştiyse bildirim yeni dosyaya yazılmaz.
+      if (caseRef.current !== target) return;
       setNotice(t("checklists.noticeUpdated", { item: item.itemText }));
     } catch (e) {
+      if (caseRef.current !== target) return;
       const apiError = toApiError(e);
       if (apiError.code === "E_ROW_VERSION") setConflictItem(item.id);
       setError(apiError);
     } finally {
-      setBusy(false);
+      if (seq === busySeq.current) setBusy(false);
     }
   }
 
@@ -204,7 +266,7 @@ export function Checklists() {
             <button
               className="btn ghost"
               style={{ marginLeft: 8 }}
-              onClick={() => void load(caseId)}
+              onClick={() => void load(caseId, false)}
             >
               {t("checklists.reload")}
             </button>
@@ -347,10 +409,7 @@ export function Checklists() {
               const rule = ruleFor(draft);
               const knownDocs = new Set(documents.map((document) => document.id));
               const staleLinks = draft.state === "present" ? draft.links.filter((id) => !knownDocs.has(id)) : [];
-              const dirty =
-                draft.state !== item.state ||
-                draft.note.trim() !== item.note ||
-                !sameLinks(draft.links, item.linkedDocumentIds);
+              const dirty = isDraftDirty(draft, item);
               return (
                 <div
                   key={item.id}

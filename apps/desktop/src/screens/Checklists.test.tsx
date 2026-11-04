@@ -27,7 +27,7 @@
 // 11. **Ölçülen kusur:** yeni işlem başlarken önceki yeşil bildirim silinmiyordu →
 //     başarısız kayıtla birlikte "«…» güncellendi." aynı ekranda görünüyordu.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../lib/i18n";
 import type {
@@ -785,3 +785,443 @@ describe("kontrol listesi ekranı davranışı", () => {
     expect(screen.getByText(t("checklists.empty"))).toBeTruthy();
   });
 });
+
+/* ------------------------------------------------------------------- uçuş yolları */
+
+type CopyResult = {
+  created: boolean;
+  itemCount: number;
+  templateId: string;
+  templateTitle: string;
+  templateVersion: number;
+  licenseId: string | null;
+  contentHash: string;
+};
+
+const DOC_P2 = documentRow({ id: "d20", caseId: "p2", displayName: "İddianame.pdf" });
+const TPL_P2: ChecklistTemplateRow = {
+  ...TPL2,
+  id: "tpl:ceza:v1",
+  title: "Ceza kontrol listesi",
+  copiedItemCount: 0,
+  itemCount: 1,
+};
+const ITEM_P2 = itemRow({ id: "i9", caseId: "p2", itemText: "İddianame tebliğ edildi mi?" });
+
+/** Başlık satırları sunucudan gelene kadar bekler (dosya seçici dolu mu?). */
+async function caseSelected(id: string, title: string) {
+  await screen.findByRole("option", { name: title });
+  await waitFor(() => expect(byId<HTMLSelectElement>("checklist-case").value).toBe(id));
+}
+
+describe("kontrol listesi uçuş yolları", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("geç gelen dosya yanıtı yeni dosyanın maddelerini, kataloğunu ve belgelerini ezmez", async () => {
+    const p1Docs = deferred<DocumentRow[]>();
+    const p1Templates = deferred<ChecklistTemplateRow[]>();
+    const p1Items = deferred<CaseChecklistItemRow[]>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? p1Docs.promise : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? p1Templates.promise : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? p1Items.promise : [ITEM_P2]),
+    });
+
+    await caseSelected("p1", P1.title);
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+    expect(screen.getByText(TPL_P2.title)).toBeTruthy();
+
+    // p1'in yanıtı **sonra** gelir: yeni dosyanın ekranına yazmamalı.
+    await act(async () => {
+      p1Docs.resolve([D1, D2]);
+      p1Templates.resolve([TPL1]);
+      p1Items.resolve([I1, I2, I3]);
+    });
+
+    expect(screen.queryByText(I1.itemText)).toBeNull();
+    expect(screen.queryByText(TPL1.title)).toBeNull();
+    expect(screen.queryByText(D1.displayName)).toBeNull();
+    expect(screen.getByText(ITEM_P2.itemText)).toBeTruthy();
+    expect(byId<HTMLSelectElement>("checklist-case").value).toBe("p2");
+    expect(
+      screen.getByText(
+        t("checklists.summary", {
+          total: 1,
+          open: 1,
+          present: 0,
+          missing: 0,
+          notApplicable: 0,
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
+  it("geç gelen dosya hatası yeni dosyanın ekranına yazılmaz", async () => {
+    const p1Items = deferred<CaseChecklistItemRow[]>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? p1Items.promise : [ITEM_P2]),
+    });
+
+    await caseSelected("p1", P1.title);
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+
+    await act(async () => {
+      p1Items.reject({ code: "E_DB", message: "Liste okunamadı.", retryable: true });
+    });
+
+    expect(screen.queryByText("E_DB")).toBeNull();
+    expect(screen.getByText(ITEM_P2.itemText)).toBeTruthy();
+  });
+
+  it("kopyalama uçuşta dosya değişirse yanıt yeni dosyaya yazılmaz", async () => {
+    const copy = deferred<CopyResult>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistCopy.mockReturnValue(copy.promise);
+
+    await screen.findByText(TPL1.title);
+    fireEvent.click(
+      within(catalogRowOf(TPL1.title)).getByRole("button", { name: t("checklists.copyToCase") }),
+    );
+    await waitFor(() => expect(mocks.checklistCopy).toHaveBeenCalledWith("p1", TPL1.id));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+
+    await act(async () => {
+      copy.resolve({
+        created: true,
+        itemCount: 3,
+        templateId: TPL1.id,
+        templateTitle: TPL1.title,
+        templateVersion: 2,
+        licenseId: "CC-BY-4.0",
+        contentHash: TPL1.contentHash,
+      });
+    });
+
+    // Ne "kopyalandı" bildirimi ne de p1'in tazelenmiş listesi yeni dosyada görünür.
+    expect(
+      screen.queryByText(
+        t("checklists.noticeCopied", {
+          title: TPL1.title,
+          version: 2,
+          count: 3,
+          license: "CC-BY-4.0",
+        }),
+      ),
+    ).toBeNull();
+    expect(screen.queryByText(I1.itemText)).toBeNull();
+    expect(screen.getByText(ITEM_P2.itemText)).toBeTruthy();
+  });
+
+  it("kopyalama hatası uçuşta dosya değişirse yeni dosyaya yazılmaz", async () => {
+    const copy = deferred<CopyResult>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistCopy.mockReturnValue(copy.promise);
+
+    await screen.findByText(TPL1.title);
+    fireEvent.click(
+      within(catalogRowOf(TPL1.title)).getByRole("button", { name: t("checklists.copyToCase") }),
+    );
+    await waitFor(() => expect(mocks.checklistCopy).toHaveBeenCalledTimes(1));
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+
+    await act(async () => {
+      copy.reject({ code: "E_COPY", message: "Şablon kopyalanamadı.", retryable: true });
+    });
+
+    expect(screen.queryByText("E_COPY")).toBeNull();
+    expect(screen.getByText(ITEM_P2.itemText)).toBeTruthy();
+  });
+
+  it("kaydetme uçuşta dosya değişirse bildirim ve tazeleme yeni dosyaya taşınmaz", async () => {
+    const saving = deferred<CaseChecklistItemRow>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistItemState.mockReturnValue(saving.promise);
+
+    await screen.findByText(I1.itemText);
+    fireEvent.change(byId<HTMLInputElement>("note-i1"), { target: { value: "p1 notu" } });
+    fireEvent.click(
+      within(itemRowOf(I1.itemText)).getByRole("button", { name: t("common.save") }),
+    );
+    await waitFor(() => expect(mocks.checklistItemState).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+
+    await act(async () => {
+      saving.resolve({ ...I1, note: "p1 notu", rowVersion: 2 });
+    });
+
+    expect(screen.queryByText(t("checklists.noticeUpdated", { item: I1.itemText }))).toBeNull();
+    expect(screen.queryByText(I1.itemText)).toBeNull();
+    expect(screen.getByText(ITEM_P2.itemText)).toBeTruthy();
+  });
+
+  it("kaydetme hatası uçuşta dosya değişirse yeni dosyada çakışma kapısı açmaz", async () => {
+    const saving = deferred<CaseChecklistItemRow>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistItemState.mockReturnValue(saving.promise);
+
+    await screen.findByText(I1.itemText);
+    fireEvent.change(byId<HTMLInputElement>("note-i1"), { target: { value: "çakışan not" } });
+    fireEvent.click(
+      within(itemRowOf(I1.itemText)).getByRole("button", { name: t("common.save") }),
+    );
+    await waitFor(() => expect(mocks.checklistItemState).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+
+    await act(async () => {
+      saving.reject({
+        code: "E_ROW_VERSION",
+        message: "Kayıt başka pencerede değişti.",
+        retryable: false,
+      });
+    });
+
+    expect(screen.queryByText("E_ROW_VERSION")).toBeNull();
+    expect(screen.queryByRole("button", { name: t("checklists.reload") })).toBeNull();
+  });
+
+  it("arka plan tazelemesi uçuşta yazılan taslağı silmez", async () => {
+    let itemCalls = 0;
+    setup({
+      items: async () => {
+        itemCalls += 1;
+        if (itemCalls === 1) return [I1, I3];
+        return [{ ...I1, note: "kaydedilen", rowVersion: 2 }, I3];
+      },
+    });
+
+    await screen.findByText(I1.itemText);
+    // Uçuşta **başka** maddeye not yazılır (kaydedilmemiş).
+    fireEvent.change(byId<HTMLInputElement>("note-i3"), { target: { value: "uçuşta yazıldı" } });
+    fireEvent.change(byId<HTMLInputElement>("note-i1"), { target: { value: "kaydedilen" } });
+    fireEvent.click(
+      within(itemRowOf(I1.itemText)).getByRole("button", { name: t("common.save") }),
+    );
+
+    await waitFor(() => expect(mocks.checklistItems).toHaveBeenCalledTimes(2));
+    // Kaydedilen satır sunucudan tazelenir; kirli taslak korunur.
+    expect(byId<HTMLInputElement>("note-i1").value).toBe("kaydedilen");
+    expect(byId<HTMLInputElement>("note-i3").value).toBe("uçuşta yazıldı");
+  });
+
+  it("tazeleme, değişmemiş taslağı sunucu değeriyle yeniler", async () => {
+    let itemCalls = 0;
+    setup({
+      items: async () => {
+        itemCalls += 1;
+        if (itemCalls === 1) return [I3];
+        return [{ ...I3, note: "sunucudaki gerekçe", rowVersion: 4 }];
+      },
+    });
+
+    await screen.findByText(TPL1.title);
+    expect(byId<HTMLInputElement>("note-i3").value).toBe(I3.note);
+
+    fireEvent.click(
+      within(catalogRowOf(TPL1.title)).getByRole("button", { name: t("checklists.copyToCase") }),
+    );
+
+    await waitFor(() => expect(mocks.checklistItems).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(byId<HTMLInputElement>("note-i3").value).toBe("sunucudaki gerekçe"));
+  });
+
+  it("dosya değişimi uçuştaki yazmanın kilidini devreder", async () => {
+    const copy = deferred<CopyResult>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistCopy.mockReturnValue(copy.promise);
+
+    await screen.findByText(TPL1.title);
+    fireEvent.click(
+      within(catalogRowOf(TPL1.title)).getByRole("button", { name: t("checklists.copyToCase") }),
+    );
+    await waitFor(() => expect(mocks.checklistCopy).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(TPL_P2.title)).toBeTruthy();
+
+    // Yeni dosyanın düğmesi eski isteğin dönmesini beklemez.
+    expect(
+      within(catalogRowOf(TPL_P2.title)).getByRole("button", { name: t("checklists.copyToCase") }),
+    ).toHaveProperty("disabled", false);
+    await act(async () => {
+      copy.resolve({
+        created: false,
+        itemCount: 1,
+        templateId: TPL1.id,
+        templateTitle: TPL1.title,
+        templateVersion: 2,
+        licenseId: "CC-BY-4.0",
+        contentHash: TPL1.contentHash,
+      });
+    });
+  });
+
+  it("kaydetme tazelemesi sürerken dosya değişirse bildirim yeni dosyaya yazılmaz", async () => {
+    let itemCalls = 0;
+    const p1Refresh = deferred<CaseChecklistItemRow[]>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => {
+        if (caseId === "p2") return [ITEM_P2];
+        itemCalls += 1;
+        return itemCalls === 1 ? [I1] : p1Refresh.promise;
+      },
+    });
+
+    await screen.findByText(I1.itemText);
+    fireEvent.change(byId<HTMLInputElement>("note-i1"), { target: { value: "p1 notu" } });
+    fireEvent.click(
+      within(itemRowOf(I1.itemText)).getByRole("button", { name: t("common.save") }),
+    );
+    // Yazma bitti, tazeleme uçuşta.
+    await waitFor(() => expect(itemCalls).toBe(2));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+
+    await act(async () => {
+      p1Refresh.resolve([{ ...I1, note: "p1 notu", rowVersion: 2 }]);
+    });
+
+    // Tazeleme eski dosyaya aitti: bildirim yeni dosyada görünmez.
+    expect(screen.queryByText(t("checklists.noticeUpdated", { item: I1.itemText }))).toBeNull();
+    expect(screen.queryByText(I1.itemText)).toBeNull();
+    expect(screen.getByText(ITEM_P2.itemText)).toBeTruthy();
+  });
+
+  it("eski kaydetmenin kapanışı yeni dosyadaki kilidi erken açmaz", async () => {
+    const first = deferred<CaseChecklistItemRow>();
+    const second = deferred<CaseChecklistItemRow>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistItemState.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await screen.findByText(I1.itemText);
+    fireEvent.change(byId<HTMLInputElement>("note-i1"), { target: { value: "p1 notu" } });
+    fireEvent.click(
+      within(itemRowOf(I1.itemText)).getByRole("button", { name: t("common.save") }),
+    );
+    await waitFor(() => expect(mocks.checklistItemState).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(ITEM_P2.itemText)).toBeTruthy();
+    const p2Save = () =>
+      within(itemRowOf(ITEM_P2.itemText)).getByRole("button", { name: t("common.save") });
+    fireEvent.change(byId<HTMLInputElement>("note-i9"), { target: { value: "p2 notu" } });
+    expect(p2Save()).toHaveProperty("disabled", false);
+
+    fireEvent.click(p2Save());
+    await waitFor(() => expect(mocks.checklistItemState).toHaveBeenCalledTimes(2));
+    expect(p2Save()).toHaveProperty("disabled", true);
+
+    // p1'in yanıtı döner: p2'nin kilidi açılmamalı.
+    await act(async () => {
+      first.resolve({ ...I1, note: "p1 notu", rowVersion: 2 });
+    });
+    expect(p2Save()).toHaveProperty("disabled", true);
+
+    await act(async () => {
+      second.resolve({ ...ITEM_P2, note: "p2 notu", rowVersion: 2 });
+    });
+    await waitFor(() => expect(p2Save()).toHaveProperty("disabled", false));
+  });
+
+  it("eski yazmanın kapanışı yeni dosyadaki kilidi erken açmaz", async () => {
+    const first = deferred<CopyResult>();
+    const second = deferred<CopyResult>();
+    setup({
+      documents: async (caseId) => (caseId === "p1" ? [D1] : [DOC_P2]),
+      templates: async (caseId) => (caseId === "p1" ? [TPL1] : [TPL_P2]),
+      items: async (caseId) => (caseId === "p1" ? [I1] : [ITEM_P2]),
+    });
+    mocks.checklistCopy.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await screen.findByText(TPL1.title);
+    fireEvent.click(
+      within(catalogRowOf(TPL1.title)).getByRole("button", { name: t("checklists.copyToCase") }),
+    );
+    await waitFor(() => expect(mocks.checklistCopy).toHaveBeenCalledWith("p1", TPL1.id));
+
+    fireEvent.change(byId<HTMLSelectElement>("checklist-case"), { target: { value: "p2" } });
+    expect(await screen.findByText(TPL_P2.title)).toBeTruthy();
+    const p2Button = () =>
+      within(catalogRowOf(TPL_P2.title)).getByRole("button", {
+        name: t("checklists.copyToCase"),
+      });
+    expect(p2Button()).toHaveProperty("disabled", false);
+
+    // Yeni dosyada ikinci kopyalama başlar (uçuşta).
+    fireEvent.click(p2Button());
+    await waitFor(() => expect(mocks.checklistCopy).toHaveBeenCalledWith("p2", TPL_P2.id));
+    expect(p2Button()).toHaveProperty("disabled", true);
+
+    // Eski dosyanın yanıtı döner: yeni dosyanın kilidi **açılmamalı**.
+    await act(async () => {
+      first.resolve({
+        created: true,
+        itemCount: 3,
+        templateId: TPL1.id,
+        templateTitle: TPL1.title,
+        templateVersion: 2,
+        licenseId: "CC-BY-4.0",
+        contentHash: TPL1.contentHash,
+      });
+    });
+    expect(p2Button()).toHaveProperty("disabled", true);
+
+    // Kendi yanıtı dönünce kilit bırakılır (kapı meşru yazmayı engellemez).
+    await act(async () => {
+      second.resolve({
+        created: true,
+        itemCount: 1,
+        templateId: TPL_P2.id,
+        templateTitle: TPL_P2.title,
+        templateVersion: 1,
+        licenseId: null,
+        contentHash: TPL_P2.contentHash,
+      });
+    });
+    expect(p2Button()).toHaveProperty("disabled", false);
+  });
+});
+
