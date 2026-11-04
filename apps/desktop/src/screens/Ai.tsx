@@ -41,6 +41,11 @@ export function Ai() {
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  // Gönderim ve iptal **kendi** uçuş bayraklarını taşır: biri askıdayken
+  // diğeri açık kalır (onay iptali yeni onayı engellemez), ama aynı düğme
+  // ikinci kez çekirdeğe yazmaz.
+  const [promoteBusy, setPromoteBusy] = useState(false);
+  const [revokeBusy, setRevokeBusy] = useState(false);
 
   // F11-T05 — aday doğrulama paneli
   const [runId, setRunId] = useState("");
@@ -56,6 +61,47 @@ export function Ai() {
   // yazılmaz (INV-05); yalnız kullanıcının açıkça istediği çekirdek yazısı gider.
   const caseGen = useRef(0);
   const runSeq = useRef(0);
+  // Uçuş kilidi **nesil** taşır: kapanış yalnız kendi neslinde kilidi bırakır.
+  // Koşulsuz `setBusy(false)` çağırsaydı, devredilen isteğin kapanışı yeni
+  // dosyada başlatılan yazmanın kilidini erken açardı.
+  const busySeq = useRef(0);
+  const promoteSeq = useRef(0);
+  const revokeSeq = useRef(0);
+  // Önizleme bir **okuma**dır: iki istek yarışırsa sonuç **son** isteğe aittir.
+  const previewSeq = useRef(0);
+  // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
+  // gelen rapor yeni türün altına yazılmaz.
+  const kindRef = useRef(kind);
+
+  function beginWrite(): number {
+    busySeq.current += 1;
+    setBusy(true);
+    return busySeq.current;
+  }
+
+  function endWrite(seq: number): void {
+    if (busySeq.current === seq) setBusy(false);
+  }
+
+  function beginPromote(): number {
+    promoteSeq.current += 1;
+    setPromoteBusy(true);
+    return promoteSeq.current;
+  }
+
+  function endPromote(seq: number): void {
+    if (promoteSeq.current === seq) setPromoteBusy(false);
+  }
+
+  function beginRevoke(): number {
+    revokeSeq.current += 1;
+    setRevokeBusy(true);
+    return revokeSeq.current;
+  }
+
+  function endRevoke(seq: number): void {
+    if (revokeSeq.current === seq) setRevokeBusy(false);
+  }
 
   useEffect(() => {
     (async () => {
@@ -77,6 +123,15 @@ export function Ai() {
     // belgelerine aitti, önizleme/adaylar/seçili çalıştırma ve doğrulama raporu da
     // önceki dosyanın. Hepsi istekten **önce** silinir; aksi hâlde yeni dosyanın
     // künyesi açıkken eski dosyanın onayıyla çalıştırma başlatılabilir.
+    // Uçuş kilitleri **devredilir**: yeni dosyanın düğmeleri eski isteğin yanıtını
+    // beklemez (yanıt hiç gelmezse süresiz kilitli kalırdı); devredilen isteğin
+    // kapanışı yeni nesilde kilidi bırakmaz (`endWrite`/`endPromote`/`endRevoke`).
+    busySeq.current += 1;
+    promoteSeq.current += 1;
+    revokeSeq.current += 1;
+    setBusy(false);
+    setPromoteBusy(false);
+    setRevokeBusy(false);
     setOverview(null);
     setConsent(null);
     setPreview(null);
@@ -103,7 +158,7 @@ export function Ai() {
   async function approve() {
     if (!provider) return;
     const gen = caseGen.current;
-    setBusy(true);
+    const seq = beginWrite();
     setError(null);
     try {
       // Onay **somut belge kümesine** bağlanır: kullanıcı neyi onayladıysa
@@ -124,14 +179,14 @@ export function Ai() {
     } catch (e) {
       if (caseGen.current === gen) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
   async function start() {
     if (!provider || !consent) return;
     const gen = caseGen.current;
-    setBusy(true);
+    const seq = beginWrite();
     setError(null);
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
@@ -142,7 +197,7 @@ export function Ai() {
     } catch (e) {
       if (caseGen.current === gen) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -174,20 +229,26 @@ export function Ai() {
     const gen = caseGen.current;
     const seq = runSeq.current;
     const forRun = runId;
-    setBusy(true);
+    // Rapor **gönderilen** türe aittir: tür değişirse geç gelen rapor yeni
+    // türün altına yazılmaz.
+    const forKind = kind;
+    const fresh = () => caseGen.current === gen && runSeq.current === seq;
+    const write = beginWrite();
     setError(null);
     setNotice(null);
     // Düşen doğrulama önceki raporu "güncel" gibi bırakmaz.
     setReport(null);
     try {
       const result = await api.aiCandidateValidate(forRun, kind, draft);
-      const same = caseGen.current === gen && runSeq.current === seq;
-      if (same) setReport(result);
+      if (fresh() && kindRef.current === forKind) setReport(result);
       if (persist) {
         // Kayıt kullanıcının açık isteğiydi: bağlam değişse de çekirdeğe gider.
         await api.aiCandidateRecord(forRun, kind, draft);
-        if (!same) return;
+        // Bildirim **yanıt anındaki** bağlama bağlıdır: kayıt ya da liste
+        // beklerken dosya/çalıştırma değiştiyse yeni bağlama yazılmaz.
+        if (!fresh()) return;
         await loadCandidates(forRun);
+        if (!fresh()) return;
         setNotice(
           result.state === "valid"
             ? t("ai.noticeValid")
@@ -197,16 +258,16 @@ export function Ai() {
         );
       }
     } catch (e) {
-      if (caseGen.current === gen && runSeq.current === seq) setError(toApiError(e));
+      if (fresh()) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(write);
     }
   }
 
   async function revalidate(candidateId: string) {
     const gen = caseGen.current;
     const seq = runSeq.current;
-    setBusy(true);
+    const write = beginWrite();
     setError(null);
     try {
       const refreshed = await api.aiCandidateRevalidate(candidateId);
@@ -216,33 +277,44 @@ export function Ai() {
     } catch (e) {
       if (caseGen.current === gen && runSeq.current === seq) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(write);
     }
   }
 
   async function promote(candidateId: string) {
     const gen = caseGen.current;
+    const seq = runSeq.current;
+    const write = beginPromote();
     setError(null);
     setNotice(null);
     try {
       await api.aiCandidatePromote(candidateId, caseId);
-      if (caseGen.current !== gen) return;
+      // Bildirim, **gönderilen** adayın çalıştırmasına aittir: uçuşta başka
+      // çalıştırmaya geçildiyse yeni çalıştırmanın altına yazılmaz.
+      if (caseGen.current !== gen || runSeq.current !== seq) return;
       setNotice(t("ai.noticePromoted"));
     } catch (e) {
-      if (caseGen.current === gen) setError(toApiError(e));
+      if (caseGen.current === gen && runSeq.current === seq) setError(toApiError(e));
+    } finally {
+      endPromote(write);
     }
   }
 
   async function showContent() {
     const gen = caseGen.current;
+    previewSeq.current += 1;
+    const seq = previewSeq.current;
     try {
       const docs = await api.documentList(caseId);
       const next = await api.aiConsentPreview(caseId, docs.map((doc) => doc.id));
-      if (caseGen.current !== gen) return;
+      // İki okuma yarışırsa **son** istek kazanır; eskisinin geç yanıtı yeni
+      // önizlemeyi ne çizer ne siler.
+      if (caseGen.current !== gen || previewSeq.current !== seq) return;
       setPreview(next);
+      setError(null);
     } catch (e) {
       // Sessiz yutma yok: istek düştüyse söylenir ve eski önizleme silinir.
-      if (caseGen.current !== gen) return;
+      if (caseGen.current !== gen || previewSeq.current !== seq) return;
       setPreview(null);
       setError(toApiError(e));
     }
@@ -252,11 +324,14 @@ export function Ai() {
     if (!consent) return;
     const gen = caseGen.current;
     const target = consent.id;
+    const write = beginRevoke();
     try {
       await api.aiConsentRevoke(target);
     } catch (e) {
       if (caseGen.current === gen) setError(toApiError(e));
       return;
+    } finally {
+      endRevoke(write);
     }
     // Geç dönen iptal, bu arada alınmış **yeni** onayı silmez.
     setConsent((cur) => (cur && cur.id === target ? null : cur));
@@ -365,6 +440,7 @@ export function Ai() {
             <button
               className="btn ghost"
               style={{ marginLeft: 8 }}
+              disabled={revokeBusy}
               onClick={() => void revokeConsent()}
             >
               {t("ai.revoke")}
@@ -435,6 +511,7 @@ export function Ai() {
               value={kind}
               onChange={(e) => {
                 const next = e.target.value;
+                kindRef.current = next;
                 setKind(next);
                 setReport(null);
                 const option = CANDIDATE_KINDS.find((item) => item.value === next);
@@ -652,7 +729,7 @@ export function Ai() {
                         </button>
                         <button
                           className="btn ghost"
-                          disabled={busy || blocked !== null}
+                          disabled={busy || promoteBusy || blocked !== null}
                           title={blocked ?? t("ai.promoteTitle")}
                           onClick={() => void promote(candidate.id)}
                         >

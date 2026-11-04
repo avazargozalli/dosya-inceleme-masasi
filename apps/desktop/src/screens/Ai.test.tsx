@@ -1333,3 +1333,380 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+// Bu blok **yazma uçuşu** kapılarını ölçer: önceki blok yanıtın hangi
+// dosya/çalıştırmaya yazıldığını kapatmıştı; burada kilit devri, tek-uçuş
+// (aynı düğme ikinci kez yazmaz), "gönderilen değer" ve okuma sırası var.
+describe("AI ekranı — yazma uçuşu, kilit devri ve geç yanıt kapıları", () => {
+  it("onay uçuşta iken dosya değişirse yeni dosyanın düğmeleri eski yanıta kilitli kalmaz", async () => {
+    const gate = deferred<TransferConsentRow>();
+    setup({ consent: () => gate.promise });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(1));
+    expect(button(t("ai.approve")).disabled).toBe(true);
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+
+    // p1'in onayı hâlâ askıda: p2'nin düğmesi onu beklemez (yanıt hiç
+    // gelmezse süresiz kilitli kalırdı).
+    expect(button(t("ai.approve")).disabled).toBe(false);
+
+    await act(async () => {
+      gate.resolve(CONSENT);
+      await Promise.resolve();
+    });
+    // Devredilen yanıt p2'ye onay yazmaz.
+    expect(screen.queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+  });
+
+  it("devredilen onayın kapanışı yeni dosyadaki onayın kilidini erken açmaz", async () => {
+    const first = deferred<TransferConsentRow>();
+    const second = deferred<TransferConsentRow>();
+    let call = 0;
+    setup({
+      consent: () => {
+        call += 1;
+        return call === 1 ? first.promise : second.promise;
+      },
+    });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(1));
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(2));
+    expect(button(t("ai.approve")).disabled).toBe(true);
+
+    // p1'in **geç** kapanışı p2'de süren onayın kilidini açmaz.
+    await act(async () => {
+      first.resolve(CONSENT);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(button(t("ai.approve")).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+
+    await act(async () => {
+      second.resolve({ ...CONSENT, id: "c-p2-onay", caseScope: "p2" });
+      await Promise.resolve();
+    });
+    expect(button(t("ai.approve")).disabled).toBe(false);
+    expect(await screen.findByRole("button", { name: t("ai.revoke") })).toBeTruthy();
+  });
+
+  it("«İncelemeye gönder» uçuşta ikinci tıklama ikinci yazma göndermez", async () => {
+    const gate = deferred<unknown>();
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    const heading = await screen.findByRole("heading", { level: 2, name: t("ai.candidatesTitle") });
+    const card = heading.closest(".card") as HTMLElement;
+
+    mocks.aiCandidatePromote.mockImplementation(() => gate.promise);
+    const promoteButton = within(card).getByRole("button", { name: t("ai.promote") }) as HTMLButtonElement;
+    fireEvent.click(promoteButton);
+    await waitFor(() => expect(mocks.aiCandidatePromote).toHaveBeenCalledTimes(1));
+    expect(promoteButton.disabled).toBe(true);
+
+    fireEvent.click(promoteButton);
+    expect(mocks.aiCandidatePromote).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      gate.resolve({ id: "rv-1" });
+      await Promise.resolve();
+    });
+    expect(await screen.findByText(t("ai.noticePromoted"))).toBeTruthy();
+    expect((within(card).getByRole("button", { name: t("ai.promote") }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("onay iptali uçuşta ikinci tıklama ikinci iptal göndermez", async () => {
+    const gate = deferred<void>();
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    mocks.aiConsentRevoke.mockImplementation(() => gate.promise);
+    fireEvent.click(button(t("ai.revoke")));
+    await waitFor(() => expect(mocks.aiConsentRevoke).toHaveBeenCalledTimes(1));
+    expect(button(t("ai.revoke")).disabled).toBe(true);
+
+    fireEvent.click(button(t("ai.revoke")));
+    expect(mocks.aiConsentRevoke).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      gate.resolve();
+      await Promise.resolve();
+    });
+    // Başarılı iptal satırı kaldırır; ikinci isteğin `E_NOT_FOUND`u yok.
+    expect(screen.queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("kayıt uçuşta çalıştırma değişirse kayıt bildirimi ve liste yeni çalıştırmaya yazılmaz", async () => {
+    const gate = deferred<unknown>();
+    setup({
+      // İki çalıştırmanın adayları **ayrı**: geç tazeleme yanlış listeyi yazarsa görünür.
+      candidates: async (runId: string) => (runId === "r2" ? [CAND_BLOCKED] : [CAND_VALID]),
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    await waitFor(() => expect(button(t("ai.validateAndSave")).disabled).toBe(false));
+
+    mocks.aiCandidateRecord.mockImplementation(() => gate.promise);
+    fireEvent.click(button(t("ai.validateAndSave")));
+    await waitFor(() => expect(mocks.aiCandidateRecord).toHaveBeenCalledTimes(1));
+
+    // Kayıt askıda iken ikinci çalıştırmaya geçilir (bildirim oraya yazılmamalı).
+    fireEvent.click(within(runRows()[1]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    await waitFor(() => expect(mocks.aiCandidatesList).toHaveBeenLastCalledWith("r2"));
+    expect(await screen.findByText(CAND_BLOCKED.structuredPayload)).toBeTruthy();
+
+    await act(async () => {
+      gate.resolve({ id: "cand-1" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Kullanıcının istediği kayıt çekirdeğe gitti; ne bildirim ne liste yeni bağlama yazılır.
+    expect(mocks.aiCandidateRecord).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(t("ai.noticeValid"))).toBeNull();
+    expect(screen.queryByText(t("ai.noticeInvalid"))).toBeNull();
+    expect(screen.queryByText(t("ai.noticePartial"))).toBeNull();
+    expect(screen.queryByText(CAND_VALID.structuredPayload)).toBeNull();
+    expect(screen.getByText(CAND_BLOCKED.structuredPayload)).toBeTruthy();
+  });
+
+  it("kayıt sonrası liste tazelenirken çalıştırma değişirse bildirim yazılmaz", async () => {
+    const refresh = deferred<AiCandidateRow[]>();
+    let r1Calls = 0;
+    setup({
+      candidates: (runId: string) => {
+        if (runId === "r2") return Promise.resolve([CAND_BLOCKED]);
+        r1Calls += 1;
+        // İlk okuma (seçim) döner; **tazeleme** askıda kalır.
+        return r1Calls === 1 ? Promise.resolve([CAND_VALID]) : refresh.promise;
+      },
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    await waitFor(() => expect(button(t("ai.validateAndSave")).disabled).toBe(false));
+
+    fireEvent.click(button(t("ai.validateAndSave")));
+    await waitFor(() => expect(r1Calls).toBe(2));
+
+    fireEvent.click(within(runRows()[1]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    expect(await screen.findByText(CAND_BLOCKED.structuredPayload)).toBeTruthy();
+
+    await act(async () => {
+      refresh.resolve([CAND_VALID]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(t("ai.noticeValid"))).toBeNull();
+    expect(screen.getByText(CAND_BLOCKED.structuredPayload)).toBeTruthy();
+  });
+
+  it("gönderim uçuşta çalıştırma değişirse gönderim bildirimi yeni çalıştırmaya yazılmaz", async () => {
+    const gate = deferred<unknown>();
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    const heading = await screen.findByRole("heading", { level: 2, name: t("ai.candidatesTitle") });
+
+    mocks.aiCandidatePromote.mockImplementation(() => gate.promise);
+    fireEvent.click(
+      within(heading.closest(".card") as HTMLElement).getByRole("button", { name: t("ai.promote") }),
+    );
+    await waitFor(() => expect(mocks.aiCandidatePromote).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(runRows()[1]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    await waitFor(() => expect(mocks.aiCandidatesList).toHaveBeenLastCalledWith("r2"));
+
+    await act(async () => {
+      gate.resolve({ id: "rv-1" });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(t("ai.noticePromoted"))).toBeNull();
+  });
+
+  it("iki «İçeriği göster» isteğinden eskisinin hatası yeni önizlemeyi silmez", async () => {
+    const first = deferred<ConsentPreview>();
+    const second = deferred<ConsentPreview>();
+    let call = 0;
+    setup({
+      preview: () => {
+        call += 1;
+        return call === 1 ? first.promise : second.promise;
+      },
+    });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.showContent")));
+    await waitFor(() => expect(mocks.aiConsentPreview).toHaveBeenCalledTimes(1));
+    fireEvent.click(button(t("ai.showContent")));
+    await waitFor(() => expect(mocks.aiConsentPreview).toHaveBeenCalledTimes(2));
+
+    // **Son** istek önce döner.
+    await act(async () => {
+      second.resolve(PREVIEW);
+      await Promise.resolve();
+    });
+    expect(await screen.findByText(t("ai.previewTitle"))).toBeTruthy();
+
+    // Eskisinin geç hatası yeni önizlemeyi ne siler ne kırmızı yazar.
+    await act(async () => {
+      first.reject(new Error("önizleme çekilemedi"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(t("ai.previewTitle"))).toBeTruthy();
+  });
+
+  it("düşen önizlemeden sonra başarılı okuma eski kırmızıyı siler", async () => {
+    let fail = true;
+    setup({
+      preview: async () => {
+        if (fail) throw new Error("önizleme çekilemedi");
+        return PREVIEW;
+      },
+    });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.showContent")));
+    expect((await screen.findByRole("alert")).textContent).toContain("E_UI_UNKNOWN");
+
+    fail = false;
+    fireEvent.click(button(t("ai.showContent")));
+    expect(await screen.findByText(t("ai.previewTitle"))).toBeTruthy();
+    // Son okuma başarılı: önceki isteğin kırmızısı ekranda kalmaz.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("eski isteğin geç başarısı yeni isteğin hatasını silmez", async () => {
+    const first = deferred<ConsentPreview>();
+    const second = deferred<ConsentPreview>();
+    let call = 0;
+    setup({
+      preview: () => {
+        call += 1;
+        return call === 1 ? first.promise : second.promise;
+      },
+    });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.showContent")));
+    await waitFor(() => expect(mocks.aiConsentPreview).toHaveBeenCalledTimes(1));
+    fireEvent.click(button(t("ai.showContent")));
+    await waitFor(() => expect(mocks.aiConsentPreview).toHaveBeenCalledTimes(2));
+
+    // **Son** istek düşer: kırmızı yazılır, önizleme yok.
+    await act(async () => {
+      second.reject(new Error("önizleme çekilemedi"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.queryByText(t("ai.previewTitle"))).toBeNull();
+
+    // Eskisinin **geç başarısı** yeni isteğin hatasını silmez.
+    await act(async () => {
+      first.resolve(PREVIEW);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText(t("ai.previewTitle"))).toBeNull();
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
+
+  it("doğrulama uçuşta aday türü değişirse rapor yeni türün altına yazılmaz", async () => {
+    const gate = deferred<CandidateReport>();
+    setup({ validate: () => gate.promise });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    await waitFor(() => expect(button(t("ai.validate")).disabled).toBe(false));
+
+    fireEvent.click(button(t("ai.validate")));
+    await waitFor(() => expect(mocks.aiCandidateValidate).toHaveBeenCalledTimes(1));
+
+    const eventOption = CANDIDATE_KINDS.find((option) => option.value === "event_candidate")!;
+    fireEvent.change(kindSelect(), { target: { value: "event_candidate" } });
+    expect(draftBox().value).toBe(eventOption.template);
+
+    await act(async () => {
+      gate.resolve(REPORT_VALID);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Rapor **gönderilen** türe aitti: yeni türün altında "güncel" gibi durmaz.
+    expect(screen.queryByText(quoteSummary(REPORT_VALID))).toBeNull();
+    const reportCard = cardByHeading(t("ai.validateTitle"));
+    expect(within(reportCard).queryByText(candidateStateLabel("valid"))).toBeNull();
+  });
+
+  it("dosya değişimi gönderim ve iptal kilidini devreder", async () => {
+    // p2'de de bir çalıştırma ve aday olsun: devredilen kilit orada görünür.
+    const overviewP2: AiOverview = {
+      ...OVERVIEW_B,
+      runs: [
+        {
+          id: "r9",
+          caseId: "p2",
+          taskType: "summarize",
+          providerId: "prov-local",
+          modelSnapshot: "llama3-8b",
+          status: "succeeded",
+          usageReport: "{}",
+          createdAt: "2026-10-22T09:00:00.000Z",
+          completedAt: "2026-10-22T09:01:00.000Z",
+        },
+      ],
+    };
+    const promoteGate = deferred<unknown>();
+    const revokeGate = deferred<void>();
+    setup({ overview: async (caseId: string) => (caseId === "p2" ? overviewP2 : OVERVIEW_A) });
+    await screen.findByText("api:claude (api)");
+
+    // p1: onay + aday; gönderim ve iptal **askıda** bırakılır.
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    const p1Heading = await screen.findByRole("heading", { level: 2, name: t("ai.candidatesTitle") });
+    mocks.aiCandidatePromote.mockImplementation(() => promoteGate.promise);
+    mocks.aiConsentRevoke.mockImplementation(() => revokeGate.promise);
+    fireEvent.click(
+      within(p1Heading.closest(".card") as HTMLElement).getByRole("button", { name: t("ai.promote") }),
+    );
+    await waitFor(() => expect(mocks.aiCandidatePromote).toHaveBeenCalledTimes(1));
+    fireEvent.click(button(t("ai.revoke")));
+    await waitFor(() => expect(mocks.aiConsentRevoke).toHaveBeenCalledTimes(1));
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+
+    // p2: yeni çalıştırmayı seç ve onay al.
+    fireEvent.click(within(runRows()[0]!).getByRole("button", { name: RUN_LABEL_SELECT }));
+    await waitFor(() => expect(mocks.aiCandidatesList).toHaveBeenLastCalledWith("r9"));
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    // p1'in iki isteği hâlâ askıda: p2'nin düğmeleri kilitli değil.
+    expect(button(t("ai.revoke")).disabled).toBe(false);
+    const p2Heading = cardByHeading(t("ai.candidatesTitle"));
+    expect(
+      (within(p2Heading).getByRole("button", { name: t("ai.promote") }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+});
