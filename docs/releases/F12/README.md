@@ -915,3 +915,71 @@ deneme/arama/kapsam değişimi temizler. Snippet'i boş (tam metni olmayan) kay�
 (metinsiz kayıt aramada künyeyle görünebilir). Kapsam dışı: klavye, Windows,
 gerçek zamanlama.
 
+
+## Korpus aktarımı ve anlam hükmü: kalan ölçülmemiş yollar (2026-11-04)
+
+`Precedents` ekranının son iki ölçülmemiş yolu kapatıldı: **korpus dışa
+aktarma** (izin kapsamına bağlı, dosyaya yazan işlem) ve **anlam hükmü**
+(kasaya yazılan hukuki karar). Mevcut 33 test korpusun *kapısını* ve hükmün
+*bağlamını* ölçüyordu; ikisinin de **uçuş** davranışı boştu.
+
+**Ölçülen kusurlar — ham koşu (düzeltme öncesi bileşen): 4 failed | 2 passed |
+33 skipped (7 yeni test).**
+
+- **Bayat yeşil sonuç (izin kapsamı yalanı):** çekirdeğin
+  `CorpusExportResult`u hangi kiple yazıldığını **taşımıyor** (kip alanı yok);
+  arayüz de sonucu kip değişiminde temizlemiyordu. “İzinli” kiple yapılan
+  aktarımın yeşil satırı (“N emsal dışa aktarıldı · sha256 …”) “Tüm korpus”
+  kipine geçildikten sonra ekranda kalıyor, **tüm korpusun sayısı** sanılıyordu
+  — izin/dağıtım kapsamı hakkında yanlış hüküm.
+- **Uçuşta kaydırılabilen kapsam:** kip seçici `corpusBusy` ile kilitli
+  değildi; dışa aktarma sürerken kapsam değiştirilebiliyordu.
+- **Hukuki kararda çift yazma:** anlam hükmünün üç düğmesinde **hiç** uçuş
+  kilidi yoktu (`disabled` yok). Çift tık iki `citationMeaningReview` yazısı
+  gönderiyordu; iki farklı karar hızlı tıklanırsa sıra çekirdeğin kabul ettiği
+  son sözü belirliyordu.
+- **İki yerel pencere:** toplu içe alma dosya seçicisi kendi uçuşunda kilitli
+  değildi (`bulkBusy` yalnız *içe aktarma* uçuşunu tutuyor); çift tık iki
+  pencere açıyor, ikinci seçim birincinin seçimini eziyordu.
+
+**Düzeltme (`Precedents.tsx` +35/−6):** kip `onChange`inde `setCorpusResult(null)`
+ve seçicide `disabled={corpusBusy}`; `reviewBusy` tek uçuş bayrağı + üç karar
+düğmesinde `disabled`; `pickBusy` bayrağı iki seçici düğmede `disabled` ve
+`finally`de bırakılır. Dışa aktarmanın kipi **render değerinden** okunur
+(pencere açıkken kip kaydırılsa bile dosya, düğmeye basıldığı anda görünen
+kiple yazılır — bu bir kapanış garantisi, ayrı `ref` gerekmedi).
+
+**Test (`screens/Precedents.test.tsx` +194; yeni `describe`: 7 test; 33 → 40):**
+kip değişiminde sonuç satırı kalkar; uçuşta seçici + düğme kapalı ve istek ilk
+kiple gider; pencere açıkken kip değişse de istek tıklama anındaki kiple gider;
+düşen aktarım önceki yeşili bırakmaz (gerçek `E_IO` yazılır); hükümde çift tık
+tek yazma + üç düğme uçuşta kapalı; düşen hüküm panel + gerekçe metnini korur,
+düğmeler yeniden açılır; seçicide çift tık tek pencere açar.
+
+**Kapı kanıtı (8 mutasyon; her biri en az bir testi düşürdü — 1 kırmızı; geri
+alma sha256 `842aabcf0635…889985c` birebir):** M1 kip değişiminde sonuç
+temizliği, M2 uçuşta seçici kilidi, M3 üç karar düğmesinin kilidi, M4 hüküm
+uçuş bayrağı, M5 seçici düğme kilidi, M6 seçici uçuş bayrağı, M7 aktarma
+başında sonuç temizliği, M8 hüküm sonrası kilit bırakma. **Dürüst:** ilk
+mutasyon koşusu mutasyonları **biriktirdi** (6/9 okundu, son iki ölçüm
+kirlendi) → betik her mutasyonu temiz dosyaya uygulayacak şekilde düzeltildi
+ve 8/8 yeniden ölçüldü. Ayrıca üç aday kapı (pencere açıkken kipin `const`a
+alınması, hüküm ve seçici için `ref` yeniden giriş kapıları) **tek başına
+mutasyonla ölçülemedi** (kapanış zaten render değerini, React da `disabled`
+düğmede tıklamayı tutuyor) → **koddan çıkarıldı**, yedekli kapı bırakılmadı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **951/951** (60 dosya; 944 → +7) ·
+`npm run build` temiz (**579,69 kB**, `index-DKjN0MM4.js`, gzip **156,27 kB**).
+Rust değişmedi; rustfmt iki manifestte `--check` temiz.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek
+yerel dosya pencereleri ve **görsel QA yok**; `api` ve `@tauri-apps/plugin-dialog`
+mock'ludur, `precedent_corpus_export` / `citation_meaning_review` SQL'i ve Rust
+**koşmaz**. Çift tık kapısı `disabled` üzerinden ölçülür (React disabled
+düğmede `onClick` üretmez); gerçek işaretçi çift tıklaması ve zamanlaması
+ölçülmedi. `reviewBusy` tek bayraktır: tek panel açık olduğu için sayaç
+gerekmedi. Korpus sonucu hâlâ **kip taşımıyor** — kip değişimi satırı temizler,
+ama aynı kip içinde iki farklı aktarım ayırt edilmez (açık kayıt).
+`exportCorpus` sonrası `loadCoverage()` düşerse yeşil satır **ve** kırmızı hata
+birlikte görünür (ikisi de doğru: dosya yazıldı, kapsam okunamadı) — kabul
+edildi.
