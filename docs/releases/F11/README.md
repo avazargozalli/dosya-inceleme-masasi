@@ -9,7 +9,7 @@
 | F11-T01 aday kaydı | ✅ | `ai_candidates`, `valid/invalid/partial`; altı aday türü şeması |
 | F11-T02 aday → inceleme kuyruğu | ✅ | `promote_candidate`, `review_items` `pending`, doğrulanmış alıntı → `source_anchors` |
 | F11-T03 kapsamlılık raporu | ✅ | belge/sayfa/OCR/boş sayfa/ayrıştırılmamış sayıları |
-| F11-T04 gerçek model çağrısı | ✅ | `ApiProvider`/`LocalProvider` + `ai_run_execute`: onay + profil + kapsam sicili, hata run'ı `failed` kapatır |
+| F11-T04 gerçek model çağrısı | ✅ | `ApiProvider`/`LocalProvider` + `ai_run_execute`: onay + profil + kapsam sicili, hata run'ı `failed` kapatır; onay **varış yerine** bağlı (`provider_id` → türetilmiş `adapter@politika#parmak izi`) |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, şema v17, `ai_candidate_validate` |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
 
@@ -348,4 +348,78 @@ bildirim/rapor/önizleme yanıtlarının **gönderilen değere** bağlanması.
 - **Kimlik:** commit mesajı `F11-T05` ile atıldı; ekranın defter kimliği
   **F11-T04** (T05 = şema doğrulama paneli). Bu turun kilit katmanı T05
   panelinin yazma yollarını da kapsar; yeni numara uydurulmadı.
+
+## F11-T04 — sağlayıcı-snapshot çekirdek denetimi: onay varış yerine bağlandı (2026-11-05)
+
+Önceki tur onayın **amaca** bağlılığını arayüzde kapatmıştı; defterde açık kalan
+çekirdek kaydı duruyordu: `consent_scope_segments` onayın `provider_snapshot`ını
+çalıştırılan sağlayıcıyla karşılaştırmıyordu ve `ai_run_execute` varış yerini
+“ilk api profili”nden **tahmin ediyordu**.
+
+### Ölçülen kusurlar (4)
+
+1. **Onay sağlayıcıya bağlı değildi (en ağırı):** `NewTransferConsent.provider_snapshot`
+   **çağıranın yazdığı** bir dizeydi; `start_ai_run` yalnız onayın etkinliğine, dosya
+   kapsamına ve belge canlılığına bakıyordu. Doğrudan IPC ile A profilinin onayı B
+   profiliyle çalıştırılabiliyordu — izin kendiliğinden genişliyordu.
+2. **Varış yeri seçili profilden okunmuyordu:** `ai_run_execute`
+   `api_profile_endpoint()` ile **ilk** api profilini alıyordu; onay başka profil
+   için alınmış olsa da içerik o profile gidiyordu.
+3. **Uç nokta/model değişimi onayı geçersizleştirmiyordu:** snapshot yalnız
+   `adapter@politika`ydı; aynı adapter sürümüyle **başka** uç noktaya/modelle
+   gönderim eski onayla yapılabiliyordu.
+4. **API profili güncellemesi sessizce yok sayılıyordu:** `register_api_profile`
+   var olan api profilini bulunca yeni değerleri **hiç yazmıyordu**; arayüz
+   “Kaydedildi” yazarken gönderim **eski** uç noktaya gidiyordu.
+
+### Düzeltme
+
+`crates/storage/src/ai.rs` (+301/−36), `apps/desktop/src-tauri/src/commands.rs`
+(+21/−3), `crates/storage/src/error.rs` (+3), `apps/desktop/src/lib/api.ts`
+(+2/−2), `apps/desktop/src/screens/Ai.tsx` (+4/−6), `Ai.test.tsx` (+3/−3).
+
+- `NewTransferConsent.provider_snapshot` → **`provider_id`**: kimlik dizesini çağıran
+  yazmaz; çekirdek `provider_snapshot(adapter, policy, capabilities)` ile türetir.
+  API profilinde kayıtlı **uç nokta + model**in kısa sha256 parmak izi dizeye girer
+  (`openai-compatible@1#a1b2c3d4e5f6`).
+- `create_transfer_consent` profili **okur**: bilinmeyen profil `E_AI_PROVIDER`,
+  `off` profili yeni `E_AI_OFF` (`StorageError::AiOff`) — “hiçbir yere gönderme”
+  onayı bir yetki değildir.
+- `start_ai_run` onayın özetini **çalıştırılan profilinkiyle** karşılaştırır;
+  uç nokta ya da model değiştiyse `E_AI_CONSENT`.
+- `ai_run_execute` varış yerini **seçili** profilden okur
+  (`api_destination(provider_id)`); API profili değilse sessizce başka yere
+  göndermek yerine `E_AI_PROVIDER` ile reddeder.
+- `register_api_profile`: aynı değerler → idempotent; **farklı** değerler → `UPDATE`
+  (+ denetim kaydı `update`, `row_version` artar).
+
+### Testler ve kapı kanıtı
+
+- `ai.rs` **+6 test** (17 → 23): `api_profile_update_replaces_destination`,
+  `api_endpoint_change_invalidates_old_consent`,
+  `api_model_change_invalidates_old_consent`, `consent_requires_a_known_provider`,
+  `consent_for_off_provider_is_rejected`, `api_destination_is_profile_scoped`.
+- **Kapı kanıtı 6/6** (her koşu orijinal metinden; geri yükleme sha256
+  `cc80346cae31120e5b83061e3ecb7966cf7e07a792755aec4910167bc9856d17` birebir):
+  M1 parmak izi kapalı (**2** — uç nokta + model), M2 `off` kapısı (1), M3 bilinmeyen
+  profil kabul (1), M4 çalıştırmada karşılaştırma (**3** — iki geçersizleşme +
+  `consent_is_provider_scoped`), M5 `api_destination` profil kapsamı (1), M6 güncelleme
+  yok sayılır (**3** — iki geçersizleşme testi de güncelleme yoluna bağlı).
+- **Ölçüm:** `cargo test -p dim-storage` tüm paket yeşil (lib 391 test; ai 23/23) ·
+  `cargo check --all-targets` masaüstü temiz (2 dk 51 sn) · `tsc --noEmit` temiz ·
+  `vitest` **1120/1120** (60 dosya) · `vite build` temiz (**588,78 kB**,
+  `index-DTcoOR6K.js`, gzip **158,94 kB**).
+
+### Sınırlamalar (dürüst)
+
+- `commands.rs`teki “API profili değil” kapısı **derlendi, koşulmadı**:
+  `State<AppState>` kuran test altyapısı yok; `commands_tests.rs` CI'da koşmuyor.
+- Parmak izi **uç nokta + model** metninden türetilir; kimlik doğrulama modu,
+  başlıklar ve TLS ayarları dizeye girmez.
+- Bu değişiklikten **önce** alınmış onayların özeti parmak izi taşımaz → güncelleme
+  sonrası **yeniden onay** gerekir (kapalı yönde güvenli; sessizce genişlemez).
+- Aynı `adapter@politika` + aynı `capabilities` taşıyan iki profil aynı varış yeri
+  sayılır (özet `provider_type` taşımaz); arayüzde böyle bir çakışma üretilemez.
+- Gerçek ağ aktarımı, gerçek Tauri penceresi ve görsel QA **insan bekliyor**.
+
 
