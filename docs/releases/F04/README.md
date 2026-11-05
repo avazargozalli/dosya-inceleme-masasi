@@ -13,6 +13,86 @@
 | F04-T07 | ✅ | **iptal gerçek** (süreç durdurulur, yarım çıktı yazılmaz) + ayrıştırma arayüz iş parçacığını kilitlemez + **canlı aşama/sayım** (worker ilerleme çerçevesi → `parse-progress` olayı → arayüz sayacı) + **maskeleme de kuyruk işi** (kasa kilidi worker boyunca tutulmaz, `redact-progress` aşamaları, iptal) + **yeniden deneme gerçekten çalışır** + **yeniden deneme kaydedilmiş ayarlarla koşar** (2026-10-28) |
 | F04-T08 | 🚧 | **merkezi sözlük + biçimlendirme katmanı** — kabuk (`App.tsx`), **14 ekran** + **5 bileşen** (`JobQueueCard`, `WorkerBudgetCard`, `Notes`, `DualReader`, `PageMap`) + **26 yardımcı lib** taşındı → kapı kapsamı **46 dosya**; **kalan yüzey 0 gömülü kullanıcı metni** (3 belgelenmiş istisna: geliştirici iddiası `main.tsx`, dosya adı regex'i `lib/filename.ts`, satır sonu yorumu `lib/backup-schedule.ts`). Kapı **genel** (taşınmış dosyada yorum dışında Türkçe harf kalmaz) + **sözlük bağı** testi. **Okuyucu davranış testi eklendi** (`components/DualReader.test.tsx`, 6 test; mutasyonla kanıtlandı) — 2026-10-31. **İnceleme davranış testi eklendi** (`screens/Review.test.tsx`, 7 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat alıntı hükmü kusuru düzeltildi) — 2026-10-31. **Arama davranış testi eklendi** (`screens/Search.test.tsx`, 10 test; başarısız aramada bayat sonuç kusuru düzeltildi) — 2026-11-01; **uçuş yarışları bölümüyle 20 teste genişletildi** (+10 test, 10 mutasyonla kanıtlandı; geç gelen arama yanıtı yeni aramayı/dosyayı/kapsamı eziyordu, kilit erken açılıyordu, düşen belge okuması önceki dosyanın tür/etiketlerini bırakıyordu) — 2026-11-03. **Dosyalar davranış testi eklendi** (`screens/Cases.test.tsx`, 13 test; 3 mutasyonla kanıtlandı; dosya değişiminde bayat veri + bayat hata bildirimi kusurları düzeltildi) — 2026-11-01. **Emsal davranış testi eklendi** (`screens/Precedents.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; emsal/dosya değişiminde bayat türetilmiş veri + başka karara izin kaydı yazılması + bayat doğrulama/hata kusurları düzeltildi) — 2026-11-01. **Sağlayıcılar davranış testi eklendi** (`screens/Providers.test.tsx`, 17 test; 8 mutasyonla kanıtlandı; yoklama/yenileme/matris/sınama/mimari/paket/kalıntı yollarında **bayat rapor** kusurları + bayraksız yetenek uyarısı düzeltildi) — 2026-11-01. **AI davranış testi eklendi** (`screens/Ai.test.tsx`, 20 test; 5 mutasyonla kanıtlandı; dosya değişiminde **önceki dosyanın aktarım onayı/önizlemesi/adayları/raporu** kalıyordu — eski onayla yeni dosyada çalıştırma başlatılabiliyordu —, düşen çalıştırma seçimi ve düşen doğrulama bayat durum bırakıyordu, önizleme isteği sessizce yutuluyordu) — 2026-11-01. **Kronoloji davranış testi eklendi** (`screens/Timeline.test.tsx`, 15 test; 4 mutasyonla kanıtlandı; dosya değişiminde bayat olay/panel (INV-05), düşen kaynak isteğinde bayat bağlantı/çapa, başarılı işlemde bayat hata ve ham ilişki rozeti düzeltildi) — 2026-11-02. **Kontrol listesi davranış testi eklendi** (`screens/Checklists.test.tsx`, 15 test; 5 mutasyonla kanıtlandı; dosya değişiminde bayat madde/katalog/belge/bildirim (INV-05), düşen yüklemede bayat veri, “Güncel kaydı yükle” sonrası bayat hata ve başarısız işlemde bayat yeşil bildirim düzeltildi) — 2026-11-02. **Ayarlar davranış testi eklendi** (`screens/Settings.test.tsx`, 17 test; 5 mutasyonla kanıtlandı; geri dönüş sonucu paneli yedek listesi boşalınca **hiç görünmüyordu**, düşen yedek alma/GC/geri yükleme önceki yeşil sonucu bırakıyordu, başarılı parola değişiminden sonra eşleşmeyen deneme eski yeşil bildirimi silmiyordu) — 2026-11-02. **Görevler davranış testi eklendi** (`screens/Tasks.test.tsx`, 17 test; 7 mutasyonla kanıtlandı; dosya değişiminde bayat görev/hatırlatıcı/bildirim (INV-05) ve **geç gelen eski yanıtın yeni listeyi ezmesi**, düşen yükleme/tazelemede bayat liste, başarılı işlemde bayat kırmızı hata, düşen kuyrukta bayat yeşil bildirim, tarih silinince sessizce taşınan hatırlatma politikası ve dosya yokken yanlış gerekçe düzeltildi) — 2026-11-02. **Çıktılar davranış testi eklendi** (`screens/Exports.test.tsx`, 22 test; 9 mutasyonla kanıtlandı; dosya değişiminde bayat kapsam/çıktı/paket satırı (INV-05), düşen kapsam isteğinde bayat kapsam, başarılı tazelemede silinmeyen kırmızı hata, uçuştaki dışa aktarma/tazeleme yanıtlarının yeni dosyayı ezmesi, devir paketi parolasının başarıdan sonra ekranda kalması ve “Kapsam okunamadı” ile “okunuyor”un karışması düzeltildi) — 2026-11-02. **Maskeleme davranış testi eklendi** (`screens/Redaction.test.tsx`, 20 test; 8 mutasyonla kanıtlandı; dosya değişiminde bayat sonuç/önizleme/bölge ve geç gelen belge listesinin yeni dosyayı ezmesi (INV-05), sürüm değişiminde bölgelerin **başka sürüme** taşınması (§13.5), önizlemenin yüklendiği sayfaya bağlı olmaması (yanlış sayfaya bölge yazımı), sayfa getirmenin “Maskeleniyor…” görünmesi, düşen belge listesinin önceki dosyanın belgelerini bırakması, maskeleme sürerken hedefin değiştirilebilmesi ve sözlük dışı yer tutucu düzeltildi) — 2026-11-02. **İş kuyruğu/bütçe kartı ve çalışma alanı davranış testleri eklendi** (`JobQueueCard` **20** + `WorkerBudgetCard` **7** + `Workspace` **4** = 33 test; 7 mutasyonla kanıtlandı; hata dalı bütün kartı siliyordu, üç asenkron yazma yolunda yanıt sırası yoktu, kasa kilitlenince önceki oturumun bildirimi/izlemesi taşınıyordu) — 2026-11-02. **Notlar davranış testi eklendi** (`components/Notes.test.tsx`, **23 test**; 9 mutasyonla kanıtlandı; dosya değişiminde önceki dosyanın notları/not paneli/taslak metni taşınıyor ve **eski dosyanın notuna yazılabiliyordu** (INV-05), düşen liste ve düşen tazeleme bayat satır bırakıyordu, liste/taslak okumalarında yanıt sırası yoktu, uçuştaki taslak yazımı not eklendikten sonra taslağı geri getiriyordu) — 2026-11-02. **Kasa kapısı davranış testi eklendi** (`screens/Unlock.test.tsx`, **14 test** + `lock-behavior.test.tsx`te 1 App düzeyi; 9 mutasyonla kanıtlandı; faz kartı çalışan belge içe aktarmayı "henüz yok" diye yazıyordu, "Geri" tek kopya kurtarma anahtarını onaysız düşürüyordu, **gezinme anahtarı yok ediyordu** (anahtar artık `App`te), istek sürerken kip/alanlar açıktı, kip değişiminde bayat hata kalıyordu ve seçili kip ekran okuyucuya bildirilmiyordu) — 2026-11-02. **Dosyalar ekranının yazma yolları genişletildi** (`screens/Cases.test.tsx`, **+10 test** = 23; 9 mutasyonla kanıtlandı; içe aktarma/etiket ekleme/etiket kaldırma **başarılarında bayat kırmızı hata** kalıyordu, işlem uçuşta dosya değişince içe aktarma sonucu/ayrıştırma özeti/toplu sonuç **yeni dosyaya** yazılıyordu, eski sürümün ilerleme olayı yeni dosyada çiziliyordu, arşivleme yeni seçimi kapatıyordu ve düşen kapsam okuması önceki kapsamın listesini bırakıyordu) — 2026-11-03. **Sayfa haritası davranış testi eklendi** (`components/PageMap.test.tsx`, **10 test** + `DualReader.test.tsx`te **+2**; 8 mutasyonla kanıtlandı; künye/aria kutusu olmayan blokları da sayıyordu, künye ham döndürmeyi yazıyordu (450° → 90°), hedef sayfadan başka sayfaya geçilince arama vurgusu yeni sayfaya taşınıyordu ve vurgu aralığı yokken tüm kutular isabet gibi boyanıyordu) — 2026-11-03. **Kabuk davranış testi eklendi** (`src/app-shell.test.tsx`, **16 test**; 9 mutasyonla kanıtlandı; kilit başarılı ama durum okuması düşünce açık ekran/içerik kalıyordu (fail-open), otomatik kilit hatası sessizce yutuluyor ve ikinci deneme on dakika bekliyordu, çift tık iki kilit isteği gönderiyordu, başarılı kilitte bayat hata kalıyordu, kasa açılışında hareketsizlik sayacı sıfırlanmıyordu, otomatik yedek açılışta hiç koşmuyordu) — 2026-11-03. **Dosyalar ekranının eşzamanlı okumaları genişletildi** (`screens/Cases.test.tsx`, **+10 test** = **33**; 10 mutasyonla kanıtlandı; liste ve kaynak okumalarında yanıt **sırası** yoktu — geç gelen eski kapsam listeyi eziyor, geç "kayıt bulunamadı"/hata son seçimin üstüne yazılıyordu —, toplu ayrıştırma sürerken tekil Ayrıştır/OCR açıktı (aynı sürüm iki kez), etiket girişi koşulsuz temizleniyordu (uçuşta yazılan yeni etiket siliniyordu), etiket ekleme/kaldırmada uçuş kilidi yoktu (çift yazma) ve dosya seçici reddi sessizdi) — 2026-11-04. **Kontrol listesi ekranının uçuş yolları genişletildi** (`screens/Checklists.test.tsx`, **+12 test** = **27**; 12 mutasyonla kanıtlandı; `load`, kopyalama ve kaydetme yanıtlarında **dosya nesli** yoktu — geç gelen liste yanıtı ve geç hata yeni dosyayı eziyordu —, arka plan tazelemesi uçuşta yazılan **başka maddenin notunu siliyordu** (sessiz kayıp), kaydetme bildirimi tazeleme sürerken dosya değişirse yeni dosyaya yazılıyordu, dosya değişimi uçuştaki yazmanın kilidini devretmiyor ve eski yazmanın `finally`si yeni kilidi erken açıyordu) — 2026-11-04. **Çıktılar ekranının uçuş yolları genişletildi** (`screens/Exports.test.tsx`, **+9 test** = **31**; 10 mutasyonla kanıtlandı; dışa aktarma uçuştayken dosya değişince `busy` **devredilmiyordu** — yeni dosyanın altı düğmesi eski isteğin yanıtına kadar (yanıt hiç gelmezse süresiz) kapalı kalıyordu —, `run`/`runPackage` `finally`si **koşulsuz** kilidi bırakıyordu (devredilen isteğin kapanışı yeni dosyada başlatılan yazmanın kilidini erken açıyordu), paket başarısı uçuşta yazılan **yeni parolayı** siliyordu, kaydet/klasör diyaloğu açıkken ikinci tık **ikinci pencere + ikinci yazma** üretiyordu ve seçici reddi (`save`/`open`) **sessizdi**) — 2026-11-04. **Kapsam şeridi ayrıldı** (`screens/Exports.test.tsx`, **+7 test** = **38**; 9 mutasyonla kanıtlandı; tek nesil sayacı yüzünden **ilgisiz bir yazma** kullanıcının istediği kapsam tazelemesini düşürüyor ve `coverageLoading` kilidi **asılı** kalıyordu; **diyalog açıkken dosya değişince** yazma eski dosya için başlıyor, istek yeni nesli aldığı için kapıdan geçiyor ve eski dosyanın “yazıldı” satırı + kapsamı **yeni dosyanın altına** düşüyordu (INV-05); kapsam okuması uçuştayken “Yenile” her tıkta yeni tam sayım sorgusu açıyordu) — 2026-11-05. Açık: **görsel QA** (Tauri penceresi bir kez bile açılmadı) + Vite 500 kB kod bölme kararı (**insan**) |
 
+## Çıktılar ekranı — devir paketi dürüstlüğü: parola kapısı, şifreli paket yolu, kapsam kaynağı (2026-11-05)
+
+Önceki `Exports` turu kapsam şeridinin okuma/yazma kuşaklarını ayırmış, açık kayıt (a) olarak
+"panelde gösterilen kapsamın anlamı"nı bırakmıştı. Bu tur o kaydı kapattı ve aynı ekranda
+**çıktının ne olduğunu** yanlış anlatan iki yol daha ölçtü.
+
+**ÖLÇÜLEN KUSUR 1 (sessiz şifreleme düşüşü, en ağırı):** parola alanı doluyken arayüz
+`submitted.trim().length >= 10` (UTF-16 birimi, kırpılmış) ile karar verip kısa parolayı
+`undefined` gönderiyordu; çekirdek ise ham dizeyi `chars().count()` ile sayar. İki kapı
+ayrıştığı için kullanıcı **parola yazdığı hâlde açık metin klasör** üretiliyor, yeşil
+"Paket hazır" satırı gösteriliyor ve parolanın uygulanmadığı hiçbir yerde yazmıyordu.
+Kırmızı: `"kisa"` ile `exportPackage` **1** çağrı (`undefined` parolayla), `.notice.ok` var,
+hiç uyarı yok. Ters yön de ölçüldü: 5 emoji = 10 UTF-16 birimi → parola gönderiliyor,
+çekirdek 5 karakter sayıp paketi **sessizce** açık metin yazıyordu (kırmızı: `exportPackage`
+emoji parolayla çağrıldı).
+
+**ÖLÇÜLEN KUSUR 2 (var olmayan yol):** şifreli pakette künye `pkg.path`i birincil konum
+olarak yazıyordu; çekirdek (`commands.rs::export_package`) klasörü `.dimpak` içine paketleyip
+`remove_dir_all` ile **siliyor**. Yani "Paket hazır: …/DimDevir-…" satırı var olmayan bir
+klasörü gösteriyordu. Kırmızı: künye silinen klasör yolunu taşıyor.
+
+**ÖLÇÜLEN KUSUR 3 (kapsam kaynağı — önceki turun açık kaydı a):** kapsam paneli tazeleme
+sonrası "kasadaki güncel değer"i, yazma sonrası "çıktıya yazılan blok"u gösteriyordu; ikisi
+aynı başlık/alt yazı altında dönüşümlüydü ve `generatedAt` (yanıtta var) hiç yazılmıyordu.
+Avukat yazma anındaki sayıları "şu anki kapsam" sanabilirdi. Kırmızı: panelde ne kaynak ne
+zaman satırı var.
+
+**Düzeltme (`Exports.tsx` +72/−16, `i18n.ts` +11):**
+- Parola ölçüsü çekirdekle **aynı**: `[...typed].length` (kod noktası = Rust `chars().count()`),
+  kırpma yok. Parola yazıldıysa ve 10'dan azsa **istek hiç gitmez**: görünür
+  `E_PACKAGE_PASSWORD` hatası, alan korunur (açık metin klasör üretilmez). Boş alan bilinçli
+  açık metindir ve künyesi bunu **yazar** (`exports.packagePlaintext`).
+- Parola gönderildiği hâlde `sealedPath` dönmezse `E_PACKAGE_NOT_SEALED` görünür: çekirdek
+  sözleşmesi denetlenir, sessiz düşüş olmaz.
+- Şifreli pakette birincil konum `.dimpak` yoludur + "klasör şifrelendi ve geçici klasör
+  silindi" satırı (`exports.sealedConverted`).
+- Kapsam şeridi kaynak + zaman yazar: `exports.coverageFromVault` ("Kasadan okundu: {at}") /
+  `coverageFromExport` / `coverageFromPackage` ("Çıktıya yazılan blok (yazma anı): {at} —
+  kasadaki güncel değer değil; “Kapsamı tazele” ile güncelleyin"). Zaman `formatDateTime` ile
+  biçimlenir (ham ISO gösterilmez).
+
+**Testler:** `Exports.test.tsx` **38 → 47** (+9; yeni `describe` "Çıktılar ekranı paket ve
+kapsam dürüstlüğü"). **Ham koşu (düzeltme öncesi bileşen, nihai 47 test): 8 failed | 38 passed**
+— sekizi de gerçek kusur; mevcut 38 test düzeltme öncesinde de yeşildi. **Dürüst:** eski
+"parola 10 karakter eşiğinde gönderir" testi kısa parolanın `undefined` gönderilmesini
+**sabitliyordu** (kusuru pinliyordu) → 10 karakterlik sınır testine dönüştürüldü; eski
+"şifreli paket künyesi" testi de silinmiş klasör yolunu bekliyordu → `.dimpak` yoluna alındı.
+
+**Kapı kanıtı 13/13** (her koşu orijinal metinden; geri yükleme sha256
+`ec21afda2db6b75c2ae4ef0710100325c9dc97e12fc7f7203891331fd95b900d` birebir): M1 parola kapısı
+kaldırıldı (**2**), M2 eşik `trim().length` (2), M3 eşik `> 10` sınır kayması (1), M4 boş parola
+`''` gönderilir (2), M5 "parola gönderildi" kapısı kaldırıldı (2), M6 "sealedPath yok" kapısı
+kaldırıldı (1), M7 birincil yol silinmiş klasör (2), M8 dosya değişimi kaynağı tazelemez (1),
+M9 tazeleme kaynağı tazelemez (1), M10 dışa aktarma kaynağı yazılmaz (1), M11 paket kaynağı
+yazılmaz (1), M12 açık metin satırı çizilmez (2), M13 şifreli dönüşüm satırı çizilmez (2).
+**Dürüst:** M4/M5 ayrıca "düşen paket isteği" testini düşürür — başarı yolunda kırmızı uyarı
+bıraktıkları için sonraki `findByRole("alert")` bayat uyarıyı yakalar; asıl kapılarını
+M4 → test 40 (açık metin künyesi), M5 → aynı test ölçer.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **1118/1118** (60 dosya; 1109 → +9) · `npm run build`
+temiz (**588,48 kB**, `index-BNHF7p0j.js`, gzip **158,88 kB**; CSS `index-CPW4QqlF.css`
+7,28 kB). Rust değişmedi.
+
+**Commit/CI (ölçüldü):** kod `0fe6a60` (3 dosya, +285/−33) → **`41966799363` 7/7 YEŞİL** (ilk
+koşu; `arayüz` günlüğü **60 dosya / 1118 test** ve **aynı paket** `index-BNHF7p0j.js`
+588,48 kB / gzip 158,88 kB → yerel/CI **birebir**).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek klasör seçicisi
+ve **görsel QA yok**; `api` mock'lu olduğu için `export_package` SQL'i ve Rust **koşmaz**.
+Parola kapısı **arayüz düzeyinde**: doğrudan IPC kısa parolayla çağrılırsa çekirdek yine
+sessizce açık metin yazar (çekirdek `password.filter(|p| p.chars().count() >= 10)`); bu tur
+arayüzün o çağrıyı **hiç yapmamasını** ve yanıtın denetlenmesini sağlar. Çekirdek
+`PackageView.path` hâlâ silinen klasörü bildirir; arayüz birincil konum olarak `sealedPath`
+gösterir (çekirdek sözleşmesini değiştirmek ayrı iş).
+
+**Açık kayıt:** (a) çekirdek kısa parolayı **kendi başına** reddetmez (doğrudan IPC ile açık
+metin paket üretilebilir) — kapı arayüzde; çekirdek tarafında `E_PACKAGE_PASSWORD` üretmek
+ayrı dilim; (b) `PackageView.path` alanı şifreli pakette anlamsız (silinmiş klasör) — kaldırmak
+sözleşme değişikliği; (c) görsel QA **insan bekliyor**.
+
 ## Çıktılar ekranı — kapsam şeridi: okuma/yazma kuşağı ayrımı, diyalog dosya kapısı (2026-11-05)
 
 Önceki `Exports` turu **uyuş** yollarını (kilit devri, seçici kilidi, sessiz seçici hatası)
@@ -84,7 +164,8 @@ yazma paralel başlamaz); `coverageLoading` okuma şeridinin bayrağı.
 **Açık kayıt:** (a) tazeleme **başarısından** sonra gösterilen kapsam "kasadaki güncel değer"dir,
 yazma sonrası gösterilen ise "dosyaya yazılan blok"tur; iki anlam aynı panelde dönüşümlüdür
 (çıktı künyesi her zaman `result.coverage` taşır — yalan yok, ama panel etiketi ikisini
-ayırmaz); (b) seçici diyaloğu **reddedilirse** ve bu arada dosya değiştiyse `E_DIALOG` yeni
+ayırmaz) — **kapandı** (2026-11-05 paket/kapsam turu: panel kaynağı ve `generatedAt` zamanını
+yazar); (b) seçici diyaloğu **reddedilirse** ve bu arada dosya değiştiyse `E_DIALOG` yeni
 dosyanın altında görünür (hata gerçek, bağlam karışık); (c) görsel QA insan bekliyor.
 
 ## Çıktılar ekranı — uçuş yolları: kilit devri, seçici kilidi, sessiz seçici hatası (2026-11-04)
