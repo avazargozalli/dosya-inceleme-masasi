@@ -287,6 +287,9 @@ export type TransferConsentRow = {
   revokedAt: string | null;
 };
 
+/** Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik. */
+export type TransferConsentListRow = TransferConsentRow & { active: boolean };
+
 export type ScopeSkip = {
   documentId: string;
   reason: "missing" | "no_current_version" | "not_parsed" | "empty_text" | string;
@@ -1830,6 +1833,8 @@ export const api = {
   aiConsentCreate: (caseId: string, providerId: string, purpose: string, documentIds: string[]) =>
     invoke<TransferConsentRow>("ai_consent_create", { caseId, providerId, purpose, documentIds }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
+  aiConsentList: (caseId: string) =>
+    invoke<TransferConsentListRow[]>("ai_consent_list", { caseId }),
   aiRunExecute: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiCandidateRow>("ai_run_execute", {
       caseId,

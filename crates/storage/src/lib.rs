@@ -37,7 +37,7 @@ mod timeline;
 pub use ai::{
     AiCandidateRow, AiContextItemRow, AiRunRow, ConsentPreview, ConsentScope, CoverageReport,
     NewAiContextItem, NewAiRun, NewTransferConsent, ProviderProfileRow, ScopeDocument,
-    ScopeSegment, ScopeSkip, TransferConsentRow,
+    ScopeSegment, ScopeSkip, TransferConsentListRow, TransferConsentRow,
 };
 pub use ai_candidate::{
     CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,

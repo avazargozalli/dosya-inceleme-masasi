@@ -71,6 +71,19 @@ pub struct NewTransferConsent {
     pub consent_text_version: String,
 }
 
+/// Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik.
+///
+/// `active` arayüzdeki saatten değil, `consent_is_active` ile **aynı** kuraldan
+/// gelir (iptal yok + süre dolmamış). Böylece liste ile çalıştırma kapısı
+/// ayrışamaz.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferConsentListRow {
+    #[serde(flatten)]
+    pub consent: TransferConsentRow,
+    pub active: bool,
+}
+
 /// Sağlayıcı profilinin **varış yerine bağlı** kimliği: `adapter@politika`.
 /// API profilinde kayıtlı uç nokta ve modelin kısa sha256 parmak izi de girer —
 /// aynı adapter sürümüyle **başka** bir uç noktaya/modelle gönderim, önceki
@@ -205,7 +218,11 @@ impl Database {
         }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
-        self.conn().execute(
+        // Onay **aynı amaç** için yenilendiyse önceki etkin onay kapanır: o
+        // yetkinin güncel kapsamı en son onaydır (varış yeri değişse bile).
+        // Farklı amaç ayrı yetkidir; ona dokunulmaz.
+        let tx = self.conn().unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO transfer_consents (id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             rusqlite::params![
@@ -219,13 +236,40 @@ impl Database {
                 now
             ],
         )?;
+        let superseded: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM transfer_consents
+                 WHERE case_scope=?1 AND purpose=?2
+                   AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?3)
+                   AND id<>?4",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![new.case_scope, new.purpose.trim(), now, id],
+                |row| row.get(0),
+            )?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        for previous in &superseded {
+            tx.execute(
+                "UPDATE transfer_consents SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL",
+                rusqlite::params![now, previous],
+            )?;
+            self.append_audit(
+                "transfer_consent",
+                Some(previous),
+                "supersede",
+                "local-user",
+                &serde_json::json!({"superseded_by": id}),
+            )?;
+        }
         self.append_audit(
             "transfer_consent",
             Some(&id),
             "approve",
             "local-user",
-            &serde_json::json!({"provider": snapshot, "documents": new.selected_document_ids.len()}),
+            &serde_json::json!({"provider": snapshot, "documents": selected.len()}),
         )?;
+        tx.commit()?;
         self.get_transfer_consent(&id)?
             .ok_or(StorageError::NotFound)
     }
@@ -259,20 +303,37 @@ impl Database {
         Ok(())
     }
 
+    /// Bir dosyanın **bütün** aktarım onayları — en yeni önce.
+    ///
+    /// Envanter olmadan etkin bir onay görünmez ve iptal edilemezdi: arayüz
+    /// yalnız kendi açtığı son onayı tutuyordu. Liste dosyaya kapsanmıştır;
+    /// başka dosyanın onayı (ve belge kimlikleri) sızmaz.
+    pub fn list_transfer_consents(
+        &self,
+        case_id: &str,
+    ) -> Result<Vec<TransferConsentListRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at,revoked_at
+             FROM transfer_consents WHERE case_scope=?1
+             ORDER BY approved_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([case_id], map_consent)?;
+        let now = now_iso();
+        let mut out = Vec::new();
+        for row in rows {
+            let consent = row?;
+            let active = consent_active_at(&consent, &now);
+            out.push(TransferConsentListRow { consent, active });
+        }
+        Ok(out)
+    }
+
     /// Onay geçerli mi? İptal edilmiş veya süresi dolmuş onay yeni çalıştırma açamaz.
     pub fn consent_is_active(&self, id: &str) -> Result<bool, StorageError> {
         let consent = self
             .get_transfer_consent(id)?
             .ok_or(StorageError::NotFound)?;
-        if consent.revoked_at.is_some() {
-            return Ok(false);
-        }
-        if let Some(expires) = consent.expires_at {
-            if expires <= now_iso() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(consent_active_at(&consent, &now_iso()))
     }
 
     pub fn start_ai_run(&self, case_id: &str, new: &NewAiRun) -> Result<AiRunRow, StorageError> {
@@ -1092,6 +1153,19 @@ pub(crate) fn map_candidate(row: &Row<'_>) -> rusqlite::Result<AiCandidateRow> {
     })
 }
 
+/// Etkinlik kuralı **tek yerde**: liste (`list_transfer_consents`) ve çalıştırma
+/// kapısı (`consent_is_active`) aynı fonksiyonu kullanır — arayüz ile çekirdek
+/// ayrışamaz.
+fn consent_active_at(consent: &TransferConsentRow, now: &str) -> bool {
+    if consent.revoked_at.is_some() {
+        return false;
+    }
+    match consent.expires_at.as_deref() {
+        Some(expires) => expires > now,
+        None => true,
+    }
+}
+
 fn map_consent(row: &Row<'_>) -> rusqlite::Result<TransferConsentRow> {
     let ids: String = row.get(4)?;
     Ok(TransferConsentRow {
@@ -1197,6 +1271,210 @@ mod tests {
                 .code(),
             "E_AI_CONSENT"
         );
+    }
+
+    fn consent_for(
+        db: &Database,
+        case_id: &str,
+        purpose: &str,
+        documents: Vec<String>,
+    ) -> TransferConsentRow {
+        db.create_transfer_consent(&NewTransferConsent {
+            provider_id: "p1".into(),
+            case_scope: case_id.into(),
+            purpose: purpose.into(),
+            selected_document_ids: documents,
+            expires_at: None,
+            consent_text_version: "1".into(),
+        })
+        .expect("onay")
+    }
+
+    /// Aynı amaç + aynı varış yeri yeniden onaylanınca **önceki yetki kapanır**:
+    /// envanterde iki etkin kopya kalmaz, kapanma denetime yazılır.
+    #[test]
+    fn new_consent_supersedes_the_previous_one_for_the_same_purpose() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let first = consent_for(&db, &case_id, "ozet", vec![document_id.clone()]);
+        assert!(db.consent_is_active(&first.id).expect("etkin"));
+
+        let second = consent_for(&db, &case_id, "ozet", vec![document_id]);
+        assert!(db.consent_is_active(&second.id).expect("yeni onay etkin"));
+        assert!(
+            !db.consent_is_active(&first.id).expect("eski onay"),
+            "aynı amaç ve varış yeri yeniden onaylandı; eski yetki açık kalmamalı"
+        );
+        let old = db
+            .get_transfer_consent(&first.id)
+            .expect("kayıt")
+            .expect("var");
+        assert!(old.revoked_at.is_some());
+        let audits: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE operation='supersede' AND entity_id=?1",
+                [&first.id],
+                |row| row.get(0),
+            )
+            .expect("denetim");
+        assert_eq!(audits, 1, "kapanma denetime yazılmalı");
+    }
+
+    /// Varış yeri değişse bile **aynı amaç** yeniden onaylanınca eski yetki
+    /// kapanır: iki etkin kopya kalmaz.
+    #[test]
+    fn reapproval_after_a_destination_change_also_supersedes() {
+        let (db, case_id, _) = setup();
+        let profile = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let first = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: profile.id.clone(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("ilk onay");
+        db.register_api_profile("https://b.example/v1", "model-b")
+            .expect("uç nokta değişti");
+        let second = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: profile.id,
+                case_scope: case_id,
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("yeni onay");
+        assert!(
+            !db.consent_is_active(&first.id).expect("eski onay"),
+            "aynı amaç yeniden onaylandı; varış yeri değişse de eski kapanmalı"
+        );
+        assert!(db.consent_is_active(&second.id).expect("yeni onay"));
+    }
+
+    /// Kapanmış onay yeniden kapatılmaz: iptal ve süre kayıtları yerinde kalır
+    /// (envanterde "iptal edildi" ile "süresi geçti" ayrımı korunur).
+    #[test]
+    fn supersede_only_touches_live_consents() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let revoked = consent_for(&db, &case_id, "ozet", vec![document_id.clone()]);
+        db.revoke_transfer_consent(&revoked.id).expect("iptal");
+        let expired = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id.clone()],
+                expires_at: Some("2000-01-01T00:00:00Z".into()),
+                consent_text_version: "1".into(),
+            })
+            .expect("süresi geçmiş onay");
+
+        let live = consent_for(&db, &case_id, "ozet", vec![document_id]);
+        assert!(db.consent_is_active(&live.id).expect("yeni onay"));
+
+        let audits: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM audit_events WHERE operation='supersede' AND entity_id=?1",
+                [&revoked.id],
+                |row| row.get(0),
+            )
+            .expect("denetim");
+        assert_eq!(audits, 0, "zaten iptal edilmiş onay yeniden kapatılmaz");
+        let expired_row = db
+            .get_transfer_consent(&expired.id)
+            .expect("kayıt")
+            .expect("var");
+        assert!(
+            expired_row.revoked_at.is_none(),
+            "süresi geçmiş onay 'iptal edildi' işaretlenmez"
+        );
+    }
+
+    /// Farklı amaç ya da farklı dosya **ayrı yetkidir**: yeni onay onları kapatmaz.
+    #[test]
+    fn consent_for_another_purpose_or_case_is_not_superseded() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let summary = consent_for(&db, &case_id, "ozet", vec![document_id.clone()]);
+        let claims = consent_for(&db, &case_id, "iddia_cikarimi", vec![document_id]);
+        assert!(
+            db.consent_is_active(&summary.id).expect("özet"),
+            "farklı amaç ayrı yetkidir"
+        );
+        assert!(db.consent_is_active(&claims.id).expect("iddia"));
+
+        let other_case = case_titled(&db, "Başka dosya");
+        let (other_doc, _) = document_with_text(&db, &other_case, "Belge", &["Metin"]);
+        let other = consent_for(&db, &other_case, "ozet", vec![other_doc]);
+        assert!(
+            db.consent_is_active(&summary.id).expect("özet"),
+            "başka dosyanın onayı bu dosyanın yetkisini kapatmaz"
+        );
+        assert!(db.consent_is_active(&other.id).expect("başka dosya"));
+    }
+
+    /// Envanter **dosyaya kapsanır**, iptal/süre durumunu çekirdekten yazar ve
+    /// en yeni onayı önce döndürür.
+    #[test]
+    fn consent_inventory_is_case_scoped_and_reports_state() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let active = consent_for(&db, &case_id, "ozet", vec![document_id.clone()]);
+        let revoked = consent_for(&db, &case_id, "iddia_cikarimi", vec![document_id.clone()]);
+        db.revoke_transfer_consent(&revoked.id).expect("iptal");
+        let expired = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "olay_cikarimi".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: Some("2000-01-01T00:00:00Z".into()),
+                consent_text_version: "1".into(),
+            })
+            .expect("süresi geçmiş onay");
+
+        let other_case = case_titled(&db, "Başka dosya");
+        let (other_doc, _) = document_with_text(&db, &other_case, "Belge", &["Metin"]);
+        consent_for(&db, &other_case, "ozet", vec![other_doc]);
+
+        let rows = db.list_transfer_consents(&case_id).expect("envanter");
+        assert_eq!(rows.len(), 3, "yalnız bu dosyanın onayları");
+        let row = |id: &str| {
+            rows.iter()
+                .find(|item| item.consent.id == id)
+                .expect("satır")
+        };
+        assert!(row(&active.id).active, "iptal edilmemiş, süresi dolmamış");
+        assert!(!row(&revoked.id).active);
+        assert!(row(&revoked.id).consent.revoked_at.is_some());
+        assert!(!row(&expired.id).active, "süre doldu");
+        assert!(
+            row(&expired.id).consent.revoked_at.is_none(),
+            "süre dolması iptal değildir"
+        );
+        assert!(rows.iter().all(|item| item.consent.case_scope == case_id));
+        let keys: Vec<(String, String)> = rows
+            .iter()
+            .map(|item| (item.consent.approved_at.clone(), item.consent.id.clone()))
+            .collect();
+        let mut expected = keys.clone();
+        expected.sort();
+        expected.reverse();
+        assert_eq!(keys, expected, "en yeni onay önce");
+        assert!(db
+            .list_transfer_consents("olmayan-dosya")
+            .expect("boş envanter")
+            .is_empty());
     }
 
     #[test]

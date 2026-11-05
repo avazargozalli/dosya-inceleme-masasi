@@ -38,6 +38,7 @@ import type {
   ConsentPreview,
   DocumentRow,
   QuoteMatchReport,
+  TransferConsentListRow,
   TransferConsentRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
@@ -61,6 +62,7 @@ const mocks = vi.hoisted(() => ({
   aiConsentPreview: vi.fn(),
   aiConsentCreate: vi.fn(),
   aiConsentRevoke: vi.fn(),
+  aiConsentList: vi.fn(),
   aiRunExecute: vi.fn(),
   aiCandidatesList: vi.fn(),
   aiCandidateValidate: vi.fn(),
@@ -345,6 +347,7 @@ type SetupOptions = {
   documents?: (caseId: string) => Promise<DocumentRow[]>;
   preview?: () => Promise<ConsentPreview>;
   consent?: () => Promise<TransferConsentRow>;
+  consents?: (caseId: string) => Promise<TransferConsentListRow[]>;
   revoke?: () => Promise<void>;
   runExecute?: () => Promise<void>;
   candidates?: (runId: string) => Promise<AiCandidateRow[]>;
@@ -369,6 +372,7 @@ function setup(options: SetupOptions = {}) {
   mocks.aiConsentPreview.mockImplementation(options.preview ?? (async () => PREVIEW));
   mocks.aiConsentCreate.mockImplementation(options.consent ?? (async () => CONSENT));
   mocks.aiConsentRevoke.mockImplementation(options.revoke ?? (async () => undefined));
+  mocks.aiConsentList.mockImplementation(options.consents ?? (async () => []));
   mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => undefined));
   mocks.aiCandidatesList.mockImplementation(options.candidates ?? (async () => [CAND_VALID]));
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
@@ -1826,5 +1830,247 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     expect(line.textContent).toContain(
       t("ai.consentPurpose", { purpose: t("ai.purposeEvents") }),
     );
+  });
+});
+
+describe("AI ekranı — aktarım onayı envanteri", () => {
+  function consentListRow(
+    overrides: Partial<TransferConsentListRow> & { id: string },
+  ): TransferConsentListRow {
+    return {
+      providerSnapshot: "claude-code@1",
+      caseScope: "p1",
+      purpose: "ozet",
+      selectedDocumentIds: ["d1"],
+      expiresAt: null,
+      consentTextVersion: "1",
+      approvedAt: "2026-11-01T10:00:00.000Z",
+      revokedAt: null,
+      active: true,
+      ...overrides,
+    };
+  }
+
+  it("envanteri çekirdekten okur; amaç, sağlayıcı ve durumu yazar", async () => {
+    const active = consentListRow({ id: "c1" });
+    const revoked = consentListRow({
+      id: "c2",
+      purpose: "iddia_cikarimi",
+      revokedAt: "2026-11-02T10:00:00.000Z",
+      active: false,
+    });
+    const expired = consentListRow({
+      id: "c3",
+      purpose: "olay_cikarimi",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+      active: false,
+    });
+    setup({ consents: async () => [active, revoked, expired] });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    await within(card).findByText(t("ai.consentActive"));
+    expect(mocks.aiConsentList).toHaveBeenCalledWith("p1");
+
+    const rows = within(card).getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.textContent).toContain(t("ai.purposeSummary"));
+    expect(rows[0]!.textContent).toContain("claude-code@1");
+    expect(rows[0]!.textContent).toContain(t("ai.consentNoExpiry"));
+    expect(rows[1]!.textContent).toContain(t("ai.consentRevoked"));
+    expect(rows[2]!.textContent).toContain(t("ai.consentExpired"));
+    // İptal yalnız **etkin** satırda sunulur; kapanmış yetki yeniden iptal edilmez.
+    expect(within(rows[0]!).getByRole("button", { name: t("ai.revoke") })).toBeTruthy();
+    expect(within(rows[1]!).queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+    expect(within(rows[2]!).queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+  });
+
+  it("envanterden iptal çekirdeğe gider ve liste çekirdekten tazelenir", async () => {
+    let rows = [consentListRow({ id: "c1" })];
+    setup({ consents: async () => rows });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    const revoke = await within(card).findByRole("button", { name: t("ai.revoke") });
+
+    rows = [
+      consentListRow({
+        id: "c1",
+        revokedAt: "2026-11-05T10:00:00.000Z",
+        active: false,
+      }),
+    ];
+    fireEvent.click(revoke);
+
+    await waitFor(() => expect(mocks.aiConsentRevoke).toHaveBeenCalledWith("c1"));
+    await within(card).findByText(t("ai.consentRevoked"));
+    expect(within(card).queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+    expect(mocks.aiConsentList.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("iptal uçuşunda satır düğmesi ikinci isteği göndermez", async () => {
+    const pending = deferred<void>();
+    setup({ consents: async () => [consentListRow({ id: "c1" })], revoke: () => pending.promise });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    const revoke = (await within(card).findByRole("button", {
+      name: t("ai.revoke"),
+    })) as HTMLButtonElement;
+    fireEvent.click(revoke);
+    await waitFor(() => expect(revoke.disabled).toBe(true));
+    fireEvent.click(revoke);
+    expect(mocks.aiConsentRevoke).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve(undefined));
+  });
+
+  it("iptal düşerse hata görünür, satır etkin kalır ve liste tazelenmez", async () => {
+    setup({
+      consents: async () => [consentListRow({ id: "c1" })],
+      revoke: async () => {
+        throw { code: "E_DB", message: "yazılamadı" };
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    const revoke = await within(card).findByRole("button", { name: t("ai.revoke") });
+    const listCalls = mocks.aiConsentList.mock.calls.length;
+    fireEvent.click(revoke);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DB");
+    expect(within(card).getByText(t("ai.consentActive"))).toBeTruthy();
+    expect(mocks.aiConsentList.mock.calls.length).toBe(listCalls);
+  });
+
+  it("dosya değişiminde geç gelen envanter yeni dosyanın listesine yazılmaz", async () => {
+    const pending = deferred<TransferConsentListRow[]>();
+    setup({
+      consents: (caseId: string) =>
+        caseId === "p1"
+          ? pending.promise
+          : Promise.resolve([
+              consentListRow({ id: "c2", caseScope: "p2", purpose: "iddia_cikarimi" }),
+            ]),
+    });
+
+    await screen.findByText("api:claude (api)");
+    switchCase("p2");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    await within(card).findByText(t("ai.purposeClaims"));
+
+    await act(async () => pending.resolve([consentListRow({ id: "c1" })]));
+    expect(within(card).queryByText(t("ai.purposeSummary"))).toBeNull();
+    expect(within(card).getByText(t("ai.purposeClaims"))).toBeTruthy();
+  });
+
+  it("onay verilince envanter tazelenir ve yeni satır görünür", async () => {
+    let rows: TransferConsentListRow[] = [];
+    setup({ consents: async () => rows });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    await within(card).findByText(t("ai.consentsEmpty"));
+    const listCalls = mocks.aiConsentList.mock.calls.length;
+
+    rows = [consentListRow({ id: CONSENT.id, selectedDocumentIds: ["d1", "d2"] })];
+    fireEvent.click(button(t("ai.approve")));
+
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(1));
+    await within(card).findByText(t("ai.consentActive"));
+    expect(mocks.aiConsentList.mock.calls.length).toBeGreaterThan(listCalls);
+  });
+
+  it("envanter okuma hatası görünür ve boş liste dürüstçe yazılır", async () => {
+    setup({
+      consents: async () => {
+        throw { code: "E_DB", message: "okunamadı" };
+      },
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DB");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    expect(within(card).getByText(t("ai.consentsEmpty"))).toBeTruthy();
+  });
+
+  it("iptal uçuşunda dosya değişirse eski dosyanın envanteri tazelenmez", async () => {
+    const pending = deferred<void>();
+    setup({
+      consents: async (caseId: string) =>
+        caseId === "p1"
+          ? [consentListRow({ id: "c1" })]
+          : [consentListRow({ id: "c2", caseScope: "p2", purpose: "iddia_cikarimi" })],
+      revoke: () => pending.promise,
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    const revoke = (await within(card).findByRole("button", {
+      name: t("ai.revoke"),
+    })) as HTMLButtonElement;
+    fireEvent.click(revoke);
+    await waitFor(() => expect(revoke.disabled).toBe(true));
+
+    switchCase("p2");
+    await within(card).findByText(t("ai.purposeClaims"));
+    const p1Calls = mocks.aiConsentList.mock.calls.filter(([id]) => id === "p1").length;
+
+    await act(async () => pending.resolve(undefined));
+    expect(mocks.aiConsentList.mock.calls.filter(([id]) => id === "p1").length).toBe(p1Calls);
+    expect(within(card).getByText(t("ai.purposeClaims"))).toBeTruthy();
+    expect(within(card).queryByText(t("ai.purposeSummary"))).toBeNull();
+  });
+
+  it("onay sonrası tazeleme, askıdaki eski okumanın geç yanıtını ezer", async () => {
+    const initial = deferred<TransferConsentListRow[]>();
+    let calls = 0;
+    setup({
+      consents: () => {
+        calls += 1;
+        return calls === 1
+          ? initial.promise
+          : Promise.resolve([consentListRow({ id: "c-new" })]);
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    const card = cardByHeading(t("ai.consentsTitle"));
+    await within(card).findByText(t("ai.consentActive"));
+
+    // İlk okuma (boş/eski liste) **sonra** döner; yeni dosyanın listesini ezmemeli.
+    await act(async () =>
+      initial.resolve([consentListRow({ id: "c-old", purpose: "iddia_cikarimi" })]),
+    );
+    expect(within(card).queryByText(t("ai.purposeClaims"))).toBeNull();
+    expect(within(card).getByText(t("ai.purposeSummary"))).toBeTruthy();
+  });
+
+  it("Yenile uçuşta iken ikinci okuma başlatmaz", async () => {
+    const pending = deferred<TransferConsentListRow[]>();
+    let calls = 0;
+    setup({
+      consents: () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.resolve([consentListRow({ id: "c1" })])
+          : pending.promise;
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    await within(card).findByText(t("ai.consentActive"));
+    const refresh = within(card).getByRole("button", {
+      name: t("ai.consentsRefresh"),
+    }) as HTMLButtonElement;
+
+    fireEvent.click(refresh);
+    await waitFor(() => expect(refresh.disabled).toBe(true));
+    fireEvent.click(refresh);
+    expect(calls).toBe(2);
+    await act(async () => pending.resolve([]));
   });
 });

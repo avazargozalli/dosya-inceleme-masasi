@@ -8,6 +8,7 @@ import {
   type CandidateReport,
   type CaseRow,
   type ConsentPreview,
+  type TransferConsentListRow,
   type TransferConsentRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
@@ -59,11 +60,27 @@ function purposeLabel(purpose: string): string {
   }
 }
 
+/**
+ * Envanter durumu **çekirdeğin** `active` değerinden okunur; arayüz kendi
+ * saatine göre "süresi geçti" demez. İptal, süre dolmasından önce gelir.
+ */
+function consentStateLabel(row: TransferConsentListRow): string {
+  if (row.revokedAt) return t("ai.consentRevoked");
+  return row.active ? t("ai.consentActive") : t("ai.consentExpired");
+}
+
+function consentStateTone(row: TransferConsentListRow): string {
+  if (row.revokedAt) return "plain";
+  return row.active ? "ok" : "warn";
+}
+
 export function Ai() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
   const [overview, setOverview] = useState<AiOverview | null>(null);
   const [consent, setConsent] = useState<TransferConsentRow | null>(null);
+  const [consents, setConsents] = useState<TransferConsentListRow[]>([]);
+  const [consentListBusy, setConsentListBusy] = useState(false);
   const [preview, setPreview] = useState<ConsentPreview | null>(null);
   const [candidates, setCandidates] = useState<AiCandidateRow[]>([]);
   const [purpose, setPurpose] = useState("ozet");
@@ -100,6 +117,9 @@ export function Ai() {
   const revokeSeq = useRef(0);
   // Önizleme bir **okuma**dır: iki istek yarışırsa sonuç **son** isteğe aittir.
   const previewSeq = useRef(0);
+  // Onay envanteri de bir **okuma**dır: dosya değişimi nesli artırır, geç yanıt
+  // yeni dosyanın listesine yazılmaz.
+  const consentListSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -138,6 +158,27 @@ export function Ai() {
     }
   }
 
+  /**
+   * Onay envanteri bir **okuma**dır. Her yeni okuma sayacı artırır ve
+   * **son başlayan okuma kazanır** (`consentListSeq`): dosya değişiminde yeni
+   * okuma başlar, geç yanıt yeni dosyanın listesine yazılmaz.
+   */
+  async function loadConsents(forCase: string): Promise<void> {
+    if (!forCase) return;
+    consentListSeq.current += 1;
+    const seq = consentListSeq.current;
+    setConsentListBusy(true);
+    try {
+      const rows = await api.aiConsentList(forCase);
+      if (consentListSeq.current !== seq) return;
+      setConsents(rows);
+    } catch (e) {
+      if (consentListSeq.current === seq) setError(toApiError(e));
+    } finally {
+      if (consentListSeq.current === seq) setConsentListBusy(false);
+    }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -151,7 +192,11 @@ export function Ai() {
   }, []);
 
   useEffect(() => {
-    if (!caseId) return;
+    if (!caseId) {
+      setConsents([]);
+      setConsentListBusy(false);
+      return;
+    }
     caseGen.current += 1;
     const gen = caseGen.current;
     // Dosya değişimi türetilmiş durumu **devralmaz** (INV-05): onay başka dosyanın
@@ -170,6 +215,8 @@ export function Ai() {
     setRevokeTarget(null);
     setOverview(null);
     setConsent(null);
+    setConsents([]);
+    setConsentListBusy(false);
     setPreview(null);
     setCandidates([]);
     setRunId("");
@@ -184,6 +231,9 @@ export function Ai() {
       .catch((e) => {
         if (caseGen.current === gen) setError(toApiError(e));
       });
+    // Envanter de çekirdekten okunur: sayfa yeniden açıldığında etkin onaylar
+    // görünür ve iptal edilebilir (arayüz yalnız kendi açtığı onayı tutmaz).
+    void loadConsents(caseId);
   }, [caseId]);
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
@@ -214,6 +264,8 @@ export function Ai() {
       const nextConsent = await api.aiConsentCreate(caseId, provider.id, purpose, ids);
       if (caseGen.current !== gen) return;
       setConsent(nextConsent);
+      // Envanter tazelenir: yeni onay (ve aynı amaçla kapanan önceki) listede görünür.
+      void loadConsents(caseId);
     } catch (e) {
       if (caseGen.current === gen) setError(toApiError(e));
     } finally {
@@ -359,11 +411,10 @@ export function Ai() {
     }
   }
 
-  async function revokeConsent() {
-    if (!consent) return;
+  async function revokeConsent(target: string) {
     const gen = caseGen.current;
-    const target = consent.id;
     const write = beginRevoke(target);
+    setError(null);
     try {
       await api.aiConsentRevoke(target);
     } catch (e) {
@@ -374,6 +425,9 @@ export function Ai() {
     }
     // Geç dönen iptal, bu arada alınmış **yeni** onayı silmez.
     setConsent((cur) => (cur && cur.id === target ? null : cur));
+    // Liste çekirdekten tazelenir: satır "iptal edildi" olur (iyimser silme yok).
+    // Dosya değiştiyse eski dosyanın listesi yeni dosyaya yazılmaz.
+    if (caseGen.current === gen) void loadConsents(caseId);
   }
 
   return (
@@ -495,12 +549,77 @@ export function Ai() {
               className="btn ghost"
               style={{ marginLeft: 8 }}
               disabled={revokeBusy}
-              onClick={() => void revokeConsent()}
+              onClick={() => void revokeConsent(consent.id)}
             >
               {t("ai.revoke")}
             </button>
           </p>
         ) : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("ai.consentsTitle")}</h2>
+            <p className="card-sub">{t("ai.consentsSub")}</p>
+          </div>
+          <button
+            className="btn ghost"
+            disabled={!caseId || consentListBusy}
+            onClick={() => void loadConsents(caseId)}
+          >
+            {consentListBusy ? t("ai.consentsLoading") : t("ai.consentsRefresh")}
+          </button>
+        </div>
+        {consents.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {consentListBusy ? t("ai.consentsLoading") : t("ai.consentsEmpty")}
+          </p>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("ai.consentsColPurpose")}</th>
+                <th>{t("ai.consentsColProvider")}</th>
+                <th>{t("ai.consentsColDocuments")}</th>
+                <th>{t("ai.consentsColApproved")}</th>
+                <th>{t("ai.consentsColExpires")}</th>
+                <th>{t("ai.consentsColState")}</th>
+                <th>{t("ai.consentsColAction")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {consents.map((row) => (
+                <tr key={row.id}>
+                  <td>{purposeLabel(row.purpose)}</td>
+                  <td>
+                    <code>{row.providerSnapshot}</code>
+                  </td>
+                  <td>{row.selectedDocumentIds.length}</td>
+                  <td>{formatDateTime(row.approvedAt)}</td>
+                  <td>{row.expiresAt ? formatDateTime(row.expiresAt) : t("ai.consentNoExpiry")}</td>
+                  <td>
+                    <span className={`badge ${consentStateTone(row)}`}>{consentStateLabel(row)}</span>
+                  </td>
+                  <td>
+                    {row.active ? (
+                      <button
+                        className="btn ghost"
+                        disabled={revokeBusy}
+                        onClick={() => void revokeConsent(row.id)}
+                      >
+                        {t("ai.revoke")}
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="hint" style={{ margin: 0 }}>
+          {t("ai.consentsNote")}
+        </p>
       </div>
 
       <div className="card">

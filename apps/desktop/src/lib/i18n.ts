@@ -534,6 +534,27 @@ export const tr = {
     previewEmpty: "ayrıştırılmış metin yok — bu dosyada gönderilecek içerik bulunmuyor",
     consentTail: "Onay {id}… · {provider} · iptal edilene kadar geçerli.",
     consentPurpose: "Amaç: {purpose}",
+    consentsTitle: "Aktarım onayları",
+    consentsSub:
+      "Bu dosya için verilmiş onaylar. Aynı amaç ve sağlayıcı yeniden onaylanınca " +
+      "önceki kapanır; farklı amaç ayrı yetkidir.",
+    consentsRefresh: "Yenile",
+    consentsLoading: "Onaylar okunuyor…",
+    consentsEmpty: "Bu dosya için kayıtlı aktarım onayı yok.",
+    consentsColPurpose: "Amaç",
+    consentsColProvider: "Sağlayıcı",
+    consentsColDocuments: "Belge",
+    consentsColApproved: "Onay zamanı",
+    consentsColExpires: "Bitiş",
+    consentsColState: "Durum",
+    consentsColAction: "Eylem",
+    consentActive: "etkin",
+    consentRevoked: "iptal edildi",
+    consentExpired: "süresi geçti",
+    consentNoExpiry: "süresiz",
+    consentsNote:
+      "Sınır: liste yalnız bu dosyanın onaylarını taşır. Sağlayıcı profili değiştiyse " +
+      "eski onay çalıştırmada reddedilir (E_AI_CONSENT); yeniden onay gerekir.",
     runsTitle: "Çalıştırmalar",
     runsSub: "Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada",
     colKind: "Tür",

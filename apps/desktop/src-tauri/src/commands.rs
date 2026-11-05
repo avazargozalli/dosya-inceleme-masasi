@@ -36,7 +36,7 @@ use dim_storage::{
     QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
     ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
     ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SearchTotal,
-    SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentRow,
+    SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentListRow, TransferConsentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -6211,6 +6211,16 @@ pub fn ai_consent_create(
         expires_at: None,
         consent_text_version: "1".into(),
     })?)
+}
+
+#[tauri::command]
+pub fn ai_consent_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<TransferConsentListRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_transfer_consents(&case_id)?)
 }
 
 #[tauri::command]
