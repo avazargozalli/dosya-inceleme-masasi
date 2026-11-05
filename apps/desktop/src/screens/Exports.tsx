@@ -17,7 +17,15 @@ import {
   emptyCoverageWarning,
 } from "../lib/export-coverage";
 import { fileStem } from "../lib/filename";
+import { formatDateTime } from "../lib/format";
 import { t } from "../lib/i18n";
+
+/**
+ * Kapsam şeridinde gösterilen sayıların **kaynağı**. Aynı panel iki farklı şeyi
+ * gösterebiliyor: kasadan şimdi okunan değer ya da bir çıktıya **yazılan** blok.
+ * Etiket olmadan avukat "şu anki kapsam" sanır; ikisi ayrı zamanlardan gelir.
+ */
+type CoverageSource = "vault" | "export" | "package";
 
 const FORMATS: Array<{
   id: "json" | "csv" | "docx" | "pdf";
@@ -44,6 +52,10 @@ export function Exports() {
   const [packagePassword, setPackagePassword] = useState("");
   const [coverage, setCoverage] = useState<ExportCoverage | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
+  // Panelde gösterilen kapsamın kaynağı: kasadan mı okundu, bir çıktıya mı
+  // yazıldı? `generatedAt` ile birlikte yazılır; aksi hâlde yazma anındaki blok
+  // “şu anki kapsam” sanılır.
+  const [coverageSource, setCoverageSource] = useState<CoverageSource>("vault");
   // İki ayrı kuşak: kapsam **okumaları** (dosya değişimi + tazeleme) ile **yazmalar**
   // (dışa aktarma + paket). Tek sayaç olsaydı ilgisiz bir yazma, kullanıcının
   // istediği tazelemenin yanıtını düşürür; düşen okumanın `finally`si kapıdan
@@ -92,7 +104,10 @@ export function Exports() {
     (async () => {
       try {
         const next = await api.caseCoverage(caseId);
-        if (alive && seq === coverSeq.current) setCoverage(next);
+        if (alive && seq === coverSeq.current) {
+          setCoverage(next);
+          setCoverageSource("vault");
+        }
       } catch (e) {
         if (alive && seq === coverSeq.current) setError(toApiError(e));
       } finally {
@@ -139,6 +154,7 @@ export function Exports() {
         setResult(exported);
         // Gösterilen kapsam, dosyaya gerçekten yazılan bloktur (yanıttan gelir).
         setCoverage(exported.coverage);
+        setCoverageSource("export");
         // Yazma kapsam şeridini devralır: uçuştaki okuma eski değeri ezemez,
         // okumanın kilidi de (kapıdan geçemeyeceği için) burada kapanır.
         coverSeq.current += 1;
@@ -155,9 +171,27 @@ export function Exports() {
 
   async function runPackage() {
     if (!caseId) return;
+    // Parola ölçüsü **çekirdekle aynı** olmalı: Rust `chars().count()` sayar,
+    // JS `.length` UTF-16 birimi sayar (5 emoji = 10 birim ama 5 karakter) ve
+    // çekirdek ham dizeyi kullanır (kırpma yok). Eski kapı `trim().length`
+    // kullanıyordu: `" 12345678 "` 10 birim görünüp 8 sayılıyor, parola
+    // sessizce düşüyor ve **açık metin** klasör yazılıyordu; 5 emoji ise
+    // gönderilip çekirdekte sessizce düşüyordu.
+    const typed = packagePassword;
+    const secretLength = [...typed].length;
+    if (secretLength > 0 && secretLength < 10) {
+      // Sessiz düşüş yok: parola yazıldıysa paket **hiç** yazılmaz. Açık metin
+      // klasör üretmek “şifreli” sanılan bir çıktı bırakırdı.
+      setError({
+        code: "E_PACKAGE_PASSWORD",
+        message: t("exports.packagePasswordTooShort", { count: secretLength }),
+        retryable: true,
+      });
+      return;
+    }
     // Gönderilen parola donar: yanıt geldiğinde alanda **başka** bir parola
     // yazılıysa silinmez (uçuşta yazılan kaybolmaz).
-    const submitted = packagePassword;
+    const submitted = secretLength >= 10 ? typed : undefined;
     const asked = caseId;
     setPickBusy(true);
     let dir: string | null = null;
@@ -175,19 +209,25 @@ export function Exports() {
     setError(null);
     setPkg(null);
     try {
-      const created = await api.exportPackage(
-        caseId,
-        dir,
-        submitted.trim().length >= 10 ? submitted : undefined,
-      );
+      const created = await api.exportPackage(caseId, dir, submitted);
       if (seq === writeSeq.current) {
         setPkg(created);
         setCoverage(created.coverage);
+        setCoverageSource("package");
         coverSeq.current += 1;
         setCoverageLoading(false);
         // Parola işi bitti: düz metin bellekte/DOM'da kalmaz — ama uçuşta
         // yazılan yeni parola bu temizliğin kurbanı olmaz.
         setPackagePassword((prev) => (prev === submitted ? "" : prev));
+        // Çekirdek parolayı aldı ama şifrelemediyse bu **sessiz** kalmaz:
+        // yeşil “paket hazır” satırı tek başına şifreli sanılırdı.
+        if (submitted !== undefined && !created.sealedPath) {
+          setError({
+            code: "E_PACKAGE_NOT_SEALED",
+            message: t("exports.packageNotSealed"),
+            retryable: true,
+          });
+        }
       }
     } catch (e) {
       if (seq === writeSeq.current) setError(toApiError(e));
@@ -205,14 +245,16 @@ export function Exports() {
     setCoverageLoading(true);
     try {
       const next = await api.caseCoverage(caseId);
-      if (seq === coverSeq.current) setCoverage(next);
+      if (seq === coverSeq.current) {
+        setCoverage(next);
+        setCoverageSource("vault");
+      }
     } catch (e) {
       if (seq === coverSeq.current) setError(toApiError(e));
     } finally {
       if (seq === coverSeq.current) setCoverageLoading(false);
     }
   }
-
 
   const coverageInfo = coverage ? coverageState(coverage) : null;
   const emptyWarning = coverage ? emptyCoverageWarning(coverage) : null;
@@ -254,6 +296,16 @@ export function Exports() {
         </div>
         {coverage && coverageInfo ? (
           <div>
+            <p className="hint" style={{ margin: "0 0 var(--space-2)" }}>
+              {t(
+                coverageSource === "vault"
+                  ? "exports.coverageFromVault"
+                  : coverageSource === "export"
+                    ? "exports.coverageFromExport"
+                    : "exports.coverageFromPackage",
+                { at: formatDateTime(coverage.generatedAt) },
+              )}
+            </p>
             <div className="row" style={{ alignItems: "center", gap: "var(--space-2)" }}>
               <span className={`badge ${coverageInfo.tone === "ok" ? "ok" : "warn"}`}>{coverageInfo.label}</span>
               <span className="muted">{coverageHeadline(coverage)}</span>
@@ -349,17 +401,21 @@ export function Exports() {
         </p>
         {pkg ? (
           <div className="notice ok">
-            {t("exports.packageReady", { path: pkg.path })}
+            {/* Şifreliyse birincil konum `.dimpak` dosyasıdır: çekirdek geçici
+                klasörü paketledikten sonra siler, `pkg.path` artık yoktur. */}
+            {pkg.sealedPath ? (
+              <>
+                {t("exports.sealed")} <code>{pkg.sealedPath}</code>
+              </>
+            ) : (
+              t("exports.packageReady", { path: pkg.path })
+            )}
             <br />
             {t("exports.packageFiles", { files: pkg.files, hash: pkg.sha256.slice(0, 16) })}
             <br />
             {coverageEmbedNote("package", pkg.coverage)}
-            {pkg.sealedPath ? (
-              <>
-                <br />
-                {t("exports.sealed")} <code>{pkg.sealedPath}</code>
-              </>
-            ) : null}
+            <br />
+            {pkg.sealedPath ? t("exports.sealedConverted") : t("exports.packagePlaintext")}
           </div>
         ) : null}
       </div>

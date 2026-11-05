@@ -205,6 +205,11 @@ export const tr = {
     coverageWarnings: "Kapsam uyarıları",
     coverageUnreadable: "Kapsam okunamadı; dışa aktarma yine kapsamı yazar.",
     coverageLoading: "Kapsam okunuyor…",
+    coverageFromVault: "Kasadan okundu: {at}",
+    coverageFromExport:
+      "Çıktıya yazılan blok (yazma anı): {at} — kasadaki güncel değer değil; “Kapsamı tazele” ile güncelleyin.",
+    coverageFromPackage:
+      "Devir paketine yazılan blok (yazma anı): {at} — kasadaki güncel değer değil; “Kapsamı tazele” ile güncelleyin.",
     writing: "Yazılıyor…",
     written: "yazıldı:",
     packageTitle: "Devir paketi",
@@ -219,6 +224,12 @@ export const tr = {
     packageReady: "Paket hazır: {path}",
     packageFiles: "{files} dosya · manifest {hash}…",
     sealed: "Şifreli paket:",
+    packagePlaintext: "Paket açık metin klasör; parola uygulanmadı.",
+    sealedConverted: "Klasör `.dimpak` içine şifrelendi ve geçici klasör silindi.",
+    packagePasswordTooShort:
+      "Parola en az 10 karakter olmalı ({count} yazıldı); paket oluşturulmadı — açık metin klasör de yazılmadı.",
+    packageNotSealed:
+      "Parola gönderildi ama çekirdek paketi şifrelemedi; klasör açık metin kaldı. Parolayı ve çekirdek sürümünü denetleyin.",
     dirDialog: "Devir paketi klasörünü seç",
     savePickFailed: "Kaydet diyaloğu açılamadı; çıktı yazılmadı.",
     dirPickFailed: "Klasör seçici açılamadı; paket oluşturulmadı.",

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Çıktılar ekranı davranış testi. `lib/export-coverage` testleri yalnız metin
-// yardımcılarını doğrular; burada 277 satırlık ekran gerçekten render edilip
+// yardımcılarını doğrular; burada 424 satırlık ekran gerçekten render edilip
 // F11-T06 (kasadan okunan kapsam, dışa aktarma, devir paketi) kararlarının
 // arayüzde **uygulandığı** ölçülür. `api` kısmi mock; `t()` ve
 // `lib/export-coverage` gerçektir.
@@ -23,8 +23,9 @@
 // 8. Yazarken düğme “Yazılıyor…” olur, öteki çıktı ve paket düğmeleri kilitlenir.
 // 9. Kapsam tazeleme yeni değerleri yazar; **düşen tazeleme** eski kırmızı
 //    hatayı bırakmaz ve sonraki başarılı tazelemede silinir.
-// 10. Devir paketi klasör ister; parola **10 karakterden kısaysa gönderilmez**
-//     (açık metin klasör), değilse olduğu gibi gider.
+// 10. Devir paketi klasör ister; parola **yazıldıysa** çekirdekle aynı ölçüyle
+//     (kod noktası) en az 10 karakter olmalı — kısa parola paket **üretmez**
+//     (sessiz açık metin yok). Boş alan açık metin klasördür ve künyesi bunu yazar.
 // 11. Paket künyesi yol/dosya/manifest öneki + şifreli paket yolunu yazar.
 // 12. Düşen paket isteği önceki paket satırını bırakmaz.
 // 13. **Ölçülen kusur (A):** paket başarısından sonra parola alanı temizlenmiyordu
@@ -75,6 +76,33 @@
 //     tık yeni tam sayım sorgusu.
 // 31. Yazma başarısı kapsam şeridini **devralır**: uçuştaki eski okuma geç
 //     dönse de yazılan bloğun kapsamını ezmez ve okuma kilidi asılı kalmaz.
+//
+// Paket ve kapsam dürüstlüğü (dördüncü `describe`; 32–41):
+//
+// 32. **Ölçülen kusur (O):** parola alanı doluyken 10 karakterden kısa parola
+//     `undefined` gönderiliyordu → çekirdek **açık metin** klasör yazıyor, arayüz
+//     yeşil “Paket hazır” diyordu; parolanın uygulanmadığı hiçbir yerde yazmıyordu.
+//     Yeni kapı: parola yazıldıysa kısa parola paket **üretmez** (görünür hata).
+// 33. **Ölçülen kusur (P):** eşik `trim().length` ile (UTF-16 birimi) ölçülüyordu;
+//     `"  1234567  "` 11 birim görünüp 7 sayılıyor, parola sessizce düşüyordu.
+//     Çekirdek ham dizeyi `chars().count()` ile sayar → kapı aynı ölçüyü kullanır
+//     ve parolayı kırpmadan gönderir.
+// 34. **Ölçülen kusur (Q, aynı kök):** 5 emoji = 10 UTF-16 birimi → parola
+//     gönderiliyor, çekirdek 5 karakter sayıp paketi **sessizce** açık metin
+//     yazıyordu.
+// 35. **Ölçülen kusur (R):** çekirdek parolayı aldığı hâlde `sealedPath`
+//     dönmezse (sözleşme ihlali) arayüz yine yalnız yeşil satırı gösteriyordu.
+// 36. **Ölçülen kusur (S):** şifreli pakette birincil konum `pkg.path`ti; çekirdek
+//     geçici klasörü sildiği için künye **var olmayan** bir yolu “paket hazır”
+//     diye yazıyordu.
+// 37. **Ölçülen kusur (T, açık kayıt a):** kapsam paneli gösterdiği sayıların
+//     kaynağını (kasadan okundu ↔ çıktıya yazıldı) ve `generatedAt` zamanını
+//     yazmıyordu; yazma anındaki blok “şu anki kapsam” sanılıyordu.
+// 38. Paket başarısı da kapsam kaynağını “devir paketi” yapar.
+// 39. Dosya değişimi kapsamı yeniden kasadan okur: kaynak ve zaman tazelenir.
+// 40. Yazma sonrası “Kapsamı tazele” de kaynağı kasadan okumaya döndürür.
+// 41. Açık metin paket künyesi parolanın uygulanmadığını **yazar** (boş alan
+//     bilinçli açık metindir; sessiz değil).
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -87,6 +115,7 @@ import {
   emptyCoverageWarning,
 } from "../lib/export-coverage";
 import { fileStem } from "../lib/filename";
+import { formatDateTime } from "../lib/format";
 import type { CaseRow, ExportCoverage, ExportResult, PackageResult } from "../lib/api";
 
 const mocks = vi.hoisted(() => ({
@@ -422,10 +451,13 @@ describe("Çıktılar ekranı", () => {
     expect(screen.getByText(coverageHeadline(FULL))).toBeTruthy();
   });
 
-  it("devir paketi parolayı 10 karakter eşiğinde gönderir", async () => {
+  it("devir paketi tam 10 karakterlik parolayı olduğu gibi gönderir", async () => {
     await renderScreen();
 
-    fireEvent.change(screen.getByLabelText(t("exports.packagePassword")), { target: { value: "kisa" } });
+    // Tam eşik: çekirdek `chars().count() >= 10` ister; 10 karakter gönderilir.
+    fireEvent.change(screen.getByLabelText(t("exports.packagePassword")), {
+      target: { value: "0123456789" },
+    });
     fireEvent.click(screen.getByRole("button", { name: t("exports.packageCreate") }));
 
     await waitFor(() => expect(mocks.exportPackage).toHaveBeenCalledTimes(1));
@@ -434,15 +466,7 @@ describe("Çıktılar ekranı", () => {
       multiple: false,
       title: t("exports.dirDialog"),
     });
-    expect(mocks.exportPackage).toHaveBeenCalledWith("p1", "/Users/avukat/Devir", undefined);
-
-    mocks.exportPackage.mockResolvedValue(packageResult());
-    fireEvent.change(screen.getByLabelText(t("exports.packagePassword")), {
-      target: { value: "cok-guclu-parola" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: t("exports.packageCreate") }));
-    await waitFor(() => expect(mocks.exportPackage).toHaveBeenCalledTimes(2));
-    expect(mocks.exportPackage).toHaveBeenLastCalledWith("p1", "/Users/avukat/Devir", "cok-guclu-parola");
+    expect(mocks.exportPackage).toHaveBeenCalledWith("p1", "/Users/avukat/Devir", "0123456789");
   });
 
   it("paket künyesini ve şifreli paket yolunu yazar", async () => {
@@ -453,12 +477,11 @@ describe("Çıktılar ekranı", () => {
     fireEvent.click(screen.getByRole("button", { name: t("exports.packageCreate") }));
 
     const ready = await findOkNotice();
-    expect(ready.textContent).toContain(t("exports.packageReady", { path: created.path }));
+    expect(ready.textContent).toContain(t("exports.sealed"));
+    expect(ready.textContent).toContain(created.sealedPath!);
     expect(ready.textContent).toContain(
       t("exports.packageFiles", { files: created.files, hash: created.sha256.slice(0, 16) }),
     );
-    expect(ready.textContent).toContain(created.sealedPath!);
-
   });
 
   it("iptal edilen klasör seçimi paket isteği üretmez", async () => {
@@ -1019,5 +1042,167 @@ describe("Çıktılar ekranı kapsam şeridi", () => {
     });
     expect(screen.getByText(coverageHeadline(PARTIAL))).toBeTruthy();
     expect(screen.queryByText(t("exports.coverageLoading"))).toBeNull();
+  });
+});
+
+/* ------------------------------- paket ve kapsam dürüstlüğü (32–39) */
+
+describe("Çıktılar ekranı paket ve kapsam dürüstlüğü", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaults();
+  });
+
+  const saveButtons = () =>
+    screen.getAllByRole("button", { name: t("common.save") }) as HTMLButtonElement[];
+  const packageButton = () =>
+    screen.getByRole("button", { name: t("exports.packageCreate") }) as HTMLButtonElement;
+  const refreshButton = () =>
+    screen.getByRole("button", { name: t("exports.refresh") }) as HTMLButtonElement;
+  const passwordInput = () =>
+    screen.getByLabelText(t("exports.packagePassword")) as HTMLInputElement;
+  const caseSelect = () => screen.getByLabelText(t("common.case")) as HTMLSelectElement;
+  const vaultLine = (at: string) => t("exports.coverageFromVault", { at });
+
+  it("parola yazıldıysa ama 10 karakterden kısaysa paket hiç yazılmaz", async () => {
+    await renderScreen();
+    fireEvent.change(passwordInput(), { target: { value: "kisa" } });
+    fireEvent.click(packageButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_PACKAGE_PASSWORD");
+    expect(alert.textContent).toContain(t("exports.packagePasswordTooShort", { count: 4 }));
+    // Ne seçici açılır ne istek gider: açık metin klasör sessizce yazılmaz.
+    expect(dialog.open).not.toHaveBeenCalled();
+    expect(mocks.exportPackage).not.toHaveBeenCalled();
+    expect(passwordInput().value).toBe("kisa");
+    expect(document.querySelector(".notice.ok")).toBeNull();
+  });
+
+  it("parola kırpılmadan, yazıldığı gibi gönderilir", async () => {
+    await renderScreen();
+    // Eski kapı `trim().length` sayıyordu: bu 11 birimlik parola 7 sayılıp
+    // **sessizce düşüyor** ve açık metin klasör yazılıyordu. Çekirdek ham dizeyi
+    // `chars().count()` ile sayar → kapı da ham dizeyi sayar ve aynen gönderir.
+    const typed = "  1234567  ";
+    mocks.exportPackage.mockResolvedValue(
+      packageResult({ sealedPath: "/Users/avukat/Devir/kira-devir.dimpak" }),
+    );
+    fireEvent.change(passwordInput(), { target: { value: typed } });
+    fireEvent.click(packageButton());
+
+    await waitFor(() =>
+      expect(mocks.exportPackage).toHaveBeenCalledWith("p1", "/Users/avukat/Devir", typed),
+    );
+    const notice = await findOkNotice();
+    // Çekirdek şifreledi: "şifrelenmedi" uyarısı çıkmamalı.
+    expect(notice.textContent).toContain(t("exports.sealedConverted"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("parola ölçüsü çekirdekle aynı: kod noktası sayılır, UTF-16 birimi değil", async () => {
+    await renderScreen();
+    // 5 emoji = 10 UTF-16 birimi; çekirdek `chars().count()` ile 5 sayar ve
+    // paketi **sessizce** açık metin yazardı.
+    fireEvent.change(passwordInput(), { target: { value: "🔒🔒🔒🔒🔒" } });
+    fireEvent.click(packageButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_PACKAGE_PASSWORD");
+    expect(mocks.exportPackage).not.toHaveBeenCalled();
+  });
+
+  it("parola gönderildiği hâlde şifrelenmemiş yanıt sessiz kalmaz", async () => {
+    await renderScreen();
+    // Çekirdek parolayı aldı ama `sealedPath` dönmedi: paket açık metindir.
+    mocks.exportPackage.mockResolvedValue(packageResult({ sealedPath: null }));
+    fireEvent.change(passwordInput(), { target: { value: "cok-guclu-parola" } });
+    fireEvent.click(packageButton());
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(t("exports.packagePlaintext"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_PACKAGE_NOT_SEALED");
+  });
+
+  it("şifreli pakette birincil konum .dimpak dosyasıdır, silinmiş klasör değil", async () => {
+    await renderScreen();
+    const created = packageResult({
+      path: "/Users/avukat/Devir/gecici-kira",
+      sealedPath: "/Users/avukat/Devir/kira-devir.dimpak",
+    });
+    mocks.exportPackage.mockResolvedValue(created);
+    fireEvent.click(packageButton());
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(created.sealedPath!);
+    // Çekirdek geçici klasörü siler: o yol artık yok, künyede de yazılmaz.
+    expect(notice.textContent).not.toContain(created.path);
+    expect(notice.textContent).toContain(t("exports.sealedConverted"));
+  });
+
+  it("kapsam paneli kaynağını ve okunduğu zamanı yazar", async () => {
+    await renderScreen();
+    expect(screen.getByText(vaultLine(formatDateTime(FULL.generatedAt)))).toBeTruthy();
+
+    const exported = coverage({ generatedAt: "2026-11-02T10:30:00.000Z" });
+    mocks.exportJson.mockResolvedValue(exportResult({ coverage: exported }));
+    fireEvent.click(saveButtons()[0]!);
+    await findOkNotice();
+    expect(
+      screen.getByText(t("exports.coverageFromExport", { at: formatDateTime(exported.generatedAt) })),
+    ).toBeTruthy();
+    expect(screen.queryByText(vaultLine(formatDateTime(FULL.generatedAt)))).toBeNull();
+
+    // Dosya değişimi yeniden kasadan okur: kaynak "vault"a döner ve zaman tazelenir.
+    const other = coverage({ generatedAt: "2026-11-02T12:30:00.000Z" });
+    mocks.caseCoverage.mockResolvedValueOnce(other);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await screen.findByText(vaultLine(formatDateTime(other.generatedAt)));
+    expect(
+      screen.queryByText(t("exports.coverageFromExport", { at: formatDateTime(exported.generatedAt) })),
+    ).toBeNull();
+  });
+
+  it("yazma sonrası kapsam tazelemesi kaynağı kasadan okumaya döndürür", async () => {
+    await renderScreen();
+    const exported = coverage({ generatedAt: "2026-11-02T10:30:00.000Z" });
+    mocks.exportJson.mockResolvedValue(exportResult({ coverage: exported }));
+    fireEvent.click(saveButtons()[0]!);
+    await findOkNotice();
+
+    const refreshed = coverage({ generatedAt: "2026-11-02T13:15:00.000Z" });
+    mocks.caseCoverage.mockResolvedValueOnce(refreshed);
+    fireEvent.click(refreshButton());
+    await screen.findByText(vaultLine(formatDateTime(refreshed.generatedAt)));
+    expect(
+      screen.queryByText(t("exports.coverageFromExport", { at: formatDateTime(exported.generatedAt) })),
+    ).toBeNull();
+  });
+
+  it("paket sonrası kapsam kaynağı devir paketidir", async () => {
+    await renderScreen();
+    const packed = coverage({ generatedAt: "2026-11-02T10:45:00.000Z" });
+    mocks.exportPackage.mockResolvedValue(packageResult({ coverage: packed }));
+    fireEvent.click(packageButton());
+    await findOkNotice();
+
+    expect(
+      screen.getByText(t("exports.coverageFromPackage", { at: formatDateTime(packed.generatedAt) })),
+    ).toBeTruthy();
+    expect(screen.queryByText(vaultLine(formatDateTime(FULL.generatedAt)))).toBeNull();
+  });
+
+  it("açık metin paket künyesi parolanın uygulanmadığını yazar", async () => {
+    await renderScreen();
+    mocks.exportPackage.mockResolvedValue(packageResult());
+    fireEvent.click(packageButton());
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(t("exports.packagePlaintext"));
+    expect(notice.textContent).not.toContain(t("exports.sealedConverted"));
+    // Parola alanı boş: istek `undefined` parolayla gider (açık metin bilinçli).
+    expect(mocks.exportPackage).toHaveBeenCalledWith("p1", "/Users/avukat/Devir", undefined);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
