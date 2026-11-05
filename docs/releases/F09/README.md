@@ -9,7 +9,7 @@
 | F09-T01 tek `Provider` sözleşmesi | ✅ | `crates/providers` |
 | F09-T02 `OffProvider` | ✅ | her istek `E_AI_OFF` |
 | F09-T03 aktarım onayı | ✅ | `transfer_consents`; onay **belge kümesine** bağlı (boş seçim, başka dosyanın belgesi ve silinmiş belge reddedilir) — ölçüldü 2026-10-28, aşağıdaki "Aktarım kapsamı" bölümü |
-| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Önceden bu iki tablo yalnız testte doluyordu |
+| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10) |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT`: onay yok / iptal / süresi geçmiş / **belge seçimi boş** / seçili belge silinmiş (7 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
 | F09-T07 API profili | ✅ | `register_api_profile`: https zorunlu, anahtar **saklanmaz** (yalnız `DIM_API_KEY`), idempotent |
@@ -338,3 +338,93 @@ profille alınacağını kullanıcı seçemez; (b) envanterden tek tek "yenile" 
 (yenileme yeni onay almaktan geçer); (c) `E_AI_PROVIDER_CHANGED` sonrası
 tazeleme **düşerse** yalnız birincil hata görünür (ikincil hata yutulur —
 bilinçli, ama yazılı); (d) görsel QA **insan bekliyor**.
+
+## Aktarım makbuzu envanteri ve deneme kaydı (2026-11-05, F09-T10)
+
+**Neden bu dilim.** `transfer_receipts` tablosu F11 turundan beri **yazılıyordu**
+(`ai_run_execute`), ama tek bir okuma yolu yoktu: `list_transfer_receipts`, IPC
+komutu ve ekran satırı hiç yazılmamıştı. Avukatın "ne çıktı, nereye, kaç öğe,
+kaç bayt, hangi içerik özetiyle" sorusunun cevabı yalnız SQLite dosyasındaydı.
+
+**ÖLÇÜLEN KUSUR 1 (görünmez denetim kanıtı).** Makbuz yazılıyor, okunamıyordu:
+`grep -rn "list_transfer_receipts"` boş döndü, `ai_receipt_list` komutu yoktu,
+`Ai` ekranında makbuz kartı yoktu. Denetim izi "var" sayılıyordu ama kimse
+göremiyordu.
+
+**ÖLÇÜLEN KUSUR 2 (düşen deneme sicilden siliniyordu).** `record_transfer_receipt`
+yalnız `provider.propose()` **başarılı olduktan sonra** çağrılıyordu. Zaman
+aşımına düşen, bağlantısı kopan ya da yanıtı gelmeyen bir gönderim içerik
+**çıkmış olabilir**; buna karşın sicilde ne hedef, ne bayt, ne özet kalıyordu —
+yalnız `ai_runs.usage_report` içinde `{"error":"E_AI_…"}`. "Denendi" ile
+"gönderildi" aynı kutuya giriyordu.
+
+**Düzeltme.**
+
+- `begin_transfer_receipt(...)` — makbuz **gönderim denenmeden önce**
+  `attempted` olarak açılır; yazılamazsa aktarım **hiç başlamaz**
+  (denetlenemeyen aktarım yapılmaz).
+- `finish_transfer_receipt(id, status)` — `attempted` → `dispatched` | `failed`.
+  Geçiş **tek koşullu `UPDATE`**dir (`WHERE id=? AND status='attempted'`):
+  önce okuyup sonra yazmak, arada başka bir sonuçlandırmanın yazdığını ezme
+  penceresi bırakırdı. Satır değişmediyse makbuz yoktur (`E_NOT_FOUND`) ya da
+  zaten sonuçlanmıştır (`E_AI_RECEIPT`); sicil geriye dönük değiştirilemez.
+- `list_transfer_receipts(case_id)` — `ai_runs` ile birleşir, **dosyaya
+  kapsanır**, en yeni önce. `TransferReceiptRow` alanları: hedef etiketi, tam
+  sha256 özeti, öğe/bayt sayısı, durum, zaman.
+- `ai_receipt_list` komutu + `api.aiReceiptList` + `Ai` ekranında **"Aktarım
+  makbuzları"** kartı. Kart dosya değişiminde ve **her gönderim denemesinden
+  sonra** (başarı **ve** hata) çekirdekten tazelenir; okuma sıra kapısı
+  (`receiptListSeq`) ile geç yanıt yeni dosyanın listesine yazılmaz.
+- `ai_run_execute`: deneme makbuzu `propose`dan **önce** açılır; düşen
+  gönderimde `failed` ile kapanır, başarıda `dispatched`. Çalıştırma raporu
+  artık `"receipt": "dispatched" | "failed" | "not_finalized"` yazar.
+
+**Testler.** `crates/storage/src/ai.rs` **31 → 36** (+5: deneme anı, düşen
+deneme satırı, sonuç değişmezliği + bilinmeyen durum + olmayan kimlik,
+dosya kapsamı, en yeni önce). `Ai.test.tsx` **70 → 78** (+8; yeni `describe`
+"Aktarım makbuzu envanteri"). **Ham koşu (düzeltme öncesi bileşen, nihai 78
+test): 8 failed | 70 passed** — sekizi de gerçek kusur; mevcut 70 test
+düzeltme öncesinde de yeşil.
+
+**Kapı kanıtı 14/14** (her koşu tek kapı; geri yükleme sha256
+`18eacfd323d33f59f11f05a9098179bd32c0214a60e19b62ef5e9d85a357beaa` ve
+`013126a35e23cab95adb2322c2f2104af7474c9647cf24a2d4da16aba5696084` birebir):
+çekirdek C1 deneme kaydı `attempted` yerine `dispatched` (1), C2 koşullu UPDATE
+kapısı kaldırıldı (1), C3 bilinmeyen durum kabul (1), C4 dosya kapsamı
+kaldırıldı (1), C5 sıra sözleşmesi kaldırıldı (1), C6 olmayan makbuz
+`E_NOT_FOUND` yerine makbuz hatası (1); arayüz U1 dosya değişiminde okuma yok
+(**6**), U2 okuma sıra kapısı yok (1), U3 gönderim sonrası tazeleme yok (**2**),
+U4 «denendi» «gönderildi» yazar (1), U5 «denendi» rozeti yeşil (1), U6 boş
+listede tablo (**4**), U7 uçuşta «Yenile» açık (1), U8 okuma hatası sessiz (1).
+**Dürüst:** U1'de iki test yeşil kaldı — biri «Yenile» ile elle okumayı, diğeri
+p2'nin kendi okumasını ölçer (ilk okumaya bağlı değiller).
+
+**Ölçüm.** `cargo test -p dim-storage --lib` **405/405** (400 → +5; `ai::tests`
+**36/36**) · `cargo clippy -p dim-storage --all-targets -D warnings` temiz ·
+masaüstü `cargo clippy --all-targets -D warnings` temiz · `cargo fmt` iki
+manifest temiz · `tsc --noEmit` temiz · `vitest` **1159/1159** (60 dosya;
+1151 → +8) · `npm run build` temiz (**597,70 kB**, `index-DH6BjBZj.js`, gzip
+**161,13 kB**; CSS 7,28 kB).
+
+**Commit/CI (ölçüldü).** Kod `b4f9671` (9 dosya, +701/−24) → **`42094357736`
+7/7 YEŞİL** (ilk koşu). `arayüz` günlüğü **60 dosya / 1159 test** ve **aynı
+paket** `index-DH6BjBZj.js` 597,70 kB / gzip 161,13 kB → yerel/CI **birebir**;
+`rust (macos-15)` + `rust (ubuntu-latest)` `ai::tests` yeşil, `masaüstü kabuk
+(cargo check)` yeşil. **Dürüst:** düzeltme sırasında masaüstü clippy ilk koşuda
+`E0432` ile düştü — `TransferReceiptRow` kökten dışa aktarılmamıştı
+(`crates/storage/src/lib.rs` düzeltildi); ikinci koşu temiz.
+
+**Dürüst sınırlar.** `ai_receipt_list` ve `ai_run_execute` **komut olarak
+koşulmadı** (`State<AppState>` kuran test altyapısı yok; `commands_tests.rs`
+CI'da koşmuyor) — kablolama derleme + clippy, davranış `begin/finish/list`
+düzeyinde **gerçek SQLite** ile doğrulandı. jsdom tarayıcı değil: gerçek Tauri
+penceresi, gerçek işaretçi ve **görsel QA yok**; `api` mock'lu olduğu için
+`transfer_receipts` SQL'i arayüz testinde koşmaz. `dispatched_at` sütunu
+tarihsel adını korur; değeri **deneme anı**dır (gönderim anı değil) — alan
+dokümanı bunu yazar.
+
+**Açık kayıt.** (a) `attempted` kalan makbuz (süreç çöktü) **kendiliğinden
+kapanmaz**; ekran «denendi · sonuç yazılmadı» yazar, otomatik uzlaştırma yok.
+(b) Makbuz yalnız **içerik özetini** taşır; özetin kasadaki segmentlerle
+yeniden karşılaştırılması arayüzde sunulmuyor (elle sha256). (c) Makbuz listesi
+sayfalanmıyor. (d) Görsel QA **insan bekliyor**.
