@@ -354,7 +354,9 @@ export type AiCandidateRow = {
 };
 
 export type PackageResult = {
-  path: string;
+  /** Açık metin klasörün yolu; şifreli pakette `null` (klasör silindi).
+   *  Silme başarısız olduysa dolu kalır — arayüz ayrı uyarı yazar. */
+  path: string | null;
   files: number;
   sha256: string;
   sealedPath: string | null;

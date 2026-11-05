@@ -402,20 +402,30 @@ export function Exports() {
         {pkg ? (
           <div className="notice ok">
             {/* Şifreliyse birincil konum `.dimpak` dosyasıdır: çekirdek geçici
-                klasörü paketledikten sonra siler, `pkg.path` artık yoktur. */}
+                klasörü paketledikten sonra siler, `pkg.path` **null** döner.
+                Klasör silinemezse çekirdek yolu yine bildirir — o zaman açık
+                metin diskte kaldığı için ayrı uyarı yazılır. */}
             {pkg.sealedPath ? (
               <>
                 {t("exports.sealed")} <code>{pkg.sealedPath}</code>
               </>
-            ) : (
+            ) : pkg.path ? (
               t("exports.packageReady", { path: pkg.path })
+            ) : (
+              t("exports.packagePathMissing")
             )}
             <br />
             {t("exports.packageFiles", { files: pkg.files, hash: pkg.sha256.slice(0, 16) })}
             <br />
             {coverageEmbedNote("package", pkg.coverage)}
             <br />
-            {pkg.sealedPath ? t("exports.sealedConverted") : t("exports.packagePlaintext")}
+            {pkg.sealedPath
+              ? pkg.path
+                ? t("exports.sealedLeftover", { path: pkg.path })
+                : t("exports.sealedConverted")
+              : pkg.path
+                ? t("exports.packagePlaintext")
+                : null}
           </div>
         ) : null}
       </div>

@@ -6061,7 +6061,13 @@ pub fn export_pdf(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageView {
-    pub path: String,
+    /// Açık metin klasörün yolu.
+    ///
+    /// Şifreli pakette `None`: çekirdek geçici klasörü `.dimpak` içine
+    /// paketledikten sonra siler, yani klasör **yoktur**. Silme başarısız
+    /// olursa yol yine burada bildirilir (açık metin diskte kaldı) — arayüz
+    /// bunu ayrı uyarı olarak yazar.
+    pub path: Option<String>,
     pub files: usize,
     pub sha256: String,
     pub record: ExportRow,
@@ -6085,6 +6091,26 @@ pub fn export_package(
     if dest_dir.trim().is_empty() {
         return Err(ApiError::new("E_PATH", "Paket konumu boş olamaz."));
     }
+    // Parola verildiyse **hiçbir şey yazılmadan** doğrulanır. Eski kod parolayı
+    // `filter` ile düşürüyordu: kısa parola sessizce yok sayılıyor ve kullanıcı
+    // parola yazdığı hâlde **açık metin** klasör alıyordu (doğrudan IPC çağrısı
+    // arayüz kapısını atladığı için çekirdek kendi kapısını taşımak zorunda).
+    let sealed_password = match password {
+        None => None,
+        Some(secret) => {
+            let chars = secret.chars().count();
+            dim_vault::package::check_password(&secret).map_err(|_| {
+                ApiError::new(
+                    "E_PACKAGE_PASSWORD",
+                    &format!(
+                        "Paket parolası en az {} karakter olmalı ({chars} yazıldı); paket oluşturulmadı, açık metin klasör de yazılmadı.",
+                        dim_vault::package::MIN_PASSWORD_CHARS
+                    ),
+                )
+            })?;
+            Some(secret)
+        }
+    };
     let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
     let payload = case_payload(db, &case_id, &coverage)?;
     let stamp = time::OffsetDateTime::now_utc()
@@ -6110,7 +6136,7 @@ pub fn export_package(
     // (okunabilir markdown). "İncelenmedi ≠ temiz" cümlesi paketin içinde kalır.
     let coverage_md = coverage.markdown(payload["case"]["title"].as_str().unwrap_or("Dosya"));
     std::fs::write(dir.join("KAPSAM.md"), coverage_md.as_bytes())?;
-    let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json), inceleme kapsamını (KAPSAM.md)\nve manifest'i taşır. Belge baytları kasa dışına otomatik çıkarılmaz;\npaylaşılacak belgeler için Maskeleme ekranından maskeli kopya üretip bu\nklasöre ekleyin.\n\nKAPSAM.md zorunlu okumadır: hangi belge ve sayfaların gerçekten\nayrıştırıldığını, kaç sayfanın OCR ile okunduğunu ve kaç belgenin hiç\nincelenmediğini yazar. Kapsam dışı içerik \"temiz\" sayılmaz.\n\nPaket açık metindir; şifreli taşıma F16 kapsamındadır.\n";
+    let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json), inceleme kapsamını (KAPSAM.md)\nve manifest'i taşır. Belge baytları kasa dışına otomatik çıkarılmaz;\npaylaşılacak belgeler için Maskeleme ekranından maskeli kopya üretip bu\nklasöre ekleyin.\n\nKAPSAM.md zorunlu okumadır: hangi belge ve sayfaların gerçekten\nayrıştırıldığını, kaç sayfanın OCR ile okunduğunu ve kaç belgenin hiç\nincelenmediğini yazar. Kapsam dışı içerik \"temiz\" sayılmaz.\n\nBu klasördeki dosyalar açık metindir: parola verilmediyse paket açık metin\nkalır; parola verildiyse klasör `.dimpak` içine şifrelenip silinir.\n";
     std::fs::write(dir.join("README.txt"), readme)?;
 
     let files = [
@@ -6134,7 +6160,8 @@ pub fn export_package(
     // Parola verildiyse klasör tek şifreli dosyaya paketlenir; alıcıya kasa
     // anahtarı verilmez, yalnız paket parolası söylenir.
     let mut sealed_path = None;
-    if let Some(secret) = password.filter(|p| p.chars().count() >= 10) {
+    let mut plaintext_dir = Some(dir.to_string_lossy().to_string());
+    if let Some(secret) = sealed_password {
         let archive = dir.with_extension("zip");
         zip_dir(&dir, &archive)?;
         let zip_bytes = std::fs::read(&archive)?;
@@ -6142,12 +6169,16 @@ pub fn export_package(
         let target = dir.with_extension("dimpak");
         std::fs::write(&target, &sealed)?;
         let _ = std::fs::remove_file(&archive);
-        let _ = std::fs::remove_dir_all(&dir);
+        // Silme başarısız olursa açık metin klasör diskte kalır; bunu
+        // gizlemek "şifreli" sanılan bir açık metin bırakırdı → yol bildirilir.
+        if std::fs::remove_dir_all(&dir).is_ok() {
+            plaintext_dir = None;
+        }
         sealed_path = Some(target.to_string_lossy().to_string());
     }
 
     Ok(PackageView {
-        path: dir.to_string_lossy().to_string(),
+        path: plaintext_dir,
         files: files.len(),
         sha256: sha,
         record,

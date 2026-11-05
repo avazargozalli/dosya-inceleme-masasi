@@ -472,7 +472,10 @@ describe("Çıktılar ekranı", () => {
 
   it("paket künyesini ve şifreli paket yolunu yazar", async () => {
     await renderScreen();
-    const created = packageResult({ sealedPath: "/Users/avukat/Devir/kira-paket.dimpak" });
+    const created = packageResult({
+      path: null,
+      sealedPath: "/Users/avukat/Devir/kira-paket.dimpak",
+    });
     mocks.exportPackage.mockResolvedValue(created);
 
     fireEvent.click(screen.getByRole("button", { name: t("exports.packageCreate") }));
@@ -1089,7 +1092,7 @@ describe("Çıktılar ekranı paket ve kapsam dürüstlüğü", () => {
     // `chars().count()` ile sayar → kapı da ham dizeyi sayar ve aynen gönderir.
     const typed = "  1234567  ";
     mocks.exportPackage.mockResolvedValue(
-      packageResult({ sealedPath: "/Users/avukat/Devir/kira-devir.dimpak" }),
+      packageResult({ path: null, sealedPath: "/Users/avukat/Devir/kira-devir.dimpak" }),
     );
     fireEvent.change(passwordInput(), { target: { value: typed } });
     fireEvent.click(packageButton());
@@ -1128,10 +1131,10 @@ describe("Çıktılar ekranı paket ve kapsam dürüstlüğü", () => {
     expect(alert.textContent).toContain("E_PACKAGE_NOT_SEALED");
   });
 
-  it("şifreli pakette birincil konum .dimpak dosyasıdır, silinmiş klasör değil", async () => {
+  it("şifreli pakette birincil konum .dimpak dosyasıdır; klasör yolu null gelir", async () => {
     await renderScreen();
     const created = packageResult({
-      path: "/Users/avukat/Devir/gecici-kira",
+      path: null,
       sealedPath: "/Users/avukat/Devir/kira-devir.dimpak",
     });
     mocks.exportPackage.mockResolvedValue(created);
@@ -1139,9 +1142,39 @@ describe("Çıktılar ekranı paket ve kapsam dürüstlüğü", () => {
 
     const notice = await findOkNotice();
     expect(notice.textContent).toContain(created.sealedPath!);
-    // Çekirdek geçici klasörü siler: o yol artık yok, künyede de yazılmaz.
-    expect(notice.textContent).not.toContain(created.path);
+    // Çekirdek geçici klasörü sildi: `path` null, "Paket hazır: …" satırı yok.
+    expect(notice.textContent).not.toContain(t("exports.packageReady", { path: "" }).trim());
     expect(notice.textContent).toContain(t("exports.sealedConverted"));
+    expect(notice.textContent).not.toContain("silinemedi");
+  });
+
+  it("şifreli pakette geçici klasör silinemediyse açık metin uyarısı yazılır", async () => {
+    await renderScreen();
+    // `path` dolu + `sealedPath` dolu: çekirdek klasörü silemedi. Açık metin
+    // diskte kaldığı için künye bunu **gizlemez**, iki yolu da yazar.
+    const created = packageResult({
+      path: "/Users/avukat/Devir/DimDevir-202611050945",
+      sealedPath: "/Users/avukat/Devir/DimDevir-202611050945.dimpak",
+    });
+    mocks.exportPackage.mockResolvedValue(created);
+    fireEvent.click(packageButton());
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(created.sealedPath!);
+    expect(notice.textContent).toContain(created.path!);
+    expect(notice.textContent).toContain(t("exports.sealedLeftover", { path: created.path! }));
+    // "Klasör silindi" cümlesi bu durumda **yanlış** olurdu.
+    expect(notice.textContent).not.toContain(t("exports.sealedConverted"));
+  });
+
+  it("çekirdek ne klasör ne şifreli dosya bildirirse paket hazır denmez", async () => {
+    await renderScreen();
+    mocks.exportPackage.mockResolvedValue(packageResult({ path: null, sealedPath: null }));
+    fireEvent.click(packageButton());
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(t("exports.packagePathMissing"));
+    expect(notice.textContent).not.toContain(t("exports.packagePlaintext"));
   });
 
   it("kapsam paneli kaynağını ve okunduğu zamanı yazar", async () => {

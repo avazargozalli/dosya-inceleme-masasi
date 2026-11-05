@@ -230,6 +230,10 @@ export const tr = {
       "Parola en az 10 karakter olmalı ({count} yazıldı); paket oluşturulmadı — açık metin klasör de yazılmadı.",
     packageNotSealed:
       "Parola gönderildi ama çekirdek paketi şifrelemedi; klasör açık metin kaldı. Parolayı ve çekirdek sürümünü denetleyin.",
+    packagePathMissing:
+      "Çekirdek paket konumu bildirmedi ve şifreli dosya da yok; çıktıyı denetleyin.",
+    sealedLeftover:
+      "Şifreli dosya yazıldı ama geçici açık metin klasör silinemedi: {path} — paylaşmadan önce elle silin.",
     dirDialog: "Devir paketi klasörünü seç",
     savePickFailed: "Kaydet diyaloğu açılamadı; çıktı yazılmadı.",
     dirPickFailed: "Klasör seçici açılamadı; paket oluşturulmadı.",
