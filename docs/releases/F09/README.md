@@ -12,7 +12,7 @@
 | F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10) |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT`: onay yok / iptal / süresi geçmiş / **belge seçimi boş** / seçili belge silinmiş (7 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
-| F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS kapsamı** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** (macOS Anahtar Zinciri) tutulur; sıra **zincir → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows kimlik yöneticisi / Linux Secret Service **uygulanmadı** (o platformlarda `E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölüm |
+| F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS + Windows** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** tutulur — macOS **Anahtar Zinciri** (`security-framework`), Windows **Kimlik Yöneticisi** (`keyring` 3.6.3, 2026-11-06); sıra **depo → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows tatbikatı gerçek Credential Manager üzerinde CI `windows-latest` işinde **koştu** (25/25). Linux Secret Service **uygulanmadı** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölümler |
 | F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt, 200 karakter örnek ve **kapsam dışı belgeler + nedeni**; gönderim yolu aynı çözümleyiciyi kullanır. Önceden SQL hatası veriyordu (aşağıdaki bölüm) |
 | F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
 
@@ -517,3 +517,68 @@ ekran hangisinin kullanıldığını yazar ama gölgede kalan kaynağı **göste
 (c) Anahtar rotasyonu/son kullanım zamanı izlenmiyor; anahtar yalnız
 `Authorization` başlığında kullanılır, istek gövdesine/loga girmez. (d) Görsel
 QA **insan bekliyor**.
+
+## F09-T07 ek turu — Windows Kimlik Yöneticisi (2026-11-06)
+
+**Neden.** Önceki tur OS deposunu **yalnız macOS** için uygulamıştı; Windows'ta
+anahtar yalnız `DIM_API_KEY` ortam değişkeninden okunuyordu ve ekran bunu
+yazıyordu. F09-T07'nin "OS güvenli deposu" şartı Windows'ta karşılanmıyordu.
+
+**Düzeltme.**
+
+- `crates/providers/src/secret.rs` → `#[cfg(target_os = "windows")] mod
+  platform`: `keyring` 3.6.3 (`windows-native`) üzerinden Windows **Kimlik
+  Yöneticisi** (Credential Manager, genel kimlik). `SecretStore` sözleşmesi
+  **aynı**: kayıt yoksa `Ok(None)` (macOS `errSecItemNotFound` karşılığı
+  `NoEntry`), gerçek erişim/bozulma hatası `E_AI_SECRET` (sessizce yedeğe
+  düşme yok), boş anahtar `E_AI_SECRET_EMPTY`, silme idempotent. Anahtar
+  değeri ekrana/IPC'ye dönmez (INV-11).
+- `keyring` Win32 çağrılarını **güvenli** API ile sarar; çalışma alanının
+  `unsafe_code = "forbid"` kapısı delinmedi (windows-sys'i doğrudan çağırmak
+  `unsafe` gerektirirdi — güvenlik kapısı gevşetilmedi).
+- Platform ayrımı: macOS `security-framework` (değişmedi), Windows `keyring`,
+  Linux/öteki `Unavailable` + ortam değişkeni (not: "yalnız macOS Anahtar
+  Zinciri ve Windows Kimlik Yöneticisi uygulandı").
+- Arayüz kaynak etiketi platforma göre değişmediği için **"OS güvenli deposu
+  (sistem kasası)"** oldu (`providers.keySourceKeychain`).
+- **CI:** yeni `windows-secret` işi (`windows-latest`) — `cargo clippy -p
+  dim-providers --all-targets -- -D warnings` + `cargo test -p dim-providers
+  --lib`. macOS/ubuntu işleri bu modülü **hiç görmez** (`cfg`), bu yüzden ayrı
+  iş gerekli.
+
+**Testler.** Windows'ta `windows_credential_manager_round_trip` (yeni): ayrı
+hizmet adı + süreç kimliğiyle **gerçek** Credential Manager üzerinde
+yaz → oku → üzerine yaz (rotasyon) → sil → yok sırası; ürün kaydına dokunmaz.
+macOS tatbikatı (`os_keychain_round_trip`) `#[ignore]` olarak kaldı (elle).
+Yerel macOS: **24 passed, 1 ignored** (değişmedi). Windows CI:
+**25 passed, 0 failed, 0 ignored** — tatbikat `ok`.
+
+**Kanıt.**
+
+- Yerel: `cargo test -p dim-providers --lib` **24/24** (+1 ignored) ·
+  `cargo clippy -p dim-providers --all-targets -- -D warnings` temiz ·
+  `cargo fmt` iki manifest temiz · `tsc` temiz · vitest **1168/1168** (60 dosya) ·
+  build **601,02 kB** (`index-Cg-CCS7t.js`, gzip **161,93 kB**).
+- Windows modülü yerelde **cross-check** edildi: ayrı iskelet crate'te aynı
+  modül + tatbikat testi `--target x86_64-pc-windows-msvc` ile derlendi,
+  clippy `-D warnings` temiz. **Dürüst:** repo içinde bu hedef derlenemedi —
+  `ring` (ureq TLS) `assert.h` bulamadı (`cc-rs`, Windows SDK yok); gerçek
+  kanıt CI'dır.
+- **CI `42122673787` 8/8 YEŞİL** (ilk koşu, yeni iş dahil): `windows güvenli
+  depo` işi **25/25** + clippy; `arayüz` **60 dosya / 1168 test** ve **aynı
+  paket** `index-Cg-CCS7t.js` 601,02 kB / gzip 161,93 kB → yerel/CI **birebir**;
+  `SBOM` yeşil (bildirim yeniden üretildi).
+- **SBOM/bildirim:** `sbom.json` rust **485 → 488**; `THIRD_PARTY_NOTICES.md`
+  **667 → 668** bileşen (kapsam 755, ölçülen 668; `keyring` MIT OR Apache-2.0).
+
+**Dürüst sınırlar.** (a) Windows yolu **yerelde koşulmadı** (makine macOS);
+kanıt `windows-latest` CI işidir — gerçek kullanıcı oturumunda **Tauri
+penceresinden** anahtar kaydetme denenmedi. (b) Linux Secret Service hâlâ
+**yok** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). (c) `keyring` Windows'ta
+blob'u **UTF-16** yazar; macOS UTF-8 — iki platform aynı kasayı paylaşmaz
+(anahtar zaten kasada taşınmaz). (d) Görsel QA **insan bekliyor**.
+
+**Açık kayıt.** (a) Linux deposu yok. (b) `windows-secret` işi yalnız
+`dim-providers` derler; **masaüstü kabuğun Windows derlemesi** hâlâ CI'da yok
+(F02 MSI doğrulaması Windows makinesi/insan bekliyor). (c) Anahtar
+rotasyonu/son kullanım izlenmiyor (değişmedi).
