@@ -8,7 +8,7 @@
 |---|---|---|
 | F07-T01 | ✅ | FTS5 araması; dosya kapsamı zorunlu (`case_id` her sorguda) |
 | F07-T02 | ✅ | tam/esnek/tırnaklı ifade ve E./K. numarası kipleri; doğrulama Rust'ta tek yerde |
-| F07-T03 | ✅ | belge türü, tarih rolü, etiket ve OCR durumu filtreleri |
+| F07-T03 | ✅ | belge türü, tarih rolü, etiket ve OCR durumu filtreleri; filtre sözlüğü dosyaya bağlı — dosya değişince tür/etiket düşer (**39 test**, 2026-11-05) |
 | F07-T04 | ✅ | sonuç alıntısı `raw_text`ten; vurgu metin düğümüyle (XSS yüzeyi yok) |
 | F07-T05 | ✅ | keyset sayfalama, 200 sonuç sınırı, kapsam görünürlüğü |
 | F07-T06 | ✅ | okuyucuda kademeli yakınlaştırma, görünüm döndürmesi ve PDF `/PageLabels` etiketi (fiziksel sayfadan ayrı) |
@@ -70,6 +70,47 @@ eşleşme** `dim_search_match(text, needle, mode)` SQL skaler fonksiyonuyla
 - Arayüz: Arama ekranında filtre çubuğu, etkin filtre rozetleri ve "Filtreler
   değişti" uyarısı (eski sonuç yeni filtreyle gösterilmez). Etiketler Dosyalar
   ekranındaki belge satırından eklenir/kaldırılır.
+
+### Dosya değişiminde filtre sözlüğü (2026-11-05)
+
+Belge türü ve etiket filtrelerinin **seçenekleri dosyadan** gelir
+(`documentList` / `caseTags`); OCR durumu ve tarih rolü sabit sözlüktür. Bu
+yüzden dosya değişince ilk ikisi anlamını yitirir. Ölçülen üç kusur:
+
+1. **Görünmez etiket filtresi (en ağırı):** c1'de "kira" çipine basılıp arama
+   yapıldıktan sonra c2'ye geçilince `draftFilters.tags` hâlâ `["kira"]`
+   taşıyordu. Çipler yeni dosyanın `caseTags`inden çizildiği için ekranda
+   **hiçbir etkin filtre görünmüyor**, ama `search_page` isteği
+   `tags: ["kira"]` ile gidiyordu → sonuç boş döner, avukat "belge yok" sanır.
+   "Temizle" düğmesi de görünürde filtre yokken açıktı.
+2. **Görünmez belge türü filtresi:** c1'de tür `pdf` seçilip c2'ye (türü
+   `docx`) geçilince `<select>` eşleşen seçenek olmadığı için "Tümü"
+   gösteriyor, durum ise `documentTypes: ["pdf"]` gönderiyordu.
+3. **Yükleme penceresinde yanlış sözlük:** yeni dosyanın belgeleri/etiketleri
+   istekteyken önceki dosyanın tür seçenekleri ve etiket çipleri ekranda
+   (**tıklanabilir**) kalıyordu; çipe basılırsa yeni dosyanın aramasına
+   sessizce uygulanıyordu.
+
+Düzeltme (`Search.tsx` +12): dosya değişimi `draftFilters`ten dosyaya özgü iki
+alanı düşürür (`documentTypes`, `tags`); sabit sözlüklü **görünür** filtreler
+(`ocrStatus`, `dateRole`) korunur — bütün filtreleri sıfırlamak kullanıcının
+ekranda gördüğü seçimi de silerdi. `documentList`/`caseTags` istekten **önce**
+temizlenir (önceki dosyanın sözlüğü yükleme boyunca görünmez).
+
+Testler: `Search.test.tsx` **35 → 39** (+4; yeni `describe` "dosya
+değişiminde filtre sözlüğü"). Düzeltme öncesi ham koşu **3 failed | 36
+passed**; dördüncü test (sabit filtreler korunur) düzeltmeden önce de yeşil
+(**sabitleme**). Kapı kanıtı **3/3** tek satır mutasyonu kırmızı: M1 dosyaya
+özgü filtreleri düşürme (**2** test), M2 `setDocs([])` (1), M3
+`setCaseTags([])` (1); geri yükleme sha256
+`be1b7a0229ec87dafa81f007061a58080fc3a30fefd43021fa0bc2fd4d8cb35d` birebir.
+
+Sınırlar: jsdom **tarayıcı değil** — gerçek Tauri penceresi ve görsel QA yok;
+`api` mock'lu olduğu için `search_page` SQL'i ve Rust **koşmaz**. Kapı
+**arayüz düzeyinde**: doğrudan IPC eski sözlükle arama başlatabilir; çekirdek
+etiketi `document_tags` üzerinden dosyaya bağladığı için veri sızıntısı yok,
+yalnız sonuç boş döner. `appliedFilters` dosya değişiminde sıfırlanmaz —
+sonuç kartı kapandığı için okunmuyor (`page === null`), görünür etkisi yok.
 
 ## F07-T05 — keyset sayfalama
 
