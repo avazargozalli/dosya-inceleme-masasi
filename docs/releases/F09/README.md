@@ -12,7 +12,7 @@
 | F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10) |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT`: onay yok / iptal / süresi geçmiş / **belge seçimi boş** / seçili belge silinmiş (7 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
-| F09-T07 API profili | ✅ | `register_api_profile`: https zorunlu, anahtar **saklanmaz** (yalnız `DIM_API_KEY`), idempotent |
+| F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS kapsamı** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** (macOS Anahtar Zinciri) tutulur; sıra **zincir → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows kimlik yöneticisi / Linux Secret Service **uygulanmadı** (o platformlarda `E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölüm |
 | F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt, 200 karakter örnek ve **kapsam dışı belgeler + nedeni**; gönderim yolu aynı çözümleyiciyi kullanır. Önceden SQL hatası veriyordu (aşağıdaki bölüm) |
 | F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
 
@@ -428,3 +428,92 @@ kapanmaz**; ekran «denendi · sonuç yazılmadı» yazar, otomatik uzlaştırma
 (b) Makbuz yalnız **içerik özetini** taşır; özetin kasadaki segmentlerle
 yeniden karşılaştırılması arayüzde sunulmuyor (elle sha256). (c) Makbuz listesi
 sayfalanmıyor. (d) Görsel QA **insan bekliyor**.
+
+## API anahtarı OS güvenli deposunda (2026-11-06 — F09-T07)
+
+Üç ölçülmüş kusur kapatıldı:
+
+- **K1 (şartname boşluğu):** anahtar **yalnız** `DIM_API_KEY` ortam
+  değişkeninden okunuyordu; uygulamanın kendi anahtar deposu yoktu ve ekran
+  kullanıcıya "anahtar yalnız DIM_API_KEY'den okunur" diyordu. Şartname
+  F09-T07 "doğrudan API anahtarını OS güvenli deposunda tut; seçilen hedefi
+  açık göster" diyor.
+- **K2 (yanlış beyan):** profil künyesi **sabit** `env:DIM_API_KEY` yazıyordu
+  (`auth_mode_verified` ve `capabilities.auth`). Anahtar başka yerden
+  okunduğunda Denetim kaydı yanlış kaynak söylerdi.
+- **K3 (boşa harcanan onay):** anahtar yokken `ai_run_execute` önce onayı
+  tüketiyor, `transfer_receipts`'e "denendi" yazıyor, sonra
+  `E_AI_UNSUPPORTED` ("sağlayıcı desteklenmiyor") dönüyordu — hiçbir bayt
+  çıkmadığı hâlde aktarım denenmiş gibi görünüyordu.
+
+**Düzeltme.**
+
+- `crates/providers/src/secret.rs` (yeni): `SecretStore` sözleşmesi +
+  `OsStore` (macOS Anahtar Zinciri, `security-framework`) ve sıra
+  **zincir → `DIM_API_KEY`**. `SecretTarget` etiketi (`os-keychain` /
+  `env:DIM_API_KEY` / `none`) hem ekrana hem profil künyesine yazılır.
+  Okuma **gerçek** bir hatayla düşerse yedeğe sessizce geçilmez
+  (`E_AI_SECRET`); depo bu platformda yoksa `note` nedenini yazar.
+- `ai_secret_status` / `ai_secret_store` / `ai_secret_clear` komutları: anahtar
+  değeri **geri dönmez**, tabloya/Denetim kaydına/günlüğe yazılmaz (INV-11);
+  boş anahtar `E_AI_SECRET_EMPTY`.
+- `register_api_profile` artık `capabilities` içinde `auth` **iddia etmez**
+  (`auth_mode_requested` = `auto`); kaynak çalışma anında çözülür.
+- `ai_run_execute`: anahtar yoksa **hiçbir şey** denenmez — çalıştırma kaydı ve
+  makbuz açılmaz, `E_AI_NO_KEY` döner.
+- Sağlayıcılar ekranı: "API anahtarı" kartı — gerçek kaynak + kayıtlı/kayıtlı
+  değil + (varsa) depo neden kullanılamıyor; kaydet/sil; yazılan anahtar
+  ekranda geri gösterilmez, uçuşta yazılan taslak yanıtla silinmez.
+
+**Testler.** `secret.rs` 10 test (9 koşar + 1 gerçek zincir tatbikatı
+`#[ignore]`), `api.rs` +1, `ai.rs` +1 (**36 → 37**), `Providers.test.tsx`
+**45 → 54**. Toplam: providers lib **14 → 24** (1 ignored), dim-storage lib
+**405 → 406**, vitest **1159 → 1168** (60 dosya). Gerçek Anahtar Zinciri
+tatbikatı yerelde koşuldu (yaz → oku → sil, ayrı hizmet adı; kullanıcı
+kaydına dokunmaz) — **geçti**.
+
+**Kapı kanıtı 16/16** (her koşu tek kapı, geri yükleme sha256 birebir
+`6963cbb4…346af` arayüz / `1bdc86cc…`, `d63e837d…`, `aa4beb5b…` çekirdek):
+arayüz U1 kaynak etiketi sabit (3), U2 açılışta durum okunmaz (9), U3 kaydetme
+çekirdeğe gitmez (3), U4 taslak koşulsuz silinir (1), U5 uçuş kilidi yok (2),
+U6 hata yutulur (1), U7 silme çekirdeğe gitmez (1), U8 "depo yok" uyarısı
+çizilmez (1), U9 anahtar kırpılmadan gönderilir (1); çekirdek C1 ortam
+değişkeni öncelik kazanır, C2 okuma hatası yutulur, C3 neden bildirilmez,
+C4 boş kayıt anahtar sayılır, C5 `missing` etiketi yanlış, C6 künye sabit auth
+yazar, C7 capabilities `auth` iddiası ekler.
+
+**Ölçüm.** `cargo test -p dim-providers` **24/24** (+1 ignored) ·
+`cargo test -p dim-storage --lib` **406/406** · `cargo clippy --workspace
+--all-targets -- -D warnings` temiz · masaüstü `clippy --all-targets -- -D
+warnings` temiz · `cargo fmt` iki manifest temiz · `tsc --noEmit` temiz ·
+`vitest` **1168/1168** (60 dosya) · `npm run build` temiz (**601,02 kB**,
+`index-DrHSau1V.js`, gzip **161,93 kB**; CSS 7,28 kB).
+
+**Commit/CI.** `e1439e2` (14 dosya, +1135/−24) + `02523fb` (düzeltme +
+bildirim) → **`42111280081` 7/7 YEŞİL**; `arayüz` günlüğü **60 dosya / 1168
+test** ve **aynı paket** `index-DrHSau1V.js` 601,02 kB / gzip 161,93 kB →
+yerel/CI **birebir**. **Dürüst:** ilk koşu **`42109884612` KIRMIZI** — (a)
+ubuntu işi `error: fields service and account are never read` (`-D warnings`;
+macOS dışı `OsStore` alan tutuyordu, alanlar hiç okunmuyordu), (b) SBOM kapısı
+`security-framework` + `security-framework-sys` bildirimde yok diye kırmızı.
+İkisi de `02523fb` ile kapandı.
+
+**Dürüst sınırlar.** (a) OS deposu **yalnız macOS** (Anahtar Zinciri); Windows
+kimlik yöneticisi ve Linux Secret Service **uygulanmadı** — o platformlarda
+`OsStore` `E_AI_SECRET_UNSUPPORTED` döner, ekran ortam değişkenine düştüğünü
+yazar (sessiz yok sayma yok). (b) `ai_secret_*` ve `ai_run_execute` **komut
+olarak koşulmadı** (`State<AppState>` kuran test altyapısı yok;
+`commands_tests.rs` CI'da koşmuyor) — kablolama derleme + clippy, davranış
+`secret` düzeyinde **gerçek Anahtar Zinciri** ve gerçek SQLite ile. (c) Yerelde
+`--target x86_64-unknown-linux-gnu` ile **derleme doğrulanamadı**: `cc-rs`
+`x86_64-linux-gnu-gcc` bulamadı (ortam eksiği, kod değil) — ubuntu kanıtı
+CI'dır. (d) jsdom tarayıcı değil: gerçek Tauri penceresi, gerçek işaretçi ve
+**görsel QA yok**; `api` mock'lu olduğu için anahtar zinciri arayüz testinde
+koşmaz.
+
+**Açık kayıt.** (a) Windows/Linux güvenli deposu yok (yukarıdaki sınır). (b)
+Aynı anda hem zincirde hem ortam değişkeninde anahtar varsa **zincir kazanır**;
+ekran hangisinin kullanıldığını yazar ama gölgede kalan kaynağı **göstermez**.
+(c) Anahtar rotasyonu/son kullanım zamanı izlenmiyor; anahtar yalnız
+`Authorization` başlığında kullanılır, istek gövdesine/loga girmez. (d) Görsel
+QA **insan bekliyor**.
