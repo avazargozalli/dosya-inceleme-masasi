@@ -61,6 +61,30 @@ impl Database {
         self.get_export(&id)?.ok_or(StorageError::NotFound)
     }
 
+    /// Dışa aktarma **tamamlanamadı**: kayıt `ready` kalırsa "paket hazır" der
+    /// ama ortada dosya yoktur.
+    ///
+    /// Sıra bilinçlidir — kayıt **önce** yazılır (denetlenemeyen aktarım
+    /// yapılmaz), bu yüzden yazma sonrası düşen adım kaydı `failed` işaretler.
+    /// Durum yalnız `ready`den düşer: tamamlanmış bir kayıt geriye alınmaz.
+    pub fn fail_export(&self, id: &str, reason: &str) -> Result<(), StorageError> {
+        let changed = self.conn().execute(
+            "UPDATE exports SET status='failed' WHERE id=?1 AND status='ready'",
+            [id],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::NotFound);
+        }
+        self.append_audit(
+            "export",
+            Some(id),
+            "fail",
+            "local-user",
+            &serde_json::json!({"reason": reason}),
+        )?;
+        Ok(())
+    }
+
     pub fn get_export(&self, id: &str) -> Result<Option<ExportRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id,case_id,type,status,destination_kind,output_hash,created_at,completed_at
@@ -141,5 +165,32 @@ mod tests {
         assert!(db
             .record_export("yok", "json", &[], "path", &"b".repeat(64))
             .is_err());
+    }
+
+    /// Paket üretilemediğinde kayıt `ready` kalamaz: "hazır" der ama ortada
+    /// dosya olmaz. Durum `failed`e düşer, ikinci kez düşürülemez.
+    #[test]
+    fn failed_export_is_marked_and_not_reset() {
+        let (db, case_id) = db_with_case();
+        let row = db
+            .record_export(
+                &case_id,
+                "package",
+                &[],
+                "user_selected_path",
+                &"c".repeat(64),
+            )
+            .expect("kayıt");
+        assert_eq!(row.status, "ready");
+
+        db.fail_export(&row.id, "E_PACKAGE_SEAL").expect("işaret");
+        let after = db.get_export(&row.id).expect("oku").expect("var");
+        assert_eq!(after.status, "failed");
+        // Yalnız `ready`den düşer: tamamlanmış kayıt geri alınmaz.
+        assert!(db.fail_export(&row.id, "E_PACKAGE_SEAL").is_err());
+        assert_eq!(
+            db.get_export(&row.id).expect("oku").expect("var").status,
+            "failed"
+        );
     }
 }

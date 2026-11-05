@@ -61,6 +61,9 @@ pub enum VaultError {
     Crypto,
     #[error("parola çok kısa: en az 10 karakter")]
     WeakPassword,
+    /// Paket üretilemedi **ve** açık metin klasörü silinemedi: yol gizlenmez.
+    #[error("paket üretilemedi ({cause}); açık metin klasörü silinemedi: {path}")]
+    PlaintextLeft { path: PathBuf, cause: String },
 }
 
 impl VaultError {
@@ -74,6 +77,7 @@ impl VaultError {
             Self::Io(_) => "E_IO",
             Self::Crypto => "E_CRYPTO",
             Self::WeakPassword => "E_PASSWORD_WEAK",
+            Self::PlaintextLeft { .. } => "E_PACKAGE_PLAINTEXT",
         }
     }
 }

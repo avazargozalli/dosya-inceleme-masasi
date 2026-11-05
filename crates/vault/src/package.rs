@@ -9,6 +9,9 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use rand::rngs::OsRng;
 use rand::RngCore;
+use std::fs;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 use crate::VaultError;
@@ -86,6 +89,137 @@ pub fn open(data: &[u8], password: &str) -> Result<Vec<u8>, VaultError> {
             },
         )
         .map_err(|_| VaultError::BadCredentials)
+}
+
+/// `seal_dir` çıktısı.
+#[derive(Debug, Clone)]
+pub struct SealedDir {
+    /// Üretilen şifreli paket dosyası (`.dimpak`).
+    pub dimpak: PathBuf,
+    /// Açık metin klasörü **silinemediyse** yolu; `None` = silindi.
+    ///
+    /// Silinememesi gizlenmez: çağıran bunu kullanıcıya "açık metin diskte
+    /// kaldı" diye bildirmek zorundadır. Sessiz kalıntı, "şifreli" sanılan bir
+    /// açık metin klasörü bırakır.
+    pub leftover_dir: Option<PathBuf>,
+}
+
+/// Açık metin klasörünü zip'e koyup tek şifreli `.dimpak` dosyasına çevirir.
+///
+/// **Sözleşme:** parola ilk adımda doğrulanır (kısa parolada **hiçbir şey
+/// yazılmaz**). Zip, şifreleme ya da yazma düşerse açık metin klasörü ve
+/// geçici arşiv **silinir**; silinemezse `VaultError::PlaintextLeft` yol
+/// bildirir — yarım iş kalıntısı sessizce bırakılmaz.
+///
+/// Şifreleme düştüğünde klasörün silinmesi bilinçlidir: kullanıcı "paket
+/// oluşturulamadı" hatasını görürken hedefte **açık metin** bir klasörün
+/// kalması, parola verdiği hâlde şifresiz veri bırakmak olurdu. Paket
+/// yeniden üretilebilir bir çıktıdır; açık metin kalıntısı değildir.
+pub fn seal_dir(dir: &Path, password: &str) -> Result<SealedDir, VaultError> {
+    check_password(password)?;
+    if !dir.is_dir() {
+        return Err(VaultError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "paketlenecek klasör yok",
+        )));
+    }
+    let archive = dir.with_extension("zip");
+    let target = dir.with_extension("dimpak");
+
+    let built: Result<(), VaultError> = (|| {
+        zip_dir(dir, &archive)?;
+        let zip_bytes = fs::read(&archive)?;
+        let sealed = seal(&zip_bytes, password)?;
+        // Paket de **geçici ada** yazılıp yerleştirilir: yarım `.dimpak` hedef
+        // adda görünmez. Hedef adda bir **klasör** varsa `rename` düşer —
+        // kullanıcının klasörü silinmez, çağrı hata verir. (Var olan aynı adlı
+        // *dosya* POSIX `rename` ile değişir; eski `fs::write` da eziyordu.)
+        let staging = temp_sibling(&target);
+        fs::write(&staging, &sealed)?;
+        fs::rename(&staging, &target)?;
+        Ok(())
+    })();
+    // Geçici arşiv ve geçici paket açık metin/yarım iş taşır: her iki yolda silinir.
+    let _ = fs::remove_file(&archive);
+    let _ = fs::remove_file(temp_sibling(&target));
+    if let Err(error) = built {
+        // Hata yolunda açık metin bırakılmaz.
+        let plaintext_gone = remove_path(dir);
+        return Err(if plaintext_gone {
+            error
+        } else {
+            VaultError::PlaintextLeft {
+                path: dir.to_path_buf(),
+                cause: error.to_string(),
+            }
+        });
+    }
+    Ok(SealedDir {
+        dimpak: target,
+        leftover_dir: (!remove_path(dir)).then(|| dir.to_path_buf()),
+    })
+}
+
+/// Klasör ağacını tek dosyalık zip arşivine yazar.
+///
+/// Arşiv **geçici ada** yazılır, bitince yerleştirilir: yarıda kalan bir arşiv
+/// geçerli paket/yedek sanılmasın (F15-T06). Hem devir paketi hem tek dosyalık
+/// kasa yedeği aynı yardımcıyı kullanır.
+pub fn zip_dir(src: &Path, dest: &Path) -> Result<(), VaultError> {
+    let io_err = |err: zip::result::ZipError| std::io::Error::other(err.to_string());
+    let temp = temp_sibling(dest);
+    let written: std::io::Result<()> = (|| {
+        let mut writer = zip::ZipWriter::new(fs::File::create(&temp)?);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut stack = vec![src.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(src)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                writer.start_file(name, options).map_err(io_err)?;
+                writer.write_all(&fs::read(&path)?)?;
+            }
+        }
+        writer.finish().map(|_| ()).map_err(io_err)?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(VaultError::Io(error));
+    }
+    fs::rename(&temp, dest)?;
+    Ok(())
+}
+
+/// Hedefin yanında geçici ad (aynı dosya sistemi → `rename` atomik).
+fn temp_sibling(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "package".to_string());
+    dest.with_file_name(format!(".{name}.tmp"))
+}
+
+/// Yolu (dosya ya da dizin) siler; **artık yok mu** diye döner.
+///
+/// `false` = hâlâ duruyor (izin yok, meşgul). Sessizce `true` demez: açık
+/// metin kalıntısını "temizlendi" saymak bu modülün kapatmaya çalıştığı hata.
+fn remove_path(path: &Path) -> bool {
+    if path.is_dir() {
+        let _ = fs::remove_dir_all(path);
+    } else {
+        let _ = fs::remove_file(path);
+    }
+    !path.exists()
 }
 
 #[cfg(test)]

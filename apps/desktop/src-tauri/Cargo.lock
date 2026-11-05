@@ -726,7 +726,6 @@ dependencies = [
  "tauri-plugin-dialog",
  "time",
  "zeroize",
- "zip",
 ]
 
 [[package]]
@@ -802,6 +801,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.21",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

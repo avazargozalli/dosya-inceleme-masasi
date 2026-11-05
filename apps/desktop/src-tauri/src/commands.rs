@@ -2876,41 +2876,6 @@ pub struct BackupView {
     pub archive_path: Option<String>,
 }
 
-/// Klasörü tek dosyalık arşive paketler. Arşiv şifrelemez; içindeki DB ve
-/// blob'lar zaten kasa anahtarıyla şifreli olduğu için açık metin sızmaz.
-///
-/// Arşiv **geçici ada** yazılır ve bitince yerleştirilir: yarıda kalan bir
-/// `.dimbak` dosyası geçerli arşiv sanılmasın (F15-T06).
-fn zip_dir(src: &Path, dest: &Path) -> Result<(), ApiError> {
-    use std::io::Write as _;
-
-    dim_storage::atomic::write_atomic_with(dest, |file| {
-        let io_err = |err: zip::result::ZipError| std::io::Error::other(err.to_string());
-        let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        let mut stack = vec![src.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir)? {
-                let path = entry?.path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                let name = path
-                    .strip_prefix(src)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                writer.start_file(name, options).map_err(io_err)?;
-                writer.write_all(&std::fs::read(&path)?)?;
-            }
-        }
-        writer.finish().map(|_| ()).map_err(io_err)
-    })
-    .map_err(ApiError::from)
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreView {
@@ -2981,13 +2946,12 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         dim_storage::atomic::remove_tree(&staging);
         return Err(err.into());
     }
-    if let Err(err) = zip_dir(&backup_dir, &archive) {
+    if let Err(err) = dim_vault::package::zip_dir(&backup_dir, &archive) {
         // Klasör yedeği geçerli ve yerinde; yalnız tek dosyalık arşiv yazılamadı.
         return Err(ApiError::new(
             "E_BACKUP_ZIP",
             &format!(
-                "Yedek klasörü hazır ama tek dosya arşivi yazılamadı: {}. Klasörü olduğu gibi kullanabilirsiniz.",
-                err.message
+                "Yedek klasörü hazır ama tek dosya arşivi yazılamadı: {err}. Klasörü olduğu gibi kullanabilirsiniz."
             ),
         ));
     }
@@ -6159,22 +6123,44 @@ pub fn export_package(
 
     // Parola verildiyse klasör tek şifreli dosyaya paketlenir; alıcıya kasa
     // anahtarı verilmez, yalnız paket parolası söylenir.
+    //
+    // Paketleme **çekirdekte** (`dim_vault::package::seal_dir`): zip + şifreleme
+    // + açık metin temizliği tek sözleşmede. Eski kod bu adımları burada
+    // yapıyordu ve aradaki her `?` hata dönüşünde hedefte **açık metin** klasör
+    // (şifreleme adımına kadar da açık metin `.zip`) bırakıyordu: kullanıcı
+    // "paket oluşturulamadı" görürken parola verdiği veri şifresiz duruyordu.
     let mut sealed_path = None;
     let mut plaintext_dir = Some(dir.to_string_lossy().to_string());
     if let Some(secret) = sealed_password {
-        let archive = dir.with_extension("zip");
-        zip_dir(&dir, &archive)?;
-        let zip_bytes = std::fs::read(&archive)?;
-        let sealed = dim_vault::package::seal(&zip_bytes, &secret)?;
-        let target = dir.with_extension("dimpak");
-        std::fs::write(&target, &sealed)?;
-        let _ = std::fs::remove_file(&archive);
-        // Silme başarısız olursa açık metin klasör diskte kalır; bunu
-        // gizlemek "şifreli" sanılan bir açık metin bırakırdı → yol bildirilir.
-        if std::fs::remove_dir_all(&dir).is_ok() {
-            plaintext_dir = None;
-        }
-        sealed_path = Some(target.to_string_lossy().to_string());
+        let sealed = match dim_vault::package::seal_dir(&dir, &secret) {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                // Kayıt **önce** yazıldı (denetlenemeyen aktarım yapılmaz);
+                // paket üretilemediyse kayıt `ready` kalamaz — yoksa "paket
+                // hazır" der ama ortada dosya olmaz.
+                let _ = db.fail_export(&record.id, error.code());
+                return Err(match error {
+                    dim_vault::VaultError::PlaintextLeft { ref path, .. } => ApiError::new(
+                        "E_PACKAGE_PLAINTEXT",
+                        &format!(
+                            "Paket oluşturulamadı ve açık metin klasörü silinemedi: {} — bu klasörü elle silin.",
+                            path.display()
+                        ),
+                    ),
+                    other => ApiError::new(
+                        "E_PACKAGE_SEAL",
+                        &format!(
+                            "Paket oluşturulamadı; açık metin klasörü ve geçici arşiv silindi ({other})."
+                        ),
+                    ),
+                });
+            }
+        };
+        // Silinemediyse yol **bildirilir** (arayüz ayrı uyarı yazar).
+        plaintext_dir = sealed
+            .leftover_dir
+            .map(|path| path.to_string_lossy().to_string());
+        sealed_path = Some(sealed.dimpak.to_string_lossy().to_string());
     }
 
     Ok(PackageView {
