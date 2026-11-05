@@ -33,6 +33,11 @@ function emptyBodyError(): ApiError {
   return { code: "E_NOTE", message: t("notes.emptyBody"), retryable: false };
 }
 
+/** Kaynak seçimi **sıralı** karşılaştırılır: çipler tıklama sırasını korur. */
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 function AnchorPicker({
   anchors,
   picked,
@@ -89,6 +94,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   const [rows, setRows] = useState<NoteRow[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Silme uçuşu satır kimliğine bağlıdır: ikinci tık ikinci `note_delete` göndermez. */
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   // Yeni not taslağı
   const [title, setTitle] = useState("");
@@ -120,6 +127,41 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   const caseGen = useRef(0);
   /** Uçuştaki besteci taslağı yazımı: temizlemeden önce beklenir (taslak geri gelmesin). */
   const draftSaveChain = useRef<Promise<unknown>>(Promise.resolve());
+  /**
+   * Yazma kuşağı: dosya değişimi ve panelin kapanması uçuştaki yanıtı **geçersiz** kılar.
+   * Kilit devri de bu sayaçla yapılır: devredilen isteğin `finally`si yeni yazmanın
+   * kilidini erken açamaz (`endWrite` yalnız kendi damgasında bırakır).
+   */
+  const busySeq = useRef(0);
+  /** Yanıt geldiğinde "kullanıcı hâlâ gönderilen metni mi görüyor" karşılaştırması. */
+  const composerNow = useRef({ title, body, picked });
+  const editNow = useRef({ title: editTitle, body: editBody, anchors: editAnchors });
+
+  useEffect(() => {
+    composerNow.current = { title, body, picked };
+  }, [title, body, picked]);
+
+  useEffect(() => {
+    editNow.current = { title: editTitle, body: editBody, anchors: editAnchors };
+  }, [editTitle, editBody, editAnchors]);
+
+  /** Yeni bir yazma uçuşu açar; dönen damga yalnız o uçuşta geçerlidir. */
+  function beginWrite(): number {
+    const seq = busySeq.current + 1;
+    busySeq.current = seq;
+    setBusy(true);
+    return seq;
+  }
+
+  /** Kilidi yalnız kendi uçuşunda bırakır (erken açılma kapısı). */
+  function endWrite(seq: number): void {
+    if (busySeq.current === seq) setBusy(false);
+  }
+
+  /** Uçuş hâlâ güncel mi? Dosya değişimi ve panel kapanışı damgayı ilerletir. */
+  function stillCurrent(seq: number): boolean {
+    return busySeq.current === seq;
+  }
 
   const load = useCallback(async () => {
     const seq = listSeq.current + 1;
@@ -142,9 +184,12 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     caseGen.current += 1;
     listSeq.current += 1;
     editSeq.current += 1;
+    // Yazma kilidi devredilir: uçuştaki eski isteğin yanıtı yeni dosyaya yazmaz.
+    busySeq.current += 1;
     setRows([]);
     setError(null);
     setBusy(false);
+    setRemovingId(null);
     setTitle("");
     setBody("");
     setPicked([]);
@@ -278,23 +323,42 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       setError(emptyBodyError());
       return;
     }
-    setBusy(true);
+    const seq = beginWrite();
+    // Ekranda duran **ham** değerler dondurulur; çekirdeğe kırpılmış metin gider.
+    const raw = { title, body, picked: [...picked] };
+    const submitted = { title: raw.title.trim(), body: raw.body.trim(), picked: raw.picked };
     setError(null);
     try {
-      await api.noteCreate(caseId, { title: title.trim(), body: body.trim(), sourceAnchorIds: picked });
+      await api.noteCreate(caseId, {
+        title: submitted.title,
+        body: submitted.body,
+        sourceAnchorIds: submitted.picked,
+      });
       // Uçuştaki taslak yazımı bitmeden temizleme: geç dönen yazma taslağı geri getirirdi.
       await draftSaveChain.current;
+      // Kasadaki taslak **gönderilen** dosyanın taslağıdır; dosya değişse de silinir.
       await api.noteDraftClear(caseId, null);
-      setTitle("");
-      setBody("");
-      setPicked([]);
-      setComposerStatus("idle");
-      setRestoredDraftAt(null);
+      // Geç yanıt: dosya değişti ya da başka bir yazma başladı → ekrana yazılmaz.
+      if (!stillCurrent(seq)) return;
+      // Uçuşta yazılan yeni taslak, gönderilen metin değiştiyse **korunur**.
+      const now = composerNow.current;
+      if (
+        now.title === raw.title &&
+        now.body === raw.body &&
+        sameIds(now.picked, raw.picked)
+      ) {
+        setTitle("");
+        setBody("");
+        setPicked([]);
+        setComposerStatus("idle");
+        setRestoredDraftAt(null);
+      }
       await load();
     } catch (e) {
+      if (!stillCurrent(seq)) return;
       setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -327,7 +391,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setEditPendingDraft(null);
     setEditBaseVersion(null);
     editHydrated.current = false;
-    setBusy(true);
+    const lock = beginWrite();
     try {
       const draft = await api.noteDraftGet(caseId, note.id);
       // Geç gelen okuma başka bir notun panelini ele geçirmez.
@@ -340,10 +404,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       if (editSeq.current !== seq) return;
       setError(toApiError(e));
     } finally {
-      if (editSeq.current === seq) {
-        setBusy(false);
-        editHydrated.current = true;
-      }
+      endWrite(lock);
+      if (editSeq.current === seq) editHydrated.current = true;
     }
   }
 
@@ -374,6 +436,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
 
   function closeEdit() {
     editSeq.current += 1;
+    // Panel kapanışı uçuştaki kaydı geçersiz kılar: yanıt paneli yeniden açmaz.
+    busySeq.current += 1;
     setEditNote(null);
     setConflict(null);
     setRevisions(null);
@@ -385,22 +449,30 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     editHydrated.current = false;
   }
 
-  async function openConflict(noteId: string) {
+  async function openConflict(
+    noteId: string,
+    mine: { title: string; body: string; anchors: string[] },
+    seq: number,
+  ) {
     try {
       const theirs = await api.noteGet(noteId);
+      // Uçuş geçersizse (dosya değişti / panel kapandı / başka yazma başladı) çakışma açılmaz.
+      if (!stillCurrent(seq)) return;
       if (!theirs) {
         setError({ code: "E_NOT_FOUND", message: t("notes.notFound"), retryable: false });
         await load();
         return;
       }
+      // "Benim metnim" **gönderilen** metindir: başka panelin metni bu nota yazılmaz.
       setConflict({
         noteId,
-        mineTitle: editTitle,
-        mineBody: editBody,
-        mineAnchors: editAnchors,
+        mineTitle: mine.title,
+        mineBody: mine.body,
+        mineAnchors: mine.anchors,
         theirs,
       });
     } catch (e) {
+      if (!stillCurrent(seq)) return;
       setError(toApiError(e));
     }
   }
@@ -411,89 +483,109 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       setError(emptyBodyError());
       return;
     }
-    setBusy(true);
+    const note = editNote;
+    const seq = beginWrite();
+    // Panelde duran **ham** değerler dondurulur; çekirdeğe kırpılmış metin gider.
+    const raw = { title: editTitle, body: editBody, anchors: [...editAnchors] };
+    const submitted = { title: raw.title.trim(), body: raw.body.trim(), anchors: raw.anchors };
     setError(null);
     setHistoryNote(null);
     try {
-      const updated = await api.noteUpdate(editNote.id, editNote.rowVersion, {
-        title: editTitle.trim(),
-        body: editBody.trim(),
-        sourceAnchorIds: editAnchors,
+      const updated = await api.noteUpdate(note.id, note.rowVersion, {
+        title: submitted.title,
+        body: submitted.body,
+        sourceAnchorIds: submitted.anchors,
       });
-      await api.noteDraftClear(caseId, editNote.id);
+      await api.noteDraftClear(caseId, note.id);
+      // Geç yanıt (dosya değişti / panel kapandı / başka yazma): panel yeniden açılmaz.
+      if (!stillCurrent(seq)) return;
       setEditNote(updated);
-      setEditTitle(updated.title);
-      setEditBody(updated.body);
-      setEditAnchors(updated.sourceAnchorIds);
+      // Uçuşta yazılan metin korunur: sunucunun metni yalnız kullanıcı değiştirmediyse yazılır.
+      const now = editNow.current;
+      if (
+        now.title === raw.title &&
+        now.body === raw.body &&
+        sameIds(now.anchors, raw.anchors)
+      ) {
+        setEditTitle(updated.title);
+        setEditBody(updated.body);
+        setEditAnchors(updated.sourceAnchorIds);
+      }
       setEditStatus("idle");
       setEditPendingDraft(null);
       setEditBaseVersion(null);
       await load();
       if (revisions?.noteId === updated.id) await showRevisions(updated.id);
     } catch (e) {
+      if (!stillCurrent(seq)) return;
       const err = toApiError(e);
-      if (err.code === "E_ROW_VERSION") await openConflict(editNote.id);
+      if (err.code === "E_ROW_VERSION") await openConflict(note.id, submitted, seq);
       else setError(err);
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
   async function resolveConflict(keepMine: boolean) {
     if (!conflict) return;
-    setBusy(true);
+    if (keepMine && conflict.mineBody.trim().length === 0) {
+      setError(emptyBodyError());
+      return;
+    }
+    const snapshot = conflict;
+    const seq = beginWrite();
     setError(null);
     try {
+      let updated: NoteRow;
       if (keepMine) {
-        if (conflict.mineBody.trim().length === 0) {
-          setError(emptyBodyError());
-          return;
-        }
-        const updated = await api.noteUpdate(conflict.noteId, conflict.theirs.rowVersion, {
-          title: conflict.mineTitle.trim(),
-          body: conflict.mineBody.trim(),
-          sourceAnchorIds: conflict.mineAnchors,
+        updated = await api.noteUpdate(snapshot.noteId, snapshot.theirs.rowVersion, {
+          title: snapshot.mineTitle.trim(),
+          body: snapshot.mineBody.trim(),
+          sourceAnchorIds: snapshot.mineAnchors,
         });
-        await api.noteDraftClear(caseId, conflict.noteId);
-        setEditNote(updated);
-        setEditTitle(updated.title);
-        setEditBody(updated.body);
-        setEditAnchors(updated.sourceAnchorIds);
-        setEditStatus("idle");
-        setEditBaseVersion(null);
-        setConflict(null);
-        await load();
       } else {
-        const theirs = conflict.theirs;
-        await api.noteDraftClear(caseId, conflict.noteId);
-        setEditNote(theirs);
-        setEditTitle(theirs.title);
-        setEditBody(theirs.body);
-        setEditAnchors(theirs.sourceAnchorIds);
-        setEditStatus("idle");
-        setEditBaseVersion(null);
-        setConflict(null);
-        await load();
+        updated = snapshot.theirs;
       }
+      await api.noteDraftClear(caseId, snapshot.noteId);
+      if (!stillCurrent(seq)) return;
+      setEditNote(updated);
+      setEditTitle(updated.title);
+      setEditBody(updated.body);
+      setEditAnchors(updated.sourceAnchorIds);
+      setEditStatus("idle");
+      setEditBaseVersion(null);
+      setConflict(null);
+      await load();
     } catch (e) {
+      if (!stillCurrent(seq)) return;
       const err = toApiError(e);
-      if (err.code === "E_ROW_VERSION") await openConflict(conflict.noteId);
-      else setError(err);
+      if (err.code === "E_ROW_VERSION") {
+        await openConflict(
+          snapshot.noteId,
+          { title: snapshot.mineTitle, body: snapshot.mineBody, anchors: snapshot.mineAnchors },
+          seq,
+        );
+      } else {
+        setError(err);
+      }
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
   async function stepHistory(direction: "undo" | "redo") {
     if (!editNote || editDirty) return;
-    setBusy(true);
+    const note = editNote;
+    const mine = { title: editTitle, body: editBody, anchors: [...editAnchors] };
+    const seq = beginWrite();
     setError(null);
     setHistoryNote(null);
     try {
       const next =
         direction === "undo"
-          ? await api.noteUndo(editNote.id, editNote.rowVersion)
-          : await api.noteRedo(editNote.id, editNote.rowVersion);
+          ? await api.noteUndo(note.id, note.rowVersion)
+          : await api.noteRedo(note.id, note.rowVersion);
+      if (!stillCurrent(seq)) return;
       setEditNote(next);
       setEditTitle(next.title);
       setEditBody(next.body);
@@ -504,12 +596,13 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       await load();
       if (revisions?.noteId === next.id) await showRevisions(next.id);
     } catch (e) {
+      if (!stillCurrent(seq)) return;
       const err = toApiError(e);
-      if (err.code === "E_ROW_VERSION") await openConflict(editNote.id);
+      if (err.code === "E_ROW_VERSION") await openConflict(note.id, mine, seq);
       else if (err.code === "E_NOTE_HISTORY") setHistoryNote(err.message);
       else setError(err);
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -524,12 +617,19 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   }
 
   async function remove(id: string) {
+    const gen = caseGen.current;
+    setRemovingId(id);
+    setError(null);
     try {
       await api.noteDelete(id);
+      if (caseGen.current !== gen) return;
       if (editNote?.id === id) closeEdit();
       await load();
     } catch (e) {
+      if (caseGen.current !== gen) return;
       setError(toApiError(e));
+    } finally {
+      if (caseGen.current === gen) setRemovingId(null);
     }
   }
 
@@ -616,7 +716,12 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
                   <button className="btn ghost" style={{ height: 24 }} onClick={() => void openEdit(note)}>
                     {t("notes.edit")}
                   </button>
-                  <button className="btn ghost" style={{ height: 24 }} onClick={() => void remove(note.id)}>
+                  <button
+                    className="btn ghost"
+                    style={{ height: 24 }}
+                    disabled={removingId !== null || busy}
+                    onClick={() => void remove(note.id)}
+                  >
                     {t("notes.delete")}
                   </button>
                 </span>

@@ -767,3 +767,301 @@ describe("notlar", () => {
     expect(vault).toBeNull();
   });
 });
+
+/* ---------------------------------------------------------------------------
+ * Yazma uçuşu (2026-11-05 turu)
+ *
+ * Yukarıdaki blok okuma yollarını, dosya kimliğini ve taslak yarışını kapatmıştı.
+ * **Yazma** uçuşu hiç ölçülmemişti: `busy` kilidi, yanıt beklerken yazılan metin
+ * ve geç gelen yanıtın hangi dosyaya/panoya yazıldığı. Ölçülen on kusur:
+ *
+ *  W1  `addNote` başarısı besteciyi **koşulsuz** temizliyordu → uçuşta yazılan
+ *      yeni taslak yanıtla siliniyordu (sessiz kayıp).
+ *  W2  `addNote` geç başarısı dosya değiştikten sonra **yeni** dosyanın
+ *      bestecisini siliyordu (INV-05).
+ *  W3  `addNote` geç hatası yeni dosyanın altında kırmızı bant oluyordu.
+ *  W4  `saveEdit` başarısı panelde uçuşta yazılan metni sunucunun metniyle
+ *      eziyordu (sessiz kayıp).
+ *  W5  `saveEdit` geç başarısı **kapanan** paneli yeniden açıyordu.
+ *  W6  `saveEdit` geç hatası yeni dosyada görünüyordu.
+ *  W7  `remove` kilitsizdi → çift tık iki `note_delete` (ikincisi `E_NOT_FOUND`
+ *      ile başarılı silmenin üstüne kırmızı yazıyordu).
+ *  W8  Dört yazma yolunun `finally`si koşulsuz `setBusy(false)` → devredilen
+ *      isteğin kapanışı yeni dosyada başlatılan yazmanın kilidini açıyordu.
+ *  W9  `openConflict` çakışmayı **o anki** panelden okuyordu → başka notun
+ *      metni "benim metnim" olarak çakışan nota yazılabiliyordu.
+ *  W10 Panel kapatılınca uçuştaki kayıt damgası ilerlemiyordu → geç yanıt
+ *      kapatılan paneli yeniden açıyordu.
+ *  W11 Taslak karşılaştırması tek başına yetmez: iki dosyada **aynı** metin
+ *      yazılıysa eski yanıt yeni dosyanın bestecisini yine temizlerdi.
+ * ------------------------------------------------------------------------- */
+
+describe("notlar yazma uçuşu", () => {
+  it("not eklerken yazılan yeni taslak yanıtla silinmez", async () => {
+    const create = deferred<NoteRow>();
+    mocks.noteCreate.mockReturnValueOnce(create.promise);
+    mocks.noteList.mockResolvedValue([]);
+
+    await mount();
+    fireEvent.change(bodyInput(), { target: { value: "İlk gözlem" } });
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+    expect(mocks.noteCreate).toHaveBeenCalledTimes(1);
+
+    // Uçuşta yeni taslak yazılır.
+    fireEvent.change(bodyInput(), { target: { value: "Uçuşta yazıldı" } });
+    await act(async () => {
+      create.resolve(note({ id: "n9" }));
+    });
+    await flush();
+
+    // Gönderilen metin artık ekranda değil: yeni taslak korunur.
+    expect(bodyInput().value).toBe("Uçuşta yazıldı");
+  });
+
+  it("not ekleme yanıtı dosya değiştikten sonra yeni dosyanın bestecisini silmez", async () => {
+    const create = deferred<NoteRow>();
+    mocks.noteCreate.mockReturnValueOnce(create.promise);
+    mocks.noteList.mockResolvedValue([]);
+    mocks.noteDraftGet.mockImplementation(async (caseId: string, noteId: string | null) =>
+      noteId === null && caseId === "c2" ? draft({ caseId: "c2", body: "c2 taslağı" }) : null,
+    );
+
+    const utils = await mount();
+    fireEvent.change(bodyInput(), { target: { value: "c1 notu" } });
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+
+    await setCase(utils, { caseId: "c2" });
+    expect(bodyInput().value).toBe("c2 taslağı");
+
+    await act(async () => {
+      create.resolve(note({ id: "n1", caseId: "c1" }));
+    });
+    await flush();
+
+    expect(bodyInput().value).toBe("c2 taslağı");
+  });
+
+  it("aynı metin iki dosyada yazılıysa eski yanıt yeni dosyanın bestecisini silmez", async () => {
+    const create = deferred<NoteRow>();
+    mocks.noteCreate.mockReturnValueOnce(create.promise);
+    mocks.noteList.mockResolvedValue([]);
+    mocks.noteDraftGet.mockImplementation(async (caseId: string, noteId: string | null) =>
+      noteId === null && caseId === "c2" ? draft({ caseId: "c2", body: "Aynı gözlem" }) : null,
+    );
+
+    const utils = await mount();
+    fireEvent.change(bodyInput(), { target: { value: "Aynı gözlem" } });
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+
+    await setCase(utils, { caseId: "c2" });
+    expect(bodyInput().value).toBe("Aynı gözlem");
+
+    await act(async () => {
+      create.resolve(note({ id: "n1", caseId: "c1" }));
+    });
+    await flush();
+
+    // Metin aynı olsa da **başka** dosyanın bestecisidir: eski yanıt onu temizlemez.
+    expect(bodyInput().value).toBe("Aynı gözlem");
+  });
+
+  it("eski dosyanın ekleme hatası yeni dosyada görünmez", async () => {
+    const create = deferred<NoteRow>();
+    mocks.noteCreate.mockReturnValueOnce(create.promise);
+    mocks.noteList.mockResolvedValue([]);
+
+    const utils = await mount();
+    fireEvent.change(bodyInput(), { target: { value: "c1 notu" } });
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+
+    await setCase(utils, { caseId: "c2" });
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await act(async () => {
+      create.reject({ code: "E_IO", message: "yazılamadı", retryable: true });
+    });
+    await flush();
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("düzenleme kaydı uçuşta yazılan metni ezmez", async () => {
+    mocks.noteList.mockResolvedValue([note()]);
+    const update = deferred<NoteRow>();
+    mocks.noteUpdate.mockReturnValueOnce(update.promise);
+
+    await mount();
+    fireEvent.click(button(t("notes.edit")));
+    await flush();
+
+    fireEvent.change(editBodyInput(), { target: { value: "Kaydedilecek metin" } });
+    fireEvent.click(button(t("common.save")));
+    await flush();
+
+    fireEvent.change(editBodyInput(), { target: { value: "Uçuşta yazıldı" } });
+    await act(async () => {
+      update.resolve(note({ body: "Kaydedilecek metin", rowVersion: 2 }));
+    });
+    await flush();
+
+    expect(mocks.noteUpdate).toHaveBeenCalledTimes(1);
+    expect(editBodyInput().value).toBe("Uçuşta yazıldı");
+  });
+
+  it("kaydetme yanıtı dosya değiştikten sonra paneli yeniden açmaz", async () => {
+    mocks.noteList.mockResolvedValueOnce([note()]).mockResolvedValue([]);
+    const update = deferred<NoteRow>();
+    mocks.noteUpdate.mockReturnValueOnce(update.promise);
+
+    const utils = await mount();
+    fireEvent.click(button(t("notes.edit")));
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "Kaydedilecek" } });
+    fireEvent.click(button(t("common.save")));
+    await flush();
+
+    await setCase(utils, { caseId: "c2" });
+    expect(screen.queryByText(t("notes.editTitle"))).toBeNull();
+
+    await act(async () => {
+      update.resolve(note({ body: "Kaydedilecek", rowVersion: 2 }));
+    });
+    await flush();
+
+    expect(screen.queryByText(t("notes.editTitle"))).toBeNull();
+  });
+
+  it("eski dosyanın kaydetme hatası yeni dosyada görünmez", async () => {
+    mocks.noteList.mockResolvedValueOnce([note()]).mockResolvedValue([]);
+    const update = deferred<NoteRow>();
+    mocks.noteUpdate.mockReturnValueOnce(update.promise);
+
+    const utils = await mount();
+    fireEvent.click(button(t("notes.edit")));
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "Kaydedilecek" } });
+    fireEvent.click(button(t("common.save")));
+    await flush();
+
+    await setCase(utils, { caseId: "c2" });
+
+    await act(async () => {
+      update.reject({ code: "E_IO", message: "yazılamadı", retryable: true });
+    });
+    await flush();
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("silme uçuşunda satır düğmesi ikinci silmeyi engeller", async () => {
+    mocks.noteList.mockResolvedValue([note()]);
+    const del = deferred<void>();
+    mocks.noteDelete.mockReturnValueOnce(del.promise);
+
+    await mount();
+    const removeButton = () => button(t("notes.delete"));
+    expect(removeButton().disabled).toBe(false);
+
+    fireEvent.click(removeButton());
+    await flush();
+
+    // Uçuşta iken ikinci tık yeni bir `note_delete` göndermemeli.
+    expect(mocks.noteDelete).toHaveBeenCalledTimes(1);
+    expect(removeButton().disabled).toBe(true);
+
+    await act(async () => {
+      del.resolve(undefined);
+    });
+    await flush();
+    expect(removeButton().disabled).toBe(false);
+  });
+
+  it("dosya değişince devredilen kilit eski yanıtla erken açılmaz", async () => {
+    const first = deferred<NoteRow>();
+    const second = deferred<NoteRow>();
+    mocks.noteCreate.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    mocks.noteList.mockResolvedValue([]);
+
+    const utils = await mount();
+    fireEvent.change(bodyInput(), { target: { value: "c1 notu" } });
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+
+    await setCase(utils, { caseId: "c2" });
+    fireEvent.change(bodyInput(), { target: { value: "c2 notu" } });
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+    expect(mocks.noteCreate).toHaveBeenCalledTimes(2);
+    expect(button(t("notes.add")).disabled).toBe(true);
+
+    await act(async () => {
+      first.resolve(note({ id: "n1", caseId: "c1" }));
+    });
+    await flush();
+
+    // Devredilen isteğin kapanışı, yeni dosyada uçuşta olan yazmanın kilidini açmaz.
+    expect(button(t("notes.add")).disabled).toBe(true);
+  });
+
+  it("çakışma okuması başka notun panelinde açılmaz", async () => {
+    mocks.noteList.mockResolvedValue([
+      note({ id: "n1", title: "Tapu incelemesi", body: "Tapu kaydı eksik." }),
+      note({ id: "n2", title: "Ceza notu", body: "Ceza dosyası gövdesi" }),
+    ]);
+    const theirs = deferred<NoteRow | null>();
+    mocks.noteUpdate.mockRejectedValueOnce({
+      code: "E_ROW_VERSION",
+      message: "sürüm çakıştı",
+      retryable: false,
+    });
+    mocks.noteGet.mockReturnValueOnce(theirs.promise);
+
+    await mount();
+    fireEvent.click(screen.getAllByRole("button", { name: t("notes.edit") })[0]!);
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "Benim metnim" } });
+    fireEvent.click(button(t("common.save")));
+    await flush();
+
+    // Çakışma okuması askıda: kullanıcı başka notun panelini açar.
+    fireEvent.click(screen.getAllByRole("button", { name: t("notes.edit") })[1]!);
+    await flush();
+    expect(editBodyInput().value).toBe("Ceza dosyası gövdesi");
+
+    await act(async () => {
+      theirs.resolve(note({ id: "n1", body: "Sunucudaki metin", rowVersion: 3 }));
+    });
+    await flush();
+
+    // n1'in çakışması n2 panelinde açılmamalı: "benim metnim" n2'nin metni olurdu.
+    expect(screen.queryByText(t("notes.conflictTitle"))).toBeNull();
+  });
+
+  it("kapatılan panel geç kayıt yanıtıyla yeniden açılmaz", async () => {
+    mocks.noteList.mockResolvedValue([note()]);
+    const update = deferred<NoteRow>();
+    mocks.noteUpdate.mockReturnValueOnce(update.promise);
+
+    await mount();
+    fireEvent.click(button(t("notes.edit")));
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "Kaydedilecek" } });
+    fireEvent.click(button(t("common.save")));
+    await flush();
+
+    fireEvent.click(button(t("notes.close")));
+    await flush();
+    expect(screen.queryByText(t("notes.editTitle"))).toBeNull();
+
+    await act(async () => {
+      update.resolve(note({ body: "Kaydedilecek", rowVersion: 2 }));
+    });
+    await flush();
+
+    expect(screen.queryByText(t("notes.editTitle"))).toBeNull();
+  });
+});
