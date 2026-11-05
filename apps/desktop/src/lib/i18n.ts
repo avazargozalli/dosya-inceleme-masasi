@@ -1769,7 +1769,7 @@ export const tr = {
     keySub:
       "Anahtar hiçbir tabloya, günlüğe veya Denetim kaydına yazılmaz; kaydedildikten sonra ekranda geri gösterilmez. Yalnız istek başlığında kullanılır.",
     keySourceLabel: "Kaynak",
-    keySourceKeychain: "OS güvenli deposu (Anahtar Zinciri)",
+    keySourceKeychain: "OS güvenli deposu (sistem kasası)",
     keySourceEnv: "DIM_API_KEY ortam değişkeni",
     keySourceMissing: "tanımlı değil",
     keySourceUnknown: "okunamadı",

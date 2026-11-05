@@ -1,12 +1,12 @@
 //! API anahtarının **kaynağı**. Anahtar hiçbir tabloya, Denetim kaydına veya
 //! günlüğe yazılmaz (INV-11); yalnız istek başlığında kullanılır.
 //!
-//! Sıra: **OS güvenli deposu** (macOS: Anahtar Zinciri) → `DIM_API_KEY` ortam
-//! değişkeni. Hangi yolun gerçekten kullanıldığı [`SecretTarget`] ile
-//! **açıkça** bildirilir; ekran ve profil künyesi bu etiketi yazar, tahmin
-//! etmez. OS deposu bu makinede yoksa (bugün: macOS dışı) ya da okuma gerçek
-//! bir hatayla düşerse bu **sessizce yutulmaz**: sırasıyla `note` alanına
-//! yazılır / çağırana hata döner.
+//! Sıra: **OS güvenli deposu** (macOS: Anahtar Zinciri, Windows: Kimlik
+//! Yöneticisi) → `DIM_API_KEY` ortam değişkeni. Hangi yolun gerçekten
+//! kullanıldığı [`SecretTarget`] ile **açıkça** bildirilir; ekran ve profil
+//! künyesi bu etiketi yazar, tahmin etmez. OS deposu bu makinede yoksa
+//! (bugün: Linux) ya da okuma gerçek bir hatayla düşerse bu **sessizce
+//! yutulmaz**: sırasıyla `note` alanına yazılır / çağırana hata döner.
 
 #[cfg(test)]
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ pub const ENV_VAR: &str = "DIM_API_KEY";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretTarget {
-    /// OS güvenli deposu (macOS Anahtar Zinciri).
+    /// OS güvenli deposu (macOS Anahtar Zinciri / Windows Kimlik Yöneticisi).
     OsKeychain,
     /// `DIM_API_KEY` ortam değişkeni.
     EnvVar,
@@ -179,13 +179,90 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod platform {
+    use super::{SecretError, SecretStore, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE};
+    use keyring::{Entry, Error as KeyringError};
+
+    /// Windows **Kimlik Yöneticisi** (Credential Manager). Kayıt genel
+    /// türdedir; hedef adı [`KEYCHAIN_SERVICE`], kullanıcı adı
+    /// [`KEYCHAIN_ACCOUNT`]tır. `keyring` Win32 çağrılarını **güvenli** API ile
+    /// sarar; bu crate `unsafe` kullanmaz (çalışma alanı kapısı
+    /// `unsafe_code = "forbid"`).
+    pub struct OsStore {
+        service: String,
+        account: String,
+    }
+
+    impl OsStore {
+        #[must_use]
+        pub fn new() -> Self {
+            Self {
+                service: KEYCHAIN_SERVICE.to_string(),
+                account: KEYCHAIN_ACCOUNT.to_string(),
+            }
+        }
+
+        /// Tatbikat/test kaydı: gerçek ürün kaydına dokunmadan aynı kod
+        /// yolunu ölçmek için ayrı hizmet adı.
+        #[cfg(test)]
+        pub fn with_names(service: &str, account: &str) -> Self {
+            Self {
+                service: service.to_string(),
+                account: account.to_string(),
+            }
+        }
+
+        fn entry(&self) -> Result<Entry, SecretError> {
+            Entry::new(&self.service, &self.account)
+                .map_err(|error| SecretError::Rejected(format!("depo açılamadı: {error}")))
+        }
+    }
+
+    impl Default for OsStore {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl SecretStore for OsStore {
+        fn read(&self) -> Result<Option<String>, SecretError> {
+            match self.entry()?.get_password() {
+                Ok(secret) => Ok(Some(secret)),
+                // Kayıt yok — hata değil (macOS `errSecItemNotFound` karşılığı).
+                Err(KeyringError::NoEntry) => Ok(None),
+                // Gerçek erişim/bozulma hatası sessizce yedeğe düşmez.
+                Err(error) => Err(SecretError::Rejected(format!("okunamadı: {error}"))),
+            }
+        }
+
+        fn write(&self, secret: &str) -> Result<(), SecretError> {
+            let secret = secret.trim();
+            if secret.is_empty() {
+                return Err(SecretError::EmptyKey);
+            }
+            self.entry()?
+                .set_password(secret)
+                .map_err(|error| SecretError::Rejected(format!("yazılamadı: {error}")))
+        }
+
+        fn clear(&self) -> Result<(), SecretError> {
+            match self.entry()?.delete_credential() {
+                Ok(()) => Ok(()),
+                // Idempotent silme: kayıt yoksa başarı.
+                Err(KeyringError::NoEntry) => Ok(()),
+                Err(error) => Err(SecretError::Rejected(format!("silinemedi: {error}"))),
+            }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod platform {
     use super::{SecretError, SecretStore};
 
-    /// Henüz uygulanmadı: Windows kimlik yöneticisi, Linux Secret Service.
-    /// **Sessizce yok sayılmaz** — çağıran `Unavailable` alır, ekran ortam
-    /// değişkenine düştüğünü yazar.
+    /// Henüz uygulanmadı: Linux Secret Service. **Sessizce yok sayılmaz** —
+    /// çağıran `Unavailable` alır, ekran ortam değişkenine düştüğünü yazar.
     #[derive(Debug, Default)]
     pub struct OsStore;
 
@@ -206,19 +283,19 @@ mod platform {
     impl SecretStore for OsStore {
         fn read(&self) -> Result<Option<String>, SecretError> {
             Err(SecretError::Unavailable(
-                "yalnız macOS Anahtar Zinciri uygulandı",
+                "yalnız macOS Anahtar Zinciri ve Windows Kimlik Yöneticisi uygulandı",
             ))
         }
 
         fn write(&self, _secret: &str) -> Result<(), SecretError> {
             Err(SecretError::Unavailable(
-                "yalnız macOS Anahtar Zinciri uygulandı",
+                "yalnız macOS Anahtar Zinciri ve Windows Kimlik Yöneticisi uygulandı",
             ))
         }
 
         fn clear(&self) -> Result<(), SecretError> {
             Err(SecretError::Unavailable(
-                "yalnız macOS Anahtar Zinciri uygulandı",
+                "yalnız macOS Anahtar Zinciri ve Windows Kimlik Yöneticisi uygulandı",
             ))
         }
     }
@@ -513,7 +590,8 @@ mod tests {
 
     /// Gerçek Anahtar Zinciri kaydı: aynı kod yolu, ayrı hizmet adı (kullanıcı
     /// kaydına dokunmaz). Elle koşulur — CI'da anahtar zinciri etkileşimi
-    /// olmayabilir.
+    /// olmayabilir. Windows karşılığı aşağıda **CI'da koşar**.
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "gerçek Anahtar Zinciri kaydı yazar; `--ignored` ile elle koşulur"]
     fn os_keychain_round_trip() {
@@ -537,5 +615,43 @@ mod tests {
         assert_eq!(status.target, SecretTarget::Missing);
         assert!(!status.present);
         assert!(store.read().expect("son okuma").is_none());
+    }
+
+    /// Gerçek **Windows Kimlik Yöneticisi** kaydı: ürün kaydına dokunmaz
+    /// (ayrı hizmet adı + süreç kimliği). Yaz → oku → üzerine yaz → sil →
+    /// yok sırasını **gerçek** Credential Manager üzerinde doğrular.
+    /// `windows-latest` CI işinde koşar; diğer platformlarda derlenmez.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[serial_test::serial]
+    fn windows_credential_manager_round_trip() {
+        let store = OsStore::with_names(
+            &format!("{KEYCHAIN_SERVICE}.test"),
+            &format!("api-key-{}", std::process::id()),
+        );
+        let _ = store.clear();
+        assert!(store.read().expect("ilk okuma").is_none());
+
+        let status = store_key(&store, "  kimlik-yoneticisi-anahtari  ").expect("yazma");
+        assert!(status.present);
+        assert_eq!(status.target, SecretTarget::OsKeychain);
+        assert!(status.os_store_available);
+        assert_eq!(
+            store.read().expect("okuma").as_deref(),
+            Some("kimlik-yoneticisi-anahtari")
+        );
+
+        // Üzerine yazma tek kayıt bırakır (rotasyon).
+        store_key(&store, "rotasyon-anahtari").expect("rotasyon");
+        assert_eq!(
+            store.read().expect("rotasyon okuması").as_deref(),
+            Some("rotasyon-anahtari")
+        );
+
+        let status = clear_key(&store).expect("silme");
+        assert_eq!(status.target, SecretTarget::Missing);
+        assert!(store.read().expect("son okuma").is_none());
+        // Idempotent silme.
+        assert!(store.clear().is_ok());
     }
 }

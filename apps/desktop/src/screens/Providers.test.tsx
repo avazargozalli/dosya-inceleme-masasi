@@ -2269,7 +2269,7 @@ describe("API anahtarı deposu", () => {
         target: "env_var",
         present: true,
         osStoreAvailable: false,
-        note: "OS güvenli deposu kullanılamıyor: yalnız macOS Anahtar Zinciri uygulandı",
+        note: "OS güvenli deposu kullanılamıyor: yalnız macOS Anahtar Zinciri ve Windows Kimlik Yöneticisi uygulandı",
       }),
     });
 

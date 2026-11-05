@@ -18,6 +18,12 @@ ureq = { version = "2.12", features = ["json"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 
+# Windows Kimlik Yöneticisi (F09-T07): `keyring` Win32 Credential Manager'ı
+# **güvenli** API ile sarar; çalışma alanı `unsafe_code = "forbid"` kapısını
+# delmek gerekmez. Yalnız Windows'ta derlenir.
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
 [dev-dependencies]
 serial_test = "3"
 

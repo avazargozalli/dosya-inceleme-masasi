@@ -83,6 +83,23 @@ jobs:
       - name: Tauri clippy + derleme
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 
+  windows-secret:
+    name: windows güvenli depo (cargo test)
+    # F09-T07: Windows Kimlik Yöneticisi yolu **yalnız** Windows'ta derlenir;
+    # macOS/ubuntu işleri bu modülü hiç görmez. Bu iş gerçek Credential
+    # Manager üzerinde yaz→oku→sil tatbikatını koşar.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: clippy (sağlayıcı crate, Windows modülü dahil)
+        run: cargo clippy -p dim-providers --all-targets -- -D warnings
+      - name: Windows Kimlik Yöneticisi tatbikatı
+        run: cargo test -p dim-providers --lib
+
   python:
     name: belge worker'ı (pytest + duman)
     runs-on: ubuntu-latest
