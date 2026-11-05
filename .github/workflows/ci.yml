@@ -159,3 +159,30 @@ jobs:
           name: third-party-notices
           path: THIRD_PARTY_NOTICES.md
           if-no-files-found: error
+
+  kaynak:
+    name: kaynak arşivi (AGPL kaynak teslimi)
+    # F16-T01'in son maddesi: kaynak etiketi/arşivi. `git archive` hiç
+    # çağrılmıyordu → ikili paketle verilecek "buna karşılık gelen kaynak"
+    # üretilmiyordu. Bu iş her push'ta gerçek repodan arşiv üretir, bağımsız
+    # doğrular ve indirilebilir artifact olarak bırakır. Yayın anında aynı
+    # araç `--tag` ile etiket bağını ve `--sbom` ile SBOM subject'ini zorunlu
+    # kılar (aşağıdaki belge).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Kapı kendini sınar (sürüm/etiket/kilit/sır mutasyonları)
+        run: python3 scripts/source_release.py --self-test
+      - name: Kaynak arşivi üret ve bağımsız doğrula
+        run: |
+          python3 scripts/source_release.py build --ref HEAD --out "$RUNNER_TEMP/kaynak" --allow-untagged
+          python3 scripts/source_release.py check "$RUNNER_TEMP/kaynak"/*.tar.gz
+          ls -l "$RUNNER_TEMP/kaynak"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaynak-arsivi
+          path: ${{ runner.temp }}/kaynak
+          if-no-files-found: error
