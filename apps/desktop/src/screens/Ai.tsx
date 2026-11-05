@@ -61,17 +61,24 @@ function purposeLabel(purpose: string): string {
 }
 
 /**
- * Envanter durumu **çekirdeğin** `active` değerinden okunur; arayüz kendi
- * saatine göre "süresi geçti" demez. İptal, süre dolmasından önce gelir.
+ * Envanter durumu **çekirdeğin** `active`/`providerCurrent` değerlerinden
+ * okunur; arayüz kendi saatine göre "süresi geçti" demez. İptal, süre
+ * dolmasından ve sağlayıcı değişiminden önce gelir.
+ *
+ * "Etkin" ile "yürütülebilir" aynı şey değildir: sağlayıcının uç noktası/modeli
+ * değiştiyse kayıt yürürlükte kalır ama hiçbir profille çalıştırılamaz —
+ * ekran bunu satırda yazar, kullanıcı "Çalıştır"a basana kadar gizlemez.
  */
 function consentStateLabel(row: TransferConsentListRow): string {
   if (row.revokedAt) return t("ai.consentRevoked");
-  return row.active ? t("ai.consentActive") : t("ai.consentExpired");
+  if (!row.active) return t("ai.consentExpired");
+  return row.providerCurrent ? t("ai.consentActive") : t("ai.consentProviderChanged");
 }
 
 function consentStateTone(row: TransferConsentListRow): string {
   if (row.revokedAt) return "plain";
-  return row.active ? "ok" : "warn";
+  if (!row.active) return "warn";
+  return row.providerCurrent ? "ok" : "warn";
 }
 
 export function Ai() {
@@ -238,6 +245,17 @@ export function Ai() {
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
   const offOnly = overview !== null && overview.providers.every((p) => p.providerType === "off");
+  // Onay **kendi** sağlayıcısıyla koşar. Eski davranış ilk off-dışı profili
+  // seçiyordu: onay başka bir profile bağlıysa çekirdek reddediyor, kullanıcı
+  // nedenini göremiyordu. Eşleşme **çekirdeğin** kullandığı ölçüdür
+  // (`provider_snapshot` eşitliği).
+  const consentProvider =
+    consent === null
+      ? null
+      : overview?.providers.find((p) => p.providerSnapshot === consent.providerSnapshot) ?? null;
+  // Künye yüklüyse ve eşleşen profil yoksa onay **yürütülemez**: düğme kapanır
+  // ve nedeni yazılır (sessiz `E_AI_CONSENT` yok).
+  const consentStale = consent !== null && overview !== null && consentProvider === null;
   // İptali **uygulanmakta** olan onayla yeni gönderim başlamaz (F09-T09):
   // aksi hâlde içerik, iptal çekirdeğe ulaşmadan dışarı çıkabilir. Bu sırada
   // alınmış **yeni** onay (başka kimlik) engellenmez.
@@ -274,19 +292,33 @@ export function Ai() {
   }
 
   async function start() {
-    if (!provider || !consent) return;
+    // Onayın **kendi** sağlayıcısı yoksa hiç istek gitmez: yanlış profille
+    // göndermek çekirdekte reddedilir, kullanıcı da boşa bekler.
+    if (!consentProvider || !consent) return;
     const gen = caseGen.current;
     const seq = beginWrite();
     setError(null);
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
       // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak koşmaz.
-      await api.aiRunExecute(caseId, provider.id, consent.id, purposeTask(consent.purpose));
+      await api.aiRunExecute(caseId, consentProvider.id, consent.id, purposeTask(consent.purpose));
       const next = await api.aiOverview(caseId);
       if (caseGen.current !== gen) return;
       setOverview(next);
     } catch (e) {
-      if (caseGen.current === gen) setError(toApiError(e));
+      const failure = toApiError(e);
+      if (caseGen.current === gen) setError(failure);
+      // Varış yeri değişmişse ekran **aynı olguyu** yazsın: künye ve envanter
+      // tazelenir, "Çalıştır" kapanır. Tazeleme düşerse ilk hata görünür kalır.
+      if (failure.code === "E_AI_PROVIDER_CHANGED" && caseGen.current === gen) {
+        try {
+          const next = await api.aiOverview(caseId);
+          if (caseGen.current === gen) setOverview(next);
+        } catch {
+          // birincil hata yukarıda yazıldı
+        }
+        if (caseGen.current === gen) void loadConsents(caseId);
+      }
     } finally {
       endWrite(seq);
     }
@@ -463,6 +495,16 @@ export function Ai() {
         <dl className="kv">
           <dt>{t("ai.provider")}</dt>
           <dd>{provider ? `${provider.adapterId} (${provider.providerType})` : t("ai.providerNone")}</dd>
+          {/* Varış yeri yalnız biliniyorsa yazılır: uydurulmuş "bilinmiyor"
+              satırı, sağlayıcı yokken bile bir hedef varmış gibi okunurdu. */}
+          {provider ? (
+            <>
+              <dt>{t("ai.destination")}</dt>
+              <dd>
+                <code>{provider.providerSnapshot}</code>
+              </dd>
+            </>
+          ) : null}
           <dt>{t("ai.coverage")}</dt>
           <dd>
             {overview
@@ -505,7 +547,7 @@ export function Ai() {
             </button>
             <button
               className="btn primary"
-              disabled={!provider || !consent || busy || revokingConsent}
+              disabled={!provider || !consent || busy || revokingConsent || consentStale}
               onClick={() => void start()}
             >
               {t("ai.run")}
@@ -538,22 +580,29 @@ export function Ai() {
           </div>
         ) : null}
         {consent ? (
-          <p className="hint" style={{ margin: 0 }}>
-            {t("ai.consentPurpose", { purpose: purposeLabel(consent.purpose) })} ·{" "}
-            {consentScopeLine(consent.selectedDocumentIds.length, preview)} ·{" "}
-            {t("ai.consentTail", {
-              id: consent.id.slice(0, 8),
-              provider: consent.providerSnapshot,
-            })}
-            <button
-              className="btn ghost"
-              style={{ marginLeft: 8 }}
-              disabled={revokeBusy}
-              onClick={() => void revokeConsent(consent.id)}
-            >
-              {t("ai.revoke")}
-            </button>
-          </p>
+          <>
+            <p className="hint" style={{ margin: 0 }}>
+              {t("ai.consentPurpose", { purpose: purposeLabel(consent.purpose) })} ·{" "}
+              {consentScopeLine(consent.selectedDocumentIds.length, preview)} ·{" "}
+              {t("ai.consentTail", {
+                id: consent.id.slice(0, 8),
+                provider: consent.providerSnapshot,
+              })}
+              <button
+                className="btn ghost"
+                style={{ marginLeft: 8 }}
+                disabled={revokeBusy}
+                onClick={() => void revokeConsent(consent.id)}
+              >
+                {t("ai.revoke")}
+              </button>
+            </p>
+            {consentStale ? (
+              <div className="notice warn" role="status">
+                {t("ai.consentStale", { provider: consent.providerSnapshot })}
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
 

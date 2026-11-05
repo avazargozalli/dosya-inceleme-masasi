@@ -125,6 +125,8 @@ const OVERVIEW_A: AiOverview = {
       adapterId: "api:claude",
       executionEnvironment: "local_process",
       policyVersion: "1.4.0",
+      // CONSENT ile **aynı** varış yeri: onay bu profille yürütülebilir.
+      providerSnapshot: "api:claude@1.4.0",
     },
     {
       id: "prov-off",
@@ -132,6 +134,7 @@ const OVERVIEW_A: AiOverview = {
       adapterId: "off",
       executionEnvironment: "none",
       policyVersion: "0",
+      providerSnapshot: "off@0",
     },
   ],
   runs: [
@@ -180,6 +183,7 @@ const OVERVIEW_OFF: AiOverview = {
       adapterId: "off",
       executionEnvironment: "none",
       policyVersion: "0",
+      providerSnapshot: "off@0",
     },
   ],
   runs: [],
@@ -205,6 +209,7 @@ const OVERVIEW_B: AiOverview = {
       adapterId: "local:ollama",
       executionEnvironment: "local_daemon",
       policyVersion: "2.0.0",
+      providerSnapshot: "local:ollama@2.0.0",
     },
   ],
   runs: [],
@@ -370,7 +375,18 @@ function setup(options: SetupOptions = {}) {
       ]),
   );
   mocks.aiConsentPreview.mockImplementation(options.preview ?? (async () => PREVIEW));
-  mocks.aiConsentCreate.mockImplementation(options.consent ?? (async () => CONSENT));
+  // Onay **istenen** profile bağlanır (çekirdek sözleşmesi): sabit bir özet
+  // döndürmek, p2'nin yerel sağlayıcısıyla alınmış onayı p1'in API varış
+  // yerine bağlar ve ekranı yanlış yere "sağlayıcı değişti" dedirtirdi.
+  const snapshotFor = (providerId: string): string =>
+    providerId === "prov-local" ? "local:ollama@2.0.0" : CONSENT.providerSnapshot;
+  mocks.aiConsentCreate.mockImplementation(
+    options.consent ??
+      (async (_caseId: string, providerId: string) => ({
+        ...CONSENT,
+        providerSnapshot: snapshotFor(providerId),
+      })),
+  );
   mocks.aiConsentRevoke.mockImplementation(options.revoke ?? (async () => undefined));
   mocks.aiConsentList.mockImplementation(options.consents ?? (async () => []));
   mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => undefined));
@@ -1847,6 +1863,7 @@ describe("AI ekranı — aktarım onayı envanteri", () => {
       approvedAt: "2026-11-01T10:00:00.000Z",
       revokedAt: null,
       active: true,
+      providerCurrent: true,
       ...overrides,
     };
   }
@@ -2072,5 +2089,123 @@ describe("AI ekranı — aktarım onayı envanteri", () => {
     fireEvent.click(refresh);
     expect(calls).toBe(2);
     await act(async () => pending.resolve([]));
+  });
+});
+
+/**
+ * Sağlayıcının **varış yeri** (uç nokta/model) değiştiğinde onay kaydı
+ * yürürlükte kalır ama hiçbir profille yürütülemez. Ekran bunu satırda ve
+ * "Çalıştır" kapısında **aynı** olgudan yazar; kullanıcı çekirdekten gelen
+ * genel bir `E_AI_CONSENT`i yorumlamak zorunda kalmaz.
+ */
+describe("AI ekranı — sağlayıcı değişimi ve onayın yürütülebilirliği", () => {
+  function row(
+    overrides: Partial<TransferConsentListRow> & { id: string },
+  ): TransferConsentListRow {
+    return {
+      providerSnapshot: "api:claude@1.4.0",
+      caseScope: "p1",
+      purpose: "ozet",
+      selectedDocumentIds: ["d1"],
+      expiresAt: null,
+      consentTextVersion: "1",
+      approvedAt: "2026-11-01T10:00:00.000Z",
+      revokedAt: null,
+      active: true,
+      providerCurrent: true,
+      ...overrides,
+    };
+  }
+
+  /** Künye: API profilinin varış yeri özeti değiştirilmiş. */
+  function overviewWith(snapshot: string): AiOverview {
+    return {
+      ...OVERVIEW_A,
+      providers: [
+        { ...OVERVIEW_A.providers[0]!, providerSnapshot: snapshot },
+        OVERVIEW_A.providers[1]!,
+      ],
+    };
+  }
+
+  it("envanter sağlayıcı değişimini satırda yazar; kayıt yürürlükte kalır", async () => {
+    const current = row({ id: "c1" });
+    const stale = row({ id: "c2", purpose: "iddia_cikarimi", providerCurrent: false });
+    setup({ consents: async () => [current, stale] });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    const rows = await within(card).findAllByRole("row");
+    expect(rows[1]!.textContent).toContain(t("ai.consentActive"));
+    expect(rows[2]!.textContent).toContain(t("ai.consentProviderChanged"));
+    expect(rows[2]!.textContent).not.toContain(t("ai.consentActive"));
+    // Yürütülemez onay **iptal edilebilir** bir kayıttır: yetki duruyor.
+    expect(within(rows[2]!).getByRole("button", { name: t("ai.revoke") })).toBeTruthy();
+    const badge = within(rows[2]!).getByText(t("ai.consentProviderChanged"));
+    expect(badge.className).toContain("warn");
+  });
+
+  it("onayın varış yeri hiçbir profille eşleşmiyorsa çalıştır kapalıdır ve nedeni yazılır", async () => {
+    setup({ overview: async () => overviewWith("api:claude@2.0.0") });
+    await screen.findByText("api:claude (api)");
+
+    // Onay **eski** varış yerine bağlı döner: profil 2.0.0'a taşınmış.
+    fireEvent.click(button(t("ai.approve")));
+    await screen.findByText(t("ai.consentStale", { provider: CONSENT.providerSnapshot }));
+    expect(button(t("ai.run")).disabled).toBe(true);
+
+    fireEvent.click(button(t("ai.run")));
+    expect(mocks.aiRunExecute).not.toHaveBeenCalled();
+  });
+
+  it("onay başka bir profile bağlıysa çalıştırma o profille koşar", async () => {
+    // İlk off-dışı profil `prov-x`; onay ise `prov-a` varış yerine bağlı.
+    // Eski davranış ilk profili seçip çekirdekten `E_AI_CONSENT` alıyordu.
+    const other = {
+      id: "prov-x",
+      providerType: "api",
+      adapterId: "api:other",
+      executionEnvironment: "local_process",
+      policyVersion: "9.0.0",
+      providerSnapshot: "api:other@9.0.0",
+    };
+    setup({
+      overview: async () => ({ ...OVERVIEW_A, providers: [other, ...OVERVIEW_A.providers] }),
+    });
+    await screen.findByText("api:other (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize");
+  });
+
+  it("E_AI_PROVIDER_CHANGED ekranı tazeler: varış yeri yazılır, çalıştır kapanır", async () => {
+    let calls = 0;
+    setup({
+      overview: async () => {
+        calls += 1;
+        return calls === 1 ? OVERVIEW_A : overviewWith("api:claude@2.0.0");
+      },
+      runExecute: async () => {
+        throw { code: "E_AI_PROVIDER_CHANGED", message: "sağlayıcının varış yeri değişti" };
+      },
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("E_AI_PROVIDER_CHANGED"),
+    );
+    // Künye tazelendi: yeni varış yeri ekranda, onay artık yürütülemez.
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(true));
+    expect(calls).toBe(2);
+    expect(screen.getByText("api:claude@2.0.0")).toBeTruthy();
+    expect(
+      screen.getByText(t("ai.consentStale", { provider: CONSENT.providerSnapshot })),
+    ).toBeTruthy();
   });
 });

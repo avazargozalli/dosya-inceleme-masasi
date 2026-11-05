@@ -82,6 +82,14 @@ pub struct TransferConsentListRow {
     #[serde(flatten)]
     pub consent: TransferConsentRow,
     pub active: bool,
+    /// Onayın bağlandığı varış yeri hâlâ **bir** yürürlükteki sağlayıcı
+    /// profilinden türetilebiliyor mu?
+    ///
+    /// `start_ai_run` onay özetini çalıştırılan profilin özetiyle karşılaştırır;
+    /// hiçbir profil aynı özeti vermiyorsa onay **hiçbir** profille
+    /// yürütülemez. `active` yalnız iptal/süreye bakar — "kayıt yürürlükte" ile
+    /// "yürütülebilir" aynı şey değildir; ekran ikisini ayrı yazar.
+    pub provider_current: bool,
 }
 
 /// Sağlayıcı profilinin **varış yerine bağlı** kimliği: `adapter@politika`.
@@ -319,11 +327,50 @@ impl Database {
         )?;
         let rows = stmt.query_map([case_id], map_consent)?;
         let now = now_iso();
+        // Yürürlükteki varış yerleri **bir kez** okunur: satır başına ayrı
+        // sorgu, aynı liste içinde farklı anların karışmasına yol açardı.
+        let current = self.current_provider_snapshots()?;
         let mut out = Vec::new();
         for row in rows {
             let consent = row?;
             let active = consent_active_at(&consent, &now);
-            out.push(TransferConsentListRow { consent, active });
+            let provider_current = current
+                .iter()
+                .any(|snapshot| snapshot == consent.provider_snapshot.trim());
+            out.push(TransferConsentListRow {
+                consent,
+                active,
+                provider_current,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Yürürlükteki (`off` dışı) profillerin türetilmiş varış yeri özetleri.
+    ///
+    /// Onay yalnız `provider_snapshot` dizesini saklar (profil kimliği değil);
+    /// bu yüzden "hâlâ yürütülebilir mi" sorusu **özet eşitliğiyle** yanıtlanır —
+    /// `start_ai_run`ın kullandığı kuralın aynısı.
+    fn current_provider_snapshots(&self) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT adapter_id,policy_version,capabilities FROM provider_profiles
+             WHERE provider_type<>'off'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (adapter_id, policy_version, capabilities) = row?;
+            out.push(provider_snapshot(
+                &adapter_id,
+                &policy_version,
+                capabilities.as_deref().unwrap_or_default(),
+            ));
         }
         Ok(out)
     }
@@ -374,7 +421,8 @@ impl Database {
             &profile.capabilities,
         );
         if consent.provider_snapshot.trim() != current {
-            return Err(StorageError::AiConsent);
+            // "Onay yok" demek yanlış olurdu: onay **var**, varış yeri değişti.
+            return Err(StorageError::AiProviderChanged);
         }
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
@@ -540,6 +588,11 @@ pub struct ProviderProfileRow {
     pub adapter_id: String,
     pub execution_environment: String,
     pub policy_version: String,
+    /// Profilin **varış yeri** kimliği (uç nokta + modelin kısa özeti dahil).
+    /// Onayın `provider_snapshot`ı ile aynı kuralla türetilir; ekran hangi
+    /// profilin hangi varış yerine gittiğini ve onayın eşleşip eşleşmediğini
+    /// tahmin etmeden yazar.
+    pub provider_snapshot: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -732,16 +785,24 @@ impl Database {
 
     pub fn list_provider_profiles(&self) -> Result<Vec<ProviderProfileRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,provider_type,adapter_id,execution_environment,policy_version
+            "SELECT id,provider_type,adapter_id,execution_environment,policy_version,capabilities
              FROM provider_profiles ORDER BY provider_type, adapter_id",
         )?;
         let rows = stmt.query_map([], |row| {
+            let adapter_id: String = row.get(2)?;
+            let policy_version: String = row.get(4)?;
+            let capabilities: Option<String> = row.get(5)?;
             Ok(ProviderProfileRow {
                 id: row.get(0)?,
                 provider_type: row.get(1)?,
-                adapter_id: row.get(2)?,
+                provider_snapshot: provider_snapshot(
+                    &adapter_id,
+                    &policy_version,
+                    capabilities.as_deref().unwrap_or_default(),
+                ),
+                adapter_id,
                 execution_environment: row.get(3)?,
-                policy_version: row.get(4)?,
+                policy_version,
             })
         })?;
         let mut out = Vec::new();
@@ -773,6 +834,7 @@ impl Database {
             adapter_id: "off".into(),
             execution_environment: "local".into(),
             policy_version: "1".into(),
+            provider_snapshot: provider_snapshot("off", "1", ""),
         })
     }
 
@@ -1477,6 +1539,110 @@ mod tests {
             .is_empty());
     }
 
+    /// **Ölçülen kusur:** sağlayıcının uç noktası/modeli değişince onay
+    /// yürütülemez hâle geliyordu ama envanter yalnız iptal/süreye baktığı için
+    /// satır "etkin" kalıyordu. "Kayıt yürürlükte" ile "yürütülebilir" ayrı
+    /// yazılmalı: `active` doğru kalır, `provider_current` düşer.
+    #[test]
+    fn consent_inventory_reports_provider_drift() {
+        let (db, case_id, _) = setup();
+        let profile = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: profile.id.clone(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+
+        let rows = db.list_transfer_consents(&case_id).expect("envanter");
+        assert!(rows[0].active);
+        assert!(
+            rows[0].provider_current,
+            "onay kendi varış yeriyle eşleşiyor"
+        );
+
+        db.register_api_profile("https://b.example/v1", "model-a")
+            .expect("uç nokta değişti");
+        let rows = db.list_transfer_consents(&case_id).expect("envanter");
+        assert!(rows[0].active, "iptal/süre yok: kayıt yürürlükte");
+        assert!(
+            !rows[0].provider_current,
+            "varış yeri artık yürürlükteki profille aynı değil"
+        );
+
+        // Envanterin söylediği ile çalıştırma kapısı **aynı** olguyu anlatır.
+        let mut approved = run(&case_id, &c.id);
+        approved.provider_id = profile.id.clone();
+        assert_eq!(
+            db.start_ai_run(&case_id, &approved).unwrap_err().code(),
+            "E_AI_PROVIDER_CHANGED",
+            "onay var, varış yeri değişti: ayrı kod"
+        );
+    }
+
+    /// Aşırı geçersizleştirme de bir yalandır: başka profilin değişmesi,
+    /// kendi profilinde duran onayı "yenilenmeli" göstermemeli.
+    #[test]
+    fn provider_drift_is_scoped_to_the_consent_provider() {
+        let (db, case_id, _) = setup();
+        let _c = consent(&db, &case_id); // p1: cli/claude-code
+        db.register_api_profile("https://a.example/v1", "model-a")
+            .expect("api profili");
+        assert!(
+            db.list_transfer_consents(&case_id).expect("envanter")[0].provider_current,
+            "cli profili duruyor: onay hâlâ yürütülebilir"
+        );
+        db.register_api_profile("https://b.example/v1", "model-b")
+            .expect("api değişti");
+        assert!(
+            db.list_transfer_consents(&case_id).expect("envanter")[0].provider_current,
+            "başka profilin değişimi bu onayı geçersiz kılmaz"
+        );
+    }
+
+    /// Profil satırı **varış yerini** taşır: ekran onayın özetiyle
+    /// karşılaştırabilsin diye aynı kuraldan türetilir.
+    #[test]
+    fn provider_profile_rows_carry_their_destination_snapshot() {
+        let (db, case_id, _) = setup();
+        let profile = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: profile.id.clone(),
+                case_scope: case_id,
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let rows = db.list_provider_profiles().expect("profiller");
+        let api = rows.iter().find(|p| p.id == profile.id).expect("api");
+        assert_eq!(
+            api.provider_snapshot, c.provider_snapshot,
+            "profil özeti onayınkiyle aynı kuraldan türetilir"
+        );
+        assert!(
+            api.provider_snapshot.contains('#'),
+            "uç nokta + model parmak izi özete girer"
+        );
+        let cli = rows.iter().find(|p| p.id == "p1").expect("cli");
+        assert_eq!(
+            cli.provider_snapshot, "claude-code@1",
+            "capabilities yok: adapter@politika"
+        );
+    }
+
     #[test]
     fn consent_is_case_scoped() {
         let (db, case_id, _) = setup();
@@ -1516,12 +1682,13 @@ mod tests {
         // Aynı sağlayıcı: geçer.
         db.start_ai_run(&case_id, &run(&case_id, &c.id))
             .expect("aynı sağlayıcı");
-        // Başka sağlayıcı: onay kapsamaz.
+        // Başka sağlayıcı: onay kapsamaz — ve bu "onay yok" değil, "varış yeri
+        // değişti"dir; ayrı kod döner (ekran yenileme söyleyebilsin diye).
         let mut other = run(&case_id, &c.id);
         other.provider_id = "p2".into();
         assert_eq!(
             db.start_ai_run(&case_id, &other).unwrap_err().code(),
-            "E_AI_CONSENT"
+            "E_AI_PROVIDER_CHANGED"
         );
         // Hiç olmayan sağlayıcı: ayrı kod.
         let mut missing = run(&case_id, &c.id);
@@ -1664,7 +1831,7 @@ mod tests {
             .expect("uç nokta değişti");
         assert_eq!(
             db.start_ai_run(&case_id, &approved).unwrap_err().code(),
-            "E_AI_CONSENT",
+            "E_AI_PROVIDER_CHANGED",
             "uç nokta değişti; eski onay yeni varış yerini kapsamaz"
         );
     }
@@ -1696,7 +1863,7 @@ mod tests {
             .expect("model değişti");
         assert_eq!(
             db.start_ai_run(&case_id, &approved).unwrap_err().code(),
-            "E_AI_CONSENT",
+            "E_AI_PROVIDER_CHANGED",
             "model değişti; eski onay yeni varış yerini kapsamaz"
         );
     }

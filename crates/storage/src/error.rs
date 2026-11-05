@@ -69,6 +69,12 @@ pub enum StorageError {
     QuoteHashMismatch,
     #[error("geçerli aktarım onayı yok")]
     AiConsent,
+    /// Onay **vardı** ama bağlandığı varış yeri (uç nokta/model) artık
+    /// yürürlükteki profille aynı değil: onay yenilenmeden çalıştırılamaz.
+    /// `E_AI_CONSENT`ten ayrıdır — kullanıcıya "onay yok" değil "onay
+    /// yenilenmeli" denir.
+    #[error("sağlayıcının varış yeri (uç nokta/model) değişti; onay yenilenmeli")]
+    AiProviderChanged,
     #[error("sağlayıcı profili bulunamadı")]
     AiProvider,
     #[error("AI kapalı: sağlayıcı bağlanmadan aktarım onayı alınamaz")]
@@ -169,6 +175,7 @@ impl StorageError {
             Self::QuoteAmbiguous => "E_QUOTE_AMBIGUOUS",
             Self::QuoteHashMismatch => "E_QUOTE_HASH",
             Self::AiConsent => "E_AI_CONSENT",
+            Self::AiProviderChanged => "E_AI_PROVIDER_CHANGED",
             Self::AiProvider => "E_AI_PROVIDER",
             Self::AiOff => "E_AI_OFF",
             Self::Manifest(_) => "E_MANIFEST",

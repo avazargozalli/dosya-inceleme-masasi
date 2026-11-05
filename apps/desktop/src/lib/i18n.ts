@@ -516,6 +516,7 @@ export const tr = {
     offEnd: "döner.",
     provider: "Sağlayıcı",
     providerNone: "yok — yalnız off",
+    destination: "Varış yeri",
     coverage: "Kapsam",
     coverageLine:
       "{documents} belge · {pages} sayfa · {ocrPages} OCR · {emptyPages} boş sayfa · " +
@@ -551,10 +552,15 @@ export const tr = {
     consentActive: "etkin",
     consentRevoked: "iptal edildi",
     consentExpired: "süresi geçti",
+    consentProviderChanged: "sağlayıcı değişti",
     consentNoExpiry: "süresiz",
+    consentStale:
+      "Bu onay {provider} varış yerine bağlı; sağlayıcının uç noktası/modeli " +
+      "değiştiği için artık yürütülemez. Gönderim için yeniden aktarım onayı verin.",
     consentsNote:
-      "Sınır: liste yalnız bu dosyanın onaylarını taşır. Sağlayıcı profili değiştiyse " +
-      "eski onay çalıştırmada reddedilir (E_AI_CONSENT); yeniden onay gerekir.",
+      "Sınır: liste yalnız bu dosyanın onaylarını taşır. Sağlayıcının varış yeri " +
+      "değiştiyse satır «sağlayıcı değişti» yazar; onay yenilenmeden çalıştırılamaz " +
+      "(E_AI_PROVIDER_CHANGED).",
     runsTitle: "Çalıştırmalar",
     runsSub: "Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada",
     colKind: "Tür",

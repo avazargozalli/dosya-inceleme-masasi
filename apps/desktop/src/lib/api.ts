@@ -261,6 +261,8 @@ export type ProviderProfileRow = {
   adapterId: string;
   executionEnvironment: string;
   policyVersion: string;
+  /** Varış yeri kimliği (uç nokta + model özeti dahil) — onayınkiyle aynı kural. */
+  providerSnapshot: string;
 };
 
 export type AiRunRow = {
@@ -288,7 +290,11 @@ export type TransferConsentRow = {
 };
 
 /** Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik. */
-export type TransferConsentListRow = TransferConsentRow & { active: boolean };
+export type TransferConsentListRow = TransferConsentRow & {
+  active: boolean;
+  /** Onayın varış yeri hâlâ yürürlükteki bir profille eşleşiyor mu? */
+  providerCurrent: boolean;
+};
 
 export type ScopeSkip = {
   documentId: string;
