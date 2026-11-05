@@ -181,37 +181,25 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::{SecretError, SecretStore, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE};
+    use super::{SecretError, SecretStore};
 
     /// Henüz uygulanmadı: Windows kimlik yöneticisi, Linux Secret Service.
     /// **Sessizce yok sayılmaz** — çağıran `Unavailable` alır, ekran ortam
     /// değişkenine düştüğünü yazar.
-    pub struct OsStore {
-        service: String,
-        account: String,
-    }
+    #[derive(Debug, Default)]
+    pub struct OsStore;
 
     impl OsStore {
         #[must_use]
         pub fn new() -> Self {
-            Self {
-                service: KEYCHAIN_SERVICE.to_string(),
-                account: KEYCHAIN_ACCOUNT.to_string(),
-            }
+            Self
         }
 
+        /// Tatbikat/test kaydı. Bu platformda depo olmadığı için adlar yok
+        /// sayılır — kullanılmayan alan tutmak `dead_code` kapısını düşürürdü.
         #[cfg(test)]
-        pub fn with_names(service: &str, account: &str) -> Self {
-            Self {
-                service: service.to_string(),
-                account: account.to_string(),
-            }
-        }
-    }
-
-    impl Default for OsStore {
-        fn default() -> Self {
-            Self::new()
+        pub fn with_names(_service: &str, _account: &str) -> Self {
+            Self
         }
     }
 
