@@ -677,8 +677,9 @@ describe("Çıktılar ekranı uçuş yolları", () => {
     fireEvent.click(saveButtons()[0]!);
     await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
     // Kilit gerçekten tutuluyor: JSON düğmesi "Yazılıyor…", ötekiler kapalı.
-    expect(saveButtons()).toHaveLength(3);
-    expect(refreshButton().disabled).toBe(true);
+    // Durum güncellemesi istek kaydından sonra boyanır → bekle (CI'da yarıştı).
+    await waitFor(() => expect(saveButtons()).toHaveLength(3));
+    await waitFor(() => expect(refreshButton().disabled).toBe(true));
 
     await switchToP2();
 
@@ -955,7 +956,8 @@ describe("Çıktılar ekranı kapsam şeridi", () => {
 
     render(<Exports />);
     await waitFor(() => expect(mocks.caseCoverage).toHaveBeenCalledTimes(1));
-    expect(refreshButton().disabled).toBe(true);
+    // Kilit durumu istek kaydından sonra boyanır: CI'da bir kez yarıştı.
+    await waitFor(() => expect(refreshButton().disabled).toBe(true));
 
     fireEvent.click(refreshButton());
     expect(mocks.caseCoverage).toHaveBeenCalledTimes(1);

@@ -80,6 +80,13 @@ temiz (**588,48 kB**, `index-BNHF7p0j.js`, gzip **158,88 kB**; CSS `index-CPW4Qq
 koşu; `arayüz` günlüğü **60 dosya / 1118 test** ve **aynı paket** `index-BNHF7p0j.js`
 588,48 kB / gzip 158,88 kB → yerel/CI **birebir**).
 
+**Dürüst ortam notu:** başlık numaralandırma düzeltmesi (`372d221`, yalnız yorum) koşusunda
+(`41968936917`) `arayüz` **kırmızı** düştü — ürün kodu değil, **mevcut** bir testin
+zamanlaması: "kapsam okunurken “Yenile” ikinci okuma başlatmaz" testi
+`waitFor(mock çağrıldı)` döndükten hemen sonra `disabled` bekliyordu; durum boyası bir tik geç
+kaldı. Beklenti `waitFor`a alındı; aynı sınıf "yazarken düğme 'Yazılıyor…'" testinde de
+kapatıldı. O koşu yeşil sayılmadı.
+
 **Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek klasör seçicisi
 ve **görsel QA yok**; `api` mock'lu olduğu için `export_package` SQL'i ve Rust **koşmaz**.
 Parola kapısı **arayüz düzeyinde**: doğrudan IPC kısa parolayla çağrılırsa çekirdek yine
