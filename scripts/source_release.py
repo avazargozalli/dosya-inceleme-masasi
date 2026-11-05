@@ -165,8 +165,11 @@ class Repo:
         return self.git("show", f"{commit}:{path}", binary=True)
 
     def tree(self, commit: str) -> list[str]:
-        out = self.git("ls-tree", "-r", "--name-only", commit)
-        return sorted(line for line in out.splitlines() if line.strip())
+        # `-z`: git, ASCII dışı yolları varsayılan olarak C tarzı tırnaklar
+        # (`"docs/adr/\303\256…"`); tar üye adları ise ham UTF-8'dir. Türkçe
+        # dosya adları bu yüzden "fazla/eksik" gibi görünür → NUL ayırıcı.
+        out = self.git("ls-tree", "-r", "-z", "--name-only", commit, binary=True)
+        return sorted(part.decode("utf-8") for part in out.split(b"\0") if part)
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -573,6 +576,9 @@ def _fixture_repo(base: Path) -> Repo:
             name = "@dim/desktop" if "apps/desktop" in rel else "@dim/contracts"
             _write(base / rel, json.dumps({"name": name, "version": "0.1.0"}))
     _write(base / "THIRD_PARTY_NOTICES.md", "# Üçüncü taraf bildirimleri (fixture)\n")
+    # ASCII dışı yol: `git ls-tree` tırnaklama tuzağını (Türkçe dosya adları)
+    # fixture'ın kendisi ölçer.
+    _write(base / "docs/adr/türkçe-ad.md", "# fixture ADR\n")
 
     repo = Repo(base)
     repo.git("init", "-q", "-b", "main")

@@ -124,7 +124,15 @@ except OSError:
     commit = ""
 
 lockfiles = {}
-for rel in ("Cargo.lock", "pnpm-lock.yaml", "workers/document/pyproject.toml"):
+# İki cargo çalışma alanı: kök workspace ve `apps/desktop/src-tauri` **ayrı**
+# kilit taşır; yalnız kökü bağlamak masaüstü kabuğunun bağımlılık ağacını
+# bağsız bırakır (F16-T01 "kilit dosyaları aynı sürüme bağla").
+for rel in (
+    "Cargo.lock",
+    "apps/desktop/src-tauri/Cargo.lock",
+    "pnpm-lock.yaml",
+    "workers/document/pyproject.toml",
+):
     path = root / rel
     if path.exists():
         lockfiles[rel] = sha256(path)

@@ -11,7 +11,8 @@ mantığını tekrar etmez:
 4. Geçişli bağımlılık kanıtı: bileşen sayısı bildirilen bağımlılık sayısından
    **büyük** olmalı (eski `--depth 0` kusurunu yakalar).
 5. Ürüne bağlama: `subject.version` = `bundleVersion` = `cargoVersion` (semver),
-   commit 40 haneli, üç kilit dosyasının sha256 özeti dolu.
+   commit 40 haneli, **dört** kilit dosyasının sha256 özeti dolu (iki cargo
+   çalışma alanı: kök ve `apps/desktop/src-tauri`).
 6. Python pinleri `ad==sürüm` biçiminde.
 
 `--self-test` gerçek SBOM'a dokunmadan bu kuralları fixture'larla sınar:
@@ -157,7 +158,12 @@ def check(sbom: dict, root: Path) -> list[str]:
     if not COMMIT.match(commit):
         errors.append(f"subject.commit 40 haneli git özeti değil: {commit!r}")
     lockfiles = subject.get("lockfiles") or {}
-    for rel in ("Cargo.lock", "pnpm-lock.yaml", "workers/document/pyproject.toml"):
+    for rel in (
+        "Cargo.lock",
+        "apps/desktop/src-tauri/Cargo.lock",
+        "pnpm-lock.yaml",
+        "workers/document/pyproject.toml",
+    ):
         digest = lockfiles.get(rel)
         if not digest:
             errors.append(f"subject.lockfiles.{rel} yok")
@@ -215,6 +221,7 @@ def _fixture_sbom(**overrides) -> dict:
             "commit": "a" * 40,
             "lockfiles": {
                 "Cargo.lock": "b" * 64,
+                "apps/desktop/src-tauri/Cargo.lock": "e" * 64,
                 "pnpm-lock.yaml": "c" * 64,
                 "workers/document/pyproject.toml": "d" * 64,
             },
@@ -279,6 +286,19 @@ def self_test() -> int:
         if not any("sürüm hizasız" in error for error in errors):
             failures.append("sürüm uyuşmazlığı yakalanmadı")
 
+        no_shell_lock = _fixture_sbom(
+            **{
+                "subject.lockfiles": {
+                    "Cargo.lock": "b" * 64,
+                    "pnpm-lock.yaml": "c" * 64,
+                    "workers/document/pyproject.toml": "d" * 64,
+                }
+            }
+        )
+        errors = check(no_shell_lock, root)
+        if not any("apps/desktop/src-tauri/Cargo.lock" in error for error in errors):
+            failures.append("masaüstü kabuk kilidinin bağsızlığı yakalanmadı")
+
         bad_count = _fixture_sbom(**{"counts.rust": 99})
         errors = check(bad_count, root)
         if not any("counts.rust" in error for error in errors):
@@ -289,7 +309,10 @@ def self_test() -> int:
         for failure in failures:
             print(" -", failure)
         return 1
-    print("SBOM öz testi yeşil (6 kural: tam/eksik-dev/sabit-sürüm/geçişli/hiza/sayaç)")
+    print(
+        "SBOM öz testi yeşil (7 kural: tam/eksik-dev/sabit-sürüm/geçişli/hiza/"
+        "sayaç/kilit-bağı)"
+    )
     return 0
 
 
