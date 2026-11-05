@@ -251,6 +251,90 @@ sınırsızdır (sayfalama yok); çok sayıda onayı olan dosyada kart büyür. 
 **insan bekliyor**.
 
 **Açık kayıt:** (a) sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil
-(sağlayıcı seçici yok; ekran rota değişiminde yeniden kurulur); (b) envanter
+(sağlayıcı seçici yok; ekran rota değişiminde yeniden kurulur) — **2026-11-05
+turunda kısmen kapandı:** envanter satırı artık «sağlayıcı değişti» yazar ve
+bayat onayla "Çalıştır" kapalıdır (aşağıdaki bölüm); profil **seçici** hâlâ yok;
+(b) envanter
 satırından **iptal** var, tek tek "yenile" düğmesi yok — yenileme yeni onay
 almaktan geçer; (c) onay envanteri denetim kaydı arayüzde gösterilmiyor.
+
+## Sağlayıcı değişimi onayı geçersiz kılar (2026-11-05, F09-T09)
+
+Önceki turun açık kaydı (a) + "envanter `active` alanı yalnız iptal/süre
+durumunu taşır" sınırı. Koda karşı okundu; dört ölçülmüş kusur çıktı.
+
+**Ölçülen kusurlar:**
+
+1. **Envanter "etkin" diyordu ama onay yürütülemezdi (en ağırı).**
+   `list_transfer_consents` yalnız `consent_active_at`e bakıyordu. Profilin uç
+   noktası/modeli değişince kayıt "etkin" kalıyor, `start_ai_run` ise
+   `E_AI_CONSENT` veriyordu. Kartın notu "çalıştırmada reddedilir" diyordu —
+   yani **hangi satırın** ölü olduğunu söylemeden kullanıcıya tahmin ettiriyordu.
+2. **Hata kodu olguyu yanlış adlandırıyordu.** Sağlayıcı değişiminde dönen kod
+   `E_AI_CONSENT` ("geçerli aktarım onayı yok"); oysa onay **vardı**, varış
+   yeri değişmişti. Ekran "onay yok" diyor, yenileme gerektiğini söylemiyordu.
+3. **Çalıştırma ilk off-dışı profille koşuyordu.** `providers.find(p =>
+   p.providerType !== "off")`; onay başka bir profile bağlıysa (birden çok
+   profil) çekirdek haklı olarak reddediyor, kullanıcı nedenini göremiyordu.
+4. **Profilin varış yeri görünmüyordu.** `ProviderProfileRow` uç nokta/model
+   özetini taşımıyordu; "sağlayıcı değişti" iddiası ekranda somutlaşamıyordu.
+
+**Düzeltme:**
+
+- `TransferConsentListRow.provider_current`: onayın `provider_snapshot`ı
+  yürürlükteki (`off` dışı) **herhangi** bir profilden türetilebiliyor mu?
+  Kural `start_ai_run` ile aynı (özet eşitliği); liste başına **bir kez**
+  okunur (satır başına sorgu aynı listede farklı anları karıştırırdı).
+  `active` (iptal/süre) ile karışmaz: iptal edilmemiş ama yürütülemez onay
+  "kayıt yürürlükte, varış yeri değişti" olarak yazılır.
+- `ProviderProfileRow.provider_snapshot`: aynı `provider_snapshot()`
+  fonksiyonundan türetilir (uç nokta + model parmak izi dahil).
+- `start_ai_run` sağlayıcı değişiminde **`E_AI_PROVIDER_CHANGED`** döner.
+- `Ai` ekranı: dördüncü durum rozeti «sağlayıcı değişti» (warn tonu), "Varış
+  yeri" satırı, bayat onayla "Çalıştır" **kapalı** + `ai.consentStale` uyarısı,
+  çalıştırma onayın **kendi** profiliyle koşar, `E_AI_PROVIDER_CHANGED`
+  sonrası künye ve envanter tazelenir (ekran kendi kendini düzeltir).
+- Testler: `ai.rs` **28 → 31** (+3), `Ai.test.tsx` **66 → 70** (+4).
+- **Var olan üç test değişti (dürüst):** `api_endpoint_change_invalidates_…`,
+  `api_model_change_invalidates_…`, `consent_is_provider_scoped`
+  `E_AI_CONSENT` bekliyordu; kod artık özel kodu döndürüyor. **Davranış aynı**
+  (ret), yalnız kod adı değişti — bunlar kusuru sabitleyen değil, genel kodu
+  pinleyen testlerdi.
+- **Test fikstürü düzeltmesi (dürüst):** `Ai.test.tsx` varsayılan
+  `aiConsentCreate` mock'u **sabit** bir özet döndürüyordu; p2'nin yerel
+  sağlayıcısıyla alınan onay p1'in API varış yerine bağlanıyor ve ekran yanlış
+  yere "sağlayıcı değişti" diyordu (iki mevcut test kırmızı). Mock artık
+  **istenen profile** bağlıyor — çekirdek sözleşmesinin aynısı.
+
+**Kapı kanıtı 10/10** (her koşu orijinal metinden, geri yükleme sha256
+`0e3ad3b08814766a7ec26d26e4961127503cd08afcf9f1a41ee2d5cb271adbcf` /
+`f607b2bd629a65992407507ea7fe44441819192fe9f37768afb96e03fd79f23b` birebir):
+çekirdek C1 `provider_current` daima true (1), C2 özet `capabilities`siz
+türetilir (1), C3 değişim genele düşer (**4**), C4 profil satırı özet yerine
+adapter taşır (1); arayüz U1 satır durumu değişimi yok sayar (1), U2 yeşil ton
+(1 — aynı testin **farklı** assertion'ı: metin vs sınıf), U3 düğme kapısı (**2**),
+U4 ilk off-dışı profille koşar (1), U5 tazeleme yok (1), U6 uyarı çizilmez (2).
+
+**Ölçüm:** `cargo test -p dim-storage --lib` **400/400** (397 → +3) ·
+`cargo clippy -p dim-storage --all-targets -D warnings` temiz · masaüstü
+`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets`
+temiz (1 dk 09 s) · `cargo fmt` iki manifest temiz · `tsc --noEmit` temiz ·
+`vitest` **1140/1140** (60 dosya; 1136 → +4) · `npm run build` temiz
+(**593,29 kB**, `index-BswuJPWp.js`, gzip **160,07 kB**; CSS 7,28 kB).
+
+**Dürüst sınırlar:** `ai_consent_list` / `ai_run_execute` **komut olarak
+koşulmadı** (`State<AppState>` kuran test altyapısı yok; `commands_tests.rs`
+CI'da koşmuyor) — kablolama derleme + clippy, davranış `list_transfer_consents`
+ve `start_ai_run` düzeyinde **gerçek SQLite** ile doğrulandı. jsdom tarayıcı
+değil: gerçek Tauri penceresi, gerçek işaretçi ve **görsel QA yok**; `api`
+mock'lu olduğu için `provider_profiles`/`transfer_consents` SQL'i koşmaz.
+"Yürütülebilir" kararı **özet eşitliğine** dayanır: aynı `adapter@politika` ve
+aynı uç nokta+modeli taşıyan iki profil aynı varış yeri sayılır (parmak izi
+`provider_type` taşımaz). Onay hâlâ **profil kimliği** saklamaz (yalnız özet).
+
+**Açık kayıt:** (a) sağlayıcı **seçici** yok — onay ilk off-dışı profille
+alınır; çalıştırma artık onayın kendi profiliyle koşar ama yeni onayın hangi
+profille alınacağını kullanıcı seçemez; (b) envanterden tek tek "yenile" yok
+(yenileme yeni onay almaktan geçer); (c) `E_AI_PROVIDER_CHANGED` sonrası
+tazeleme **düşerse** yalnız birincil hata görünür (ikincil hata yutulur —
+bilinçli, ama yazılı); (d) görsel QA **insan bekliyor**.
