@@ -14,7 +14,7 @@
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
 | F09-T07 API profili | ✅ | `register_api_profile`: https zorunlu, anahtar **saklanmaz** (yalnız `DIM_API_KEY`), idempotent |
 | F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt, 200 karakter örnek ve **kapsam dışı belgeler + nedeni**; gönderim yolu aynı çözümleyiciyi kullanır. Önceden SQL hatası veriyordu (aşağıdaki bölüm) |
-| F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05 (aşağıdaki bölüm): dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) ve çekirdek onayın `provider_snapshot`ını çalıştırmayla karşılaştırmıyor |
+| F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
 
 ## Dürüst durum
 
@@ -159,3 +159,98 @@ değil (sağlayıcı seçici yok; ekran rota değişiminde yeniden kurulur) ve �
 çekirdekte etkin kalır (arayüz yalnız sonuncuyu gösterir; yeni gönderim onunla
 koşmaz) — onay envanteri ekranı yok; (c) iptal başarısı önizleme kartını
 temizlemez (kart belge kapsamı okumasıdır, yetki iddiası taşımaz).
+
+> **Güncelleme (2026-11-05, sonraki tur):** (b) aşağıdaki **"Onay envanteri ve
+> süpersede"** bölümüyle kapandı. (a)'nın çekirdek karşılaştırması F11-T04'te
+> `start_ai_run` içine eklendi; ekran tarafı (sağlayıcı seçici) açık kalıyor.
+> `consent_scope_segments` yalnız **kapsam** çözümleyicisidir, yetki kapısı
+> değildir — yetki kapısı `start_ai_run`dır.
+
+## Onay envanteri ve süpersede (2026-11-05, F09-T09)
+
+Önceki turun açık kaydı (b): *"yeni onay alınırken eski onay iptal edilmez,
+çekirdekte etkin kalır (arayüz yalnız sonuncuyu gösterir) — onay envanteri
+ekranı yok."* Koda karşı okundu: çekirdekte `transfer_consents` için **liste
+okuması yoktu**; arayüz onayı yalnız kendi `useState`inde tutuyordu. Sonuç:
+rota değişiminde ya da uygulama yeniden açıldığında **etkin bir aktarım yetkisi
+ne görünür ne iptal edilebilirdi**. Aynı amaç için ikinci kez onay verilince de
+eski kayıt etkin kalıyordu; hangisinin güncel kapsam olduğu ekrandan okunamıyordu.
+
+**Ölçülen kusurlar (ham koşu: 10 failed | 56 passed / 66):**
+
+1. **Görünmez etkin yetki (en ağırı).** `list_transfer_consents` ve
+   `ai_consent_list` yoktu. Onay ekranı kapandığında/yeniden açıldığında
+   kullanıcı, parola verdiği belge kümesi için verdiği yetkiyi göremiyor ve
+   iptal edemiyordu. Kırmızı: "Aktarım onayları" kartı ve satırları yok.
+2. **Aynı amaç için iki etkin yetki.** `create_transfer_consent` yalnız INSERT
+   ediyordu; aynı dosya+amaç yeniden onaylanınca önceki kayıt etkin kalıyordu.
+   Kırmızı: ikinci onaydan sonra `consent_is_active(eski)` hâlâ `true`.
+3. **Durum arayüz saatine kalacaktı.** Envanter satırı "süresi geçti" kararını
+   tarayıcı saatinden vermemeli; çekirdek `consent_active_at` tek kuralı
+   `active` alanıyla taşır (tasarım kararı — kusur değil, ayrışmayı önler).
+
+**Düzeltme:**
+
+- `create_transfer_consent` tek `unchecked_transaction` içinde: INSERT + **aynı
+  dosya ve amaç** için etkin önceki onayları `revoked_at` ile kapatır ve her
+  biri için `transfer_consent/supersede` denetim kaydı yazar
+  (`superseded_by`). Farklı amaç veya farklı dosya ayrı yetkidir, dokunulmaz;
+  zaten iptal edilmiş ya da süresi geçmiş kayıt yeniden işaretlenmez (envanterde
+  "iptal edildi" ile "süresi geçti" ayrımı korunur).
+- `list_transfer_consents(case_id)` → `TransferConsentListRow` (kayıt + `active`),
+  dosyaya kapsanmış, en yeni önce. `active`, `consent_is_active` ile **aynı**
+  `consent_active_at` fonksiyonundan gelir.
+- Tauri komutu `ai_consent_list` + `api.aiConsentList`.
+- Ai ekranında **"Aktarım onayları"** kartı: amaç, sağlayıcı özeti, belge sayısı,
+  onay zamanı, bitiş ve durum; iptal **yalnız etkin** satırda. Liste dosya
+  değişiminde, onaydan ve iptalden sonra çekirdekten tazelenir; iyimser
+  ekleme/silme yok. `consentListSeq` ile **son başlayan okuma kazanır**; iptal
+  uçuşunda satır düğmeleri kapalıdır; iptal düşerse satır etkin kalır ve hata
+  görünür. Sağlayıcı profili değişmişse onay çalıştırmada `E_AI_CONSENT` verir —
+  kart bunu sınır notu olarak yazar.
+
+**Testler:** `crates/storage/src/ai.rs` **23 → 28** (+5: süpersede, farklı
+amaç/dosya dokunulmaz, varış yeri değişse de süpersede, yalnız canlı kayıtlar,
+envanter kapsam/sıra/durum). `Ai.test.tsx` **56 → 66** (+10). **Ham koşu
+(düzeltme öncesi bileşen, nihai 66 test): 10 failed | 56 passed** — onu da yeni
+envanter testleri; eski 56 test yeşil kaldı (regresyon yok).
+
+**Kapı kanıtı 17/17** (her koşu tek kapı, dosya yedekten geri yüklendi;
+`ai.rs` sha256 `f85e41c37580d4771ed73eef6b1ad6849e543103596b6ae35dbcfe6c84c8349c`,
+`Ai.tsx` `673f84281d70c3e5756f49aa4be96a23bd96016c7b8ba2a783076dbf93c312fa`
+birebir): UI M1 başarı sıra kapısı (2), M2 yalnız etkin satırda iptal (2), M3
+satır uçuş kilidi (2), M4 Yenile kilidi (1), M5 onay sonrası tazeleme (2), M6
+iptal sonrası dosya kapısı (1), M7 iptal sonrası tazeleme (1), M8 okuma hatası
+(1), M9 iptal etiketi (2), M10 boş liste satırı (2); çekirdek C1 süpersede
+kapısı (2), C2 amaç filtresi (2), C3 dosya filtresi (2), C4 iptal edilmişi
+kapatmama (1), C5 süresi geçmişi kapatmama (1), C6 yeni onayın kendisini koruma
+(17 — kendi onayını da kapatınca zincir), C7 süre kuralı (2). **Dürüst:** C2/C3
+beklenen 1 yerine 2 test düşürdü (envanter testi de etkileniyor); C6 geniş
+kırılım verdi.
+
+**Ölçüm:** `cargo test --workspace --all-targets` **tümü yeşil** (dim-storage lib
+**397**, +5; dim-vault 17+13+3) · `cargo clippy --workspace --all-targets
+-D warnings` temiz · masaüstü clippy temiz (artımlı 3,7 sn; **dürüst:** ilk koşu
+`E0432` ile düştü — `TransferConsentListRow` `dim_storage` kökünden dışa
+aktarılmamıştı, `lib.rs` dışa aktarımı eklendi) · `cargo fmt` iki manifest temiz ·
+`tsc --noEmit` temiz · `vitest` **1130/1130** (60 dosya; 1120 → +10) · `pnpm
+build` temiz (**591,83 kB**, `index-B5cLgRXx.js`, gzip **159,57 kB**; CSS
+`index-CPW4QqlF.css` 7,28 kB).
+
+**Dürüst sınırlar:** jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek
+işaretçi ve görsel QA yok. `ai_consent_list` **komut olarak koşulmadı**
+(`State<AppState>` kuran test altyapısı yok; `commands_tests.rs` CI'da koşmuyor);
+kablolama derleme + clippy ile, davranış `list_transfer_consents` düzeyinde
+gerçek SQLite ile doğrulandı. Envanter `active` alanı yalnız iptal/süre durumunu
+taşır; sağlayıcı profili değişince kayıt "etkin" görünür ama çalıştırma
+`E_AI_CONSENT` verir (kart bunu yazar; ayrı "sağlayıcı değişti" durumu yok).
+`expires_at` arayüzden hiç yazılmıyor (komut `None` geçer) — "süresi geçti"
+satırı yalnız doğrudan IPC/test ile üretilebilir. Süpersede **varış yerine göre
+değil, dosya+amaç** ile çalışır: aynı amaç için son onay güncel kapsamdır. Liste
+sınırsızdır (sayfalama yok); çok sayıda onayı olan dosyada kart büyür. Görsel QA
+**insan bekliyor**.
+
+**Açık kayıt:** (a) sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil
+(sağlayıcı seçici yok; ekran rota değişiminde yeniden kurulur); (b) envanter
+satırından **iptal** var, tek tek "yenile" düğmesi yok — yenileme yeni onay
+almaktan geçer; (c) onay envanteri denetim kaydı arayüzde gösterilmiyor.
