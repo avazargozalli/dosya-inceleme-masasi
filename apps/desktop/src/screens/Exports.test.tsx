@@ -77,7 +77,7 @@
 // 31. Yazma başarısı kapsam şeridini **devralır**: uçuştaki eski okuma geç
 //     dönse de yazılan bloğun kapsamını ezmez ve okuma kilidi asılı kalmaz.
 //
-// Paket ve kapsam dürüstlüğü (dördüncü `describe`; 32–41):
+// Paket ve kapsam dürüstlüğü (dördüncü `describe`; 32–40):
 //
 // 32. **Ölçülen kusur (O):** parola alanı doluyken 10 karakterden kısa parola
 //     `undefined` gönderiliyordu → çekirdek **açık metin** klasör yazıyor, arayüz
@@ -97,11 +97,12 @@
 //     diye yazıyordu.
 // 37. **Ölçülen kusur (T, açık kayıt a):** kapsam paneli gösterdiği sayıların
 //     kaynağını (kasadan okundu ↔ çıktıya yazıldı) ve `generatedAt` zamanını
-//     yazmıyordu; yazma anındaki blok “şu anki kapsam” sanılıyordu.
-// 38. Paket başarısı da kapsam kaynağını “devir paketi” yapar.
-// 39. Dosya değişimi kapsamı yeniden kasadan okur: kaynak ve zaman tazelenir.
-// 40. Yazma sonrası “Kapsamı tazele” de kaynağı kasadan okumaya döndürür.
-// 41. Açık metin paket künyesi parolanın uygulanmadığını **yazar** (boş alan
+//     yazmıyordu; yazma anındaki blok “şu anki kapsam” sanılıyordu. Bu test ayrıca
+//     **dosya değişiminde** kaynağın “kasadan”a döndüğünü ve zamanın tazelendiğini
+//     ölçer.
+// 38. Yazma sonrası “Kapsamı tazele” de kaynağı kasadan okumaya döndürür.
+// 39. Paket başarısı da kapsam kaynağını “devir paketi” yapar.
+// 40. Açık metin paket künyesi parolanın uygulanmadığını **yazar** (boş alan
 //     bilinçli açık metindir; sessiz değil).
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
