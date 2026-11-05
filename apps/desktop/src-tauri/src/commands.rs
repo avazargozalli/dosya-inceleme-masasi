@@ -37,6 +37,7 @@ use dim_storage::{
     ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
     ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SearchTotal,
     SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentListRow, TransferConsentRow,
+    TransferReceiptRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -6231,6 +6232,21 @@ pub fn ai_consent_revoke(state: State<'_, AppState>, consent_id: String) -> Resu
     Ok(())
 }
 
+/// Dosyanın aktarım makbuzları.
+///
+/// Makbuz yazılıyordu ama **okunamıyordu**: "ne çıktı, nereye, kaç bayt,
+/// hangi içerik özetiyle" sorusu yalnız SQL'de kalıyordu. Bu komut denetim
+/// kanıtını ekrana taşır; kapsam `ai_runs.case_id` üzerinden kurulur.
+#[tauri::command]
+pub fn ai_receipt_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<TransferReceiptRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_transfer_receipts(&case_id)?)
+}
+
 #[tauri::command]
 pub fn ai_run_start(
     state: State<'_, AppState>,
@@ -6592,30 +6608,49 @@ pub fn ai_run_execute(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     let mut provider = ApiProvider::new(&endpoint, &model)?;
-    let candidate = match provider.propose(&request) {
-        Ok(candidate) => candidate,
-        Err(error) => {
-            let report = serde_json::json!({"error": error.code()}).to_string();
-            db.finish_ai_run(&run.id, "failed", &report)?;
-            return Err(error.into());
-        }
-    };
-    // İçerik çıktı: makbuz yazılır. Makbuz yazılamazsa çalıştırma `partial`
-    // kapanır — "gönderildi ama sicili yok" sessizce başarı sayılmaz.
-    let receipt = db.record_transfer_receipt(
+    // Makbuz **deneme anında** açılır: gönderim düşse de "denendi" sicilde
+    // kalır. Aksi hâlde zaman aşımına düşen bir aktarımın hiçbir izi olmazdı —
+    // içerik çıkmış olabilir. Makbuz yazılamazsa aktarım **hiç başlamaz**.
+    let attempt = match db.begin_transfer_receipt(
         &run.id,
         &destination_label(&endpoint, &model),
         &outbound_hash,
         i64::try_from(scope.segments.len()).unwrap_or(i64::MAX),
         i64::try_from(bytes).unwrap_or(i64::MAX),
-    );
+    ) {
+        Ok(id) => id,
+        Err(error) => {
+            let report = serde_json::json!({"error": "receipt_not_recorded"}).to_string();
+            let _ = db.finish_ai_run(&run.id, "failed", &report);
+            return Err(error.into());
+        }
+    };
+    let candidate = match provider.propose(&request) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            // Düşen deneme makbuzu **failed** olarak kapanır: "denendi,
+            // gönderilemedi". Makbuz kapanmazsa `attempted` kalır — ikisi de
+            // "gönderildi" demek değildir.
+            let finalized = db.finish_transfer_receipt(&attempt, "failed");
+            let report = serde_json::json!({
+                "error": error.code(),
+                "receipt": if finalized.is_ok() { "failed" } else { "not_finalized" },
+            })
+            .to_string();
+            db.finish_ai_run(&run.id, "failed", &report)?;
+            return Err(error.into());
+        }
+    };
+    // İçerik çıktı: makbuz `dispatched` olarak kapanır. Kapanmazsa çalıştırma
+    // `partial` yazılır — "gönderildi ama sicili yok" sessizce başarı sayılmaz.
+    let receipt = db.finish_transfer_receipt(&attempt, "dispatched");
     let payload = serde_json::to_string(&candidate.payload).unwrap_or_else(|_| "{}".to_string());
     let row = db.record_ai_candidate(&run.id, &task_type, &payload)?;
     let report = serde_json::json!({
         "segments": scope.segments.len(),
         "documents": scope.documents.len(),
         "bytes": bytes,
-        "receipt": if receipt.is_ok() { "recorded" } else { "failed" },
+        "receipt": if receipt.is_ok() { "dispatched" } else { "not_finalized" },
     })
     .to_string();
     db.finish_ai_run(

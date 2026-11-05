@@ -296,6 +296,24 @@ export type TransferConsentListRow = TransferConsentRow & {
   providerCurrent: boolean;
 };
 
+/**
+ * Aktarım makbuzu: "ne çıktı, nereye, kaç öğe, kaç bayt, hangi içerik
+ * özetiyle". `status` `attempted` ise gönderim denendi ama sonuç yazılmadı
+ * (süreç çöktü/yanıt gelmedi) — başarı sayılmaz.
+ */
+export type TransferReceiptRow = {
+  id: string;
+  aiRunId: string;
+  caseId: string;
+  taskType: string;
+  destinationLabel: string;
+  outboundHash: string;
+  itemCount: number;
+  byteCount: number;
+  status: string;
+  dispatchedAt: string;
+};
+
 export type ScopeSkip = {
   documentId: string;
   reason: "missing" | "no_current_version" | "not_parsed" | "empty_text" | string;
@@ -1841,6 +1859,8 @@ export const api = {
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
   aiConsentList: (caseId: string) =>
     invoke<TransferConsentListRow[]>("ai_consent_list", { caseId }),
+  aiReceiptList: (caseId: string) =>
+    invoke<TransferReceiptRow[]>("ai_receipt_list", { caseId }),
   aiRunExecute: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiCandidateRow>("ai_run_execute", {
       caseId,

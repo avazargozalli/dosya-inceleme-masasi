@@ -79,6 +79,10 @@ pub enum StorageError {
     AiProvider,
     #[error("AI kapalı: sağlayıcı bağlanmadan aktarım onayı alınamaz")]
     AiOff,
+    /// Aktarım makbuzu sicili: bilinmeyen durum ya da sonuçlanmış makbuzu
+    /// yeniden yazma girişimi. Makbuz geriye dönük değiştirilemez.
+    #[error("aktarım makbuzu: {0}")]
+    AiReceipt(String),
     #[error("künye listesi: {0}")]
     Manifest(String),
     #[error("kaynak kullanım koşulu: {0}")]
@@ -178,6 +182,7 @@ impl StorageError {
             Self::AiProviderChanged => "E_AI_PROVIDER_CHANGED",
             Self::AiProvider => "E_AI_PROVIDER",
             Self::AiOff => "E_AI_OFF",
+            Self::AiReceipt(_) => "E_AI_RECEIPT",
             Self::Manifest(_) => "E_MANIFEST",
             Self::Terms(_) => "E_TERMS",
             Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",

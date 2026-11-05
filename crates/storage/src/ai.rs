@@ -92,6 +92,34 @@ pub struct TransferConsentListRow {
     pub provider_current: bool,
 }
 
+/// Bir aktarım makbuzunun **okunabilir** satırı.
+///
+/// Makbuz yazılıyordu ama okunamıyordu: hangi hedefe, kaç öğe, kaç bayt,
+/// hangi içerik özetiyle çıktığı yalnız SQL'de duruyordu. Avukatın denetim
+/// kanıtı budur; ekran bu satırları çekirdekten okur.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferReceiptRow {
+    pub id: String,
+    pub ai_run_id: String,
+    pub case_id: String,
+    pub task_type: String,
+    /// Hedef etiketi: ana makine + model. Yol/sorgu/anahtar **yazılmaz**.
+    pub destination_label: String,
+    /// Gönderilen segment kimlikleri + metinlerinin sha256 özeti (tam).
+    pub outbound_hash: String,
+    pub item_count: i64,
+    pub byte_count: i64,
+    /// `attempted` | `dispatched` | `failed`.
+    ///
+    /// `attempted`, "gönderim denendi, sonuç yazılmadı" demektir (süreç
+    /// çöktü ya da yanıt gelmedi) — sessizce başarı sayılmaz.
+    pub status: String,
+    /// Makbuzun açıldığı an (gönderim **denemesi**). Sütun adı tarihseldir
+    /// (`dispatched_at`); `attempted` satırda da doludur.
+    pub dispatched_at: String,
+}
+
 /// Sağlayıcı profilinin **varış yerine bağlı** kimliği: `adapter@politika`.
 /// API profilinde kayıtlı uç nokta ve modelin kısa sha256 parmak izi de girer —
 /// aynı adapter sürümüyle **başka** bir uç noktaya/modelle gönderim, önceki
@@ -552,7 +580,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn record_transfer_receipt(
+    /// Aktarım makbuzunu **deneme anında** açar (`attempted`).
+    ///
+    /// Neden gönderimden önce: `provider.propose` zaman aşımına düşerse içerik
+    /// çıkmış **olabilir**. Yalnız başarıda makbuz yazmak, "denendi" ile
+    /// "gönderildi" arasındaki farkı sicilden siler; düşen deneme hiç iz
+    /// bırakmaz. Makbuz yazılamazsa aktarım **hiç başlamaz** (denetlenemeyen
+    /// aktarım yapılmaz) — hata çağırana taşınır.
+    pub fn begin_transfer_receipt(
         &self,
         run_id: &str,
         destination_label: &str,
@@ -566,17 +601,102 @@ impl Database {
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
             "INSERT INTO transfer_receipts (id,ai_run_id,destination_label,outbound_hash,item_count,byte_count,status,dispatched_at)
-             VALUES (?1,?2,?3,?4,?5,?6,'dispatched',?7)",
+             VALUES (?1,?2,?3,?4,?5,?6,'attempted',?7)",
             rusqlite::params![id, run_id, destination_label, outbound_hash, item_count, byte_count, now_iso()],
         )?;
         self.append_audit(
             "transfer_receipt",
             Some(&id),
-            "dispatch",
+            "attempt",
             "local-system",
             &serde_json::json!({"destination": destination_label}),
         )?;
         Ok(id)
+    }
+
+    /// Deneme makbuzunu sonuçlandırır: `attempted` → `dispatched` | `failed`.
+    ///
+    /// Geçiş **tek** koşullu `UPDATE`dir: önce okuyup sonra yazmak, arada
+    /// başka bir sonuçlandırmanın yazdığını ezme penceresi bırakırdı. Satır
+    /// değişmediyse ya makbuz yoktur ya da zaten sonuçlanmıştır; ikisi ayrı
+    /// kodla döner. Sonuçlanmış makbuz **yeniden yazılmaz** (sicil geriye
+    /// dönük değiştirilemez). `attempted` kalan makbuz "denendi, sonuç
+    /// yazılmadı" demektir — sessizce başarıya çevrilmez.
+    pub fn finish_transfer_receipt(
+        &self,
+        receipt_id: &str,
+        status: &str,
+    ) -> Result<(), StorageError> {
+        if status != "dispatched" && status != "failed" {
+            return Err(StorageError::AiReceipt(format!(
+                "bilinmeyen makbuz durumu: {status}"
+            )));
+        }
+        let changed = self.conn().execute(
+            "UPDATE transfer_receipts SET status=?2 WHERE id=?1 AND status='attempted'",
+            rusqlite::params![receipt_id, status],
+        )?;
+        if changed == 0 {
+            let current: Option<String> = self
+                .conn()
+                .query_row(
+                    "SELECT status FROM transfer_receipts WHERE id=?1",
+                    [receipt_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            return Err(match current {
+                None => StorageError::NotFound,
+                Some(current) => {
+                    StorageError::AiReceipt(format!("makbuz zaten sonuçlanmış: {current}"))
+                }
+            });
+        }
+        self.append_audit(
+            "transfer_receipt",
+            Some(receipt_id),
+            status,
+            "local-system",
+            &serde_json::json!({}),
+        )?;
+        Ok(())
+    }
+
+    /// Dosyanın aktarım makbuzları — **en yeni önce**.
+    ///
+    /// Makbuz `ai_runs`a bağlıdır; dosya kapsamı `ai_runs.case_id` üzerinden
+    /// kurulur (başka dosyanın makbuzu bu listeye girmez). Bu, "ne çıktı,
+    /// nereye, kaç bayt, hangi içerik özetiyle" sorusunun tek okuma yoludur.
+    pub fn list_transfer_receipts(
+        &self,
+        case_id: &str,
+    ) -> Result<Vec<TransferReceiptRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT r.id,r.ai_run_id,a.case_id,a.task_type,r.destination_label,r.outbound_hash,
+                    r.item_count,r.byte_count,r.status,r.dispatched_at
+             FROM transfer_receipts r JOIN ai_runs a ON a.id=r.ai_run_id
+             WHERE a.case_id=?1
+             ORDER BY r.dispatched_at DESC, r.id DESC",
+        )?;
+        let rows = stmt.query_map([case_id], |row| {
+            Ok(TransferReceiptRow {
+                id: row.get(0)?,
+                ai_run_id: row.get(1)?,
+                case_id: row.get(2)?,
+                task_type: row.get(3)?,
+                destination_label: row.get(4)?,
+                outbound_hash: row.get(5)?,
+                item_count: row.get(6)?,
+                byte_count: row.get(7)?,
+                status: row.get(8)?,
+                dispatched_at: row.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 }
 
@@ -1961,12 +2081,159 @@ mod tests {
         }];
         assert_eq!(db.record_context_items(&r.id, &items).expect("bağlam"), 1);
         assert_eq!(db.list_context_items(&r.id).expect("liste").len(), 1);
-        db.record_transfer_receipt(&r.id, "claude-code", &"a".repeat(64), 1, 42)
+        let receipt = db
+            .begin_transfer_receipt(&r.id, "claude-code", &"a".repeat(64), 1, 42)
             .expect("makbuz");
+        db.finish_transfer_receipt(&receipt, "dispatched")
+            .expect("makbuz kapandı");
         db.finish_ai_run(&r.id, "succeeded", "{\"billing\":\"unknown\"}")
             .expect("bitir");
         let finished = db.get_ai_run(&r.id).expect("get").expect("var");
         assert_eq!(finished.status, "succeeded");
+    }
+
+    /// Makbuz **deneme anında** açılır. Eski davranış yalnız başarıda yazıyordu:
+    /// zaman aşımına düşen bir aktarımın sicilde hiç izi kalmıyor, "denendi" ile
+    /// "gönderildi" aynı kutuya giriyordu.
+    #[test]
+    fn transfer_attempt_is_recorded_before_dispatch() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let id = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"c".repeat(64), 2, 99)
+            .expect("deneme");
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].status, "attempted",
+            "gönderim bitmeden «gönderildi» yazılmaz"
+        );
+        assert_eq!(rows[0].destination_label, "api.ornek.com · m");
+        assert_eq!(rows[0].item_count, 2);
+        assert_eq!(rows[0].byte_count, 99);
+        assert_eq!(rows[0].outbound_hash, "c".repeat(64));
+        assert_eq!(rows[0].ai_run_id, r.id);
+
+        db.finish_transfer_receipt(&id, "dispatched")
+            .expect("kapanış");
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        assert_eq!(rows[0].status, "dispatched");
+    }
+
+    /// Düşen gönderim makbuzu **failed** olarak kapanır ve satır durur:
+    /// "denendi, gönderilemedi" sicilden silinmez.
+    #[test]
+    fn failed_transfer_keeps_a_failed_receipt() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let id = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"e".repeat(64), 1, 12)
+            .expect("deneme");
+        db.finish_transfer_receipt(&id, "failed")
+            .expect("başarısız kapanış");
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        assert_eq!(rows.len(), 1, "düşen deneme listeden kaybolmaz");
+        assert_eq!(rows[0].status, "failed");
+    }
+
+    /// Sicil geriye dönük değiştirilemez: sonuçlanmış makbuz yeniden
+    /// yazılamaz, bilinmeyen durum reddedilir ve reddedilen yazım satıra
+    /// dokunmaz.
+    #[test]
+    fn receipt_status_is_final_and_validated() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+
+        let done = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"f".repeat(64), 1, 5)
+            .expect("deneme");
+        db.finish_transfer_receipt(&done, "dispatched")
+            .expect("kapanış");
+        let err = db
+            .finish_transfer_receipt(&done, "failed")
+            .expect_err("sonuçlanmış makbuz yeniden yazılmaz");
+        assert_eq!(err.code(), "E_AI_RECEIPT");
+
+        let open = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"0".repeat(64), 1, 6)
+            .expect("deneme");
+        let err = db
+            .finish_transfer_receipt(&open, "sent")
+            .expect_err("bilinmeyen durum");
+        assert_eq!(err.code(), "E_AI_RECEIPT");
+
+        let err = db
+            .finish_transfer_receipt("olmayan-makbuz", "dispatched")
+            .expect_err("olmayan makbuz");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        let open_row = rows.iter().find(|row| row.id == open).expect("satır");
+        assert_eq!(
+            open_row.status, "attempted",
+            "reddedilen durum satıra yazılmaz"
+        );
+    }
+
+    /// Liste **dosyaya kapsanır**: başka dosyanın makbuzu bu dosyanın
+    /// envanterine girmez (denetim kanıtı dosya sınırını aşmaz).
+    #[test]
+    fn receipts_are_scoped_to_their_case() {
+        let (db, case_id, _) = setup();
+        let other = case_titled(&db, "Başka dosya");
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        db.begin_transfer_receipt(&r.id, "a.example · m", &"d".repeat(64), 1, 10)
+            .expect("makbuz");
+        assert_eq!(db.list_transfer_receipts(&case_id).expect("liste").len(), 1);
+        assert!(
+            db.list_transfer_receipts(&other).expect("liste").is_empty(),
+            "başka dosyanın makbuzu sızmaz"
+        );
+    }
+
+    /// En yeni makbuz önce gelir (ekran "son gönderim"i üstte yazar).
+    #[test]
+    fn receipts_are_listed_newest_first() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let older = db
+            .begin_transfer_receipt(&r.id, "a.example · m", &"1".repeat(64), 1, 1)
+            .expect("eski");
+        let newer = db
+            .begin_transfer_receipt(&r.id, "a.example · m", &"2".repeat(64), 1, 2)
+            .expect("yeni");
+        // Zaman damgası aynı milisaniyeye düşebilir; sıra sözleşmesini
+        // sabitlemek için yaşlar açıkça yazılır.
+        db.conn()
+            .execute(
+                "UPDATE transfer_receipts SET dispatched_at='2026-01-01T00:00:00Z' WHERE id=?1",
+                [&older],
+            )
+            .expect("eski zaman");
+        db.conn()
+            .execute(
+                "UPDATE transfer_receipts SET dispatched_at='2026-01-02T00:00:00Z' WHERE id=?1",
+                [&newer],
+            )
+            .expect("yeni zaman");
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        assert_eq!(rows[0].id, newer, "en yeni önce");
+        assert_eq!(rows[1].id, older);
     }
 
     fn case_titled(db: &Database, title: &str) -> String {
@@ -2275,14 +2542,17 @@ mod tests {
             }],
         )
         .expect("bağlam");
-        db.record_transfer_receipt(
-            &run.id,
-            "api.ornek.com · m",
-            &"b".repeat(64),
-            1,
-            scope.bytes,
-        )
-        .expect("makbuz");
+        let receipt = db
+            .begin_transfer_receipt(
+                &run.id,
+                "api.ornek.com · m",
+                &"b".repeat(64),
+                1,
+                scope.bytes,
+            )
+            .expect("makbuz");
+        db.finish_transfer_receipt(&receipt, "dispatched")
+            .expect("kapanış");
         db.finish_ai_run(&run.id, "succeeded", "{}").expect("bitir");
         for table in [
             "audit_log",

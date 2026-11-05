@@ -136,6 +136,7 @@ pub fn run() {
             commands::ai_consent_create,
             commands::ai_consent_list,
             commands::ai_consent_revoke,
+            commands::ai_receipt_list,
             commands::ai_run_start,
             commands::ai_candidates_list,
             commands::ai_candidate_promote,

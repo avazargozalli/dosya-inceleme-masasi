@@ -561,6 +561,27 @@ export const tr = {
       "Sınır: liste yalnız bu dosyanın onaylarını taşır. Sağlayıcının varış yeri " +
       "değiştiyse satır «sağlayıcı değişti» yazar; onay yenilenmeden çalıştırılamaz " +
       "(E_AI_PROVIDER_CHANGED).",
+    receiptsTitle: "Aktarım makbuzları",
+    receiptsSub:
+      "Cihazdan çıkan her gönderim: hedef, öğe, bayt ve gönderilen metnin içerik özeti. " +
+      "«denendi» satırı gönderimin sonucunun yazılmadığını söyler; başarı sayılmaz.",
+    receiptsEmpty: "Bu dosya için aktarım makbuzu yok.",
+    receiptsLoading: "Makbuzlar okunuyor…",
+    receiptsRefresh: "Yenile",
+    receiptsColTime: "Zaman",
+    receiptsColTask: "Görev",
+    receiptsColDestination: "Hedef",
+    receiptsColItems: "Öğe",
+    receiptsColBytes: "Bayt",
+    receiptsColHash: "İçerik özeti",
+    receiptsColState: "Durum",
+    receiptAttempted: "denendi · sonuç yazılmadı",
+    receiptDispatched: "gönderildi",
+    receiptFailed: "gönderilemedi",
+    receiptsNote:
+      "Sınır: makbuz gönderilen metnin özetini taşır, metnin kendisini değil. Özet, " +
+      "kasadaki segmentlerden yeniden hesaplanarak karşılaştırılabilir; hedef etiketi " +
+      "yalnız ana makine ve modeli yazar (yol, sorgu ve anahtar makbuza girmez).",
     runsTitle: "Çalıştırmalar",
     runsSub: "Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada",
     colKind: "Tür",

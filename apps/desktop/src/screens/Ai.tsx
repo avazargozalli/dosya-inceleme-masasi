@@ -10,6 +10,7 @@ import {
   type ConsentPreview,
   type TransferConsentListRow,
   type TransferConsentRow,
+  type TransferReceiptRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -81,6 +82,24 @@ function consentStateTone(row: TransferConsentListRow): string {
   return row.providerCurrent ? "ok" : "warn";
 }
 
+/**
+ * Makbuz durumu. `attempted` **başarı değildir**: gönderim denendi, sonucu
+ * yazılmadı (süreç çöktü ya da yanıt gelmedi). Bilinmeyen durum olduğu gibi
+ * yazılır — ekran tanımadığı bir değeri "gönderildi" saymaz.
+ */
+function receiptStateLabel(status: string): string {
+  if (status === "dispatched") return t("ai.receiptDispatched");
+  if (status === "failed") return t("ai.receiptFailed");
+  if (status === "attempted") return t("ai.receiptAttempted");
+  return status;
+}
+
+function receiptStateTone(status: string): string {
+  if (status === "dispatched") return "ok";
+  if (status === "failed") return "danger";
+  return "warn";
+}
+
 export function Ai() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -88,6 +107,10 @@ export function Ai() {
   const [consent, setConsent] = useState<TransferConsentRow | null>(null);
   const [consents, setConsents] = useState<TransferConsentListRow[]>([]);
   const [consentListBusy, setConsentListBusy] = useState(false);
+  // Makbuz envanteri de **çekirdekten** okunur: yazılan makbuzun okuma yolu
+  // yoktu, avukat neyin çıktığını göremiyordu.
+  const [receipts, setReceipts] = useState<TransferReceiptRow[]>([]);
+  const [receiptListBusy, setReceiptListBusy] = useState(false);
   const [preview, setPreview] = useState<ConsentPreview | null>(null);
   const [candidates, setCandidates] = useState<AiCandidateRow[]>([]);
   const [purpose, setPurpose] = useState("ozet");
@@ -127,6 +150,9 @@ export function Ai() {
   // Onay envanteri de bir **okuma**dır: dosya değişimi nesli artırır, geç yanıt
   // yeni dosyanın listesine yazılmaz.
   const consentListSeq = useRef(0);
+  // Makbuz envanteri de bir **okuma**dır: son başlayan okuma kazanır; geç
+  // yanıt yeni dosyanın listesine yazılmaz.
+  const receiptListSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -186,6 +212,28 @@ export function Ai() {
     }
   }
 
+  /**
+   * Aktarım makbuzları bir **okuma**dır (onay envanteriyle aynı desen): her
+   * yeni okuma sayacı artırır, **son başlayan kazanır**. Gönderimden sonra da
+   * çağrılır — düşen deneme `failed` satırı bırakır, başarılı gönderim
+   * `dispatched`; ikisi de ekranda görünür.
+   */
+  async function loadReceipts(forCase: string): Promise<void> {
+    if (!forCase) return;
+    receiptListSeq.current += 1;
+    const seq = receiptListSeq.current;
+    setReceiptListBusy(true);
+    try {
+      const rows = await api.aiReceiptList(forCase);
+      if (receiptListSeq.current !== seq) return;
+      setReceipts(rows);
+    } catch (e) {
+      if (receiptListSeq.current === seq) setError(toApiError(e));
+    } finally {
+      if (receiptListSeq.current === seq) setReceiptListBusy(false);
+    }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -202,6 +250,8 @@ export function Ai() {
     if (!caseId) {
       setConsents([]);
       setConsentListBusy(false);
+      setReceipts([]);
+      setReceiptListBusy(false);
       return;
     }
     caseGen.current += 1;
@@ -224,6 +274,8 @@ export function Ai() {
     setConsent(null);
     setConsents([]);
     setConsentListBusy(false);
+    setReceipts([]);
+    setReceiptListBusy(false);
     setPreview(null);
     setCandidates([]);
     setRunId("");
@@ -241,6 +293,7 @@ export function Ai() {
     // Envanter de çekirdekten okunur: sayfa yeniden açıldığında etkin onaylar
     // görünür ve iptal edilebilir (arayüz yalnız kendi açtığı onayı tutmaz).
     void loadConsents(caseId);
+    void loadReceipts(caseId);
   }, [caseId]);
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
@@ -320,6 +373,10 @@ export function Ai() {
         if (caseGen.current === gen) void loadConsents(caseId);
       }
     } finally {
+      // Makbuz envanteri **her** denemeden sonra tazelenir: başarılı gönderim
+      // `dispatched`, düşen gönderim `failed` satırı bırakır; ikisi de ekranda
+      // görünür (eski davranışta düşen deneme sicilde hiç yoktu).
+      if (caseGen.current === gen) void loadReceipts(caseId);
       endWrite(seq);
     }
   }
@@ -706,6 +763,69 @@ export function Ai() {
         ) : (
           <p className="hint" style={{ margin: 0 }}>{t("ai.runsEmpty")}</p>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("ai.receiptsTitle")}</h2>
+            <p className="card-sub">{t("ai.receiptsSub")}</p>
+          </div>
+          <button
+            className="btn ghost"
+            disabled={!caseId || receiptListBusy}
+            onClick={() => void loadReceipts(caseId)}
+          >
+            {receiptListBusy ? t("ai.receiptsLoading") : t("ai.receiptsRefresh")}
+          </button>
+        </div>
+        {receipts.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {receiptListBusy ? t("ai.receiptsLoading") : t("ai.receiptsEmpty")}
+          </p>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("ai.receiptsColTime")}</th>
+                <th>{t("ai.receiptsColTask")}</th>
+                <th>{t("ai.receiptsColDestination")}</th>
+                <th>{t("ai.receiptsColItems")}</th>
+                <th>{t("ai.receiptsColBytes")}</th>
+                <th>{t("ai.receiptsColHash")}</th>
+                <th>{t("ai.receiptsColState")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {receipts.map((row) => (
+                <tr key={row.id}>
+                  <td>{formatDateTime(row.dispatchedAt)}</td>
+                  <td>{row.taskType}</td>
+                  <td>
+                    <code>{row.destinationLabel}</code>
+                  </td>
+                  <td>{row.itemCount}</td>
+                  <td>{row.byteCount}</td>
+                  <td
+                    style={{
+                      fontFamily: "var(--mono)",
+                      fontSize: 11,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {row.outboundHash}
+                  </td>
+                  <td>
+                    <span className={`badge ${receiptStateTone(row.status)}`}>
+                      {receiptStateLabel(row.status)}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="hint" style={{ margin: 0 }}>{t("ai.receiptsNote")}</p>
       </div>
 
       <div className="card">

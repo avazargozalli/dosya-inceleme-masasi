@@ -40,6 +40,7 @@ import type {
   QuoteMatchReport,
   TransferConsentListRow,
   TransferConsentRow,
+  TransferReceiptRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -63,6 +64,7 @@ const mocks = vi.hoisted(() => ({
   aiConsentCreate: vi.fn(),
   aiConsentRevoke: vi.fn(),
   aiConsentList: vi.fn(),
+  aiReceiptList: vi.fn(),
   aiRunExecute: vi.fn(),
   aiCandidatesList: vi.fn(),
   aiCandidateValidate: vi.fn(),
@@ -353,6 +355,7 @@ type SetupOptions = {
   preview?: () => Promise<ConsentPreview>;
   consent?: () => Promise<TransferConsentRow>;
   consents?: (caseId: string) => Promise<TransferConsentListRow[]>;
+  receipts?: (caseId: string) => Promise<TransferReceiptRow[]>;
   revoke?: () => Promise<void>;
   runExecute?: () => Promise<void>;
   candidates?: (runId: string) => Promise<AiCandidateRow[]>;
@@ -389,6 +392,7 @@ function setup(options: SetupOptions = {}) {
   );
   mocks.aiConsentRevoke.mockImplementation(options.revoke ?? (async () => undefined));
   mocks.aiConsentList.mockImplementation(options.consents ?? (async () => []));
+  mocks.aiReceiptList.mockImplementation(options.receipts ?? (async () => []));
   mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => undefined));
   mocks.aiCandidatesList.mockImplementation(options.candidates ?? (async () => [CAND_VALID]));
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
@@ -2207,5 +2211,206 @@ describe("AI ekranı — sağlayıcı değişimi ve onayın yürütülebilirliğ
     expect(
       screen.getByText(t("ai.consentStale", { provider: CONSENT.providerSnapshot })),
     ).toBeTruthy();
+  });
+});
+
+describe("AI ekranı — aktarım makbuzu envanteri", () => {
+  function receiptRow(
+    overrides: Partial<TransferReceiptRow> & { id: string },
+  ): TransferReceiptRow {
+    return {
+      aiRunId: "r1",
+      caseId: "p1",
+      taskType: "summarize",
+      destinationLabel: "api.ornek.com · claude-sonnet",
+      outboundHash: "a".repeat(64),
+      itemCount: 3,
+      byteCount: 4096,
+      status: "dispatched",
+      dispatchedAt: "2026-11-05T09:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("makbuzları çekirdekten okur: hedef, öğe, bayt, özet ve durum yazılır", async () => {
+    // Sıra **çekirdekten** gelir (en yeni önce); ekran yeniden sıralamaz.
+    const failed = receiptRow({
+      id: "m1",
+      status: "failed",
+      outboundHash: "b".repeat(64),
+      itemCount: 1,
+      byteCount: 12,
+    });
+    const open = receiptRow({ id: "m2", status: "attempted", outboundHash: "c".repeat(64) });
+    const sent = receiptRow({ id: "m3" });
+    setup({ receipts: async () => [failed, open, sent] });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText(t("ai.receiptFailed"));
+    expect(mocks.aiReceiptList).toHaveBeenCalledWith("p1");
+
+    const rows = within(card).getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.textContent).toContain(t("ai.receiptFailed"));
+    expect(rows[0]!.textContent).toContain("api.ornek.com · claude-sonnet");
+    expect(rows[0]!.textContent).toContain("b".repeat(64));
+    expect(rows[1]!.textContent).toContain(t("ai.receiptAttempted"));
+    expect(rows[2]!.textContent).toContain(t("ai.receiptDispatched"));
+    expect(rows[2]!.textContent).toContain("4096");
+    expect(rows[2]!.textContent).toContain(formatDateTime(sent.dispatchedAt));
+
+    // Renk de sözleşmenin parçası: `attempted` **başarı** değildir.
+    expect(within(rows[1]!).getByText(t("ai.receiptAttempted")).className).toContain("warn");
+    expect(within(rows[2]!).getByText(t("ai.receiptDispatched")).className).toContain("ok");
+    expect(within(rows[0]!).getByText(t("ai.receiptFailed")).className).toContain("danger");
+  });
+
+  it("makbuz yokken uydurmaz: boş satır yazar, tablo çizmez", async () => {
+    setup();
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText(t("ai.receiptsEmpty"));
+    expect(within(card).queryByRole("table")).toBeNull();
+  });
+
+  it("dosya değişiminde önceki dosyanın makbuzları ekranda kalmaz", async () => {
+    setup({
+      receipts: async (caseId) =>
+        caseId === "p2"
+          ? [
+              receiptRow({
+                id: "m2",
+                caseId: "p2",
+                destinationLabel: "local:ollama · llama",
+                taskType: "extract_events",
+              }),
+            ]
+          : [receiptRow({ id: "m1" })],
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText("api.ornek.com · claude-sonnet");
+
+    switchCase("p2");
+    await within(card).findByText("local:ollama · llama");
+    expect(within(card).queryByText("api.ornek.com · claude-sonnet")).toBeNull();
+    expect(mocks.aiReceiptList).toHaveBeenCalledWith("p2");
+  });
+
+  it("geç gelen makbuz yanıtı yeni dosyanın listesine yazılmaz", async () => {
+    const pending = deferred<TransferReceiptRow[]>();
+    setup({
+      receipts: (caseId) =>
+        caseId === "p1"
+          ? pending.promise
+          : Promise.resolve([
+              receiptRow({
+                id: "m2",
+                caseId: "p2",
+                destinationLabel: "local:ollama · llama",
+              }),
+            ]),
+    });
+
+    await screen.findByText("api:claude (api)");
+    switchCase("p2");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText("local:ollama · llama");
+
+    // p1'in okuması **sonra** döner: yeni dosyanın listesini ezmez (INV-05).
+    await act(async () => {
+      pending.resolve([receiptRow({ id: "m1", destinationLabel: "geç gelen hedef" })]);
+      await Promise.resolve();
+    });
+    expect(within(card).queryByText("geç gelen hedef")).toBeNull();
+    expect(within(card).getByText("local:ollama · llama")).toBeTruthy();
+  });
+
+  it("başarılı gönderimden sonra makbuzlar tazelenir ve yeni satır görünür", async () => {
+    let rows: TransferReceiptRow[] = [];
+    setup({ receipts: async () => rows });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText(t("ai.receiptsEmpty"));
+
+    rows = [receiptRow({ id: "m1" })];
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+
+    await within(card).findByText(t("ai.receiptDispatched"));
+    expect(mocks.aiReceiptList.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("düşen gönderimde de makbuz tazelenir: «gönderilemedi» satırı görünür", async () => {
+    // Eski davranış: makbuz yalnız başarıda yazılıyordu → düşen denemenin
+    // sicilde hiç izi yoktu, ekranda da hiçbir şey görünmüyordu.
+    let rows: TransferReceiptRow[] = [];
+    setup({
+      receipts: async () => rows,
+      runExecute: async () => {
+        rows = [receiptRow({ id: "m9", status: "failed", outboundHash: "d".repeat(64) })];
+        throw { code: "E_AI_IO", message: "ağ hatası" };
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText(t("ai.receiptsEmpty"));
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("E_AI_IO"));
+    await within(card).findByText(t("ai.receiptFailed"));
+    expect(within(card).getByText("d".repeat(64))).toBeTruthy();
+  });
+
+  it("makbuz okuması düşerse sessiz kalmaz", async () => {
+    setup({
+      receipts: async () => {
+        throw { code: "E_DB_SQL", message: "makbuz okunamadı" };
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("E_DB_SQL"),
+    );
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    expect(within(card).queryByRole("table")).toBeNull();
+  });
+
+  it("okuma uçuşta iken «Yenile» kapalıdır", async () => {
+    const pending = deferred<TransferReceiptRow[]>();
+    let calls = 0;
+    setup({
+      receipts: () => {
+        calls += 1;
+        return calls === 1 ? Promise.resolve([receiptRow({ id: "m1" })]) : pending.promise;
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    await within(card).findByText(t("ai.receiptDispatched"));
+
+    const refresh = within(card).getByRole("button", {
+      name: t("ai.receiptsRefresh"),
+    }) as HTMLButtonElement;
+    fireEvent.click(refresh);
+    await waitFor(() => expect(calls).toBe(2));
+    await waitFor(() => expect(refresh.disabled).toBe(true));
+    expect(within(card).getByText(t("ai.receiptsLoading"))).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve([receiptRow({ id: "m1" })]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(refresh.disabled).toBe(false));
   });
 });
