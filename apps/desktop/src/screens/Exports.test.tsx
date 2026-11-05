@@ -59,6 +59,22 @@
 //     dosyanın altına yazılmaz.
 // 26. Devredilen **paketin** kapanışı da yeni dosyada başlatılan yazmanın
 //     kilidini açmaz (iki yazma yolu ayrı ayrı ölçülür).
+//
+// Kapsam şeridi (üçüncü `describe`; 27–31):
+//
+// 27. **Ölçülen kusur (K, INV-05):** kaydet diyaloğu açıkken dosya değişince
+//     yazma yine başlıyordu; istek **yeni** nesli aldığı için kapıdan geçiyor
+//     ve eski dosyanın “yazıldı” satırı + kapsamı yeni dosyanın altına
+//     düşüyordu.
+// 28. **Ölçülen kusur (L, aynı sınıf):** klasör seçimi açıkken dosya değişince
+//     devir paketi eski dosya için oluşturuluyordu.
+// 29. **Ölçülen kusur (M):** tek nesil sayacı yüzünden **ilgisiz** bir dışa
+//     aktarma, kullanıcının istediği kapsam tazelemesinin yanıtını düşürüyordu
+//     (tazeleme sessizce yutuluyordu).
+// 30. **Ölçülen kusur (N):** kapsam okuması uçuştayken “Yenile” açıktı → her
+//     tık yeni tam sayım sorgusu.
+// 31. Yazma başarısı kapsam şeridini **devralır**: uçuştaki eski okuma geç
+//     dönse de yazılan bloğun kapsamını ezmez ve okuma kilidi asılı kalmaz.
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -814,5 +830,194 @@ describe("Çıktılar ekranı uçuş yolları", () => {
       await second.promise;
     });
     expect(await findOkNotice()).toBeTruthy();
+  });
+});
+
+/* ------------------------------------------- kapsam şeridi ve diyalog uçuşu */
+
+describe("Çıktılar ekranı kapsam şeridi", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaults();
+  });
+
+  const saveButtons = () =>
+    screen.getAllByRole("button", { name: t("common.save") }) as HTMLButtonElement[];
+  const caseSelect = () => screen.getByLabelText(t("common.case")) as HTMLSelectElement;
+  const packageButton = () =>
+    screen.getByRole("button", { name: t("exports.packageCreate") }) as HTMLButtonElement;
+  const refreshButton = () =>
+    screen.getByRole("button", { name: t("exports.refresh") }) as HTMLButtonElement;
+
+  /** Dosya değiştirir ve yeni dosyanın kapsamını bekler. */
+  async function switchToP2() {
+    mocks.caseCoverage.mockResolvedValueOnce(PARTIAL);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await screen.findByText(coverageHeadline(PARTIAL));
+  }
+
+  it("kaydet diyaloğu açıkken dosya değişirse eski dosyanın dışa aktarması başlatılmaz", async () => {
+    await renderScreen();
+    const picked = deferred<string | null>();
+    dialog.save.mockReturnValue(picked.promise);
+
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(dialog.save).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      picked.resolve("/Users/avukat/Cikti/kira.json");
+      await picked.promise;
+    });
+
+    // Seçim yanıtı geldiğinde hedef dosya artık ekranda değil: yazma başlamaz.
+    expect(mocks.exportJson).not.toHaveBeenCalled();
+    expect(document.querySelector(".notice.ok")).toBeNull();
+    // Yeni dosyanın kapsamı da eski dosyanın çıktısıyla ezilmez.
+    expect(screen.getByText(coverageHeadline(PARTIAL))).toBeTruthy();
+    expect(screen.queryByText(coverageHeadline(FULL))).toBeNull();
+  });
+
+  it("klasör seçimi açıkken dosya değişirse eski dosyanın paketi oluşturulmaz", async () => {
+    await renderScreen();
+    const picked = deferred<string | null>();
+    dialog.open.mockReturnValue(picked.promise);
+
+    fireEvent.click(packageButton());
+    await waitFor(() => expect(dialog.open).toHaveBeenCalledTimes(1));
+
+    await switchToP2();
+
+    await act(async () => {
+      picked.resolve("/Users/avukat/Devir");
+      await picked.promise;
+    });
+
+    expect(mocks.exportPackage).not.toHaveBeenCalled();
+    expect(document.querySelector(".notice.ok")).toBeNull();
+    expect(screen.getByText(coverageHeadline(PARTIAL))).toBeTruthy();
+  });
+
+  it("dışa aktarma başlarken uçuştaki kapsam tazelemesi düşmez", async () => {
+    await renderScreen();
+    const read = deferred<ExportCoverage>();
+    mocks.caseCoverage.mockReturnValueOnce(read.promise);
+    fireEvent.click(refreshButton());
+    await waitFor(() => expect(mocks.caseCoverage).toHaveBeenCalledTimes(2));
+
+    const write = deferred<ExportResult>();
+    mocks.exportJson.mockReturnValue(write.promise);
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
+
+    // Yazma düşer; kullanıcının istediği tazeleme yine de yazılır.
+    await act(async () => {
+      write.reject(apiError("E_DISK_FULL", "Disk dolu."));
+      await write.promise.catch(() => undefined);
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain("E_DISK_FULL");
+
+    await act(async () => {
+      read.resolve(PARTIAL);
+      await read.promise;
+    });
+    expect(screen.getByText(coverageHeadline(PARTIAL))).toBeTruthy();
+  });
+
+  it("kapsam okunurken “Yenile” ikinci okuma başlatmaz", async () => {
+    const first = deferred<ExportCoverage>();
+    mocks.caseCoverage.mockReturnValueOnce(first.promise);
+
+    render(<Exports />);
+    await waitFor(() => expect(mocks.caseCoverage).toHaveBeenCalledTimes(1));
+    expect(refreshButton().disabled).toBe(true);
+
+    fireEvent.click(refreshButton());
+    expect(mocks.caseCoverage).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve(FULL);
+      await first.promise;
+    });
+    await screen.findByText(coverageHeadline(FULL));
+    await waitFor(() => expect(refreshButton().disabled).toBe(false));
+  });
+
+  it("yazma başarısı kapsam kilidini devralır ve eski okumayı geçersiz kılar", async () => {
+    mocks.caseCoverage.mockRejectedValue(apiError("E_DB", "Kapsam okunamadı."));
+    render(<Exports />);
+    await screen.findByRole("alert");
+    expect(screen.getByText(t("exports.coverageUnreadable"))).toBeTruthy();
+
+    const stale = deferred<ExportCoverage>();
+    mocks.caseCoverage.mockReturnValueOnce(stale.promise);
+    fireEvent.click(refreshButton());
+    await waitFor(() => expect(refreshButton().disabled).toBe(true));
+    expect(screen.getByText(t("exports.coverageLoading"))).toBeTruthy();
+
+    // Yazma başarısı kapsamı yanıttan yazar ve okuma kilidini devralır:
+    // asılı “Kapsam okunuyor…” satırı kalmaz, düğme yeniden açılır.
+    fireEvent.click(saveButtons()[0]!);
+    await findOkNotice();
+    await waitFor(() => expect(refreshButton().disabled).toBe(false));
+    expect(screen.getByText(coverageHeadline(FULL))).toBeTruthy();
+    expect(screen.queryByText(t("exports.coverageLoading"))).toBeNull();
+
+    // Uçuştaki eski okuma geç döner: yazılan bloğun kapsamını ezmez.
+    await act(async () => {
+      stale.resolve(PARTIAL);
+      await stale.promise;
+    });
+    expect(screen.queryByText(coverageHeadline(PARTIAL))).toBeNull();
+    expect(screen.getByText(coverageHeadline(FULL))).toBeTruthy();
+  });
+
+  it("paket başarısı da kapsam şeridini devralır", async () => {
+    mocks.caseCoverage.mockRejectedValue(apiError("E_DB", "Kapsam okunamadı."));
+    mocks.exportPackage.mockResolvedValue(packageResult());
+    render(<Exports />);
+    await screen.findByRole("alert");
+
+    const stale = deferred<ExportCoverage>();
+    mocks.caseCoverage.mockReturnValueOnce(stale.promise);
+    fireEvent.click(refreshButton());
+    await waitFor(() => expect(refreshButton().disabled).toBe(true));
+
+    fireEvent.click(packageButton());
+    await findOkNotice();
+    await waitFor(() => expect(refreshButton().disabled).toBe(false));
+
+    await act(async () => {
+      stale.resolve(PARTIAL);
+      await stale.promise;
+    });
+    expect(screen.queryByText(coverageHeadline(PARTIAL))).toBeNull();
+    expect(screen.getByText(coverageHeadline(FULL))).toBeTruthy();
+  });
+
+  it("dosya değişiminin kapsam okuması, ilgisiz bir yazma başlayınca düşmez", async () => {
+    await renderScreen();
+    const read = deferred<ExportCoverage>();
+    mocks.caseCoverage.mockReturnValueOnce(read.promise);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await waitFor(() => expect(mocks.caseCoverage).toHaveBeenCalledTimes(2));
+
+    const write = deferred<ExportResult>();
+    mocks.exportJson.mockReturnValue(write.promise);
+    fireEvent.click(saveButtons()[0]!);
+    await waitFor(() => expect(mocks.exportJson).toHaveBeenCalledTimes(1));
+
+    // Yazma düşer; yeni dosyanın kapsam okuması yine de yazılır.
+    await act(async () => {
+      write.reject(apiError("E_IO", "Yazılamadı."));
+      await write.promise.catch(() => undefined);
+    });
+    await act(async () => {
+      read.resolve(PARTIAL);
+      await read.promise;
+    });
+    expect(screen.getByText(coverageHeadline(PARTIAL))).toBeTruthy();
+    expect(screen.queryByText(t("exports.coverageLoading"))).toBeNull();
   });
 });

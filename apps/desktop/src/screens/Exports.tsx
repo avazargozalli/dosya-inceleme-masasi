@@ -44,8 +44,16 @@ export function Exports() {
   const [packagePassword, setPackagePassword] = useState("");
   const [coverage, setCoverage] = useState<ExportCoverage | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
-  // İstek sırası: dosya değişimi/uçuştaki istek eski yanıtı geçersiz kılar.
-  const seqRef = useRef(0);
+  // İki ayrı kuşak: kapsam **okumaları** (dosya değişimi + tazeleme) ile **yazmalar**
+  // (dışa aktarma + paket). Tek sayaç olsaydı ilgisiz bir yazma, kullanıcının
+  // istediği tazelemenin yanıtını düşürür; düşen okumanın `finally`si kapıdan
+  // geçmediği için `coverageLoading` kilidi asılı kalırdı.
+  const writeSeq = useRef(0);
+  const coverSeq = useRef(0);
+  // Diyalog uçuşunda dosya kimliği: seçim yanıtı geldiğinde başka dosyaya
+  // geçilmişse yazma **başlatılmaz** — yoksa eski dosyanın çıktısı yeni dosyanın
+  // altına “yazıldı” diye düşerdi (INV-05).
+  const caseRef = useRef("");
 
   useEffect(() => {
     (async () => {
@@ -64,14 +72,16 @@ export function Exports() {
   // yoksa yeni dosyanın isteği askıdayken başka dosyanın çıktısı güncel
   // sanılır (INV-05).
   useEffect(() => {
-    const seq = ++seqRef.current;
+    caseRef.current = caseId;
+    const seq = ++coverSeq.current;
+    // Kilit devri: yeni dosyanın altı düğmesi eski dosyanın isteğini beklemez
+    // (yanıt hiç gelmezse süresiz kilitli kalırdı). Devredilen yazmanın
+    // kapanışı artık `seq` kapısından geçmediği için kilidi geri açamaz.
+    writeSeq.current += 1;
     setResult(null);
     setPkg(null);
     setCoverage(null);
     setError(null);
-    // Kilit devri: yeni dosyanın altı düğmesi eski dosyanın isteğini beklemez
-    // (yanıt hiç gelmezse süresiz kilitli kalırdı). Devredilen isteğin
-    // kapanışı artık `seq` kapısından geçmediği için kilidi geri açamaz.
     setBusy(null);
     if (!caseId) {
       setCoverageLoading(false);
@@ -82,11 +92,11 @@ export function Exports() {
     (async () => {
       try {
         const next = await api.caseCoverage(caseId);
-        if (alive && seq === seqRef.current) setCoverage(next);
+        if (alive && seq === coverSeq.current) setCoverage(next);
       } catch (e) {
-        if (alive && seq === seqRef.current) setError(toApiError(e));
+        if (alive && seq === coverSeq.current) setError(toApiError(e));
       } finally {
-        if (alive && seq === seqRef.current) setCoverageLoading(false);
+        if (alive && seq === coverSeq.current) setCoverageLoading(false);
       }
     })();
     return () => {
@@ -97,7 +107,8 @@ export function Exports() {
   async function run(format: "json" | "csv" | "docx" | "pdf") {
     const selected = cases.find((c) => c.id === caseId);
     if (!selected) return;
-    // Seçici uçuşu: ikinci tıklama ikinci pencere açmaz (hedefi ikincisi ezerdi).
+    // Diyalog uçuşu: ikinci tıklama ikinci pencere açmaz (hedefi ikincisi ezerdi).
+    const asked = caseId;
     setPickBusy(true);
     let target: string | null = null;
     try {
@@ -113,7 +124,10 @@ export function Exports() {
       setPickBusy(false);
     }
     if (typeof target !== "string") return;
-    const seq = ++seqRef.current;
+    // Dosya, diyalog açıkken değiştiyse yazma **başlatılmaz**: hedef artık
+    // ekranda değil ve yanıt yeni dosyanın “yazıldı” satırı olarak görünürdü.
+    if (caseRef.current !== asked) return;
+    const seq = ++writeSeq.current;
     setBusy(format);
     setError(null);
     setResult(null);
@@ -121,17 +135,21 @@ export function Exports() {
       const fn =
         format === "json" ? api.exportJson : format === "csv" ? api.exportCsv : format === "docx" ? api.exportDocx : api.exportPdf;
       const exported = await fn(caseId, target);
-      if (seq === seqRef.current) {
+      if (seq === writeSeq.current) {
         setResult(exported);
         // Gösterilen kapsam, dosyaya gerçekten yazılan bloktur (yanıttan gelir).
         setCoverage(exported.coverage);
+        // Yazma kapsam şeridini devralır: uçuştaki okuma eski değeri ezemez,
+        // okumanın kilidi de (kapıdan geçemeyeceği için) burada kapanır.
+        coverSeq.current += 1;
+        setCoverageLoading(false);
       }
     } catch (e) {
-      if (seq === seqRef.current) setError(toApiError(e));
+      if (seq === writeSeq.current) setError(toApiError(e));
     } finally {
       // Yalnız **kendi** isteğinde kilidi bırakır: dosya değiştiyse kilit zaten
       // devredilmiştir; yeni dosyada başlatılan yazmanın kilidi erken açılmaz.
-      if (seq === seqRef.current) setBusy(null);
+      if (seq === writeSeq.current) setBusy(null);
     }
   }
 
@@ -140,6 +158,7 @@ export function Exports() {
     // Gönderilen parola donar: yanıt geldiğinde alanda **başka** bir parola
     // yazılıysa silinmez (uçuşta yazılan kaybolmaz).
     const submitted = packagePassword;
+    const asked = caseId;
     setPickBusy(true);
     let dir: string | null = null;
     try {
@@ -150,7 +169,8 @@ export function Exports() {
       setPickBusy(false);
     }
     if (typeof dir !== "string") return;
-    const seq = ++seqRef.current;
+    if (caseRef.current !== asked) return;
+    const seq = ++writeSeq.current;
     setBusy("package");
     setError(null);
     setPkg(null);
@@ -160,32 +180,36 @@ export function Exports() {
         dir,
         submitted.trim().length >= 10 ? submitted : undefined,
       );
-      if (seq === seqRef.current) {
+      if (seq === writeSeq.current) {
         setPkg(created);
         setCoverage(created.coverage);
+        coverSeq.current += 1;
+        setCoverageLoading(false);
         // Parola işi bitti: düz metin bellekte/DOM'da kalmaz — ama uçuşta
         // yazılan yeni parola bu temizliğin kurbanı olmaz.
         setPackagePassword((prev) => (prev === submitted ? "" : prev));
       }
     } catch (e) {
-      if (seq === seqRef.current) setError(toApiError(e));
+      if (seq === writeSeq.current) setError(toApiError(e));
     } finally {
-      if (seq === seqRef.current) setBusy(null);
+      if (seq === writeSeq.current) setBusy(null);
     }
   }
 
   async function refreshCoverage() {
+    // Okuma tek uçuşu düğmenin `disabled` kapısı tutar (React kapalı düğmede
+    // `onClick` üretmez); burada ikinci bir bayrak tutmak yedekli olurdu.
     if (!caseId) return;
-    const seq = ++seqRef.current;
+    const seq = ++coverSeq.current;
     setError(null);
     setCoverageLoading(true);
     try {
       const next = await api.caseCoverage(caseId);
-      if (seq === seqRef.current) setCoverage(next);
+      if (seq === coverSeq.current) setCoverage(next);
     } catch (e) {
-      if (seq === seqRef.current) setError(toApiError(e));
+      if (seq === coverSeq.current) setError(toApiError(e));
     } finally {
-      if (seq === seqRef.current) setCoverageLoading(false);
+      if (seq === coverSeq.current) setCoverageLoading(false);
     }
   }
 
@@ -220,7 +244,11 @@ export function Exports() {
             <h2>{t("exports.coverageTitle")}</h2>
             <p className="card-sub">{t("exports.coverageSub")}</p>
           </div>
-          <button className="btn ghost" disabled={!caseId || busy !== null || pickBusy} onClick={() => void refreshCoverage()}>
+          <button
+            className="btn ghost"
+            disabled={!caseId || busy !== null || pickBusy || coverageLoading}
+            onClick={() => void refreshCoverage()}
+          >
             {t("exports.refresh")}
           </button>
         </div>
