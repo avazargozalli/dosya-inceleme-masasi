@@ -690,3 +690,86 @@ içerikten kayar. Düzeltme görsel/yerleşim kararı (görüntüyü döndürüp
   destekler ve test eder.
 - Tauri penceresi bu ortamda açılmadı; ekranlar typecheck, birim testleri ve
   üretim derlemesiyle doğrulandı — gerçek tıklama/görsel QA yok.
+
+## Doğrulama (F07-T10 — notlar yazma uçuşu, 2026-11-05)
+
+Önceki `Notlar` turu (2026-11-04) okuma yollarını, dosya kimliğini ve taslak
+yarışını kapatmıştı. **Yazma** uçuşu hiç ölçülmemişti: `busy` kilidi, yanıt
+beklerken yazılan metin ve geç yanıtın hangi dosyaya/panoya yazıldığı. Koda
+karşı okundu; on bir ölçülmüş kusur çıktı.
+
+**Ölçülen kusurlar:**
+
+1. **Sessiz kayıp (besteci):** `addNote` başarısı başlık/gövde/çapa seçimini
+   **koşulsuz** temizliyordu → yanıt beklerken yazılan yeni not taslağı yanıtla
+   birlikte siliniyordu.
+2. **INV-05 (besteci, geç yanıt):** dosya değiştikten sonra gelen başarı
+   **yeni** dosyanın bestecisini (kasadan geri yüklenen taslağı) siliyordu.
+3. **Geç hata:** `addNote` hatası dosya değiştikten sonra yeni dosyanın altında
+   kırmızı bant oluyordu.
+4. **Sessiz kayıp (düzenleyici):** `saveEdit` başarısı paneldeki alanları
+   sunucunun metniyle eziyordu → uçuşta yazılan metin kayboluyordu.
+5. **Geç yanıt (düzenleyici):** dosya değiştikten sonra gelen kayıt yanıtı
+   **kapanan** paneli eski dosyanın notuyla yeniden açıyordu.
+6. **Geç hata (düzenleyici):** `saveEdit` hatası yeni dosyada görünüyordu.
+7. **Kilitsiz silme:** `remove` hiç kilit kurmuyordu → çift tık iki
+   `note_delete`; ikincisi `E_NOT_FOUND` ile **başarılı** silmenin üstüne kırmızı
+   yazıyordu.
+8. **Erken açılan kilit:** dört yazma yolunun `finally`si koşulsuz
+   `setBusy(false)` → devredilen isteğin kapanışı yeni dosyada başlatılan
+   yazmanın kilidini açıyordu.
+9. **Çakışmada çapraz metin:** `openConflict` "benim metnimi" **yanıt anındaki**
+   panelden okuyordu → başka notun paneli açıksa onun metni çakışan nota
+   yazılabiliyordu.
+10. **Kapanan panel yeniden açılıyordu:** panel kapatılınca uçuştaki kayıt
+    damgası ilerlemiyordu.
+11. **Aynı metin iki dosyada:** taslak karşılaştırması tek başına yetmiyordu;
+    iki dosyada aynı metin yazılıysa eski yanıt yeni dosyanın bestecisini yine
+    temizlerdi.
+
+**Düzeltme (`Notes.tsx` +235/−65, test +298):** `busySeq` +
+`beginWrite()`/`endWrite(seq)` (kapanış yalnız kendi damgasında kilidi bırakır);
+dosya değişimi ve **panel kapanışı** kilidi devreder; `composerNow`/`editNow`
+ref'leri "kullanıcı hâlâ gönderilen metni mi görüyor" karşılaştırmasını yapar
+(ekrandaki **ham** değer dondurulur, çekirdeğe kırpılmış metin gider);
+`openConflict(noteId, mine, seq)` gönderilen metni taşır ve uçuş damgasıyla
+kapılır; silme `removingId` ile satıra bağlanır (düğme uçuşta kapalı).
+
+**Testler:** `Notes.test.tsx` **23 → 34** (+11; yeni `describe` "notlar yazma
+uçuşu"). **Ham koşu (düzeltme öncesi bileşen, nihai 34 test): 11 failed | 23
+passed** — on biri de gerçek kusur; mevcut 23 test düzeltme öncesinde de yeşil.
+
+**Kapı kanıtı 11/11** (her koşu düzeltilmiş dosyadan, geri yükleme sha256
+`4296a47f94328daf50120474eba90088f578ee59e138c3a5a76b4483e849da62` birebir):
+M1 besteci taslak kapısı (1), M2 geç yanıt kapısı (1), M3 geç hata kapısı (1),
+M4 düzenleyici alan kapısı (1), M5 kayıt geç yanıt kapısı (1), M6 kayıt geç hata
+kapısı (1), M7 silme düğme kilidi (1), M8 `endWrite` kapısı (1), M9 çakışma
+uçuş kapısı (1), M10 `closeEdit` damgası (1). **Dürüst:** 2 numaralı kusur
+**çift kapılıdır** — iki kapıdan biri tek başına yeter, tek kapı mutasyonunda
+test **yeşil kalır**; M1+M2 birlikte kaldırıldığında kırmızıya düşer (ölçüldü,
+1 failed). Yedekli kapı bırakılmadı: her iki kapı da kendi başına başka bir
+kusuru (W1 / W11) ölçer. **Dürüst:** `endWrite` kapısı **tek yolda** (ekleme)
+mutasyonla ölçüldü; aynı yardımcı beş yazma yolunda kullanılıyor, kalan dördü
+ayrı ayrı mutasyona sokulmadı.
+
+**Ölçüm:** `tsc --noEmit` temiz · `vitest` **1151/1151** (60 dosya; 1140 → +11) ·
+`npm run build` temiz (**594,61 kB**, `index-BzKjwMkX.js`, gzip **160,52 kB**;
+CSS 7,28 kB). Rust değişmedi.
+
+**Commit/CI (ölçüldü):** kod `3681758` (2 dosya, +468/−65) → **`42079534108`
+7/7 YEŞİL** (ilk koşu; `arayüz` günlüğü **60 dosya / 1151 test**, **aynı paket**
+`index-BzKjwMkX.js` 594,61 kB / gzip 160,52 kB → yerel/CI **birebir**).
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek
+işaretçi zamanlaması ve **görsel QA yok**; `api` mock'lu olduğu için `note_*`
+SQL'i ve Rust **koşmaz**. Kapılar **arayüz düzeyinde**: doğrudan IPC bunları
+atlar. `busy` **tek bayrak** (kuyruk değil); `removingId` ayrı bayrak (silme
+`busy` kurmuyor). Taslak koruması **metin karşılaştırması**dır: aynı dosyada
+aynı metin yeniden yazıldıysa "değişmedi" sayılır ve besteci temizlenir
+(bilinçli). Yanıt sırası elle çözülen sözlerle denetlenir, gerçek gecikme değil.
+
+**Açık kayıt:** (a) dosya değişiminde besteci metni korunmaz (yeni dosyanın
+taslağı yüklenir) — bu turda değişmedi; (b) `dropPendingDraft` uçuşta dosya
+değişirse `setEditStatus` yazar (görünür etkisi yok, ölçülmedi); (c) silme
+başarısı düşen tazelemede yeşil satır + kırmızı hata birlikte görünür (ikisi de
+doğru beyan); (d) görsel QA **insan bekliyor**.
