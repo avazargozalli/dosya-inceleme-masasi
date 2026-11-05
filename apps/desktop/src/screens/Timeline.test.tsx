@@ -1039,3 +1039,174 @@ describe("kronoloji ekranı uçuş yolları", () => {
     expect(document.getElementById("edit-title-e1")).toBeNull();
   });
 });
+
+/* --------------------------------------- yazma kilidi devri (bu tur) */
+
+describe("kronoloji ekranı yazma kilidi devri", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("yazma uçuşunda dosya değişince yeni dosyanın alanları kilitli kalmaz", async () => {
+    const created = deferred<EventRow>();
+    setup({ events: async (caseId) => (caseId === "p1" ? [] : [E_P2]) });
+    await caseLoaded();
+    mocks.eventCreate.mockReturnValue(created.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Eski dosya olayı" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    expect(await screen.findByText("Ceza olayı")).toBeTruthy();
+
+    // Yeni dosyanın düğmeleri/alanları eski isteğin yanıtını **beklemez**;
+    // yanıt hiç gelmezse süresiz kilitli kalırdı.
+    expect(byId<HTMLInputElement>("tl-title")).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: t("timeline.addEvent") })).toHaveProperty(
+      "disabled",
+      false,
+    );
+
+    await act(async () => {
+      created.resolve(eventRow({ id: "e-old", title: "Eski dosya olayı" }));
+      await created.promise;
+    });
+  });
+
+  it("devredilen yazmanın kapanışı yeni dosyada başlatılan yazmanın kilidini erken açmaz", async () => {
+    const first = deferred<EventRow>();
+    const second = deferred<EventRow>();
+    setup({ events: async (caseId) => (caseId === "p1" ? [] : [E_P2]) });
+    await caseLoaded();
+    mocks.eventCreate.mockImplementation((caseId: string) =>
+      caseId === "p1" ? first.promise : second.promise,
+    );
+
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Birinci" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    await waitFor(() =>
+      expect(mocks.eventCreate).toHaveBeenCalledWith("p1", expect.anything()),
+    );
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    await screen.findByText("Ceza olayı");
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "İkinci" } });
+    const add = screen.getByRole("button", { name: t("timeline.addEvent") });
+    fireEvent.click(add);
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(2));
+    expect(add).toHaveProperty("disabled", true);
+
+    await act(async () => {
+      first.resolve(eventRow({ id: "e-old", title: "Birinci" }));
+      await first.promise;
+    });
+    // Eski yanıt, yeni dosyada süren yazmanın kilidini açmaz.
+    expect(add).toHaveProperty("disabled", true);
+
+    await act(async () => {
+      second.resolve(eventRow({ id: "e-new2", caseId: "p2", title: "İkinci" }));
+      await second.promise;
+    });
+    await waitFor(() => expect(add).toHaveProperty("disabled", false));
+  });
+
+  it("geç yanıt uçuşta yazılan yeni taslağı silmez", async () => {
+    const created = deferred<EventRow>();
+    setup({ events: async (caseId) => (caseId === "p1" ? [] : [E_P2]) });
+    await caseLoaded();
+    mocks.eventCreate.mockReturnValue(created.promise);
+
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Eski dosya" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    await screen.findByText("Ceza olayı");
+    // Kilit devredildiği için yeni dosyada taslak yazılabilir.
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), {
+      target: { value: "Yeni dosya taslağı" },
+    });
+
+    await act(async () => {
+      created.resolve(eventRow({ id: "e-old", title: "Eski dosya" }));
+      await created.promise;
+    });
+
+    // Yanıt yalnız **gönderilen** taslağı temizler; yenisini silmez.
+    expect(byId<HTMLInputElement>("tl-title").value).toBe("Yeni dosya taslağı");
+  });
+
+  it("eski dosyanın yazma hatası yeni dosyada görünmez", async () => {
+    const confirming = deferred<EventRow>();
+    setup({ events: async (caseId) => (caseId === "p1" ? [E_DRAFT] : [E_P2]) });
+    await screen.findByText(E_DRAFT.title);
+    mocks.eventConfirm.mockReturnValue(confirming.promise);
+
+    const row = rowOf(E_DRAFT.title);
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.confirm") }));
+    await waitFor(() => expect(mocks.eventConfirm).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    expect(await screen.findByText("Ceza olayı")).toBeTruthy();
+
+    await act(async () => {
+      confirming.reject({ code: "E_IO", message: "Onay yazılamadı.", retryable: true });
+      await confirming.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_IO")).toBeNull();
+  });
+
+  it("geçici kaydetme hatası düzenleyiciyi kapatmaz, yazılan metin korunur", async () => {
+    setup({ events: async () => [E_DRAFT] });
+    await screen.findByText(E_DRAFT.title);
+    mocks.eventUpdate.mockRejectedValue({
+      code: "E_IO",
+      message: "Kayıt yazılamadı.",
+      retryable: true,
+    });
+
+    const row = rowOf(E_DRAFT.title);
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.edit") }));
+    fireEvent.change(byId<HTMLInputElement>("edit-title-e1"), {
+      target: { value: "Benim başlığım" },
+    });
+    fireEvent.click(within(row).getByRole("button", { name: t("common.save") }));
+
+    expect(await screen.findByText("E_IO")).toBeTruthy();
+    // Panel kapanırsa kullanıcının yazdığı metin sessizce kaybolurdu.
+    expect(byId<HTMLInputElement>("edit-title-e1").value).toBe("Benim başlığım");
+  });
+
+  it("dosya değiştiyse eski dosyanın bağlama hatası yeni dosyada görünmez", async () => {
+    const linking = deferred<unknown>();
+    setup({
+      events: async (caseId) => (caseId === "p1" ? [E_UNKNOWN] : [E_P2]),
+      anchors: async () => [A1],
+      sources: async () => [],
+    });
+    await screen.findByText(E_UNKNOWN.title);
+    const row = rowOf(E_UNKNOWN.title);
+
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.sources") }));
+    await waitFor(() => expect(byId<HTMLSelectElement>("src-e2").value).toBe(A1.id));
+    mocks.eventLinkSource.mockReturnValue(linking.promise);
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.attach") }));
+    await waitFor(() => expect(mocks.eventLinkSource).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLSelectElement>("tl-case"), { target: { value: "p2" } });
+    expect(await screen.findByText("Ceza olayı")).toBeTruthy();
+
+    await act(async () => {
+      linking.reject({ code: "E_IO", message: "Kaynak bağlanamadı.", retryable: true });
+      await linking.promise.catch(() => undefined);
+    });
+
+    expect(screen.queryByText("E_IO")).toBeNull();
+  });
+});

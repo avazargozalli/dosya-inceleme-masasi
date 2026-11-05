@@ -57,6 +57,18 @@ const EMPTY: Draft = {
   description: "",
 };
 
+/** Gönderilen taslak hâlâ ekranda mı? Yanıt, uçuşta yazılmış yeni taslağı silmez. */
+function sameDraft(a: Draft, b: Draft): boolean {
+  return (
+    a.title === b.title &&
+    a.date === b.date &&
+    a.precision === b.precision &&
+    a.role === b.role &&
+    a.kind === b.kind &&
+    a.description === b.description
+  );
+}
+
 export function Timeline() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -76,6 +88,20 @@ export function Timeline() {
   // paneli kapatılıp yeniden açılsa bile eski isteğin geç yanıtı yenisini ezmez.
   const caseRef = useRef("");
   const linkSeq = useRef(0);
+  // Yazma nesli: yanıt **yalnız kendi** neslinde kilidi bırakır. Dosya değişimi
+  // kilidi devreder; devredilen isteğin kapanışı yeni dosyada başlatılan yazmanın
+  // kilidini erken açmaz.
+  const busySeq = useRef(0);
+
+  function beginWrite(): number {
+    busySeq.current += 1;
+    setBusy(true);
+    return busySeq.current;
+  }
+
+  function endWrite(seq: number): void {
+    if (busySeq.current === seq) setBusy(false);
+  }
 
   useEffect(() => {
     (async () => {
@@ -114,6 +140,13 @@ export function Timeline() {
     setLinks([]);
     setLinkAnchor("");
     setError(null);
+    // Uçuş kilidi **devredilir** (INV-05): yeni dosyanın düğmeleri/alanları eski
+    // isteğin yanıtını beklemez; yanıt hiç gelmezse süresiz kilitli kalırdı.
+    busySeq.current += 1;
+    setBusy(false);
+    // Kaynak paneli nesli de devralınır: eski dosyanın uçuştaki bağlama/kaldırma
+    // yanıtı (ve hatası) yeni dosyanın panelinde görünmez.
+    linkSeq.current += 1;
     void load(caseId);
   }, [caseId, load]);
 
@@ -126,24 +159,29 @@ export function Timeline() {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
-    setBusy(true);
+    // Gönderilen dosya ve taslak tıklama anında donar: uçuşta dosya değişip
+    // yeni taslak yazılırsa yanıt **onu** silmez.
+    const asked = caseId;
+    const submitted = draft;
+    const seq = beginWrite();
     try {
-      await api.eventCreate(caseId, {
-        eventKind: draft.kind,
-        dateValue: draft.precision === "unknown" ? null : draft.date || null,
-        datePrecision: draft.precision,
-        dateRole: draft.role,
-        dateRaw: draft.date || null,
-        title: draft.title.trim(),
-        description: draft.description.trim(),
+      await api.eventCreate(asked, {
+        eventKind: submitted.kind,
+        dateValue: submitted.precision === "unknown" ? null : submitted.date || null,
+        datePrecision: submitted.precision,
+        dateRole: submitted.role,
+        dateRaw: submitted.date || null,
+        title: submitted.title.trim(),
+        description: submitted.description.trim(),
         assertionKind: "user",
       });
-      setDraft(EMPTY);
-      await load(caseId);
+      setDraft((current) => (sameDraft(current, submitted) ? EMPTY : current));
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      // Eski dosyanın geç hatası yeni dosyanın ekranına yazılmaz.
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -167,12 +205,13 @@ export function Timeline() {
     // Gönderilen kayıt ve değerler tıklama anında donar; uçuşta başka satırın
     // düzenleyicisi açılırsa yanıt **onu** kapatmaz.
     const target = editing;
+    const asked = caseId;
     setError(null);
     if (target.draft.title.trim().length === 0) {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
-    setBusy(true);
+    const seq = beginWrite();
     try {
       await api.eventUpdate(target.id, target.rowVersion, {
         eventKind: target.draft.kind,
@@ -184,40 +223,47 @@ export function Timeline() {
         description: target.draft.description.trim(),
       });
       setEditing((current) => (current && current.id === target.id ? null : current));
-      await load(caseId);
+      await load(asked);
     } catch (e) {
-      // Çatışmada kayıt ezilmedi: taze sürümü yükle, kullanıcı yeniden düzenlesin.
-      setEditing((current) => (current && current.id === target.id ? null : current));
-      await load(caseId);
-      setError(toApiError(e));
+      const failure = toApiError(e);
+      // Yalnız **çakışmada** kayıt sunucuda değişmiştir: panel kapanır ve taze
+      // sürüm yüklenir. Geçici hatada kullanıcının yazdığı metin **korunur**
+      // (paneli kapatmak sessiz kayıp olurdu), hata görünür kalır.
+      if (failure.code === "E_CONFLICT") {
+        setEditing((current) => (current && current.id === target.id ? null : current));
+      }
+      await load(asked);
+      if (caseRef.current === asked) setError(failure);
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
   async function confirm(id: string) {
+    const asked = caseId;
     setError(null);
-    setBusy(true);
+    const seq = beginWrite();
     try {
       await api.eventConfirm(id);
-      await load(caseId);
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
   async function remove(id: string) {
+    const asked = caseId;
     setError(null);
-    setBusy(true);
+    const seq = beginWrite();
     try {
       await api.eventDelete(id);
-      await load(caseId);
+      await load(asked);
     } catch (e) {
-      setError(toApiError(e));
+      if (caseRef.current === asked) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(seq);
     }
   }
 
@@ -254,7 +300,7 @@ export function Timeline() {
     if (!linkAnchor) return;
     const seq = linkSeq.current;
     setError(null);
-    setBusy(true);
+    const write = beginWrite();
     try {
       await api.eventLinkSource(eventId, linkAnchor, linkRelation);
       const rows = await api.eventSources(eventId);
@@ -262,14 +308,14 @@ export function Timeline() {
     } catch (e) {
       if (seq === linkSeq.current) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(write);
     }
   }
 
   async function detach(id: string, eventId: string) {
     const seq = linkSeq.current;
     setError(null);
-    setBusy(true);
+    const write = beginWrite();
     try {
       await api.eventUnlinkSource(id);
       const rows = await api.eventSources(eventId);
@@ -277,7 +323,7 @@ export function Timeline() {
     } catch (e) {
       if (seq === linkSeq.current) setError(toApiError(e));
     } finally {
-      setBusy(false);
+      endWrite(write);
     }
   }
 
