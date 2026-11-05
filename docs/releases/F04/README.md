@@ -46,7 +46,7 @@ süresiz asılı kalıyordu.
 yeni `caseCoverage` (tam sayım) sorgusu açıyordu. Kırmızı: okuma sürerken düğme `disabled`
 beklenirken `false`.
 
-**Düzeltme (`Exports.tsx` +52/−22):** iki sayaç — `coverSeq` (dosya değişimi + tazeleme) ve
+**Düzeltme (`Exports.tsx` +51/−23):** iki sayaç — `coverSeq` (dosya değişimi + tazeleme) ve
 `writeSeq` (dışa aktarma + paket). Dosya değişimi yalnız `writeSeq`i devreder; kapsam
 okumaları bundan etkilenmez. **Yazma başarısı** kapsam şeridini **devralır**
 (`coverSeq += 1` + `setCoverageLoading(false)`): uçuştaki eski okuma, dosyaya yazılan bloğun
