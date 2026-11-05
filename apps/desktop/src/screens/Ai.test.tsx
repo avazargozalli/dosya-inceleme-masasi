@@ -1710,3 +1710,121 @@ describe("AI ekranı — yazma uçuşu, kilit devri ve geç yanıt kapıları", 
     ).toBe(false);
   });
 });
+
+describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
+  it("onay iptali uçuştayken çalıştır kapalıdır: gönderim iptalden önce başlamaz", async () => {
+    const revokeGate = deferred<void>();
+    setup({ revoke: () => revokeGate.promise });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.click(button(t("ai.revoke")));
+    await waitFor(() => expect(mocks.aiConsentRevoke).toHaveBeenCalledTimes(1));
+
+    // F09-T09: iptal **uygulanmadan** yeni gönderim başlamaz.
+    expect(button(t("ai.run")).disabled).toBe(true);
+    fireEvent.click(button(t("ai.run")));
+    expect(mocks.aiRunExecute).toHaveBeenCalledTimes(0);
+
+    revokeGate.resolve();
+    await waitFor(() => expect(screen.queryByRole("button", { name: t("ai.revoke") })).toBeNull());
+    expect(mocks.aiRunExecute).toHaveBeenCalledTimes(0);
+  });
+
+  it("iptal uçuşu, o sırada alınan yeni onayın çalıştırmasını kapatmaz", async () => {
+    const revokeGate = deferred<void>();
+    setup({ revoke: () => revokeGate.promise });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.revoke")));
+    await waitFor(() => expect(mocks.aiConsentRevoke).toHaveBeenCalledTimes(1));
+
+    // Eski onay iptal edilirken yeni bir onay alınır.
+    mocks.aiConsentCreate.mockResolvedValueOnce(CONSENT_NEW);
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(2));
+
+    // Yeni onay eski iptalin hedefi değil: çalıştırma açık kalır.
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT_NEW.id, "summarize");
+
+    revokeGate.resolve();
+    // Eski onayın geç iptali yeni onayı silmez.
+    await waitFor(() => expect(button(t("ai.revoke")).disabled).toBe(false));
+  });
+
+  it("çalıştırma onayın amacıyla koşar: iddia çıkarımı özet diye gönderilmez", async () => {
+    setup({ consent: async () => ({ ...CONSENT, purpose: "iddia_cikarimi" }) });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.change(purposeSelect(), { target: { value: "iddia_cikarimi" } });
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() =>
+      expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
+        "p1",
+        "api:claude@1.4.0",
+        "iddia_cikarimi",
+        ["d1", "d2"],
+      ),
+    );
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "extract_claims");
+  });
+
+  it("olay çıkarımı onayı olay göreviyle koşar", async () => {
+    setup({ consent: async () => ({ ...CONSENT, purpose: "olay_cikarimi" }) });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.change(purposeSelect(), { target: { value: "olay_cikarimi" } });
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "extract_events");
+  });
+
+  it("onaydan sonra amaç değişirse onay düşer ve yeni gönderim yeniden onay ister", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    // Onay "Özet" amacına bağlıydı; seçim değişince o onay artık geçerli değil.
+    fireEvent.change(purposeSelect(), { target: { value: "iddia_cikarimi" } });
+    await waitFor(() => expect(screen.queryByRole("button", { name: t("ai.revoke") })).toBeNull());
+    expect(button(t("ai.run")).disabled).toBe(true);
+    expect(mocks.aiRunExecute).toHaveBeenCalledTimes(0);
+
+    // Yeniden onay: gönderim yeni amacın göreviyle koşar.
+    mocks.aiConsentCreate.mockResolvedValueOnce({ ...CONSENT, purpose: "iddia_cikarimi" });
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "extract_claims");
+  });
+
+  it("onay satırı onaylanan amacı yazar", async () => {
+    setup({ consent: async () => ({ ...CONSENT, purpose: "olay_cikarimi" }) });
+    await screen.findByText("api:claude (api)");
+
+    fireEvent.click(button(t("ai.approve")));
+    const revoke = await screen.findByRole("button", { name: t("ai.revoke") });
+    const line = revoke.closest("p");
+    if (!(line instanceof HTMLParagraphElement)) throw new Error("onay satırı yok");
+    expect(line.textContent).toContain(
+      t("ai.consentPurpose", { purpose: t("ai.purposeEvents") }),
+    );
+  });
+});

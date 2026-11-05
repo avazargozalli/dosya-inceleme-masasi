@@ -518,6 +518,7 @@ export const tr = {
     skippedSuffix: "— bu belgeler gönderilmez.",
     previewEmpty: "ayrıştırılmış metin yok — bu dosyada gönderilecek içerik bulunmuyor",
     consentTail: "Onay {id}… · {provider} · iptal edilene kadar geçerli.",
+    consentPurpose: "Amaç: {purpose}",
     runsTitle: "Çalıştırmalar",
     runsSub: "Durum, sağlayıcı ve kullanım raporu · aday doğrulaması seçili çalıştırmada",
     colKind: "Tür",

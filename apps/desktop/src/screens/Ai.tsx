@@ -31,6 +31,34 @@ import {
   warningCount,
 } from "../lib/candidate";
 
+/**
+ * Onay **amaca özgüdür** (F09-T09): çalıştırmanın görev türü, onaylanan amaca
+ * göre koşar. `summarize` sabiti, "İddia çıkarımı" için onay alınmışken modele
+ * "özetle" demek olurdu.
+ */
+const PURPOSE_TASKS: Record<string, string> = {
+  ozet: "summarize",
+  olay_cikarimi: "extract_events",
+  iddia_cikarimi: "extract_claims",
+};
+
+function purposeTask(purpose: string): string {
+  return PURPOSE_TASKS[purpose] ?? purpose;
+}
+
+function purposeLabel(purpose: string): string {
+  switch (purpose) {
+    case "ozet":
+      return t("ai.purposeSummary");
+    case "olay_cikarimi":
+      return t("ai.purposeEvents");
+    case "iddia_cikarimi":
+      return t("ai.purposeClaims");
+    default:
+      return purpose;
+  }
+}
+
 export function Ai() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -46,6 +74,9 @@ export function Ai() {
   // ikinci kez çekirdeğe yazmaz.
   const [promoteBusy, setPromoteBusy] = useState(false);
   const [revokeBusy, setRevokeBusy] = useState(false);
+  // İptal **hedefi**: uçuştaki iptal hangi onaya ait? Yeni gönderim yalnız
+  // iptal edilmekte olan onayla kapanır; bu sırada alınmış yeni onay açık kalır.
+  const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
 
   // F11-T05 — aday doğrulama paneli
   const [runId, setRunId] = useState("");
@@ -93,14 +124,18 @@ export function Ai() {
     if (promoteSeq.current === seq) setPromoteBusy(false);
   }
 
-  function beginRevoke(): number {
+  function beginRevoke(target: string): number {
     revokeSeq.current += 1;
     setRevokeBusy(true);
+    setRevokeTarget(target);
     return revokeSeq.current;
   }
 
   function endRevoke(seq: number): void {
-    if (revokeSeq.current === seq) setRevokeBusy(false);
+    if (revokeSeq.current === seq) {
+      setRevokeBusy(false);
+      setRevokeTarget(null);
+    }
   }
 
   useEffect(() => {
@@ -132,6 +167,7 @@ export function Ai() {
     setBusy(false);
     setPromoteBusy(false);
     setRevokeBusy(false);
+    setRevokeTarget(null);
     setOverview(null);
     setConsent(null);
     setPreview(null);
@@ -152,6 +188,10 @@ export function Ai() {
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
   const offOnly = overview !== null && overview.providers.every((p) => p.providerType === "off");
+  // İptali **uygulanmakta** olan onayla yeni gönderim başlamaz (F09-T09):
+  // aksi hâlde içerik, iptal çekirdeğe ulaşmadan dışarı çıkabilir. Bu sırada
+  // alınmış **yeni** onay (başka kimlik) engellenmez.
+  const revokingConsent = consent !== null && revokeBusy && revokeTarget === consent.id;
   const selectedKind = CANDIDATE_KINDS.find((option) => option.value === kind) ?? CANDIDATE_KINDS[0]!;
   const draftError = draftJsonError(draft);
 
@@ -190,7 +230,8 @@ export function Ai() {
     setError(null);
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
-      await api.aiRunExecute(caseId, provider.id, consent.id, "summarize");
+      // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak koşmaz.
+      await api.aiRunExecute(caseId, provider.id, consent.id, purposeTask(consent.purpose));
       const next = await api.aiOverview(caseId);
       if (caseGen.current !== gen) return;
       setOverview(next);
@@ -324,7 +365,7 @@ export function Ai() {
     if (!consent) return;
     const gen = caseGen.current;
     const target = consent.id;
-    const write = beginRevoke();
+    const write = beginRevoke(target);
     try {
       await api.aiConsentRevoke(target);
     } catch (e) {
@@ -387,7 +428,17 @@ export function Ai() {
         <div className="row">
           <div className="field" style={{ maxWidth: 220 }}>
             <label htmlFor="ai-purpose">{t("ai.purpose")}</label>
-            <select id="ai-purpose" className="input" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+            <select
+              id="ai-purpose"
+              className="input"
+              value={purpose}
+              onChange={(e) => {
+                setPurpose(e.target.value);
+                // Onay **amaca özgüdür** (F09-T09): amaç değişince eski onay
+                // kapsam dışı kalır; yeni gönderim yeniden onay ister.
+                setConsent(null);
+              }}
+            >
               <option value="ozet">{t("ai.purposeSummary")}</option>
               <option value="olay_cikarimi">{t("ai.purposeEvents")}</option>
               <option value="iddia_cikarimi">{t("ai.purposeClaims")}</option>
@@ -400,7 +451,11 @@ export function Ai() {
             <button className="btn ghost" onClick={() => void showContent()}>
               {t("ai.showContent")}
             </button>
-            <button className="btn primary" disabled={!provider || !consent || busy} onClick={() => void start()}>
+            <button
+              className="btn primary"
+              disabled={!provider || !consent || busy || revokingConsent}
+              onClick={() => void start()}
+            >
               {t("ai.run")}
             </button>
           </div>
@@ -432,7 +487,8 @@ export function Ai() {
         ) : null}
         {consent ? (
           <p className="hint" style={{ margin: 0 }}>
-            {consentScopeLine(consent.selectedDocumentIds.length, preview)}{" · "}
+            {t("ai.consentPurpose", { purpose: purposeLabel(consent.purpose) })} ·{" "}
+            {consentScopeLine(consent.selectedDocumentIds.length, preview)} ·{" "}
             {t("ai.consentTail", {
               id: consent.id.slice(0, 8),
               provider: consent.providerSnapshot,
