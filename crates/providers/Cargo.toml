@@ -12,6 +12,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 ureq = { version = "2.12", features = ["json"] }
 
+# macOS Anahtar Zinciri (F09-T07): anahtar OS güvenli deposunda tutulur.
+# Yalnız macOS'ta derlenir; diğer platformlarda `secret::OsStore` açıkça
+# `E_AI_SECRET_UNSUPPORTED` döner (sessiz yok sayma yok).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [dev-dependencies]
 serial_test = "3"
 

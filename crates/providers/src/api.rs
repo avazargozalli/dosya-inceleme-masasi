@@ -10,8 +10,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::{
-    AiRequest, Candidate, Capabilities, Provider, ProviderError, ProviderProfile, ProviderType,
-    ValidationState,
+    secret::SecretTarget, AiRequest, Candidate, Capabilities, Provider, ProviderError,
+    ProviderProfile, ProviderType, ValidationState,
 };
 
 const SYSTEM_PROMPT: &str = "Yalnız JSON döndür. Hukuki sonuç üretme; yalnız aday alanlar öner. \
@@ -28,6 +28,10 @@ pub struct ApiProvider {
 
 impl ApiProvider {
     /// Uç nokta `https://` olmalıdır; düz HTTP reddedilir.
+    ///
+    /// Anahtar **çözülür**: önce OS güvenli deposu, sonra `DIM_API_KEY`;
+    /// hangisinin kullanıldığı profil künyesine (`auth_mode_verified`) yazılır
+    /// — künye artık sabit bir varsayım değil, ölçülen kaynaktır.
     pub fn new(endpoint: &str, model: &str) -> Result<Self, ProviderError> {
         let endpoint = endpoint.trim().trim_end_matches('/');
         if !endpoint.starts_with("https://") {
@@ -36,17 +40,19 @@ impl ApiProvider {
         if model.trim().is_empty() {
             return Err(ProviderError::Unsupported("model adı boş"));
         }
-        Ok(Self::build(endpoint, model))
+        let (api_key, target) = crate::secret::resolve_default()
+            .map_err(|error| ProviderError::Secret(error.to_string()))?;
+        Ok(Self::build(endpoint, model, api_key, target))
     }
 
-    fn build(endpoint: &str, model: &str) -> Self {
+    fn build(endpoint: &str, model: &str, api_key: Option<String>, target: SecretTarget) -> Self {
         Self {
             profile: ProviderProfile {
                 id: "api".to_string(),
                 provider_type: ProviderType::Api,
                 adapter_id: "openai-compatible".to_string(),
                 version_range: None,
-                auth_mode_verified: Some("env:DIM_API_KEY".to_string()),
+                auth_mode_verified: Some(target.label().to_string()),
                 capabilities: Capabilities {
                     structured_output: true,
                     streaming: false,
@@ -57,14 +63,16 @@ impl ApiProvider {
             },
             endpoint: endpoint.to_string(),
             model: model.trim().to_string(),
-            api_key: std::env::var("DIM_API_KEY").ok(),
+            api_key,
             timeout: Duration::from_secs(120),
         }
     }
 
     #[cfg(test)]
     pub fn for_test(endpoint: &str, model: &str) -> Self {
-        Self::build(endpoint, model)
+        // Testte gerçek anahtar zincirine ve ortam değişkenine **dokunulmaz**:
+        // kaynak `none` yazılır, anahtar gereken testler doğrudan atar.
+        Self::build(endpoint, model, None, SecretTarget::Missing)
     }
 
     #[must_use]
@@ -94,10 +102,9 @@ impl Provider for ApiProvider {
     }
 
     fn propose(&mut self, request: &AiRequest) -> Result<Candidate, ProviderError> {
-        let api_key = self
-            .api_key
-            .as_deref()
-            .ok_or(ProviderError::Unsupported("DIM_API_KEY tanımlı değil"))?;
+        let api_key = self.api_key.as_deref().ok_or(ProviderError::Unsupported(
+            "API anahtarı tanımlı değil (OS güvenli deposu ya da DIM_API_KEY)",
+        ))?;
         let url = format!("{}/chat/completions", self.endpoint);
         let response = ureq::post(&url)
             .set("Authorization", &format!("Bearer {api_key}"))
@@ -202,10 +209,45 @@ mod tests {
     #[test]
     #[serial]
     fn missing_key_is_reported_not_sent() {
-        let mut provider = ApiProvider::new("https://ornek.com/v1", "m").expect("provider");
+        // `new` gerçek depoya/ortama bakar; bu test kapıyı **anahtarsız**
+        // ölçer: sağlayıcı hiçbir istek kurmaz.
+        let mut provider = ApiProvider::for_test("https://ornek.com/v1", "m");
         provider.api_key = None;
         let error = provider.propose(&request()).unwrap_err();
         assert_eq!(error.code(), "E_AI_UNSUPPORTED");
+    }
+
+    #[test]
+    #[serial]
+    fn auth_mode_reports_the_resolved_source_not_a_constant() {
+        // Kaynak `none`: profil künyesi sabit "env:DIM_API_KEY" yazmaz.
+        let provider = ApiProvider::for_test("https://ornek.com/v1", "m");
+        assert_eq!(
+            provider.profile().auth_mode_verified.as_deref(),
+            Some("none")
+        );
+
+        let keychain = ApiProvider::build(
+            "https://ornek.com/v1",
+            "m",
+            Some("k".into()),
+            SecretTarget::OsKeychain,
+        );
+        assert_eq!(
+            keychain.profile().auth_mode_verified.as_deref(),
+            Some("os-keychain")
+        );
+
+        let env = ApiProvider::build(
+            "https://ornek.com/v1",
+            "m",
+            Some("k".into()),
+            SecretTarget::EnvVar,
+        );
+        assert_eq!(
+            env.profile().auth_mode_verified.as_deref(),
+            Some("env:DIM_API_KEY")
+        );
     }
 
     #[test]

@@ -265,6 +265,18 @@ export type ProviderProfileRow = {
   providerSnapshot: string;
 };
 
+/** API anahtarının gerçekten okunduğu yer. */
+export type SecretTarget = "os_keychain" | "env_var" | "missing";
+
+/** Anahtarın durumu. **Anahtar değeri bu tipte taşınmaz** (INV-11). */
+export type ApiKeyStatus = {
+  target: SecretTarget;
+  present: boolean;
+  /** OS deposu bu makinede kullanılabilir mi? `false` ise `note` nedenini yazar. */
+  osStoreAvailable: boolean;
+  note: string | null;
+};
+
 export type AiRunRow = {
   id: string;
   caseId: string;
@@ -1852,6 +1864,9 @@ export const api = {
   aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
   providerApiProfileSave: (endpoint: string, model: string) =>
     invoke<ProviderProfileRow>("provider_api_profile_save", { endpoint, model }),
+  aiSecretStatus: () => invoke<ApiKeyStatus>("ai_secret_status"),
+  aiSecretStore: (apiKey: string) => invoke<ApiKeyStatus>("ai_secret_store", { apiKey }),
+  aiSecretClear: () => invoke<ApiKeyStatus>("ai_secret_clear"),
   aiConsentPreview: (caseId: string, documentIds: string[]) =>
     invoke<ConsentPreview>("ai_consent_preview", { caseId, documentIds }),
   aiConsentCreate: (caseId: string, providerId: string, purpose: string, documentIds: string[]) =>

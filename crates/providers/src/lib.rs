@@ -13,6 +13,7 @@
 
 mod api;
 mod local;
+pub mod secret;
 #[cfg(test)]
 mod test_server;
 
@@ -110,6 +111,10 @@ pub enum ProviderError {
     Schema,
     #[error("işlem iptal edildi")]
     Cancelled,
+    /// API anahtarının kaynağı çözülemedi (OS güvenli deposu reddetti vb.).
+    /// Anahtarın **kendisi** bu iletiye girmez.
+    #[error("{0}")]
+    Secret(String),
 }
 
 impl ProviderError {
@@ -121,6 +126,7 @@ impl ProviderError {
             Self::Quota => "E_AI_QUOTA",
             Self::Schema => "E_AI_SCHEMA",
             Self::Cancelled => "E_AI_CANCELLED",
+            Self::Secret(_) => "E_AI_SECRET",
         }
     }
 

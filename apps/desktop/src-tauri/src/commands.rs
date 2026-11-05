@@ -6476,6 +6476,35 @@ pub fn provider_api_profile_save(
     Ok(db.register_api_profile(&endpoint, &model)?)
 }
 
+/// API anahtarının **nereden** okunacağını bildirir: OS güvenli deposu
+/// (macOS Anahtar Zinciri) → `DIM_API_KEY`. Anahtarın **kendisi dönmez**
+/// (INV-11); ekran yalnız kaynağı ve var olup olmadığını yazar.
+#[tauri::command]
+pub fn ai_secret_status() -> Result<dim_providers::secret::ApiKeyStatus, ApiError> {
+    Ok(dim_providers::secret::status_default()?)
+}
+
+/// Anahtarı **OS güvenli deposuna** yazar. Düz metin dosya, tablo veya Denetim
+/// kaydı yazılmaz; değer geri okunup ekrana verilmez, yalnız istek başlığında
+/// kullanılır. OS deposu yoksa `E_AI_SECRET_UNSUPPORTED` döner — sessizce
+/// başka yere yazılmaz.
+#[tauri::command]
+pub fn ai_secret_store(api_key: String) -> Result<dim_providers::secret::ApiKeyStatus, ApiError> {
+    Ok(dim_providers::secret::store_key(
+        &dim_providers::secret::os_store(),
+        &api_key,
+    )?)
+}
+
+/// Kayıtlı anahtarı OS güvenli deposundan siler (idempotent). Ortam değişkeni
+/// varsa anahtar yine okunur; ekran hangi kaynağa düştüğünü yazar.
+#[tauri::command]
+pub fn ai_secret_clear() -> Result<dim_providers::secret::ApiKeyStatus, ApiError> {
+    Ok(dim_providers::secret::clear_key(
+        &dim_providers::secret::os_store(),
+    )?)
+}
+
 #[tauri::command]
 pub fn ai_consent_preview(
     state: State<'_, AppState>,
@@ -6534,6 +6563,21 @@ pub fn ai_run_execute(
                 "Gönderilecek ayrıştırılmış metin yok.{}",
                 scope_skip_note(&scope.skipped)
             ),
+        ));
+    }
+
+    // Anahtar yoksa **hiçbir şey denenmez**: ne çalıştırma kaydı ne de makbuz
+    // açılır. Eski davranış onayı tüketiyor, "denendi" makbuzu yazıyor ve
+    // ardından "sağlayıcı desteklenmiyor" diyordu — oysa hiçbir bayt çıkmadı.
+    let key_status = dim_providers::secret::status_default()?;
+    if !key_status.present {
+        let hint = key_status.note.as_deref().unwrap_or(
+            "Sağlayıcılar ekranından anahtarı OS güvenli deposuna kaydedin ya da \
+             DIM_API_KEY ortam değişkenini tanımlayın.",
+        );
+        return Err(ApiError::new(
+            "E_AI_NO_KEY",
+            &format!("API anahtarı tanımlı değil; hiçbir şey gönderilmedi. {hint}"),
         ));
     }
 

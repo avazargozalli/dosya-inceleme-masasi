@@ -86,6 +86,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AdapterArch,
   AdapterView,
+  ApiKeyStatus,
   CliArchReport,
   CliAttackReport,
   CliCapabilityMatrix,
@@ -156,6 +157,9 @@ const mocks = vi.hoisted(() => ({
   providerProbeRun: vi.fn(),
   providerProbeCancel: vi.fn(),
   providerApiProfileSave: vi.fn(),
+  aiSecretStatus: vi.fn(),
+  aiSecretStore: vi.fn(),
+  aiSecretClear: vi.fn(),
   cliCapabilityMatrix: vi.fn(),
   cliAttackProbe: vi.fn(),
   cliArchReport: vi.fn(),
@@ -617,6 +621,22 @@ const SWEEP: CliSandboxSweep = {
   minAgeSecs: 3600,
 };
 
+/** Anahtar zincirinde kayıtlı anahtar. */
+const KEYCHAIN_STATUS: ApiKeyStatus = {
+  target: "os_keychain",
+  present: true,
+  osStoreAvailable: true,
+  note: null,
+};
+
+/** Hiçbir kaynakta anahtar yok. */
+const MISSING_STATUS: ApiKeyStatus = {
+  target: "missing",
+  present: false,
+  osStoreAvailable: true,
+  note: null,
+};
+
 type SetupOptions = {
   rows?: AdapterView[];
   probeRun?: (adapterId: string) => Promise<CliProbeView>;
@@ -630,6 +650,7 @@ type SetupOptions = {
   measure?: (adapterId: string, confirm: boolean) => Promise<CliResidueMeasure>;
   cleanup?: (adapterId: string, at: number, paths: string[]) => Promise<CliResidueCleanup>;
   sweep?: () => Promise<CliSandboxSweep>;
+  secretStatus?: () => Promise<ApiKeyStatus>;
 };
 
 function setup(options: SetupOptions = {}) {
@@ -637,6 +658,9 @@ function setup(options: SetupOptions = {}) {
   mocks.providerProbeRun.mockImplementation(options.probeRun ?? (async () => probe()));
   mocks.providerProbeCancel.mockImplementation(options.probeCancel ?? (async () => true));
   mocks.providerApiProfileSave.mockResolvedValue(undefined);
+  mocks.aiSecretStatus.mockImplementation(options.secretStatus ?? (async () => KEYCHAIN_STATUS));
+  mocks.aiSecretStore.mockImplementation(async () => KEYCHAIN_STATUS);
+  mocks.aiSecretClear.mockImplementation(async () => MISSING_STATUS);
   mocks.cliCapabilityMatrix.mockImplementation(options.matrix ?? (async () => MATRIX));
   mocks.cliAttackProbe.mockImplementation(options.attack ?? (async () => ATTACK));
   mocks.cliArchReport.mockImplementation(options.arch ?? (async () => ARCH_REPORT));
@@ -2109,5 +2133,150 @@ describe("alt kartlar: çekirdeğin tek CLI kilidi", () => {
       measure.resolve(MEASURE);
     });
     expect(button(t("providers.measureRun")).disabled).toBe(false);
+  });
+});
+
+describe("API anahtarı deposu", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  /** Kaynak satırı: "Kaynak: <strong>…</strong> · kayıtlı". */
+  function sourceLine(): HTMLElement {
+    const found = screen.getByTestId("api-key-source");
+    return found as HTMLElement;
+  }
+
+  function keyInput(): HTMLInputElement {
+    const found = screen.getByLabelText(t("providers.keyInputAria"));
+    return found as HTMLInputElement;
+  }
+
+  it("kaynağı çekirdekten okur: anahtar zinciri", async () => {
+    setup();
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceKeychain")));
+    expect(sourceLine().textContent).toContain(t("providers.keyPresent"));
+    // Sabit "DIM_API_KEY" yazmaz: kaynak ölçülür.
+    expect(sourceLine().textContent).not.toContain("DIM_API_KEY ortam");
+  });
+
+  it("ortam değişkeni kaynağını ayırır", async () => {
+    setup({
+      secretStatus: async () => ({
+        target: "env_var",
+        present: true,
+        osStoreAvailable: true,
+        note: null,
+      }),
+    });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceEnv")));
+    expect(sourceLine().textContent).not.toContain(t("providers.keySourceKeychain"));
+  });
+
+  it("anahtar yokken bunu 'tanımlı değil' diye yazar", async () => {
+    setup({ secretStatus: async () => MISSING_STATUS });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceMissing")));
+    expect(sourceLine().textContent).toContain(t("providers.keyMissing"));
+  });
+
+  it("kaydetme tam sözleşmeyle gider, alan temizlenir ve anahtar ekranda kalmaz", async () => {
+    setup({ secretStatus: async () => MISSING_STATUS });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceMissing")));
+
+    fireEvent.change(keyInput(), { target: { value: "  gizli-anahtar-123  " } });
+    fireEvent.click(button(t("providers.keySave")));
+
+    await waitFor(() => expect(mocks.aiSecretStore).toHaveBeenCalledTimes(1));
+    // Kırpılmış değer gider: yapıştırma boşluğu başlığa sızmasın.
+    expect(mocks.aiSecretStore).toHaveBeenCalledWith("gizli-anahtar-123");
+    await screen.findByText(t("providers.keySaved"));
+    expect(keyInput().value).toBe("");
+    // Anahtar değeri DOM'da hiçbir yerde kalmaz.
+    expect(document.body.textContent).not.toContain("gizli-anahtar-123");
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceKeychain")));
+  });
+
+  it("uçuşta alan ve iki düğme kilitlidir (tek uçuş)", async () => {
+    const pending = deferred<ApiKeyStatus>();
+    setup({ secretStatus: async () => MISSING_STATUS });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceMissing")));
+    mocks.aiSecretStore.mockImplementation(() => pending.promise);
+
+    fireEvent.change(keyInput(), { target: { value: "anahtar" } });
+    fireEvent.click(button(t("providers.keySave")));
+
+    await waitFor(() => expect(keyInput().disabled).toBe(true));
+    expect(button(t("providers.keyClear")).disabled).toBe(true);
+
+    await act(async () => {
+      pending.resolve(KEYCHAIN_STATUS);
+    });
+    expect(keyInput().disabled).toBe(false);
+    expect(button(t("providers.keySave")).disabled).toBe(true); // alan boş
+  });
+
+  it("uçuşta yazılan yeni anahtar yanıtla silinmez", async () => {
+    const pending = deferred<ApiKeyStatus>();
+    setup({ secretStatus: async () => MISSING_STATUS });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceMissing")));
+    mocks.aiSecretStore.mockImplementation(() => pending.promise);
+
+    fireEvent.change(keyInput(), { target: { value: "birinci" } });
+    fireEvent.click(button(t("providers.keySave")));
+    await waitFor(() => expect(keyInput().disabled).toBe(true));
+
+    // Kilit alanı kapatır; kullanıcı yanıt gelmeden yeni değer yazamaz ama
+    // programatik olarak yazılmış bir taslak yine de korunmalı.
+    fireEvent.change(keyInput(), { target: { value: "ikinci" } });
+    await act(async () => {
+      pending.resolve(KEYCHAIN_STATUS);
+    });
+
+    expect(keyInput().value).toBe("ikinci");
+  });
+
+  it("silme çekirdeğe gider ve kaynağı tazeler", async () => {
+    setup({ secretStatus: async () => KEYCHAIN_STATUS });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceKeychain")));
+
+    fireEvent.click(button(t("providers.keyClear")));
+
+    await waitFor(() => expect(mocks.aiSecretClear).toHaveBeenCalledTimes(1));
+    await screen.findByText(t("providers.keyCleared"));
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceMissing")));
+  });
+
+  it("kaydetme hatası sessiz yutulmaz, yazılan anahtar korunur", async () => {
+    setup({ secretStatus: async () => MISSING_STATUS });
+    await waitFor(() => expect(sourceLine().textContent).toContain(t("providers.keySourceMissing")));
+    mocks.aiSecretStore.mockRejectedValue({ code: "E_AI_SECRET", message: "zincir reddetti" });
+
+    fireEvent.change(keyInput(), { target: { value: "yazilan" } });
+    fireEvent.click(button(t("providers.keySave")));
+
+    await screen.findByText("E_AI_SECRET");
+    expect(screen.getByText(/zincir reddetti/)).toBeTruthy();
+    expect(keyInput().value).toBe("yazilan");
+  });
+
+  it("OS deposu yoksa yazar ve yazma düğmelerini kapatır", async () => {
+    setup({
+      secretStatus: async () => ({
+        target: "env_var",
+        present: true,
+        osStoreAvailable: false,
+        note: "OS güvenli deposu kullanılamıyor: yalnız macOS Anahtar Zinciri uygulandı",
+      }),
+    });
+
+    await screen.findByText(t("providers.keyStoreUnavailable"));
+    await waitFor(() => expect(button(t("providers.keySave")).disabled).toBe(true));
+    expect(button(t("providers.keyClear")).disabled).toBe(true);
+    // Neden kullanılamadığı da yazılır (anahtar değeri değil).
+    expect(screen.getByText(/yalnız macOS Anahtar Zinciri/)).toBeTruthy();
   });
 });

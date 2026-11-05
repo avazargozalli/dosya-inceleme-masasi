@@ -1038,7 +1038,9 @@ pub struct ConsentScope {
 
 impl Database {
     /// `api` tipi sağlayıcı profili kaydeder. **API anahtarı saklanmaz**;
-    /// anahtar yalnız `DIM_API_KEY` ortam değişkeninden okunur ve hiçbir
+    /// anahtarın kaynağı (OS güvenli deposu ya da `DIM_API_KEY`) profil
+    /// künyesinde **iddia edilmez** — çalışma anında `dim_providers::secret`
+    /// çözer ve `auth_mode_verified` olarak bildirir. Anahtar hiçbir
     /// tabloya/Denetim kaydına yazılmaz. Uç nokta `https://` olmalıdır.
     pub fn register_api_profile(
         &self,
@@ -1063,9 +1065,7 @@ impl Database {
             if current.as_ref() == Some(&(endpoint.to_string(), model.to_string())) {
                 return Ok(existing);
             }
-            let capabilities = serde_json::json!(
-                {"endpoint": endpoint, "model": model, "auth": "env:DIM_API_KEY"}
-            );
+            let capabilities = serde_json::json!({ "endpoint": endpoint, "model": model });
             self.conn().execute(
                 "UPDATE provider_profiles
                  SET capabilities=?1, updated_at=?2, row_version=row_version+1
@@ -1087,11 +1087,10 @@ impl Database {
         }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
-        let capabilities =
-            serde_json::json!({"endpoint": endpoint, "model": model, "auth": "env:DIM_API_KEY"});
+        let capabilities = serde_json::json!({ "endpoint": endpoint, "model": model });
         self.conn().execute(
             "INSERT INTO provider_profiles (id,provider_type,adapter_id,execution_environment,auth_mode_requested,capabilities,policy_version,created_at,updated_at)
-             VALUES (?1,'api','openai-compatible','remote','env:DIM_API_KEY',?2,'1',?3,?3)",
+             VALUES (?1,'api','openai-compatible','remote','auto',?2,'1',?3,?3)",
             rusqlite::params![id, capabilities.to_string(), now],
         )?;
         self.append_audit(
@@ -1893,6 +1892,54 @@ mod tests {
             profiles.iter().filter(|p| p.provider_type == "api").count(),
             1
         );
+    }
+
+    /// Profil künyesi anahtarın **kaynağını iddia etmez**: anahtar OS güvenli
+    /// deposundan da gelebilir. Sabit `auth: env:DIM_API_KEY` yazmak, zincir
+    /// kullanıldığında Denetim kaydında yanlış beyan olurdu.
+    #[test]
+    fn api_profile_does_not_claim_the_key_source() {
+        let (db, _case_id, _provider) = setup();
+        db.register_api_profile("https://example.com/v1", "ornek-model")
+            .expect("profil");
+        let raw: String = db
+            .conn()
+            .query_row(
+                "SELECT capabilities FROM provider_profiles WHERE provider_type='api'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("kayıt");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        assert!(value.get("auth").is_none(), "{raw}");
+        assert_eq!(value["endpoint"], "https://example.com/v1");
+        assert_eq!(value["model"], "ornek-model");
+        // Ters yön: uç nokta/model **gerçekten** yazılı (iddiasızlık bilgi
+        // kaybı değil).
+        assert_eq!(
+            db.api_destination(
+                &db.list_provider_profiles()
+                    .expect("liste")
+                    .into_iter()
+                    .find(|p| p.provider_type == "api")
+                    .expect("profil")
+                    .id
+            )
+            .expect("varış"),
+            Some((
+                "https://example.com/v1".to_string(),
+                "ornek-model".to_string()
+            ))
+        );
+        let requested: String = db
+            .conn()
+            .query_row(
+                "SELECT auth_mode_requested FROM provider_profiles WHERE provider_type='api'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("kip");
+        assert_eq!(requested, "auto");
     }
 
     /// API profili **güncellenebilir** olmalı: kullanıcı uç noktayı/modeli

@@ -4,6 +4,7 @@ import {
   toApiError,
   type AdapterView,
   type ApiError,
+  type ApiKeyStatus,
   type CliArchReport,
   type CliAttackReport,
   type CliCapabilityMatrix,
@@ -125,6 +126,15 @@ function profileFailureText(error: unknown): string {
     return error.message;
   }
   return `${failure.code} — ${failure.message}`;
+}
+
+// Anahtarın **gerçekten** okunduğu yeri yazar; "nereden okunur" tahmin
+// edilmez. Kaynak okunamadıysa bunu da açıkça söyler.
+function keySourceText(status: ApiKeyStatus | null): string {
+  if (status === null) return t("providers.keySourceUnknown");
+  if (status.target === "os_keychain") return t("providers.keySourceKeychain");
+  if (status.target === "env_var") return t("providers.keySourceEnv");
+  return t("providers.keySourceMissing");
 }
 
 export function Providers() {
@@ -295,6 +305,74 @@ export function Providers() {
   const [apiMessage, setApiMessage] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
 
+  // API anahtarının **gerçekten** okunduğu yer. Anahtar değeri hiçbir zaman
+  // durumda tutulmaz: yalnız yazılırken `keyDraft`ta durur, gönderilince
+  // temizlenir; sunucudan geri okunmaz (INV-11).
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyMessage, setKeyMessage] = useState("");
+  const [keyError, setKeyError] = useState<ApiError | null>(null);
+  const [keyBusy, setKeyBusy] = useState(false);
+  // Okuma ve yazma aynı nesil sayacını paylaşır: geç gelen eski yanıt yeni
+  // durumun üstüne yazmaz, kilidi de erken açmaz.
+  const keySeq = useRef(0);
+
+  useEffect(() => {
+    const seq = ++keySeq.current;
+    api
+      .aiSecretStatus()
+      .then((status) => {
+        if (seq !== keySeq.current) return;
+        setKeyStatus(status);
+        setKeyError(null);
+      })
+      .catch((failure) => {
+        if (seq !== keySeq.current) return;
+        setKeyStatus(null);
+        setKeyError(toApiError(failure));
+      });
+  }, []);
+
+  async function saveKey() {
+    const submitted = keyDraft;
+    setKeyBusy(true);
+    setKeyMessage("");
+    setKeyError(null);
+    const seq = ++keySeq.current;
+    try {
+      const status = await api.aiSecretStore(submitted.trim());
+      if (seq !== keySeq.current) return;
+      setKeyStatus(status);
+      setKeyMessage(t("providers.keySaved"));
+      // Taslak koruması: yalnız **gönderilen** değer hâlâ yazılıysa temizle;
+      // uçuşta yazılan yeni anahtar yanıtla silinmesin.
+      setKeyDraft((current) => (current === submitted ? "" : current));
+    } catch (failure) {
+      if (seq !== keySeq.current) return;
+      setKeyError(toApiError(failure));
+    } finally {
+      if (seq === keySeq.current) setKeyBusy(false);
+    }
+  }
+
+  async function clearKey() {
+    setKeyBusy(true);
+    setKeyMessage("");
+    setKeyError(null);
+    const seq = ++keySeq.current;
+    try {
+      const status = await api.aiSecretClear();
+      if (seq !== keySeq.current) return;
+      setKeyStatus(status);
+      setKeyMessage(t("providers.keyCleared"));
+    } catch (failure) {
+      if (seq !== keySeq.current) return;
+      setKeyError(toApiError(failure));
+    } finally {
+      if (seq === keySeq.current) setKeyBusy(false);
+    }
+  }
+
   // Yalnız boşluktan oluşan alan geçerli bir uç nokta/model değildir; çekirdeğe
   // kırpılmış değer gider (kopyala-yapıştır boşluğu yazımı bozmasın).
   const profileReady = apiEndpoint.trim() !== "" && apiModel.trim() !== "";
@@ -320,8 +398,7 @@ export function Providers() {
             <h2>{t("providers.apiProfileTitle")}</h2>
             <p className="card-sub">
               {t("providers.apiKeySubBefore")} <strong>{t("providers.apiKeySubStrong")}</strong>
-              {t("providers.apiKeySubAfter")} <code>DIM_API_KEY</code>{" "}
-              {t("providers.apiKeySubTail")}
+              {t("providers.apiKeySubAfter")}
             </p>
           </div>
         </div>
@@ -357,6 +434,62 @@ export function Providers() {
           </button>
         </div>
         {apiMessage ? <p className="card-sub">{apiMessage}</p> : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("providers.keyTitle")}</h2>
+            <p className="card-sub">{t("providers.keySub")}</p>
+          </div>
+        </div>
+        <p className="card-sub" data-testid="api-key-source">
+          {t("providers.keySourceLabel")}: <strong>{keySourceText(keyStatus)}</strong>
+          {keyStatus ? (
+            <>
+              {" · "}
+              {keyStatus.present ? t("providers.keyPresent") : t("providers.keyMissing")}
+            </>
+          ) : null}
+        </p>
+        {keyStatus && !keyStatus.osStoreAvailable ? (
+          <div className="notice">{t("providers.keyStoreUnavailable")}</div>
+        ) : null}
+        {keyStatus?.note ? <p className="card-sub">{keyStatus.note}</p> : null}
+        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          <input
+            type="password"
+            aria-label={t("providers.keyInputAria")}
+            placeholder={t("providers.keyPlaceholder")}
+            value={keyDraft}
+            disabled={keyBusy}
+            onChange={(event) => {
+              setKeyDraft(event.target.value);
+              setKeyMessage("");
+            }}
+            style={{ minWidth: 260 }}
+          />
+          <button
+            className="btn"
+            disabled={keyBusy || keyDraft.trim() === "" || keyStatus?.osStoreAvailable === false}
+            onClick={() => void saveKey()}
+          >
+            {keyBusy ? t("providers.keySaving") : t("providers.keySave")}
+          </button>
+          <button
+            className="btn"
+            disabled={keyBusy || keyStatus?.osStoreAvailable === false}
+            onClick={() => void clearKey()}
+          >
+            {t("providers.keyClear")}
+          </button>
+        </div>
+        {keyMessage ? <p className="card-sub">{keyMessage}</p> : null}
+        {keyError ? (
+          <div className="notice danger">
+            <strong>{keyError.code}</strong> — {keyError.message}
+          </div>
+        ) : null}
       </div>
 
       <div className="page-head">

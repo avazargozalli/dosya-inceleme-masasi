@@ -25,6 +25,16 @@ impl ApiError {
     }
 }
 
+impl From<dim_providers::secret::SecretError> for ApiError {
+    fn from(value: dim_providers::secret::SecretError) -> Self {
+        Self {
+            code: value.code().to_string(),
+            message: value.to_string(),
+            retryable: false,
+        }
+    }
+}
+
 impl From<dim_ingest::worker::WorkerError> for ApiError {
     fn from(value: dim_ingest::worker::WorkerError) -> Self {
         Self {
