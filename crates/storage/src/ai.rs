@@ -7,6 +7,7 @@
 
 use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{now_iso, Database, NewAnchor, StorageError};
 
@@ -57,7 +58,10 @@ pub struct TransferConsentRow {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewTransferConsent {
-    pub provider_snapshot: String,
+    /// Onayın bağlanacağı sağlayıcı **profili**. Kimlik dizesini (`adapter@sürüm`)
+    /// çağıran yazmaz; çekirdek profilden türetir (uç nokta + model parmak izi
+    /// dahil), böylece arayüz ile çekirdek ayrışamaz.
+    pub provider_id: String,
     pub case_scope: String,
     pub purpose: String,
     #[serde(default)]
@@ -65,6 +69,45 @@ pub struct NewTransferConsent {
     #[serde(default)]
     pub expires_at: Option<String>,
     pub consent_text_version: String,
+}
+
+/// Sağlayıcı profilinin **varış yerine bağlı** kimliği: `adapter@politika`.
+/// API profilinde kayıtlı uç nokta ve modelin kısa sha256 parmak izi de girer —
+/// aynı adapter sürümüyle **başka** bir uç noktaya/modelle gönderim, önceki
+/// onayla yapılamaz (şartname: izin kendiliğinden genişlemez).
+fn provider_snapshot(adapter_id: &str, policy_version: &str, capabilities: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(capabilities).unwrap_or(serde_json::Value::Null);
+    let endpoint = value
+        .get("endpoint")
+        .and_then(|item| item.as_str())
+        .unwrap_or_default();
+    let model = value
+        .get("model")
+        .and_then(|item| item.as_str())
+        .unwrap_or_default();
+    if endpoint.is_empty() && model.is_empty() {
+        return format!("{adapter_id}@{policy_version}");
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(endpoint.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(model.as_bytes());
+    let digest = hasher.finalize();
+    let fingerprint: String = digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{adapter_id}@{policy_version}#{fingerprint}")
+}
+
+/// Profil satırının kimlik için gereken alanları (ham `capabilities` dahil).
+struct ProfileRecord {
+    provider_type: String,
+    adapter_id: String,
+    policy_version: String,
+    capabilities: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,16 +132,49 @@ pub struct NewAiContextItem {
 }
 
 impl Database {
+    /// Profil satırının kimlik için gereken alanlarını okur; profil yoksa `None`.
+    fn profile_record(&self, provider_id: &str) -> Result<Option<ProfileRecord>, StorageError> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT provider_type,adapter_id,policy_version,capabilities
+                 FROM provider_profiles WHERE id=?1",
+                [provider_id],
+                |row| {
+                    Ok(ProfileRecord {
+                        provider_type: row.get(0)?,
+                        adapter_id: row.get(1)?,
+                        policy_version: row.get(2)?,
+                        capabilities: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Onay **sağlayıcı profiline** bağlanır. Kimlik dizesi çağırandan gelmez;
+    /// profilden türetilir (`provider_snapshot`), böylece uç nokta/model
+    /// değişince eski onay kendiliğinden geçersizleşir.
     pub fn create_transfer_consent(
         &self,
         new: &NewTransferConsent,
     ) -> Result<TransferConsentRow, StorageError> {
-        if new.provider_snapshot.trim().is_empty()
-            || new.case_scope.trim().is_empty()
-            || new.purpose.trim().is_empty()
-        {
+        if new.case_scope.trim().is_empty() || new.purpose.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
+        let profile = self
+            .profile_record(&new.provider_id)?
+            .ok_or(StorageError::AiProvider)?;
+        // AI kapalıyken aktarım onayı alınamaz: "hiçbir yere gönderme" onayı
+        // bir yetki değildir.
+        if profile.provider_type == "off" {
+            return Err(StorageError::AiOff);
+        }
+        let snapshot = provider_snapshot(
+            &profile.adapter_id,
+            &profile.policy_version,
+            &profile.capabilities,
+        );
         let exists: i64 = self.conn().query_row(
             "SELECT count(*) FROM cases WHERE id=?1 AND deleted_at IS NULL",
             [&new.case_scope],
@@ -134,7 +210,7 @@ impl Database {
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             rusqlite::params![
                 id,
-                new.provider_snapshot.trim(),
+                snapshot,
                 new.case_scope,
                 new.purpose.trim(),
                 serde_json::to_string(&selected).unwrap_or_else(|_| "[]".into()),
@@ -148,7 +224,7 @@ impl Database {
             Some(&id),
             "approve",
             "local-user",
-            &serde_json::json!({"provider": new.provider_snapshot, "documents": new.selected_document_ids.len()}),
+            &serde_json::json!({"provider": snapshot, "documents": new.selected_document_ids.len()}),
         )?;
         self.get_transfer_consent(&id)?
             .ok_or(StorageError::NotFound)
@@ -225,20 +301,18 @@ impl Database {
                 return Err(StorageError::AiConsent);
             }
         }
-        // Onay **sağlayıcıya** da bağlıdır: başka bir profille (yeni uç nokta/model)
-        // aynı onay kullanılamaz — şartname "mevcut izin kendiliğinden genişlemez".
-        let provider_snapshot: Option<String> = self
-            .conn()
-            .query_row(
-                "SELECT adapter_id || '@' || policy_version FROM provider_profiles WHERE id=?1",
-                [&new.provider_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(provider_snapshot) = provider_snapshot else {
-            return Err(StorageError::AiProvider);
-        };
-        if consent.provider_snapshot.trim() != provider_snapshot {
+        // Onay **sağlayıcıya ve varış yerine** bağlıdır: başka bir profille ya
+        // da aynı profilin uç nokta/modeli değiştikten sonra aynı onay
+        // kullanılamaz — şartname "mevcut izin kendiliğinden genişlemez".
+        let profile = self
+            .profile_record(&new.provider_id)?
+            .ok_or(StorageError::AiProvider)?;
+        let current = provider_snapshot(
+            &profile.adapter_id,
+            &profile.policy_version,
+            &profile.capabilities,
+        );
+        if consent.provider_snapshot.trim() != current {
             return Err(StorageError::AiConsent);
         }
         let id = uuid::Uuid::now_v7().to_string();
@@ -738,7 +812,35 @@ impl Database {
             .into_iter()
             .find(|p| p.provider_type == "api" && p.adapter_id == "openai-compatible")
         {
-            return Ok(existing);
+            // Aynı değerler: ikinci profil açılmaz (idempotent). **Farklı**
+            // değerler: kayıt gerçekten güncellenir — eski davranış ikinci
+            // kaydı sessizce yok sayıyordu, arayüz "Kaydedildi" yazarken
+            // gönderim eski uç noktaya gidiyordu.
+            let current = self.api_destination(&existing.id)?;
+            if current.as_ref() == Some(&(endpoint.to_string(), model.to_string())) {
+                return Ok(existing);
+            }
+            let capabilities = serde_json::json!(
+                {"endpoint": endpoint, "model": model, "auth": "env:DIM_API_KEY"}
+            );
+            self.conn().execute(
+                "UPDATE provider_profiles
+                 SET capabilities=?1, updated_at=?2, row_version=row_version+1
+                 WHERE id=?3",
+                rusqlite::params![capabilities.to_string(), now_iso(), existing.id],
+            )?;
+            self.append_audit(
+                "provider_profile",
+                Some(&existing.id),
+                "update",
+                "local-user",
+                &serde_json::json!({"type": "api", "endpoint": endpoint, "model": model}),
+            )?;
+            return self
+                .list_provider_profiles()?
+                .into_iter()
+                .find(|p| p.id == existing.id)
+                .ok_or(StorageError::NotFound);
         }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
@@ -762,13 +864,18 @@ impl Database {
             .ok_or(StorageError::NotFound)
     }
 
-    /// Kayıtlı API profilinin uç noktası ve modeli. Profil yoksa `None`.
-    pub fn api_profile_endpoint(&self) -> Result<Option<(String, String)>, StorageError> {
+    /// Seçili **API** profilinin kayıtlı uç noktası ve modeli. Profil yoksa,
+    /// `api` tipi değilse ya da kayıt eksikse `None`. Çağıran, içeriği hangi
+    /// sağlayıcıya gönderdiğini **tahmin etmez**; seçili profilden okur.
+    pub fn api_destination(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<(String, String)>, StorageError> {
         let raw: Option<String> = self
             .conn()
             .query_row(
-                "SELECT capabilities FROM provider_profiles WHERE provider_type='api' LIMIT 1",
-                [],
+                "SELECT capabilities FROM provider_profiles WHERE id=?1 AND provider_type='api'",
+                [provider_id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -778,7 +885,9 @@ impl Database {
         let endpoint = value.get("endpoint").and_then(|v| v.as_str());
         let model = value.get("model").and_then(|v| v.as_str());
         match (endpoint, model) {
-            (Some(endpoint), Some(model)) => Ok(Some((endpoint.to_string(), model.to_string()))),
+            (Some(endpoint), Some(model)) if !endpoint.is_empty() && !model.is_empty() => {
+                Ok(Some((endpoint.to_string(), model.to_string())))
+            }
             _ => Ok(None),
         }
     }
@@ -1030,7 +1139,7 @@ mod tests {
     fn consent(db: &Database, case_id: &str) -> TransferConsentRow {
         let (document_id, _) = document_with_text(db, case_id, "Belge", &["Sözleşme metni"]);
         db.create_transfer_consent(&NewTransferConsent {
-            provider_snapshot: "claude-code@1".into(),
+            provider_id: "p1".into(),
             case_scope: case_id.into(),
             purpose: "ozet".into(),
             selected_document_ids: vec![document_id],
@@ -1074,7 +1183,7 @@ mod tests {
         let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
         let row = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id],
@@ -1218,6 +1327,162 @@ mod tests {
         assert_eq!(
             profiles.iter().filter(|p| p.provider_type == "api").count(),
             1
+        );
+    }
+
+    /// API profili **güncellenebilir** olmalı: kullanıcı uç noktayı/modeli
+    /// değiştirdiğinde çekirdek gerçekten yazmalı. Eski davranış ikinci kaydı
+    /// sessizce yok sayıyordu (arayüz "Kaydedildi" yazarken gönderim eski
+    /// uç noktaya gidiyordu).
+    #[test]
+    fn api_profile_update_replaces_destination() {
+        let (db, _case_id, _provider) = setup();
+        let first = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        let same = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("tekrar");
+        assert_eq!(first.id, same.id, "aynı değerler ikinci profil açmamalı");
+        assert_eq!(
+            db.api_destination(&first.id).expect("varış"),
+            Some(("https://a.example/v1".to_string(), "model-a".to_string()))
+        );
+        let updated = db
+            .register_api_profile("https://b.example/v1", "model-b")
+            .expect("güncelle");
+        assert_eq!(updated.id, first.id, "profil çoğalmaz");
+        assert_eq!(
+            db.api_destination(&first.id).expect("varış"),
+            Some(("https://b.example/v1".to_string(), "model-b".to_string())),
+            "kaydedilen uç nokta/model gerçekten değişmeli"
+        );
+    }
+
+    /// Varış yeri değişince **eski onay geçersizdir**: aynı adapter sürümüyle
+    /// başka uç noktaya gönderim, önceki onayla yapılamaz.
+    #[test]
+    fn api_endpoint_change_invalidates_old_consent() {
+        let (db, case_id, _provider) = setup();
+        let profile = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: profile.id.clone(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let mut approved = run(&case_id, &c.id);
+        approved.provider_id = profile.id.clone();
+        db.start_ai_run(&case_id, &approved)
+            .expect("aynı varış yeri");
+        db.register_api_profile("https://b.example/v1", "model-a")
+            .expect("uç nokta değişti");
+        assert_eq!(
+            db.start_ai_run(&case_id, &approved).unwrap_err().code(),
+            "E_AI_CONSENT",
+            "uç nokta değişti; eski onay yeni varış yerini kapsamaz"
+        );
+    }
+
+    /// Model de varış yerinin parçasıdır: aynı uç noktada başka model eski
+    /// onayla kullanılamaz.
+    #[test]
+    fn api_model_change_invalidates_old_consent() {
+        let (db, case_id, _provider) = setup();
+        let profile = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: profile.id.clone(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let mut approved = run(&case_id, &c.id);
+        approved.provider_id = profile.id.clone();
+        db.start_ai_run(&case_id, &approved)
+            .expect("aynı varış yeri");
+        db.register_api_profile("https://a.example/v1", "model-b")
+            .expect("model değişti");
+        assert_eq!(
+            db.start_ai_run(&case_id, &approved).unwrap_err().code(),
+            "E_AI_CONSENT",
+            "model değişti; eski onay yeni varış yerini kapsamaz"
+        );
+    }
+
+    /// Onay yalnız **var olan** sağlayıcı profiline bağlanabilir; çağıranın
+    /// uydurduğu özet dizesi kabul edilmez.
+    #[test]
+    fn consent_requires_a_known_provider() {
+        let (db, case_id, _provider) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let err = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "uydurma".into(),
+                case_scope: case_id,
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect_err("bilinmeyen sağlayıcı");
+        assert_eq!(err.code(), "E_AI_PROVIDER");
+    }
+
+    /// AI kapalıyken aktarım onayı alınamaz: "hiçbir yere gönderme" onayı bir
+    /// yetki değildir.
+    #[test]
+    fn consent_for_off_provider_is_rejected() {
+        let (db, case_id, _provider) = setup();
+        let off = db.ensure_off_provider().expect("off profili");
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let err = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: off.id,
+                case_scope: case_id,
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect_err("AI kapalı");
+        assert_eq!(err.code(), "E_AI_OFF");
+    }
+
+    /// Varış yeri **seçili profile** bağlıdır: CLI profili API varış yeri
+    /// sayılmaz; gönderim yolu "ilk api profili"ni tahmin etmez.
+    #[test]
+    fn api_destination_is_profile_scoped() {
+        let (db, _case_id, cli_provider) = setup();
+        let api = db
+            .register_api_profile("https://a.example/v1", "model-a")
+            .expect("profil");
+        assert_eq!(
+            db.api_destination(&api.id).expect("api varış"),
+            Some(("https://a.example/v1".to_string(), "model-a".to_string()))
+        );
+        assert_eq!(
+            db.api_destination(&cli_provider).expect("cli varış"),
+            None,
+            "CLI profili API varış yeri değildir"
+        );
+        assert_eq!(
+            db.api_destination("olmayan-profil").expect("yok"),
+            None,
+            "olmayan profil varış yeri üretmez"
         );
     }
 
@@ -1389,7 +1654,7 @@ mod tests {
         // Aynı belge kümesiyle onay: gönderim kapsamı önizlemeyle **birebir** olmalı.
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: ids,
@@ -1435,7 +1700,7 @@ mod tests {
             .expect("bitir");
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id],
@@ -1458,7 +1723,7 @@ mod tests {
         let (_other, _) = document_with_text(&db, &case_id, "Onaysız", &["ONAYSIZ METİN"]);
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![approved],
@@ -1479,7 +1744,7 @@ mod tests {
         let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id.clone()],
@@ -1542,7 +1807,7 @@ mod tests {
         let (document_id, _) = document_with_text(&db, &case_id, "Belge", &[canary]);
         let c = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id.clone(),
                 purpose: "ozet".into(),
                 selected_document_ids: vec![document_id],
@@ -1604,7 +1869,7 @@ mod tests {
         ] {
             let err = db
                 .create_transfer_consent(&NewTransferConsent {
-                    provider_snapshot: "claude-code@1".into(),
+                    provider_id: "p1".into(),
                     case_scope: case_id.clone(),
                     purpose: "ozet".into(),
                     selected_document_ids: ids,
@@ -1622,7 +1887,7 @@ mod tests {
         let (db, case_id, _) = setup();
         let err = db
             .create_transfer_consent(&NewTransferConsent {
-                provider_snapshot: "claude-code@1".into(),
+                provider_id: "p1".into(),
                 case_scope: case_id,
                 purpose: "ozet".into(),
                 selected_document_ids: vec![],

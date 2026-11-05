@@ -6211,14 +6211,14 @@ pub fn ai_overview(state: State<'_, AppState>, case_id: String) -> Result<AiOver
 pub fn ai_consent_create(
     state: State<'_, AppState>,
     case_id: String,
-    provider_snapshot: String,
+    provider_id: String,
     purpose: String,
     document_ids: Vec<String>,
 ) -> Result<TransferConsentRow, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.create_transfer_consent(&NewTransferConsent {
-        provider_snapshot,
+        provider_id,
         case_scope: case_id,
         purpose,
         selected_document_ids: document_ids,
@@ -6493,8 +6493,26 @@ pub fn ai_run_execute(
 
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    // Varış yeri **seçili** profilden okunur: eski davranış "ilk api profili"ni
+    // kullanıyordu, yani onay başka bir sağlayıcıya ait olsa da içerik o profile
+    // gidebiliyordu. Bu yürütme yolu yalnız API profilini taşır; başka tür
+    // seçilirse sessizce başka yere göndermek yerine açıkça reddedilir.
+    let profile = db
+        .list_provider_profiles()?
+        .into_iter()
+        .find(|p| p.id == provider_id)
+        .ok_or_else(|| ApiError::new("E_AI_PROVIDER", "Sağlayıcı profili bulunamadı."))?;
+    if profile.provider_type != "api" {
+        return Err(ApiError::new(
+            "E_AI_PROVIDER",
+            &format!(
+                "«{}» API profili değil; bu sürümde yalnız API aktarımı yürütülebilir.",
+                profile.adapter_id
+            ),
+        ));
+    }
     let (endpoint, model) = db
-        .api_profile_endpoint()?
+        .api_destination(&provider_id)?
         .ok_or_else(|| ApiError::new("E_AI_OFF", "API profili tanımlı değil."))?;
     let scope = db.consent_scope_segments(&case_id, &consent_id)?;
     if scope.segments.is_empty() {

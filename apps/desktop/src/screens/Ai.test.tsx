@@ -541,7 +541,7 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
     expect(mocks.aiConsentPreview).toHaveBeenCalledWith("p1", ["d1", "d2"]);
     expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
       "p1",
-      "api:claude@1.4.0",
+      "prov-a",
       "iddia_cikarimi",
       ["d1", "d2"],
     );
@@ -910,7 +910,7 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
     await waitFor(() =>
       expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
         "p1",
-        "api:claude@1.4.0",
+        "prov-a",
         "ozet",
         ["d1", "d2"],
       ),
@@ -1768,7 +1768,7 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     await waitFor(() =>
       expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
         "p1",
-        "api:claude@1.4.0",
+        "prov-a",
         "iddia_cikarimi",
         ["d1", "d2"],
       ),

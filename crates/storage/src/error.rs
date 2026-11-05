@@ -71,6 +71,8 @@ pub enum StorageError {
     AiConsent,
     #[error("sağlayıcı profili bulunamadı")]
     AiProvider,
+    #[error("AI kapalı: sağlayıcı bağlanmadan aktarım onayı alınamaz")]
+    AiOff,
     #[error("künye listesi: {0}")]
     Manifest(String),
     #[error("kaynak kullanım koşulu: {0}")]
@@ -168,6 +170,7 @@ impl StorageError {
             Self::QuoteHashMismatch => "E_QUOTE_HASH",
             Self::AiConsent => "E_AI_CONSENT",
             Self::AiProvider => "E_AI_PROVIDER",
+            Self::AiOff => "E_AI_OFF",
             Self::Manifest(_) => "E_MANIFEST",
             Self::Terms(_) => "E_TERMS",
             Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",

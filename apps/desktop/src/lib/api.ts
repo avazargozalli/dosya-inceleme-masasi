@@ -1827,8 +1827,8 @@ export const api = {
     invoke<ProviderProfileRow>("provider_api_profile_save", { endpoint, model }),
   aiConsentPreview: (caseId: string, documentIds: string[]) =>
     invoke<ConsentPreview>("ai_consent_preview", { caseId, documentIds }),
-  aiConsentCreate: (caseId: string, providerSnapshot: string, purpose: string, documentIds: string[]) =>
-    invoke<TransferConsentRow>("ai_consent_create", { caseId, providerSnapshot, purpose, documentIds }),
+  aiConsentCreate: (caseId: string, providerId: string, purpose: string, documentIds: string[]) =>
+    invoke<TransferConsentRow>("ai_consent_create", { caseId, providerId, purpose, documentIds }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
   aiRunExecute: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiCandidateRow>("ai_run_execute", {

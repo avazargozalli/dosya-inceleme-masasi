@@ -208,12 +208,10 @@ export function Ai() {
       const nextPreview = await api.aiConsentPreview(caseId, ids);
       if (caseGen.current !== gen) return;
       setPreview(nextPreview);
-      const nextConsent = await api.aiConsentCreate(
-        caseId,
-        `${provider.adapterId}@${provider.policyVersion}`,
-        purpose,
-        ids,
-      );
+      // Onay **sağlayıcı profiline** bağlanır: kimlik dizesini arayüz kurmaz,
+      // çekirdek profilden türetir (uç nokta + model parmak izi dahil). Böylece
+      // sağlayıcı değişince eski onay kendiliğinden geçersizleşir.
+      const nextConsent = await api.aiConsentCreate(caseId, provider.id, purpose, ids);
       if (caseGen.current !== gen) return;
       setConsent(nextConsent);
     } catch (e) {
