@@ -320,3 +320,66 @@ bant olarak görünür (ölçülmedi, kapatılmadı; bağ listesinin kendisi kap
 çakışmadığı için görünür etkisi yok (bilinçli); (c) dosya değişiminde form alanları
 (iddia metni, aday metni) korunur — kullanıcı girdisi; (d) görsel QA **insan bekliyor**.
 
+
+## Kronoloji ekranı — yazma kilidi devri (ek)
+
+`Timeline.tsx`in 30 testi kararları, dosya kimliğini ve panel sırasını ölçüyordu; **yazma
+kilidinin dosya değişiminde devri** ve **yazma hatalarının dosya kapısı** hiç ölçülmemişti.
+**6 yeni test** (30 → 36). Düzeltme öncesi ham koşu (yeni testler, eski bileşen):
+**6 failed | 30 passed** — altısı da gerçek kusur; mevcut 30 test yeşil.
+
+Ölçülen kusurlar:
+
+1. **Kilit devri yok (en ağırı):** yazma uçuşunda dosya değişince `busy` bırakılmıyordu →
+   yeni dosyanın "Olay ekle" düğmesi ve besteci alanları eski isteğin yanıtına kadar —
+   yanıt hiç gelmezse **süresiz** — kilitli kalıyordu.
+2. **Erken açılan kilit:** altı yazma yolunun `finally`si koşulsuz `setBusy(false)`
+   çağırıyordu → devredilen isteğin kapanışı, yeni dosyada başlatılan yazmanın kilidini
+   açıyordu (ikinci yazma kapısı kalkar).
+3. **Sessiz kayıp (taslak):** `add()` başarısı taslağı koşulsuz `EMPTY` yapıyordu → kilit
+   devredildikten sonra yeni dosyada yazılan taslak eski isteğin yanıtıyla siliniyordu.
+4. **Geç hata (yazma yolları):** `add`/`saveEdit`/`confirm`/`remove` hata yolları dosya
+   kapısı taşımıyordu → eski dosyanın `E_IO`'su yeni dosyanın altında kırmızı bant.
+5. **Geçici hatada düzenleyici kapanıyordu:** `saveEdit` çakışma dışındaki hatada da
+   paneli kapatıp listeyi yüklüyordu → kullanıcının yazdığı başlık/açıklama **sessizce
+   kayboluyordu** (yalnız `E_CONFLICT` kaydın sunucuda değiştiğini gösterir).
+6. **Kaynak paneli nesli dosya değişiminde artmıyordu:** uçuştaki bağlama/kaldırma hatası
+   (ve yanıtı) yeni dosyanın ekranına yazılabiliyordu.
+
+Düzeltme (`Timeline.tsx` +78/−32): `busySeq` + `beginWrite()/endWrite(seq)` — kapanış
+yalnız **kendi** neslinde kilidi bırakır; dosya değişimi kilidi **devreder**
+(`busySeq += 1`, `setBusy(false)`) ve kaynak paneli neslini artırır (`linkSeq += 1`);
+`add` gönderilen dosyayı ve taslağı (`sameDraft`) dondurur, taslağı yalnız gönderilen
+taslak hâlâ ekrandaysa temizler; `add`/`saveEdit`/`confirm`/`remove` hata yolları
+`caseRef.current === asked` kapısına alındı; `saveEdit` paneli yalnız `E_CONFLICT`te
+kapatır (geçici hatada metin korunur, hata görünür).
+
+**Kapı kanıtı 6/6** (her koşu tek kapı; geri yükleme sha256
+`abb6f11a5300f4a4989816e7f17f4cb188ed94d1c0f3564ce155febe0887fa74` birebir):
+M1 kilit devri (2), M2 `endWrite` kapısı (1), M3 taslak koruması (1), M4 onay hatası
+dosya kapısı (1), M5 çakışma kapısı (1), M6 panel nesli (1). **Dürüst:** M1'in ikinci
+kırmızısı **bağımlı** — devir olmadan yeni dosyada ikinci yazma hiç başlamıyor; asıl
+erken-açılma kapısını M2 ölçer.
+
+Ölçüm: `tsc --noEmit` temiz · `vitest` **1136/1136** (60 dosya; 1130 → **+6**) ·
+`vite build` temiz (**592,34 kB**, `index-BwkBa1eR.js`, gzip **159,81 kB**; CSS
+`index-CPW4QqlF.css` 7,28 kB). Rust değişmedi; rustfmt gerekmedi (Rust dosyası yok).
+
+**Kimlik:** şartnamedeki **F08-T04** (çok kaynaklı manuel olay oluşturma, düzenleme ve
+kaynak açma akışı); bu tur ekranın yazma kilidi yüzüdür.
+
+**Dürüst sınırlar:** jsdom **tarayıcı değil** — gerçek Tauri penceresi, gerçek işaretçi
+çift tıklaması ve **görsel QA yok**; `api` mock'lu olduğu için `event_create`,
+`event_update`, `event_confirm`, `event_delete`, `event_link_source`,
+`event_unlink_source` SQL'i ve Rust **koşmaz**. `busy` **tek bayrak** (kuyruk değil):
+uçuşta besteci/düzenleyici alanları kilitli kalır (kilit devri yalnız **dosya
+değişiminde**); doğrudan IPC bu kapıları atlar. Yanıt sırası elle çözülen sözlerle
+denetlenir, gerçek gecikmeyle değil.
+
+**Açık kayıt:** (a) dosya değişiminde besteci taslağı **korunur** (kullanıcı girdisi) —
+p1 için yazılan başlık p2 formunda durur ve "Olay ekle" ile p2'ye yazılabilir (diğer
+ekranlarla aynı sözleşme; bilinçli, ölçülmedi); (b) `E_CONFLICT` dışındaki hatada
+düzenleyici açık kalır; kayıt gerçekten silinmişse (`E_NOT_FOUND`) kullanıcı aynı hatayı
+yeniden görür (kapatma yolu yok, panelden çıkabilir); (c) kaynak paneli nesli dosya
+değişiminde artar → aynı anda uçuşta olan `openLink` yanıtı düşer (panel zaten kapalı);
+(d) görsel QA **insan bekliyor**.
