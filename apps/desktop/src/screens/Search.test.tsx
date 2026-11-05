@@ -1243,3 +1243,169 @@ describe("ertelenmiş toplam sayımı (F15)", () => {
     ).toBeTruthy();
   });
 });
+
+/**
+ * Dosya değişiminde filtre sözlüğü (F07-T03).
+ *
+ * Belge türü ve etiket filtrelerinin **seçenekleri dosyadan** gelir (`docs`,
+ * `caseTags`); OCR durumu ve tarih rolü sabit sözlüktür. Dosya değişince ilk
+ * ikisi anlamını yitirir: seçenek listesinde karşılığı olmayan bir filtre
+ * ekranda **görünmez** kalır ama aramayı sessizce daraltır — avukat "belge
+ * yok" sanır. Ölçülen kararlar:
+ *
+ * 1. Önceki dosyanın etiket filtresi yeni dosyanın aramasına taşınmaz;
+ *    görünürde filtre yokken "Temizle" kapalıdır.
+ * 2. Önceki dosyanın belge türü, seçici "Tümü" gösterirken uygulanmaz.
+ * 3. Yeni dosyanın belgeleri/etiketleri gelene kadar önceki dosyanın
+ *    seçenekleri ve çipleri ekranda (tıklanabilir) kalmaz.
+ * 4. Sabit sözlüklü **görünür** filtreler (OCR, tarih rolü) korunur — düzeltme
+ *    bütün filtreleri sıfırlamaz.
+ */
+const DOCX: DocumentRow = {
+  ...DOCUMENTS[0]!,
+  id: "d2",
+  caseId: "c2",
+  displayName: "İhtar metni",
+  documentType: "docx",
+  currentVersionId: "v2",
+};
+
+const TAGS2: CaseTagRow[] = [{ tag: "ihtar", documentCount: 1 }];
+
+/** İki dosyanın **farklı** tür/etiket sözlüğü: filtrenin taşınıp taşınmadığı ölçülebilir. */
+function setupTwoVocabularies() {
+  for (const mock of Object.values(mocks)) mock.mockReset();
+  mocks.caseList.mockResolvedValue([CASE, CASE2]);
+  mocks.documentList.mockImplementation(async (id: string) => (id === "c2" ? [DOCX] : DOCUMENTS));
+  mocks.caseTags.mockImplementation(async (id: string) => (id === "c2" ? TAGS2 : TAGS));
+  mocks.searchPage.mockResolvedValue(page());
+  mocks.searchTotal.mockResolvedValue(totalLine());
+  mocks.precedentSearch.mockResolvedValue(libraryPage());
+  render(<Search />);
+}
+
+function typeOptions(): string[] {
+  return Array.from(byId<HTMLSelectElement>("filter-type").options).map((option) => option.value);
+}
+
+function clearFiltersButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: t("search.clearFilters") }) as HTMLButtonElement;
+}
+
+describe("dosya değişiminde filtre sözlüğü", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("önceki dosyanın etiket filtresi yeni dosyanın aramasına taşınmaz", async () => {
+    setupTwoVocabularies();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+
+    // c1 sözlüğü: "kira" çipi. Taslağa gerçekten girdi mi — "Temizle" açık.
+    fireEvent.click(await screen.findByRole("button", { name: /kira/ }));
+    expect(clearFiltersButton().disabled).toBe(false);
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    // c2'nin kendi çipi geldi; önceki dosyanın çipi ekranda yok.
+    expect(await screen.findByRole("button", { name: /ihtar/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /kira/ })).toBeNull();
+
+    await searchFor("ihtar");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    // Görünmez filtre yok: istek etiketsiz gider.
+    expect(mocks.searchPage).toHaveBeenCalledWith(
+      "c2",
+      "ihtar",
+      { documentTypes: [], dateRole: null, tags: [], ocrStatus: "any" },
+      { limit: 25, cursor: null, includeTotal: false, mode: "auto" },
+    );
+    // Görünürde filtre kalmadı: "Temizle" kapalı (görünmez filtre yok).
+    expect(clearFiltersButton().disabled).toBe(true);
+  });
+
+  it('önceki dosyanın belge türü seçici "Tümü" gösterirken filtre uygulanmaz', async () => {
+    setupTwoVocabularies();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    expect(typeOptions()).toEqual(["", "pdf"]);
+    fireEvent.change(byId<HTMLSelectElement>("filter-type"), { target: { value: "pdf" } });
+    expect(byId<HTMLSelectElement>("filter-type").value).toBe("pdf");
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c2"));
+    // Yeni dosyada "pdf" yok: seçici "Tümü" gösteriyor...
+    expect(typeOptions()).toEqual(["", "docx"]);
+    expect(byId<HTMLSelectElement>("filter-type").value).toBe("");
+    // ...ve arama gerçekten filtresiz koşar (görünmez filtre yok).
+    await searchFor("ihtar");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    expect(mocks.searchPage.mock.calls[0]![2]).toEqual({
+      documentTypes: [],
+      dateRole: null,
+      tags: [],
+      ocrStatus: "any",
+    });
+  });
+
+  it("yeni dosyanın sözlüğü gelene kadar önceki dosyanın tür ve etiketleri gösterilmez", async () => {
+    setupTwoVocabularies();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    expect(typeOptions()).toEqual(["", "pdf"]);
+    expect(screen.getByRole("button", { name: /kira/ })).toBeTruthy();
+
+    const pendingDocs = deferred<DocumentRow[]>();
+    const pendingTags = deferred<CaseTagRow[]>();
+    mocks.documentList.mockReset();
+    mocks.caseTags.mockReset();
+    mocks.documentList.mockReturnValueOnce(pendingDocs.promise);
+    mocks.caseTags.mockReturnValueOnce(pendingTags.promise);
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c2"));
+
+    // İstek uçuşta: önceki dosyanın türü/etiketi yeni dosyada tıklanabilir kalmaz.
+    expect(typeOptions()).toEqual([""]);
+    expect(screen.queryByRole("button", { name: /kira/ })).toBeNull();
+    expect(screen.getByText(t("search.tagsEmpty"))).toBeTruthy();
+
+    await act(async () => {
+      pendingDocs.resolve([DOCX]);
+      pendingTags.resolve(TAGS2);
+    });
+    expect(typeOptions()).toEqual(["", "docx"]);
+    expect(screen.getByRole("button", { name: /ihtar/ })).toBeTruthy();
+  });
+
+  it("görünür sabit filtreler (OCR, tarih rolü) dosya değişiminde korunur", async () => {
+    setupTwoVocabularies();
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.change(byId<HTMLSelectElement>("filter-ocr"), { target: { value: "ocr" } });
+    fireEvent.change(byId<HTMLSelectElement>("filter-role"), { target: { value: "event" } });
+
+    fireEvent.change(byId<HTMLSelectElement>("search-case"), { target: { value: "c2" } });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c2"));
+    // Sabit sözlük: seçim görünür ve korunur (düzeltme her şeyi sıfırlamaz).
+    expect(byId<HTMLSelectElement>("filter-ocr").value).toBe("ocr");
+    expect(byId<HTMLSelectElement>("filter-role").value).toBe("event");
+
+    mocks.searchPage.mockResolvedValue(
+      page({ filters: { documentTypes: [], dateRole: "event", tags: [], ocrStatus: "ocr" } }),
+    );
+    await searchFor("ihtar");
+    await waitFor(() => expect(mocks.searchPage).toHaveBeenCalledTimes(1));
+    expect(mocks.searchPage.mock.calls[0]![2]).toEqual({
+      documentTypes: [],
+      dateRole: "event",
+      tags: [],
+      ocrStatus: "ocr",
+    });
+  });
+});

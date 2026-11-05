@@ -163,6 +163,11 @@ export function Search() {
       return;
     }
     let cancelled = false;
+    // Yeni dosyanın sözlüğü gelene kadar önceki dosyanın seçenekleri ekranda
+    // kalmaz: filtre türü/etiket çipi yanlış dosyaya ait görünmemeli (çipe
+    // basılırsa yeni dosyanın aramasına sessizce uygulanırdı).
+    setDocs([]);
+    setCaseTags([]);
     (async () => {
       try {
         const [rows, tags] = await Promise.all([
@@ -193,6 +198,13 @@ export function Search() {
     setReader(null);
     setPage(null);
     setSearchedQuery("");
+    // Filtre sözlüğü dosyaya bağlıdır (F07-T03): belge türü ve etiket
+    // seçenekleri o dosyanın belgelerinden/etiketlerinden gelir. Yeni dosyada
+    // karşılığı olmayan bir filtre seçicide **görünmez** kalır ama aramayı
+    // sessizce daraltırdı ("belge yok" sanılır). Bu yüzden dosyaya özgü iki
+    // filtre düşer; sabit sözlüklü **görünür** filtreler (OCR durumu, tarih
+    // rolü) korunur.
+    setDraftFilters((prev) => ({ ...prev, documentTypes: [], tags: [] }));
     totalSeq.current += 1;
     setTotalProbe(TOTAL_PROBE_IDLE);
     // Uçuştaki arama artık bu dosyaya ait değil: yanıtı yazılmamalı, kilidi de
