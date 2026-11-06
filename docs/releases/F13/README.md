@@ -29,6 +29,48 @@ yapılır. Bölge modunda OCR doğrulaması yapılmaz; bu, kayıtta dürüstçe 
 temizliği, boş terim reddi, eşleşmeyen terim, bağımsız pypdf doğrulaması, OCR bayrağı).
 Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI: yeşil.
 
+## Tur kaydı — 2026-11-06 (ilerleme olayına çalıştırma kimliği)
+
+- **Kapanan açık kayıt:** bu dosyanın (a) maddesi — `redact-progress` olayı yalnız
+  `versionId` taşıyordu; aynı sürümde art arda iki maskelemede birincinin
+  **gecikmiş** karesi ikincinin ilerleme satırına yazabiliyordu.
+- **ÖLÇÜLEN KUSUR (eski kod):** arayüz kapısı yalnız `versionId`e bakıyordu.
+  İkinci maskeleme başladığında birincinin gecikmiş karesi `versionId` eşleştiği
+  için **yeni çalıştırmanın satırına** yazılıyordu (yeni maskeleme hiç sayfa
+  işlemeden "3 / 4 · %75" gösterebiliyordu). `busy` dışında kareler zaten
+  düşüyordu; kusur yalnız **çalıştırma sürerken** görünüyordu.
+- **Düzeltme (çekirdek + arayüz):**
+  - `ParseProgressEvent` artık `runId` taşır (5 alan: `versionId`, `runId`,
+    `stage`, `done`, `total`). Kimliği **çağıran** üretir; `document_redact`,
+    `document_redact_regions` ve `document_parse` komutlarına verir, çekirdek her
+    karede aynı kimliği yayımlar (`progress_run_id`: kırpar, **boş kimliği
+    `null`** sayar — boş dize hiçbir çalıştırmayla eşleşmezdi).
+  - Kuyruktan kendiliğinden başlatılan işler (`documents_parse_pending`,
+    `job_retry`, `job_run`) `runId: null` yayımlar: çağıranın bilmediği kimliği
+    çekirdek **uydurmaz**; arayüz o kareleri kendi satırına yazmaz (kuyruk satırı
+    `jobs.progress_*` alanlarından okunur).
+  - `Redaction.tsx` ve `Cases.tsx` kapısı `(versionId, runId)` **çifti** üzerinden
+    çalışır; kapanış (`finally`) yalnız kendi kimliğinde temizler, hedef değişimi
+    kimliği kapatır (INV-05).
+- **Testler:** Rust `parse_progress_event_carries_run_identity_and_counts`
+  (+`runId: null` dürüstlüğü) ve `progress_run_id_trims_and_drops_blank` →
+  masaüstü kabuk tabanı **34 koşar / 5 yoksayılır** (kaynak 39 test). Arayüz:
+  `Redaction.test.tsx` **+2** (aynı sürümde gecikmiş kare; kimliksiz olay),
+  `Cases.test.tsx` **+1** (aynı belgenin ikinci ayrıştırması) → toplam **1171**.
+- **Kapı kanıtı (tek kapı mutasyonu, her biri kendi testini düşürdü):** R1
+  Redaction kimlik kapısı kaldırıldı → *"aynı sürümde ikinci maskelemede birincinin
+  gecikmiş karesi görünmez"* kırmızı; R2 → *"çalıştırma kimliği taşımayan
+  (kuyruktan gelen) olay kendi satırına yazılmaz"* kırmızı; C1 Cases kimlik kapısı
+  → *"aynı belgenin ikinci ayrıştırmasında birincinin gecikmiş karesi görünmez"*
+  kırmızı; Rust `run_id: None` → olay testi kırmızı; normalizasyon kaldırıldı →
+  kimlik testi kırmızı. Geri yükleme sha256'ları **birebir**.
+- **Dürüst sınırlar:** kimlik **arayüz üretimi**; doğrudan IPC çağrısı kimlik
+  vermezse olay `runId: null` taşır ve arayüz onu göstermez (kapalı yön — yanlış
+  satır yazılmaz, ilerleme görünmez). `job_retry`/`job_run` kareleri kimliksiz
+  kaldığı için o yollarda canlı satır yoktur. Kimlik sayaçla üretilir
+  (`redact-N`/`parse-N`); pencere yeniden yüklenirse dinleyici de yeniden kurulur.
+  Gerçek Tauri penceresi ve görsel QA **insan bekliyor**.
+
 ## Tur kaydı — 2026-11-04 (maskeleme ekranı uçuş yolları)
 
 - **Önceki turun açık işi kapandı:** tur başında `HEAD == origin/main` (`c66777c`) ve CI
@@ -93,9 +135,11 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   `document_page_preview`, `document_redact`, `document_redact_regions` SQL/Rust tarafı
   **koşmaz**. Kilit devri **arayüz düzeyinde**: doğrudan IPC bu kapıları atlar. Maskeleme tek
   uçuş (`busy`), hedef seçicileri uçuşta kapalı; `busy` tek bayrak (terim ↔ bölge paralel koşmaz).
-- **Açık kayıt:** (a) `redact-progress` olayı yalnız `versionId` taşır (çalıştırma kimliği yok) →
-  aynı sürümde art arda iki maskelemede birincinin **gecikmiş** olayı ikincinin ilerleme satırına
-  yazabilir (çekirdek sözleşmesi değişmeden kapatılamaz; ölçülmedi); (b) başarılı maskeden sonra
+- **Açık kayıt:** (a) ✅ **kapandı (2026-11-06 turu):** `redact-progress` (ve
+  `parse-progress`) olayı artık çağıranın ürettiği **çalıştırma kimliğini**
+  (`runId`) taşır; aynı sürümde art arda iki maskelemede birincinin gecikmiş
+  karesi ikincinin satırına yazılmaz (ayrıntı: aşağıdaki 2026-11-06 tur kaydı).
+  (b) başarılı maskeden sonra
   belge seçici hâlâ **özgün** sürümü gösterir (tasarım: yeniden maskeleme idempotent), yeni türev
   otomatik seçilmez; (c) uçuşta çizilen bölgenin sayfası, o anki `page` alanından farklı olabilir
   (bölge **görüntünün** sayfasına yazılır — bilinçli); (d) görsel QA + gerçek Tauri penceresi

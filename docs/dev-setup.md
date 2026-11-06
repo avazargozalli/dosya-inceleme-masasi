@@ -39,7 +39,7 @@ koşar: `cargo test --lib` çıktısını okur, sonra
 3. kaynak sayımı: `#[test]` = koşan + yoksayılan,
 4. **kayıtlı taban** (`BASELINE_PASSED` / `BASELINE_IGNORED`) ile birebir
 
-kurallarını denetler. Ölçüm (2026-11-06): **33 koşar, 5 yoksayılır** (38 test).
+kurallarını denetler. Ölçüm (2026-11-06): **34 koşar, 5 yoksayılır** (39 test).
 
 Yoksayılan beş test gerçek worker/tesseract ister (`#[ignore = "gerçek worker …"]`)
 ve **2026-11-06'dan beri CI'da gerçekten koşuyor**: `desktop` işi depo venv'ini
