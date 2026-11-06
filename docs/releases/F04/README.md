@@ -29,7 +29,7 @@ dosyaya geçilebiliyordu ve:
    dosyada başlatılan bir içe aktarma uçuştayken eski isteğin `finally`si onun
    kilidini açabilir, bırakılan ikinci dosya paralel içe aktarılabilirdi.
 
-**Düzeltme (`Cases.tsx` +19/−6):** `beginWork()` artık bir **nesil numarası**
+**Düzeltme (`Cases.tsx` +36/−10):** `beginWork()` artık bir **nesil numarası**
 döndürür (`workSeq`); `endWork(seq)` yalnız kendi neslinde kilidi bırakır.
 Dosya değişimi effect'i `workSeq`i artırır, `workingRef`i sıfırlar ve `busy`i
 bırakır — kilit **devredilir**; eski isteğin kapanışı `workSeq` kapısından
