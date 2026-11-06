@@ -80,12 +80,23 @@ paket dizininde **120 dosya**; MSI **41.115.800 bayt** (39,21 MiB), sha256
 - **Negatif kontrol:** aynı tatbikat **eski** MSI'ye (`42181755831`) karşı
   koşuldu → kurulum yine çıkış 0, ama 4 dosya ve **`kurulan pakette belge worker
   yok`** ile **kırmızı** (`42193554800`). Yani kapı gerçekten kusuru yakalıyor.
+- **Tam hat yeşil:** `desktop-build` `42194554840` — `bundle` (macOS arm64 + x86_64),
+  `windows-binary (x64)`, `manifest` ve tatbikat (`workflow_call` ile) **success**;
+  yalnız Windows **ARM64** deneysel işi kırmızı (`continue-on-error`, F17).
 
 **Ölçülen nüans (iddia edilmiyor):** kurulan `dim-desktop.exe` **aynı boyutta**
 (22.692.864 bayt) ama sha256 **farklı** (`d7501397…` ≠ derlenen `f985cd88…`) —
 Tauri paketleme sırasında ikiliyi yeniden yazıyor. Bu yüzden kimlik iddiası
 **sürüm bilgisi** (`ProductVersion`/`FileVersion` = `0.1.0`) **+ MSI özeti**
 üzerinden kurulur; "kurulan ikili derlenenle bayt bayt aynı" **denmez**.
+
+**Koşular arası tekrarlanabilirlik (ölçüldü, iddia edilmiyor):** ikinci tam hat
+koşusu (`42194554840`) aynı commit'te MSI'yi **41.107.608 bayt** / `9aeb78bf…`
+üretti (ilki 41.115.800 / `549fb7b2…`); derlenen `.exe` özeti de koşular arasında
+değişiyor (`2d467745…` ↔ `f985cd88…`). Yani **paket bit-tekrarlanabilir değil**
+(`.dmg`de de aynı durum). Buna karşılık **kurulan ağaç iki koşuda da birebir**:
+122 dosya / 94.421.532 bayt, worker 5.945.161 bayt. Karşılaştırma manifest
+üzerinden yapılır, koşular arası dosya özeti üzerinden değil.
 
 **Tatbikatın kendisi yeniden koşulabilir:** `msi-install-drill.yml` ayrı bir
 yeniden kullanılabilir iş akışı; `desktop-build` onu `workflow_call` ile çağırır,

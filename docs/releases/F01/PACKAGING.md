@@ -88,9 +88,13 @@ Koşu, paketi **kendi kendine yeter** hâlde dener:
 - **Bütünlük kanıtı, imza değildir.** Manifesti üreten süreçle doğrulayan süreç
   aynı güven sınırındadır; kurcalayan manifesti de güncelleyebilir. Kod imzası
   ADR-0012 gereği kapsam dışı.
-- **Yalnız macOS arm64 ölçüldü.** Windows MSI (F02-T08) ve Linux paketi bu turda
-  üretilmedi; aynı betikler farklı platformda farklı sonuç verebilir (sembolik bağ
-  davranışı Windows'ta farklıdır — testler o dalda atlanır).
+- **Yalnız macOS arm64 ölçüldü** (bu tur). Windows MSI (F02-T08) ve Linux paketi bu
+  turda üretilmedi; aynı betikler farklı platformda farklı sonuç verebilir (sembolik
+  bağ davranışı Windows'ta farklıdır — testler o dalda atlanır).
+  **Güncelleme (2026-11-06):** `build-worker.sh` Windows'ta (git-bash) da koşuyor;
+  worker Windows MSI'sine giriyor ve **kurulum sonrası** kurulum dizininden
+  konuşturuldu (`pong`, `pdf 1.24.14`). Windows'ta symlink dalı hâlâ atlanır;
+  ayrıntı `docs/releases/F02/README.md`.
 - **Tesseract pakete gömülmez** (bilinçli): OCR için sistemde kurulu olmalı, dil
   verisi (`tur`) de paketlenmez. Bu makinede kurulu değil → `ocr.available=false`.
   Arayüz bunu “bulunamadı” olarak yazar, “OCR çalışıyor” demez.
