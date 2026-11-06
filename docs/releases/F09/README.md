@@ -239,7 +239,7 @@ build` temiz (**591,83 kB**, `index-B5cLgRXx.js`, gzip **159,57 kB**; CSS
 
 **Dürüst sınırlar:** jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek
 işaretçi ve görsel QA yok. `ai_consent_list` **komut olarak koşulmadı**
-(`State<AppState>` kuran test altyapısı yok; `commands_tests.rs` CI'da koşmuyor);
+(`State<AppState>` kuran test altyapısı yok; `commands_tests.rs` CI'da koşmuyordu (2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor);
 kablolama derleme + clippy ile, davranış `list_transfer_consents` düzeyinde
 gerçek SQLite ile doğrulandı. Envanter `active` alanı yalnız iptal/süre durumunu
 taşır; sağlayıcı profili değişince kayıt "etkin" görünür ama çalıştırma
@@ -324,7 +324,7 @@ temiz (1 dk 09 s) · `cargo fmt` iki manifest temiz · `tsc --noEmit` temiz ·
 
 **Dürüst sınırlar:** `ai_consent_list` / `ai_run_execute` **komut olarak
 koşulmadı** (`State<AppState>` kuran test altyapısı yok; `commands_tests.rs`
-CI'da koşmuyor) — kablolama derleme + clippy, davranış `list_transfer_consents`
+CI'da koşmuyordu (2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor) — kablolama derleme + clippy, davranış `list_transfer_consents`
 ve `start_ai_run` düzeyinde **gerçek SQLite** ile doğrulandı. jsdom tarayıcı
 değil: gerçek Tauri penceresi, gerçek işaretçi ve **görsel QA yok**; `api`
 mock'lu olduğu için `provider_profiles`/`transfer_consents` SQL'i koşmaz.
@@ -416,7 +416,7 @@ paket** `index-DH6BjBZj.js` 597,70 kB / gzip 161,13 kB → yerel/CI **birebir**;
 
 **Dürüst sınırlar.** `ai_receipt_list` ve `ai_run_execute` **komut olarak
 koşulmadı** (`State<AppState>` kuran test altyapısı yok; `commands_tests.rs`
-CI'da koşmuyor) — kablolama derleme + clippy, davranış `begin/finish/list`
+CI'da koşmuyordu (2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor) — kablolama derleme + clippy, davranış `begin/finish/list`
 düzeyinde **gerçek SQLite** ile doğrulandı. jsdom tarayıcı değil: gerçek Tauri
 penceresi, gerçek işaretçi ve **görsel QA yok**; `api` mock'lu olduğu için
 `transfer_receipts` SQL'i arayüz testinde koşmaz. `dispatched_at` sütunu
@@ -503,7 +503,7 @@ kimlik yöneticisi ve Linux Secret Service **uygulanmadı** — o platformlarda
 `OsStore` `E_AI_SECRET_UNSUPPORTED` döner, ekran ortam değişkenine düştüğünü
 yazar (sessiz yok sayma yok). (b) `ai_secret_*` ve `ai_run_execute` **komut
 olarak koşulmadı** (`State<AppState>` kuran test altyapısı yok;
-`commands_tests.rs` CI'da koşmuyor) — kablolama derleme + clippy, davranış
+`commands_tests.rs` CI'da koşmuyordu (2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor) — kablolama derleme + clippy, davranış
 `secret` düzeyinde **gerçek Anahtar Zinciri** ve gerçek SQLite ile. (c) Yerelde
 `--target x86_64-unknown-linux-gnu` ile **derleme doğrulanamadı**: `cc-rs`
 `x86_64-linux-gnu-gcc` bulamadı (ortam eksiği, kod değil) — ubuntu kanıtı

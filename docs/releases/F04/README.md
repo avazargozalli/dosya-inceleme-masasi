@@ -68,8 +68,8 @@ temiz (2 dk 41 sn, soğuk) · `cargo fmt` iki manifest temiz · `tsc --noEmit` t
 **158,94 kB**; TS değişmedi → paket birebir aynı).
 
 **Dürüst sınırlar:** `export_package` ve `vault_backup` **komut olarak koşulmadı** —
-`State<AppState>` kurup komutu çağıran test altyapısı yok, `commands_tests.rs` CI'da koşmuyor
-(masaüstü işi yalnız derler). Kablolama **derleme + clippy** ile doğrulandı; davranış
+`State<AppState>` kurup komutu çağıran test altyapısı yok, `commands_tests.rs` CI'da koşmuyordu
+(masaüstü işi yalnız derlerdi; 2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor). Kablolama **derleme + clippy** ile doğrulandı; davranış
 `seal_dir`/`zip_dir` düzeyinde **gerçek dosya sistemiyle** test edildi. İzin tabanlı düşüş
 testleri `#[cfg(unix)]` (CI matrisi ubuntu + macOS; Windows'ta koşmaz). `record_export` sırası
 değişmedi (denetim önce); durum **arayüzde gösterilmiyor**, `list_exports` taşır.
@@ -130,8 +130,8 @@ temiz · `vitest` **1120/1120** (60 dosya) · `pnpm build` temiz (**588,82 kB**,
 
 **Dürüst sınırlar:** masaüstü kabuğu yerelde **derlendi** ama `export_package` **koşulmadı** —
 `State<AppState>` kurup komutu çağıran bir test altyapısı yok; `commands_tests.rs` yalnız saf
-yardımcıları sınar ve **CI'da koşmaz** (masaüstü işi `cargo clippy --all-targets` ile yalnız
-derler). jsdom tarayıcı değil: gerçek Tauri penceresi, gerçek klasör seçicisi ve **görsel QA
+yardımcıları sınar ve **CI'da koşmazdı** (masaüstü işi `cargo clippy --all-targets` ile yalnız
+derlerdi; 2026-11-06: iş artık `cargo test --lib` de koşuyor). jsdom tarayıcı değil: gerçek Tauri penceresi, gerçek klasör seçicisi ve **görsel QA
 yok**; `api` mock'lu olduğu için SQL/Rust koşmaz.
 
 **Açık kayıt:** (a) klasör oluşturulduktan **sonra** `zip_dir`/`seal`/yazma düşerse açık metin

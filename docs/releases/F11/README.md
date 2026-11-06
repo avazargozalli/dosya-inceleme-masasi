@@ -413,7 +413,7 @@ bildirim/rapor/önizleme yanıtlarının **gönderilen değere** bağlanması.
 ### Sınırlamalar (dürüst)
 
 - `commands.rs`teki “API profili değil” kapısı **derlendi, koşulmadı**:
-  `State<AppState>` kuran test altyapısı yok; `commands_tests.rs` CI'da koşmuyor.
+  `State<AppState>` kuran test altyapısı yok; `commands_tests.rs` CI'da koşmuyordu (2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor).
 - Parmak izi **uç nokta + model** metninden türetilir; kimlik doğrulama modu,
   başlıklar ve TLS ayarları dizeye girmez.
 - Bu değişiklikten **önce** alınmış onayların özeti parmak izi taşımaz → güncelleme
