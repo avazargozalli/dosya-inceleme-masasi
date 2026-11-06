@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDirectory, save as saveFile } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -6,6 +6,7 @@ import {
   type ApiError,
   type CaseRow,
   type ExportCoverage,
+  type ExportRecordRow,
   type ExportResult,
   type PackageResult,
 } from "../lib/api";
@@ -39,6 +40,34 @@ const FORMATS: Array<{
   { id: "pdf", title: "PDF", description: t("exports.formatPdf"), ext: "pdf" },
 ];
 
+/** Denetim defteri tür etiketi: çekirdeğin yazdığı `type` değerinden türetilir. */
+function recordTypeLabel(type: string): string {
+  return type === "package" ? t("exports.ledgerTypePackage") : type.toUpperCase();
+}
+
+/**
+ * Kayıt durumu. `ready` **yazıldı**, `failed` **başarısız**; tanınmayan bir
+ * durum gizlenmez — ham değeriyle yazılır (uydurulmuş Türkçe etiket yok).
+ */
+function recordStatus(status: string): { label: string; tone: "ok" | "danger" | "warn" | "plain" } {
+  switch (status) {
+    case "ready":
+      return { label: t("exports.ledgerStatusReady"), tone: "ok" };
+    case "failed":
+      return { label: t("exports.ledgerStatusFailed"), tone: "danger" };
+    case "draft":
+      return { label: t("exports.ledgerStatusDraft"), tone: "plain" };
+    case "building":
+      return { label: t("exports.ledgerStatusBuilding"), tone: "plain" };
+    case "verifying":
+      return { label: t("exports.ledgerStatusVerifying"), tone: "plain" };
+    case "blocked":
+      return { label: t("exports.ledgerStatusBlocked"), tone: "warn" };
+    default:
+      return { label: t("exports.ledgerStatusUnknown", { status }), tone: "warn" };
+  }
+}
+
 export function Exports() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -56,12 +85,20 @@ export function Exports() {
   // yazıldı? `generatedAt` ile birlikte yazılır; aksi hâlde yazma anındaki blok
   // “şu anki kapsam” sanılır.
   const [coverageSource, setCoverageSource] = useState<CoverageSource>("vault");
+  // Dışa aktarma kayıtları (denetim defteri): her yazma zaten kasaya kaydediliyor
+  // ama **okuma yolu yoktu** — kayıt yalnız SQLite dosyasındaydı. Liste dosyaya
+  // kapsanır; okuma hatası kendi satırında görünür (sessiz yutulmaz).
+  const [records, setRecords] = useState<ExportRecordRow[]>([]);
+  const [recordsError, setRecordsError] = useState<ApiError | null>(null);
+  const [recordsLoading, setRecordsLoading] = useState(false);
   // İki ayrı kuşak: kapsam **okumaları** (dosya değişimi + tazeleme) ile **yazmalar**
   // (dışa aktarma + paket). Tek sayaç olsaydı ilgisiz bir yazma, kullanıcının
   // istediği tazelemenin yanıtını düşürür; düşen okumanın `finally`si kapıdan
   // geçmediği için `coverageLoading` kilidi asılı kalırdı.
   const writeSeq = useRef(0);
   const coverSeq = useRef(0);
+  /** Defter okumalarının kuşağı: geç yanıt yeni dosyanın listesine yazmaz. */
+  const recordsSeq = useRef(0);
   // Diyalog uçuşunda dosya kimliği: seçim yanıtı geldiğinde başka dosyaya
   // geçilmişse yazma **başlatılmaz** — yoksa eski dosyanın çıktısı yeni dosyanın
   // altına “yazıldı” diye düşerdi (INV-05).
@@ -77,6 +114,28 @@ export function Exports() {
         setError(toApiError(e));
       }
     })();
+  }, []);
+
+  const loadRecords = useCallback(async (id: string) => {
+    if (!id) {
+      // Dosya seçimi kalktıysa askıdaki okuma da geçersizdir.
+      recordsSeq.current += 1;
+      return;
+    }
+    const seq = ++recordsSeq.current;
+    setRecordsLoading(true);
+    try {
+      const rows = await api.exportList(id);
+      if (seq !== recordsSeq.current) return;
+      setRecords(rows);
+      setRecordsError(null);
+    } catch (e) {
+      if (seq !== recordsSeq.current) return;
+      // Sessiz yutma yok: defter okunamadıysa yazılır; boş liste gösterilmez.
+      setRecordsError(toApiError(e));
+    } finally {
+      if (seq === recordsSeq.current) setRecordsLoading(false);
+    }
   }, []);
 
   // Kapsam kasadan okunur; arayüz kendi sayısını üretmez. Dosya değişince
@@ -95,8 +154,14 @@ export function Exports() {
     setCoverage(null);
     setError(null);
     setBusy(null);
+    // Denetim defteri de dosyaya kapsanır: önceki dosyanın kayıtları **istekten
+    // önce** temizlenir, yeni dosyanın kayıtları hemen istenir.
+    setRecords([]);
+    setRecordsError(null);
+    void loadRecords(caseId);
     if (!caseId) {
       setCoverageLoading(false);
+      setRecordsLoading(false);
       return;
     }
     let alive = true;
@@ -117,7 +182,7 @@ export function Exports() {
     return () => {
       alive = false;
     };
-  }, [caseId]);
+  }, [caseId, loadRecords]);
 
   async function run(format: "json" | "csv" | "docx" | "pdf") {
     const selected = cases.find((c) => c.id === caseId);
@@ -159,9 +224,17 @@ export function Exports() {
         // okumanın kilidi de (kapıdan geçemeyeceği için) burada kapanır.
         coverSeq.current += 1;
         setCoverageLoading(false);
+        // Yeni kayıt defterde görünmeli: "yazıldı" satırı kalıcı kanıt değildir,
+        // ekran kapanınca kaybolur.
+        void loadRecords(caseId);
       }
     } catch (e) {
-      if (seq === writeSeq.current) setError(toApiError(e));
+      if (seq === writeSeq.current) {
+        setError(toApiError(e));
+        // Düşen yazma da defteri tazeler: paket kaydı **önce** yazılıp
+        // `failed` işaretlendiği için başarısız deneme yalnız burada görünür.
+        void loadRecords(caseId);
+      }
     } finally {
       // Yalnız **kendi** isteğinde kilidi bırakır: dosya değiştiyse kilit zaten
       // devredilmiştir; yeni dosyada başlatılan yazmanın kilidi erken açılmaz.
@@ -228,9 +301,15 @@ export function Exports() {
             retryable: true,
           });
         }
+        void loadRecords(caseId);
       }
     } catch (e) {
-      if (seq === writeSeq.current) setError(toApiError(e));
+      if (seq === writeSeq.current) {
+        setError(toApiError(e));
+        // Düşen pakette kayıt `failed` olarak kasada durur; tazeleme olmadan
+        // avukat bunu hiçbir yerde göremezdi.
+        void loadRecords(caseId);
+      }
     } finally {
       if (seq === writeSeq.current) setBusy(null);
     }
@@ -428,6 +507,95 @@ export function Exports() {
                 : null}
           </div>
         ) : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("exports.ledgerTitle")}</h2>
+            <p className="card-sub">{t("exports.ledgerSub")}</p>
+          </div>
+          <button
+            className="btn ghost"
+            disabled={!caseId || recordsLoading}
+            onClick={() => {
+              if (caseId) void loadRecords(caseId);
+            }}
+          >
+            {t("exports.ledgerRefresh")}
+          </button>
+        </div>
+        {recordsError ? (
+          // Okunamayan defter "kayıt yok" diye gösterilmez: avukat çıktının
+          // izlenmediğini sanardı. Hata kendi satırında yazılır.
+          <div className="notice danger" role="alert">
+            {t("exports.ledgerUnreadable", {
+              code: recordsError.code,
+              message: recordsError.message,
+            })}
+          </div>
+        ) : records.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {recordsLoading ? t("exports.ledgerLoading") : t("exports.ledgerEmpty")}
+          </p>
+        ) : (
+          <>
+            <p className="hint" style={{ margin: "0 0 6px" }}>
+              {t("exports.ledgerCount", { count: records.length })}
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {records.map((record) => {
+                const status = recordStatus(record.status);
+                return (
+                  <div
+                    key={record.id}
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: "var(--radius)",
+                      padding: "8px var(--space-3)",
+                    }}
+                  >
+                    <div
+                      className="row"
+                      style={{
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: "var(--space-2)",
+                      }}
+                    >
+                      <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                        <div className="small muted">
+                          {recordTypeLabel(record.exportType)} · {formatDateTime(record.createdAt)}
+                          {record.outputHash ? (
+                            <>
+                              {" · "}
+                              <span style={{ fontFamily: "var(--mono)" }}>
+                                {record.outputHash.slice(0, 16)}…
+                              </span>
+                            </>
+                          ) : null}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: "var(--mono)",
+                            fontSize: 12,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={record.destinationPath ?? undefined}
+                        >
+                          {record.destinationPath ?? t("exports.ledgerNoPath")}
+                        </div>
+                      </div>
+                      <span className={`badge ${status.tone}`}>{status.label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

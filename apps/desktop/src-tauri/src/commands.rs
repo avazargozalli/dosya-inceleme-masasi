@@ -5830,6 +5830,22 @@ pub fn case_coverage(
     Ok(ExportCoverage::from_report(&db.coverage_report(&case_id)?))
 }
 
+/// Dosyanın dışa aktarma kayıtları (denetim defteri), en yeni önce.
+///
+/// Her dışa aktarma yolu kaydı **zaten** yazıyordu (`record_export`, düşen
+/// pakette `fail_export`) ama **okuma yolu yoktu**: avukat "bu dosyadan ne
+/// çıktı, nereye, hangi özetle, başarılı mı" sorusunu yanıtlayamıyor, başarısız
+/// kayıt hiçbir yerde görünmüyordu. Kayıt yalnız `exports` tablosunda kalıyordu.
+#[tauri::command]
+pub fn exports_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<ExportRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_exports(&case_id)?)
+}
+
 #[tauri::command]
 pub fn export_json(
     state: State<'_, AppState>,
@@ -5844,7 +5860,14 @@ pub fn export_json(
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
-    let record = db.record_export(&case_id, "json", &[], "user_selected_path", &sha)?;
+    let record = db.record_export(
+        &case_id,
+        "json",
+        &[],
+        "user_selected_path",
+        &dest_path,
+        &sha,
+    )?;
     Ok(ExportView {
         path: dest_path,
         bytes: bytes.len(),
@@ -5896,7 +5919,7 @@ pub fn export_csv(
     let bytes = out.into_bytes();
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
-    let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &sha)?;
+    let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &dest_path, &sha)?;
     Ok(ExportView {
         path: dest_path,
         bytes: bytes.len(),
@@ -6018,7 +6041,14 @@ pub fn export_docx(
     worker.shutdown();
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
-    let record = db.record_export(&case_id, "docx", &[], "user_selected_path", &sha)?;
+    let record = db.record_export(
+        &case_id,
+        "docx",
+        &[],
+        "user_selected_path",
+        &dest_path,
+        &sha,
+    )?;
     Ok(ExportView {
         path: dest_path,
         bytes: bytes.len(),
@@ -6071,7 +6101,7 @@ pub fn export_pdf(
     worker.shutdown();
     write_export(&dest_path, &bytes)?;
     let sha = hex::encode(Sha256::digest(&bytes));
-    let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &sha)?;
+    let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &dest_path, &sha)?;
     Ok(ExportView {
         path: dest_path,
         bytes: bytes.len(),
@@ -6178,7 +6208,22 @@ pub fn export_package(
         .map_err(|_| ApiError::new("E_EXPORT", "Manifest üretilemedi."))?;
     std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
     let sha = hex::encode(Sha256::digest(&manifest_bytes));
-    let record = db.record_export(&case_id, "package", &[], "user_selected_path", &sha)?;
+    // Denetim defterine **gerçek** hedef yazılır: parola verildiyse paket
+    // `seal_dir` ile `<klasör>.dimpak` dosyasına dönüşür (aynı ad kuralı burada
+    // uygulanır), verilmediyse açık metin klasörü diskte kalır.
+    let destination = if sealed_password.is_some() {
+        dir.with_extension("dimpak")
+    } else {
+        dir.clone()
+    };
+    let record = db.record_export(
+        &case_id,
+        "package",
+        &[],
+        "user_selected_path",
+        &destination.to_string_lossy(),
+        &sha,
+    )?;
 
     // Parola verildiyse klasör tek şifreli dosyaya paketlenir; alıcıya kasa
     // anahtarı verilmez, yalnız paket parolası söylenir.

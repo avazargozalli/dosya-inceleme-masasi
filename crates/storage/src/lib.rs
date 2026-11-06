@@ -259,9 +259,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0023_job_parse_options",
         sql: include_str!("migrations/0023_job_parse_options.sql"),
     },
+    Migration {
+        version: 24,
+        name: "0024_export_destination",
+        sql: include_str!("migrations/0024_export_destination.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 23;
+pub const CURRENT_SCHEMA_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

@@ -13,7 +13,8 @@
 //    yazılır (arayüz kendi sayısını üretmez).
 // 2. Kapsam `complete=false` ise “Kapsam kısmi” + uyarı listesi; belgesiz
 //    dosyada “Kapsam yok” + dürüst uyarı; sayılar uydurulmaz.
-// 3. Dosya yokken dışa aktarma istekleri gitmez, altı düğme de kapalıdır.
+// 3. Dosya yokken dışa aktarma istekleri gitmez, yedi düğme de kapalıdır
+//    (dışa aktarma kayıtları kartının “tazele” düğmesi dahil).
 // 4. Kaydet diyaloğu dosya **başlığından** ad üretir (`fileStem`), uzantı ve
 //    filtre seçilen biçimdir; çekirdeğe `(caseId, hedef yol)` gider.
 // 5. Sonuç künyesi yazılan türü, yolu, baytı, sha256'nın ilk 16 karakterini ve
@@ -105,7 +106,7 @@
 // 40. Açık metin paket künyesi parolanın uygulanmadığını **yazar** (boş alan
 //     bilinçli açık metindir; sessiz değil).
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { t } from "../lib/i18n";
@@ -117,11 +118,18 @@ import {
 } from "../lib/export-coverage";
 import { fileStem } from "../lib/filename";
 import { formatDateTime } from "../lib/format";
-import type { CaseRow, ExportCoverage, ExportResult, PackageResult } from "../lib/api";
+import type {
+  CaseRow,
+  ExportCoverage,
+  ExportRecordRow,
+  ExportResult,
+  PackageResult,
+} from "../lib/api";
 
 const mocks = vi.hoisted(() => ({
   caseList: vi.fn(),
   caseCoverage: vi.fn(),
+  exportList: vi.fn(),
   exportJson: vi.fn(),
   exportCsv: vi.fn(),
   exportDocx: vi.fn(),
@@ -264,6 +272,7 @@ const CSV_RESULT = exportResult({
 function setupDefaults() {
   mocks.caseList.mockResolvedValue([P1, P2]);
   mocks.caseCoverage.mockResolvedValue(FULL);
+  mocks.exportList.mockResolvedValue([]);
   mocks.exportJson.mockResolvedValue(exportResult());
   mocks.exportCsv.mockResolvedValue(CSV_RESULT);
   mocks.exportDocx.mockResolvedValue(exportResult());
@@ -349,7 +358,7 @@ describe("Çıktılar ekranı", () => {
     expect(screen.getByText(EMPTY.statement)).toBeTruthy();
   });
 
-  it("dosya yokken kapsam isteği gitmez ve altı düğme de kapalıdır", async () => {
+  it("dosya yokken kapsam isteği gitmez ve yedi düğme de kapalıdır", async () => {
     mocks.caseList.mockResolvedValue([]);
     render(<Exports />);
 
@@ -359,7 +368,7 @@ describe("Çıktılar ekranı", () => {
     const buttons = screen.getAllByRole("button");
     const enabled = buttons.filter((b) => !(b as HTMLButtonElement).disabled);
     expect(enabled).toHaveLength(0);
-    expect(buttons).toHaveLength(6); // 4 çıktı + kapsam tazele + paket
+    expect(buttons).toHaveLength(7); // 4 çıktı + kapsam tazele + paket + kayıtları tazele
   });
 
   it("JSON çıktısında kaydet diyaloğu dosya başlığından ad üretir ve sözleşmeyle yazar", async () => {
@@ -1240,5 +1249,191 @@ describe("Çıktılar ekranı paket ve kapsam dürüstlüğü", () => {
     // Parola alanı boş: istek `undefined` parolayla gider (açık metin bilinçli).
     expect(mocks.exportPackage).toHaveBeenCalledWith("p1", "/Users/avukat/Devir", undefined);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+/* ------------------------------------------------ dışa aktarma kayıtları */
+//
+// **Ölçülen kusur (U, açık kayıt):** her dışa aktarma `exports` tablosuna kayıt
+// yazıyordu (`record_export`, düşen pakette `fail_export`) ama **okuma yolu
+// yoktu**: ne IPC komutu ne ekran. Sonuç: avukat "bu dosyadan ne çıktı, nereye,
+// hangi özetle, başarılı mı" sorusunu yanıtlayamıyordu; `failed` işaretlenen
+// kayıt hiçbir yerde görünmüyordu (kayıt yalnız SQLite dosyasındaydı).
+//
+// 41. Dosya seçilince kayıtlar kasadan istenir; tür · zaman · hedef · özet yazılır.
+// 42. `failed` kayıt "başarısız" olarak işaretlenir — "yazıldı" denmez; hedefi
+//     olmayan eski kayıt için konum uydurulmaz.
+// 43. Başarılı dışa aktarmadan sonra defter tazelenir (yeni kayıt görünür).
+// 44. **Düşen paket denemesinden sonra da** tazelenir: başarısız kayıt ancak
+//     böyle görünür (kayıt `propose`tan önce yazılıp `failed` işaretleniyor).
+// 45. Dosya değişince önceki dosyanın kayıtları **istekten önce** temizlenir.
+// 46. Geç gelen **eski** dosya yanıtı yeni dosyanın listesini ezmez.
+// 47. Defter okunamazsa hata yazılır; "kayıt yok" denmez (sessiz yutma yok).
+// 48. "Kayıtları tazele" defteri yeniden okur.
+describe("dışa aktarma kayıtları (denetim defteri)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaults();
+  });
+
+  function recordRow(overrides: Partial<ExportRecordRow> = {}): ExportRecordRow {
+    return {
+      id: "r1",
+      caseId: "p1",
+      exportType: "json",
+      status: "ready",
+      destinationKind: "user_selected_path",
+      destinationPath: "/Users/avukat/Cikti/kira.json",
+      outputHash: "0123456789abcdef0123456789abcdef",
+      createdAt: ISO,
+      completedAt: ISO,
+      ...overrides,
+    };
+  }
+
+  const ledgerRefresh = () =>
+    screen.getByRole("button", { name: t("exports.ledgerRefresh") }) as HTMLButtonElement;
+  const packageButton = () =>
+    screen.getByRole("button", { name: t("exports.packageCreate") }) as HTMLButtonElement;
+  const caseSelect = () => screen.getByLabelText(t("common.case")) as HTMLSelectElement;
+  const saveButtons = () =>
+    screen.getAllByRole("button", { name: t("common.save") }) as HTMLButtonElement[];
+
+  it("dosya seçilince kayıtları kasadan ister; tür · zaman · hedef · özet yazılır", async () => {
+    mocks.exportList.mockResolvedValue([recordRow()]);
+    await renderScreen();
+
+    expect(mocks.exportList).toHaveBeenCalledWith("p1");
+    const path = await screen.findByText("/Users/avukat/Cikti/kira.json");
+    const card = path.closest("div.row")!.parentElement as HTMLElement;
+    // Tür etiketi çekirdeğin `type` değerinden türetilir (ham değer gizlenmez).
+    expect(within(card).getAllByText(/^JSON · /).length).toBeGreaterThan(0);
+    expect(within(card).getByText(t("exports.ledgerStatusReady"))).toBeTruthy();
+    expect(screen.getByText(t("exports.ledgerCount", { count: 1 }))).toBeTruthy();
+  });
+
+  it("başarısız kaydı 'başarısız' işaretler; hedefi olmayan kayıt için konum uydurmaz", async () => {
+    mocks.exportList.mockResolvedValue([
+      recordRow({
+        id: "r2",
+        exportType: "package",
+        status: "failed",
+        destinationPath: null,
+        outputHash: null,
+      }),
+    ]);
+    await renderScreen();
+
+    await screen.findByText(t("exports.ledgerStatusFailed"));
+    expect(screen.queryByText(t("exports.ledgerStatusReady"))).toBeNull();
+    expect(screen.getByText(t("exports.ledgerNoPath"))).toBeTruthy();
+    expect(
+      screen.getAllByText(new RegExp(`^${t("exports.ledgerTypePackage")} · `)).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("başarılı dışa aktarmadan sonra defter tazelenir", async () => {
+    mocks.exportList.mockResolvedValueOnce([]);
+    await renderScreen();
+    expect(screen.getByText(t("exports.ledgerEmpty"))).toBeTruthy();
+
+    mocks.exportList.mockResolvedValue([
+      recordRow({ id: "r3", exportType: "pdf", destinationPath: "/Users/avukat/Cikti/kira.pdf" }),
+    ]);
+    fireEvent.click(saveButtons()[0]!);
+
+    await screen.findByText("/Users/avukat/Cikti/kira.pdf");
+    expect(mocks.exportList).toHaveBeenCalledTimes(2);
+    expect(mocks.exportList).toHaveBeenLastCalledWith("p1");
+  });
+
+  it("düşen paket denemesinden sonra da defter tazelenir (başarısız kayıt görünür)", async () => {
+    mocks.exportList.mockResolvedValueOnce([]);
+    await renderScreen();
+    mocks.exportList.mockResolvedValue([
+      recordRow({
+        id: "r4",
+        exportType: "package",
+        status: "failed",
+        destinationPath: "/Users/avukat/Devir/DimDevir-202611061200.dimpak",
+        outputHash: null,
+      }),
+    ]);
+    mocks.exportPackage.mockRejectedValue({
+      code: "E_PACKAGE_SEAL",
+      message: "Paket oluşturulamadı.",
+    });
+
+    fireEvent.click(packageButton());
+    await screen.findByRole("alert");
+
+    // Tazeleme olmadan bu kayıt hiçbir yerde görünmezdi.
+    await screen.findByText(t("exports.ledgerStatusFailed"));
+    expect(screen.getByText("/Users/avukat/Devir/DimDevir-202611061200.dimpak")).toBeTruthy();
+    expect(mocks.exportList).toHaveBeenCalledTimes(2);
+  });
+
+  it("dosya değişince önceki dosyanın kayıtları istekten önce temizlenir", async () => {
+    mocks.exportList.mockResolvedValue([recordRow()]);
+    await renderScreen();
+    await screen.findByText("/Users/avukat/Cikti/kira.json");
+
+    const pending = deferred<ExportRecordRow[]>();
+    mocks.exportList.mockReturnValueOnce(pending.promise);
+    mocks.caseCoverage.mockResolvedValueOnce(PARTIAL);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+
+    // Yeni dosyanın yanıtı askıdayken eski dosyanın kaydı ekranda kalmaz.
+    await waitFor(() => expect(screen.queryByText("/Users/avukat/Cikti/kira.json")).toBeNull());
+    expect(mocks.exportList).toHaveBeenLastCalledWith("p2");
+
+    await act(async () => {
+      pending.resolve([
+        recordRow({ id: "r9", caseId: "p2", destinationPath: "/Users/avukat/Cikti/ceza.json" }),
+      ]);
+      await pending.promise;
+    });
+    await screen.findByText("/Users/avukat/Cikti/ceza.json");
+  });
+
+  it("geç gelen eski dosya yanıtı yeni dosyanın listesini ezmez", async () => {
+    const pending = deferred<ExportRecordRow[]>();
+    mocks.exportList.mockReturnValueOnce(pending.promise);
+    await renderScreen();
+
+    mocks.exportList.mockResolvedValue([
+      recordRow({ id: "r9", caseId: "p2", destinationPath: "/Users/avukat/Cikti/ceza.json" }),
+    ]);
+    mocks.caseCoverage.mockResolvedValueOnce(PARTIAL);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await screen.findByText("/Users/avukat/Cikti/ceza.json");
+
+    await act(async () => {
+      pending.resolve([recordRow()]);
+      await pending.promise;
+    });
+    expect(screen.queryByText("/Users/avukat/Cikti/kira.json")).toBeNull();
+    expect(screen.getByText("/Users/avukat/Cikti/ceza.json")).toBeTruthy();
+  });
+
+  it("defter okunamazsa hata yazar; 'kayıt yok' demez", async () => {
+    mocks.exportList.mockRejectedValue({ code: "E_DB", message: "kasa okunamadı" });
+    await renderScreen();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      t("exports.ledgerUnreadable", { code: "E_DB", message: "kasa okunamadı" }),
+    );
+    expect(screen.queryByText(t("exports.ledgerEmpty"))).toBeNull();
+  });
+
+  it("'Kayıtları tazele' defteri yeniden okur", async () => {
+    await renderScreen();
+    await screen.findByText(t("exports.ledgerEmpty"));
+    expect(mocks.exportList).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(ledgerRefresh());
+    await waitFor(() => expect(mocks.exportList).toHaveBeenCalledTimes(2));
+    expect(mocks.exportList).toHaveBeenLastCalledWith("p1");
   });
 });

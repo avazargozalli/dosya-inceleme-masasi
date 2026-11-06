@@ -411,6 +411,23 @@ export type ExportResult = {
   coverage: ExportCoverage;
 };
 
+/**
+ * Kasadaki dışa aktarma kaydı (denetim defteri satırı). `destinationPath` 24.
+ * şemada eklendi; eski kayıtlarda `null` — boş bir konum uydurulmaz.
+ * `status` çekirdekten gelir: `ready` (yazıldı) ya da `failed` (paket üretilemedi).
+ */
+export type ExportRecordRow = {
+  id: string;
+  caseId: string;
+  exportType: string;
+  status: string;
+  destinationKind: string;
+  destinationPath: string | null;
+  outputHash: string | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
 export type RedactionResult = {
   document: DocumentRow;
   version: DocumentVersionRow;
@@ -1876,6 +1893,7 @@ export const api = {
   exportPackage: (caseId: string, destDir: string, password?: string) =>
     invoke<PackageResult>("export_package", { caseId, destDir, password }),
   caseCoverage: (caseId: string) => invoke<ExportCoverage>("case_coverage", { caseId }),
+  exportList: (caseId: string) => invoke<ExportRecordRow[]>("exports_list", { caseId }),
 
   aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
   providerApiProfileSave: (endpoint: string, model: string) =>
