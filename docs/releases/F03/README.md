@@ -8,7 +8,7 @@
 |---|---|---|
 | F03-T01 | ✅ | `crates/vault`: rastgele ana anahtar, Argon2id, sürümlü başlık |
 | F03-T02 | ✅ | parola + kurtarma yuvası ayrı sarılı; `open_with_recovery` |
-| F03-T04 | ✅ | `crates/storage`: 54 tablo tanımı (şema v23), FK/CHECK, migrasyon checksum |
+| F03-T04 | ✅ | `crates/storage`: 54 tablo tanımı (şema v24), FK/CHECK, migrasyon checksum |
 | F03-T05 | ✅ | rastgele `storage_id`, chunked AEAD blob, atomik rename |
 | F03-T07 | ✅ | **2026-10-26 düzeltmesi:** `crates/jobs` yalnız *kuralları* taşıyordu; `jobs` tablosu salt-yazılıydı. Kuyruk artık `crates/storage/src/queue.rs`'te gerçek: idempotent ekleme, atomik sahiplenme (lease + `job_attempts`), öncelik/yaş sırası, bağımlılık kapısı, doğrulama adımı, tamamlama/kısmi, hata + artan bekleme, engel, iptal, kullanıcı yeniden denemesi. **§17.2 durum makinesi tam** (migration 0021) |
 | F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26, süreç öldürme 2026-10-29):** §17.6 iki adım — kesilen `running/validating/canceling` önce `interrupted`, sonra `queued` (bütçe varsa) / `failed` (bütçe bittiyse); iptal istenmiş iş `canceled`. `vault_open` **kiraya bakmadan** yapar (`recover_orphaned_jobs`; çökme sonrası kira hâlâ gelecekte olabilir — ölçüldü), orta oturumdaki "Bekleyen işleri kurtar" kiraya saygı duyar. Kurtarılan iş `queued` kalır; **"Başlat"** (`job_run`) gerçekten çalıştırır |
