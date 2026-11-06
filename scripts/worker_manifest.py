@@ -348,7 +348,27 @@ def _read_manifest(root: Path) -> dict:
     return data
 
 
+def _utf8_console() -> None:
+    """Çıktıyı UTF-8'e sabitler.
+
+    Windows konsolu varsayılan olarak cp1252'dir ve Türkçe karakterlerde
+    `UnicodeEncodeError` verir (2026-11-06: Windows worker paketlemesi tam bu
+    yüzden düştü — araç Windows'ta ilk kez koşuyordu). Kodlanamayan karakter
+    `replace` ile yazılır: ölçüm satırı sessizce kaybolmaz.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Yönlendirilmiş/ikili akış yeniden yapılandırılamaz: çıktı yine gider.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     parser = argparse.ArgumentParser(description="Worker paketi manifesti")
     sub = parser.add_subparsers(dest="command", required=True)
 
