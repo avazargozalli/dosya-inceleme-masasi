@@ -193,6 +193,70 @@ jobs:
           for a in m["artifacts"]:
               print(f"{a['platform']}/{a['arch']}/{a['kind']}  {a['bytes']} bayt  {a['sha256'][:16]}…  {a['name']}")
           PY
+      - name: Manifestin dış özeti ilan edilir (paket ikamesi reddedilir)
+        # Manifestin `contentSha256`ı **kendi içinde**: paket alanları değiştirilip
+        # özet yeniden hesaplanırsa `E_MANIFEST_TAMPER` yakalamaz (ölçüldü). Bu yüzden
+        # `build` bir `.sha256` yan dosyası yazar ve kullanıcıya ayrı kanaldan bir
+        # özet gider; burada o özetin gerçekten iş gördüğü **gerçek paketle** kanıtlanır.
+        run: |
+          set -euo pipefail
+          MANIFEST=dist/release/release-manifest.json
+          test -f "$MANIFEST.sha256"
+          DIGEST="$(cut -d' ' -f1 "$MANIFEST.sha256")"
+          echo "manifest özeti: $DIGEST"
+          test "${#DIGEST}" -eq 64
+          {
+            echo "### Sürüm paketleri"
+            echo ""
+            echo "Manifest özeti (ayrı kanaldan ilan edilecek): \`$DIGEST\`"
+            echo ""
+            echo '```'
+            cat "$MANIFEST.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Olumlu yol: dış özet + zorunlu özet kapısı birlikte geçer.
+          dmg="$(ls dist/release/*.dmg | head -1)"
+          python3 scripts/release_manifest.py verify --manifest "$MANIFEST" \
+            --file "$dmg" --manifest-sha256 "$DIGEST" --require-manifest-digest
+          echo "ok: gerçek $(basename "$dmg") dış özetle doğrulandı"
+
+          # Saldırı: paketin yerine başka içerik konur, manifestin bytes+sha256'sı
+          # o dosyaya göre güncellenir, contentSha256 **yeniden hesaplanır**.
+          KOTU="$RUNNER_TEMP/ikame"
+          mkdir -p "$KOTU"
+          msi="$(ls dist/release/*.msi | head -1)"
+          cp "$msi" "$KOTU/$(basename "$msi")"
+          printf 'ARKA KAPI %s' "$(date -u +%s)" >> "$KOTU/$(basename "$msi")"
+          python3 - "$MANIFEST" "$KOTU/$(basename "$msi")" "$KOTU/ikame.json" <<'PY'
+          import json, sys, pathlib, hashlib
+          sys.path.insert(0, "scripts")
+          from release_manifest import content_sha256
+          manifest_path, evil_path, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+          m = json.loads(manifest_path.read_text(encoding="utf-8"))
+          body = evil_path.read_bytes()
+          for entry in m["artifacts"]:
+              if entry["name"] == evil_path.name:
+                  entry["bytes"] = len(body)
+                  entry["sha256"] = hashlib.sha256(body).hexdigest()
+          m["contentSha256"] = content_sha256(m)
+          out.write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("ikame manifest yazıldı:", out)
+          PY
+          # Kendi iç özetiyle tutarlı görünür (eski kapı bunu kabul ediyordu).
+          python3 scripts/release_manifest.py verify --manifest "$KOTU/ikame.json" \
+            --file "$KOTU/$(basename "$msi")" >/dev/null 2>&1 \
+            && echo "ölçü: ikame manifest kendi iç özetiyle KABUL ediliyor (bilinen sınır)" \
+            || echo "ölçü: ikame manifest iç özetle de reddedildi (beklenenden güçlü)"
+          # Dış özet bağlar.
+          if python3 scripts/release_manifest.py verify --manifest "$KOTU/ikame.json" \
+              --file "$KOTU/$(basename "$msi")" --manifest-sha256 "$DIGEST" \
+              >/dev/null 2>"$KOTU/ikame.err"; then
+            echo "HATA: paket ikamesi kabul edildi" >&2; exit 1
+          fi
+          grep -q E_MANIFEST_DIGEST "$KOTU/ikame.err"
+          echo "ok: paket ikamesi (contentSha256 geri hesaplanmış) → E_MANIFEST_DIGEST"
+
       - name: İndirilen kopyayı doğrula (platform/mimari/sürüm/boyut/sha256)
         run: |
           set -euo pipefail

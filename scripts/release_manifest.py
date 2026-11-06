@@ -40,7 +40,9 @@ kusurlu her durum **kırmızı** olmalı.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -91,6 +93,14 @@ REQUIRED_DEFAULT = (
 
 #: Artefakt olmayan, klasörde bulunmasına izin verilen yan dosyalar.
 SIDECAR_SUFFIXES = (".sha256", ".json", ".md", ".txt")
+
+#: Manifestin **kendi** `contentSha256`ı dosyanın içindedir: bir alan değiştirilip
+#: özet yeniden hesaplanırsa `E_MANIFEST_TAMPER` yakalamaz. Bu yüzden manifest de
+#: `.sha256` yan dosyasıyla yayımlanır (`build` yazar) ve `verify` **dışarıdan**
+#: verilen özeti (`--manifest-sha256`) manifest hiç ayrıştırılmadan dosya
+#: baytlarına karşı denetler — ayrı kanaldan gelen özet, manifestin kendisinden
+#: bağımsız tek referanstır.
+MANIFEST_SIDECAR_SUFFIX = ".sha256"
 
 NAME = re.compile(
     r"^(?P<product>.+?)_(?P<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)"
@@ -319,6 +329,74 @@ def build_manifest(
     return manifest
 
 
+def write_manifest(path: Path, manifest: dict) -> str:
+    """Manifesti **ve** `.sha256` yan dosyasını yazar; dosya özetini döndürür.
+
+    Tek yazma yolu: yan dosya ile manifest aynı baytlardan türetilir, arada
+    başka bir yazma olursa özet tutmaz (`E_MANIFEST_SIDECAR`).
+    """
+    body = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    digest = sha256_file(path)
+    sidecar = path.with_name(path.name + MANIFEST_SIDECAR_SUFFIX)
+    sidecar.write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+    return digest
+
+
+def manifest_sidecar_path(manifest_path: Path) -> Path:
+    return manifest_path.with_name(manifest_path.name + MANIFEST_SIDECAR_SUFFIX)
+
+
+def check_manifest_digest(
+    manifest_path: Path,
+    manifest_sha256: str | None,
+    require_manifest_digest: bool,
+) -> str | None:
+    """Manifestin **dosya** özetini denetler; manifesti ayrıştırmadan.
+
+    Sıra: dışarıdan verilen özet → yan dosya → (istenirse) özet yokluğu.
+    Dönüş: kullanılan özet ya da `None` (denetim istenmedi).
+    """
+    actual = sha256_file(manifest_path) if manifest_path.is_file() else None
+
+    if manifest_sha256 is not None:
+        wanted = manifest_sha256.strip().lower()
+        if SHA256.match(wanted) is None:
+            raise GateError("E_USAGE", f"dış özet 64 haneli hex değil: {manifest_sha256!r}")
+        if actual is None:
+            raise GateError("E_MISSING_FILE", f"manifest yok: {manifest_path}")
+        if actual != wanted:
+            raise GateError(
+                "E_MANIFEST_DIGEST",
+                f"manifest dosyası dış özetle uyuşmuyor: {actual[:12]}… ≠ {wanted[:12]}… "
+                "— manifest değiştirilmiş (kendi contentSha256'sı bunu yakalayamaz)",
+            )
+        return actual
+
+    sidecar = manifest_sidecar_path(manifest_path)
+    if sidecar.is_file():
+        parts = sidecar.read_text(encoding="utf-8", errors="replace").split()
+        if not parts or SHA256.match(parts[0].lower()) is None:
+            raise GateError("E_MANIFEST_SIDECAR", f"yan dosya okunamadı: {sidecar.name}")
+        if actual is None:
+            raise GateError("E_MISSING_FILE", f"manifest yok: {manifest_path}")
+        if actual != parts[0].lower():
+            raise GateError(
+                "E_MANIFEST_SIDECAR",
+                f"yan dosya {parts[0][:12]}… ≠ manifest {actual[:12]}… "
+                "— manifest okunurken kesilmiş/bozulmuş olabilir",
+            )
+        return actual
+
+    if require_manifest_digest:
+        raise GateError(
+            "E_MANIFEST_DIGEST",
+            f"dış özet yok: --manifest-sha256 verilmedi ve {sidecar.name} bulunamadı",
+        )
+    return None
+
+
 def load_manifest(path: Path) -> dict:
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -344,8 +422,19 @@ def verify_file(
     arch: str | None,
     version: str | None,
     require_free_disk: bool,
+    *,
+    manifest_sha256: str | None = None,
+    require_manifest_digest: bool = False,
 ) -> dict:
-    """İndirilen tek dosyayı manifeste karşı doğrular (F16-T09)."""
+    """İndirilen tek dosyayı manifeste karşı doğrular (F16-T09).
+
+    Manifestin kendi `contentSha256`ı dosyanın içinde olduğu için tek başına
+    yetmez; bu yüzden **dosya** özeti (dışarıdan verilen ya da yan dosyadaki)
+    manifest ayrıştırılmadan önce denetlenir.
+    """
+    manifest_digest = check_manifest_digest(
+        manifest_path, manifest_sha256, require_manifest_digest
+    )
     manifest = load_manifest(manifest_path)
 
     if version is not None and version != manifest.get("version"):
@@ -400,6 +489,7 @@ def verify_file(
         "bytes": size,
         "version": manifest.get("version"),
         "signed": manifest.get("signed") is True,
+        "manifestSha256": manifest_digest,
     }
 
 
@@ -447,6 +537,10 @@ def self_test() -> int:
         """Geçen kuralı **anında** yazar: mutasyon kanıtı tek satırın düşmesini ölçer."""
         checks.append(line)
         print("ok:", line)
+
+    def note(line: str) -> None:
+        """Ölçüm notu: kapı değil, sayılmaz (kusuru pinlememek için)."""
+        print("ölçü:", line)
 
     with tempfile.TemporaryDirectory(prefix="dimrel-") as raw:
         base = Path(raw)
@@ -703,6 +797,91 @@ def self_test() -> int:
         else:
             ok("G20 boş disk kapısı yetersizse E_DISK")
 
+        # 21) Manifest `.sha256` yan dosyasıyla yazılır; yan dosya **baytları** özetler.
+        paired_dir = base / "paired"
+        paired = paired_dir / "release-manifest.json"
+        paired_digest = write_manifest(paired, manifest)
+        sidecar = manifest_sidecar_path(paired)
+        if not sidecar.is_file():
+            failures.append("G21 `.sha256` yan dosyası yazılmadı")
+        elif sidecar.read_text(encoding="utf-8").split()[:1] != [paired_digest]:
+            failures.append("G21 yan dosyadaki özet `write_manifest` dönüşüyle uyuşmuyor")
+        elif sha256_file(paired) != paired_digest:
+            failures.append("G21 yan dosya manifestin gerçek baytlarını özetlemiyor")
+        else:
+            ok("G21 `build` manifesti + `.sha256` yan dosyası (dosya baytı) yazar")
+
+        # 22) Kurcalanmış manifest, `contentSha256` **geri hesaplanmış** olsa da
+        #     yayımlanmış yan dosya özetiyle düşer. İç özet tek başına yetmez.
+        edited_dir = base / "edited"
+        edited_dir.mkdir()
+        edited = edited_dir / paired.name
+        tampered = json.loads(json.dumps(manifest))
+        tampered["artifacts"][2]["bytes"] = int(tampered["artifacts"][2]["bytes"]) + 4096
+        tampered["contentSha256"] = content_sha256(tampered)
+        edited.write_text(
+            json.dumps(tampered, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        note(
+            "geri hesaplanmış contentSha256'lı manifest kendi iç özetiyle tutarlı görünür "
+            "(`E_MANIFEST_TAMPER` yakalamaz) — dış özet gerekir"
+        )
+        shutil.copy(sidecar, manifest_sidecar_path(edited))
+        message = _expect(
+            "E_MANIFEST_SIDECAR",
+            lambda: verify_file(edited, msi, None, None, None, False),
+        )
+        if message:
+            failures.append(f"G22 kurcalanmış manifest (yan dosya): {message}")
+        else:
+            ok("G22 kurcalanmış + geri hesaplanmış manifest E_MANIFEST_SIDECAR")
+
+        # 23) Dışarıdan verilen özet (yayın duyurusu) uyuşmazsa manifest okunmadan düşer.
+        message = _expect(
+            "E_MANIFEST_DIGEST",
+            lambda: verify_file(
+                edited, msi, None, None, None, False, manifest_sha256=paired_digest
+            ),
+        )
+        if message:
+            failures.append(f"G23 dış özet uyuşmazlığı: {message}")
+        else:
+            ok("G23 `--manifest-sha256` uyuşmazsa E_MANIFEST_DIGEST")
+
+        # 24) Özet ne dışarıdan ne yan dosyadan geldiyse ve zorunluysa: sessiz kabul yok.
+        lone = base / "lone" / "release-manifest.json"
+        lone.parent.mkdir()
+        lone.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        message = _expect(
+            "E_MANIFEST_DIGEST",
+            lambda: verify_file(lone, msi, None, None, None, False, require_manifest_digest=True),
+        )
+        if message:
+            failures.append(f"G24 özet yokluğu: {message}")
+        else:
+            ok("G24 `--require-manifest-digest`: özet yoksa E_MANIFEST_DIGEST")
+
+        # 25) Bozuk özet biçimi sessizce yorumlanmaz.
+        message = _expect(
+            "E_USAGE",
+            lambda: verify_file(paired, msi, None, None, None, False, manifest_sha256="abc"),
+        )
+        if message:
+            failures.append(f"G25 bozuk dış özet: {message}")
+        else:
+            ok("G25 64 haneli olmayan dış özet E_USAGE")
+
+        # 26) Özet yoksa `verify` **sessiz** kalmaz: uyarı yazar (kabul eder ama yalan söylemez).
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = main(["release_manifest.py", "verify", "--manifest", str(lone), "--file", str(msi)])
+        if code != 0:
+            failures.append(f"G26 özetsiz doğrulama {code} koduyla döndü (beklenen 0)")
+        elif "UYARI" not in err.getvalue():
+            failures.append("G26 özetsiz doğrulama uyarı yazmadı (sessiz kabul)")
+        else:
+            ok("G26 özetsiz doğrulama uyarır (sessiz kabul yok)")
+
     if failures:
         print("paket manifesti öz testi KIRMIZI:")
         for failure in failures:
@@ -742,6 +921,17 @@ def main(argv: list[str]) -> int:
     verify.add_argument("--arch", choices=sorted(set(ARCH_TOKENS.values())), default=None)
     verify.add_argument("--version", default=None)
     verify.add_argument("--require-free-disk", action="store_true")
+    verify.add_argument(
+        "--manifest-sha256",
+        default=None,
+        metavar="HEX",
+        help="manifestin yayımlanmış (ayrı kanaldan gelen) dosya özeti",
+    )
+    verify.add_argument(
+        "--require-manifest-digest",
+        action="store_true",
+        help="ne dış özet ne de .sha256 yan dosyası varsa reddet",
+    )
 
     args = parser.parse_args(argv[1:])
     try:
@@ -755,11 +945,10 @@ def main(argv: list[str]) -> int:
                 args.signed,
                 args.attestation,
             )
-            args.out.parent.mkdir(parents=True, exist_ok=True)
-            args.out.write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
+            digest = write_manifest(args.out, manifest)
             print(f"manifest yazıldı: {args.out} · {summarize(manifest)}")
+            print(f"manifest özeti (dışarıya ilan edilecek): {digest}")
+            print(f"yan dosya: {manifest_sidecar_path(args.out).name}")
             return 0
         outcome = verify_file(
             args.manifest,
@@ -768,12 +957,22 @@ def main(argv: list[str]) -> int:
             args.arch,
             args.version,
             args.require_free_disk,
+            manifest_sha256=args.manifest_sha256,
+            require_manifest_digest=args.require_manifest_digest,
         )
         print(
             f"paket doğrulandı: {outcome['name']} · {outcome['platform']}/{outcome['arch']}/"
             f"{outcome['kind']} · {outcome['bytes']} bayt · sürüm {outcome['version']} · "
             f"imza {'var' if outcome['signed'] else 'yok'}"
         )
+        if outcome["manifestSha256"]:
+            print(f"manifest özeti doğrulandı: {outcome['manifestSha256']}")
+        else:
+            print(
+                "UYARI: manifest özeti doğrulanmadı (--manifest-sha256 ya da .sha256 yan dosyası "
+                "yok) — paket ikamesi bu çağrıda yakalanmaz",
+                file=sys.stderr,
+            )
         return 0
     except GateError as error:
         print(f"KIRMIZI {error.code}: {error.message}", file=sys.stderr)
