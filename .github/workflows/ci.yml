@@ -70,7 +70,7 @@ jobs:
       - run: cargo test --workspace --all-targets
 
   desktop:
-    name: masaüstü kabuk (cargo check)
+    name: masaüstü kabuk (clippy + test)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +82,14 @@ jobs:
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
       - name: Tauri clippy + derleme
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Test kapısı öz testi
+        run: python3 scripts/desktop_test_gate.py --self-test
+      # Bu iş bugüne dek yalnız **derliyordu**: test ikilisi hiç koşmuyordu.
+      # Artık `commands_tests.rs` (32) + `parse_pool.rs` (6) gerçekten koşar;
+      # 5 test gerçek worker/tesseract ister ve `#[ignore]` taşır. Kapı sayı
+      # tabanını ve kaynak sayımını denetler → test sessizce kaybolamaz.
+      - name: Masaüstü kabuk testleri (gerçek kasa, worker'sız)
+        run: python3 scripts/desktop_test_gate.py
 
   windows-secret:
     name: windows güvenli depo (cargo test)
