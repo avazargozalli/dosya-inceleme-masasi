@@ -186,3 +186,74 @@ jobs:
           name: kaynak-arsivi
           path: ${{ runner.temp }}/kaynak
           if-no-files-found: error
+
+  paket:
+    name: sürüm paketi manifesti (F16-T05/T09)
+    # İkili paketler depoda tutulmaz (elle, **imzasız** üretilir); bu iş
+    # manifest biçimini, zorunlu platform kümesini ve indirme doğrulamasını
+    # gerçek ürün adı/sürümüyle sınar. Artefaktlar **sentetiktir** ve üretilen
+    # manifest `release-manifest.ornek.json` adını taşır — gerçek sürüm
+    # manifesti sanılmamalıdır.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Kapı kendini sınar (ad/sürüm/zorunlu/imza/kaynak kapıları)
+        run: python3 scripts/release_manifest.py --self-test
+      - name: Kaynak bağı + paket manifesti (sentetik artefaktlar)
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/paket"
+          mkdir -p "$WORK/artifacts"
+          python3 scripts/source_release.py build --ref HEAD --out "$WORK/kaynak" --allow-untagged
+          python3 - "$WORK/artifacts" <<'PY'
+          import json, pathlib, sys
+          art = pathlib.Path(sys.argv[1])
+          conf = json.loads(pathlib.Path("apps/desktop/src-tauri/tauri.conf.json").read_text())
+          product, version = conf["productName"], conf["version"]
+          for name, body in [
+              (f"{product}_{version}_aarch64.dmg", b"sentetik-macos-arm64"),
+              (f"{product}_{version}_x64.dmg", b"sentetik-macos-x64"),
+              (f"{product}_{version}_x64_tr-TR.msi", b"sentetik-windows-x64"),
+          ]:
+              (art / name).write_bytes((body * 512)[:4096])
+          PY
+          VERSION="$(python3 -c 'import json;print(json.load(open("apps/desktop/src-tauri/tauri.conf.json"))["version"])')"
+          python3 scripts/release_manifest.py build \
+            --artifacts "$WORK/artifacts" \
+            --version "$VERSION" \
+            --commit "$(git rev-parse HEAD)" \
+            --source-manifest "$WORK"/kaynak/*.manifest.json \
+            --out "$WORK/release-manifest.ornek.json"
+          for file in "$WORK"/artifacts/*; do
+            python3 scripts/release_manifest.py verify \
+              --manifest "$WORK/release-manifest.ornek.json" --file "$file" --version "$VERSION"
+          done
+      - name: Kesilen ve kurcalanmış paket reddedilir
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/paket"
+          MSI="$(ls "$WORK"/artifacts/*.msi)"
+          mkdir -p "$WORK/kesik" "$WORK/kurcali"
+          # Aynı **ad**, eksik bayt: indirme kesilmiş sayılır (E_SIZE).
+          head -c 100 "$MSI" > "$WORK/kesik/$(basename "$MSI")"
+          # Aynı ad, aynı boyut, değişmiş bayt: kurcalama sayılır (E_HASH).
+          cp "$MSI" "$WORK/kurcali/$(basename "$MSI")"
+          printf 'x' | dd of="$WORK/kurcali/$(basename "$MSI")" bs=1 seek=0 conv=notrunc status=none
+          for case in kesik:E_SIZE kurcali:E_HASH; do
+            dir="${case%%:*}"; code="${case##*:}"
+            if python3 scripts/release_manifest.py verify \
+                 --manifest "$WORK/release-manifest.ornek.json" \
+                 --file "$WORK/$dir/$(basename "$MSI")" 2>"$WORK/$dir.log"; then
+              echo "KIRMIZI: $dir paketi kabul edildi"; exit 1
+            fi
+            grep -q "$code" "$WORK/$dir.log" || { echo "KIRMIZI: $dir için $code beklenirdi"; cat "$WORK/$dir.log"; exit 1; }
+            echo "ok: $dir → $code"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paket-manifesti
+          path: ${{ runner.temp }}/paket/release-manifest.ornek.json
+          if-no-files-found: error
