@@ -105,6 +105,8 @@ jobs:
           workers/document/.venv/bin/pip install --quiet -e "workers/document[all]"
       - name: Tesseract (OCR; ürün varsayılanı tur+eng)
         run: brew install tesseract tesseract-lang
+      - name: Gerçek worker kapısı öz testi
+        run: python3 scripts/desktop_test_gate.py --ignored --self-test
       - name: Masaüstü kabuk gerçek worker testleri (yoksayılanlar)
         run: python3 scripts/desktop_test_gate.py --ignored
 
