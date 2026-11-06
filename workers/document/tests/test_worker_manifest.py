@@ -190,3 +190,23 @@ def test_missing_manifest_is_an_error_not_an_empty_pass(tmp_path: Path) -> None:
     with pytest.raises(wm.ManifestError):
         wm._read_manifest(package)
     assert wm.main(["verify", "--dir", str(package), "--json"]) == 2
+
+
+def test_platform_tag_is_normalized_for_windows_and_macos(monkeypatch) -> None:
+    """Aynı mimari iki etiketle yazılmaz.
+
+    Windows `platform.machine()` "AMD64" der; etiket `windows-x86_64` olmalı ki
+    manifestte `windows-AMD64` ile `windows-x86_64` karışmasın (Windows worker'ı
+    2026-11-06'da ilk kez paketlendi).
+    """
+    monkeypatch.setattr(wm.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(wm.platform, "machine", lambda: "AMD64")
+    assert wm._platform_tag() == "windows-x86_64"
+
+    monkeypatch.setattr(wm.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(wm.platform, "machine", lambda: "arm64")
+    assert wm._platform_tag() == "macos-arm64"
+
+    monkeypatch.setattr(wm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(wm.platform, "machine", lambda: "x86_64")
+    assert wm._platform_tag() == "linux-x86_64"

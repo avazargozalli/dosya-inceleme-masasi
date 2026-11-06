@@ -100,6 +100,10 @@ def _platform_tag() -> str:
         system = "macos"
     if machine in ("aarch64", "arm64"):
         machine = "arm64"
+    # Windows `platform.machine()` "AMD64" der; aynı mimari iki etiketle
+    # yazılmasın (manifestte "windows-AMD64" ile "windows-x86_64" karışırdı).
+    elif machine in ("amd64", "x86_64", "x64"):
+        machine = "x86_64"
     return f"{system}-{machine}"
 
 
