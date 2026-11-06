@@ -1,6 +1,0 @@
-name: probe-a
-on:
-  workflow_dispatch:
-jobs:
-  call:
-    uses: ./.github/workflows/msi-install-drill.yml

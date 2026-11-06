@@ -177,6 +177,12 @@ jobs:
     # dakikalık yeniden derleme beklemeden tekrarlanabilir.
     needs: [windows-binary]
     if: always()
+    # Çağrılan iş akışı `actions: read` istiyor (artefakt indirme); çağıran
+    # bunu **açıkça** vermezse GitHub iş akışını `startup_failure` ile
+    # reddediyor (2026-11-06'da ölçüldü: izin bloğu olmadan koşu hiç başlamadı).
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/msi-install-drill.yml
     with:
       artifact_run_id: ${{ github.run_id }}

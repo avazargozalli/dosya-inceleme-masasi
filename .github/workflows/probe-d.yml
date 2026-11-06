@@ -1,6 +1,0 @@
-name: probe-d
-on:
-  workflow_dispatch:
-jobs:
-  call:
-    uses: ./.github/workflows/probe-called-2.yml
