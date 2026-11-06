@@ -164,8 +164,10 @@ olur (sessiz geçmez). Python tarafı yalnız **bildirilen** pinlerdir; geçişl
 Python bağımlılıkları SBOM'da yok (paketlenmiş worker içeriği
 `scripts/worker_manifest.py` ile ayrı doğrulanır — release'te birleştirilmeli).
 Lisans/üçüncü taraf bildirimi **artık var** (`THIRD_PARTY_NOTICES.md`, aşağıdaki
-bölüm) ve kapıya bağlı; kaynak etiketi (git tag/arşiv) hâlâ **yok** (F16-T01'in
-kalan tek maddesi). Kök
+bölüm) ve kapıya bağlı; kaynak etiketi/arşivi de **artık var** (2026-11-06,
+`scripts/source_release.py`; SBOM `subject` + dört kilit + bildirim özeti
+arşive bağlanıyor — `docs/releases/F16/SOURCE-RELEASE.md`). Git **etiketi**
+depoda yok; etiket oluşturmak yayın adımıdır. Kök
 `package.json` sürümü **0.2.0**, uygulama **0.1.0**: subject yalnız uygulama/paket/
 Cargo sürümünü taşır, monorepo sürümü hizalanmadı (sürüm hizalama işi açık).
 SBOM imzalanmıyor, attestation yok.
