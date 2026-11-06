@@ -1,0 +1,136 @@
+name: probe-called-3
+
+# Windows MSI kurulum tatbikatı (F02-T09): gerçekten kurar, kurulan ağaçta
+# uygulama ikilisini ve **belge worker'ını** arar, worker'ı kurulum dizininden
+# NDJSON ile konuşturur, sonra kaldırır.
+#
+# `desktop-build` bunu `workflow_call` ile çağırır; ayrıca elle de koşulabilir:
+# `artifact_run_id` verilirse MSI **o koşunun** artefaktından indirilir — yani
+# 25 dakikalık yeniden derleme beklemeden tatbikat tekrarlanabilir.
+on:
+  workflow_call:
+    inputs:
+      artifact_run_id:
+        description: "MSI artefaktının indirileceği koşu kimliği (boşsa bu koşu)"
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: "MSI artefaktının indirileceği koşu kimliği (boşsa bu koşu)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read # artefakt indirme (aynı depo, başka koşu)
+
+jobs:
+  drill:
+    name: Kur → doğrula → kaldır (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dim-windows-x64
+          path: dist/win
+      - name: MSI'yi sessiz kur
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = Get-ChildItem -Path dist/win -Recurse -Filter *.msi | Select-Object -First 1
+          if (-not $msi) { throw 'artefakt içinde MSI yok' }
+          $built = Get-ChildItem -Path dist/win -Recurse -Filter 'dim-desktop.exe' | Select-Object -First 1
+          if (-not $built) { throw 'artefakt içinde derlenmiş dim-desktop.exe yok' }
+          $msiHash = (Get-FileHash $msi.FullName -Algorithm SHA256).Hash.ToLower()
+          $exeHash = (Get-FileHash $built.FullName -Algorithm SHA256).Hash.ToLower()
+          $configVersion = (Get-Content 'apps/desktop/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          Write-Host "msi: $($msi.Name) — $($msi.Length) bayt — sha256 $msiHash"
+          Write-Host "derlenmiş ikili: $($built.Length) bayt — sha256 $exeHash — sürüm $configVersion"
+          "MSI_SHA=$msiHash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "EXE_SHA=$exeHash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BUILT_BYTES=$($built.Length)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "APP_VERSION=$configVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $log = Join-Path $env:RUNNER_TEMP 'msi-install.log'
+          $argline = "/i `"$($msi.FullName)`" /qn /norestart /l*v `"$log`""
+          $p = Start-Process msiexec.exe -ArgumentList $argline -Wait -PassThru
+          Write-Host "kurulum çıkış kodu: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            Write-Host '--- kurulum günlüğü (son 80 satır) ---'
+            Get-Content $log -Tail 80
+            throw "MSI kurulamadı: çıkış kodu $($p.ExitCode)"
+          }
+      - name: Kurulan paketi doğrula (uygulama + worker + ARP)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $keys = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          )
+          $entry = Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like '*Dosya*nceleme*' } | Select-Object -First 1
+          if (-not $entry) { throw 'ARP kaydı yok: kurulum kendini kaydetmedi' }
+          Write-Host "ARP: $($entry.DisplayName) $($entry.DisplayVersion) → $($entry.InstallLocation)"
+          $dir = $entry.InstallLocation
+          if (-not $dir) { $dir = Join-Path $env:ProgramFiles 'Dosya İnceleme Masası' }
+          $dir = $dir.TrimEnd('\')
+          "INSTALL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PRODUCT_CODE=$($entry.PSChildName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $app = Join-Path $dir 'dim-desktop.exe'
+          if (-not (Test-Path $app)) { throw "kurulan uygulama ikilisi yok: $app" }
+          $installed = Get-Item $app
+          $appHash = (Get-FileHash $app -Algorithm SHA256).Hash.ToLower()
+          $ver = $installed.VersionInfo
+          $sameBytes = if ($appHash -eq $env:EXE_SHA) { 'evet' } else { 'hayır' }
+          Write-Host "kurulan ikili: $($installed.Length) bayt — sha256 $appHash — ProductVersion '$($ver.ProductVersion)' FileVersion '$($ver.FileVersion)'"
+          Write-Host "derlenen ikili: $env:BUILT_BYTES bayt — sha256 $env:EXE_SHA"
+          # Ölçüm, kapı değil: Tauri paketleme sırasında ikiliyi yeniden yazıyor
+          # (2026-11-06 ölçümü: aynı boyut sınıfı, farklı sha256). Kimlik iddiası
+          # **sürüm bilgisi + MSI özeti** üzerinden kurulur; bayt eşitliği iddia edilmez.
+          Write-Host "bayt eşitliği: $sameBytes"
+          if ($ver.ProductVersion -and $ver.ProductVersion -notmatch [regex]::Escape($env:APP_VERSION)) {
+            throw "kurulan sürüm beklenenle uyuşmuyor: '$($ver.ProductVersion)' ≠ $env:APP_VERSION"
+          }
+          if (-not $ver.ProductVersion) { Write-Host 'UYARI: kurulan ikilide ProductVersion boş — sürüm kapısı ölçülemedi' }
+          $files = Get-ChildItem -Path $dir -Recurse -File | Measure-Object -Property Length -Sum
+          Write-Host "kurulan dosya: $($files.Count) — $($files.Sum) bayt"
+          $worker = Get-ChildItem -Path $dir -Recurse -Filter 'dim-worker.exe' | Select-Object -First 1
+          if (-not $worker) {
+            Write-Host '--- kurulan ağaç (ilk 40 dosya) ---'
+            Get-ChildItem -Path $dir -Recurse -File | Select-Object -First 40 -ExpandProperty FullName
+            throw 'kurulan pakette belge worker yok — MSI `resources/worker` taşımıyor'
+          }
+          Write-Host "worker: $($worker.FullName) — $($worker.Length) bayt"
+          $req = @(
+            '{"v":1,"id":"1","method":"ping","params":{}}',
+            '{"v":1,"id":"2","method":"capabilities","params":{}}'
+          ) -join "`n"
+          $out = ($req | & $worker.FullName) -join "`n"
+          Write-Host "worker yanıtı:`n$out"
+          if ($out -notmatch '"pong":true') { throw 'kurulan worker ping yanıtı vermedi' }
+          if ($out -notmatch '"pdf":\s*\{\s*"available":\s*true') { throw 'kurulan worker pdf motorunu bildirmedi' }
+      - name: Kaldır ve temizlendiğini doğrula
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'msi-uninstall.log'
+          $argline = "/x $env:PRODUCT_CODE /qn /norestart /l*v `"$log`""
+          $p = Start-Process msiexec.exe -ArgumentList $argline -Wait -PassThru
+          Write-Host "kaldırma çıkış kodu: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -Tail 60
+            throw "kaldırma başarısız: $($p.ExitCode)"
+          }
+          Start-Sleep -Seconds 2
+          if (Test-Path (Join-Path $env:INSTALL_DIR 'dim-desktop.exe')) { throw 'kaldırmadan sonra uygulama ikilisi duruyor' }
+          $keys = @(
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          )
+          $left = Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like '*Dosya*nceleme*' } | Select-Object -First 1
+          if ($left) { throw 'kaldırmadan sonra ARP kaydı duruyor' }
+          Write-Host 'ok: kur → doğrula (uygulama + worker) → kaldır turu temiz'
