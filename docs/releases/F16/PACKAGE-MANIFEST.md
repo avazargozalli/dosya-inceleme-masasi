@@ -118,6 +118,12 @@ birlikte koştu:
 | `macos/x86_64/dmg` | 66.643.461 bayt | `Dosya İnceleme Masası_0.1.0_x64.dmg` |
 | `windows/x86_64/msi` | 8.290.304 bayt | `Dosya İnceleme Masası_0.1.0_x64_tr-TR.msi` |
 
+> **Not (2026-11-06, sonraki tur):** MSI o gün **belge worker'ını taşımıyordu**;
+> F02 turunda worker Windows'ta da paketlendi → aynı MSI **41.115.800 bayt**
+> (sha256 `549fb7b2…`). Yukarıdaki tablo o koşunun **tarihsel** ölçümüdür; manifest
+> aracının boyut kapısı iki durumda da doğru çalışır (boyut manifestten gelir).
+> Ayrıntı: `docs/releases/F02/README.md`.
+
 - Sürüm `0.1.0`, etiket **yok** (`--allow-untagged`); kaynak arşivi **435 dosya**
   (2.286.554 / 2.289.801 bayt — commit'e bağlı), manifest `source.commit` ile bağlı.
 - İkinci koşuda manifest kimliği `99934c6c…058e72`, **dış özet** `d43148d4…4721e958`

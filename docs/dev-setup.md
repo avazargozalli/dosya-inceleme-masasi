@@ -75,6 +75,21 @@ Bu projede Tauri/Rust paketlemesi GitHub Actions'ta yapılır. Gerekçe: tekrarl
 ortam, disk tasarrufu ve imzalama sırlarının geliştirici makinesine kopyalanmaması.
 Lokal ortamda `cargo check`/`cargo test` yeterlidir; `tauri build` gerekmez.
 
+### Windows MSI kurulum tatbikatı
+
+`desktop-build` MSI'yi üretir; **kurulduğunu** ayrı bir iş ölçer (sessiz kurulum →
+kurulan ağaçta uygulama + belge worker'ı → worker'ı NDJSON ile konuşturma → kaldırma).
+Yeniden derleme beklemeden, herhangi bir koşunun MSI'sine karşı koşulabilir:
+
+```
+gh workflow run msi-install-drill.yml -f artifact_run_id=<desktop-build koşu kimliği>
+```
+
+Koşu, MSI'yi `dim-windows-x64` artefaktından indirir; bu yüzden o koşuda
+`windows-binary (x86_64…)` işi yeşil olmalı. Tatbikat **worker'sız** bir MSI'de
+kırmızı yanar (`kurulan pakette belge worker yok`) — 2026-11-06'da gerçekten
+böyle bir paket vardı, düzeltildi: `docs/releases/F02/README.md`.
+
 ## Sık hatalar
 
 - **`pnpm install --frozen-lockfile` hata veriyor:** `pnpm-lock.yaml` güncel değil;
