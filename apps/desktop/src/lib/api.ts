@@ -326,6 +326,19 @@ export type TransferReceiptRow = {
   dispatchedAt: string;
 };
 
+export type AiContextItemRow = {
+  id: string;
+  aiRunId: string;
+  documentVersionId: string;
+  /** Belgenin adı; sürüm/belge silinmişse `null` — ekran kimliği yazar. */
+  documentTitle: string | null;
+  /** Sürüm numarası; bulunamazsa `null`. */
+  versionNo: number | null;
+  sourceAnchorId: string | null;
+  inclusionReason: string;
+  bytesSent: number;
+};
+
 export type ScopeSkip = {
   documentId: string;
   reason: "missing" | "no_current_version" | "not_parsed" | "empty_text" | string;
@@ -1920,6 +1933,8 @@ export const api = {
   aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),
   aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),
+  /** Çalıştırmada cihazdan **çıkan** belge sürümleri (gönderim sicili). */
+  aiContextItems: (runId: string) => invoke<AiContextItemRow[]>("ai_context_items", { runId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
   aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>

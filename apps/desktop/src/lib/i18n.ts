@@ -608,6 +608,24 @@ export const tr = {
     runsEmpty: "Henüz çalıştırma yok. Sağlayıcı bağlanınca burada görünür.",
     selectRun: "Seç ve adayları gör",
     selectedRun: "Seçili · adayları yenile",
+    contextTitle: "Gönderilen içerik",
+    contextSub:
+      "Seçili çalıştırmada cihazdan çıkan belge sürümleri. Kayıt gönderimden " +
+      "**önce** yazılır; belge sonradan silinse de satır durur.",
+    contextNoRun: "İçerik sicilini görmek için yukarıdaki tablodan bir çalıştırma seçin.",
+    contextEmpty: "Bu çalıştırma için gönderilen içerik kaydı yok.",
+    contextLoading: "İçerik sicili okunuyor…",
+    contextError: "İçerik sicili okunamadı:",
+    contextColDocument: "Belge",
+    contextColVersion: "Sürüm",
+    contextColReason: "Gerekçe",
+    contextColBytes: "Bayt",
+    contextMissingDocument: "belge bulunamadı · {id}",
+    contextVersionUnknown: "—",
+    contextTotal: "{documents} belge · {bytes}",
+    contextNote:
+      "Sınır: sicil belge **sürümünü** ve gönderilen bayt sayısını yazar, metnin " +
+      "kendisini saklamaz. Gönderilen metnin içerik özeti makbuz satırındadır.",
     validateTitle: "Aday doğrula ve kaydet",
     validateSub:
       "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +

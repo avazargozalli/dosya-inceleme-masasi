@@ -3,6 +3,7 @@ import {
   api,
   toApiError,
   type AiCandidateRow,
+  type AiContextItemRow,
   type AiOverview,
   type ApiError,
   type CandidateReport,
@@ -113,6 +114,14 @@ export function Ai() {
   const [receiptListBusy, setReceiptListBusy] = useState(false);
   const [preview, setPreview] = useState<ConsentPreview | null>(null);
   const [candidates, setCandidates] = useState<AiCandidateRow[]>([]);
+  // Gönderim sicili de **çekirdekten** okunur: `ai_context_items` her çalıştırmada
+  // hangi belge sürümünün kaç baytının çıktığını yazıyordu ama okuma yolu yoktu
+  // — avukat "bu çalıştırmada ne gitti" sorusunu yanıtlayamıyordu.
+  const [contextItems, setContextItems] = useState<AiContextItemRow[]>([]);
+  const [contextBusy, setContextBusy] = useState(false);
+  // Okuma hatası **kendi satırında** yazılır: düşen okumadan sonra "kayıt yok"
+  // demek, olmayan bir olguyu bildirmek olurdu.
+  const [contextError, setContextError] = useState<ApiError | null>(null);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -153,6 +162,9 @@ export function Ai() {
   // Makbuz envanteri de bir **okuma**dır: son başlayan okuma kazanır; geç
   // yanıt yeni dosyanın listesine yazılmaz.
   const receiptListSeq = useRef(0);
+  // Gönderim sicili de bir **okuma**dır: `runSeq` seçimi, `contextSeq` okumayı
+  // damgalar — geç yanıt başka çalıştırmanın satırı olarak yazılmaz.
+  const contextSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -278,6 +290,10 @@ export function Ai() {
     setReceiptListBusy(false);
     setPreview(null);
     setCandidates([]);
+    setContextItems([]);
+    setContextBusy(false);
+    setContextError(null);
+    contextSeq.current += 1;
     setRunId("");
     setReport(null);
     setNotice(null);
@@ -354,10 +370,18 @@ export function Ai() {
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
       // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak koşmaz.
-      await api.aiRunExecute(caseId, consentProvider.id, consent.id, purposeTask(consent.purpose));
+      const candidate = await api.aiRunExecute(
+        caseId,
+        consentProvider.id,
+        consent.id,
+        purposeTask(consent.purpose),
+      );
       const next = await api.aiOverview(caseId);
       if (caseGen.current !== gen) return;
       setOverview(next);
+      // Yeni çalıştırma **seçilir**: gönderim sicili (hangi sürüm, kaç bayt)
+      // gönderimden hemen sonra ekranda — avukat sormak zorunda kalmaz.
+      await focusRun(candidate.aiRunId);
     } catch (e) {
       const failure = toApiError(e);
       if (caseGen.current === gen) setError(failure);
@@ -393,15 +417,56 @@ export function Ai() {
     }
   }
 
-  async function selectRun(id: string) {
+  /**
+   * Gönderim sicili bir **okuma**dır (onay/makbuz deseniyle aynı): her yeni okuma
+   * sayacı artırır, geç yanıt yeni seçimin altına yazılmaz. Liste **istekten
+   * önce** temizlenir — eski çalıştırmanın satırı yeni çalıştırmanınki gibi
+   * görünmesin.
+   */
+  async function loadContextItems(forRun: string): Promise<void> {
+    if (!forRun) return;
+    contextSeq.current += 1;
+    const seq = contextSeq.current;
+    setContextBusy(true);
+    setContextError(null);
+    try {
+      const rows = await api.aiContextItems(forRun);
+      if (contextSeq.current !== seq) return;
+      setContextItems(rows);
+    } catch (e) {
+      if (contextSeq.current !== seq) return;
+      // Satırlar **temiz kalır**: düşen okumada eski liste "bu çalıştırmanın
+      // içeriği" gibi gösterilmez, "kayıt yok" da denmez.
+      setContextItems([]);
+      setContextError(toApiError(e));
+    } finally {
+      if (contextSeq.current === seq) setContextBusy(false);
+    }
+  }
+
+  /**
+   * Bir çalıştırmayı **ekranın odağına** alır: adaylar ve gönderim sicili o
+   * çalıştırmaya aittir. Gönderimden sonra da çağrılır — avukat "ne gitti"
+   * sorusunun yanıtını hemen görür.
+   */
+  async function focusRun(id: string): Promise<void> {
     runSeq.current += 1;
+    const seq = runSeq.current;
     setRunId(id);
+    // Önceki çalıştırmanın adayları/sicili seçili çalıştırmanınki gibi
+    // okunmasın: liste istekten **önce** boşaltılır, düşerse boş kalır.
+    setCandidates([]);
+    setContextItems([]);
+    setContextError(null);
+    await loadCandidates(id);
+    if (runSeq.current !== seq) return;
+    await loadContextItems(id);
+  }
+
+  async function selectRun(id: string) {
     setReport(null);
     setNotice(null);
-    // Önceki çalıştırmanın adayları seçili çalıştırmanın adayı gibi okunmasın:
-    // liste istekten önce boşaltılır, düşerse boş kalır.
-    setCandidates([]);
-    await loadCandidates(id);
+    await focusRun(id);
   }
 
   async function validateDraft(persist: boolean) {
@@ -763,6 +828,69 @@ export function Ai() {
         ) : (
           <p className="hint" style={{ margin: 0 }}>{t("ai.runsEmpty")}</p>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("ai.contextTitle")}</h2>
+            <p className="card-sub">{t("ai.contextSub")}</p>
+          </div>
+        </div>
+        {!runId ? (
+          <p className="hint" style={{ margin: 0 }}>{t("ai.contextNoRun")}</p>
+        ) : contextError ? (
+          // Düşen okuma "kayıt yok" sayılmaz: kendi satırında yazılır.
+          <div className="notice danger" role="alert">
+            <strong>{t("ai.contextError")}</strong> {contextError.code} — {contextError.message}
+          </div>
+        ) : contextItems.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {contextBusy ? t("ai.contextLoading") : t("ai.contextEmpty")}
+          </p>
+        ) : (
+          <>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>{t("ai.contextColDocument")}</th>
+                  <th>{t("ai.contextColVersion")}</th>
+                  <th>{t("ai.contextColReason")}</th>
+                  <th>{t("ai.contextColBytes")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contextItems.map((item) => (
+                  <tr key={item.id}>
+                    <td>
+                      {item.documentTitle ?? (
+                        <span className="hint">
+                          {t("ai.contextMissingDocument", { id: item.documentVersionId })}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {item.versionNo === null
+                        ? t("ai.contextVersionUnknown")
+                        : item.versionNo}
+                    </td>
+                    <td>{item.inclusionReason}</td>
+                    <td>{item.bytesSent}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="hint" style={{ margin: 0 }}>
+              {t("ai.contextTotal", {
+                documents: contextItems.length,
+                bytes: formatSize(
+                  contextItems.reduce((sum, item) => sum + item.bytesSent, 0),
+                ),
+              })}
+            </p>
+          </>
+        )}
+        <p className="hint" style={{ margin: 0 }}>{t("ai.contextNote")}</p>
       </div>
 
       <div className="card">

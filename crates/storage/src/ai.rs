@@ -165,6 +165,13 @@ pub struct AiContextItemRow {
     pub id: String,
     pub ai_run_id: String,
     pub document_version_id: String,
+    /// Belgenin okunabilir adı (`documents.display_name`). Sürüm ya da belge
+    /// bulunamazsa `None`: kimlik dururken **ad uydurulmaz**. Kayıt, belge
+    /// silinse de denetim için okunur kalır (`ai_context_items` sürüme yabancı
+    /// anahtarla bağlı değil).
+    pub document_title: Option<String>,
+    /// Sürüm numarası (`document_versions.version_no`); bulunamazsa `None`.
+    pub version_no: Option<i64>,
     pub source_anchor_id: Option<String>,
     pub inclusion_reason: String,
     pub bytes_sent: i64,
@@ -532,19 +539,32 @@ impl Database {
         Ok(items.len())
     }
 
+    /// Gönderilen içeriğin **okunabilir** sicili.
+    ///
+    /// Sıra kayıt sırasıdır (`rowid`): aynı çalıştırmada aynı damgaya düşen iki
+    /// satır bile gönderim sırasını korur. Belge adı ve sürüm numarası **sol
+    /// birleşimle** gelir — belge/sürüm silinmişse satır yine döner, ad alanı
+    /// `None` kalır (uydurma ad yok, sessizce düşen denetim satırı yok).
     pub fn list_context_items(&self, run_id: &str) -> Result<Vec<AiContextItemRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,ai_run_id,document_version_id,source_anchor_id,inclusion_reason,bytes_sent
-             FROM ai_context_items WHERE ai_run_id=?1",
+            "SELECT c.id,c.ai_run_id,c.document_version_id,d.display_name,v.version_no,
+                    c.source_anchor_id,c.inclusion_reason,c.bytes_sent
+             FROM ai_context_items c
+             LEFT JOIN document_versions v ON v.id = c.document_version_id
+             LEFT JOIN documents d ON d.id = v.document_id
+             WHERE c.ai_run_id=?1
+             ORDER BY c.rowid ASC",
         )?;
         let rows = stmt.query_map([run_id], |row| {
             Ok(AiContextItemRow {
                 id: row.get(0)?,
                 ai_run_id: row.get(1)?,
                 document_version_id: row.get(2)?,
-                source_anchor_id: row.get(3)?,
-                inclusion_reason: row.get(4)?,
-                bytes_sent: row.get(5)?,
+                document_title: row.get(3)?,
+                version_no: row.get(4)?,
+                source_anchor_id: row.get(5)?,
+                inclusion_reason: row.get(6)?,
+                bytes_sent: row.get(7)?,
             })
         })?;
         let mut out = Vec::new();
@@ -2137,6 +2157,74 @@ mod tests {
             .expect("bitir");
         let finished = db.get_ai_run(&r.id).expect("get").expect("var");
         assert_eq!(finished.status, "succeeded");
+    }
+
+    /// Denetim sicili **okunabilir** olmalı: satır yalnız sürüm kimliği değil,
+    /// belgenin adını ve sürüm numarasını taşır. Sıra **kayıt sırasıdır** —
+    /// alfabetik ya da damga sırası değil.
+    #[test]
+    fn context_items_are_readable_with_title_and_version_in_record_order() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let (z_doc, z_version) = document_with_text(&db, &case_id, "Zabıt", &["ZABIT METNİ"]);
+        let (a_doc, a_version) = document_with_text(&db, &case_id, "Ara karar", &["ARA KARAR"]);
+        assert_ne!(z_doc, a_doc);
+        let items = vec![
+            NewAiContextItem {
+                document_version_id: z_version.clone(),
+                source_anchor_id: None,
+                inclusion_reason: "onaylanan belge".into(),
+                bytes_sent: 120,
+            },
+            NewAiContextItem {
+                document_version_id: a_version.clone(),
+                source_anchor_id: None,
+                inclusion_reason: "onaylanan belge".into(),
+                bytes_sent: 64,
+            },
+        ];
+        assert_eq!(db.record_context_items(&r.id, &items).expect("bağlam"), 2);
+
+        let listed = db.list_context_items(&r.id).expect("liste");
+        assert_eq!(listed.len(), 2);
+        // Alfabetik değil: kayıt sırası (Zabıt önce yazıldı).
+        assert_eq!(listed[0].document_title.as_deref(), Some("Zabıt"));
+        assert_eq!(listed[0].version_no, Some(1));
+        assert_eq!(listed[0].bytes_sent, 120);
+        assert_eq!(listed[1].document_title.as_deref(), Some("Ara karar"));
+        assert_eq!(listed[1].version_no, Some(1));
+        assert_eq!(listed[1].document_version_id, a_version);
+    }
+
+    /// Belge/sürüm silinse de **denetim satırı düşmez**; ad alanı boş kalır.
+    /// Kimlik dururken ad uydurulmaz — ekran kimliği yazar.
+    #[test]
+    fn context_item_without_document_keeps_the_row_without_inventing_a_name() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        db.record_context_items(
+            &r.id,
+            &[NewAiContextItem {
+                document_version_id: "silinmis-surum".into(),
+                source_anchor_id: None,
+                inclusion_reason: "onaylanan belge".into(),
+                bytes_sent: 7,
+            }],
+        )
+        .expect("bağlam");
+
+        let listed = db.list_context_items(&r.id).expect("liste");
+        assert_eq!(listed.len(), 1, "denetim satırı sessizce düşmemeli");
+        assert_eq!(listed[0].document_version_id, "silinmis-surum");
+        assert_eq!(listed[0].document_title, None);
+        assert_eq!(listed[0].version_no, None);
+        assert_eq!(listed[0].bytes_sent, 7);
     }
 
     /// Makbuz **deneme anında** açılır. Eski davranış yalnız başarıda yazıyordu:

@@ -143,6 +143,7 @@ pub fn run() {
             commands::ai_receipt_list,
             commands::ai_run_start,
             commands::ai_candidates_list,
+            commands::ai_context_items,
             commands::ai_candidate_promote,
             commands::ai_candidate_validate,
             commands::ai_candidate_record,

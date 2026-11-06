@@ -20,7 +20,7 @@ use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_providers::{AiRequest, ApiProvider, ContextSegment, Provider};
 use dim_storage::{
-    AiCandidateRow, AiRunRow, AnchorLocation, AnchorRow, CandidateReport, Case,
+    AiCandidateRow, AiContextItemRow, AiRunRow, AnchorLocation, AnchorRow, CandidateReport, Case,
     CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow,
     CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow, ConsentPreview,
     ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey,
@@ -6383,6 +6383,16 @@ pub fn ai_run_start(
             consent_id,
         },
     )?)
+}
+
+#[tauri::command]
+pub fn ai_context_items(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<AiContextItemRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_context_items(&run_id)?)
 }
 
 #[tauri::command]

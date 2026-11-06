@@ -32,6 +32,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AiCandidateRow,
+  AiContextItemRow,
   AiOverview,
   CandidateReport,
   CaseRow,
@@ -67,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   aiReceiptList: vi.fn(),
   aiRunExecute: vi.fn(),
   aiCandidatesList: vi.fn(),
+  aiContextItems: vi.fn(),
   aiCandidateValidate: vi.fn(),
   aiCandidateRecord: vi.fn(),
   aiCandidateRevalidate: vi.fn(),
@@ -357,8 +359,9 @@ type SetupOptions = {
   consents?: (caseId: string) => Promise<TransferConsentListRow[]>;
   receipts?: (caseId: string) => Promise<TransferReceiptRow[]>;
   revoke?: () => Promise<void>;
-  runExecute?: () => Promise<void>;
+  runExecute?: () => Promise<AiCandidateRow>;
   candidates?: (runId: string) => Promise<AiCandidateRow[]>;
+  contextItems?: (runId: string) => Promise<AiContextItemRow[]>;
   validate?: () => Promise<CandidateReport>;
   record?: () => Promise<unknown>;
   revalidate?: (candidateId: string) => Promise<AiCandidateRow>;
@@ -393,8 +396,9 @@ function setup(options: SetupOptions = {}) {
   mocks.aiConsentRevoke.mockImplementation(options.revoke ?? (async () => undefined));
   mocks.aiConsentList.mockImplementation(options.consents ?? (async () => []));
   mocks.aiReceiptList.mockImplementation(options.receipts ?? (async () => []));
-  mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => undefined));
+  mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => CAND_VALID));
   mocks.aiCandidatesList.mockImplementation(options.candidates ?? (async () => [CAND_VALID]));
+  mocks.aiContextItems.mockImplementation(options.contextItems ?? (async () => []));
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
   mocks.aiCandidateRecord.mockImplementation(options.record ?? (async () => ({ id: "cand-1" })));
   mocks.aiCandidateRevalidate.mockImplementation(
@@ -977,7 +981,7 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
   });
 
   it("çalıştırma uçuşta dosya değişirse eski dosyanın özeti yeni dosyaya yazılmaz", async () => {
-    const gate = deferred<void>();
+    const gate = deferred<AiCandidateRow>();
     setup({
       runExecute: () => gate.promise,
       overview: async (caseId: string) => (caseId === "p2" ? OVERVIEW_B : OVERVIEW_A),
@@ -995,7 +999,7 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
     await screen.findByText("local:ollama (local)");
 
     await act(async () => {
-      gate.resolve();
+      gate.resolve(CAND_VALID);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -1251,7 +1255,7 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
   });
 
   it("çalıştırma uçuşta düşerse hata yeni dosyaya yazılmaz", async () => {
-    const gate = deferred<void>();
+    const gate = deferred<AiCandidateRow>();
     setup({ runExecute: () => gate.promise });
     await screen.findByText("api:claude (api)");
 
@@ -2412,5 +2416,221 @@ describe("AI ekranı — aktarım makbuzu envanteri", () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(refresh.disabled).toBe(false));
+  });
+});
+
+describe("AI ekranı — gönderilen içerik sicili", () => {
+  function contextRow(
+    overrides: Partial<AiContextItemRow> & { id: string },
+  ): AiContextItemRow {
+    return {
+      aiRunId: "r1",
+      documentVersionId: "d1-v1",
+      documentTitle: "Kira sözleşmesi.pdf",
+      versionNo: 1,
+      sourceAnchorId: null,
+      inclusionReason: "onaylanan belge",
+      bytesSent: 120,
+      ...overrides,
+    };
+  }
+
+  it("seçili çalıştırmanın içeriğini çekirdekten okur: belge, sürüm, gerekçe, bayt", async () => {
+    const zabit = contextRow({
+      id: "c1",
+      documentVersionId: "d2-v3",
+      documentTitle: "Zabıt",
+      versionNo: 3,
+      bytesSent: 64,
+      inclusionReason: "onaylanan belge",
+    });
+    setup({ contextItems: async () => [contextRow({ id: "c0" }), zabit] });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.contextTitle"));
+    // Seçim yokken sicil **okunmaz** ve "kayıt yok" denmez.
+    expect(within(card).getByText(t("ai.contextNoRun"))).toBeTruthy();
+    expect(mocks.aiContextItems).not.toHaveBeenCalled();
+
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiContextItems).toHaveBeenCalledWith("r1"));
+
+    const rows = await within(card).findAllByRole("row");
+    expect(rows).toHaveLength(3); // başlık + 2 satır
+    expect(rows[1]!.textContent).toContain("Kira sözleşmesi.pdf");
+    expect(rows[1]!.textContent).toContain("120");
+    expect(rows[2]!.textContent).toContain("Zabıt");
+    expect(rows[2]!.textContent).toContain("3");
+    expect(rows[2]!.textContent).toContain("64");
+    expect(within(card).getByText(t("ai.contextColReason"))).toBeTruthy();
+    // Toplam **hesaplanır** (uydurulmaz): 120 + 64.
+    expect(
+      within(card).getByText(
+        t("ai.contextTotal", { documents: 2, bytes: formatSize(184) }),
+      ),
+    ).toBeTruthy();
+  });
+
+  it("belge adı yoksa kimliği yazar, uydurma ad koymaz", async () => {
+    setup({
+      contextItems: async () => [
+        contextRow({
+          id: "c9",
+          documentVersionId: "silinmis-surum",
+          documentTitle: null,
+          versionNo: null,
+        }),
+      ],
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+
+    const card = cardByHeading(t("ai.contextTitle"));
+    await within(card).findByText(
+      t("ai.contextMissingDocument", { id: "silinmis-surum" }),
+    );
+    const rows = within(card).getAllByRole("row").slice(1);
+    expect(rows[0]!.textContent).toContain("silinmis-surum");
+    expect(rows[0]!.textContent).toContain(t("ai.contextVersionUnknown"));
+  });
+
+  it("düşen okuma kendi satırında yazılır; «kayıt yok» denmez", async () => {
+    setup({
+      contextItems: async () => {
+        throw { code: "E_DB_SQL", message: "sicil okunamadı" };
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+
+    const card = cardByHeading(t("ai.contextTitle"));
+    await waitFor(() =>
+      expect(within(card).getByRole("alert").textContent).toContain("E_DB_SQL"),
+    );
+    expect(within(card).queryByText(t("ai.contextEmpty"))).toBeNull();
+    expect(within(card).queryByRole("table")).toBeNull();
+  });
+
+  it("boş liste «kayıt yok» yazar, tablo çizmez", async () => {
+    setup({ contextItems: async () => [] });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+
+    const card = cardByHeading(t("ai.contextTitle"));
+    await within(card).findByText(t("ai.contextEmpty"));
+    expect(within(card).queryByRole("table")).toBeNull();
+  });
+
+  it("geç yanıt yeni seçimin altına yazılmaz (okuma sırası)", async () => {
+    const slow = deferred<AiContextItemRow[]>();
+    setup({
+      contextItems: (runId: string) =>
+        runId === "r1"
+          ? slow.promise
+          : Promise.resolve([
+              contextRow({
+                id: "c2",
+                aiRunId: "r2",
+                documentTitle: "Ödeme makbuzu.pdf",
+                bytesSent: 32,
+              }),
+            ]),
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.contextTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button")); // r1, yavaş
+    // Okuma **gerçekten uçuşta** olsun: aksi hâlde ikinci seçim birincinin
+    // okumasını hiç başlatmaz ve kapı ölçülmemiş olur.
+    await waitFor(() => expect(mocks.aiContextItems).toHaveBeenCalledWith("r1"));
+    fireEvent.click(within(runRows()[1]!).getByRole("button")); // r2, hızlı
+    await within(card).findByText("Ödeme makbuzu.pdf");
+
+    await act(async () => {
+      slow.resolve([contextRow({ id: "c1", documentTitle: "Kira sözleşmesi.pdf" })]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(within(card).queryByText("Kira sözleşmesi.pdf")).toBeNull();
+    expect(within(card).getByText("Ödeme makbuzu.pdf")).toBeTruthy();
+  });
+
+  it("yeni seçimde liste istekten önce temizlenir: eski satır yeni çalıştırmanınki gibi durmaz", async () => {
+    const pending = deferred<AiContextItemRow[]>();
+    setup({
+      contextItems: (runId: string) =>
+        runId === "r1"
+          ? Promise.resolve([contextRow({ id: "c1", documentTitle: "Kira sözleşmesi.pdf" })])
+          : pending.promise,
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.contextTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await within(card).findByText("Kira sözleşmesi.pdf");
+
+    fireEvent.click(within(runRows()[1]!).getByRole("button"));
+    // Yanıt gelmeden önce eski satır **ekranda kalmaz**.
+    await waitFor(() =>
+      expect(within(card).queryByText("Kira sözleşmesi.pdf")).toBeNull(),
+    );
+    expect(within(card).getByText(t("ai.contextLoading"))).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve([contextRow({ id: "c2", aiRunId: "r2", documentTitle: "Zabıt" })]);
+      await Promise.resolve();
+    });
+    await within(card).findByText("Zabıt");
+  });
+
+  it("dosya değişiminde önceki dosyanın sicili ekranda kalmaz", async () => {
+    setup({
+      contextItems: async (runId: string) =>
+        runId === "r1" ? [contextRow({ id: "c1" })] : [],
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.contextTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await within(card).findByText("Kira sözleşmesi.pdf");
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+
+    await within(card).findByText(t("ai.contextNoRun"));
+    expect(within(card).queryByText("Kira sözleşmesi.pdf")).toBeNull();
+  });
+
+  it("gönderimden sonra yeni çalıştırmanın içeriği yüklenir", async () => {
+    setup({
+      runExecute: async () =>
+        candidateRow({ id: "cand-9", aiRunId: "r9" }),
+      contextItems: async (runId: string) =>
+        runId === "r9"
+          ? [
+              contextRow({
+                id: "c9",
+                aiRunId: "r9",
+                documentTitle: "Kira sözleşmesi.pdf",
+                bytesSent: 512,
+              }),
+            ]
+          : [],
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+
+    // Gönderim sonrası çalıştırma **seçilir** ve sicili okunur.
+    await waitFor(() => expect(mocks.aiContextItems).toHaveBeenCalledWith("r9"));
+    const card = cardByHeading(t("ai.contextTitle"));
+    await within(card).findByText("Kira sözleşmesi.pdf");
+    expect(within(card).getByText("512")).toBeTruthy();
   });
 });
