@@ -617,7 +617,8 @@ diyor. Bu ölçüm **gerçek kasa + gerçek Python worker** ile yapıldı (debug
 derleme, Apple M2); koşucu Tauri testi
 `commands::tests::two_parses_run_concurrently_on_a_real_vault`
 (`#[ignore]`, `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
---lib two_parses -- --ignored --nocapture`).
+--lib two_parses -- --ignored --nocapture`; 2026-11-06'dan beri CI'da
+`scripts/desktop_test_gate.py --ignored` ile otomatik).
 
 İki belge: `progress-pages.pdf` (4 sayfa) ve `redaction-hidden.pdf` (1 sayfa).
 Isınma koşusundan sonra:

@@ -39,14 +39,35 @@ koşar: `cargo test --lib` çıktısını okur, sonra
 3. kaynak sayımı: `#[test]` = koşan + yoksayılan,
 4. **kayıtlı taban** (`BASELINE_PASSED` / `BASELINE_IGNORED`) ile birebir
 
-kurallarını denetler. Ölçüm (2026-11-06): **33 koşar, 5 yoksayılır** (38 test);
-yoksayılanlar gerçek worker/tesseract ister ve `#[ignore = "gerçek worker …"]`
-taşır — elle: `DIM_WORKER_PYTHON=… cargo test --lib <ad> -- --ignored --nocapture`.
+kurallarını denetler. Ölçüm (2026-11-06): **33 koşar, 5 yoksayılır** (38 test).
+
+Yoksayılan beş test gerçek worker/tesseract ister (`#[ignore = "gerçek worker …"]`)
+ve **2026-11-06'dan beri CI'da gerçekten koşuyor**: `desktop` işi depo venv'ini
+(`pymupdf` + `pytesseract`) ve tesseract'ı kurar, sonra
+
+```bash
+python3 scripts/desktop_test_gate.py --ignored
+```
+
+`--ignored` modu `DIM_REQUIRE_WORKER=1` ile koşar: motor bulunamazsa test
+**düşer** (sessiz atlama yok — `E_SKIPPED`), `0 ignored`, `--ignored` düşmediyse
+`33 filtered`, beklenen beş test adı (`E_CENSUS`) ve taban 5
+(`IGNORED_BASELINE`) denetlenir. Ölçülen tuzak: motoru olmayan bir python'la
+(`DIM_WORKER_PYTHON=/bin/true`) koşu cargo'ya *"5 passed; 0 failed … finished in
+0.00s"* dedirtiyor — kapı bunu kırmızı yakalar.
+
+Yerelde aynı komut venv'i **kendiliğinden** bulur; `DIM_WORKER_PYTHON` vermek
+gerekmez. Yorumlayıcı sırası **tek yerde**: `DIM_WORKER_PYTHON` →
+`workers/document/.venv` → PATH (`dim_ingest::worker::dev_python_for_worker`).
+Ürün (`spawn_worker`) da bu sırayı kullanır — ayrı bir sıra yazmak "test venv'i
+gördü, ürün görmedi" kusurunu üretir (2026-11-06'da ölçüldü: beş test ilk kez
+koşuldu, **0 geçti / 5 düştü**, dördü `E_ENGINE_MISSING`).
 
 Yeni test eklerken ya da bir testi bilinçli yoksayarken tabanı **tek satır**
 güncelleyin (`scripts/desktop_test_gate.py`); kazara `#[ignore]` kapıyı kırmızı
-yakar. Kapının kendisi `--self-test` ile 9 fixture üzerinde sınanır; CI'daki
-`masaüstü kabuk (clippy + test)` işi ikisini de koşar.
+yakar. Kapının kendisi `--self-test` (9 fixture) ve `--ignored --self-test`
+(7 fixture) ile sınanır; CI'daki `masaüstü kabuk (clippy + test)` işi üçünü de
+(normal koşu, öz test, gerçek worker koşusu) çalıştırır.
 
 ## Neden ağır derleme lokalde değil
 
@@ -60,4 +81,7 @@ Lokal ortamda `cargo check`/`cargo test` yeterlidir; `tauri build` gerekmez.
   `pnpm install --lockfile-only` ile bilinçli güncelleyip commit edin.
 - **CLI kimlik dosyası okunamıyor:** Tasarım gereği uygulama token/çerez okumaz.
   CLI kendi oturumunu yönetir (ADR-0005).
-- **Worker `E_ENGINE_MISSING`:** `pip install -e "workers/document[pdf]"` eksik.
+- **Worker `E_ENGINE_MISSING`:** `workers/document/.venv` eksik ya da motoru yok
+  (`pip install -e "workers/document[all]"`). Uygulama venv'i kendiliğinden
+  bulur (`DIM_WORKER_PYTHON` → venv → PATH); yine alıyorsan `DIM_WORKER_PYTHON`
+  açıkça venv'e işaret etsin.

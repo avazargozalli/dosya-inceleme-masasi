@@ -69,7 +69,9 @@ temiz (2 dk 41 sn, soğuk) · `cargo fmt` iki manifest temiz · `tsc --noEmit` t
 
 **Dürüst sınırlar:** `export_package` ve `vault_backup` **komut olarak koşulmadı** —
 `State<AppState>` kurup komutu çağıran test altyapısı yok, `commands_tests.rs` CI'da koşmuyordu
-(masaüstü işi yalnız derlerdi; 2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor). Kablolama **derleme + clippy** ile doğrulandı; davranış
+(masaüstü işi yalnız derlerdi; 2026-11-06: `masaüstü kabuk` işi bu testleri artık koşuyor —
+beş `#[ignore]`lı gerçek-worker ölçümü de aynı tarihten beri
+`scripts/desktop_test_gate.py --ignored` ile CI'da koşuyor). Kablolama **derleme + clippy** ile doğrulandı; davranış
 `seal_dir`/`zip_dir` düzeyinde **gerçek dosya sistemiyle** test edildi. İzin tabanlı düşüş
 testleri `#[cfg(unix)]` (CI matrisi ubuntu + macOS; Windows'ta koşmaz). `record_export` sırası
 değişmedi (denetim önce); durum **arayüzde gösterilmiyor**, `list_exports` taşır.
@@ -137,7 +139,8 @@ yok**; `api` mock'lu olduğu için SQL/Rust koşmaz.
 **Açık kayıt:** (a) klasör oluşturulduktan **sonra** `zip_dir`/`seal`/yazma düşerse açık metin
 klasör diskte kalır — hata görünür ama temizlik yok (ayrı dilim); (b) `record.output_hash`
 şifreli pakette de **manifest** özetidir, `.dimpak` dosyasının özeti değil (sözleşme kararı);
-(c) masaüstü Rust testleri CI'da **koşmuyor** (yalnız derleniyor) — CI boşluğu; (d) görsel QA
+(c) masaüstü Rust testleri CI'da **koşmuyordu** (yalnız derleniyordu) — **kapandı**
+(2026-11-06: normal 33 test + beş gerçek-worker testi CI'da koşuyor); (d) görsel QA
 **insan bekliyor**.
 
 ## Çıktılar ekranı — devir paketi dürüstlüğü: parola kapısı, şifreli paket yolu, kapsam kaynağı (2026-11-05)
@@ -3534,7 +3537,8 @@ Bu, "çalışıyor gibi görünen düğme"nin daha sessiz bir biçimidir: düğm
   işte kayıtlı değil)"*; `password_required` için ayrı dürüst satır. `applied`
   tipi `restored` taşır.
 - **ÖLÇÜM (gerçek kasa + gerçek Python worker + tesseract 5.5.3, M2;
-  `retry_reuses_the_recorded_ocr_setting_on_a_scanned_document`, `--ignored --nocapture`):**
+  `retry_reuses_the_recorded_ocr_setting_on_a_scanned_document`, `--ignored --nocapture`;
+  2026-11-06'dan beri CI'da da koşuyor):**
   `1) OCR açık: 1 sayfa / 1 segment` · `2) varsayılan (eski davranış): 1 sayfa /
   0 segment, metin ""` · `3) kayıtlı ayar (yeni davranış): 1 sayfa / 1 segment`,
   metin ilk koşuyla **aynı**.
@@ -3681,8 +3685,11 @@ denetimi gerçek mi?" sorusuydu; **ölçüldü: değildi**.
   `large_document_runs_alone` bu yüzden düştü (100 ms bekleyen büyük iş
   `None` aldı). Artık `Some` = **kapı en az bir kez kapalıydı**; test sabit
   100 ms uyku yerine "büyük iş beklemeye girdi" kapısıyla ilerliyor.
-- **ÖLÇÜM (gerçek kasa + gerçek Python worker, debug, Apple M2;**
-  `DIM_WORKER_PYTHON=workers/document/.venv/bin/python ... --ignored --nocapture`**)**: `retrying_a_failed_parse_job_really_parses_the_document`
+- **ÖLÇÜM (gerçek kasa + gerçek Python worker, debug, Apple M2;
+  `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib retrying -- --ignored --nocapture`):**
+  **2026-11-06'dan beri `DIM_WORKER_PYTHON` gerekmiyor** (ürün de test de depo
+  venv'ini kendiliğinden bulur: `dim_ingest::worker::dev_python_for_worker`);
+  `retrying_a_failed_parse_job_really_parses_the_document`
   → **4 sayfa, 4 segment, 1,21 s**, kareler `start → open → pages ×4 → store ×2`,
   iş **`completed`**, `progress_stage=store`, `attempt_count=1` (yeniden
   deneme gerçekten yeni bir denemedir).
@@ -4009,7 +4016,8 @@ ikincisi kilidi beklerdi. Yani "iki worker" yalnız kâğıt üzerinde vardı.
   `jobs` tarafında toplu iş için tek denetim satırı (yalnız sayılar).
 
 **ÖLÇÜM (gerçek kasa + gerçek Python worker, debug derleme, Apple M2):**
-`two_parses_run_concurrently_on_a_real_vault` (elle: `--ignored --nocapture`),
+`two_parses_run_concurrently_on_a_real_vault` (2026-11-06'dan beri CI'da
+`scripts/desktop_test_gate.py --ignored` ile; elle: `--ignored --nocapture`),
 iki belge (`progress-pages.pdf` 4 sayfa, `redaction-hidden.pdf` 1 sayfa),
 ısınma koşusundan sonra:
 
