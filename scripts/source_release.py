@@ -380,6 +380,7 @@ def build(
             "name": archive_name,
             "prefix": prefix,
             "sha256": sha256_bytes(packed),
+            "tarSha256": sha256_bytes(raw),
             "sizeBytes": len(packed),
             "uncompressedBytes": len(raw),
             "fileCount": len(inside),
@@ -449,6 +450,20 @@ def verify(
             problems.append("yan dosya (.sha256) arşiv özetiyle uyuşmuyor")
     else:
         problems.append(f"özet yan dosyası yok: {sidecar_path.name}")
+
+    # İçerik kimliği: `.tar.gz` özeti zlib sürümüne bağlıdır (ubuntu 3.12 ile
+    # macOS 3.13 aynı commit'te farklı gzip baytı üretti, ölçüldü). Bu yüzden
+    # platformdan bağımsız kimlik **açılmış tar** özetidir ve ayrıca doğrulanır.
+    try:
+        raw_tar = gzip.decompress(archive_path.read_bytes())
+    except (OSError, EOFError, zlib.error) as exc:
+        return problems + [f"arşiv açılamadı (gzip): {exc}"]
+    if archive.get("tarSha256") != sha256_bytes(raw_tar):
+        problems.append("arşiv içerik (tar) özeti manifest ile uyuşmuyor")
+    if archive.get("uncompressedBytes") != len(raw_tar):
+        problems.append(
+            f"açılmış boyut {len(raw_tar)} ≠ manifest {archive.get('uncompressedBytes')}"
+        )
 
     commit = str(manifest.get("commit") or "")
     version = str(manifest.get("version") or "")
@@ -653,6 +668,11 @@ def self_test() -> int:
             "manifest arşivdeki kilit özetlerini taşır",
             manifest["lockfiles"]["Cargo.lock"] == sha256_bytes(b"# fixture lock\n"),
         )
+        check(
+            "manifest platformdan bağımsız içerik (tar) özetini taşır",
+            manifest["archive"]["tarSha256"]
+            == sha256_bytes(gzip.decompress(archive.read_bytes())),
+        )
 
         block = tomllib.loads((repo.root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
         check("fixture sürümü 0.1.0", block == "0.1.0")
@@ -672,6 +692,18 @@ def self_test() -> int:
         check(
             "M1 kilit özeti uyuşmazlığı yakalanır",
             any("kilit dosyası özeti uyuşmuyor" in problem for problem in problems),
+            "; ".join(problems),
+        )
+
+        # M1b: içerik (tar) özeti bozulunca doğrulama kırmızı
+        tampered = json.loads((out / f"{archive.name}.manifest.json").read_text())
+        tampered["archive"]["tarSha256"] = "0" * 64
+        bad_tar = base / "bad-tar.manifest.json"
+        bad_tar.write_text(json.dumps(tampered))
+        problems = verify(repo, archive, manifest_path=bad_tar)
+        check(
+            "M1b içerik (tar) özeti uyuşmazlığı yakalanır",
+            any("içerik (tar) özeti" in problem for problem in problems),
             "; ".join(problems),
         )
 
@@ -827,6 +859,7 @@ def self_test() -> int:
             "name": name3,
             "prefix": prefix3,
             "sha256": sha256_bytes(packed3),
+            "tarSha256": sha256_bytes(raw3),
             "sizeBytes": len(packed3),
             "uncompressedBytes": len(raw3),
             "fileCount": len(tar_members(raw3)),
@@ -892,6 +925,7 @@ def main(argv: list[str]) -> int:
             )
             print(f"arşiv: {archive}")
             print(f"sha256: {manifest['archive']['sha256']}")
+            print(f"tar sha256 (platformdan bağımsız): {manifest['archive']['tarSha256']}")
             print(
                 f"sürüm: {manifest['version']} · commit: {manifest['commit']} · "
                 f"etiket: {manifest['tag'] or '(yok)'} · dosya: {manifest['archive']['fileCount']} · "
