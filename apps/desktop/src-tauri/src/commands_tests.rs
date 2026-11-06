@@ -43,12 +43,13 @@ fn empty_path_rejected() {
     assert_eq!(resolve_vault_path("   ").unwrap_err().code, "E_PATH");
 }
 
-/// **F04-T07 ilerleme olayı:** yalnız sürüm kimliği, aşama ve sayaç taşır;
-/// belge metni, dosya adı veya yol yayımlanmaz.
+/// **F04-T07/F13 ilerleme olayı:** yalnız sürüm kimliği, **çalıştırma
+/// kimliği**, aşama ve sayaç taşır; belge metni, dosya adı veya yol yayımlanmaz.
 #[test]
-fn parse_progress_event_carries_only_stage_and_counts() {
+fn parse_progress_event_carries_run_identity_and_counts() {
     let event = ParseProgressEvent::new(
         "version-1",
+        Some("run-7"),
         &ParseProgress {
             stage: "pages".to_string(),
             done: 7,
@@ -57,17 +58,20 @@ fn parse_progress_event_carries_only_stage_and_counts() {
     );
     let value = serde_json::to_value(&event).expect("olay JSON");
     assert_eq!(value["versionId"], "version-1");
+    assert_eq!(value["runId"], "run-7");
     assert_eq!(value["stage"], "pages");
     assert_eq!(value["done"], 7);
     assert_eq!(value["total"], 40);
-    // Sözleşme: dört alan; metin/yol/ad alanı yok.
-    assert_eq!(value.as_object().expect("nesne").len(), 4);
+    // Sözleşme: beş alan; metin/yol/ad alanı yok.
+    assert_eq!(value.as_object().expect("nesne").len(), 5);
     for forbidden in ["text", "fileName", "path", "quote"] {
         assert!(value.get(forbidden).is_none(), "{forbidden} yayımlanmamalı");
     }
-    // Toplam bilinmiyorsa `null` (uydurulmuş sayı yok).
+    // Toplam bilinmiyorsa `null` (uydurulmuş sayı yok); kimlik yoksa da `null`
+    // — olay kendine kimlik uydurmaz.
     let open = ParseProgressEvent::new(
         "version-1",
+        None,
         &ParseProgress {
             stage: "start".to_string(),
             done: 0,
@@ -76,6 +80,21 @@ fn parse_progress_event_carries_only_stage_and_counts() {
     );
     let value = serde_json::to_value(&open).expect("olay JSON");
     assert!(value["total"].is_null());
+    assert!(value["runId"].is_null());
+}
+
+/// Çağıranın verdiği çalıştırma kimliği kırpılır; **boş kimlik** kimlik yok
+/// sayılır: boş dize arayüzdeki hiçbir çalıştırmayla eşleşmez, dolayısıyla
+/// ilerleme sessizce kaybolurdu (`None` bunu açıkça söyler).
+#[test]
+fn progress_run_id_trims_and_drops_blank() {
+    assert_eq!(
+        progress_run_id(Some("  run-1 ".to_string())).as_deref(),
+        Some("run-1")
+    );
+    assert_eq!(progress_run_id(Some("   ".to_string())), None);
+    assert_eq!(progress_run_id(Some(String::new())), None);
+    assert_eq!(progress_run_id(None), None);
 }
 
 /// **§17.3 bütçe görünümü:** çekirdekten gelen rapor arayüz tipine **birebir**

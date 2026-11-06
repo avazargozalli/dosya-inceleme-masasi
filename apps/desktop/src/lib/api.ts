@@ -1642,13 +1642,18 @@ export type WorkerBudgetView = WorkerBudgetProfile & {
 };
 
 /**
- * Ayrıştırma ilerlemesi (F04-T07, `parse-progress` olayı).
+ * Ayrıştırma ilerlemesi (F04-T07, F13; `parse-progress` / `redact-progress`).
  *
  * Yalnız aşama ve sayaç taşır: belge metni, dosya adı veya yol **yok**.
  * `total` bilinmiyorsa `null` — sıfır uydurulmaz.
+ *
+ * `runId` çağıranın ürettiği çalıştırma kimliğidir (aynı sürümde art arda iki
+ * çalıştırmada kareler karışmasın). Kuyruktan başlatılan işlerde `null`:
+ * arayüz o kareleri kendi çalıştırmasına yazmaz.
  */
 export type ParseProgressEvent = {
   versionId: string;
+  runId: string | null;
   stage: string;
   done: number;
   total: number | null;
@@ -1743,8 +1748,16 @@ export const api = {
     ocrLang = DEFAULT_OCR_LANG,
     textEncoding = "auto",
     password?: string,
+    runId?: string,
   ) =>
-    invoke<ParseResult>("document_parse", { versionId, ocr, ocrLang, textEncoding, password }),
+    invoke<ParseResult>("document_parse", {
+      versionId,
+      ocr,
+      ocrLang,
+      textEncoding,
+      password,
+      runId,
+    }),
   /**
    * §17.3 toplu ayrıştırma: **bekleyen** belgeler (güncel sürümü var, başarılı
    * ayrıştırması yok) en fazla iki worker'la ayrıştırılır. Sonuç belge başına
@@ -1845,10 +1858,13 @@ export const api = {
     }),
   cliStaleSandboxSweep: () => invoke<CliSandboxSweep>("cli_stale_sandbox_sweep"),
 
-  documentRedact: (versionId: string, terms: string[]) =>
-    invoke<RedactionResult>("document_redact", { versionId, terms }),
-  documentRedactRegions: (versionId: string, regions: Array<{ pageIndex: number; rect: [number, number, number, number] }>) =>
-    invoke<RedactionResult>("document_redact_regions", { versionId, regions }),
+  documentRedact: (versionId: string, terms: string[], runId: string) =>
+    invoke<RedactionResult>("document_redact", { versionId, terms, runId }),
+  documentRedactRegions: (
+    versionId: string,
+    regions: Array<{ pageIndex: number; rect: [number, number, number, number] }>,
+    runId: string,
+  ) => invoke<RedactionResult>("document_redact_regions", { versionId, regions, runId }),
   exportJson: (caseId: string, destPath: string) =>
     invoke<ExportResult>("export_json", { caseId, destPath }),
   exportCsv: (caseId: string, destPath: string) =>

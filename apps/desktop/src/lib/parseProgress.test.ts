@@ -10,6 +10,7 @@ import {
 
 const progress = (over: Partial<ParseProgressEvent> = {}): ParseProgressEvent => ({
   versionId: "v-1",
+  runId: null,
   stage: "pages",
   done: 12,
   total: 40,

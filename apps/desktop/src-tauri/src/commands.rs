@@ -1570,28 +1570,50 @@ pub fn worker_budgets() -> Vec<WorkerBudgetProfileView> {
         .collect()
 }
 
-/// Arayüze yayılan ayrıştırma ilerlemesi (F04-T07).
+/// Arayüze yayılan ayrıştırma ilerlemesi (F04-T07, F13).
 ///
-/// Olay **yalnız** sürüm kimliği, aşama ve sayaç taşır: belge metni, dosya
-/// adı, yol veya kasa bilgisi yayımlanmaz (denetim kaydıyla aynı sınır).
+/// Olay **yalnız** sürüm kimliği, çalıştırma kimliği, aşama ve sayaç taşır:
+/// belge metni, dosya adı, yol veya kasa bilgisi yayımlanmaz (denetim
+/// kaydıyla aynı sınır).
+///
+/// **Çalıştırma kimliği (`run_id`) neden var:** sürüm kimliği tek başına
+/// çalıştırmayı ayırt etmez; aynı sürümde art arda iki ayrıştırma/maskeleme
+/// koştuğunda birincinin **gecikmiş** karesi ikincinin ilerleme satırına
+/// yazılabiliyordu (F13 açık kayıt a). Kimliği **çağıran** üretir ve komuta
+/// verir; olay her karede aynı kimliği taşır, arayüz yalnız kendi
+/// çalıştırmasının karelerini kabul eder. Kuyruktan (kendiliğinden) başlatılan
+/// işlerde çağıran bir kimlik bilmediği için `None` — o kareler arayüzdeki
+/// hiçbir çalıştırmayla eşleşmez.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParseProgressEvent {
     pub version_id: String,
+    pub run_id: Option<String>,
     pub stage: String,
     pub done: u32,
     pub total: Option<u32>,
 }
 
 impl ParseProgressEvent {
-    fn new(version_id: &str, progress: &ParseProgress) -> Self {
+    fn new(version_id: &str, run_id: Option<&str>, progress: &ParseProgress) -> Self {
         Self {
             version_id: version_id.to_string(),
+            run_id: run_id.map(str::to_string),
             stage: progress.stage.clone(),
             done: progress.done,
             total: progress.total,
         }
     }
+}
+
+/// `runId` parametresini normalize eder.
+///
+/// Boşluk kırpılır; **boş kimlik** "kimlik yok" sayılır: boş dize arayüzdeki
+/// hiçbir çalıştırmayla eşleşmez, dolayısıyla ilerleme sessizce kaybolurdu.
+/// `None` bu durumu açıkça söyler (olay `runId: null` taşır).
+fn progress_run_id(run_id: Option<String>) -> Option<String> {
+    let trimmed = run_id.as_deref().map(str::trim).unwrap_or("");
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Kuyruk satırına ilerleme yazımının en küçük aralığı.
@@ -1959,7 +1981,14 @@ fn commit_parse(
 /// **Canlı aşama/sayım:** worker'ın ilerleme çerçeveleri `parse-progress`
 /// olayına çevrilir (`start` → `queued` → `open` → `pages` → `store`); aynı
 /// kareler **kuyruk satırına** da yazılır (`jobs.progress_stage/done/total`,
-/// 0022). Olay kaybolursa ayrıştırma etkilenmez.
+/// 0022). Olay kaybolursa ayrıştırma etkilenmez. `run_id` çağıranın verdiği
+/// çalıştırma kimliğidir; aynı sürümde art arda iki ayrıştırmada kareler
+/// birbirine karışmaz.
+///
+/// `too_many_arguments`: Tauri IPC argümanları JS sözleşmesinde **düz** gelir;
+/// seçenekleri tek nesneye toplamak istemci çağrısını ve testleri yeniden
+/// yazdırırdı (aynı gerekçe `run_parse`ta da yazılı).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn document_parse(
     app: tauri::AppHandle,
@@ -1969,13 +1998,15 @@ pub async fn document_parse(
     ocr_lang: Option<String>,
     text_encoding: Option<String>,
     password: Option<String>,
+    run_id: Option<String>,
 ) -> Result<ParseResultView, ApiError> {
     let hub = state.vault_handle();
     let slot = state.workers_handle();
     let pool = state.parse_pool_handle();
+    let run_id = progress_run_id(run_id);
     tauri::async_runtime::spawn_blocking(move || {
         let mut emit = |progress: &ParseProgress| {
-            let event = ParseProgressEvent::new(&version_id, progress);
+            let event = ParseProgressEvent::new(&version_id, run_id.as_deref(), progress);
             // Pencere kapalıysa olay düşer; ayrıştırma sürer.
             let _ = app.emit("parse-progress", event);
         };
@@ -2326,7 +2357,9 @@ pub async fn documents_parse_pending(
             let mut emit = |progress: &ParseProgress| {
                 let _ = app.emit(
                     "parse-progress",
-                    ParseProgressEvent::new(&version_id, progress),
+                    // Toplu ayrıştırmayı çağıran tek bir kimlik vermez; her
+                    // belge kendi sürümüyle ayrılır, kimlik `None`.
+                    ParseProgressEvent::new(&version_id, None, progress),
                 );
             };
             let outcome = run_parse(
@@ -2732,7 +2765,7 @@ pub async fn job_retry(
     let retry_job_id = row.id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut emit = |progress: &ParseProgress| {
-            let event = ParseProgressEvent::new(&emit_version, progress);
+            let event = ParseProgressEvent::new(&emit_version, None, progress);
             let _ = app.emit("parse-progress", event);
         };
         let outcome = run_parse(&hub, &slot, &pool, &run_version, parse_options, &mut emit);
@@ -2844,7 +2877,7 @@ pub async fn job_run(
     let run_job_id = row.id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut emit = |progress: &ParseProgress| {
-            let event = ParseProgressEvent::new(&emit_version, progress);
+            let event = ParseProgressEvent::new(&emit_version, None, progress);
             let _ = app.emit("parse-progress", event);
         };
         let outcome = run_parse(&hub, &slot, &pool, &run_version, parse_options, &mut emit);
@@ -5651,19 +5684,23 @@ fn run_redaction(
 }
 
 /// Maskelemeyi arayüz iş parçacığı dışında koşar (uzun belgede pencere
-/// kilitlenmez) ve işi kuyruğa yazar.
+/// kilitlenmez) ve işi kuyruğa yazar. `run_id` çağıranın çalıştırma kimliğidir:
+/// aynı sürümde art arda iki maskelemede birincinin gecikmiş karesi ikincinin
+/// ilerleme satırına yazılmaz (F13 açık kayıt a).
 async fn redact_command(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     version_id: String,
+    run_id: Option<String>,
     request: RedactRequest,
 ) -> Result<RedactionView, ApiError> {
     let hub = state.vault_handle();
     let slot = state.workers_handle();
     let pool = state.parse_pool_handle();
+    let run_id = progress_run_id(run_id);
     tauri::async_runtime::spawn_blocking(move || {
         let mut emit = |progress: &ParseProgress| {
-            let event = ParseProgressEvent::new(&version_id, progress);
+            let event = ParseProgressEvent::new(&version_id, run_id.as_deref(), progress);
             // Pencere kapalıysa olay düşer; maskeleme sürer.
             let _ = app.emit("redact-progress", event);
         };
@@ -5688,8 +5725,9 @@ pub async fn document_redact(
     state: State<'_, AppState>,
     version_id: String,
     terms: Vec<String>,
+    run_id: Option<String>,
 ) -> Result<RedactionView, ApiError> {
-    redact_command(app, state, version_id, RedactRequest::Terms(terms)).await
+    redact_command(app, state, version_id, run_id, RedactRequest::Terms(terms)).await
 }
 
 /// Kullanıcının seçtiği sayfa bölgelerini gerçekten kaldırır (aynı iş hattı).
@@ -5699,12 +5737,20 @@ pub async fn document_redact_regions(
     state: State<'_, AppState>,
     version_id: String,
     regions: Vec<RedactRegionInput>,
+    run_id: Option<String>,
 ) -> Result<RedactionView, ApiError> {
     if regions.is_empty() {
         return Err(ApiError::new("E_REDACT_REGIONS", "En az bir bölge seçin."));
     }
     let pairs: Vec<(u32, [f64; 4])> = regions.iter().map(|r| (r.page_index, r.rect)).collect();
-    redact_command(app, state, version_id, RedactRequest::Regions(pairs)).await
+    redact_command(
+        app,
+        state,
+        version_id,
+        run_id,
+        RedactRequest::Regions(pairs),
+    )
+    .await
 }
 
 #[derive(Serialize)]

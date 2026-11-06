@@ -63,9 +63,10 @@ export function Cases() {
   // kullanıcı aynı belgeyi açık kodlamayla yeniden ayrıştırabilir.
   const [txtEncoding, setTxtEncoding] = useState("auto");
   // F04-T07: canlı aşama/sayım. `parse-progress` olayı yalnız aşama ve sayaç
-  // taşır; satır, geçerli ayrıştırmanın sürümüne aitse gösterilir.
+  // taşır; satır, geçerli ayrıştırmanın **çalıştırma kimliğine** aitse gösterilir.
   const [parseProgress, setParseProgress] = useState<ParseProgressEvent | null>(null);
-  const activeParseVersion = useRef<string | null>(null);
+  const activeParse = useRef<{ versionId: string; runId: string } | null>(null);
+  const parseSeq = useRef(0);
   // §17.3 toplu ayrıştırma: bekleyen belgeler en fazla iki worker'la. Sonuç
   // belge başına gerçektir; kaç belgenin gerçekten ayrıştığı yazılır.
   const [batchBusy, setBatchBusy] = useState(false);
@@ -114,11 +115,11 @@ export function Cases() {
 
   // Nesil artışı **bütün yükleme effect'lerinden önce** koşar (kaynak sırası):
   // aşağıdaki effect'ler yeni nesli yakalar, eski isteklerin yanıtı yazılmaz.
-  // Süren ayrıştırmanın sürüm kapısı da kapanır: eski sürümün ilerleme olayı
-  // yeni dosyanın altında gösterilmez.
+  // Süren ayrıştırmanın **çalıştırma kimliği** de kapanır: eski çalıştırmanın
+  // ilerleme olayı yeni dosyanın altında gösterilmez.
   useEffect(() => {
     caseGen.current += 1;
-    activeParseVersion.current = null;
+    activeParse.current = null;
   }, [selected?.id]);
 
   useEffect(() => {
@@ -128,7 +129,12 @@ export function Cases() {
     // yalnızca uygulama içinde çalışır.
     void listen<ParseProgressEvent>("parse-progress", (event) => {
       if (disposed) return;
-      if (event.payload.versionId !== activeParseVersion.current) return;
+      // Sürüm kimliği tek başına yetmez: aynı belgenin ikinci ayrıştırmasında
+      // birincinin gecikmiş karesi yeni satıra yazılmasın (F13 ile aynı sözleşme).
+      const active = activeParse.current;
+      if (!active) return;
+      if (event.payload.versionId !== active.versionId) return;
+      if (event.payload.runId !== active.runId) return;
       setParseProgress(event.payload);
     })
       .then((stop) => {
@@ -348,11 +354,12 @@ export function Cases() {
 
   async function parseDocument(versionId: string, ocr = false) {
     const gen = caseGen.current;
+    const runId = `parse-${++parseSeq.current}`;
     beginWork();
     setError(null);
     setNotice(null);
     setParseProgress(null);
-    activeParseVersion.current = versionId;
+    activeParse.current = { versionId, runId };
     try {
       const result = await api.documentParse(
         versionId,
@@ -360,6 +367,7 @@ export function Cases() {
         DEFAULT_OCR_LANG,
         txtEncoding,
         pdfPassword.trim() === "" ? undefined : pdfPassword,
+        runId,
       );
       if (gen !== caseGen.current) return;
       // Hangi kodlamanın kullanıldığı worker uyarısından okunur; tahmin edilmez.
@@ -386,9 +394,12 @@ export function Cases() {
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
     } finally {
-      // Eşzamanlı ikinci ayrıştırma varsa onun sürüm kapısı kapanmaz.
-      if (activeParseVersion.current === versionId) activeParseVersion.current = null;
-      setParseProgress(null);
+      // Kapanış yalnız kendi çalıştırmamızın kimliğinde temizler: eşzamanlı
+      // ikinci ayrıştırma varsa onun kapısı kapanmaz.
+      if (activeParse.current?.runId === runId) {
+        activeParse.current = null;
+        setParseProgress(null);
+      }
       endWork();
     }
   }

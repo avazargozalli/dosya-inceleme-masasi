@@ -43,9 +43,9 @@ SOURCES = (
     DESKTOP / "src" / "parse_pool.rs",
 )
 
-#: Ölçülen taban (2026-11-06, macOS + CI): 38 testin 33'ü koşar, 5'i gerçek
+#: Ölçülen taban (2026-11-06, macOS + CI): 39 testin 34'ü koşar, 5'i gerçek
 #: worker/tesseract ister ve `#[ignore]` taşır.
-BASELINE_PASSED = 33
+BASELINE_PASSED = 34
 BASELINE_IGNORED = 5
 
 #: `--ignored` koşusunun tabanı: beş test de **gerçekten** koşmalı. Bu koşu

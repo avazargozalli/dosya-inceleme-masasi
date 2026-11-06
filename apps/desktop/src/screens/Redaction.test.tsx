@@ -308,11 +308,11 @@ describe("Maskeleme ekranı", () => {
     fireEvent.click(runButton());
 
     expect(mocks.documentRedact).toHaveBeenCalledTimes(1);
-    expect(mocks.documentRedact).toHaveBeenCalledWith("v1", [
-      "Ahmet Yılmaz",
-      "00000000000",
-      "TCKN",
-    ]);
+    expect(mocks.documentRedact).toHaveBeenCalledWith(
+      "v1",
+      ["Ahmet Yılmaz", "00000000000", "TCKN"],
+      expect.any(String),
+    );
   });
 
   it("sonuç künyesini yanıttan yazar; kalan terim ve akış ayrıntıları uydurulmaz", async () => {
@@ -473,9 +473,11 @@ describe("Maskeleme ekranı", () => {
     fireEvent.click(regionsRunButton(1));
 
     expect(mocks.documentRedactRegions).toHaveBeenCalledTimes(1);
-    expect(mocks.documentRedactRegions).toHaveBeenCalledWith("v1", [
-      { pageIndex: 0, rect: [50, 25, 150, 75] },
-    ]);
+    expect(mocks.documentRedactRegions).toHaveBeenCalledWith(
+      "v1",
+      [{ pageIndex: 0, rect: [50, 25, 150, 75] }],
+      expect.any(String),
+    );
     const card = await resultCard();
     expect(within(card).getByText("Kira sözleşmesi (bölge maskeli).pdf")).toBeTruthy();
     // Başarılı maskeden sonra seçim temizlenir.
@@ -504,9 +506,11 @@ describe("Maskeleme ekranı", () => {
     drag(box, [10, 10], [110, 110]);
     fireEvent.click(regionsRunButton(1));
 
-    expect(mocks.documentRedactRegions).toHaveBeenCalledWith("v1", [
-      { pageIndex: 0, rect: [5, 5, 55, 55] }, // 10 * 72/144
-    ]);
+    expect(mocks.documentRedactRegions).toHaveBeenCalledWith(
+      "v1",
+      [{ pageIndex: 0, rect: [5, 5, 55, 55] }], // 10 * 72/144
+      expect.any(String),
+    );
   });
 
   it("belge değişince önceki belgenin sonucu, önizlemesi ve bölgeleri kalkar", async () => {
@@ -620,13 +624,16 @@ describe("Maskeleme ekranı", () => {
     expect(runButton().disabled).toBe(true);
   });
 
-  it("ilerleme olayını yalnız çalışan sürüm için yazar; olay yoksa sayaç uydurmaz", async () => {
+  it("ilerleme olayını yalnız kendi çalıştırması için yazar; olay yoksa sayaç uydurmaz", async () => {
     const pending = deferred<RedactionResult>();
     mocks.documentRedact.mockReturnValue(pending.promise);
 
     await renderScreen();
     fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
     fireEvent.click(runButton());
+    // Çalıştırma kimliği arayüzden gider (F13): kareler bununla ayrılır.
+    const runId = mocks.documentRedact.mock.calls[0]![2] as string;
+    expect(runId).toBeTruthy();
 
     // Henüz olay yok: sayaç yok, dürüst “hazırlanıyor…”.
     expect(screen.getByRole("status").textContent).toBe(t("redaction.preparing"));
@@ -636,11 +643,11 @@ describe("Maskeleme ekranı", () => {
     expect(docSelect().disabled).toBe(true);
     expect(screen.getByRole("button", { name: t("redaction.masking") })).toBeTruthy();
 
-    // Başka sürümün olayı yok sayılır.
+    // Başka sürümün olayı yok sayılır (kimlik doğru olsa bile).
     act(() => {
       for (const handler of progressHandlers) {
         handler({
-          payload: { versionId: "v2", stage: "redact", done: 9, total: 9 },
+          payload: { versionId: "v2", runId, stage: "redact", done: 9, total: 9 },
         });
       }
     });
@@ -648,6 +655,7 @@ describe("Maskeleme ekranı", () => {
 
     const event: ParseProgressEvent = {
       versionId: "v1",
+      runId,
       stage: "redact",
       done: 2,
       total: 4,
@@ -667,6 +675,73 @@ describe("Maskeleme ekranı", () => {
     await resultCard();
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  it("aynı sürümde ikinci maskelemede birincinin gecikmiş karesi görünmez", async () => {
+    const first = deferred<RedactionResult>();
+    const second = deferred<RedactionResult>();
+    mocks.documentRedact.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+    await waitFor(() => expect(mocks.documentRedact).toHaveBeenCalledTimes(1));
+    const firstRun = mocks.documentRedact.mock.calls[0]![2] as string;
+    await act(async () => {
+      first.resolve(redactionResult());
+      await first.promise;
+    });
+
+    // Aynı sürümde ikinci maskeleme: kendi kimliğiyle gider.
+    fireEvent.click(runButton());
+    await waitFor(() => expect(mocks.documentRedact).toHaveBeenCalledTimes(2));
+    const secondRun = mocks.documentRedact.mock.calls[1]![2] as string;
+    expect(secondRun).not.toBe(firstRun);
+
+    // Birincinin gecikmiş karesi: aynı sürüm, eski kimlik → yeni satıra yazılmaz.
+    act(() => {
+      for (const handler of progressHandlers) {
+        handler({ payload: { versionId: "v1", runId: firstRun, stage: "redact", done: 3, total: 4 } });
+      }
+    });
+    expect(screen.getByRole("status").textContent).toBe(t("redaction.preparing"));
+    expect(screen.queryByRole("progressbar")).toBeNull();
+
+    // Kendi karesi görünür (kapı her şeyi yutmuyor).
+    act(() => {
+      for (const handler of progressHandlers) {
+        handler({ payload: { versionId: "v1", runId: secondRun, stage: "redact", done: 1, total: 4 } });
+      }
+    });
+    expect(screen.getByRole("status").textContent).toBe(
+      parseProgressLine({ stage: "redact", done: 1, total: 4 }),
+    );
+
+    await act(async () => {
+      second.resolve(redactionResult());
+      await second.promise;
+    });
+  });
+
+  it("çalıştırma kimliği taşımayan (kuyruktan gelen) olay kendi satırına yazılmaz", async () => {
+    const pending = deferred<RedactionResult>();
+    mocks.documentRedact.mockReturnValue(pending.promise);
+
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+
+    act(() => {
+      for (const handler of progressHandlers) {
+        handler({ payload: { versionId: "v1", runId: null, stage: "redact", done: 5, total: 9 } });
+      }
+    });
+    expect(screen.getByRole("status").textContent).toBe(t("redaction.preparing"));
+
+    await act(async () => {
+      pending.resolve(redactionResult());
+      await pending.promise;
+    });
   });
 
   it("terim yer tutucusu sözlükten gelir", async () => {
@@ -819,9 +894,11 @@ describe("Maskeleme ekranı uçuş yolları", () => {
       await pending.promise;
     });
 
-    expect(mocks.documentRedactRegions).toHaveBeenCalledWith("v1", [
-      { pageIndex: 0, rect: [5, 5, 55, 55] },
-    ]);
+    expect(mocks.documentRedactRegions).toHaveBeenCalledWith(
+      "v1",
+      [{ pageIndex: 0, rect: [5, 5, 55, 55] }],
+      expect.any(String),
+    );
     // Yalnız **gönderilen** bölge temizlenir; uçuşta çizilen kalır.
     expect(clearButton(1)).toBeTruthy();
     expect(box.querySelectorAll("span")).toHaveLength(1);

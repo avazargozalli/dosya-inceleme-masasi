@@ -482,6 +482,7 @@ describe("dosyalar ekranı davranışı", () => {
       DEFAULT_OCR_LANG,
       "auto",
       undefined,
+      expect.any(String),
     );
     await waitFor(() => expect(noticeText()).not.toBeNull());
 
@@ -501,6 +502,7 @@ describe("dosyalar ekranı davranışı", () => {
       DEFAULT_OCR_LANG,
       "windows-1254",
       " giZli ",
+      expect.any(String),
     );
   });
 
@@ -940,10 +942,15 @@ describe("dosyalar ekranı — uçuştaki yazmalar ve bayat hata", () => {
     await selectCase(CASE.title);
     fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
     await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+    // Çalıştırma kimliği arayüzden gider (F13): kareler bununla ayrılır.
+    const runId = mocks.documentParse.mock.calls[0]![5] as string;
+    expect(runId).toBeTruthy();
 
     // Süren ayrıştırmanın ilerlemesi görünür: sürüm kapısı gerçekten açık.
     act(() => {
-      progress!({ payload: { versionId: "12345678-abcd", stage: "pages", done: 1, total: 3 } });
+      progress!({
+        payload: { versionId: "12345678-abcd", runId, stage: "pages", done: 1, total: 3 },
+      });
     });
     expect(screen.getByRole("progressbar")).toBeTruthy();
 
@@ -952,13 +959,66 @@ describe("dosyalar ekranı — uçuştaki yazmalar ve bayat hata", () => {
 
     // Aynı sürümün geç gelen olayı yeni dosyanın altında çizilmez.
     act(() => {
-      progress!({ payload: { versionId: "12345678-abcd", stage: "pages", done: 2, total: 3 } });
+      progress!({
+        payload: { versionId: "12345678-abcd", runId, stage: "pages", done: 2, total: 3 },
+      });
     });
     expect(screen.queryByRole("progressbar")).toBeNull();
 
     await act(async () => {
       resolveParse(parseResult());
       await Promise.resolve();
+    });
+  });
+
+  it("aynı belgenin ikinci ayrıştırmasında birincinin gecikmiş karesi görünmez", async () => {
+    let progress: ((event: { payload: ParseProgressEvent }) => void) | null = null;
+    const first = deferred<ParseResult>();
+    const second = deferred<ParseResult>();
+    mocks.documentParse.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    setup({
+      cases: [CASE],
+      listen: async (handler) => {
+        progress = handler;
+        return () => undefined;
+      },
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+    const firstRun = mocks.documentParse.mock.calls[0]![5] as string;
+    await act(async () => {
+      first.resolve(parseResult());
+      await first.promise;
+    });
+    await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+
+    // Aynı belge ikinci kez ayrıştırılır: kendi kimliğiyle gider.
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(2));
+    const secondRun = mocks.documentParse.mock.calls[1]![5] as string;
+    expect(secondRun).not.toBe(firstRun);
+
+    // Birincinin gecikmiş karesi: aynı sürüm, eski kimlik → yeni satıra yazılmaz.
+    act(() => {
+      progress!({
+        payload: { versionId: "12345678-abcd", runId: firstRun, stage: "pages", done: 2, total: 3 },
+      });
+    });
+    expect(screen.queryByRole("progressbar")).toBeNull();
+
+    // Kendi karesi görünür (kapı her şeyi yutmuyor).
+    act(() => {
+      progress!({
+        payload: { versionId: "12345678-abcd", runId: secondRun, stage: "pages", done: 1, total: 3 },
+      });
+    });
+    expect(screen.getByRole("progressbar")).toBeTruthy();
+
+    await act(async () => {
+      second.resolve(parseResult());
+      await second.promise;
     });
   });
 

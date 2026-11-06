@@ -24,7 +24,11 @@ export function Redaction() {
   // F04-T07: maskeleme artık kuyruk işi olarak koşar; aşama/sayım
   // `redact-progress` olayıyla gelir. Sayaç uydurulmaz: olay yoksa satır yok.
   const [progress, setProgress] = useState<ParseProgressEvent | null>(null);
-  const activeVersion = useRef<string | null>(null);
+  // Çalıştırma kimliği (F13 açık kayıt a): aynı sürümde art arda iki
+  // maskelemede birincinin **gecikmiş** karesi ikincinin ilerleme satırına
+  // yazılmaz. Kimliği arayüz üretir, olay her karede taşır.
+  const activeRun = useRef<{ versionId: string; runId: string } | null>(null);
+  const runSeq = useRef(0);
   const [mode, setMode] = useState<"terms" | "regions">("terms");
   const [page, setPage] = useState(0);
   // Önizleme **hangi sayfaya aitse** onunla taşınır: sayfa alanı değişince eski
@@ -53,6 +57,9 @@ export function Redaction() {
     setPreview(null);
     setPage(0);
     setProgress(null);
+    // Uçuştaki çalıştırmanın kimliği kapanır: eski hedefin gecikmiş karesi yeni
+    // hedefin ilerleme satırına yazılmaz (INV-05).
+    activeRun.current = null;
     setError(null);
     setPageBusy(false);
     setDrag(null);
@@ -64,7 +71,13 @@ export function Redaction() {
     // Tarayıcıda (Tauri yok) dinleyici kurulamaz; hata yutulur.
     void listen<ParseProgressEvent>("redact-progress", (event) => {
       if (disposed) return;
-      if (event.payload.versionId !== activeVersion.current) return;
+      // Yalnız **kendi** çalıştırmamızın kareleri: sürüm kimliği tek başına
+      // yetmez, aynı sürümde art arda iki maskelemede eski çalıştırmanın
+      // gecikmiş karesi yeni satıra yazılırdı.
+      const active = activeRun.current;
+      if (!active) return;
+      if (event.payload.versionId !== active.versionId) return;
+      if (event.payload.runId !== active.runId) return;
       setProgress(event.payload);
     })
       .then((stop) => {
@@ -147,13 +160,14 @@ export function Redaction() {
     const gen = genRef.current;
     const version = versionId;
     const submitted = regions;
+    const runId = `redact-${++runSeq.current}`;
     setBusy(true);
     setError(null);
     setResult(null);
-    activeVersion.current = version;
+    activeRun.current = { versionId: version, runId };
     setProgress(null);
     try {
-      const result = await api.documentRedactRegions(version, regions);
+      const result = await api.documentRedactRegions(version, regions, runId);
       if (gen !== genRef.current) return;
       setResult(result);
       // Yalnız **gönderilen** bölgeler düşer: maskeleme sürerken çizilen yeni
@@ -163,8 +177,11 @@ export function Redaction() {
       if (gen !== genRef.current) return;
       setError(toApiError(e));
     } finally {
-      activeVersion.current = null;
-      setProgress(null);
+      // Kapanış yalnız **kendi** çalıştırmamızın kimliğinde temizler.
+      if (activeRun.current?.runId === runId) {
+        activeRun.current = null;
+        setProgress(null);
+      }
       setBusy(false);
     }
   }
@@ -215,21 +232,24 @@ export function Redaction() {
     }
     const gen = genRef.current;
     const version = versionId;
+    const runId = `redact-${++runSeq.current}`;
     setBusy(true);
     setError(null);
     setResult(null);
-    activeVersion.current = version;
+    activeRun.current = { versionId: version, runId };
     setProgress(null);
     try {
-      const result = await api.documentRedact(version, list);
+      const result = await api.documentRedact(version, list, runId);
       if (gen !== genRef.current) return;
       setResult(result);
     } catch (e) {
       if (gen !== genRef.current) return;
       setError(toApiError(e));
     } finally {
-      activeVersion.current = null;
-      setProgress(null);
+      if (activeRun.current?.runId === runId) {
+        activeRun.current = null;
+        setProgress(null);
+      }
       setBusy(false);
     }
   }
