@@ -1534,3 +1534,161 @@ describe("dosyalar ekranı — oluşturma ve sürükle-bırak uçuş yolları", 
     ).toBeTruthy();
   });
 });
+
+// Yazma kilidi (`busy` + `workingRef`) **dosya nesline** bağlıdır: dosya
+// değişince kilit devredilir (yeni dosya eski isteğin yanıtını beklemez) ve
+// devredilen eski isteğin kapanışı yeni dosyada başlatılan yazmanın kilidini
+// erken açmaz. Dosya listesi düğmeleri `busy` ile kapatılmadığı için bu yol
+// gerçekten ulaşılabilir; çekirdek eşzamanlılığı `ParsePool` (en fazla iki
+// worker) ve kasa yazma kilidi sınırlar.
+describe("dosyalar ekranı — yazma kilidi dosya nesline bağlıdır", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    drop = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  let drop: DropHandler | null = null;
+
+  const IMPORTED_INTO_C2 = {
+    kind: "imported" as const,
+    document: { ...DOC, id: "d8", caseId: "c2", displayName: "İhtar eki.pdf", currentVersionId: "v3" },
+    version: {
+      id: "v3",
+      documentId: "d8",
+      caseId: "c2",
+      versionNo: 1,
+      blobId: "b3",
+      originalSha256: "sha3",
+      byteSize: 2048,
+      detectedMime: "application/pdf",
+      importedAt: ISO,
+    },
+  };
+
+  async function dropPath(path: string) {
+    await act(async () => {
+      drop!({ payload: { type: "drop", paths: [path] } });
+      await Promise.resolve();
+    });
+  }
+
+  function addButton(): HTMLButtonElement {
+    return screen.getByRole("button", { name: t("cases.addDocument") }) as HTMLButtonElement;
+  }
+
+  it("ayrıştırma sürerken dosya değişirse yeni dosyanın düğmeleri eski yanıtı beklemez", async () => {
+    const parse = deferred<ParseResult>();
+    mocks.documentParse.mockReturnValue(parse.promise);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+    expect(addButton().disabled).toBe(true);
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    // Kilit devredildi: yeni dosyanın düğmeleri eski ayrıştırmanın yanıtına
+    // (ve hiç gelmeyebilecek bir yanıta) bağlı değil.
+    expect(addButton().disabled).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: t("cases.newCase") }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    await act(async () => {
+      parse.resolve(parseResult());
+      await Promise.resolve();
+    });
+    // Devredilen isteğin kapanışı yeni dosyanın kilidini kapatmaz.
+    expect(addButton().disabled).toBe(false);
+  });
+
+  it("eski isteğin kapanışı yeni dosyada başlatılan yazmanın kilidini erken açmaz", async () => {
+    const parse = deferred<ParseResult>();
+    const importJob = deferred<typeof IMPORTED_INTO_C2>();
+    mocks.documentParse.mockReturnValue(parse.promise);
+    mocks.openFileDialog.mockResolvedValue("/tmp/ihtar-eki.pdf");
+    mocks.documentImport.mockReturnValue(importJob.promise);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+      onDrop: (handler) => {
+        drop = handler;
+      },
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+
+    fireEvent.click(addButton());
+    await waitFor(() =>
+      expect(mocks.documentImport).toHaveBeenCalledWith("c2", "/tmp/ihtar-eki.pdf"),
+    );
+    expect(addButton().disabled).toBe(true);
+
+    await act(async () => {
+      parse.resolve(parseResult());
+      await Promise.resolve();
+    });
+
+    // Yeni dosyanın içe aktarması hâlâ uçuşta: eski isteğin `finally`si
+    // kilidi erken açmaz, bırakılan dosya paralel içe aktarılmaz.
+    expect(addButton().disabled).toBe(true);
+    await dropPath("/tmp/paralel.pdf");
+    expect(mocks.documentImport).toHaveBeenCalledTimes(1);
+    expect((await screen.findByRole("alert")).textContent).toContain("E_DROP_BUSY");
+
+    await act(async () => {
+      importJob.resolve(IMPORTED_INTO_C2);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(addButton().disabled).toBe(false));
+  });
+
+  it("ayrıştırma sürerken dosya değişirse bırakılan dosya eski isteğe takılmaz", async () => {
+    const parse = deferred<ParseResult>();
+    mocks.documentParse.mockReturnValue(parse.promise);
+    mocks.documentImport.mockResolvedValue(IMPORTED_INTO_C2);
+    setup({
+      cases: [CASE, CASE2],
+      documents: async (caseId) => (caseId === "c1" ? [DOC] : []),
+      onDrop: (handler) => {
+        drop = handler;
+      },
+    });
+
+    await selectCase(CASE.title);
+    fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
+    await waitFor(() => expect(mocks.documentParse).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(CASE2.title) }));
+    expect(await screen.findByRole("heading", { name: CASE2.title })).toBeTruthy();
+    await waitFor(() => expect(drop).not.toBeNull());
+
+    await dropPath("/tmp/ihtar-eki.pdf");
+
+    // Bırakılan dosya **yeni** dosyaya aktarılır; eski ayrıştırma "uçuşta"
+    // diye sessizce (ya da E_DROP_BUSY ile) reddedilmez.
+    await waitFor(() =>
+      expect(mocks.documentImport).toHaveBeenCalledWith("c2", "/tmp/ihtar-eki.pdf"),
+    );
+    expect(screen.queryByText("E_DROP_BUSY")).toBeNull();
+
+    await act(async () => {
+      parse.resolve(parseResult());
+      await Promise.resolve();
+    });
+  });
+});

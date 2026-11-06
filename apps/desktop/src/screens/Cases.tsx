@@ -93,6 +93,10 @@ export function Cases() {
   // dinleyicisi **render anındaki** durumu yakaladığı için kilit ayrıca ref'te
   // tutulur: uçuştaki işlem sırasında bırakılan dosya paralel içe aktarılmaz.
   const workingRef = useRef(false);
+  // Yazma kilidinin nesli: kapanış yalnız **kendi** uçuşunda kilidi bırakır.
+  // Dosya değişimi kilidi devreder (aşağıdaki effect); devredilen eski isteğin
+  // `finally`si yeni dosyada başlatılan yazmanın kilidini erken açamaz.
+  const workSeq = useRef(0);
   // Oluşturma formunun **güncel** taslağı: yanıt geldiğinde formun uçuşta
   // değişip değişmediği bununla ölçülür (değiştiyse form kapanmaz).
   const formRef = useRef<NewCaseInput>(form);
@@ -103,12 +107,17 @@ export function Cases() {
   // için düğme metni yalnız bu bayrakla "Oluşturuluyor…" yazar.
   const [createBusy, setCreateBusy] = useState(false);
 
-  function beginWork() {
+  function beginWork(): number {
+    const seq = ++workSeq.current;
     workingRef.current = true;
     setBusy(true);
+    return seq;
   }
 
-  function endWork() {
+  function endWork(seq: number) {
+    // Yalnız kendi uçuşu hâlâ güncelse kilidi bırakır: dosya değişiminde kilit
+    // devredilir, yeni dosyada başlatılan işlemin kilidi erken açılmaz.
+    if (seq !== workSeq.current) return;
     workingRef.current = false;
     setBusy(false);
   }
@@ -120,6 +129,13 @@ export function Cases() {
   useEffect(() => {
     caseGen.current += 1;
     activeParse.current = null;
+    // Uçuştaki yazmanın kilidi **devredilir**: yeni dosyanın düğmeleri eski
+    // isteğin yanıtını beklemez (yanıt hiç gelmezse süresiz kilitlenirdi).
+    // Eski isteğin kapanışı `workSeq` kapısından geçemez; sonucu zaten `gen`
+    // kapısından yazmaz.
+    workSeq.current += 1;
+    workingRef.current = false;
+    setBusy(false);
   }, [selected?.id]);
 
   useEffect(() => {
@@ -238,8 +254,8 @@ export function Cases() {
     }
     const gen = caseGen.current;
     const submitted = form;
+    const work = beginWork();
     setCreateBusy(true);
-    beginWork();
     try {
       const created = await api.caseCreate({
         ...form,
@@ -260,7 +276,7 @@ export function Cases() {
       setError(toApiError(e));
     } finally {
       setCreateBusy(false);
-      endWork();
+      endWork(work);
     }
   }
 
@@ -286,7 +302,7 @@ export function Cases() {
   async function importFromPath(path: string) {
     if (!selected) return;
     const gen = caseGen.current;
-    beginWork();
+    const work = beginWork();
     setError(null);
     setNotice(null);
     try {
@@ -308,7 +324,7 @@ export function Cases() {
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
     } finally {
-      endWork();
+      endWork(work);
     }
   }
 
@@ -355,7 +371,7 @@ export function Cases() {
   async function parseDocument(versionId: string, ocr = false) {
     const gen = caseGen.current;
     const runId = `parse-${++parseSeq.current}`;
-    beginWork();
+    const work = beginWork();
     setError(null);
     setNotice(null);
     setParseProgress(null);
@@ -400,7 +416,7 @@ export function Cases() {
         activeParse.current = null;
         setParseProgress(null);
       }
-      endWork();
+      endWork(work);
     }
   }
 
@@ -504,7 +520,7 @@ export function Cases() {
   async function mutate(action: "archive" | "restore" | "delete") {
     if (!selected) return;
     const gen = caseGen.current;
-    beginWork();
+    const work = beginWork();
     setError(null);
     try {
       if (action === "archive") await api.caseArchive(selected.id);
@@ -516,7 +532,7 @@ export function Cases() {
     } catch (e) {
       if (gen === caseGen.current) setError(toApiError(e));
     } finally {
-      endWork();
+      endWork(work);
     }
   }
 
