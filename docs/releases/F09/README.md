@@ -9,7 +9,7 @@
 | F09-T01 tek `Provider` sözleşmesi | ✅ | `crates/providers` |
 | F09-T02 `OffProvider` | ✅ | her istek `E_AI_OFF` |
 | F09-T03 aktarım onayı | ✅ | `transfer_consents`; onay **belge kümesine** bağlı (boş seçim, başka dosyanın belgesi ve silinmiş belge reddedilir) — ölçüldü 2026-10-28, aşağıdaki "Aktarım kapsamı" bölümü |
-| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10) |
+| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10). **Gönderim sicili de okunur** (`list_context_items` + `ai_context_items` + "Gönderilen içerik" kartı: belge adı, sürüm, gerekçe, bayt; 2026-11-06) |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT`: onay yok / iptal / süresi geçmiş / **belge seçimi boş** / seçili belge silinmiş (7 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
 | F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS + Windows** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** tutulur — macOS **Anahtar Zinciri** (`security-framework`), Windows **Kimlik Yöneticisi** (`keyring` 3.6.3, 2026-11-06); sıra **depo → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows tatbikatı gerçek Credential Manager üzerinde CI `windows-latest` işinde **koştu** (25/25). Linux Secret Service **uygulanmadı** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölümler |
@@ -582,3 +582,80 @@ blob'u **UTF-16** yazar; macOS UTF-8 — iki platform aynı kasayı paylaşmaz
 `dim-providers` derler; **masaüstü kabuğun Windows derlemesi** hâlâ CI'da yok
 (F02 MSI doğrulaması Windows makinesi/insan bekliyor). (c) Anahtar
 rotasyonu/son kullanım izlenmiyor (değişmedi).
+
+## Gönderim sicili **okunabilir**: hangi belge sürümü çıktı (2026-11-06, F09-T04)
+
+**Ölçülen kusur.** `ai_context_items` F09-T04'ten beri gönderimden **önce**
+yazılıyordu (hangi belge sürümü, hangi gerekçe, kaç bayt) — ama
+`list_context_items` **yalnız `crates/storage` içinde** tanımlıydı: Tauri komutu,
+`api.ts` bağı ve ekran kartı **yoktu** (`git grep`: tek tüketici yok). Makbuz
+satırı yalnız **toplam** öğe/bayt ve içerik özetini taşıyordu; avukat "bu
+çalıştırmada **hangi belge** gitti" sorusunu yanıtlayamıyordu. (Aynı sınıf kusur
+dışa aktarma defterinde 2026-11-06'da kapatıldı — F14-T05.)
+
+**İkinci ölçülen boşluk.** Satır yalnız `document_version_id` (UUID) taşıyordu:
+ekranda okunacak bir ad ya da sürüm numarası yoktu.
+
+**Yazılan.**
+
+- `AiContextItemRow` artık `document_title` + `version_no` taşır; sorgu
+  `document_versions`/`documents` ile **sol birleşim** yapar. Belge ya da sürüm
+  silinmişse **satır düşmez**, ad `null` kalır (kimlik dururken ad uydurulmaz;
+  `ai_context_items` sürüme yabancı anahtarla bağlı değil, denetim satırı yaşar).
+  Sıra **kayıt sırasıdır** (`rowid ASC`): aynı damgaya düşen iki satır bile
+  gönderim sırasını korur.
+- Yeni **`ai_context_items`** komutu + `api.aiContextItems`.
+- Ai ekranında **"Gönderilen içerik"** kartı: belge · sürüm · gerekçe · bayt ve
+  altında **hesaplanan** toplam. Seçim yokken **okuma yapılmaz** ve "kayıt yok"
+  denmez; düşen okuma **kendi satırında** yazılır (sessiz yutma yok); liste
+  istekten **önce** temizlenir; geç yanıt yeni seçimin altına yazılmaz
+  (`contextSeq`); dosya değişiminde sicil ve seçim birlikte düşer.
+- Gönderimden sonra **yeni çalıştırma odaklanır** (`focusRun(candidate.aiRunId)`):
+  sicil, gönderim anında ekranda — avukat sormak zorunda kalmaz.
+
+**Testler.** `dim-storage` `ai::` **+2** (okunabilirlik + kayıt sırası; belge
+yoksa satır durur, ad `null`) → lib **409 → 411**. Arayüz `Ai.test.tsx`
+**78 → 86** (+8; yeni `describe` "gönderilen içerik sicili").
+
+**Kapı kanıtı (gerçek koşular).**
+
+- Düzeltme öncesi HEAD bileşeni + yeni testler: **`8 failed | 78 skipped`** —
+  sekizi de kırmızı, yani testler gerçekten yeni davranışı ölçüyor.
+- Arayüz mutasyonları **7/7**: M1 kart/okuma yok (**7** test — "seçim yokken
+  okuma yapılmaz" testi doğası gereği yeşil kalır), M2 liste temizliği (1),
+  M3 `contextSeq` kapısı (1), M4 düşen okuma "kayıt yok" yazar (1), M5 adsız
+  belgeye uydurma ad (1), M6 gönderim sonrası odak yok (1), M7 görünüm kapısı
+  (**2**). M2–M6 **cerrahi**; M1/M7 birden çok testi düşürür (dürüst).
+- Çekirdek **3/3**: R1 sol→iç birleşim (**2** — *cerrahi değil*: mevcut
+  `context_items_and_receipt_are_recorded` testi de düşer, çünkü var olmayan bir
+  sürüm kimliği kullanıyor), R2 sıra ters (1), R3 ad birleşimi kaldırıldı (1).
+- Geri yükleme sha256'ları **birebir** (arayüz `ff1b95d7…`, çekirdek `1d44bfc1…`).
+- **Dürüst:** ilk "geç yanıt" testi M3 mutasyonunda **yeşil kaldı** — ikinci
+  seçim birincinin okumasını hiç başlatmıyordu (`focusRun` içindeki `runSeq`
+  kapısı onu kesiyordu). Test, ilk okumanın gerçekten uçuşta olduğunu
+  bekleyecek şekilde düzeltildi; M3 yeniden ölçüldü (`1 failed`).
+- **Yerel:** `dim-storage --lib` **411/411** (286,06 s) · `ai::` **39/39** ·
+  clippy `-p dim-storage --all-targets -D warnings` temiz · masaüstü kabuk
+  `cargo check --all-targets` temiz (3 dk 23 s) + clippy temiz · `cargo fmt` iki
+  manifest temiz · `tsc --noEmit` temiz · vitest **1190/1190** (60 dosya) ·
+  `vite build` **607,94 kB** (`index-Bkw0nht6.js`, gzip **163,44 kB**).
+  **Dürüst:** ilk tam suite (cargo test ile **paralel**) 4 kırmızı verdi
+  (`Redaction`/bir başka dosya, yük altında zamanlama); yalnız koşuda ve CI'da
+  **1190/1190 yeşil** — bu turda eklenen testlerle ilgisi yok.
+- **CI:** kod `5161594` → **`42308455810` 10/10 YEŞİL**; `rust (macos-15)`
+  `dim-storage` **411 passed** (196,77 s) ve `rust (ubuntu-latest)` **411 passed**
+  (266,10 s) — **birebir**; `arayüz` **60 dosya / 1190 test**, paket
+  `index-Bkw0nht6.js` **607,94 kB** / gzip **163,44 kB** (yerel/CI birebir);
+  `masaüstü kabuk` **34 koştu · 0 düştü · 5 yoksayıldı** + yoksayılan koşu
+  **5 passed** (35,06 s).
+
+**Dürüst sınırlar.** (a) `ai_context_items` **komut olarak koşulmadı**
+(`State<AppState>` kurup komutu çağıran test altyapısı yok) — kablolama
+`cargo check --all-targets` + clippy, davranış `list_context_items` düzeyinde
+**gerçek SQLite** ile. (b) Sicil **bayt sayısını** ve sürümü yazar, metnin
+kendisini saklamaz; gönderilen metnin içerik özeti makbuz satırındadır.
+(c) Kayıt silinemez/düzenlenemez (denetim sicili), kartta filtre/sayfalama yok.
+(d) jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+(e) `document_title` **anlık** okunur (kayıt anındaki ad saklanmaz): belge sonradan
+yeniden adlandırılırsa eski çalıştırma yeni adı gösterir — sürüm kimliği ve bayt
+değişmez.
