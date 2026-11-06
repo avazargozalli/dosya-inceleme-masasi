@@ -11,16 +11,16 @@ on:
   workflow_call:
     inputs:
       artifact_run_id:
-        description: "MSI artefaktının indirileceği koşu kimliği (boşsa bu koşu)"
+        description: "MSI artefaktının indirileceği koşu kimliği (çağıran: kendi koşusu)"
         required: false
         type: string
         default: ""
   workflow_dispatch:
     inputs:
       artifact_run_id:
-        description: "MSI artefaktının indirileceği koşu kimliği (boşsa bu koşu)"
-        required: false
-        default: ""
+        description: "MSI artefaktının indirileceği koşu kimliği (zorunlu: tatbikat kendi MSI'sini üretmez)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -32,6 +32,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # Tek indirme yolu: `artifact_run_id` **her zaman** verilir (çağıran
+      # `desktop-build` `github.run_id`'yi geçirir; elle koşuda zorunlu alan).
       - uses: actions/download-artifact@v4
         with:
           name: dim-windows-x64
