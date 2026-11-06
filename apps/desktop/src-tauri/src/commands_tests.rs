@@ -490,8 +490,7 @@ fn run_plan_only_starts_queued_parse_jobs() {
 #[test]
 #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
 fn retrying_a_failed_parse_job_really_parses_the_document() {
-    if redaction_dev_python().is_none() {
-        eprintln!("python+pymupdf yok; test atlandı");
+    if require_dev_worker().is_none() {
         return;
     }
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -768,8 +767,7 @@ fn failed_parse_job(state: &AppState, version_id: &str) -> String {
 #[test]
 #[ignore = "gerçek worker + gerçek kasa + tesseract; ölçüm elle koşulur"]
 fn retry_reuses_the_recorded_ocr_setting_on_a_scanned_document() {
-    if redaction_dev_python().is_none() {
-        eprintln!("python+pymupdf yok; test atlandı");
+    if require_dev_worker().is_none() {
         return;
     }
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1059,7 +1057,36 @@ fn a_completed_redaction_opens_a_fresh_job_row() {
 /// Gerçek worker'lı ölçümler için python + worker klasörü.
 fn redaction_dev_python() -> Option<PathBuf> {
     let dir = dim_ingest::worker::dev_worker_dir()?;
-    dim_ingest::worker::dev_python_with_module(&dir, "pymupdf")
+    // **Uygulamanın** seçeceği yorumlayıcı (`spawn_worker` aynı işlevi kullanır):
+    // "herhangi bir python pymupdf'i içe aktarıyor" yetmez — worker'ın gerçekten
+    // kullanacağı yorumlayıcı motoru taşımalı.
+    dim_ingest::worker::dev_worker_python_with_module(&dir, "pymupdf")
+}
+
+/// Gerçek worker'ı **zorunlu** kılan kapı.
+///
+/// Motor yoksa: `DIM_REQUIRE_WORKER=1` verilmişse test **düşer** (sessiz
+/// `return` yok); verilmemişse "atlandı" satırı yazılır. CI bu değişkeni verir,
+/// böylece bu beş test venv kurulmadan "yeşil" görünemez — yoksa 5 test
+/// **hiçbir şey ölçmeden** geçerdi.
+///
+/// Ölçüldü (2026-11-06, bu testler ilk kez koşulduğunda): **0 geçti / 5 düştü**.
+/// Dördü `E_ENGINE_MISSING` ("PyMuPDF bu worker paketinde yok") verdi çünkü ürün
+/// worker'ı çıplak `python3` ile başlatıyordu, test kapısı ise depo venv'ini
+/// görüyordu; beşincisi (iptal) ondan türeyen 60 sn zaman aşımıyla düştü.
+fn require_dev_worker() -> Option<PathBuf> {
+    if let Some(python) = redaction_dev_python() {
+        return Some(python);
+    }
+    if std::env::var("DIM_REQUIRE_WORKER").is_ok_and(|value| value == "1") {
+        panic!(
+            "gerçek worker yok: uygulamanın seçeceği yorumlayıcı `pymupdf` içe aktaramıyor \
+             (DIM_WORKER_PYTHON={:?}) — DIM_REQUIRE_WORKER=1 ile bu test atlanamaz",
+            std::env::var("DIM_WORKER_PYTHON").ok()
+        );
+    }
+    eprintln!("python+pymupdf yok; test atlandı");
+    None
 }
 
 /// **F04-T07 ÖLÇÜMÜ — kasa kilidi worker boyunca tutulmaz.** Eski kod
@@ -1073,8 +1100,7 @@ fn redaction_dev_python() -> Option<PathBuf> {
 #[test]
 #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
 fn redaction_runs_off_the_vault_lock_and_reports_pages() {
-    if redaction_dev_python().is_none() {
-        eprintln!("python+pymupdf yok; test atlandı");
+    if require_dev_worker().is_none() {
         return;
     }
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1193,8 +1219,7 @@ fn redaction_runs_off_the_vault_lock_and_reports_pages() {
 #[test]
 #[ignore = "gerçek worker + gerçek kasa; ölçüm elle koşulur"]
 fn redaction_cancel_stops_the_worker_and_writes_nothing() {
-    if redaction_dev_python().is_none() {
-        eprintln!("python+pymupdf yok; test atlandı");
+    if require_dev_worker().is_none() {
         return;
     }
     // 120 sayfa: iptal için gerçek zaman penceresi. Fikstür **depoda**
@@ -1280,6 +1305,10 @@ fn redaction_cancel_stops_the_worker_and_writes_nothing() {
 #[ignore = "gerçek worker + gerçek kasa; F15 ölçümü elle koşulur"]
 fn two_parses_run_concurrently_on_a_real_vault() {
     use dim_storage::{AiPolicy, CaseKind, NewCase, Sensitivity};
+
+    if require_dev_worker().is_none() {
+        return;
+    }
 
     let dir = std::env::temp_dir().join(format!("dim-parse-parallel-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

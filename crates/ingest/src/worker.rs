@@ -1243,6 +1243,89 @@ fn start_memory_watchdog(
     stop
 }
 
+/// Yorumlayıcı gerçekten çalışıyor mu? (`--version` çıkışı 0.)
+fn python_runs(path: &Path) -> bool {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Yorumlayıcı `module`'ü içe aktarabiliyor mu?
+fn python_imports(path: &Path, module: &str) -> bool {
+    Command::new(path)
+        .args(["-c", &format!("import {module}")])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// PATH'teki yorumlayıcı adları (`DIM_WORKER_PYTHON` **okunmaz**).
+fn path_pythons() -> Vec<PathBuf> {
+    ["python3", "python"]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Depo venv'i (`workers/document/.venv`), dosya varsa.
+fn venv_python(worker_dir: &Path) -> Option<PathBuf> {
+    let path = if cfg!(windows) {
+        worker_dir.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        worker_dir.join(".venv").join("bin").join("python")
+    };
+    path.is_file().then_some(path)
+}
+
+/// Aday sırası **tek yerde**: `DIM_WORKER_PYTHON` → depo venv'i → PATH.
+fn python_candidates(worker_dir: &Path) -> Vec<PathBuf> {
+    python_candidates_from(std::env::var_os("DIM_WORKER_PYTHON").as_deref(), worker_dir)
+}
+
+fn python_candidates_from(chosen: Option<&std::ffi::OsStr>, worker_dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(path) = chosen {
+        out.push(PathBuf::from(path));
+    }
+    if let Some(venv) = venv_python(worker_dir) {
+        out.push(venv);
+    }
+    for candidate in path_pythons() {
+        if !out.contains(&candidate) {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+/// **Uygulamanın** geliştirme kipinde worker için seçtiği yorumlayıcı.
+///
+/// Sıra: `DIM_WORKER_PYTHON` → `workers/document/.venv` → PATH (`python3`,
+/// `python`). Açıkça verilen yol çalışmıyorsa **sistem python'una düşülmez**
+/// (yanlış yol sessizce gizlenmez). `spawn_worker` bu işlevi kullanır; testler
+/// de **aynı** seçimi ölçer — ayrı bir sıra yazmak "test venv'i gördü, ürün
+/// görmedi" kusurunu üretir (ölçüldü 2026-11-06: 5 yoksayılan testin 4'ü
+/// `E_ENGINE_MISSING` ile düştü).
+///
+/// Süreç başlatma bu modülde merkezîdir (ADR-05).
+#[must_use]
+pub fn dev_python_for_worker(worker_dir: &Path) -> Option<PathBuf> {
+    dev_python_for_worker_from(std::env::var_os("DIM_WORKER_PYTHON").as_deref(), worker_dir)
+}
+
+fn dev_python_for_worker_from(
+    chosen: Option<&std::ffi::OsStr>,
+    worker_dir: &Path,
+) -> Option<PathBuf> {
+    if let Some(path) = chosen {
+        let path = PathBuf::from(path);
+        return python_runs(&path).then_some(path);
+    }
+    python_candidates_from(None, worker_dir)
+        .into_iter()
+        .find(|candidate| python_runs(candidate))
+}
+
 /// Geliştirme ortamında Python yorumlayıcısını bulur (`python3`, sonra `python`).
 ///
 /// `DIM_WORKER_PYTHON` verildiyse **o** kullanılır (Tauri ile aynı kural:
@@ -1255,20 +1338,11 @@ fn start_memory_watchdog(
 pub fn dev_python() -> Option<PathBuf> {
     if let Some(chosen) = std::env::var_os("DIM_WORKER_PYTHON") {
         let path = PathBuf::from(chosen);
-        let works = Command::new(&path)
-            .arg("--version")
-            .output()
-            .is_ok_and(|out| out.status.success());
-        return works.then_some(path);
+        return python_runs(&path).then_some(path);
     }
-    for candidate in ["python3", "python"] {
-        if let Ok(out) = Command::new(candidate).arg("--version").output() {
-            if out.status.success() {
-                return Some(PathBuf::from(candidate));
-            }
-        }
-    }
-    None
+    path_pythons()
+        .into_iter()
+        .find(|candidate| python_runs(candidate))
 }
 
 /// Geliştirme ortamında worker klasörünü bulur: depo kökündeki
@@ -1296,23 +1370,40 @@ pub fn dev_worker_dir() -> Option<PathBuf> {
 /// `python3`/`python`. Modül hiçbirinde yoksa `None` döner; çağıran test
 /// "atlandı" yazar — motor yokken "temiz" ya da "bozuk" demek yanıltıcı olur.
 /// Süreç başlatma tek yerde tutulur (clippy `disallowed_methods` kapısı).
+///
+/// **Sınır:** burada *herhangi* bir aday kazanabilir; çağıran yorumlayıcıyı
+/// worker'a **kendisi** verir (`spawn_dev_*`). Uygulamanın kendi seçimini
+/// ölçeceksen [`dev_worker_python_with_module`] kullan.
 #[must_use]
 pub fn dev_python_with_module(worker_dir: &Path, module: &str) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(path) = std::env::var_os("DIM_WORKER_PYTHON") {
-        candidates.push(PathBuf::from(path));
-    }
-    let venv = worker_dir.join(".venv").join("bin").join("python");
-    if venv.is_file() {
-        candidates.push(venv);
-    }
-    candidates.extend(dev_python());
-    candidates.into_iter().find(|candidate| {
-        Command::new(candidate)
-            .args(["-c", &format!("import {module}")])
-            .status()
-            .is_ok_and(|status| status.success())
-    })
+    python_candidates(worker_dir)
+        .into_iter()
+        .find(|candidate| python_imports(candidate, module))
+}
+
+/// Test kapısı: **uygulamanın seçeceği** yorumlayıcı `module`'ü içe aktarıyor mu?
+///
+/// [`dev_python_with_module`]den farkı: orada başka bir aday kazanabilir (bozuk
+/// venv varken PATH python'u) → test "motor var" sanırken worker
+/// `E_ENGINE_MISSING` alır. Burada **tek seçim** ([`dev_python_for_worker`])
+/// denetlenir; motor yoksa `None` döner ve çağıran test ancak açıkça
+/// `DIM_REQUIRE_WORKER=1` verilmediyse atlayabilir.
+#[must_use]
+pub fn dev_worker_python_with_module(worker_dir: &Path, module: &str) -> Option<PathBuf> {
+    dev_worker_python_with_module_from(
+        std::env::var_os("DIM_WORKER_PYTHON").as_deref(),
+        worker_dir,
+        module,
+    )
+}
+
+fn dev_worker_python_with_module_from(
+    chosen: Option<&std::ffi::OsStr>,
+    worker_dir: &Path,
+    module: &str,
+) -> Option<PathBuf> {
+    let chosen = dev_python_for_worker_from(chosen, worker_dir)?;
+    python_imports(&chosen, module).then_some(chosen)
 }
 
 /// Worker sürecine geçen **asgari** ortam. `env_clear()` sonrası yalnız bu
@@ -2391,5 +2482,102 @@ mod env_isolation_tests {
                 .expect("kardeş ad");
             assert_eq!(value, *tmp, "{name}");
         }
+    }
+}
+
+/// Yorumlayıcı seçimi tek kural olmalı: **ürün ile test aynı python'u görmeli.**
+///
+/// Ölçülen kusur (2026-11-06): `spawn_worker` `DIM_WORKER_PYTHON` ya da çıplak
+/// `python3` kullanırken test kapısı depo venv'ini (`workers/document/.venv`)
+/// görüyordu → beş "elle ölçüm" testi ilk kez koşulduğunda **0 geçti / 5 düştü**
+/// (`E_ENGINE_MISSING — PyMuPDF bu worker paketinde yok`). Bu testler seçim
+/// sırasını ve "motor var mı" kapısının *yorumlayıcının kendisini* ölçtüğünü
+/// sabitler; biri bozulursa kırmızı olur.
+#[cfg(test)]
+mod python_choice_tests {
+    use super::{
+        dev_python_for_worker_from, dev_worker_python_with_module_from, python_candidates_from,
+    };
+    use std::path::{Path, PathBuf};
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("dim-python-choice-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dizin");
+        dir
+    }
+
+    /// Sahte yorumlayıcı: `--version` her zaman 0; `import …` yalnız
+    /// `accepts_import` ise 0 (motor var/yok ayrımını taklit eder).
+    #[cfg(unix)]
+    fn fake_python(path: &Path, accepts_import: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().expect("üst dizin")).expect("dizin");
+        let body = if accepts_import {
+            "#!/bin/sh\nexit 0\n"
+        } else {
+            "#!/bin/sh\ncase \"$1\" in --version) exit 0 ;; esac\nexit 3\n"
+        };
+        std::fs::write(path, body).expect("yaz");
+        let mut perms = std::fs::metadata(path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("kip");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn venv_is_the_default_choice_before_path_pythons() {
+        let dir = scratch("venv");
+        let venv = dir.join(".venv").join("bin").join("python");
+        fake_python(&venv, true);
+        assert_eq!(dev_python_for_worker_from(None, &dir), Some(venv.clone()));
+        let candidates = python_candidates_from(None, &dir);
+        assert_eq!(candidates.first(), Some(&venv), "{candidates:?}");
+        assert_eq!(
+            candidates.len(),
+            3,
+            "venv + python3 + python beklenir: {candidates:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn explicit_choice_wins_and_a_broken_choice_does_not_fall_back() {
+        let dir = scratch("explicit");
+        let venv = dir.join(".venv").join("bin").join("python");
+        fake_python(&venv, true);
+        let chosen = dir.join("ozel-python");
+        fake_python(&chosen, true);
+        assert_eq!(
+            dev_python_for_worker_from(Some(chosen.as_os_str()), &dir),
+            Some(chosen),
+            "DIM_WORKER_PYTHON venv'i yenmeli"
+        );
+
+        let missing = dir.join("yok-python");
+        assert_eq!(
+            dev_python_for_worker_from(Some(missing.as_os_str()), &dir),
+            None,
+            "açıkça verilen bozuk yol sessizce venv'e düşmemeli"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn strict_gate_measures_the_engine_not_just_launchability() {
+        let dir = scratch("strict");
+        let venv = dir.join(".venv").join("bin").join("python");
+        fake_python(&venv, false);
+        assert_eq!(
+            dev_python_for_worker_from(None, &dir),
+            Some(venv),
+            "yorumlayıcı çalışıyor"
+        );
+        assert_eq!(
+            dev_worker_python_with_module_from(None, &dir, "pymupdf"),
+            None,
+            "motor yoksa kapı None dönmeli — 'süreç başlıyor' demek yetmez"
+        );
     }
 }

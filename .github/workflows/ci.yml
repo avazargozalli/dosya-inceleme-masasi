@@ -90,6 +90,23 @@ jobs:
       # tabanını ve kaynak sayımını denetler → test sessizce kaybolamaz.
       - name: Masaüstü kabuk testleri (gerçek kasa, worker'sız)
         run: python3 scripts/desktop_test_gate.py
+      # `--ignored` beş testi **gerçek worker'la** koşar (F04-T07 yeniden deneme,
+      # OCR ayarı, kasa kilidi, iptal, F15 paralel ölçümü). Bu testler 2026-11-06'ya
+      # dek hiçbir yerde koşmadı; ilk koşuda **0 geçti / 5 düştü** — ürün worker'ı
+      # çıplak `python3` ile başlatıyordu, test kapısı ise depo venv'ini görüyordu
+      # (`E_ENGINE_MISSING — PyMuPDF bu worker paketinde yok`). Ürün artık
+      # `DIM_WORKER_PYTHON` → venv → PATH sırasını tek yerde kullanıyor; bu adımlar
+      # venv'i ve tesseract'ı kurar, kapı `DIM_REQUIRE_WORKER=1` verir: motor yoksa
+      # test **düşer**, sessizce atlanamaz (E_SKIPPED).
+      - name: Worker sanal ortamı (pymupdf + pytesseract)
+        run: |
+          python3 -m venv workers/document/.venv
+          workers/document/.venv/bin/pip install --quiet --upgrade pip
+          workers/document/.venv/bin/pip install --quiet -e "workers/document[all]"
+      - name: Tesseract (OCR; ürün varsayılanı tur+eng)
+        run: brew install tesseract tesseract-lang
+      - name: Masaüstü kabuk gerçek worker testleri (yoksayılanlar)
+        run: python3 scripts/desktop_test_gate.py --ignored
 
   windows-secret:
     name: windows güvenli depo (cargo test)

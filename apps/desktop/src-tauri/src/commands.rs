@@ -1483,8 +1483,20 @@ fn spawn_worker(kind: WorkerKind) -> Result<WorkerClient, ApiError> {
             "Belge worker'ı bulunamadı: paket içinde worker yok, geliştirme dizini de yok.",
         )
     })?;
-    let python = std::env::var("DIM_WORKER_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    WorkerClient::spawn_dev_budgeted(Path::new(&python), &dir, budget).map_err(Into::into)
+    // Geliştirme kipi: yorumlayıcı **tek kuraldan** seçilir
+    // (`DIM_WORKER_PYTHON` → depo venv'i → PATH). Daha önce yalnız ortam
+    // değişkeni ya da çıplak `python3` denenirdi: belgelenmiş venv kurulumu
+    // (`workers/document/.venv`) olan bir geliştiricide worker `python3` ile
+    // başlıyor ve `E_ENGINE_MISSING — PyMuPDF bu worker paketinde yok`
+    // veriyordu (ölçüldü 2026-11-06, beş testin dördü).
+    let python = dim_ingest::worker::dev_python_for_worker(&dir).ok_or_else(|| {
+        ApiError::new(
+            "E_WORKER_PYTHON",
+            "Belge worker'ı için Python yorumlayıcısı bulunamadı: DIM_WORKER_PYTHON, \
+             workers/document/.venv ya da PATH'teki python3 denendi.",
+        )
+    })?;
+    WorkerClient::spawn_dev_budgeted(&python, &dir, budget).map_err(Into::into)
 }
 
 /// §17.3 bütçe profili (arayüzde liste). Değerler ölçümle değişebilir; burada
