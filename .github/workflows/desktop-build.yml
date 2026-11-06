@@ -46,9 +46,18 @@ jobs:
         run: bash scripts/build-worker.sh
       - name: Paket içinde worker var mı
         run: test -x apps/desktop/src-tauri/resources/worker/dim-worker
-      - name: İmzasız .app üret
-        run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --bundles app
-      - name: Artefaktı sıkıştır
+      # F16-T05: dağıtılan macOS paketi `.dmg`dir; bu iş 2026-11-06'ya kadar
+      # yalnız `.app` zip'i üretiyordu → manifest aracının tanıdığı bir macOS
+      # paketi **hiç yoktu** (ad biçimi `.dmg` bekler).
+      - name: İmzasız .app + .dmg üret
+        run: pnpm --filter @dim/desktop exec tauri build --target ${{ matrix.target }} --bundles app,dmg
+      - name: .dmg'yi manifest klasörüne topla
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          cp "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/"*.dmg dist/release/
+          ls -l dist/release
+      - name: Artefaktı sıkıştır (.app)
         run: |
           cd "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
           ditto -c -k --sequesterRsrc --keepParent *.app "$RUNNER_TEMP/dim-${{ matrix.target }}.zip"
@@ -56,6 +65,11 @@ jobs:
         with:
           name: dim-macos-${{ matrix.target }}
           path: ${{ runner.temp }}/dim-${{ matrix.target }}.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dim-paket-dmg-${{ matrix.target }}
+          path: dist/release/*.dmg
           if-no-files-found: error
 
   windows-binary:
@@ -106,10 +120,129 @@ jobs:
           test -n "$msi"
           ls -l "$msi"
           sha256sum "$msi"
+      - name: MSI'yi manifest klasörüne topla
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          cp apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi dist/release/
+          ls -l dist/release
       - uses: actions/upload-artifact@v4
         with:
           name: dim-windows-${{ matrix.arch }}
           path: |
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/*.exe
+          if-no-files-found: error
+      # Manifest işi yalnız **dağıtılan** paketi indirir; `.exe` bilinçli olarak
+      # ayrı artefaktta kalır (manifest `.exe` tanımaz — sessiz atlama olmasın).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dim-paket-msi-${{ matrix.arch }}
+          path: dist/release/*.msi
+          if-no-files-found: error
+
+  manifest:
+    name: sürüm manifesti — gerçek paketlerden (F16-T05)
+    # F16-T05'in kapanışı: `ci.yml`deki `paket` işi manifest **biçimini**
+    # sentetik artefaktlarla sınar; bu iş ise `tauri build`in ürettiği gerçek
+    # `.dmg`/`.msi` dosyalarından manifest üretir, her dosyayı tek tek doğrular
+    # ve kesik/kurcalanmış **gerçek** paketin reddedildiğini kanıtlar.
+    # Paketler depoda tutulmaz (imzasız, `.gitignore`); manifest de yalnız
+    # artefakt olarak yüklenir.
+    needs: [bundle, windows-binary]
+    # ARM64 Windows deneysel ve upstream'de düşüyor (F17) → `windows-binary`
+    # kırmızı olabilir; x64 MSI yine üretilmişse manifest üretilebilmeli.
+    # Eksik paket varsa iş **kırmızı** olur (E_MISSING_PLATFORM) — sessiz
+    # eksik manifest yok.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # kaynak arşivi commit ağacından üretilir
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dim-paket-*
+          path: dist/release
+          merge-multiple: true
+      - name: Manifest üret (gerçek .dmg + .msi, kaynak arşivine bağlı)
+        run: |
+          set -euo pipefail
+          ls -l dist/release
+          VERSION="$(python3 -c 'import json;print(json.load(open("apps/desktop/src-tauri/tauri.conf.json"))["version"])')"
+          echo "sürüm: $VERSION"
+          python3 scripts/source_release.py build --ref HEAD --out "$RUNNER_TEMP/kaynak" --allow-untagged
+          python3 scripts/release_manifest.py build \
+            --artifacts dist/release \
+            --version "$VERSION" \
+            --commit "$GITHUB_SHA" \
+            --source-manifest "$RUNNER_TEMP"/kaynak/*.manifest.json \
+            --out dist/release/release-manifest.json
+          python3 - <<'PY'
+          import json
+          m = json.load(open("dist/release/release-manifest.json"))
+          print("kimlik:", m["contentSha256"])
+          print("kaynak:", (m.get("source") or {}).get("commit", "—"))
+          for a in m["artifacts"]:
+              print(f"{a['platform']}/{a['arch']}/{a['kind']}  {a['bytes']} bayt  {a['sha256'][:16]}…  {a['name']}")
+          PY
+      - name: İndirilen kopyayı doğrula (platform/mimari/sürüm/boyut/sha256)
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json;print(json.load(open("apps/desktop/src-tauri/tauri.conf.json"))["version"])')"
+          for f in dist/release/*.dmg; do
+            case "$(basename "$f")" in
+              *_aarch64.dmg) arch=aarch64 ;;
+              *_x64.dmg|*_x86_64.dmg) arch=x86_64 ;;
+              *) echo "HATA: tanınmayan dmg adı: $f" >&2; exit 1 ;;
+            esac
+            python3 scripts/release_manifest.py verify --manifest dist/release/release-manifest.json \
+              --file "$f" --platform macos --arch "$arch" --version "$VERSION" --require-free-disk
+          done
+          for f in dist/release/*.msi; do
+            case "$(basename "$f")" in
+              *_x64*.msi) arch=x86_64 ;;
+              *_arm64*.msi) arch=aarch64 ;;
+              *) echo "HATA: tanınmayan msi adı: $f" >&2; exit 1 ;;
+            esac
+            python3 scripts/release_manifest.py verify --manifest dist/release/release-manifest.json \
+              --file "$f" --platform windows --arch "$arch" --version "$VERSION" --require-free-disk
+          done
+      - name: Kesik ve kurcalanmış GERÇEK paket reddedilir
+        # Sentetik değil: aynı adla kırpılmış .dmg ve tek baytı bozulmuş .msi.
+        run: |
+          set -euo pipefail
+          KOTU="$RUNNER_TEMP/bozuk"
+          mkdir -p "$KOTU"
+          dmg="$(ls dist/release/*.dmg | head -1)"
+          head -c 102400 "$dmg" > "$KOTU/$(basename "$dmg")"
+          if python3 scripts/release_manifest.py verify --manifest dist/release/release-manifest.json \
+              --file "$KOTU/$(basename "$dmg")" >/dev/null 2>"$KOTU/kesik.err"; then
+            echo "HATA: kesik indirme kabul edildi" >&2; exit 1
+          fi
+          grep -q E_SIZE "$KOTU/kesik.err"
+          echo "ok: kesik gerçek $(basename "$dmg") → E_SIZE"
+          msi="$(ls dist/release/*.msi | head -1)"
+          cp "$msi" "$KOTU/$(basename "$msi")"
+          python3 - "$KOTU/$(basename "$msi")" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          b = bytearray(p.read_bytes())
+          b[len(b) // 2] ^= 0xFF
+          p.write_bytes(b)
+          PY
+          if python3 scripts/release_manifest.py verify --manifest dist/release/release-manifest.json \
+              --file "$KOTU/$(basename "$msi")" >/dev/null 2>"$KOTU/hash.err"; then
+            echo "HATA: kurcalanmış paket kabul edildi" >&2; exit 1
+          fi
+          grep -q E_HASH "$KOTU/hash.err"
+          echo "ok: kurcalanmış gerçek $(basename "$msi") → E_HASH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dim-surum-paketleri
+          path: dist/release
           if-no-files-found: error
