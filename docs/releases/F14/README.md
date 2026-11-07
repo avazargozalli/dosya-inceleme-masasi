@@ -12,7 +12,7 @@
 | F14-T04 PDF rapor | ✅ | `render_report_pdf`, HTML kaçışlı, `Story` ile sayfalama |
 | F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı; **okunur**: `exports_list` + Çıktılar ekranında defter (tür, hedef yol, zaman, özet, durum) |
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
-| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07) |
+| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07); **plan (hedef + aralık) kasa ayarında (`settings`, kapsam `vault`) saklanır, cihaz kaydındaki eski plan bir kez göç eder** (2026-11-07) |
 | F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
 | Yarım çıktı bırakma / atomik yazım (şartname F14-T11) | ✅ | Beş dışa aktarma ve devir paketi `atomic::write_atomic_verified` ile yazılır (geçici ad → geri okunan özet → `rename`); 2026-11-07 ölçüm + 8/8 mutasyon (aşağıdaki bölüm) |
 
@@ -311,3 +311,86 @@ yok); bayrak **kaldırıldı**, D3 senaryosu düşürüldü, 8/8 yeniden ölçü
 - `std::fs::rename` hedef üzerine yazarken **atomik** yer değiştirir; ağ
   birimlerinde (SMB/NFS) bu garanti dosya sistemine bağlıdır.
 - Gerçek Tauri penceresi, gerçek kaydet diyaloğu ve **görsel QA insan bekliyor**.
+
+## Otomatik yedek planı kasa ayarında — `settings` tablosu ilk kez kullanılır (2026-11-07)
+
+**Ölçülen boşluk:** `settings` (`scope`, `key`, `typed_value`, `version`) şemanın ilk
+sürümünden beri var ve şartname "kasa ayarı ile cihaz/UI ayarı ayrı depolanır" der;
+ama tabloya **tek SQL** yoktu (`git grep`: `INSERT/SELECT/UPDATE/DELETE` sayısı **0**).
+Otomatik yedek planı (hedef klasör + aralık) yalnız WebView `localStorage`'ındaydı:
+aynı kasa başka bir OS profilinde açıldığında plan görünmüyor, uygulama verisi
+silinince yedek **sessizce** kapanıyordu; kasa kendi yedek politikasını taşımıyordu.
+
+**Yazılan:**
+- `crates/storage/src/settings.rs`: `get_setting` / `set_setting` / `delete_setting` /
+  `list_settings` + `SettingRow` (camelCase). Kapalı kapsam kümesi (`vault|device|ui`,
+  tablo CHECK'iyle aynı), anahtar kırpılır ve `1..=64` + yalnız `[a-z0-9._-]`, değer
+  JSON ve `≤ 8 KiB`, `null` reddedilir; aynı anahtar ikinci yazımda `version` artar.
+  Okunan **bozuk JSON hatadır** (`SettingInvalid`, kod `E_DB_SETTING`) — "kayıt yok"
+  denmez; liste bozuk satırı **atlamaz**, `ORDER BY key ASC`.
+- Üç Tauri komutu (`vault_setting_get/set/delete`): kapsam **sabit `vault`** — cihaz/UI
+  ayarı kasanın içine yazılmaz; `api.ts` bağları + `SettingRow` tipi.
+- `lib/backup-config.ts`: plan kasadan okunur; kasa ayarı yoksa cihaz kaydındaki eski
+  plan **bir kez** kasaya taşınır (yazım **geri okunarak** doğrulanır; eski anahtarlar
+  ancak doğrulanmış göçten sonra silinir). Göç yazılamazsa plan kullanılmaya devam eder
+  ama kaynak `legacy` + hata kodu döner. Kasa ayarı **bozuksa** plan yok sayılır ve
+  cihaz kaydıyla **ezilmez**. `save` yazımı geri okunan değerle karşılaştırır
+  (`E_BACKUP_SETTING_VERIFY`); doğrulanmamış yazım önbelleğe işlenmez.
+- `App.tsx` zamanlayıcısı planı kasadan okur (`source: invalid` → yedek **alınmaz**);
+  `Settings.tsx` "Otomatik yedek" kartı planı kasadan okur, seç/kapat yollarını kasaya
+  yazar, göç/okunamama durumlarını ayrı satırda yazar ("seçilmedi" ile "okunamadı"
+  karışmaz). 6 sözlük anahtarı.
+- **Kasa ayarı önbelleği:** doğrulanmış yazımdan sonra cihaz kaydına ayna yazılır ve
+  **yalnız kasa okunamadığında** kullanılır; kaynak yine kasadır.
+
+**Testler:** storage `settings::tests` **+6** → `dim-storage --lib` **431 → 437**;
+`lib/backup-config.test.ts` **15** (yeni dosya); `Settings.test.tsx` **42 → 46** (+4,
+biri yeniden yazıldı); `app-shell.test.tsx` **18 → 20** → yerel **63 dosya / 1272 test**.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-settings-gates.py`).** **15/15
+mutasyon kırmızı**, her biri tek başına, geri yükleme sha256 birebir:
+U1 kasa ayarı yok sayılır (7 test) · U2 bozuk ayar cihaz kaydıyla ezilir (3) ·
+U3 göç yazılmadan eski anahtarlar silinir (2) · U4 yazım doğrulanmaz (1) ·
+U5 önbellek doğrulamadan önce yazılır (1) · U6 seçim kasaya yazılmaz/sahte başarı (2) ·
+U7 "kapat" kasa ayarını silmez (1) · U8 bozuk ayar yedeği durdurmaz (3) ·
+U9 plan hatası gizlenir (1) · R1 kapsam doğrulaması kapalı · R2 anahtar biçimi ·
+R3 sürüm artmaz · R4 bozuk değer "kayıt yok" sayılır · R5 silme "satır vardı" der ·
+R6 liste sırası ters (her R mutasyonu **tam 1** storage testi — cerrahi).
+**Dürüst:** U8'in ilk mutasyonu App'te **import edilmeyen** bir ad kullandı → koşu
+çökmeyle kırmızı oldu (81 passed + exit 1) ve **kanıt sayılmadı**; mutasyon sabit
+hedefe (`"/yedek"`) çevrildi, 3 testin düştüğü yeniden ölçüldü. U1/U2/U3/U6/U8
+cerrahi değil (birden çok test düşürüyor).
+
+**Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1272/1272**
+(63 dosya) · `dim-storage --lib` **437/437** (245,86 s) · storage + masaüstü clippy
+`--all-targets -D warnings` temiz · masaüstü `cargo check --all-targets` temiz ·
+`cargo fmt` iki manifest temiz. **Dürüst:** yerel `vite build` **koşulmadı** — disk tur
+ortasında 4,4 G'ye indi (kural: eşik altında ağır derleme başlatılmaz); paket ölçümü CI'dan.
+
+**CI (ölçüldü):** `be6d8e0` (14 dosya, +1168/−27) → **`42406317633` 10/10 YEŞİL**:
+`dim-storage` **437** hem `macos-15` (193,15 s) hem `ubuntu-latest` (473,02 s) —
+**birebir**; `arayüz` **63 dosya / 1271 test**, paket `index-DSM126Si.js` **632,01 kB** /
+gzip **169,46 kB** (+ `index-CPW4QqlF.css` 7,28 kB); `masaüstü kabuk`
+`40 passed · 5 ignored` + yoksayılan koşu `5 passed` (38,63 s); diğer yedi iş yeşil.
+Yerel 1272 / CI 1271 farkı ağaçtaki **başka ajanın** commit'siz `format.test.ts`
+testidir. **i18n hunk ayrımı:** `git diff` iki hunk'tı; yalnız benim `autoSetting*` /
+`autoSchedule*` hunk'ım `git apply --cached --recount` ile sahneye alındı, başka ajanın
+`cases.parseStatus*` üç anahtarı commit'e **girmedi** (`git show :…i18n.ts | grep -c
+parseStatus` → **0**).
+
+**Dürüst sınırlar.**
+- Plan artık kasada; **"son başarılı yedek" ve "son deneme" hâlâ cihaz kaydında**
+  (`localStorage`), kasa geçmişi `backup_runs`ta. Uygulama verisi silinirse tazelik
+  kaybolur → sonraki açılışta **erken** yedek alınır (veri kaybı yönünde değil).
+- Kasa ayarı yalnız **kasa açıkken** okunur/yazılır; `settings`'in `device`/`ui`
+  kapsamları bugün ürün tarafından **kullanılmıyor** (cihaz/UI ayarları localStorage'da).
+- Kasa ayarı bozuksa otomatik yedek **durur** ve neden yazılır; onarım kullanıcı
+  seçimiyle (klasörü yeniden seç) olur — otomatik onarım yok.
+- Göç **ilk okumada bir kez** koşar; iki pencere aynı anda açılırsa ikisi de yazmayı
+  deneyebilir (sürüm artar, son yazan kazanır) — eşzamanlılık kilidi yok.
+- `vault_setting_*` komutları **komut olarak koşulmadı** (`State<AppState>` altyapısı
+  yok): kablolama `cargo check` + clippy, davranış storage düzeyinde **gerçek SQLite** ile.
+- Değer üst sınırı **8 KiB** ve anahtar biçimi `[a-z0-9._-]`: gelecekte büyük/farklı
+  anahtar gerekirse sözleşme genişletilmeli.
+- jsdom tarayıcı değil → gerçek Tauri penceresi, gerçek klasör seçici ve
+  **görsel QA insan bekliyor**.
