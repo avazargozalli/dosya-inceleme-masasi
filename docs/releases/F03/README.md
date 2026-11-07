@@ -168,7 +168,130 @@ düzeyi; ayrıntı ve kusur listesi: `docs/releases/F04/README.md`).
   "Kasayı aç" ile tazelenir — kullanıcı anahtarı onaylamadan çalışma alanına
   geçmez (kabul edilen akış, kayıtlı).
 
+## Denetim zinciri okunur ve doğrulanır (2026-11-07)
+
+**ÖLÇÜLEN KUSUR (iki parça):** `audit_events` her önemli işlemde yazılıyordu
+(`append_audit`; 40 kategori / 40+ çağrı yeri — kasa açılışı kurtarması, belge
+içe aktarma, iş kuyruğu, dışa aktarma, maskeleme, aktarım onayı/makbuzu, emsal,
+CLI sondaları, GC…), ama:
+
+1. **Okuma yolu hiç yoktu** — `crates/storage` içinde `list_audit_events`
+   bulunmuyordu; Tauri komutu, `api.ts` bağı ve ekran kartı da yoktu
+   (`git grep`: tek tüketici yok). Avukat "bu kasada hangi işlemler yapıldı"
+   sorusunu yanıtlayamıyordu; şartname tablosu bu tabloyu **"yerel değişiklik
+   geçmişi"** olarak tanımlar (`docs/spec/...`, `audit_events` satırı).
+2. **Bütünlük doğrulaması üründe hiç koşmuyordu** — `verify_audit_chain`
+   yalnız **testlerden** çağrılıyordu (8 çağrı yeri: 8'i de test). Hash zinciri
+   kurcalamayı yakalayacak biçimde yazılmıştı ama çalışan uygulamada bu kapı
+   hiç kapanmıyordu; kayıt bozulsa/elle değiştirilse kullanıcı bunu göremezdi.
+
+**Yazılan (çekirdek):** `crates/storage/src/audit.rs` (yeni)
+
+- `list_audit_events(limit, category)` — **en yeni önce** (`sequence DESC`);
+  sınır **çekirdekte** kırpılır (`1..=200`, `0` → `1`, taşan → `200`). Sıra
+  `timestamp`e göre değildir: aynı damgada yazılan kayıtlar bile yazılma sırasını
+  korur. `category` verilirse yalnız o kategori.
+- `AuditEventRow` — `sequence, id, category, entityId, operation, actorLabel,
+  metadata, priorHash, eventHash, timestamp`. `metadata_allowlist` çözülemezse
+  satır **düşmez**, `metadata: null` döner (bozukluk görünür, kayıt kaybolmaz).
+- `audit_chain_status()` — `{ checked, intact, brokenEventId, brokenReason }`.
+  `brokenReason` **kararlı kod**: `prior_hash` (önceki kayda bağ kopuk) ya da
+  `event_hash` (kaydın kendi özeti tutmuyor). `checked` yalnız **doğrulanmış**
+  kayıt sayısıdır (kopukluktan önceki).
+- **Tek yürüyüş:** hash kuralı `audit::walk_chain` içinde; `verify_audit_chain`
+  (eski hata-döndüren sözleşme, mesajları birebir korunur) ve
+  `audit_chain_status` (yeni durum sözleşmesi) aynı yürüyüşü paylaşır — iki
+  kopya zamanla ayrışamaz.
+
+**Yazılan (kabuk + arayüz):** yeni `audit_event_list` / `audit_chain_check`
+komutları (`lib.rs` kaydı), `api.auditEventList` / `api.auditChainCheck` +
+`AuditEventRow`/`AuditChainStatus` tipleri; **Ayarlar → "Denetim zinciri"** kartı:
+
+- Kasa açılınca son **50** kayıt okunur (düğmeyle tazelenir); kilitliyken
+  **okuma yapılmaz**, doğrulama düğmesi kapalıdır ve kart nedenini yazar.
+- Tablo: zaman · kategori · işlem · aktör · kayıt (kimlik kısaltılır, tam değer
+  `title`da) · kayıt özeti (10 karakter + `…`, tam özet `title`da). Kategori ve
+  işlem **çekirdek kodlarıdır**; bilinmeyen değer gizlenmez (40 kategori için
+  uydurma çeviri yok — not satırı bunu söyler).
+- "Zinciri doğrula": tutarlıysa **yeşil** "N kayıt baştan sona doğrulandı";
+  kopuksa **kırmızı** (`role=alert`) "İlk N kayıt tutarlı; sonrasında kopukluk
+  var: `<kayıt>`" + neden (`prior_hash` → "aradan kayıt çıkmış olabilir",
+  `event_hash` → "kayıt değiştirilmiş"; **bilinmeyen neden ham değeriyle**).
+- Düşen okuma **kendi satırında** (kod + mesaj); liste istekten **önce**
+  temizlenir (eski satırlar "güncel" gibi kalmaz); hata hâlinde liste `null` →
+  ekran **"kayıt yok" demez**. Doğrulama sonucu istek anında düşer, geç yanıt
+  yenisini ezmez (`auditSeq`/`auditCheckSeq`).
+- 23 i18n anahtarı (`settings.audit*`); gömülü metin yok
+  (`localization.test.ts` yeşil).
+
+**Testler:** storage `audit::tests` **7** (yeni dosya) → `dim-storage --lib`
+**415 → 422**. Arayüz `Settings.test.tsx` **25 → 33** (+8) → vitest
+**1201 → 1210** (60 dosya; +8'i bu tur, +1'i başka ajanın commit edilmemiş
+`format.test.ts` değişikliği).
+
+**Kapı kanıtı (gerçek koşular, betikler `scratch/audit-{ui,core}-gates.py`):**
+
+- **Düzeltme öncesi** HEAD bileşeni + yeni 8 arayüz testi: **`8 failed | 25 passed`**
+  (sekizi de kırmızı — kart hiç yok).
+- **Arayüz 9/9 kırmızı:** U1 kasa açılınca okuma (1), U2 tazeleme temizliği (1),
+  U3 düşen okuma sessiz (1), U4 tutarsız sonuç "tutarlı" yazar (1), U5 bilinmeyen
+  neden gizlenir (1), U6 doğrulama hatası yutulur (1), U7 önceki "tutarlı" satırı
+  istekte kalır (1), U8 kilitliyken doğrulama açık (1), U9 **çiftli** (hata varken
+  "kayıt yok": iki kapı birlikte kaldırılınca, 1). Geri yükleme sha256 birebir
+  (`8d83a8f8…4dcb`), son koşu **33/33**.
+- **Çekirdek 7/7 kırmızı:** C1 sıra ters, C2 kategori filtresi yok sayılır,
+  C3 bozuk metadata satırı düşürülür, C4 kopukluk "tutarlı" bildirilir, C5 neden
+  sabitlenir, C6 kırılan kayıt "doğrulandı" sayılır, C7 bağ kopukluğu denetlenmez.
+  Geri yükleme sha256 birebir (`27b4d60d…2cd7`), son koşu yeşil.
+- **Dürüst (kendi hatam):** U9'u önce iki kapıdan **birini** kaldırarak ölçtüm —
+  test **yeşil kaldı**: `auditError` görünürken boş-liste satırı zaten
+  `!auditError` kapısıyla, hata hâlinde liste de `null` ile korunuyor; iki kapı
+  birbirinin yedeği. Ölçüm **çiftli** mutasyona çevrildi ve kırmızı alındı; iki
+  kapı da bırakıldı (biri bozuk veri, diğeri görünüm sözleşmesi).
+- **İlk betik hatası (dürüst):** kapı betiği `npx`i daraltılmış `PATH`te arayıp
+  düştü ve bileşen dosyasını HEAD hâlinde bıraktı; dosya yedekten geri yazıldı
+  (sha256 aynı), betiğe `try/finally` + tam `PATH` eklendi. O koşu kanıt sayılmadı.
+
+**Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `dim-storage --lib` **422/422**
+(260,63 s) · clippy `-p dim-storage --all-targets -D warnings` temiz · masaüstü
+clippy temiz · `cargo check --all-targets` temiz · `cargo fmt` iki manifest temiz ·
+masaüstü kabuk kapısı **34 koştu · 0 düştü · 5 yoksayıldı** (kaynak 39) ·
+`tsc --noEmit` temiz · vitest **1210/1210** (60 dosya) · `npm run build`
+**619,48 kB** (`index-B98Cx2XO.js`, gzip **166,26 kB**; CSS 7,35 kB).
+
+**CI (ölçüldü):** kod `84f0b74` (8 dosya, +593/−73) → `42326849144` **KIRMIZI**:
+`arayüz` işi `yerelleştirme kapısı > sözlükte kullanılmayan anahtar kalmaz`
+testinde düştü (`cases.parseStatusSucceeded/Partial/Failed` — **benim hatam**:
+`i18n.ts`i eklerken **başka ajanın** commit edilmemiş 4 anahtarını da sahneye
+aldım; onların tüketicisi `lib/format.ts`/`Cases.tsx` henüz commit edilmemişti).
+Düzeltme `e8a752d` yalnız o **3** anahtarı HEAD'den çıkardı (çalışma ağacındaki
+diğer ajan değişiklikleri korunarak) → **`42327661340` 10/10 YEŞİL**:
+`dim-storage` **422** hem `macos-15` (189,62 s) hem `ubuntu-latest` (268,83 s) —
+birebir; `arayüz` **60 dosya / 1209 test**, paket `index-lHY2P-yg.js`
+**618,83 kB** / gzip **166,00 kB**; `masaüstü kabuk` **34 koştu · 0 düştü ·
+5 yoksayıldı** + yoksayılan koşu **5 passed** (50,41 s). **Dürüst:** yerel paket
+**619,48 kB** çıktı çünkü çalışma ağacımda **başka ajanın** commit edilmemiş
+`format.ts`/`Cases.tsx`/`app.css` değişiklikleri vardı; CI (yalnız commit'lenen
+kod) **618,83 kB**. Yerel/CI test sayısı birebir değil çünkü aynı sebeple yerelde
+**1210** (bir test başka ajanın `format.test.ts`inden), CI'da **1209**.
+
+**Dürüst sınırlar:** (a) iki komut **komut olarak koşulmadı** (`State<AppState>`
+kuran test altyapısı yok) — kablolama `cargo check` + clippy, davranış storage
+düzeyinde **gerçek SQLite** ile; (b) defter **salt-okunur** (arayüzden silinemez/
+düzenlenemez), filtre yalnız kategori (tarih/aktör filtresi yok), sayfalama yok
+(en yeni 200 sınırı); (c) doğrulama **çalışma anında** yapılır — arka planda
+otomatik/kendiliğinden doğrulama yok, kullanıcı düğmeye basar; (d) kopukluk
+**onarılmaz**, yalnız raporlanır (onarım ürün kararı); (e) `sequence` AUTOINCREMENT
+sırasıdır, silinen kayıt boşluğu zincirde **bağ kopukluğu** olarak görünür
+(beklenen davranış — ölçüldü); (f) jsdom tarayıcı değil → gerçek Tauri penceresi
+ve **görsel QA insan bekliyor**; (g) `system_info` komutu hâlâ arayüzden
+kullanılmıyor (ayrı iş); (h) şartname bu tabloyu **"resmî zaman damgası veya
+değiştirilemez delil iddiası taşımayan yerel değişiklik geçmişi"** olarak
+tanımlar — kart bunu **yazar**; hash zinciri yalnız bütünlük bozukluğunu
+gösterir, hukukî delil iddiası üretmez.
+
 ## Hâlâ eksik
 
 - OS düzeyinde kilit (ekran kilidi) algılama.
+- Denetim zinciri: onarım/uzlaştırma akışı, tarih/aktör filtresi, sayfalama.
 
