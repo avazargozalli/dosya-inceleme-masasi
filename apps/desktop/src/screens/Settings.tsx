@@ -10,6 +10,7 @@ import {
   type AuditChainStatus,
   type AuditEventRow,
   type BackupResult,
+  type BackupRunRow,
   type PreUpdateBackup,
   type RollbackResult,
   type VaultStatus,
@@ -37,6 +38,35 @@ import {
 
 /** Denetim listesinde gösterilen kayıt sayısı; üst sınırı çekirdek de kırpar. */
 const AUDIT_LIST_LIMIT = 50;
+
+/** Yedek geçmişinde gösterilen kayıt sayısı; üst sınırı çekirdek de kırpar. */
+const BACKUP_HISTORY_LIMIT = 20;
+
+/**
+ * Yedek durumu **kararlı** etiketlerden yazılır; tanınmayan durum gizlenmez,
+ * ham değeriyle görünür (sessizce "tamamlandı" denmez).
+ */
+function backupRunStatusLabel(status: string): string {
+  switch (status) {
+    case "verified":
+      return t("settings.backupHistoryStatusVerified");
+    case "succeeded":
+      return t("settings.backupHistoryStatusSucceeded");
+    case "failed":
+      return t("settings.backupHistoryStatusFailed");
+    case "running":
+      return t("settings.backupHistoryStatusRunning");
+    default:
+      return status;
+  }
+}
+
+function backupRunStatusTone(status: string): string {
+  if (status === "verified" || status === "succeeded") return "ok";
+  if (status === "failed") return "danger";
+  if (status === "running") return "warn";
+  return "plain";
+}
 
 /** Uzun kimlik listede kısaltılır; tam değer `title`da durur (kaybolmaz). */
 function shortId(value: string): string {
@@ -81,6 +111,13 @@ export function Settings() {
   /** Uçuş nesilleri: geç yanıt yeni isteğin sonucunu ezmez. */
   const auditSeq = useRef(0);
   const auditCheckSeq = useRef(0);
+
+  // Yedek geçmişi (kasa içi `backup_runs`). `historyRows === null` "bilinmiyor"
+  // demektir; boş liste ancak **başarılı** okumadan sonra "kayıt yok" olur.
+  const [historyRows, setHistoryRows] = useState<BackupRunRow[] | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState<ApiError | null>(null);
+  const historySeq = useRef(0);
 
   useEffect(() => {
     void api.status().then(setStatus).catch((e) => setError(toApiError(e)));
@@ -132,6 +169,19 @@ export function Settings() {
     void loadAudit();
   }, [unlocked]);
 
+  // Yedek geçmişi kasa açılınca okunur; kilitlenince liste **ve** hata düşer
+  // (kilitli ekranda son yedekler "güncel" gibi görünmez).
+  useEffect(() => {
+    if (!unlocked) {
+      historySeq.current += 1;
+      setHistoryRows(null);
+      setHistoryBusy(false);
+      setHistoryError(null);
+      return;
+    }
+    void loadHistory();
+  }, [unlocked]);
+
   /**
    * Denetim defteri okuması. Liste **istekten önce** temizlenir: düşen bir
    * tazelemeden sonra eski satırlar "güncel" gibi kalmaz. Hata hâlinde liste
@@ -152,6 +202,29 @@ export function Settings() {
       }
     } finally {
       if (seq === auditSeq.current) setAuditBusy(false);
+    }
+  }
+
+  /**
+   * Yedek geçmişi okuması. Liste **istekten önce** temizlenir: düşen bir
+   * tazelemeden sonra eski satırlar "güncel" gibi kalmaz. Hata hâlinde liste
+   * `null`a döner — ekran "kayıt yok" **demez**, okunamadığını yazar.
+   */
+  async function loadHistory() {
+    const seq = ++historySeq.current;
+    setHistoryBusy(true);
+    setHistoryError(null);
+    setHistoryRows([]);
+    try {
+      const rows = await api.backupRunList(BACKUP_HISTORY_LIMIT);
+      if (seq === historySeq.current) setHistoryRows(rows);
+    } catch (e) {
+      if (seq === historySeq.current) {
+        setHistoryRows(null);
+        setHistoryError(toApiError(e));
+      }
+    } finally {
+      if (seq === historySeq.current) setHistoryBusy(false);
     }
   }
 
@@ -263,6 +336,9 @@ export function Settings() {
     setError(null);
     try {
       setBackup(await api.vaultBackup(picked));
+      // Yedek kasaya yazıldıysa geçmiş listesi **hemen** tazelenir; kayıt
+      // yazılamadıysa sonuç kartı bunu ayrıca uyarır.
+      void loadHistory();
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -653,12 +729,94 @@ export function Settings() {
                 {t("settings.backupArchive")} <code>{backup.archivePath}</code>
               </>
             ) : null}
+            {backup.historyRecorded ? null : (
+              <p className="notice danger" role="alert" style={{ marginTop: 8 }}>
+                {t("settings.backupHistoryNotRecorded", {
+                  code: backup.historyError ?? t("common.unknown"),
+                })}
+              </p>
+            )}
           </div>
         ) : (
           <p className="hint" style={{ margin: 0 }}>
             {status?.unlocked ? t("settings.backupNone") : t("settings.backupLocked")}
           </p>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("settings.backupHistoryTitle")}</h2>
+            <p className="card-sub">{t("settings.backupHistorySub")}</p>
+          </div>
+          <button
+            className="btn ghost"
+            disabled={!unlocked || historyBusy}
+            onClick={() => void loadHistory()}
+          >
+            {historyBusy ? t("settings.backupHistoryLoading") : t("settings.backupHistoryRefresh")}
+          </button>
+        </div>
+        {!unlocked ? (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.backupHistoryLocked")}</p>
+        ) : null}
+        {unlocked && historyError ? (
+          <div className="notice danger" role="alert">
+            <strong>{historyError.code}</strong> — {historyError.message}
+          </div>
+        ) : null}
+        {unlocked && !historyError && historyRows === null ? (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.backupHistoryLoading")}</p>
+        ) : null}
+        {unlocked && historyRows !== null && historyRows.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {historyBusy ? t("settings.backupHistoryLoading") : t("settings.backupHistoryEmpty")}
+          </p>
+        ) : null}
+        {unlocked && historyRows !== null && historyRows.length > 0 ? (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("settings.backupHistoryColTime")}</th>
+                <th>{t("settings.backupHistoryColTarget")}</th>
+                <th>{t("settings.backupHistoryColManifest")}</th>
+                <th>{t("settings.backupHistoryColStatus")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historyRows.map((row) => (
+                <tr key={row.id}>
+                  <td>{formatDateTime(row.createdAt)}</td>
+                  <td>
+                    <code style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                      {row.destinationLabel}
+                    </code>
+                    <div className="hint" style={{ margin: 0 }}>{row.snapshotId}</div>
+                  </td>
+                  <td>
+                    <code title={row.manifestHash}>{`${row.manifestHash.slice(0, 10)}…`}</code>
+                  </td>
+                  <td>
+                    <span className={`badge ${backupRunStatusTone(row.status)}`}>
+                      {backupRunStatusLabel(row.status)}
+                    </span>
+                    {row.verificationResult ? (
+                      <div className="hint" style={{ margin: 0 }}>
+                        <code>{row.verificationResult}</code>
+                      </div>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+        {unlocked ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {t("settings.backupHistoryLimitNote", { count: BACKUP_HISTORY_LIMIT })}
+          </p>
+        ) : null}
       </div>
 
       <div className="card">

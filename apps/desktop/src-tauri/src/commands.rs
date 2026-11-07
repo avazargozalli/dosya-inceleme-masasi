@@ -20,24 +20,24 @@ use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_providers::{AiRequest, ApiProvider, ContextSegment, Provider};
 use dim_storage::{
-    AiCandidateRow, AiContextItemRow, AiRunRow, AnchorLocation, AnchorRow, CandidateReport, Case,
-    CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult, ChecklistTemplateRow,
-    CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow, ConsentPreview,
-    ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport, Database, DatabaseKey,
-    Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow, EventSourceRow,
-    EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck, InTextQuoteInput,
-    JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiContextItem, NewAiRun, NewAnchor, NewCase,
-    NewCitationCheck, NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage,
-    NewPrecedent, NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark,
-    NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit,
-    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, PrecedentBibliography,
-    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
-    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
-    SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow,
+    AiCandidateRow, AiContextItemRow, AiRunRow, AnchorLocation, AnchorRow, BackupRunRow,
+    CandidateReport, Case, CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult,
+    ChecklistTemplateRow, CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow,
+    ConsentPreview, ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport,
+    Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow,
+    EventSourceRow, EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck,
+    InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiContextItem, NewAiRun,
+    NewAnchor, NewBackupRun, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
+    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
+    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
+    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
+    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
+    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
+    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow,
+    TransferConsentListRow, TransferConsentRow, TransferReceiptRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -2945,6 +2945,11 @@ pub struct BackupView {
     pub manifest_hash: String,
     /// Tek dosyalık `.dimbak` arşivi (içerik zaten şifreli).
     pub archive_path: Option<String>,
+    /// Yedek kasa içi geçmişe yazıldı mı? Yazılamazsa yedek **yine de**
+    /// geçerlidir; arayüz bunu ayrı uyarı olarak yazar (sessiz yutma yok).
+    pub history_recorded: bool,
+    /// Geçmiş yazımı düştüyse kararlı hata kodu; yedek geçerli kalır.
+    pub history_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -3034,13 +3039,51 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         "local-user",
         &serde_json::json!({"files": file_count}),
     );
+
+    // Yedek gerçekten alındı ve doğrulandı (staging açılıp `integrity_check`
+    // koştu). Şimdi kasa **kendi geçmişine** yazar: "ne zaman, nereye, hangi
+    // manifestle, doğrulandı mı" sorusu manifest dosyasına mahkûm kalmasın.
+    // Kayıt düşerse yedek geçersiz olmaz — dosyalar hedefte duruyor; komut
+    // bunu `historyRecorded=false` + kod ile **açıkça** bildirir.
+    let snapshot_id = backup_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "DimYedek".to_string());
+    let (history_recorded, history_error) = match db.record_backup_run(&NewBackupRun {
+        snapshot_id: &snapshot_id,
+        schema_version: i64::from(db.schema_version()),
+        manifest_hash: &manifest_hash,
+        status: "verified",
+        verification_result: Some("integrity_check"),
+        destination_label: dest_dir.trim(),
+    }) {
+        Ok(_) => (true, None),
+        Err(err) => (false, Some(ApiError::from(err).code)),
+    };
     Ok(BackupView {
         path: backup_dir.to_string_lossy().to_string(),
         file_count,
         total_bytes,
         manifest_hash,
         archive_path: Some(archive.to_string_lossy().to_string()),
+        history_recorded,
+        history_error,
     })
+}
+
+/// Kasa yedeği geçmişi — **en yeni önce**, kasa kilitliyken okunmaz.
+/// `limit` 1..=[`dim_storage::MAX_BACKUP_RUN_LIST`] aralığına kırpılır.
+#[tauri::command]
+pub fn backup_run_list(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<BackupRunRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let limit = usize::try_from(limit.unwrap_or(20))
+        .unwrap_or(20)
+        .clamp(1, dim_storage::MAX_BACKUP_RUN_LIST);
+    Ok(db.list_backup_runs(limit)?)
 }
 
 /// Hazırlık dizinine yedeği yazar, manifesti üretir ve yedeğin açıldığını

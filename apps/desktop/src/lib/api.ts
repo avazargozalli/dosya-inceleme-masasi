@@ -1282,6 +1282,28 @@ export type BackupResult = {
   totalBytes: number;
   manifestHash: string;
   archivePath: string | null;
+  /**
+   * Yedek kasa içi geçmişe yazıldı mı? `false` ise yedek **yine de**
+   * geçerlidir; `historyError` nedenini taşır (sessiz yutma yok).
+   */
+  historyRecorded: boolean;
+  historyError: string | null;
+};
+
+/** Kasa yedeği geçmişi satırı (`backup_runs`). */
+export type BackupRunRow = {
+  id: string;
+  /** Yedek klasörünün adı, ör. `DimYedek-20261107-1830`. */
+  snapshotId: string;
+  schemaVersion: number;
+  /** `manifest.json` baytlarının sha256'sı. */
+  manifestHash: string;
+  status: string;
+  verificationResult: string | null;
+  /** Kullanıcının seçtiği hedef klasör. */
+  destinationLabel: string;
+  createdAt: string;
+  completedAt: string | null;
 };
 
 export type RestoreResult = {
@@ -1822,6 +1844,7 @@ export const api = {
     invoke<VaultInfo>("vault_open_with_recovery", { path, recoveryKey }),
   lockVault: () => invoke<void>("vault_lock"),
   vaultBackup: (destDir: string) => invoke<BackupResult>("vault_backup", { destDir }),
+  backupRunList: (limit = 20) => invoke<BackupRunRow[]>("backup_run_list", { limit }),
   vaultGc: (dryRun: boolean) => invoke<VaultGcResult>("vault_gc", { dryRun }),
   vaultChangePassword: (oldPassword: string, newPassword: string) =>
     invoke<void>("vault_change_password", { oldPassword, newPassword }),

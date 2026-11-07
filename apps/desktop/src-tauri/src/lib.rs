@@ -111,6 +111,7 @@ pub fn run() {
             commands::checklist_items,
             commands::checklist_item_state,
             commands::vault_backup,
+            commands::backup_run_list,
             commands::provider_probe,
             commands::provider_probe_run,
             commands::provider_probe_cancel,

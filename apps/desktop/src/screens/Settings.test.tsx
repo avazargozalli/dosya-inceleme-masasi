@@ -87,6 +87,7 @@ import type {
   AuditChainStatus,
   AuditEventRow,
   BackupResult,
+  BackupRunRow,
   JobQueueView,
   PreUpdateBackup,
   RestoreResult,
@@ -102,6 +103,7 @@ const mocks = vi.hoisted(() => ({
   vaultPreUpdateBackups: vi.fn(),
   vaultRollbackPreUpdate: vi.fn(),
   vaultBackup: vi.fn(),
+  backupRunList: vi.fn(),
   vaultGc: vi.fn(),
   vaultRestore: vi.fn(),
   vaultChangePassword: vi.fn(),
@@ -198,6 +200,21 @@ const BACKUP_RESULT: BackupResult = {
   totalBytes: 3_500_000,
   manifestHash: "0123456789abcdef0123",
   archivePath: null,
+  historyRecorded: true,
+  historyError: null,
+};
+
+/** Yedek geçmişi satırları: biri doğrulanmış, biri tanınmayan durum taşır. */
+const HISTORY_VERIFIED: BackupRunRow = {
+  id: "run-1",
+  snapshotId: "DimYedek-20261107-1830",
+  schemaVersion: 24,
+  manifestHash: "abcdef0123456789abcdef",
+  status: "verified",
+  verificationResult: "integrity_check",
+  destinationLabel: "/Volumes/Yedek",
+  createdAt: ISO,
+  completedAt: ISO,
 };
 
 const RESTORE_RESULT: RestoreResult = {
@@ -236,6 +253,10 @@ type SetupOptions = {
   budgets?: WorkerBudgetProfile[];
   audit?: AuditEventRow[];
   auditChain?: AuditChainStatus;
+  /** Yedek geçmişi (varsayılan: boş ama **başarılı** okuma). */
+  history?: BackupRunRow[];
+  /** İlk geçmiş okuması düşsün (senaryo: "kayıt yok" denmemeli). */
+  historyError?: { code: string; message: string; retryable: boolean };
   /** Teşhis kartının çekirdekten okuyacağı künye (varsayılan: paket sürümüyle aynı). */
   core?: SystemInfo;
 };
@@ -260,6 +281,12 @@ function setup(options: SetupOptions = {}) {
   mocks.systemInfo.mockResolvedValue(
     options.core ?? { appVersion, protocolVersion: 1, platform: "macos" },
   );
+  // Yedek geçmişi: varsayılan boş ve **başarılı** (ekran "kayıt yok" diyebilir).
+  if (options.historyError) {
+    mocks.backupRunList.mockRejectedValue(options.historyError);
+  } else {
+    mocks.backupRunList.mockResolvedValue(options.history ?? []);
+  }
   dialog.open.mockResolvedValue(null);
   render(<Settings />);
 }
@@ -1297,6 +1324,8 @@ describe("denetim zinciri kartı", () => {
     });
     // Teşhis kartı kendi okumasını yapar; bu senaryo denetim defterini ölçüyor.
     mocks.systemInfo.mockResolvedValue({ appVersion, protocolVersion: 1, platform: "macos" });
+    // Yedek geçmişi bu senaryonun konusu değil; boş ama **başarılı** okuma.
+    mocks.backupRunList.mockResolvedValue([]);
     dialog.open.mockResolvedValue(null);
     render(<Settings />);
 
@@ -1357,5 +1386,124 @@ describe("teşhis kartı ekrana bağlı", () => {
     // Ayrışma gizlenmez.
     expect(within(card).getByRole("alert").textContent).toBe(t("settings.diagnosticsDrift"));
     expect(mocks.systemInfo).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Yedek geçmişi kartı (2026-11-07 turu).
+ *
+ * Ölçülen kusur: `vault_backup` yedeği diske yazıp doğruluyordu ama kasa
+ * `backup_runs` tablosuna **hiç yazmıyordu**; "ne zaman, nereye, hangi
+ * manifestle, doğrulandı mı" yalnız hedef klasördeki manifest dosyasındaydı
+ * ve uygulamadan okunamıyordu. Kart, okuma yolunu kilitli/açık, düşen okuma,
+ * tazeleme ve geç yanıt kapılarıyla ölçer.
+ */
+describe("yedek geçmişi kartı", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("kasa kilitliyken geçmiş okunmaz; kart kilitli yazar", async () => {
+    setup({ status: LOCKED });
+    expect(await screen.findByText(t("settings.vaultLockedBadge"))).toBeTruthy();
+    const card = cardOf(t("settings.backupHistoryTitle"));
+    expect(mocks.backupRunList).not.toHaveBeenCalled();
+    expect(card.textContent).toContain(t("settings.backupHistoryLocked"));
+    expect(card.textContent).not.toContain(t("settings.backupHistoryEmpty"));
+  });
+
+  it("açık kasada satırlar hedef, snapshot, manifest ve durumla yazılır; tanınmayan durum gizlenmez", async () => {
+    setup({
+      history: [
+        HISTORY_VERIFIED,
+        { ...HISTORY_VERIFIED, id: "run-2", snapshotId: "DimYedek-bilinmeyen", status: "weird" },
+      ],
+    });
+    const card = cardOf(t("settings.backupHistoryTitle"));
+    expect(await within(card).findByText(HISTORY_VERIFIED.snapshotId)).toBeTruthy();
+    const text = card.textContent ?? "";
+    expect(text).toContain(HISTORY_VERIFIED.destinationLabel);
+    expect(text).toContain(`${HISTORY_VERIFIED.manifestHash.slice(0, 10)}…`);
+    expect(text).toContain(t("settings.backupHistoryStatusVerified"));
+    expect(text).toContain("integrity_check");
+    // Tanınmayan durum "doğrulandı" diye yuvarlanmaz: ham değeri görünür.
+    expect(text).toContain("weird");
+    expect(text).toContain(t("settings.backupHistoryLimitNote", { count: 20 }));
+    expect(mocks.backupRunList).toHaveBeenCalledWith(20);
+  });
+
+  it("geçmiş okuması düşerse 'kayıt yok' denmez; hata kodu yazılır", async () => {
+    setup({ historyError: { code: "E_VAULT_IO", message: "okunamadı", retryable: false } });
+    const card = cardOf(t("settings.backupHistoryTitle"));
+    const alert = await within(card).findByRole("alert");
+    expect(alert.textContent).toContain("E_VAULT_IO");
+    expect(card.textContent).not.toContain(t("settings.backupHistoryEmpty"));
+  });
+
+  it("yedek başarısı geçmişi tazeler; kayıt yazılamadıysa sonuç kartı uyarır", async () => {
+    setup({ history: [HISTORY_VERIFIED] });
+    expect(await screen.findByText(HISTORY_VERIFIED.snapshotId)).toBeTruthy();
+    const before = mocks.backupRunList.mock.calls.length;
+
+    dialog.open.mockResolvedValue("/Volumes/Yedek");
+    mocks.vaultBackup.mockResolvedValue({
+      ...BACKUP_RESULT,
+      historyRecorded: false,
+      historyError: "E_VAULT_IO",
+    });
+    fireEvent.click(
+      within(cardOf(t("settings.backupTitle"))).getByRole("button", {
+        name: t("settings.backupPick"),
+      }),
+    );
+
+    await waitFor(() => expect(mocks.vaultBackup).toHaveBeenCalledWith("/Volumes/Yedek"));
+    await waitFor(() =>
+      expect(mocks.backupRunList.mock.calls.length).toBeGreaterThan(before),
+    );
+    const warning = await within(cardOf(t("settings.backupTitle"))).findByRole("alert");
+    expect(warning.textContent).toContain("E_VAULT_IO");
+    expect(warning.textContent).toContain(
+      t("settings.backupHistoryNotRecorded", { code: "E_VAULT_IO" }),
+    );
+  });
+
+  it("geç gelen geçmiş yanıtı yeni tazelemenin listesini ezmez", async () => {
+    setup();
+    const card = cardOf(t("settings.backupHistoryTitle"));
+    expect(await within(card).findByText(t("settings.backupHistoryEmpty"))).toBeTruthy();
+
+    // 1) Elle tazeleme askıda.
+    const first = deferred<BackupRunRow[]>();
+    mocks.backupRunList.mockReturnValueOnce(first.promise);
+    fireEvent.click(
+      within(card).getByRole("button", { name: t("settings.backupHistoryRefresh") }),
+    );
+    await waitFor(() => expect(mocks.backupRunList).toHaveBeenCalledTimes(2));
+
+    // 2) Yedek başarısı ikinci okumayı başlatır; önce o yazılır.
+    const second = deferred<BackupRunRow[]>();
+    mocks.backupRunList.mockReturnValueOnce(second.promise);
+    dialog.open.mockResolvedValue("/Volumes/Yedek");
+    mocks.vaultBackup.mockResolvedValue(BACKUP_RESULT);
+    fireEvent.click(
+      within(cardOf(t("settings.backupTitle"))).getByRole("button", {
+        name: t("settings.backupPick"),
+      }),
+    );
+    await waitFor(() => expect(mocks.backupRunList).toHaveBeenCalledTimes(3));
+
+    second.resolve([HISTORY_VERIFIED]);
+    expect(await within(card).findByText(HISTORY_VERIFIED.snapshotId)).toBeTruthy();
+
+    // 3) Birinci istek geç döner: yeni listeyi ezmemeli.
+    first.resolve([{ ...HISTORY_VERIFIED, id: "eski", snapshotId: "ESKI-YEDEK" }]);
+    await waitFor(() => expect(within(card).queryByText("ESKI-YEDEK")).toBeNull());
+    expect(within(card).getByText(HISTORY_VERIFIED.snapshotId)).toBeTruthy();
   });
 });
