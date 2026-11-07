@@ -111,8 +111,10 @@ const MIGRATED = [
   "lib/reviewTarget.ts",
   "components/DualReader.tsx",
   "components/PageMap.tsx",
+  "components/DiagnosticsCard.tsx",
   "lib/reader.ts",
   "lib/inventory.ts",
+  "lib/diagnostics.ts",
   "lib/api.ts",
 ];
 

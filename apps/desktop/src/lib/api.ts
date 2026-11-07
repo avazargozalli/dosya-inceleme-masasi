@@ -25,6 +25,17 @@ export type VaultStatus = {
   preUpdateBackup: string | null;
 };
 
+/**
+ * Teşhis (REQ-033): **çalışan ikilinin** sürümü, IPC protokol sürümü ve platform.
+ * Hassas veri taşımaz — dosya yolu, kasa kimliği veya kullanıcı bilgisi yoktur.
+ * Kasa kilitliyken de okunur (kasa durumu gerektirmez).
+ */
+export type SystemInfo = {
+  appVersion: string;
+  protocolVersion: number;
+  platform: string;
+};
+
 /** Kasanın yanında bulunan güncelleme öncesi yedek (F16-T03). */
 export type PreUpdateBackup = {
   fileName: string;
@@ -2300,4 +2311,10 @@ export const api = {
     }),
   /** Denetim zinciri bütünlüğü: kurcalama çalışan üründe ölçülür. */
   auditChainCheck: () => invoke<AuditChainStatus>("audit_chain_check"),
+  /**
+   * Teşhis: sürüm **çekirdekten** (`env!("CARGO_PKG_VERSION")`), protokol ve
+   * platform. Arayüz paketinin sürümü ayrı satırda durur; ikisi ayrışırsa
+   * teşhis kartı uyarır.
+   */
+  systemInfo: () => invoke<SystemInfo>("system_info"),
 };

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
+import { DiagnosticsCard } from "../components/DiagnosticsCard";
 import { JobQueueCard } from "../components/JobQueueCard";
 import { WorkerBudgetCard } from "../components/WorkerBudgetCard";
 import {
@@ -871,12 +872,7 @@ export function Settings() {
 
       <WorkerBudgetCard unlocked={unlocked} />
 
-      <div className="card tight">
-        <h2>{t("settings.diagnosticsTitle")}</h2>
-        <p className="muted small" style={{ margin: 0 }}>
-          {t("settings.diagnosticsBody")}
-        </p>
-      </div>
+      <DiagnosticsCard uiVersion={appVersion} />
     </div>
   );
 }

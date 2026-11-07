@@ -89,6 +89,7 @@ import type {
   PreUpdateBackup,
   RestoreResult,
   RollbackResult,
+  SystemInfo,
   VaultGcResult,
   VaultStatus,
   WorkerBudgetProfile,
@@ -106,6 +107,7 @@ const mocks = vi.hoisted(() => ({
   workerBudgets: vi.fn(),
   auditEventList: vi.fn(),
   auditChainCheck: vi.fn(),
+  systemInfo: vi.fn(),
 }));
 
 const dialog = vi.hoisted(() => ({ open: vi.fn() }));
@@ -232,6 +234,8 @@ type SetupOptions = {
   budgets?: WorkerBudgetProfile[];
   audit?: AuditEventRow[];
   auditChain?: AuditChainStatus;
+  /** Teşhis kartının çekirdekten okuyacağı künye (varsayılan: paket sürümüyle aynı). */
+  core?: SystemInfo;
 };
 
 function setup(options: SetupOptions = {}) {
@@ -249,6 +253,10 @@ function setup(options: SetupOptions = {}) {
       brokenEventId: null,
       brokenReason: null,
     },
+  );
+  // Teşhis: varsayılan **aynı** sürüm (uyarı yok); senaryolar `core` ile ezer.
+  mocks.systemInfo.mockResolvedValue(
+    options.core ?? { appVersion, protocolVersion: 1, platform: "macos" },
   );
   dialog.open.mockResolvedValue(null);
   render(<Settings />);
@@ -1237,6 +1245,8 @@ describe("denetim zinciri kartı", () => {
       message: "denetim defteri okunamadı",
       retryable: false,
     });
+    // Teşhis kartı kendi okumasını yapar; bu senaryo denetim defterini ölçüyor.
+    mocks.systemInfo.mockResolvedValue({ appVersion, protocolVersion: 1, platform: "macos" });
     dialog.open.mockResolvedValue(null);
     render(<Settings />);
 
@@ -1264,5 +1274,38 @@ describe("denetim zinciri kartı", () => {
 
     pending.resolve([]);
     expect(await within(auditCard()).findByText(t("settings.auditEmpty"))).toBeTruthy();
+  });
+});
+
+/**
+ * Ekran düzeyinde bağlantı (2026-11-07 turu): teşhis kartı **çekirdekten** mi
+ * okuyor?
+ *
+ * `components/DiagnosticsCard.test.tsx` kartın kendi davranışını ölçer; burada
+ * ölçülen şey kartın Ayarlar ekranına gerçekten **bağlı** olduğu ve gösterdiği
+ * sürümün paket sürümünden ayrılabildiğidir. Ölçülen kusur: ekranın tek sürüm
+ * satırı `package.json`dan geliyordu (`system_info` hiç çağrılmıyordu) — çalışan
+ * ikili ayrı sürümdeyse ekran bunu söyleyemiyordu.
+ */
+describe("teşhis kartı ekrana bağlı", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("sürüm çekirdekten okunur; paket sürümü ayrı satırda durur ve ayrışma uyarır", async () => {
+    setup({ core: { appVersion: "0.9.9-core", protocolVersion: 1, platform: "macos" } });
+
+    const card = cardOf(t("settings.diagnosticsTitle"));
+    expect(await within(card).findByText("0.9.9-core")).toBeTruthy();
+    // Arayüz sürümü de yazılı: iki değer karşılaştırılabilir.
+    expect(card.textContent).toContain(appVersion);
+    // Ayrışma gizlenmez.
+    expect(within(card).getByRole("alert").textContent).toBe(t("settings.diagnosticsDrift"));
+    expect(mocks.systemInfo).toHaveBeenCalledTimes(1);
   });
 });

@@ -1177,6 +1177,22 @@ export const tr = {
     diagnosticsTitle: "Teşhis",
     diagnosticsBody:
       "Uygulama belge içeriğini günlüğe yazmaz; yalnız hata kodları ve sürüm bilgisi tutulur. Destek için hata kodu yeterlidir.",
+    diagnosticsCoreVersion: "Çekirdek sürümü",
+    diagnosticsUiVersion: "Arayüz sürümü",
+    diagnosticsProtocol: "Protokol sürümü",
+    diagnosticsPlatform: "Platform",
+    diagnosticsRefresh: "Yenile",
+    diagnosticsLoading: "Okunuyor…",
+    diagnosticsNotRead: "okunamadı",
+    diagnosticsUnreadable: "Sürüm bilgisi çekirdekten okunamadı",
+    diagnosticsBadPayload:
+      "Çekirdekten gelen künye beklenen biçimde değil; sürüm bilgisi yazılmadı.",
+    diagnosticsDrift:
+      "Arayüz paketi ile çalışan çekirdek aynı sürümde değil; bu kurulum karışmış olabilir.",
+    diagnosticsProtocolMismatch:
+      "Arayüz protokol {ui} bekliyor, çekirdek {core} bildiriyor; bu kurulum uyumsuz olabilir.",
+    diagnosticsPrivacy:
+      "Bu kart yalnız sürüm, protokol ve platform gösterir; dosya yolu, kasa kimliği veya kullanıcı bilgisi taşımaz.",
     auditTitle: "Denetim zinciri",
     auditSub:
       "Kasadaki değişikliklerin yerel kaydı; her kayıt öncekinin özetine bağlıdır, bağ kopukluğu kaydın bütünlüğünün bozulduğunu gösterir. Resmî zaman damgası veya delil iddiası taşımaz.",
