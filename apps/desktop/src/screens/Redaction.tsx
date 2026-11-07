@@ -7,10 +7,47 @@ import {
   type CaseRow,
   type DocumentRow,
   type ParseProgressEvent,
+  type RedactionPlanRow,
+  type RedactionRegionRow,
   type RedactionResult,
 } from "../lib/api";
+import { formatDateTime } from "../lib/format";
 import { t } from "../lib/i18n";
 import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
+
+/**
+ * Plan durumu. Tanınmayan bir durum **gizlenmez** — ham değeriyle yazılır
+ * (uydurulmuş Türkçe etiket yok).
+ */
+function planState(status: string): { label: string; tone: "ok" | "danger" | "warn" | "plain" } {
+  switch (status) {
+    case "draft":
+      return { label: t("redaction.planStateDraft"), tone: "plain" };
+    case "reviewing":
+      return { label: t("redaction.planStateReviewing"), tone: "warn" };
+    case "approved":
+      return { label: t("redaction.planStateApproved"), tone: "ok" };
+    case "applied":
+      return { label: t("redaction.planStateApplied"), tone: "ok" };
+    case "failed":
+      return { label: t("redaction.planStateFailed"), tone: "danger" };
+    default:
+      return { label: t("redaction.planStateUnknown", { state: status }), tone: "warn" };
+  }
+}
+
+/**
+ * Bölgeleri **sayfaya göre** sayar. Sıra sayfa numarasıdır — kayıt sırası
+ * değil: avukat "hangi sayfada kaç bölge" sorusunu okur. Sayı ekranda
+ * hesaplanır, çekirdekten gelen satırlardan türetilir (uydurma yok).
+ */
+function pageBreakdown(rows: RedactionRegionRow[]): Array<{ page: number; count: number }> {
+  const counts = new Map<number, number>();
+  for (const row of rows) counts.set(row.pageIndex, (counts.get(row.pageIndex) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([page, count]) => ({ page, count }));
+}
 
 export function Redaction() {
   const [cases, setCases] = useState<CaseRow[]>([]);
@@ -42,6 +79,23 @@ export function Redaction() {
   // Dosya/sürüm değişimi uçuştaki yanıtları geçersiz kılar (INV-05).
   const genRef = useRef(0);
   const pageSeq = useRef(0);
+  // Maskeleme sicili **çekirdekten** okunur: plan ve bölgeler her maskelemede
+  // kasaya yazılıyordu ama okuma yolu yoktu — avukat "hangi belgede hangi
+  // sayfalarda kaç bölge maskelendi" sorusunu yanıtlayamıyordu.
+  const [plans, setPlans] = useState<RedactionPlanRow[]>([]);
+  const [plansBusy, setPlansBusy] = useState(false);
+  // Okuma hatası **kendi satırında** yazılır: düşen okumadan sonra "kayıt yok"
+  // demek, olmayan bir olguyu bildirmek olurdu.
+  const [plansError, setPlansError] = useState<ApiError | null>(null);
+  const [openPlanId, setOpenPlanId] = useState<string | null>(null);
+  const [planRegions, setPlanRegions] = useState<RedactionRegionRow[]>([]);
+  const [planRegionsBusy, setPlanRegionsBusy] = useState(false);
+  const [planRegionsError, setPlanRegionsError] = useState<ApiError | null>(null);
+  // İki ayrı kuşak: plan listesi (dosya + tazeleme) ve bölge detayı (plan
+  // seçimi). Tek sayaç olsaydı ilgisiz bir bölge okuması liste tazelemesinin
+  // yanıtını düşürürdü.
+  const plansSeq = useRef(0);
+  const regionsSeq = useRef(0);
 
   // Hedef (dosya/belge) değişimi tek yerden geçer: uçuştaki yanıtlar
   // geçersizleşir, sayfa kilidi **devredilir** (yeni hedef kendi sayfasını
@@ -103,6 +157,63 @@ export function Redaction() {
     })();
   }, []);
 
+  const loadPlans = useCallback(async (id: string) => {
+    if (!id) {
+      // Dosya seçimi kalktıysa askıdaki okuma da geçersizdir.
+      plansSeq.current += 1;
+      return;
+    }
+    const seq = ++plansSeq.current;
+    setPlansBusy(true);
+    try {
+      const rows = await api.redactionPlanList(id);
+      if (seq !== plansSeq.current) return;
+      setPlans(rows);
+      setPlansError(null);
+    } catch (e) {
+      if (seq !== plansSeq.current) return;
+      // Sessiz yutma yok: okunamayan sicil "kayıt yok" diye gösterilmez.
+      setPlansError(toApiError(e));
+    } finally {
+      if (seq === plansSeq.current) setPlansBusy(false);
+    }
+  }, []);
+
+  async function loadRegions(planId: string): Promise<void> {
+    const seq = ++regionsSeq.current;
+    setPlanRegionsBusy(true);
+    setPlanRegionsError(null);
+    try {
+      const rows = await api.redactionPlanRegions(planId);
+      if (seq !== regionsSeq.current) return;
+      setPlanRegions(rows);
+    } catch (e) {
+      if (seq !== regionsSeq.current) return;
+      // Düşen okumada eski planın bölgeleri yeni planınki gibi gösterilmez.
+      setPlanRegions([]);
+      setPlanRegionsError(toApiError(e));
+    } finally {
+      if (seq === regionsSeq.current) setPlanRegionsBusy(false);
+    }
+  }
+
+  // Bölge detayı **aç/kapa**: aynı plana ikinci tıklama kapatır ve uçuştaki
+  // okumayı düşürür; başka plana geçiş önceki satırları hemen temizler.
+  function togglePlan(planId: string) {
+    regionsSeq.current += 1;
+    if (openPlanId === planId) {
+      setOpenPlanId(null);
+      setPlanRegions([]);
+      setPlanRegionsError(null);
+      setPlanRegionsBusy(false);
+      return;
+    }
+    setOpenPlanId(planId);
+    setPlanRegions([]);
+    setPlanRegionsError(null);
+    void loadRegions(planId);
+  }
+
   useEffect(() => {
     if (!caseId) return;
     // INV-05: yeni dosyanın isteği askıdayken **önceki dosyanın** belgeleri,
@@ -112,6 +223,16 @@ export function Redaction() {
     const gen = genRef.current;
     setDocs([]);
     setVersionId("");
+    // Maskeleme sicili de dosyaya kapsanır: önceki dosyanın planları ve açık
+    // bölge detayı **istekten önce** temizlenir (geç yanıt yeni dosyaya yazılmaz).
+    setPlans([]);
+    setPlansError(null);
+    setOpenPlanId(null);
+    setPlanRegions([]);
+    setPlanRegionsError(null);
+    setPlanRegionsBusy(false);
+    regionsSeq.current += 1;
+    void loadPlans(caseId);
     void api
       .documentList(caseId)
       .then((list) => {
@@ -125,7 +246,7 @@ export function Redaction() {
         setVersionId("");
         setError(toApiError(e));
       });
-  }, [caseId, resetTargetState]);
+  }, [caseId, loadPlans, resetTargetState]);
 
   async function loadPage() {
     if (!versionId) return;
@@ -170,6 +291,9 @@ export function Redaction() {
       const result = await api.documentRedactRegions(version, regions, runId);
       if (gen !== genRef.current) return;
       setResult(result);
+      // Sicil **gönderimden hemen sonra** tazelenir: yeni plan satırı ekranda
+      // (satır `result.plan.id` ile işaretlenir); avukat sormak zorunda kalmaz.
+      void loadPlans(caseId);
       // Yalnız **gönderilen** bölgeler düşer: maskeleme sürerken çizilen yeni
       // bölge sessizce silinmez (gönderim yükü tıklama anındaki listedir).
       setRegions((prev) => prev.filter((region) => !submitted.includes(region)));
@@ -242,6 +366,8 @@ export function Redaction() {
       const result = await api.documentRedact(version, list, runId);
       if (gen !== genRef.current) return;
       setResult(result);
+      // Yeni plan satırı sicilde **hemen** görünür (gönderim sonrası tazeleme).
+      void loadPlans(caseId);
     } catch (e) {
       if (gen !== genRef.current) return;
       setError(toApiError(e));
@@ -513,6 +639,169 @@ export function Redaction() {
           </p>
         </div>
       ) : null}
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("redaction.plansTitle")}</h2>
+            <p className="card-sub">{t("redaction.plansSub")}</p>
+          </div>
+          <button
+            className="btn ghost"
+            disabled={!caseId || plansBusy}
+            onClick={() => {
+              if (caseId) void loadPlans(caseId);
+            }}
+          >
+            {t("redaction.plansRefresh")}
+          </button>
+        </div>
+        {plansError ? (
+          // Okunamayan sicil "kayıt yok" diye gösterilmez: avukat maskelemenin
+          // izlenmediğini sanardı. Hata kendi satırında yazılır.
+          <div className="notice danger" role="alert">
+            {t("redaction.plansUnreadable", {
+              code: plansError.code,
+              message: plansError.message,
+            })}
+          </div>
+        ) : plans.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {plansBusy ? t("redaction.plansLoading") : t("redaction.plansEmpty")}
+          </p>
+        ) : (
+          <>
+            <p className="hint" style={{ margin: "0 0 6px" }}>
+              {t("redaction.plansCount", { count: plans.length })}
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {plans.map((plan) => {
+                const state = planState(plan.state);
+                const open = openPlanId === plan.id;
+                const pages = open ? pageBreakdown(planRegions) : [];
+                const unreadable = open
+                  ? planRegions.filter((row) => row.rects === null).length
+                  : 0;
+                return (
+                  <div
+                    key={plan.id}
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: "var(--radius)",
+                      padding: "8px var(--space-3)",
+                    }}
+                  >
+                    <div
+                      className="row"
+                      style={{
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: "var(--space-2)",
+                      }}
+                    >
+                      <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                        <div className="small muted">
+                          {plan.documentTitle ??
+                            t("redaction.planMissingDocument", {
+                              id: plan.documentVersionId,
+                            })}
+                          {" · "}
+                          {plan.versionNo === null
+                            ? t("redaction.planVersionUnknown")
+                            : t("redaction.planVersionNo", { version: plan.versionNo })}
+                          {" · "}
+                          {formatDateTime(plan.createdAt)}
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: "var(--mono)",
+                            fontSize: 12,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={plan.renderHash}
+                        >
+                          {t("redaction.planRenderHash", {
+                            hash: plan.renderHash.slice(0, 16),
+                          })}
+                        </div>
+                      </div>
+                      <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                        {result && result.plan.id === plan.id ? (
+                          <span className="badge ok">{t("redaction.planThisRun")}</span>
+                        ) : null}
+                        <span className={`badge ${state.tone}`}>{state.label}</span>
+                      </div>
+                    </div>
+                    <div
+                      className="row"
+                      style={{
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginTop: 6,
+                      }}
+                    >
+                      <span className="small muted">
+                        {t("redaction.planRegions", { count: plan.regionCount })}
+                      </span>
+                      <button
+                        className="btn ghost"
+                        aria-expanded={open}
+                        onClick={() => togglePlan(plan.id)}
+                      >
+                        {open
+                          ? t("redaction.planRegionsHide")
+                          : t("redaction.planRegionsShow")}
+                      </button>
+                    </div>
+                    {open ? (
+                      planRegionsError ? (
+                        <div className="notice danger" role="alert">
+                          {t("redaction.planRegionsUnreadable", {
+                            code: planRegionsError.code,
+                            message: planRegionsError.message,
+                          })}
+                        </div>
+                      ) : planRegions.length === 0 ? (
+                        <p className="hint" style={{ margin: "6px 0 0" }}>
+                          {planRegionsBusy
+                            ? t("redaction.planRegionsLoading")
+                            : t("redaction.planRegionsEmpty")}
+                        </p>
+                      ) : (
+                        <>
+                          <ul className="small" style={{ margin: "6px 0 0", paddingLeft: 16 }}>
+                            {pages.map((entry) => (
+                              <li key={entry.page}>
+                                {t("redaction.planPageLine", {
+                                  page: entry.page + 1,
+                                  count: entry.count,
+                                })}
+                              </li>
+                            ))}
+                          </ul>
+                          {unreadable > 0 ? (
+                            <p
+                              className="hint"
+                              style={{ margin: "4px 0 0", color: "var(--danger)" }}
+                            >
+                              {t("redaction.planGeometryUnreadable", { count: unreadable })}
+                            </p>
+                          ) : null}
+                        </>
+                      )
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+        <p className="hint" style={{ margin: "8px 0 0" }}>
+          {t("redaction.plansNote")}
+        </p>
+      </div>
     </div>
   );
 }

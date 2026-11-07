@@ -441,10 +441,47 @@ export type ExportRecordRow = {
   completedAt: string | null;
 };
 
+/**
+ * Maskeleme planı satırı — **denetim sicili**. `documentTitle`/`versionNo`
+ * sorgudan okunur (satırda saklanmaz): sürüm/belge bulunamazsa `null`, ad
+ * uydurulmaz. `regionCount` plana yazılmış bölge sayısıdır.
+ */
+export type RedactionPlanRow = {
+  id: string;
+  caseId: string;
+  documentVersionId: string;
+  parseRunId: string | null;
+  renderHash: string;
+  coordinateSpace: string;
+  planVersion: number;
+  state: string;
+  reviewer: string | null;
+  outputProfile: string;
+  createdAt: string;
+  updatedAt: string;
+  documentTitle: string | null;
+  versionNo: number | null;
+  regionCount: number;
+};
+
+/**
+ * Planın bölge satırı. `rects` punto dikdörtgenleridir; saklanan `quads`
+ * çözülemezse `null` döner — geometri uydurulmaz, bölge satırı listede kalır.
+ */
+export type RedactionRegionRow = {
+  id: string;
+  pageIndex: number;
+  rects: Array<[number, number, number, number]> | null;
+  coordinateSpace: string;
+  category: string;
+  detectedTextHash: string | null;
+  userDecision: string;
+};
+
 export type RedactionResult = {
   document: DocumentRow;
   version: DocumentVersionRow;
-  plan: { id: string; state: string; outputProfile: string };
+  plan: RedactionPlanRow;
   hits: number;
   remaining: string[];
   ocrVerified: boolean;
@@ -1895,6 +1932,12 @@ export const api = {
     regions: Array<{ pageIndex: number; rect: [number, number, number, number] }>,
     runId: string,
   ) => invoke<RedactionResult>("document_redact_regions", { versionId, regions, runId }),
+  /** Dosyanın maskeleme sicili: her plan satırı belge adı/sürüm/bölge sayısıyla. */
+  redactionPlanList: (caseId: string) =>
+    invoke<RedactionPlanRow[]>("redaction_plan_list", { caseId }),
+  /** Planın bölgeleri — yazılma sırasıyla. */
+  redactionPlanRegions: (planId: string) =>
+    invoke<RedactionRegionRow[]>("redaction_plan_regions", { planId }),
   exportJson: (caseId: string, destPath: string) =>
     invoke<ExportResult>("export_json", { caseId, destPath }),
   exportCsv: (caseId: string, destPath: string) =>

@@ -123,6 +123,8 @@ pub fn run() {
             commands::cli_stale_sandbox_sweep,
             commands::document_redact,
             commands::document_redact_regions,
+            commands::redaction_plan_list,
+            commands::redaction_plan_regions,
             commands::export_json,
             commands::case_coverage,
             commands::exports_list,

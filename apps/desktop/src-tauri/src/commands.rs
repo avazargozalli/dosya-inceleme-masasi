@@ -34,10 +34,10 @@ use dim_storage::{
     PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
     PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
     QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow, ReviewItemRow,
-    ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery, SearchTotal,
-    SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentListRow, TransferConsentRow,
-    TransferReceiptRow,
+    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
+    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
+    SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow, TransferConsentListRow,
+    TransferConsentRow, TransferReceiptRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -5751,6 +5751,34 @@ pub async fn document_redact_regions(
         RedactRequest::Regions(pairs),
     )
     .await
+}
+
+/// Dosyanın **maskeleme sicili**: her maskelemede yazılan plan satırları.
+///
+/// Plan yazılıyordu ama okuma yolu yoktu — avukat "hangi belgede hangi
+/// sürümde, kaç bölge maskelendi" sorusunu yanıtlayamıyordu; ekranda yalnız
+/// son çalıştırmanın ham kimliği duruyordu. Satır belge adı + sürüm numarası +
+/// bölge sayısıyla döner (ad sorgudan okunur, satırda saklanmaz).
+#[tauri::command]
+pub fn redaction_plan_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<Vec<RedactionPlanRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_redaction_plans(&case_id)?)
+}
+
+/// Planın bölgeleri — **yazılma sırası**yla. Bozuk geometri (`quads`)
+/// gizlenmez: `rects` `None` döner, bölge satırı listede kalır.
+#[tauri::command]
+pub fn redaction_plan_regions(
+    state: State<'_, AppState>,
+    plan_id: String,
+) -> Result<Vec<RedactionRegionRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_redaction_regions(&plan_id)?)
 }
 
 #[derive(Serialize)]

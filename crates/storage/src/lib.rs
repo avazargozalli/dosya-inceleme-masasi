@@ -92,7 +92,9 @@ pub use queue::{
     JobCancelResult, JobQueueSummary, JobRecovery, JobRow, JobStateCount, DEFAULT_LEASE_SECONDS,
     JOB_PARSE_DOCUMENT,
 };
-pub use redactions::{NewRedactionPlan, RedactionPlanRow, RedactionRegionInput};
+pub use redactions::{
+    NewRedactionPlan, RedactionPlanRow, RedactionRegionInput, RedactionRegionRow,
+};
 pub use review_commit::{
     OutboxEventRow, ReviewCommitResult, ReviewTarget, EVENT_DECISION_COMMITTED, EVENT_ITEM_DECIDED,
 };

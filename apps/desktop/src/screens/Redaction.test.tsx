@@ -51,6 +51,8 @@ import type {
   DocumentRow,
   DocumentVersionRow,
   ParseProgressEvent,
+  RedactionPlanRow,
+  RedactionRegionRow,
   RedactionResult,
 } from "../lib/api";
 
@@ -60,6 +62,8 @@ const mocks = vi.hoisted(() => ({
   documentPagePreview: vi.fn(),
   documentRedact: vi.fn(),
   documentRedactRegions: vi.fn(),
+  redactionPlanList: vi.fn(),
+  redactionPlanRegions: vi.fn(),
 }));
 
 const events = vi.hoisted(() => ({ listen: vi.fn() }));
@@ -136,11 +140,46 @@ function versionRow(overrides: Partial<DocumentVersionRow> = {}): DocumentVersio
   };
 }
 
+/** Plan satırı — çekirdeğin döndürdüğü alanların tamamı (sicil kartı). */
+function planRow(overrides: Partial<RedactionPlanRow> = {}): RedactionPlanRow {
+  return {
+    id: "plan-1",
+    caseId: "p1",
+    documentVersionId: "v1",
+    parseRunId: null,
+    renderHash: "b".repeat(64),
+    coordinateSpace: "pdf_page_points",
+    planVersion: 1,
+    state: "applied",
+    reviewer: null,
+    outputProfile: "share",
+    createdAt: ISO,
+    updatedAt: ISO,
+    documentTitle: "Kira sözleşmesi.pdf",
+    versionNo: 1,
+    regionCount: 3,
+    ...overrides,
+  };
+}
+
+function regionRow(overrides: Partial<RedactionRegionRow> = {}): RedactionRegionRow {
+  return {
+    id: "region-1",
+    pageIndex: 0,
+    rects: [[1, 2, 3, 4]],
+    coordinateSpace: "pdf_page_points",
+    category: "user_term",
+    detectedTextHash: "h".repeat(64),
+    userDecision: "redact",
+    ...overrides,
+  };
+}
+
 function redactionResult(overrides: Partial<RedactionResult> = {}): RedactionResult {
   return {
     document: docRow("d9", "Kira sözleşmesi (maskeli).pdf", "v9"),
     version: versionRow(),
-    plan: { id: "plan-1", state: "applied", outputProfile: "share" },
+    plan: planRow(),
     hits: 3,
     remaining: [],
     ocrVerified: true,
@@ -206,6 +245,10 @@ beforeEach(() => {
   mocks.documentRedactRegions.mockResolvedValue(
     redactionResult({ document: docRow("d9", "Kira sözleşmesi (bölge maskeli).pdf", "v9") }),
   );
+  // Maskeleme sicili varsayılan olarak **boş**: mevcut testler bu kartı
+  // ölçmez; kartın varlığı başka iddiaları bozmaz.
+  mocks.redactionPlanList.mockResolvedValue([]);
+  mocks.redactionPlanRegions.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -936,5 +979,171 @@ describe("Maskeleme ekranı uçuş yolları", () => {
     expect(
       screen.queryByRole("button", { name: t("redaction.runRegions", { count: 1 }) }),
     ).toBeNull();
+  });
+});
+
+/**
+ * **Ölçülen kusur:** her maskelemede `redaction_plans` + `redaction_regions`
+ * yazılıyordu ama `list_redaction_plans` yalnız `crates/storage` içinde
+ * tanımlıydı — Tauri komutu, `api.ts` bağı ve ekran kartı yoktu; ekranda
+ * yalnız son çalıştırmanın ham plan kimliği duruyordu. Bu blok, sicilin
+ * gerçekten **okunduğunu** ve satırın belge/sürüm/sayfa bilgisiyle
+ * yazıldığını ölçer.
+ */
+describe("Maskeleme sicili (plan okuma yolu)", () => {
+  function plansCard(): HTMLElement {
+    return screen.getByText(t("redaction.plansTitle")).closest(".card") as HTMLElement;
+  }
+
+  it("dosya seçilince planları çekirdekten ister; satır belge adı ve sürümle yazılır", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow()]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(/Kira sözleşmesi\.pdf/);
+    expect(mocks.redactionPlanList).toHaveBeenCalledWith("p1");
+    // Sürüm numarası ve bölge sayısı **satırdan** yazılır.
+    expect(within(card).getByText(new RegExp(t("redaction.planVersionNo", { version: 1 })))).toBeTruthy();
+    expect(within(card).getByText(t("redaction.planRegions", { count: 3 }))).toBeTruthy();
+    expect(within(card).getByText(t("redaction.planStateApplied"))).toBeTruthy();
+  });
+
+  it("plan yoksa “kayıt yok” yazar (uydurma satır üretmez)", async () => {
+    await renderScreen();
+    await within(plansCard()).findByText(t("redaction.plansEmpty"));
+    expect(within(plansCard()).queryAllByRole("button", { name: t("redaction.planRegionsShow") })).toHaveLength(0);
+  });
+
+  it("sicil okunamazsa hata kendi satırında yazılır, “kayıt yok” denmez", async () => {
+    mocks.redactionPlanList.mockRejectedValue(apiError("E_IO", "kasa okunamadı"));
+    await renderScreen();
+    const alert = await within(plansCard()).findByRole("alert");
+    expect(alert.textContent).toContain("E_IO");
+    expect(alert.textContent).toContain("kasa okunamadı");
+    expect(within(plansCard()).queryByText(t("redaction.plansEmpty"))).toBeNull();
+  });
+
+  it("tanınmayan plan durumu gizlenmez, ham değeriyle yazılır", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow({ state: "arsivlendi" })]);
+    await renderScreen();
+    await within(plansCard()).findByText(t("redaction.planStateUnknown", { state: "arsivlendi" }));
+  });
+
+  it("bölgeleri plan kimliğiyle ister ve sayfa dağılımını sayfaya göre yazar", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow({ id: "plan-7", regionCount: 3 })]);
+    mocks.redactionPlanRegions.mockResolvedValue([
+      regionRow({ id: "r1", pageIndex: 2 }),
+      regionRow({ id: "r2", pageIndex: 0 }),
+      regionRow({ id: "r3", pageIndex: 2 }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    const show = await within(card).findByRole("button", {
+      name: t("redaction.planRegionsShow"),
+    });
+    fireEvent.click(show);
+    await waitFor(() => expect(mocks.redactionPlanRegions).toHaveBeenCalledWith("plan-7"));
+    // Sayfa numarası **1 tabanlı** yazılır (çekirdek 0 tabanlı saklar).
+    await within(card).findByText(t("redaction.planPageLine", { page: 1, count: 1 }));
+    await within(card).findByText(t("redaction.planPageLine", { page: 3, count: 2 }));
+  });
+
+  it("geometrisi okunamayan bölge gizlenmez", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow({ regionCount: 2 })]);
+    mocks.redactionPlanRegions.mockResolvedValue([
+      regionRow({ id: "r1" }),
+      regionRow({ id: "r2", rects: null }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    fireEvent.click(await within(card).findByRole("button", { name: t("redaction.planRegionsShow") }));
+    await within(card).findByText(t("redaction.planGeometryUnreadable", { count: 1 }));
+    // Satır yine listelenir: sayım geometriye bağlı değil.
+    await within(card).findByText(t("redaction.planPageLine", { page: 1, count: 2 }));
+  });
+
+  it("bölge okuması düşerse hata kendi satırında yazılır, plan satırı kalır", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow()]);
+    mocks.redactionPlanRegions.mockRejectedValue(apiError("E_IO", "bölgeler okunamadı"));
+    await renderScreen();
+    const card = plansCard();
+    fireEvent.click(await within(card).findByRole("button", { name: t("redaction.planRegionsShow") }));
+    const alert = await within(card).findByRole("alert");
+    expect(alert.textContent).toContain("bölgeler okunamadı");
+    expect(within(card).getByText(/Kira sözleşmesi\.pdf/)).toBeTruthy();
+  });
+
+  it("aynı plana ikinci tıklama bölge isteğini tekrarlamaz, listeyi kapatır", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow()]);
+    mocks.redactionPlanRegions.mockResolvedValue([regionRow()]);
+    await renderScreen();
+    const card = plansCard();
+    fireEvent.click(await within(card).findByRole("button", { name: t("redaction.planRegionsShow") }));
+    await within(card).findByText(t("redaction.planPageLine", { page: 1, count: 1 }));
+    fireEvent.click(within(card).getByRole("button", { name: t("redaction.planRegionsHide") }));
+    // Kapanış **düğme adından** okunur: listeyi boşaltmak tek başına "kapandı"
+    // demek değil (açık kalan plan ikinci tıkta kapalı görünürdü).
+    expect(within(card).getByRole("button", { name: t("redaction.planRegionsShow") })).toBeTruthy();
+    expect(within(card).queryByText(t("redaction.planPageLine", { page: 1, count: 1 }))).toBeNull();
+    expect(mocks.redactionPlanRegions).toHaveBeenCalledTimes(1);
+  });
+
+  it("dosya değişince önceki dosyanın planları ve bölge detayı kalkar (INV-05)", async () => {
+    const pending = deferred<RedactionPlanRow[]>();
+    mocks.redactionPlanList
+      .mockResolvedValueOnce([planRow()])
+      .mockReturnValueOnce(pending.promise);
+    mocks.redactionPlanRegions.mockResolvedValue([regionRow()]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(/Kira sözleşmesi\.pdf/);
+    fireEvent.click(within(card).getByRole("button", { name: t("redaction.planRegionsShow") }));
+    await within(card).findByText(t("redaction.planPageLine", { page: 1, count: 1 }));
+
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    // Yeni dosyanın isteği askıdayken eski satır ve açık bölge detayı kalkar.
+    await waitFor(() => expect(within(card).queryByText(/Kira sözleşmesi\.pdf/)).toBeNull());
+    expect(within(card).queryByText(t("redaction.planPageLine", { page: 1, count: 1 }))).toBeNull();
+
+    await act(async () => {
+      pending.resolve([
+        planRow({
+          id: "plan-2",
+          caseId: "p2",
+          documentVersionId: "v9",
+          documentTitle: "Ceza dosyası belgesi.pdf",
+          versionNo: 2,
+        }),
+      ]);
+      await pending.promise;
+    });
+    await within(card).findByText(/Ceza dosyası belgesi\.pdf/);
+  });
+
+  it("başarılı maskelemeden sonra sicil tazelenir", async () => {
+    // Tazeleme **gönderim sonrası** ikinci okumadır; satır başka bir plan
+    // kimliğiyle gelir → "bu çalıştırma" işareti çıkmaz (yanlış eşleşme yok).
+    mocks.redactionPlanList.mockResolvedValueOnce([]).mockResolvedValue([planRow({ id: "plan-9" })]);
+    await renderScreen();
+    await within(plansCard()).findByText(t("redaction.plansEmpty"));
+
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+    await resultCard();
+
+    await waitFor(() => expect(mocks.redactionPlanList).toHaveBeenCalledTimes(2));
+    await within(plansCard()).findByText(/Kira sözleşmesi\.pdf/);
+    expect(within(plansCard()).queryByText(t("redaction.planThisRun"))).toBeNull();
+  });
+
+  it("bu çalıştırmanın planı sicilde işaretlenir", async () => {
+    mocks.redactionPlanList.mockResolvedValueOnce([]).mockResolvedValue([planRow()]);
+    await renderScreen();
+    await within(plansCard()).findByText(t("redaction.plansEmpty"));
+
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+    await resultCard();
+
+    await within(plansCard()).findByText(t("redaction.planThisRun"));
   });
 });
