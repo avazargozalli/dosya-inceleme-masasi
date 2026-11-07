@@ -117,6 +117,9 @@ pub struct ReviewDecisionRow {
     pub review_item_id: String,
     pub decision: String,
     pub edited_payload: Option<Value>,
+    /// `edited_payload` metni çözülemediyse `true`. Bozuk kayıt "düzenleme yok"
+    /// gibi görünmez: arayüz "okunamadı" yazar (sessiz yutma yok).
+    pub edited_payload_invalid: bool,
     pub reviewer_label: String,
     pub rationale: String,
     pub decided_at: String,
@@ -780,13 +783,16 @@ impl Database {
              ORDER BY julianday(decided_at) ASC, rowid ASC",
         )?;
         let rows = stmt.query_map([item_id], |row| {
+            let raw_edited: Option<String> = row.get(3)?;
+            let parsed_edited: Option<Value> = raw_edited
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok());
             Ok(ReviewDecisionRow {
                 id: row.get(0)?,
                 review_item_id: row.get(1)?,
                 decision: row.get(2)?,
-                edited_payload: row
-                    .get::<_, Option<String>>(3)?
-                    .and_then(|s| serde_json::from_str(&s).ok()),
+                edited_payload_invalid: raw_edited.is_some() && parsed_edited.is_none(),
+                edited_payload: parsed_edited,
                 reviewer_label: row.get(4)?,
                 rationale: row.get(5)?,
                 decided_at: row.get(6)?,
@@ -1047,6 +1053,78 @@ mod tests {
             .is_err());
         assert_eq!(s.db.review_history(&item.id).expect("geçmiş").len(), 1);
         assert!(s.db.verify_audit_chain().expect("zincir") >= 2);
+    }
+
+    /// Geçmişteki **bozuk** `edited_payload` "düzenleme yok" gibi görünmez:
+    /// satır `edited_payload_invalid=true` ile döner. Payload'sız (delil iste) ve
+    /// geçerli payload'lı kararlar bayrağı taşımaz.
+    #[test]
+    fn review_history_marks_unreadable_edited_payload() {
+        let s = setup();
+        let item =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "claim_candidate".into(),
+                    payload: serde_json::json!({"text": "Kira ödenmedi"}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("öğe");
+        s.db.decide_review_item(&item.id, "request_evidence", None, "avukat", "dekont iste")
+            .expect("delil");
+        s.db.decide_review_item(
+            &item.id,
+            "edit",
+            Some(&serde_json::json!({"text": "Düzeltildi"})),
+            "avukat",
+            "düzeltme",
+        )
+        .expect("düzenleme");
+        // Kasa dışı yazımı taklit eder: sütuna çözülemeyen JSON düşmüş.
+        s.db.conn()
+            .execute(
+                "INSERT INTO review_decisions
+                   (id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at)
+                 VALUES ('d-bozuk',?1,'edit','{bozuk','avukat','',?2)",
+                rusqlite::params![item.id, "2026-10-01T00:00:01Z"],
+            )
+            .expect("bozuk satır");
+
+        let history = s.db.review_history(&item.id).expect("geçmiş");
+        assert_eq!(history.len(), 3);
+        let delil = history
+            .iter()
+            .find(|r| r.decision == "request_evidence")
+            .expect("delil satırı");
+        assert!(delil.edited_payload.is_none());
+        assert!(!delil.edited_payload_invalid, "payload yoksa bayrak yanmaz");
+        let duzeltme = history
+            .iter()
+            .find(|r| r.id != "d-bozuk" && r.decision == "edit")
+            .expect("düzeltme satırı");
+        assert_eq!(
+            duzeltme
+                .edited_payload
+                .as_ref()
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str()),
+            Some("Düzeltildi")
+        );
+        assert!(
+            !duzeltme.edited_payload_invalid,
+            "geçerli payload bayrak taşımaz"
+        );
+        let bozuk = history
+            .iter()
+            .find(|r| r.id == "d-bozuk")
+            .expect("bozuk satır");
+        assert!(bozuk.edited_payload.is_none());
+        assert!(
+            bozuk.edited_payload_invalid,
+            "bozuk kayıt 'içerik yok' diye gizlenmez"
+        );
     }
 
     #[test]

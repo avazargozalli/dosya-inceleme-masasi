@@ -1244,6 +1244,8 @@ export type ReviewDecisionRow = {
   reviewItemId: string;
   decision: string;
   editedPayload: unknown;
+  /** `editedPayload` metni çözülemediyse true: "düzenleme yok" ile karışmaz. */
+  editedPayloadInvalid: boolean;
   reviewerLabel: string;
   rationale: string;
   decidedAt: string;

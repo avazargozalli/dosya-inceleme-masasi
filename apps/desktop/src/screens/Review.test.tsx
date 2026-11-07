@@ -33,6 +33,7 @@ import type {
   InTextQuoteCheck,
   InTextQuoteFinding,
   InTextQuotePosition,
+  ReviewDecisionRow,
   ReviewItemRow,
 } from "../lib/api";
 
@@ -56,6 +57,7 @@ const mocks = vi.hoisted(() => ({
   evidenceLinkCreate: vi.fn(),
   claimRelationList: vi.fn(),
   claimRelationCreate: vi.fn(),
+  reviewHistory: vi.fn(),
 }));
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -83,6 +85,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       evidenceLinkCreate: mocks.evidenceLinkCreate,
       claimRelationList: mocks.claimRelationList,
       claimRelationCreate: mocks.claimRelationCreate,
+      reviewHistory: mocks.reviewHistory,
     },
   };
 });
@@ -278,6 +281,21 @@ function finding(overrides: Partial<InTextQuoteFinding> & { index: number; quote
   };
 }
 
+/** Karar geçmişi satırı (F08-T04). */
+function decision(overrides: Partial<ReviewDecisionRow> = {}): ReviewDecisionRow {
+  return {
+    id: "d-1",
+    reviewItemId: "i-acc",
+    decision: "accept",
+    editedPayload: null,
+    editedPayloadInvalid: false,
+    reviewerLabel: "avukat",
+    rationale: "",
+    decidedAt: ISO,
+    ...overrides,
+  };
+}
+
 /** İkinci iddia (aynı dosyada) ve ikinci dosyanın künyeleri. */
 const CLAIM_B: ClaimRow = {
   ...CLAIMS[0]!,
@@ -376,6 +394,7 @@ function setup(
   mocks.reviewDecide.mockResolvedValue({});
   mocks.reviewItemCreate.mockResolvedValue({});
   mocks.reviewSupersede.mockResolvedValue({});
+  mocks.reviewHistory.mockResolvedValue([]);
   render(<Review />);
 }
 
@@ -1341,5 +1360,206 @@ describe("inceleme uçuş kilidi ve geç yanıt kapıları", () => {
     });
 
     expect(screen.queryByRole("alert")).not.toBeNull();
+  });
+});
+
+/**
+ * F08-T04 — **karar geçmişi görünür**. `review_decisions` tablosu kabul/ret/
+ * düzeltme/delil-iste kararlarını eklemeli tutar; şartname E2E-06 "karar
+ * geçmişi görünür" der. Ölçülen kusur: `review_history` komutu ve `api.ts` bağı
+ * vardı, **arayüzde tek çağrı yoktu** → "delil iste" gerekçesi, sonraki karardan
+ * sonra ekrandan siliniyordu.
+ */
+describe("karar geçmişi", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  function switchToC2() {
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c2" } });
+  }
+
+  function setupTwoCases() {
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: ITEMS, anchors: ANCHORS, documents: DOCUMENTS },
+        c2: { claims: [CLAIM_C2], items: [ITEM_C2], anchors: [ANCHOR_C2], documents: [] },
+      },
+    });
+  }
+
+  it("geçmiş yalnız istekle okunur ve önceki kararlar gerekçesiyle görünür", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    // Açılışta kalem başına geçmiş okuması yapılmaz (N+1 istek yok).
+    expect(mocks.reviewHistory).not.toHaveBeenCalled();
+
+    mocks.reviewHistory.mockResolvedValue([
+      decision({ id: "d1", decision: "request_evidence", rationale: "Dekont iste" }),
+      decision({ id: "d2", decision: "accept", rationale: "Dekont geldi" }),
+    ]);
+    fireEvent.click(byId("hist-i-acc"));
+    await waitFor(() => expect(mocks.reviewHistory).toHaveBeenCalledWith("i-acc"));
+
+    const panel = await waitFor(() => byId("hist-panel-i-acc"));
+    await waitFor(() =>
+      expect(within(panel).getByText(t("review.decisionRequestEvidence"))).toBeTruthy(),
+    );
+    expect(within(panel).getByText(t("review.decisionAccept"))).toBeTruthy();
+    // Aynı kararı veren iki satırın ikisi de yazılır.
+    expect(within(panel).getAllByText(t("review.historyReviewer", { name: "avukat" }))).toHaveLength(2);
+    expect(within(panel).getByText(t("review.rationaleDash", { text: "Dekont iste" }))).toBeTruthy();
+    // Düğme kapanış moduna geçer.
+    expect(byId("hist-i-acc").textContent).toBe(t("review.historyHide"));
+  });
+
+  it("tanınmayan karar kodu ham gösterilir, düzenlenen içerik yazılır", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.reviewHistory.mockResolvedValue([
+      decision({
+        id: "d1",
+        decision: "deferred_by_court",
+        editedPayload: { text: "Düzeltilmiş metin" },
+      }),
+    ]);
+    fireEvent.click(byId("hist-i-acc"));
+
+    const panel = await waitFor(() => byId("hist-panel-i-acc"));
+    // Uydurma etiket yok: tanınmayan kod olduğu gibi yazılır.
+    await waitFor(() => expect(within(panel).getByText("deferred_by_court")).toBeTruthy());
+    expect(within(panel).getByText(t("review.historyEdited"))).toBeTruthy();
+    expect(within(panel).getByText(/Düzeltilmiş metin/)).toBeTruthy();
+  });
+
+  it("çözülemeyen düzenlenmiş içerik 'yok' gibi gizlenmez", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.reviewHistory.mockResolvedValue([
+      decision({ id: "d1", decision: "edit", editedPayload: null, editedPayloadInvalid: true }),
+    ]);
+    fireEvent.click(byId("hist-i-acc"));
+
+    const panel = await waitFor(() => byId("hist-panel-i-acc"));
+    await waitFor(() =>
+      expect(within(panel).getByText(t("review.historyEditedInvalid"))).toBeTruthy(),
+    );
+    expect(within(panel).queryByText(t("review.historyEdited"))).toBeNull();
+  });
+
+  it("okuma hatası 'kayıt yok' demez, kendi satırını yazar", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.reviewHistory.mockRejectedValue({
+      code: "E_DB_REVIEW",
+      message: "okunamadı",
+      retryable: false,
+    });
+    fireEvent.click(byId("hist-i-acc"));
+
+    const panel = await waitFor(() => byId("hist-panel-i-acc"));
+    const alert = await waitFor(() => within(panel).getByRole("alert"));
+    expect(alert.textContent).toBe(t("review.historyError", { code: "E_DB_REVIEW" }));
+    expect(within(panel).queryByText(t("review.historyEmpty"))).toBeNull();
+  });
+
+  it("kapanıp yeniden açılan panelde geç yanıt görünmez", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    const first = deferred<ReviewDecisionRow[]>();
+    const second = deferred<ReviewDecisionRow[]>();
+    let call = 0;
+    mocks.reviewHistory.mockImplementation(() => {
+      call += 1;
+      return call === 1 ? first.promise : second.promise;
+    });
+
+    fireEvent.click(byId("hist-i-acc")); // 1. istek
+    fireEvent.click(byId("hist-i-acc")); // kapat
+    fireEvent.click(byId("hist-i-acc")); // 2. istek (yeni nesil)
+    await waitFor(() => expect(mocks.reviewHistory).toHaveBeenCalledTimes(2));
+
+    // Eski isteğin yanıtı geç gelir: yeni panelde görünmez.
+    await act(async () => {
+      first.resolve([decision({ id: "d-eski", rationale: "eski-yanit" })]);
+      await Promise.resolve();
+    });
+    const panel = byId("hist-panel-i-acc");
+    expect(within(panel).queryByText(t("review.rationaleDash", { text: "eski-yanit" }))).toBeNull();
+
+    await act(async () => {
+      second.resolve([decision({ id: "d-yeni", rationale: "yeni-yanit" })]);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(within(byId("hist-panel-i-acc")).getByText(t("review.rationaleDash", { text: "yeni-yanit" }))).toBeTruthy(),
+    );
+  });
+
+  it("dosya değişince panel kapanır, geç yanıt yeni dosyaya yazılmaz", async () => {
+    setupTwoCases();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    const slow = deferred<ReviewDecisionRow[]>();
+    mocks.reviewHistory.mockReturnValue(slow.promise);
+    fireEvent.click(byId("hist-i-acc"));
+    await waitFor(() => expect(mocks.reviewHistory).toHaveBeenCalledWith("i-acc"));
+
+    switchToC2();
+    await screen.findByRole("button", { name: C2_CLAIM_BUTTON });
+    expect(document.getElementById("hist-panel-i-acc")).toBeNull();
+
+    // Eski dosyanın yanıtı **sonradan** döner: yeni dosyanın ekranına düşmez.
+    await act(async () => {
+      slow.resolve([decision({ id: "d-gec", rationale: "eski-dosya-gerekcesi" })]);
+      await Promise.resolve();
+    });
+    expect(screen.queryByText(t("review.rationaleDash", { text: "eski-dosya-gerekcesi" }))).toBeNull();
+
+    // Dosyaya geri dönülünce panel **kapalı** açılır: eski dosyanın paneli
+    // kimliğiyle birlikte düşmüştür (bayat liste görünmez).
+    fireEvent.change(byId<HTMLSelectElement>("rv-case"), { target: { value: "c1" } });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+    expect(document.getElementById("hist-panel-i-acc")).toBeNull();
+    expect(byId("hist-i-acc").textContent).toBe(t("review.historyShow"));
+  });
+
+  it("paneli açık kalem karar verilince geçmiş tazelenir", async () => {
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.reviewHistory.mockResolvedValueOnce([
+      decision({ id: "d1", reviewItemId: "i-pend2", decision: "request_evidence", rationale: "Dekont iste" }),
+    ]);
+    fireEvent.click(byId("hist-i-pend2"));
+    await waitFor(() =>
+      expect(
+        within(byId("hist-panel-i-pend2")).getByText(t("review.decisionRequestEvidence")),
+      ).toBeTruthy(),
+    );
+
+    // Yeni karar yazıldıktan sonra geçmiş yeniden okunur: eski liste kalmaz.
+    mocks.reviewHistory.mockResolvedValueOnce([
+      decision({ id: "d1", reviewItemId: "i-pend2", decision: "request_evidence", rationale: "Dekont iste" }),
+      decision({ id: "d2", reviewItemId: "i-pend2", decision: "accept", rationale: "Dekont geldi" }),
+    ]);
+    const card = itemCard("Ödeme yapıldı");
+    fireEvent.click(within(card).getByRole("button", { name: t("review.requestEvidence") }));
+    await waitFor(() => expect(mocks.reviewDecide).toHaveBeenCalledWith("i-pend2", "request_evidence", "", undefined));
+
+    await waitFor(() =>
+      expect(
+        within(byId("hist-panel-i-pend2")).getByText(t("review.decisionAccept")),
+      ).toBeTruthy(),
+    );
+    expect(mocks.reviewHistory).toHaveBeenCalledTimes(2);
   });
 });

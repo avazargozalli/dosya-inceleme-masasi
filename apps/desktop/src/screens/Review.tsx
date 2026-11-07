@@ -12,6 +12,7 @@ import {
   type EvidenceLinkRow,
   type InTextQuoteCheck,
   type InTextQuoteFinding,
+  type ReviewDecisionRow,
   type ReviewItemRow,
 } from "../lib/api";
 import {
@@ -83,6 +84,17 @@ const ITEM_STATE: Record<string, string> = {
   superseded: t("review.stateSuperseded"),
 };
 
+/**
+ * Karar geçmişindeki karar kodları. Tanınmayan kod **ham** gösterilir: geçmiş
+ * kaydı uydurma bir etikete çevrilmez (eski sürüm/elle yazım olabilir).
+ */
+const DECISION: Record<string, string> = {
+  accept: t("review.decisionAccept"),
+  reject: t("review.decisionReject"),
+  edit: t("review.decisionEdit"),
+  request_evidence: t("review.decisionRequestEvidence"),
+};
+
 export function Review() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -124,6 +136,12 @@ export function Review() {
   const [targetKinds, setTargetKinds] = useState<Record<string, ReviewTargetKind>>({});
   const [targetClaimKinds, setTargetClaimKinds] = useState<Record<string, string>>({});
   const [outboxPending, setOutboxPending] = useState(0);
+  // Karar geçmişi (F08-T04): kalem başına **istek üzerine** okunur — liste
+  // açılışında her kalem için ayrı okuma yapılmaz.
+  const [historyOpenId, setHistoryOpenId] = useState<string | null>(null);
+  const [historyRows, setHistoryRows] = useState<Record<string, ReviewDecisionRow[]>>({});
+  const [historyErrors, setHistoryErrors] = useState<Record<string, ApiError>>({});
+  const [historyBusyId, setHistoryBusyId] = useState<string | null>(null);
 
   // Uçuştaki yanıtların kapısı: yanıt yalnız **hâlâ** aynı dosya, aynı iddia ve
   // aynı alıntı hükmü için yazılır (INV-05). Değerler render dışında okunduğu
@@ -140,6 +158,11 @@ export function Review() {
   // devreder; devredilen isteğin kapanışı, yeni dosyada başlatılan yazmanın
   // kilidini erken açmaz.
   const busySeq = useRef(0);
+  // Açık geçmiş paneli ve yarışan okumalar: geç yanıt yalnız **hâlâ** açık olan
+  // kalemin panelinde görünür. Ref, `setState`den **önce** yazılır (yanıt
+  // microtask'ta dönerse effect beklenmez).
+  const historyOpenRef = useRef<string | null>(null);
+  const historySeq = useRef(0);
 
   function beginWrite(): number {
     const seq = ++busySeq.current;
@@ -234,6 +257,64 @@ export function Review() {
     void load(caseId);
   }, [caseId, load]);
 
+  /**
+   * Karar geçmişini okur (F08-T04). Kapı: yanıt yalnız **aynı dosya** ve **en son**
+   * istek için yazılır; dosya değişiminde ya da panel kapanıp yeniden açıldığında
+   * (yeni istek) geç yanıt ekrana düşmez.
+   */
+  async function loadHistory(itemId: string) {
+    const asked = caseId;
+    const seq = ++historySeq.current;
+    setHistoryBusyId(itemId);
+    // Yeni denemede önceki hata satırı kalkar; liste tazelenene kadar korunur.
+    setHistoryErrors((prev) => {
+      if (!(itemId in prev)) return prev;
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+    try {
+      const rows = await api.reviewHistory(itemId);
+      if (caseRef.current !== asked || historySeq.current !== seq) return;
+      setHistoryRows((prev) => ({ ...prev, [itemId]: rows }));
+    } catch (e) {
+      if (caseRef.current !== asked || historySeq.current !== seq) return;
+      // Okunamayan geçmiş "kayıt yok" diye gösterilmez: bayat liste düşer,
+      // hata kendi satırında yazılır.
+      setHistoryErrors((prev) => ({ ...prev, [itemId]: toApiError(e) }));
+      setHistoryRows((prev) => {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+    } finally {
+      if (historySeq.current === seq) setHistoryBusyId((cur) => (cur === itemId ? null : cur));
+    }
+  }
+
+  function closeHistory() {
+    historyOpenRef.current = null;
+    setHistoryOpenId(null);
+  }
+
+  function toggleHistory(item: ReviewItemRow) {
+    if (historyOpenRef.current === item.id) {
+      closeHistory();
+      return;
+    }
+    historyOpenRef.current = item.id;
+    setHistoryOpenId(item.id);
+    // Açılışta önceki okumanın satırları gösterilmez: panel "yükleniyor" ile
+    // açılır, bayat liste yeni okuma gibi sunulmaz.
+    setHistoryRows((prev) => {
+      if (!(item.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+    void loadHistory(item.id);
+  }
+
   // Dosya değişince önceki dosyanın alıntı **hükmü** ve **belge kapsamı**
   // temizlenir: bayat sonuç ekranda kalmaz ve kapsam yeni dosyaya taşınırsa
   // denetim başka dosyanın belgesine daraltılmış gitmez. Yazılan alıntı
@@ -248,6 +329,14 @@ export function Review() {
     // yazmanın kilidini açmaz.
     busySeq.current += 1;
     setBusy(false);
+    // Karar geçmişi paneli önceki dosyanın kalemine aittir: açık kimlik, liste,
+    // hata ve uçuştaki okuma kimliği birlikte düşer (geç yanıt yazılmaz).
+    historySeq.current += 1;
+    historyOpenRef.current = null;
+    setHistoryOpenId(null);
+    setHistoryRows({});
+    setHistoryErrors({});
+    setHistoryBusyId(null);
     setQuoteCheck(null);
     setQuoteBindings({});
     setQuoteSource("");
@@ -501,6 +590,9 @@ export function Review() {
         setEditJson("");
       }
       await load(asked);
+      // Paneli açık kalemin geçmişi yeni kararla **tazelenir**: ekranda eski
+      // liste kalmaz.
+      if (historyOpenRef.current === item.id) void loadHistory(item.id);
     } catch (e) {
       // Uçuşta dosya değiştiyse eski dosyanın hatası yenisinin altında yazılmaz.
       if (caseRef.current === asked) setError(toApiError(e));
@@ -536,6 +628,7 @@ export function Review() {
         (prev[item.id] ?? "") === claimKind ? { ...prev, [item.id]: "" } : prev,
       );
       await load(asked);
+      if (historyOpenRef.current === item.id) void loadHistory(item.id);
     } catch (e) {
       if (caseRef.current === asked) setError(toApiError(e));
     } finally {
@@ -562,11 +655,95 @@ export function Review() {
         prev[item.id] === oldItemId ? { ...prev, [item.id]: "" } : prev,
       );
       await load(asked);
+      // Yerine geçilen kalemin paneli açıksa geçmişi de tazelenir.
+      const openId = historyOpenRef.current;
+      if (openId !== null && (openId === oldItemId || openId === item.id)) {
+        void loadHistory(openId);
+      }
     } catch (e) {
       if (caseRef.current === asked) setError(toApiError(e));
     } finally {
       endWrite(seq);
     }
+  }
+
+  /** Karar geçmişi aç/kapa düğmesi (kimlik `hist-<kalem>`). */
+  function historyToggle(item: ReviewItemRow) {
+    const open = historyOpenId === item.id;
+    return (
+      <button
+        id={`hist-${item.id}`}
+        className="btn ghost"
+        aria-expanded={open}
+        onClick={() => toggleHistory(item)}
+      >
+        {open ? t("review.historyHide") : t("review.historyShow")}
+      </button>
+    );
+  }
+
+  /**
+   * Açık geçmiş paneli. Dürüstlük kapıları: düşen okuma **"kayıt yok" demez**
+   * (kendi hata satırını yazar), tanınmayan karar kodu **ham** gösterilir,
+   * çözülemeyen düzenlenmiş içerik "yok" gibi gizlenmez.
+   */
+  function historyPanel(item: ReviewItemRow) {
+    if (historyOpenId !== item.id) return null;
+    const rows = historyRows[item.id];
+    const failure = historyErrors[item.id];
+    return (
+      <div
+        id={`hist-panel-${item.id}`}
+        style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}
+      >
+        {historyBusyId === item.id ? (
+          <p className="hint" style={{ margin: 0 }}>{t("review.historyLoading")}</p>
+        ) : null}
+        {failure ? (
+          <div className="notice danger" role="alert">
+            {t("review.historyError", { code: failure.code })}
+          </div>
+        ) : rows === undefined ? null : rows.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>{t("review.historyEmpty")}</p>
+        ) : (
+          rows.map((decision) => (
+            <div key={decision.id} className="card tight" style={{ background: "var(--bg)", margin: 0 }}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <span className="badge plain">{DECISION[decision.decision] ?? decision.decision}</span>
+                <span className="muted small">{formatTimestamp(decision.decidedAt)}</span>
+              </div>
+              <span className="small">
+                {t("review.historyReviewer", { name: decision.reviewerLabel })}
+              </span>
+              {decision.rationale ? (
+                <p className="small" style={{ margin: 0 }}>
+                  {t("review.rationaleDash", { text: decision.rationale })}
+                </p>
+              ) : null}
+              {decision.editedPayloadInvalid ? (
+                <p className="hint error" style={{ margin: 0 }}>{t("review.historyEditedInvalid")}</p>
+              ) : decision.editedPayload === null || decision.editedPayload === undefined ? null : (
+                <>
+                  <span className="muted small">{t("review.historyEdited")}</span>
+                  <pre
+                    style={{
+                      margin: 0,
+                      maxHeight: 120,
+                      overflow: "auto",
+                      whiteSpace: "pre-wrap",
+                      fontFamily: "var(--mono)",
+                      fontSize: 12,
+                    }}
+                  >
+                    {JSON.stringify(decision.editedPayload, null, 2)}
+                  </pre>
+                </>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    );
   }
 
   return (
@@ -914,6 +1091,16 @@ export function Review() {
                     </div>
                   </div>
                 ) : null}
+                {/* Delil istenmiş kalem kuyrukta beklerken **neden** istendiği
+                    görünür: karar geçmişi burada da açılır. */}
+                {item.state === "needs_more_evidence" ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div className="row" style={{ justifyContent: "flex-end" }}>
+                      {historyToggle(item)}
+                    </div>
+                    {historyPanel(item)}
+                  </div>
+                ) : null}
                 {editingId === item.id ? (
                   <div className="field">
                     <label htmlFor={`edit-${item.id}`}>{t("review.editJsonLabel")}</label>
@@ -1049,18 +1236,27 @@ export function Review() {
               <h2 style={{ marginTop: 8 }}>{t("review.decidedTitle")}</h2>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {decided.map((item) => (
-                  <div key={item.id} className="row" style={{ justifyContent: "space-between", padding: "6px 8px", border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
-                    <span className="small">
-                      {ITEM_KIND[item.itemKind] ?? item.itemKind}
-                      {item.targetEntityId ? (
-                        <span className="badge plain" style={{ marginLeft: 8 }}>
-                          {t("review.targetBadge", { id: item.targetEntityId.slice(0, 8) })}
+                  <div
+                    key={item.id}
+                    style={{ border: "1px solid var(--line)", borderRadius: "var(--radius)" }}
+                  >
+                    <div className="row" style={{ justifyContent: "space-between", padding: "6px 8px" }}>
+                      <span className="small">
+                        {ITEM_KIND[item.itemKind] ?? item.itemKind}
+                        {item.targetEntityId ? (
+                          <span className="badge plain" style={{ marginLeft: 8 }}>
+                            {t("review.targetBadge", { id: item.targetEntityId.slice(0, 8) })}
+                          </span>
+                        ) : null}
+                      </span>
+                      <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                        <span className={`badge ${item.state === "accepted" ? "ok" : item.state === "rejected" ? "danger" : "warn"}`}>
+                          {ITEM_STATE[item.state] ?? item.state}
                         </span>
-                      ) : null}
-                    </span>
-                    <span className={`badge ${item.state === "accepted" ? "ok" : item.state === "rejected" ? "danger" : "warn"}`}>
-                      {ITEM_STATE[item.state] ?? item.state}
-                    </span>
+                        {historyToggle(item)}
+                      </div>
+                    </div>
+                    <div style={{ padding: "0 8px 8px" }}>{historyPanel(item)}</div>
                   </div>
                 ))}
               </div>
