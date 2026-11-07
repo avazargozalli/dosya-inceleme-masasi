@@ -55,6 +55,14 @@
 // 20. **Ölçülen kusur E (uçuştaki taslak yazımı):** `note_draft_save` uçuşta
 //     kalırken not eklendiğinde/silindiğinde, geç dönen yazma taslağı **geri
 //     getiriyordu** (sonraki açılışta aynı metin yeniden belirir).
+// 21. **Ölçülen kusur F (düzenleme taslağının sırası):** besteci taslağı
+//     `draftSaveChain` ile sıraya bağlıydı; **düzenleme** taslağı değildi.
+//     `save_note_draft` kör upsert (sürüm kapısı yok) olduğu için (a) uçuştaki
+//     yazma bitmeden `noteDraftClear` gidiyor, geç dönen yazma silinen taslağı
+//     **geri getiriyordu** — sonraki açılışta "taslak farklı" diye **eski**
+//     metin öneriliyordu; (b) iki taslak yazımı iç içe geçebiliyordu; (c) geç
+//     dönen yanıt **başka** notun panelinde "kaydedildi" yazıyordu (o notun
+//     taslağı yazılmadığı hâlde).
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1063,5 +1071,132 @@ describe("notlar yazma uçuşu", () => {
     await flush();
 
     expect(screen.queryByText(t("notes.editTitle"))).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Düzenleme taslağının yazma sırası (2026-11-08 turu)
+ *
+ * Yukarıdaki blok besteci taslağının yarışını kapatmıştı (`draftSaveChain`).
+ * **Düzenleme** taslağı sıraya bağlı değildi ve `save_note_draft` kör bir
+ * upsert'tir (sürüm kapısı yok, `ON CONFLICT DO UPDATE`). Üç ölçülmüş kusur:
+ *
+ *  D1  `saveEdit` uçuştaki taslak yazımını beklemeden `noteDraftClear`
+ *      gönderiyordu → geç dönen yazma silinen taslağı **geri getiriyordu**;
+ *      sonraki açılışta "taslak farklı" diye **eski** metin önerilir.
+ *  D2  İki düzenleme taslağı yazımı iç içe geçebiliyordu (sıra garantisi yok).
+ *  D3  Geç dönen taslak yanıtı **başka** notun durum satırına `kaydedildi`
+ *      yazıyordu; o notun taslağı yazılmadığı hâlde.
+ */
+describe("düzenleme taslağı yazma sırası", () => {
+  it("kaydetme uçuştaki düzenleme taslağı yazımını bekler; taslak geri gelmez", async () => {
+    mocks.noteList.mockResolvedValue([note()]);
+    mocks.noteUpdate.mockResolvedValue(note({ rowVersion: 2, body: "Yeni metin" }));
+    const save = deferred<NoteDraftRow>();
+    const order: string[] = [];
+    let vault: NoteDraftRow | null = null;
+    mocks.noteDraftSave.mockImplementation(async () => {
+      const saved = await save.promise;
+      vault = saved;
+      order.push("save");
+      return saved;
+    });
+    mocks.noteDraftClear.mockImplementation(async (_caseId: string, noteId: string | null) => {
+      // Besteci taslağının kendi temizliği (`null`) bu ölçümün dışında.
+      if (noteId === "n1") {
+        vault = null;
+        order.push("clear");
+      }
+      return true;
+    });
+
+    await mount();
+    fireEvent.click(button(t("notes.edit")));
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "Yeni metin" } });
+    await tick();
+    expect(mocks.noteDraftSave).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(button(t("common.save")));
+    await flush();
+
+    // Taslak yazımı hâlâ uçuşta: **bu notun** temizliği gönderilmedi.
+    expect(mocks.noteDraftClear).not.toHaveBeenCalledWith("c1", "n1");
+
+    await act(async () => {
+      save.resolve(draft({ noteId: "n1", body: "Yeni metin" }));
+    });
+    await flush();
+
+    // Sıra: önce yazma, sonra temizleme → kasadaki taslak boş kalır.
+    expect(order).toEqual(["save", "clear"]);
+    expect(vault).toBeNull();
+    expect(mocks.noteDraftClear).toHaveBeenCalledWith("c1", "n1");
+  });
+
+  it("iki düzenleme taslağı yazımı iç içe geçmez; ikincisi birincinin bitmesini bekler", async () => {
+    mocks.noteList.mockResolvedValue([note()]);
+    const first = deferred<NoteDraftRow>();
+    mocks.noteDraftSave
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(draft({ noteId: "n1", body: "ikinci" }));
+
+    await mount();
+    fireEvent.click(button(t("notes.edit")));
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "birinci" } });
+    await tick();
+    expect(mocks.noteDraftSave).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(editBodyInput(), { target: { value: "ikinci" } });
+    await tick();
+
+    // Birinci yazma uçuşta: ikinci `noteDraftSave` **başlamadı**.
+    expect(mocks.noteDraftSave).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve(draft({ noteId: "n1", body: "birinci" }));
+    });
+    await flush();
+
+    expect(mocks.noteDraftSave).toHaveBeenCalledTimes(2);
+    expect(mocks.noteDraftSave).toHaveBeenLastCalledWith(
+      "c1",
+      "n1",
+      expect.objectContaining({ body: "ikinci" }),
+    );
+  });
+
+  it("geç dönen düzenleme taslağı yanıtı başka notun durum satırına yazmaz", async () => {
+    mocks.noteList.mockResolvedValue([
+      note({ id: "n1" }),
+      note({ id: "n2", title: "İkinci not", body: "İkinci gövde" }),
+    ]);
+    const save = deferred<NoteDraftRow>();
+    mocks.noteDraftSave.mockImplementation(async () => save.promise);
+
+    await mount();
+    const editButtons = () =>
+      screen.getAllByRole("button", { name: t("notes.edit") }) as HTMLButtonElement[];
+
+    fireEvent.click(editButtons()[0]!);
+    await flush();
+    fireEvent.change(editBodyInput(), { target: { value: "n1 taslağı" } });
+    await tick();
+    expect(mocks.noteDraftSave).toHaveBeenCalledTimes(1);
+
+    // Panel n2'ye geçer: n1'in taslak yazımı hâlâ uçuşta.
+    fireEvent.click(editButtons()[1]!);
+    await flush();
+    expect(editBodyInput().value).toBe("İkinci gövde");
+
+    await act(async () => {
+      save.resolve(draft({ noteId: "n1", body: "n1 taslağı" }));
+    });
+    await flush();
+
+    // n2 için taslak yazılmadı: durum satırı "kaydedildi"/"başarısız" demez.
+    expect(screen.queryByText(t("notes.draftSaved"))).toBeNull();
+    expect(screen.queryByText(t("notes.draftFailed"))).toBeNull();
   });
 });

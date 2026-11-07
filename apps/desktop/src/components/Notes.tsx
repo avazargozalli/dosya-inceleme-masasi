@@ -128,6 +128,19 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   /** Uçuştaki besteci taslağı yazımı: temizlemeden önce beklenir (taslak geri gelmesin). */
   const draftSaveChain = useRef<Promise<unknown>>(Promise.resolve());
   /**
+   * Düzenleme taslağı yazımları da **sıraya** bağlanır. `save_note_draft` kör bir
+   * upsert'tir (sürüm kapısı yok): uçuştaki eski yazma, temizlemeden **sonra**
+   * düşerse silinen taslağı geri getirir. Bu yüzden `saveEdit`/`resolveConflict`/
+   * `dropPendingDraft` temizlemeden önce bu zinciri bekler (besteci yolundaki
+   * `draftSaveChain` ile aynı gerekçe).
+   */
+  const editDraftChain = useRef<Promise<unknown>>(Promise.resolve());
+  /**
+   * Panelde açık notun kimliği: geç dönen taslak yanıtı **başka** notun
+   * durum satırına `kaydedildi`/`başarısız` yazmaz (o notun taslağı yazılmadı).
+   */
+  const editOpenId = useRef<string | null>(null);
+  /**
    * Yazma kuşağı: dosya değişimi ve panelin kapanması uçuştaki yanıtı **geçersiz** kılar.
    * Kilit devri de bu sayaçla yapılır: devredilen isteğin `finally`si yeni yazmanın
    * kilidini erken açamaz (`endWrite` yalnız kendi damgasında bırakır).
@@ -144,6 +157,10 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
   useEffect(() => {
     editNow.current = { title: editTitle, body: editBody, anchors: editAnchors };
   }, [editTitle, editBody, editAnchors]);
+
+  useEffect(() => {
+    editOpenId.current = editNote?.id ?? null;
+  }, [editNote]);
 
   /** Yeni bir yazma uçuşu açar; dönen damga yalnız o uçuşta geçerlidir. */
   function beginWrite(): number {
@@ -294,8 +311,12 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     if (!editDirty) return;
     const note = editNote;
     const timer = setTimeout(() => {
-      void (async () => {
-        setEditStatus("saving");
+      const write = async () => {
+        // Duraklamış yazma da **yazılır** (kullanıcının metni kaybolmaz); yalnız
+        // durum satırı, panel hâlâ aynı notu gösteriyorsa güncellenir. Dosya
+        // değişince panel kapanır (`editOpenId` = null) → geç yanıt yazmaz.
+        const stillShown = () => editOpenId.current === note.id;
+        if (stillShown()) setEditStatus("saving");
         try {
           await api.noteDraftSave(caseId, note.id, {
             title: editTitle,
@@ -303,11 +324,15 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
             sourceAnchorIds: editAnchors,
             baseRowVersion: editBaseVersion ?? note.rowVersion,
           });
-          setEditStatus("saved");
+          if (stillShown()) setEditStatus("saved");
         } catch {
-          setEditStatus("failed");
+          if (stillShown()) setEditStatus("failed");
         }
-      })();
+      };
+      // Yazmalar sıraya bağlanır: iki taslak yazımı iç içe geçmez ve temizleme
+      // (aşağıdaki üç yol) **son** yazmayı bekler.
+      const task = editDraftChain.current.then(write, write);
+      editDraftChain.current = task.catch(() => undefined);
     }, 900);
     return () => clearTimeout(timer);
   }, [caseId, editNote, editDirty, editTitle, editBody, editAnchors, editBaseVersion]);
@@ -427,6 +452,7 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     setEditPendingDraft(null);
     if (!editNote) return;
     try {
+      await editDraftChain.current;
       await api.noteDraftClear(caseId, editNote.id);
       setEditStatus("idle");
     } catch (e) {
@@ -496,6 +522,9 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
         body: submitted.body,
         sourceAnchorIds: submitted.anchors,
       });
+      // Uçuştaki düzenleme taslağı yazımı bitmeden temizleme: kör upsert, geç dönen
+      // yazma silinen taslağı geri getirirdi (sonraki açılışta eski metin önerilir).
+      await editDraftChain.current;
       await api.noteDraftClear(caseId, note.id);
       // Geç yanıt (dosya değişti / panel kapandı / başka yazma): panel yeniden açılmaz.
       if (!stillCurrent(seq)) return;
@@ -546,6 +575,8 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
       } else {
         updated = snapshot.theirs;
       }
+      // Uçuştaki yazma bitmeden silme: taslak geri gelmesin.
+      await editDraftChain.current;
       await api.noteDraftClear(caseId, snapshot.noteId);
       if (!stillCurrent(seq)) return;
       setEditNote(updated);
