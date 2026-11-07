@@ -13,7 +13,7 @@
 | F03-T07 | ✅ | **2026-10-26 düzeltmesi:** `crates/jobs` yalnız *kuralları* taşıyordu; `jobs` tablosu salt-yazılıydı. Kuyruk artık `crates/storage/src/queue.rs`'te gerçek: idempotent ekleme, atomik sahiplenme (lease + `job_attempts`), öncelik/yaş sırası, bağımlılık kapısı, doğrulama adımı, tamamlama/kısmi, hata + artan bekleme, engel, iptal, kullanıcı yeniden denemesi. **§17.2 durum makinesi tam** (migration 0021) |
 | F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26, süreç öldürme 2026-10-29):** §17.6 iki adım — kesilen `running/validating/canceling` önce `interrupted`, sonra `queued` (bütçe varsa) / `failed` (bütçe bittiyse); iptal istenmiş iş `canceled`. `vault_open` **kiraya bakmadan** yapar (`recover_orphaned_jobs`; çökme sonrası kira hâlâ gelecekte olabilir — ölçüldü), orta oturumdaki "Bekleyen işleri kurtar" kiraya saygı duyar. Kurtarılan iş `queued` kalır; **"Başlat"** (`job_run`) gerçekten çalıştırır |
 | F03-T10 | ✅ | `backup_to` (SQLCipher backup API), yanlış anahtarla açılmaz |
-| F03-T12 | ✅ | disk/izin/yanlış parola hata kodları |
+| F03-T12 | ✅ | disk/izin/yanlış parola hata kodları; **2026-11-07:** teşhis kartı sürümü **çekirdekten** okur (`system_info`; sürüm/protokol/platform, ayrışma uyarısı) |
 
 ## Doğrulama
 
@@ -264,7 +264,8 @@ masaüstü kabuk kapısı **34 koştu · 0 düştü · 5 yoksayıldı** (kaynak 
 testinde düştü (`cases.parseStatusSucceeded/Partial/Failed` — **benim hatam**:
 `i18n.ts`i eklerken **başka ajanın** commit edilmemiş 4 anahtarını da sahneye
 aldım; onların tüketicisi `lib/format.ts`/`Cases.tsx` henüz commit edilmemişti).
-Düzeltme `e8a752d` yalnız o **3** anahtarı HEAD'den çıkardı (çalışma ağacındaki
+Düzeltme `e8a752d` yalnız CI'nın işaret ettiği **3** anahtarı HEAD'den çıkardı
+(dördüncü `cases.partialParse` kapıdan geçtiği için kaldı; çalışma ağacındaki
 diğer ajan değişiklikleri korunarak) → **`42327661340` 10/10 YEŞİL**:
 `dim-storage` **422** hem `macos-15` (189,62 s) hem `ubuntu-latest` (268,83 s) —
 birebir; `arayüz` **60 dosya / 1209 test**, paket `index-lHY2P-yg.js`
@@ -284,11 +285,70 @@ otomatik/kendiliğinden doğrulama yok, kullanıcı düğmeye basar; (d) kopuklu
 **onarılmaz**, yalnız raporlanır (onarım ürün kararı); (e) `sequence` AUTOINCREMENT
 sırasıdır, silinen kayıt boşluğu zincirde **bağ kopukluğu** olarak görünür
 (beklenen davranış — ölçüldü); (f) jsdom tarayıcı değil → gerçek Tauri penceresi
-ve **görsel QA insan bekliyor**; (g) `system_info` komutu hâlâ arayüzden
-kullanılmıyor (ayrı iş); (h) şartname bu tabloyu **"resmî zaman damgası veya
+ve **görsel QA insan bekliyor**; (g) ~~`system_info` komutu hâlâ arayüzden
+kullanılmıyor~~ — **2026-11-07'de kapandı** (Ayarlar → Teşhis kartı çekirdek
+sürümünü okur); (h) şartname bu tabloyu **"resmî zaman damgası veya
 değiştirilemez delil iddiası taşımayan yerel değişiklik geçmişi"** olarak
 tanımlar — kart bunu **yazar**; hash zinciri yalnız bütünlük bozukluğunu
 gösterir, hukukî delil iddiası üretmez.
+
+## Teşhis kartı sürümü çekirdekten okur (2026-11-07)
+
+**Ölçülen kusur (ölü yüzey):** `system_info` komutu `generate_handler!`da kayıtlıydı
+ama **hiçbir yerden çağrılmıyordu** (`git grep system_info -- apps/desktop/src` boştu).
+Ayarlar'daki "Teşhis" kartı yalnız sabit metindi; ekranda görünen sürüm
+`package.json`dan geliyordu — yani **paketlenen arayüzün** sürümü. Çalışan ikilinin
+sürümü hiç okunmadığı için, ikili ile arayüz ayrışan bir kurulumda (elle kopyalama,
+yanlış paket, geri alınmış güncelleme) ekran farkında olmadan **yanlış sürüm**
+yazıyordu ve bunu gösterecek bir satır yoktu. `protocol_version` da hiçbir yerde
+görünmüyordu.
+
+**Yazılan:** `DiagnosticsCard` (Ayarlar → Teşhis) + `api.systemInfo` + `SystemInfo`:
+
+- Çekirdek sürümü (`env!("CARGO_PKG_VERSION")`), arayüz sürümü (`package.json`),
+  protokol sürümü ve platform. İkisi ayrışırsa **uyarı** satırı basılır; protokol
+  uyumsuzsa ayrı uyarı. Ayrışma gizlenmez.
+- Okuma düşerse sürüm **uydurulmaz**: satır "okunamadı" yazar, hata kodu ve ileti
+  görünür. Sözleşme dışı gövde (eksik alan/yanlış tip/boş sürüm) `parseSystemInfo`
+  ile reddedilir (`E_SYSTEM_INFO`) — eksik yanıtı sürüm saymak da uydurmadır.
+- Geç yanıt kapısı (`seqRef`): `main.tsx` StrictMode ile açıldığı için effect iki kez
+  koşar; yavaş dönen eski yanıt (ya da **geç hata**) yeni değeri ezmez.
+- Kart **kasa durumuna bağlı değildir** — `system_info` kasa açmadan yanıt verir ve
+  "hangi sürümü kurmuşum" sorusu tam olarak kasa açılamadığında sorulur.
+- Platform kodları marka adıyla (`macos` → macOS), **tanınmayan kod ham** yazılır.
+- 14 i18n anahtarı; gizlilik sınırı ekranda yazılı: yalnız sürüm/protokol/platform —
+  dosya yolu, kasa kimliği, kullanıcı bilgisi yok (REQ-033).
+- `lib/diagnostics.ts` + **kaynak kapısı** (`lib/diagnostics.test.ts`): çekirdek
+  sürümü crate üstverisinden okunmalı, komut `generate_handler!`da kayıtlı olmalı,
+  `api` bağı bulunmalı.
+
+**Kanıt (gerçek koşular):**
+
+- **Düzeltme öncesi:** HEAD `Settings.tsx` + yeni testler → **`1 failed | 33 passed`**
+  (düşen test: "sürüm çekirdekten okunur…"); geri yükleme sha256 birebir
+  (`5635ea26…f8e0`).
+- **Mutasyon 11/11 kırmızı:** M1 geç yanıt kapısı, M2 sürüm ayrışma uyarısı, M3 hata
+  satırı, M4 sözleşme dışı künye kapısı, M5 bilinmeyen platform ham, M6 protokol
+  uyumsuzluğu, M7 "Yenile" yeniden okuma, M8 çekirdek sürümü kaynağı, M9 geç hata
+  kapısı, M10 çekirdek sürümü gömülü sabite çevrildi (kaynak kapısı), M11 komut kaydı
+  silindi (kaynak kapısı).
+- **Dürüst (kendi ölçüm hatam):** M1 ve M9 ilk koşuda **yeşil kaldı** — iki test de
+  geç yanıtı **beklemiyordu** (`waitFor` eski değer yazılmadan geçiyordu). Testlere
+  açık bekleme eklendi, mutasyon yeniden ölçüldü (`1 failed`); kapı ölçülmeden
+  bırakılmadı.
+- Yerel: `tsc --noEmit` temiz · vitest **62 dosya / 1228 test** · `npm run build`
+  **622,72 kB** (`index-CwDOuVA5.js`, gzip **167,08 kB**).
+- **CI:** `42334337774` **10/10 YEŞİL**; `arayüz` **62 dosya / 1227 test**, paket
+  `index-G68jn6fB.js` **622,07 kB** / gzip **166,80 kB**. Yerel 1228 ile aradaki
+  **1 test farkı** ağaçta duran **başka ajanın** commit edilmemiş
+  `format.test.ts`/`Cases.test.tsx` değişiklikleridir (commit'te yok).
+
+**Dürüst sınırlar:** (a) `system_info` **komut olarak koşulmadı** (`State<AppState>`
+kuran test altyapısı yok; komut zaten state istemez) — kablolama derleme + kaynak
+kapısı, davranış arayüz düzeyinde `api` mock'lu; (b) ayrışma **gösterilir**, otomatik
+onarılmaz; (c) kart yalnız Ayarlar'da — kabuk başlığındaki sürüm hâlâ `package.json`dan
+(tek kaynak yapılması ayrı iş); (d) jsdom tarayıcı değil → gerçek Tauri penceresi ve
+**görsel QA insan bekliyor**.
 
 ## Hâlâ eksik
 
