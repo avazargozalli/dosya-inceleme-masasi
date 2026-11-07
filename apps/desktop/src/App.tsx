@@ -14,9 +14,10 @@ import {
   BACKUP_CHECK_MS,
   BACKUP_LAST_KEY,
   isBackupDue,
-  readBackupSettings,
+  readBackupLast,
   writeBackupAttempt,
 } from "./lib/backup-schedule";
+import { loadBackupSchedule } from "./lib/backup-config";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
@@ -108,17 +109,22 @@ export function App() {
     if (status.unlocked) lastActivity.current = Date.now();
   }, [status.unlocked]);
 
-  // Otomatik yedek: klasör seçilmişse ve süresi dolduysa kasa açıkken alınır.
-  // Kasa açıldığı anda ilk kontrol koşar; kilitliyken istek gönderilmez.
+  // Otomatik yedek: plan **kasada** (`settings`, kapsam `vault`) durur; kasa
+  // açıkken süresi dolunca yedek alınır. Cihaz kaydı yalnız göç kaynağı ve
+  // önbellektir. Kasa ayarı bozuksa yedek **alınmaz** (Ayarlar nedeni yazar).
   useEffect(() => {
     if (!status.unlocked) return;
     const run = async () => {
-      const settings = readBackupSettings();
-      if (!settings.dir) return;
-      if (!isBackupDue(settings.last, Date.now(), settings.days)) return;
+      // Okuma yolu kendi hatasını taşır; burada beklenmedik hata olursa yedek
+      // alınmaz (sessiz yutma yok — Ayarlar nedeni yazar).
+      const load = await loadBackupSchedule().catch(() => null);
+      if (!load) return;
+      if (load.source === "invalid" || !load.schedule) return;
+      const schedule = load.schedule;
+      if (!isBackupDue(readBackupLast(), Date.now(), schedule.days)) return;
       const at = new Date().toISOString();
       try {
-        await api.vaultBackup(settings.dir);
+        await api.vaultBackup(schedule.dir);
       } catch (e) {
         // Sessiz kal (modal/toast yok) ama deneme **kayda geçer**: Ayarlar'da
         // "son deneme" ve neden görünür; başarısız deneme tazeliği ilerletmez.

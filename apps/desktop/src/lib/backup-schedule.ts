@@ -126,3 +126,92 @@ export function clearBackupAttempt(): void {
     // sessiz
   }
 }
+
+/* ------------------------------------------------- kasa ayarı (settings) --- */
+
+/**
+ * Otomatik yedek planının **kasa içi** anahtarı (`settings`, kapsam `vault`).
+ * Plan kasa politikasıdır: kasayla taşınır, uygulama verisi silinince kaybolmaz.
+ * Cihaz kaydındaki eski anahtarlar yalnız göç kaynağı ve önbellektir.
+ */
+export const BACKUP_SCHEDULE_SETTING = "backup.schedule";
+
+/** Otomatik yedek planı: hedef klasör + aralık (gün). */
+export type BackupSchedule = { dir: string; days: number };
+
+/**
+ * Kasa ayarının değerini doğrular: `{ destination, days }`. Bozuk/eksik değer
+ * `null`dur — "plan yok" ile karışmaz (çağıran ikisini ayrı yazar).
+ */
+export function parseBackupSchedule(value: unknown): BackupSchedule | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const v = value as { destination?: unknown; days?: unknown };
+  if (typeof v.destination !== "string") return null;
+  const dir = v.destination.trim();
+  if (!dir) return null;
+  if (typeof v.days !== "number" || !Number.isInteger(v.days)) return null;
+  // 1..365: sıfır/negatif aralık "her kontrol yedek al" demek olurdu; üst sınır
+  // yıllık bir planı kabul etmez (kaza ile yedeksiz kalmayı önler).
+  if (v.days < 1 || v.days > 365) return null;
+  return { dir, days: v.days };
+}
+
+/** Planı kasa ayarına yazılacak JSON değerine çevirir (kırpılmış hedef). */
+export function backupScheduleValue(schedule: BackupSchedule): {
+  destination: string;
+  days: number;
+} {
+  return { destination: schedule.dir.trim(), days: schedule.days };
+}
+
+/**
+ * Cihaz kaydındaki **eski** plan (göç kaynağı / okunamazsa önbellek).
+ * Hedef boşsa `null`; bozuk aralık varsayılana döner (uydurma değer yazılmaz).
+ */
+export function readLegacyBackupSchedule(): BackupSchedule | null {
+  try {
+    const dir = (localStorage.getItem(BACKUP_DIR_KEY) ?? "").trim();
+    if (!dir) return null;
+    const raw = Number(localStorage.getItem(BACKUP_DAYS_KEY) ?? DEFAULT_BACKUP_DAYS);
+    const days = Number.isInteger(raw) && raw >= 1 && raw <= 365 ? raw : DEFAULT_BACKUP_DAYS;
+    return { dir, days };
+  } catch {
+    return null;
+  }
+}
+
+/** Göç tamamlandıktan sonra eski anahtarlar silinir (bayat değer geri gelmesin). */
+export function clearLegacyBackupSchedule(): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.removeItem(BACKUP_DIR_KEY);
+    store.removeItem(BACKUP_DAYS_KEY);
+  } catch {
+    // sessiz: kota/izin hatası göçü geri almaz
+  }
+}
+
+/** Son **başarılı** yedek zamanı (cihaz kaydı). Kasa geçmişi `backup_runs`ta. */
+export function readBackupLast(): string | null {
+  try {
+    return localStorage.getItem(BACKUP_LAST_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kasa ayarı **doğrulanarak** yazıldıktan sonra cihaz önbelleği tazelenir.
+ * Önbellek yalnız kasa okunamadığında kullanılır; kaynak yine kasadır.
+ */
+export function cacheBackupSchedule(schedule: BackupSchedule): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(BACKUP_DIR_KEY, schedule.dir);
+    store.setItem(BACKUP_DAYS_KEY, String(schedule.days));
+  } catch {
+    // sessiz: önbellek yazılamazsa yedek planı kasadan okunur
+  }
+}

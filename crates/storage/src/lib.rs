@@ -32,6 +32,7 @@ mod precedents;
 pub mod queue;
 mod redactions;
 mod review_commit;
+pub mod settings;
 mod tags;
 mod tasks;
 mod timeline;
@@ -101,6 +102,9 @@ pub use redactions::{
 };
 pub use review_commit::{
     OutboxEventRow, ReviewCommitResult, ReviewTarget, EVENT_DECISION_COMMITTED, EVENT_ITEM_DECIDED,
+};
+pub use settings::{
+    SettingRow, MAX_SETTING_KEY, MAX_SETTING_LIST, MAX_SETTING_VALUE_BYTES, SETTING_SCOPES,
 };
 pub use tags::{CaseTagRow, DocumentTagRow, MAX_TAG_CHARS};
 pub use tasks::{NewTask, ReminderEnqueueResult, ReminderRow, TaskRow, EVENT_TASK_REMINDER};

@@ -1310,6 +1310,20 @@ export type BackupRunRow = {
   completedAt: string | null;
 };
 
+/**
+ * Kasa ayarı (`settings` tablosu). Şartname kasa ayarı ile cihaz/UI ayarını
+ * **ayrı** tutar; bu tipteki `scope` daima `vault`tur (komutlar kapsamı sabitler).
+ * `value` yazılmış JSON değeridir — biçimini çağıran sözleşme belirler.
+ */
+export type SettingRow = {
+  scope: string;
+  key: string;
+  value: unknown;
+  /** Aynı anahtar kaç kez yazıldı; ilk yazım 1. */
+  version: number;
+  updatedAt: string;
+};
+
 export type RestoreResult = {
   vaultPath: string;
   fileCount: number;
@@ -1849,6 +1863,13 @@ export const api = {
   lockVault: () => invoke<void>("vault_lock"),
   vaultBackup: (destDir: string) => invoke<BackupResult>("vault_backup", { destDir }),
   backupRunList: (limit = 20) => invoke<BackupRunRow[]>("backup_run_list", { limit }),
+  /** Kasa ayarı okur (kapsam `vault`). Kayıt yoksa `null` — "boş değer" değil. */
+  vaultSettingGet: (key: string) => invoke<SettingRow | null>("vault_setting_get", { key }),
+  /** Kasa ayarını yazar ve **geri okunan** satırı döndürür (sürüm artar). */
+  vaultSettingSet: (key: string, value: unknown) =>
+    invoke<SettingRow>("vault_setting_set", { key, value }),
+  /** Kasa ayarını siler; satır var mıydı bilgisini döndürür. */
+  vaultSettingDelete: (key: string) => invoke<boolean>("vault_setting_delete", { key }),
   vaultGc: (dryRun: boolean) => invoke<VaultGcResult>("vault_gc", { dryRun }),
   vaultChangePassword: (oldPassword: string, newPassword: string) =>
     invoke<void>("vault_change_password", { oldPassword, newPassword }),

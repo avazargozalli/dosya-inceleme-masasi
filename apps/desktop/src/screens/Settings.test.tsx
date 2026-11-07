@@ -72,6 +72,7 @@ import {
   BACKUP_DAYS_KEY,
   BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
+  DEFAULT_BACKUP_DAYS,
   writeBackupAttempt,
 } from "../lib/backup-schedule";
 import { formatDateTime, formatSize } from "../lib/format";
@@ -92,6 +93,7 @@ import type {
   PreUpdateBackup,
   RestoreResult,
   RollbackResult,
+  SettingRow,
   SystemInfo,
   VaultGcResult,
   VaultStatus,
@@ -104,6 +106,9 @@ const mocks = vi.hoisted(() => ({
   vaultRollbackPreUpdate: vi.fn(),
   vaultBackup: vi.fn(),
   backupRunList: vi.fn(),
+  vaultSettingGet: vi.fn(),
+  vaultSettingSet: vi.fn(),
+  vaultSettingDelete: vi.fn(),
   vaultGc: vi.fn(),
   vaultRestore: vi.fn(),
   vaultChangePassword: vi.fn(),
@@ -259,6 +264,8 @@ type SetupOptions = {
   historyError?: { code: string; message: string; retryable: boolean };
   /** Teşhis kartının çekirdekten okuyacağı künye (varsayılan: paket sürümüyle aynı). */
   core?: SystemInfo;
+  /** Kasa ayarındaki otomatik yedek planı (varsayılan: kayıt yok → göç/önbellek). */
+  scheduleRow?: SettingRow | null;
 };
 
 function setup(options: SetupOptions = {}) {
@@ -287,6 +294,13 @@ function setup(options: SetupOptions = {}) {
   } else {
     mocks.backupRunList.mockResolvedValue(options.history ?? []);
   }
+  // Otomatik yedek planı kasa ayarından okunur; varsayılan **kayıt yok**.
+  // Yazım, geri okunan satırı döndürür (doğrulama yolu gerçek).
+  mocks.vaultSettingGet.mockResolvedValue(options.scheduleRow ?? null);
+  mocks.vaultSettingSet.mockImplementation((key: string, value: unknown) =>
+    Promise.resolve({ scope: "vault", key, value, version: 1, updatedAt: ISO }),
+  );
+  mocks.vaultSettingDelete.mockResolvedValue(true);
   dialog.open.mockResolvedValue(null);
   render(<Settings />);
 }
@@ -588,26 +602,33 @@ describe("ayarlar ekranı davranışı", () => {
     expect(text).not.toContain(BACKUP_RESULT.path);
   });
 
-  it("otomatik yedek ayarları yerel kayıttan okunur; kapat/sıfırla yalnız kendi anahtarını siler", async () => {
-    localStorage.setItem(BACKUP_DIR_KEY, "/Volumes/OtoYedek");
-    localStorage.setItem(BACKUP_DAYS_KEY, "3");
+  it("otomatik yedek planı kasadan okunur; kapat planı ve önbelleği birlikte siler", async () => {
     localStorage.setItem(BACKUP_LAST_KEY, "2026-10-28T06:00:00.000Z");
-    setup();
+    setup({
+      scheduleRow: {
+        scope: "vault",
+        key: "backup.schedule",
+        value: { destination: "/Volumes/OtoYedek", days: 3 },
+        version: 2,
+        updatedAt: ISO,
+      },
+    });
 
     expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
     const auto = cardOf(t("settings.autoTitle"));
     expect(auto.textContent).toContain("/Volumes/OtoYedek");
     expect(auto.textContent).toContain(t("settings.autoDaysValue", { days: 3 }));
     expect(auto.textContent).toContain(formatDateTime("2026-10-28T06:00:00.000Z"));
+    // Plan kasadan geldi: okuma hatası/uyarısı yok.
+    expect(within(auto).queryByRole("alert")).toBeNull();
 
     const disable = within(auto).getByRole("button", { name: t("settings.autoDisable") }) as HTMLButtonElement;
     expect(disable.disabled).toBe(false);
     fireEvent.click(disable);
-    expect(localStorage.getItem(BACKUP_DIR_KEY)).toBeNull();
-    // Aralık ve son yedek kaydı korunur.
-    expect(localStorage.getItem(BACKUP_DAYS_KEY)).toBe("3");
-    expect(localStorage.getItem(BACKUP_LAST_KEY)).not.toBeNull();
+    await waitFor(() => expect(mocks.vaultSettingDelete).toHaveBeenCalledWith("backup.schedule"));
     expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoDirNone"));
+    // "Kapat" yalnız planı siler; son yedek kaydı korunur.
+    expect(localStorage.getItem(BACKUP_LAST_KEY)).not.toBeNull();
 
     const reset = within(cardOf(t("settings.autoTitle"))).getByRole("button", {
       name: t("settings.autoReset"),
@@ -616,6 +637,85 @@ describe("ayarlar ekranı davranışı", () => {
     fireEvent.click(reset);
     expect(localStorage.getItem(BACKUP_LAST_KEY)).toBeNull();
     expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoLastNone"));
+  });
+
+  it("klasör seçimi planı kasaya yazar; cihaz kaydı yalnız doğrulanmış önbellektir", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    dialog.open.mockResolvedValue("/Volumes/YeniYedek");
+    fireEvent.click(within(auto).getByRole("button", { name: t("settings.autoPick") }));
+
+    await waitFor(() =>
+      expect(mocks.vaultSettingSet).toHaveBeenCalledWith("backup.schedule", {
+        destination: "/Volumes/YeniYedek",
+        days: DEFAULT_BACKUP_DAYS,
+      }),
+    );
+    // Ekran **geri okunan** değeri yazar; seçimden bağımsız "etkin" denmez.
+    expect(cardOf(t("settings.autoTitle")).textContent).toContain("/Volumes/YeniYedek");
+    expect(localStorage.getItem(BACKUP_DIR_KEY)).toBe("/Volumes/YeniYedek");
+    expect(localStorage.getItem(BACKUP_DAYS_KEY)).toBe(String(DEFAULT_BACKUP_DAYS));
+    expect(within(cardOf(t("settings.autoTitle"))).queryByRole("alert")).toBeNull();
+  });
+
+  it("kasa ayarı yazılamazsa plan etkin sayılmaz: klasör seçilmedi kalır, neden yazılır", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    dialog.open.mockResolvedValue("/Volumes/YeniYedek");
+    mocks.vaultSettingSet.mockRejectedValue({
+      code: "E_IO",
+      message: "hedef disk yok",
+      retryable: true,
+    });
+    fireEvent.click(within(auto).getByRole("button", { name: t("settings.autoPick") }));
+
+    await waitFor(() => expect(mocks.vaultSettingSet).toHaveBeenCalled());
+    expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoDirNone"));
+    expect(localStorage.getItem(BACKUP_DIR_KEY)).toBeNull();
+    expect(notices().join("\n")).toContain("E_IO");
+  });
+
+  it("kasadaki bozuk plan yedek planı sayılmaz; neden görünür, cihaz kaydıyla ezilmez", async () => {
+    setup({
+      scheduleRow: {
+        scope: "vault",
+        key: "backup.schedule",
+        value: { destination: "   ", days: 0 },
+        version: 1,
+        updatedAt: ISO,
+      },
+    });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    await waitFor(() =>
+      expect(auto.textContent).toContain(
+        t("settings.autoSettingInvalid", { code: "E_DB_SETTING" }),
+      ),
+    );
+    expect(auto.textContent).toContain(t("settings.autoDirNone"));
+    // Bozuk kasa ayarı "yok" sayılıp cihaz kaydıyla ezilmez.
+    expect(mocks.vaultSettingSet).not.toHaveBeenCalled();
+  });
+
+  it("cihaz kaydındaki eski plan kasaya bir kez taşınır, eski anahtarlar silinir", async () => {
+    localStorage.setItem(BACKUP_DIR_KEY, "/Volumes/EskiYedek");
+    localStorage.setItem(BACKUP_DAYS_KEY, "5");
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    await waitFor(() =>
+      expect(mocks.vaultSettingSet).toHaveBeenCalledWith("backup.schedule", {
+        destination: "/Volumes/EskiYedek",
+        days: 5,
+      }),
+    );
+    const auto = cardOf(t("settings.autoTitle"));
+    expect(auto.textContent).toContain(t("settings.autoSettingMigrated"));
+    // Taşındıktan sonra eski anahtarlar silinir: bayat değer geri gelmez.
+    expect(localStorage.getItem(BACKUP_DIR_KEY)).toBeNull();
+    expect(localStorage.getItem(BACKUP_DAYS_KEY)).toBeNull();
   });
 
   it("son başarılı yedek ile son deneme ayrı gösterilir; başarısız denemenin nedeni yazılır", async () => {

@@ -1177,6 +1177,15 @@ export const tr = {
     autoNext: "Sıradaki plan",
     autoNextDue: "süresi doldu — sonraki kontrolde",
     autoNextNone: "klasör seçilince",
+    autoSettingMigrated: "Cihaz kaydındaki plan kasaya taşındı; bundan sonra kasa ayarı geçerli.",
+    autoSettingLegacy:
+      "Kasa ayarı kullanılamadı ({code}); cihaz kaydındaki plan kullanılıyor. Klasörü yeniden seçmek planı kasaya yazar.",
+    autoSettingReadFailed: "Otomatik yedek planı kasadan okunamadı ({code}); yedek alınmıyor.",
+    autoSettingInvalid:
+      "Kasadaki otomatik yedek ayarı bozuk ({code}); yedek alınmıyor. Klasörü yeniden seçin.",
+    autoScheduleInvalid: "Otomatik yedek planı geçersiz: hedef klasör ve 1–365 gün aralığı gerekir.",
+    autoScheduleVerify:
+      "Kasa ayarı yazıldı ama geri okunan değer beklenen değil; plan etkin sayılmadı.",
     autoDisable: "Otomatik yedeği kapat",
     autoReset: "Sıfırla",
     autoResetTitle: "Bir sonraki kontrolde yeniden yedek alınır",

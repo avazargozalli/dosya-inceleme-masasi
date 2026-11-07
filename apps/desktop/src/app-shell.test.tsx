@@ -48,6 +48,9 @@ const mocks = vi.hoisted(() => ({
   lockVault: vi.fn(),
   openVault: vi.fn(),
   vaultBackup: vi.fn(),
+  vaultSettingGet: vi.fn(),
+  vaultSettingSet: vi.fn(),
+  vaultSettingDelete: vi.fn(),
   caseList: vi.fn(),
   documentList: vi.fn(),
 }));
@@ -62,6 +65,9 @@ vi.mock("./lib/api", async (importOriginal) => {
       lockVault: mocks.lockVault,
       openVault: mocks.openVault,
       vaultBackup: mocks.vaultBackup,
+      vaultSettingGet: mocks.vaultSettingGet,
+      vaultSettingSet: mocks.vaultSettingSet,
+      vaultSettingDelete: mocks.vaultSettingDelete,
       caseList: mocks.caseList,
       documentList: mocks.documentList,
     },
@@ -146,6 +152,19 @@ beforeEach(() => {
   mocks.vaultBackup.mockResolvedValue({});
   mocks.caseList.mockResolvedValue([]);
   mocks.documentList.mockResolvedValue([]);
+  // Otomatik yedek planı kasa ayarından okunur: varsayılan **kayıt yok**.
+  // (Cihaz kaydında hedef varsa göç yolu yazar; yazım geri okunan satır döner.)
+  mocks.vaultSettingGet.mockResolvedValue(null);
+  mocks.vaultSettingSet.mockImplementation((key: string, value: unknown) =>
+    Promise.resolve({
+      scope: "vault",
+      key,
+      value,
+      version: 1,
+      updatedAt: "2026-11-03T09:00:00.000Z",
+    }),
+  );
+  mocks.vaultSettingDelete.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -462,6 +481,40 @@ describe("kabuk: otomatik yedek", () => {
     expect(mocks.vaultBackup).not.toHaveBeenCalled();
   });
 
+  it("plan kasadan okunur: cihaz kaydı boşken de süresi dolmuş yedek alınır", async () => {
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.vaultSettingGet.mockResolvedValue({
+      scope: "vault",
+      key: "backup.schedule",
+      value: { destination: "/Volumes/KasaAyar", days: 7 },
+      version: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+
+    await mount();
+
+    expect(mocks.vaultBackup).toHaveBeenCalledWith("/Volumes/KasaAyar");
+    expect(readBackupAttempt()?.ok).toBe(true);
+  });
+
+  it("kasadaki bozuk plan yedek almaz; cihaz kaydındaki hedef onu ezmez", async () => {
+    localStorage.setItem(BACKUP_DIR_KEY, "/yedek");
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.vaultSettingGet.mockResolvedValue({
+      scope: "vault",
+      key: "backup.schedule",
+      value: { destination: "", days: 0 },
+      version: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+
+    await mount();
+    await tickActive(BACKUP_CHECK_MS * 2);
+
+    expect(mocks.vaultBackup).not.toHaveBeenCalled();
+    expect(readBackupAttempt()).toBeNull();
+  });
+
   it("kasa kilitliyken yedek isteği gönderilmez", async () => {
     localStorage.setItem(BACKUP_DIR_KEY, "/yedek");
     mocks.status.mockResolvedValue(LOCKED);
@@ -474,7 +527,14 @@ describe("kabuk: otomatik yedek", () => {
   });
 
   it("yedek düşerse sessiz kalır ve sonraki saatlik kontrolde yeniden denenir", async () => {
-    localStorage.setItem(BACKUP_DIR_KEY, "/yedek");
+    // Plan kasa ayarında: ilk deneme düşse de plan yerinde kalır (göç tek seferlik).
+    mocks.vaultSettingGet.mockResolvedValue({
+      scope: "vault",
+      key: "backup.schedule",
+      value: { destination: "/yedek", days: 7 },
+      version: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
     mocks.status.mockResolvedValue(UNLOCKED);
     mocks.vaultBackup
       .mockRejectedValueOnce({

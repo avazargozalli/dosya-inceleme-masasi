@@ -36,8 +36,8 @@ use dim_storage::{
     ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
     RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
     ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, TaskRow,
-    TransferConsentListRow, TransferConsentRow, TransferReceiptRow,
+    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
+    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -3084,6 +3084,40 @@ pub fn backup_run_list(
         .unwrap_or(20)
         .clamp(1, dim_storage::MAX_BACKUP_RUN_LIST);
     Ok(db.list_backup_runs(limit)?)
+}
+
+/// **Kasa ayarı** okur. Kapsam daima `vault`tur: şartname kasa ayarı ile
+/// cihaz/UI ayarını ayrı tutar, bu yüzden komut kapsam **almaz** (cihaz ayarı
+/// kasanın içine yazılmaz). Ayar yoksa `None` döner — boş/bozuk değer değil.
+#[tauri::command]
+pub fn vault_setting_get(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<Option<SettingRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.get_setting("vault", &key)?)
+}
+
+/// Kasa ayarını yazar ve **geri okunan** satırı döndürür (sürüm artar).
+/// Değer JSON'dur; `null` ve 8 KiB üstü reddedilir (çekirdek kapısı).
+#[tauri::command]
+pub fn vault_setting_set(
+    state: State<'_, AppState>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<SettingRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.set_setting("vault", &key, &value)?)
+}
+
+/// Kasa ayarını siler; **satır var mıydı** bilgisini döndürür (sessiz yutma yok).
+#[tauri::command]
+pub fn vault_setting_delete(state: State<'_, AppState>, key: String) -> Result<bool, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.delete_setting("vault", &key)?)
 }
 
 /// Hazırlık dizinine yedeği yazar, manifesti üretir ve yedeğin açıldığını

@@ -20,12 +20,19 @@ import { formatDateTime, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
 import { version as appVersion } from "../../package.json";
 import {
-  BACKUP_DAYS_KEY,
-  BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
+  DEFAULT_BACKUP_DAYS,
   nextBackupAt,
+  readBackupLast,
   readBackupStatus,
 } from "../lib/backup-schedule";
+import {
+  clearBackupSchedule,
+  loadBackupSchedule,
+  saveBackupSchedule,
+  type BackupScheduleLoad,
+  type BackupScheduleSource,
+} from "../lib/backup-config";
 import {
   backupStatusText,
   backupVersionLabel,
@@ -78,6 +85,10 @@ export function Settings() {
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [gc, setGc] = useState<VaultGcResult | null>(null);
   const [autoBackup, setAutoBackup] = useState(() => readBackupStatus());
+  // Planın kaynağı ve okuma hatası: "plan yok" ile "okunamadı" ayrı yazılır.
+  const [scheduleSource, setScheduleSource] = useState<BackupScheduleSource | null>(null);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const scheduleSeq = useRef(0);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPassword2, setNewPassword2] = useState("");
@@ -181,6 +192,44 @@ export function Settings() {
     }
     void loadHistory();
   }, [unlocked]);
+
+  /**
+   * Otomatik yedek planı **kasadan** okunur (`settings`, kapsam `vault`).
+   * Cihaz kaydındaki eski plan bir kez kasaya taşınır; taşınamazsa plan yine
+   * kullanılır ama kaynak `legacy` ve hata kodu yazılır — "kasadan okundu"
+   * denmez. Kilitliyken okuma yapılmaz.
+   */
+  useEffect(() => {
+    if (!unlocked) {
+      scheduleSeq.current += 1;
+      setScheduleSource(null);
+      setScheduleError(null);
+      return;
+    }
+    const seq = ++scheduleSeq.current;
+    void loadBackupSchedule()
+      .then((load) => {
+        if (seq !== scheduleSeq.current) return;
+        applySchedule(load);
+      })
+      .catch((e) => {
+        // Okuma yolu kendi hatalarını taşır; buraya düşen beklenmedik bir
+        // hatadır ve "plan yok" diye yazılmaz.
+        if (seq !== scheduleSeq.current) return;
+        setScheduleError(toApiError(e).code);
+        setScheduleSource("none");
+      });
+  }, [unlocked]);
+
+  function applySchedule(load: BackupScheduleLoad) {
+    setScheduleSource(load.source);
+    setScheduleError(load.error);
+    setAutoBackup((prev) => ({
+      ...prev,
+      dir: load.schedule?.dir ?? "",
+      days: load.schedule?.days ?? DEFAULT_BACKUP_DAYS,
+    }));
+  }
 
   /**
    * Denetim defteri okuması. Liste **istekten önce** temizlenir: düşen bir
@@ -830,9 +879,21 @@ export function Settings() {
             onClick={async () => {
               const picked = await pickDirectory(t("settings.backupPick"));
               if (picked === null) return;
-              localStorage.setItem(BACKUP_DIR_KEY, picked);
-              localStorage.setItem(BACKUP_DAYS_KEY, "7");
-              setAutoBackup(readBackupStatus());
+              setScheduleError(null);
+              try {
+                // Plan **kasaya** yazılır ve geri okunarak doğrulanır; cihaz
+                // kaydı yalnız doğrulanmış yazımdan sonra tazelenir.
+                const saved = await saveBackupSchedule({
+                  dir: picked,
+                  days: DEFAULT_BACKUP_DAYS,
+                });
+                setScheduleSource("vault");
+                setAutoBackup((prev) => ({ ...prev, dir: saved.dir, days: saved.days }));
+              } catch (e) {
+                const err = toApiError(e);
+                setScheduleError(err.code);
+                setError(err);
+              }
             }}
           >
             {t("settings.autoPick")}
@@ -858,6 +919,19 @@ export function Settings() {
           <dt>{t("settings.autoNext")}</dt>
           <dd>{nextPlanText()}</dd>
         </dl>
+        {/* Plan kaynağı/hatası **gizlenmez**: "seçilmedi" ile "okunamadı" ayrı. */}
+        {scheduleError ? (
+          <p className="notice danger" role="alert">
+            {scheduleSource === "invalid"
+              ? t("settings.autoSettingInvalid", { code: scheduleError })
+              : scheduleSource === "legacy"
+                ? t("settings.autoSettingLegacy", { code: scheduleError })
+                : t("settings.autoSettingReadFailed", { code: scheduleError })}
+          </p>
+        ) : null}
+        {scheduleSource === "migrated" ? (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.autoSettingMigrated")}</p>
+        ) : null}
         {autoBackup.attempt && !autoBackup.attempt.ok ? (
           <p className="notice danger" role="alert">
             {t("settings.autoAttemptReason", {
@@ -869,9 +943,19 @@ export function Settings() {
           <button
             className="btn ghost"
             disabled={!autoBackup.dir}
-            onClick={() => {
-              localStorage.removeItem(BACKUP_DIR_KEY);
-              setAutoBackup(readBackupStatus());
+            onClick={async () => {
+              setScheduleError(null);
+              try {
+                // Plan kasadan silinir; cihaz önbelleği de temizlenir. Başarısız
+                // silmede ekran "kapandı" demez.
+                await clearBackupSchedule();
+                setScheduleSource("none");
+                setAutoBackup((prev) => ({ ...prev, dir: "", days: DEFAULT_BACKUP_DAYS }));
+              } catch (e) {
+                const err = toApiError(e);
+                setScheduleError(err.code);
+                setError(err);
+              }
             }}
           >
             {t("settings.autoDisable")}
@@ -881,7 +965,7 @@ export function Settings() {
             disabled={!autoBackup.last}
             onClick={() => {
               localStorage.removeItem(BACKUP_LAST_KEY);
-              setAutoBackup(readBackupStatus());
+              setAutoBackup((prev) => ({ ...prev, last: readBackupLast() }));
             }}
             title={t("settings.autoResetTitle")}
           >

@@ -47,6 +47,10 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
+    /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
+    /// ayrıdır çünkü **neden** taşır (hangi anahtar, hangi kural).
+    #[error("geçersiz kasa ayarı: {reason}")]
+    SettingInvalid { reason: String },
     #[error("geçersiz etiket: boş, kontrol karakterli veya 40 karakterden uzun")]
     InvalidTag,
     #[error("geçersiz arama filtresi: {0}")]
@@ -171,6 +175,7 @@ impl StorageError {
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
             Self::InvalidSetting => "E_DB_SETTING",
+            Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
             Self::SearchFilter(_) => "E_SEARCH_FILTER",
             Self::SearchQuery(_) => "E_SEARCH_QUERY",
