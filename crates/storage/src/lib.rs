@@ -8,6 +8,7 @@ mod ai;
 mod ai_candidate;
 mod anchors;
 pub mod atomic;
+pub mod audit;
 pub mod backup;
 mod cases;
 mod checklists;
@@ -43,6 +44,7 @@ pub use ai_candidate::{
     CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};
+pub use audit::{AuditChainStatus, AuditEventRow, DEFAULT_AUDIT_EVENTS, MAX_AUDIT_EVENTS};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use checklists::{
     CaseChecklistItemRow, ChecklistCopyResult, ChecklistTemplateRef, ChecklistTemplateRow,
@@ -685,65 +687,19 @@ impl Database {
     }
 
     /// Denetim zincirini baştan sona doğrular (hash kopukluğu = kurcalama).
+    ///
+    /// Yürüyüş `audit::walk_chain` ile **paylaşılır**; `audit_chain_status` aynı
+    /// yürüyüşü durum olarak döndürür (hash kuralı tek yerde).
     pub fn verify_audit_chain(&self) -> Result<usize, StorageError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, category, entity_id, operation, actor_label, metadata_allowlist, prior_hash, event_hash, timestamp
-             FROM audit_events ORDER BY sequence ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-            ))
-        })?;
-
-        let mut prior: Option<String> = None;
-        let mut count = 0usize;
-        for row in rows {
-            let (
-                id,
-                category,
-                entity_id,
-                operation,
-                actor_label,
-                metadata,
-                prior_hash,
-                event_hash,
-                timestamp,
-            ) = row?;
-            if prior_hash != prior {
-                return Err(StorageError::Integrity(format!(
-                    "denetim zinciri koptu: {id}"
-                )));
-            }
-            let canonical = serde_json::json!({
-                "id": id.clone(),
-                "category": category,
-                "entityId": entity_id,
-                "operation": operation,
-                "actor": actor_label,
-                "metadata": serde_json::from_str::<serde_json::Value>(&metadata).unwrap_or(serde_json::Value::Null),
-                "priorHash": prior_hash,
-                "timestamp": timestamp,
-            });
-            let mut hasher = Sha256::new();
-            hasher.update(canonical.to_string().as_bytes());
-            if hex::encode(hasher.finalize()) != event_hash {
-                return Err(StorageError::Integrity(format!(
-                    "denetim kaydı bozulmuş: {id}"
-                )));
-            }
-            prior = Some(event_hash);
-            count += 1;
+        let walk = audit::walk_chain(&self.conn)?;
+        match walk.broken {
+            None => Ok(walk.checked),
+            Some(broken) => Err(StorageError::Integrity(if broken.reason == "prior_hash" {
+                format!("denetim zinciri koptu: {}", broken.event_id)
+            } else {
+                format!("denetim kaydı bozulmuş: {}", broken.event_id)
+            })),
         }
-        Ok(count)
     }
 }
 

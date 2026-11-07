@@ -176,6 +176,8 @@ pub fn run() {
             commands::vault_pre_update_backups,
             commands::vault_rollback_pre_update,
             commands::system_info,
+            commands::audit_event_list,
+            commands::audit_chain_check,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri uygulaması başlatılamadı");

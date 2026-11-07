@@ -82,6 +82,8 @@ import {
   rollbackSummary,
 } from "../lib/rollback";
 import type {
+  AuditChainStatus,
+  AuditEventRow,
   BackupResult,
   JobQueueView,
   PreUpdateBackup,
@@ -102,6 +104,8 @@ const mocks = vi.hoisted(() => ({
   vaultChangePassword: vi.fn(),
   jobQueueStatus: vi.fn(),
   workerBudgets: vi.fn(),
+  auditEventList: vi.fn(),
+  auditChainCheck: vi.fn(),
 }));
 
 const dialog = vi.hoisted(() => ({ open: vi.fn() }));
@@ -226,6 +230,8 @@ type SetupOptions = {
   status?: VaultStatus;
   backups?: PreUpdateBackup[];
   budgets?: WorkerBudgetProfile[];
+  audit?: AuditEventRow[];
+  auditChain?: AuditChainStatus;
 };
 
 function setup(options: SetupOptions = {}) {
@@ -233,6 +239,17 @@ function setup(options: SetupOptions = {}) {
   mocks.vaultPreUpdateBackups.mockResolvedValue(options.backups ?? [B_OK, B_BAD]);
   mocks.jobQueueStatus.mockResolvedValue(QUEUE_EMPTY);
   mocks.workerBudgets.mockResolvedValue(options.budgets ?? []);
+  // Denetim defteri varsayılanı: boş ama **başarılı** okuma (ekran "kayıt yok"
+  // yazabilir). Testler kendi senaryosunda ezer.
+  mocks.auditEventList.mockResolvedValue(options.audit ?? []);
+  mocks.auditChainCheck.mockResolvedValue(
+    options.auditChain ?? {
+      checked: 0,
+      intact: true,
+      brokenEventId: null,
+      brokenReason: null,
+    },
+  );
   dialog.open.mockResolvedValue(null);
   render(<Settings />);
 }
@@ -1029,5 +1046,223 @@ describe("ayarlar ekranı uçuş yolları", () => {
     expect(alert.textContent).toContain("E_DIALOG");
     expect(alert.textContent).toContain(t("settings.pickDirFailed"));
     expect(mocks.vaultRestore).not.toHaveBeenCalled();
+  });
+});
+
+/* --------------------------------------------------- denetim zinciri (F03) */
+
+const ENTITY_LONG = "11111111-2222-3333-4444-555555555555";
+
+/**
+ * Çekirdek **en yeni önce** döndürür (`sequence DESC`). İki satırın
+ * `timestamp`i bilinçli olarak ters verilir: arayüz kendi başına sıralarsa
+ * (yanlış) sıra değişir, bu test onu yakalar.
+ */
+const AUDIT_ROWS: AuditEventRow[] = [
+  {
+    sequence: 12,
+    id: "ev-12",
+    category: "document",
+    entityId: ENTITY_LONG,
+    operation: "import",
+    actorLabel: "local-user",
+    metadata: { bytes: 10 },
+    priorHash: "aa11",
+    eventHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    timestamp: "2026-11-01T09:00:00.000Z",
+  },
+  {
+    sequence: 11,
+    id: "ev-11",
+    category: "yeni_kategori",
+    entityId: null,
+    operation: "create",
+    actorLabel: "local-user",
+    metadata: null,
+    priorHash: null,
+    eventHash: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    timestamp: "2026-11-01T10:00:00.000Z",
+  },
+];
+
+function auditCard(): HTMLElement {
+  return cardOf(t("settings.auditTitle"));
+}
+
+describe("denetim zinciri kartı", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("açık kasada defter okunur; sıra çekirdekten gelir ve bilinmeyen kategori gizlenmez", async () => {
+    setup({ audit: AUDIT_ROWS });
+
+    const table = await within(auditCard()).findByRole("table");
+    expect(mocks.auditEventList).toHaveBeenCalledTimes(1);
+    expect(mocks.auditEventList).toHaveBeenCalledWith(50);
+
+    const rows = within(table).getAllByRole("row");
+    // Başlık + iki kayıt; ilk veri satırı çekirdeğin verdiği ilk satırdır.
+    expect(rows).toHaveLength(3);
+    const first = rows[1]!;
+    const second = rows[2]!;
+    expect(first.textContent).toContain("import");
+    expect(second.textContent).toContain("yeni_kategori");
+    expect(second.textContent).toContain("create");
+    // Uzun kimlik kısaltılır, tam değer title'da durur (kaybolmaz).
+    const entityCell = within(first).getByTitle(ENTITY_LONG);
+    expect(entityCell.textContent).toBe("11111111…");
+    // Özet kısaltılır ama tam özet title'dadır.
+    expect(within(first).getByTitle(AUDIT_ROWS[0]!.eventHash)).toBeTruthy();
+    expect(within(auditCard()).queryByText(t("settings.auditEmpty"))).toBeNull();
+    // Şartname sınırı ekranda yazılı: bu defter resmî delil iddiası taşımaz.
+    expect(within(auditCard()).getByText(t("settings.auditSub"))).toBeTruthy();
+  });
+
+  it("kasa kilitliyken defter istenmez, doğrulama düğmesi kapalıdır", async () => {
+    setup({ status: LOCKED, audit: AUDIT_ROWS });
+
+    expect(await screen.findByText(t("settings.vaultLockedBadge"))).toBeTruthy();
+    expect(within(auditCard()).getByText(t("settings.auditLocked"))).toBeTruthy();
+    const verify = within(auditCard()).getByRole("button", {
+      name: t("settings.auditVerify"),
+    }) as HTMLButtonElement;
+    expect(verify.disabled).toBe(true);
+    expect(mocks.auditEventList).not.toHaveBeenCalled();
+    expect(mocks.auditChainCheck).not.toHaveBeenCalled();
+  });
+
+  it("tutarlı zincir doğrulanan kayıt sayısıyla yazılır", async () => {
+    setup({
+      audit: AUDIT_ROWS,
+      auditChain: { checked: 12, intact: true, brokenEventId: null, brokenReason: null },
+    });
+    await within(auditCard()).findByRole("table");
+
+    fireEvent.click(
+      within(auditCard()).getByRole("button", { name: t("settings.auditVerify") }),
+    );
+
+    const status = await within(auditCard()).findByRole("status");
+    expect(status.textContent).toContain(t("settings.auditIntact"));
+    expect(status.textContent).toContain(t("settings.auditIntactCount", { count: 12 }));
+    expect(within(auditCard()).queryByText(t("settings.auditBroken"))).toBeNull();
+  });
+
+  it("kopuklukta neden ve kayıt kimliği yazılır, 'doğrulandı' denmez", async () => {
+    setup({
+      audit: AUDIT_ROWS,
+      auditChain: {
+        checked: 3,
+        intact: false,
+        brokenEventId: "ev-9",
+        brokenReason: "event_hash",
+      },
+    });
+    await within(auditCard()).findByRole("table");
+
+    fireEvent.click(
+      within(auditCard()).getByRole("button", { name: t("settings.auditVerify") }),
+    );
+
+    const alert = await within(auditCard()).findByRole("alert");
+    expect(alert.textContent).toContain(t("settings.auditBroken"));
+    expect(alert.textContent).toContain(t("settings.auditBrokenLead", { count: 3 }));
+    expect(alert.textContent).toContain("ev-9");
+    expect(alert.textContent).toContain(t("settings.auditBrokenHash"));
+    expect(within(auditCard()).queryByText(t("settings.auditIntact"))).toBeNull();
+  });
+
+  it("bilinmeyen kopukluk nedeni ham değeriyle yazılır", async () => {
+    setup({
+      audit: AUDIT_ROWS,
+      auditChain: {
+        checked: 0,
+        intact: false,
+        brokenEventId: "ev-1",
+        brokenReason: "yeni_tur",
+      },
+    });
+    await within(auditCard()).findByRole("table");
+
+    fireEvent.click(
+      within(auditCard()).getByRole("button", { name: t("settings.auditVerify") }),
+    );
+
+    const alert = await within(auditCard()).findByRole("alert");
+    expect(alert.textContent).toContain(
+      t("settings.auditBrokenUnknown", { reason: "yeni_tur" }),
+    );
+  });
+
+  it("doğrulama düşerse önceki 'tutarlı' satırı kalmaz", async () => {
+    setup({
+      audit: AUDIT_ROWS,
+      auditChain: { checked: 4, intact: true, brokenEventId: null, brokenReason: null },
+    });
+    await within(auditCard()).findByRole("table");
+    const verify = () =>
+      fireEvent.click(
+        within(auditCard()).getByRole("button", { name: t("settings.auditVerify") }),
+      );
+
+    verify();
+    expect(await within(auditCard()).findByRole("status")).toBeTruthy();
+
+    mocks.auditChainCheck.mockRejectedValue({
+      code: "E_DB_INTEGRITY",
+      message: "denetim okunamadı",
+      retryable: false,
+    });
+    verify();
+
+    const alert = await within(auditCard()).findByRole("alert");
+    expect(alert.textContent).toContain(t("settings.auditVerifyFailed"));
+    expect(alert.textContent).toContain("E_DB_INTEGRITY");
+    expect(within(auditCard()).queryByRole("status")).toBeNull();
+  });
+
+  it("okuma düşerse 'kayıt yok' denmez, hata satırı yazılır", async () => {
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.vaultPreUpdateBackups.mockResolvedValue([B_OK]);
+    mocks.jobQueueStatus.mockResolvedValue(QUEUE_EMPTY);
+    mocks.workerBudgets.mockResolvedValue([]);
+    mocks.auditEventList.mockRejectedValue({
+      code: "E_DB_INTEGRITY",
+      message: "denetim defteri okunamadı",
+      retryable: false,
+    });
+    dialog.open.mockResolvedValue(null);
+    render(<Settings />);
+
+    const alert = await within(auditCard()).findByRole("alert");
+    expect(alert.textContent).toContain("E_DB_INTEGRITY");
+    expect(within(auditCard()).queryByText(t("settings.auditEmpty"))).toBeNull();
+    expect(within(auditCard()).queryByRole("table")).toBeNull();
+  });
+
+  it("tazeleme eski satırları istekten önce temizler", async () => {
+    setup({ audit: AUDIT_ROWS });
+    await within(auditCard()).findByRole("table");
+
+    const pending = deferred<AuditEventRow[]>();
+    mocks.auditEventList.mockReturnValueOnce(pending.promise);
+    fireEvent.click(
+      within(auditCard()).getByRole("button", { name: t("settings.auditRefresh") }),
+    );
+
+    // Yanıt gelmeden eski satırlar ekranda kalmamalı.
+    expect(within(auditCard()).queryByRole("table")).toBeNull();
+    expect(
+      within(auditCard()).getAllByText(t("settings.auditLoading")).length,
+    ).toBeGreaterThan(0);
+
+    pending.resolve([]);
+    expect(await within(auditCard()).findByText(t("settings.auditEmpty"))).toBeTruthy();
   });
 });

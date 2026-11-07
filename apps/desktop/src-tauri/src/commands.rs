@@ -512,6 +512,31 @@ pub fn system_info() -> SystemInfo {
     }
 }
 
+/// Denetim defterinin son kayıtları (en yeni önce). Sınır **çekirdekte**
+/// kırpılır; `category` verilirse yalnız o kategori.
+#[tauri::command]
+pub fn audit_event_list(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    category: Option<String>,
+) -> Result<Vec<dim_storage::AuditEventRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let category = category.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let limit = limit.map_or(dim_storage::DEFAULT_AUDIT_EVENTS, |l| l as usize);
+    Ok(db.list_audit_events(limit, category)?)
+}
+
+/// Denetim zinciri bütünlüğü: kaç kayıt doğrulandı, kopukluk var mı, nerede.
+#[tauri::command]
+pub fn audit_chain_check(
+    state: State<'_, AppState>,
+) -> Result<dim_storage::AuditChainStatus, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.audit_chain_status()?)
+}
+
 // Testler ayrı dosyada: `commands.rs` yalnız komut yüzeyini taşır.
 #[cfg(test)]
 #[path = "commands_tests.rs"]

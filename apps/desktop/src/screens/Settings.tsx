@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openDirectory } from "@tauri-apps/plugin-dialog";
 import { JobQueueCard } from "../components/JobQueueCard";
 import { WorkerBudgetCard } from "../components/WorkerBudgetCard";
@@ -6,6 +6,8 @@ import {
   api,
   toApiError,
   type ApiError,
+  type AuditChainStatus,
+  type AuditEventRow,
   type BackupResult,
   type PreUpdateBackup,
   type RollbackResult,
@@ -30,6 +32,14 @@ import {
   rollbackDisabledReason,
   rollbackSummary,
 } from "../lib/rollback";
+
+/** Denetim listesinde gösterilen kayıt sayısı; üst sınırı çekirdek de kırpar. */
+const AUDIT_LIST_LIMIT = 50;
+
+/** Uzun kimlik listede kısaltılır; tam değer `title`da durur (kaybolmaz). */
+function shortId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value;
+}
 
 export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
@@ -56,6 +66,19 @@ export function Settings() {
   const [preUpdateSelected, setPreUpdateSelected] = useState("");
   const [rollbackConfirm, setRollbackConfirm] = useState("");
   const [rollbackDone, setRollbackDone] = useState<RollbackResult | null>(null);
+
+  // Denetim defteri (kasa geneli). Okuma ve doğrulama **ayrı** uçuşlardır:
+  // biri düşerken diğerinin sonucu yazılmaz. `auditRows === null` "bilinmiyor"
+  // demektir; boş liste ancak başarılı okumadan sonra "kayıt yok" olur.
+  const [auditRows, setAuditRows] = useState<AuditEventRow[] | null>(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState<ApiError | null>(null);
+  const [auditCheck, setAuditCheck] = useState<AuditChainStatus | null>(null);
+  const [auditCheckBusy, setAuditCheckBusy] = useState(false);
+  const [auditCheckError, setAuditCheckError] = useState<ApiError | null>(null);
+  /** Uçuş nesilleri: geç yanıt yeni isteğin sonucunu ezmez. */
+  const auditSeq = useRef(0);
+  const auditCheckSeq = useRef(0);
 
   useEffect(() => {
     void api.status().then(setStatus).catch((e) => setError(toApiError(e)));
@@ -89,6 +112,65 @@ export function Settings() {
       cancelled = true;
     };
   }, [unlocked]);
+
+  // Denetim defteri kasa açılınca okunur; kilitlenince liste **ve** doğrulama
+  // sonucu birlikte düşer (kilitli ekranda "zincir doğrulandı" yazmaz).
+  useEffect(() => {
+    if (!unlocked) {
+      auditSeq.current += 1;
+      auditCheckSeq.current += 1;
+      setAuditRows(null);
+      setAuditBusy(false);
+      setAuditError(null);
+      setAuditCheck(null);
+      setAuditCheckBusy(false);
+      setAuditCheckError(null);
+      return;
+    }
+    void loadAudit();
+  }, [unlocked]);
+
+  /**
+   * Denetim defteri okuması. Liste **istekten önce** temizlenir: düşen bir
+   * tazelemeden sonra eski satırlar "güncel" gibi kalmaz. Hata hâlinde liste
+   * `null`a döner — ekran "kayıt yok" **demez**, "bilinmiyor" der.
+   */
+  async function loadAudit() {
+    const seq = ++auditSeq.current;
+    setAuditBusy(true);
+    setAuditError(null);
+    setAuditRows([]);
+    try {
+      const rows = await api.auditEventList(AUDIT_LIST_LIMIT);
+      if (seq === auditSeq.current) setAuditRows(rows);
+    } catch (e) {
+      if (seq === auditSeq.current) {
+        setAuditRows(null);
+        setAuditError(toApiError(e));
+      }
+    } finally {
+      if (seq === auditSeq.current) setAuditBusy(false);
+    }
+  }
+
+  /**
+   * Zincir doğrulaması. Sonuç yalnız **en son** isteğin neslinde yazılır;
+   * düşen doğrulama önceki "tutarlı" satırını ekranda bırakmaz.
+   */
+  async function checkAuditChain() {
+    const seq = ++auditCheckSeq.current;
+    setAuditCheckBusy(true);
+    setAuditCheckError(null);
+    setAuditCheck(null);
+    try {
+      const result = await api.auditChainCheck();
+      if (seq === auditCheckSeq.current) setAuditCheck(result);
+    } catch (e) {
+      if (seq === auditCheckSeq.current) setAuditCheckError(toApiError(e));
+    } finally {
+      if (seq === auditCheckSeq.current) setAuditCheckBusy(false);
+    }
+  }
 
   /**
    * Klasör seçici. Pencere açılamazsa sessiz kalmaz: seçim yapılmadığı
@@ -301,6 +383,115 @@ export function Settings() {
             <span style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{status.preUpdateBackup}</span>
             . {t("settings.preUpdateTail")}
           </div>
+        ) : null}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("settings.auditTitle")}</h2>
+            <p className="card-sub">{t("settings.auditSub")}</p>
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn ghost"
+              disabled={!unlocked || auditBusy}
+              onClick={() => void loadAudit()}
+            >
+              {auditBusy ? t("settings.auditLoading") : t("settings.auditRefresh")}
+            </button>
+            <button
+              className="btn"
+              disabled={!unlocked || auditCheckBusy}
+              onClick={() => void checkAuditChain()}
+            >
+              {auditCheckBusy ? t("settings.auditVerifying") : t("settings.auditVerify")}
+            </button>
+          </div>
+        </div>
+        {!unlocked ? (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.auditLocked")}</p>
+        ) : null}
+        {unlocked && auditCheckError ? (
+          <div className="notice danger" role="alert">
+            <strong>{t("settings.auditVerifyFailed")}</strong>{" "}
+            <code>{auditCheckError.code}</code> — {auditCheckError.message}
+          </div>
+        ) : null}
+        {unlocked && auditCheck ? (
+          auditCheck.intact ? (
+            <div className="notice ok" role="status">
+              <strong>{t("settings.auditIntact")}</strong>{" "}
+              {t("settings.auditIntactCount", { count: auditCheck.checked })}
+            </div>
+          ) : (
+            <div className="notice danger" role="alert">
+              <strong>{t("settings.auditBroken")}</strong>{" "}
+              {t("settings.auditBrokenLead", { count: auditCheck.checked })}{" "}
+              <code title={auditCheck.brokenEventId ?? undefined}>
+                {auditCheck.brokenEventId ?? t("common.unknown")}
+              </code>{" "}
+              {auditCheck.brokenReason === "prior_hash"
+                ? t("settings.auditBrokenPrior")
+                : auditCheck.brokenReason === "event_hash"
+                  ? t("settings.auditBrokenHash")
+                  : t("settings.auditBrokenUnknown", {
+                      reason: auditCheck.brokenReason ?? t("common.unknown"),
+                    })}
+            </div>
+          )
+        ) : null}
+        {unlocked && auditError ? (
+          <div className="notice danger" role="alert">
+            <strong>{auditError.code}</strong> — {auditError.message}
+          </div>
+        ) : null}
+        {unlocked && !auditError && auditRows === null ? (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.auditLoading")}</p>
+        ) : null}
+        {unlocked && !auditError && auditRows !== null && auditRows.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {auditBusy ? t("settings.auditLoading") : t("settings.auditEmpty")}
+          </p>
+        ) : null}
+        {unlocked && auditRows !== null && auditRows.length > 0 ? (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("settings.auditColTime")}</th>
+                <th>{t("settings.auditColCategory")}</th>
+                <th>{t("settings.auditColOperation")}</th>
+                <th>{t("settings.auditColActor")}</th>
+                <th>{t("settings.auditColEntity")}</th>
+                <th>{t("settings.auditColHash")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditRows.map((row) => (
+                <tr key={row.id}>
+                  <td>{formatDateTime(row.timestamp)}</td>
+                  <td>
+                    <code>{row.category}</code>
+                  </td>
+                  <td>
+                    <code>{row.operation}</code>
+                  </td>
+                  <td>{row.actorLabel}</td>
+                  <td title={row.entityId ?? undefined}>
+                    {row.entityId ? shortId(row.entityId) : "—"}
+                  </td>
+                  <td>
+                    <code title={row.eventHash}>{`${row.eventHash.slice(0, 10)}…`}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+        {unlocked ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {t("settings.auditLimitNote", { count: AUDIT_LIST_LIMIT })}
+          </p>
         ) : null}
       </div>
 

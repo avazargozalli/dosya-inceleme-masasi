@@ -442,6 +442,36 @@ export type ExportRecordRow = {
 };
 
 /**
+ * Denetim defteri satırı (`audit_events`). `sequence` **yazılma sırasıdır**;
+ * `metadata` çekirdekte çözülemezse `null` döner (satır düşmez).
+ * `category`/`operation` çekirdek kodlarıdır — arayüz bilinmeyeni gizlemez.
+ */
+export type AuditEventRow = {
+  sequence: number;
+  id: string;
+  category: string;
+  entityId: string | null;
+  operation: string;
+  actorLabel: string;
+  metadata: Record<string, unknown> | null;
+  priorHash: string | null;
+  eventHash: string;
+  timestamp: string;
+};
+
+/**
+ * Zincir doğrulamasının sonucu. `intact=false` iken `brokenReason`
+ * `prior_hash` (önceki kayda bağ kopuk) ya da `event_hash` (kaydın kendi
+ * özeti tutmuyor) olur; `checked` yalnız **doğrulanmış** kayıt sayısıdır.
+ */
+export type AuditChainStatus = {
+  checked: number;
+  intact: boolean;
+  brokenEventId: string | null;
+  brokenReason: string | null;
+};
+
+/**
  * Maskeleme planı satırı — **denetim sicili**. `documentTitle`/`versionNo`
  * sorgudan okunur (satırda saklanmaz): sürüm/belge bulunamazsa `null`, ad
  * uydurulmaz. `regionCount` plana yazılmış bölge sayısıdır.
@@ -2259,4 +2289,15 @@ export const api = {
     invoke<NoteDraftRow | null>("note_draft_get", { caseId, noteId }),
   noteDraftClear: (caseId: string, noteId: string | null) =>
     invoke<boolean>("note_draft_clear", { caseId, noteId }),
+  /**
+   * Denetim defteri (kasa geneli) — en yeni önce. `limit` **çekirdekte**
+   * kırpılır (1..200); `category` verilirse yalnız o kategori.
+   */
+  auditEventList: (limit?: number, category?: string | null) =>
+    invoke<AuditEventRow[]>("audit_event_list", {
+      limit: limit ?? null,
+      category: category ?? null,
+    }),
+  /** Denetim zinciri bütünlüğü: kurcalama çalışan üründe ölçülür. */
+  auditChainCheck: () => invoke<AuditChainStatus>("audit_chain_check"),
 };
