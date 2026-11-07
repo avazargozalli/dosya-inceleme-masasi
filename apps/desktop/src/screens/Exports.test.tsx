@@ -223,6 +223,7 @@ function exportResult(overrides: Partial<ExportResult> = {}): ExportResult {
     path: "/Users/avukat/Cikti/kira.json",
     bytes: 20480,
     sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    replacedExisting: false,
     record: {
       id: "ex-1",
       exportType: "json",
@@ -394,6 +395,28 @@ describe("Çıktılar ekranı", () => {
 
     // Gösterilen kapsam yanıttan gelir.
     expect(screen.getByText(coverageHeadline(FULL))).toBeTruthy();
+  });
+
+  it("yazma doğrulandı satırı her başarılı çıktıda görünür", async () => {
+    await renderScreen();
+    fireEvent.click(screen.getAllByRole("button", { name: t("common.save") })[0]!);
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(t("exports.verifiedReadback"));
+    // Üzerine yazılmadıysa o uyarı **görünmez** (yanlış alarm yok).
+    expect(notice.textContent).not.toContain(t("exports.replacedExisting"));
+  });
+
+  it("var olan dosyanın üzerine yazıldıysa sonuç künyesi bunu yazar", async () => {
+    mocks.exportJson.mockResolvedValue(exportResult({ replacedExisting: true }));
+    await renderScreen();
+    fireEvent.click(screen.getAllByRole("button", { name: t("common.save") })[0]!);
+
+    const notice = await findOkNotice();
+    expect(notice.textContent).toContain(t("exports.replacedExisting"));
+    // Yol ve özet yine görünür: uyarı künyeyi ezmez.
+    expect(notice.textContent).toContain("/Users/avukat/Cikti/kira.json");
+    expect(notice.textContent).toContain("0123456789abcdef…");
   });
 
   it("iptal edilen kaydet diyaloğu istek üretmez", async () => {

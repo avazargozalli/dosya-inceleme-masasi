@@ -26,6 +26,10 @@ pub enum StorageError {
     },
     #[error("diskte yeterli yer yok: {reason}")]
     DiskFull { reason: String },
+    #[error(
+        "yazılan dosya doğrulanamadı (hedef değiştirilmedi): beklenen sha256 {expected}, geri okunan {actual}"
+    )]
+    WriteVerify { expected: String, actual: String },
     #[error("kasa yanında dolu bir WAL dosyası var: kasa başka bir süreçte açık olabilir. Uygulamayı kapatıp kasayı bir kez açın, sonra geri dönüşü tekrarlayın")]
     RollbackWalBusy,
     #[error("kasa dosyası okunamadı: dosya sistemi hatası (disk dolu ya da birim koptu olabilir): {reason}")]
@@ -158,6 +162,7 @@ impl StorageError {
             Self::MigrationBackup { .. } => "E_DB_MIGRATION_BACKUP",
             Self::RollbackReopen { .. } => "E_DB_ROLLBACK_REOPEN",
             Self::DiskFull { .. } => "E_DISK_FULL",
+            Self::WriteVerify { .. } => "E_WRITE_VERIFY",
             Self::RollbackWalBusy => "E_DB_ROLLBACK_WAL",
             Self::VaultIo { .. } => "E_DB_IO",
             Self::BackupInvalid { .. } => "E_BACKUP_INVALID",

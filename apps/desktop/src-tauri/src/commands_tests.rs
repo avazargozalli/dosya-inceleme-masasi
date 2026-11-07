@@ -1743,3 +1743,162 @@ fn case_payload_embeds_coverage_block() {
         .lines()
         .all(|l| l.starts_with('#')));
 }
+
+// ---------------------------------------------------------------------------
+// Dışa aktarma dosyasının **atomik ve doğrulanmış** yazımı (2026-11-07)
+//
+// Ölçülen kusur: `write_export` doğrudan `std::fs::write` çağırıyordu. Gerçek
+// disk dolması ölçümünde (12 MB yazım, ~6 MB boş birim) hedefte **0 baytlık**
+// dosya geçerli adla kaldı; var olan 512.000 baytlık rapor **yok oldu**;
+// parçalı yazımda 10.485.760 baytlık kesik dosya kaldı. Bu testler yeni
+// sözleşmeyi ölçer: geçici ada yaz → geri oku → doğrula → yerleştir.
+// ---------------------------------------------------------------------------
+
+/// Test için benzersiz geçici dizin (kasa testleriyle aynı düzen; `tempfile`
+/// bu crate'in bağımlılığı değil).
+fn dim_export_test_dir(tag: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("dim-export-{tag}-{}-{nanos}", std::process::id()));
+    dim_storage::atomic::remove_tree(&dir);
+    std::fs::create_dir_all(&dir).expect("dizin");
+    dir
+}
+
+fn dim_dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("liste")
+        .map(|e| e.expect("girdi").file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Yeni hedef: dönen özet **diskten geri okunan** özettir, geçici dosya kalmaz.
+#[test]
+fn write_export_returns_hash_read_back_from_disk() {
+    let dir = dim_export_test_dir("hash");
+    let target = dir.join("rapor.pdf");
+    let path = target.to_string_lossy().to_string();
+    let bytes = vec![b'P'; 40_000];
+    let written = write_export(&path, &bytes).expect("yazıldı");
+    assert_eq!(
+        written.sha256,
+        dim_storage::backup::sha256_file(&target).expect("geri okuma"),
+        "kayda geçen özet dosyanın özeti olmalı"
+    );
+    assert_eq!(written.sha256, dim_storage::atomic::sha256_bytes(&bytes));
+    assert_eq!(written.bytes, 40_000);
+    assert!(!written.replaced_existing);
+    assert_eq!(std::fs::read(&target).expect("okundu"), bytes);
+    assert_eq!(
+        dim_dir_names(&dir),
+        vec!["rapor.pdf".to_string()],
+        "geçici dosya kalmamalı"
+    );
+    dim_storage::atomic::remove_tree(&dir);
+}
+
+/// Var olan çıktının üzerine yazma **ölçülür**; arayüz bunu yazar (sessiz
+/// değiştirme yok). Eksik ara klasör oluşturulur.
+#[test]
+fn write_export_reports_replaced_existing_and_creates_parent() {
+    let dir = dim_export_test_dir("replace");
+    let nested = dir.join("yeni").join("alt");
+    let target = nested.join("rapor.json");
+    let path = target.to_string_lossy().to_string();
+    let first = write_export(&path, b"{\"a\":1}").expect("ilk yazım");
+    assert!(!first.replaced_existing);
+    let second = write_export(&path, b"{\"a\":2}").expect("ikinci yazım");
+    assert!(second.replaced_existing, "üzerine yazıldığı ölçülmeli");
+    assert_eq!(std::fs::read(&target).expect("okundu"), b"{\"a\":2}");
+    dim_storage::atomic::remove_tree(&dir);
+}
+
+/// Boş konum yazma denemesinden **önce** reddedilir.
+#[test]
+fn write_export_rejects_blank_path_before_writing() {
+    let error = write_export("   ", b"x").expect_err("boş konum");
+    assert_eq!(error.code, "E_PATH");
+}
+
+/// Yazma düşerse **eski dosya bozulmaz**: hedefteki baytlar aynı kalır ve
+/// geride geçici dosya kalmaz. (Klasör yazılamaz kılınarak gerçek hata.)
+#[test]
+fn write_export_failure_keeps_previous_file_intact() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = dim_export_test_dir("fail");
+    let target = dir.join("rapor.pdf");
+    std::fs::write(&target, b"eski saglam rapor").expect("eski");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).expect("kilit");
+    let path = target.to_string_lossy().to_string();
+    let error = write_export(&path, b"yeni rapor govdesi").expect_err("yazılamaz");
+    // Geri aç: temizlik ve sonraki kontroller için.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("ac");
+    assert_eq!(error.code, "E_IO", "kod: {}", error.code);
+    assert_eq!(
+        std::fs::read(&target).expect("okundu"),
+        b"eski saglam rapor",
+        "eski dosya korunmalı"
+    );
+    assert_eq!(
+        dim_dir_names(&dir),
+        vec!["rapor.pdf".to_string()],
+        "geçici kalmamalı"
+    );
+    dim_storage::atomic::remove_tree(&dir);
+}
+
+/// Paket hazırlık dizini: iş tamamlanmadan çıkılırsa **silinir**, tamamlanınca
+/// tek adımda son ada geçer ve son adda yarım klasör görünmez.
+#[test]
+fn staging_guard_removes_uncommitted_dir_and_commits_atomically() {
+    let dir = dim_export_test_dir("staging");
+    let final_dir = dir.join("DimDevir-20260101");
+    let staging = dim_storage::atomic::temp_sibling(&final_dir, "dimtmp");
+    std::fs::create_dir_all(&staging).expect("hazırlık");
+    std::fs::write(staging.join("case.json"), b"{}").expect("dosya");
+    {
+        let _guard = StagingGuard::new(staging.clone());
+        // Kapsam dışına çıkılıyor: `Drop` hazırlığı siler.
+    }
+    assert!(!staging.exists(), "yarım hazırlık silinmeli");
+    assert!(!final_dir.exists(), "son ad hiç oluşmamalı");
+
+    std::fs::create_dir_all(&staging).expect("hazırlık");
+    std::fs::write(staging.join("case.json"), b"{}").expect("dosya");
+    let guard = StagingGuard::new(staging.clone());
+    guard.commit(&final_dir).expect("yerleşti");
+    assert!(!staging.exists(), "hazırlık adı kalmamalı");
+    assert_eq!(
+        std::fs::read(final_dir.join("case.json")).expect("okundu"),
+        b"{}"
+    );
+    // Var olan son ada ikinci kez yerleşilmez.
+    std::fs::create_dir_all(&staging).expect("hazırlık");
+    let again = StagingGuard::new(staging.clone());
+    let error = again.commit(&final_dir).expect_err("hedef var");
+    assert_eq!(error.code(), "E_IO");
+    drop(again);
+    dim_storage::atomic::remove_tree(&dir);
+}
+
+/// Yapısal kapı: dışa aktarma **tek** yazma yolundan geçer ve o yol atomik
+/// yardımcıyı çağırır. Ölçülen kusur (2026-11-07) tam buydu: beş dışa aktarma
+/// komutu `std::fs::write` ile doğrudan son ada yazıyordu (disk dolmasında
+/// hedefte 0 baytlık dosya kalıyor, eski çıktı yok oluyordu). Ham yazım geri
+/// gelirse bu kapı kırmızı yanar.
+#[test]
+fn export_writes_only_go_through_the_verified_atomic_writer() {
+    let source = include_str!("commands.rs");
+    assert!(
+        source.contains("write_atomic_verified("),
+        "dışa aktarma doğrulanmış atomik yazıcıyı kullanmalı"
+    );
+    assert!(
+        !source.contains("std::fs::write("),
+        "komut yüzeyinde ham `std::fs::write` kalmamalı (yarım çıktı geçerli adla kalır)"
+    );
+}

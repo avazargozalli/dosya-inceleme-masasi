@@ -430,6 +430,7 @@ const EXPORT_RESULT = {
   path: "/tmp/korpus.json",
   bytes: 2048,
   sha256: "0123456789abcdef",
+  replacedExisting: false,
   exported: 1,
   excluded: 2,
   contentHash: "c".repeat(64),

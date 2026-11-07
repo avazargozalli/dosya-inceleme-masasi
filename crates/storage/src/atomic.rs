@@ -94,6 +94,96 @@ where
     }
 }
 
+/// Doğrulanmış atomik yazımın **ölçülen** sonucu.
+///
+/// `sha256` bellekteki tamponun değil, **diskten geri okunan** dosyanın
+/// özetidir: denetim defterine yazılan özet ile diskteki baytlar aynı şeyi
+/// söyler. `replaced_existing` hedefte daha önce bir dosya varken ölçülür
+/// (kullanıcı diyalogda "değiştir" demiş olabilir; arayüz bunu yazar).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedWrite {
+    pub sha256: String,
+    pub bytes: u64,
+    pub replaced_existing: bool,
+}
+
+/// Baytları yazar, **yazılanı geri okuyup** özetini doğrular, sonra yerleştirir.
+///
+/// Sıra: geçici ada yaz → `sync_all` → geçici dosyayı okuyup sha256 → beklenen
+/// özetle karşılaştır → ancak eşitse `rename`. Doğrulama tutmazsa hedef
+/// **değişmez**, geçici dosya silinir ve `E_WRITE_VERIFY` döner. Bu, "yazdım"
+/// demenin dosyaya bakmadan söylenmemesi içindir.
+pub fn write_atomic_verified(path: &Path, bytes: &[u8]) -> Result<VerifiedWrite, StorageError> {
+    let expected = sha256_bytes(bytes);
+    write_atomic_verified_with(path, &expected, |out| out.write_all(bytes))
+}
+
+/// `write_atomic_verified`in akış hâli: yazma işini çağıran verir, beklenen
+/// özeti de o verir (dışa aktarma, rapor, arşiv).
+pub fn write_atomic_verified_with<F>(
+    path: &Path,
+    expected_sha256: &str,
+    write: F,
+) -> Result<VerifiedWrite, StorageError>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(map_io)?;
+    }
+    let replaced_existing = path.exists();
+    let temp = temp_sibling(path, "dimtmp");
+    let written = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        write(&mut file)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(err) = written {
+        remove_file_best_effort(&temp);
+        return Err(map_io(err));
+    }
+    // Geri okuma: kasadaki/arayüzdeki özet ile diskteki dosya aynı olmalı.
+    let actual = match crate::backup::sha256_file(&temp) {
+        Ok(hash) => hash,
+        Err(error) => {
+            remove_file_best_effort(&temp);
+            return Err(error);
+        }
+    };
+    let bytes = fs::metadata(&temp).map(|meta| meta.len()).unwrap_or(0);
+    if actual != expected_sha256 {
+        remove_file_best_effort(&temp);
+        return Err(StorageError::WriteVerify {
+            expected: expected_sha256.to_string(),
+            actual,
+        });
+    }
+    match fs::rename(&temp, path) {
+        Ok(()) => Ok(VerifiedWrite {
+            sha256: actual,
+            bytes,
+            replaced_existing,
+        }),
+        Err(err) => {
+            remove_file_best_effort(&temp);
+            Err(map_io(err))
+        }
+    }
+}
+
+/// Bellekteki baytların sha256'sı (küçük/kilitli tamponlar için).
+#[must_use]
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
 /// Kaynağı hedefe atomik kopyalar; yazılan bayt sayısını döner.
 pub fn copy_atomic(src: &Path, dst: &Path) -> Result<u64, StorageError> {
     let mut total: u64 = 0;
@@ -291,6 +381,84 @@ mod tests {
             fs::read(&target).expect("okundu"),
             b"eski",
             "eski içerik korunur"
+        );
+    }
+
+    /// Dışa aktarma yolu: dönen özet **diskten geri okunan** özettir ve hedef
+    /// ancak doğrulamadan sonra yerleşir.
+    #[test]
+    fn verified_write_returns_disk_hash_and_writes_nothing_extra() {
+        let dir = tempfile::tempdir().expect("dizin");
+        let target = dir.path().join("rapor.pdf");
+        let bytes = vec![b'A'; 9000];
+        let written = write_atomic_verified(&target, &bytes).expect("yazıldı");
+        assert_eq!(written.sha256, sha256_bytes(&bytes), "bellek özeti");
+        assert_eq!(
+            written.sha256,
+            crate::backup::sha256_file(&target).expect("geri okuma"),
+            "dönen özet diskteki dosyanın özeti olmalı"
+        );
+        assert_eq!(written.bytes, 9000);
+        assert!(!written.replaced_existing, "hedef yoktu");
+        assert_eq!(fs::read(&target).expect("okundu"), bytes);
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .expect("liste")
+            .map(|e| e.expect("girdi").file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["rapor.pdf".to_string()], "geçici kalmamalı");
+    }
+
+    /// Var olan hedefin üzerine yazma **ölçülür** (arayüz "üzerine yazıldı" der).
+    #[test]
+    fn verified_write_reports_replaced_existing() {
+        let dir = tempfile::tempdir().expect("dizin");
+        let target = dir.path().join("rapor.pdf");
+        fs::write(&target, b"eski rapor").expect("eski");
+        let written = write_atomic_verified(&target, b"yeni rapor").expect("yazıldı");
+        assert!(written.replaced_existing);
+        assert_eq!(fs::read(&target).expect("okundu"), b"yeni rapor");
+    }
+
+    /// Geri okunan özet tutmazsa **hedef değişmez**: yarım/bozuk çıktı geçerli
+    /// adla kalmaz, eski dosya da bozulmaz.
+    #[test]
+    fn verified_write_mismatch_keeps_target_and_reports_code() {
+        let dir = tempfile::tempdir().expect("dizin");
+        let target = dir.path().join("rapor.pdf");
+        fs::write(&target, b"eski saglam").expect("eski");
+        let expected = sha256_bytes(b"tam govde");
+        let err = write_atomic_verified_with(&target, &expected, |out| out.write_all(b"kesik"))
+            .expect_err("doğrulama tutmaz");
+        assert_eq!(err.code(), "E_WRITE_VERIFY", "ayrı kod: {err}");
+        assert_eq!(
+            fs::read(&target).expect("okundu"),
+            b"eski saglam",
+            "hedef değişmemeli"
+        );
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .expect("liste")
+            .map(|e| e.expect("girdi").file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["rapor.pdf".to_string()], "geçici kalmamalı");
+    }
+
+    /// Disk dolması doğrulanmış yolda da `E_DISK_FULL` döner ve hedefe dokunmaz.
+    #[test]
+    fn verified_write_maps_enospc_and_keeps_old_target() {
+        let dir = tempfile::tempdir().expect("dizin");
+        let target = dir.path().join("rapor.pdf");
+        fs::write(&target, b"onceki").expect("onceki");
+        let err = write_atomic_verified_with(&target, "00", |out| {
+            out.write_all(b"parca")?;
+            Err(io::Error::from_raw_os_error(28))
+        })
+        .expect_err("disk dolu");
+        assert_eq!(err.code(), "E_DISK_FULL");
+        assert_eq!(fs::read(&target).expect("okundu"), b"onceki");
+        assert_eq!(
+            fs::read_dir(dir.path()).expect("liste").count(),
+            1,
+            "geçici dosya kalmamalı (yalnız hedef)"
         );
     }
 

@@ -448,6 +448,14 @@ export function Exports() {
             <br />
             {result.bytes} {t("units.byte")} · sha256 {result.sha256.slice(0, 16)}…
             <br />
+            {t("exports.verifiedReadback")}
+            {result.replacedExisting ? (
+              <>
+                <br />
+                {t("exports.replacedExisting")}
+              </>
+            ) : null}
+            <br />
             {coverageEmbedNote(result.record.exportType, result.coverage)}
           </div>
         ) : null}

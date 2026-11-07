@@ -122,6 +122,9 @@ export function corpusResultText(result: CorpusExportResult): string {
   const parts = [t("terms.resultExported", { exported: result.exported })];
   if (result.excluded > 0) parts.push(t("terms.resultExcluded", { excluded: result.excluded }));
   parts.push(t("terms.resultHash", { hash: result.sha256.slice(0, 12) }));
+  // Hedefte var olan dosya değiştirildiyse bu **yazılır**: "kaydettim" ile
+  // "eskisinin üzerine yazdım" aynı cümle değil.
+  if (result.replacedExisting) parts.push(t("terms.resultReplaced"));
   return parts.join(" · ");
 }
 

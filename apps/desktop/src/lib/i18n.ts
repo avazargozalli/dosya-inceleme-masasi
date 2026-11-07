@@ -212,6 +212,10 @@ export const tr = {
       "Devir paketine yazılan blok (yazma anı): {at} — kasadaki güncel değer değil; “Kapsamı tazele” ile güncelleyin.",
     writing: "Yazılıyor…",
     written: "yazıldı:",
+    verifiedReadback:
+      "Yazma doğrulandı: özet, diske yazılan dosyadan geri okunarak hesaplandı.",
+    replacedExisting:
+      "Var olan dosyanın üzerine yazıldı — önceki içerik değiştirildi (aynı ad).",
     packageTitle: "Devir paketi",
     packageSub:
       "case.json + KAPSAM.md + manifest + README; belge baytları otomatik eklenmez",
@@ -1642,6 +1646,7 @@ export const tr = {
     resultExported: "{exported} karar aktarıldı",
     resultExcluded: "{excluded} kayıt izin nedeniyle dışarıda",
     resultHash: "sha256 {hash}…",
+    resultReplaced: "var olan dosyanın üzerine yazıldı",
   },
   precedentLib: {
     versionNoText: "tam metin yok",

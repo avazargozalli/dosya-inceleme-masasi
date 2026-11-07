@@ -431,6 +431,8 @@ export type ExportResult = {
   path: string;
   bytes: number;
   sha256: string;
+  /** Hedefte var olan dosyanın üzerine mi yazıldı (çekirdek **ölçer**). */
+  replacedExisting: boolean;
   record: { id: string; exportType: string; status: string; outputHash: string | null; createdAt: string };
   coverage: ExportCoverage;
 };
@@ -597,6 +599,8 @@ export type CorpusExportResult = {
   path: string;
   bytes: number;
   sha256: string;
+  /** Hedefte var olan dosyanın üzerine mi yazıldı (çekirdek **ölçer**). */
+  replacedExisting: boolean;
   exported: number;
   excluded: number;
   contentHash: string;

@@ -4900,6 +4900,8 @@ pub struct CorpusExportView {
     pub path: String,
     pub bytes: usize,
     pub sha256: String,
+    /// Hedefte var olan dosyanın üzerine mi yazıldı (ölçüldü).
+    pub replaced_existing: bool,
     pub exported: usize,
     pub excluded: usize,
     pub content_hash: String,
@@ -4954,8 +4956,9 @@ pub fn precedent_corpus_export(
     });
     let bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
-    write_export(&dest_path, &bytes)?;
-    let sha = hex::encode(Sha256::digest(&bytes));
+    // Özet **diskten geri okunur**: denetim kaydı dosyanın kendi özetini taşır.
+    let written = write_export(&dest_path, &bytes)?;
+    let sha = written.sha256.clone();
     db.append_audit(
         "precedent_corpus",
         None,
@@ -4966,12 +4969,14 @@ pub fn precedent_corpus_export(
             "exported": export.exported,
             "excluded": export.excluded,
             "sha256": sha,
+            "replacedExisting": written.replaced_existing,
         }),
     )?;
     Ok(CorpusExportView {
         path: dest_path,
-        bytes: bytes.len(),
+        bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
         sha256: sha,
+        replaced_existing: written.replaced_existing,
         exported: export.exported,
         excluded: export.excluded,
         content_hash: export.content_hash,
@@ -5855,22 +5860,59 @@ pub struct ExportView {
     pub path: String,
     pub bytes: usize,
     pub sha256: String,
+    /// Hedefte daha önce bir dosya varken üzerine mi yazıldı? (Diyalogda
+    /// "değiştir" seçimi kullanıcıya aittir; kayıt bunu **ölçer** ve arayüz
+    /// yazar — sessizce eskisinin yerine geçmiş gibi görünmez.)
+    pub replaced_existing: bool,
     pub record: ExportRow,
     /// Çıktının içine gömülen kapsam bloğu (F11-T06). Arayüz "ne yazıldı"
     /// iddiasını buradan gösterir; ölçüm kasadan gelir.
     pub coverage: ExportCoverage,
 }
 
-fn write_export(path: &str, bytes: &[u8]) -> Result<(), ApiError> {
-    let target = PathBuf::from(path.trim());
+/// Dışa aktarma paketinin **hazırlık** dizini.
+///
+/// Paket, son adda açılmaz: içerik yanındaki geçici adda tamamlanır, sonra tek
+/// `rename` ile yerleşir (`atomic::commit_dir`). Böylece yarıda kalan bir paket
+/// **geçerli adla** görünmez. `Drop`, iş tamamlanmadan çıkılırsa hazırlık
+/// dizinini siler — `?` ile dönen her hata yolu temizlenir. Yerleştirme
+/// başarılıysa hazırlık adı artık **yoktur**, yani `Drop` zararsızdır (ayrı bir
+/// "tamamlandı" bayrağı tutulmaz: ölçüldü, yük taşımıyordu).
+struct StagingGuard {
+    path: PathBuf,
+}
+
+impl StagingGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Hazırlığı son ada taşır. Hedef varsa **yazmaz** (`E_PACKAGE_EXISTS`).
+    fn commit(&self, final_path: &Path) -> Result<(), dim_storage::StorageError> {
+        dim_storage::atomic::commit_dir(&self.path, final_path)
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        dim_storage::atomic::remove_tree(&self.path);
+    }
+}
+
+fn write_export(path: &str, bytes: &[u8]) -> Result<dim_storage::atomic::VerifiedWrite, ApiError> {
     if path.trim().is_empty() {
         return Err(ApiError::new("E_PATH", "Çıktı konumu boş olamaz."));
     }
-    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&target, bytes)?;
-    Ok(())
+    // Ölçülen kusur (2026-11-07): eski yol `std::fs::write` idi. Gerçek disk
+    // dolması ölçümünde (12 MB yazım, ~6 MB boş birim) hedefte **0 baytlık**
+    // dosya geçerli adla kaldı ve var olan 512.000 baytlık rapor **yok oldu**;
+    // parçalı yazımda 10.485.760 baytlık kesik dosya kaldı. Artık aynı
+    // dizinde geçici ada yazılır, geri okunan sha256 doğrulanır, hedef ancak
+    // doğrulamadan sonra yerleştirilir: yarım çıktı geçerli adla kalmaz.
+    Ok(dim_storage::atomic::write_atomic_verified(
+        std::path::Path::new(path.trim()),
+        bytes,
+    )?)
 }
 
 fn case_payload(
@@ -5954,8 +5996,9 @@ pub fn export_json(
     let payload = case_payload(db, &case_id, &coverage)?;
     let bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
-    write_export(&dest_path, &bytes)?;
-    let sha = hex::encode(Sha256::digest(&bytes));
+    // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
+    let written = write_export(&dest_path, &bytes)?;
+    let sha = written.sha256.clone();
     let record = db.record_export(
         &case_id,
         "json",
@@ -5966,8 +6009,9 @@ pub fn export_json(
     )?;
     Ok(ExportView {
         path: dest_path,
-        bytes: bytes.len(),
+        bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
         sha256: sha,
+        replaced_existing: written.replaced_existing,
         record,
         coverage,
     })
@@ -6013,13 +6057,15 @@ pub fn export_csv(
         ));
     }
     let bytes = out.into_bytes();
-    write_export(&dest_path, &bytes)?;
-    let sha = hex::encode(Sha256::digest(&bytes));
+    // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
+    let written = write_export(&dest_path, &bytes)?;
+    let sha = written.sha256.clone();
     let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &dest_path, &sha)?;
     Ok(ExportView {
         path: dest_path,
-        bytes: bytes.len(),
+        bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
         sha256: sha,
+        replaced_existing: written.replaced_existing,
         record,
         coverage,
     })
@@ -6135,8 +6181,9 @@ pub fn export_docx(
     let mut worker = spawn_worker(WorkerKind::Render)?;
     let bytes = worker.render_report(&payload)?;
     worker.shutdown();
-    write_export(&dest_path, &bytes)?;
-    let sha = hex::encode(Sha256::digest(&bytes));
+    // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
+    let written = write_export(&dest_path, &bytes)?;
+    let sha = written.sha256.clone();
     let record = db.record_export(
         &case_id,
         "docx",
@@ -6147,8 +6194,9 @@ pub fn export_docx(
     )?;
     Ok(ExportView {
         path: dest_path,
-        bytes: bytes.len(),
+        bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
         sha256: sha,
+        replaced_existing: written.replaced_existing,
         record,
         coverage,
     })
@@ -6195,13 +6243,15 @@ pub fn export_pdf(
     let mut worker = spawn_worker(WorkerKind::Render)?;
     let bytes = worker.render_report_pdf(&payload)?;
     worker.shutdown();
-    write_export(&dest_path, &bytes)?;
-    let sha = hex::encode(Sha256::digest(&bytes));
+    // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
+    let written = write_export(&dest_path, &bytes)?;
+    let sha = written.sha256.clone();
     let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &dest_path, &sha)?;
     Ok(ExportView {
         path: dest_path,
-        bytes: bytes.len(),
+        bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
         sha256: sha,
+        replaced_existing: written.replaced_existing,
         record,
         coverage,
     })
@@ -6276,22 +6326,38 @@ pub fn export_package(
             "Aynı adlı paket klasörü var.",
         ));
     }
-    std::fs::create_dir_all(&dir)?;
+    // Ölçülen kusur (2026-11-07): eski kod doğrudan son adda klasör açıp
+    // içine dört dosyayı `std::fs::write` ile yazıyordu. Yazmalardan biri
+    // düşerse (disk dolması/izin) **yarım paket geçerli adda** kalıyordu:
+    // kullanıcı "paket oluşturulamadı" görürken diskte `DimDevir-…` klasörü
+    // duruyor, üstelik ikinci denemeyi `E_PACKAGE_EXISTS` kilitliyordu. Artık
+    // içerik yanındaki **hazırlık** adına yazılır; ancak dört dosya da
+    // tamamlanınca tek `rename` ile son ada geçer. Hata hâlinde hazırlık
+    // dizini silinir.
+    let staging = dim_storage::atomic::temp_sibling(&dir, "dimtmp");
+    if let Err(error) = std::fs::create_dir_all(&staging) {
+        return Err(ApiError::from(error));
+    }
+    // Herhangi bir `?` hatası hazırlık dizinini **siler** (Drop): yarıda kalan
+    // hazırlık klasörü diskte kalmaz.
+    let staging_guard = StagingGuard::new(staging.clone());
 
     let case_bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
-    std::fs::write(dir.join("case.json"), &case_bytes)?;
+    // Hazırlık dizini içindeki yazmalar da atomik: yarım `case.json` hazırlık
+    // dizininde bile kalmaz (silme düşse bile dosya bütün olur).
+    dim_storage::atomic::write_atomic(&staging.join("case.json"), &case_bytes)?;
     // Kapsam manifesti: paketin hangi belge/sayfa kapsamıyla üretildiğini yazar
     // (okunabilir markdown). "İncelenmedi ≠ temiz" cümlesi paketin içinde kalır.
     let coverage_md = coverage.markdown(payload["case"]["title"].as_str().unwrap_or("Dosya"));
-    std::fs::write(dir.join("KAPSAM.md"), coverage_md.as_bytes())?;
+    dim_storage::atomic::write_atomic(&staging.join("KAPSAM.md"), coverage_md.as_bytes())?;
     let readme = "Dosya İnceleme Masası — devir paketi\n\nBu klasör dosya metadatasını (case.json), inceleme kapsamını (KAPSAM.md)\nve manifest'i taşır. Belge baytları kasa dışına otomatik çıkarılmaz;\npaylaşılacak belgeler için Maskeleme ekranından maskeli kopya üretip bu\nklasöre ekleyin.\n\nKAPSAM.md zorunlu okumadır: hangi belge ve sayfaların gerçekten\nayrıştırıldığını, kaç sayfanın OCR ile okunduğunu ve kaç belgenin hiç\nincelenmediğini yazar. Kapsam dışı içerik \"temiz\" sayılmaz.\n\nBu klasördeki dosyalar açık metindir: parola verilmediyse paket açık metin\nkalır; parola verildiyse klasör `.dimpak` içine şifrelenip silinir.\n";
-    std::fs::write(dir.join("README.txt"), readme)?;
+    dim_storage::atomic::write_atomic(&staging.join("README.txt"), readme.as_bytes())?;
 
     let files = [
-        ("case.json", sha256_file(&dir.join("case.json"))?),
-        ("KAPSAM.md", sha256_file(&dir.join("KAPSAM.md"))?),
-        ("README.txt", sha256_file(&dir.join("README.txt"))?),
+        ("case.json", sha256_file(&staging.join("case.json"))?),
+        ("KAPSAM.md", sha256_file(&staging.join("KAPSAM.md"))?),
+        ("README.txt", sha256_file(&staging.join("README.txt"))?),
     ];
     let manifest = serde_json::json!({
         "format": "dim-handoff",
@@ -6302,8 +6368,20 @@ pub fn export_package(
     });
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|_| ApiError::new("E_EXPORT", "Manifest üretilemedi."))?;
-    std::fs::write(dir.join("manifest.json"), &manifest_bytes)?;
-    let sha = hex::encode(Sha256::digest(&manifest_bytes));
+    // Manifest de doğrulanmış yazımla: kayda geçen özet **dosyadan** okunur.
+    let written = dim_storage::atomic::write_atomic_verified(
+        &staging.join("manifest.json"),
+        &manifest_bytes,
+    )?;
+    // Son adım: hazırlık dizini tek `rename` ile yerleşir. Hedef bu arada
+    // oluştuysa yazma **reddedilir** (mevcut klasörün üzerine yazılmaz).
+    if let Err(error) = staging_guard.commit(&dir) {
+        return Err(ApiError::new(
+            "E_PACKAGE_EXISTS",
+            &format!("Paket klasörü yerleştirilemedi: {error}"),
+        ));
+    }
+    let sha = written.sha256;
     // Denetim defterine **gerçek** hedef yazılır: parola verildiyse paket
     // `seal_dir` ile `<klasör>.dimpak` dosyasına dönüşür (aynı ad kuralı burada
     // uygulanır), verilmediyse açık metin klasörü diskte kalır.

@@ -114,6 +114,7 @@ describe("kaynak kullanım koşulu metinleri", () => {
       path: "/tmp/korpus.json",
       bytes: 1024,
       sha256: "abcdef0123456789",
+      replacedExisting: false,
       exported: 2,
       excluded: 1,
       contentHash: "ffff",
@@ -124,11 +125,27 @@ describe("kaynak kullanım koşulu metinleri", () => {
         path: "/tmp/k.json",
         bytes: 1,
         sha256: "0123456789abcdef",
+        replacedExisting: false,
         exported: 1,
         excluded: 0,
         contentHash: "x",
       }),
     ).toBe("1 karar aktarıldı · sha256 0123456789ab…");
+  });
+
+  it("üzerine yazılan korpus dosyası sonuç metninde ayrıca yazılır", () => {
+    const text = corpusResultText({
+      path: "/tmp/korpus.json",
+      bytes: 1024,
+      sha256: "abcdef0123456789",
+      replacedExisting: true,
+      exported: 1,
+      excluded: 0,
+      contentHash: "ffff",
+    });
+    expect(text).toBe(
+      "1 karar aktarıldı · sha256 abcdef012345… · var olan dosyanın üzerine yazıldı",
+    );
   });
 
   it("yazılı dayanak yalnız 'izinli' için gerekir", () => {

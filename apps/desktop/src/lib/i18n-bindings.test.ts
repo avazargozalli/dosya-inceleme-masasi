@@ -822,6 +822,7 @@ describe("Emsal kümesi (ekran + üç yardımcı lib) sözlükten gelir", () => 
         path: "/tmp/k.json",
         bytes: 1,
         sha256: "abcdef0123456789",
+        replacedExisting: false,
         exported: 2,
         excluded: 1,
         contentHash: "ffff",
