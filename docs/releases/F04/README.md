@@ -2414,8 +2414,12 @@ Argon2id/SQLCipher kilidi ve **görsel QA yok**; `api` mock'lu olduğu için `va
 **davranışını** ölçer, gerçek zamanlamasını değil. Otomatik yedek yalnız açılış +
 saatlik kontrol; gerçek takvim/uygulama ömrü ölçülmedi.
 
-**Açık kayıt:** (a) yedek başarısızsa sessiz kalır (bilinçli: gürültü yok) — sonraki
-saatlik kontrolde yeniden denenir, kullanıcıya bildirim yok; (b) `locking` yalnız
+**Açık kayıt:** (a) ~~yedek başarısızsa sessiz kalır~~ — **2026-11-07'de kapandı:**
+kabuk hâlâ modal/toast üretmez (bilinçli: saatlik yeniden deneme gürültü çıkarmasın)
+ama düşen deneme `dim.backup.attempt` kaydına **neden koduyla** yazılır ve
+Ayarlar → Otomatik yedek kartında "Son deneme" / "Sıradaki plan" satırları ile
+kırmızı uyarıda görünür (bkz. `F14/README.md`); sonraki saatlik kontrolde yeniden
+denenir, başarısız deneme tazeliği ilerletmez; (b) `locking` yalnız
 düğmeyi kilitler; otomatik kilit ile elle kilit yarışı `lockingRef` ile tekilleşir
 (ölçüldü); (c) süresi dolmuş yedek kasa açılışında koşarken arayüzü kilitlemez
 (yedek arka planda); (d) gerçek Tauri penceresi + görsel QA **insan bekliyor**.
