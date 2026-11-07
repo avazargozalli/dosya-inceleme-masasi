@@ -10,7 +10,7 @@
 //! "alındı" satırı oluşmaz. Kayıt yazılamazsa yedek yine de geçerlidir; komut
 //! bunu ayrı alanda (`historyRecorded=false` + kod) bildirir.
 
-use rusqlite::Row;
+use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
 use crate::{now_iso, Database, StorageError};
@@ -116,7 +116,7 @@ impl Database {
                 [id],
                 map_backup_run,
             )
-            .ok())
+            .optional()?)
     }
 
     /// **En yeni önce.** Aynı damgada yazılan iki kayıt `created_at` ile
