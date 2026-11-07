@@ -15,6 +15,7 @@ import {
   BACKUP_LAST_KEY,
   isBackupDue,
   readBackupSettings,
+  writeBackupAttempt,
 } from "./lib/backup-schedule";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
@@ -115,12 +116,21 @@ export function App() {
       const settings = readBackupSettings();
       if (!settings.dir) return;
       if (!isBackupDue(settings.last, Date.now(), settings.days)) return;
+      const at = new Date().toISOString();
       try {
         await api.vaultBackup(settings.dir);
-        localStorage.setItem(BACKUP_LAST_KEY, new Date().toISOString());
-      } catch {
-        // Sessiz: sonraki kontrolde yeniden denenir; kullanıcıya gürültü yapma.
+      } catch (e) {
+        // Sessiz kal (modal/toast yok) ama deneme **kayda geçer**: Ayarlar'da
+        // "son deneme" ve neden görünür; başarısız deneme tazeliği ilerletmez.
+        writeBackupAttempt({ at, ok: false, code: toApiError(e).code });
+        return;
       }
+      try {
+        localStorage.setItem(BACKUP_LAST_KEY, at);
+      } catch {
+        // kota/izin: tazelik yazılamadıysa sonraki kontrolde yeniden denenir
+      }
+      writeBackupAttempt({ at, ok: true, code: null });
     };
     const timer = setInterval(() => void run(), BACKUP_CHECK_MS);
     void run();

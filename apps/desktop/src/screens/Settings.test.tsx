@@ -68,9 +68,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { version as appVersion } from "../../package.json";
 import {
+  BACKUP_ATTEMPT_KEY,
   BACKUP_DAYS_KEY,
   BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
+  writeBackupAttempt,
 } from "../lib/backup-schedule";
 import { formatDateTime, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -587,6 +589,54 @@ describe("ayarlar ekranı davranışı", () => {
     fireEvent.click(reset);
     expect(localStorage.getItem(BACKUP_LAST_KEY)).toBeNull();
     expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoLastNone"));
+  });
+
+  it("son başarılı yedek ile son deneme ayrı gösterilir; başarısız denemenin nedeni yazılır", async () => {
+    localStorage.setItem(BACKUP_DIR_KEY, "/Volumes/OtoYedek");
+    localStorage.setItem(BACKUP_DAYS_KEY, "7");
+    localStorage.setItem(BACKUP_LAST_KEY, "2026-10-28T06:00:00.000Z");
+    writeBackupAttempt({ at: "2026-11-07T02:00:00.000Z", ok: false, code: "E_IO" });
+    setup();
+
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    // Son **başarılı** yedek ayrı satırda kalır: başarısız deneme tazeliği ilerletmez.
+    expect(auto.textContent).toContain(formatDateTime("2026-10-28T06:00:00.000Z"));
+    expect(auto.textContent).toContain(formatDateTime("2026-11-07T02:00:00.000Z"));
+    expect(auto.textContent).toContain(t("settings.autoAttemptFailed"));
+    expect(auto.textContent).not.toContain(t("settings.autoAttemptNone"));
+    expect(auto.textContent).toContain(t("settings.autoNextDue"));
+    const alert = within(auto).getByRole("alert");
+    expect(alert.textContent).toContain("E_IO");
+    expect(alert.textContent).toContain(t("settings.autoAttemptReason", { code: "E_IO" }));
+  });
+
+  it("başarılı son deneme 'son yedek' ile karışmaz; sıradaki plan son başarılı yedekten hesaplanır", async () => {
+    const last = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    localStorage.setItem(BACKUP_DIR_KEY, "/Volumes/OtoYedek");
+    localStorage.setItem(BACKUP_DAYS_KEY, "7");
+    localStorage.setItem(BACKUP_LAST_KEY, last);
+    writeBackupAttempt({ at: new Date().toISOString(), ok: true, code: null });
+    setup();
+
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    expect(auto.textContent).toContain(t("settings.autoAttemptOk"));
+    expect(within(auto).queryByRole("alert")).toBeNull();
+    const nextIso = new Date(Date.parse(last) + 7 * 24 * 60 * 60 * 1000).toISOString();
+    expect(auto.textContent).toContain(formatDateTime(nextIso));
+    expect(auto.textContent).not.toContain(t("settings.autoNextDue"));
+  });
+
+  it("bozuk deneme kaydı uydurulmaz: 'henüz deneme yok' yazılır", async () => {
+    localStorage.setItem(BACKUP_DIR_KEY, "/Volumes/OtoYedek");
+    localStorage.setItem(BACKUP_ATTEMPT_KEY, "bozuk");
+    setup();
+
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    expect(auto.textContent).toContain(t("settings.autoAttemptNone"));
+    expect(within(auto).queryByRole("alert")).toBeNull();
   });
 
   it("gc tarama adayları yazar, temizleme aday yokken kapalıdır, silme sonucu ve eksik dosya yazılır", async () => {

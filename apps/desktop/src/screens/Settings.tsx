@@ -22,7 +22,8 @@ import {
   BACKUP_DAYS_KEY,
   BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
-  readBackupSettings,
+  nextBackupAt,
+  readBackupStatus,
 } from "../lib/backup-schedule";
 import {
   backupStatusText,
@@ -46,7 +47,7 @@ export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [gc, setGc] = useState<VaultGcResult | null>(null);
-  const [autoBackup, setAutoBackup] = useState(() => readBackupSettings());
+  const [autoBackup, setAutoBackup] = useState(() => readBackupStatus());
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPassword2, setNewPassword2] = useState("");
@@ -310,6 +311,16 @@ export function Settings() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // Sıradaki plan: son **başarılı** yedekten hesaplanır (başarısız deneme
+  // tazeliği ilerletmez). Klasör yoksa plan yok; süre dolduysa saatlik kontrol
+  // denenecek demektir.
+  function nextPlanText(): string {
+    if (!autoBackup.dir) return t("settings.autoNextNone");
+    const nextAt = nextBackupAt(autoBackup.last, autoBackup.days);
+    if (nextAt === null || Date.now() >= nextAt) return t("settings.autoNextDue");
+    return formatDateTime(new Date(nextAt).toISOString());
   }
 
   async function runRestore() {
@@ -663,7 +674,7 @@ export function Settings() {
               if (picked === null) return;
               localStorage.setItem(BACKUP_DIR_KEY, picked);
               localStorage.setItem(BACKUP_DAYS_KEY, "7");
-              setAutoBackup(readBackupSettings());
+              setAutoBackup(readBackupStatus());
             }}
           >
             {t("settings.autoPick")}
@@ -676,14 +687,33 @@ export function Settings() {
           <dd>{t("settings.autoDaysValue", { days: autoBackup.days })}</dd>
           <dt>{t("settings.autoLast")}</dt>
           <dd>{autoBackup.last ? formatDateTime(autoBackup.last) : t("settings.autoLastNone")}</dd>
+          <dt>{t("settings.autoAttempt")}</dt>
+          <dd>
+            {autoBackup.attempt
+              ? `${formatDateTime(autoBackup.attempt.at)} · ${
+                  autoBackup.attempt.ok
+                    ? t("settings.autoAttemptOk")
+                    : t("settings.autoAttemptFailed")
+                }`
+              : t("settings.autoAttemptNone")}
+          </dd>
+          <dt>{t("settings.autoNext")}</dt>
+          <dd>{nextPlanText()}</dd>
         </dl>
+        {autoBackup.attempt && !autoBackup.attempt.ok ? (
+          <p className="notice danger" role="alert">
+            {t("settings.autoAttemptReason", {
+              code: autoBackup.attempt.code ?? t("settings.autoAttemptUnknown"),
+            })}
+          </p>
+        ) : null}
         <div className="row" style={{ gap: 6 }}>
           <button
             className="btn ghost"
             disabled={!autoBackup.dir}
             onClick={() => {
               localStorage.removeItem(BACKUP_DIR_KEY);
-              setAutoBackup(readBackupSettings());
+              setAutoBackup(readBackupStatus());
             }}
           >
             {t("settings.autoDisable")}
@@ -693,7 +723,7 @@ export function Settings() {
             disabled={!autoBackup.last}
             onClick={() => {
               localStorage.removeItem(BACKUP_LAST_KEY);
-              setAutoBackup(readBackupSettings());
+              setAutoBackup(readBackupStatus());
             }}
             title={t("settings.autoResetTitle")}
           >

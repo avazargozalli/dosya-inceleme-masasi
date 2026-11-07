@@ -40,6 +40,7 @@ import {
   BACKUP_CHECK_MS,
   BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
+  readBackupAttempt,
 } from "./lib/backup-schedule";
 
 const mocks = vi.hoisted(() => ({
@@ -403,6 +404,40 @@ describe("kabuk: otomatik yedek", () => {
     // hiç yedek almıyordu; ilk deneme ancak bir saat sonraki kontroldeydi.
     expect(mocks.vaultBackup).toHaveBeenCalledWith("/yedek");
     expect(localStorage.getItem(BACKUP_LAST_KEY)).not.toBeNull();
+    // Son deneme ayrı kaydedilir: Ayarlar "son yedek" ile "son deneme"yi ayrı yazar.
+    const attempt = readBackupAttempt();
+    expect(attempt?.ok).toBe(true);
+    expect(attempt?.code).toBeNull();
+  });
+
+  it("düşen otomatik yedek denemesi neden koduyla kaydedilir, tazelik ilerlemez", async () => {
+    localStorage.setItem(BACKUP_DIR_KEY, "/yedek");
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.vaultBackup.mockRejectedValue({
+      code: "E_IO",
+      message: "hedef disk yok",
+      retryable: true,
+    });
+
+    await mount();
+
+    expect(mocks.vaultBackup).toHaveBeenCalledTimes(1);
+    const attempt = readBackupAttempt();
+    expect(attempt?.ok).toBe(false);
+    expect(attempt?.code).toBe("E_IO");
+    // Başarısız deneme tazeliği ilerletmez: son başarılı yedek zamanı yazılmaz.
+    expect(localStorage.getItem(BACKUP_LAST_KEY)).toBeNull();
+  });
+
+  it("klasör seçilmediyse deneme kaydı da yazılmaz", async () => {
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.vaultBackup.mockResolvedValue({});
+
+    await mount();
+    await tickActive(BACKUP_CHECK_MS * 2);
+
+    expect(mocks.vaultBackup).not.toHaveBeenCalled();
+    expect(readBackupAttempt()).toBeNull();
   });
 
   it("yedek süresi dolmadıysa istek gönderilmez", async () => {
