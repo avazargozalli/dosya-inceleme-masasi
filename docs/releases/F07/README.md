@@ -770,6 +770,71 @@ aynı metin yeniden yazıldıysa "değişmedi" sayılır ve besteci temizlenir
 
 **Açık kayıt:** (a) dosya değişiminde besteci metni korunmaz (yeni dosyanın
 taslağı yüklenir) — bu turda değişmedi; (b) `dropPendingDraft` uçuşta dosya
-değişirse `setEditStatus` yazar (görünür etkisi yok, ölçülmedi); (c) silme
+değişirse `setEditStatus` yazar (görünür etkisi yok, **2026-11-08 turunda
+taslak yazımının sırası** kapatıldı; durum yazımı hâlâ kapısız — aşağıdaki
+tura bakınız); (c) silme
 başarısı düşen tazelemede yeşil satır + kırmızı hata birlikte görünür (ikisi de
 doğru beyan); (d) görsel QA **insan bekliyor**.
+
+## Doğrulama (F07-T10 — düzenleme taslağının yazma sırası, 2026-11-08)
+
+Önceki iki `Notlar` turu okuma yollarını, dosya kimliğini, taslak yarışını ve
+**yazma** uçuşunu kapatmıştı. Ölçülmemiş tek yol kaldı: **düzenleme taslağının**
+otomatik kaydının sırası. Çekirdek sözleşmesi okundu: `save_note_draft` kör bir
+upsert'tir (`ON CONFLICT(case_id,note_id) DO UPDATE`, `row_version` kapısı yok) —
+yani **hangi yazma sonra düşerse kasa onu tutar**. Besteci taslağı `draftSaveChain`
+ile sıraya bağlıydı; düzenleme taslağı değildi.
+
+**Ölçülen kusurlar:**
+
+1. **Silinen taslak geri geliyordu:** `saveEdit` `noteDraftClear`'ı uçuştaki
+   `note_draft_save(case, note)` bitmeden gönderiyordu → geç dönen yazma satırı
+   yeniden oluşturuyordu. Sonraki açılışta panel "taslak farklı" diyor ve
+   **eski** metni "Taslağı yükle" ile sunuyordu (yeni kaydı eski metinle ezme
+   yolu). Aynı yarış `resolveConflict` ve `dropPendingDraft` yollarında da vardı.
+2. **İç içe yazma:** iki düzenleme taslağı yazımı eşzamanlı uçabiliyordu (sıra
+   garantisi yok) → eski yük sonra düşerse kasa eski metni tutardı.
+3. **Yanlış durum satırı:** geç dönen taslak yanıtı `editStatus`ı **koşulsuz**
+   yazıyordu; panel başka nota geçtiyse "kaydedildi"/"başarısız" **o** notun
+   satırında görünüyordu (o notun taslağı yazılmadığı hâlde).
+
+**Düzeltme (`Notes.tsx` +41/−5):** `editDraftChain` — düzenleme taslağı yazımları
+sıraya bağlanır; `saveEdit`, `resolveConflict` ve `dropPendingDraft` temizlemeden
+**önce** zinciri bekler (besteci yolundaki `draftSaveChain` ile aynı gerekçe).
+`editOpenId` — durum satırı yalnız panel hâlâ **aynı** notu gösteriyorsa güncellenir
+(dosya değişince panel kapanır → kimlik `null`). Yazmanın kendisi panel kapansa da
+**yapılır**: kullanıcının yazdığı metin kaybolmaz; kapı yalnız beyandadır.
+
+**Testler:** `Notes.test.tsx` **34 → 37** (+3; yeni `describe` "düzenleme taslağı
+yazma sırası"): kaydetme uçuştaki yazmayı bekler (sıra `save` → `clear`, kasadaki
+taslak `null`), iki yazma iç içe geçmez (ikinci `noteDraftSave` birinci bitmeden
+**başlamaz**), geç yanıt başka notun durum satırına yazmaz.
+
+**Kapı kanıtı 3/3** (her mutasyon tek başına, `-t` ile yalnız kendi testi
+koşularak; geri yükleme sha256 `dcfa32a02737ac0a…` **birebir**):
+M1 `saveEdit` zinciri beklemez (1 düştü) · M2 yazımlar sıraya bağlanmaz (1) ·
+M3 geç yanıt durum satırını kapısız yazar (1).
+**Dürüst (kendi hatam):** ilk kapı betiği `CI=1` ile koştu; bu kipte vitest
+`Tests …` özet satırını **yazmıyor** → üç mutasyon da "YEŞİL" göründü (sahte
+yeşil). Ayrıştırıcı özet satırı + çıkış kodu + gerçek `❯` düşme işaretine
+bağlandı, ölçüm **3/3 kırmızı** olarak yenilendi. İlk denemede M1 iddiası
+`noteDraftClear`ın **besteci** çağrısıyla (`c1`,`null`) yanlış yere düştü →
+iddia not kimliğine daraltıldı.
+
+**Ölçüm:** `tsc --noEmit` temiz · yerel `vitest` **1290/1290** (63 dosya;
+CI 1289 — fark ağaçtaki **başka ajanın** commit'siz `format.test.ts` testi).
+Rust değişmedi; yerel `vite build` koşulmadı (disk eşiği), paket CI'dan.
+
+**Commit/CI (ölçüldü):** kod `c1bc541` (2 dosya, +171/−5) → **`42420136393`
+10/10 YEŞİL**: `arayüz` **63 dosya / 1289 test**, paket `index-DSzE1Vzx.js`
+**634,30 kB** / gzip **170,24 kB** (CSS 7,28 kB); `dim-storage` **437**
+(değişmedi); `masaüstü kabuk` `40 passed · 5 ignored` + yoksayılan koşu
+`5 passed · 40 filtered` (30,52 s).
+
+**Dürüst sınırlar:** (a) kapılar **arayüz düzeyinde** — doğrudan IPC bunları
+atlar; (b) sıra garantisi **tek pencere** içindir; iki pencere aynı taslağı
+yazarsa çekirdek hâlâ sürüm kapısız upsert ile **son yazan kazanır** (bu tur
+çekirdeği değiştirmedi); (c) gerçek IPC gecikmesi ölçülmedi — sıra, elle
+çözülen sözlerle (deterministik) denetlendi; (d) `dropPendingDraft`'ın
+`setEditStatus("idle")` çağrısı hâlâ kapısız (görünür etkisi yok — açık kayıt);
+(e) jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
