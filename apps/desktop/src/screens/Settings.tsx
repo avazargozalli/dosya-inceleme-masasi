@@ -22,14 +22,18 @@ import { version as appVersion } from "../../package.json";
 import {
   BACKUP_LAST_KEY,
   DEFAULT_BACKUP_DAYS,
+  latestBackupSuccess,
   nextBackupAt,
+  readBackupForce,
   readBackupLast,
   readBackupStatus,
+  writeBackupForce,
 } from "../lib/backup-schedule";
 import {
   clearBackupSchedule,
   loadBackupSchedule,
   saveBackupSchedule,
+  type BackupFreshness,
   type BackupScheduleLoad,
   type BackupScheduleSource,
 } from "../lib/backup-config";
@@ -85,6 +89,10 @@ export function Settings() {
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [gc, setGc] = useState<VaultGcResult | null>(null);
   const [autoBackup, setAutoBackup] = useState(() => readBackupStatus());
+  // Tazelik **kasadan** (`backup_runs`) okunur; cihaz kaydı yalnız yedektir.
+  // `null` = henüz okunmadı (ekran "hiç" demez), `error` = kasa okunamadı.
+  const [freshness, setFreshness] = useState<BackupFreshness | null>(null);
+  const [forced, setForced] = useState(() => readBackupForce());
   // Planın kaynağı ve okuma hatası: "plan yok" ile "okunamadı" ayrı yazılır.
   const [scheduleSource, setScheduleSource] = useState<BackupScheduleSource | null>(null);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
@@ -188,6 +196,7 @@ export function Settings() {
       setHistoryRows(null);
       setHistoryBusy(false);
       setHistoryError(null);
+      setFreshness(null);
       return;
     }
     void loadHistory();
@@ -258,6 +267,9 @@ export function Settings() {
    * Yedek geçmişi okuması. Liste **istekten önce** temizlenir: düşen bir
    * tazelemeden sonra eski satırlar "güncel" gibi kalmaz. Hata hâlinde liste
    * `null`a döner — ekran "kayıt yok" **demez**, okunamadığını yazar.
+   *
+   * Aynı okuma **tazeliği** de besler: "son başarılı yedek" ayrı bir istek
+   * atmaz (iki kaynak ayrışmasın diye tek yol).
    */
   async function loadHistory() {
     const seq = ++historySeq.current;
@@ -266,11 +278,28 @@ export function Settings() {
     setHistoryRows([]);
     try {
       const rows = await api.backupRunList(BACKUP_HISTORY_LIMIT);
-      if (seq === historySeq.current) setHistoryRows(rows);
+      if (seq === historySeq.current) {
+        setHistoryRows(rows);
+        const iso = latestBackupSuccess(rows);
+        setFreshness({
+          iso,
+          source: iso ? "vault" : "none",
+          deviceIso: readBackupLast(),
+          error: null,
+        });
+      }
     } catch (e) {
       if (seq === historySeq.current) {
+        const deviceIso = readBackupLast();
         setHistoryRows(null);
         setHistoryError(toApiError(e));
+        // Kasa okunamadı: cihaz kaydı **kaynağıyla** yazılır, "hiç" denmez.
+        setFreshness({
+          iso: deviceIso,
+          source: deviceIso ? "device" : "none",
+          deviceIso,
+          error: toApiError(e).code,
+        });
       }
     } finally {
       if (seq === historySeq.current) setHistoryBusy(false);
@@ -443,9 +472,30 @@ export function Settings() {
   // denenecek demektir.
   function nextPlanText(): string {
     if (!autoBackup.dir) return t("settings.autoNextNone");
-    const nextAt = nextBackupAt(autoBackup.last, autoBackup.days);
+    if (forced) return t("settings.autoNextDue");
+    const nextAt = nextBackupAt(freshness?.iso ?? null, autoBackup.days);
     if (nextAt === null || Date.now() >= nextAt) return t("settings.autoNextDue");
     return formatDateTime(new Date(nextAt).toISOString());
+  }
+
+  /**
+   * "Son yedek" satırı. Kanıt kasadır; cihaz kaydı yalnız kasa okunamazsa
+   * yazılır ve **kaynağı** söylenir. Okunmadıysa "hiç" denmez (bilinmiyor).
+   */
+  function lastBackupText(): string {
+    if (!unlocked) return t("settings.autoLastNone");
+    if (!freshness) return t("settings.autoLastLoading");
+    if (freshness.error) {
+      return freshness.iso
+        ? t("settings.autoLastDeviceFallback", {
+            time: formatDateTime(freshness.iso),
+            code: freshness.error,
+          })
+        : t("settings.autoLastUnknown", { code: freshness.error });
+    }
+    return freshness.iso
+      ? t("settings.autoLastVault", { time: formatDateTime(freshness.iso) })
+      : t("settings.autoLastNone");
   }
 
   async function runRestore() {
@@ -905,7 +955,7 @@ export function Settings() {
           <dt>{t("settings.autoDays")}</dt>
           <dd>{t("settings.autoDaysValue", { days: autoBackup.days })}</dd>
           <dt>{t("settings.autoLast")}</dt>
-          <dd>{autoBackup.last ? formatDateTime(autoBackup.last) : t("settings.autoLastNone")}</dd>
+          <dd>{lastBackupText()}</dd>
           <dt>{t("settings.autoAttempt")}</dt>
           <dd>
             {autoBackup.attempt
@@ -919,6 +969,18 @@ export function Settings() {
           <dt>{t("settings.autoNext")}</dt>
           <dd>{nextPlanText()}</dd>
         </dl>
+        {/* Cihaz kaydı ile kasa kaydı ayrışırsa **gizlenmez**: tazelik kasa
+            kaydına göre hesaplanır, cihaz kaydı kendi zamanıyla yazılır. */}
+        {freshness && !freshness.error && freshness.deviceIso && freshness.deviceIso !== freshness.iso ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {t("settings.autoLastDeviceMismatch", {
+              time: formatDateTime(freshness.deviceIso),
+            })}
+          </p>
+        ) : null}
+        {forced ? (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.autoForceQueued")}</p>
+        ) : null}
         {/* Plan kaynağı/hatası **gizlenmez**: "seçilmedi" ile "okunamadı" ayrı. */}
         {scheduleError ? (
           <p className="notice danger" role="alert">
@@ -962,10 +1024,25 @@ export function Settings() {
           </button>
           <button
             className="btn ghost"
-            disabled={!autoBackup.last}
+            disabled={!autoBackup.dir}
             onClick={() => {
+              // Kasa kaydı **kanıttır** ve silinmez; düğme bir sonraki kontrolün
+              // yedeği zorunlu almasını ister (`dim.backup.force`). Cihaz
+              // önbelleği de temizlenir — ekran kaynağı yazmaya devam eder.
               localStorage.removeItem(BACKUP_LAST_KEY);
-              setAutoBackup((prev) => ({ ...prev, last: readBackupLast() }));
+              writeBackupForce();
+              setForced(true);
+              setAutoBackup((prev) => ({ ...prev, last: null }));
+              setFreshness((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      deviceIso: null,
+                      iso: prev.source === "device" ? null : prev.iso,
+                      source: prev.source === "device" ? "none" : prev.source,
+                    }
+                  : prev,
+              );
             }}
             title={t("settings.autoResetTitle")}
           >

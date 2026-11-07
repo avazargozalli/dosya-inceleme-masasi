@@ -2,14 +2,19 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   BACKUP_ATTEMPT_KEY,
+  BACKUP_FORCE_KEY,
   DEFAULT_BACKUP_DAYS,
   clearBackupAttempt,
+  clearBackupForce,
   isBackupDue,
+  latestBackupSuccess,
   nextBackupAt,
   parseBackupAttempt,
   readBackupAttempt,
+  readBackupForce,
   readBackupStatus,
   writeBackupAttempt,
+  writeBackupForce,
 } from "./backup-schedule";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -112,7 +117,6 @@ describe("deneme kaydı (localStorage)", () => {
     expect(readBackupAttempt()).toEqual({ at, ok: false, code: "E_DISK_FULL" });
     expect(readBackupStatus().attempt).toEqual({ at, ok: false, code: "E_DISK_FULL" });
   });
-
   it("bozuk kayıt 'deneme yok' sayılır", () => {
     localStorage.setItem(BACKUP_ATTEMPT_KEY, "bozuk");
     expect(readBackupAttempt()).toBeNull();
@@ -123,5 +127,53 @@ describe("deneme kaydı (localStorage)", () => {
     clearBackupAttempt();
     expect(localStorage.getItem(BACKUP_ATTEMPT_KEY)).toBeNull();
     expect(readBackupAttempt()).toBeNull();
+  });
+});
+
+describe("latestBackupSuccess (kasa geçmişi)", () => {
+  it("yalnız doğrulanmış/tamamlanmış satırlar kanıttır", () => {
+    expect(
+      latestBackupSuccess([
+        { status: "failed", completedAt: "2026-11-07T09:00:00.000Z", createdAt: "2026-11-07T08:00:00.000Z" },
+        { status: "running", completedAt: null, createdAt: "2026-11-07T09:30:00.000Z" },
+        { status: "verified", completedAt: "2026-11-07T08:10:00.000Z", createdAt: "2026-11-07T08:00:00.000Z" },
+      ]),
+    ).toBe("2026-11-07T08:10:00.000Z");
+  });
+
+  it("en yenisini seçer; tamamlanma zamanı yoksa oluşturma zamanına düşer", () => {
+    expect(
+      latestBackupSuccess([
+        { status: "succeeded", completedAt: null, createdAt: "2026-11-05T10:00:00.000Z" },
+        { status: "verified", completedAt: "2026-11-06T10:00:00.000Z", createdAt: "2026-11-06T09:00:00.000Z" },
+      ]),
+    ).toBe("2026-11-06T10:00:00.000Z");
+  });
+
+  it("tanınmayan durum ve çözülemeyen tarih tazelik ilerletmez", () => {
+    expect(
+      latestBackupSuccess([
+        { status: "verified", completedAt: "bozuk", createdAt: "2026-11-07T08:00:00.000Z" },
+        { status: "verified", completedAt: "2026-11-07T09:00:00.000Z", createdAt: "2026-11-07T08:00:00.000Z" },
+        { status: "tamamlandı", completedAt: "2026-11-07T10:00:00.000Z", createdAt: "2026-11-07T10:00:00.000Z" },
+      ]),
+    ).toBe("2026-11-07T09:00:00.000Z");
+  });
+
+  it("hiç kanıt yoksa null (uydurma tarih yok)", () => {
+    expect(latestBackupSuccess([])).toBeNull();
+    expect(latestBackupSuccess([{ status: "failed", completedAt: null, createdAt: "2026-11-07T08:00:00.000Z" }])).toBeNull();
+  });
+});
+
+describe("zorunlu yedek işareti (localStorage)", () => {
+  it("yazar, okur ve temizler", () => {
+    expect(readBackupForce()).toBe(false);
+    writeBackupForce();
+    expect(readBackupForce()).toBe(true);
+    expect(localStorage.getItem(BACKUP_FORCE_KEY)).toBe("1");
+    clearBackupForce();
+    expect(readBackupForce()).toBe(false);
+    expect(localStorage.getItem(BACKUP_FORCE_KEY)).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BACKUP_DAYS_KEY,
   BACKUP_DIR_KEY,
+  BACKUP_LAST_KEY,
   DEFAULT_BACKUP_DAYS,
   backupScheduleValue,
   parseBackupSchedule,
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   vaultSettingGet: vi.fn(),
   vaultSettingSet: vi.fn(),
   vaultSettingDelete: vi.fn(),
+  backupRunList: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => {
@@ -26,8 +28,10 @@ vi.mock("./api", async (importOriginal) => {
 });
 
 const {
+  BACKUP_FRESHNESS_LIMIT,
   E_BACKUP_SETTING_VERIFY,
   clearBackupSchedule,
+  loadBackupFreshness,
   loadBackupSchedule,
   saveBackupSchedule,
 } = await import("./backup-config");
@@ -238,5 +242,74 @@ describe("readLegacyBackupSchedule", () => {
     localStorage.setItem(BACKUP_DIR_KEY, "/Volumes/Eski");
     localStorage.setItem(BACKUP_DAYS_KEY, "abc");
     expect(readLegacyBackupSchedule()).toEqual({ dir: "/Volumes/Eski", days: DEFAULT_BACKUP_DAYS });
+  });
+});
+
+describe("loadBackupFreshness (tazelik kanıtı kasadır)", () => {
+  function run(status: string, completedAt: string | null, createdAt: string) {
+    return {
+      id: `${status}-${createdAt}`,
+      snapshotId: "DimYedek-20261107-0830",
+      schemaVersion: 24,
+      manifestHash: "a".repeat(64),
+      status,
+      verificationResult: status === "verified" ? "integrity_check" : null,
+      destinationLabel: "/Volumes/Yedek",
+      createdAt,
+      completedAt,
+    };
+  }
+
+  it("kasa kaydı cihaz kaydını ezer ve kaynak 'vault' olur", async () => {
+    localStorage.setItem(BACKUP_LAST_KEY, "2026-11-01T00:00:00.000Z");
+    mocks.backupRunList.mockResolvedValue([
+      run("verified", "2026-11-07T08:31:00.000Z", "2026-11-07T08:30:00.000Z"),
+    ]);
+
+    const value = await loadBackupFreshness();
+    expect(value).toEqual({
+      iso: "2026-11-07T08:31:00.000Z",
+      source: "vault",
+      deviceIso: "2026-11-01T00:00:00.000Z",
+      error: null,
+    });
+    expect(mocks.backupRunList).toHaveBeenCalledWith(BACKUP_FRESHNESS_LIMIT);
+  });
+
+  it("kasa okundu ama başarılı satır yoksa cihaz kaydı tazelik sayılmaz", async () => {
+    localStorage.setItem(BACKUP_LAST_KEY, "2026-11-07T07:00:00.000Z");
+    mocks.backupRunList.mockResolvedValue([
+      run("failed", null, "2026-11-07T08:30:00.000Z"),
+    ]);
+
+    const value = await loadBackupFreshness();
+    // Cihaz kaydı **raporlanır** ama kaynak `none`: o kayıt başka kasanın olabilir.
+    expect(value.iso).toBeNull();
+    expect(value.source).toBe("none");
+    expect(value.deviceIso).toBe("2026-11-07T07:00:00.000Z");
+    expect(value.error).toBeNull();
+  });
+
+  it("kasa okunamazsa cihaz kaydına düşer ve hata kodunu taşır", async () => {
+    localStorage.setItem(BACKUP_LAST_KEY, "2026-11-06T07:00:00.000Z");
+    mocks.backupRunList.mockRejectedValue({
+      code: "E_DB",
+      message: "kasa okunamadı",
+      retryable: true,
+    });
+
+    const value = await loadBackupFreshness();
+    expect(value).toEqual({
+      iso: "2026-11-06T07:00:00.000Z",
+      source: "device",
+      deviceIso: "2026-11-06T07:00:00.000Z",
+      error: "E_DB",
+    });
+  });
+
+  it("cihaz kaydı da yoksa kaynak 'none' ve hata kodu görünür", async () => {
+    mocks.backupRunList.mockRejectedValue({ code: "E_LOCKED", message: "kilitli", retryable: false });
+    const value = await loadBackupFreshness();
+    expect(value).toEqual({ iso: null, source: "none", deviceIso: null, error: "E_LOCKED" });
   });
 });

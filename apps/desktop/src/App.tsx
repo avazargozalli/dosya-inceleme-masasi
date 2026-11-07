@@ -13,11 +13,12 @@ import { canShowScreen } from "./lib/lock";
 import {
   BACKUP_CHECK_MS,
   BACKUP_LAST_KEY,
+  clearBackupForce,
   isBackupDue,
-  readBackupLast,
+  readBackupForce,
   writeBackupAttempt,
 } from "./lib/backup-schedule";
-import { loadBackupSchedule } from "./lib/backup-config";
+import { loadBackupFreshness, loadBackupSchedule } from "./lib/backup-config";
 import { Providers } from "./screens/Providers";
 import { Review } from "./screens/Review";
 import { Search } from "./screens/Search";
@@ -110,10 +111,16 @@ export function App() {
   }, [status.unlocked]);
 
   // Otomatik yedek: plan **kasada** (`settings`, kapsam `vault`) durur; kasa
-  // açıkken süresi dolunca yedek alınır. Cihaz kaydı yalnız göç kaynağı ve
-  // önbellektir. Kasa ayarı bozuksa yedek **alınmaz** (Ayarlar nedeni yazar).
+  // açıkken süresi dolunca yedek alınır. **Tazelik kanıtı da kasadır**
+  // (`backup_runs`): cihaz kaydı yalnız yedektir ve kasa okunamazsa kullanılır.
+  // Kasa ayarı bozuksa yedek **alınmaz** (Ayarlar nedeni yazar).
+  const lastSuccessRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!status.unlocked) return;
+    if (!status.unlocked) {
+      // Kasa kapandı: başka kasanın tazeliğiyle devam edilmez.
+      lastSuccessRef.current = null;
+      return;
+    }
     const run = async () => {
       // Okuma yolu kendi hatasını taşır; burada beklenmedik hata olursa yedek
       // alınmaz (sessiz yutma yok — Ayarlar nedeni yazar).
@@ -121,7 +128,10 @@ export function App() {
       if (!load) return;
       if (load.source === "invalid" || !load.schedule) return;
       const schedule = load.schedule;
-      if (!isBackupDue(readBackupLast(), Date.now(), schedule.days)) return;
+      const freshness = await loadBackupFreshness().catch(() => null);
+      const lastIso = freshness?.iso ?? lastSuccessRef.current;
+      const forced = readBackupForce();
+      if (!forced && !isBackupDue(lastIso, Date.now(), schedule.days)) return;
       const at = new Date().toISOString();
       try {
         await api.vaultBackup(schedule.dir);
@@ -131,10 +141,14 @@ export function App() {
         writeBackupAttempt({ at, ok: false, code: toApiError(e).code });
         return;
       }
+      // Yedek geçmişi (`backup_runs`) çekirdekte yazıldı; bu oturumda tazelik
+      // ayrıca tutulur ki saatlik kontrol aynı yedeği yinelemesin.
+      lastSuccessRef.current = at;
+      clearBackupForce();
       try {
         localStorage.setItem(BACKUP_LAST_KEY, at);
       } catch {
-        // kota/izin: tazelik yazılamadıysa sonraki kontrolde yeniden denenir
+        // kota/izin: önbellek yazılamadıysa kasa kaydı geçerli
       }
       writeBackupAttempt({ at, ok: true, code: null });
     };

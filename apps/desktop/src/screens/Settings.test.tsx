@@ -73,6 +73,7 @@ import {
   BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
   DEFAULT_BACKUP_DAYS,
+  readBackupForce,
   writeBackupAttempt,
 } from "../lib/backup-schedule";
 import { formatDateTime, formatSize } from "../lib/format";
@@ -612,31 +613,59 @@ describe("ayarlar ekranı davranışı", () => {
         version: 2,
         updatedAt: ISO,
       },
+      // Tazelik kanıtı kasadadır; cihaz kaydı ayrı (daha eski) zamandır.
+      history: [
+        {
+          id: "run-1",
+          snapshotId: "DimYedek-20261102-0900",
+          schemaVersion: 24,
+          manifestHash: "e".repeat(64),
+          status: "verified",
+          verificationResult: "integrity_check",
+          destinationLabel: "/Volumes/OtoYedek",
+          createdAt: "2026-11-02T09:00:00.000Z",
+          completedAt: "2026-11-02T09:01:00.000Z",
+        },
+      ],
     });
 
     expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
     const auto = cardOf(t("settings.autoTitle"));
     expect(auto.textContent).toContain("/Volumes/OtoYedek");
     expect(auto.textContent).toContain(t("settings.autoDaysValue", { days: 3 }));
-    expect(auto.textContent).toContain(formatDateTime("2026-10-28T06:00:00.000Z"));
+    // "Son yedek" **kasa kaydından** yazılır ve kaynağını söyler.
+    expect(auto.textContent).toContain(
+      t("settings.autoLastVault", { time: formatDateTime("2026-11-02T09:01:00.000Z") }),
+    );
+    // Cihaz kaydı farklıysa çelişki gizlenmez (ayrı satırda yazılır).
+    expect(auto.textContent).toContain(
+      t("settings.autoLastDeviceMismatch", { time: formatDateTime("2026-10-28T06:00:00.000Z") }),
+    );
     // Plan kasadan geldi: okuma hatası/uyarısı yok.
     expect(within(auto).queryByRole("alert")).toBeNull();
 
-    const disable = within(auto).getByRole("button", { name: t("settings.autoDisable") }) as HTMLButtonElement;
+    // "Sıfırla" **plan dururken** denenir: kasa kaydı silinmez, cihaz
+    // önbelleği temizlenir ve sonraki kontrol için zorunlu yedek işaretlenir.
+    const reset = within(auto).getByRole("button", { name: t("settings.autoReset") }) as HTMLButtonElement;
+    expect(reset.disabled).toBe(false);
+    fireEvent.click(reset);
+    expect(localStorage.getItem(BACKUP_LAST_KEY)).toBeNull();
+    expect(readBackupForce()).toBe(true);
+    expect(cardOf(t("settings.autoTitle")).textContent).toContain(
+      t("settings.autoLastVault", { time: formatDateTime("2026-11-02T09:01:00.000Z") }),
+    );
+    expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoForceQueued"));
+
+    const disable = within(cardOf(t("settings.autoTitle"))).getByRole("button", {
+      name: t("settings.autoDisable"),
+    }) as HTMLButtonElement;
     expect(disable.disabled).toBe(false);
     fireEvent.click(disable);
     await waitFor(() => expect(mocks.vaultSettingDelete).toHaveBeenCalledWith("backup.schedule"));
     expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoDirNone"));
     // "Kapat" yalnız planı siler; son yedek kaydı korunur.
-    expect(localStorage.getItem(BACKUP_LAST_KEY)).not.toBeNull();
-
-    const reset = within(cardOf(t("settings.autoTitle"))).getByRole("button", {
-      name: t("settings.autoReset"),
-    }) as HTMLButtonElement;
-    expect(reset.disabled).toBe(false);
-    fireEvent.click(reset);
     expect(localStorage.getItem(BACKUP_LAST_KEY)).toBeNull();
-    expect(cardOf(t("settings.autoTitle")).textContent).toContain(t("settings.autoLastNone"));
+    expect(readBackupForce()).toBe(true);
   });
 
   it("klasör seçimi planı kasaya yazar; cihaz kaydı yalnız doğrulanmış önbellektir", async () => {
@@ -744,7 +773,22 @@ describe("ayarlar ekranı davranışı", () => {
     localStorage.setItem(BACKUP_DAYS_KEY, "7");
     localStorage.setItem(BACKUP_LAST_KEY, last);
     writeBackupAttempt({ at: new Date().toISOString(), ok: true, code: null });
-    setup();
+    // Tazelik kanıtı kasadadır: son başarılı yedek geçmişteki doğrulanmış satırdır.
+    setup({
+      history: [
+        {
+          id: "run-2",
+          snapshotId: "DimYedek-20261105-0900",
+          schemaVersion: 24,
+          manifestHash: "f".repeat(64),
+          status: "verified",
+          verificationResult: "integrity_check",
+          destinationLabel: "/Volumes/OtoYedek",
+          createdAt: last,
+          completedAt: last,
+        },
+      ],
+    });
 
     expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
     const auto = cardOf(t("settings.autoTitle"));
@@ -1017,6 +1061,81 @@ describe("ayarlar ekranı davranışı", () => {
     expect(byId<HTMLInputElement>("pw-old").value).toBe("yanlis-parola");
     expect(byId<HTMLInputElement>("pw-new").value).toBe("1234567890");
     expect(notices().join("\n")).not.toContain(t("settings.passwordDone"));
+  });
+
+  it("kasa geçmişi okunamazsa 'son yedek: hiç' denmez; cihaz kaydı kaynağıyla yazılır", async () => {
+    localStorage.setItem(BACKUP_LAST_KEY, "2026-11-06T07:00:00.000Z");
+    setup({
+      historyError: { code: "E_DB", message: "geçmiş okunamadı", retryable: true },
+    });
+
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    await waitFor(() =>
+      expect(auto.textContent).toContain(
+        t("settings.autoLastDeviceFallback", {
+          time: formatDateTime("2026-11-06T07:00:00.000Z"),
+          code: "E_DB",
+        }),
+      ),
+    );
+    // "Hiç yedek yok" demek yalan olurdu: kayıt var ama kasadan okunamadı.
+    expect(auto.textContent).not.toContain(t("settings.autoLastNone"));
+  });
+
+  it("kasa kaydı yoksa cihaz kaydı tazelik sayılmaz; çelişki ayrı satırda yazılır", async () => {
+    localStorage.setItem(BACKUP_LAST_KEY, "2026-11-06T07:00:00.000Z");
+    setup({ history: [] });
+
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    await waitFor(() => expect(auto.textContent).toContain(t("settings.autoLastNone")));
+    expect(auto.textContent).toContain(
+      t("settings.autoLastDeviceMismatch", { time: formatDateTime("2026-11-06T07:00:00.000Z") }),
+    );
+  });
+
+  it("kasa kaydı tazeyken sıfırla zorunlu yedek işaretler; plan süresi doldu yazar", async () => {
+    const fresh = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    setup({
+      scheduleRow: {
+        scope: "vault",
+        key: "backup.schedule",
+        value: { destination: "/Volumes/OtoYedek", days: 7 },
+        version: 1,
+        updatedAt: ISO,
+      },
+      history: [
+        {
+          id: "run-3",
+          snapshotId: "DimYedek-20261107-0900",
+          schemaVersion: 24,
+          manifestHash: "a1".repeat(32),
+          status: "verified",
+          verificationResult: "integrity_check",
+          destinationLabel: "/Volumes/OtoYedek",
+          createdAt: fresh,
+          completedAt: fresh,
+        },
+      ],
+    });
+
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    const auto = cardOf(t("settings.autoTitle"));
+    // Kasa kaydı taze: plan gelecekte bir tarih gösterir.
+    await waitFor(() =>
+      expect(auto.textContent).toContain(
+        t("settings.autoLastVault", { time: formatDateTime(fresh) }),
+      ),
+    );
+    expect(auto.textContent).not.toContain(t("settings.autoNextDue"));
+
+    fireEvent.click(within(auto).getByRole("button", { name: t("settings.autoReset") }) as HTMLButtonElement);
+
+    expect(readBackupForce()).toBe(true);
+    expect(auto.textContent).toContain(t("settings.autoForceQueued"));
+    // "Sıfırla" sözü: bir sonraki kontrol yedek alır → plan "süresi doldu" olur.
+    expect(auto.textContent).toContain(t("settings.autoNextDue"));
   });
 });
 

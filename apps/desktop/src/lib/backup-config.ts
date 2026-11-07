@@ -16,7 +16,9 @@ import {
   backupScheduleValue,
   cacheBackupSchedule,
   clearLegacyBackupSchedule,
+  latestBackupSuccess,
   parseBackupSchedule,
+  readBackupLast,
   readLegacyBackupSchedule,
   type BackupSchedule,
 } from "./backup-schedule";
@@ -115,4 +117,48 @@ export async function saveBackupSchedule(schedule: BackupSchedule): Promise<Back
 export async function clearBackupSchedule(): Promise<void> {
   await api.vaultSettingDelete(BACKUP_SCHEDULE_SETTING);
   clearLegacyBackupSchedule();
+}
+
+/* ------------------------------------------------------------ tazelik --- */
+
+/** Kasa geçmişinden tazelik için okunan satır sayısı (en yeni önce). */
+export const BACKUP_FRESHNESS_LIMIT = 20;
+
+/**
+ * "Son başarılı yedek" bilgisi.
+ * - `vault`: kasa geçmişinden okundu (kanıt; yedekle birlikte taşınır)
+ * - `device`: yalnız cihaz kaydı (kasa geçmişi okunamadı)
+ * - `none`: kanıt yok
+ */
+export type BackupFreshness = {
+  iso: string | null;
+  source: "vault" | "device" | "none";
+  /** Cihaz kaydındaki zaman — çelişki gizlenmesin diye ayrı taşınır. */
+  deviceIso: string | null;
+  /** Kasa okuması düştüyse hata **kodu**; `null` ise okuma başarılı. */
+  error: string | null;
+};
+
+/**
+ * Tazeliği **kasadan** okur (`backup_runs`); cihaz kaydı yalnız yedektir.
+ *
+ * Kasa okunamazsa cihaz kaydına düşer ve hata kodunu taşır: yedek sessizce
+ * durmaz (fail-open, veri kaybı yönünde değil) ama ekran "kasadan okundu"
+ * demez. Kasa okunup **başarılı satır yoksa** kaynak `none`dur — cihaz kaydı
+ * olsa bile tazelik iddiası kurulmaz (o kayıt başka bir kasanın olabilir).
+ */
+export async function loadBackupFreshness(): Promise<BackupFreshness> {
+  const deviceIso = readBackupLast();
+  try {
+    const runs = await api.backupRunList(BACKUP_FRESHNESS_LIMIT);
+    const iso = latestBackupSuccess(runs);
+    return { iso, source: iso ? "vault" : "none", deviceIso, error: null };
+  } catch (e) {
+    return {
+      iso: deviceIso,
+      source: deviceIso ? "device" : "none",
+      deviceIso,
+      error: toApiError(e).code,
+    };
+  }
 }

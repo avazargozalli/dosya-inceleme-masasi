@@ -201,6 +201,69 @@ export function readBackupLast(): string | null {
   }
 }
 
+/* ---------------------------------------------- kasa geçmişi (backup_runs) --- */
+
+/**
+ * Kasa geçmişindeki (`backup_runs`) **son başarılı** yedeğin zamanı.
+ *
+ * Tazelik kanıtı kasadır: yedek kaydı yedeğin içinde taşınır. Yalnız
+ * `verified`/`succeeded` satırlar kanıttır — `running`/`failed`/tanınmayan durum
+ * tazeliği **ilerletmez** (uydurma tarih yok). Tarihi çözülemeyen satır atlanır;
+ * hiç kanıt yoksa `null` döner ("yedek yok" ile "bilinmiyor" çağıranda ayrılır).
+ */
+export function latestBackupSuccess(
+  runs: ReadonlyArray<{ status: string; completedAt: string | null; createdAt: string }>,
+): string | null {
+  let bestMs: number | null = null;
+  let bestIso: string | null = null;
+  for (const run of runs) {
+    if (run.status !== "verified" && run.status !== "succeeded") continue;
+    const iso = run.completedAt ?? run.createdAt;
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) continue;
+    if (bestMs === null || ms > bestMs) {
+      bestMs = ms;
+      bestIso = iso;
+    }
+  }
+  return bestIso;
+}
+
+/**
+ * "Sıfırla" düğmesinin işareti: kasa kaydı silinemez (kanıttır), bu yüzden
+ * düğme bir sonraki kontrolün yedeği **zorunlu** almasını ister. Başarılı
+ * yedekten sonra temizlenir; başarısız denemede kalır (söz tutulur).
+ */
+export const BACKUP_FORCE_KEY = "dim.backup.force";
+
+export function readBackupForce(): boolean {
+  try {
+    return localStorage.getItem(BACKUP_FORCE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeBackupForce(): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(BACKUP_FORCE_KEY, "1");
+  } catch {
+    // sessiz: işaret yazılamazsa düğme yalnız cihaz kaydını temizler
+  }
+}
+
+export function clearBackupForce(): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.removeItem(BACKUP_FORCE_KEY);
+  } catch {
+    // sessiz
+  }
+}
+
 /**
  * Kasa ayarı **doğrulanarak** yazıldıktan sonra cihaz önbelleği tazelenir.
  * Önbellek yalnız kasa okunamadığında kullanılır; kaynak yine kasadır.

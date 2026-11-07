@@ -41,6 +41,8 @@ import {
   BACKUP_DIR_KEY,
   BACKUP_LAST_KEY,
   readBackupAttempt,
+  readBackupForce,
+  writeBackupForce,
 } from "./lib/backup-schedule";
 
 const mocks = vi.hoisted(() => ({
@@ -51,6 +53,7 @@ const mocks = vi.hoisted(() => ({
   vaultSettingGet: vi.fn(),
   vaultSettingSet: vi.fn(),
   vaultSettingDelete: vi.fn(),
+  backupRunList: vi.fn(),
   caseList: vi.fn(),
   documentList: vi.fn(),
 }));
@@ -68,6 +71,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       vaultSettingGet: mocks.vaultSettingGet,
       vaultSettingSet: mocks.vaultSettingSet,
       vaultSettingDelete: mocks.vaultSettingDelete,
+      backupRunList: mocks.backupRunList,
       caseList: mocks.caseList,
       documentList: mocks.documentList,
     },
@@ -165,6 +169,9 @@ beforeEach(() => {
     }),
   );
   mocks.vaultSettingDelete.mockResolvedValue(true);
+  // Tazelik: varsayılan **kasa geçmişi boş** (kanıt yok). Testler kendi
+  // senaryosunda `mockResolvedValue([...])` ile ezer.
+  mocks.backupRunList.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -459,11 +466,24 @@ describe("kabuk: otomatik yedek", () => {
     expect(readBackupAttempt()).toBeNull();
   });
 
-  it("yedek süresi dolmadıysa istek gönderilmez", async () => {
+  it("kasa kaydı tazeyse yedek istenmez (cihaz kaydı boş olsa da)", async () => {
     localStorage.setItem(BACKUP_DIR_KEY, "/yedek");
-    localStorage.setItem(BACKUP_LAST_KEY, new Date().toISOString());
     mocks.status.mockResolvedValue(UNLOCKED);
     mocks.vaultBackup.mockResolvedValue({});
+    // Kanıt kasadadır: cihaz kaydı silinmiş olsa da yedek taze sayılır.
+    mocks.backupRunList.mockResolvedValue([
+      {
+        id: "r1",
+        snapshotId: "DimYedek-20261103-0859",
+        schemaVersion: 24,
+        manifestHash: "b".repeat(64),
+        status: "verified",
+        verificationResult: "integrity_check",
+        destinationLabel: "/yedek",
+        createdAt: "2026-11-03T08:00:00.000Z",
+        completedAt: "2026-11-03T08:01:00.000Z",
+      },
+    ]);
 
     await mount();
     await tickActive(BACKUP_CHECK_MS);
@@ -555,6 +575,88 @@ describe("kabuk: otomatik yedek", () => {
     // Başarılı yedekten sonra süre dolmadığı için üçüncü istek yok.
     await tickActive(BACKUP_CHECK_MS);
     expect(mocks.vaultBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it("cihaz kaydı taze olsa da kasa kaydı eskiyse yedek alınır (kanıt kasadır)", async () => {
+    mocks.vaultSettingGet.mockResolvedValue({
+      scope: "vault",
+      key: "backup.schedule",
+      value: { destination: "/yedek", days: 7 },
+      version: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+    // Cihaz kaydı "az önce yedeklendi" diyor; kasa geçmişi 40 gün öncesini
+    // gösteriyor (başka kasadan kalmış önbellek). Tazelik kasadan hesaplanır.
+    localStorage.setItem(BACKUP_LAST_KEY, new Date().toISOString());
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.backupRunList.mockResolvedValue([
+      {
+        id: "r-old",
+        snapshotId: "DimYedek-20260924-0900",
+        schemaVersion: 24,
+        manifestHash: "c".repeat(64),
+        status: "verified",
+        verificationResult: "integrity_check",
+        destinationLabel: "/yedek",
+        createdAt: "2026-09-24T09:00:00.000Z",
+        completedAt: "2026-09-24T09:01:00.000Z",
+      },
+    ]);
+
+    await mount();
+
+    expect(mocks.vaultBackup).toHaveBeenCalledWith("/yedek");
+  });
+
+  it("kasa geçmişi okunamazsa cihaz kaydına düşer (yedek sessizce durmaz)", async () => {
+    mocks.vaultSettingGet.mockResolvedValue({
+      scope: "vault",
+      key: "backup.schedule",
+      value: { destination: "/yedek", days: 7 },
+      version: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+    localStorage.setItem(BACKUP_LAST_KEY, new Date().toISOString());
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.backupRunList.mockRejectedValue({ code: "E_DB", message: "okunamadı", retryable: true });
+
+    await mount();
+    await tickActive(BACKUP_CHECK_MS);
+
+    // Yedek kaydı okunamadı ama cihaz kaydı taze: gereksiz yedek alınmaz.
+    expect(mocks.vaultBackup).not.toHaveBeenCalled();
+  });
+
+  it("sıfırla işareti kasa kaydı tazeyken de yedeği zorunlu alır ve işareti temizler", async () => {
+    mocks.vaultSettingGet.mockResolvedValue({
+      scope: "vault",
+      key: "backup.schedule",
+      value: { destination: "/yedek", days: 7 },
+      version: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    });
+    mocks.status.mockResolvedValue(UNLOCKED);
+    mocks.backupRunList.mockResolvedValue([
+      {
+        id: "r-fresh",
+        snapshotId: "DimYedek-20261103-0859",
+        schemaVersion: 24,
+        manifestHash: "d".repeat(64),
+        status: "verified",
+        verificationResult: "integrity_check",
+        destinationLabel: "/yedek",
+        createdAt: "2026-11-03T08:00:00.000Z",
+        completedAt: "2026-11-03T08:01:00.000Z",
+      },
+    ]);
+    writeBackupForce();
+
+    await mount();
+
+    expect(mocks.vaultBackup).toHaveBeenCalledTimes(1);
+    // Söz tutuldu: işaret başarılı yedekten sonra temizlendi.
+    expect(readBackupForce()).toBe(false);
+    expect(readBackupAttempt()?.ok).toBe(true);
   });
 });
 

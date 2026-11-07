@@ -1167,6 +1167,13 @@ export const tr = {
     autoDaysValue: "{days} gün",
     autoLast: "Son yedek",
     autoLastNone: "hiç",
+    autoLastLoading: "okunuyor…",
+    autoLastVault: "{time} · kasa kaydı",
+    autoLastDeviceFallback: "{time} · cihaz kaydı (kasa kaydı okunamadı: {code})",
+    autoLastUnknown: "bilinmiyor — kasa kaydı okunamadı ({code})",
+    autoLastDeviceMismatch:
+      "Cihaz kaydı {time} diyor; tazelik kasa kaydına göre hesaplanır (kanıt yedekle birlikte taşınır).",
+    autoForceQueued: "Sıfırla: sonraki kontrol yedeği zorunlu alacak.",
     autoAttempt: "Son deneme",
     autoAttemptNone: "henüz deneme yok",
     autoAttemptOk: "başarılı",
