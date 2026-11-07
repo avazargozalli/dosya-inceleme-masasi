@@ -177,8 +177,9 @@ hangi manifestle, doğrulandı mı" sorusunun tek kanıtı hedef klasördeki
 - `tsc --noEmit` temiz · vitest **62 dosya / 1248 test** (yerel; CI 1247 —
   fark: ağaçta duran başka ajanın `format.test.ts` değişikliği) ·
   `npm run build` **628,50 kB** (`index-Dpi5BGKN.js`, gzip 168,28).
-- `dim-storage --lib` **427/427** (macos 240,96 s · ubuntu 283,64 s — iki
-  platformda **birebir**; önceki 422 + 5 yeni) · storage clippy `-D warnings`
+- `dim-storage --lib` CI'da **427/427** (macos 240,96 s · ubuntu 283,64 s — iki
+  platformda **birebir**; önceki 422 + 5 yeni; yerelde yalnız `backup_runs::`
+  filtresi **5/5** koştu) · storage clippy `-D warnings`
   temiz · masaüstü clippy/check temiz · `cargo fmt` iki manifest temiz.
 - **CI:** `42383692666` **10/10 YEŞİL**; `arayüz` **62 dosya / 1247 test**,
   paket `index-126ILiYd.js` **627,93 kB** / gzip **168,02 kB**;
