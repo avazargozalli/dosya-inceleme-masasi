@@ -9,7 +9,7 @@
 | F13-T01 | ✅ | terim listesiyle gerçek çıkarma (`apply_redactions`, görüntü pikselleri dahil) |
 | F13-T02 | ✅ | çıktı yeniden açılıp terimlerin kalmadığı doğrulanır; kalmazsa kayıt yok |
 | F13-T03 | ✅ | yeni sürüm `parent_version_id` ile bağlanır; özgün sürüm değişmez |
-| F13-T04 | ✅ | plan + bölgeler (sayfa, quad, terim hash'i) kaydı |
+| F13-T04 | ✅ | plan + bölgeler (sayfa, quad, terim hash'i) kaydı; **sicil okunur** (plan listesi + bölge sayfa dağılımı; 2026-11-07 turu) |
 | F13-T05 | ✅ | sayfa önizlemesi üzerinde dikdörtgen seçimi; punto koordinatına çevrim; bölge doğrulaması |
 | F13-T06 | ✅ | bağımsız pypdf okuyucusu + OCR (tesseract varsa) sızıntı kontrolü; `ocrVerified` dürüst bayrağı |
 
@@ -147,3 +147,75 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
 - **Kimlik:** yeni numara uydurulmadı — şartnamede **F13-T02** (elle metin/görsel bölge seçimini
   sayfa dönüşümlerinden bağımsız koordinatlara çevirme). **Dürüst:** bu README tablosundaki
   numaralandırma şartnameden **kayık** (tabloda T05 = bölge seçimi); kayıt şartname numarasıyla.
+
+## Tur kaydı — 2026-11-07 (maskeleme planı sicili okunur)
+
+- **ÖLÇÜLEN KUSUR:** her maskelemede `redaction_plans` + `redaction_regions` yazılıyor
+  (`commit_redaction` → `create_redaction_plan` + `add_redaction_regions`), ama
+  `list_redaction_plans` **yalnız `crates/storage` içinde** tanımlıydı — Tauri komutu,
+  `lib/api.ts` bağı ve ekran kartı yoktu (`git grep`: tek tüketici yok). `redaction_regions`
+  için **okuma yolu hiç yoktu** (storage'da bile). Ekranda yalnız son çalıştırmanın **ham plan
+  kimliği** duruyordu; ekran kapanınca kayboluyordu. Avukat "hangi belgede hangi sürümde,
+  hangi sayfalarda kaç bölge maskelendi" sorusunu yanıtlayamıyordu.
+- **İkinci ölçülen boşluk:** plan satırı yalnız `document_version_id` (UUID) taşıyordu;
+  okunacak belge adı/sürüm numarası yoktu.
+- **Yazılan:**
+  - `RedactionPlanRow` artık `document_title`, `version_no`, `region_count` taşır; iki sorgu
+    (`get`/`list`) `document_versions`/`documents` ile **sol birleşim** + `COUNT(*)` alt sorgusu
+    kullanır. Sürüm/belge bulunamazsa satır **düşmez**, ad `null` kalır (kimlik dururken ad
+    uydurulmaz). Liste sırası `created_at DESC, rowid DESC` — aynı damgaya düşen iki plan bile
+    yazılma sırasını korur.
+  - Yeni `list_redaction_regions(plan_id)` (storage): **yazılma sırası** (`rowid ASC`), `quads`
+    JSON'u çözülür; bozuk geometri `rects: null` döner (satır listede kalır, geometri uydurulmaz).
+  - Yeni `redaction_plan_list` / `redaction_plan_regions` komutları + `api.redactionPlanList` /
+    `api.redactionPlanRegions` + `RedactionPlanRow`/`RedactionRegionRow` tipleri.
+  - Maskeleme ekranında **"Maskeleme planları"** kartı: belge · sürüm · durum rozeti · bölge
+    sayısı · kaynak özeti öneki · zaman. Tanınmayan durum **ham değeriyle** yazılır (uydurulmuş
+    etiket yok). "Bölgeleri göster" planın sayfa dağılımını verir ("Sayfa N: M bölge"), geometrisi
+    okunamayan bölge sayısı ayrı uyarıda. Seçim yokken **okuma yapılmaz** ("kayıt yok" denmez);
+    düşen liste okuması **kendi satırında** (sessiz yutma yok); liste istekten **önce** temizlenir;
+    geç yanıt `plansSeq`/`regionsSeq` ile düşer; dosya değişiminde sicil + açık bölge detayı
+    birlikte düşer (INV-05).
+  - Başarılı maskelemeden **hemen sonra** sicil tazelenir ve yeni plan satırı
+    "bu çalıştırma" rozetiyle işaretlenir (`result.plan.id`).
+  - 29 i18n anahtarı (`redaction.plans*`, `redaction.plan*`); gömülü metin yok.
+- **Testler:** storage `redactions::` **6** (2 → +4): ad/sürüm/bölge sayısı birleşimi, sürüm
+  kaybolsa da satır durur (ad `null`), damga eşitken `rowid` sırası, bölge sırası + bozuk `quads`
+  → `rects: null`. Arayüz `Redaction.test.tsx` **29 → 40** (+11; yeni `describe` "Maskeleme sicili
+  (plan okuma yolu)"). Toplam: `dim-storage --lib` **411 → 415**, vitest **1190 → 1201** (60 dosya).
+- **Kapı kanıtı (gerçek koşular, betik: `scratch/redaction-plan-gates*.py`):** düzeltme öncesi
+  HEAD bileşeni + yeni testler **`11 failed | 29 passed`** (on biri de kırmızı). Arayüz mutasyonları
+  **9/9 kırmızı**: M1 dosya değişiminde temizlik (1), M2 hata satırı (1), M3 tanınmayan durum (1),
+  M4 sayfa numarası (**4** — *cerrahi değil*), M5 geometri uyarısı (1), M6 bölge okuma hatası (1),
+  M7 aç/kapa kapanışı (1), M8 gönderim sonrası tazeleme (**2** — *cerrahi değil*), M9 "bu çalıştırma"
+  işareti (1). Çekirdek **5/5**: R1 sol→iç birleşim (1), R2 bölge sayısı (1), R3 sıra yedeği (1),
+  R4 bölge sırası (1), R5 bozuk geometri (1). Geri yükleme sha256 birebir (arayüz `7bfbf1b2…`,
+  çekirdek `c6a6410e…`).
+  **Dürüst (kendi hatam):** M7 ilk ölçümde **yeşil kaldı** — test yalnız "liste boşaldı"yı
+  ölçüyordu; `openPlanId` açık kalsa da liste temizlendiği için geçiyordu. Test kapanışı **düğme
+  adından** (`Bölgeleri göster` geri döner) okuyacak biçimde düzeltildi, M7 yeniden ölçüldü
+  (`1 failed`). R1/R2 ilk betikte "EŞLEŞMEDİ" verdi: aynı ifade **iki sorguda** geçiyor → iki
+  sorguda birden mutasyona çevrildi ve yeniden ölçüldü.
+- **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `dim-storage --lib` **415/415** (247,49 s) · clippy
+  `-p dim-storage --all-targets -D warnings` temiz (5,05 s) · masaüstü kabuk clippy
+  `--all-targets -D warnings` temiz (1 dk 03 s) · `cargo check --all-targets` temiz (6,19 s) ·
+  `cargo fmt` iki manifest temiz · masaüstü kabuk kapısı **34 koştu · 0 düştü · 5 yoksayıldı**
+  (kaynak 39 test) · `tsc --noEmit` temiz · vitest **1201/1201** (60 dosya) · `npm run build`
+  **613,88 kB** (`index-vkPakvwy.js`, gzip **164,74 kB**; CSS 7,28 kB).
+- **Commit/CI (ölçüldü):** kod `04c2b6f` (8 dosya, +859/−12) → **`42317787444` 10/10 YEŞİL**;
+  `dim-storage` **415 passed** hem `macos-15` (166,59 s) hem `ubuntu-latest` (346,11 s) — **birebir**;
+  `arayüz` **60 dosya / 1201 test**, paket `index-vkPakvwy.js` 613,88 kB / gzip 164,74 kB
+  (yerel/CI **birebir**); `masaüstü kabuk` **34 koştu · 0 düştü · 5 yoksayıldı**.
+- **Dürüst sınırlar:** (a) yeni iki komut **komut olarak koşulmadı** (`State<AppState>` test
+  altyapısı yok) — kablolama `cargo check` + clippy, davranış storage düzeyinde **gerçek SQLite**
+  ile; (b) sicil salt-okunur: plan/bölge **silinemez, düzenlenemez**, filtre/sayfalama yok;
+  (c) `document_title` **anlık** okunur — belge yeniden adlandırılırsa eski plan yeni adı gösterir
+  (sürüm kimliği ve bölge sayısı değişmez); (d) bölge geometrisi `quads` JSON'undan çözülür; bozuk
+  satır `rects: null` ile görünür ama **onarılmaz**; (e) bölge `category`/`user_decision` bugün
+  sabit (`user_term`/`redact`) — kural tabanlı kategoriler (TCKN/IBAN) henüz üretilmiyor, sicil
+  bunu gizlemez (ham değer okunur); (f) jsdom tarayıcı değil → gerçek Tauri penceresi ve
+  **görsel QA insan bekliyor**.
+- **Açık kayıt:** (a) sicil **dosya kapsamlı**; belge bazında filtre yok; (b) plan→çıktı sürümü
+  bağı (`parent_version_id`) sicil satırında **gösterilmiyor** (yalnız belge/sürüm no); (c) plan
+  durumu `applied` dışına ürün akışında geçmiyor (draft→applied tek adım) — yeniden inceleme
+  akışı (F13-T01'in "yerleşim değişince tekrar incelet" kısmı) hâlâ ayrı iş.
