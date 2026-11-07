@@ -12,7 +12,7 @@
 | F14-T04 PDF rapor | ✅ | `render_report_pdf`, HTML kaçışlı, `Story` ile sayfalama |
 | F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı; **okunur**: `exports_list` + Çıktılar ekranında defter (tür, hedef yol, zaman, özet, durum) |
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
-| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez |
+| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07) |
 | F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
 
 ## Dürüst durum
@@ -124,3 +124,85 @@ göremiyordu.
   (bu dilim değiştirmedi — ürün kararı).
 - jsdom tarayıcı değil: gerçek Tauri penceresi, gerçek disk çıkarma ve
   **görsel QA insan bekliyor**.
+
+## Yedek geçmişi — `backup_runs` yazılır ve okunur (2026-11-07)
+
+**Ölçülen kusur (yazma + okuma yok):** şema dosyasında `backup_runs` tablosu
+vardı (`docs/spec/...:434`: snapshot, şema sürümü, manifest özeti, durum,
+doğrulama sonucu, hedef). Koda karşı tarandı: tabloya **tek bir INSERT bile
+yoktu** (`select=0 insert=0 update=0`). `vault_backup` yedeği diske yazıyor,
+manifesti üretiyor ve yedeğin açıldığını (integrity check) doğruluyordu ama
+kasaya yalnız `audit_events` içinde `{files:N}` düşüyordu. "Ne zaman, nereye,
+hangi manifestle, doğrulandı mı" sorusunun tek kanıtı hedef klasördeki
+`manifest.json` dosyasıydı; uygulamadan okunamıyordu. Ayarlar ekranı yalnız
+**son** başarılı/deneme zamanını (localStorage) gösteriyordu; geçmiş yoktu.
+
+**Yazılan:**
+- `crates/storage/src/backup_runs.rs` (yeni): `record_backup_run` +
+  `list_backup_runs`; `BackupRunRow` (camelCase) ve `NewBackupRun`.
+  Durum kümesi **kapalı** (`running|succeeded|failed|verified`); boş
+  snapshot/manifest/hedef reddedilir; hedef kırpılır; `running` dışında
+  `completed_at` yazılır. Sıra **en yeni önce** (`created_at DESC, rowid DESC`
+  — aynı damgada kayıt sırası korunur), `limit` 1..=50'ye kırpılır.
+- `vault_backup`: yedek + arşiv başarıyla yazıldıktan ve doğrulandıktan
+  **sonra** kayıt yazılır (`status="verified"`, `verification_result="integrity_check"`,
+  `schema_version=db.schema_version()`). Kayıt düşerse **yedek geçersiz olmaz**
+  (dosyalar hedefte durur): yanıt `historyRecorded=false` + `historyError`
+  taşır, arayüz bunu kırmızı uyarı olarak yazar — sessiz yutma yok.
+- `backup_run_list` komutu + `api.backupRunList` + `BackupRunRow` tipi.
+- Ayarlar → **"Yedek geçmişi"** kartı: zaman · hedef (seçilen klasör) ·
+  snapshot adı · manifest öneki · durum rozeti. Kilitliyken **okuma yok**;
+  liste istekten önce temizlenir; düşen okuma kendi satırında yazılır
+  ("kayıt yok" **denmez**); yedek başarısından sonra ve "Geçmişi tazele" ile
+  okunur; `historySeq` ile geç yanıt yeni listeyi ezmez. Tanınmayan durum
+  gizlenmez, **ham değeriyle** yazılır.
+- 16 sözlük anahtarı (`settings.backupHistory*`); gömülü metin yok.
+
+**Kanıt (gerçek koşular):**
+- Düzeltme öncesi HEAD `Settings.tsx` + nihai test dosyası: **5 failed |
+  37 passed** — beşi de gerçek kusur (kart/okuma yok).
+- Kapı **13/13 mutasyon kırmızı** (her mutasyon temiz dosyaya, tek başına;
+  geri yükleme sha256 birebir): M1 kilitliyken okuma (**2**), M2 tablo
+  çizilmez (**3**), M3 bilinmeyen durum "doğrulandı"ya yuvarlanır (1),
+  M4 hatada liste boş (**1**), M5 yedek sonrası tazeleme yok (**2**),
+  M6 kayıt uyarısı gizli (1), M7 geç yanıt kapısı yok (1); R1 durum
+  doğrulaması yok (1), R2 sıra ters (1), R3 limit kırpma yok (1), R4 hedef
+  kırpılmaz (**2**), R5 `completed_at` boş (1).
+  **Dürüst:** M1/M2/M5 ve R4 cerrahi değil (birden çok test düşürüyor);
+  M4 ilk ölçümde **yeşil kaldı** (boş metin zaten `!historyError` kapısıyla
+  gizliydi) → fazladan kapı kaldırıldı, boş metin artık **yalnız** listeye
+  bakar, M4 yeniden ölçüldü (1 failed). R5 ilk mutasyonu **derlenmedi**
+  (`let completed = None` tür çıkarımı) → `Option<String>` ile yeniden
+  ölçüldü; derlenmeyen koşu kanıt sayılmadı.
+- `tsc --noEmit` temiz · vitest **62 dosya / 1248 test** (yerel; CI 1247 —
+  fark: ağaçta duran başka ajanın `format.test.ts` değişikliği) ·
+  `npm run build` **628,50 kB** (`index-Dpi5BGKN.js`, gzip 168,28).
+- `dim-storage --lib` **427/427** (macos 240,96 s · ubuntu 283,64 s — iki
+  platformda **birebir**; önceki 422 + 5 yeni) · storage clippy `-D warnings`
+  temiz · masaüstü clippy/check temiz · `cargo fmt` iki manifest temiz.
+- **CI:** `42383692666` **10/10 YEŞİL**; `arayüz` **62 dosya / 1247 test**,
+  paket `index-126ILiYd.js` **627,93 kB** / gzip **168,02 kB**;
+  `masaüstü kabuk` **34 koştu · 0 düştü · 5 yoksayıldı**; `rust` iki
+  platformda **427 passed**.
+  **Dürüst:** `94fefec` commit mesajındaki kod parçaları kabuk tarafından
+  yutuldu (geri yazma cron'da engelli); içerik ve ağaç doğru.
+
+**Dürüst sınırlar:**
+- Yalnız **başarılı** yedekler yazılır. Düşen deneme `backup_runs`'a
+  `failed` olarak **yazılmaz** (nedeni Ayarlar'daki "son deneme" satırı ve
+  hata kodu taşır); `running` durumu bugün hiçbir yol tarafından yazılmıyor.
+- Arşiv (`.dimbak`) yazımı düşerse klasör yedeği geçerli kalır ama **geçmiş
+  satırı yazılmaz** (kayıt tam başarıdan sonra). Bilinçli: yarım işlem
+  "yedeğim hazır" gibi görünmesin.
+- Geçmiş **kasa içindedir**: yedeğin kendisi alınırken snapshot, o ana kadar
+  yazılmış satırları taşır; en yeni satır kendi yedeğinin içinde yoktur.
+  Eski bir yedekten geri yükleme, o andaki (daha eski) geçmişi geri getirir —
+  nokta-zaman doğruluğu budur, kayıp değildir.
+- `destination_label` kullanıcı seçiminin **kök** klasörüdür; snapshot klasör
+  adı ayrı alandır. Yol, kasa şifreli olduğu için cihaz dışına çıkmaz.
+- Kart **salt-okunur**: silme/düzenleme, filtre ve sayfalama yok (en yeni 20,
+  üst sınır 50). Kayıt sınırı aşılırsa eski satırlar listede görünmez.
+- `backup_run_list` **komut olarak koşulmadı** (`State<AppState>` kuran test
+  altyapısı yok); kablolama `cargo check` + clippy, davranış storage
+  düzeyinde **gerçek SQLite** ile. Gerçek Tauri penceresi, gerçek harici disk
+  ve **görsel QA insan bekliyor**.
