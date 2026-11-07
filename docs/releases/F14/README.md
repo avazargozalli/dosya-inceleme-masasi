@@ -14,6 +14,7 @@
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
 | F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07) |
 | F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
+| Yarım çıktı bırakma / atomik yazım (şartname F14-T11) | ✅ | Beş dışa aktarma ve devir paketi `atomic::write_atomic_verified` ile yazılır (geçici ad → geri okunan özet → `rename`); 2026-11-07 ölçüm + 8/8 mutasyon (aşağıdaki bölüm) |
 
 ## Dürüst durum
 
@@ -207,3 +208,106 @@ hangi manifestle, doğrulandı mı" sorusunun tek kanıtı hedef klasördeki
   altyapısı yok); kablolama `cargo check` + clippy, davranış storage
   düzeyinde **gerçek SQLite** ile. Gerçek Tauri penceresi, gerçek harici disk
   ve **görsel QA insan bekliyor**.
+
+## Dışa aktarma atomik ve doğrulanmış yazılır (2026-11-07)
+
+**Ölçülen kusur.** Beş dışa aktarma komutu (`export_json`/`csv`/`docx`/`pdf`
+ve emsal korpusu) dosyayı `std::fs::write` ile **doğrudan son ada** yazıyordu.
+Şartname §1098 "dosya önce uygulamanın kontrol ettiği geçici hedefte
+tamamlanır; doğrulama sonrası atomik taşıma mümkünse kullanılır" ve F14-T11
+"iptal/hata hâlinde yarım çıktıyı geçerli dosya adıyla bırakma" diyor; çekirdek
+bu kuralı `crates/storage/src/atomic.rs` içinde **zaten uyguluyordu** (kasa,
+yedek, arşiv) — dışa aktarma yolu onu **kullanmıyordu**.
+
+Gerçek disk dolması ölçümü (küçük bir birim: 12 MB yazım, ~6 MB boş):
+
+| Yol | Sonuç |
+|---|---|
+| `std::fs::write`, yeni hedef | hedef **var**: **0 bayt** — geçerli adla boş dosya |
+| `std::fs::write`, var olan hedef | 512.000 baytlık eski rapor **yok oldu** (0 bayt) |
+| parçalı (1 MB) yazım | hedefte **10.485.760 bayt** kesik dosya kaldı |
+| atomik (geçici ad → `sync_all` → `rename`) | hedef **hiç oluşmadı**; geçici silindi |
+| atomik, var olan hedef | eski dosya **bozulmadı** (204.800 bayt yerinde) |
+
+İkinci kusur: kayda geçen `sha256` **bellekteki** tamponun özetiydi
+(`Sha256::digest(&bytes)`), dosyadan geri okunmuyordu. Üçüncü: devir paketi dört
+dosyayı doğrudan **son adda** açılan klasöre yazıyordu; yazmalardan biri
+düşerse `DimDevir-…` klasörü yarım kalıyor, ikinci deneme `E_PACKAGE_EXISTS`
+ile kilitleniyordu (kayıt ise hiç yazılmıyordu).
+
+**Yazılan.**
+
+- `crates/storage/src/atomic.rs`: `write_atomic_verified` /
+  `write_atomic_verified_with` — aynı dizinde geçici ada yaz → `sync_all` →
+  **geri okuyup sha256** → beklenen özetle karşılaştır → ancak eşitse `rename`.
+  Dönen `VerifiedWrite { sha256, bytes, replaced_existing }`; `sha256` **diskten
+  okunan** özettir, `bytes` ölçülen boyuttur. Doğrulama tutmazsa hedef
+  **değişmez**, geçici silinir, yeni kod `E_WRITE_VERIFY`.
+- `write_export` (masaüstü kabuğu) artık bu yardımcıyı çağırır ve sonucu
+  döndürür; beş çağrı yeri kayda **diskten okunan** özeti yazar. `ExportView` ve
+  `CorpusExportView` `replaced_existing` alanı taşır (denetim kaydı da yazar).
+- Devir paketi: içerik yanındaki **hazırlık** dizinine yazılır (`StagingGuard`),
+  dört dosya tamamlanınca tek `rename` ile son ada geçer; hata hâlinde `Drop`
+  hazırlık dizinini siler. `manifest.json` doğrulanmış yazımla yazılır ve kayda
+  geçen özet dosyadan okunur.
+- Çıktılar ekranı: sonuç künyesi "yazma doğrulandı" satırını ve (varsa) "var
+  olan dosyanın üzerine yazıldı" uyarısını yazar; emsal korpusu sonuç metni de
+  üzerine yazmayı söyler. 3 yeni sözlük anahtarı.
+
+**Testler.** `atomic::tests` **7 → 11** (dönen özet = diskteki özet · üzerine
+yazma ölçümü · doğrulama tutmazsa hedef korunur + `E_WRITE_VERIFY` · ENOSPC'de
+hedef korunur ve geçici kalmaz) → `dim-storage --lib` **427 → 431**. Masaüstü
+kabuk **5** yeni test (dosyadan okunan özet · üzerine yazma + eksik klasör ·
+boş konum `E_PATH` · yazma düşünce eski dosya bozulmaz · hazırlık dizini
+temizliği/atomik yerleştirme) + **yapısal kapı** (komut yüzeyinde ham
+`std::fs::write(` kalmamalı) → taban **34 → 40 koşan** (kaynak 45).
+Arayüz: `Exports.test.tsx` **57 → 59**, `precedent-terms.test.ts` **+1** → yerel
+**62 dosya / 1251 test** (ağaçta başka ajanın commit'siz değişiklikleri vardı).
+
+**Ölçüm (yerel, Node 22.23.1 + TZ=UTC).** `tsc --noEmit` temiz · vitest
+**1251/1251** (62 dosya) · `vite build` **628,95 kB** (`index-DM3LG6R3.js`) ·
+`dim-storage --lib` **431/431** (206,25 s) · storage + masaüstü clippy
+`-D warnings` temiz · `cargo fmt` iki manifest temiz · masaüstü kabuk kapısı
+**40 koştu · 0 düştü · 5 yoksayıldı (kaynak 45)**.
+
+**Commit/CI (ölçüldü).** Kod `ea0ffb4` (13 dosya, +505/−33) → **`42398509896`
+10/10 YEŞİL** (`dim-storage` **431** hem `macos-15` 192,88 s hem `ubuntu-latest`
+358,32 s — birebir; `arayüz` **62 dosya / 1250 test**, paket
+`index-DsI79o3X.js` **628,38 kB** / gzip **168,15 kB**; `masaüstü kabuk`
+`40 passed · 5 ignored` + yoksayılan koşu `5 passed · 40 filtered` (41,16 s)).
+Yerel 1251 / 628,95 farkı ağaçtaki **başka ajanın** commit'siz değişiklikleri
+(commit'te yok). **i18n hunk ayrımı:** `git diff` üç hunk'tı; yalnız benim
+`exports.verifiedReadback/replacedExisting` + `terms.resultReplaced`
+hunk'larım `git apply --cached --recount` ile sahneye alındı, başka ajanın
+`cases.parseStatus*` üç anahtarı commit'e **girmedi**
+(`git show :…i18n.ts | grep -c parseStatus` → **0**).
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-export-atomic-gates.py`).**
+**8/8 mutasyon kırmızı**, her biri tek başına, geri yükleme sha256 birebir:
+S1 geri okunan özet doğrulaması kaldırıldı · S2 üzerine yazma ölçümü kaldırıldı ·
+S3 hata hâlinde geçici dosya silinmiyor · D1 ham `std::fs::write`'a geri dönüş
+(yapısal kapı) · D2 hazırlık dizini `Drop`'ta silinmiyor · U1 "yazma doğrulandı"
+satırı gizlendi · U2 "üzerine yazıldı" uyarısı gizlendi · U3 korpus sonuç
+metninden üzerine yazma bilgisi kaldırıldı.
+**Dürüst:** D3 (yerleştirmeden sonra "tamamlandı" bayrağı kaldırıldı) ilk ölçümde
+**yeşil kaldı** — bayrak yük taşımıyordu (rename sonrası hazırlık yolu zaten
+yok); bayrak **kaldırıldı**, D3 senaryosu düşürüldü, 8/8 yeniden ölçüldü.
+
+**Dürüst sınırlar.**
+- "Üzerine yazma ayrı seçimdir" kapısı hâlâ **kaydet diyaloğunun** onayıdır;
+  çekirdek `overwrite` bayrağı istemez. Doğrudan IPC çağrısı var olan dosyayı
+  değiştirebilir — artık **atomik** değiştirir ve kayıt/arayüz bunu söyler, ama
+  ikinci bir onay sorulmaz.
+- Doğrulama **geri okuma**dır: yazma sonrası bozulmayı (bit çürümesi) yakalar;
+  yazma sırasında diskin yalan söylemesi (`fsync` sonrası) bu kapının dışında.
+- Ürün yolunda **hermetik disk-dolması testi yok** (ENOSPC enjeksiyonu yalnız
+  storage sözleşmesinde); ürün yolu gerçek birim ölçümüyle karşılaştırıldı,
+  CI'da tetiklenmiyor.
+- Paket akışı (`export_package`) **komut olarak koşulmadı** (`State<AppState>`
+  altyapısı yok): hazırlık/yerleştirme mekanizması birim testle ölçüldü,
+  kablolama `cargo check` + clippy.
+- Emsal korpusu dışa aktarımı için arayüzde ayrı uyarı satırı yok; bilgi sonuç
+  metninde ve denetim kaydında.
+- `std::fs::rename` hedef üzerine yazarken **atomik** yer değiştirir; ağ
+  birimlerinde (SMB/NFS) bu garanti dosya sistemine bağlıdır.
+- Gerçek Tauri penceresi, gerçek kaydet diyaloğu ve **görsel QA insan bekliyor**.
