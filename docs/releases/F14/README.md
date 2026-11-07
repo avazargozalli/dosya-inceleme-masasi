@@ -12,7 +12,7 @@
 | F14-T04 PDF rapor | ✅ | `render_report_pdf`, HTML kaçışlı, `Story` ile sayfalama |
 | F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı; **okunur**: `exports_list` + Çıktılar ekranında defter (tür, hedef yol, zaman, özet, durum) |
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
-| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07); **plan (hedef + aralık) kasa ayarında (`settings`, kapsam `vault`) saklanır, cihaz kaydındaki eski plan bir kez göç eder** (2026-11-07) |
+| F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07); **plan (hedef + aralık) kasa ayarında (`settings`, kapsam `vault`) saklanır, cihaz kaydındaki eski plan bir kez göç eder** (2026-11-07); **"son başarılı yedek" tazeliği de kasadan okunur, cihaz kaydı yalnız yedektir ve çelişki gizlenmez** (2026-11-07) |
 | F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
 | Yarım çıktı bırakma / atomik yazım (şartname F14-T11) | ✅ | Beş dışa aktarma ve devir paketi `atomic::write_atomic_verified` ile yazılır (geçici ad → geri okunan özet → `rename`); 2026-11-07 ölçüm + 8/8 mutasyon (aşağıdaki bölüm) |
 
@@ -382,6 +382,8 @@ parseStatus` → **0**).
 - Plan artık kasada; **"son başarılı yedek" ve "son deneme" hâlâ cihaz kaydında**
   (`localStorage`), kasa geçmişi `backup_runs`ta. Uygulama verisi silinirse tazelik
   kaybolur → sonraki açılışta **erken** yedek alınır (veri kaybı yönünde değil).
+  **2026-11-07: "son başarılı yedek" artık kasadan okunur** (aşağıdaki bölüm); "son
+  deneme" cihaz kaydında kalır (başarısız deneme kasaya yazılmaz).
 - Kasa ayarı yalnız **kasa açıkken** okunur/yazılır; `settings`'in `device`/`ui`
   kapsamları bugün ürün tarafından **kullanılmıyor** (cihaz/UI ayarları localStorage'da).
 - Kasa ayarı bozuksa otomatik yedek **durur** ve neden yazılır; onarım kullanıcı
@@ -394,3 +396,78 @@ parseStatus` → **0**).
   anahtar gerekirse sözleşme genişletilmeli.
 - jsdom tarayıcı değil → gerçek Tauri penceresi, gerçek klasör seçici ve
   **görsel QA insan bekliyor**.
+
+## Son yedek tazeliği kasadan okunur — tek kanıt, iki ekran aynı gerçeği yazar (2026-11-07)
+
+**Ölçülen kusur (iki kaynak):** aynı ekranda iki farklı "son yedek" vardı:
+"Otomatik yedek" kartındaki satır cihaz kaydından (`localStorage`, `dim.backup.last`),
+"Yedek geçmişi" kartı ise kasa içi `backup_runs`tan okunuyordu. WebView verisi
+temizlenince (veya aynı kasa başka bir OS profilinde açılınca) kart **"Son yedek: hiç"**
+yazarken hemen altındaki geçmiş **N doğrulanmış yedek** listeliyordu. Ters yön daha
+kötüydü: eski bir kasa yedeği geri yüklendiğinde cihaz kaydı "dün yedeklendi" diyor,
+kasanın kendi geçmişi günler öncesini gösteriyor ve zamanlayıcı **yedeği erteliyordu**
+(tazelik yanlış tarafta). `App.tsx` zamanlayıcısı da yalnız cihaz kaydına bakıyordu.
+
+**Yazılan:**
+- `lib/backup-schedule.ts`: `latestBackupSuccess(runs)` — yalnız `verified`/`succeeded`
+  satırlar kanıttır; en yenisi seçilir, `completedAt` yoksa `createdAt`a düşer, tarihi
+  çözülemeyen satır **atlanır**, tanınmayan durum tazelik ilerletmez (uydurma tarih yok).
+  `dim.backup.force` işareti (`read/write/clearBackupForce`): "Sıfırla" kasa kaydını
+  silemediği için bir sonraki kontrolü **zorunlu** yedeğe çevirir; başarılı yedekte temizlenir.
+- `lib/backup-config.ts`: `loadBackupFreshness()` → `{ iso, source: vault|device|none,
+  deviceIso, error }`. Kasa okunur ve başarılı satır varsa kaynak `vault`; kasa okunur ama
+  satır yoksa **`none`** (cihaz kaydı olsa da tazelik iddiası kurulmaz — o kayıt başka
+  kasanın olabilir); kasa **okunamazsa** cihaz kaydına düşer ve hata kodunu taşır
+  (fail-open: okuma hatası yedeği durdurmaz, ama ekran "kasadan okundu" demez).
+- `App.tsx`: tazelik `loadBackupFreshness()`ten; oturum içi `lastSuccessRef` başarılı
+  yedekten sonra tazeliği ilerletir (saatlik kontrol aynı yedeği tekrarlamaz); kasa
+  kilitlenince sıfırlanır. `dim.backup.force` varsa süre aranmaz; başarıda temizlenir.
+- `Settings.tsx`: "Son yedek" satırı **kasa kaydından** yazılır ve kaynağını söyler
+  (`… · kasa kaydı`); cihaz kaydı farklıysa **ayrı satırda** yazılır (çelişki gizlenmez).
+  Kasa geçmişi okunamazsa "hiç" **denmez**: cihaz kaydı + hata kodu yazılır. Tazelik ve
+  geçmiş **aynı istekten** beslenir (ayrı okuma yok, iki görünüm ayrışmaz). "Sıfırla"
+  artık kasa kaydını silmeye çalışmaz: cihaz önbelleğini temizler, zorunlu yedek işaretler,
+  "Sıradaki plan" `süresi doldu` yazar. 6 sözlük anahtarı.
+
+**Testler:** `lib/backup-schedule.test.ts` **16 → 21** (+5) ·
+`lib/backup-config.test.ts` **15 → 19** (+4) · `app-shell.test.tsx` **20 → 23** (+3; biri
+"cihaz kaydı tazeyse" testinden "kasa kaydı tazeyse"ye yeniden yazıldı) ·
+`Settings.test.tsx` **46 → 49** (+3; iki test yeni sözleşmeye göre güncellendi) →
+yerel **63 dosya / 1287 test**.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-freshness-gates.py`).** **12/12
+mutasyon kırmızı**, her biri tek başına, geri yükleme sha256 birebir:
+U1 App kasa tazeliğini yok sayar (2) · U2 zorunlu işaret yok sayılır (1) · U3 başarıda
+işaret temizlenmez (1) · R1 tazelik cihaz kaydından okunur/eski davranış (2) ·
+R2 okuma hatası gizlenir (2) · R3 her durum kanıt sayılır (3) · R4 en eski satır seçilir (1) ·
+U4 okunamayınca "hiç" denir (1) · U5 kasa yerine cihaz yazılır (3) · U6 çelişki satırı
+gizlenir (3) · U7 sıfırla zorunlu yedek işaretlemez (2) · U8 sıradaki plan işareti yok
+sayar (1). **Dürüst (kendi hatam):** ilk betikte R2 iki eşleşme (paylaşılan `error:`
+satırı), R4 girinti uyuşmazlığı, U8 ise **yeşil** kaldı — çünkü U8 testinde kasa geçmişi
+boştu ve "süresi doldu" zaten `iso=null`dan geliyordu; test **taze kasa kaydıyla**
+yeniden yazıldı, üçü de yeniden ölçüldü. U4–U8 cerrahi; U1/U2/U3/R1/R3/U5/U6 çoklu.
+
+**Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1287/1287**
+(63 dosya). **Dürüst:** yerel `vite build` **koşulmadı** — disk tur başında **1,3 G**'ye
+inmişti (eşik altı); temizlikle 4,8 G'ye çıktı, ağır derleme yine başlatılmadı → paket
+ölçümü CI'dan. Rust kodu değişmedi.
+
+**CI (ölçüldü):** `24f9f95` (9 dosya, +579/−26) → **`42414030035` 10/10 YEŞİL**;
+`arayüz` **63 dosya / 1286 test**, paket `index-5IZQZrtT.js` **634,09 kB** / gzip
+**170,16 kB** (+ `index-CPW4QqlF.css` 7,28 kB). Yerel 1287 / CI 1286 farkı ağaçtaki
+**başka ajanın** commit'siz `format.test.ts` testidir; `dim-storage` 437 (değişmedi).
+
+**Dürüst sınırlar.**
+- `backup_runs` yalnız **başarılı** yedekleri taşır (düşen deneme yazılmaz); tazelik en
+  yeni **başarılı** yedeğe göre hesaplanır, "son deneme" cihaz kaydında kalır.
+- Tazelik `backupRunList(20)` penceresinden okunur: en yeni 20 satırın hiçbiri başarılı
+  değilse daha eski bir başarı görünmez (bugün yalnız `verified` yazıldığı için pratikte
+  boşluk yok; satır sayısı büyürse sınır genişletilmeli).
+- Kasa okunamazsa cihaz kaydına düşülür (fail-open): bu durumda **erken** yedek alınabilir
+  (veri kaybı yönünde değil) ve ekran kaynağı `cihaz kaydı` diye yazar.
+- `dim.backup.force` cihaz kaydındadır; uygulama verisi silinirse "sıfırla" isteği de
+  kaybolur (kasa kaydı yine geçerli).
+- Ayarlar ekranı tazeliği açılışta ve geçmiş tazelemesinde okur; **otomatik** yedek
+  ekran açıkken çalışırsa "son yedek" satırı bir sonraki tazelemeye kadar eski kalabilir
+  (canlı abonelik yok).
+- jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
