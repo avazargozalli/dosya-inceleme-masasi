@@ -30,15 +30,15 @@ use dim_storage::{
     NewAiContextItem, NewAiRun, NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck,
     NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
     NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
-    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
-    OutboxEventRow, PageRow, ParseRun, ParticipantRow, PrecedentBibliography,
-    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
-    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
-    SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow, TaskRow, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow,
+    NewTransferConsent, NewTransferSegment, NoteDraftInput, NoteDraftRow, NoteEdit,
+    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, ParticipantRow,
+    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
+    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
+    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
+    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -6658,6 +6658,16 @@ pub fn ai_context_items(
 }
 
 #[tauri::command]
+pub fn ai_transfer_segments(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<TransferSegmentRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_transfer_segments(&run_id)?)
+}
+
+#[tauri::command]
 pub fn ai_candidates_list(
     state: State<'_, AppState>,
     run_id: String,
@@ -6990,10 +7000,37 @@ pub fn ai_run_execute(
             source_anchor_id: None,
             inclusion_reason: "onaylanan belge".to_string(),
             bytes_sent: document.bytes,
+            // Gerçek segment kimlikleri: `ai_context_items.segment_ids` eskiden
+            // hep '[]' yazılıyordu — belge satırı hangi blokların gittiğini
+            // söylemiyordu.
+            segment_ids: scope
+                .segments
+                .iter()
+                .filter(|segment| segment.document_version_id == document.document_version_id)
+                .map(|segment| segment.segment_id.clone())
+                .collect(),
         })
         .collect();
     if let Err(error) = db.record_context_items(&run.id, &items) {
         let report = serde_json::json!({"error": "context_record_failed"}).to_string();
+        let _ = db.finish_ai_run(&run.id, "failed", &report);
+        return Err(error.into());
+    }
+
+    // Segment düzeyinde gönderim sicili: gönderilecek **metnin kendisi**
+    // (kimlik eşlemesiyle) kasadan doğrulanarak yazılır. Bu satır yazılamazsa
+    // aktarım başlamaz: kasa dışına çıkan metin sicilsiz kalamaz.
+    let transfer_segments: Vec<NewTransferSegment> = scope
+        .segments
+        .iter()
+        .map(|segment| NewTransferSegment {
+            segment_id: segment.segment_id.clone(),
+            document_version_id: segment.document_version_id.clone(),
+            text: segment.text.clone(),
+        })
+        .collect();
+    if let Err(error) = db.record_transfer_segments(&run.id, &transfer_segments) {
+        let report = serde_json::json!({"error": "transfer_segment_record_failed"}).to_string();
         let _ = db.finish_ai_run(&run.id, "failed", &report);
         return Err(error.into());
     }

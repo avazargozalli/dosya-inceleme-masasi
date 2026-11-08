@@ -40,6 +40,7 @@ import type {
   DocumentRow,
   QuoteMatchReport,
   TransferConsentListRow,
+  TransferSegmentRow,
   TransferConsentRow,
   TransferReceiptRow,
 } from "../lib/api";
@@ -69,6 +70,7 @@ const mocks = vi.hoisted(() => ({
   aiRunExecute: vi.fn(),
   aiCandidatesList: vi.fn(),
   aiContextItems: vi.fn(),
+  aiTransferSegments: vi.fn(),
   aiCandidateValidate: vi.fn(),
   aiCandidateRecord: vi.fn(),
   aiCandidateRevalidate: vi.fn(),
@@ -277,6 +279,7 @@ function quote(overrides: Partial<QuoteMatchReport> = {}): QuoteMatchReport {
     textOrigin: "text",
     parseRunId: "pr1",
     segmentId: "seg1",
+    outboundState: "not_recorded",
     ...overrides,
   };
 }
@@ -302,6 +305,7 @@ const REPORT_VALID: CandidateReport = {
   ],
   notes: ["Alıntı 2, boşluk katlamasıyla eşleşti."],
   checkedAt: "2026-10-21T12:00:00.000Z",
+  outboundState: "not_recorded",
 };
 
 const REPORT_INVALID: CandidateReport = {
@@ -316,6 +320,7 @@ const REPORT_INVALID: CandidateReport = {
   quotes: [quote({ state: "not_found", pageIndex: null, charStart: null, occurrences: 0 })],
   notes: [],
   checkedAt: "2026-10-21T12:10:00.000Z",
+  outboundState: "not_recorded",
 };
 
 function candidateRow(overrides: Partial<AiCandidateRow> = {}): AiCandidateRow {
@@ -362,6 +367,7 @@ type SetupOptions = {
   runExecute?: () => Promise<AiCandidateRow>;
   candidates?: (runId: string) => Promise<AiCandidateRow[]>;
   contextItems?: (runId: string) => Promise<AiContextItemRow[]>;
+  transferSegments?: (runId: string) => Promise<TransferSegmentRow[]>;
   validate?: () => Promise<CandidateReport>;
   record?: () => Promise<unknown>;
   revalidate?: (candidateId: string) => Promise<AiCandidateRow>;
@@ -399,6 +405,7 @@ function setup(options: SetupOptions = {}) {
   mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => CAND_VALID));
   mocks.aiCandidatesList.mockImplementation(options.candidates ?? (async () => [CAND_VALID]));
   mocks.aiContextItems.mockImplementation(options.contextItems ?? (async () => []));
+  mocks.aiTransferSegments.mockImplementation(options.transferSegments ?? (async () => []));
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
   mocks.aiCandidateRecord.mockImplementation(options.record ?? (async () => ({ id: "cand-1" })));
   mocks.aiCandidateRevalidate.mockImplementation(
@@ -2431,6 +2438,7 @@ describe("AI ekranı — gönderilen içerik sicili", () => {
       sourceAnchorId: null,
       inclusionReason: "onaylanan belge",
       bytesSent: 120,
+      segmentCount: null,
       ...overrides,
     };
   }
@@ -2632,5 +2640,153 @@ describe("AI ekranı — gönderilen içerik sicili", () => {
     const card = cardByHeading(t("ai.contextTitle"));
     await within(card).findByText("Kira sözleşmesi.pdf");
     expect(within(card).getByText("512")).toBeTruthy();
+  });
+});
+
+describe("AI ekranı — gönderilen segment sicili", () => {
+  function segmentRow(
+    overrides: Partial<TransferSegmentRow> & { id: string },
+  ): TransferSegmentRow {
+    return {
+      aiRunId: "r1",
+      documentVersionId: "d1-v1",
+      segmentId: "seg-abcdef01",
+      outboundHash: "a".repeat(64),
+      charCount: 24,
+      byteCount: 26,
+      transformKind: "identity",
+      textHead: "Kiracı, 12 Mart 2024 tarihli dilekçesinde",
+      ...overrides,
+    };
+  }
+
+  it("segmentleri çekirdekten okur: karakter, özet ve metin başı", async () => {
+    setup({
+      transferSegments: async () => [
+        segmentRow({ id: "t1" }),
+        segmentRow({ id: "t2", segmentId: "seg-2", charCount: 12 }),
+      ],
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.transferTitle"));
+    // Seçim yokken sicil **okunmaz** ve "sicil yok" denmez.
+    expect(within(card).getByText(t("ai.transferNoRun"))).toBeTruthy();
+    expect(mocks.aiTransferSegments).not.toHaveBeenCalled();
+
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiTransferSegments).toHaveBeenCalledWith("r1"));
+
+    const rows = await within(card).findAllByRole("row");
+    expect(rows).toHaveLength(3); // başlık + 2 satır
+    expect(rows[1]!.textContent).toContain("24");
+    expect(rows[1]!.textContent).toContain("Kiracı, 12 Mart 2024");
+    expect(rows[1]!.textContent).toContain("a".repeat(12));
+    expect(rows[2]!.textContent).toContain("12");
+  });
+
+  it("düşen segment okuması «sicil yok» demez; hata kendi satırında yazılır", async () => {
+    setup({
+      transferSegments: async () => {
+        throw { code: "E_DB_SQL", message: "okunamadı" };
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiTransferSegments).toHaveBeenCalledWith("r1"));
+
+    const card = cardByHeading(t("ai.transferTitle"));
+    const alert = await within(card).findByRole("alert");
+    expect(alert.textContent).toContain("E_DB_SQL");
+    expect(within(card).queryByText(t("ai.transferEmpty"))).toBeNull();
+  });
+
+  it("dosya değişiminde önceki dosyanın segment sicili ekranda kalmaz", async () => {
+    setup({
+      transferSegments: async (runId: string) =>
+        runId === "r1" ? [segmentRow({ id: "t1" })] : [],
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.transferTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await within(card).findByText("Kiracı, 12 Mart 2024 tarihli dilekçesinde");
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+
+    await within(card).findByText(t("ai.transferNoRun"));
+    expect(
+      within(card).queryByText("Kiracı, 12 Mart 2024 tarihli dilekçesinde"),
+    ).toBeNull();
+  });
+
+  it("rapor gönderim sicili durumunu ve alıntı başına gönderim etiketini yazar", async () => {
+    setup({
+      validate: async () => ({
+        ...REPORT_VALID,
+        outboundState: "recorded",
+        quotes: [quote({ outboundState: "found" })],
+      }),
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(button(t("ai.validate")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.validate")));
+
+    const reportCard = cardByHeading(t("ai.validateTitle"));
+    expect(await within(reportCard).findByText(t("ai.outboundRecorded"))).toBeTruthy();
+    expect(within(reportCard).getByText(t("ai.outboundFound"))).toBeTruthy();
+  });
+
+  it("gönderim sicili yoksa rapor rozeti «sicil yok» yazar (kayıt eklenmez)", async () => {
+    setup(); // REPORT_VALID: outboundState=not_recorded, alıntı outboundState=not_recorded
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(button(t("ai.validate")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.validate")));
+
+    const reportCard = cardByHeading(t("ai.validateTitle"));
+    // Rozet + her alıntı satırı aynı metni yazar; hiçbiri «sicil var» demez.
+    const labels = await within(reportCard).findAllByText(t("ai.outboundNotRecorded"));
+    expect(labels.length).toBe(REPORT_VALID.quotes.length + 1);
+    expect(within(reportCard).queryByText(t("ai.outboundRecorded"))).toBeNull();
+  });
+
+  it("geç yanıt yeni çalıştırmanın segment siciline yazılmaz (okuma sırası)", async () => {
+    const slow = deferred<TransferSegmentRow[]>();
+    setup({
+      transferSegments: (runId: string) =>
+        runId === "r1"
+          ? slow.promise
+          : Promise.resolve([
+              segmentRow({ id: "t2", aiRunId: "r2", textHead: "Ödeme makbuzu metni" }),
+            ]),
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.transferTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button")); // r1, yavaş
+    // Okuma **gerçekten uçuşta** olsun; yoksa ikinci seçim birincinin okumasını
+    // hiç başlatmaz ve kapı ölçülmemiş olur.
+    await waitFor(() => expect(mocks.aiTransferSegments).toHaveBeenCalledWith("r1"));
+    fireEvent.click(within(runRows()[1]!).getByRole("button")); // r2, hızlı
+    await within(card).findByText("Ödeme makbuzu metni");
+
+    await act(async () => {
+      slow.resolve([
+        segmentRow({ id: "t1", textHead: "Kiracı, 12 Mart 2024 tarihli dilekçesinde" }),
+      ]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      within(card).queryByText("Kiracı, 12 Mart 2024 tarihli dilekçesinde"),
+    ).toBeNull();
+    expect(within(card).getByText("Ödeme makbuzu metni")).toBeTruthy();
   });
 });

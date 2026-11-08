@@ -348,6 +348,23 @@ export type AiContextItemRow = {
   sourceAnchorId: string | null;
   inclusionReason: string;
   bytesSent: number;
+  /** Gönderilen segment sayısı; sütun okunamadıysa `null` ("0" denmez). */
+  segmentCount: number | null;
+};
+
+/** Gönderilen tek bir segmentin sicil satırı (`transfer_segments`). */
+export type TransferSegmentRow = {
+  id: string;
+  aiRunId: string;
+  documentVersionId: string | null;
+  segmentId: string;
+  outboundHash: string;
+  charCount: number;
+  byteCount: number;
+  /** `identity` — gönderilen metin özgün segmentin kendisi; `transformed` — dönüşüm var. */
+  transformKind: string;
+  /** İlk 120 karakter (tam metin arayüze dökülmez). */
+  textHead: string;
 };
 
 export type ScopeSkip = {
@@ -390,6 +407,8 @@ export type QuoteMatchReport = {
   textOrigin: string | null;
   parseRunId: string | null;
   segmentId: string | null;
+  /** `not_recorded` · `found` · `missing` · `document_not_sent` · `changed` */
+  outboundState: string;
 };
 
 export type CandidateReport = {
@@ -401,6 +420,8 @@ export type CandidateReport = {
   quotes: QuoteMatchReport[];
   notes: string[];
   checkedAt: string;
+  /** `recorded` (gönderim sicili var) · `not_recorded` (elle kaydedilen aday) */
+  outboundState: string;
 };
 
 export type AiCandidateRow = {
@@ -2100,6 +2121,8 @@ export const api = {
   aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),
   /** Çalıştırmada cihazdan **çıkan** belge sürümleri (gönderim sicili). */
   aiContextItems: (runId: string) => invoke<AiContextItemRow[]>("ai_context_items", { runId }),
+  aiTransferSegments: (runId: string) =>
+    invoke<TransferSegmentRow[]>("ai_transfer_segments", { runId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
   aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>

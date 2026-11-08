@@ -12,6 +12,7 @@ import {
   type TransferConsentListRow,
   type TransferConsentRow,
   type TransferReceiptRow,
+  type TransferSegmentRow,
 } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -101,6 +102,20 @@ function receiptStateTone(status: string): string {
   return "warn";
 }
 
+/**
+ * Alıntının **gönderim siciliyle** ilişkisi. Bilinmeyen değer olduğu gibi
+ * yazılır — ekran tanımadığı bir durumu "gönderilen metinde bulundu" saymaz.
+ */
+function outboundLabel(state: string): string {
+  if (!state) return t("common.unknown");
+  if (state === "found") return t("ai.outboundFound");
+  if (state === "missing") return t("ai.outboundMissing");
+  if (state === "document_not_sent") return t("ai.outboundDocumentNotSent");
+  if (state === "changed") return t("ai.outboundChanged");
+  if (state === "not_recorded") return t("ai.outboundNotRecorded");
+  return state;
+}
+
 export function Ai() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -122,6 +137,11 @@ export function Ai() {
   // Okuma hatası **kendi satırında** yazılır: düşen okumadan sonra "kayıt yok"
   // demek, olmayan bir olguyu bildirmek olurdu.
   const [contextError, setContextError] = useState<ApiError | null>(null);
+  // Segment sicili: kasadan çıkan **metnin** kendisi (ilk 120 karakter).
+  // Gönderim sicilinin ikinci katmanı; aday alıntıları önce burada aranır.
+  const [segments, setSegments] = useState<TransferSegmentRow[]>([]);
+  const [segmentsBusy, setSegmentsBusy] = useState(false);
+  const [segmentsError, setSegmentsError] = useState<ApiError | null>(null);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -165,6 +185,8 @@ export function Ai() {
   // Gönderim sicili de bir **okuma**dır: `runSeq` seçimi, `contextSeq` okumayı
   // damgalar — geç yanıt başka çalıştırmanın satırı olarak yazılmaz.
   const contextSeq = useRef(0);
+  // Segment sicili de bağımsız bir **okuma**dır: kendi nesli vardır.
+  const segmentsSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -294,6 +316,10 @@ export function Ai() {
     setContextBusy(false);
     setContextError(null);
     contextSeq.current += 1;
+    setSegments([]);
+    setSegmentsBusy(false);
+    setSegmentsError(null);
+    segmentsSeq.current += 1;
     setRunId("");
     setReport(null);
     setNotice(null);
@@ -445,6 +471,30 @@ export function Ai() {
   }
 
   /**
+   * Segment sicili de bir **okuma**dır: her yeni okuma sayacı artırır, geç
+   * yanıt yeni seçimin altına yazılmaz. Düşen okumada liste boşaltılır ama
+   * **"sicil yok" denmez** — hata kendi satırında yazılır.
+   */
+  async function loadSegments(forRun: string): Promise<void> {
+    if (!forRun) return;
+    segmentsSeq.current += 1;
+    const seq = segmentsSeq.current;
+    setSegmentsBusy(true);
+    setSegmentsError(null);
+    try {
+      const rows = await api.aiTransferSegments(forRun);
+      if (segmentsSeq.current !== seq) return;
+      setSegments(rows);
+    } catch (e) {
+      if (segmentsSeq.current !== seq) return;
+      setSegments([]);
+      setSegmentsError(toApiError(e));
+    } finally {
+      if (segmentsSeq.current === seq) setSegmentsBusy(false);
+    }
+  }
+
+  /**
    * Bir çalıştırmayı **ekranın odağına** alır: adaylar ve gönderim sicili o
    * çalıştırmaya aittir. Gönderimden sonra da çağrılır — avukat "ne gitti"
    * sorusunun yanıtını hemen görür.
@@ -458,9 +508,13 @@ export function Ai() {
     setCandidates([]);
     setContextItems([]);
     setContextError(null);
+    setSegments([]);
+    setSegmentsError(null);
     await loadCandidates(id);
     if (runSeq.current !== seq) return;
     await loadContextItems(id);
+    if (runSeq.current !== seq) return;
+    await loadSegments(id);
   }
 
   async function selectRun(id: string) {
@@ -857,6 +911,7 @@ export function Ai() {
                   <th>{t("ai.contextColVersion")}</th>
                   <th>{t("ai.contextColReason")}</th>
                   <th>{t("ai.contextColBytes")}</th>
+                  <th>{t("ai.contextColSegments")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -876,6 +931,11 @@ export function Ai() {
                     </td>
                     <td>{item.inclusionReason}</td>
                     <td>{item.bytesSent}</td>
+                    <td>
+                      {item.segmentCount === null
+                        ? t("ai.contextSegmentUnknown")
+                        : item.segmentCount}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -891,6 +951,57 @@ export function Ai() {
           </>
         )}
         <p className="hint" style={{ margin: 0 }}>{t("ai.contextNote")}</p>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("ai.transferTitle")}</h2>
+            <p className="card-sub">{t("ai.transferSub")}</p>
+          </div>
+        </div>
+        {!runId ? (
+          <p className="hint" style={{ margin: 0 }}>{t("ai.transferNoRun")}</p>
+        ) : segmentsError ? (
+          <div className="notice danger" role="alert">
+            <strong>{t("ai.transferError")}</strong> {segmentsError.code} — {segmentsError.message}
+          </div>
+        ) : segments.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {segmentsBusy ? t("ai.transferLoading") : t("ai.transferEmpty")}
+          </p>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("ai.transferColIndex")}</th>
+                <th>{t("ai.transferColSegment")}</th>
+                <th>{t("ai.transferColChars")}</th>
+                <th>{t("ai.transferColHash")}</th>
+                <th>{t("ai.transferColText")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {segments.map((segment, index) => (
+                <tr key={segment.id}>
+                  <td>{index + 1}</td>
+                  <td>
+                    <code title={segment.segmentId}>{segment.segmentId.slice(0, 8)}…</code>
+                    {segment.transformKind === "identity" ? null : (
+                      <span className="hint" style={{ display: "block" }}>
+                        {segment.transformKind}
+                      </span>
+                    )}
+                  </td>
+                  <td>{segment.charCount}</td>
+                  <td><code title={segment.outboundHash}>{segment.outboundHash.slice(0, 12)}…</code></td>
+                  <td style={{ maxWidth: 380 }}>{segment.textHead}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="hint" style={{ margin: 0 }}>{t("ai.transferNote")}</p>
       </div>
 
       <div className="card">
@@ -1036,6 +1147,13 @@ export function Ai() {
                 {quoteStateLabel(report.quoteState)}
               </span>
               <span className="badge plain">{quoteSummary(report)}</span>
+              <span className="badge plain">
+                {t(
+                  report.outboundState === "recorded"
+                    ? "ai.outboundRecorded"
+                    : "ai.outboundNotRecorded",
+                )}
+              </span>
               {errorCount(report.issues) > 0 ? (
                 <span className="badge danger">
                   {t("ai.errorBadge", { count: errorCount(report.issues) })}
@@ -1057,6 +1175,7 @@ export function Ai() {
                     <th>{t("ai.colState")}</th>
                     <th>{t("ai.colPosition")}</th>
                     <th>{t("ai.colOccurrences")}</th>
+                    <th>{t("ai.colOutbound")}</th>
                     <th>{t("ai.colText")}</th>
                   </tr>
                 </thead>
@@ -1072,6 +1191,7 @@ export function Ai() {
                       </td>
                       <td>{quotePositionLabel(quote)}</td>
                       <td>{quote.occurrences}</td>
+                      <td>{outboundLabel(quote.outboundState)}</td>
                       <td>
                         {quote.textOrigin ?? t("common.unknown")}
                         {quote.claimedPageIndex !== null && quote.pageIndex !== null

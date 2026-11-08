@@ -22,6 +22,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::ai::SentSegment;
 use crate::parsing::PageRow;
 use crate::{now_iso, AiCandidateRow, Database, StorageError};
 
@@ -267,7 +268,14 @@ pub struct QuotePosition {
 
 /// Alıntı başına eşleşme raporu. `state`:
 /// `exact` · `normalized` · `ambiguous` · `page_mismatch` · `not_found` ·
-/// `unverifiable` (`reason`: `version_not_found`, `case_mismatch`, `no_text`).
+/// `unverifiable` (`reason`: `version_not_found`, `case_mismatch`, `no_text`,
+/// `document_not_sent`, `source_changed`; `not_found` için `not_in_outbound`).
+///
+/// `outbound_state` — çalıştırmanın gönderim siciliyle ilişki:
+/// `not_recorded` (sicil yok; elle kaydedilen aday), `found` (alıntı gönderilen
+/// metinde **var**), `missing` (sicil var, alıntı gönderilen metinde yok),
+/// `document_not_sent` (alıntının belgesi hiç gönderilmemiş), `changed`
+/// (gönderilen metinde vardı, güncel belge metninde yok).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteMatchReport {
@@ -294,6 +302,8 @@ pub struct QuoteMatchReport {
     pub parse_run_id: Option<String>,
     #[serde(default)]
     pub segment_id: Option<String>,
+    #[serde(default)]
+    pub outbound_state: String,
 }
 
 /// Adayın bütün doğrulama sonucu: şema + alıntı + birleşik karar.
@@ -310,6 +320,10 @@ pub struct CandidateReport {
     pub quotes: Vec<QuoteMatchReport>,
     pub notes: Vec<String>,
     pub checked_at: String,
+    /// `recorded` — çalıştırmanın gönderim sicili var (alıntı önce orada
+    /// arandı); `not_recorded` — sicil yok (elle kaydedilen aday).
+    #[serde(default)]
+    pub outbound_state: String,
 }
 
 /// Aday yükünü türüne göre doğrular. **Saf fonksiyon**: veritabanına bakmaz,
@@ -771,9 +785,29 @@ impl Database {
         payload: &str,
     ) -> Result<CandidateReport, StorageError> {
         let run = self.get_ai_run(run_id)?.ok_or(StorageError::NotFound)?;
+        // Gönderim sicili varsa alıntı **önce** orada aranır: modelin gördüğü
+        // metin, kasada sonradan yeniden ayrıştırılmış metin değildir.
+        let sent = self.sent_segments(run_id)?;
+        let outbound_state = if sent.is_empty() {
+            "not_recorded"
+        } else {
+            "recorded"
+        };
         let schema = validate_candidate_payload(candidate_type, payload);
         let mut quotes = Vec::new();
         let mut notes = Vec::new();
+        if outbound_state == "recorded" {
+            notes.push(format!(
+                "Alıntılar önce bu çalıştırmada gönderilen metinde arandı ({} segment).",
+                sent.len()
+            ));
+        } else {
+            notes.push(
+                "Bu çalıştırma için gönderim sicili yok; alıntılar belge metninde arandı \
+                 (elle kaydedilen aday)."
+                    .to_string(),
+            );
+        }
 
         let quote_state = if schema.state == "invalid" {
             notes.push("Şema geçersiz olduğu için alıntılar eşleştirilmedi.".to_string());
@@ -795,7 +829,13 @@ impl Database {
                 let scope = scopes
                     .get(&quote.document_version_id)
                     .and_then(Option::as_ref);
-                quotes.push(match_quote(&run.case_id, quote.source_index, quote, scope));
+                quotes.push(match_quote(
+                    &run.case_id,
+                    quote.source_index,
+                    quote,
+                    scope,
+                    &sent,
+                ));
             }
             let state = aggregate_quote_state(&quotes);
             let exact = quotes.iter().filter(|item| item.state == "exact").count();
@@ -846,6 +886,7 @@ impl Database {
             quotes,
             notes,
             checked_at: now_iso(),
+            outbound_state: outbound_state.to_string(),
         })
     }
 
@@ -993,6 +1034,7 @@ fn match_quote(
     index: usize,
     quote: &QuoteRef,
     scope: Option<&VersionScope>,
+    sent: &[SentSegment],
 ) -> QuoteMatchReport {
     let mut report = QuoteMatchReport {
         index,
@@ -1009,6 +1051,7 @@ fn match_quote(
         text_origin: None,
         parse_run_id: None,
         segment_id: None,
+        outbound_state: "not_recorded".into(),
     };
     let Some(scope) = scope else {
         report.reason = Some("version_not_found".into());
@@ -1018,6 +1061,45 @@ fn match_quote(
     if scope.case_id != case_id {
         report.reason = Some("case_mismatch".into());
         return report;
+    }
+    // **Gönderilen metin kapısı** (şartname: "şema → kaynak kimliği ve case
+    // kapsamı → gönderilen alıntı eşleşmesi → yerel kaynak eşlemesi"): sicil
+    // varsa alıntı önce modelin gerçekten gördüğü metinde aranır. Böylece
+    // sonradan yeniden ayrıştırılan metin "model bunu görmüştü" iddiası
+    // üretemez; gönderilmemiş belgeden alıntı da doğrulanmış sayılmaz.
+    if !sent.is_empty() {
+        let own: Vec<&SentSegment> = sent
+            .iter()
+            .filter(|segment| {
+                segment.document_version_id.as_deref() == Some(quote.document_version_id.as_str())
+            })
+            .collect();
+        if own.is_empty() {
+            report.state = "unverifiable".into();
+            report.reason = Some("document_not_sent".into());
+            report.outbound_state = "document_not_sent".into();
+            return report;
+        }
+        let mut found = false;
+        let mut matched_segment: Option<String> = None;
+        for segment in &own {
+            match verify_quote(&segment.text, &quote.quote, None, None) {
+                QuoteMatch::NotFound | QuoteMatch::HashMismatch => {}
+                QuoteMatch::Exact | QuoteMatch::Normalized | QuoteMatch::Ambiguous => {
+                    found = true;
+                    matched_segment = Some(segment.segment_id.clone());
+                    break;
+                }
+            }
+        }
+        if !found {
+            report.state = "not_found".into();
+            report.reason = Some("not_in_outbound".into());
+            report.outbound_state = "missing".into();
+            return report;
+        }
+        report.outbound_state = "found".into();
+        report.segment_id = matched_segment;
     }
     let Some(parse_run_id) = scope.parse_run_id.as_deref() else {
         report.reason = Some("no_text".into());
@@ -1087,6 +1169,12 @@ fn match_quote(
         report.state = "normalized".into();
         report.page_index = Some(page_index);
         report.text_origin = origin;
+    } else if report.outbound_state == "found" {
+        // Alıntı gönderilen metinde vardı ama güncel belge metninde yok:
+        // uydurma değil, kaynak konumu üretilemiyor (yeniden ayrıştırma).
+        report.state = "unverifiable".into();
+        report.reason = Some("source_changed".into());
+        report.outbound_state = "changed".into();
     } else {
         report.state = "not_found".into();
     }
@@ -1106,7 +1194,7 @@ fn aggregate_quote_state(quotes: &[QuoteMatchReport]) -> &'static str {
             "unverifiable"
                 if matches!(
                     quote.reason.as_deref(),
-                    Some("version_not_found" | "case_mismatch")
+                    Some("version_not_found" | "case_mismatch" | "document_not_sent")
                 ) =>
             {
                 failed = true;
@@ -1129,12 +1217,20 @@ fn quote_issues(quotes: &[QuoteMatchReport]) -> Vec<ValidationIssue> {
         let field = format!("quotes[{}]", quote.index);
         match quote.state.as_str() {
             "exact" => {}
-            "not_found" => issues.push(issue(
-                "quote_not_found",
-                "error",
-                &field,
-                "Alıntı belge metninde bulunamadı; kaynak sayılmaz.",
-            )),
+            "not_found" => match quote.reason.as_deref() {
+                Some("not_in_outbound") => issues.push(issue(
+                    "quote_not_in_outbound",
+                    "error",
+                    &field,
+                    "Alıntı bu çalıştırmada gönderilen metinde bulunamadı; model bu metni görmemiş olabilir. Kaynak sayılmaz.",
+                )),
+                _ => issues.push(issue(
+                    "quote_not_found",
+                    "error",
+                    &field,
+                    "Alıntı belge metninde bulunamadı; kaynak sayılmaz.",
+                )),
+            },
             "unverifiable" => match quote.reason.as_deref() {
                 Some("case_mismatch") => issues.push(issue(
                     "quote_case_mismatch",
@@ -1147,6 +1243,18 @@ fn quote_issues(quotes: &[QuoteMatchReport]) -> Vec<ValidationIssue> {
                     "error",
                     &field,
                     "Belirtilen belge sürümü bulunamadı.",
+                )),
+                Some("document_not_sent") => issues.push(issue(
+                    "quote_document_not_sent",
+                    "error",
+                    &field,
+                    "Alıntının belgesi bu çalıştırmada gönderilen kapsamda değil; model bu belgeyi görmemişti.",
+                )),
+                Some("source_changed") => issues.push(issue(
+                    "quote_source_changed",
+                    "warning",
+                    &field,
+                    "Alıntı gönderilen metinde bulundu; güncel belge metninde bulunamadı (yeniden ayrıştırma olabilir). Kaynak konumu üretilemedi.",
                 )),
                 _ => issues.push(issue(
                     "quote_unverifiable",
@@ -1187,7 +1295,10 @@ fn byte_to_char(text: &str, byte: usize) -> i64 {
 mod tests {
     use super::*;
     use crate::cases::{CaseKind, NewCase};
-    use crate::{AiPolicy, DatabaseKey, NewAiRun, NewPage, NewTransferConsent, Sensitivity};
+    use crate::{
+        AiPolicy, DatabaseKey, NewAiRun, NewPage, NewTransferConsent, NewTransferSegment,
+        Sensitivity,
+    };
 
     const PAGE_ZERO: &str =
         "Kiracı, 12 Mart 2024 tarihli dilekçesinde ödeme yapılmadığını belirtmiştir.";
@@ -1772,5 +1883,253 @@ mod tests {
                 .code()
                 == "E_AI_SCHEMA"
         );
+    }
+
+    /// Sürümün segmentleri (kimlik, metin) — kayıt sırası.
+    fn version_segments(fixture: &Fixture) -> Vec<(String, String)> {
+        let mut stmt = fixture
+            .db
+            .conn()
+            .prepare(
+                "SELECT s.id, s.raw_text FROM text_segments s
+                 JOIN parse_runs pr ON pr.id = s.parse_run_id
+                 WHERE pr.document_version_id=?1 ORDER BY s.rowid",
+            )
+            .expect("stmt");
+        let rows = stmt
+            .query_map([&fixture.version_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("rows");
+        rows.map(|row| row.expect("satır")).collect()
+    }
+
+    /// Aynı sürüme **yeni** bir ayrıştırma koşusu ekler (metin değişir).
+    fn add_parse(fixture: &Fixture, pages: &[&str]) {
+        let run = fixture
+            .db
+            .start_parse_run(&fixture.version_id, &fixture.case_id, "plain", "3", "{}")
+            .expect("parse");
+        let stored: Vec<NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, text)| NewPage {
+                index: i64::try_from(index).expect("index"),
+                text: (*text).to_string(),
+                width: Some(595.0),
+                height: Some(842.0),
+                origin: "native".into(),
+                warnings: vec![],
+                rotation: 0,
+                coordinate_space: Some("unrotated_cropbox_points".into()),
+                page_label: None,
+                blocks: vec![],
+            })
+            .collect();
+        fixture
+            .db
+            .store_pages(&run.id, &fixture.case_id, &stored)
+            .expect("pages");
+        fixture
+            .db
+            .finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+    }
+
+    /// Aynı dosyaya **ikinci** belge ekler (gönderim kapsamı dışında kalan).
+    fn add_document(fixture: &Fixture, name: &str, pages: &[&str]) -> String {
+        let blob = fixture
+            .db
+            .create_blob_record(&format!("st-{}", uuid::Uuid::now_v7()), 10, "aad")
+            .expect("blob");
+        let document = fixture
+            .db
+            .create_document(&fixture.case_id, name, "petition", None, "unknown")
+            .expect("document");
+        let version = fixture
+            .db
+            .add_version(
+                &document.id,
+                &fixture.case_id,
+                &blob,
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = fixture
+            .db
+            .start_parse_run(&version.id, &fixture.case_id, "plain", "2", "{}")
+            .expect("parse");
+        let stored: Vec<NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, text)| NewPage {
+                index: i64::try_from(index).expect("index"),
+                text: (*text).to_string(),
+                width: Some(595.0),
+                height: Some(842.0),
+                origin: "native".into(),
+                warnings: vec![],
+                rotation: 0,
+                coordinate_space: Some("unrotated_cropbox_points".into()),
+                page_label: None,
+                blocks: vec![],
+            })
+            .collect();
+        fixture
+            .db
+            .store_pages(&run.id, &fixture.case_id, &stored)
+            .expect("pages");
+        fixture
+            .db
+            .finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+        version.id
+    }
+
+    /// Şartname sırası: şema → kapsam → **gönderilen alıntı eşleşmesi** →
+    /// yerel kaynak eşlemesi. Modelin gördüğü metin, sonradan yeniden
+    /// ayrıştırılmış metin değildir: gönderilen metinde olmayan alıntı
+    /// doğrulanmış sayılmaz; gönderilen metinde olup güncel metinde kalmayan
+    /// alıntı ise uydurma değil, konumu üretilemeyen alıntıdır.
+    #[test]
+    fn quotes_are_checked_against_the_sent_text_not_the_latest_parse() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let segments = version_segments(&fixture);
+        assert_eq!(segments.len(), 1);
+        let sent: Vec<NewTransferSegment> = segments
+            .iter()
+            .map(|(id, text)| NewTransferSegment {
+                segment_id: id.clone(),
+                document_version_id: fixture.version_id.clone(),
+                text: text.clone(),
+            })
+            .collect();
+        fixture
+            .db
+            .record_transfer_segments(&fixture.run_id, &sent)
+            .expect("sicil");
+
+        // Aynı sürüm yeniden ayrıştırılır: güncel metin artık başka.
+        add_parse(
+            &fixture,
+            &["Bambaşka bir metin; dilekçede ödeme iddiası yok."],
+        );
+
+        // (1) Gönderilen metinde vardı, güncel metinde yok → source_changed.
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(
+                    &fixture.version_id,
+                    "ödeme yapılmadığını belirtmiştir",
+                    Some(0),
+                ),
+            )
+            .expect("doğrula");
+        assert_eq!(report.outbound_state, "recorded");
+        let quote = &report.quotes[0];
+        assert_eq!(quote.outbound_state, "changed");
+        assert_eq!(quote.state, "unverifiable");
+        assert_eq!(quote.reason.as_deref(), Some("source_changed"));
+        assert!(
+            quote.segment_id.is_some(),
+            "alıntının bulunduğu gönderilen segment yazılır"
+        );
+        assert_eq!(report.quote_state, "partial");
+
+        // (2) Yalnız yeni metinde var: model bunu görmemişti → not_in_outbound.
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(&fixture.version_id, "ödeme iddiası yok", None),
+            )
+            .expect("doğrula");
+        let quote = &report.quotes[0];
+        assert_eq!(quote.state, "not_found");
+        assert_eq!(quote.reason.as_deref(), Some("not_in_outbound"));
+        assert_eq!(quote.outbound_state, "missing");
+        assert_eq!(report.quote_state, "failed");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|item| item.code == "quote_not_in_outbound"),
+            "sorun kodu gönderilen metni işaret eder"
+        );
+    }
+
+    /// Gönderim kapsamında olmayan belgeden alıntı doğrulanmış sayılmaz:
+    /// model o belgeyi görmemişti. (Kapı olmadan alıntı belge metninde
+    /// bulunur ve "exact" görünürdü.)
+    #[test]
+    fn quote_from_a_document_outside_the_sent_scope_is_not_verified() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let segments = version_segments(&fixture);
+        fixture
+            .db
+            .record_transfer_segments(
+                &fixture.run_id,
+                &segments
+                    .iter()
+                    .map(|(id, text)| NewTransferSegment {
+                        segment_id: id.clone(),
+                        document_version_id: fixture.version_id.clone(),
+                        text: text.clone(),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("sicil");
+        let other_version = add_document(
+            &fixture,
+            "Diğer.pdf",
+            &["Diğer belgede kira ödemesi yapıldığı yazılıdır."],
+        );
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(&other_version, "kira ödemesi yapıldığı", None),
+            )
+            .expect("doğrula");
+        let quote = &report.quotes[0];
+        assert_eq!(quote.state, "unverifiable");
+        assert_eq!(quote.reason.as_deref(), Some("document_not_sent"));
+        assert_eq!(quote.outbound_state, "document_not_sent");
+        assert_eq!(report.quote_state, "failed");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|item| item.code == "quote_document_not_sent"),
+            "sorun kodu gönderilmeyen belgeyi işaret eder"
+        );
+    }
+
+    /// Gönderim sicili olmayan (elle kaydedilen) adaylarda eski davranış
+    /// korunur; rapor bunu **açıkça** `not_recorded` diye yazar.
+    #[test]
+    fn runs_without_a_sent_ledger_keep_document_checking() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(
+                    &fixture.version_id,
+                    "ödeme yapılmadığını belirtmiştir",
+                    Some(0),
+                ),
+            )
+            .expect("doğrula");
+        assert_eq!(report.outbound_state, "not_recorded");
+        assert_eq!(report.quotes[0].state, "exact");
+        assert_eq!(report.quotes[0].outbound_state, "not_recorded");
+        assert_eq!(report.quote_state, "verified");
     }
 }

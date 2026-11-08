@@ -653,12 +653,31 @@ export const tr = {
     contextColVersion: "Sürüm",
     contextColReason: "Gerekçe",
     contextColBytes: "Bayt",
+    contextColSegments: "Segment",
+    contextSegmentUnknown: "okunamadı",
     contextMissingDocument: "belge bulunamadı · {id}",
     contextVersionUnknown: "—",
     contextTotal: "{documents} belge · {bytes}",
     contextNote:
-      "Sınır: sicil belge **sürümünü** ve gönderilen bayt sayısını yazar, metnin " +
-      "kendisini saklamaz. Gönderilen metnin içerik özeti makbuz satırındadır.",
+      "Sicil belge **sürümünü**, gönderilen baytı ve segment sayısını yazar. Gönderilen " +
+      "metnin kendisi “Gönderilen segmentler” kartındadır (ilk 120 karakter); tam metin " +
+      "arayüze dökülmez.",
+    transferTitle: "Gönderilen segmentler",
+    transferSub:
+      "Kasadan çıkan metnin segment düzeyinde sicili. Aday alıntıları **önce** bu metinde " +
+      "aranır; model sonradan değişmiş belge metnini görmüş sayılmaz.",
+    transferNoRun: "Segment sicilini görmek için bir çalıştırma seçin.",
+    transferEmpty: "Bu çalıştırma için segment sicili yok.",
+    transferLoading: "Segment sicili okunuyor…",
+    transferError: "Segment sicili okunamadı:",
+    transferColIndex: "#",
+    transferColSegment: "Segment",
+    transferColChars: "Karakter",
+    transferColHash: "SHA-256",
+    transferColText: "Metin (ilk 120)",
+    transferNote:
+      "Her satır yazılmadan önce kasadaki segment metniyle birebir karşılaştırılır; sicile " +
+      "beyan edilen metin yazılamaz.",
     validateTitle: "Aday doğrula ve kaydet",
     validateSub:
       "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +
@@ -675,12 +694,20 @@ export const tr = {
     colPosition: "Konum",
     colOccurrences: "Tekrar",
     colText: "Metin",
+    colOutbound: "Gönderim",
+    outboundRecorded: "gönderim sicili var",
+    outboundNotRecorded: "gönderim sicili yok",
+    outboundFound: "gönderilen metinde",
+    outboundMissing: "gönderilen metinde yok",
+    outboundDocumentNotSent: "belge gönderilmedi",
+    outboundChanged: "metin değişmiş",
     claimedPage: "model sayfa {page} dedi",
     issuesSummary: "Doğrulama sorunları ({count})",
     limits:
-      "Doğrulamanın sınırları: yalnız kasada ayrıştırılmış metin aranır; OCR yazım hatası " +
-      "eşleşmeyi etkileyebilir, maskeli bağlamın özgün kaynağa geri eşlenmesi bu adımda " +
-      "yapılmaz. Aday metni modelin ürettiği hâliyle saklanır.",
+      "Doğrulamanın sınırları: gönderim sicili varsa alıntı önce **gönderilen** metinde " +
+      "aranır; sonra güncel ayrıştırılmış metinde konumu bulunur. OCR yazım hatası eşleşmeyi " +
+      "etkileyebilir; maskeli bağlamın özgün kaynağa geri eşlenmesi bu adımda yapılmaz. Aday " +
+      "metni modelin ürettiği hâliyle saklanır.",
     candidatesTitle: "Adaylar",
     candidatesSub: "Kabul edilene kadar hukuki kayıt sayılmaz",
     colSchema: "Şema",

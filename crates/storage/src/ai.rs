@@ -151,6 +151,12 @@ fn provider_snapshot(adapter_id: &str, policy_version: &str, capabilities: &str)
     format!("{adapter_id}@{policy_version}#{fingerprint}")
 }
 
+/// SHA-256 özetinin küçük harfli onaltılığı (gönderim sicili).
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Profil satırının kimlik için gereken alanları (ham `capabilities` dahil).
 struct ProfileRecord {
     provider_type: String,
@@ -175,6 +181,10 @@ pub struct AiContextItemRow {
     pub source_anchor_id: Option<String>,
     pub inclusion_reason: String,
     pub bytes_sent: i64,
+    /// Gönderilen segment sayısı (`segment_ids` sütunundan). `None`: sütun
+    /// okunamadı — "0 segment" denmez. Eski satırlarda `[]` yazılıydı; bu
+    /// sürümden sonra gerçek segment kimlikleri yazılır.
+    pub segment_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,6 +195,49 @@ pub struct NewAiContextItem {
     pub source_anchor_id: Option<String>,
     pub inclusion_reason: String,
     pub bytes_sent: i64,
+    /// Gönderilen segmentlerin kimlikleri. Boş liste "segment bilinmiyor"
+    /// demektir; çekirdek yazmadan önce her kimliği **kasadaki** segmentle
+    /// doğrular (uydurma kimlik yazılamaz).
+    #[serde(default)]
+    pub segment_ids: Vec<String>,
+}
+
+/// Gönderilen tek bir segmentin sicil satırı (şartname `transfer_segments`).
+///
+/// Metin **çağırandan** gelir ama beyan edilemez: çekirdek kasadaki
+/// `text_segments.raw_text` ile birebir karşılaştırır; farklıysa yazmaz.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewTransferSegment {
+    pub segment_id: String,
+    pub document_version_id: String,
+    pub text: String,
+}
+
+/// `transfer_segments` satırının **okunabilir** biçimi. Tam metin döndürülmez;
+/// `text_head` ilk 120 karakterdir (denetimde gözle tanıma için).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSegmentRow {
+    pub id: String,
+    pub ai_run_id: String,
+    pub document_version_id: Option<String>,
+    pub segment_id: String,
+    pub outbound_hash: String,
+    pub char_count: i64,
+    pub byte_count: i64,
+    /// `identity` — gönderilen metin özgün segmentin kendisi (bugün tek yol);
+    /// `transformed` — bir dönüşüm/plan kimliği taşır (henüz üretilmiyor).
+    pub transform_kind: String,
+    pub text_head: String,
+}
+
+/// Doğrulamanın «gönderilen metin» aşaması için satır (tam metinle).
+#[derive(Debug, Clone)]
+pub struct SentSegment {
+    pub document_version_id: Option<String>,
+    pub segment_id: String,
+    pub text: String,
 }
 
 impl Database {
@@ -522,14 +575,40 @@ impl Database {
             if item.bytes_sent < 0 {
                 return Err(StorageError::InvalidSetting);
             }
+            // Segment kimlikleri **kasadan** doğrulanır: var olmayan ya da
+            // başka sürüme ait bir kimlik yazılamaz. Boş liste «bilinmiyor»
+            // demektir (eski davranış), uydurma kimlik değil.
+            let mut seen: Vec<&str> = Vec::new();
+            for segment_id in &item.segment_ids {
+                if segment_id.trim().is_empty() || segment_id.trim() != segment_id {
+                    return Err(StorageError::InvalidSetting);
+                }
+                if seen.contains(&segment_id.as_str()) {
+                    return Err(StorageError::InvalidSetting);
+                }
+                seen.push(segment_id);
+                let exists: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM text_segments s
+                     JOIN parse_runs pr ON pr.id = s.parse_run_id
+                     WHERE s.id=?1 AND pr.document_version_id=?2",
+                    rusqlite::params![segment_id, item.document_version_id],
+                    |row| row.get(0),
+                )?;
+                if exists == 0 {
+                    return Err(StorageError::NotFound);
+                }
+            }
+            let segment_ids =
+                serde_json::to_string(&item.segment_ids).unwrap_or_else(|_| "[]".to_string());
             tx.execute(
                 "INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
-                 VALUES (?1,?2,?3,?4,'[]',?5,?6)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 rusqlite::params![
                     uuid::Uuid::now_v7().to_string(),
                     run_id,
                     item.document_version_id,
                     item.source_anchor_id,
+                    segment_ids,
                     item.inclusion_reason,
                     item.bytes_sent
                 ],
@@ -548,7 +627,7 @@ impl Database {
     pub fn list_context_items(&self, run_id: &str) -> Result<Vec<AiContextItemRow>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT c.id,c.ai_run_id,c.document_version_id,d.display_name,v.version_no,
-                    c.source_anchor_id,c.inclusion_reason,c.bytes_sent
+                    c.source_anchor_id,c.inclusion_reason,c.bytes_sent,c.segment_ids
              FROM ai_context_items c
              LEFT JOIN document_versions v ON v.id = c.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
@@ -556,6 +635,10 @@ impl Database {
              ORDER BY c.rowid ASC",
         )?;
         let rows = stmt.query_map([run_id], |row| {
+            let raw_segments: String = row.get(8)?;
+            let segment_count = serde_json::from_str::<Vec<String>>(&raw_segments)
+                .ok()
+                .map(|ids| i64::try_from(ids.len()).unwrap_or(i64::MAX));
             Ok(AiContextItemRow {
                 id: row.get(0)?,
                 ai_run_id: row.get(1)?,
@@ -565,6 +648,167 @@ impl Database {
                 source_anchor_id: row.get(5)?,
                 inclusion_reason: row.get(6)?,
                 bytes_sent: row.get(7)?,
+                segment_count,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Gönderilen metni **segment düzeyinde** sicile yazar (şartname
+    /// `transfer_segments`: «gönderilen metin ve özgün aralık eşlemesi şifreli
+    /// tutulur»).
+    ///
+    /// Beyan kabul edilmez: her satırın metni kasadaki `text_segments.raw_text`
+    /// ile **birebir** karşılaştırılır; farklıysa hiçbir satır yazılmaz. Bugün
+    /// tek dönüşüm kimliktir (`transform_manifest_id` NULL); maskeleme
+    /// bağlandığında dönüşüm kimliği ve aralık eşlemesi buraya gelecek.
+    pub fn record_transfer_segments(
+        &self,
+        run_id: &str,
+        segments: &[NewTransferSegment],
+    ) -> Result<usize, StorageError> {
+        if self.get_ai_run(run_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        if segments.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        let mut seen: Vec<&str> = Vec::new();
+        let mut chars_total: i64 = 0;
+        for segment in segments {
+            if segment.segment_id.trim().is_empty()
+                || segment.segment_id.trim() != segment.segment_id
+                || segment.document_version_id.trim().is_empty()
+                || segment.text.is_empty()
+                || segment.text.contains('\0')
+            {
+                return Err(StorageError::InvalidSetting);
+            }
+            if seen.contains(&segment.segment_id.as_str()) {
+                return Err(StorageError::InvalidSetting);
+            }
+            seen.push(segment.segment_id.as_str());
+            // Aynı çalıştırmada ikinci kez yazmak (mükerrer sicil) reddedilir;
+            // UNIQUE indeks yalnız savunma derinliğidir (ham SQL hatası
+            // kullanıcıya taşınmaz).
+            let already: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM transfer_segments
+                 WHERE ai_run_id=?1 AND outbound_segment_id=?2",
+                rusqlite::params![run_id, segment.segment_id],
+                |row| row.get(0),
+            )?;
+            if already > 0 {
+                return Err(StorageError::InvalidSetting);
+            }
+            let stored: Option<String> = tx
+                .query_row(
+                    "SELECT s.raw_text FROM text_segments s
+                     JOIN parse_runs pr ON pr.id = s.parse_run_id
+                     WHERE s.id=?1 AND pr.document_version_id=?2",
+                    rusqlite::params![segment.segment_id, segment.document_version_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(stored) = stored else {
+                // Var olmayan segment ya da başka sürüme ait kimlik: sicile
+                // yazılamaz (kayıt bulunamadı).
+                return Err(StorageError::NotFound);
+            };
+            if stored != segment.text {
+                return Err(StorageError::InvalidSetting);
+            }
+            let chars = i64::try_from(segment.text.chars().count()).unwrap_or(i64::MAX);
+            chars_total = chars_total.saturating_add(chars);
+            let hash = sha256_hex(segment.text.as_bytes());
+            let map = serde_json::json!([{
+                "outStart": 0,
+                "outEnd": chars,
+                "sourceStart": 0,
+                "sourceEnd": chars,
+            }])
+            .to_string();
+            tx.execute(
+                "INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,outbound_hash,
+                    transform_manifest_id,source_range_map,document_version_id)
+                 VALUES (?1,?2,?3,?3,?4,?5,NULL,?6,?7)",
+                rusqlite::params![
+                    uuid::Uuid::now_v7().to_string(),
+                    run_id,
+                    segment.segment_id,
+                    segment.text,
+                    hash,
+                    map,
+                    segment.document_version_id
+                ],
+            )?;
+        }
+        tx.commit()?;
+        self.append_audit(
+            "transfer_segment",
+            Some(run_id),
+            "record",
+            "local-system",
+            &serde_json::json!({"segments": segments.len(), "chars": chars_total}),
+        )?;
+        Ok(segments.len())
+    }
+
+    /// Gönderim sicilinin **okunabilir** satırları; sıra kayıt sırasıdır
+    /// (`rowid`). Tam metin döndürülmez (ilk 120 karakter + özet yeter).
+    pub fn list_transfer_segments(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<TransferSegmentRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,ai_run_id,document_version_id,outbound_segment_id,outbound_hash,
+                    length(outbound_text),length(CAST(outbound_text AS BLOB)),
+                    transform_manifest_id,substr(outbound_text,1,120)
+             FROM transfer_segments WHERE ai_run_id=?1 ORDER BY rowid ASC",
+        )?;
+        let rows = stmt.query_map([run_id], |row| {
+            let transform_manifest_id: Option<String> = row.get(7)?;
+            Ok(TransferSegmentRow {
+                id: row.get(0)?,
+                ai_run_id: row.get(1)?,
+                document_version_id: row.get(2)?,
+                segment_id: row.get(3)?,
+                outbound_hash: row.get(4)?,
+                char_count: row.get(5)?,
+                byte_count: row.get(6)?,
+                transform_kind: if transform_manifest_id.is_some() {
+                    "transformed".to_string()
+                } else {
+                    "identity".to_string()
+                },
+                text_head: row.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Doğrulamanın **gönderilen metin** aşaması için satırlar (tam metinle).
+    /// Aday doğrulaması alıntıyı önce burada arar; kasa dışına çıkan metin
+    /// budur.
+    pub(crate) fn sent_segments(&self, run_id: &str) -> Result<Vec<SentSegment>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT document_version_id,outbound_segment_id,outbound_text
+             FROM transfer_segments WHERE ai_run_id=?1 ORDER BY rowid ASC",
+        )?;
+        let rows = stmt.query_map([run_id], |row| {
+            Ok(SentSegment {
+                document_version_id: row.get(0)?,
+                segment_id: row.get(1)?,
+                text: row.get(2)?,
             })
         })?;
         let mut out = Vec::new();
@@ -2145,6 +2389,7 @@ mod tests {
             source_anchor_id: None,
             inclusion_reason: "seçili paragraf".into(),
             bytes_sent: 42,
+            segment_ids: Vec::new(),
         }];
         assert_eq!(db.record_context_items(&r.id, &items).expect("bağlam"), 1);
         assert_eq!(db.list_context_items(&r.id).expect("liste").len(), 1);
@@ -2178,12 +2423,14 @@ mod tests {
                 source_anchor_id: None,
                 inclusion_reason: "onaylanan belge".into(),
                 bytes_sent: 120,
+                segment_ids: Vec::new(),
             },
             NewAiContextItem {
                 document_version_id: a_version.clone(),
                 source_anchor_id: None,
                 inclusion_reason: "onaylanan belge".into(),
                 bytes_sent: 64,
+                segment_ids: Vec::new(),
             },
         ];
         assert_eq!(db.record_context_items(&r.id, &items).expect("bağlam"), 2);
@@ -2215,6 +2462,7 @@ mod tests {
                 source_anchor_id: None,
                 inclusion_reason: "onaylanan belge".into(),
                 bytes_sent: 7,
+                segment_ids: Vec::new(),
             }],
         )
         .expect("bağlam");
@@ -2623,7 +2871,7 @@ mod tests {
     /// Aktarım sicili belge **metnini** saklamaz: denetim/koşu/bağlam/makbuz
     /// satırlarında belge metni geçmez (yalnız kimlik, sayı ve özet).
     #[test]
-    fn transfer_records_never_store_document_text() {
+    fn transfer_metadata_never_stores_document_text() {
         fn table_has(db: &Database, table: &str, needle: &str) -> bool {
             let mut stmt = db
                 .conn()
@@ -2674,9 +2922,22 @@ mod tests {
                 source_anchor_id: None,
                 inclusion_reason: "onaylanan belge".into(),
                 bytes_sent: scope.documents[0].bytes,
+                segment_ids: Vec::new(),
             }],
         )
         .expect("bağlam");
+        // Şartname `transfer_segments` tablosu için **gönderilen metni** ister
+        // (şifreli kasa içinde). Metin yalnız orada ve kasadaki segmenttedir;
+        // makbuz/denetim/çalıştırma satırları metni taşımaz.
+        db.record_transfer_segments(
+            &run.id,
+            &[NewTransferSegment {
+                segment_id: scope.segments[0].segment_id.clone(),
+                document_version_id: scope.segments[0].document_version_id.clone(),
+                text: scope.segments[0].text.clone(),
+            }],
+        )
+        .expect("gönderim sicili");
         let receipt = db
             .begin_transfer_receipt(
                 &run.id,
@@ -2703,6 +2964,8 @@ mod tests {
         }
         // Metin gerçekten kasadadır (yanlış negatif olmasın): kontrol.
         assert!(table_has(&db, "text_segments", canary));
+        // Gönderim sicili metni **taşır** (şartname gereği, kasa içinde).
+        assert!(table_has(&db, "transfer_segments", canary));
     }
 
     /// Onay, kapsamındaki belgeleri **gerçekten** adlandırmalı: başka dosyanın
@@ -2746,5 +3009,217 @@ mod tests {
             })
             .expect_err("boş seçim");
         assert_eq!(err.code(), "E_AI_CONSENT");
+    }
+
+    /// Verilen sürümün segmentleri (kimlik, metin) — kayıt sırası.
+    fn segments_for_version(db: &Database, version_id: &str) -> Vec<(String, String)> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT s.id, s.raw_text FROM text_segments s
+                 JOIN parse_runs pr ON pr.id = s.parse_run_id
+                 WHERE pr.document_version_id=?1 ORDER BY s.rowid",
+            )
+            .expect("stmt");
+        let rows = stmt
+            .query_map([version_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("rows");
+        rows.map(|row| row.expect("satır")).collect()
+    }
+
+    /// Belge kümesine bağlı onay (test yardımcısı).
+    fn consent_for_document(db: &Database, case_id: &str, document_id: &str) -> TransferConsentRow {
+        db.create_transfer_consent(&NewTransferConsent {
+            provider_id: "p1".into(),
+            case_scope: case_id.into(),
+            purpose: "ozet".into(),
+            selected_document_ids: vec![document_id.to_string()],
+            expires_at: None,
+            consent_text_version: "1".into(),
+        })
+        .expect("onay")
+    }
+
+    /// Gönderim sicili **metnin kendisini** taşır: kimlik eşlemesi, karakter/bayt
+    /// sayısı ve sha256 çekirdekte hesaplanır; sıra kayıt sırasıdır.
+    #[test]
+    fn transfer_segments_record_identity_map_and_hash() {
+        let (db, case_id, _) = setup();
+        let (document_id, version_id) =
+            document_with_text(&db, &case_id, "Belge", &["Kira bedeli ödenmedi."]);
+        let c = consent_for_document(&db, &case_id, &document_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let segments = segments_for_version(&db, &version_id);
+        assert_eq!(segments.len(), 1, "tek sayfa tek segment üretir");
+        let (segment_id, text) = segments[0].clone();
+        assert_eq!(
+            db.record_transfer_segments(
+                &r.id,
+                &[NewTransferSegment {
+                    segment_id: segment_id.clone(),
+                    document_version_id: version_id.clone(),
+                    text: text.clone(),
+                }],
+            )
+            .expect("sicil"),
+            1
+        );
+
+        let rows = db.list_transfer_segments(&r.id).expect("liste");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.segment_id, segment_id);
+        assert_eq!(
+            row.document_version_id.as_deref(),
+            Some(version_id.as_str())
+        );
+        assert_eq!(row.char_count, i64::try_from(text.chars().count()).unwrap());
+        assert_eq!(row.byte_count, i64::try_from(text.len()).unwrap());
+        assert_eq!(row.transform_kind, "identity");
+        assert_eq!(row.outbound_hash, sha256_hex(text.as_bytes()));
+        assert_eq!(row.outbound_hash.len(), 64);
+        assert_eq!(row.text_head, text);
+
+        // Aralık eşlemesi kimliktir: gönderilen aralık = özgün aralık.
+        let map: String = db
+            .conn()
+            .query_row(
+                "SELECT source_range_map FROM transfer_segments WHERE ai_run_id=?1",
+                [&r.id],
+                |row| row.get(0),
+            )
+            .expect("harita");
+        let value: serde_json::Value = serde_json::from_str(&map).expect("json");
+        assert_eq!(value[0]["outStart"], 0);
+        assert_eq!(value[0]["outEnd"], text.chars().count());
+        assert_eq!(value[0]["sourceStart"], 0);
+        assert_eq!(value[0]["sourceEnd"], text.chars().count());
+
+        // Tam metin yalnız doğrulama yolunda; başka çalıştırmanın sicili ayrıdır.
+        let sent = db.sent_segments(&r.id).expect("gönderilen");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].text, text);
+        let other = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("ikinci çalıştırma");
+        assert!(db
+            .list_transfer_segments(&other.id)
+            .expect("liste")
+            .is_empty());
+    }
+
+    /// Beyan edilen metin kasadaki segmentle birebir aynı değilse sicile
+    /// **hiçbir** satır yazılmaz; mükerrer kayıt ham SQL hatası olarak değil
+    /// `E_DB_SETTING` olarak reddedilir.
+    #[test]
+    fn transfer_segment_text_must_match_the_vault() {
+        let (db, case_id, _) = setup();
+        let (document_id, version_id) =
+            document_with_text(&db, &case_id, "Belge", &["Kira bedeli ödenmedi."]);
+        let c = consent_for_document(&db, &case_id, &document_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let (segment_id, text) = segments_for_version(&db, &version_id)[0].clone();
+
+        let err = db
+            .record_transfer_segments(
+                &r.id,
+                &[NewTransferSegment {
+                    segment_id: segment_id.clone(),
+                    document_version_id: version_id.clone(),
+                    text: "uydurulmuş metin".into(),
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_DB_SETTING");
+        assert!(
+            db.list_transfer_segments(&r.id).expect("liste").is_empty(),
+            "hata sonrası satır kalmaz"
+        );
+
+        let err = db
+            .record_transfer_segments(
+                &r.id,
+                &[NewTransferSegment {
+                    segment_id: "olmayan-segment".into(),
+                    document_version_id: version_id.clone(),
+                    text: text.clone(),
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND", "var olmayan segment yazılamaz");
+
+        db.record_transfer_segments(
+            &r.id,
+            &[NewTransferSegment {
+                segment_id: segment_id.clone(),
+                document_version_id: version_id.clone(),
+                text: text.clone(),
+            }],
+        )
+        .expect("geçerli sicil");
+        let err = db
+            .record_transfer_segments(
+                &r.id,
+                &[NewTransferSegment {
+                    segment_id: segment_id.clone(),
+                    document_version_id: version_id.clone(),
+                    text: text.clone(),
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_DB_SETTING", "mükerrer satır reddedilir");
+        assert_eq!(db.list_transfer_segments(&r.id).expect("liste").len(), 1);
+    }
+
+    /// `ai_context_items.segment_ids` artık gerçek kimlikleri taşır; uydurma
+    /// kimlik yazılamaz ve satır sayısı okunabilir.
+    #[test]
+    fn context_items_record_real_segment_ids() {
+        let (db, case_id, _) = setup();
+        let (document_id, version_id) =
+            document_with_text(&db, &case_id, "Belge", &["Kira bedeli ödenmedi."]);
+        let c = consent_for_document(&db, &case_id, &document_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let (segment_id, text) = segments_for_version(&db, &version_id)[0].clone();
+        let bytes = i64::try_from(text.len()).unwrap();
+        db.record_context_items(
+            &r.id,
+            &[NewAiContextItem {
+                document_version_id: version_id.clone(),
+                source_anchor_id: None,
+                inclusion_reason: "onaylanan belge".into(),
+                bytes_sent: bytes,
+                segment_ids: vec![segment_id],
+            }],
+        )
+        .expect("bağlam");
+        let rows = db.list_context_items(&r.id).expect("liste");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].segment_count, Some(1));
+
+        let err = db
+            .record_context_items(
+                &r.id,
+                &[NewAiContextItem {
+                    document_version_id: version_id.clone(),
+                    source_anchor_id: None,
+                    inclusion_reason: "onaylanan belge".into(),
+                    bytes_sent: bytes,
+                    segment_ids: vec!["uydurma-segment".into()],
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        assert_eq!(
+            db.list_context_items(&r.id).expect("liste").len(),
+            1,
+            "hata sonrası ikinci satır yazılmaz"
+        );
     }
 }

@@ -45,8 +45,9 @@ pub use actors::{
 };
 pub use ai::{
     AiCandidateRow, AiContextItemRow, AiRunRow, ConsentPreview, ConsentScope, CoverageReport,
-    NewAiContextItem, NewAiRun, NewTransferConsent, ProviderProfileRow, ScopeDocument,
-    ScopeSegment, ScopeSkip, TransferConsentListRow, TransferConsentRow, TransferReceiptRow,
+    NewAiContextItem, NewAiRun, NewTransferConsent, NewTransferSegment, ProviderProfileRow,
+    ScopeDocument, ScopeSegment, ScopeSkip, SentSegment, TransferConsentListRow,
+    TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
 };
 pub use ai_candidate::{
     CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,
@@ -286,9 +287,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0025_actor_merges",
         sql: include_str!("migrations/0025_actor_merges.sql"),
     },
+    Migration {
+        version: 26,
+        name: "0026_transfer_segments",
+        sql: include_str!("migrations/0026_transfer_segments.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 25;
+pub const CURRENT_SCHEMA_VERSION: u32 = 26;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

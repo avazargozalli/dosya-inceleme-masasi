@@ -35,6 +35,7 @@ function quote(overrides: Partial<QuoteMatchReport>): QuoteMatchReport {
     textOrigin: "native",
     parseRunId: "r1",
     segmentId: "s1",
+    outboundState: "not_recorded",
     ...overrides,
   };
 }
@@ -49,6 +50,7 @@ function report(overrides: Partial<CandidateReport>): CandidateReport {
     quotes: [quote({})],
     notes: [],
     checkedAt: "2026-10-24T20:00:00Z",
+    outboundState: "not_recorded",
     ...overrides,
   };
 }
