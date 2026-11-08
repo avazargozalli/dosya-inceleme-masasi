@@ -15,6 +15,7 @@ mod cases;
 mod checklists;
 mod claims;
 mod connectors;
+mod csv_export;
 mod documents;
 mod error;
 mod export_coverage;
@@ -60,6 +61,7 @@ pub use claims::{
 pub use connectors::{
     connector_catalog, connector_catalog_hash, ConnectorInfo, STATUS_DOCUMENTED_NOT_ENABLED,
 };
+pub use csv_export::{build_case_csv, safe_cell, CSV_FORMAT_NOTE};
 pub use documents::{Document, DocumentVersion, PendingParse, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use export_coverage::{ExportCoverage, COVERAGE_COUNTING_NOTE, COVERAGE_STATEMENT};

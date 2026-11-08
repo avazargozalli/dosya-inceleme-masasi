@@ -6051,14 +6051,6 @@ pub fn export_json(
     })
 }
 
-fn csv_escape(value: &str) -> String {
-    if value.contains([',', '"', '\n']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
-
 #[tauri::command]
 pub fn export_csv(
     state: State<'_, AppState>,
@@ -6067,30 +6059,20 @@ pub fn export_csv(
 ) -> Result<ExportView, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    // Kapsam bloğu tablo satırlarına karışmasın diye `#` yorum satırı olarak
-    // başa yazılır; sayılar kasadan gelir.
+    // Kapsam bloğu, biçim notu ve üç bölüm (kronoloji + görevler + belge
+    // dizini) tek yerde, `dim_storage::build_case_csv` içinde üretilir; hücre
+    // politikası (`=`, `+`, `-`, `@`, tam genişlikli karşılıkları, baştaki
+    // boşluk/kontrol karakterleri) orada uygulanır — burada ham metin CSV'ye
+    // yazılmaz.
     let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
-    let mut out = coverage.csv_comment_block();
-    out.push_str("kayit,tarih,tur,baslik,durum\n");
-    for event in db.list_events(&case_id)? {
-        out.push_str(&format!(
-            "olay,{},{},{},{}\n",
-            csv_escape(event.sortable_date.as_deref().unwrap_or("")),
-            csv_escape(&event.date_role),
-            csv_escape(&event.title),
-            csv_escape(&event.status)
-        ));
-    }
-    for task in db.list_tasks(&case_id, true)? {
-        out.push_str(&format!(
-            "gorev,{},{},{},{}\n",
-            csv_escape(task.user_due_date.as_deref().unwrap_or("")),
-            csv_escape("gorev"),
-            csv_escape(&task.title),
-            csv_escape(&task.status)
-        ));
-    }
+    let out = dim_storage::build_case_csv(
+        &coverage,
+        &db.list_events(&case_id)?,
+        &db.list_tasks(&case_id, true)?,
+        &db.list_documents(&case_id)?,
+    );
     let bytes = out.into_bytes();
+
     // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
     let written = write_export(&dest_path, &bytes)?;
     let sha = written.sha256.clone();
