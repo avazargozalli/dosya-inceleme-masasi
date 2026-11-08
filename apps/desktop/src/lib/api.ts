@@ -1251,6 +1251,37 @@ export type ReviewDecisionRow = {
   decidedAt: string;
 };
 
+/** Dosya tarafları — şema `case_participants` + `actors` (şartname F08-T01). */
+export type CaseParticipantRow = {
+  id: string;
+  caseId: string;
+  actorId: string;
+  displayName: string;
+  kind: "person" | "organization" | "unknown" | string;
+  role: string;
+  roleNote: string | null;
+  createdAt: string;
+};
+
+/** Birleştirme kaydı; `undoneAt` doluysa geri alınmıştır. */
+export type ActorMergeRow = {
+  id: string;
+  sourceActorId: string;
+  sourceDisplayName: string;
+  targetActorId: string;
+  targetDisplayName: string;
+  movedParticipantIds: string[];
+  caseIds: string[];
+  reviewerLabel: string;
+  createdAt: string;
+  undoneAt: string | null;
+};
+
+export type CaseParties = {
+  participants: CaseParticipantRow[];
+  merges: ActorMergeRow[];
+};
+
 /** İnceleme kararının ürettiği hedef kayıt (F08-T08). */
 export type ReviewCommitResult = {
   item: ReviewItemRow;
@@ -2252,6 +2283,31 @@ export const api = {
   contradictionAssessments: (itemId: string) =>
     invoke<ContradictionAssessmentRow[]>("contradiction_assessments", { itemId }),
   reviewHistory: (itemId: string) => invoke<ReviewDecisionRow[]>("review_history", { itemId }),
+
+  casePartyList: (caseId: string) => invoke<CaseParties>("case_party_list", { caseId }),
+  casePartyAdd: (
+    caseId: string,
+    input: {
+      displayName: string;
+      kind: string;
+      role: string;
+      roleNote?: string | null;
+      actorId?: string | null;
+    },
+  ) =>
+    invoke<CaseParticipantRow>("case_party_add", {
+      caseId,
+      displayName: input.displayName,
+      kind: input.kind,
+      role: input.role,
+      roleNote: input.roleNote ?? null,
+      actorId: input.actorId ?? null,
+    }),
+  casePartyRemove: (participantId: string) =>
+    invoke<void>("case_party_remove", { participantId }),
+  actorMerge: (sourceActorId: string, targetActorId: string, reviewer: string) =>
+    invoke<ActorMergeRow>("actor_merge", { sourceActorId, targetActorId, reviewer }),
+  actorMergeUndo: (mergeId: string) => invoke<ActorMergeRow>("actor_merge_undo", { mergeId }),
 
   checklistTemplates: (caseId: string) =>
     invoke<ChecklistTemplateRow[]>("checklist_templates", { caseId }),

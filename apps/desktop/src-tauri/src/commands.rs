@@ -20,24 +20,25 @@ use dim_ingest::{import_path, ImportResult};
 use dim_preview::{PreviewKey, PreviewStore};
 use dim_providers::{AiRequest, ApiProvider, ContextSegment, Provider};
 use dim_storage::{
-    AiCandidateRow, AiContextItemRow, AiRunRow, AnchorLocation, AnchorRow, BackupRunRow,
-    CandidateReport, Case, CaseChecklistItemRow, CasePatch, CaseTagRow, ChecklistCopyResult,
-    ChecklistTemplateRow, CitationCheckRow, CitationContext, ClaimRelationRow, ClaimRow,
-    ConsentPreview, ContradictionAssessmentRow, CorpusCoverage, CorpusMode, CoverageReport,
-    Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch, EventRow,
-    EventSourceRow, EvidenceLinkRow, ExportCoverage, ExportRow, GcReport, InTextQuoteCheck,
-    InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiContextItem, NewAiRun,
-    NewAnchor, NewBackupRun, NewCase, NewCitationCheck, NewClaim, NewClaimRelation, NewEvent,
-    NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
-    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
-    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
-    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
-    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
-    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow,
+    ActorMergeRow, AiCandidateRow, AiContextItemRow, AiRunRow, AnchorLocation, AnchorRow,
+    BackupRunRow, CandidateReport, Case, CaseChecklistItemRow, CaseParties, CasePatch, CaseTagRow,
+    ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, CitationContext, ClaimRelationRow,
+    ClaimRow, ConsentPreview, ContradictionAssessmentRow, CorpusCoverage, CorpusMode,
+    CoverageReport, Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch,
+    EventRow, EventSourceRow, EvidenceLinkRow, ExportCoverage, ExportRow, GcReport,
+    InTextQuoteCheck, InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, MarkRow,
+    NewAiContextItem, NewAiRun, NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck,
+    NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
+    NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
+    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
+    OutboxEventRow, PageRow, ParseRun, ParticipantRow, PrecedentBibliography,
+    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
+    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
+    SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow, TaskRow, TransferConsentListRow,
+    TransferConsentRow, TransferReceiptRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -3379,6 +3380,77 @@ pub fn review_history(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.review_history(&item_id)?)
+}
+
+/// Dosya tarafları: kişi/kurum + rol listesi ve birleştirme geçmişi (F08-T01).
+#[tauri::command]
+pub fn case_party_list(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<CaseParties, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_case_parties(&case_id)?)
+}
+
+/// Dosyaya taraf ekler; `actorId` doluysa mevcut tarafa rol eklenir.
+#[tauri::command]
+pub fn case_party_add(
+    state: State<'_, AppState>,
+    case_id: String,
+    display_name: String,
+    kind: String,
+    role: String,
+    role_note: Option<String>,
+    actor_id: Option<String>,
+) -> Result<ParticipantRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.add_case_party(
+        &case_id,
+        &NewCaseParty {
+            display_name: &display_name,
+            kind: &kind,
+            role: &role,
+            role_note: role_note.as_deref(),
+            actor_id: actor_id.as_deref(),
+        },
+    )?)
+}
+
+/// Dosya rolünü kaldırır (geri dönüşümlü silme; denetim kaydı kalır).
+#[tauri::command]
+pub fn case_party_remove(
+    state: State<'_, AppState>,
+    participant_id: String,
+) -> Result<(), ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.remove_case_participant(&participant_id)?)
+}
+
+/// İki tarafı birleştirir; kayıt geri alınabilir (`actor_merge_undo`).
+#[tauri::command]
+pub fn actor_merge(
+    state: State<'_, AppState>,
+    source_actor_id: String,
+    target_actor_id: String,
+    reviewer: String,
+) -> Result<ActorMergeRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.merge_actors(&source_actor_id, &target_actor_id, &reviewer)?)
+}
+
+/// Birleştirmeyi geri alır: roller kaynağa döner, kaynak eski durumuna yazılır.
+#[tauri::command]
+pub fn actor_merge_undo(
+    state: State<'_, AppState>,
+    merge_id: String,
+) -> Result<ActorMergeRow, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.undo_actor_merge(&merge_id)?)
 }
 
 /// Katalogdaki lisanslı kontrol listeleri (F08-T11).

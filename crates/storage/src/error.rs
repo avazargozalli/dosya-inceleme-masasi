@@ -53,6 +53,10 @@ pub enum StorageError {
     SettingInvalid { reason: String },
     #[error("geçersiz etiket: boş, kontrol karakterli veya 40 karakterden uzun")]
     InvalidTag,
+    /// Dosya tarafları sözleşmesi: bilinmeyen tür, boş/sınır üstü alan,
+    /// yinelenen rol ya da birleştirme kuralı. **Neden** taşır.
+    #[error("dosya tarafı işlemi geçersiz: {reason}")]
+    ActorInvalid { reason: String },
     #[error("geçersiz arama filtresi: {0}")]
     SearchFilter(String),
     #[error("geçersiz arama sorgusu: {0}")]
@@ -177,6 +181,7 @@ impl StorageError {
             Self::InvalidSetting => "E_DB_SETTING",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
+            Self::ActorInvalid { .. } => "E_DB_ACTOR",
             Self::SearchFilter(_) => "E_SEARCH_FILTER",
             Self::SearchQuery(_) => "E_SEARCH_QUERY",
             Self::SearchCursor => "E_SEARCH_CURSOR",

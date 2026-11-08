@@ -110,6 +110,7 @@ const MIGRATED = [
   "lib/intext.ts",
   "lib/reviewTarget.ts",
   "components/DualReader.tsx",
+  "components/Parties.tsx",
   "components/PageMap.tsx",
   "components/DiagnosticsCard.tsx",
   "lib/reader.ts",

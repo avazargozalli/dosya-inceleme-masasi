@@ -31,6 +31,7 @@ import {
 } from "../lib/intext";
 import { formatTimestamp } from "../lib/format";
 import { t } from "../lib/i18n";
+import { Parties } from "../components/Parties";
 import {
   buildReviewTarget,
   itemText,
@@ -801,6 +802,8 @@ export function Review() {
           <button className="btn primary" disabled={busy || claimKind === "" || claimText.trim().length === 0} onClick={() => void addClaim()}>{t("review.addAction")}</button>
         </div>
       </div>
+
+      <Parties caseId={caseId} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-4)" }}>
         <div className="card">

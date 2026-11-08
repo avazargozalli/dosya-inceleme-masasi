@@ -4,6 +4,7 @@
 //! `DatabaseKey` olarak verilir; `Debug` çıktısında görünmez. Açık metin
 //! veritabanı dosyası hiçbir aşamada oluşturulmaz.
 
+mod actors;
 mod ai;
 mod ai_candidate;
 mod anchors;
@@ -38,6 +39,10 @@ mod tags;
 mod tasks;
 mod timeline;
 
+pub use actors::{
+    ActorMergeRow, CaseParties, NewCaseParty, ParticipantRow, ACTOR_KINDS, MAX_ACTOR_MERGE_LIST,
+    MAX_PARTY_LIST, MAX_PARTY_NAME, MAX_PARTY_NOTE, MAX_PARTY_ROLE,
+};
 pub use ai::{
     AiCandidateRow, AiContextItemRow, AiRunRow, ConsentPreview, ConsentScope, CoverageReport,
     NewAiContextItem, NewAiRun, NewTransferConsent, ProviderProfileRow, ScopeDocument,
@@ -276,9 +281,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0024_export_destination",
         sql: include_str!("migrations/0024_export_destination.sql"),
     },
+    Migration {
+        version: 25,
+        name: "0025_actor_merges",
+        sql: include_str!("migrations/0025_actor_merges.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 24;
+pub const CURRENT_SCHEMA_VERSION: u32 = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

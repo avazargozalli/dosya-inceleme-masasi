@@ -58,6 +58,7 @@ const mocks = vi.hoisted(() => ({
   claimRelationList: vi.fn(),
   claimRelationCreate: vi.fn(),
   reviewHistory: vi.fn(),
+  casePartyList: vi.fn(),
 }));
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -86,6 +87,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       claimRelationList: mocks.claimRelationList,
       claimRelationCreate: mocks.claimRelationCreate,
       reviewHistory: mocks.reviewHistory,
+      casePartyList: mocks.casePartyList,
     },
   };
 });
@@ -395,6 +397,7 @@ function setup(
   mocks.reviewItemCreate.mockResolvedValue({});
   mocks.reviewSupersede.mockResolvedValue({});
   mocks.reviewHistory.mockResolvedValue([]);
+  mocks.casePartyList.mockResolvedValue({ participants: [], merges: [] });
   render(<Review />);
 }
 
