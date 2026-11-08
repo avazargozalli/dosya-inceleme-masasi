@@ -10,7 +10,7 @@
 | F11-T02 aday → inceleme kuyruğu | ✅ | `promote_candidate`, `review_items` `pending`, doğrulanmış alıntı → `source_anchors` |
 | F11-T03 kapsamlılık raporu | ✅ | belge/sayfa/OCR/boş sayfa/ayrıştırılmamış sayıları |
 | F11-T04 gerçek model çağrısı | ✅ | `ApiProvider`/`LocalProvider` + `ai_run_execute`: onay + profil + kapsam sicili, hata run'ı `failed` kapatır; onay **varış yerine** bağlı (`provider_id` → türetilmiş `adapter@politika#parmak izi`) |
-| F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, şema v17, `ai_candidate_validate` |
+| F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, `ai_candidate_validate`; alıntı **önce gönderilen metinde** aranır (şema v26, `transfer_segments` + `record_transfer_segments`) |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
 
 ## Dürüst durum
@@ -421,5 +421,98 @@ bildirim/rapor/önizleme yanıtlarının **gönderilen değere** bağlanması.
 - Aynı `adapter@politika` + aynı `capabilities` taşıyan iki profil aynı varış yeri
   sayılır (özet `provider_type` taşımaz); arayüzde böyle bir çakışma üretilemez.
 - Gerçek ağ aktarımı, gerçek Tauri penceresi ve görsel QA **insan bekliyor**.
+
+## Gönderim sicili segment düzeyinde — alıntı önce gönderilen metinde (2026-11-08)
+
+**ÖLÇÜLEN KUSUR (üç katman, tek sınıf):** şartname `transfer_segments` tablosunu
+“gönderilen metin ve özgün aralık eşlemesi şifreli tutulur” diye tanımlar, doğrulama
+sırasını da “şema → kapsam → **gönderilen alıntı eşleşmesi** → yerel kaynak eşlemesi”
+diye bağlar. Üründe tablo şemanın ilk sürümünden beri vardı ama **tek satır
+yazılmıyordu**; `ai_context_items.segment_ids` her çalıştırmada `'[]'` yazılıyordu
+(hangi blokların gittiği kayıtsızdı) ve alıntı doğrulaması **en yeni ayrıştırmada**
+arıyordu. Sonuç: belge yeniden ayrıştırıldıktan sonra model **hiç görmediği** metinden
+“doğrulanmış” alıntı üretebiliyor, gönderilmeyen bir belgeden gelen alıntı da
+`exact` görünebiliyordu — kaynak izlenebilirliğinin tam ortasında sessiz boşluk.
+
+### Yazılan
+
+- **Şema v26** (`0026_transfer_segments.sql`): `transfer_segments.document_version_id`
+  sütunu (hangi sürümün segmenti olduğu; eski satırlar `NULL` kalır ve “gönderilmiş”
+  sayılmaz), `ai_run_id` indeksi, `(ai_run_id, outbound_segment_id)` **UNIQUE**.
+  `CURRENT_SCHEMA_VERSION = 26`.
+- **`crates/storage/src/ai.rs`:** `NewTransferSegment`, `TransferSegmentRow`, `SentSegment`;
+  `record_transfer_segments` metni **kasadaki** `text_segments.raw_text` ile birebir
+  doğrular (beyan edilen metin yazılamaz), karakter/bayt sayısı + `sha256` + kimlik
+  aralık haritası (`source_range_map`) çekirdekte hesaplanır; mükerrer satır ve yanlış
+  metin `E_DB_SETTING`, bilinmeyen/başka sürüme ait segment `E_NOT_FOUND`; **hata
+  hâlinde hiçbir satır yazılmaz** (tek işlem). `list_transfer_segments` kayıt sırası
+  (`rowid ASC`), tam metin yerine ilk 120 karakter. `sent_segments` doğrulama yolu.
+  `record_context_items` artık **gerçek** `segment_ids` yazar (her kimlik kasadan
+  doğrulanır, uydurma kimlik `E_NOT_FOUND`); `AiContextItemRow.segment_count` okunur.
+- **`crates/storage/src/ai_candidate.rs`:** alıntı başına `outbound_state` + rapor
+  düzeyinde `outbound_state`. **Gönderilen metin kapısı:** sicil varsa alıntı önce
+  gönderilen segmentlerde aranır — yoksa `not_found`/`not_in_outbound`; belge hiç
+  gönderilmediyse `unverifiable`/`document_not_sent` (**failed**); gönderilen metinde
+  olup güncel metinde kalmayan alıntı `unverifiable`/`source_changed` — **uydurma
+  değil**, kısmi. Yeni sorun kodları: `quote_not_in_outbound`,
+  `quote_document_not_sent`, `quote_source_changed`.
+- **`commands.rs` + `lib.rs`:** `ai_run_execute` gönderimden **önce** context ve
+  segment sicilini yazar; ikisi de yazılamazsa **hiçbir bayt dışarı çıkmaz**. Yeni
+  `ai_transfer_segments` komutu kayıtlı.
+- **Arayüz:** “Gönderilen içerik” kartına **segment** sütunu (`segment_count: null` →
+  “okunamadı”, “0” denmez); yeni **“Gönderilen segmentler”** kartı (sıra · segment
+  kimliği · karakter · sha256 öneki · metin başı) kendi `segmentsSeq` geç-yanıt
+  kapısıyla, düşen okuma **“sicil yok” demez**; raporda gönderim rozeti + alıntı
+  tablosunda “Gönderim” sütunu. Bilinmeyen durum **ham** yazılır.
+
+### Testler ve kapı kanıtı
+
+- `ai::tests` +3 (`transfer_segments_record_identity_map_and_hash`,
+  `transfer_segment_text_must_match_the_vault`, `context_items_record_real_segment_ids`)
+  ve `transfer_records_never_store_document_text` →
+  `transfer_metadata_never_stores_document_text` (metnin **yalnız** kasa segmenti ve
+  gönderim sicilinde olduğunu kanıtlar) → `dim-storage --lib` **452 → 458**.
+- `ai_candidate::tests` +3 (`quotes_are_checked_against_the_sent_text_not_the_latest_parse`,
+  `quote_from_a_document_outside_the_sent_scope_is_not_verified`,
+  `runs_without_a_sent_ledger_keep_document_checking`).
+- `Ai.test.tsx` +6 (sicil okunur · düşen okuma “sicil yok” demez · dosya değişiminde
+  düşer · geç yanıt yazılmaz · rapor rozeti `recorded` · rozet `not_recorded`) →
+  yerel `108/108` (dosya), tam arayüz **1314/1314** (64 dosya).
+- **Kapı kanıtı 12/12 kırmızı** (her mutasyon tek başına, kaynak `try/finally` ile
+  geri yüklendi, sha256 birebir; çekirdek `ai.rs c30d395b…`, `ai_candidate.rs 423636c7…`,
+  arayüz `Ai.tsx 59b3238c…`): C1 metin beyanı kasadan doğrulanmaz · C2 mükerrer sicil
+  reddi kapalı · C3 `segment_ids` hep `'[]'` · C4 hash metinden değil kimlikten ·
+  C5 aralık eşlemesi `outEnd=0` · C6 gönderilen metin kapısı kapalı · C7 gönderilmeyen
+  belge kapısı kapalı · C8 `source_changed` kapısı kapalı · U1 sicil hiç okunmaz ·
+  U2 geç yanıt kapısı kaldırılır · U3 düşen okuma hata yutulur · U4 rozet her zaman
+  “sicil var” der.
+- **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1314/1314**
+  (64 dosya; `Ai.test.tsx` 92) · `dim-storage --lib` **458/458** (224,20 s) ·
+  `cargo fmt` iki manifest temiz · `clippy -p dim-storage --all-targets -D warnings`
+  temiz · masaüstü `clippy --all-targets -D warnings` temiz (46,05 s) · masaüstü kabuk
+  kapısı **40 koştu · 0 düştü · 5 yoksayıldı (kaynak 45)**.
+- **Commit/CI (ölçüldü):** kod `0722d5c` (11 dosya, **+1252/−30**) → **`42498863213`
+  10/10 YEŞİL**: `dim-storage` **458** hem `macos-15` (182,06 s) hem `ubuntu-latest`
+  (512,88 s) — birebir; `arayüz` **64 dosya / 1313 test**, paket `index-fgDGwFXL.js`
+  **651,62 kB** / gzip **174,17 kB** (CSS 7,28 kB / gzip 2,07); `masaüstü kabuk`
+  `40 passed · 5 ignored` + yoksayılan koşu `5 passed · 40 filtered`; diğer altı iş yeşil.
+  **i18n hunk ayrımı:** üç hunk'tan yalnız benim iki hunk'ım `git apply --cached
+  --recount` ile sahneye alındı; ağaçtaki başka ajanın `cases.parseStatus*` üç anahtarı
+  commit'e **girmedi** (`git show :…i18n.ts | grep -c parseStatus` → **0**). Yerel 1314 /
+  CI 1313 farkı ağaçtaki onun commit'siz `format.test.ts` testi.
+
+### Sınırlamalar (dürüst)
+
+- Dönüşüm bugün **kimliktir**: maskeleme planının gönderime uygulanması ve
+  maskeli→özgün aralık eşlemesi **yok** (sütunlar ve `source_range_map` bunun için hazır;
+  `transform_manifest_id` NULL → `transform_kind=identity`).
+- Gönderilen metin kasada **ikinci kez** durur (segment + sicil) → kasa büyür; sicil
+  satırı denetim gereği **silinemez** ve arayüzden düzenlenemez.
+- Sicil yalnız `ai_run_execute` yolunda yazılır; elle kaydedilen adaylarda
+  `not_recorded` (eski davranış korunur, ekran bunu **yazar**).
+- Yeni `ai_transfer_segments` komutu **komut olarak koşulmadı** (`State<AppState>`
+  altyapısı yok): kablolama check + clippy, davranış storage düzeyinde gerçek SQLite.
+- jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
 
 
