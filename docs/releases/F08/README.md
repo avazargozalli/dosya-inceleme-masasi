@@ -9,7 +9,7 @@
 | F08-T01 | ✅ | olay kaydı: tarih türü, kesinlik, ham tarih |
 | F08-T02 | ✅ | bilinmeyen tarih sıralamaya sokulmaz, ayrı grupta |
 | F08-T03 | ✅ | onay (`draft → confirmed`) ve denetim kaydı |
-| F08-T04 | ✅ | iddia–delil matrisi, inceleme kuyruğu, kabul/ret/düzelt geçmişi |
+| F08-T04 | ✅ | iddia–delil matrisi, inceleme kuyruğu, kabul/ret/düzelt geçmişi (**arayüzde görünür**: kalem başına "Geçmişi göster") |
 | F08-T05 | ✅ | görevler: kullanıcı tarihi, tamamlama, silme |
 | F08-T06 | ✅ | not ↔ kaynak alıntı bağı (`source_anchor_ids`) |
 
@@ -383,3 +383,70 @@ düzenleyici açık kalır; kayıt gerçekten silinmişse (`E_NOT_FOUND`) kullan
 yeniden görür (kapatma yolu yok, panelden çıkabilir); (c) kaynak paneli nesli dosya
 değişiminde artar → aynı anda uçuşta olan `openLink` yanıtı düşer (panel zaten kapalı);
 (d) görsel QA **insan bekliyor**.
+
+## İnceleme ekranı — karar geçmişi görünür (ek, 2026-11-08)
+
+**Ölçülen kusur (yazılıyor, okunmuyor):** `review_decisions` her kararda satır yazıyor
+(`decide_review_item`, alanlar: karar, `edited_payload`, karar veren, gerekçe, zaman) ve
+`review_history` komutu + `api.ts` bağı **F08'den beri** vardı; arayüzde tek çağrı yoktu
+(ölçüm: `grep -rn "reviewHistory" apps/desktop/src` → yalnız `lib/api.ts` tanımı). Şartname
+E2E-06 açıkça *"karar geçmişi görünür"* der; F08-T04 satırı "kabul/ret/düzelt geçmişi" diye
+işaretliydi. Sonuç: "delil iste" gerekçesi, sonraki kararla birlikte ekrandan **siliniyordu**
+(kalem `needs_more_evidence` olarak kuyrukta beklerken bile "neden delil istendi" görünmüyordu);
+birden çok düzeltmenin içeriği ve karar veren kimliği ulaşılamazdı. Çoklu satır **ölçüldü**:
+`decide_review_item` yalnız `pending`/`needs_more_evidence` durumundan karar kabul eder, yani
+`delil iste → kabul` iki satır üretir (mevcut test `review_item_requires_source_and_is_decided_once`
+final karardan sonra reddi doğrular).
+
+**Yazılan.** `Review.tsx` (+218/−14):
+
+- Her **karar verilmiş** kalemde ve kuyrukta **delil bekleyen** kalemde "Geçmişi göster" düğmesi;
+  geçmiş **istek üzerine** okunur (liste açılışında kalem başına N+1 okuma yok — ölçüldü:
+  açılışta `reviewHistory` çağrısı **0**).
+- Kapılar: yanıt yalnız **aynı dosya** ve **en son istek** için yazılır (`caseRef` + `historySeq`);
+  dosya değişiminde panel kimliği, satırlar, hata ve uçuştaki okuma kimliği **birlikte** düşer.
+  Panel kapanıp yeniden açılırsa yeni nesil başlar: eski yanıt görünmez. Açılışta önceki satırlar
+  gösterilmez (bayat liste "yeni okuma" gibi sunulmaz).
+- Karar/kabul/yerine geçme başarılıysa **paneli açık kalemin geçmişi tazelenir**.
+- Dürüstlük: düşen okuma **"kayıt yok" demez** (kendi `role=alert` satırı, liste düşer);
+  tanınmayan karar kodu **ham** gösterilir; karar veren + gerekçe + zaman yazılır; düzenlenmiş
+  içerik JSON olarak gösterilir.
+
+`crates/storage/src/claims.rs`: `ReviewDecisionRow.edited_payload_invalid` eklendi — `edited_payload`
+sütunu **çözülemeyen** JSON taşıyorsa `true` (payload yoksa `false`). Arayüz bu durumda
+"Düzenlenen içerik okunamadı (kayıt bozuk)." yazar; bozuk kayıt "düzenleme yok" gibi gizlenmez.
+Sıra değişmedi (`julianday(decided_at) ASC, rowid ASC`).
+
+**Testler.** `Review.test.tsx` **35 → 42** (+7; yeni `describe` "karar geçmişi") ·
+`claims::tests::review_history_marks_unreadable_edited_payload` (+1) → `dim-storage --lib`
+**437 → 438**.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-review-history-gates.py`).** Taban 7/7 yeşil;
+**eski kodda** (HEAD `Review.tsx`) yeni testlerin **7/7'si kırmızı**. Mutasyonlar **7/7 kırmızı**,
+her biri tek başına (`-t` ile yalnız kendi testi): M1 panel açılışında okuma yok (1) ·
+M2 istek nesli kapısı yok (1) · M3 hata "kayıt yok" gibi gösterilir (1) · M4 tanınmayan karar kodu
+uydurma etikete çevrilir (1) · M5 karardan sonra geçmiş tazelenmez (1) · M6 dosya değişiminde
+panel/kimlik düşmez (1) · R1 bozuk payload bayrağı yanmaz (1). Geri yükleme sha256 birebir
+(ui `ffad9f13…`, rs `d9c7680…`). **Dürüst (kendi hatam):** kapı betiğinin ilk sürümü filtreli
+koşuda vitest'in `N failed | M skipped` biçimini okumadı (regex yalnız `… passed` arıyordu) →
+M1 kırmızı olduğu hâlde "YEŞİL" sanıldı ve betik erken durdu; ayrıştırıcı `failed`/`passed`
+alanlarını ayrı arayacak biçimde düzeltildi, 7/7 yeniden ölçüldü.
+
+**Ölçüm (yerel, Node 22.23.1 + TZ=UTC).** `tsc --noEmit` temiz · vitest **1297/1297** (63 dosya;
+yerel fazlalık ağaçtaki **başka ajanın** commit'siz `format.test.ts` testi) · `cargo test -p
+dim-storage --lib claims::tests::review_history` **1/1** · `cargo fmt` iki manifest temiz.
+Yerel `vite build` koşulmadı (disk eşiği) → paket ölçümü CI'dan.
+
+**CI (ölçüldü).** Kod `8440e87` → **`42427139500` 10/10 YEŞİL**: `arayüz` **63 dosya / 1296 test**
+(yerel 1297 − ağaçtaki başka ajanın testi), paket `index-CvBUy_dC.js` **637,91 kB** / gzip
+**171,16 kB** (CSS 7,28 kB / gzip 2,07); `dim-storage` **438** hem `ubuntu-latest` (479,54 s) hem
+`macos-15` (200,56 s) — **birebir**; `masaüstü kabuk` `40 passed · 5 ignored` + yoksayılan koşu
+`5 passed · 40 filtered` (41,97 s); diğer yedi iş yeşil.
+
+**Dürüst sınırlar.** (a) `review_history` komutu **`item_id`** ile çalışır, `case_id` taşımaz —
+doğrudan IPC, kimliği bilinen başka dosyanın kalem geçmişini okuyabilir (diğer kalem okumalarıyla
+aynı sözleşme); arayüz yalnız o dosyanın kalemlerini gösterir. (b) Geçmiş **salt-okunur**: silinemez,
+düzeltilemez. (c) **Dosya geneli** toplu karar listesi yok — okuma kalem başına. (d) Bozuk
+`edited_payload` **işaretlenir**, onarılmaz. (e) Karar sayısı pratikte 1–2 (durum makinesi final
+karardan sonra karar kabul etmez); geçmiş "denetim izi" değil, kalemin kendi karar kaydıdır.
+(f) jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
