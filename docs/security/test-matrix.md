@@ -20,6 +20,7 @@ Her tehdit, onu **gerçekten** sınayan test ya da kanıtla eşleşir. Boş hüc
 | T13 | Tedarik zinciri | bağımlılıklar | `scripts/sbom.sh` + CI `sbom` job'u | 🚧 |
 | T14 | Paketlenmiş uygulamada worker'sız kalma | `.app` | Paket içi `dim-worker` ping/capabilities (macOS arm64) | ✅ |
 | T15 | Otomatik güncelleme imzası | updater | Anahtar yok; iskelet ve doğrulama F16 | ⬜ |
+| T16 | CSV formül enjeksiyonu (tablo uygulamasında komut) | `crates/storage/src/csv_export.rs` | `safe_cell`: `=`, `+`, `@`, tam genişlikli `＝ ＋ ＠`, `-`/`－` (ardından boşluk yoksa) ve baştaki boşluk/kontrol karakterleri sonrası `'` ile metne sabitlenir; `\r` tırnaklanır. `csv_export` testleri **4**; **8/8** mutasyon kırmızı (2026-11-08) | ✅ |
 
 ## Kapsam dışı (bilinçli)
 

@@ -7,7 +7,7 @@
 | İş | Durum | Kanıt |
 |---|---|---|
 | F14-T01 JSON dışa aktarma | ✅ | `export_json`, tam metadata, hash kaydı |
-| F14-T02 CSV | ✅ | kronoloji + görevler, kaçışlı CSV |
+| F14-T02 CSV | ✅ | kronoloji + görevler + **belge dizini**; **güvenli hücre politikası** (`=`, `+`, `-`, `@`, tam genişlikli karşılıkları, baştaki boşluk/kontrol) — `dim_storage::build_case_csv` (2026-11-08; aşağıdaki bölüm) |
 | F14-T03 DOCX rapor | ✅ | `render_report`, tablolar + notlar |
 | F14-T04 PDF rapor | ✅ | `render_report_pdf`, HTML kaçışlı, `Story` ile sayfalama |
 | F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı; **okunur**: `exports_list` + Çıktılar ekranında defter (tür, hedef yol, zaman, özet, durum) |
@@ -471,3 +471,68 @@ inmişti (eşik altı); temizlikle 4,8 G'ye çıktı, ağır derleme yine başla
   ekran açıkken çalışırsa "son yedek" satırı bir sonraki tazelemeye kadar eski kalabilir
   (canlı abonelik yok).
 - jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+## CSV — güvenli hücre politikası ve belge dizini (2026-11-08)
+
+**Ölçülen kusur 1 (formül enjeksiyonu):** `export_csv` hücreleri `csv_escape` ile
+üretiyordu; fonksiyon **yalnız** `,`, `"` ve `\n` için tırnaklıyordu. `=`, `+`,
+`@` ile başlayan (ya da baştaki boşluk/kontrol karakterinden sonra bunlar gelen)
+hücreler **ham** yazılıyordu. Şartname §"Dışa aktarım" güvenli hücre politikasını
+açıkça sayar: `=`, `+`, `-`, `@`, **tam genişlikli karşılıkları**, sekme ve satır
+başı. Kronoloji başlığı `=cmd|' /C calc'!A0` olduğunda satır **satır başında
+çıplak formülle** başlıyordu; tablo uygulaması bunu formül olarak yorumlayabilir.
+Tek `\r` taşıyan başlık da tırnaklanmıyordu (satır yapısı bozulur).
+
+**Ölçülen kusur 2 (eksik bölüm):** şartname CSV'nin "kronoloji, **belge dizini**
+ve görev" aktardığını söyler; çıktı yalnız kronoloji + görev taşıyordu — dosyadaki
+belgeler (ad, tür, durum, belge tarihi, eklenme) CSV'de **yoktu**. Biçim de
+(ayraç/tarih/kodlama) yalnız belgede yazılıydı, çıktının kendisinde değil.
+
+**Yazılan (`crates/storage/src/csv_export.rs`, yeni modül):**
+
+- `safe_cell(value)` — hücrenin **ilk anlamlı** karakteri riskliyse başına `'`
+  konur: `=`, `+`, `@`, tam genişlikli `＝ ＋ ＠`; `-`/`－` yalnız **ardından boşluk
+  gelmiyorsa** (`-1+1`, `-A1`, `-cmd|…`). Baştaki boşluk/kontrol karakterleri
+  (sekme, satır başı, NBSP, BOM) **atlanarak** bakılır — tablo uygulamaları onları
+  kırpar. Ardından RFC 4180: `,`, `"`, `\r`, `\n` içeren hücre çift tırnaklanır,
+  içteki tırnaklar ikilenir.
+- `build_case_csv(coverage, events, tasks, documents)` — kapsam bloğu + **biçim
+  notu** (`# biçim: ayraç=, · tarih=YYYY-AA-GG · kodlama=UTF-8 · riskli hücreler '
+  ile metne sabitlenir`) + `# kronoloji` (olaylar ve görevler aynı beş sütunda) +
+  `# belge dizini` (belge · tür · durum · belge tarihi · eklenme). Belge dizini
+  **en sonda**: `comment='#'` ile okuyan araç ilk tabloyu kesintisiz görür.
+- `export_csv` artık ham metni kendisi yazmaz; `dim_storage::build_case_csv`
+  çağırır ve belge listesini de kasadan okur (`list_documents`).
+
+**Testler:** `csv_export::tests` **4** (yeni) → `dim-storage --lib` **438 → 442**.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-csv-gates.py`, her mutasyon tek
+başına, geri yükleme sha256 `f6cde77a03c013e6…` birebir):** **8/8 kırmızı** —
+M0 eski `csv_escape` davranışı (1 passed · 3 failed) · M1 baş koruması kapalı
+(2·2) · M2 tam genişlikli tetikleyiciler tanınmaz (2·2) · M3 tire kuralı
+daraltılmaz (3·1) · M4 `\r` tırnaklanmaz (3·1) · M5 baştaki boşluk atlanmaz (3·1) ·
+M6 belge dizini yazılmaz (2·2) · M7 içteki çift tırnak ikilenmez (2·2).
+
+**Ölçüm (yerel):** `cargo fmt --all -- --check` temiz · `clippy -p dim-storage
+--all-targets -- -D warnings` temiz · `cargo test -p dim-storage --lib` **442/442**
+(212,06 s). Ağır masaüstü derlemesi yerelde koşulmadı (disk 5,0 G — eşik) →
+kablolama CI'da derlendi.
+
+**CI (ölçüldü):** `d8daf54` → **`42433650618` 10/10 YEŞİL**: `dim-storage` **442**
+hem `ubuntu-latest` (295,20 s) hem `macos-15` (198,49 s) — birebir; `masaüstü kabuk`
+`40 passed · 5 ignored` + kapı "40 koştu · 0 düştü · 5 yoksayıldı (kaynak 45)" +
+yoksayılan koşu `5 passed`; `arayüz` **1296 test** (değişmedi), diğer altı iş yeşil.
+
+**Dürüst sınırlar:** (a) **Excel/LibreOffice aç–kaydet–yeniden aç turu
+yapılmadı** — bu makinede Excel yok; şartname F14-T04'ün bu yarısı **insan/ortam
+bekliyor**, kod tarafı testle sabit; (b) `'` öneki bazı okuyucularda **görünür**
+(hücre metni bir karakter değişir) — veri kaybı yok, amaç formülün
+çalışmaması; (c) tire kuralı bilinçli daraltıldı: `- zamanaşımı` bozulmaz,
+`-1+1`/`-A1`/`-cmd|` korunur; `-` **ardından boşluk** gelen bir formül varsa
+korunmaz (Excel böyle bir hücreyi formül saymaz); (d) belge dizini **kimlik/özet
+taşımaz** (bunlar JSON/DOCX/PDF'te); (e) **UTF-8 BOM eklenmedi** — Windows
+Excel'de Türkçe karakterlerin bozulması riski sürüyor; BOM, `comment='#'`
+okuyucularını `utf-8-sig`'e mecbur bırakır → **ürün kararı** olarak açık
+bırakıldı; (f) `export_csv` **komut olarak koşulmadı** (`State<AppState>`
+altyapısı yok) — kablolama CI'da derlenir, davranış storage düzeyinde gerçek
+nesnelerle test edildi; (g) gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
