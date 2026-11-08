@@ -30,15 +30,15 @@ use dim_storage::{
     NewAiContextItem, NewAiRun, NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck,
     NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
     NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
-    NewTransferConsent, NewTransferSegment, NoteDraftInput, NoteDraftRow, NoteEdit,
-    NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun, ParticipantRow,
-    PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
-    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
-    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
-    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
+    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
+    OutboxEventRow, PageRow, ParseRun, ParticipantRow, PrecedentBibliography,
+    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
+    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
+    SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow, TaskRow, TransferConsentListRow,
+    TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -6914,6 +6914,7 @@ pub fn ai_run_execute(
     provider_id: String,
     consent_id: String,
     task_type: String,
+    mask_terms: Option<Vec<String>>,
 ) -> Result<AiCandidateRow, ApiError> {
     use sha2::{Digest, Sha256};
 
@@ -6992,6 +6993,40 @@ pub fn ai_run_execute(
 
     // Gönderimden **önce** sicil: hangi sürümün kaç baytı çıkıyor. Yazılamazsa
     // hiçbir şey gönderilmez (denetlenemeyen aktarım yapılmaz).
+    // Segment düzeyinde gönderim sicili + maske (şartname §737: «Her gönderim
+    // segmenti, gönderilen metin/hash, maskeleme dönüşüm sürümü ve özgün
+    // Unicode aralıklarına eşleme taşır»). Metin çağırandan **alınmaz**:
+    // çekirdek kasadan okur, maskeyi kendisi uygular ve gönderilecek metni
+    // geri döndürür — kayıt ile gönderim ayrışamaz. Sicil yazılamazsa hiçbir
+    // bayt çıkmaz.
+    let outbound_refs: Vec<dim_storage::OutboundSegmentRef> = scope
+        .segments
+        .iter()
+        .map(|segment| dim_storage::OutboundSegmentRef {
+            segment_id: segment.segment_id.clone(),
+            document_version_id: segment.document_version_id.clone(),
+        })
+        .collect();
+    let mask = mask_terms.map(|terms| dim_storage::OutboundMask { terms });
+    let outbound_record = match db.record_outbound_segments(&run.id, &outbound_refs, mask.as_ref())
+    {
+        Ok(record) => record,
+        Err(error) => {
+            let report = serde_json::json!({"error": "transfer_segment_record_failed"}).to_string();
+            let _ = db.finish_ai_run(&run.id, "failed", &report);
+            return Err(error.into());
+        }
+    };
+    // Gönderilen bayt **maskeli** metinden sayılır: makbuz ve bağlam satırı
+    // kasadan çıkan gerçek boyutu yazar (maskesiz boyut değil).
+    let outbound_bytes_for = |version_id: &str| -> i64 {
+        outbound_record
+            .segments
+            .iter()
+            .filter(|segment| segment.document_version_id == version_id)
+            .map(|segment| i64::try_from(segment.text.len()).unwrap_or(i64::MAX))
+            .sum()
+    };
     let items: Vec<NewAiContextItem> = scope
         .documents
         .iter()
@@ -6999,7 +7034,7 @@ pub fn ai_run_execute(
             document_version_id: document.document_version_id.clone(),
             source_anchor_id: None,
             inclusion_reason: "onaylanan belge".to_string(),
-            bytes_sent: document.bytes,
+            bytes_sent: outbound_bytes_for(&document.document_version_id),
             // Gerçek segment kimlikleri: `ai_context_items.segment_ids` eskiden
             // hep '[]' yazılıyordu — belge satırı hangi blokların gittiğini
             // söylemiyordu.
@@ -7017,30 +7052,12 @@ pub fn ai_run_execute(
         return Err(error.into());
     }
 
-    // Segment düzeyinde gönderim sicili: gönderilecek **metnin kendisi**
-    // (kimlik eşlemesiyle) kasadan doğrulanarak yazılır. Bu satır yazılamazsa
-    // aktarım başlamaz: kasa dışına çıkan metin sicilsiz kalamaz.
-    let transfer_segments: Vec<NewTransferSegment> = scope
-        .segments
-        .iter()
-        .map(|segment| NewTransferSegment {
-            segment_id: segment.segment_id.clone(),
-            document_version_id: segment.document_version_id.clone(),
-            text: segment.text.clone(),
-        })
-        .collect();
-    if let Err(error) = db.record_transfer_segments(&run.id, &transfer_segments) {
-        let report = serde_json::json!({"error": "transfer_segment_record_failed"}).to_string();
-        let _ = db.finish_ai_run(&run.id, "failed", &report);
-        return Err(error.into());
-    }
-
     let request = AiRequest {
         case_id,
         task_type: task_type.clone(),
         prompt_version: "1".to_string(),
         output_schema_version: "candidate.v1".to_string(),
-        segments: scope
+        segments: outbound_record
             .segments
             .iter()
             .map(|segment| ContextSegment {
@@ -7071,7 +7088,7 @@ pub fn ai_run_execute(
         &run.id,
         &destination_label(&endpoint, &model),
         &outbound_hash,
-        i64::try_from(scope.segments.len()).unwrap_or(i64::MAX),
+        i64::try_from(outbound_record.segments.len()).unwrap_or(i64::MAX),
         i64::try_from(bytes).unwrap_or(i64::MAX),
     ) {
         Ok(id) => id,

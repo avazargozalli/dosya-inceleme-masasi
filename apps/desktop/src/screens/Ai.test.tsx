@@ -2655,6 +2655,7 @@ describe("AI ekranı — gönderilen segment sicili", () => {
       charCount: 24,
       byteCount: 26,
       transformKind: "identity",
+      maskTermCount: 0,
       textHead: "Kiracı, 12 Mart 2024 tarihli dilekçesinde",
       ...overrides,
     };
@@ -2788,5 +2789,134 @@ describe("AI ekranı — gönderilen segment sicili", () => {
       within(card).queryByText("Kiracı, 12 Mart 2024 tarihli dilekçesinde"),
     ).toBeNull();
     expect(within(card).getByText("Ödeme makbuzu metni")).toBeTruthy();
+  });
+});
+
+describe("AI ekranı — gönderim maskesi", () => {
+  function row(overrides: Partial<TransferSegmentRow> & { id: string }): TransferSegmentRow {
+    return {
+      aiRunId: "r1",
+      documentVersionId: "d1-v1",
+      segmentId: "seg-abcdef01",
+      outboundHash: "a".repeat(64),
+      charCount: 24,
+      byteCount: 26,
+      transformKind: "identity",
+      maskTermCount: 0,
+      textHead: "Kiracı, 12 Mart 2024 tarihli dilekçesinde",
+      ...overrides,
+    };
+  }
+
+  function maskBox(): HTMLTextAreaElement {
+    const el = document.getElementById("ai-mask");
+    if (!(el instanceof HTMLTextAreaElement)) throw new Error("maske alanı yok");
+    return el;
+  }
+
+  it("girilen terimler çalıştırmaya maskTerms olarak gider (boş satırlar atılır)", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.change(maskBox(), { target: { value: "Ahmet Yılmaz\n  Acme Ltd.  \n\n" } });
+    expect(screen.getByText(t("ai.maskCount", { count: 2 }))).toBeTruthy();
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize", [
+      "Ahmet Yılmaz",
+      "Acme Ltd.",
+    ]);
+  });
+
+  it("maske girilmezse çağrı dört argümanla kalır (maske istenmedi)", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize");
+  });
+
+  it("geçersiz terim (tek karakter) çalıştırmayı kapatır ve nedenini yazar", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.change(maskBox(), { target: { value: "a" } });
+    expect(button(t("ai.run")).disabled).toBe(true);
+    expect(screen.getByText(t("ai.maskInvalid"))).toBeTruthy();
+    fireEvent.click(button(t("ai.run")));
+    expect(mocks.aiRunExecute).not.toHaveBeenCalled();
+  });
+
+  it("dosya değişince maske alanı temizlenir (INV-05: türetilmiş durum taşınmaz)", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.change(maskBox(), { target: { value: "Ahmet Yılmaz" } });
+    expect(maskBox().value).toBe("Ahmet Yılmaz");
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+    await waitFor(() => expect(maskBox().value).toBe(""));
+  });
+
+  it("segment sicili maske türünü ve terim sayısını yazar", async () => {
+    setup({
+      transferSegments: async () => [
+        row({
+          id: "t1",
+          transformKind: "mask_terms",
+          maskTermCount: 2,
+          textHead: "[MASKED] 12 Mart 2024 tarihli dilekçesinde",
+        }),
+        row({ id: "t2", segmentId: "seg-2", transformKind: "unknown", maskTermCount: 0 }),
+      ],
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.transferTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiTransferSegments).toHaveBeenCalledWith("r1"));
+
+    await within(card).findByText(t("ai.transferKindMasked", { count: 2 }));
+    expect(within(card).getByText(t("ai.transferKindMasked", { count: 2 }))).toBeTruthy();
+    // Bilinmeyen dönüşüm gizlenmez: ham kimlik yazılır.
+    expect(within(card).getByText(t("ai.transferKindUnknown", { kind: "unknown" }))).toBeTruthy();
+  });
+
+  it("rapor maskeli gönderimde geri eşlenen özgün aralığı yazar", async () => {
+    setup({
+      validate: async () => ({
+        ...REPORT_VALID,
+        outboundState: "recorded",
+        quotes: [
+          quote({
+            outboundState: "found",
+            transformKind: "mask_terms",
+            masked: true,
+            sourceCharStart: 42,
+          }),
+          quote({
+            outboundState: "masked",
+            state: "unverifiable",
+            reason: "quote_masked",
+            masked: true,
+          }),
+        ],
+      }),
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(button(t("ai.validate")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.validate")));
+
+    const reportCard = cardByHeading(t("ai.validateTitle"));
+    expect(await within(reportCard).findByText(t("ai.maskedSourceRange", { start: 42 }))).toBeTruthy();
+    expect(within(reportCard).getByText(t("ai.outboundMasked"))).toBeTruthy();
   });
 });

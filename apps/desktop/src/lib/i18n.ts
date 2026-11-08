@@ -675,9 +675,18 @@ export const tr = {
     transferColChars: "Karakter",
     transferColHash: "SHA-256",
     transferColText: "Metin (ilk 120)",
+    transferKindMasked: "maskeli · {count} terim",
+    transferKindUnknown: "dönüşüm okunamadı: {kind}",
     transferNote:
-      "Her satır yazılmadan önce kasadaki segment metniyle birebir karşılaştırılır; sicile " +
-      "beyan edilen metin yazılamaz.",
+      "Metin çağırandan alınmaz: çekirdek kasadaki segmenti okur, maskeyi kendisi uygular ve " +
+      "gönderilecek metni yazar. Sicil ile gönderim ayrışamaz.",
+    maskLabel: "Gönderim maskesi (isteğe bağlı)",
+    maskPlaceholder: "Her satıra bir terim (ad soyad, kurum, tutar)",
+    maskHint:
+      "Terimler bu cihazda kalır; modele yalnız maskelenmiş metin gider. Maske, gönderilen " +
+      "metinde “[MASKED]” yer tutucusuyla görünür.",
+    maskCount: "{count} terim maskelenecek.",
+    maskInvalid: "Her terim 2–200 karakter olmalı; en çok 500 terim girilebilir.",
     validateTitle: "Aday doğrula ve kaydet",
     validateSub:
       "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +
@@ -701,13 +710,16 @@ export const tr = {
     outboundMissing: "gönderilen metinde yok",
     outboundDocumentNotSent: "belge gönderilmedi",
     outboundChanged: "metin değişmiş",
+    outboundMasked: "maskeli · geri eşlenemedi",
+    maskedSourceRange: "özgün aralık: {start}",
     claimedPage: "model sayfa {page} dedi",
     issuesSummary: "Doğrulama sorunları ({count})",
     limits:
       "Doğrulamanın sınırları: gönderim sicili varsa alıntı önce **gönderilen** metinde " +
-      "aranır; sonra güncel ayrıştırılmış metinde konumu bulunur. OCR yazım hatası eşleşmeyi " +
-      "etkileyebilir; maskeli bağlamın özgün kaynağa geri eşlenmesi bu adımda yapılmaz. Aday " +
-      "metni modelin ürettiği hâliyle saklanır.",
+      "aranır; maske uygulanmışsa kasadaki aralık haritasıyla özgün segment aralığına " +
+      "bağlanır ve maske içine düşen alıntı doğrulanmış sayılmaz. Sonra güncel " +
+      "ayrıştırılmış metinde konumu bulunur. OCR yazım hatası eşleşmeyi etkileyebilir. " +
+      "Aday metni modelin ürettiği hâliyle saklanır.",
     candidatesTitle: "Adaylar",
     candidatesSub: "Kabul edilene kadar hukuki kayıt sayılmaz",
     colSchema: "Şema",

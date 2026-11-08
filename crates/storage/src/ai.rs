@@ -9,6 +9,9 @@ use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::outbound_mask::{
+    mask_terms, parse_runs, validate_terms, MaskError, MaskRun, MASK_PLACEHOLDER,
+};
 use crate::{now_iso, Database, NewAnchor, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,9 +229,14 @@ pub struct TransferSegmentRow {
     pub outbound_hash: String,
     pub char_count: i64,
     pub byte_count: i64,
-    /// `identity` — gönderilen metin özgün segmentin kendisi (bugün tek yol);
-    /// `transformed` — bir dönüşüm/plan kimliği taşır (henüz üretilmiyor).
+    /// `identity` — gönderilen metin özgün segmentin kendisi;
+    /// `mask_terms` — maske uygulandı (`outbound_transforms`); `unknown` —
+    /// dönüşüm kimliği çözülemedi (kayıt bozuk, gizlenmez).
     pub transform_kind: String,
+    /// Maskede kullanılan terim sayısı (kimlikte 0). Terimlerin **kendisi**
+    /// saklanmaz.
+    #[serde(default)]
+    pub mask_term_count: i64,
     pub text_head: String,
 }
 
@@ -237,7 +245,70 @@ pub struct TransferSegmentRow {
 pub struct SentSegment {
     pub document_version_id: Option<String>,
     pub segment_id: String,
+    /// Modelin **gördüğü** metin (maskeli olabilir).
     pub text: String,
+    /// Gönderilen metnin özgün karakter aralıklarına eşlemesi. `None` —
+    /// harita yok ya da okunamadı; bu durumda alıntı geri eşlenemez
+    /// (şartname §737: «geri eşlenemeyen alıntı doğrulanmış sayılmaz»).
+    pub runs: Option<Vec<MaskRun>>,
+    /// `identity` · `mask_terms` · `unknown` (dönüşüm kimliği çözülemedi).
+    pub transform_kind: String,
+}
+
+/// Gönderim maskesi isteği. Yalnız **terim listesi** taşır; yer tutucu sürüme
+/// bağlıdır (`v1` → `[MASKED]`). Terimlerin kendisi kasaya yazılmaz; sicile
+/// yalnız terim sayısı ve listenin özeti düşer.
+#[derive(Debug, Clone)]
+pub struct OutboundMask {
+    pub terms: Vec<String>,
+}
+
+/// Gönderilecek segmentin kasadaki kimliği. Metin **çağırandan alınmaz**:
+/// çekirdek kasadaki `text_segments.raw_text`i okur, maskeyi kendisi uygular.
+#[derive(Debug, Clone)]
+pub struct OutboundSegmentRef {
+    pub segment_id: String,
+    pub document_version_id: String,
+}
+
+/// Kasadan türetilen gönderim satırı. `text` kasa dışına çıkacak **tam**
+/// metindir (maskeli olabilir); sicile yazılan da budur.
+#[derive(Debug, Clone)]
+pub struct OutboundSegment {
+    pub segment_id: String,
+    pub document_version_id: String,
+    pub text: String,
+    pub masked_runs: usize,
+    pub masked_chars: i64,
+}
+
+/// Gönderim hazırlığının sonucu: dönüşüm kimliği + gönderilecek metinler.
+#[derive(Debug, Clone)]
+pub struct OutboundRecord {
+    pub transform_id: Option<String>,
+    /// `identity` ya da `mask_terms`.
+    pub transform_kind: String,
+    pub term_count: usize,
+    pub segments: Vec<OutboundSegment>,
+    pub masked_runs: usize,
+    pub masked_chars: i64,
+}
+
+impl OutboundRecord {
+    fn empty() -> Self {
+        Self {
+            transform_id: None,
+            transform_kind: "identity".into(),
+            term_count: 0,
+            segments: Vec::new(),
+            masked_runs: 0,
+            masked_chars: 0,
+        }
+    }
+}
+
+fn mask_storage_error(error: MaskError) -> StorageError {
+    StorageError::MaskRejected(error.code())
 }
 
 impl Database {
@@ -658,34 +729,103 @@ impl Database {
         Ok(out)
     }
 
-    /// Gönderilen metni **segment düzeyinde** sicile yazar (şartname
-    /// `transfer_segments`: «gönderilen metin ve özgün aralık eşlemesi şifreli
-    /// tutulur»).
-    ///
-    /// Beyan kabul edilmez: her satırın metni kasadaki `text_segments.raw_text`
-    /// ile **birebir** karşılaştırılır; farklıysa hiçbir satır yazılmaz. Bugün
-    /// tek dönüşüm kimliktir (`transform_manifest_id` NULL); maskeleme
-    /// bağlandığında dönüşüm kimliği ve aralık eşlemesi buraya gelecek.
+    /// Beyan kapısı: satırların metni kasadaki `text_segments.raw_text` ile
+    /// **birebir** eşleşmeli. Kimlik yolunda metin çağırandan gelir; uydurma
+    /// metin yazılamaz. Maskeleme için `record_outbound_segments` kullanılır.
     pub fn record_transfer_segments(
         &self,
         run_id: &str,
         segments: &[NewTransferSegment],
     ) -> Result<usize, StorageError> {
+        for segment in segments {
+            self.verify_declared_segment_text(segment)?;
+        }
+        let refs: Vec<OutboundSegmentRef> = segments
+            .iter()
+            .map(|segment| OutboundSegmentRef {
+                segment_id: segment.segment_id.clone(),
+                document_version_id: segment.document_version_id.clone(),
+            })
+            .collect();
+        let record = self.record_outbound_segments(run_id, &refs, None)?;
+        Ok(record.segments.len())
+    }
+
+    fn verify_declared_segment_text(
+        &self,
+        segment: &NewTransferSegment,
+    ) -> Result<(), StorageError> {
+        if segment.segment_id.trim().is_empty()
+            || segment.segment_id.trim() != segment.segment_id
+            || segment.document_version_id.trim().is_empty()
+            || segment.text.is_empty()
+            || segment.text.contains('\0')
+        {
+            return Err(StorageError::InvalidSetting);
+        }
+        let stored: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT s.raw_text FROM text_segments s
+                 JOIN parse_runs pr ON pr.id = s.parse_run_id
+                 WHERE s.id=?1 AND pr.document_version_id=?2",
+                rusqlite::params![segment.segment_id, segment.document_version_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(stored) = stored else {
+            return Err(StorageError::NotFound);
+        };
+        if stored != segment.text {
+            return Err(StorageError::InvalidSetting);
+        }
+        Ok(())
+    }
+
+    /// Gönderilecek segmentleri kasadan okur, istenirse **maskeler** ve sicile
+    /// yazar; gönderilecek metinleri geri döndürür.
+    ///
+    /// Sözleşme (şartname §737):
+    /// - metin çağırandan **alınmaz**; kasadaki segmentten okunur,
+    /// - maske çekirdekte uygulanır ve `source_range_map` özgün Unicode
+    ///   aralıklarını taşır,
+    /// - dönüşüm sürümü `outbound_transforms`ta içerik adresli saklanır,
+    /// - herhangi bir satır yazılamazsa **hiçbir satır** yazılmaz (tek işlem).
+    ///
+    /// Dönen `segments[].text` sicile yazılan metnin aynısıdır; çağıran
+    /// gönderimi bundan kurmalıdır (kayıt ile gönderim ayrışamaz).
+    pub fn record_outbound_segments(
+        &self,
+        run_id: &str,
+        segments: &[OutboundSegmentRef],
+        mask: Option<&OutboundMask>,
+    ) -> Result<OutboundRecord, StorageError> {
         if self.get_ai_run(run_id)?.is_none() {
             return Err(StorageError::NotFound);
         }
+        let terms = match mask {
+            Some(mask) => validate_terms(&mask.terms).map_err(mask_storage_error)?,
+            None => Vec::new(),
+        };
         if segments.is_empty() {
-            return Ok(0);
+            return Ok(OutboundRecord::empty());
         }
         let tx = self.conn().unchecked_transaction()?;
+        let transform_id = if terms.is_empty() {
+            None
+        } else {
+            Some(ensure_outbound_transform(&tx, &terms)?)
+        };
         let mut seen: Vec<&str> = Vec::new();
-        let mut chars_total: i64 = 0;
+        let mut chars_in: i64 = 0;
+        let mut chars_out: i64 = 0;
+        let mut masked_runs_total = 0usize;
+        let mut masked_chars_total = 0i64;
+        let mut out = Vec::with_capacity(segments.len());
         for segment in segments {
             if segment.segment_id.trim().is_empty()
                 || segment.segment_id.trim() != segment.segment_id
                 || segment.document_version_id.trim().is_empty()
-                || segment.text.is_empty()
-                || segment.text.contains('\0')
             {
                 return Err(StorageError::InvalidSetting);
             }
@@ -693,9 +833,6 @@ impl Database {
                 return Err(StorageError::InvalidSetting);
             }
             seen.push(segment.segment_id.as_str());
-            // Aynı çalıştırmada ikinci kez yazmak (mükerrer sicil) reddedilir;
-            // UNIQUE indeks yalnız savunma derinliğidir (ham SQL hatası
-            // kullanıcıya taşınmaz).
             let already: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM transfer_segments
                  WHERE ai_run_id=?1 AND outbound_segment_id=?2",
@@ -714,39 +851,48 @@ impl Database {
                     |row| row.get(0),
                 )
                 .optional()?;
-            let Some(stored) = stored else {
-                // Var olmayan segment ya da başka sürüme ait kimlik: sicile
-                // yazılamaz (kayıt bulunamadı).
+            let Some(raw) = stored else {
                 return Err(StorageError::NotFound);
             };
-            if stored != segment.text {
+            if raw.trim().is_empty() {
+                // Boş segment gönderilmez: maskeyi kanıtlayacak metin yok.
                 return Err(StorageError::InvalidSetting);
             }
-            let chars = i64::try_from(segment.text.chars().count()).unwrap_or(i64::MAX);
-            chars_total = chars_total.saturating_add(chars);
-            let hash = sha256_hex(segment.text.as_bytes());
-            let map = serde_json::json!([{
-                "outStart": 0,
-                "outEnd": chars,
-                "sourceStart": 0,
-                "sourceEnd": chars,
-            }])
-            .to_string();
+            let masked = mask_terms(&raw, &terms).map_err(mask_storage_error)?;
+            let source_chars = i64::try_from(raw.chars().count()).unwrap_or(i64::MAX);
+            let out_chars = i64::try_from(masked.text.chars().count()).unwrap_or(i64::MAX);
+            let hash = sha256_hex(masked.text.as_bytes());
+            let map = serde_json::to_string(&masked.runs)
+                .map_err(|_| StorageError::MaskRejected(MaskError::InvalidMap.code()))?;
             tx.execute(
                 "INSERT INTO transfer_segments
                    (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,outbound_hash,
-                    transform_manifest_id,source_range_map,document_version_id)
-                 VALUES (?1,?2,?3,?3,?4,?5,NULL,?6,?7)",
+                    transform_manifest_id,source_range_map,document_version_id,source_char_count)
+                 VALUES (?1,?2,?3,?3,?4,?5,?6,?7,?8,?9)",
                 rusqlite::params![
                     uuid::Uuid::now_v7().to_string(),
                     run_id,
                     segment.segment_id,
-                    segment.text,
+                    masked.text,
                     hash,
+                    transform_id,
                     map,
-                    segment.document_version_id
+                    segment.document_version_id,
+                    source_chars
                 ],
             )?;
+            chars_in = chars_in.saturating_add(source_chars);
+            chars_out = chars_out.saturating_add(out_chars);
+            masked_runs_total += masked.masked_runs;
+            masked_chars_total = masked_chars_total
+                .saturating_add(i64::try_from(masked.masked_chars).unwrap_or(i64::MAX));
+            out.push(OutboundSegment {
+                segment_id: segment.segment_id.clone(),
+                document_version_id: segment.document_version_id.clone(),
+                text: masked.text,
+                masked_runs: masked.masked_runs,
+                masked_chars: i64::try_from(masked.masked_chars).unwrap_or(i64::MAX),
+            });
         }
         tx.commit()?;
         self.append_audit(
@@ -754,25 +900,54 @@ impl Database {
             Some(run_id),
             "record",
             "local-system",
-            &serde_json::json!({"segments": segments.len(), "chars": chars_total}),
+            &serde_json::json!({
+                "segments": segments.len(),
+                "chars": chars_in,
+                "outboundChars": chars_out,
+                "transform": if transform_id.is_some() { "mask_terms" } else { "identity" },
+                "maskedRuns": masked_runs_total,
+                "maskedChars": masked_chars_total,
+            }),
         )?;
-        Ok(segments.len())
+        Ok(OutboundRecord {
+            transform_id,
+            transform_kind: if terms.is_empty() {
+                "identity".into()
+            } else {
+                "mask_terms".into()
+            },
+            term_count: terms.len(),
+            segments: out,
+            masked_runs: masked_runs_total,
+            masked_chars: masked_chars_total,
+        })
     }
 
     /// Gönderim sicilinin **okunabilir** satırları; sıra kayıt sırasıdır
     /// (`rowid`). Tam metin döndürülmez (ilk 120 karakter + özet yeter).
+    /// Dönüşüm türü `outbound_transforms`tan okunur: ekran "maskelendi" ile
+    /// "kimlik" arasındaki farkı uydurmadan gösterir.
     pub fn list_transfer_segments(
         &self,
         run_id: &str,
     ) -> Result<Vec<TransferSegmentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,ai_run_id,document_version_id,outbound_segment_id,outbound_hash,
-                    length(outbound_text),length(CAST(outbound_text AS BLOB)),
-                    transform_manifest_id,substr(outbound_text,1,120)
-             FROM transfer_segments WHERE ai_run_id=?1 ORDER BY rowid ASC",
+            "SELECT t.id,t.ai_run_id,t.document_version_id,t.outbound_segment_id,t.outbound_hash,
+                    length(t.outbound_text),length(CAST(t.outbound_text AS BLOB)),
+                    t.transform_manifest_id,substr(t.outbound_text,1,120),
+                    x.kind,x.term_count
+             FROM transfer_segments t
+             LEFT JOIN outbound_transforms x ON x.id = t.transform_manifest_id
+             WHERE t.ai_run_id=?1 ORDER BY t.rowid ASC",
         )?;
         let rows = stmt.query_map([run_id], |row| {
             let transform_manifest_id: Option<String> = row.get(7)?;
+            let joined_kind: Option<String> = row.get(9)?;
+            let transform_kind = if transform_manifest_id.is_none() {
+                "identity".to_string()
+            } else {
+                joined_kind.unwrap_or_else(|| "unknown".to_string())
+            };
             Ok(TransferSegmentRow {
                 id: row.get(0)?,
                 ai_run_id: row.get(1)?,
@@ -781,11 +956,8 @@ impl Database {
                 outbound_hash: row.get(4)?,
                 char_count: row.get(5)?,
                 byte_count: row.get(6)?,
-                transform_kind: if transform_manifest_id.is_some() {
-                    "transformed".to_string()
-                } else {
-                    "identity".to_string()
-                },
+                transform_kind,
+                mask_term_count: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
                 text_head: row.get(8)?,
             })
         })?;
@@ -798,17 +970,43 @@ impl Database {
 
     /// Doğrulamanın **gönderilen metin** aşaması için satırlar (tam metinle).
     /// Aday doğrulaması alıntıyı önce burada arar; kasa dışına çıkan metin
-    /// budur.
+    /// budur. `runs`, alıntının özgün karakter aralığına geri eşlenmesini
+    /// sağlar; okunamayan harita `None` döner (alıntı doğrulanmış sayılmaz).
     pub(crate) fn sent_segments(&self, run_id: &str) -> Result<Vec<SentSegment>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT document_version_id,outbound_segment_id,outbound_text
-             FROM transfer_segments WHERE ai_run_id=?1 ORDER BY rowid ASC",
+            "SELECT t.document_version_id,t.outbound_segment_id,t.outbound_text,
+                    t.source_range_map,t.transform_manifest_id,
+                    COALESCE(x.kind,'identity'),t.source_char_count
+             FROM transfer_segments t
+             LEFT JOIN outbound_transforms x ON x.id = t.transform_manifest_id
+             WHERE t.ai_run_id=?1 ORDER BY t.rowid ASC",
         )?;
         let rows = stmt.query_map([run_id], |row| {
+            let text: String = row.get(2)?;
+            let map_json: String = row.get(3)?;
+            let transform: Option<String> = row.get(4)?;
+            let kind: String = row.get(5)?;
+            let source_chars: Option<i64> = row.get(6)?;
+            let out_len = text.chars().count();
+            let runs = if transform.is_none() {
+                // Kimlik satırı: eşleme özdeşliktir (şartname §737).
+                Some(identity_runs(out_len))
+            } else {
+                match source_chars.and_then(|n| usize::try_from(n).ok()) {
+                    Some(source_len) => parse_runs(&map_json, out_len, source_len).ok(),
+                    None => None,
+                }
+            };
             Ok(SentSegment {
                 document_version_id: row.get(0)?,
                 segment_id: row.get(1)?,
-                text: row.get(2)?,
+                text,
+                runs,
+                transform_kind: if transform.is_none() {
+                    "identity".to_string()
+                } else {
+                    kind
+                },
             })
         })?;
         let mut out = Vec::new();
@@ -1624,6 +1822,65 @@ fn map_consent(row: &Row<'_>) -> rusqlite::Result<TransferConsentRow> {
         approved_at: row.get(7)?,
         revoked_at: row.get(8)?,
     })
+}
+
+/// Kimlik eşlemesi: gönderilen metin özgün metnin kendisidir.
+fn identity_runs(len: usize) -> Vec<MaskRun> {
+    if len == 0 {
+        return Vec::new();
+    }
+    vec![MaskRun {
+        out_start: 0,
+        out_end: len,
+        source_start: 0,
+        source_end: len,
+        masked: false,
+    }]
+}
+
+/// Dönüşüm sürümünü **içerik adresli** olarak bulur/oluşturur. Aynı terim
+/// listesi aynı satırı kullanır; terimlerin kendisi saklanmaz, yalnız özeti
+/// (`settings_hash`) ve sayısı.
+fn ensure_outbound_transform(
+    tx: &rusqlite::Transaction<'_>,
+    terms: &[String],
+) -> Result<String, StorageError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"dim-outbound-transform-v1");
+    hasher.update(MASK_PLACEHOLDER.as_bytes());
+    for term in terms {
+        hasher.update(b"\x1f");
+        hasher.update(term.as_bytes());
+    }
+    let settings_hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT id FROM outbound_transforms WHERE settings_hash=?1",
+            [&settings_hash],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let id = uuid::Uuid::now_v7().to_string();
+    tx.execute(
+        "INSERT INTO outbound_transforms
+           (id,kind,settings_hash,term_count,placeholder,created_at)
+         VALUES (?1,'mask_terms',?2,?3,?4,?5)",
+        rusqlite::params![
+            id,
+            settings_hash,
+            i64::try_from(terms.len()).unwrap_or(i64::MAX),
+            MASK_PLACEHOLDER,
+            now_iso()
+        ],
+    )?;
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -3221,5 +3478,209 @@ mod tests {
             1,
             "hata sonrası ikinci satır yazılmaz"
         );
+    }
+
+    /// Maske uygulanan gönderim: dönüşüm sürümü + özgün aralık eşlemesi yazılır
+    /// (şartname §737). Maskelenen ad **gönderilen metinde de sicilde de**
+    /// görünmez; eşleme yalnız kasa içinde durur.
+    #[test]
+    fn masked_outbound_records_transform_and_original_range_map() {
+        use crate::outbound_mask::map_span_in_runs;
+
+        let (db, case_id, _) = setup();
+        let raw = "Ahmet Yılmaz 12.000 TL ödedi.";
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &[raw]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        let ai_run = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let record = db
+            .record_outbound_segments(
+                &ai_run.id,
+                &[OutboundSegmentRef {
+                    segment_id: scope.segments[0].segment_id.clone(),
+                    document_version_id: scope.segments[0].document_version_id.clone(),
+                }],
+                Some(&OutboundMask {
+                    terms: vec!["Ahmet Yılmaz".into()],
+                }),
+            )
+            .expect("maskeli gönderim");
+        assert_eq!(record.transform_kind, "mask_terms");
+        assert_eq!(record.term_count, 1);
+        assert_eq!(record.masked_runs, 1);
+        assert_eq!(record.masked_chars, 12);
+        assert_eq!(record.segments[0].text, "[MASKED] 12.000 TL ödedi.");
+        assert!(record.transform_id.is_some(), "dönüşüm sürümü yazılmalı");
+
+        let rows = db.list_transfer_segments(&ai_run.id).expect("sicil");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].transform_kind, "mask_terms");
+        assert_eq!(rows[0].mask_term_count, 1);
+        assert!(
+            !rows[0].text_head.contains("Ahmet"),
+            "maskelenen ad sicil başlığında görünmemeli: {}",
+            rows[0].text_head
+        );
+
+        let sent = db.sent_segments(&ai_run.id).expect("gönderilen");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].transform_kind, "mask_terms");
+        let runs = sent[0].runs.as_deref().expect("harita");
+        // Kuyruk birebir eşlenir: gönderilen 8..25 ↔ özgün 12..29.
+        assert_eq!(
+            map_span_in_runs(runs, 8, 25),
+            Some((12, 29)),
+            "kopya parçası özgün aralığa dönmeli"
+        );
+        assert_eq!(
+            map_span_in_runs(runs, 0, 8),
+            None,
+            "maske parçası geri eşlenemez"
+        );
+
+        // Terimlerin kendisi hiçbir tabloya yazılmaz (yalnız özet + sayı).
+        for (table, column) in [
+            ("outbound_transforms", "settings_hash"),
+            ("outbound_transforms", "placeholder"),
+        ] {
+            let hits: i64 = db
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT count(*) FROM {table} WHERE instr(CAST(\"{column}\" AS TEXT),'Ahmet') > 0"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("tarama");
+            assert_eq!(hits, 0, "{table}.{column} terimi saklamamalı");
+        }
+    }
+
+    /// Kullanılamayan maske **hiçbir satır yazmadan** reddedilir: kısa terim,
+    /// yer tutucu çakışması, yanlış segment kimliği.
+    #[test]
+    fn outbound_mask_failures_write_no_rows() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Ahmet Yılmaz ödedi."]);
+        let (placeholder_document, _) =
+            document_with_text(&db, &case_id, "YerTutucu", &["Metin [MASKED] içeriyor."]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id.clone(), placeholder_document],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        let ai_run = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let first = &scope.segments[0];
+        let refs = vec![OutboundSegmentRef {
+            segment_id: first.segment_id.clone(),
+            document_version_id: first.document_version_id.clone(),
+        }];
+        let cases: Vec<(Option<&str>, &str)> =
+            vec![(Some("a"), "E_MASK_TERM"), (None, "E_MASK_PLACEHOLDER")];
+        for (index, (term, expected)) in cases.into_iter().enumerate() {
+            let target = if index == 0 {
+                refs.clone()
+            } else {
+                // Yer tutucu taşıyan segment (ikinci belge).
+                scope
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.segment_id != first.segment_id)
+                    .map(|segment| OutboundSegmentRef {
+                        segment_id: segment.segment_id.clone(),
+                        document_version_id: segment.document_version_id.clone(),
+                    })
+                    .collect()
+            };
+            let mask = OutboundMask {
+                terms: term.map_or_else(|| vec!["Ahmet".to_string()], |t| vec![t.to_string()]),
+            };
+            let error = db
+                .record_outbound_segments(&ai_run.id, &target, Some(&mask))
+                .expect_err("reddedilmeli");
+            assert_eq!(error.code(), expected);
+            assert_eq!(
+                db.list_transfer_segments(&ai_run.id).expect("sicil").len(),
+                0,
+                "reddedilen maske satır bırakmamalı"
+            );
+        }
+        // Yanlış sürüm kimliği: segment başka sürüme ait sayılmaz.
+        let bad = vec![OutboundSegmentRef {
+            segment_id: first.segment_id.clone(),
+            document_version_id: "baska-surum".into(),
+        }];
+        let error = db
+            .record_outbound_segments(&ai_run.id, &bad, None)
+            .expect_err("reddedilmeli");
+        assert_eq!(error.code(), "E_NOT_FOUND");
+        assert_eq!(
+            db.list_transfer_segments(&ai_run.id).expect("sicil").len(),
+            0
+        );
+    }
+
+    /// Maske uygulanmasa bile kimlik eşlemesi **yazılır**: alıntı doğrulaması
+    /// hangi metnin gittiğini ve nasıl eşlendiğini bilir.
+    #[test]
+    fn identity_outbound_records_identity_map() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Düz metin."]);
+        let c = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
+        let ai_run = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let record = db
+            .record_outbound_segments(
+                &ai_run.id,
+                &[OutboundSegmentRef {
+                    segment_id: scope.segments[0].segment_id.clone(),
+                    document_version_id: scope.segments[0].document_version_id.clone(),
+                }],
+                None,
+            )
+            .expect("gönderim");
+        assert_eq!(record.transform_kind, "identity");
+        assert!(record.transform_id.is_none());
+        assert_eq!(record.segments[0].text, "Düz metin.");
+        let sent = db.sent_segments(&ai_run.id).expect("gönderilen");
+        let runs = sent[0].runs.as_deref().expect("kimlik haritası");
+        assert_eq!(
+            crate::outbound_mask::map_span_in_runs(runs, 0, 4),
+            Some((0, 4))
+        );
+        let rows = db.list_transfer_segments(&ai_run.id).expect("sicil");
+        assert_eq!(rows[0].transform_kind, "identity");
+        assert_eq!(rows[0].mask_term_count, 0);
     }
 }

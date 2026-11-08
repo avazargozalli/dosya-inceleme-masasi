@@ -26,6 +26,7 @@ mod intext_quotes;
 pub mod job_state;
 mod marks;
 mod notes;
+mod outbound_mask;
 mod parsing;
 mod pre_update;
 mod precedent_import;
@@ -45,9 +46,10 @@ pub use actors::{
 };
 pub use ai::{
     AiCandidateRow, AiContextItemRow, AiRunRow, ConsentPreview, ConsentScope, CoverageReport,
-    NewAiContextItem, NewAiRun, NewTransferConsent, NewTransferSegment, ProviderProfileRow,
-    ScopeDocument, ScopeSegment, ScopeSkip, SentSegment, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
+    NewAiContextItem, NewAiRun, NewTransferConsent, NewTransferSegment, OutboundMask,
+    OutboundRecord, OutboundSegment, OutboundSegmentRef, ProviderProfileRow, ScopeDocument,
+    ScopeSegment, ScopeSkip, SentSegment, TransferConsentListRow, TransferConsentRow,
+    TransferReceiptRow, TransferSegmentRow,
 };
 pub use ai_candidate::{
     CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,
@@ -79,6 +81,10 @@ pub use intext_quotes::{
 };
 pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
+pub use outbound_mask::{
+    fold_char, mask_terms, parse_runs, validate_terms, MaskError, MaskRun, MaskedText,
+    MASK_PLACEHOLDER, MAX_MASK_TERMS, MAX_MASK_TERM_CHARS, MIN_MASK_TERM_CHARS,
+};
 pub use parsing::{
     settings_hash, BlobRef, NewPage, PageRow, ParseRun, SearchCursor, SearchFilters, SearchHit,
     SearchMode, SearchPage, SearchQuery, SearchTotal, SearchVerification, SegmentBlock,
@@ -292,9 +298,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0026_transfer_segments",
         sql: include_str!("migrations/0026_transfer_segments.sql"),
     },
+    Migration {
+        version: 27,
+        name: "0027_outbound_transforms",
+        sql: include_str!("migrations/0027_outbound_transforms.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 26;
+pub const CURRENT_SCHEMA_VERSION: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

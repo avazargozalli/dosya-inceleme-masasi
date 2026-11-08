@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 
+use crate::outbound_mask::map_span_in_runs;
 use dim_evidence::{verify_quote, QuoteMatch};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -269,7 +270,11 @@ pub struct QuotePosition {
 /// Alıntı başına eşleşme raporu. `state`:
 /// `exact` · `normalized` · `ambiguous` · `page_mismatch` · `not_found` ·
 /// `unverifiable` (`reason`: `version_not_found`, `case_mismatch`, `no_text`,
-/// `document_not_sent`, `source_changed`; `not_found` için `not_in_outbound`).
+/// `document_not_sent`, `source_changed`, `quote_masked` (alıntı maskelenen
+/// aralığa düşüyor), `quote_unmapped` (gönderilen metinde birebir konum yok),
+/// `map_unreadable` (aralık haritası okunamadı); `not_found` için
+/// `not_in_outbound`). Şartname §737: geri eşlenemeyen alıntı doğrulanmış
+/// sayılmaz.
 ///
 /// `outbound_state` — çalıştırmanın gönderim siciliyle ilişki:
 /// `not_recorded` (sicil yok; elle kaydedilen aday), `found` (alıntı gönderilen
@@ -304,6 +309,19 @@ pub struct QuoteMatchReport {
     pub segment_id: Option<String>,
     #[serde(default)]
     pub outbound_state: String,
+    /// Gönderilen satırın dönüşümü: `identity` · `mask_terms` · `unknown`.
+    /// Maske uygulanmışsa alıntı **önce maskeli kopyada** doğrulandı.
+    #[serde(default)]
+    pub transform_kind: Option<String>,
+    /// Alıntının **özgün** segmentteki başlangıç karakteri (maskeli gönderimde
+    /// yerel eşlemeyle geri bağlanan aralık). Bağlanamadıysa `null`.
+    #[serde(default)]
+    pub source_char_start: Option<i64>,
+    #[serde(default)]
+    pub source_char_end: Option<i64>,
+    /// Alıntı maskeli bir gönderimden gelip özgün aralığa eşlendi mi?
+    #[serde(default)]
+    pub masked: bool,
 }
 
 /// Adayın bütün doğrulama sonucu: şema + alıntı + birleşik karar.
@@ -1052,6 +1070,10 @@ fn match_quote(
         parse_run_id: None,
         segment_id: None,
         outbound_state: "not_recorded".into(),
+        transform_kind: None,
+        source_char_start: None,
+        source_char_end: None,
+        masked: false,
     };
     let Some(scope) = scope else {
         report.reason = Some("version_not_found".into());
@@ -1080,26 +1102,99 @@ fn match_quote(
             report.outbound_state = "document_not_sent".into();
             return report;
         }
-        let mut found = false;
-        let mut matched_segment: Option<String> = None;
+        // Alıntının gönderilen metindeki **birebir** konumları. Maske
+        // uygulanmış satırda konum şart: ancak konumdan özgün aralığa
+        // eşleme kurulabilir (şartname §737).
+        let quote_chars = i64::try_from(quote.quote.chars().count()).unwrap_or(i64::MAX);
+        let mut exact_plain: Vec<(&SentSegment, i64, i64)> = Vec::new();
+        let mut exact_masked: Vec<(&SentSegment, i64, i64)> = Vec::new();
+        let mut weak: Option<&SentSegment> = None;
         for segment in &own {
-            match verify_quote(&segment.text, &quote.quote, None, None) {
-                QuoteMatch::NotFound | QuoteMatch::HashMismatch => {}
-                QuoteMatch::Exact | QuoteMatch::Normalized | QuoteMatch::Ambiguous => {
-                    found = true;
-                    matched_segment = Some(segment.segment_id.clone());
-                    break;
+            let masked_row = segment.transform_kind != "identity";
+            for (byte, _) in segment.text.match_indices(&quote.quote) {
+                let start = byte_to_char(&segment.text, byte);
+                let end = start + quote_chars;
+                if masked_row {
+                    exact_masked.push((segment, start, end));
+                } else {
+                    exact_plain.push((segment, start, end));
                 }
             }
+            if weak.is_none()
+                && matches!(
+                    verify_quote(&segment.text, &quote.quote, None, None),
+                    QuoteMatch::Exact | QuoteMatch::Normalized | QuoteMatch::Ambiguous
+                )
+            {
+                weak = Some(segment);
+            }
         }
-        if !found {
+        if exact_plain.is_empty() && exact_masked.is_empty() && weak.is_none() {
             report.state = "not_found".into();
             report.reason = Some("not_in_outbound".into());
             report.outbound_state = "missing".into();
             return report;
         }
+        if let Some((segment, _, _)) = exact_plain.first() {
+            // Kimlik satırı: eşleme özdeşliktir, ek kapı gerekmez.
+            report.transform_kind = Some(segment.transform_kind.clone());
+            report.segment_id = Some(segment.segment_id.clone());
+        } else if !exact_masked.is_empty() {
+            // Maskeli gönderim: tek birebir konum + başarılı geri eşleme.
+            report.transform_kind = Some("mask_terms".into());
+            let unmappable = |report: &mut QuoteMatchReport, reason: &str, masked: bool| {
+                report.state = "unverifiable".into();
+                report.reason = Some(reason.into());
+                report.outbound_state = "masked".into();
+                report.masked = masked;
+            };
+            if exact_masked.len() > 1 {
+                // Birden fazla konum: tek özgün aralık seçilemez.
+                unmappable(&mut report, "quote_unmapped", true);
+                return report;
+            }
+            let (segment, start, end) = exact_masked[0];
+            let mapped = match (usize::try_from(start), usize::try_from(end)) {
+                (Ok(start), Ok(end)) => segment
+                    .runs
+                    .as_deref()
+                    .map(|runs| map_span_in_runs(runs, start, end)),
+                _ => None,
+            };
+            match mapped {
+                Some(Some((source_start, source_end))) => {
+                    report.segment_id = Some(segment.segment_id.clone());
+                    report.source_char_start =
+                        Some(i64::try_from(source_start).unwrap_or(i64::MAX));
+                    report.source_char_end = Some(i64::try_from(source_end).unwrap_or(i64::MAX));
+                    report.masked = true;
+                }
+                Some(None) => {
+                    // Alıntı maskelenen aralığa düşüyor: özgün metinde yok.
+                    unmappable(&mut report, "quote_masked", true);
+                    return report;
+                }
+                None => {
+                    // Harita okunamadı: eşleme kanıtsız.
+                    unmappable(&mut report, "map_unreadable", true);
+                    return report;
+                }
+            }
+        } else {
+            // Yalnız zayıf katmanda bulundu.
+            let segment = weak.expect("zayıf eşleşme");
+            report.transform_kind = Some(segment.transform_kind.clone());
+            if segment.transform_kind != "identity" {
+                // Maskeli metinde birebir konum yok → geri eşlenemez.
+                report.state = "unverifiable".into();
+                report.reason = Some("quote_unmapped".into());
+                report.outbound_state = "masked".into();
+                report.masked = true;
+                return report;
+            }
+            report.segment_id = Some(segment.segment_id.clone());
+        }
         report.outbound_state = "found".into();
-        report.segment_id = matched_segment;
     }
     let Some(parse_run_id) = scope.parse_run_id.as_deref() else {
         report.reason = Some("no_text".into());
@@ -1194,7 +1289,14 @@ fn aggregate_quote_state(quotes: &[QuoteMatchReport]) -> &'static str {
             "unverifiable"
                 if matches!(
                     quote.reason.as_deref(),
-                    Some("version_not_found" | "case_mismatch" | "document_not_sent")
+                    Some(
+                        "version_not_found"
+                            | "case_mismatch"
+                            | "document_not_sent"
+                            | "quote_masked"
+                            | "quote_unmapped"
+                            | "map_unreadable"
+                    )
                 ) =>
             {
                 failed = true;
@@ -1232,6 +1334,24 @@ fn quote_issues(quotes: &[QuoteMatchReport]) -> Vec<ValidationIssue> {
                 )),
             },
             "unverifiable" => match quote.reason.as_deref() {
+                Some("quote_masked") => issues.push(issue(
+                    "quote_masked_region",
+                    "error",
+                    &field,
+                    "Alıntı gönderilen metinde maskelenen aralığa düşüyor; özgün kaynağa geri eşlenemedi, kaynak sayılmaz.",
+                )),
+                Some("quote_unmapped") => issues.push(issue(
+                    "quote_unmapped",
+                    "error",
+                    &field,
+                    "Alıntı gönderilen (maskeli) metinde birebir konumda bulunamadı; geri eşlenemediği için kaynak sayılmaz.",
+                )),
+                Some("map_unreadable") => issues.push(issue(
+                    "quote_map_unreadable",
+                    "error",
+                    &field,
+                    "Gönderim aralık haritası okunamadı; alıntı özgün kaynağa bağlanamaz.",
+                )),
                 Some("case_mismatch") => issues.push(issue(
                     "quote_case_mismatch",
                     "error",
@@ -2131,5 +2251,131 @@ mod tests {
         assert_eq!(report.quotes[0].state, "exact");
         assert_eq!(report.quotes[0].outbound_state, "not_recorded");
         assert_eq!(report.quote_state, "verified");
+    }
+
+    /// Maskeli gönderim: alıntı **önce maskeli kopyada** doğrulanır, sonra
+    /// yalnız kasadaki aralık haritasıyla özgün segment aralığına bağlanır
+    /// (şartname §737). Maskenin dışında kalan alıntı gerçek konumunu korur.
+    fn record_masked_send(fixture: &Fixture, terms: &[&str]) {
+        let segments = version_segments(fixture);
+        let refs: Vec<crate::ai::OutboundSegmentRef> = segments
+            .iter()
+            .map(|(id, _)| crate::ai::OutboundSegmentRef {
+                segment_id: id.clone(),
+                document_version_id: fixture.version_id.clone(),
+            })
+            .collect();
+        fixture
+            .db
+            .record_outbound_segments(
+                &fixture.run_id,
+                &refs,
+                Some(&crate::ai::OutboundMask {
+                    terms: terms.iter().map(|term| (*term).to_string()).collect(),
+                }),
+            )
+            .expect("maskeli sicil");
+    }
+
+    #[test]
+    fn masked_quote_maps_back_to_the_original_segment_range() {
+        let fixture = setup(&[PAGE_ZERO]);
+        record_masked_send(&fixture, &["Kiracı"]);
+
+        let quote_text = "ödeme yapılmadığını belirtmiştir";
+        let expected_source = PAGE_ZERO[..PAGE_ZERO.find("ödeme").expect("konum")]
+            .chars()
+            .count();
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(&fixture.version_id, quote_text, Some(0)),
+            )
+            .expect("doğrula");
+        let quote = &report.quotes[0];
+        assert_eq!(
+            quote.state, "exact",
+            "maskeli kopyada bulunan alıntı doğrulanır"
+        );
+        assert_eq!(quote.outbound_state, "found");
+        assert_eq!(quote.transform_kind.as_deref(), Some("mask_terms"));
+        assert!(quote.masked, "alıntı maskeli gönderimden geldi");
+        assert_eq!(
+            quote.source_char_start,
+            Some(i64::try_from(expected_source).expect("konum")),
+            "özgün segmentteki karakter aralığı yazılmalı"
+        );
+        assert_eq!(
+            quote
+                .source_char_end
+                .map(|end| end - quote.source_char_start.unwrap_or(0)),
+            Some(i64::try_from(quote_text.chars().count()).expect("uzunluk"))
+        );
+        assert_eq!(report.quote_state, "verified");
+    }
+
+    /// Maskelenen aralığa düşen alıntı geri eşlenemez: modelin gördüğü metinde
+    /// yer tutucu vardı, özgün kaynağa bağlanamaz → doğrulanmış sayılmaz.
+    #[test]
+    fn quote_inside_the_masked_region_is_not_verified() {
+        let fixture = setup(&[PAGE_ZERO]);
+        record_masked_send(&fixture, &["Kiracı"]);
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(
+                    &fixture.version_id,
+                    crate::outbound_mask::MASK_PLACEHOLDER,
+                    Some(0),
+                ),
+            )
+            .expect("doğrula");
+        let quote = &report.quotes[0];
+        assert_eq!(quote.state, "unverifiable");
+        assert_eq!(quote.reason.as_deref(), Some("quote_masked"));
+        assert_eq!(quote.outbound_state, "masked");
+        assert!(quote.masked);
+        assert_eq!(report.quote_state, "failed");
+        assert_eq!(report.state, "invalid");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|item| item.code == "quote_masked_region"),
+            "sorun kodu maskelenen aralığı işaret eder"
+        );
+    }
+
+    /// Maskeli metinde yalnız **zayıf katmanda** bulunan alıntının birebir
+    /// konumu yoktur: aralık haritasıyla geri eşlenemez.
+    #[test]
+    fn quote_matched_only_weakly_in_masked_text_is_unmapped() {
+        let fixture = setup(&[PAGE_ZERO]);
+        record_masked_send(&fixture, &["Kiracı"]);
+        let report = fixture
+            .db
+            .validate_ai_candidate(
+                &fixture.run_id,
+                "claim_candidate",
+                &candidate(
+                    &fixture.version_id,
+                    "ödeme  yapılmadığını belirtmiştir",
+                    Some(0),
+                ),
+            )
+            .expect("doğrula");
+        let quote = &report.quotes[0];
+        assert_eq!(quote.state, "unverifiable");
+        assert_eq!(quote.reason.as_deref(), Some("quote_unmapped"));
+        assert_eq!(quote.outbound_state, "masked");
+        assert_eq!(report.quote_state, "failed");
+        assert!(report
+            .issues
+            .iter()
+            .any(|item| item.code == "quote_unmapped"));
     }
 }

@@ -361,8 +361,10 @@ export type TransferSegmentRow = {
   outboundHash: string;
   charCount: number;
   byteCount: number;
-  /** `identity` — gönderilen metin özgün segmentin kendisi; `transformed` — dönüşüm var. */
+  /** `identity` · `mask_terms` · `unknown` (dönüşüm kimliği çözülemedi). */
   transformKind: string;
+  /** Maskede kullanılan terim sayısı (kimlikte 0); terimlerin kendisi saklanmaz. */
+  maskTermCount: number;
   /** İlk 120 karakter (tam metin arayüze dökülmez). */
   textHead: string;
 };
@@ -407,8 +409,17 @@ export type QuoteMatchReport = {
   textOrigin: string | null;
   parseRunId: string | null;
   segmentId: string | null;
-  /** `not_recorded` · `found` · `missing` · `document_not_sent` · `changed` */
+  /**
+   * `not_recorded` · `found` · `missing` · `document_not_sent` · `changed` ·
+   * `masked` (alıntı maskeli kopyada bulundu ama özgün aralığa bağlanamadı).
+   */
   outboundState: string;
+  /** `identity` · `mask_terms` · `unknown` */
+  transformKind?: string | null;
+  /** Maskeli gönderimde geri eşlenen **özgün** karakter aralığı. */
+  sourceCharStart?: number | null;
+  sourceCharEnd?: number | null;
+  masked?: boolean;
 };
 
 export type CandidateReport = {
@@ -2109,12 +2120,23 @@ export const api = {
     invoke<TransferConsentListRow[]>("ai_consent_list", { caseId }),
   aiReceiptList: (caseId: string) =>
     invoke<TransferReceiptRow[]>("ai_receipt_list", { caseId }),
-  aiRunExecute: (caseId: string, providerId: string, consentId: string, taskType: string) =>
+  /**
+   * Çalıştırmayı yürütür. `maskTerms` verilirse gönderilen metin **çekirdekte**
+   * maskelenir; terimler kasadan çıkmaz, yalnız sayı ve özet sicile düşer.
+   */
+  aiRunExecute: (
+    caseId: string,
+    providerId: string,
+    consentId: string,
+    taskType: string,
+    maskTerms: string[] | null = null,
+  ) =>
     invoke<AiCandidateRow>("ai_run_execute", {
       caseId,
       providerId,
       consentId,
       taskType,
+      maskTerms,
     }),
   aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),

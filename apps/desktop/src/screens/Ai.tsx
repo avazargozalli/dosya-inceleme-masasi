@@ -112,6 +112,7 @@ function outboundLabel(state: string): string {
   if (state === "missing") return t("ai.outboundMissing");
   if (state === "document_not_sent") return t("ai.outboundDocumentNotSent");
   if (state === "changed") return t("ai.outboundChanged");
+  if (state === "masked") return t("ai.outboundMasked");
   if (state === "not_recorded") return t("ai.outboundNotRecorded");
   return state;
 }
@@ -121,6 +122,9 @@ export function Ai() {
   const [caseId, setCaseId] = useState("");
   const [overview, setOverview] = useState<AiOverview | null>(null);
   const [consent, setConsent] = useState<TransferConsentRow | null>(null);
+  // Gönderim maskesi: satır başına bir terim. Terimler **kasaya yazılmaz**;
+  // çekirdek maskeyi uygular, sicile yalnız terim sayısı düşer.
+  const [maskText, setMaskText] = useState("");
   const [consents, setConsents] = useState<TransferConsentListRow[]>([]);
   const [consentListBusy, setConsentListBusy] = useState(false);
   // Makbuz envanteri de **çekirdekten** okunur: yazılan makbuzun okuma yolu
@@ -306,6 +310,7 @@ export function Ai() {
     setRevokeTarget(null);
     setOverview(null);
     setConsent(null);
+    setMaskText("");
     setConsents([]);
     setConsentListBusy(false);
     setReceipts([]);
@@ -358,6 +363,16 @@ export function Ai() {
   const selectedKind = CANDIDATE_KINDS.find((option) => option.value === kind) ?? CANDIDATE_KINDS[0]!;
   const draftError = draftJsonError(draft);
 
+  // Ölçü **çekirdekle aynı**: kod noktası uzunluğu (JS `.length` değil) ve
+  // 2–200 sınırı; geçersiz liste gönderilmez (çekirdek de reddeder).
+  const maskTerms = maskText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const maskInvalid =
+    maskTerms.length > 500 ||
+    maskTerms.some((term) => [...term].length < 2 || [...term].length > 200);
+
   async function approve() {
     if (!provider) return;
     const gen = caseGen.current;
@@ -396,12 +411,23 @@ export function Ai() {
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
       // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak koşmaz.
-      const candidate = await api.aiRunExecute(
-        caseId,
-        consentProvider.id,
-        consent.id,
-        purposeTask(consent.purpose),
-      );
+      // Maske **yalnız** girildiyse gönderilir: boş liste göndermek,
+      // "maske istendi ama uygulanmadı" izlenimi verirdi.
+      const candidate =
+        maskTerms.length > 0
+          ? await api.aiRunExecute(
+              caseId,
+              consentProvider.id,
+              consent.id,
+              purposeTask(consent.purpose),
+              maskTerms,
+            )
+          : await api.aiRunExecute(
+              caseId,
+              consentProvider.id,
+              consent.id,
+              purposeTask(consent.purpose),
+            );
       const next = await api.aiOverview(caseId);
       if (caseGen.current !== gen) return;
       setOverview(next);
@@ -714,6 +740,24 @@ export function Ai() {
               <option value="iddia_cikarimi">{t("ai.purposeClaims")}</option>
             </select>
           </div>
+          <div className="field" style={{ maxWidth: 320 }}>
+            <label htmlFor="ai-mask">{t("ai.maskLabel")}</label>
+            <textarea
+              id="ai-mask"
+              className="input"
+              rows={2}
+              value={maskText}
+              placeholder={t("ai.maskPlaceholder")}
+              onChange={(e) => setMaskText(e.target.value)}
+            />
+            <p className="hint" style={{ margin: 0 }}>
+              {maskInvalid
+                ? t("ai.maskInvalid")
+                : maskTerms.length > 0
+                  ? t("ai.maskCount", { count: maskTerms.length })
+                  : t("ai.maskHint")}
+            </p>
+          </div>
           <div className="row" style={{ alignItems: "flex-end", gap: "var(--space-2)" }}>
             <button className="btn" disabled={!provider || busy} onClick={() => void approve()}>
               {t("ai.approve")}
@@ -723,7 +767,7 @@ export function Ai() {
             </button>
             <button
               className="btn primary"
-              disabled={!provider || !consent || busy || revokingConsent || consentStale}
+              disabled={!provider || !consent || busy || revokingConsent || consentStale || maskInvalid}
               onClick={() => void start()}
             >
               {t("ai.run")}
@@ -989,7 +1033,9 @@ export function Ai() {
                     <code title={segment.segmentId}>{segment.segmentId.slice(0, 8)}…</code>
                     {segment.transformKind === "identity" ? null : (
                       <span className="hint" style={{ display: "block" }}>
-                        {segment.transformKind}
+                        {segment.transformKind === "mask_terms"
+                          ? t("ai.transferKindMasked", { count: segment.maskTermCount })
+                          : t("ai.transferKindUnknown", { kind: segment.transformKind })}
                       </span>
                     )}
                   </td>
@@ -1189,7 +1235,14 @@ export function Ai() {
                           {quoteLineStateLabel(quote)}
                         </span>
                       </td>
-                      <td>{quotePositionLabel(quote)}</td>
+                      <td>
+                        {quotePositionLabel(quote)}
+                        {quote.masked && quote.sourceCharStart != null ? (
+                          <span className="hint" style={{ display: "block" }}>
+                            {t("ai.maskedSourceRange", { start: quote.sourceCharStart })}
+                          </span>
+                        ) : null}
+                      </td>
                       <td>{quote.occurrences}</td>
                       <td>{outboundLabel(quote.outboundState)}</td>
                       <td>

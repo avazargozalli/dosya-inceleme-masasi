@@ -45,6 +45,11 @@ pub enum StorageError {
 
     #[error("G/Ç hatası: {0}")]
     Io(#[from] std::io::Error),
+    /// Gönderim maskesi sözleşmesi: terim biçimi, yer tutucu çakışması ya da
+    /// okunamayan aralık haritası. **Neden** kararlı kod olarak taşınır
+    /// (`E_MASK_TERM`, `E_MASK_TERMS_LIMIT`, `E_MASK_PLACEHOLDER`, `E_MASK_MAP`).
+    #[error("gönderim maskesi reddedildi: {0}")]
+    MaskRejected(&'static str),
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
     /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
@@ -178,6 +183,7 @@ impl StorageError {
             Self::Integrity(_) => "E_DB_INTEGRITY",
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
+            Self::MaskRejected(code) => code,
             Self::InvalidSetting => "E_DB_SETTING",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
