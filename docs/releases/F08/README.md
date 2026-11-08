@@ -12,6 +12,7 @@
 | F08-T04 | ✅ | iddia–delil matrisi, inceleme kuyruğu, kabul/ret/düzelt geçmişi (**arayüzde görünür**: kalem başına "Geçmişi göster") |
 | F08-T05 | ✅ | görevler: kullanıcı tarihi, tamamlama, silme |
 | F08-T06 | ✅ | not ↔ kaynak alıntı bağı (`source_anchor_ids`) |
+| F08-T01 *(şartname numarası)* | ✅ | **kişi/kurum + dosya rolü** ve **geri alınabilir birleştirme**: `actors` / `case_participants` tabloları ilk kez kullanılır; `actor_merges` (şema **v25**); arayüzde “Dosya tarafları” kartı — 14/14 mutasyon (2026-11-08) |
 
 ## Doğrulama
 
@@ -450,3 +451,103 @@ düzeltilemez. (c) **Dosya geneli** toplu karar listesi yok — okuma kalem baş
 `edited_payload` **işaretlenir**, onarılmaz. (e) Karar sayısı pratikte 1–2 (durum makinesi final
 karardan sonra karar kabul etmez); geçmiş "denetim izi" değil, kalemin kendi karar kaydıdır.
 (f) jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+## Dosya tarafları — kişi/kurum, rol ve geri alınabilir birleştirme (ek, 2026-11-08)
+
+**Ölçülen boşluk (şartname F08-T01 / REQ-010).** Şartname "kişi/kurum ve dosya
+rolünü ayır; birleştirmeyi inceleme ve **geri alma** işlemine bağla" der; tablo
+sözleşmesi (`actors`: `display_name`, `kind`, `normalized_names`, `review_state`,
+`merged_into_actor_id`; `case_participants`: `case_id`, `actor_id`, `role`,
+`role_note`, `valid_from/to`) şemanın ilk sürümünden beri var. Ama kodda **tek SQL
+yoktu** (`git grep`: iki tabloya tek çağrı yok) — üründe taraf/rol kaydı,
+birleştirme ve geri alma hiç yoktu. Bu README'nin tablosundaki `F08-T01` satırı
+**olay tarihi** işini anlatıyor; şartname numaralandırmasıyla çakışıyordu (aşağıdaki nota bakın).
+
+**Yazılan — çekirdek (`crates/storage/src/actors.rs`, şema v25).**
+- `add_case_party(case_id, …)` — aktör + katılımcı **tek işlemde** yazılır; katılımcı
+  yazımı düşerse yeni aktör de geri alınır (sahipsiz kişi kaydı kalmaz). Ad/rol
+  kırpılır; boş, kontrol karakterli veya sınır üstü (ad 200 · rol 80 · not 500)
+  değer reddedilir. Tür **kapalı küme** (`person|organization|unknown`).
+  `actorId` verilirse **mevcut** tarafa rol eklenir (ad uydurulmaz); birleştirilmiş
+  tarafa yeni rol `E_DB_ACTOR` ile reddedilir.
+- Aynı dosyada aynı taraf + aynı rol ikinci kez yazılmaz (tablo UNIQUE'i); ihlal
+  **ham SQL hatası olarak sızmaz**, `E_DB_ACTOR` + "zaten kayıtlı" olur.
+- `list_case_parties(case_id)` — **kayıt sırası** (`created_at, rowid`), en çok 200
+  satır. `remove_case_participant` geri dönüşümlü siler (`deleted_at`), denetim
+  kaydı kalır.
+- `merge_actors(source, target, reviewer)` — çakışma **ön denetimi**: aynı dosyada
+  aynı rol iki tarafta da kayıtlıysa birleştirme reddedilir (sessiz yinelenen rol
+  yok). Roller hedefe taşınır, kaynak `merged` işaretlenir; `actor_merges` kaydı
+  kaynak, hedef, **taşınan satır kimlikleri**, kaynağın **önceki inceleme durumu**
+  ve birleştiren kimliğini saklar. `undo_actor_merge` rolleri kaynağa döndürür ve
+  önceki durumu **birebir** yazar; birleştirmeden sonra elle silinmiş roller geri
+  gelmez (silme bilinçli kullanıcı eylemidir).
+- Yeni komutlar: `case_party_list`, `case_party_add`, `case_party_remove`,
+  `actor_merge`, `actor_merge_undo` (+ `api.ts` bağları ve tipleri).
+
+**Arayüz (`components/Parties.tsx`; İnceleme ekranında dosya altında).** Taraf
+tablosu (ad · tür · rol · rol notu), yeni taraf formu (mevcut tarafa ikinci rol
+seçilebilir), **onay kutusu** işaretliyken çalışan birleştirme ve **çekirdekten
+okunan** birleştirme geçmişi + "Geri al". Dosya değişince liste, form, seçim ve
+bildirim birlikte düşer (INV-05); düşen okuma "taraf yok" **demez** (`role=alert`),
+geç yanıt `seq` kapısıyla düşer; bilinmeyen tür **ham** gösterilir.
+
+**Testler.** storage `actors::tests` **10** (yeni) → `dim-storage --lib` **442 →
+452**; `Parties.test.tsx` **11** (yeni) → yerel arayüz **1308** (64 dosya; fazlalık
+ağaçtaki **başka ajanın** commit'siz `format.test.ts` testi) · `Review.test.tsx`
+harness'ı `casePartyList` mock'uyla güncellendi (42 test değişmedi).
+
+**Kapı kanıtı (gerçek koşular; betikler `scratch/dim-parties-gates*.py`; her
+mutasyon tek başına, geri yükleme sha256 birebir).** Çekirdek **7/7 kırmızı** —
+R1 roller taşınmaz · R2 çakışma ön denetimi kapalı (birleştirme ham `E_DB_SQL`e
+düşer; kullanıcı "çakışma" görmez) · R3 geri alma rolleri döndürmez · R4
+birleştirilmiş tarafa rol eklenir · R5 yinelenen rol `E_DB_ACTOR` yerine SQL hatası
+· R6 liste sırası ters · R7 silinen satır listede kalır. Arayüz **7/7 kırmızı** —
+U1 ekleme çekirdeğe gitmez · U2 onay kapısı kapalı · U3 geri alma çekirdeğe gitmez
+· U4 dosya değişiminde liste temizlenmez · U5 okuma hatası yutulur · U6 geç yanıt
+kapısı · U7 aynı taraf seçimi kapalı değil.
+**Dürüst (kendi hatam, iki tanesi):** (1) U4 ilk ölçümde **yeşil kaldı**:
+temizleme iki yerde (effect + okuma) yapılıyordu, biri kaldırılınca diğeri testi
+geçiriyordu → yük taşımayan effect satırı **kaldırıldı**, U4 tek kapıyla yeniden
+ölçüldü (kırmızı). (2) Arayüz betiğinin ilk ayrıştırıcısı filtreli vitest özetini
+(`1 failed | 10 skipped`) okumadı; `failed`/`passed`/`skipped` ayrı aranacak
+biçimde düzeltildi ve yedi ölçüm yenilendi (ilk koşunun "kırmızı"ları kanıt
+sayılmadı).
+
+**Ölçüm (yerel, Node 22.23.1 + TZ=UTC).** `tsc --noEmit` temiz · vitest
+**1308/1308** (64 dosya) · `cargo test -p dim-storage --lib` **452/452** (230,95 s)
+· `cargo fmt` iki manifest temiz · `cargo clippy -p dim-storage --all-targets`
+ve masaüstü clippy `-D warnings` temiz · `cargo check --all-targets` (masaüstü)
+temiz. Yerel `vite build` koşulmadı → paket ölçümü CI'dan.
+
+**Commit/CI (ölçüldü).** Kod `91cf11b` (13 dosya, **+1834/−19**) → **`42486765219`
+10/10 YEŞİL**: `arayüz` **64 dosya / 1307 test** (yerel 1308 − ağaçtaki başka
+ajanın commit'siz `format.test.ts` testi), paket `index-B8lzUIqY.js` **647,83 kB**
+/ gzip **173,29 kB** (CSS 7,28 kB / gzip 2,07); `dim-storage` **452** hem
+`ubuntu-latest` (298,48 s) hem `macos-15` (187,10 s) — **birebir**; `masaüstü
+kabuk` `40 koştu · 0 düştü · 5 yoksayıldı (kaynak 45)` + yoksayılan koşu
+`5 passed`; diğer altı iş yeşil.
+
+**Dürüst sınırlar.** (a) Birleştirme **dosya kapsamı dışında** da yapılabilir
+(doğrudan IPC); arayüz seçimini o dosyanın taraflarıyla sınırlar. (b) Geri alma
+yalnız **hâlâ hedefte duran** rolleri döndürür — birleştirmeden sonra silinen rol
+geri gelmez. (c) `normalized_names` basit küçük harftir; otomatik eşleştirme/öneri
+**yoktur**, birleştirmeyi kullanıcı seçer (şartname "otomatik eşleştirme kabul
+edilmeden birleşmez" der; bu turda otomatik eşleştirme hiç üretilmiyor). (d)
+Birleştirme geçmişi dosya başına en yeni 50 kayıtla sınırlı (küresel tarama 200
+satır); daha eski birleştirmeler listede görünmez. (e) Kart **İnceleme** ekranında:
+Dosyalar ekranı (`Cases.tsx`) o turda başka bir çalışma hattındaydı (commit'siz
+değişiklikler); kartın Dosyalar'a taşınması **ürün kararı**. (f) Rol **serbest
+metindir**; kapalı rol listesi (davacı/davalı/vekil…) hukuki ürün kararıdır ve
+uydurulmadı. (g) Bozuk bir `moved_participants` JSON'u olan birleştirme kaydı
+listede **atlanır** (taraflar listesi kilitlenmez); bozukluk onarılmaz. (h)
+`review_state='pending'` durumu bu turda **yazılmıyor** (otomatik aday üretimi yok);
+kullanıcı kaydı `accepted` açılır. (i) `case_party_*`/`actor_merge*` **komut olarak
+koşulmadı** (`State<AppState>` altyapısı yok) — kablolama cargo check + clippy,
+davranış storage düzeyinde **gerçek SQLite** ile; jsdom tarayıcı değil → gerçek
+Tauri penceresi ve **görsel QA insan bekliyor**.
+
+**Not (numaralandırma).** Şartname F08-T01 kişi/kurum + rol işidir; bu README'nin
+tablosundaki `F08-T01` satırı olay tarihini anlatır. İki numaralandırma arasındaki
+fark bu turda görünür kılındı (tabloya `F08-T01 *(şartname numarası)*` satırı
+eklendi); eski satırlar **yeniden numaralanmadı** (geçmiş kanıtlar bozulmasın).
