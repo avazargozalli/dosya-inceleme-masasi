@@ -514,5 +514,110 @@ arıyordu. Sonuç: belge yeniden ayrıştırıldıktan sonra model **hiç görme
   altyapısı yok): kablolama check + clippy, davranış storage düzeyinde gerçek SQLite.
 - jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
 
+## F11-T03 — gönderim maskesi ve maskeli bağlamın geri eşlenmesi (2026-11-08)
 
+**Ölçülen boşluk.** Şartname §737 maskeli bağlamın **iki aşamalı** doğrulamasını
+ister: «Her gönderim segmenti, gönderilen metin/hash, **maskeleme dönüşüm sürümü**
+ve özgün Unicode aralıklarına eşleme taşır. Modelin alıntısı önce gördüğü maskeli
+kopyada doğrulanır. Sonra yalnız kasada bulunan eşleme, ilgili özgün segment/sürüme
+bağlanır. Maske hiç uygulanmadıysa eşleme özdeşliktir. (…) geri eşlenemeyen alıntı
+doğrulanmış sayılmaz.» Önceki tur birinci aşamayı yazmıştı (alıntı **gönderilen**
+metinde aranır); dönüşüm ise her satırda **kimlikti**: maske uygulanmıyor,
+`transform_manifest_id` hiç yazılmıyor, `source_range_map` tek bir `[0..n → 0..n]`
+parçasıydı. Yani ürün «maskeli bağlam» diye bir yol **sunmuyordu**; maske yalnız
+PDF çıktısında (F13) vardı ve modele giden metne hiç dokunmuyordu.
 
+**Yazılan.**
+
+- **Şema v27** (`0027_outbound_transforms.sql`): `outbound_transforms`
+  (`kind`, içerik adresli `settings_hash`, `term_count`, `placeholder`; **terimlerin
+  kendisi saklanmaz**) + `transfer_segments.source_char_count` (harita bütünlük
+  kapısı). `CURRENT_SCHEMA_VERSION = 27`.
+- **`crates/storage/src/outbound_mask.rs` (yeni, 505 satır):** Türkçe kurallı
+  **1:1** harf katlaması (`İ`→`i`, `I`→`ı`; `to_lowercase`'in iki karakter üretip
+  aralığı kaydırması engellenir), çakışan ve **bitişik** terimlerin tek yer
+  tutucuda birleşmesi, `MaskedText` + kesintisiz `MaskRun` haritası,
+  `map_span_in_runs` (maske parçasına değen aralık → `None`; uydurma konum yok),
+  `parse_runs` (kesintili/bozuk harita reddedilir), terim doğrulama (2–200
+  karakter, ≤500 terim, kontrol karakteri yok, yer tutucu çakışması reddi).
+- **`ai.rs`:** `OutboundMask`, `OutboundSegmentRef`, `OutboundSegment`,
+  `OutboundRecord`. `record_outbound_segments` metni **çağırandan almaz**: kasadaki
+  `text_segments.raw_text`i okur, maskeyi **çekirdekte** uygular, sicile maskeli
+  metni + `sha256` + haritayı + dönüşüm kimliğini yazar ve **gönderilecek metni
+  geri döndürür** — kayıt ile gönderim ayrışamaz. Hata hâlinde hiçbir satır
+  yazılmaz. `record_transfer_segments` beyan kapısını (metin kasadakiyle birebir)
+  koruyarak bu yola delege eder. `sent_segments` haritayı ve dönüşüm türünü taşır;
+  `list_transfer_segments` `outbound_transforms` ile birleşir (`identity` ·
+  `mask_terms` · `unknown` + terim sayısı).
+- **`ai_candidate.rs`:** maskeli satırda alıntı yalnız **tek birebir konumdan**
+  geri eşlenir. Maske aralığına düşen alıntı `quote_masked`, maskeli metinde
+  yalnız zayıf katmanda kalan alıntı `quote_unmapped`, okunamayan harita
+  `map_unreadable` — üçü de **failed** ve sorun koduyla raporlanır. Eşleme
+  başarılıysa rapor `masked`, `transformKind`, `sourceCharStart/End` taşır; kimlik
+  satırlarında davranış değişmez.
+- **`commands.rs`:** `ai_run_execute` `maskTerms` alır; bağlam satırındaki bayt ve
+  makbuz artık **maskeli** metinden sayılır (`bytes_sent` = kasadan çıkan gerçek
+  boyut). **Arayüz:** "Gönderim maskesi" alanı (satır başına terim; ölçü çekirdekle
+  aynı — kod noktası, 2–200, ≤500), geçersiz liste çalıştırmayı **kapatır**;
+  sicilde maske türü/terim sayısı, raporda geri eşlenen özgün aralık; `limits`
+  metni yeni sözleşmeye göre düzeltildi.
+
+**Testler ve kapı kanıtı.**
+
+- `outbound_mask::tests` **9** (kimlik, tek terim + harita, Türkçe katlama,
+  çakışan/bitişik birleştirme, sınırı aşan aralık, yer tutucu çakışması, terim
+  doğrulama, bozuk harita) + `ai::tests` **+3** (maskeli sicil + harita + terim
+  sızıntısı yok; reddedilen maske satır bırakmaz; kimlik haritası) +
+  `ai_candidate::tests` **+3** (maskeli alıntı özgün aralığa döner; maske içine
+  düşen alıntı doğrulanmaz; zayıf katman `quote_unmapped`) → `dim-storage --lib`
+  **458 → 473**.
+- `Ai.test.tsx` **+6** (terimler çalıştırmaya gider · maske yoksa dört argüman ·
+  geçersiz terim düğmeyi kapatır · dosya değişince alan temizlenir · sicilde maske
+  türü/terim sayısı · raporda özgün aralık) → `Ai.test.tsx` **98**, tam arayüz
+  **1320/1320** (64 dosya).
+- **Kapı kanıtı 13/13 kırmızı** (betik `scratch/dim-mask-gates.py`; her mutasyon
+  tek başına, `try/finally` + sha256 birebir geri yükleme — `outbound_mask.rs
+  90898777…`, `ai.rs 3dbddfb4…`, `ai_candidate.rs 951486a5…`, `Ai.tsx 9706a390…`):
+  C1 maske hiç uygulanmaz · C2 terim alt sınırı 2→1 · C3 yer tutucu çakışması
+  denetlenmez · C4 maske parçası haritada «kopya» sayılır · C5 sicile ham metin
+  yazılır · C6 dönüşüm kimliği yazılmaz · C7 okunan harita yok sayılır ·
+  C8 maske içine düşen alıntı yine doğrulanır · U1 maske çalıştırmaya geçirilmez ·
+  U2 geçersiz maske düğmeyi kapatmaz · U3 dosya değişiminde alan temizlenmez ·
+  U4 maske türü etiketi yazılmaz · U5 geri eşlenen aralık yazılmaz.
+- **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest
+  **1320/1320** (64 dosya) · `dim-storage --lib` **473/473** (236,46 s) ·
+  `cargo fmt` iki manifest temiz · storage + masaüstü `clippy --all-targets
+  -D warnings` temiz. Yerel `vite build` koşulmadı → paket CI'dan.
+- **Commit/CI (ölçüldü):** kod `cac62cd` (11 dosya, **+1602/−113**) →
+  **`42507035630` 10/10 YEŞİL**: `dim-storage` **473** hem `macos-15`
+  (196,20 s) hem `ubuntu-latest` (412,94 s) — **birebir**; `arayüz` **64 dosya /
+  1319 test**, paket `index-Ci6W12PB.js` **653,29 kB** / gzip **174,75 kB**
+  (CSS 7,28 kB / gzip 2,07); `masaüstü kabuk` **40 koştu · 0 düştü ·
+  5 yoksayıldı (kaynak 45)** + yoksayılan koşu **5 passed · 40 filtered**;
+  diğer altı iş yeşil. **i18n hunk ayrımı:** üç hunk'tan yalnız benim iki
+  hunk'ım `git apply --cached --recount` ile sahneye alındı; ağaçtaki başka
+  ajanın `cases.parseStatus*` anahtarları commit'e **girmedi**
+  (`git show :…i18n.ts | grep -c parseStatus` → **0**). Yerel 1320 / CI 1319
+  farkı ağaçtaki onun commit'siz `format.test.ts` testi.
+
+**Sınırlamalar (dürüst).**
+
+- Maske terim listesi **kullanıcıdan** gelir. F13 maskeleme **planı** (bölge/quad)
+  gönderim metnine **hâlâ uygulanmaz**: plan yalnız bölge geometrisi ve terim
+  **hash'i** saklar, bölge→karakter aralığı eşlemesi yoktur. Bu tur metin düzeyinde
+  maske + harita altyapısını kurdu; plan→gönderim köprüsü ayrı iştir.
+- Eşleşme **birebir** (harf katlamalı) alt dizedir: çekim eki alan adlar
+  (`Ahmet Yılmaz'a`) gövdeyi maskeler, **eki metinde bırakır**; bitişik yazım ve
+  kısaltma varyantları maskelenmez (liste elde tutulmalı).
+- Yer tutucu sabittir (`[MASKED]`); metin bu dizgeyi zaten içeriyorsa maske
+  **reddedilir** (belirsizlik yaratılmaz).
+- Terimlerin kendisi sicile yazılmaz (özet + sayı). Aynı maskeyi yeniden üretmek
+  için kullanıcı listeyi yeniden girmelidir; maskeli metin ve harita kasadadır.
+- Maske yalnız `ai_run_execute` yolunda; elle kaydedilen adaylarda `not_recorded`
+  (eski davranış korunur ve ekran yazar).
+- `ai_context_items.bytes_sent` artık **gönderilen** (maskeli) bayt: maskesiz eski
+  satırlarla birebir karşılaştırılmamalı.
+- Yeni komut yolu **komut olarak koşulmadı** (`State<AppState>` test altyapısı
+  yok): kablolama check + clippy, davranış storage düzeyinde gerçek SQLite ve
+  arayüz testleriyle ölçüldü.
+- jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
