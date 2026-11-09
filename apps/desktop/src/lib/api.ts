@@ -374,13 +374,29 @@ export type ScopeSkip = {
   reason: "missing" | "no_current_version" | "not_parsed" | "empty_text" | string;
 };
 
+export type ConsentMaskPreview = {
+  termCount: number;
+  maskedRuns: number;
+  maskedChars: number;
+  sampleMasked: boolean;
+  /** `false` ise `bytes` maskesiz üst sınırdır (kapsam bütçeden büyük). */
+  bytesExact: boolean;
+  planId: string | null;
+};
+
 export type ConsentPreview = {
   documents: number;
   segments: number;
+  /** Gönderilecek (maske verilmişse maskeli) metnin bayt sayısı. */
   bytes: number;
+  /** Maske uygulanmadan metnin bayt sayısı. */
+  bytesUnmasked: number;
+  /** Gönderilecek ilk segmentin kısa örneği; maske verilmişse maskeli. */
   sample: string;
   /** Kapsam dışı kalan belgeler; sessiz atlama yok. */
   skipped: ScopeSkip[];
+  /** Önizlemede uygulanacak maske özeti; maske verilmediyse null. */
+  mask: ConsentMaskPreview | null;
 };
 
 export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
@@ -2111,8 +2127,18 @@ export const api = {
   aiSecretStatus: () => invoke<ApiKeyStatus>("ai_secret_status"),
   aiSecretStore: (apiKey: string) => invoke<ApiKeyStatus>("ai_secret_store", { apiKey }),
   aiSecretClear: () => invoke<ApiKeyStatus>("ai_secret_clear"),
-  aiConsentPreview: (caseId: string, documentIds: string[]) =>
-    invoke<ConsentPreview>("ai_consent_preview", { caseId, documentIds }),
+  aiConsentPreview: (
+    caseId: string,
+    documentIds: string[],
+    maskTerms?: string[] | null,
+    maskPlanId?: string | null,
+  ) =>
+    invoke<ConsentPreview>("ai_consent_preview", {
+      caseId,
+      documentIds,
+      maskTerms: maskTerms ?? null,
+      maskPlanId: maskPlanId ?? null,
+    }),
   aiConsentCreate: (caseId: string, providerId: string, purpose: string, documentIds: string[]) =>
     invoke<TransferConsentRow>("ai_consent_create", { caseId, providerId, purpose, documentIds }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),

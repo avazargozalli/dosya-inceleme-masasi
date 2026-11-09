@@ -699,6 +699,17 @@ export const tr = {
       "Terimler arayüze dönmez; eşleşen blok bulunamayan bölge varsa gönderim durur.",
     maskPlanHintIdle: "Seçilirse plan bölgelerinden türetilen terimler de maskeye eklenir.",
     maskPlanUnreadable: "Planlar okunamadı; aşağıdaki hataya bakın.",
+    previewMaskApplied: "{terms} terim · örnek metinde {runs} eşleşme maskelendi.",
+    previewMaskNoMatch:
+      "{terms} terim · örnek metinde eşleşme yok; metin değişmeden gider.",
+    previewMaskBytes: "Gönderim {masked} (maskesiz {raw}).",
+    previewMaskBytesUpper:
+      "Kapsam büyük: bayt sayısı maskesiz üst sınırdır ({raw}); örnek yine maskeli.",
+    previewMaskPlan: "karartma planı uygulanıyor.",
+    previewNoMask: "Maske yok: metin olduğu gibi gider.",
+    maskChangedSincePreview:
+      "Maske önizlemeden/onaydan sonra değişti. Gönderim, önizlenen metinle aynı " +
+      "olmaz — “Onayla”ya basıp önizlemeyi yenileyin.",
     validateTitle: "Aday doğrula ve kaydet",
     validateSub:
       "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +

@@ -6895,10 +6895,26 @@ pub fn ai_consent_preview(
     state: State<'_, AppState>,
     case_id: String,
     document_ids: Vec<String>,
+    mask_terms: Option<Vec<String>>,
+    mask_plan_id: Option<String>,
 ) -> Result<ConsentPreview, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    Ok(db.consent_preview(&case_id, &document_ids)?)
+    // Önizleme **gönderilecek metni** göstermeli: `ai_run_execute` maskeyi
+    // uygulayıp maskeli metni gönderdiği için maskesiz önizleme yanlış olurdu.
+    // Plan köprüsü gönderimle **aynı** çekirdek kapısından geçer (terim
+    // türetimi + kapsam denetimi); türetilemeyen plan burada da hata verir.
+    let mut terms = mask_terms.unwrap_or_default();
+    let mut plan: Option<(String, String)> = None;
+    if let Some(plan_id) = mask_plan_id.as_deref() {
+        let derived = db.outbound_terms_from_plan(&case_id, plan_id)?;
+        terms.extend(derived.terms);
+        plan = Some((derived.plan_id, derived.document_version_id));
+    }
+    let plan_ref = plan
+        .as_ref()
+        .map(|(plan_id, version)| (plan_id.as_str(), version.as_str()));
+    Ok(db.consent_preview_masked(&case_id, &document_ids, &terms, plan_ref)?)
 }
 
 /// Onaylı aktarımı **gerçekten** yürütür. Gönderilecek içerik **onayın belge

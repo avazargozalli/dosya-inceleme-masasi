@@ -4,7 +4,16 @@ import { tr } from "./i18n";
 import { consentScopeLine, skipReasonLabel, skippedSummary } from "./transferScope";
 
 function preview(overrides: Partial<ConsentPreview> = {}): ConsentPreview {
-  return { documents: 2, segments: 5, bytes: 120, sample: "", skipped: [], ...overrides };
+  return {
+    documents: 2,
+    segments: 5,
+    bytes: 120,
+    bytesUnmasked: 120,
+    sample: "",
+    skipped: [],
+    mask: null,
+    ...overrides,
+  };
 }
 
 describe("aktarım kapsamı", () => {

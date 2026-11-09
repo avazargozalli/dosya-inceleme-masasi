@@ -141,6 +141,9 @@ export function Ai() {
   const [receipts, setReceipts] = useState<TransferReceiptRow[]>([]);
   const [receiptListBusy, setReceiptListBusy] = useState(false);
   const [preview, setPreview] = useState<ConsentPreview | null>(null);
+  // Önizlemenin hangi maske **imzasıyla** alındığı. Maske onaydan/önizlemeden
+  // sonra değişirse gönderim farklı metinle çıkardı → "Çalıştır" kapanır.
+  const [previewMaskSig, setPreviewMaskSig] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<AiCandidateRow[]>([]);
   // Gönderim sicili de **çekirdekten** okunur: `ai_context_items` her çalıştırmada
   // hangi belge sürümünün kaç baytının çıktığını yazıyordu ama okuma yolu yoktu
@@ -358,6 +361,7 @@ export function Ai() {
     setReceipts([]);
     setReceiptListBusy(false);
     setPreview(null);
+    setPreviewMaskSig(null);
     setCandidates([]);
     setContextItems([]);
     setContextBusy(false);
@@ -419,6 +423,12 @@ export function Ai() {
   const maskInvalid =
     maskTerms.length > 500 ||
     maskTerms.some((term) => [...term].length < 2 || [...term].length > 200);
+  // Maske imzası: önizleme/onay **hangi maske** üzerinden alındı. Gönderim
+  // aynı maskeyi kullanmıyorsa "Çalıştır" kapanır — onaylanan metin ile çıkan
+  // metin ayrışmaz (şartname §11.7: maskeleme durumu önizlemenin parçasıdır).
+  const maskSig = `${maskPlanId}\u0000${maskTerms.join("\u0000")}`;
+  const maskChangedSincePreview =
+    preview !== null && previewMaskSig !== null && previewMaskSig !== maskSig;
 
   async function approve() {
     if (!provider) return;
@@ -430,9 +440,15 @@ export function Ai() {
       // gönderim yalnız onu kapsar; sonradan belge eklenirse yeniden onay gerekir.
       const docs = await api.documentList(caseId);
       const ids = docs.map((doc) => doc.id);
-      const nextPreview = await api.aiConsentPreview(caseId, ids);
+      const nextPreview = await api.aiConsentPreview(
+        caseId,
+        ids,
+        maskTerms.length > 0 ? maskTerms : null,
+        maskPlanId || null,
+      );
       if (caseGen.current !== gen) return;
       setPreview(nextPreview);
+      setPreviewMaskSig(maskSig);
       // Onay **sağlayıcı profiline** bağlanır: kimlik dizesini arayüz kurmaz,
       // çekirdek profilden türetir (uç nokta + model parmak izi dahil). Böylece
       // sağlayıcı değişince eski onay kendiliğinden geçersizleşir.
@@ -687,16 +703,23 @@ export function Ai() {
     const seq = previewSeq.current;
     try {
       const docs = await api.documentList(caseId);
-      const next = await api.aiConsentPreview(caseId, docs.map((doc) => doc.id));
+      const next = await api.aiConsentPreview(
+        caseId,
+        docs.map((doc) => doc.id),
+        maskTerms.length > 0 ? maskTerms : null,
+        maskPlanId || null,
+      );
       // İki okuma yarışırsa **son** istek kazanır; eskisinin geç yanıtı yeni
       // önizlemeyi ne çizer ne siler.
       if (caseGen.current !== gen || previewSeq.current !== seq) return;
       setPreview(next);
+      setPreviewMaskSig(maskSig);
       setError(null);
     } catch (e) {
       // Sessiz yutma yok: istek düştüyse söylenir ve eski önizleme silinir.
       if (caseGen.current !== gen || previewSeq.current !== seq) return;
       setPreview(null);
+      setPreviewMaskSig(null);
       setError(toApiError(e));
     }
   }
@@ -853,12 +876,25 @@ export function Ai() {
             </button>
             <button
               className="btn primary"
-              disabled={!provider || !consent || busy || revokingConsent || consentStale || maskInvalid}
+              disabled={
+                !provider ||
+                !consent ||
+                busy ||
+                revokingConsent ||
+                consentStale ||
+                maskInvalid ||
+                maskChangedSincePreview
+              }
               onClick={() => void start()}
             >
               {t("ai.run")}
             </button>
           </div>
+          {maskChangedSincePreview ? (
+            <div className="notice warn" role="status">
+              {t("ai.maskChangedSincePreview")}
+            </div>
+          ) : null}
         </div>
 
         {preview ? (
@@ -880,6 +916,26 @@ export function Ai() {
                 {skippedSummary(preview.skipped)} {t("ai.skippedSuffix")}
               </p>
             ) : null}
+            {preview.mask ? (
+              <p className="hint" style={{ margin: 0 }}>
+                {preview.mask.sampleMasked
+                  ? t("ai.previewMaskApplied", {
+                      terms: preview.mask.termCount,
+                      runs: preview.mask.maskedRuns,
+                    })
+                  : t("ai.previewMaskNoMatch", { terms: preview.mask.termCount })}
+                {" · "}
+                {preview.mask.bytesExact
+                  ? t("ai.previewMaskBytes", {
+                      masked: formatSize(preview.bytes),
+                      raw: formatSize(preview.bytesUnmasked),
+                    })
+                  : t("ai.previewMaskBytesUpper", { raw: formatSize(preview.bytesUnmasked) })}
+                {preview.mask.planId ? ` · ${t("ai.previewMaskPlan")}` : ""}
+              </p>
+            ) : (
+              <p className="hint" style={{ margin: 0 }}>{t("ai.previewNoMask")}</p>
+            )}
             <pre style={{ maxHeight: 140, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
               {preview.sample || t("ai.previewEmpty")}
             </pre>

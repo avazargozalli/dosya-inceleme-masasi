@@ -263,6 +263,14 @@ pub struct OutboundMask {
     pub terms: Vec<String>,
 }
 
+/// Önizlemede maskenin **tüm kapsama** uygulanacağı karakter bütçesi.
+///
+/// `mask_terms` maliyeti metin × terim olduğundan büyük kapsamda (ör. 1.000
+/// sayfa) önizleme yavaşlardı. Bütçe aşılırsa yalnız **örnek** segment
+/// maskelenir, eşleşme sayısı örneğe daralır ve bayt sayısı maskesiz üst sınır
+/// olarak işaretlenir (`bytesExact=false`). Sessizce "maskeli" denmez.
+pub const PREVIEW_MASK_CHAR_BUDGET: usize = 1_000_000;
+
 /// Gönderilecek segmentin kasadaki kimliği. Metin **çağırandan alınmaz**:
 /// çekirdek kasadaki `text_segments.raw_text`i okur, maskeyi kendisi uygular.
 #[derive(Debug, Clone)]
@@ -1443,11 +1451,41 @@ impl Database {
 pub struct ConsentPreview {
     pub documents: i64,
     pub segments: i64,
+    /// Gönderilecek (maske verilmişse **maskeli**) metnin bayt sayısı.
+    /// `mask.bytes_exact=false` ise bu sayı maskesiz **üst sınırdır**.
     pub bytes: i64,
-    /// Gönderilecek ilk segmentin kısa örneği; veri yoksa boş.
+    /// Maske **uygulanmadan** metnin bayt sayısı (karşılaştırma için).
+    pub bytes_unmasked: i64,
+    /// Gönderilecek ilk segmentin kısa örneği; maske verilmişse **maskeli**.
+    /// Veri yoksa boş.
     pub sample: String,
     /// Kapsam dışı kalan belgeler ve nedeni (sessiz atlama yok).
     pub skipped: Vec<ScopeSkip>,
+    /// Önizlemede uygulanacak maske özeti; maske verilmediyse `None`.
+    /// **Terimler taşınmaz** — yalnız sayı ve plan kimliği.
+    pub mask: Option<ConsentMaskPreview>,
+}
+
+/// Önizlemede uygulanacak maskenin özeti. Terim listesi burada da yazılmaz
+/// (şartname §737: terimler kasaya girmez); yalnız ölçüm ve plan kimliği.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentMaskPreview {
+    /// Doğrulanmış terim sayısı.
+    pub term_count: i64,
+    /// Kapsamda maskelenen parça sayısı. Bütçe aşılırsa yalnız **örnek**
+    /// segment ölçülür (`bytes_exact=false` bunu söyler).
+    pub masked_runs: i64,
+    /// Kapsamda maskelenen özgün karakter sayısı (bütçe aşılırsa yalnız örnek).
+    pub masked_chars: i64,
+    /// Örnek segmentte en az bir eşleşme var mı (kullanıcı "maske uygulandı"
+    /// sanmasın diye eşleşmesiz durum ayrıca yazılır).
+    pub sample_masked: bool,
+    /// `bytes` alanı maskeli metinden mi sayıldı? `false` ise bayt sayısı
+    /// maskesiz **üst sınırdır** — "maskeli" diye sunulmaz.
+    pub bytes_exact: bool,
+    /// Karartma planı köprüsü kullanıldıysa plan kimliği (terim değil).
+    pub plan_id: Option<String>,
 }
 
 /// Aktarım kapsamında gönderilecek tek segment.
@@ -1737,27 +1775,128 @@ impl Database {
     /// bayt, kısa örnek ve **kapsam dışı kalan belgeler**. Gönderim yolu aynı
     /// çözümleyiciyi kullandığı için önizleme ile gönderilen içerik ayrışamaz.
     /// Tam metin arayüze dökülmez.
+    ///
+    /// **Maske:** `ai_run_execute` maskeyi uygulayıp **maskeli** metni
+    /// gönderdiği için, maskesiz önizleme gönderilecek metni yanlış gösterirdi.
+    /// `consent_preview_masked` gönderilecek metnin kendisini (maskeli örnek +
+    /// maskeli bayt) döndürür; bu fonksiyon maske verilmeden çağırır.
     pub fn consent_preview(
         &self,
         case_id: &str,
         document_ids: &[String],
     ) -> Result<ConsentPreview, StorageError> {
+        self.consent_preview_masked(case_id, document_ids, &[], None)
+    }
+
+    /// Maskeli önizleme: maske **doğrulanır**, örnek segment maskeli gösterilir
+    /// ve bayt sayısı maskeli metinden sayılır. `plan` verilmişse (`(plan_id,
+    /// document_version_id)`) plan bu kapsamdaki bir belgeye ait olmalıdır;
+    /// değilse gönderim yoluyla **aynı** hata: `E_MASK_PLAN_SCOPE`.
+    ///
+    /// Terimler yalnız çağrı boyunca yaşar, kasaya yazılmaz.
+    pub fn consent_preview_masked(
+        &self,
+        case_id: &str,
+        document_ids: &[String],
+        terms: &[String],
+        plan: Option<(&str, &str)>,
+    ) -> Result<ConsentPreview, StorageError> {
+        self.consent_preview_with_budget(
+            case_id,
+            document_ids,
+            terms,
+            plan,
+            PREVIEW_MASK_CHAR_BUDGET,
+        )
+    }
+
+    /// Bütçe parametreli iç gerçekleme: önizleme tüm kapsamı maskelerken
+    /// `mask_terms` maliyeti metin × terim olduğundan büyük kapsamda yalnız
+    /// **örnek** maskelenir ve bayt sayısı maskesiz üst sınır olarak
+    /// işaretlenir (`bytes_exact=false`). Sessizce "maskeli" denmez.
+    fn consent_preview_with_budget(
+        &self,
+        case_id: &str,
+        document_ids: &[String],
+        terms: &[String],
+        plan: Option<(&str, &str)>,
+        budget: usize,
+    ) -> Result<ConsentPreview, StorageError> {
+        let terms = if terms.is_empty() {
+            // Maske verilmedi: boş liste "geçersiz terim" değildir.
+            Vec::new()
+        } else {
+            validate_terms(terms).map_err(mask_storage_error)?
+        };
         let resolved = self.resolve_transfer_scope(case_id, document_ids)?;
-        let bytes = resolved
+        if let Some((_, version)) = plan {
+            if !resolved
+                .documents
+                .iter()
+                .any(|document| document.document_version_id == version)
+            {
+                return Err(StorageError::MaskRejected("E_MASK_PLAN_SCOPE"));
+            }
+        }
+        let bytes_unmasked = resolved
             .segments
             .iter()
             .map(|segment| i64::try_from(segment.text.len()).unwrap_or(i64::MAX))
-            .sum();
+            .sum::<i64>();
+        let mut bytes = bytes_unmasked;
+        let mut sample = resolved
+            .segments
+            .first()
+            .map(|segment| segment.text.chars().take(200).collect())
+            .unwrap_or_default();
+        let mut mask_summary = None;
+        if !terms.is_empty() {
+            let total_chars: usize = resolved
+                .segments
+                .iter()
+                .map(|segment| segment.text.chars().count())
+                .sum();
+            let exact = total_chars <= budget;
+            let mut masked_runs: i64 = 0;
+            let mut masked_chars: i64 = 0;
+            let mut masked_bytes: i64 = 0;
+            let mut sample_masked = false;
+            for (index, segment) in resolved.segments.iter().enumerate() {
+                if !exact && index > 0 {
+                    break;
+                }
+                let masked = mask_terms(&segment.text, &terms).map_err(mask_storage_error)?;
+                masked_runs = masked_runs
+                    .saturating_add(i64::try_from(masked.masked_runs).unwrap_or(i64::MAX));
+                masked_chars = masked_chars
+                    .saturating_add(i64::try_from(masked.masked_chars).unwrap_or(i64::MAX));
+                masked_bytes = masked_bytes
+                    .saturating_add(i64::try_from(masked.text.len()).unwrap_or(i64::MAX));
+                if index == 0 {
+                    sample_masked = masked.masked_runs > 0;
+                    sample = masked.text.chars().take(200).collect();
+                }
+            }
+            if exact {
+                bytes = masked_bytes;
+            }
+            mask_summary = Some(ConsentMaskPreview {
+                term_count: i64::try_from(terms.len()).unwrap_or(i64::MAX),
+                masked_runs,
+                masked_chars,
+                sample_masked,
+                bytes_exact: exact,
+                plan_id: plan.map(|(plan_id, _)| plan_id.to_string()),
+            });
+        }
         Ok(ConsentPreview {
             documents: i64::try_from(resolved.documents.len()).unwrap_or(i64::MAX),
             segments: i64::try_from(resolved.segments.len()).unwrap_or(i64::MAX),
             bytes,
-            sample: resolved
-                .segments
-                .first()
-                .map(|segment| segment.text.chars().take(200).collect())
-                .unwrap_or_default(),
+            bytes_unmasked,
+            sample,
             skipped: resolved.skipped,
+            mask: mask_summary,
         })
     }
 }
@@ -2626,12 +2765,192 @@ mod tests {
         assert_eq!(preview.documents, 0);
         assert_eq!(preview.segments, 0);
         assert_eq!(preview.bytes, 0);
+        assert_eq!(preview.bytes_unmasked, 0);
         assert!(preview.sample.is_empty());
+        assert!(preview.mask.is_none(), "maske verilmediyse özet yok");
 
         let missing = db
             .consent_preview(&case_id, &["olmayan-belge".to_string()])
             .expect("önizleme");
         assert_eq!(missing.documents, 0);
+    }
+
+    /// Önizleme **gönderilecek metni** göstermeli: maskeli örnek + maskeli bayt.
+    /// En güçlü kanıt, önizlemenin gerçek gönderimle birebir aynı olmasıdır.
+    #[test]
+    fn preview_with_mask_matches_what_is_sent() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz kira sözleşmesini imzaladı"],
+        );
+        let terms = vec!["Ahmet Yılmaz".to_string()];
+        let preview = db
+            .consent_preview_masked(&case_id, std::slice::from_ref(&document_id), &terms, None)
+            .expect("önizleme");
+        let mask = preview.mask.as_ref().expect("maske özeti");
+        assert_eq!(mask.term_count, 1);
+        assert!(mask.sample_masked, "örnekte eşleşme var");
+        assert!(mask.bytes_exact, "küçük kapsam birebir sayılır");
+        assert!(
+            preview.bytes < preview.bytes_unmasked,
+            "maske bayt sayısını küçültür"
+        );
+        assert_eq!(
+            preview.bytes_unmasked,
+            i64::try_from("Ahmet Yılmaz kira sözleşmesini imzaladı".len()).unwrap_or(i64::MAX),
+            "maskesiz bayt ham metinden"
+        );
+        assert!(preview.sample.contains("[MASKED]"), "örnek maskeli");
+        assert!(
+            !preview.sample.contains("Ahmet Yılmaz"),
+            "önizleme adı göstermez"
+        );
+
+        // Gönderim yolu aynı maskeyi uygular: bayt ve örnek birebir aynı olmalı.
+        let consent = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+            })
+            .expect("onay");
+        let started = db
+            .start_ai_run(&case_id, &run(&case_id, &consent.id))
+            .expect("çalıştır");
+        let scope = db
+            .consent_scope_segments(&case_id, &consent.id)
+            .expect("kapsam");
+        let refs: Vec<OutboundSegmentRef> = scope
+            .segments
+            .iter()
+            .map(|segment| OutboundSegmentRef {
+                segment_id: segment.segment_id.clone(),
+                document_version_id: segment.document_version_id.clone(),
+            })
+            .collect();
+        let sent = db
+            .record_outbound_segments(&started.id, &refs, Some(&OutboundMask { terms }))
+            .expect("gönderim sicili");
+        let sent_bytes: usize = sent.segments.iter().map(|segment| segment.text.len()).sum();
+        assert_eq!(
+            preview.bytes,
+            i64::try_from(sent_bytes).unwrap_or(i64::MAX),
+            "önizleme baytı gönderilen baytla birebir"
+        );
+        let sent_sample: String = sent.segments[0].text.chars().take(200).collect();
+        assert_eq!(
+            preview.sample, sent_sample,
+            "önizleme örneği gönderilen metin"
+        );
+    }
+
+    /// Maske **verilmediyse** davranış değişmez: örnek ham, bayt maskesiz.
+    #[test]
+    fn preview_without_mask_shows_raw_text() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz kira sözleşmesini imzaladı"],
+        );
+        let preview = db
+            .consent_preview(&case_id, &[document_id])
+            .expect("önizleme");
+        assert!(preview.mask.is_none());
+        assert_eq!(preview.bytes, preview.bytes_unmasked);
+        assert!(preview.sample.contains("Ahmet Yılmaz"));
+    }
+
+    /// Eşleşme yoksa "maske uygulandı" denmez: sayaç sıfır, bayt değişmez.
+    #[test]
+    fn preview_with_mask_reports_no_match() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["kira sözleşmesi"]);
+        let preview = db
+            .consent_preview_masked(&case_id, &[document_id], &["Kemal".to_string()], None)
+            .expect("önizleme");
+        let mask = preview.mask.expect("maske özeti");
+        assert!(!mask.sample_masked);
+        assert_eq!(mask.masked_runs, 0);
+        assert_eq!(mask.masked_chars, 0);
+        assert_eq!(preview.bytes, preview.bytes_unmasked);
+    }
+
+    /// Plan köprüsü: plan bu kapsamdaki bir belgeye ait değilse gönderim
+    /// yoluyla **aynı** hata (`E_MASK_PLAN_SCOPE`) — önizleme sessiz geçmez.
+    #[test]
+    fn preview_rejects_plan_out_of_scope() {
+        let (db, case_id, _) = setup();
+        let (document_id, version_id) =
+            document_with_text(&db, &case_id, "Belge", &["Ahmet Yılmaz imzaladı"]);
+        let (_other_document, other_version) =
+            document_with_text(&db, &case_id, "Diğer", &["başka metin"]);
+        let terms = vec!["Ahmet Yılmaz".to_string()];
+        let error = db
+            .consent_preview_masked(
+                &case_id,
+                std::slice::from_ref(&document_id),
+                &terms,
+                Some(("plan-1", &other_version)),
+            )
+            .expect_err("kapsam dışı plan");
+        assert_eq!(error.code(), "E_MASK_PLAN_SCOPE");
+
+        let inside = db
+            .consent_preview_masked(
+                &case_id,
+                &[document_id],
+                &terms,
+                Some(("plan-1", &version_id)),
+            )
+            .expect("kapsam içi plan");
+        assert_eq!(
+            inside.mask.expect("maske özeti").plan_id.as_deref(),
+            Some("plan-1")
+        );
+    }
+
+    /// Büyük kapsamda yalnız örnek maskelenir; bayt sayısı **maskesiz üst
+    /// sınır** olarak işaretlenir (sessizce "maskeli" denmez).
+    #[test]
+    fn preview_budget_marks_bytes_as_upper_bound() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz kira sözleşmesini imzaladı"],
+        );
+        let preview = db
+            .consent_preview_with_budget(
+                &case_id,
+                &[document_id],
+                &["Ahmet Yılmaz".to_string()],
+                None,
+                1,
+            )
+            .expect("önizleme");
+        let mask = preview.mask.expect("maske özeti");
+        assert!(!mask.bytes_exact, "bütçe aşıldı");
+        assert!(mask.sample_masked, "örnek yine maskelenir");
+        assert_eq!(preview.bytes, preview.bytes_unmasked);
+    }
+
+    /// Geçersiz terim önizlemede de reddedilir (gönderimle aynı kapı).
+    #[test]
+    fn preview_rejects_invalid_terms() {
+        let (db, case_id, _) = setup();
+        let error = db
+            .consent_preview_masked(&case_id, &[], &["a".to_string()], None)
+            .expect_err("kısa terim");
+        assert_eq!(error.code(), "E_MASK_TERM");
     }
 
     #[test]

@@ -238,19 +238,41 @@ const PREVIEW: ConsentPreview = {
   documents: 2,
   segments: 37,
   bytes: 20_480,
+  bytesUnmasked: 20_480,
   sample: "MADDE 1 — Taraflar arasındaki kira sözleşmesi…",
   skipped: [
     { documentId: "d3", reason: "not_parsed" },
     { documentId: "d4", reason: "empty_text" },
   ],
+  mask: null,
 };
 
 const PREVIEW_EMPTY: ConsentPreview = {
   documents: 1,
   segments: 0,
   bytes: 0,
+  bytesUnmasked: 0,
   sample: "",
   skipped: [],
+  mask: null,
+};
+
+/** Maskeli önizleme: örnek ve bayt **gönderilecek** (maskeli) metinden. */
+const PREVIEW_MASKED: ConsentPreview = {
+  documents: 2,
+  segments: 37,
+  bytes: 12_000,
+  bytesUnmasked: 20_480,
+  sample: "MADDE 1 — [MASKED] arasındaki kira sözleşmesi…",
+  skipped: [],
+  mask: {
+    termCount: 1,
+    maskedRuns: 2,
+    maskedChars: 24,
+    sampleMasked: true,
+    bytesExact: true,
+    planId: null,
+  },
 };
 
 const CONSENT: TransferConsentRow = {
@@ -577,7 +599,7 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
 
     await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(1));
     expect(mocks.documentList).toHaveBeenCalledWith("p1");
-    expect(mocks.aiConsentPreview).toHaveBeenCalledWith("p1", ["d1", "d2"]);
+    expect(mocks.aiConsentPreview).toHaveBeenCalledWith("p1", ["d1", "d2"], null, null);
     expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
       "p1",
       "prov-a",
@@ -624,7 +646,7 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
 
     fireEvent.click(button(t("ai.showContent")));
     await screen.findByText(t("ai.previewTitle"));
-    expect(mocks.aiConsentPreview).toHaveBeenCalledWith("p1", ["d1", "d2"]);
+    expect(mocks.aiConsentPreview).toHaveBeenCalledWith("p1", ["d1", "d2"], null, null);
     expect(
       screen.getByText(
         t("ai.previewSub", {
@@ -2821,11 +2843,12 @@ describe("AI ekranı — gönderim maskesi", () => {
   it("girilen terimler çalıştırmaya maskTerms olarak gider (boş satırlar atılır)", async () => {
     setup();
     await screen.findByText("api:claude (api)");
-    fireEvent.click(button(t("ai.approve")));
-    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
-
+    // Maske **onaydan önce** girilir: önizleme/onay gönderilecek maskeli metni
+    // kapsar; onaydan sonra maske değişirse "Çalıştır" kapanır (ayrı test).
     fireEvent.change(maskBox(), { target: { value: "Ahmet Yılmaz\n  Acme Ltd.  \n\n" } });
     expect(screen.getByText(t("ai.maskCount", { count: 2 }))).toBeTruthy();
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
     expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize", [
@@ -2922,6 +2945,70 @@ describe("AI ekranı — gönderim maskesi", () => {
     const reportCard = cardByHeading(t("ai.validateTitle"));
     expect(await within(reportCard).findByText(t("ai.maskedSourceRange", { start: 42 }))).toBeTruthy();
     expect(within(reportCard).getByText(t("ai.outboundMasked"))).toBeTruthy();
+  });
+
+  it("önizleme maskeyi taşır: terimler çekirdeğe gider, örnek maskeli gösterilir", async () => {
+    setup({ preview: async () => PREVIEW_MASKED });
+    await screen.findByText("api:claude (api)");
+    fireEvent.change(maskBox(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentPreview).toHaveBeenCalledTimes(1));
+    // Terimler **çekirdeğe** gider: önizleme, gönderimle aynı maskeyi hesaplar.
+    expect(mocks.aiConsentPreview).toHaveBeenCalledWith(
+      "p1",
+      ["d1", "d2"],
+      ["Ahmet Yılmaz"],
+      null,
+    );
+    await screen.findByText(t("ai.previewTitle"));
+    const line = `${t("ai.previewMaskApplied", { terms: 1, runs: 2 })} · ${t(
+      "ai.previewMaskBytes",
+      { masked: formatSize(12_000), raw: formatSize(20_480) },
+    )}`;
+    expect(screen.getByText(byTextContent(line))).toBeTruthy();
+    expect(screen.getByText(PREVIEW_MASKED.sample)).toBeTruthy();
+  });
+
+  it("maske onaydan sonra değişirse çalıştır kapanır ve neden yazılır", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+
+    fireEvent.change(maskBox(), { target: { value: "Ahmet Yılmaz" } });
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(true));
+    expect(screen.getByText(t("ai.maskChangedSincePreview"))).toBeTruthy();
+
+    // Yeniden onay, önizlemeyi maskeyle tazeler ve kapıyı açar.
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    expect(screen.queryByText(t("ai.maskChangedSincePreview"))).toBeNull();
+  });
+
+  it("plan seçiliyken önizleme plan kimliğini çekirdeğe taşır", async () => {
+    setup({ plans: async () => [planRow()] });
+    await screen.findByText("api:claude (api)");
+    await waitFor(() => expect(planSelect().options.length).toBe(2));
+    fireEvent.change(planSelect(), { target: { value: "plan-1" } });
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentPreview).toHaveBeenCalledTimes(1));
+    // Terim değil **plan kimliği**: terimler çekirdekte türetilir.
+    expect(mocks.aiConsentPreview).toHaveBeenCalledWith("p1", ["d1", "d2"], null, "plan-1");
+  });
+
+  it("önizleme kapsam dışı planda düşerse onay oluşmaz ve hata yazılır", async () => {
+    setup({
+      plans: async () => [planRow()],
+      preview: async () => {
+        throw { code: "E_MASK_PLAN_SCOPE", message: "plan bu kapsamda değil" };
+      },
+    });
+    await screen.findByText("api:claude (api)");
+    await waitFor(() => expect(planSelect().options.length).toBe(2));
+    fireEvent.change(planSelect(), { target: { value: "plan-1" } });
+    fireEvent.click(button(t("ai.approve")));
+    expect(await screen.findByText("E_MASK_PLAN_SCOPE")).toBeTruthy();
+    expect(mocks.aiConsentCreate).not.toHaveBeenCalled();
   });
 
   function planRow(overrides: Partial<RedactionPlanRow> = {}): RedactionPlanRow {
