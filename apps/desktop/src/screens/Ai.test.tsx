@@ -2986,8 +2986,12 @@ describe("AI ekranı — gönderim maskesi", () => {
   });
 
   it("dosya değişince plan seçimi temizlenir (önceki dosyanın planı taşınmaz)", async () => {
+    // Dikkat: yeni dosyanın listesinde **aynı kimlikli** bir plan yok; seçicinin
+    // boşalması DOM eşleşmesine değil, durumun temizlenmesine bağlı olmalı.
+    // Bu yüzden ekran değil **gönderilen çalıştırma** ölçülür: eski plan
+    // kimliği taşınırsa çağrı altı argümanlı olur.
     setup({
-      plans: async (caseId) => (caseId === "p1" ? [planRow()] : [planRow({ id: "plan-2" })]),
+      plans: async (caseId) => (caseId === "p1" ? [planRow()] : []),
     });
     await screen.findByText("api:claude (api)");
     await waitFor(() => expect(planSelect().options.length).toBe(2));
@@ -2997,5 +3001,10 @@ describe("AI ekranı — gönderim maskesi", () => {
     switchCase("p2");
     await screen.findByText("local:ollama (local)");
     await waitFor(() => expect(planSelect().value).toBe(""));
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p2", "prov-local", CONSENT.id, "summarize");
   });
 });

@@ -12,6 +12,7 @@
 | F13-T04 | ✅ | plan + bölgeler (sayfa, quad, terim hash'i) kaydı; **sicil okunur** (plan listesi + bölge sayfa dağılımı; 2026-11-07 turu) |
 | F13-T05 | ✅ | sayfa önizlemesi üzerinde dikdörtgen seçimi; punto koordinatına çevrim; bölge doğrulaması |
 | F13-T06 | ✅ | bağımsız pypdf okuyucusu + OCR (tesseract varsa) sızıntı kontrolü; `ocrVerified` dürüst bayrağı |
+| F13-T04b | ✅ | plan bölgeleri **gönderim maskesine** bağlandı (2026-11-09 turu; terimler çekirdekte türetilir, `E_MASK_PLAN`) |
 
 ## Dürüst durum
 
@@ -219,3 +220,51 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   bağı (`parent_version_id`) sicil satırında **gösterilmiyor** (yalnız belge/sürüm no); (c) plan
   durumu `applied` dışına ürün akışında geçmiyor (draft→applied tek adım) — yeniden inceleme
   akışı (F13-T01'in "yerleşim değişince tekrar incelet" kısmı) hâlâ ayrı iş.
+
+## Tur kaydı — 2026-11-09 (plan bölgeleri gönderim maskesine bağlanır)
+
+- **Ölçülen boşluk:** F11'in gönderim maskesi yalnız kullanıcının elle girdiği terimlerle
+  çalışıyordu; F13 planı ise paylaşım PDF'ine uygulanıyordu. Aynı belge AI'ya giderken
+  planın kırmızı bölgelerindeki adlar **maskesiz** çıkabiliyordu. Planda terim saklanmaz
+  (yalnız bölge geometrisi + `detected_text_hash`), bu yüzden terimler metinden türetilmeliydi.
+- **Yazılan:** `redactions::outbound_terms_from_plan` — planın `redact` bölgeleriyle
+  **kesişen** `text_segments.bbox_list` bloklarının karakter aralıkları kesilir; kırpılan
+  parçalar `validate_terms` ile kanonikleştirilir (Türkçe 1:1 katlama, tekilleştirme,
+  uzundan kısaya). Terimler **kasaya yazılmaz**; `ai_run_execute` `maskPlanId` alır,
+  maskeyi çekirdek uygular. Plan bu onayın kapsamındaki sürüme ait değilse
+  `E_MASK_PLAN_SCOPE`; denetim kaydı plan kimliği + bölge/blok/terim sayısı yazar.
+- **Kapılar (`E_MASK_PLAN`, hepsi hatayla kapanır):** plan güncel sürüme ve aynı render
+  özetine ait olmalı · sayfa döndürmesi 0 · sayfa koordinat uzayı `unrotated_cropbox_points`
+  (plan `pdf_page_points`) · bölge geometrisi okunabilir · bölgede **en az bir** kullanılabilir
+  terim var. Herhangi biri tutmazsa **hiçbir bayt gönderilmez**; sessiz eksik maske yok.
+- **Arayüz:** AI ekranında "Karartma planı" seçicisi (plan listesi `redaction_plan_list`).
+  Düşen liste "plan yok" demez (`maskPlanUnreadable` + hata satırı); dosya değişiminde seçim
+  temizlenir ve çalıştırma plan kimliği taşımaz.
+- **Testler:** storage `redactions` **8 → 17** (+9: kesişim, çakışan bölge tekilleştirme,
+  kısa parça sayımı, bayat sürüm, yabancı dosya, tamper edilmiş `case_id`, render özeti,
+  döndürülmüş sayfa, uzay uyuşmazlığı, metinsiz sürüm) → `dim-storage --lib` **484/484**
+  (252,02 s). Arayüz `Ai.test.tsx` **98 → 101** (+3: plan seçimi → `maskPlanId`, düşen liste,
+  dosya değişiminde taşınmama) → vitest **1323/1323** (64 dosya).
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-plan-mask-gates.py`, her mutasyon tek
+  başına, `try/finally` + sha256 birebir):** **11/11 kırmızı** — C1 bölge kesişimi kapalı ·
+  C2 plan dosya kapsamı denetlenmez · C3 bayat sürüm · C4 döndürülmüş sayfa · C5 PDF dışı uzay ·
+  C6 metinsiz bölge maskesiz geçer · C7 tek karakter terime girer · C8 render özeti ·
+  U1 plan kimliği geçirilmez · U2 düşen liste "plan yok" der · U3 seçim taşınır.
+  **Dürüst (kendi hatam):** ilk ölçüm **8/11** idi — C2/C8 için test yoktu ve U3 testi
+  DOM eşleşmesine bağlıydı (seçenek listede olmayınca kendiliğinden boşalıyordu). İki çekirdek
+  testi eklendi, U3 testi **gönderilen çalıştırmanın argümanını** ölçecek biçimde düzeltildi;
+  ikinci ölçüm 11/11.
+- **Dürüst sınırlar:** (a) çıkarım **blok düzeyinde**: bölge bir satırın parçasını kapsasa da
+  o blok bütün olarak maskelenir (fazla maskeleme; eksik maskeleme tercih edilmez);
+  (b) 1 karakterlik parçalar `validate_terms` alt sınırı yüzünden maskelenemez — **sayılır**
+  (`shortSkipped`) ama sessiz kalmaz; (c) yalnız `unrotated_cropbox_points` + döndürmesiz
+  sayfalar; OCR/görüntü uzayı (`image_pixels`) çevrilemez, plan reddedilir; (d) plan
+  `parse_run_id` boşsa **en yeni** ayrıştırma kullanılır — doluysa ve güncel değilse reddedilir;
+  (e) plan seçici dosyadaki **tüm** planları listeler; belge/sürüm filtresi yok, uyumsuz seçim
+  çalıştırmada açık hatayla durur; (f) terimler yalnız gönderim anında türetilir, hiçbir yere
+  yazılmaz — aynı maskeyi yeniden üretmek için plan yeniden seçilmeli; (g) jsdom tarayıcı değil
+  → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
+- **CI (ölçüldü, dürüst):** kod commit `effe881` → `42673881593`, **6/10 iş yeşil**
+  (sözleşmeler, masaüstü kabuk, windows, worker, SBOM, kaynak arşivi); `arayüz`, `rust` (iki OS)
+  ve `paket` işleri run'da **hiç oluşmadı** (log yok, annotation yok) ve run `failure` kapandı —
+  kod hatası olarak okunmadı, ayrıca kovalanıyor. Test/belge commit'i ayrı koşuda doğrulanacak.

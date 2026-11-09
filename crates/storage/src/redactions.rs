@@ -1106,4 +1106,77 @@ mod tests {
         assert_eq!(err.code(), "E_MASK_PLAN");
         assert!(err.to_string().contains("ayrıştırılmamış"));
     }
+
+    #[test]
+    fn tampered_plan_case_scope_is_not_trusted() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        // Plan satırındaki dosya kapsamı bozulursa **sürüm** bağı hâlâ doğru
+        // olsa bile plan yabancı sayılır: satır kendi başına yetki vermez.
+        let other = db
+            .create_case(&NewCase {
+                title: "Başka".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        db.conn()
+            .execute(
+                "UPDATE redaction_plans SET case_id=?1 WHERE id=?2",
+                rusqlite::params![other.id, plan.id],
+            )
+            .expect("tamper");
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
+    }
+
+    #[test]
+    fn plan_bound_to_another_render_is_rejected() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "f".repeat(64),
+                    output_profile: "share".into(),
+                },
+            )
+            .expect("plan");
+        db.add_redaction_regions(
+            &plan.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [5.0, 5.0, 210.0, 35.0],
+                term_hash: "h".into(),
+            }],
+        )
+        .expect("regions");
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_MASK_PLAN");
+        assert!(err.to_string().contains("render özeti"));
+    }
 }
