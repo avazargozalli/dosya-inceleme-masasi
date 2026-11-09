@@ -9,6 +9,7 @@ import {
   type CandidateReport,
   type CaseRow,
   type ConsentPreview,
+  type RedactionPlanRow,
   type TransferConsentListRow,
   type TransferConsentRow,
   type TransferReceiptRow,
@@ -125,6 +126,14 @@ export function Ai() {
   // Gönderim maskesi: satır başına bir terim. Terimler **kasaya yazılmaz**;
   // çekirdek maskeyi uygular, sicile yalnız terim sayısı düşer.
   const [maskText, setMaskText] = useState("");
+  // Karartma planı **kimlikle** seçilir: terimler çekirdekte türetilir ve
+  // arayüze dönmez (planda yalnız bölge geometrisi var).
+  const [maskPlanId, setMaskPlanId] = useState("");
+  const [maskPlans, setMaskPlans] = useState<RedactionPlanRow[]>([]);
+  const [maskPlansBusy, setMaskPlansBusy] = useState(false);
+  // Okuma hatası **kendi satırında** tutulur: düşen okumadan sonra "plan yok"
+  // demek, olmayan bir olguyu bildirmek olurdu.
+  const [maskPlansError, setMaskPlansError] = useState<ApiError | null>(null);
   const [consents, setConsents] = useState<TransferConsentListRow[]>([]);
   const [consentListBusy, setConsentListBusy] = useState(false);
   // Makbuz envanteri de **çekirdekten** okunur: yazılan makbuzun okuma yolu
@@ -186,6 +195,9 @@ export function Ai() {
   // Makbuz envanteri de bir **okuma**dır: son başlayan okuma kazanır; geç
   // yanıt yeni dosyanın listesine yazılmaz.
   const receiptListSeq = useRef(0);
+  // Karartma planı listesi de bir **okuma**dır: son başlayan kazanır; dosya
+  // değişiminde geç yanıt yeni dosyanın listesine yazılmaz.
+  const maskPlanSeq = useRef(0);
   // Gönderim sicili de bir **okuma**dır: `runSeq` seçimi, `contextSeq` okumayı
   // damgalar — geç yanıt başka çalıştırmanın satırı olarak yazılmaz.
   const contextSeq = useRef(0);
@@ -272,6 +284,31 @@ export function Ai() {
     }
   }
 
+  /**
+   * Dosyanın karartma planları — **okuma**. Plan satırı yalnız kimlik, belge
+   * adı, sürüm ve bölge sayısı taşır; maskelenecek terimler planda yoktur.
+   * Liste düşerse sessizce "plan yok" denmez: hata yazılır ve seçim temizlenir.
+   */
+  async function loadMaskPlans(forCase: string): Promise<void> {
+    if (!forCase) return;
+    maskPlanSeq.current += 1;
+    const seq = maskPlanSeq.current;
+    setMaskPlansBusy(true);
+    setMaskPlansError(null);
+    try {
+      const rows = await api.redactionPlanList(forCase);
+      if (maskPlanSeq.current !== seq) return;
+      setMaskPlans(rows);
+    } catch (e) {
+      if (maskPlanSeq.current !== seq) return;
+      setMaskPlans([]);
+      setMaskPlansError(toApiError(e));
+      setError(toApiError(e));
+    } finally {
+      if (maskPlanSeq.current === seq) setMaskPlansBusy(false);
+    }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -290,6 +327,11 @@ export function Ai() {
       setConsentListBusy(false);
       setReceipts([]);
       setReceiptListBusy(false);
+      setMaskPlans([]);
+      setMaskPlansBusy(false);
+      setMaskPlansError(null);
+      setMaskPlanId("");
+      maskPlanSeq.current += 1;
       return;
     }
     caseGen.current += 1;
@@ -329,6 +371,10 @@ export function Ai() {
     setReport(null);
     setNotice(null);
     setError(null);
+    // Plan seçimi dosyaya bağlıdır: önceki dosyanın planıyla yeni dosyanın
+    // metni maskelenemez (INV-05).
+    setMaskPlanId("");
+    setMaskPlansError(null);
     void api
       .aiOverview(caseId)
       .then((next) => {
@@ -341,6 +387,7 @@ export function Ai() {
     // görünür ve iptal edilebilir (arayüz yalnız kendi açtığı onayı tutmaz).
     void loadConsents(caseId);
     void loadReceipts(caseId);
+    void loadMaskPlans(caseId);
   }, [caseId]);
 
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
@@ -411,10 +458,19 @@ export function Ai() {
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
       // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak koşmaz.
-      // Maske **yalnız** girildiyse gönderilir: boş liste göndermek,
-      // "maske istendi ama uygulanmadı" izlenimi verirdi.
-      const candidate =
-        maskTerms.length > 0
+      // Maske **yalnız** girildiyse/seçildiyse gönderilir: boş liste göndermek,
+      // "maske istendi ama uygulanmadı" izlenimi verirdi. Plan seçiliyse
+      // terimler çekirdekte türetilir; arayüz yalnız plan kimliğini taşır.
+      const candidate = maskPlanId
+        ? await api.aiRunExecute(
+            caseId,
+            consentProvider.id,
+            consent.id,
+            purposeTask(consent.purpose),
+            maskTerms.length > 0 ? maskTerms : null,
+            maskPlanId,
+          )
+        : maskTerms.length > 0
           ? await api.aiRunExecute(
               caseId,
               consentProvider.id,
@@ -756,6 +812,36 @@ export function Ai() {
                 : maskTerms.length > 0
                   ? t("ai.maskCount", { count: maskTerms.length })
                   : t("ai.maskHint")}
+            </p>
+          </div>
+          <div className="field" style={{ maxWidth: 320 }}>
+            <label htmlFor="ai-mask-plan">{t("ai.maskPlanLabel")}</label>
+            <select
+              id="ai-mask-plan"
+              value={maskPlanId}
+              onChange={(e) => setMaskPlanId(e.target.value)}
+            >
+              <option value="">{t("ai.maskPlanNone")}</option>
+              {maskPlans.map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  {t("ai.maskPlanOption", {
+                    title: plan.documentTitle ?? t("common.unknown"),
+                    version: plan.versionNo ?? "?",
+                    regions: plan.regionCount,
+                  })}
+                </option>
+              ))}
+            </select>
+            <p className="hint" style={{ margin: 0 }}>
+              {maskPlansBusy
+                ? t("ai.maskPlanLoading")
+                : maskPlansError
+                  ? t("ai.maskPlanUnreadable")
+                  : maskPlans.length === 0
+                    ? t("ai.maskPlanEmpty")
+                    : maskPlanId
+                      ? t("ai.maskPlanHint")
+                      : t("ai.maskPlanHintIdle")}
             </p>
           </div>
           <div className="row" style={{ alignItems: "flex-end", gap: "var(--space-2)" }}>

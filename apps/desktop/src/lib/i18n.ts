@@ -687,6 +687,18 @@ export const tr = {
       "metinde “[MASKED]” yer tutucusuyla görünür.",
     maskCount: "{count} terim maskelenecek.",
     maskInvalid: "Her terim 2–200 karakter olmalı; en çok 500 terim girilebilir.",
+    maskPlanLabel: "Karartma planı (isteğe bağlı)",
+    maskPlanNone: "Plan seçilmedi",
+    maskPlanOption: "{title} · sürüm {version} · {regions} bölge",
+    maskPlanLoading: "Planlar okunuyor…",
+    maskPlanEmpty:
+      "Bu dosyada karartma planı yok. Plan, Redaksiyon ekranında üretilen maskeli " +
+      "sürümle birlikte yazılır.",
+    maskPlanHint:
+      "Planın kırmızıya alınmış bölgelerindeki metin, gönderimde de maskelenir. " +
+      "Terimler arayüze dönmez; eşleşen blok bulunamayan bölge varsa gönderim durur.",
+    maskPlanHintIdle: "Seçilirse plan bölgelerinden türetilen terimler de maskeye eklenir.",
+    maskPlanUnreadable: "Planlar okunamadı; aşağıdaki hataya bakın.",
     validateTitle: "Aday doğrula ve kaydet",
     validateSub:
       "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +

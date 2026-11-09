@@ -6915,6 +6915,7 @@ pub fn ai_run_execute(
     consent_id: String,
     task_type: String,
     mask_terms: Option<Vec<String>>,
+    mask_plan_id: Option<String>,
 ) -> Result<AiCandidateRow, ApiError> {
     use sha2::{Digest, Sha256};
 
@@ -6978,6 +6979,32 @@ pub fn ai_run_execute(
         .map(|byte| format!("{byte:02x}"))
         .collect();
 
+    // Karartma planı köprüsü (F13 → F11): planda **terim saklanmaz**, yalnız
+    // bölge geometrisi vardır; terimler çekirdekte bölgeyle kesişen metin
+    // bloklarından türetilir. Plan bu onayın kapsamındaki bir belgeye ait
+    // değilse hiçbir şey gönderilmez (başka dosyanın bölgeleriyle maskeleme
+    // yapılmaz). Türetilemeyen bölge **maskesiz gönderilmez**: hata döner.
+    let mut mask_list = mask_terms.unwrap_or_default();
+    let plan_mask = match mask_plan_id.as_deref() {
+        Some(plan_id) => {
+            let derived = db.outbound_terms_from_plan(&case_id, plan_id)?;
+            if !scope
+                .documents
+                .iter()
+                .any(|document| document.document_version_id == derived.document_version_id)
+            {
+                return Err(ApiError::new(
+                    "E_MASK_PLAN_SCOPE",
+                    "Seçilen karartma planı bu onayın kapsamındaki bir belgeye ait değil; \
+                     hiçbir şey gönderilmedi.",
+                ));
+            }
+            mask_list.extend(derived.terms.clone());
+            Some(derived)
+        }
+        None => None,
+    };
+
     let run = db.start_ai_run(
         &case_id,
         &NewAiRun {
@@ -7007,7 +7034,11 @@ pub fn ai_run_execute(
             document_version_id: segment.document_version_id.clone(),
         })
         .collect();
-    let mask = mask_terms.map(|terms| dim_storage::OutboundMask { terms });
+    let mask = if mask_list.is_empty() {
+        None
+    } else {
+        Some(dim_storage::OutboundMask { terms: mask_list })
+    };
     let outbound_record = match db.record_outbound_segments(&run.id, &outbound_refs, mask.as_ref())
     {
         Ok(record) => record,
@@ -7017,6 +7048,24 @@ pub fn ai_run_execute(
             return Err(error.into());
         }
     };
+    // Plan köprüsü kullanıldıysa denetim kaydı: **terim değil**, plan kimliği
+    // ve ölçüm yazılır (terimler kasaya hiç girmez).
+    if let Some(derived) = &plan_mask {
+        db.append_audit(
+            "ai_run",
+            Some(&run.id),
+            "mask_plan",
+            "local-user",
+            &serde_json::json!({
+                "planId": derived.plan_id,
+                "terms": derived.terms.len(),
+                "regions": derived.regions_total,
+                "regionsUsed": derived.regions_used,
+                "blocks": derived.blocks,
+                "shortSkipped": derived.short_skipped,
+            }),
+        )?;
+    }
     // Gönderilen bayt **maskeli** metinden sayılır: makbuz ve bağlam satırı
     // kasadan çıkan gerçek boyutu yazar (maskesiz boyut değil).
     let outbound_bytes_for = |version_id: &str| -> i64 {

@@ -2123,6 +2123,8 @@ export const api = {
   /**
    * Çalıştırmayı yürütür. `maskTerms` verilirse gönderilen metin **çekirdekte**
    * maskelenir; terimler kasadan çıkmaz, yalnız sayı ve özet sicile düşer.
+   * `maskPlanId` verilirse karartma planının bölgelerinden türetilen terimler
+   * de aynı maskeye eklenir (terimler arayüze dönmez).
    */
   aiRunExecute: (
     caseId: string,
@@ -2130,6 +2132,7 @@ export const api = {
     consentId: string,
     taskType: string,
     maskTerms: string[] | null = null,
+    maskPlanId: string | null = null,
   ) =>
     invoke<AiCandidateRow>("ai_run_execute", {
       caseId,
@@ -2137,6 +2140,7 @@ export const api = {
       consentId,
       taskType,
       maskTerms,
+      maskPlanId,
     }),
   aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
     invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),

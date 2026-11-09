@@ -112,7 +112,7 @@ pub use queue::{
     JOB_PARSE_DOCUMENT,
 };
 pub use redactions::{
-    NewRedactionPlan, RedactionPlanRow, RedactionRegionInput, RedactionRegionRow,
+    NewRedactionPlan, PlanMaskTerms, RedactionPlanRow, RedactionRegionInput, RedactionRegionRow,
 };
 pub use review_commit::{
     OutboxEventRow, ReviewCommitResult, ReviewTarget, EVENT_DECISION_COMMITTED, EVENT_ITEM_DECIDED,

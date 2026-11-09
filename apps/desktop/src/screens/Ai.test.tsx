@@ -39,6 +39,7 @@ import type {
   ConsentPreview,
   DocumentRow,
   QuoteMatchReport,
+  RedactionPlanRow,
   TransferConsentListRow,
   TransferSegmentRow,
   TransferConsentRow,
@@ -67,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   aiConsentRevoke: vi.fn(),
   aiConsentList: vi.fn(),
   aiReceiptList: vi.fn(),
+  redactionPlanList: vi.fn(),
   aiRunExecute: vi.fn(),
   aiCandidatesList: vi.fn(),
   aiContextItems: vi.fn(),
@@ -363,6 +365,7 @@ type SetupOptions = {
   consent?: () => Promise<TransferConsentRow>;
   consents?: (caseId: string) => Promise<TransferConsentListRow[]>;
   receipts?: (caseId: string) => Promise<TransferReceiptRow[]>;
+  plans?: (caseId: string) => Promise<RedactionPlanRow[]>;
   revoke?: () => Promise<void>;
   runExecute?: () => Promise<AiCandidateRow>;
   candidates?: (runId: string) => Promise<AiCandidateRow[]>;
@@ -402,6 +405,7 @@ function setup(options: SetupOptions = {}) {
   mocks.aiConsentRevoke.mockImplementation(options.revoke ?? (async () => undefined));
   mocks.aiConsentList.mockImplementation(options.consents ?? (async () => []));
   mocks.aiReceiptList.mockImplementation(options.receipts ?? (async () => []));
+  mocks.redactionPlanList.mockImplementation(options.plans ?? (async () => []));
   mocks.aiRunExecute.mockImplementation(options.runExecute ?? (async () => CAND_VALID));
   mocks.aiCandidatesList.mockImplementation(options.candidates ?? (async () => [CAND_VALID]));
   mocks.aiContextItems.mockImplementation(options.contextItems ?? (async () => []));
@@ -2918,5 +2922,80 @@ describe("AI ekranı — gönderim maskesi", () => {
     const reportCard = cardByHeading(t("ai.validateTitle"));
     expect(await within(reportCard).findByText(t("ai.maskedSourceRange", { start: 42 }))).toBeTruthy();
     expect(within(reportCard).getByText(t("ai.outboundMasked"))).toBeTruthy();
+  });
+
+  function planRow(overrides: Partial<RedactionPlanRow> = {}): RedactionPlanRow {
+    return {
+      id: "plan-1",
+      caseId: "p1",
+      documentVersionId: "d1-v1",
+      parseRunId: null,
+      renderHash: "a".repeat(64),
+      coordinateSpace: "pdf_page_points",
+      planVersion: 1,
+      state: "applied",
+      reviewer: null,
+      outputProfile: "share",
+      createdAt: "2026-10-01T08:00:00.000Z",
+      updatedAt: "2026-10-01T08:00:00.000Z",
+      documentTitle: "Kira sözleşmesi.pdf",
+      versionNo: 1,
+      regionCount: 2,
+      ...overrides,
+    };
+  }
+
+  function planSelect(): HTMLSelectElement {
+    const el = document.getElementById("ai-mask-plan");
+    if (!(el instanceof HTMLSelectElement)) throw new Error("plan seçici yok");
+    return el;
+  }
+
+  it("plan listesi okunur; seçilen plan kimliği çalıştırmaya gider, terimler arayüze gelmez", async () => {
+    setup({ plans: async () => [planRow()] });
+    await screen.findByText("api:claude (api)");
+    await waitFor(() => expect(planSelect().options.length).toBe(2));
+    expect(planSelect().options[1]!.textContent).toContain("Kira sözleşmesi.pdf");
+    expect(mocks.redactionPlanList).toHaveBeenCalledWith("p1");
+
+    fireEvent.change(planSelect(), { target: { value: "plan-1" } });
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    // Terimler çekirdekte türetilir: arayüz yalnız plan kimliğini taşır.
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith(
+      "p1",
+      "prov-a",
+      CONSENT.id,
+      "summarize",
+      null,
+      "plan-1",
+    );
+    expect(screen.getByText(t("ai.maskPlanHint"))).toBeTruthy();
+  });
+
+  it("plan listesi düşerse \"plan yok\" denmez; hata yazılır ve seçim temizlenir", async () => {
+    setup({ plans: async () => Promise.reject(new Error("okunamadı")) });
+    await screen.findByText("api:claude (api)");
+    await waitFor(() => expect(mocks.redactionPlanList).toHaveBeenCalledWith("p1"));
+    await waitFor(() => expect(screen.queryByText(t("ai.maskPlanEmpty"))).toBeNull());
+    expect(screen.getByText(t("ai.maskPlanUnreadable"))).toBeTruthy();
+    expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+    expect(planSelect().value).toBe("");
+  });
+
+  it("dosya değişince plan seçimi temizlenir (önceki dosyanın planı taşınmaz)", async () => {
+    setup({
+      plans: async (caseId) => (caseId === "p1" ? [planRow()] : [planRow({ id: "plan-2" })]),
+    });
+    await screen.findByText("api:claude (api)");
+    await waitFor(() => expect(planSelect().options.length).toBe(2));
+    fireEvent.change(planSelect(), { target: { value: "plan-1" } });
+    expect(planSelect().value).toBe("plan-1");
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+    await waitFor(() => expect(planSelect().value).toBe(""));
   });
 });

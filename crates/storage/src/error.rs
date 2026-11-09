@@ -50,6 +50,11 @@ pub enum StorageError {
     /// (`E_MASK_TERM`, `E_MASK_TERMS_LIMIT`, `E_MASK_PLACEHOLDER`, `E_MASK_MAP`).
     #[error("gönderim maskesi reddedildi: {0}")]
     MaskRejected(&'static str),
+    /// Karartma planından gönderim maskesi türetilemedi: plan bayat, geometri
+    /// çözülemiyor ya da bölge metni kanıtlanamıyor. **Neden** taşır; eksik
+    /// maskeyle gönderim yapılmaz.
+    #[error("karartma planı gönderime uygulanamadı: {reason}")]
+    PlanMaskInvalid { reason: String },
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
     /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
@@ -184,6 +189,7 @@ impl StorageError {
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
             Self::MaskRejected(code) => code,
+            Self::PlanMaskInvalid { .. } => "E_MASK_PLAN",
             Self::InvalidSetting => "E_DB_SETTING",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",

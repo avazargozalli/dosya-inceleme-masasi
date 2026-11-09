@@ -9,6 +9,8 @@
 use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
+use crate::outbound_mask::validate_terms;
+use crate::parsing::{parse_blocks, SegmentBlock};
 use crate::{now_iso, Database, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +209,316 @@ impl Database {
             out.push(row?);
         }
         Ok(out)
+    }
+}
+
+/// Karartma planından türetilen gönderim maskesi.
+///
+/// Terimler **saklanmaz**: planda yalnız bölge geometrisi ve terim özeti
+/// (hash) vardır. Metin, planın bağlı olduğu sürümün güncel ayrıştırmasındaki
+/// bloklardan, bölgeyle kesişen kutular üzerinden çıkarılır — bu yüzden dönen
+/// liste yalnız çağrı süresince yaşar ve kasaya yazılmaz.
+#[derive(Debug, Clone)]
+pub struct PlanMaskTerms {
+    pub plan_id: String,
+    pub document_version_id: String,
+    pub terms: Vec<String>,
+    pub regions_total: usize,
+    pub regions_used: usize,
+    pub blocks: usize,
+    pub short_skipped: usize,
+}
+
+struct PlanPageText {
+    page_index: i64,
+    rotation: i64,
+    coordinate_space: Option<String>,
+    segments: Vec<(String, Vec<SegmentBlock>)>,
+}
+
+/// İki kutu kesişiyor mu? **Kenara değmek de kesişmedir**: sıfır alanlı
+/// boşluk daha çok yuvarlama artığıdır; eksik maske (ad sızması) fazla
+/// maskelemekten daha ağır olduğu için sınırda kutu da alınır.
+fn rects_overlap(first: [f64; 4], second: [f64; 4]) -> bool {
+    let (ax0, ax1) = (first[0].min(first[2]), first[0].max(first[2]));
+    let (ay0, ay1) = (first[1].min(first[3]), first[1].max(first[3]));
+    let (bx0, bx1) = (second[0].min(second[2]), second[0].max(second[2]));
+    let (by0, by1) = (second[1].min(second[3]), second[1].max(second[3]));
+    ax0 <= bx1 && ax1 >= bx0 && ay0 <= by1 && ay1 >= by0
+}
+
+/// Plan bölgeleri `pdf_page_points` uzayında yazılır; ayrıştırma sayfaları
+/// aynı PDF noktası uzayını `unrotated_cropbox_points` adıyla taşır.
+/// `image_pixels`/`structure` **çevrilemez** (ölçek saklanmıyor), bu yüzden
+/// kabul edilmez — tahminle dönüşüm yapılmaz.
+fn plan_space_matches_page(page_space: Option<&str>) -> bool {
+    matches!(page_space, Some("unrotated_cropbox_points"))
+}
+
+/// Bölgeyle kesişen blokların metnini terimlere çevirir.
+///
+/// Kontrol karakteri taşıyan parçalar (ör. blok içi satır sonu) ayrı satırlara
+/// bölünür; her parça kırpılır. 1 karakterlik parçalar maskelenemez
+/// (`validate_terms` alt sınırı 2) ve **sessizce** kaybolmaz: sayılır.
+fn block_terms(
+    chars: &[char],
+    blocks: &[SegmentBlock],
+    rects: &[[f64; 4]],
+    blocks_hit: &mut usize,
+    short_skipped: &mut usize,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for block in blocks {
+        let Some(bbox) = block.bbox else { continue };
+        if !rects.iter().any(|rect| rects_overlap(bbox, *rect)) {
+            continue;
+        }
+        *blocks_hit += 1;
+        if block.start < 0 || block.end <= block.start {
+            continue;
+        }
+        let start = usize::try_from(block.start).unwrap_or(usize::MAX);
+        let end = usize::try_from(block.end)
+            .unwrap_or(usize::MAX)
+            .min(chars.len());
+        if start >= end {
+            continue;
+        }
+        let text: String = chars[start..end].iter().collect();
+        for piece in text.split('\n') {
+            let trimmed = piece.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.chars().any(char::is_control) {
+                *short_skipped += 1;
+                continue;
+            }
+            let length = trimmed.chars().count();
+            if (2..=200).contains(&length) {
+                out.push(trimmed.to_string());
+            } else {
+                *short_skipped += 1;
+            }
+        }
+    }
+    out
+}
+
+impl Database {
+    /// Karartma planının `redact` bölgelerinden **gönderim maskesi terimleri**
+    /// üretir. Terimler kasaya yazılmaz; çağıran maskeyi çekirdekte uygular.
+    ///
+    /// Kapılar (hepsi hatayla kapanır — sessiz eksik maske yok):
+    /// - plan bu dosyaya ve **güncel** sürüme ait olmalı,
+    /// - planın bağlandığı render özeti sürümün özetiyle aynı olmalı,
+    /// - koordinat uzayı PDF noktası olmalı, sayfa döndürmesi 0 olmalı,
+    /// - her `redact` bölgesi en az bir kullanılabilir terim üretmeli;
+    ///   geometrisi okunamayan/kesişen metni olmayan bölge **maskesiz kalmaz**.
+    pub fn outbound_terms_from_plan(
+        &self,
+        case_id: &str,
+        plan_id: &str,
+    ) -> Result<PlanMaskTerms, StorageError> {
+        let plan = self
+            .get_redaction_plan(plan_id)?
+            .ok_or(StorageError::NotFound)?;
+        if plan.case_id != case_id {
+            return Err(StorageError::NotFound);
+        }
+        let version = self
+            .get_version(&plan.document_version_id)?
+            .ok_or(StorageError::NotFound)?;
+        if version.case_id != case_id {
+            return Err(StorageError::NotFound);
+        }
+        if plan.render_hash != version.original_sha256 {
+            return Err(StorageError::PlanMaskInvalid {
+                reason:
+                    "plan başka bir dosya sürümüne ait (render özeti eşleşmiyor); maske uygulanmadı"
+                        .into(),
+            });
+        }
+        let current: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT current_version_id FROM documents
+                 WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                rusqlite::params![version.document_id, case_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        if current.as_deref() != Some(plan.document_version_id.as_str()) {
+            return Err(StorageError::PlanMaskInvalid {
+                reason:
+                    "plan güncel sürüme ait değil; bölge geometrisi gönderilecek metinle eşleşmez"
+                        .into(),
+            });
+        }
+        if plan.coordinate_space != "pdf_page_points" {
+            return Err(StorageError::PlanMaskInvalid {
+                reason: format!(
+                    "plan koordinat uzayı «{}»; gönderim maskesi yalnız PDF noktası uzayında çözülür",
+                    plan.coordinate_space
+                ),
+            });
+        }
+        let latest_run: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT pr.id FROM parse_runs pr
+                 WHERE pr.document_version_id=?1
+                   AND EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=pr.id)
+                 ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1",
+                [&plan.document_version_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(run_id) = latest_run else {
+            return Err(StorageError::PlanMaskInvalid {
+                reason: "planın sürümü ayrıştırılmamış; bölge metni çıkarılamaz".into(),
+            });
+        };
+        if let Some(declared) = plan.parse_run_id.as_deref() {
+            if declared != run_id {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason:
+                        "plan eski bir ayrıştırmaya ait; bölge geometrisi güncel metinle eşleşmiyor"
+                            .into(),
+                });
+            }
+        }
+        let mut stmt = self.conn().prepare(
+            "SELECT p.page_index,p.rotation,p.coordinate_space,s.raw_text,s.bbox_list
+             FROM text_segments s JOIN pages p ON p.id=s.page_id
+             WHERE p.parse_run_id=?1
+             ORDER BY p.page_index, s.rowid",
+        )?;
+        let rows = stmt.query_map([&run_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        let mut pages: Vec<PlanPageText> = Vec::new();
+        for row in rows {
+            let (page_index, rotation, coordinate_space, raw, bbox_raw) = row?;
+            let blocks = parse_blocks(bbox_raw);
+            match pages.last_mut() {
+                Some(page) if page.page_index == page_index => {
+                    page.segments.push((raw, blocks));
+                }
+                _ => pages.push(PlanPageText {
+                    page_index,
+                    rotation: rotation.unwrap_or(0),
+                    coordinate_space,
+                    segments: vec![(raw, blocks)],
+                }),
+            }
+        }
+        if pages.is_empty() {
+            return Err(StorageError::PlanMaskInvalid {
+                reason: "planın sürümünde ayrıştırılmış metin yok; bölge metni çıkarılamaz".into(),
+            });
+        }
+
+        let regions = self.list_redaction_regions(plan_id)?;
+        let redact: Vec<&RedactionRegionRow> = regions
+            .iter()
+            .filter(|region| region.user_decision == "redact")
+            .collect();
+        if redact.is_empty() {
+            return Err(StorageError::PlanMaskInvalid {
+                reason: "planda karartılacak bölge yok".into(),
+            });
+        }
+
+        let mut terms: Vec<String> = Vec::new();
+        let mut regions_used = 0usize;
+        let mut blocks_hit = 0usize;
+        let mut short_skipped = 0usize;
+        for (index, region) in redact.iter().enumerate() {
+            let Some(page) = pages
+                .iter()
+                .find(|page| page.page_index == region.page_index)
+            else {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason: format!(
+                        "bölge {}: sayfa {} ayrıştırmada yok",
+                        index + 1,
+                        region.page_index
+                    ),
+                });
+            };
+            if page.rotation % 360 != 0 {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason: format!(
+                        "bölge {}: sayfa {} döndürülmüş ({}°); bölge kutusu döndürme öncesi uzayda çözülemiyor",
+                        index + 1,
+                        region.page_index,
+                        page.rotation
+                    ),
+                });
+            }
+            if !plan_space_matches_page(page.coordinate_space.as_deref()) {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason: format!(
+                        "bölge {}: sayfa {} koordinat uzayı «{}»; PDF noktası uzayı değil",
+                        index + 1,
+                        region.page_index,
+                        page.coordinate_space.as_deref().unwrap_or("bilinmiyor")
+                    ),
+                });
+            }
+            let Some(rects) = region.rects.as_ref() else {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason: format!("bölge {}: geometri okunamadı", index + 1),
+                });
+            };
+            if rects.is_empty() {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason: format!("bölge {}: boş geometri", index + 1),
+                });
+            }
+            let mut region_terms = Vec::new();
+            for (raw, blocks) in &page.segments {
+                let chars: Vec<char> = raw.chars().collect();
+                region_terms.extend(block_terms(
+                    &chars,
+                    blocks,
+                    rects,
+                    &mut blocks_hit,
+                    &mut short_skipped,
+                ));
+            }
+            if region_terms.is_empty() {
+                return Err(StorageError::PlanMaskInvalid {
+                    reason: format!(
+                        "bölge {} (sayfa {}): kesişen metin bloğu yok; maske kanıtlanamaz",
+                        index + 1,
+                        region.page_index
+                    ),
+                });
+            }
+            regions_used += 1;
+            terms.extend(region_terms);
+        }
+        let terms = validate_terms(&terms).map_err(|error| StorageError::PlanMaskInvalid {
+            reason: format!("plan terimleri maskeye uygun değil: {}", error.code()),
+        })?;
+        Ok(PlanMaskTerms {
+            plan_id: plan.id,
+            document_version_id: plan.document_version_id,
+            terms,
+            regions_total: redact.len(),
+            regions_used,
+            blocks: blocks_hit,
+            short_skipped,
+        })
     }
 }
 
@@ -500,5 +812,298 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code(), "E_NOT_FOUND");
+    }
+
+    fn block(start: i64, end: i64, bbox: [f64; 4]) -> SegmentBlock {
+        SegmentBlock {
+            start,
+            end,
+            bbox: Some(bbox),
+            ..Default::default()
+        }
+    }
+
+    fn seed_page(
+        db: &Database,
+        case_id: &str,
+        version_id: &str,
+        text: &str,
+        blocks: Vec<SegmentBlock>,
+        rotation: i64,
+        coordinate_space: Option<&str>,
+    ) {
+        let run = db
+            .start_parse_run(version_id, case_id, "text", "1", "{}")
+            .expect("run");
+        db.store_pages(
+            &run.id,
+            case_id,
+            &[crate::parsing::NewPage {
+                index: 0,
+                text: text.to_string(),
+                width: Some(595.0),
+                height: Some(842.0),
+                origin: "native".into(),
+                warnings: Vec::new(),
+                rotation,
+                coordinate_space: coordinate_space.map(str::to_string),
+                page_label: None,
+                blocks,
+            }],
+        )
+        .expect("pages");
+    }
+
+    fn plan_with_regions(
+        db: &Database,
+        case_id: &str,
+        version_id: &str,
+        regions: &[(i64, [f64; 4])],
+    ) -> RedactionPlanRow {
+        let version = db.get_version(version_id).expect("v").expect("var");
+        let plan = db
+            .create_redaction_plan(
+                case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.to_string(),
+                    parse_run_id: None,
+                    render_hash: version.original_sha256,
+                    output_profile: "share".into(),
+                },
+            )
+            .expect("plan");
+        let inputs: Vec<RedactionRegionInput> = regions
+            .iter()
+            .map(|(page_index, rect)| RedactionRegionInput {
+                page_index: *page_index,
+                rect: *rect,
+                term_hash: "h".into(),
+            })
+            .collect();
+        db.add_redaction_regions(&plan.id, &inputs)
+            .expect("regions");
+        plan
+    }
+
+    const THREE_LINES: &str = "Ahmet Yılmaz\nkira bedeli\nİstanbul";
+
+    #[test]
+    fn plan_terms_come_from_blocks_inside_regions() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![
+                block(0, 12, [10.0, 10.0, 200.0, 30.0]),
+                block(13, 24, [10.0, 40.0, 200.0, 60.0]),
+                block(25, 33, [10.0, 70.0, 80.0, 90.0]),
+            ],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        // Bölge yalnız ilk satırı kapsıyor: komşu satır maskelenmez.
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        let mask = db
+            .outbound_terms_from_plan(&case_id, &plan.id)
+            .expect("mask");
+        assert_eq!(mask.terms, vec!["Ahmet Yılmaz".to_string()]);
+        assert_eq!(mask.regions_total, 1);
+        assert_eq!(mask.regions_used, 1);
+        assert_eq!(mask.blocks, 1);
+        assert_eq!(mask.short_skipped, 0);
+        assert_eq!(mask.document_version_id, version_id);
+        // Terim gerçekten gönderilecek metni maskeler.
+        let masked = crate::outbound_mask::mask_terms("Ahmet Yılmaz ödedi.", &mask.terms)
+            .expect("mask_terms");
+        assert!(!masked.text.contains("Ahmet"));
+        assert!(masked.text.contains(crate::outbound_mask::MASK_PLACEHOLDER));
+    }
+
+    #[test]
+    fn overlapping_regions_and_duplicate_blocks_are_deduplicated() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![
+                block(0, 12, [10.0, 10.0, 200.0, 30.0]),
+                block(13, 24, [10.0, 40.0, 200.0, 60.0]),
+                block(25, 33, [10.0, 70.0, 80.0, 90.0]),
+            ],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        // İki bölge de ilk iki satırı kapsıyor; terimler tekilleşir.
+        let plan = plan_with_regions(
+            &db,
+            &case_id,
+            &version_id,
+            &[(0, [0.0, 0.0, 300.0, 65.0]), (0, [0.0, 0.0, 300.0, 65.0])],
+        );
+        let mask = db
+            .outbound_terms_from_plan(&case_id, &plan.id)
+            .expect("mask");
+        assert_eq!(
+            mask.terms,
+            vec!["Ahmet Yılmaz".to_string(), "kira bedeli".to_string()]
+        );
+        assert_eq!(mask.regions_total, 2);
+        assert_eq!(mask.regions_used, 2);
+        // Aynı blok iki bölgede de sayılır (blok sayısı ölçüm dürüstlüğü).
+        assert_eq!(mask.blocks, 4);
+    }
+
+    #[test]
+    fn short_fragments_are_counted_not_silently_dropped() {
+        let (db, case_id, version_id) = setup();
+        let text = "·\nAhmet Yılmaz";
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            text,
+            vec![
+                block(0, 1, [10.0, 10.0, 20.0, 30.0]),
+                block(2, 14, [10.0, 40.0, 200.0, 60.0]),
+            ],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [0.0, 0.0, 300.0, 70.0])]);
+        let mask = db
+            .outbound_terms_from_plan(&case_id, &plan.id)
+            .expect("mask");
+        assert_eq!(mask.terms, vec!["Ahmet Yılmaz".to_string()]);
+        assert_eq!(mask.short_skipped, 1);
+    }
+
+    #[test]
+    fn stale_version_plan_is_rejected() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        let version = db.get_version(&version_id).expect("v").expect("var");
+        let blob = db
+            .create_blob_record("st-redact-2", 10, "aad")
+            .expect("blob");
+        let newer = db
+            .add_version(
+                &version.document_id,
+                &case_id,
+                &blob,
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v2");
+        db.conn()
+            .execute(
+                "UPDATE documents SET current_version_id=?1 WHERE id=?2",
+                rusqlite::params![newer.id, version.document_id],
+            )
+            .expect("current");
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_MASK_PLAN");
+        assert!(err.to_string().contains("güncel sürüme"));
+    }
+
+    #[test]
+    fn plan_from_other_case_is_not_found() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        let err = db
+            .outbound_terms_from_plan("başka-dosya", &plan.id)
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
+    }
+
+    #[test]
+    fn region_without_intersecting_text_blocks_before_sending() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            0,
+            Some("unrotated_cropbox_points"),
+        );
+        // Bölge sayfada ama metin bloğu yok: maske kanıtlanamaz, gönderim durur.
+        let plan = plan_with_regions(
+            &db,
+            &case_id,
+            &version_id,
+            &[(0, [10.0, 400.0, 200.0, 430.0])],
+        );
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_MASK_PLAN");
+        assert!(err.to_string().contains("kesişen metin bloğu yok"));
+    }
+
+    #[test]
+    fn rotated_page_is_rejected() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            90,
+            Some("unrotated_cropbox_points"),
+        );
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_MASK_PLAN");
+        assert!(err.to_string().contains("döndürülmüş"));
+    }
+
+    #[test]
+    fn non_pdf_coordinate_space_is_rejected() {
+        let (db, case_id, version_id) = setup();
+        seed_page(
+            &db,
+            &case_id,
+            &version_id,
+            THREE_LINES,
+            vec![block(0, 12, [10.0, 10.0, 200.0, 30.0])],
+            0,
+            Some("image_pixels"),
+        );
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_MASK_PLAN");
+        assert!(err.to_string().contains("koordinat uzayı"));
+    }
+
+    #[test]
+    fn plan_without_sent_version_text_is_rejected() {
+        let (db, case_id, version_id) = setup();
+        let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
+        let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
+        assert_eq!(err.code(), "E_MASK_PLAN");
+        assert!(err.to_string().contains("ayrıştırılmamış"));
     }
 }
