@@ -307,6 +307,13 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
 - **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1330/1330** · storage
   **495/495** · `cargo fmt` iki manifest temiz · storage + masaüstü `clippy --all-targets -D warnings`
   temiz (masaüstü 1 dk 23 s) · `upgrade_tests` yeşil (şema 28'e yükseltme dahil).
+- **CI (ölçüldü):** kod `54af7e0` → run `42701027424` **10/10 YEŞİL** (`dim-storage` **495** hem
+  `ubuntu-latest` (367,55 s) hem `macos-15` (259,20 s) — **birebir**; `arayüz` **64 dosya / 1329
+  test** — yerel 1330 farkı ağaçtaki başka ajanın commit'siz `format.test.ts` testi; paket
+  `index-CewgFzes.js` **657,06 kB** / gzip **175,70 kB** (CSS 7,28 kB / gzip 2,07); `masaüstü kabuk`,
+  `windows güvenli depo`, `sözleşmeler`, `kaynak arşivi`, `paket manifesti`, `belge worker'ı` ve
+  `SBOM` yeşil). Belge `6ba1269` → run `42702784226` **10/10 YEŞİL**.
+
 - **Dürüst sınırlar:** (a) plan satırı **kaynak** belgeyi göstermeye devam eder; çıktı ayrı
   sütundadır — arayüzde çıktıya **tıklayıp gitme** yok (gezinme ayrı iş); (b) v28'den önce yazılmış
   planlar `NULL` kalır; geriye dönük **doldurma yapılmadı** (aynı kaynaktan birden çok maskeleme
