@@ -12,6 +12,7 @@
 | F11-T04 gerçek model çağrısı | ✅ | `ApiProvider`/`LocalProvider` + `ai_run_execute`: onay + profil + kapsam sicili, hata run'ı `failed` kapatır; onay **varış yerine** bağlı (`provider_id` → türetilmiş `adapter@politika#parmak izi`) |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, `ai_candidate_validate`; alıntı **önce gönderilen metinde** aranır (şema v26, `transfer_segments` + `record_transfer_segments`) |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
+| Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
 
 ## Dürüst durum
 
@@ -621,3 +622,80 @@ PDF çıktısında (F13) vardı ve modele giden metne hiç dokunmuyordu.
   yok): kablolama check + clippy, davranış storage düzeyinde gerçek SQLite ve
   arayüz testleriyle ölçüldü.
 - jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+## F11-T03 eki — gönderim önizlemesi **maskeyi taşır** (2026-11-09)
+
+**Ölçülen kusur (şartname §11.7).** Onay/önizleme ekranı "seçili dosya ve
+belgeler, gönderilecek metin, **maskeleme durumu**, tahmini kapsam" göstermek
+zorundadır. Ölçüm: `consent_preview` maskeyi **hiç bilmiyordu** — örnek metin
+hamdı ve bayt sayısı maskesizdi; oysa `ai_run_execute` maskeyi uygulayıp
+**maskeli** metni gönderiyordu. Yani aynı kod yolunun kendi yorumu ("önizleme
+ile gönderilen içerik ayrışamaz") maske seçildiğinde **kırılıyordu**: kullanıcı
+ham adı görüp onay veriyor, dışarı maskeli metin çıkıyordu (ters yönde de
+yanıltıcı: bayt sayısı gönderilenden büyük görünüyordu).
+
+**Yazılan.**
+
+- `crates/storage/src/ai.rs`: `consent_preview_masked(case_id, ids, terms, plan)`
+  — maske **doğrulanır** (`validate_terms`), örnek segment maskeli gösterilir ve
+  bayt sayısı **maskeli metinden** sayılır. `ConsentPreview` artık
+  `bytesUnmasked` ve `mask: Option<ConsentMaskPreview>` taşır
+  (`termCount`, `maskedRuns`, `maskedChars`, `sampleMasked`, `bytesExact`,
+  `planId`) — **terim listesi yine taşınmaz**.
+- **Kapsam bütçesi:** `mask_terms` maliyeti metin × terim olduğundan
+  `PREVIEW_MASK_CHAR_BUDGET` (1.000.000 karakter) üstünde yalnız **örnek**
+  maskelenir; `bytesExact=false` yazılır ve bayt sayısı "maskesiz üst sınır"
+  olarak sunulur. Sessizce "maskeli" denmez.
+- **Plan köprüsü:** plan kimliği verilirse terimler çekirdekte türetilir ve plan
+  bu kapsamdaki bir belgeye ait değilse önizleme, gönderimle **aynı** hatayı
+  verir: `E_MASK_PLAN_SCOPE` (onay oluşmaz).
+- `apps/desktop/src-tauri/src/commands.rs`: `ai_consent_preview` `maskTerms` +
+  `maskPlanId` alır (plan → `outbound_terms_from_plan`, aynı kapı).
+- `Ai.tsx`: önizleme çağrıları (onay + "Gönderilecek içeriği göster") maskeyi
+  taşır; kartta maske satırı (terim/eşleşme sayısı, maskeli bayt ya da üst sınır,
+  plan rozeti). **Maske değişirse "Çalıştır" kapanır** ve nedeni yazılır
+  (`previewMaskSig`): onaylanan metin ile çıkan metin ayrışmaz; yeniden "Onayla"
+  önizlemeyi maskeyle tazeler. 7 sözlük anahtarı.
+
+**Testler.** `ai::tests` **+6** (maskeli önizleme = gönderilen bayt/örnek birebir;
+maske yokken ham; eşleşme yokken "maskelendi" denmez; plan kapsam dışı
+`E_MASK_PLAN_SCOPE`; bütçe üst sınırı işaretler; geçersiz terim reddi) →
+`dim-storage --lib` **484 → 490**. `Ai.test.tsx` **101 → 105** (+4: maskeyi
+çekirdeğe taşır + maskeli satır, onaydan sonra maske değişince çalıştır kapanır,
+plan kimliği önizlemeye gider, kapsam dışı planda onay oluşmaz) — bir eski test
+yeni sözleşmeye göre yeniden yazıldı (maske artık onaydan **önce** girilir).
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-preview-mask-gates.py`, her
+mutasyon tek başına, `try/finally` + sha256 birebir):** **11/11 kırmızı** —
+C1 maske baytı sayılmaz · C2 örnek maskelenmez · C3 plan kapsam kapısı kapalı ·
+C4 terim doğrulaması kapalı · C5 bütçe yok sayılır · C6 eşleşme yokken
+"maskelendi" denir · U1 önizleme maskeyi taşımaz · U2 maske imzası yazılmaz ·
+U3 çalıştır kapısı maskeyi yok sayar · U4 maske satırı yazılmaz · U5 plan kimliği
+önizlemeye gitmez.
+
+**Dürüst sınırlar.**
+
+- Bütçe (1M karakter) üstünde bayt sayısı **maskesiz üst sınırdır**
+  (`bytesExact=false`); kullanıcıya böyle yazılır. Tam sayı için daha hızlı bir
+  eşleştirici (Aho–Corasick) gerekir — bu turda yapılmadı.
+- Maske **onaydan sonra** değişirse çalıştırma kapanır ve yeniden onay ister;
+  bu bilinçli bir sürtünmedir (izin kendiliğinden değişmez). Onay kaydı
+  (`transfer_consents`) belge kümesine bağlıdır; **maske imzası onay satırına
+  yazılmaz** — çekirdek sözleşmesi değişmedi, kapı arayüz + önizleme düzeyinde.
+- Önizleme çağrısı yine tüm kapsamın metnini okur (mevcut davranış); maske
+  maliyeti bütçeyle sınırlandı, okuma maliyeti sınırlandırılmadı.
+- Komut yolu **komut olarak koşulmadı** (`State<AppState>` altyapısı yok):
+  kablolama check + clippy, davranış storage düzeyinde gerçek SQLite.
+- jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `28f0dd1` (8 dosya, **+549/−25**) → run `42687029029`
+**10/10 YEŞİL**: `dim-storage` **490** hem `ubuntu-latest` (322,26 s) hem
+`macos-15` (251,61 s) — **birebir**; `arayüz` **64 dosya / 1326 test** (yerel 1327
+farkı ağaçtaki başka ajanın commit'siz `format.test.ts` testi), paket
+`index-B5i3FPyB.js` **656,52 kB** / gzip **175,59 kB** (CSS 7,28 kB / 2,07);
+`masaüstü kabuk`, `windows güvenli depo`, `sözleşmeler`, `kaynak arşivi`,
+`paket manifesti`, `belge worker'ı` ve `SBOM` yeşil. **i18n hunk ayrımı:** iki
+hunk'tan yalnız benim `previewMask*`/`maskChangedSincePreview` hunk'ım
+`git apply --cached --recount` ile sahneye alındı; başka ajanın
+`cases.parseStatus*` üç anahtarı commit'e **girmedi**
+(`git show HEAD:…i18n.ts | grep -c parseStatus` → **0**).
