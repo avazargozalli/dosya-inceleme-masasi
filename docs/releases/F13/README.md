@@ -13,6 +13,7 @@
 | F13-T05 | ✅ | sayfa önizlemesi üzerinde dikdörtgen seçimi; punto koordinatına çevrim; bölge doğrulaması |
 | F13-T06 | ✅ | bağımsız pypdf okuyucusu + OCR (tesseract varsa) sızıntı kontrolü; `ocrVerified` dürüst bayrağı |
 | F13-T04b | ✅ | plan bölgeleri **gönderim maskesine** bağlandı (2026-11-09 turu; terimler çekirdekte türetilir, `E_MASK_PLAN`) |
+| F13-T04c | ✅ | plan satırı **ürettiği çıktı sürümünü** taşır (şema v28; bağ doğrulanır, eski planlar "kayıtlı değil" der; 2026-11-09 turu) |
 
 ## Dürüst durum
 
@@ -216,8 +217,10 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   sabit (`user_term`/`redact`) — kural tabanlı kategoriler (TCKN/IBAN) henüz üretilmiyor, sicil
   bunu gizlemez (ham değer okunur); (f) jsdom tarayıcı değil → gerçek Tauri penceresi ve
   **görsel QA insan bekliyor**.
-- **Açık kayıt:** (a) sicil **dosya kapsamlı**; belge bazında filtre yok; (b) plan→çıktı sürümü
-  bağı (`parent_version_id`) sicil satırında **gösterilmiyor** (yalnız belge/sürüm no); (c) plan
+- **Açık kayıt:** (a) sicil **dosya kapsamlı**; belge bazında filtre yok; (b) ~~plan→çıktı sürümü
+  bağı (`parent_version_id`) sicil satırında **gösterilmiyor** (yalnız belge/sürüm no)~~ —
+  **2026-11-09'da kapandı:** plan satırı `output_version_id` taşır (şema v28), çıktı belge adı +
+  sürüm no ile yazılır; eski planlar "kayıtlı değil" der. (c) plan
   durumu `applied` dışına ürün akışında geçmiyor (draft→applied tek adım) — yeniden inceleme
   akışı (F13-T01'in "yerleşim değişince tekrar incelet" kısmı) hâlâ ayrı iş.
 
@@ -268,3 +271,49 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   (sözleşmeler, masaüstü kabuk, windows, worker, SBOM, kaynak arşivi); `arayüz`, `rust` (iki OS)
   ve `paket` işleri run'da **hiç oluşmadı** (log yok, annotation yok) ve run `failure` kapandı —
   kod hatası olarak okunmadı, ayrıca kovalanıyor. Test/belge commit'i ayrı koşuda doğrulanacak.
+
+## Tur kaydı — 2026-11-09 (plan satırı ürettiği çıktı sürümünü taşır)
+
+- **Ölçülen boşluk (dürüst):** `commit_redaction` her maskelemede **yeni bir belge + sürüm**
+  üretir ve `parent_version_id` ile kaynak sürüme bağlar; ama `redaction_plans` satırı yalnız
+  **kaynak** sürümü taşıyordu. Sicil bu yüzden "hangi maskeleme hangi çıktıyı üretti" sorusunu
+  yanıtlayamıyordu: aynı kaynak sürümden iki maskeleme yapıldığında iki çıktı birbirinden ayırt
+  edilemiyor, çıktıyı bulmak için belge adına ("… (maskeli)") bakmak gerekiyordu. Bu, önceki
+  turun **açık kayıt (b)** maddesiydi.
+- **Yazılan:** şema **v28** `0028_redaction_plan_output.sql` — `redaction_plans.output_version_id`
+  (yabancı anahtar, `ON DELETE SET NULL`) + indeks. Bağ **doğrulanmadan yazılmaz**
+  (`E_REDACTION_PLAN`): çıktı var olmalı, **aynı dosyaya** ait olmalı, kaynak sürümün **alt
+  sürümü** olmalı ve kaynağın kendisi olamaz; tutmazsa plan **hiç yazılmaz** (yanlış iz, izsizlikten
+  kötüdür). `NewRedactionPlan.output_version_id` (`serde(default)` — eski çağıranlar `None`),
+  `commit_redaction` çıktı sürümünü geçirir, denetim kaydı bağın **varlığını** yazar (kimlik yazılmaz).
+  `RedactionPlanRow` üç alan kazanır: `output_version_id`, `output_version_no`,
+  `output_document_title` — ikisi **sol birleşimle** okunur, bulunamazsa `null` (ad/numara uydurulmaz).
+  Arayüz sicil satırında **"Çıktı: <belge> · sürüm N"** yazar; sütundan önce yazılmış planlarda
+  **"Çıktı sürümü kayıtlı değil (bu sütundan önce yazılmış plan)."** yazar — "çıktı yok" denmez,
+  çıktı da uydurulmaz. 3 sözlük anahtarı.
+- **Testler:** storage `redactions::tests` **17 → 22** (+5: çıktı bağı yazılır/okunur; bağsız plan
+  dürüst kalır; alt sürüm olmayan çıktı reddedilir ve **satır yazılmaz**; başka dosyanın çıktısı
+  reddedilir; kaynak==çıktı reddedilir) → `dim-storage --lib` **490 → 495** (315,46 s).
+  `Redaction.test.tsx` **40 → 43** (+3: çıktı satırı yazılır ve kaynak satırı değişmez; bağsız eski
+  plan çıktı uydurmaz; ad okunamazsa **kimlik** yazılır) → vitest **1327 → 1330** (64 dosya).
+  Bir eski test daraltıldı: sürüm numarası artık iki satırda geçebildiği için kaynak satırında
+  **belge adıyla birlikte** aranıyor.
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-plan-output-gates-1109.py`, her mutasyon tek
+  başına, `try/finally` + sha256 birebir):** **9/9 kırmızı** — C1 bağ yazılmaz · C2 alt sürüm
+  kapısı kapalı · C3 dosya kapsamı kapalı · C4 kaynak==çıktı kapalı · C5 liste çıktı bilgisini
+  okumaz · C6 kaynak ve çıktı karıştırılır · U1 bağ yokken satır hiç yazılmaz · U2 bağlı plan
+  "kayıtlı değil" gösterilir · U3 ad okunamazsa kimlik yazılmaz. C2/C5/C6 **derlendi ve davranış
+  testiyle** düştü (derlenmeyen koşu kanıt sayılmadı); U1 filtresinde hedef test `1 failed` verdi.
+- **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1330/1330** · storage
+  **495/495** · `cargo fmt` iki manifest temiz · storage + masaüstü `clippy --all-targets -D warnings`
+  temiz (masaüstü 1 dk 23 s) · `upgrade_tests` yeşil (şema 28'e yükseltme dahil).
+- **Dürüst sınırlar:** (a) plan satırı **kaynak** belgeyi göstermeye devam eder; çıktı ayrı
+  sütundadır — arayüzde çıktıya **tıklayıp gitme** yok (gezinme ayrı iş); (b) v28'den önce yazılmış
+  planlar `NULL` kalır; geriye dönük **doldurma yapılmadı** (aynı kaynaktan birden çok maskeleme
+  varsa ebeveyn bağı tek başına hangi çıktının hangi plana ait olduğunu kanıtlamaz — tahmin
+  yazılmaz); (c) bağ yalnız `commit_redaction` yolunda yazılır; doğrudan `create_redaction_plan`
+  çağıran bir yol bağsız plan üretebilir (testlerde bilinçli); (d) `document_redact` komutu
+  **komut olarak koşulmadı** (`State<AppState>` altyapısı yok) — kablolama check + clippy, davranış
+  storage düzeyinde gerçek SQLite; (e) plan satırı taşıyan bir **v27 kasa kopyasından** yükseltme
+  ayrıca denenmedi (ALTER yolu her test DB'sinde 1→28 kurulumuyla koşuyor); (f) jsdom tarayıcı
+  değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
