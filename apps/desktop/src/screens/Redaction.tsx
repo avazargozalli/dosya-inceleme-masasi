@@ -37,6 +37,25 @@ function planState(status: string): { label: string; tone: "ok" | "danger" | "wa
 }
 
 /**
+ * **Yeniden inceleme nedeni** (F13-T01). Çekirdek kararlı bir kod gönderir;
+ * eşleme burada yapılır, tanınmayan kod **ham** yazılır (uydurma etiket yok).
+ */
+function reinspectText(reason: string): string {
+  switch (reason) {
+    case "version_missing":
+      return t("redaction.planReinspectVersionMissing");
+    case "version_superseded":
+      return t("redaction.planReinspectVersionSuperseded");
+    case "render_changed":
+      return t("redaction.planReinspectRenderChanged");
+    case "parse_run_newer":
+      return t("redaction.planReinspectParseRunNewer");
+    default:
+      return t("redaction.planReinspectUnknown", { reason });
+  }
+}
+
+/**
  * Bölgeleri **sayfaya göre** sayar. Sıra sayfa numarasıdır — kayıt sırası
  * değil: avukat "hangi sayfada kaç bölge" sorusunu okur. Sayı ekranda
  * hesaplanır, çekirdekten gelen satırlardan türetilir (uydurma yok).
@@ -749,10 +768,36 @@ export function Redaction() {
                             hash: plan.renderHash.slice(0, 16),
                           })}
                         </div>
+                        {/*
+                          F13-T01 "yerleşim değişince yeniden incelet": plan
+                          gerçekten uygulandı (rozet tarihsel gerçeği yazar) ama
+                          bağlandığı kanıt artık bugünkü belgeyi anlatmıyor.
+                          Bu satır olmadan sicil planı sonsuza dek geçerli
+                          gösterirdi.
+                        */}
+                        {plan.reinspectReason !== null ? (
+                          <div className="notice warn" style={{ marginTop: 6 }}>
+                            {t("redaction.planReinspectLine", {
+                              reason: reinspectText(plan.reinspectReason),
+                            })}{" "}
+                            {plan.currentVersionNo !== null &&
+                            plan.currentVersionNo !== plan.versionNo
+                              ? `${t("redaction.planCurrentVersion", {
+                                  version: plan.currentVersionNo,
+                                })} `
+                              : ""}
+                            {t("redaction.planReinspectHint")}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="row" style={{ gap: 6, alignItems: "center" }}>
                         {result && result.plan.id === plan.id ? (
                           <span className="badge ok">{t("redaction.planThisRun")}</span>
+                        ) : null}
+                        {plan.reinspectReason !== null ? (
+                          <span className="badge warn">
+                            {t("redaction.planReinspectBadge")}
+                          </span>
                         ) : null}
                         <span className={`badge ${state.tone}`}>{state.label}</span>
                       </div>

@@ -47,6 +47,31 @@ pub struct RedactionPlanRow {
     pub output_version_no: Option<i64>,
     /// Çıktı belgesinin adı (`documents.display_name`); bulunamazsa `None`.
     pub output_document_title: Option<String>,
+    /// Belgenin **güncel** sürüm numarası (`documents.current_version_id`).
+    ///
+    /// Planın kaynağı güncel sürüm değilse avukat "hangi sürümden sonra
+    /// değişti" sorusunu bu satırdan yanıtlar. Sürüm satırı yoksa ya da belge
+    /// güncel sürüm taşımıyorsa `None` (numara uydurulmaz).
+    pub current_version_no: Option<i64>,
+    /// **Yeniden inceleme nedeni** — kararlı kod (F13-T01: "yerleşim
+    /// değişince yeniden incelet").
+    ///
+    /// `None` = planın kaynağı bugünkü belge hâliyle tutuyor. Dolu = plan
+    /// yürürlükte (`approved`/`applied`) ama bağlandığı kanıt artık tutmuyor;
+    /// sicil bunu yazmadan plan "uygulandı" görünürdü. Planın **durumu
+    /// değişmez**: maskeleme geçmişte gerçekten uygulandı — değişen, o
+    /// geometrinin bugünkü belgeyi anlatmamasıdır.
+    ///
+    /// Kodlar:
+    /// - `version_missing` — planın sürümü/belgesi kasadan silinmiş,
+    /// - `version_superseded` — belgenin daha yeni bir sürümü var,
+    /// - `render_changed` — planın render özeti sürümün özetiyle eşleşmiyor,
+    /// - `parse_run_newer` — plan bir ayrıştırmaya bağlıyken sürüm yeniden
+    ///   ayrıştırıldı (yerleşim değişmiş olabilir).
+    ///
+    /// Ölçülemeyen kapılar (sayfa döndürmesi, kesişen blok metni) **burada
+    /// iddia edilmez** — maske çalışırken yine hatayla kapanır.
+    pub reinspect_reason: Option<String>,
 }
 
 /// Planın bölge satırı — **okuma** modeli. `quads` alanı yazılırken JSON
@@ -203,10 +228,25 @@ impl Database {
             "SELECT p.id,p.case_id,p.document_version_id,p.parse_run_id,p.render_hash,p.coordinate_space,p.plan_version,p.state,p.reviewer,p.output_profile,p.created_at,p.updated_at,
                     d.display_name,v.version_no,
                     (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id),
-                    p.output_version_id,ov.version_no,od.display_name
+                    p.output_version_id,ov.version_no,od.display_name,
+                    cv.version_no,
+                    CASE
+                      WHEN p.state NOT IN ('approved','applied') THEN NULL
+                      WHEN v.id IS NULL OR d.id IS NULL OR d.deleted_at IS NOT NULL THEN 'version_missing'
+                      WHEN d.current_version_id IS NULL OR d.current_version_id <> p.document_version_id THEN 'version_superseded'
+                      WHEN v.original_sha256 <> p.render_hash THEN 'render_changed'
+                      WHEN p.parse_run_id IS NOT NULL AND p.parse_run_id <> COALESCE((
+                          SELECT pr.id FROM parse_runs pr
+                           WHERE pr.document_version_id = p.document_version_id
+                             AND EXISTS (SELECT 1 FROM pages pg WHERE pg.parse_run_id = pr.id)
+                           ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1
+                      ), '') THEN 'parse_run_newer'
+                      ELSE NULL
+                    END
              FROM redaction_plans p
              LEFT JOIN document_versions v ON v.id = p.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
+             LEFT JOIN document_versions cv ON cv.id = d.current_version_id
              LEFT JOIN document_versions ov ON ov.id = p.output_version_id
              LEFT JOIN documents od ON od.id = ov.document_id
              WHERE p.id=?1",
@@ -224,10 +264,25 @@ impl Database {
             "SELECT p.id,p.case_id,p.document_version_id,p.parse_run_id,p.render_hash,p.coordinate_space,p.plan_version,p.state,p.reviewer,p.output_profile,p.created_at,p.updated_at,
                     d.display_name,v.version_no,
                     (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id),
-                    p.output_version_id,ov.version_no,od.display_name
+                    p.output_version_id,ov.version_no,od.display_name,
+                    cv.version_no,
+                    CASE
+                      WHEN p.state NOT IN ('approved','applied') THEN NULL
+                      WHEN v.id IS NULL OR d.id IS NULL OR d.deleted_at IS NOT NULL THEN 'version_missing'
+                      WHEN d.current_version_id IS NULL OR d.current_version_id <> p.document_version_id THEN 'version_superseded'
+                      WHEN v.original_sha256 <> p.render_hash THEN 'render_changed'
+                      WHEN p.parse_run_id IS NOT NULL AND p.parse_run_id <> COALESCE((
+                          SELECT pr.id FROM parse_runs pr
+                           WHERE pr.document_version_id = p.document_version_id
+                             AND EXISTS (SELECT 1 FROM pages pg WHERE pg.parse_run_id = pr.id)
+                           ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1
+                      ), '') THEN 'parse_run_newer'
+                      ELSE NULL
+                    END
              FROM redaction_plans p
              LEFT JOIN document_versions v ON v.id = p.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
+             LEFT JOIN document_versions cv ON cv.id = d.current_version_id
              LEFT JOIN document_versions ov ON ov.id = p.output_version_id
              LEFT JOIN documents od ON od.id = ov.document_id
              WHERE p.case_id=?1 ORDER BY p.created_at DESC, p.rowid DESC",
@@ -602,6 +657,8 @@ fn map_plan(row: &Row<'_>) -> rusqlite::Result<RedactionPlanRow> {
         output_version_id: row.get(15)?,
         output_version_no: row.get(16)?,
         output_document_title: row.get(17)?,
+        current_version_no: row.get(18)?,
+        reinspect_reason: row.get(19)?,
     })
 }
 
@@ -1460,5 +1517,235 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "E_REDACTION_PLAN");
         assert!(err.to_string().contains("kendisi olamaz"));
+    }
+
+    /// Kaynağının **kendi** özetine bağlı, bölgeleri yazılmış plan: sicilde
+    /// "uygulandı" görünen planların normal hâli (`setup()` sürümü `"a"*64`).
+    fn applied_plan(db: &Database, case_id: &str, version_id: &str) -> RedactionPlanRow {
+        let plan = db
+            .create_redaction_plan(
+                case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.to_string(),
+                    parse_run_id: None,
+                    render_hash: "a".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        db.add_redaction_regions(
+            &plan.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [1.0, 2.0, 3.0, 4.0],
+                term_hash: "h1".into(),
+            }],
+        )
+        .expect("bölge");
+        db.get_redaction_plan(&plan.id)
+            .expect("get")
+            .expect("plan var")
+    }
+
+    fn document_of(db: &Database, version_id: &str) -> String {
+        db.conn()
+            .query_row(
+                "SELECT document_id FROM document_versions WHERE id=?1",
+                [version_id],
+                |row| row.get(0),
+            )
+            .expect("belge")
+    }
+
+    /// F13-T01: "yerleşim değişince yeniden incelet". Belgeye yeni sürüm
+    /// gelince planın geometrisi güncel belgeyi anlatmaz; sicil bunu **yazmak
+    /// zorunda** — yoksa plan sonsuza dek "uygulandı" görünür.
+    #[test]
+    fn superseded_source_version_requires_reinspection() {
+        let (db, case_id, version_id) = setup();
+        let plan = applied_plan(&db, &case_id, &version_id);
+        // Kendi sürümü güncelken sapma yok: bayrak her plana vurulmaz.
+        assert_eq!(plan.reinspect_reason, None);
+        assert_eq!(plan.current_version_no, Some(1));
+
+        let blob = db
+            .create_blob_record("st-redact-v2", 11, "aad")
+            .expect("blob");
+        let doc = document_of(&db, &version_id);
+        db.add_version_with_parent(
+            &doc,
+            &case_id,
+            &blob,
+            &"c".repeat(64),
+            11,
+            "application/pdf",
+            Some(&version_id),
+        )
+        .expect("v2");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].reinspect_reason.as_deref(),
+            Some("version_superseded")
+        );
+        assert_eq!(rows[0].current_version_no, Some(2));
+        // Geçmiş **yeniden yazılmaz**: maskeleme gerçekten uygulandı.
+        assert_eq!(rows[0].state, "applied");
+        // Sicil ile maske kapısı aynı gerçeği söyler (bayrak uydurma değil).
+        let err = db
+            .outbound_terms_from_plan(&case_id, &plan.id)
+            .expect_err("maske kapısı kapanmalı");
+        assert!(err.to_string().contains("güncel sürüme ait değil"));
+    }
+
+    /// Yürürlükte olmayan plan (`draft`) için "yeniden inceleme" istenmez:
+    /// ortada uygulanmış bir geometri yok.
+    #[test]
+    fn draft_plan_does_not_ask_for_reinspection() {
+        let (db, case_id, version_id) = setup();
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "a".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        let blob = db
+            .create_blob_record("st-draft-v2", 11, "aad")
+            .expect("blob");
+        let doc = document_of(&db, &version_id);
+        db.add_version_with_parent(
+            &doc,
+            &case_id,
+            &blob,
+            &"c".repeat(64),
+            11,
+            "application/pdf",
+            Some(&version_id),
+        )
+        .expect("v2");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows[0].id, plan.id);
+        assert_eq!(rows[0].state, "draft");
+        assert_eq!(rows[0].reinspect_reason, None);
+        // Güncel sürüm yine **yazılır**: bilgi planın durumuna bağlı değil.
+        assert_eq!(rows[0].current_version_no, Some(2));
+    }
+
+    /// Planın bağlandığı render özeti sürümün özetiyle tutmuyorsa geometri
+    /// hangi dosyaya ait olduğunu kanıtlamaz.
+    #[test]
+    fn render_mismatch_requires_reinspection() {
+        let (db, case_id, version_id) = setup();
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id,
+                    parse_run_id: None,
+                    // Sürüm `"a"*64`; plan başka bir render'a bağlı.
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        db.add_redaction_regions(
+            &plan.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [1.0, 2.0, 3.0, 4.0],
+                term_hash: "h1".into(),
+            }],
+        )
+        .expect("bölge");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows[0].reinspect_reason.as_deref(), Some("render_changed"));
+    }
+
+    /// Sürüm yeniden ayrıştırıldıysa planın bağlı olduğu ayrıştırma artık en
+    /// yeni koşu değildir: yerleşim değişmiş olabilir → yeniden inceleme.
+    #[test]
+    fn newer_parse_run_requires_reinspection() {
+        let (db, case_id, version_id) = setup();
+        let page = |text: &str| crate::parsing::NewPage {
+            index: 0,
+            text: text.to_string(),
+            width: Some(595.0),
+            height: Some(842.0),
+            origin: "native".into(),
+            warnings: Vec::new(),
+            rotation: 0,
+            coordinate_space: Some("unrotated_cropbox_points".into()),
+            page_label: None,
+            blocks: Vec::new(),
+        };
+        let run1 = db
+            .start_parse_run(&version_id, &case_id, "pdfium", "1.0", "{}")
+            .expect("koşu");
+        db.store_pages(&run1.id, &case_id, &[page("Ahmet Yılmaz")])
+            .expect("sayfa");
+
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: Some(run1.id.clone()),
+                    render_hash: "a".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        db.add_redaction_regions(
+            &plan.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [1.0, 2.0, 3.0, 4.0],
+                term_hash: "h1".into(),
+            }],
+        )
+        .expect("bölge");
+        // Bağlı koşu hâlâ en yeniyse sapma yok.
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows[0].reinspect_reason, None);
+
+        let run2 = db
+            .start_parse_run(&version_id, &case_id, "pdfium", "1.0", "{}")
+            .expect("koşu 2");
+        db.store_pages(&run2.id, &case_id, &[page("Ahmet Yılmaz (yeni yerleşim)")])
+            .expect("sayfa 2");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows[0].reinspect_reason.as_deref(), Some("parse_run_newer"));
+    }
+
+    /// Plan satırı sürümünden uzun yaşar (`document_version_id` yabancı
+    /// anahtar değil): sürüm satırı yoksa okuma **çöker değil**, nedeni yazar.
+    #[test]
+    fn missing_source_version_requires_reinspection() {
+        let (db, case_id, version_id) = setup();
+        let plan = applied_plan(&db, &case_id, &version_id);
+        db.conn()
+            .execute("DELETE FROM document_versions WHERE id=?1", [&version_id])
+            .expect("sürüm silindi");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows[0].id, plan.id);
+        assert_eq!(rows[0].reinspect_reason.as_deref(), Some("version_missing"));
+        // Ad/sürüm uydurulmaz.
+        assert!(rows[0].document_title.is_none());
+        assert!(rows[0].version_no.is_none());
+        assert!(rows[0].current_version_no.is_none());
     }
 }

@@ -560,6 +560,19 @@ export type RedactionPlanRow = {
   outputVersionId: string | null;
   outputVersionNo: number | null;
   outputDocumentTitle: string | null;
+  /**
+   * Belgenin **güncel** sürüm numarası. Planın kaynağı güncel sürüm değilse
+   * hangi sürümden sonra değiştiği buradan okunur; bilinmiyorsa `null`
+   * (numara uydurulmaz).
+   */
+  currentVersionNo: number | null;
+  /**
+   * **Yeniden inceleme nedeni** — kararlı kod (F13-T01). `null` = planın
+   * kaynağı bugünkü belgeyle tutuyor. Dolu = plan yürürlükte ama bağlandığı
+   * kanıt artık tutmuyor; `version_missing` · `version_superseded` ·
+   * `render_changed` · `parse_run_newer`. Tanınmayan kod **ham** yazılır.
+   */
+  reinspectReason: string | null;
 };
 
 /**

@@ -161,6 +161,8 @@ function planRow(overrides: Partial<RedactionPlanRow> = {}): RedactionPlanRow {
     outputVersionId: "v9",
     outputVersionNo: 1,
     outputDocumentTitle: "Kira sözleşmesi (maskeli).pdf",
+    currentVersionNo: 1,
+    reinspectReason: null,
     ...overrides,
   };
 }
@@ -1082,6 +1084,62 @@ describe("Maskeleme sicili (plan okuma yolu)", () => {
     mocks.redactionPlanList.mockResolvedValue([planRow({ state: "arsivlendi" })]);
     await renderScreen();
     await within(plansCard()).findByText(t("redaction.planStateUnknown", { state: "arsivlendi" }));
+  });
+
+  it("kaynağı aşılmış plan yeniden inceleme rozetiyle ve güncel sürümle yazılır", async () => {
+    // F13-T01: "yerleşim değişince yeniden incelet". Plan gerçekten
+    // uygulandı (rozet tarihsel) ama bağlandığı sürüm artık güncel değil.
+    mocks.redactionPlanList.mockResolvedValue([
+      planRow({ versionNo: 1, currentVersionNo: 3, reinspectReason: "version_superseded" }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(t("redaction.planReinspectBadge"));
+    // Neden ve güncel sürüm **birlikte** yazılır: "yeniden incele" diyen satır
+    // hangi sürümden sonra değiştiğini de söyler.
+    const text = card.textContent ?? "";
+    expect(text).toContain(t("redaction.planReinspectVersionSuperseded"));
+    expect(text).toContain(t("redaction.planCurrentVersion", { version: 3 }));
+    // Durum rozeti yine "uygulandı" der: geçmiş yeniden yazılmaz.
+    expect(within(card).getByText(t("redaction.planStateApplied"))).toBeTruthy();
+  });
+
+  it("taze planda yeniden inceleme rozeti ve satırı yoktur", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow()]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(/Kira sözleşmesi\.pdf/);
+    expect(within(card).queryByText(t("redaction.planReinspectBadge"))).toBeNull();
+    expect(card.textContent ?? "").not.toContain("Yeniden inceleme gerekli");
+  });
+
+  it("tanınmayan yeniden inceleme nedeni gizlenmez, ham koduyla yazılır", async () => {
+    mocks.redactionPlanList.mockResolvedValue([
+      planRow({ reinspectReason: "yerlesim_kaydi" }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(t("redaction.planReinspectBadge"));
+    // Uydurma Türkçe etiket yok: tanınmayan kod **ham** görünür.
+    expect(card.textContent ?? "").toContain("yerlesim_kaydi");
+  });
+
+  it("güncel sürüm bilinmiyorsa sürüm satırı uydurulmaz", async () => {
+    // Sürüm satırı kasadan silinmiş plan: güncel numara `null` → "güncel
+    // sürüm" cümlesi kurulmaz, neden yine yazılır.
+    mocks.redactionPlanList.mockResolvedValue([
+      planRow({
+        reinspectReason: "version_missing",
+        currentVersionNo: null,
+        versionNo: null,
+        documentTitle: null,
+      }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(t("redaction.planReinspectBadge"));
+    expect(card.textContent ?? "").toContain(t("redaction.planReinspectVersionMissing"));
+    expect(card.textContent ?? "").not.toContain(t("redaction.planCurrentVersion", { version: 1 }));
   });
 
   it("bölgeleri plan kimliğiyle ister ve sayfa dağılımını sayfaya göre yazar", async () => {
