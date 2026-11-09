@@ -712,6 +712,29 @@ export function Redaction() {
                           {" · "}
                           {formatDateTime(plan.createdAt)}
                         </div>
+                        {/*
+                          Planın **ürettiği** sürüm. Sicil eskiden yalnız
+                          kaynağı gösteriyordu; aynı kaynaktan iki maskeleme
+                          yapıldığında çıktılar ayırt edilemiyordu. Bağ yoksa
+                          çıktı uydurulmaz: "kayıtlı değil" yazılır.
+                        */}
+                        <div className="small muted">
+                          {plan.outputVersionId === null
+                            ? t("redaction.planOutputUnlinked")
+                            : t("redaction.planOutput", {
+                                title:
+                                  plan.outputDocumentTitle ??
+                                  t("redaction.planOutputNoTitle", {
+                                    id: plan.outputVersionId,
+                                  }),
+                                version:
+                                  plan.outputVersionNo === null
+                                    ? t("redaction.planVersionUnknown")
+                                    : t("redaction.planVersionNo", {
+                                        version: plan.outputVersionNo,
+                                      }),
+                              })}
+                        </div>
                         <div
                           style={{
                             fontFamily: "var(--mono)",

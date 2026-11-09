@@ -158,6 +158,9 @@ function planRow(overrides: Partial<RedactionPlanRow> = {}): RedactionPlanRow {
     documentTitle: "Kira sözleşmesi.pdf",
     versionNo: 1,
     regionCount: 3,
+    outputVersionId: "v9",
+    outputVersionNo: 1,
+    outputDocumentTitle: "Kira sözleşmesi (maskeli).pdf",
     ...overrides,
   };
 }
@@ -1001,10 +1004,63 @@ describe("Maskeleme sicili (plan okuma yolu)", () => {
     const card = plansCard();
     await within(card).findByText(/Kira sözleşmesi\.pdf/);
     expect(mocks.redactionPlanList).toHaveBeenCalledWith("p1");
-    // Sürüm numarası ve bölge sayısı **satırdan** yazılır.
-    expect(within(card).getByText(new RegExp(t("redaction.planVersionNo", { version: 1 })))).toBeTruthy();
+    // Sürüm numarası ve bölge sayısı **satırdan** yazılır. Sürüm numarası
+    // kaynak satırında belge adıyla birlikte aranır: çıktı satırı aynı numarayı
+    // taşıyabilir (iki belge de 1. sürüm), iki satır karıştırılmaz.
+    expect(
+      within(card).getByText(
+        new RegExp(
+          `Kira sözleşmesi\\.pdf · ${t("redaction.planVersionNo", { version: 1 })}`,
+        ),
+      ),
+    ).toBeTruthy();
     expect(within(card).getByText(t("redaction.planRegions", { count: 3 }))).toBeTruthy();
     expect(within(card).getByText(t("redaction.planStateApplied"))).toBeTruthy();
+  });
+
+  it("plan satırı ürettiği çıktı sürümünü yazar; kaynak satırı değişmez", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow()]);
+    await renderScreen();
+    const card = plansCard();
+    // Çıktı **ayrı satırda** yazılır: bağ, kaynak sürümün yerine geçmez.
+    expect(
+      within(card).getByText(
+        t("redaction.planOutput", {
+          title: "Kira sözleşmesi (maskeli).pdf",
+          version: t("redaction.planVersionNo", { version: 1 }),
+        }),
+      ),
+    ).toBeTruthy();
+    expect(within(card).getByText(/Kira sözleşmesi\.pdf · /)).toBeTruthy();
+  });
+
+  it("çıktı bağı kayıtlı olmayan eski plan çıktı uydurmaz", async () => {
+    mocks.redactionPlanList.mockResolvedValue([
+      planRow({
+        outputVersionId: null,
+        outputVersionNo: null,
+        outputDocumentTitle: null,
+      }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(t("redaction.planOutputUnlinked"));
+    // "Çıktı: …" satırı **yok**: bağ yokken çıktı varmış gibi gösterilmez.
+    expect(within(card).queryByText(/^Çıktı: /)).toBeNull();
+  });
+
+  it("çıktı belgesinin adı okunamazsa kimlik yazılır, ad uydurulmaz", async () => {
+    mocks.redactionPlanList.mockResolvedValue([planRow({ outputDocumentTitle: null })]);
+    await renderScreen();
+    const card = plansCard();
+    expect(
+      within(card).getByText(
+        t("redaction.planOutput", {
+          title: t("redaction.planOutputNoTitle", { id: "v9" }),
+          version: t("redaction.planVersionNo", { version: 1 }),
+        }),
+      ),
+    ).toBeTruthy();
   });
 
   it("plan yoksa “kayıt yok” yazar (uydurma satır üretmez)", async () => {

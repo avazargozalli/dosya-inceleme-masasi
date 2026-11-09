@@ -36,6 +36,17 @@ pub struct RedactionPlanRow {
     pub version_no: Option<i64>,
     /// Bu plana yazılmış bölge sayısı (tek sorguda alt sorgu).
     pub region_count: i64,
+    /// Bu planın ürettiği **çıktı sürümü** (`redaction_plans.output_version_id`).
+    ///
+    /// Bu sütun eklenmeden önce yazılmış planlarda `None` — bu "çıktı yok"
+    /// demek **değildir**, "bağ kayıtlı değil" demektir; arayüz ikisini ayrı
+    /// yazar. Çıktı sürümü silinirse bağ `ON DELETE SET NULL` ile çözülür.
+    pub output_version_id: Option<String>,
+    /// Çıktı sürümünün numarası (`document_versions.version_no`); bağ yoksa
+    /// ya da sürüm/satır bulunamazsa `None` (numara uydurulmaz).
+    pub output_version_no: Option<i64>,
+    /// Çıktı belgesinin adı (`documents.display_name`); bulunamazsa `None`.
+    pub output_document_title: Option<String>,
 }
 
 /// Planın bölge satırı — **okuma** modeli. `quads` alanı yazılırken JSON
@@ -61,6 +72,12 @@ pub struct NewRedactionPlan {
     pub parse_run_id: Option<String>,
     pub render_hash: String,
     pub output_profile: String,
+    /// Maskelemenin ürettiği sürüm. Ürün yolu (`commit_redaction`) her zaman
+    /// doldurur; bağ **doğrulanmadan** yazılmaz: çıktı, kaynak sürümün alt
+    /// sürümü olmalı ve aynı dosyaya ait olmalıdır. `None` yalnız bu sütundan
+    /// önce yazılmış planları temsil eder.
+    #[serde(default)]
+    pub output_version_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,11 +99,42 @@ impl Database {
         if version.case_id != case_id {
             return Err(StorageError::NotFound);
         }
+        // Çıktı bağı **doğrulanmadan** yazılmaz: plan, kendi ürettiği sürümü
+        // göstermeli. Çıktı kaynak sürümün alt sürümü değilse (ya da başka
+        // dosyaya aitse) sicile yanlış iz düşerdi — izi hiç yazmamak, yanlış
+        // yazmaktan iyidir.
+        if let Some(output_id) = new.output_version_id.as_deref() {
+            if output_id == new.document_version_id {
+                return Err(StorageError::RedactionPlanInvalid {
+                    reason: "çıktı sürümü kaynak sürümün kendisi olamaz".into(),
+                });
+            }
+            let output =
+                self.get_version(output_id)?
+                    .ok_or_else(|| StorageError::RedactionPlanInvalid {
+                        reason: format!("çıktı sürümü bulunamadı: {output_id}"),
+                    })?;
+            if output.case_id != case_id {
+                return Err(StorageError::RedactionPlanInvalid {
+                    reason: "çıktı sürümü başka dosyaya ait".into(),
+                });
+            }
+            let parent: Option<String> = self.conn().query_row(
+                "SELECT parent_version_id FROM document_versions WHERE id=?1",
+                [output_id],
+                |row| row.get(0),
+            )?;
+            if parent.as_deref() != Some(new.document_version_id.as_str()) {
+                return Err(StorageError::RedactionPlanInvalid {
+                    reason: "çıktı sürümü kaynak sürümün alt sürümü değil".into(),
+                });
+            }
+        }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         self.conn().execute(
-            "INSERT INTO redaction_plans (id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,'pdf_page_points',1,'draft',?6,?7,?7)",
+            "INSERT INTO redaction_plans (id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id)
+             VALUES (?1,?2,?3,?4,?5,'pdf_page_points',1,'draft',?6,?7,?7,?8)",
             rusqlite::params![
                 id,
                 case_id,
@@ -94,7 +142,8 @@ impl Database {
                 new.parse_run_id,
                 new.render_hash,
                 new.output_profile,
-                now
+                now,
+                new.output_version_id
             ],
         )?;
         self.append_audit(
@@ -102,7 +151,12 @@ impl Database {
             Some(&id),
             "create",
             "local-user",
-            &serde_json::json!({"caseId": case_id}),
+            &serde_json::json!({
+                "caseId": case_id,
+                // Bağın **varlığı** denetime yazılır; çıktı kimliği plan
+                // satırındadır (denetim kaydı kimlik taşımaz).
+                "outputLinked": new.output_version_id.is_some(),
+            }),
         )?;
         self.get_redaction_plan(&id)?.ok_or(StorageError::NotFound)
     }
@@ -148,10 +202,13 @@ impl Database {
         let mut stmt = self.conn().prepare(
             "SELECT p.id,p.case_id,p.document_version_id,p.parse_run_id,p.render_hash,p.coordinate_space,p.plan_version,p.state,p.reviewer,p.output_profile,p.created_at,p.updated_at,
                     d.display_name,v.version_no,
-                    (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id)
+                    (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id),
+                    p.output_version_id,ov.version_no,od.display_name
              FROM redaction_plans p
              LEFT JOIN document_versions v ON v.id = p.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
+             LEFT JOIN document_versions ov ON ov.id = p.output_version_id
+             LEFT JOIN documents od ON od.id = ov.document_id
              WHERE p.id=?1",
         )?;
         Ok(stmt.query_row([id], map_plan).optional()?)
@@ -166,10 +223,13 @@ impl Database {
         let mut stmt = self.conn().prepare(
             "SELECT p.id,p.case_id,p.document_version_id,p.parse_run_id,p.render_hash,p.coordinate_space,p.plan_version,p.state,p.reviewer,p.output_profile,p.created_at,p.updated_at,
                     d.display_name,v.version_no,
-                    (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id)
+                    (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id),
+                    p.output_version_id,ov.version_no,od.display_name
              FROM redaction_plans p
              LEFT JOIN document_versions v ON v.id = p.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
+             LEFT JOIN document_versions ov ON ov.id = p.output_version_id
+             LEFT JOIN documents od ON od.id = ov.document_id
              WHERE p.case_id=?1 ORDER BY p.created_at DESC, p.rowid DESC",
         )?;
         let rows = stmt.query_map([case_id], map_plan)?;
@@ -539,6 +599,9 @@ fn map_plan(row: &Row<'_>) -> rusqlite::Result<RedactionPlanRow> {
         document_title: row.get(12)?,
         version_no: row.get(13)?,
         region_count: row.get(14)?,
+        output_version_id: row.get(15)?,
+        output_version_no: row.get(16)?,
+        output_document_title: row.get(17)?,
     })
 }
 
@@ -589,6 +652,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: "b".repeat(64),
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .expect("plan");
@@ -626,6 +690,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: "b".repeat(64),
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .expect("plan");
@@ -674,6 +739,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: "c".repeat(64),
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .expect("plan");
@@ -705,6 +771,7 @@ mod tests {
                         parse_run_id: None,
                         render_hash: hash.repeat(64),
                         output_profile: "share".into(),
+                        output_version_id: None,
                     },
                 )
                 .expect("plan")
@@ -736,6 +803,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: "f".repeat(64),
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .expect("plan");
@@ -808,6 +876,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: "c".repeat(64),
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .unwrap_err();
@@ -869,6 +938,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: version.original_sha256,
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .expect("plan");
@@ -1163,6 +1233,7 @@ mod tests {
                     parse_run_id: None,
                     render_hash: "f".repeat(64),
                     output_profile: "share".into(),
+                    output_version_id: None,
                 },
             )
             .expect("plan");
@@ -1178,5 +1249,216 @@ mod tests {
         let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
         assert_eq!(err.code(), "E_MASK_PLAN");
         assert!(err.to_string().contains("render özeti"));
+    }
+
+    /// Maskeleme çıktısı yeni bir belge + sürümdür (`parent_version_id` kaynağa
+    /// bağlanır). Plan bu çıktıyı **göstermelidir** — aynı kaynak sürümden iki
+    /// maskeleme yapıldığında hangi çıktının hangi plandan geldiği sicilden
+    /// okunabilsin.
+    fn add_output_document(
+        db: &Database,
+        case_id: &str,
+        source_version_id: &str,
+        name: &str,
+        sha: &str,
+    ) -> crate::documents::DocumentVersion {
+        let blob = db
+            .create_blob_record(&format!("st-out-{sha}"), 12, "aad")
+            .expect("blob");
+        let doc = db
+            .create_document(case_id, name, "pdf", None, "unknown")
+            .expect("çıktı belgesi");
+        db.add_version_with_parent(
+            &doc.id,
+            case_id,
+            &blob,
+            sha,
+            12,
+            "application/pdf",
+            Some(source_version_id),
+        )
+        .expect("çıktı sürümü")
+    }
+
+    #[test]
+    fn plan_records_output_version_and_reads_it_back() {
+        let (db, case_id, version_id) = setup();
+        let output = add_output_document(
+            &db,
+            &case_id,
+            &version_id,
+            "Belge (maskeli)",
+            &"c".repeat(64),
+        );
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: Some(output.id.clone()),
+                },
+            )
+            .expect("plan");
+        // `get` yolu: bağ kimlik, çıktı sürüm numarası ve belge adıyla döner.
+        assert_eq!(plan.output_version_id.as_deref(), Some(output.id.as_str()));
+        assert_eq!(plan.output_version_no, Some(1));
+        assert_eq!(
+            plan.output_document_title.as_deref(),
+            Some("Belge (maskeli)")
+        );
+        // Kaynak sürüm alanı **değişmez**: plan kaynağa bağlıdır, çıktı ayrı
+        // sütundadır (ikisi karışmaz).
+        assert_eq!(plan.document_version_id, version_id);
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].output_version_id.as_deref(),
+            Some(output.id.as_str())
+        );
+        assert_eq!(rows[0].output_version_no, Some(1));
+        assert_eq!(
+            rows[0].output_document_title.as_deref(),
+            Some("Belge (maskeli)")
+        );
+        assert_eq!(rows[0].document_title.as_deref(), Some("Belge"));
+    }
+
+    #[test]
+    fn plan_without_output_stays_unlinked_and_is_not_disguised() {
+        let (db, case_id, version_id) = setup();
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id,
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        // Sütun eklenmeden önce yazılmış planlar: bağ **yok**, çıktı varmış
+        // gibi gösterilmez.
+        assert!(plan.output_version_id.is_none());
+        assert!(plan.output_version_no.is_none());
+        assert!(plan.output_document_title.is_none());
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert!(rows[0].output_version_id.is_none());
+        assert!(rows[0].output_version_no.is_none());
+        assert!(rows[0].output_document_title.is_none());
+    }
+
+    #[test]
+    fn plan_rejects_output_that_is_not_child_of_source() {
+        let (db, case_id, version_id) = setup();
+        // Ebeveynsiz sürüm: kaynağın alt sürümü değil.
+        let blob = db.create_blob_record("st-orphan", 12, "aad").expect("blob");
+        let doc = db
+            .create_document(&case_id, "Başka belge", "pdf", None, "unknown")
+            .expect("doc");
+        let orphan = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &blob,
+                &"d".repeat(64),
+                12,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        let err = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id,
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: Some(orphan.id),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_REDACTION_PLAN");
+        assert!(err.to_string().contains("alt sürümü değil"));
+        // Yanlış bağ sicile **yazılmadı**.
+        assert!(db.list_redaction_plans(&case_id).expect("liste").is_empty());
+    }
+
+    #[test]
+    fn plan_rejects_output_from_another_case() {
+        let (db, case_id, version_id) = setup();
+        let other = db
+            .create_case(&NewCase {
+                title: "Başka dosya".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let other_blob = db
+            .create_blob_record("st-other-src", 12, "aad")
+            .expect("blob");
+        let other_doc = db
+            .create_document(&other.id, "Yabancı", "pdf", None, "unknown")
+            .expect("doc");
+        let other_src = db
+            .add_version(
+                &other_doc.id,
+                &other.id,
+                &other_blob,
+                &"f".repeat(64),
+                12,
+                "application/pdf",
+            )
+            .expect("yabancı kaynak sürüm");
+        let output = add_output_document(
+            &db,
+            &other.id,
+            &other_src.id,
+            "Yabancı (maskeli)",
+            &"e".repeat(64),
+        );
+        let err = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id,
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: Some(output.id),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_REDACTION_PLAN");
+        assert!(err.to_string().contains("başka dosyaya ait"));
+        assert!(db.list_redaction_plans(&case_id).expect("liste").is_empty());
+    }
+
+    #[test]
+    fn plan_rejects_output_equal_to_source() {
+        let (db, case_id, version_id) = setup();
+        let err = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: Some(version_id),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_REDACTION_PLAN");
+        assert!(err.to_string().contains("kendisi olamaz"));
     }
 }

@@ -3028,6 +3028,9 @@ describe("AI ekranı — gönderim maskesi", () => {
       documentTitle: "Kira sözleşmesi.pdf",
       versionNo: 1,
       regionCount: 2,
+      outputVersionId: "d1-v2",
+      outputVersionNo: 2,
+      outputDocumentTitle: "Kira sözleşmesi (maskeli).pdf",
       ...overrides,
     };
   }

@@ -5732,6 +5732,9 @@ fn commit_redaction(
             parse_run_id: None,
             render_hash: version.original_sha256.clone(),
             output_profile: "share".to_string(),
+            // Sicil, maskelemenin **ürettiği** sürümü gösterir: aynı kaynak
+            // sürümden iki maskeleme yapıldığında çıktılar ayırt edilebilsin.
+            output_version_id: Some(new_version.id.clone()),
         },
     )?;
     let regions = prep.request.plan_regions(&outcome);

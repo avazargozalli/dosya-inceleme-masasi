@@ -55,6 +55,11 @@ pub enum StorageError {
     /// maskeyle gönderim yapılmaz.
     #[error("karartma planı gönderime uygulanamadı: {reason}")]
     PlanMaskInvalid { reason: String },
+    /// Karartma planı sözleşmesi: planın bağlandığı çıktı sürümü kaynak
+    /// sürümün **alt sürümü değil** ya da başka dosyaya ait. **Neden** taşır;
+    /// yanlış bağ sicile yazılmaz.
+    #[error("karartma planı bağı geçersiz: {reason}")]
+    RedactionPlanInvalid { reason: String },
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
     /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
@@ -190,6 +195,7 @@ impl StorageError {
             Self::Io(_) => "E_IO",
             Self::MaskRejected(code) => code,
             Self::PlanMaskInvalid { .. } => "E_MASK_PLAN",
+            Self::RedactionPlanInvalid { .. } => "E_REDACTION_PLAN",
             Self::InvalidSetting => "E_DB_SETTING",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",

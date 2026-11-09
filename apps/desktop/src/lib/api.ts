@@ -553,6 +553,13 @@ export type RedactionPlanRow = {
   documentTitle: string | null;
   versionNo: number | null;
   regionCount: number;
+  /**
+   * Planın ürettiği sürüm. `null` = bu sütundan önce yazılmış plan (bağ
+   * kayıtlı değil) — "çıktı yok" değildir; arayüz ikisini ayırır.
+   */
+  outputVersionId: string | null;
+  outputVersionNo: number | null;
+  outputDocumentTitle: string | null;
 };
 
 /**
