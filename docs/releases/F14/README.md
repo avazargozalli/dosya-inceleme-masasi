@@ -10,7 +10,7 @@
 | F14-T02 CSV | ✅ | kronoloji + görevler + **belge dizini**; **güvenli hücre politikası** (`=`, `+`, `-`, `@`, tam genişlikli karşılıkları, baştaki boşluk/kontrol) — `dim_storage::build_case_csv` (2026-11-08; aşağıdaki bölüm) |
 | F14-T03 DOCX rapor | ✅ | `render_report`, tablolar + notlar |
 | F14-T04 PDF rapor | ✅ | `render_report_pdf`, HTML kaçışlı, `Story` ile sayfalama |
-| F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı; **okunur**: `exports_list` + Çıktılar ekranında defter (tür, hedef yol, zaman, özet, durum) |
+| F14-T05 dışa aktarma sicili | ✅ | `exports` tablosu + denetim kaydı; **okunur**: `exports_list` + Çıktılar ekranında defter (tür, hedef yol, zaman, özet, durum). **Kaynak sürüm izi (2026-11-10):** `export_items` artık yazılır — her çıktı hangi **belge sürümlerinden** üretildi ve o sürüm `masked` mi (`redaction_plans.output_version_id` ölçüsü); `included_ids` kalemlerden türetilir, `template_version` gerçek biçim sürümünü taşır, `E_EXPORT_SOURCE` kapıları düşerse **hiçbir satır yazılmaz**; ekranda satır başına "kaynakları göster" (aşağıdaki bölüm) |
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
 | F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07); **plan (hedef + aralık) kasa ayarında (`settings`, kapsam `vault`) saklanır, cihaz kaydındaki eski plan bir kez göç eder** (2026-11-07); **"son başarılı yedek" tazeliği de kasadan okunur, cihaz kaydı yalnız yedektir ve çelişki gizlenmez** (2026-11-07) |
 | F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
@@ -536,3 +536,82 @@ okuyucularını `utf-8-sig`'e mecbur bırakır → **ürün kararı** olarak aç
 bırakıldı; (f) `export_csv` **komut olarak koşulmadı** (`State<AppState>`
 altyapısı yok) — kablolama CI'da derlenir, davranış storage düzeyinde gerçek
 nesnelerle test edildi; (g) gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+## Dışa aktarma kaynağı: hangi belge sürümlerinden üretildi (2026-11-10)
+
+**Ölçülen kusur (şartname §16.3, §433).** Şartname "`exports` ve `export_items`
+kullanılan şablonu, **kaynak sürümlerini**, çıktının hash'ini ve **maskeleme
+durumunu** kaydeder" der. Ölçüm: `record_export` **beş** yolun hepsinde
+(`json`, `csv`, `docx`, `pdf`, `package`) `included_ids` için boş dizi (`[]`)
+yazıyordu, `export_items` tablosuna **tek satır** yazılmıyordu ve
+`exports.template_version` NULL kalıyordu. Sonuç: avukat "bu rapor hangi belge
+sürümlerinden üretildi, o sürüm maskeli kopya mıydı" sorusunu yanıtlayamıyordu;
+sicil yalnız "bir dosya çıktı" diyordu.
+
+**Yazılan (şema değişikliği yok — tablo ilk şemadan beri var):**
+
+- `record_export(case_id, type, template_version, items, …)`: kaynak kalemleri
+  **yazmadan önce doğrulanır**, sonra tek işlemde yazılır. Kapılar: sürüm var
+  olmalı, **aynı dosyaya** ait olmalı, mükerrer olmamalı, `redaction_state`
+  kapalı kümede (`none|masked`), meta alanları (sayfa aralığı ≤32, atıf etiketi
+  ≤64, şablon sürümü ≤64) kontrol karakteri taşımamalı ve sınırı aşmamalı.
+  Düşerse **`E_EXPORT_SOURCE`** ve **hiçbir satır yazılmaz** (yarım iz kalmaz).
+- `included_ids` artık **kalemlerden türetilir** (iki liste ayrışamaz);
+  `template_version` gerçek biçim sürümünü taşır (`dim-case-export@1`,
+  `case-csv@1`, `case-report@1`, `transfer-package@1`).
+- `export_sources` (komut katmanı): her belgenin **güncel sürümü**; sürüm
+  `redaction_plans.output_version_id` ile işaretliyse `masked` — **belge adına
+  bakılmaz**. `masked_output_version_ids(case_id)` dosya kapsamlıdır.
+- Okuma: `export_items_list` + `ExportItemRow` (belge adı, sürüm no, maskeleme);
+  `ExportRow.item_count` alt sorguyla **tek istekte** gelir (ayrı sayaç isteği
+  yok — aynı olgu iki istekten okunmaz).
+- Arayüz: sicil satırında "Kaynak: N belge sürümü", kalemsiz eski kayıtta
+  "Kaynak sürüm yazılmamış (eski kayıt)"; "Kaynakları göster" **istek üzerine**
+  okur (`itemsSeq` geç yanıt kapısı), düşen okuma "kaynak yok" **demez**, dosya
+  değişiminde panel kimliği düşer (aynı dosyaya geri dönüşte kendiliğinden
+  açılmaz).
+
+**Testler:** `exports::tests` **6 → 12** (+6: kalem yazımı + `included_ids`
+türetimi, yabancı/bilinmeyen sürüm reddi (satırsız), mükerrer + bilinmeyen durum,
+meta sınırı/kontrol karakteri, boş meta → NULL, kalemsiz eski kayıt + `item_count`);
+`redactions::tests` **+1** (`masked_output_version_ids` dosya kapsamı) →
+`dim-storage --lib` **510 → 517**. `Exports.test.tsx` **59 → 64** (+5) → yerel
+arayüz **65 dosya / 1351 test**.
+
+**Kapı kanıtı (gerçek koşular; betik `dim-export-source-gates.py`, her mutasyon
+tek başına, `try/finally` + sha256 birebir geri yükleme):** **17/17 KIRMIZI** —
+S1 `included_ids` kalemlerden türetilmez · S2 sürüm sahipliği denetimi kapalı ·
+S3 maskeleme durumu kümesi kapalı · S4 `item_count` 0 · S5 şablon sürümü
+yazılmaz · S6 maske izi dosya kapsamını yok sayar · S7 kalem sırası ters ·
+S8 `export_items` hiç yazılmaz · S9 kontrol karakteri denetimi kapalı ·
+S10 boş meta NULL yerine boş dize · U1 kaynak sayısı satırı yok · U2 eski kayıt
+"kaynak yazılmamış" demez · U3 kaynaklar çekirdekten okunmaz · U4 maskeli sürüm
+maskesiz yazılır · U5 düşen okuma yutulur · U6 geç yanıt kapısı yok ·
+U7 dosya değişiminde panel kapanmaz. **Dürüst (kendi hatam, iki tanesi):** ilk
+ölçümde **S4 EŞLEŞMEDİ** (aynı alt sorgu `get_export` ve `list_exports`ta iki kez
+geçiyor; betik tek eşleşme bekliyordu → `expected=2` ile yeniden koşuldu) ve
+**U7 YEŞİL kaldı** (senaryo p1→p2 geçişinde paneli ölçüyordu; yeni listede eski
+kimlik olmadığı için panel zaten görünmüyordu). Test **p1→p2→p1 geri dönüşüyle**
+güçlendirildi; `setItemsFor(null)` dışındaki temizlik satırları yük taşımadığı
+için **koddan çıkarıldı**; iki kapı yeniden ölçüldü → kırmızı.
+
+**Dürüst sınırlar:** (a) `output_page_range` ve `citation_label` **NULL**:
+raporun hangi sayfasına hangi belgenin düştüğü worker çıktısında eşlenmiyor —
+uydurma numara/etiket yazılmadı; (b) kalemler belgenin **güncel** sürümünü
+gösterir; çıktı üretilirken kullanılan sürüm ayrıca sabitlenmiyor (export ile
+kayıt arasında yeni sürüm eklenirse iz o anki sürümü gösterir — sıkıştırma yok);
+(c) `masked` ölçüsü `redaction_plans.output_version_id`dir: planı olmayan ama
+elle eklenmiş maskeli kopya `none` görünür; (d) eski kayıtlar (kalemsiz) "kaynak
+yok" cümlesiyle ayrılır, geriye dönük **doldurma yapılmadı** (hangi sürümün
+kullanıldığı kanıtlanamaz); (e) komutlar **komut olarak koşulmadı**
+(`State<AppState>` altyapısı yok) — kablolama check+clippy, davranış storage
+düzeyinde gerçek SQLite; (f) jsdom tarayıcı değil → gerçek Tauri penceresi ve
+**görsel QA insan bekliyor**.
+
+**CI (ölçüldü):** kod `d160521` (10 dosya, **+962/−22**) → run `42823128994`
+**10/10 YEŞİL**: `dim-storage` **517** hem `ubuntu-latest` (368,36 s) hem
+`macos-15` (203,23 s) — **birebir**; `arayüz` **65 dosya / 1350 test** (yerel
+1351 farkı ağaçtaki başka ajanın commit'siz `format.test.ts` testi), paket
+`index-CbO_Ee7q.js` **665,39 kB** / gzip **177,97 kB** (CSS 7,28 / 2,07);
+`masaüstü kabuk` `40 koştu · 0 düştü · 5 yoksayıldı` + yoksayılan koşu
+`5 passed · 40 filtered`; diğer altı iş yeşil.
