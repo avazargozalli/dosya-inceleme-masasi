@@ -699,3 +699,75 @@ hunk'tan yalnız benim `previewMask*`/`maskChangedSincePreview` hunk'ım
 `git apply --cached --recount` ile sahneye alındı; başka ajanın
 `cases.parseStatus*` üç anahtarı commit'e **girmedi**
 (`git show HEAD:…i18n.ts | grep -c parseStatus` → **0**).
+
+## Aktarım makbuzu açılış uzlaştırması — kesilen deneme «oturum kesildi» yazar (2026-11-11)
+
+**Ölçülen kusur.** `transfer_receipts` satırı gönderimden **önce** `attempted`
+olarak açılır (`begin_transfer_receipt`) ve `ai_run_execute` dönerken
+`dispatched|failed` olarak kapanır. Ama süreç gönderim sırasında ölürse (uygulama
+kapatıldı, çökme, SIGKILL) satır **sonsuza kadar** `attempted` kalıyordu: arayüz
+aylar sonra da "denendi · sonuç yazılmadı" yazıyor, satır hâlâ uçuşta olabilecek
+bir deneme gibi duruyordu — oysa sonucu yazacak çağrı artık yok. İş kuyruğu için
+tam bu gerekçeyle bir açılış uzlaştırması vardı (`recover_orphaned_jobs` /
+`recover_at_open`); gönderim makbuzlarının eşdeğeri **yoktu**.
+
+**Yazılan.**
+
+- `crates/storage/src/ai.rs`: `reconcile_attempted_receipts()` — tek koşullu
+  `UPDATE … WHERE status='attempted'` → `interrupted`. Sonuçlanmış satıra
+  dokunmaz; geçiş **kesindir** (`finish_transfer_receipt` yalnız `attempted`
+  satırı sonuçlandırır, kesilen satır artık sonuçlandırılamaz). Kaç satırın
+  kapandığını döndürür ve sayıyı denetime yazar (`transfer_receipt` /
+  `interrupt`); **makbuz kimliği, hedef ve özet denetime girmez**. İkinci açılış
+  yapacak bir şey bulmaz (idempotent). Denetim yazılamazsa kasa açılışı düşmez
+  (yükseltme göçünün `let _ =` deseniyle aynı gerekçe).
+- Gerekçe (kodda da yazılı): açılış anında hiçbir gönderim uçuşta olamaz —
+  `ai_run_execute` kasa kilidini gönderim boyunca tutar ve komut dönerken makbuz
+  sonuçlandırılır; sonuçlandırma yazılamamış olsa bile o çağrı geri gelmez
+  (`partial` raporlanır). Yani açılışta `attempted` kalan satırın sonucunu
+  yazacak **canlı bir çağrı yoktur**: süreç çökmüş ya da final yazımı düşmüştür.
+- `apps/desktop/src-tauri/src/commands.rs` `remember()`: iş kurtarmasının yanında
+  uzlaştırma çağrılır.
+- `Ai.tsx` + `i18n.ts`: dördüncü durum **«oturum kesildi · sonuç yazılmadı»**
+  (`warn` rozet; «gönderildi» **demez**). Kart alt metni iki durumu ayırır:
+  «denendi» sonucun yazılmadığını, «oturum kesildi» sonucu yazacak çağrının
+  artık olmadığını söyler — içerik çıkmış olabilir.
+
+**Testler.** `ai::tests` **+1** (`reconcile_closes_orphaned_attempts_as_interrupted`:
+yalnız yarım kalan satır kapanır; `dispatched`/`failed` değişmez; kesilen satır
+sonradan sonuçlandırılamaz `E_AI_RECEIPT`; ikinci çağrı **0**; denetimde sayı
+var — kimlik/hedef yok) → `dim-storage --lib` **524 → 525**. `Ai.test.tsx` **+1**
+(kesilen makbuz «oturum kesildi» yazar, `warn`, «gönderildi» yazmaz) → yerel
+**65 dosya / 1357 test**; `tsc --noEmit` temiz; `cargo fmt` iki manifest temiz;
+storage + masaüstü `clippy --all-targets -D warnings` temiz.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-receipt-recovery-gates.py`, her
+mutasyon tek başına, `try/finally` + sha256 birebir):** **9/9 KIRMIZI** —
+S1 uzlaştırma hiç kapatmaz · S2 sonuçlanmış satır da ezilir · S3 denetim
+yazılmaz · S4 denetim sayıyı taşımaz · S5 kesilen makbuz yeniden
+sonuçlandırılabilir · S6 uzlaştırma idempotent değil (kesinleri de sayar) ·
+U1 etiket dalı yok · U2 kesilen makbuz yeşil rozet · U3 «gönderildi» yazar.
+
+**Dürüst sınırlar.**
+
+- Uzlaştırma **yalnız kasa açılışında** koşar; açık oturumda gönderim sırasında
+  süreç ölürse satır bir sonraki açılışa kadar `attempted` görünür (doğru: o
+  oturumda sonuç gelmemişti).
+- `interrupted`, "içerik çıkmadı" **demek değildir** — "sonuç yazılmadı" der;
+  içerik çıkmış olabilir, çıkıp çıkmadığı sicilden kanıtlanamaz.
+- Kesinleşen satır **geri alınamaz** (denetim izi); yeniden deneme yeni bir
+  çalıştırma açar.
+- Komut yolu (`remember`) **komut olarak koşulmadı** (`State<AppState>` altyapısı
+  yok): kablolama check + clippy, davranış storage düzeyinde gerçek SQLite.
+- jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `4c1d03b` (5 dosya, **+146/−5**) → run
+`42917762357` **10/10 YEŞİL**: `dim-storage` **525** hem `macos-15` (237,68 s)
+hem `ubuntu-latest` (479,66 s) — **birebir**; `arayüz` **65 dosya / 1356 test**
+(yerel 1357 farkı ağaçtaki başka ajanın commit'siz `format.test.ts` testi), paket
+`index-CP778o7x.js` **667,94 kB** / gzip **178,58 kB**; `masaüstü kabuk`
+**40 koştu · 0 düştü · 5 yoksayıldı**; diğer altı iş yeşil. **i18n hunk ayrımı:**
+üç hunk'tan yalnız benim iki hunk'ım sahneye alındı (`git update-index
+--cacheinfo` ile HEAD içeriği + benim değişikliklerim blob olarak yazıldı); başka
+ajanın `parseStatus*` üç anahtarı commit'e **girmedi**
+(`git show HEAD:…i18n.ts | grep -c parseStatus` → **0**; ağaçta 3).
