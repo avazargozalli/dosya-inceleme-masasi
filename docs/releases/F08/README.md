@@ -13,6 +13,7 @@
 | F08-T05 | ✅ | görevler: kullanıcı tarihi, tamamlama, silme |
 | F08-T06 | ✅ | not ↔ kaynak alıntı bağı (`source_anchor_ids`) |
 | F08-T01 *(şartname numarası)* | ✅ | **kişi/kurum + dosya rolü** ve **geri alınabilir birleştirme**: `actors` / `case_participants` tabloları ilk kez kullanılır; `actor_merges` (şema **v25**); arayüzde “Dosya tarafları” kartı — 14/14 mutasyon (2026-11-08) |
+| F08-T03 *(şartname numarası)* | ✅ | **kesin/yaklaşık/aralık/bilinmeyen tarih sıralaması, gün uydurmadan**: ay/yıl kesinliğinde gün **saklanmaz ve gösterilmez**, aralık iki uçlu tek değer (`başlangıç/bitiş`, başlangıçla sıralanır), ham tarih metni düzenlemede **korunur**, CSV kesinliğe uyar; `E_EVENT_DATE`; 11/11 mutasyon (2026-11-10) |
 
 ## Doğrulama
 
@@ -551,3 +552,79 @@ Tauri penceresi ve **görsel QA insan bekliyor**.
 tablosundaki `F08-T01` satırı olay tarihini anlatır. İki numaralandırma arasındaki
 fark bu turda görünür kılındı (tabloya `F08-T01 *(şartname numarası)*` satırı
 eklendi); eski satırlar **yeniden numaralanmadı** (geçmiş kanıtlar bozulmasın).
+
+## Tarih kesinliği — gün uydurulmadan sıralama (şartname F08-T03)
+
+**Kimlik:** şartnamedeki **F08-T03** (§20.10 satır 1555: *"Kesin, yaklaşık,
+aralık ve bilinmeyen tarihleri gün uydurmadan sırala"*) ve §590/§955
+("yaklaşık tarih `2026-03` veya aralık olarak gösterilir; **gün uydurulmaz**").
+Bu README'nin tablosundaki `F08-T03` satırı onay (`draft → confirmed`) işini
+anlatır — numaralandırma farkı yukarıdaki notta.
+
+**ÖLÇÜLEN KUSUR (iki tanesi).**
+
+1. **Gün uydurma.** Ay/yıl kesinliği tam gün zorunlu tutuyor ve tam gün
+   gösteriyordu: `datePrecision:"month"` + `dateValue:"2026-05-12"` olduğu gibi
+   saklanıyor, ekranda ve CSV'de **2026-05-12** yazıyordu (mevcut test bunu
+   pinliyordu). Aralık kesinliği hiç temsil edilemiyordu (tek gün olarak
+   saklanıyordu) → "01.03–30.06" aralığı sıralamada tek güne düşüyordu.
+2. **Ham tarih kaybı.** Düzenleme, sunucudaki `date_raw`ı ("10 Nisan 2026",
+   "01.03.2026") ISO tarihle **eziyordu**: yalnız başlığı düzelten kullanıcı
+   kaynak ifadeyi kaybediyordu. Formda ham metin alanı hiç yoktu.
+
+**Yazılan.**
+
+- **Çekirdek:** `StorageError::EventDateInvalid` → yeni kod **`E_EVENT_DATE`**.
+  `timeline::normalize_event_date` — gün katı takvim doğrulaması (31 Şubat ve
+  "10.04.2026" reddedilir); ay/yıl kesinliğinde gün **saklanmaz** (tam gün
+  gelirse kırpılır); aralık `başlangıç/bitiş`, ters sıra `E_EVENT_DATE`;
+  yaklaşık girildiği çözünürlükte korunur; bilinmeyen → NULL.
+  `sortable_event_date` (aralık **başlangıçla** sıralanır) + `event_date_text`
+  (görüntü/çıktı kesinliğe uyar). `create_event`/`update_event` bu
+  sözleşmeden geçer.
+- **CSV:** `build_case_csv` artık `sortable_date` yerine kesinliğe uygun metni
+  yazar; eski kayıtlarda (ay kesinliği + tam gün) da gün **yazılmaz**.
+- **Arayüz:** yeni `lib/timeline-date.ts` (`dateInputMode`,
+  `isRealDay/isRealMonth/isYear`, `dateDraftIssue`, `composeDateValue`,
+  `eventDateText`, `editDateInputs`). `Timeline.tsx` kesinliğe göre giriş
+  (gün→`date`, ay/yaklaşık→`month`, yıl→4 hane, aralık→iki `date`,
+  bilinmeyen→kapalı), ayrı **"Metinde geçen tarih"** alanı (ekleme +
+  düzenleme; `date_raw` korunur), kesinlik değişince tarihin yeni
+  çözünürlüğe kırpılması, satırda kesinliğe uygun gösterim. 10 sözlük anahtarı.
+
+**Testler.** storage `timeline::` **12 → 18** (+6: ay/yıl kırpma, gün reddi,
+aralık sırası/sıralama, yaklaşık çözünürlük, görüntü metni), `csv_export`
+**4 → 5** (+1) → `dim-storage --lib` **503 → 510** (yerel 279,34 s).
+`lib/timeline-date.test.ts` **7** (yeni), `Timeline.test.tsx` **36 → 39**
+(ay testi yeni sözleşmeye göre yeniden yazıldı; yıl, aralık, boş-gün reddi,
+ham-metin koruma testleri eklendi) → yerel tam vitest **65 dosya / 1346 test**.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-timeline-date-gates.py`,
+her mutasyon tek başına, `try/finally` + sha256 birebir geri yükleme): 11/11
+KIRMIZI** — S1 ay kesinliği günü saklar · S2 gün kesinliği eksik günü kabul
+eder · S3 aralık sıra denetimi kapalı · S4 aralık bitişle sıralanır · S5
+görüntü metni ay kesinliğinde günü yazar · S6 CSV kesinliği yok sayar ·
+U1 ay kesinliğinde gün girişi · U2 düzenlemede ham metin ezilir · U3 aralık
+tek değerle gönderilir · U4 gün kesinliğinde boş tarih kapısı kapalı ·
+U5 satır görüntüsü kesinliğe uymaz.
+
+**Commit/CI (ölçüldü).** Kod `7979984` (8 dosya, **+960/−60**) → run
+`42809915402` **10/10 YEŞİL**: `dim-storage` **510** hem `macos-15`
+(242,54 s) hem `ubuntu-latest` (403,01 s) — **birebir**; `arayüz` **65 dosya /
+1345 test** (yerel 1346 − ağaçtaki başka ajanın commit'siz `format.test.ts`
+testi), paket `index-QaPk0OkB.js` **663,27 kB** / gzip **177,55 kB** (CSS
+7,28 kB / gzip 2,07); `masaüstü kabuk` `40 koştu · 0 düştü · 5 yoksayıldı
+(kaynak 45)` + yoksayılan koşu `5 passed · 40 filtered`; diğer altı iş yeşil.
+
+**Dürüst sınırlar.** (a) Eski kayıtlar (ay kesinliği + tam gün) görüntüde ve
+CSV'de kırpılır ama **veritabanında dönüştürülmedi**; düzenlenip kaydedilince
+değer kesinliğe kırpılır (ham metin korunur). (b) Yaklaşık tarih arayüzde
+**ay** çözünürlüğünde girilir; gün düzeyinde yaklaşık tarih yalnız çekirdek
+sözleşmesinde kabul edilir. (c) Aralık uçları **tam gün** ister (ay uçlu
+aralık yok). (d) Ham metin arayüzde 120 karakterle sınırlı (`maxLength`);
+çekirdek uzunluğu kırpmaz/reddetmez. (e) Komutlar **komut olarak koşulmadı**
+(`State<AppState>` altyapısı yok) — kablolama check+clippy, davranış storage
+düzeyinde **gerçek SQLite**. (f) jsdom tarayıcı değil: `type="month"` /
+`type="date"` davranışı gerçek Tauri penceresinde (WKWebView) ve **görsel QA
+insan bekliyor**. (g) CSV tarih sütunu artık kesinliğe uyar; Excel/LibreOffice
+aç–kaydet turu hâlâ **insan/ortam bekliyor** (F14'teki açık madde).
