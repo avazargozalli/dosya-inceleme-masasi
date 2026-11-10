@@ -649,7 +649,9 @@ export const tr = {
     receiptsTitle: "Aktarım makbuzları",
     receiptsSub:
       "Cihazdan çıkan her gönderim: hedef, öğe, bayt ve gönderilen metnin içerik özeti. " +
-      "«denendi» satırı gönderimin sonucunun yazılmadığını söyler; başarı sayılmaz.",
+      "«denendi» satırı gönderimin sonucunun yazılmadığını söyler; başarı sayılmaz. " +
+      "«oturum kesildi» satırı, sonucu yazacak çağrının artık olmadığını söyler — " +
+      "içerik çıkmış olabilir.",
     receiptsEmpty: "Bu dosya için aktarım makbuzu yok.",
     receiptsLoading: "Makbuzlar okunuyor…",
     receiptsRefresh: "Yenile",
@@ -661,6 +663,7 @@ export const tr = {
     receiptsColHash: "İçerik özeti",
     receiptsColState: "Durum",
     receiptAttempted: "denendi · sonuç yazılmadı",
+    receiptInterrupted: "oturum kesildi · sonuç yazılmadı",
     receiptDispatched: "gönderildi",
     receiptFailed: "gönderilemedi",
     receiptsNote:

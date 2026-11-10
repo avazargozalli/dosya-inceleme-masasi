@@ -113,10 +113,13 @@ pub struct TransferReceiptRow {
     pub outbound_hash: String,
     pub item_count: i64,
     pub byte_count: i64,
-    /// `attempted` | `dispatched` | `failed`.
+    /// `attempted` | `dispatched` | `failed` | `interrupted`.
     ///
     /// `attempted`, "gönderim denendi, sonuç yazılmadı" demektir (süreç
-    /// çöktü ya da yanıt gelmedi) — sessizce başarı sayılmaz.
+    /// çöktü ya da yanıt gelmedi) — sessizce başarı sayılmaz. `interrupted`
+    /// ise açılış uzlaştırmasının yazdığı **kesin** durumdur: süreç, sonucu
+    /// yazamadan kapandı. İçerik çıkmış **olabilir**; satır ne "gönderildi"
+    /// ne "gönderilemedi" der.
     pub status: String,
     /// Makbuzun açıldığı an (gönderim **denemesi**). Sütun adı tarihseldir
     /// (`dispatched_at`); `attempted` satırda da doludur.
@@ -1280,6 +1283,46 @@ impl Database {
             &serde_json::json!({}),
         )?;
         Ok(())
+    }
+
+    /// Açılış uzlaştırması: **sonucu yazılmadan kapanmış** gönderim makbuzları.
+    ///
+    /// `attempted` satırı "gönderim denendi, sonuç yazılmadı" demektir; onu
+    /// sonuçlandıran çağrı yalnız gönderimi yapan süreçte bulunur
+    /// (`finish_transfer_receipt`). Süreç öldüyse satır sonsuza kadar
+    /// `attempted` kalıyordu ve arayüzde hâlâ uçuşta olabilecek bir deneme gibi
+    /// görünüyordu — oysa onu yazacak süreç artık yok.
+    ///
+    /// Kasa açılışında hiçbir gönderim uçuşta olamaz: `ai_run_execute` kasa
+    /// kilidini gönderim boyunca tutar ve komut dönerken makbuz sonuçlandırılır.
+    /// Sonuçlandırma yazılamamış olsa bile o çağrı geri gelmez (`partial`
+    /// raporlanır, satır `attempted` kalır) — yani açılış anında `attempted`
+    /// olan satırın sonucunu yazacak **canlı bir çağrı yoktur**: süreç çökmüş
+    /// ya da final yazımı düşmüştür; ikisi de "sonuç yok" demektir.
+    ///
+    /// `interrupted` yazar: satır ne "gönderildi" ne "gönderilemedi" der;
+    /// içerik çıkmış **olabilir**. Geçiş tek `UPDATE`dir, sonuçlanmış satırlara
+    /// dokunmaz ve kesin olduğu için aynı satır sonradan sonuçlandırılamaz.
+    /// Kaç satırın kapandığını döndürür; sayı denetime yazılır (makbuz kimliği,
+    /// hedef ve özet **yazılmaz**).
+    pub fn reconcile_attempted_receipts(&self) -> Result<usize, StorageError> {
+        let changed = self.conn().execute(
+            "UPDATE transfer_receipts SET status='interrupted' WHERE status='attempted'",
+            [],
+        )?;
+        if changed > 0 {
+            // Denetim yazılamazsa kasa açılışı düşmez: satırlar zaten kesin
+            // durumda; eksik denetim kaydı açılışı engellemez (yükseltme
+            // göçünün `let _ =` deseniyle aynı gerekçe).
+            let _ = self.append_audit(
+                "transfer_receipt",
+                None,
+                "interrupt",
+                "local-system",
+                &serde_json::json!({ "interrupted": changed }),
+            );
+        }
+        Ok(changed)
     }
 
     /// Dosyanın aktarım makbuzları — **en yeni önce**.
@@ -3343,6 +3386,80 @@ mod tests {
         let rows = db.list_transfer_receipts(&case_id).expect("liste");
         assert_eq!(rows[0].id, newer, "en yeni önce");
         assert_eq!(rows[1].id, older);
+    }
+
+    /// Açılış uzlaştırması: sonucu yazılmadan kapanmış denemeler **interrupted**
+    /// olur — sonsuza kadar "uçuşta" görünmez; sonuçlanmış satıra dokunulmaz ve
+    /// geçiş kesindir (aynı makbuz sonradan sonuçlandırılamaz).
+    #[test]
+    fn reconcile_closes_orphaned_attempts_as_interrupted() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let orphan = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"a".repeat(64), 1, 10)
+            .expect("deneme");
+        let sent = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"b".repeat(64), 1, 11)
+            .expect("deneme");
+        let rejected = db
+            .begin_transfer_receipt(&r.id, "api.ornek.com · m", &"c".repeat(64), 1, 12)
+            .expect("deneme");
+        db.finish_transfer_receipt(&sent, "dispatched")
+            .expect("kapanış");
+        db.finish_transfer_receipt(&rejected, "failed")
+            .expect("kapanış");
+
+        assert_eq!(
+            db.reconcile_attempted_receipts().expect("uzlaştırma"),
+            1,
+            "yalnız yarım kalan satır kapanır"
+        );
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        let status = |id: &str| {
+            rows.iter()
+                .find(|row| row.id == id)
+                .map(|row| row.status.clone())
+                .expect("satır")
+        };
+        assert_eq!(status(&orphan), "interrupted");
+        assert_eq!(
+            status(&sent),
+            "dispatched",
+            "sonuçlanmış satır geriye dönük değişmez"
+        );
+        assert_eq!(status(&rejected), "failed");
+
+        // Geçiş **kesin**: kesilen makbuz sonradan sonuçlandırılamaz.
+        let err = db
+            .finish_transfer_receipt(&orphan, "dispatched")
+            .expect_err("kesilen makbuz sonuçlanmaz");
+        assert_eq!(err.code(), "E_AI_RECEIPT");
+        // İkinci açılış yapacak bir şey bulmaz (idempotent).
+        assert_eq!(db.reconcile_attempted_receipts().expect("yeniden"), 0);
+
+        // Sayı denetime yazılır; makbuz kimliği, hedef ve özet **yazılmaz**.
+        let (count, metadata): (i64, String) = db
+            .conn()
+            .query_row(
+                "SELECT count(*), coalesce(max(metadata_allowlist),'') FROM audit_events \
+                 WHERE operation='interrupt' AND category='transfer_receipt'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("denetim");
+        assert_eq!(count, 1, "uzlaştırma denetime bir kez yazılır");
+        assert!(
+            metadata.contains("\"interrupted\":1"),
+            "sayı denetime yazılır: {metadata}"
+        );
+        assert!(!metadata.contains("ornek.com"), "hedef denetime girmez");
+        assert!(
+            !metadata.contains(&orphan),
+            "makbuz kimliği denetime girmez"
+        );
     }
 
     fn case_titled(db: &Database, title: &str) -> String {

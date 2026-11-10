@@ -88,13 +88,16 @@ function consentStateTone(row: TransferConsentListRow): string {
 
 /**
  * Makbuz durumu. `attempted` **başarı değildir**: gönderim denendi, sonucu
- * yazılmadı (süreç çöktü ya da yanıt gelmedi). Bilinmeyen durum olduğu gibi
- * yazılır — ekran tanımadığı bir değeri "gönderildi" saymaz.
+ * yazılmadı (yanıt gelmedi ya da süreç sonucu yazamadan kapandı). `interrupted`
+ * ise açılış uzlaştırmasının yazdığı **kesin** durumdur: sonucu yazacak çağrı
+ * artık yok; içerik çıkmış olabilir. Bilinmeyen durum olduğu gibi yazılır —
+ * ekran tanımadığı bir değeri "gönderildi" saymaz.
  */
 function receiptStateLabel(status: string): string {
   if (status === "dispatched") return t("ai.receiptDispatched");
   if (status === "failed") return t("ai.receiptFailed");
   if (status === "attempted") return t("ai.receiptAttempted");
+  if (status === "interrupted") return t("ai.receiptInterrupted");
   return status;
 }
 

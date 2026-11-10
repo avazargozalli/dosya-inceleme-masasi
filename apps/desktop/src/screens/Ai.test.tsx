@@ -2307,6 +2307,20 @@ describe("AI ekranı — aktarım makbuzu envanteri", () => {
     expect(within(rows[0]!).getByText(t("ai.receiptFailed")).className).toContain("danger");
   });
 
+  it("sonucu yazılmadan kesilen deneme «oturum kesildi» yazar; başarı saymaz", async () => {
+    // `interrupted` açılış uzlaştırmasının **kesin** durumudur: sonucu yazacak
+    // çağrı artık yok. Ekran «gönderildi» yazmaz, yeşil rozet çizmez.
+    setup({ receipts: async () => [receiptRow({ id: "m1", status: "interrupted" })] });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.receiptsTitle"));
+    const badge = await within(card).findByText(t("ai.receiptInterrupted"));
+    expect(badge.className).toContain("warn");
+    const row = badge.closest("tr");
+    expect(row).not.toBeNull();
+    expect(row!.textContent).not.toContain(t("ai.receiptDispatched"));
+  });
+
   it("makbuz yokken uydurmaz: boş satır yazar, tablo çizmez", async () => {
     setup();
 

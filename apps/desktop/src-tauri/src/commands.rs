@@ -213,6 +213,10 @@ fn remember(
     // F03-T08 / F15-T06: açılışta yarım kalmış işler sessizce "yürüyor" görünmesin.
     // Ayrıntı ve gerekçe: `recover_at_open`.
     recover_at_open(&db);
+    // F11: aynı gerekçe gönderim makbuzları için — sonucu yazılmadan kapanmış
+    // `attempted` satır "hâlâ uçuşta" gibi görünmesin; kesin duruma çevrilir.
+    // Ayrıntı: `Database::reconcile_attempted_receipts`.
+    let _ = db.reconcile_attempted_receipts();
     let info = VaultInfo {
         vault_path: path.to_string_lossy().to_string(),
         vault_id: vault_id.clone(),
