@@ -259,6 +259,9 @@ describe("kronoloji ekranı davranışı", () => {
     expect(draftRow.textContent).not.toContain(t("timeline.rawNote", { raw: E_DRAFT.dateRaw! }));
 
     const rawRow = rowOf(E_RAW.title);
+    // Ay kesinliği: eski kayıtta tam gün saklı olsa da ekranda **gün yazılmaz**.
+    expect(rawRow.textContent).toContain("2026-04");
+    expect(rawRow.textContent).not.toContain("2026-04-10");
     expect(rawRow.textContent).toContain("10 Nisan 2026");
     expect(rawRow.textContent).toContain(t("timeline.rawNote", { raw: "10 Nisan 2026" }));
 
@@ -309,18 +312,19 @@ describe("kronoloji ekranı davranışı", () => {
     fireEvent.change(byId<HTMLInputElement>("tl-title"), {
       target: { value: "  Duruşma ertelendi  " },
     });
-    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
+    // Ay kesinliği: **gün istenmez** (F08-T03); ay girişi tam gün taşımaz.
     fireEvent.change(byId<HTMLSelectElement>("tl-precision"), { target: { value: "month" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05" } });
     fireEvent.change(byId<HTMLSelectElement>("tl-role"), { target: { value: "hearing" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
 
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
     expect(mocks.eventCreate).toHaveBeenCalledWith("p1", {
       eventKind: "other",
-      dateValue: "2026-05-12",
+      dateValue: "2026-05",
       datePrecision: "month",
       dateRole: "hearing",
-      dateRaw: "2026-05-12",
+      dateRaw: null,
       title: "Duruşma ertelendi",
       description: "",
       assertionKind: "user",
@@ -350,6 +354,74 @@ describe("kronoloji ekranı davranışı", () => {
         dateRaw: null,
         datePrecision: "unknown",
         title: "Tarihi belirsiz olay",
+      }),
+    );
+  });
+
+  it("gün kesinliğinde boş tarih gönderilmez; ay/yıl için gün istenmez", async () => {
+    setup({ events: async () => [] });
+    await screen.findByText(t("timeline.knownEmpty"));
+    await caseLoaded();
+
+    // Gün kesinliği + boş tarih: "gün" diyen kayıt tarihsiz sıralamaya düşmez.
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Tarihsiz gün" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    expect(await screen.findByText("E_EVENT_DATE")).toBeTruthy();
+    expect(document.body.textContent).toContain(t("timeline.dateNeedDay"));
+    expect(mocks.eventCreate).not.toHaveBeenCalled();
+
+    // Yıl kesinliği: dört haneli yıl yeter; ay/gün istenmez.
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Yıl olayı" } });
+    fireEvent.change(byId<HTMLSelectElement>("tl-precision"), { target: { value: "year" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
+    expect(mocks.eventCreate).toHaveBeenCalledWith(
+      "p1",
+      expect.objectContaining({
+        dateValue: "2026",
+        datePrecision: "year",
+        dateRaw: null,
+      }),
+    );
+  });
+
+  it("aralık iki uç ister; ters sıra reddedilir, doğru aralık iki tarihle gider", async () => {
+    setup({ events: async () => [] });
+    await screen.findByText(t("timeline.knownEmpty"));
+    await caseLoaded();
+
+    fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Ara dönem" } });
+    fireEvent.change(byId<HTMLSelectElement>("tl-precision"), { target: { value: "range" } });
+
+    // Tek uç: aralık gönderilmez.
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-01-05" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    expect(await screen.findByText("E_EVENT_DATE")).toBeTruthy();
+    expect(document.body.textContent).toContain(t("timeline.dateNeedRange"));
+    expect(mocks.eventCreate).not.toHaveBeenCalled();
+
+    // Ters sıra: reddedilir.
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-04-01" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date-end"), { target: { value: "2026-03-01" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+    expect(await screen.findByText("E_EVENT_DATE")).toBeTruthy();
+    expect(document.body.textContent).toContain(t("timeline.dateRangeOrder"));
+    expect(mocks.eventCreate).not.toHaveBeenCalled();
+
+    // Doğru aralık: tek değer olarak `başlangıç/bitiş` gider.
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-01-05" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date-end"), { target: { value: "2026-03-09" } });
+    fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
+
+    await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
+    expect(mocks.eventCreate).toHaveBeenCalledWith(
+      "p1",
+      expect.objectContaining({
+        dateValue: "2026-01-05/2026-03-09",
+        datePrecision: "range",
+        dateRaw: null,
       }),
     );
   });
@@ -403,6 +475,37 @@ describe("kronoloji ekranı davranışı", () => {
     });
     await waitFor(() => expect(document.getElementById("edit-title-e1")).toBeNull());
     await waitFor(() => expect(mocks.eventList).toHaveBeenCalledTimes(2));
+  });
+
+  it("düzenlemede ham tarih metni korunur ve kesinliğe kırpılır", async () => {
+    // ÖLÇÜLEN KUSUR: düzenleme, sunucudaki `date_raw`ı ("10 Nisan 2026") ISO
+    // tarihle eziyordu — yalnız başlığı düzelten kullanıcı kaynak ifadeyi
+    // kaybediyordu. Ham metin artık ayrı alandır ve korunur.
+    setup({ events: async () => [E_RAW] });
+    await screen.findByText(E_RAW.title);
+    const row = rowOf(E_RAW.title);
+
+    fireEvent.click(within(row).getByRole("button", { name: t("timeline.edit") }));
+    expect(byId<HTMLInputElement>("edit-date-raw-e3").value).toBe("10 Nisan 2026");
+    // Ay kesinliğinde giriş ay çözünürlüğündedir (gün istenmez).
+    expect(byId<HTMLInputElement>("edit-date-e3").value).toBe("2026-04");
+
+    fireEvent.change(byId<HTMLInputElement>("edit-title-e3"), {
+      target: { value: "Keşif (düzeltildi)" },
+    });
+    fireEvent.click(within(row).getByRole("button", { name: t("common.save") }));
+
+    await waitFor(() => expect(mocks.eventUpdate).toHaveBeenCalledTimes(1));
+    expect(mocks.eventUpdate).toHaveBeenCalledWith(
+      "e3",
+      1,
+      expect.objectContaining({
+        dateValue: "2026-04",
+        datePrecision: "month",
+        dateRaw: "10 Nisan 2026",
+        title: "Keşif (düzeltildi)",
+      }),
+    );
   });
 
   it("düzenlemede boş başlık gönderilmez", async () => {
@@ -586,6 +689,8 @@ describe("kronoloji ekranı davranışı", () => {
     expect(await screen.findByText("E_TITLE")).toBeTruthy();
 
     fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Yeni olay" } });
+    // Gün kesinliği tarih ister (F08-T03); boş tarih gönderilmez.
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
 
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
@@ -669,6 +774,7 @@ describe("kronoloji ekranı uçuş yolları", () => {
 
     mocks.eventCreate.mockReturnValue(created.promise);
     fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Yeni olay" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
 
@@ -994,6 +1100,7 @@ describe("kronoloji ekranı uçuş yolları", () => {
     mocks.eventCreate.mockReturnValue(created.promise);
 
     fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Yeni olay" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
 
@@ -1058,6 +1165,7 @@ describe("kronoloji ekranı yazma kilidi devri", () => {
     mocks.eventCreate.mockReturnValue(created.promise);
 
     fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Eski dosya olayı" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
 
@@ -1088,6 +1196,7 @@ describe("kronoloji ekranı yazma kilidi devri", () => {
     );
 
     fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Birinci" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     await waitFor(() =>
       expect(mocks.eventCreate).toHaveBeenCalledWith("p1", expect.anything()),
@@ -1122,6 +1231,7 @@ describe("kronoloji ekranı yazma kilidi devri", () => {
     mocks.eventCreate.mockReturnValue(created.promise);
 
     fireEvent.change(byId<HTMLInputElement>("tl-title"), { target: { value: "Eski dosya" } });
+    fireEvent.change(byId<HTMLInputElement>("tl-date"), { target: { value: "2026-05-12" } });
     fireEvent.click(screen.getByRole("button", { name: t("timeline.addEvent") }));
     await waitFor(() => expect(mocks.eventCreate).toHaveBeenCalledTimes(1));
 

@@ -94,9 +94,17 @@ pub fn build_case_csv(
     out.push_str("# kronoloji\n");
     out.push_str(EVENT_COLUMNS);
     for event in events {
+        // Tarih, **kesinliğe göre** yazılır: ay/yıl kesinliğinde gün yazılmaz
+        // (F08-T03; eski kayıtlarda tam gün saklanmış olsa da).
+        let date_text = crate::timeline::event_date_text(
+            &event.date_precision,
+            event.date_value.as_deref(),
+            event.sortable_date.as_deref(),
+        )
+        .unwrap_or_default();
         out.push_str(&format!(
             "olay,{},{},{},{}\n",
-            safe_cell(event.sortable_date.as_deref().unwrap_or("")),
+            safe_cell(&date_text),
             safe_cell(&event.date_role),
             safe_cell(&event.title),
             safe_cell(&event.status)
@@ -257,6 +265,32 @@ mod tests {
         let task_at = csv.find("gorev,2024-06-01").expect("görev satırı");
         let index_at = csv.find("# belge dizini").expect("dizin başlığı");
         assert!(index_at > task_at, "belge dizini görevlerden sonra gelmeli");
+    }
+
+    #[test]
+    fn csv_writes_date_according_to_precision_without_inventing_day() {
+        // Eski kayıt: ay kesinliği ama tam gün saklanmış (0029 öncesi arayüzün
+        // zorunlu günü). Çıktı **günü yazmaz** (F08-T03).
+        let mut month = event("kira dönemi");
+        month.date_value = Some("2024-05-17".into());
+        month.sortable_date = Some("2024-05-17".into());
+        month.date_precision = "month".into();
+
+        let mut range = event("ara dönem");
+        range.date_value = Some("2024-01-05/2024-03-09".into());
+        range.sortable_date = Some("2024-01-05".into());
+        range.date_precision = "range".into();
+
+        let csv = build_case_csv(&coverage(), &[month, range], &[], &[]);
+        assert!(
+            csv.contains("olay,2024-05,hearing,kira dönemi,open\n"),
+            "{csv}"
+        );
+        assert!(
+            csv.contains("olay,2024-01-05 – 2024-03-09,hearing,ara dönem,open\n"),
+            "{csv}"
+        );
+        assert!(!csv.contains("2024-05-17"), "gün uydurulmamalı: {csv}");
     }
 
     #[test]

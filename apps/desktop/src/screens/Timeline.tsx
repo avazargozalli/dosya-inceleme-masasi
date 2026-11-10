@@ -9,6 +9,14 @@ import {
   type EventSourceRow,
 } from "../lib/api";
 import { t } from "../lib/i18n";
+import {
+  composeDateValue,
+  dateDraftIssue,
+  dateInputMode,
+  editDateInputs,
+  eventDateText,
+  type DateDraftIssue,
+} from "../lib/timeline-date";
 
 
 const DATE_ROLE_LABEL: Record<string, string> = {
@@ -42,6 +50,10 @@ const RELATION_LABEL: Record<string, string> = {
 type Draft = {
   title: string;
   date: string;
+  /** Aralık kesinliğinde bitiş tarihi; diğerlerinde boş. */
+  dateEnd: string;
+  /** Metinde geçen özgün tarih ifadesi (sıralamadan bağımsız, korunur). */
+  raw: string;
   precision: string;
   role: string;
   kind: string;
@@ -51,6 +63,8 @@ type Draft = {
 const EMPTY: Draft = {
   title: "",
   date: "",
+  dateEnd: "",
+  raw: "",
   precision: "day",
   role: "event",
   kind: "other",
@@ -62,10 +76,129 @@ function sameDraft(a: Draft, b: Draft): boolean {
   return (
     a.title === b.title &&
     a.date === b.date &&
+    a.dateEnd === b.dateEnd &&
+    a.raw === b.raw &&
     a.precision === b.precision &&
     a.role === b.role &&
     a.kind === b.kind &&
     a.description === b.description
+  );
+}
+
+/** Tarih taslağı hatasının kullanıcıya yazılan metni (`E_EVENT_DATE`). */
+function dateIssueText(issue: DateDraftIssue): string {
+  switch (issue) {
+    case "needDay":
+      return t("timeline.dateNeedDay");
+    case "needMonth":
+      return t("timeline.dateNeedMonth");
+    case "needYear":
+      return t("timeline.dateNeedYear");
+    case "needRange":
+      return t("timeline.dateNeedRange");
+    case "rangeOrder":
+      return t("timeline.dateRangeOrder");
+  }
+}
+
+/**
+ * Kesinliğe göre tarih girişi (F08-T03): ay/yıl kesinliğinde **gün istenmez**,
+ * aralık iki uç ister. Ham metin ayrı alandır ve düzenlemede korunur —
+ * kaynak ifade (örn. "10 Nisan 2026") sıralama tarihinden bağımsızdır.
+ */
+function DateFields({
+  dateId,
+  endId,
+  rawId,
+  precision,
+  date,
+  dateEnd,
+  raw,
+  disabled,
+  onDate,
+  onDateEnd,
+  onRaw,
+}: {
+  dateId: string;
+  endId: string;
+  rawId: string;
+  precision: string;
+  date: string;
+  dateEnd: string;
+  raw: string;
+  disabled: boolean;
+  onDate: (value: string) => void;
+  onDateEnd: (value: string) => void;
+  onRaw: (value: string) => void;
+}) {
+  const mode = dateInputMode(precision);
+  const dateDisabled = disabled || mode === "none";
+  return (
+    <>
+      <div className="field">
+        <label htmlFor={dateId}>{t("timeline.fieldDate")}</label>
+        {mode === "month" ? (
+          <input
+            id={dateId}
+            className="input"
+            type="month"
+            value={date}
+            disabled={dateDisabled}
+            onChange={(e) => onDate(e.target.value)}
+          />
+        ) : mode === "year" ? (
+          <input
+            id={dateId}
+            className="input"
+            inputMode="numeric"
+            maxLength={4}
+            placeholder="YYYY"
+            value={date}
+            disabled={dateDisabled}
+            onChange={(e) => onDate(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+          />
+        ) : (
+          <input
+            id={dateId}
+            className="input"
+            type="date"
+            value={date}
+            disabled={dateDisabled}
+            onChange={(e) => onDate(e.target.value)}
+          />
+        )}
+        {mode === "month" ? (
+          <span className="hint">{t("timeline.dateMonthHint")}</span>
+        ) : mode === "range" ? (
+          <span className="hint">{t("timeline.dateRangeHint")}</span>
+        ) : null}
+      </div>
+      {mode === "range" ? (
+        <div className="field">
+          <label htmlFor={endId}>{t("timeline.fieldDateEnd")}</label>
+          <input
+            id={endId}
+            className="input"
+            type="date"
+            value={dateEnd}
+            disabled={disabled}
+            onChange={(e) => onDateEnd(e.target.value)}
+          />
+        </div>
+      ) : null}
+      <div className="field" style={{ flex: "1 1 220px" }}>
+        <label htmlFor={rawId}>{t("timeline.fieldDateRaw")}</label>
+        <input
+          id={rawId}
+          className="input"
+          maxLength={120}
+          placeholder={t("timeline.fieldDateRawPlaceholder")}
+          value={raw}
+          disabled={disabled}
+          onChange={(e) => onRaw(e.target.value)}
+        />
+      </div>
+    </>
   );
 }
 
@@ -159,6 +292,13 @@ export function Timeline() {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
+    // Tarih, **kesinliğe** göre doğrulanır: ay/yıl için gün istenmez, gün için
+    // tam tarih. Eksik gün uydurulmaz (F08-T03).
+    const issue = dateDraftIssue(draft.precision, draft.date, draft.dateEnd);
+    if (issue !== null) {
+      setError({ code: "E_EVENT_DATE", message: dateIssueText(issue), retryable: false });
+      return;
+    }
     // Gönderilen dosya ve taslak tıklama anında donar: uçuşta dosya değişip
     // yeni taslak yazılırsa yanıt **onu** silmez.
     const asked = caseId;
@@ -167,10 +307,12 @@ export function Timeline() {
     try {
       await api.eventCreate(asked, {
         eventKind: submitted.kind,
-        dateValue: submitted.precision === "unknown" ? null : submitted.date || null,
+        dateValue: composeDateValue(submitted.precision, submitted.date, submitted.dateEnd),
         datePrecision: submitted.precision,
         dateRole: submitted.role,
-        dateRaw: submitted.date || null,
+        // Ham metin ayrı alandır: kaynak ifade ("10 Nisan 2026") sıralama
+        // tarihinden bağımsızdır ve kullanıcı yazmadıysa uydurulmaz.
+        dateRaw: submitted.raw.trim().length > 0 ? submitted.raw.trim() : null,
         title: submitted.title.trim(),
         description: submitted.description.trim(),
         assertionKind: "user",
@@ -186,12 +328,17 @@ export function Timeline() {
   }
 
   function startEdit(event: EventRow) {
+    const inputs = editDateInputs(event.datePrecision, event.dateValue);
     setEditing({
       id: event.id,
       rowVersion: event.rowVersion,
       draft: {
         title: event.title,
-        date: event.dateValue ?? "",
+        date: inputs.date,
+        dateEnd: inputs.dateEnd,
+        // Ham metin **korunur**: yalnız başlığı düzelten kullanıcı kaynak
+        // ifadeyi kaybetmez (eski davranış ISO tarihi yazıp eziyordu).
+        raw: event.dateRaw ?? "",
         precision: event.datePrecision,
         role: event.dateRole,
         kind: event.eventKind,
@@ -211,14 +358,19 @@ export function Timeline() {
       setError({ code: "E_TITLE", message: t("timeline.titleRequired"), retryable: false });
       return;
     }
+    const issue = dateDraftIssue(target.draft.precision, target.draft.date, target.draft.dateEnd);
+    if (issue !== null) {
+      setError({ code: "E_EVENT_DATE", message: dateIssueText(issue), retryable: false });
+      return;
+    }
     const seq = beginWrite();
     try {
       await api.eventUpdate(target.id, target.rowVersion, {
         eventKind: target.draft.kind,
-        dateValue: target.draft.precision === "unknown" ? null : target.draft.date || null,
+        dateValue: composeDateValue(target.draft.precision, target.draft.date, target.draft.dateEnd),
         datePrecision: target.draft.precision,
         dateRole: target.draft.role,
-        dateRaw: target.draft.date || null,
+        dateRaw: target.draft.raw.trim().length > 0 ? target.draft.raw.trim() : null,
         title: target.draft.title.trim(),
         description: target.draft.description.trim(),
       });
@@ -340,9 +492,9 @@ export function Timeline() {
               </span>
             </div>
             <div className="muted small" style={{ marginTop: 4 }}>
-              {event.sortableDate ?? t("dates.missing")} ·{" "}
+              {eventDateText(event) ?? t("dates.missing")} ·{" "}
               {PRECISION_LABEL[event.datePrecision] ?? event.datePrecision}
-              {event.dateRaw && event.dateRaw !== event.sortableDate
+              {event.dateRaw && event.dateRaw !== (eventDateText(event) ?? "")
                 ? ` · ${t("timeline.rawNote", { raw: event.dateRaw })}`
                 : ""}
             </div>
@@ -384,19 +536,25 @@ export function Timeline() {
                   }
                 />
               </div>
-              <div className="field">
-                <label htmlFor={`edit-date-${event.id}`}>{t("timeline.fieldDate")}</label>
-                <input
-                  id={`edit-date-${event.id}`}
-                  className="input"
-                  type="date"
-                  value={editing.draft.date}
-                  disabled={busy || editing.draft.precision === "unknown"}
-                  onChange={(e) =>
-                    setEditing({ ...editing, draft: { ...editing.draft, date: e.target.value } })
-                  }
-                />
-              </div>
+              <DateFields
+                dateId={`edit-date-${event.id}`}
+                endId={`edit-date-end-${event.id}`}
+                rawId={`edit-date-raw-${event.id}`}
+                precision={editing.draft.precision}
+                date={editing.draft.date}
+                dateEnd={editing.draft.dateEnd}
+                raw={editing.draft.raw}
+                disabled={busy}
+                onDate={(value) =>
+                  setEditing({ ...editing, draft: { ...editing.draft, date: value } })
+                }
+                onDateEnd={(value) =>
+                  setEditing({ ...editing, draft: { ...editing.draft, dateEnd: value } })
+                }
+                onRaw={(value) =>
+                  setEditing({ ...editing, draft: { ...editing.draft, raw: value } })
+                }
+              />
               <div className="field">
                 <label htmlFor={`edit-precision-${event.id}`}>{t("timeline.fieldPrecision")}</label>
                 <select
@@ -404,9 +562,17 @@ export function Timeline() {
                   className="input"
                   value={editing.draft.precision}
                   disabled={busy}
-                  onChange={(e) =>
-                    setEditing({ ...editing, draft: { ...editing.draft, precision: e.target.value } })
-                  }
+                  onChange={(e) => {
+                    const precision = e.target.value;
+                    const inputs = editDateInputs(
+                      precision,
+                      editing.draft.date || editing.draft.dateEnd,
+                    );
+                    setEditing({
+                      ...editing,
+                      draft: { ...editing.draft, precision, ...inputs },
+                    });
+                  }}
                 >
                   {Object.entries(PRECISION_LABEL).map(([key, label]) => (
                     <option key={key} value={key}>
@@ -565,17 +731,19 @@ export function Timeline() {
           </div>
         </div>
         <div className="row">
-          <div className="field">
-            <label htmlFor="tl-date">{t("timeline.fieldDate")}</label>
-            <input
-              id="tl-date"
-              className="input"
-              type="date"
-              value={draft.date}
-              disabled={busy || draft.precision === "unknown"}
-              onChange={(e) => setDraft({ ...draft, date: e.target.value })}
-            />
-          </div>
+          <DateFields
+            dateId="tl-date"
+            endId="tl-date-end"
+            rawId="tl-date-raw"
+            precision={draft.precision}
+            date={draft.date}
+            dateEnd={draft.dateEnd}
+            raw={draft.raw}
+            disabled={busy}
+            onDate={(value) => setDraft({ ...draft, date: value })}
+            onDateEnd={(value) => setDraft({ ...draft, dateEnd: value })}
+            onRaw={(value) => setDraft({ ...draft, raw: value })}
+          />
           <div className="field">
             <label htmlFor="tl-precision">{t("timeline.fieldPrecision")}</label>
             <select
@@ -583,7 +751,13 @@ export function Timeline() {
               className="input"
               value={draft.precision}
               disabled={busy}
-              onChange={(e) => setDraft({ ...draft, precision: e.target.value })}
+              onChange={(e) => {
+                // Kesinlik değişince tarih alanı yeni çözünürlüğe kırpılır:
+                // "2026-04-10" + Ay → "2026-04" (gün saklanmaz, F08-T03).
+                const precision = e.target.value;
+                const inputs = editDateInputs(precision, draft.date);
+                setDraft({ ...draft, precision, date: inputs.date, dateEnd: inputs.dateEnd });
+              }}
             >
               {Object.entries(PRECISION_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>

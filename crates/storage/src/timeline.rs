@@ -91,6 +91,182 @@ fn valid_assertion(value: &str) -> bool {
     )
 }
 
+/// `YYYY-AA-GG` (takvimde var olan gün). Biçim **katı**: sıfır dolgulu,
+/// fazladan boşluk yok; `time` takvim doğrulamasını yapar (31 Şubat reddedilir).
+fn parse_iso_day(value: &str) -> Option<time::Date> {
+    time::Date::parse(
+        value,
+        time::macros::format_description!("[year]-[month]-[day]"),
+    )
+    .ok()
+}
+
+/// `YYYY-AA`. Gün taşıyan değer verilirse **ay** kısmı okunur (gün atılır):
+/// kesinlik günü söylemiyorsa saklanan değer de söylemez.
+fn parse_year_month(value: &str) -> Option<(i32, u8)> {
+    // Tam gün verilmişse takvim doğrulamasıyla birlikte aydan türetilir.
+    if let Some(date) = parse_iso_day(value) {
+        return Some((date.year(), u8::from(date.month())));
+    }
+    // `YYYY-AA`: iki parça, yıl 4 hane, ay 1–12 (sıfır dolgulu).
+    let (year, month) = value.split_once('-')?;
+    if year.len() != 4
+        || month.len() != 2
+        || !year.bytes().all(|b| b.is_ascii_digit())
+        || !month.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let year: i32 = year.parse().ok()?;
+    let month: u8 = month.parse().ok()?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    Some((year, month))
+}
+
+/// `YYYY`. Ay/gün taşıyan değer verilirse **yalnız yıl** okunur.
+fn parse_year(value: &str) -> Option<i32> {
+    if value.len() == 4 && value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse::<i32>().ok();
+    }
+    parse_year_month(value).map(|(year, _)| year)
+}
+
+/// Tarih değerini **kesinliğe göre** doğrular ve normalize eder (şartname
+/// F08-T03: "kesin, yaklaşık, aralık ve bilinmeyen tarihleri **gün
+/// uydurmadan** sırala").
+///
+/// - `day`: tam tarih ister; eksik/geçersiz gün reddedilir (`E_EVENT_DATE`).
+/// - `month`: `YYYY-AA`; tam gün verilirse gün **atılır** (kesinlik günü
+///   söylemiyor; saklanan değer de söylemez).
+/// - `year`: `YYYY`; ay/gün atılır.
+/// - `approximate`: yıl, ay ya da gün — **girildiği kadarı** korunur.
+/// - `range`: `YYYY-AA-GG/YYYY-AA-GG`; başlangıç ≤ bitiş.
+/// - `unknown`: tarih yok; değer yok sayılır.
+///
+/// Boş değer her kesinlikte `None` döner (tarih girilmemiş); `day`/`month`/
+/// `year` için değer **varsa** biçimi tutmak zorundadır.
+pub fn normalize_event_date(
+    value: Option<&str>,
+    precision: &str,
+) -> Result<Option<String>, StorageError> {
+    let trimmed = value.map(str::trim).filter(|value| !value.is_empty());
+    match precision {
+        "unknown" => Ok(None),
+        "day" => match trimmed {
+            None => Ok(None),
+            Some(raw) => parse_iso_day(raw)
+                .map(|date| {
+                    Some(format!(
+                        "{:04}-{:02}-{:02}",
+                        date.year(),
+                        u8::from(date.month()),
+                        date.day()
+                    ))
+                })
+                .ok_or(StorageError::EventDateInvalid(
+                    "gün kesinliği için tam tarih gerekir (YYYY-AA-GG)",
+                )),
+        },
+        "month" => match trimmed {
+            None => Ok(None),
+            Some(raw) => parse_year_month(raw)
+                .map(|(year, month)| Some(format!("{year:04}-{month:02}")))
+                .ok_or(StorageError::EventDateInvalid(
+                    "ay kesinliği için YYYY-AA gerekir",
+                )),
+        },
+        "year" => match trimmed {
+            None => Ok(None),
+            Some(raw) => parse_year(raw)
+                .map(|year| Some(format!("{year:04}")))
+                .ok_or(StorageError::EventDateInvalid(
+                    "yıl kesinliği için YYYY gerekir",
+                )),
+        },
+        "approximate" => match trimmed {
+            None => Ok(None),
+            Some(raw) => {
+                if let Some(date) = parse_iso_day(raw) {
+                    Ok(Some(format!(
+                        "{:04}-{:02}-{:02}",
+                        date.year(),
+                        u8::from(date.month()),
+                        date.day()
+                    )))
+                } else if let Some((year, month)) = parse_year_month(raw) {
+                    Ok(Some(format!("{year:04}-{month:02}")))
+                } else if let Some(year) = parse_year(raw) {
+                    Ok(Some(format!("{year:04}")))
+                } else {
+                    Err(StorageError::EventDateInvalid(
+                        "yaklaşık tarih YYYY, YYYY-AA ya da YYYY-AA-GG olmalı",
+                    ))
+                }
+            }
+        },
+        "range" => match trimmed {
+            None => Ok(None),
+            Some(raw) => {
+                let (start, end) = raw.split_once('/').ok_or(StorageError::EventDateInvalid(
+                    "aralık iki tarih ister (YYYY-AA-GG/YYYY-AA-GG)",
+                ))?;
+                let start = parse_iso_day(start.trim()).ok_or(StorageError::EventDateInvalid(
+                    "aralık başlangıcı tam tarih olmalı (YYYY-AA-GG)",
+                ))?;
+                let end = parse_iso_day(end.trim()).ok_or(StorageError::EventDateInvalid(
+                    "aralık bitişi tam tarih olmalı (YYYY-AA-GG)",
+                ))?;
+                if end < start {
+                    return Err(StorageError::EventDateInvalid(
+                        "aralığın bitişi başlangıçtan önce olamaz",
+                    ));
+                }
+                Ok(Some(format!(
+                    "{:04}-{:02}-{:02}/{:04}-{:02}-{:02}",
+                    start.year(),
+                    u8::from(start.month()),
+                    start.day(),
+                    end.year(),
+                    u8::from(end.month()),
+                    end.day()
+                )))
+            }
+        },
+        _ => Err(StorageError::InvalidSetting),
+    }
+}
+
+/// Sıralama değeri: `range` başlangıçla sıralanır (bitiş sıralamayı bozmaz);
+/// diğer kesinliklerde normalize değerin kendisi. `unknown` → `None`.
+fn sortable_event_date(precision: &str, normalized: Option<&str>) -> Option<String> {
+    let value = normalized?;
+    if precision == "range" {
+        return value.split_once('/').map(|(start, _)| start.to_string());
+    }
+    Some(value.to_string())
+}
+
+/// Kullanıcıya ve çıktılara yazılan tarih metni: **kesinlik gün söylemiyorsa
+/// gün yazılmaz**. Eski kayıtlarda (0029/0030 öncesi) ay kesinliğiyle tam gün
+/// saklanmış olabilir; görüntü ve CSV bu günü göstermez.
+#[must_use]
+pub fn event_date_text(
+    precision: &str,
+    date_value: Option<&str>,
+    sortable: Option<&str>,
+) -> Option<String> {
+    let value = date_value.or(sortable)?;
+    match precision {
+        "unknown" => None,
+        "range" => Some(value.replace('/', " – ")),
+        "month" => Some(value.get(..7).unwrap_or(value).to_string()),
+        "year" => Some(value.get(..4).unwrap_or(value).to_string()),
+        _ => Some(value.to_string()),
+    }
+}
+
 impl Database {
     pub fn create_event(&self, case_id: &str, new: &NewEvent) -> Result<EventRow, StorageError> {
         if !valid_precision(&new.date_precision)
@@ -110,15 +286,11 @@ impl Database {
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
-        // Bilinmeyen tarihte sıralama değeri NULL kalır; uydurulmuş gün yazılmaz.
-        let sortable = if new.date_precision == "unknown" {
-            None
-        } else {
-            new.date_value
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-        };
+        // Tarih, seçilen **kesinliğe** göre doğrulanır ve normalize edilir:
+        // ay/yıl kesinliğinde gün saklanmaz, eksik gün uydurulmaz (F08-T03).
+        // Geçersiz biçim `E_EVENT_DATE` ile reddedilir.
+        let normalized = normalize_event_date(new.date_value.as_deref(), &new.date_precision)?;
+        let sortable = sortable_event_date(&new.date_precision, normalized.as_deref());
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         self.conn().execute(
@@ -128,7 +300,7 @@ impl Database {
                 id,
                 case_id,
                 new.event_kind.trim(),
-                new.date_value,
+                normalized,
                 new.date_precision,
                 new.date_role,
                 new.date_raw,
@@ -242,16 +414,10 @@ impl Database {
                 actual: current.row_version,
             });
         }
-        // Bilinmeyen tarihte sıralama değeri NULL kalır (create ile aynı kural).
-        let sortable = if patch.date_precision == "unknown" {
-            None
-        } else {
-            patch
-                .date_value
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        };
+        // Tarih create ile **aynı** sözleşmeden geçer: ay/yıl kesinliğinde gün
+        // saklanmaz, geçersiz biçim `E_EVENT_DATE` ile reddedilir (F08-T03).
+        let normalized = normalize_event_date(patch.date_value.as_deref(), &patch.date_precision)?;
+        let sortable = sortable_event_date(&patch.date_precision, normalized.as_deref());
         let now = now_iso();
         let changed = self.conn().execute(
             "UPDATE events SET event_kind=?1, date_value=?2, date_precision=?3, date_role=?4,
@@ -260,7 +426,7 @@ impl Database {
              WHERE id=?10 AND row_version=?11 AND deleted_at IS NULL",
             rusqlite::params![
                 patch.event_kind.trim(),
-                patch.date_value,
+                normalized,
                 patch.date_precision,
                 patch.date_role,
                 patch.date_raw,
@@ -497,6 +663,107 @@ mod tests {
         e.date_value = Some("2026-01-01".into());
         let created = db.create_event(&case_id, &e).expect("olay");
         assert_eq!(created.sortable_date, None);
+    }
+
+    #[test]
+    fn month_precision_stores_no_day() {
+        let (db, case_id) = setup();
+        // Eski çağıranlar ay kesinliğiyle tam gün gönderebiliyor (aday aktarımı);
+        // çekirdek günü **atmaz**, saklamaz: kesinlik günü söylemiyor.
+        let created = db
+            .create_event(&case_id, &event("Kira dönemi", Some("2026-04-10"), "month"))
+            .expect("ay");
+        assert_eq!(created.date_value.as_deref(), Some("2026-04"));
+        assert_eq!(created.sortable_date.as_deref(), Some("2026-04"));
+        // Ham metin **korunur**: kaynak ifade kullanıcıya aittir.
+        assert_eq!(created.date_raw.as_deref(), Some("2026-04-10"));
+    }
+
+    #[test]
+    fn year_precision_stores_year_only() {
+        let (db, case_id) = setup();
+        let created = db
+            .create_event(&case_id, &event("Sözleşme", Some("2026-04-10"), "year"))
+            .expect("yıl");
+        assert_eq!(created.date_value.as_deref(), Some("2026"));
+        assert_eq!(created.sortable_date.as_deref(), Some("2026"));
+    }
+
+    #[test]
+    fn day_precision_rejects_partial_or_impossible_date() {
+        let (db, case_id) = setup();
+        for bad in ["2026-04", "2026", "2026-02-31", "10.04.2026", "2026-4-1"] {
+            let error = db
+                .create_event(&case_id, &event("X", Some(bad), "day"))
+                .expect_err("gün kesinliğinde geçersiz tarih reddedilmeli");
+            assert_eq!(error.code(), "E_EVENT_DATE", "değer: {bad}");
+        }
+        // Geçerli tam gün kabul edilir.
+        assert!(db
+            .create_event(&case_id, &event("Y", Some("2026-02-28"), "day"))
+            .is_ok());
+    }
+
+    #[test]
+    fn range_is_sorted_by_start_and_order_is_enforced() {
+        let (db, case_id) = setup();
+        db.create_event(
+            &case_id,
+            &event("Ara dönem", Some("2026-03-01/2026-06-30"), "range"),
+        )
+        .expect("aralık");
+        db.create_event(&case_id, &event("Tek gün", Some("2026-05-01"), "day"))
+            .expect("gün");
+
+        let rows = db.list_events(&case_id).expect("liste");
+        let titles: Vec<_> = rows.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, vec!["Ara dönem", "Tek gün"]);
+        assert_eq!(rows[0].sortable_date.as_deref(), Some("2026-03-01"));
+        assert_eq!(rows[0].date_value.as_deref(), Some("2026-03-01/2026-06-30"));
+
+        let error = db
+            .create_event(
+                &case_id,
+                &event("Ters", Some("2026-06-30/2026-03-01"), "range"),
+            )
+            .expect_err("ters aralık reddedilmeli");
+        assert_eq!(error.code(), "E_EVENT_DATE");
+    }
+
+    #[test]
+    fn approximate_keeps_given_granularity() {
+        let (db, case_id) = setup();
+        for (value, expected) in [
+            ("2026", "2026"),
+            ("2026-04", "2026-04"),
+            ("2026-04-10", "2026-04-10"),
+        ] {
+            let created = db
+                .create_event(&case_id, &event("Yaklaşık", Some(value), "approximate"))
+                .expect("yaklaşık");
+            assert_eq!(created.date_value.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn event_date_text_hides_day_when_precision_is_coarse() {
+        assert_eq!(
+            event_date_text("month", Some("2026-04-10"), Some("2026-04-10")).as_deref(),
+            Some("2026-04")
+        );
+        assert_eq!(
+            event_date_text("year", Some("2026-04-10"), Some("2026-04-10")).as_deref(),
+            Some("2026")
+        );
+        assert_eq!(
+            event_date_text("range", Some("2026-03-01/2026-06-30"), Some("2026-03-01")).as_deref(),
+            Some("2026-03-01 – 2026-06-30")
+        );
+        assert_eq!(
+            event_date_text("day", Some("2026-04-10"), Some("2026-04-10")).as_deref(),
+            Some("2026-04-10")
+        );
+        assert_eq!(event_date_text("unknown", None, None), None);
     }
 
     #[test]

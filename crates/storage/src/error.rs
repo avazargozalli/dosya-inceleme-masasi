@@ -62,6 +62,11 @@ pub enum StorageError {
     RedactionPlanInvalid { reason: String },
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
+    /// Olay tarihi sözleşmesi (şartname F08-T03): değer seçilen **kesinliğe**
+    /// uymuyor (ay için gün, yıl için ay taşınamaz) ya da aralık sırası ters.
+    /// **Neden** taşır; eksik gün uydurulmaz.
+    #[error("olay tarihi geçersiz: {0}")]
+    EventDateInvalid(&'static str),
     /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
     /// ayrıdır çünkü **neden** taşır (hangi anahtar, hangi kural).
     #[error("geçersiz kasa ayarı: {reason}")]
@@ -197,6 +202,7 @@ impl StorageError {
             Self::PlanMaskInvalid { .. } => "E_MASK_PLAN",
             Self::RedactionPlanInvalid { .. } => "E_REDACTION_PLAN",
             Self::InvalidSetting => "E_DB_SETTING",
+            Self::EventDateInvalid(_) => "E_EVENT_DATE",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
             Self::ActorInvalid { .. } => "E_DB_ACTOR",
