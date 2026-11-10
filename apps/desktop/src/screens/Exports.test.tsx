@@ -121,6 +121,7 @@ import { formatDateTime } from "../lib/format";
 import type {
   CaseRow,
   ExportCoverage,
+  ExportItemRow,
   ExportRecordRow,
   ExportResult,
   PackageResult,
@@ -130,6 +131,7 @@ const mocks = vi.hoisted(() => ({
   caseList: vi.fn(),
   caseCoverage: vi.fn(),
   exportList: vi.fn(),
+  exportItems: vi.fn(),
   exportJson: vi.fn(),
   exportCsv: vi.fn(),
   exportDocx: vi.fn(),
@@ -274,6 +276,7 @@ function setupDefaults() {
   mocks.caseList.mockResolvedValue([P1, P2]);
   mocks.caseCoverage.mockResolvedValue(FULL);
   mocks.exportList.mockResolvedValue([]);
+  mocks.exportItems.mockResolvedValue([]);
   mocks.exportJson.mockResolvedValue(exportResult());
   mocks.exportCsv.mockResolvedValue(CSV_RESULT);
   mocks.exportDocx.mockResolvedValue(exportResult());
@@ -1308,6 +1311,8 @@ describe("dışa aktarma kayıtları (denetim defteri)", () => {
       destinationKind: "user_selected_path",
       destinationPath: "/Users/avukat/Cikti/kira.json",
       outputHash: "0123456789abcdef0123456789abcdef",
+      templateVersion: "dim-case-export@1",
+      itemCount: 1,
       createdAt: ISO,
       completedAt: ISO,
       ...overrides,
@@ -1458,5 +1463,154 @@ describe("dışa aktarma kayıtları (denetim defteri)", () => {
     fireEvent.click(ledgerRefresh());
     await waitFor(() => expect(mocks.exportList).toHaveBeenCalledTimes(2));
     expect(mocks.exportList).toHaveBeenLastCalledWith("p1");
+  });
+
+  /* ------------------------------------------- kaynak sürüm izi (F14 §16.3) */
+
+  function itemRow(overrides: Partial<ExportItemRow> = {}): ExportItemRow {
+    return {
+      id: "i1",
+      exportId: "r1",
+      sourceVersionId: "v-1",
+      documentId: "d-1",
+      documentTitle: "Kira sözleşmesi",
+      versionNo: 1,
+      outputPageRange: null,
+      citationLabel: null,
+      redactionState: "none",
+      ...overrides,
+    };
+  }
+
+  /** Sözlük metnini **birebir** arayan regex (parantez/nokta regex anlamı taşımaz). */
+  const literal = (value: string) => new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
+  const itemsButton = () =>
+    screen.getByRole("button", { name: t("exports.itemsShow") }) as HTMLButtonElement;
+
+  it("kaynak sürüm sayısı yazılır; kalemsiz eski kayıt 'kaynak yazılmamış' der", async () => {
+    mocks.exportList.mockResolvedValue([
+      recordRow({ id: "r1", itemCount: 2, destinationPath: "/tmp/kira.json" }),
+      recordRow({
+        id: "r0",
+        itemCount: 0,
+        templateVersion: null,
+        destinationPath: "/tmp/eski.json",
+      }),
+    ]);
+    await renderScreen();
+
+    await screen.findByText("/tmp/kira.json");
+    // Satırın içinde "Kaynakları göster" düğmesi de var: tam metin değil,
+    // satır içi eşleşme aranır.
+    expect(
+      screen.getByText(literal(t("exports.ledgerItems", { count: 2 }))),
+    ).toBeTruthy();
+    // Eski kayıt için "kaynak yok" **denmez**: izin yokluğu ayrı cümledir.
+    expect(screen.getByText(literal(t("exports.ledgerNoItems")))).toBeTruthy();
+  });
+
+  it("kaynakları göster: belge adı · sürüm · maskeleme çekirdekten okunur", async () => {
+    mocks.exportList.mockResolvedValue([recordRow({ itemCount: 2 })]);
+    mocks.exportItems.mockResolvedValue([
+      itemRow(),
+      itemRow({
+        id: "i2",
+        sourceVersionId: "v-2",
+        documentTitle: "İhtarname",
+        versionNo: 3,
+        redactionState: "masked",
+      }),
+    ]);
+    await renderScreen();
+    await screen.findByText("/Users/avukat/Cikti/kira.json");
+
+    fireEvent.click(itemsButton());
+    await screen.findByText(/Kira sözleşmesi/);
+
+    expect(mocks.exportItems).toHaveBeenCalledWith("r1");
+    expect(screen.getByText(/Kira sözleşmesi · sürüm 1 · maskesiz/)).toBeTruthy();
+    expect(screen.getByText(/İhtarname · sürüm 3 · maskeli sürüm/)).toBeTruthy();
+    // Açık panelde düğme "gizle" olur.
+    expect(
+      screen.getByRole("button", { name: t("exports.itemsHide") }),
+    ).toBeTruthy();
+  });
+
+  it("düşen kaynak okuması 'kaynak yok' demez; hata satırı yazar", async () => {
+    mocks.exportList.mockResolvedValue([recordRow()]);
+    mocks.exportItems.mockRejectedValue({ code: "E_DB", message: "kasa okunamadı" });
+    await renderScreen();
+    await screen.findByText("/Users/avukat/Cikti/kira.json");
+
+    fireEvent.click(itemsButton());
+    await screen.findByRole("alert");
+
+    expect(
+      screen.getByText(
+        t("exports.itemsUnreadable", { code: "E_DB", message: "kasa okunamadı" }),
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(t("exports.itemsEmpty"))).toBeNull();
+  });
+
+  it("geç gelen eski kaynak yanıtı sonra açılan paneli ezmez", async () => {
+    mocks.exportList.mockResolvedValue([
+      recordRow({ id: "r1", destinationPath: "/tmp/bir.json" }),
+      recordRow({ id: "r2", destinationPath: "/tmp/iki.json" }),
+    ]);
+    const pending = deferred<ExportItemRow[]>();
+    mocks.exportItems.mockReturnValueOnce(pending.promise);
+    mocks.exportItems.mockResolvedValue([
+      itemRow({ id: "i9", exportId: "r2", documentTitle: "İkinci belge" }),
+    ]);
+    await renderScreen();
+    await screen.findByText("/tmp/bir.json");
+
+    // Birinci kaydın paneli açılır (yanıt askıda), sonra ikinci kaydın paneli.
+    const showButtons = screen.getAllByRole("button", {
+      name: t("exports.itemsShow"),
+    }) as HTMLButtonElement[];
+    fireEvent.click(showButtons[0]!);
+    fireEvent.click(showButtons[1]!);
+    await screen.findByText(/İkinci belge/);
+
+    await act(async () => {
+      pending.resolve([itemRow({ id: "i1", documentTitle: "Birinci belge" })]);
+      await pending.promise;
+    });
+    // Geç yanıt ikinci kaydın paneline yazılmaz.
+    expect(screen.queryByText(/Birinci belge/)).toBeNull();
+    expect(screen.getByText(/İkinci belge/)).toBeTruthy();
+  });
+
+  it("dosya değişince açık kaynak paneli kapanır; geri dönüşte kendiliğinden açılmaz", async () => {
+    mocks.exportList.mockResolvedValue([recordRow()]);
+    mocks.exportItems.mockResolvedValue([itemRow()]);
+    await renderScreen();
+    await screen.findByText("/Users/avukat/Cikti/kira.json");
+    fireEvent.click(itemsButton());
+    await screen.findByText(/Kira sözleşmesi/);
+
+    mocks.exportList.mockResolvedValue([
+      recordRow({ id: "r9", caseId: "p2", destinationPath: "/tmp/ceza.json" }),
+    ]);
+    mocks.caseCoverage.mockResolvedValueOnce(PARTIAL);
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+
+    await screen.findByText("/tmp/ceza.json");
+    expect(screen.queryByText(/Kira sözleşmesi/)).toBeNull();
+
+    // Aynı dosyaya geri dönüş: eski panel kimliği **temizlenmemişse** kendiliğinden
+    // açılır ve bayat sürüm listesi gösterilirdi (INV-05).
+    mocks.exportList.mockResolvedValue([recordRow()]);
+    mocks.caseCoverage.mockResolvedValueOnce(FULL);
+    fireEvent.change(caseSelect(), { target: { value: "p1" } });
+
+    await screen.findByText("/Users/avukat/Cikti/kira.json");
+    expect(screen.queryByText(/Kira sözleşmesi/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: t("exports.itemsShow") }),
+    ).toBeTruthy();
   });
 });

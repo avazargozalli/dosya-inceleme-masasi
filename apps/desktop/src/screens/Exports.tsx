@@ -6,6 +6,7 @@ import {
   type ApiError,
   type CaseRow,
   type ExportCoverage,
+  type ExportItemRow,
   type ExportRecordRow,
   type ExportResult,
   type PackageResult,
@@ -91,6 +92,14 @@ export function Exports() {
   const [records, setRecords] = useState<ExportRecordRow[]>([]);
   const [recordsError, setRecordsError] = useState<ApiError | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
+  // Kaynak sürüm listesi **istek üzerine** okunur (her satır için önden N+1
+  // okuma yapılmaz). `itemsSeq` geç yanıt kapısıdır: yavaş dönen eski yanıt,
+  // sonra açılan başka kaydın panelini ele geçirmez.
+  const [itemsFor, setItemsFor] = useState<string | null>(null);
+  const [itemsRows, setItemsRows] = useState<ExportItemRow[]>([]);
+  const [itemsError, setItemsError] = useState<ApiError | null>(null);
+  const [itemsLoading, setItemsLoading] = useState(false);
+  const itemsSeq = useRef(0);
   // İki ayrı kuşak: kapsam **okumaları** (dosya değişimi + tazeleme) ile **yazmalar**
   // (dışa aktarma + paket). Tek sayaç olsaydı ilgisiz bir yazma, kullanıcının
   // istediği tazelemenin yanıtını düşürür; düşen okumanın `finally`si kapıdan
@@ -138,6 +147,38 @@ export function Exports() {
     }
   }, []);
 
+  /**
+   * Sicil satırının **kaynak sürümleri** (şartname §16.3/§433: "hangi belge
+   * sürümlerinden üretildi"). Aynı satıra ikinci tıklama paneli kapatır;
+   * kapanış askıdaki okumanın yanıtını da geçersiz kılar.
+   */
+  async function toggleItems(exportId: string) {
+    if (itemsFor === exportId) {
+      itemsSeq.current += 1;
+      setItemsFor(null);
+      setItemsRows([]);
+      setItemsError(null);
+      setItemsLoading(false);
+      return;
+    }
+    const seq = ++itemsSeq.current;
+    setItemsFor(exportId);
+    setItemsRows([]);
+    setItemsError(null);
+    setItemsLoading(true);
+    try {
+      const rows = await api.exportItems(exportId);
+      if (seq !== itemsSeq.current) return;
+      setItemsRows(rows);
+    } catch (e) {
+      if (seq !== itemsSeq.current) return;
+      // Düşen okuma "kaynak yok" demez: ayrı hata satırı yazılır.
+      setItemsError(toApiError(e));
+    } finally {
+      if (seq === itemsSeq.current) setItemsLoading(false);
+    }
+  }
+
   // Kapsam kasadan okunur; arayüz kendi sayısını üretmez. Dosya değişince
   // önceki dosyanın kapsamı **ve** çıktı/paket satırları ekranda kalmaz:
   // yoksa yeni dosyanın isteği askıdayken başka dosyanın çıktısı güncel
@@ -158,6 +199,12 @@ export function Exports() {
     // önce** temizlenir, yeni dosyanın kayıtları hemen istenir.
     setRecords([]);
     setRecordsError(null);
+    // Açık kaynak paneli de kapanır: yeni sicilde eski kayıt kimliği yoktur, ama
+    // kullanıcı aynı dosyaya **geri dönerse** panel kendiliğinden açılmamalı.
+    // (Satır listesi/hata/kilidi burada temizlenmez: panel kapalıyken görünmezler
+    // ve her açılış kendi durumunu sıfırlar — yük taşımayan yedek kapı bırakılmadı,
+    // 2026-11-10 mutasyon ölçümü.)
+    setItemsFor(null);
     void loadRecords(caseId);
     if (!caseId) {
       setCoverageLoading(false);
@@ -598,6 +645,62 @@ export function Exports() {
                       </div>
                       <span className={`badge ${status.tone}`}>{status.label}</span>
                     </div>
+                    <div className="small muted" style={{ marginTop: 4 }}>
+                      {record.itemCount > 0
+                        ? t("exports.ledgerItems", { count: record.itemCount })
+                        : t("exports.ledgerNoItems")}
+                      {record.templateVersion ? ` · ${record.templateVersion}` : null}
+                      {" · "}
+                      <button
+                        className="btn ghost"
+                        style={{ padding: "0 6px", fontSize: 12 }}
+                        onClick={() => void toggleItems(record.id)}
+                      >
+                        {itemsFor === record.id
+                          ? t("exports.itemsHide")
+                          : t("exports.itemsShow")}
+                      </button>
+                    </div>
+                    {itemsFor === record.id ? (
+                      // Kaynak listesi **kendi** panelinde: düşen okuma "kaynak
+                      // yok" demez, ayrı hata satırı yazar.
+                      <div style={{ marginTop: 6 }}>
+                        {itemsError ? (
+                          <div className="notice danger" role="alert">
+                            {t("exports.itemsUnreadable", {
+                              code: itemsError.code,
+                              message: itemsError.message,
+                            })}
+                          </div>
+                        ) : itemsLoading ? (
+                          <p className="hint" style={{ margin: 0 }}>
+                            {t("exports.itemsLoading")}
+                          </p>
+                        ) : itemsRows.length === 0 ? (
+                          <p className="hint" style={{ margin: 0 }}>
+                            {t("exports.itemsEmpty")}
+                          </p>
+                        ) : (
+                          <ul style={{ margin: 0, paddingLeft: 18 }}>
+                            {itemsRows.map((item) => (
+                              <li key={item.id} className="small">
+                                {item.documentTitle ?? item.sourceVersionId}
+                                {" · "}
+                                {item.versionNo !== null
+                                  ? t("exports.itemVersion", { version: item.versionNo })
+                                  : t("exports.itemVersionMissing")}
+                                {" · "}
+                                {item.redactionState === "masked"
+                                  ? t("exports.itemMasked")
+                                  : item.redactionState === "none"
+                                    ? t("exports.itemUnmasked")
+                                    : item.redactionState}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

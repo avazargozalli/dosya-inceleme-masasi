@@ -67,6 +67,12 @@ pub enum StorageError {
     /// **Neden** taşır; eksik gün uydurulmaz.
     #[error("olay tarihi geçersiz: {0}")]
     EventDateInvalid(&'static str),
+    /// Dışa aktarma kaynak izi sözleşmesi (şartname §16.3/§433): kalem
+    /// bilinmeyen/başka dosyaya ait bir sürümü gösteriyor, maskesiz/maskeli
+    /// dışında bir durum taşıyor ya da biçim kuralını çiğniyor. **Neden**
+    /// taşır; yanlış iz sicile yazılmaz (hiç yazmamak yanlış yazmaktan iyidir).
+    #[error("dışa aktarma kaynağı geçersiz: {reason}")]
+    ExportSourceInvalid { reason: String },
     /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
     /// ayrıdır çünkü **neden** taşır (hangi anahtar, hangi kural).
     #[error("geçersiz kasa ayarı: {reason}")]
@@ -203,6 +209,7 @@ impl StorageError {
             Self::RedactionPlanInvalid { .. } => "E_REDACTION_PLAN",
             Self::InvalidSetting => "E_DB_SETTING",
             Self::EventDateInvalid(_) => "E_EVENT_DATE",
+            Self::ExportSourceInvalid { .. } => "E_EXPORT_SOURCE",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
             Self::ActorInvalid { .. } => "E_DB_ACTOR",

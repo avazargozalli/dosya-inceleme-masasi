@@ -6024,6 +6024,37 @@ fn write_export(path: &str, bytes: &[u8]) -> Result<dim_storage::atomic::Verifie
     )?)
 }
 
+/// Dışa aktarmanın **kaynak sürümleri** (şartname §16.3/§433).
+///
+/// Her belgenin güncel sürümü; o sürüm bir maskeleme planının çıktısıysa
+/// `masked`. `citation_label` ve `output_page_range` bugün **üretilmiyor**:
+/// raporun hangi sayfasına hangi belgenin düştüğü worker çıktısında eşlenmiyor
+/// → `None` (uydurma numara yazılmaz, dürüst sınır).
+fn export_sources(
+    db: &Database,
+    case_id: &str,
+) -> Result<Vec<dim_storage::NewExportItem>, ApiError> {
+    let masked = db.masked_output_version_ids(case_id)?;
+    let mut out = Vec::new();
+    for doc in db.list_documents(case_id)? {
+        let Some(version_id) = doc.current_version_id else {
+            continue;
+        };
+        let redaction_state = if masked.contains(&version_id) {
+            "masked"
+        } else {
+            "none"
+        };
+        out.push(dim_storage::NewExportItem {
+            source_version_id: version_id,
+            output_page_range: None,
+            citation_label: None,
+            redaction_state: redaction_state.to_string(),
+        });
+    }
+    Ok(out)
+}
+
 fn case_payload(
     db: &Database,
     case_id: &str,
@@ -6093,6 +6124,20 @@ pub fn exports_list(
     Ok(db.list_exports(&case_id)?)
 }
 
+/// Bir çıktının **kaynak sürüm kalemleri** (şartname §16.3/§433).
+///
+/// Sicil satırı "hangi belge sürümlerinden üretildi" sorusunu yanıtlar; sürüm
+/// silinmişse belge adı/sürüm no `null` döner (kimlik uydurulmaz).
+#[tauri::command]
+pub fn export_items_list(
+    state: State<'_, AppState>,
+    export_id: String,
+) -> Result<Vec<dim_storage::ExportItemRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_export_items(&export_id)?)
+}
+
 #[tauri::command]
 pub fn export_json(
     state: State<'_, AppState>,
@@ -6102,6 +6147,9 @@ pub fn export_json(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let coverage = ExportCoverage::from_report(&db.coverage_report(&case_id)?);
+    // Kaynak izi **yazmadan önce** hesaplanır: doğrulama düşerse dosya da
+    // yazılmaz (yarım çıktı + izsiz kayıt olmaz).
+    let sources = export_sources(db, &case_id)?;
     let payload = case_payload(db, &case_id, &coverage)?;
     let bytes = serde_json::to_vec_pretty(&payload)
         .map_err(|_| ApiError::new("E_EXPORT", "JSON üretilemedi."))?;
@@ -6111,7 +6159,8 @@ pub fn export_json(
     let record = db.record_export(
         &case_id,
         "json",
-        &[],
+        Some("dim-case-export@1"),
+        &sources,
         "user_selected_path",
         &dest_path,
         &sha,
@@ -6147,11 +6196,21 @@ pub fn export_csv(
         &db.list_documents(&case_id)?,
     );
     let bytes = out.into_bytes();
+    // Kaynak izi yazmadan önce: doğrulama düşerse dosya da yazılmaz.
+    let sources = export_sources(db, &case_id)?;
 
     // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
     let written = write_export(&dest_path, &bytes)?;
     let sha = written.sha256.clone();
-    let record = db.record_export(&case_id, "csv", &[], "user_selected_path", &dest_path, &sha)?;
+    let record = db.record_export(
+        &case_id,
+        "csv",
+        Some("case-csv@1"),
+        &sources,
+        "user_selected_path",
+        &dest_path,
+        &sha,
+    )?;
     Ok(ExportView {
         path: dest_path,
         bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
@@ -6272,13 +6331,16 @@ pub fn export_docx(
     let mut worker = spawn_worker(WorkerKind::Render)?;
     let bytes = worker.render_report(&payload)?;
     worker.shutdown();
+    // Kaynak izi yazmadan önce: doğrulama düşerse dosya da yazılmaz.
+    let sources = export_sources(db, &case_id)?;
     // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
     let written = write_export(&dest_path, &bytes)?;
     let sha = written.sha256.clone();
     let record = db.record_export(
         &case_id,
         "docx",
-        &[],
+        Some("case-report@1"),
+        &sources,
         "user_selected_path",
         &dest_path,
         &sha,
@@ -6334,10 +6396,20 @@ pub fn export_pdf(
     let mut worker = spawn_worker(WorkerKind::Render)?;
     let bytes = worker.render_report_pdf(&payload)?;
     worker.shutdown();
+    // Kaynak izi yazmadan önce: doğrulama düşerse dosya da yazılmaz.
+    let sources = export_sources(db, &case_id)?;
     // Özet **diskten geri okunur**: kayda geçen sha256 dosyanın kendi özetidir.
     let written = write_export(&dest_path, &bytes)?;
     let sha = written.sha256.clone();
-    let record = db.record_export(&case_id, "pdf", &[], "user_selected_path", &dest_path, &sha)?;
+    let record = db.record_export(
+        &case_id,
+        "pdf",
+        Some("case-report@1"),
+        &sources,
+        "user_selected_path",
+        &dest_path,
+        &sha,
+    )?;
     Ok(ExportView {
         path: dest_path,
         bytes: usize::try_from(written.bytes).unwrap_or(usize::MAX),
@@ -6484,7 +6556,8 @@ pub fn export_package(
     let record = db.record_export(
         &case_id,
         "package",
-        &[],
+        Some("transfer-package@1"),
+        &export_sources(db, &case_id)?,
         "user_selected_path",
         &destination.to_string_lossy(),
         &sha,

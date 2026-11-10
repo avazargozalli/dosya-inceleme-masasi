@@ -137,6 +137,7 @@ pub fn run() {
             commands::export_json,
             commands::case_coverage,
             commands::exports_list,
+            commands::export_items_list,
             commands::export_csv,
             commands::export_docx,
             commands::export_pdf,

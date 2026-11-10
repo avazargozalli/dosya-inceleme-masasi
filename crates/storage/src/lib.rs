@@ -73,7 +73,7 @@ pub use csv_export::{build_case_csv, safe_cell, CSV_FORMAT_NOTE};
 pub use documents::{Document, DocumentVersion, PendingParse, MAX_DOCUMENT_BYTES};
 pub use error::StorageError;
 pub use export_coverage::{ExportCoverage, COVERAGE_COUNTING_NOTE, COVERAGE_STATEMENT};
-pub use exports::ExportRow;
+pub use exports::{ExportItemRow, ExportRow, NewExportItem};
 pub use gc::{GcBlobRow, GcReport};
 pub use intext_quotes::{
     extract_quoted_spans, ExtractedQuotes, InTextQuoteCheck, InTextQuoteFinding, InTextQuoteInput,

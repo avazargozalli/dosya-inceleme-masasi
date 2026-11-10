@@ -498,8 +498,37 @@ export type ExportRecordRow = {
   destinationKind: string;
   destinationPath: string | null;
   outputHash: string | null;
+  /**
+   * Çıktıyı üreten biçim/şablon sürümü (`case-report@1`). Biçim sürümü
+   * taşımayan eski kayıtlarda `null` — uydurulmaz.
+   */
+  templateVersion: string | null;
+  /**
+   * Kayda yazılmış **kaynak sürüm kalemi** sayısı (şartname §16.3). `0` ise
+   * kaynak izi yoktur (eski kayıt) — "kaynak yok" diye yorumlanmaz, ekran
+   * ayrı söyler.
+   */
+  itemCount: number;
   createdAt: string;
   completedAt: string | null;
+};
+
+/**
+ * Bir çıktının **kaynak sürüm** kalemi: hangi belge sürümünden üretildi ve o
+ * sürüm maskeli bir kopya mıydı? Sürüm silinmişse `documentTitle`/`versionNo`
+ * `null` döner (şemada FK yok, iz kalır; kimlik uydurulmaz).
+ */
+export type ExportItemRow = {
+  id: string;
+  exportId: string;
+  sourceVersionId: string;
+  documentId: string | null;
+  documentTitle: string | null;
+  versionNo: number | null;
+  outputPageRange: string | null;
+  citationLabel: string | null;
+  /** `none` | `masked` (çekirdeğin kapalı kümesi). */
+  redactionState: string;
 };
 
 /**
@@ -2152,6 +2181,9 @@ export const api = {
     invoke<PackageResult>("export_package", { caseId, destDir, password }),
   caseCoverage: (caseId: string) => invoke<ExportCoverage>("case_coverage", { caseId }),
   exportList: (caseId: string) => invoke<ExportRecordRow[]>("exports_list", { caseId }),
+  /** Bir çıktının kaynak sürüm kalemleri (şartname §16.3). */
+  exportItems: (exportId: string) =>
+    invoke<ExportItemRow[]>("export_items_list", { exportId }),
 
   aiOverview: (caseId: string) => invoke<AiOverview>("ai_overview", { caseId }),
   providerApiProfileSave: (endpoint: string, model: string) =>

@@ -129,6 +129,23 @@ pub struct RedactionRegionInput {
 }
 
 impl Database {
+    /// Maskelemenin ürettiği **çıktı sürümleri**. Dışa aktarma kaydı bir sürümün
+    /// maskeli kopya olup olmadığını belge adından değil bu izden **ölçer**
+    /// (`export_items.redaction_state`). Bağ `output_version_id`den okunur;
+    /// çıktısı silinmiş planlar zaten `NULL` taşır ve o sürüm yoktur.
+    pub fn masked_output_version_ids(&self, case_id: &str) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT DISTINCT output_version_id FROM redaction_plans
+             WHERE case_id=?1 AND output_version_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([case_id], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn create_redaction_plan(
         &self,
         case_id: &str,
@@ -732,6 +749,71 @@ mod tests {
             )
             .expect("v");
         (db, case.id, version.id)
+    }
+
+    /// Dışa aktarma kaydı bir sürümün maskeli kopya olup olmadığını **izden**
+    /// ölçer (`redaction_plans.output_version_id`), belge adına bakmaz.
+    #[test]
+    fn masked_output_version_ids_reads_plan_link() {
+        let (db, case_id, source_version) = setup();
+        // Plan yokken hiçbir sürüm maskeli değil — "belki" denmez.
+        assert!(db
+            .masked_output_version_ids(&case_id)
+            .expect("liste")
+            .is_empty());
+        let blob = db
+            .create_blob_record("st-masked-out", 10, "aad")
+            .expect("blob");
+        let document_id: String = db
+            .conn()
+            .query_row(
+                "SELECT document_id FROM document_versions WHERE id=?1",
+                [&source_version],
+                |row| row.get(0),
+            )
+            .expect("belge");
+        let output = db
+            .add_version_with_parent(
+                &document_id,
+                &case_id,
+                &blob,
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+                Some(&source_version),
+            )
+            .expect("çıktı");
+        db.create_redaction_plan(
+            &case_id,
+            &NewRedactionPlan {
+                document_version_id: source_version.clone(),
+                parse_run_id: None,
+                render_hash: "abc".into(),
+                output_profile: "masked_pdf".into(),
+                output_version_id: Some(output.id.clone()),
+            },
+        )
+        .expect("plan");
+        assert_eq!(
+            db.masked_output_version_ids(&case_id).expect("liste"),
+            vec![output.id.clone()]
+        );
+        // Başka dosya bu izi görmez: kapsam dosyaya bağlıdır.
+        let other = db
+            .create_case(&crate::cases::NewCase {
+                title: "Başka".into(),
+                case_kind: crate::cases::CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya");
+        assert!(db
+            .masked_output_version_ids(&other.id)
+            .expect("liste")
+            .is_empty());
     }
 
     #[test]
