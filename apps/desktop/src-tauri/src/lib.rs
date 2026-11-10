@@ -157,6 +157,7 @@ pub fn run() {
             commands::ai_candidates_list,
             commands::ai_context_items,
             commands::ai_transfer_segments,
+            commands::ai_messages_list,
             commands::ai_candidate_promote,
             commands::ai_candidate_validate,
             commands::ai_candidate_record,

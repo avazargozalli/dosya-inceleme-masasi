@@ -4,6 +4,7 @@ import {
   toApiError,
   type AiCandidateRow,
   type AiContextItemRow,
+  type AiMessageRow,
   type AiOverview,
   type ApiError,
   type CandidateReport,
@@ -158,6 +159,11 @@ export function Ai() {
   const [segments, setSegments] = useState<TransferSegmentRow[]>([]);
   const [segmentsBusy, setSegmentsBusy] = useState(false);
   const [segmentsError, setSegmentsError] = useState<ApiError | null>(null);
+  // Görünen model yanıtı (şartname §06.3 `ai_messages`): sağlayıcının
+  // kullanıcıya görünen metni — yapısal şema hatasında da saklanır.
+  const [messages, setMessages] = useState<AiMessageRow[]>([]);
+  const [messagesBusy, setMessagesBusy] = useState(false);
+  const [messagesError, setMessagesError] = useState<ApiError | null>(null);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -206,6 +212,8 @@ export function Ai() {
   const contextSeq = useRef(0);
   // Segment sicili de bağımsız bir **okuma**dır: kendi nesli vardır.
   const segmentsSeq = useRef(0);
+  // Model yanıtı da bağımsız bir **okuma**dır: kendi nesli vardır.
+  const messagesSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -593,6 +601,30 @@ export function Ai() {
   }
 
   /**
+   * Görünen model yanıtı da bir **okuma**dır: her yeni okuma sayacı artırır,
+   * geç yanıt yeni seçimin altına yazılmaz. Düşen okumada satırlar temizlenir
+   * ama **"yanıt yok" denmez** — hata kendi satırında yazılır.
+   */
+  async function loadMessages(forRun: string): Promise<void> {
+    if (!forRun) return;
+    messagesSeq.current += 1;
+    const seq = messagesSeq.current;
+    setMessagesBusy(true);
+    setMessagesError(null);
+    try {
+      const rows = await api.aiMessages(forRun);
+      if (messagesSeq.current !== seq) return;
+      setMessages(rows);
+    } catch (e) {
+      if (messagesSeq.current !== seq) return;
+      setMessages([]);
+      setMessagesError(toApiError(e));
+    } finally {
+      if (messagesSeq.current === seq) setMessagesBusy(false);
+    }
+  }
+
+  /**
    * Bir çalıştırmayı **ekranın odağına** alır: adaylar ve gönderim sicili o
    * çalıştırmaya aittir. Gönderimden sonra da çağrılır — avukat "ne gitti"
    * sorusunun yanıtını hemen görür.
@@ -613,6 +645,8 @@ export function Ai() {
     await loadContextItems(id);
     if (runSeq.current !== seq) return;
     await loadSegments(id);
+    if (runSeq.current !== seq) return;
+    await loadMessages(id);
   }
 
   async function selectRun(id: string) {
@@ -1190,6 +1224,62 @@ export function Ai() {
           </table>
         )}
         <p className="hint" style={{ margin: 0 }}>{t("ai.transferNote")}</p>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("ai.answerTitle")}</h2>
+            <p className="card-sub">{t("ai.answerSub")}</p>
+          </div>
+        </div>
+        {!runId ? (
+          <p className="hint" style={{ margin: 0 }}>{t("ai.answerNoRun")}</p>
+        ) : messagesError ? (
+          // Düşen okuma "yanıt yok" sayılmaz: kendi satırında yazılır.
+          <div className="notice danger" role="alert">
+            <strong>{t("ai.answerError")}</strong> {messagesError.code} — {messagesError.message}
+          </div>
+        ) : messages.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {messagesBusy ? t("ai.answerLoading") : t("ai.answerEmpty")}
+          </p>
+        ) : (
+          <>
+            {messages.map((message) => (
+              <div key={message.id} style={{ marginBottom: "var(--space-2)" }}>
+                <p className="hint" style={{ margin: 0 }}>
+                  {t("ai.answerMeta", {
+                    role:
+                      message.role === "assistant"
+                        ? t("ai.answerRoleAssistant")
+                        : message.role,
+                    state:
+                      message.state === "visible"
+                        ? t("ai.answerStateVisible")
+                        : message.state === "unparsed"
+                          ? t("ai.answerStateUnparsed")
+                          : message.state === "truncated"
+                            ? t("ai.answerStateTruncated")
+                            : message.state,
+                    refs: message.sourceRefs.length,
+                  })}
+                </p>
+                <pre
+                  style={{
+                    maxHeight: 220,
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    fontSize: 12,
+                  }}
+                >
+                  {message.visibleContent}
+                </pre>
+              </div>
+            ))}
+            <p className="hint" style={{ margin: 0 }}>{t("ai.answerNote")}</p>
+          </>
+        )}
       </div>
 
       <div className="card">

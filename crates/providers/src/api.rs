@@ -127,10 +127,15 @@ impl Provider for ApiProvider {
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .ok_or(ProviderError::Schema)?;
-        let payload: Value = serde_json::from_str(content).map_err(|_| ProviderError::Schema)?;
+        // Yalnız **görünen** içerik okunur: sağlayıcı `reasoning_content` gibi
+        // özel akıl yürütme alanları döndürse bile bunlar okunmaz (şartname
+        // §06.3: özel chain-of-thought talep edilmez/saklanmaz).
+        let payload: Value = serde_json::from_str(content)
+            .map_err(|_| ProviderError::SchemaAnswer(content.to_string()))?;
 
         Ok(Candidate {
             payload,
+            visible_content: content.to_string(),
             source_segment_ids: request
                 .segments
                 .iter()
@@ -202,8 +207,53 @@ mod tests {
         provider.api_key = Some("test-anahtar".into());
         let candidate = provider.propose(&request()).expect("aday");
         assert_eq!(candidate.payload["summary"], "kira");
+        assert_eq!(candidate.visible_content, r#"{"summary":"kira"}"#);
         assert_eq!(candidate.source_segment_ids, vec!["seg-1".to_string()]);
         assert_eq!(candidate.validation_state, ValidationState::Partial);
+    }
+
+    #[test]
+    #[serial]
+    fn non_json_answer_is_carried_not_lost() {
+        // Model JSON yerine düz metin döndürürse yanıt **buharlaşmaz**: hata
+        // görünen metni taşır, çağıran onu sicile yazabilir.
+        let _guard = SERVER_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let endpoint = serve(
+            "200 OK",
+            r#"{"choices":[{"message":{"content":"Kira borcu 12.000 TL görünüyor."}}]}"#,
+        );
+        let mut provider = ApiProvider::for_test(&endpoint, "m");
+        provider.api_key = Some("k".into());
+        let error = provider.propose(&request()).unwrap_err();
+        assert_eq!(
+            error,
+            ProviderError::SchemaAnswer("Kira borcu 12.000 TL görünüyor.".into())
+        );
+        assert_eq!(error.code(), "E_AI_SCHEMA");
+    }
+
+    #[test]
+    #[serial]
+    fn reasoning_field_is_not_visible_content() {
+        // Şartname §06.3: özel akıl yürütme saklanmaz — yalnız **görünen**
+        // içerik adayın yanıt metnine girer.
+        let _guard = SERVER_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let endpoint = serve(
+            "200 OK",
+            r#"{"choices":[{"message":{
+                "content":"{\"summary\":\"kira\"}",
+                "reasoning_content":"özel akıl yürütme metni"
+            }}]}"#,
+        );
+        let mut provider = ApiProvider::for_test(&endpoint, "m");
+        provider.api_key = Some("k".into());
+        let candidate = provider.propose(&request()).expect("aday");
+        assert_eq!(candidate.visible_content, r#"{"summary":"kira"}"#);
+        assert!(!candidate.visible_content.contains("akıl yürütme"));
     }
 
     #[test]

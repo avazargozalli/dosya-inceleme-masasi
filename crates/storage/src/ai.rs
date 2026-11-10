@@ -319,6 +319,21 @@ fn mask_storage_error(error: MaskError) -> StorageError {
     StorageError::MaskRejected(error.code())
 }
 
+/// Şartname §06.3 `ai_messages` satırı: **görünen** yanıt metni.
+///
+/// Özel akıl yürütme (chain-of-thought) alanı **yoktur**; yalnız sağlayıcının
+/// kullanıcıya görünen yanıtı saklanır.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiMessageRow {
+    pub id: String,
+    pub ai_run_id: String,
+    pub role: String,
+    pub visible_content: String,
+    pub source_refs: Vec<String>,
+    pub state: String,
+}
+
 impl Database {
     /// Profil satırının kimlik için gereken alanlarını okur; profil yoksa `None`.
     fn profile_record(&self, provider_id: &str) -> Result<Option<ProfileRecord>, StorageError> {
@@ -1048,6 +1063,141 @@ impl Database {
             &serde_json::json!({}),
         )?;
         Ok(())
+    }
+
+    /// Görünen yanıt metninin üst sınırı (karakter). Üstünde metin **kırpılır**
+    /// ve satır `truncated` durumuyla yazılır — sessiz kırpma yok.
+    pub const AI_MESSAGE_CHAR_LIMIT: usize = 262_144;
+    /// Bir yanıtın dayanabileceği en çok segment kimliği.
+    pub const AI_MESSAGE_REF_LIMIT: usize = 200;
+
+    /// Şartname §06.3 `ai_messages`: **görünen** yanıt metni kayda alınır.
+    ///
+    /// - Özel akıl yürütme (chain-of-thought) alanları bu sözleşmede yoktur;
+    ///   çağıran yalnız sağlayıcının görünen içeriğini verir.
+    /// - `state`: `visible` (yanıt yapısal şemaya çözüldü) ya da `unparsed`
+    ///   (yanıt geldi ama şemaya çözülemedi). Metin sınırı aşarsa satır
+    ///   `truncated` yazılır.
+    /// - Kusurlu satır (boş içerik, kontrol karakteri, biçimsiz/yinelenen
+    ///   kaynak başvurusu) **hiç yazılmaz**.
+    pub fn record_ai_message(
+        &self,
+        run_id: &str,
+        role: &str,
+        content: &str,
+        source_refs: &[String],
+        state: &str,
+    ) -> Result<AiMessageRow, StorageError> {
+        if !matches!(role, "assistant" | "user" | "system" | "tool") {
+            return Err(StorageError::AiMessageInvalid("bilinmeyen rol"));
+        }
+        if !matches!(state, "visible" | "unparsed") {
+            return Err(StorageError::AiMessageInvalid("bilinmeyen durum"));
+        }
+        if self.get_ai_run(run_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        if content.trim().is_empty() {
+            return Err(StorageError::AiMessageInvalid("içerik boş"));
+        }
+        if content
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        {
+            return Err(StorageError::AiMessageInvalid(
+                "içerik kontrol karakteri taşıyor",
+            ));
+        }
+        if source_refs.len() > Self::AI_MESSAGE_REF_LIMIT {
+            return Err(StorageError::AiMessageInvalid(
+                "kaynak başvurusu sınırı aşıldı",
+            ));
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for reference in source_refs {
+            if reference.trim().is_empty()
+                || reference.trim() != reference
+                || reference.chars().count() > 128
+                || reference.chars().any(char::is_control)
+            {
+                return Err(StorageError::AiMessageInvalid("kaynak başvurusu biçimsiz"));
+            }
+            if seen.contains(&reference.as_str()) {
+                return Err(StorageError::AiMessageInvalid(
+                    "kaynak başvurusu yineleniyor",
+                ));
+            }
+            seen.push(reference);
+        }
+        let mut stored = content.to_string();
+        let mut stored_state = state.to_string();
+        if stored.chars().count() > Self::AI_MESSAGE_CHAR_LIMIT {
+            stored = stored.chars().take(Self::AI_MESSAGE_CHAR_LIMIT).collect();
+            stored_state = "truncated".to_string();
+        }
+        let refs_json = serde_json::to_string(source_refs)
+            .map_err(|_| StorageError::AiMessageInvalid("kaynak başvurusu yazılamadı"))?;
+        let id = uuid::Uuid::now_v7().to_string();
+        let tx = self.conn().unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO ai_messages (id,ai_run_id,role,visible_content,source_refs,state)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![id, run_id, role, stored, refs_json, stored_state],
+        )?;
+        tx.commit()?;
+        self.append_audit(
+            "ai_message",
+            Some(&id),
+            "record",
+            "local-system",
+            &serde_json::json!({
+                "role": role,
+                "state": stored_state,
+                "chars": stored.chars().count(),
+            }),
+        )?;
+        Ok(AiMessageRow {
+            id,
+            ai_run_id: run_id.to_string(),
+            role: role.to_string(),
+            visible_content: stored,
+            source_refs: source_refs.to_vec(),
+            state: stored_state,
+        })
+    }
+
+    /// Bir çalıştırmanın görünen yanıtları (kayıt sırası). Bozuk kaynak
+    /// başvurusu sessizce yutulmaz: satır **okunamadı** diye hata verir.
+    pub fn list_ai_messages(&self, run_id: &str) -> Result<Vec<AiMessageRow>, StorageError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT id,ai_run_id,role,visible_content,source_refs,state
+             FROM ai_messages WHERE ai_run_id=?1 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, ai_run_id, role, visible_content, refs_json, state) = row?;
+            let source_refs: Vec<String> = serde_json::from_str(&refs_json)
+                .map_err(|_| StorageError::AiMessageInvalid("kaynak başvurusu okunamadı"))?;
+            out.push(AiMessageRow {
+                id,
+                ai_run_id,
+                role,
+                visible_content,
+                source_refs,
+                state,
+            });
+        }
+        Ok(out)
     }
 
     /// Aktarım makbuzunu **deneme anında** açar (`attempted`).
@@ -4001,5 +4151,169 @@ mod tests {
         let rows = db.list_transfer_segments(&ai_run.id).expect("sicil");
         assert_eq!(rows[0].transform_kind, "identity");
         assert_eq!(rows[0].mask_term_count, 0);
+    }
+
+    fn started_run(db: &Database, case_id: &str) -> String {
+        let c = consent(db, case_id);
+        db.start_ai_run(case_id, &run(case_id, &c.id))
+            .expect("çalıştır")
+            .id
+    }
+
+    #[test]
+    fn visible_answer_is_recorded_and_read_back() {
+        let (db, case_id, _) = setup();
+        let run_id = started_run(&db, &case_id);
+        let refs = vec!["seg-1".to_string(), "seg-2".to_string()];
+        let row = db
+            .record_ai_message(
+                &run_id,
+                "assistant",
+                "Kira borcu 12.000 TL görünüyor.",
+                &refs,
+                "visible",
+            )
+            .expect("yanıt");
+        assert_eq!(row.role, "assistant");
+        assert_eq!(row.state, "visible");
+        assert_eq!(row.ai_run_id, run_id);
+        assert_eq!(row.visible_content, "Kira borcu 12.000 TL görünüyor.");
+        assert_eq!(row.source_refs, refs);
+
+        let listed = db.list_ai_messages(&run_id).expect("liste");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, row.id);
+        assert_eq!(listed[0].source_refs, refs);
+    }
+
+    #[test]
+    fn answer_text_never_reaches_the_audit_log() {
+        let (db, case_id, _) = setup();
+        let run_id = started_run(&db, &case_id);
+        db.record_ai_message(
+            &run_id,
+            "assistant",
+            "Gizli müvekkil adı: Ayşe.",
+            &[],
+            "visible",
+        )
+        .expect("yanıt");
+        let events = db
+            .list_audit_events(50, Some("ai_message"))
+            .expect("denetim");
+        assert_eq!(events.len(), 1);
+        let metadata = serde_json::to_string(&events[0].metadata).expect("meta");
+        assert!(!metadata.contains("Ayşe"), "{metadata}");
+        assert!(metadata.contains("\"chars\""), "{metadata}");
+    }
+
+    #[test]
+    fn message_role_and_state_are_closed_sets() {
+        let (db, case_id, _) = setup();
+        let run_id = started_run(&db, &case_id);
+        assert_eq!(
+            db.record_ai_message(&run_id, "vali", "metin", &[], "visible")
+                .unwrap_err()
+                .code(),
+            "E_AI_MESSAGE"
+        );
+        assert_eq!(
+            db.record_ai_message(&run_id, "assistant", "metin", &[], "onaylandı")
+                .unwrap_err()
+                .code(),
+            "E_AI_MESSAGE"
+        );
+        assert_eq!(
+            db.record_ai_message("bilinmeyen-run", "assistant", "metin", &[], "visible")
+                .unwrap_err()
+                .code(),
+            "E_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn empty_or_control_content_is_rejected() {
+        let (db, case_id, _) = setup();
+        let run_id = started_run(&db, &case_id);
+        assert_eq!(
+            db.record_ai_message(&run_id, "assistant", "   ", &[], "visible")
+                .unwrap_err()
+                .code(),
+            "E_AI_MESSAGE"
+        );
+        assert_eq!(
+            db.record_ai_message(&run_id, "assistant", "a\u{0}b", &[], "visible")
+                .unwrap_err()
+                .code(),
+            "E_AI_MESSAGE"
+        );
+        // Satır başı/sekme serbesttir: model yanıtı çok satırlı olabilir.
+        db.record_ai_message(
+            &run_id,
+            "assistant",
+            "satır 1\nsatır 2\tbitti",
+            &[],
+            "visible",
+        )
+        .expect("çok satırlı yanıt");
+    }
+
+    #[test]
+    fn long_answer_is_clipped_and_marked_truncated() {
+        let (db, case_id, _) = setup();
+        let run_id = started_run(&db, &case_id);
+        let long = "ş".repeat(Database::AI_MESSAGE_CHAR_LIMIT + 10);
+        let row = db
+            .record_ai_message(&run_id, "assistant", &long, &[], "visible")
+            .expect("yanıt");
+        assert_eq!(row.state, "truncated");
+        assert_eq!(
+            row.visible_content.chars().count(),
+            Database::AI_MESSAGE_CHAR_LIMIT
+        );
+        // Kırpma sessiz değil: satır durumu ve uzunluk okuyan tarafından görülür.
+        let listed = db.list_ai_messages(&run_id).expect("liste");
+        assert_eq!(listed[0].state, "truncated");
+    }
+
+    #[test]
+    fn messages_are_scoped_and_ordered() {
+        let (db, case_id, _) = setup();
+        let first = started_run(&db, &case_id);
+        let second = started_run(&db, &case_id);
+        db.record_ai_message(&first, "assistant", "ilk yanıt", &[], "visible")
+            .expect("1");
+        db.record_ai_message(&first, "assistant", "ikinci yanıt", &[], "unparsed")
+            .expect("2");
+        db.record_ai_message(&second, "assistant", "başka çalıştırma", &[], "visible")
+            .expect("3");
+        let listed = db.list_ai_messages(&first).expect("liste");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].visible_content, "ilk yanıt");
+        assert_eq!(listed[1].visible_content, "ikinci yanıt");
+        assert_eq!(listed[1].state, "unparsed");
+        assert!(db.list_ai_messages(&second).expect("liste")[0]
+            .visible_content
+            .contains("başka"));
+    }
+
+    #[test]
+    fn malformed_reference_is_rejected() {
+        let (db, case_id, _) = setup();
+        let run_id = started_run(&db, &case_id);
+        for bad in [
+            vec![" ".to_string()],
+            vec![" seg".to_string()],
+            vec!["a".repeat(129)],
+            vec!["seg-1".to_string(), "seg-1".to_string()],
+        ] {
+            assert_eq!(
+                db.record_ai_message(&run_id, "assistant", "metin", &bad, "visible")
+                    .unwrap_err()
+                    .code(),
+                "E_AI_MESSAGE",
+                "{bad:?}"
+            );
+        }
     }
 }

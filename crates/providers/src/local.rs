@@ -105,9 +105,12 @@ impl Provider for LocalProvider {
             .pointer("/message/content")
             .and_then(Value::as_str)
             .ok_or(ProviderError::Schema)?;
-        let payload: Value = serde_json::from_str(content).map_err(|_| ProviderError::Schema)?;
+        // Yalnız görünen yanıt okunur (bkz. `api.rs` aynı kural).
+        let payload: Value = serde_json::from_str(content)
+            .map_err(|_| ProviderError::SchemaAnswer(content.to_string()))?;
         Ok(Candidate {
             payload,
+            visible_content: content.to_string(),
             source_segment_ids: request
                 .segments
                 .iter()
@@ -164,7 +167,22 @@ mod tests {
         let mut provider = LocalProvider::with_endpoint(&endpoint, "qwen").expect("provider");
         let candidate = provider.propose(&request()).expect("aday");
         assert_eq!(candidate.payload["summary"], "kira");
+        assert_eq!(candidate.visible_content, r#"{"summary":"kira"}"#);
         assert_eq!(candidate.validation_state, ValidationState::Partial);
+    }
+
+    #[test]
+    #[serial]
+    fn non_json_local_answer_is_carried_not_lost() {
+        let _guard = SERVER_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let endpoint = serve("200 OK", r#"{"message":{"content":"düz metin yanıt"}}"#);
+        let mut provider = LocalProvider::with_endpoint(&endpoint, "qwen").expect("provider");
+        assert_eq!(
+            provider.propose(&request()).unwrap_err(),
+            ProviderError::SchemaAnswer("düz metin yanıt".into())
+        );
     }
 
     #[test]

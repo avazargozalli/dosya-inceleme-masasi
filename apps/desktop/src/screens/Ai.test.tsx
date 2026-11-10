@@ -33,6 +33,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AiCandidateRow,
   AiContextItemRow,
+  AiMessageRow,
   AiOverview,
   CandidateReport,
   CaseRow,
@@ -73,6 +74,7 @@ const mocks = vi.hoisted(() => ({
   aiCandidatesList: vi.fn(),
   aiContextItems: vi.fn(),
   aiTransferSegments: vi.fn(),
+  aiMessages: vi.fn(),
   aiCandidateValidate: vi.fn(),
   aiCandidateRecord: vi.fn(),
   aiCandidateRevalidate: vi.fn(),
@@ -393,6 +395,7 @@ type SetupOptions = {
   candidates?: (runId: string) => Promise<AiCandidateRow[]>;
   contextItems?: (runId: string) => Promise<AiContextItemRow[]>;
   transferSegments?: (runId: string) => Promise<TransferSegmentRow[]>;
+  messages?: (runId: string) => Promise<AiMessageRow[]>;
   validate?: () => Promise<CandidateReport>;
   record?: () => Promise<unknown>;
   revalidate?: (candidateId: string) => Promise<AiCandidateRow>;
@@ -432,6 +435,7 @@ function setup(options: SetupOptions = {}) {
   mocks.aiCandidatesList.mockImplementation(options.candidates ?? (async () => [CAND_VALID]));
   mocks.aiContextItems.mockImplementation(options.contextItems ?? (async () => []));
   mocks.aiTransferSegments.mockImplementation(options.transferSegments ?? (async () => []));
+  mocks.aiMessages.mockImplementation(options.messages ?? (async () => []));
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
   mocks.aiCandidateRecord.mockImplementation(options.record ?? (async () => ({ id: "cand-1" })));
   mocks.aiCandidateRevalidate.mockImplementation(
@@ -3100,5 +3104,143 @@ describe("AI ekranı — gönderim maskesi", () => {
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
     expect(mocks.aiRunExecute).toHaveBeenCalledWith("p2", "prov-local", CONSENT.id, "summarize");
+  });
+});
+
+describe("AI ekranı — model yanıtı (ai_messages)", () => {
+  function messageRow(
+    overrides: Partial<AiMessageRow> & { id: string },
+  ): AiMessageRow {
+    return {
+      aiRunId: "r1",
+      role: "assistant",
+      visibleContent: "Kira borcu 12.000 TL görünüyor.",
+      sourceRefs: ["seg-1", "seg-2"],
+      state: "visible",
+      ...overrides,
+    };
+  }
+
+  it("yanıtı çekirdekten okur: içerik, durum ve kaynak sayısı yazılır", async () => {
+    setup({
+      messages: async () => [
+        messageRow({ id: "m1" }),
+        messageRow({
+          id: "m2",
+          visibleContent: "Model JSON yerine düz metin döndürdü.",
+          sourceRefs: [],
+          state: "unparsed",
+        }),
+        messageRow({ id: "m3", visibleContent: "uzun…", state: "truncated" }),
+      ],
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.answerTitle"));
+    // Seçim yokken okuma **yapılmaz** ve "yanıt yok" denmez.
+    expect(within(card).getByText(t("ai.answerNoRun"))).toBeTruthy();
+    expect(mocks.aiMessages).not.toHaveBeenCalled();
+
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiMessages).toHaveBeenCalledWith("r1"));
+
+    await within(card).findByText("Kira borcu 12.000 TL görünüyor.");
+    expect(within(card).getByText("Model JSON yerine düz metin döndürdü.")).toBeTruthy();
+    const text = card.textContent ?? "";
+    // Durum etiketleri **uydurulmaz**: bilinen üç durum kendi cümlesiyle yazılır.
+    expect(text).toContain(t("ai.answerStateVisible"));
+    expect(text).toContain(t("ai.answerStateUnparsed"));
+    expect(text).toContain(t("ai.answerStateTruncated"));
+    // Kaynak sayısı satırdan okunur (2 segment → "2 kaynak segment").
+    expect(text).toContain(
+      t("ai.answerMeta", {
+        role: t("ai.answerRoleAssistant"),
+        state: t("ai.answerStateVisible"),
+        refs: 2,
+      }),
+    );
+  });
+
+  it("düşen yanıt okuması «yanıt yok» demez; hata kendi satırında yazılır", async () => {
+    setup({
+      messages: async () => {
+        throw { code: "E_AI_MESSAGE", message: "kayıt okunamadı" };
+      },
+    });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiMessages).toHaveBeenCalledWith("r1"));
+
+    const card = cardByHeading(t("ai.answerTitle"));
+    const alert = await within(card).findByRole("alert");
+    expect(alert.textContent).toContain("E_AI_MESSAGE");
+    expect(within(card).queryByText(t("ai.answerEmpty"))).toBeNull();
+  });
+
+  it("boş liste «kayıt yok» yazar, içerik uydurmaz", async () => {
+    setup({ messages: async () => [] });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiMessages).toHaveBeenCalledWith("r1"));
+
+    const card = cardByHeading(t("ai.answerTitle"));
+    expect(await within(card).findByText(t("ai.answerEmpty"))).toBeTruthy();
+    expect(within(card).queryByRole("alert")).toBeNull();
+    expect(within(card).queryByText(t("ai.answerNoRun"))).toBeNull();
+  });
+
+  it("geç yanıt yeni çalıştırmanın yanıtına yazılmaz (okuma sırası)", async () => {
+    const slow = deferred<AiMessageRow[]>();
+    setup({
+      messages: (runId: string) =>
+        runId === "r1"
+          ? slow.promise
+          : Promise.resolve([
+              messageRow({
+                id: "m-r2",
+                aiRunId: "r2",
+                visibleContent: "İkinci çalıştırmanın yanıtı.",
+              }),
+            ]),
+    });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.answerTitle"));
+    fireEvent.click(within(runRows()[0]!).getByRole("button")); // r1, yavaş
+    await waitFor(() => expect(mocks.aiMessages).toHaveBeenCalledWith("r1"));
+    fireEvent.click(within(runRows()[1]!).getByRole("button")); // r2, hızlı
+    await within(card).findByText("İkinci çalıştırmanın yanıtı.");
+
+    await act(async () => {
+      slow.resolve([
+        messageRow({ id: "m-r1", visibleContent: "Birinci çalıştırmanın yanıtı." }),
+      ]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(within(card).queryByText("Birinci çalıştırmanın yanıtı.")).toBeNull();
+    expect(within(card).getByText("İkinci çalıştırmanın yanıtı.")).toBeTruthy();
+  });
+
+  it("dosya değişiminde önceki dosyanın yanıtı ekranda kalmaz", async () => {
+    setup({ messages: async () => [messageRow({ id: "m1" })] });
+
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    const card = cardByHeading(t("ai.answerTitle"));
+    await within(card).findByText("Kira borcu 12.000 TL görünüyor.");
+
+    switchCase("p2");
+    await screen.findByText("local:ollama (local)");
+    // Yeni dosyada yanıt **önceki dosyadan** taşınmaz; seçim de yoktur.
+    await waitFor(() =>
+      expect(
+        within(card).queryByText("Kira borcu 12.000 TL görünüyor."),
+      ).toBeNull(),
+    );
+    expect(within(card).getByText(t("ai.answerNoRun"))).toBeTruthy();
   });
 });

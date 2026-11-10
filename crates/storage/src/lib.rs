@@ -45,11 +45,12 @@ pub use actors::{
     MAX_PARTY_LIST, MAX_PARTY_NAME, MAX_PARTY_NOTE, MAX_PARTY_ROLE,
 };
 pub use ai::{
-    AiCandidateRow, AiContextItemRow, AiRunRow, ConsentMaskPreview, ConsentPreview, ConsentScope,
-    CoverageReport, NewAiContextItem, NewAiRun, NewTransferConsent, NewTransferSegment,
-    OutboundMask, OutboundRecord, OutboundSegment, OutboundSegmentRef, ProviderProfileRow,
-    ScopeDocument, ScopeSegment, ScopeSkip, SentSegment, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow, TransferSegmentRow, PREVIEW_MASK_CHAR_BUDGET,
+    AiCandidateRow, AiContextItemRow, AiMessageRow, AiRunRow, ConsentMaskPreview, ConsentPreview,
+    ConsentScope, CoverageReport, NewAiContextItem, NewAiRun, NewTransferConsent,
+    NewTransferSegment, OutboundMask, OutboundRecord, OutboundSegment, OutboundSegmentRef,
+    ProviderProfileRow, ScopeDocument, ScopeSegment, ScopeSkip, SentSegment,
+    TransferConsentListRow, TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
+    PREVIEW_MASK_CHAR_BUDGET,
 };
 pub use ai_candidate::{
     CandidateReport, CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,

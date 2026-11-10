@@ -464,6 +464,22 @@ export type AiCandidateRow = {
   checkedAt: string | null;
 };
 
+/**
+ * Şartname §06.3 `ai_messages`: modelin **görünen** yanıtı.
+ *
+ * Özel akıl yürütme (chain-of-thought) alanı yoktur. `state`:
+ * `visible` (yanıt şemaya çözüldü) · `unparsed` (yanıt geldi ama yapısal
+ * şemaya uymadı) · `truncated` (yanıt saklama sınırını aştı, kırpıldı).
+ */
+export type AiMessageRow = {
+  id: string;
+  aiRunId: string;
+  role: string;
+  visibleContent: string;
+  sourceRefs: string[];
+  state: string;
+};
+
 export type PackageResult = {
   /** Açık metin klasörün yolu; şifreli pakette `null` (klasör silindi).
    *  Silme başarısız olduysa dolu kalır — arayüz ayrı uyarı yazar. */
@@ -2239,6 +2255,8 @@ export const api = {
   aiContextItems: (runId: string) => invoke<AiContextItemRow[]>("ai_context_items", { runId }),
   aiTransferSegments: (runId: string) =>
     invoke<TransferSegmentRow[]>("ai_transfer_segments", { runId }),
+  /** Çalıştırmanın **görünen** model yanıtı (şema hatasında da saklanır). */
+  aiMessages: (runId: string) => invoke<AiMessageRow[]>("ai_messages_list", { runId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
   aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>

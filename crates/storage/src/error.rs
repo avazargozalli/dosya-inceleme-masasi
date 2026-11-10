@@ -121,6 +121,11 @@ pub enum StorageError {
     /// yeniden yazma girişimi. Makbuz geriye dönük değiştirilemez.
     #[error("aktarım makbuzu: {0}")]
     AiReceipt(String),
+    /// Görünen yanıt sicili (şartname §06.3 `ai_messages`): rol/durum kapalı
+    /// küme dışında, içerik boş ya da kontrol karakterli, kaynak başvurusu
+    /// biçimsiz. **Neden** taşır; kusurlu satır sicile yazılmaz.
+    #[error("model yanıtı sicili: {0}")]
+    AiMessageInvalid(&'static str),
     #[error("künye listesi: {0}")]
     Manifest(String),
     #[error("kaynak kullanım koşulu: {0}")]
@@ -229,6 +234,7 @@ impl StorageError {
             Self::AiProvider => "E_AI_PROVIDER",
             Self::AiOff => "E_AI_OFF",
             Self::AiReceipt(_) => "E_AI_RECEIPT",
+            Self::AiMessageInvalid(_) => "E_AI_MESSAGE",
             Self::Manifest(_) => "E_MANIFEST",
             Self::Terms(_) => "E_TERMS",
             Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",

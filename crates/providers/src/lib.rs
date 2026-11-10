@@ -91,6 +91,11 @@ pub enum ValidationState {
 #[serde(rename_all = "camelCase")]
 pub struct Candidate {
     pub payload: Value,
+    /// Sağlayıcının **görünen** yanıt metni (şartname §06.3 `ai_messages`).
+    /// Yapısal yük çözümlense de çözümlenmese de bu metin kaybolmaz; özel akıl
+    /// yürütme alanları (chain-of-thought) buraya **girmez** — sağlayıcıdan
+    /// yalnız görünen içerik okunur.
+    pub visible_content: String,
     /// Adayın dayandığı segment kimlikleri; çekirdek alıntıyı ayrıca doğrular.
     pub source_segment_ids: Vec<String>,
     pub validation_state: ValidationState,
@@ -109,6 +114,11 @@ pub enum ProviderError {
     Quota,
     #[error("yanıt beklenen şemaya uymuyor")]
     Schema,
+    /// Yanıt **geldi** ama yapısal şemaya çözülemedi. Görünen metin taşınır
+    /// ki çağıran onu sicile yazabilsin: kullanıcı modelin ne dediğini
+    /// görebilmeli (şema hatası, yanıtı buharlaştırmamalı).
+    #[error("yanıt beklenen şemaya uymuyor")]
+    SchemaAnswer(String),
     #[error("işlem iptal edildi")]
     Cancelled,
     /// API anahtarının kaynağı çözülemedi (OS güvenli deposu reddetti vb.).
@@ -124,7 +134,7 @@ impl ProviderError {
             Self::Unsupported(_) => "E_AI_UNSUPPORTED",
             Self::Transport => "E_AI_TRANSPORT",
             Self::Quota => "E_AI_QUOTA",
-            Self::Schema => "E_AI_SCHEMA",
+            Self::Schema | Self::SchemaAnswer(_) => "E_AI_SCHEMA",
             Self::Cancelled => "E_AI_CANCELLED",
             Self::Secret(_) => "E_AI_SECRET",
         }

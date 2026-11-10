@@ -6743,6 +6743,21 @@ pub fn ai_transfer_segments(
     Ok(db.list_transfer_segments(&run_id)?)
 }
 
+/// Bir çalıştırmanın **görünen** model yanıtı (şartname §06.3 `ai_messages`).
+///
+/// Yanıt metni bugüne kadar hiçbir yerde saklanmıyordu: yapısal şema hatası
+/// alan bir çalıştırmada avukat modelin ne dediğini göremiyordu. Okuma yolu
+/// yalnız görünen içeriği döner; özel akıl yürütme alanı yoktur.
+#[tauri::command]
+pub fn ai_messages_list(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<dim_storage::AiMessageRow>, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.list_ai_messages(&run_id)?)
+}
+
 #[tauri::command]
 pub fn ai_candidates_list(
     state: State<'_, AppState>,
@@ -7239,6 +7254,11 @@ pub fn ai_run_execute(
             return Err(error.into());
         }
     };
+    let outbound_ref_ids: Vec<String> = request
+        .segments
+        .iter()
+        .map(|segment| segment.segment_id.clone())
+        .collect();
     let candidate = match provider.propose(&request) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -7246,15 +7266,64 @@ pub fn ai_run_execute(
             // gönderilemedi". Makbuz kapanmazsa `attempted` kalır — ikisi de
             // "gönderildi" demek değildir.
             let finalized = db.finish_transfer_receipt(&attempt, "failed");
+            // Görünen yanıt **geldiyse kaybolmaz**: şema hatası, modelin ne
+            // dediğini buharlaştırmaz (şartname §06.3 `ai_messages`). Yanıt
+            // yazılamazsa rapor `not_recorded` yazar — sessiz yutma yok.
+            let answer_state = match &error {
+                dim_providers::ProviderError::SchemaAnswer(text) => {
+                    if db
+                        .record_ai_message(
+                            &run.id,
+                            "assistant",
+                            text,
+                            &outbound_ref_ids,
+                            "unparsed",
+                        )
+                        .is_ok()
+                    {
+                        "recorded"
+                    } else {
+                        "not_recorded"
+                    }
+                }
+                _ => "none",
+            };
             let report = serde_json::json!({
                 "error": error.code(),
                 "receipt": if finalized.is_ok() { "failed" } else { "not_finalized" },
+                "answer": answer_state,
             })
             .to_string();
             db.finish_ai_run(&run.id, "failed", &report)?;
+            if answer_state == "recorded" {
+                return Err(ApiError::new(
+                    "E_AI_SCHEMA",
+                    "Modelin yanıtı beklenen yapısal şemaya uymuyor; görünen yanıt \
+                     “Model yanıtı” kartına kaydedildi. Yanıtı inceleyip yeniden deneyin.",
+                ));
+            }
             return Err(error.into());
         }
     };
+    // Görünen yanıt adaydan **önce** yazılır: aday yazımı düşse de modelin ne
+    // dediği kaybolmaz.
+    if let Err(error) = db.record_ai_message(
+        &run.id,
+        "assistant",
+        &candidate.visible_content,
+        &outbound_ref_ids,
+        "visible",
+    ) {
+        // İçerik **çıktı**: makbuz `attempted` bırakılmaz, gönderim gerçeği yazılır.
+        let finalized = db.finish_transfer_receipt(&attempt, "dispatched");
+        let report = serde_json::json!({
+            "error": "answer_not_recorded",
+            "receipt": if finalized.is_ok() { "dispatched" } else { "not_finalized" },
+        })
+        .to_string();
+        let _ = db.finish_ai_run(&run.id, "failed", &report);
+        return Err(error.into());
+    }
     // İçerik çıktı: makbuz `dispatched` olarak kapanır. Kapanmazsa çalıştırma
     // `partial` yazılır — "gönderildi ama sicili yok" sessizce başarı sayılmaz.
     let receipt = db.finish_transfer_receipt(&attempt, "dispatched");

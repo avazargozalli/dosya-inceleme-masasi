@@ -715,6 +715,22 @@ export const tr = {
     transferNote:
       "Metin çağırandan alınmaz: çekirdek kasadaki segmenti okur, maskeyi kendisi uygular ve " +
       "gönderilecek metni yazar. Sicil ile gönderim ayrışamaz.",
+    answerTitle: "Model yanıtı",
+    answerSub:
+      "Sağlayıcının **görünen** yanıt metni. Yapısal şema hatasında da saklanır; özel akıl " +
+      "yürütme (chain-of-thought) alanları istenmez ve saklanmaz.",
+    answerNoRun: "Yanıtı görmek için bir çalıştırma seçin.",
+    answerEmpty: "Bu çalıştırma için görünen yanıt kaydı yok.",
+    answerLoading: "Model yanıtı okunuyor…",
+    answerError: "Model yanıtı okunamadı:",
+    answerRoleAssistant: "model",
+    answerStateVisible: "şemaya çözüldü",
+    answerStateUnparsed: "şemaya uymadı",
+    answerStateTruncated: "kısaltıldı",
+    answerMeta: "{role} · {state} · {refs} kaynak segment",
+    answerNote:
+      "Sınır: saklanan metin sağlayıcının görünen içeriğidir; gizli akıl yürütme yoktur. " +
+      "Saklama sınırını (262.144 karakter) aşan yanıt kırpılır ve “kısaltıldı” yazar.",
     maskLabel: "Gönderim maskesi (isteğe bağlı)",
     maskPlaceholder: "Her satıra bir terim (ad soyad, kurum, tutar)",
     maskHint:
