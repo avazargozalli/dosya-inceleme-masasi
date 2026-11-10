@@ -230,3 +230,14 @@ cargo test -p dim-storage pre_update
   sistemindeki **kopya yolu** kodda var ama gerçek ortamda denenmedi. Ağ
   biriminde `rename`/bağlantı semantiği denenmedi. Uyku/uyanma ve harici disk
   kopması hâlâ denenmedi.
+
+### 2026-11-10 yeniden koşum (şema v29)
+
+`#[ignore]` tatbikatı bu makinede yeniden koşturuldu
+(`cargo test -p dim-storage --test rollback_drill -- --ignored --nocapture`), güncel şemayla (v29):
+kasa **925.696 bayt**, yedek **921.600 bayt**, imaj 48 KiB boşlukla dolduruldu (**5.111.808 bayt**) →
+`rollback_vault` **`E_DISK_FULL`** ("No space left on device (os error 28)"); dolu diskte kasa açma
+**`E_DB_IO`**; hedefte yarım dosya kalmadı (`yedek.db`, `vault.db`, `-shm`, `-wal`, `doldur.bin`);
+yer açıldıktan sonra aynı çağrı başarılı ve `vault.db.rollback-…safety` güvenlik kopyası
+**925.696 bayt**; `1 passed · 0 failed` (2,44 s). Şema büyüdüğü için kasa boyutu 2026-10-26
+ölçümünden (876.544 bayt) farklı — tatbikat yine **gerçek dosyalarla**.

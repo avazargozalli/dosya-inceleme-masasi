@@ -14,6 +14,7 @@
 | F13-T06 | ✅ | bağımsız pypdf okuyucusu + OCR (tesseract varsa) sızıntı kontrolü; `ocrVerified` dürüst bayrağı |
 | F13-T04b | ✅ | plan bölgeleri **gönderim maskesine** bağlandı (2026-11-09 turu; terimler çekirdekte türetilir, `E_MASK_PLAN`) |
 | F13-T04c | ✅ | plan satırı **ürettiği çıktı sürümünü** taşır (şema v28; bağ doğrulanır, eski planlar "kayıtlı değil" der; 2026-11-09 turu) |
+| F13-T04d | ✅ | çıktı bağının **silinme izi**: çıktı silinince sicil "kayıtlı değil" demez, "artık yok" der (şema v29 `output_version_ref`, FK değil; yükseltmede geriye dönük yazılır; 2026-11-10 turu) |
 | F13-T01b | ✅ | sicil **yeniden inceleme nedenini** yazar: aşılmış sürüm · render uyuşmazlığı · yeni ayrıştırma · silinmiş sürüm (şema değişikliği yok, okuma anında türetilir; 2026-11-10 turu) |
 
 ## Dürüst durum
@@ -399,3 +400,65 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   (tek yerel kullanıcı — onay adımı ürün kararı); (f) iki komut **komut olarak koşulmadı**
   (`State<AppState>` altyapısı yok) — kablolama check + clippy, davranış storage düzeyinde gerçek
   SQLite; (g) jsdom tarayıcı değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
+
+## Tur kaydı — 2026-11-10 (çıktı bağının **silinme izi** — F13-T04d)
+
+- **Önceki turun açık kaydı kapanıyor:** 2026-11-10 turunun notu — "`output_version_id` FK'si
+  `ON DELETE SET NULL`; çıktı belgesi silinirse bağ NULL'a döner ve arayüz 'bu sütundan önce
+  yazılmış plan' der; 'çıktı vardı, sonra silindi' ayırt edilemez" (şema v29 adayı).
+- **ÖLÇÜLEN KUSUR:** `PRAGMA foreign_keys` açık (`lib.rs` + `foreign_keys_are_enforced` testi), yani
+  çıktı sürümü silinince bağ **gerçekten** NULL'a dönüyor. O anda `outputVersionId` `null` olduğu
+  için sicil **"Çıktı sürümü kayıtlı değil (bu sütundan önce yazılmış plan)."** yazıyordu:
+  **silinmiş çıktı** ile **hiç bağlanmamış plan** aynı cümleye düşüyordu. Denetim satırı yaşıyordu
+  ama **neyi kaybettiğini söyleyemiyordu** — belge silme yolu ürüne girdiğinde sicil sessizce
+  yanlış okunacaktı.
+- **Yazılan (şema v29 — `0029_redaction_plan_output_trace.sql`):**
+  - `redaction_plans.output_version_ref TEXT` — **yabancı anahtar değil**: bağ yazılırken kimlik hem
+    `output_version_id`ye hem buraya yazılır; çıktı silinince FK bağı çözer, **iz kalır**.
+  - v28 kasaları: `UPDATE … SET output_version_ref = output_version_id WHERE output_version_id IS NOT NULL`
+    (bağ hâlâ duruyorsa iz geriye dönük yazılır). 0029'dan **önce** zaten silinmiş bağlar
+    kurtarılamaz — geri getirilemeyen bilgi tahmin edilmez.
+  - `RedactionPlanRow.outputLinkState` (`none` · `linked` · `removed`) + `outputVersionRef`. Durum
+    **tek sorguda** ve **ölçülerek** hesaplanır: `linked` için çıktı sürüm satırı okunmuş (`ov.id`)
+    ve belgesi yumuşak-silinmemiş (`od.deleted_at IS NULL`) olmalı; bağ kaydı varsa `removed`,
+    hiç yoksa `none`. Silinen çıktının **adı/sürüm numarası uydurulmaz** (`null`).
+  - Arayüz (`Redaction.tsx` → `planOutputState`): üç hâl ayrı yazılır — "Çıktı: <belge> · sürüm N" ·
+    **"Çıktı artık kasada görünmüyor (bağ yazılmıştı: <kimlik>)."** · "Çıktı sürümü kayıtlı değil
+    (bu sütundan önce yazılmış plan)." Kimlik yoksa "silindi" **denmez** (uydurma kimlik yok).
+    1 sözlük anahtarı.
+- **Testler:** storage `redactions::tests` **27 → 29** (+2: silinmiş çıktı sürümünün izi · yumuşak
+  silinmiş çıktı belgesi) → `dim-storage --lib` **500 → 503** (279,20 s). `upgrade_tests` **+1**:
+  v28 kasası **gerçek migrasyon dosyalarıyla** kurulur, açılır, iz **geriye dönük yazılır**, sonra
+  çıktı silinince `removed` okunur (yükseltme yolu bu sütun için ayrıca kanıtlandı). `Redaction.test.tsx`
+  **47 → 49** (+2) → vitest **1334 → 1336** (64 dosya); `Ai.test.tsx` fikstürü tip gereği iki alanla
+  güncellendi (test sayısı değişmedi).
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-output-trace-gates.py`, her mutasyon tek başına,
+  `try/finally` + sha256 birebir):** **7/7 kırmızı** — R1 iz yazılmaz · R2 silinmiş çıktı `none`
+  okunur · R3 hiç bağlanmamış plan `removed` okunur · R4 yükseltme backfill'i yok · U1 arayüz yalnız
+  kimliğe bakar (eski davranış) · U2 kimlik yokken de "silindi" denir · U3 silinme satırı canlı
+  kimliği yazar. Dördü `cargo test` ile **derlendi** ve hedef testi düşürdü; üçü vitest'te
+  (`1 failed | 48 skipped`). **Dürüst (kendi hatam):** betiğin ilk koşusu UI kapılarında `npx`
+  bulamadı (`~/.n-node22/bin` yalnız `node` taşıyor) → 4/7 ölçülmüştü; PATH düzeltildi, üç UI kapısı
+  yeniden koşuldu (ilk dördün kırmızısı korundu, dosyalar sha256 birebir geri yüklendi).
+- **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1336/1336** (64 dosya) ·
+  `cargo test -p dim-storage --lib` **503/503** (279,20 s; `upgrade_tests` dahil) · `cargo fmt` iki
+  manifest temiz · storage + masaüstü `clippy --all-targets -D warnings` temiz. Yerel `vite build`
+  koşulmadı (ağaçta başka ajanın commit'siz değişiklikleri var) → paket ölçümü CI'dan.
+- **CI (ölçüldü):** kod `b860694` (9 dosya) → run `42788837953` **10/10 YEŞİL** (`dim-storage` **503**
+  hem `macos-15` (253,93 s) hem `ubuntu-latest` (613,49 s) — **birebir**; yeni
+  `upgrade_tests::upgrade_backfills_redaction_output_trace` iki OS'ta da koştu ve geçti; `arayüz`
+  **64 dosya / 1335 test** — yerel 1336 farkı ağaçtaki başka ajanın commit'siz `format.test.ts`
+  testi; paket `index-BXg6wZFr.js` **658,92 kB** / gzip **176,23 kB**; `masaüstü kabuk` 40 koştu ·
+  0 düştü · 5 yoksayıldı + yoksayılan koşu 5 passed · 40 filtered (motor: pymupdf + tesseract);
+  `windows güvenli depo`, `sözleşmeler`, `kaynak arşivi`, `sürüm paketi manifesti`,
+  `belge worker'ı`, `SBOM` yeşil).
+- **Dürüst sınırlar:** (a) 0029'dan **önce** silinmiş çıktıların izi kurtarılamaz (o planlar `none`
+  okunur) — bilinçli; (b) `outputLinkState` **okuma anında** ölçülür — "o gün bağlıydı" bilgisi
+  değil, "bugün çözülüyor mu" sorusunun yanıtıdır; `output_version_ref` ise **yazıldığı andaki**
+  izdir (ikisi ayrı şeydir); (c) silinen çıktının **adı/sürüm numarası** yazılmaz, yalnız kimliği;
+  (d) üründe bugün **belge/sürüm silme yolu yok** (`document_delete` komutu yok, `documents.deleted_at`
+  yalnız bir testte yazılıyor) → bu dilim **gelecekteki silme yoluna karşı sözleşmeyi** kapatır,
+  bugün kullanıcıda görünen bir hatayı düzeltmez; bugünkü görünür kazanç doğru cümle + yükseltmede
+  geriye dönük izdir; (e) iki komut **komut olarak koşulmadı** (`State<AppState>` altyapısı yok) —
+  kablolama check + clippy, davranış storage düzeyinde gerçek SQLite; (f) jsdom tarayıcı değil →
+  gerçek Tauri penceresi + **görsel QA insan bekliyor**.
