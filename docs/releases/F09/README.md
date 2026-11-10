@@ -15,6 +15,7 @@
 | F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS + Windows** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** tutulur — macOS **Anahtar Zinciri** (`security-framework`), Windows **Kimlik Yöneticisi** (`keyring` 3.6.3, 2026-11-06); sıra **depo → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows tatbikatı gerçek Credential Manager üzerinde CI `windows-latest` işinde **koştu** (25/25). Linux Secret Service **uygulanmadı** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölümler |
 | F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt, 200 karakter örnek ve **kapsam dışı belgeler + nedeni**; gönderim yolu aynı çözümleyiciyi kullanır. Önceden SQL hatası veriyordu (aşağıdaki bölüm) |
 | F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
+| Şartname §06.3 eki — `ai_messages` görünen yanıt sicili | ✅ | Sağlayıcının **görünen** yanıt metni her çalıştırmada kaydedilir; JSON şemaya uymayan yanıt da saklanır (`E_AI_SCHEMA` yolunda kaybolmaz), özel akıl yürütme alanı yazılmaz; rol/durum kapalı küme, 262.144 karakter sınırında kırpma (`truncated`), kaynak başvurusu kapısı — kusurlu satır yazılmaz; yeni komut `ai_messages_list` + Ai ekranında "Model yanıtı" kartı (2026-11-10) |
 
 ## Dürüst durum
 
@@ -659,3 +660,62 @@ kendisini saklamaz; gönderilen metnin içerik özeti makbuz satırındadır.
 (e) `document_title` **anlık** okunur (kayıt anındaki ad saklanmaz): belge sonradan
 yeniden adlandırılırsa eski çalıştırma yeni adı gösterir — sürüm kimliği ve bayt
 değişmez.
+
+## Görünen model yanıtı sicile yazılır (2026-11-10 — şartname §06.3 `ai_messages`)
+
+- **Ölçülen boşluk:** tablo şemanın ilk sürümünden beri vardı, **tek satır
+  yazılmıyordu**. `ApiProvider`/`LocalProvider` yanıtı `serde_json` ile çözüp
+  yalnız yapısal yükü döndürüyor, ham içeriği atıyordu. Sonuç: (a) model JSON
+  yerine düz metin döndürdüğünde çalıştırma `E_AI_SCHEMA` ile düşüyor ve
+  **avukat modelin ne dediğini hiç göremiyordu**; (b) başarılı çalıştırmada bile
+  yanıt metni (aday yükünün kaynağı) sicilde yoktu.
+- **Yazılan:** `Candidate.visible_content` + `ProviderError::SchemaAnswer(String)`
+  — yanıt çözülemese de metin hatayla birlikte taşınır (`code()` yine
+  `E_AI_SCHEMA`). `record_ai_message(run, role, content, refs, state)` /
+  `list_ai_messages(run)`: rol ve durum kapalı küme (`assistant|user|system|tool`;
+  `visible|unparsed`), boş/kontrol karakterli içerik reddi, 262.144 karakter
+  sınırında kırpma ve `state=truncated`, kaynak başvurusu biçim/yinelenme/sınır
+  kapısı; kusurlu satır **hiç yazılmaz**. Denetim kaydı yalnız rol/durum/uzunluk
+  taşır — **yanıt metni denetime yazılmaz**. `ai_run_execute` yanıtı **adaydan
+  önce** yazar (aday yazımı düşse de metin kalır); içerik çıktıysa makbuz
+  `attempted` bırakılmaz. Yeni komut `ai_messages_list`; Ai ekranında
+  **"Model yanıtı"** kartı (seçili çalıştırma, kendi `messagesSeq` geç yanıt
+  kapısı, düşen okuma "yanıt yok" demez, üç durum kendi etiketiyle, bilinmeyen
+  durum ham yazılır).
+- **Testler:** storage `ai::tests` **51 → 58** (+7) → `dim-storage --lib`
+  **517 → 524** (312,39 s); sağlayıcı **+3** (api 2, local 1);
+  `Ai.test.tsx` **105 → 110** (+5) → vitest **65 dosya / 1356 test**;
+  `tsc --noEmit` temiz; `cargo fmt` iki manifest temiz; storage + masaüstü
+  `clippy --all-targets -D warnings` temiz.
+- **Kapı kanıtı (gerçek koşular; betikler `scratch/dim-ai-message-gates-core.py`
+  ve `-ui.py`, her mutasyon tek başına, `try/finally` + sha256 birebir):**
+  **19/19 KIRMIZI** — S1 rol kapalı kümesi · S2 durum kapalı kümesi · S3
+  çalıştırma yokluğu kapısı · S4 boş içerik · S5 kontrol karakteri · S6 kaynak
+  başvurusu biçimi · S7 kırpma · S8 `truncated` durumu · S9 kaynak başvurusu
+  yazımı · S10 liste kapsamı · S11 liste sırası · S12 denetim kaydına metin
+  sızması; P1 şema hatası yanıtı taşımaz (eski davranış) · P2 görünen içerik ham
+  gövdeden (akıl yürütme sızar); U1 yanıt okunmaz · U2 düşen okuma yutulur · U3
+  geç yanıt kapısı yok · U5 durum etiketi yazılmaz · U6 hata dalı çizilmez.
+- **Dürüst (kendi hatam):** U4 ("dosya değişiminde yanıt temizlenmez") ilk
+  ölçümde **yeşil kaldı** — `runId` sıfırlandığı için kart eski yanıtı zaten
+  çizmiyordu; **yük taşımayan dört temizlik satırı** koddan çıkarıldı ve senaryo
+  düşürüldü (test edilmeyen kapı bırakılmadı). S3'ün ilk betiği **EŞLEŞMEDİ**
+  verdi (aynı `get_ai_run` kalıbı dosyada 4 kez) → benzersiz bağlamla yeniden
+  ölçüldü (kırmızı).
+- **CI (ölçüldü):** kod `9f4e29e` (12 dosya, **+743/−8**) → run `42836490597`
+  **10/10 YEŞİL** (`dim-storage` **524** hem `macos-15` 267,32 s hem
+  `ubuntu-latest` 430,36 s — **birebir**; `arayüz` **65 dosya / 1355 test** —
+  yerel 1356 farkı ağaçtaki başka ajanın commit'siz `format.test.ts` testi;
+  paket `index-L2m15Y5V.js` **667,71 kB** / gzip **178,52 kB**; `masaüstü kabuk`
+  40/0/5 + yoksayılan koşu 5 passed · 0 atlandı).
+- **Dürüst sınırlar:** (a) yalnız `ai_run_execute` yolunda yazılır; `ai_run_start`
+  ile açılan elle çalıştırmanın yanıtı yoktur; (b) başarılı yanıt **JSON metni**
+  olarak saklanır (sağlayıcının görünen içeriği budur), ayrı güzelleştirme yok;
+  (c) 262.144 karakteri aşan yanıt kırpılır, sınır ötesi **saklanmaz**;
+  (d) `source_refs` biçim doğrulamasından geçer, varlığı yeniden sorgulanmaz —
+  değerler çekirdeğin kasadan okuduğu gönderim kaydından gelir, arayüzden
+  yazılamaz; (e) şema `system|user|tool` rollerine izin verir, bugün yalnız
+  `assistant` yazılır; (f) komut **komut olarak koşulmadı** (`State<AppState>`
+  altyapısı yok) — kablolama check+clippy, davranış storage düzeyinde gerçek
+  SQLite; (g) jsdom tarayıcı değil → gerçek Tauri penceresi + **görsel QA insan
+  bekliyor**.
