@@ -326,6 +326,7 @@ export const tr = {
     planOutput: "Çıktı: {title} · {version}",
     planOutputNoTitle: "çıktı belgesi okunamadı ({id})",
     planOutputUnlinked: "Çıktı sürümü kayıtlı değil (bu sütundan önce yazılmış plan).",
+    planOutputRemoved: "Çıktı artık kasada görünmüyor (bağ yazılmıştı: {id}).",
     planReinspectBadge: "yeniden inceleme gerekli",
     planReinspectLine: "Yeniden inceleme gerekli: {reason}.",
     planReinspectHint:

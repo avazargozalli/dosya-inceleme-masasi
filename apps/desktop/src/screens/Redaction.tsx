@@ -37,6 +37,24 @@ function planState(status: string): { label: string; tone: "ok" | "danger" | "wa
 }
 
 /**
+ * Planın **çıktı bağının** üç hâli (şema v29). Çekirdek `outputLinkState`
+ * gönderir; arayüz kararı burada tek yerde verilir:
+ *
+ * - `removed` — yalnız çekirdek "bağ yazıldı, çıktı artık yok" dediğinde **ve**
+ *   elde bir kimlik varsa,
+ * - `linked` — `outputVersionId` doluysa (tanınmayan durumda bile kimlik
+ *   kanıttır; "silindi" denmez),
+ * - `none` — kimlik yoksa: "kayıtlı değil" (uydurma çıktı yok).
+ */
+function planOutputState(
+  plan: Pick<RedactionPlanRow, "outputLinkState" | "outputVersionId" | "outputVersionRef">,
+): "none" | "linked" | "removed" {
+  const identified = plan.outputVersionRef ?? plan.outputVersionId;
+  if (plan.outputLinkState === "removed" && identified !== null) return "removed";
+  return plan.outputVersionId !== null ? "linked" : "none";
+}
+
+/**
  * **Yeniden inceleme nedeni** (F13-T01). Çekirdek kararlı bir kod gönderir;
  * eşleme burada yapılır, tanınmayan kod **ham** yazılır (uydurma etiket yok).
  */
@@ -738,13 +756,17 @@ export function Redaction() {
                           çıktı uydurulmaz: "kayıtlı değil" yazılır.
                         */}
                         <div className="small muted">
-                          {plan.outputVersionId === null
+                          {planOutputState(plan) === "none"
                             ? t("redaction.planOutputUnlinked")
-                            : t("redaction.planOutput", {
+                            : planOutputState(plan) === "removed"
+                              ? t("redaction.planOutputRemoved", {
+                                  id: plan.outputVersionRef ?? plan.outputVersionId ?? "",
+                                })
+                              : t("redaction.planOutput", {
                                 title:
                                   plan.outputDocumentTitle ??
                                   t("redaction.planOutputNoTitle", {
-                                    id: plan.outputVersionId,
+                                    id: plan.outputVersionId ?? "",
                                   }),
                                 version:
                                   plan.outputVersionNo === null

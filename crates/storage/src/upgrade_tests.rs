@@ -11,9 +11,8 @@ fn key() -> DatabaseKey {
     DatabaseKey::new([9u8; 32])
 }
 
-/// Güncelleme öncesi durumu kurar: `CURRENT_SCHEMA_VERSION - 1` (v12) şeması,
-/// gerçek migrasyon dosyaları ve bir dosya kaydıyla.
-fn create_v12(path: &Path) {
+/// `max_version`a kadar **gerçek** migrasyon dosyalarıyla eski şemayı kurar.
+fn create_schema_at(path: &Path, max_version: u32) -> Connection {
     let conn = Connection::open(path).expect("dosya açılır");
     apply_key_and_pragmas(&conn, &key()).expect("anahtar");
     parsing::register_search_functions(&conn).expect("arama fonksiyonları");
@@ -26,7 +25,7 @@ fn create_v12(path: &Path) {
          );",
     )
     .expect("sürüm tablosu");
-    for migration in MIGRATIONS.iter().filter(|m| m.version <= 12) {
+    for migration in MIGRATIONS.iter().filter(|m| m.version <= max_version) {
         conn.execute_batch(migration.sql).expect("eski migrasyon");
         conn.execute(
             "INSERT INTO schema_migrations (version, name, checksum, applied_at)
@@ -40,6 +39,13 @@ fn create_v12(path: &Path) {
         )
         .expect("sürüm kaydı");
     }
+    conn
+}
+
+/// Güncelleme öncesi durumu kurar: eski şemada (v12) bir kasa ve bir dosya
+/// kaydı.
+fn create_v12(path: &Path) {
+    let conn = create_schema_at(path, 12);
     conn.execute(
         "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
          VALUES ('c-eski','Eski dosya','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
@@ -496,4 +502,76 @@ fn job_state_rewrite_keeps_attempts_and_remaps_legacy_states() {
             .execute("UPDATE jobs SET state=?1 WHERE id='j-legacy'", [state])
             .expect("yeni durum yazılabilmeli");
     }
+}
+
+/// v28 kasası: **bağlı** maskeleme planı, `output_version_ref` sütunu
+/// eklenmeden önce. v29 bu kasayı açarken bağın izini geriye dönük yazmalı.
+fn create_v28_with_linked_plan(path: &Path) {
+    let conn = create_schema_at(path, 28);
+    conn.execute(
+        "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+         VALUES ('c-eski','Eski dosya','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        [],
+    )
+    .expect("dosya kaydı");
+    conn.execute(
+        "INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+         VALUES ('b1','st-1',1,10,'w','2026-01-01T00:00:00Z')",
+        [],
+    )
+    .expect("blob");
+    for (doc_id, name) in [("d-kaynak", "Belge"), ("d-cikti", "Belge (maskeli)")] {
+        conn.execute(
+            "INSERT INTO documents (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES (?1,'c-eski',?2,'pdf','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            rusqlite::params![doc_id, name],
+        )
+        .expect("belge");
+    }
+    for (version_id, doc_id, sha, parent) in [
+        ("v-kaynak", "d-kaynak", "a".repeat(64), None),
+        ("v-cikti", "d-cikti", "b".repeat(64), Some("v-kaynak")),
+    ] {
+        conn.execute(
+            "INSERT INTO document_versions (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,parent_version_id,is_original)
+             VALUES (?1,?2,'c-eski',1,'b1',?3,10,'application/pdf','2026-01-01T00:00:00Z',?4,1)",
+            rusqlite::params![version_id, doc_id, sha, parent],
+        )
+        .expect("sürüm");
+    }
+    conn.execute(
+        "INSERT INTO redaction_plans (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id)
+         VALUES ('p-eski','c-eski','v-kaynak',?1,'pdf_page_points',1,'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','v-cikti')",
+        rusqlite::params!["a".repeat(64)],
+    )
+    .expect("plan");
+    // WAL kalıntısı bırakma: yükseltme dosyayı tek başına okumalı.
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+}
+
+/// v29 yükseltmesi, v28 kasasındaki bağlı planın **izini** geriye dönük yazar:
+/// yükseltmeden sonra çıktı silinse bile plan "bağ yok" demez.
+#[test]
+fn upgrade_backfills_redaction_output_trace() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    create_v28_with_linked_plan(&path);
+
+    let db = Database::open(&path, &key()).expect("yükselt");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let rows = db.list_redaction_plans("c-eski").expect("liste");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].output_version_id.as_deref(), Some("v-cikti"));
+    // İz, sütun eklenmeden önce yazılmış plana **geriye dönük** yazıldı.
+    assert_eq!(rows[0].output_version_ref.as_deref(), Some("v-cikti"));
+    assert_eq!(rows[0].output_link_state, "linked");
+
+    // Yükseltmeden sonra çıktı silinirse iz kalır: sicil "kayıtlı değil" demez.
+    db.conn()
+        .execute("DELETE FROM document_versions WHERE id='v-cikti'", [])
+        .expect("çıktı silindi");
+    let rows = db.list_redaction_plans("c-eski").expect("liste");
+    assert!(rows[0].output_version_id.is_none());
+    assert_eq!(rows[0].output_link_state, "removed");
+    assert_eq!(rows[0].output_version_ref.as_deref(), Some("v-cikti"));
 }

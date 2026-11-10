@@ -161,6 +161,8 @@ function planRow(overrides: Partial<RedactionPlanRow> = {}): RedactionPlanRow {
     outputVersionId: "v9",
     outputVersionNo: 1,
     outputDocumentTitle: "Kira sözleşmesi (maskeli).pdf",
+    outputLinkState: "linked",
+    outputVersionRef: "v9",
     currentVersionNo: 1,
     reinspectReason: null,
     ...overrides,
@@ -1042,6 +1044,8 @@ describe("Maskeleme sicili (plan okuma yolu)", () => {
         outputVersionId: null,
         outputVersionNo: null,
         outputDocumentTitle: null,
+        outputLinkState: "none",
+        outputVersionRef: null,
       }),
     ]);
     await renderScreen();
@@ -1063,6 +1067,41 @@ describe("Maskeleme sicili (plan okuma yolu)", () => {
         }),
       ),
     ).toBeTruthy();
+  });
+
+  it("çıktısı silinmiş plan “kayıtlı değil” diye gizlenmez", async () => {
+    mocks.redactionPlanList.mockResolvedValue([
+      planRow({
+        // Çekirdek (v29): bağ yazılmıştı, çıktı sürümü artık kasada yok.
+        outputLinkState: "removed",
+        outputVersionId: null,
+        outputVersionNo: null,
+        outputDocumentTitle: null,
+        outputVersionRef: "v9",
+      }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    // Kimlik yazılır: silindiği **ölçülmüş** bağ, "hiç bağlanmamış" gibi okunmaz.
+    await within(card).findByText(t("redaction.planOutputRemoved", { id: "v9" }));
+    expect(within(card).queryByText(t("redaction.planOutputUnlinked"))).toBeNull();
+  });
+
+  it("çıktı kimliği yoksa “silindi” denmez (uydurma kimlik yok)", async () => {
+    mocks.redactionPlanList.mockResolvedValue([
+      planRow({
+        // Durum "removed" dese de elde kimlik yok: çıktı uydurulmaz.
+        outputLinkState: "removed",
+        outputVersionId: null,
+        outputVersionNo: null,
+        outputDocumentTitle: null,
+        outputVersionRef: null,
+      }),
+    ]);
+    await renderScreen();
+    const card = plansCard();
+    await within(card).findByText(t("redaction.planOutputUnlinked"));
+    expect(within(card).queryByText(/^Çıktı artık kasada görünmüyor/)).toBeNull();
   });
 
   it("plan yoksa “kayıt yok” yazar (uydurma satır üretmez)", async () => {

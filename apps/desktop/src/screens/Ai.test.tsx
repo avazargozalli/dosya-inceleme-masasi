@@ -3031,6 +3031,8 @@ describe("AI ekranı — gönderim maskesi", () => {
       outputVersionId: "d1-v2",
       outputVersionNo: 2,
       outputDocumentTitle: "Kira sözleşmesi (maskeli).pdf",
+      outputLinkState: "linked",
+      outputVersionRef: "d1-v2",
       currentVersionNo: 1,
       reinspectReason: null,
       ...overrides,

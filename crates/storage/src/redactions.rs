@@ -47,6 +47,22 @@ pub struct RedactionPlanRow {
     pub output_version_no: Option<i64>,
     /// Çıktı belgesinin adı (`documents.display_name`); bulunamazsa `None`.
     pub output_document_title: Option<String>,
+    /// Çıktı bağının **durumu** — bağın yazılıp yazılmadığı ile bugünkü
+    /// hâli ayrılır:
+    ///
+    /// - `none` — bağ **hiç yazılmadı** (v28'den önce yazılmış plan),
+    /// - `linked` — bağ yazıldı, çıktı sürümü bugün de kasada,
+    /// - `removed` — bağ yazıldı, çıktı **artık çözülemiyor**: sürüm silinmiş
+    ///   ya da belge yumuşak-silinmiş.
+    ///
+    /// `none` ile `removed` ayrılmadan arayüz "kayıtlı değil" deyip silinmiş
+    /// çıktıyı gizliyordu; ikisi aynı cümleyi hak etmiyor.
+    pub output_link_state: String,
+    /// Bağ **yazılırken** kaydedilen çıktı sürümü kimliği
+    /// (`redaction_plans.output_version_ref`). Yabancı anahtar **değildir**:
+    /// çıktı silinince `output_version_id` NULL'a döner ama iz kalır. `none`
+    /// durumunda `None`.
+    pub output_version_ref: Option<String>,
     /// Belgenin **güncel** sürüm numarası (`documents.current_version_id`).
     ///
     /// Planın kaynağı güncel sürüm değilse avukat "hangi sürümden sonra
@@ -158,8 +174,8 @@ impl Database {
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         self.conn().execute(
-            "INSERT INTO redaction_plans (id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id)
-             VALUES (?1,?2,?3,?4,?5,'pdf_page_points',1,'draft',?6,?7,?7,?8)",
+            "INSERT INTO redaction_plans (id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id,output_version_ref)
+             VALUES (?1,?2,?3,?4,?5,'pdf_page_points',1,'draft',?6,?7,?7,?8,?8)",
             rusqlite::params![
                 id,
                 case_id,
@@ -228,7 +244,8 @@ impl Database {
             "SELECT p.id,p.case_id,p.document_version_id,p.parse_run_id,p.render_hash,p.coordinate_space,p.plan_version,p.state,p.reviewer,p.output_profile,p.created_at,p.updated_at,
                     d.display_name,v.version_no,
                     (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id),
-                    p.output_version_id,ov.version_no,od.display_name,
+                    p.output_version_id,ov.id,ov.version_no,od.display_name,
+                    p.output_version_ref,od.deleted_at,
                     cv.version_no,
                     CASE
                       WHEN p.state NOT IN ('approved','applied') THEN NULL
@@ -264,7 +281,8 @@ impl Database {
             "SELECT p.id,p.case_id,p.document_version_id,p.parse_run_id,p.render_hash,p.coordinate_space,p.plan_version,p.state,p.reviewer,p.output_profile,p.created_at,p.updated_at,
                     d.display_name,v.version_no,
                     (SELECT COUNT(*) FROM redaction_regions rr WHERE rr.plan_id=p.id),
-                    p.output_version_id,ov.version_no,od.display_name,
+                    p.output_version_id,ov.id,ov.version_no,od.display_name,
+                    p.output_version_ref,od.deleted_at,
                     cv.version_no,
                     CASE
                       WHEN p.state NOT IN ('approved','applied') THEN NULL
@@ -655,10 +673,28 @@ fn map_plan(row: &Row<'_>) -> rusqlite::Result<RedactionPlanRow> {
         version_no: row.get(13)?,
         region_count: row.get(14)?,
         output_version_id: row.get(15)?,
-        output_version_no: row.get(16)?,
-        output_document_title: row.get(17)?,
-        current_version_no: row.get(18)?,
-        reinspect_reason: row.get(19)?,
+        output_version_no: row.get(17)?,
+        output_document_title: row.get(18)?,
+        output_link_state: {
+            // Bağın bugünkü hâli **ölçülür**, varsayılmaz: `linked` için
+            // çıktı sürümünün satırı gerçekten okunmuş ve belgesi
+            // yumuşak-silinmemiş olmalı. Aksi hâlde bağ yazılmışsa `removed`,
+            // hiç yazılmamışsa `none`.
+            let version_row: Option<String> = row.get(16)?;
+            let document_deleted: Option<String> = row.get(20)?;
+            let recorded: Option<String> = row.get(19)?;
+            if version_row.is_some() && document_deleted.is_none() {
+                "linked"
+            } else if recorded.is_some() || row.get::<_, Option<String>>(15)?.is_some() {
+                "removed"
+            } else {
+                "none"
+            }
+            .to_string()
+        },
+        output_version_ref: row.get(19)?,
+        current_version_no: row.get(21)?,
+        reinspect_reason: row.get(22)?,
     })
 }
 
@@ -1366,6 +1402,9 @@ mod tests {
             plan.output_document_title.as_deref(),
             Some("Belge (maskeli)")
         );
+        // Bağ **yazıldı**: hem canlı kimlik hem silinmeye dayanan iz taşınır.
+        assert_eq!(plan.output_link_state, "linked");
+        assert_eq!(plan.output_version_ref.as_deref(), Some(output.id.as_str()));
         // Kaynak sürüm alanı **değişmez**: plan kaynağa bağlıdır, çıktı ayrı
         // sütundadır (ikisi karışmaz).
         assert_eq!(plan.document_version_id, version_id);
@@ -1380,6 +1419,11 @@ mod tests {
         assert_eq!(
             rows[0].output_document_title.as_deref(),
             Some("Belge (maskeli)")
+        );
+        assert_eq!(rows[0].output_link_state, "linked");
+        assert_eq!(
+            rows[0].output_version_ref.as_deref(),
+            Some(output.id.as_str())
         );
         assert_eq!(rows[0].document_title.as_deref(), Some("Belge"));
     }
@@ -1408,6 +1452,111 @@ mod tests {
         assert!(rows[0].output_version_id.is_none());
         assert!(rows[0].output_version_no.is_none());
         assert!(rows[0].output_document_title.is_none());
+        // Bağ **hiç yazılmadı**: durum `none`. `removed` (bağ vardı, çıktı
+        // silindi) ile karıştırılmaz — arayüz ikisine ayrı cümle yazar.
+        assert_eq!(plan.output_link_state, "none");
+        assert!(plan.output_version_ref.is_none());
+        assert_eq!(rows[0].output_link_state, "none");
+        assert!(rows[0].output_version_ref.is_none());
+    }
+
+    /// Çıktı sürümü kasadan silinirse bağ **izi** kalır: `output_version_id`
+    /// yabancı anahtarla (`ON DELETE SET NULL`) NULL'a döner, ama
+    /// `output_version_ref` bağ yazılırken kaydedilen kimliği taşır. Sicil
+    /// "kayıtlı değil" demez — "artık yok" der; ikisi ayrı gerçektir.
+    #[test]
+    fn deleted_output_version_keeps_link_trace() {
+        let (db, case_id, version_id) = setup();
+        let output = add_output_document(
+            &db,
+            &case_id,
+            &version_id,
+            "Belge (maskeli)",
+            &"c".repeat(64),
+        );
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: Some(output.id.clone()),
+                },
+            )
+            .expect("plan");
+        db.conn()
+            .execute("DELETE FROM document_versions WHERE id=?1", [&output.id])
+            .expect("çıktı sürümü silindi");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(rows[0].id, plan.id);
+        // Canlı bağ çözüldü, **iz** duruyor.
+        assert!(rows[0].output_version_id.is_none());
+        assert_eq!(
+            rows[0].output_version_ref.as_deref(),
+            Some(output.id.as_str())
+        );
+        assert_eq!(rows[0].output_link_state, "removed");
+        // Silinen çıktının adı/sürüm numarası **uydurulmaz**.
+        assert!(rows[0].output_version_no.is_none());
+        assert!(rows[0].output_document_title.is_none());
+        // Kaynak satır etkilenmez: plan hâlâ kaynağa bağlı okunur.
+        assert_eq!(rows[0].document_title.as_deref(), Some("Belge"));
+        assert_eq!(rows[0].document_version_id, version_id);
+        // `get` yolu aynı gerçeği yazar (iki sorgu ayrışmaz).
+        let got = db
+            .get_redaction_plan(&plan.id)
+            .expect("oku")
+            .expect("plan var");
+        assert_eq!(got.output_link_state, "removed");
+        assert_eq!(got.output_version_ref.as_deref(), Some(output.id.as_str()));
+    }
+
+    /// Çıktı **belgesi** yumuşak-silinirse sürüm satırı yerinde kalır ama çıktı
+    /// artık kullanılamaz: sicil bağı canlı saymaz (`removed`), "çıktı var"
+    /// diye göstermez.
+    #[test]
+    fn soft_deleted_output_document_is_removed_not_linked() {
+        let (db, case_id, version_id) = setup();
+        let output = add_output_document(
+            &db,
+            &case_id,
+            &version_id,
+            "Belge (maskeli)",
+            &"c".repeat(64),
+        );
+        db.create_redaction_plan(
+            &case_id,
+            &NewRedactionPlan {
+                document_version_id: version_id,
+                parse_run_id: None,
+                render_hash: "b".repeat(64),
+                output_profile: "share".into(),
+                output_version_id: Some(output.id.clone()),
+            },
+        )
+        .expect("plan");
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at=?1 WHERE id=?2",
+                rusqlite::params![now_iso(), output.document_id],
+            )
+            .expect("çıktı belgesi yumuşak-silindi");
+
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        // Sürüm satırı duruyor (yabancı anahtar çözülmedi) ama belge silinmiş:
+        // bağ canlı sayılmaz.
+        assert_eq!(
+            rows[0].output_version_id.as_deref(),
+            Some(output.id.as_str())
+        );
+        assert_eq!(rows[0].output_link_state, "removed");
+        assert_eq!(
+            rows[0].output_version_ref.as_deref(),
+            Some(output.id.as_str())
+        );
     }
 
     #[test]

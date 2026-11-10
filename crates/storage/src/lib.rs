@@ -308,9 +308,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0028_redaction_plan_output",
         sql: include_str!("migrations/0028_redaction_plan_output.sql"),
     },
+    Migration {
+        version: 29,
+        name: "0029_redaction_plan_output_trace",
+        sql: include_str!("migrations/0029_redaction_plan_output_trace.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 28;
+pub const CURRENT_SCHEMA_VERSION: u32 = 29;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

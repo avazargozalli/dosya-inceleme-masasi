@@ -561,6 +561,18 @@ export type RedactionPlanRow = {
   outputVersionNo: number | null;
   outputDocumentTitle: string | null;
   /**
+   * Çıktı bağının **durumu** (şema v29): `none` = bağ **hiç** yazılmadı
+   * (v28'den önceki plan), `linked` = bağ yazıldı ve çıktı bugün de kasada,
+   * `removed` = bağ yazıldı ama çıktı artık çözülemiyor (sürüm/belge silinmiş).
+   */
+  outputLinkState: "none" | "linked" | "removed";
+  /**
+   * Bağ **yazılırken** kaydedilen çıktı sürümü kimliği (yabancı anahtar
+   * değil): çıktı silinip `outputVersionId` boşalsa da iz kalır. `none`
+   * durumunda `null`.
+   */
+  outputVersionRef: string | null;
+  /**
    * Belgenin **güncel** sürüm numarası. Planın kaynağı güncel sürüm değilse
    * hangi sürümden sonra değiştiği buradan okunur; bilinmiyorsa `null`
    * (numara uydurulmaz).
