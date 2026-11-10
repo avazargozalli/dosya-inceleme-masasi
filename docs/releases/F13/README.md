@@ -14,6 +14,7 @@
 | F13-T06 | ✅ | bağımsız pypdf okuyucusu + OCR (tesseract varsa) sızıntı kontrolü; `ocrVerified` dürüst bayrağı |
 | F13-T04b | ✅ | plan bölgeleri **gönderim maskesine** bağlandı (2026-11-09 turu; terimler çekirdekte türetilir, `E_MASK_PLAN`) |
 | F13-T04c | ✅ | plan satırı **ürettiği çıktı sürümünü** taşır (şema v28; bağ doğrulanır, eski planlar "kayıtlı değil" der; 2026-11-09 turu) |
+| F13-T01b | ✅ | sicil **yeniden inceleme nedenini** yazar: aşılmış sürüm · render uyuşmazlığı · yeni ayrıştırma · silinmiş sürüm (şema değişikliği yok, okuma anında türetilir; 2026-11-10 turu) |
 
 ## Dürüst durum
 
@@ -221,8 +222,11 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   bağı (`parent_version_id`) sicil satırında **gösterilmiyor** (yalnız belge/sürüm no)~~ —
   **2026-11-09'da kapandı:** plan satırı `output_version_id` taşır (şema v28), çıktı belge adı +
   sürüm no ile yazılır; eski planlar "kayıtlı değil" der. (c) plan
-  durumu `applied` dışına ürün akışında geçmiyor (draft→applied tek adım) — yeniden inceleme
-  akışı (F13-T01'in "yerleşim değişince tekrar incelet" kısmı) hâlâ ayrı iş.
+  durumu `applied` dışına ürün akışında geçmiyor (draft→applied tek adım) — ~~yeniden inceleme
+  akışı (F13-T01'in "yerleşim değişince tekrar incelet" kısmı) hâlâ ayrı iş~~ — **2026-11-10'da
+  kapandı:** sicil satırı `reinspectReason` taşır (aşılmış sürüm · render uyuşmazlığı · yeni
+  ayrıştırma · silinmiş sürüm) ve arayüz "yeniden inceleme gerekli" rozetini yazar; `state`
+  makinesi yine `draft → applied` (onay adımı ürün kararı).
 
 ## Tur kaydı — 2026-11-09 (plan bölgeleri gönderim maskesine bağlanır)
 
@@ -324,3 +328,74 @@ Tesseract yoksa `ocrVerified=false` döner; "görüntü doğrulandı" denmez. CI
   storage düzeyinde gerçek SQLite; (e) plan satırı taşıyan bir **v27 kasa kopyasından** yükseltme
   ayrıca denenmedi (ALTER yolu her test DB'sinde 1→28 kurulumuyla koşuyor); (f) jsdom tarayıcı
   değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
+
+## Tur kaydı — 2026-11-10 (yerleşim değişince yeniden inceleme görünür — F13-T01)
+
+- **Önceki turun açık kaydı kapanıyor:** bu dosyanın **(c)** maddesi — "plan durumu `applied`
+  dışına ürün akışında geçmiyor (draft→applied tek adım); yeniden inceleme akışı (F13-T01'in
+  'yerleşim değişince tekrar incelet' kısmı) hâlâ ayrı iş" — bu turda kapandı.
+- **ÖLÇÜLEN KUSUR (eski kod):** `redaction_plans` satırı **tarihsel** bir sicildir; `state='applied'`
+  yazıldıktan sonra bir daha değişmez (`add_redaction_regions` tek adımda `applied` yazar). Ama
+  planın geometrisi **bağlandığı** sürüme/ayrıştırmaya/render özetine aittir ve belge sonradan
+  değişebilir. Ölçüm (yeni testlerin ilk koşusu, eski kod): belgeye yeni sürüm eklendiğinde sicil
+  satırı hâlâ "uygulandı" diyordu — oysa maske yolu (`outbound_terms_from_plan`) aynı planı
+  "plan güncel sürüme ait değil" diye **reddediyordu**. Avukat sicilde geçerli gördüğü plana
+  güvenip maskeleme yapamıyor, nedenini de göremiyordu. Aynı sessizlik yeniden ayrıştırma
+  (yerleşim değişikliği) ve render özeti uyuşmazlığı için de geçerliydi.
+- **Yazılan (şema değişikliği YOK — bayrak okuma anında türetilir):** `RedactionPlanRow` iki alan
+  kazandı: `currentVersionNo` (`documents.current_version_id` → sürüm numarası; bilinmiyorsa
+  `null`) ve `reinspectReason` (kararlı kod). Neden, **tek sorguda** `CASE` ile hesaplanır
+  (plan başına ek istek yok; `parse_runs(document_version_id, created_at)` indeksi kullanılır):
+  `version_missing` (sürüm/belge satırı yok ya da belge silinmiş) · `version_superseded`
+  (belgenin güncel sürümü planınki değil) · `render_changed` (`render_hash` ≠ sürümün özeti) ·
+  `parse_run_newer` (plan bir ayrıştırmaya bağlıyken sürüm yeniden ayrıştırıldı). Bayrak **yalnız
+  `approved`/`applied`** planlarda dolar: yürürlükte olmayan plan için "yeniden inceleme"
+  istenmez. Planın `state`i **değişmez** — maskeleme geçmişte gerçekten uygulandı; değişen,
+  o geometrinin bugünkü belgeyi anlatmamasıdır.
+- **Arayüz:** sicil satırında `warn` rozet **"yeniden inceleme gerekli"** + neden satırı
+  ("belgenin daha yeni bir sürümü var" vb.) + mümkünse **"Belgenin güncel sürümü N."** +
+  ne yapılacağı (maskeleme güncel sürümden yeniden yapılmalı; plan silinmez). Tanınmayan neden
+  kodu **ham** yazılır (`bilinmeyen neden (<kod>)`), sürüm numarası bilinmiyorsa **uydurulmaz**.
+  8 sözlük anahtarı.
+- **Testler:** storage `redactions::tests` **22 → 27** (+5: aşılmış sürüm · taslak plan istenmez ·
+  render uyuşmazlığı · yeni ayrıştırma · silinmiş sürüm) → `dim-storage --lib` **495 → 500**
+  (295,58 s). `Redaction.test.tsx` **43 → 47** (+4; `planRow` fikstürü yeni alanlarla) → vitest
+  **1330 → 1334** (64 dosya). `Ai.test.tsx` fikstürü tip gereği iki alanla güncellendi (test
+  sayısı değişmedi).
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-reinspect-gates-1110.py`, her mutasyon tek
+  başına, `try/finally` + sha256 birebir — core `104750e4…`, ui `cf1c4b21…`):** **11/11 kırmızı** —
+  C1 durum kapısı (taslak da işaretlenir) · C2 aşılmış sürüm kapısı · C3 render özeti kapısı ·
+  C4 ayrıştırma tazeliği kapısı · C5 silinmiş sürüm kapısı · C6 güncel sürüm numarası planın
+  kendi sürümünden yazılır · U1 rozet çizilmez · U2 neden satırı çizilmez · U3 tanınmayan neden
+  gizlenir · U4 bilinmeyen güncel sürüme numara uydurulur · U5 farklı güncel sürüm satırı
+  yazılmaz. Altısı `cargo test` ile **derlendi ve davranış testiyle** düştü (exit 101, hedef test
+  `FAILED`); beşi vitest'te hedef testi düşürdü (`1 failed | 46 skipped`). **Dürüst (kendi
+  hatam):** betiğin ilk sürümü çekirdek mutasyonlarını "EŞLEŞMEDİ" diye atladı — aynı `CASE`
+  parçası **iki sorguda** (get + list) geçiyor, betik tek eşleşme arıyordu; beklenen sayı 2'ye
+  çevrildi ve on bir ölçüm yeniden koşuldu (ilk koşunun 5/11'i kanıt sayılmadı). Ayrıca ilk test
+  koşusunda `NewPage.origin` alanına `top_left` yazmıştım; şema kapısı (`native|ocr|mixed|none`)
+  reddetti → `native` ile düzeltildi (test düşmesi kod hatası değil, fikstür hatasıydı).
+- **Ölçüm (yerel, Node 22.23.1 + TZ=UTC):** `tsc --noEmit` temiz · vitest **1334/1334** (64 dosya) ·
+  `cargo test -p dim-storage --lib` **500/500** (295,58 s; `upgrade_tests` dahil) · `cargo fmt` iki
+  manifest temiz · storage + masaüstü `clippy --all-targets -D warnings` temiz. Yerel `vite build`
+  koşulmadı (ağaçta başka ajanın commit'siz değişiklikleri var → paket ölçümü CI'dan).
+- **CI (ölçüldü):** kod `b60a1ff` (6 dosya, **+417/−2**) → run `42716055764` **10/10 YEŞİL**
+  (`dim-storage` **500** hem `ubuntu-latest` (572,60 s) hem `macos-15` (231,15 s) — **birebir**;
+  `arayüz` **64 dosya / 1333 test** — yerel 1334 farkı ağaçtaki başka ajanın commit'siz
+  `format.test.ts` testi; paket `index-4uesX5_b.js` **658,58 kB** / gzip **176,10 kB**
+  (CSS 7,28 kB / gzip 2,07); `masaüstü kabuk` 40 koştu · 0 düştü · 5 yoksayıldı + yoksayılan koşu
+  5 passed · 40 filtered; `windows güvenli depo`, `sözleşmeler`, `kaynak arşivi`,
+  `sürüm paketi manifesti`, `belge worker'ı` ve `SBOM` yeşil).
+- **Dürüst sınırlar:** (a) bayrak **okuma anında** türetilir; kasaya yazılmaz, bu yüzden planın
+  "o gün geçerliydi" bilgisi değil "bugün geçerli mi" sorusunun yanıtıdır; (b) `parse_run_id`
+  **boş** yazılmış planlar (ürün yolu `commit_redaction` bugün `None` yazıyor — bölgeler
+  redaksiyon çalıştırmasından gelir, kasa ayrıştırmasından değil) yeniden ayrıştırmada
+  **işaretlenmez**; bu planların maskesi zaten en güncel ayrıştırmadan türetiliyor, ama "yerleşim
+  değişti" sinyali bu satırlarda yok — açık kayıt; (c) bayrak **yapısal** kapıları yansıtır; sayfa
+  döndürmesi ve kesişen blok metni gibi **metin düzeyi** kapılar sicilde iddia edilmez, maske
+  çalışırken yine hatayla kapanır; (d) "yeniden inceleme" bir **düğme değil**: planı yeniden
+  üretmek için maskeleme güncel sürümden yeniden koşulur (plan silinemez/düzenlenemez); (e)
+  `state` makinesi hâlâ `draft → applied`; `reviewing`/`approved` durumlarını yazan ürün yolu yok
+  (tek yerel kullanıcı — onay adımı ürün kararı); (f) iki komut **komut olarak koşulmadı**
+  (`State<AppState>` altyapısı yok) — kablolama check + clippy, davranış storage düzeyinde gerçek
+  SQLite; (g) jsdom tarayıcı değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
