@@ -130,8 +130,11 @@ fn antigravity_hardening_reaches_the_process() {
     let work = empty_workdir(tmp.path());
     let cancel = Arc::new(AtomicBool::new(false));
 
+    // İstem **tek belirteç** olarak verilir (`--print=<istem>`): `agy` `--print`i
+    // **değer alan** bayrak sayar. Çıplak `--print` + komşu bayrak, bayrağı isteme
+    // çevirip sertleştirmeyi sessizce düşürür (ölçüldü 1.4.12; `prompt_argv`).
     let outcome = run_cli(
-        &request("antigravity-cli", exe, work, &["--print"]),
+        &request("antigravity-cli", exe, work, &["--print=DIM-CANARY-49"]),
         &cancel,
     )
     .expect("run");
@@ -150,6 +153,36 @@ fn antigravity_hardening_reaches_the_process() {
         !outcome.stdout_head.contains("--tools"),
         "{}",
         outcome.stdout_head
+    );
+    // İstem bayrakla aynı belirteçte kalmalı; çıplak `--print` sürece gitmemeli.
+    assert!(
+        !outcome.stdout_head.contains("--print|"),
+        "çıplak --print sürece gitti: {}",
+        outcome.stdout_head
+    );
+}
+
+/// Ölçülen kusur (F10-T08): `agy` çıplak `--print`e komşu belirteci **istem**
+/// sanar; sertleştirme bayrağı sessizce isteme dönüşür ve uygulanmaz. Kapı
+/// yürütmeden **önce** durmalı — süreç hiç başlamamalı (sahte CLI çalışırsa iş
+/// dizinine işaret bırakır).
+#[test]
+fn antigravity_bare_print_next_to_a_flag_is_refused_before_start() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let exe = script(tmp.path(), "agy", "touch started.marker");
+    let work = empty_workdir(tmp.path());
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let err = run_cli(
+        &request("antigravity-cli", exe, work.clone(), &["--print"]),
+        &cancel,
+    )
+    .expect_err("kapı istemi reddetmeliydi");
+    assert_eq!(err.code(), "E_CLI_ARGUMENT", "{err}");
+    assert!(err.to_string().contains("istem"), "{err}");
+    assert!(
+        !work.join("started.marker").exists(),
+        "süreç başladı: kapı yürütmeden önce durmalıydı"
     );
 }
 

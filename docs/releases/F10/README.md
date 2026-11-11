@@ -17,7 +17,7 @@
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ✅ | Claude profili: `--no-session-persistence` + **`--tools ""`** + `--strict-mcp-config` zorunlu (sertleştirme); gerçek çağrı `DIM-CANARY-48`. Not: kimlikli `--print` çağrısı allowlist'te **`USER`** olmadan "Not logged in" veriyordu — eklendi (ölçüldü) |
 | F10-T07 | ✅ | Codex `--json` NDJSON ayrıştırıcı (`events.rs`): metin + usage, bilinmeyen tip korunur |
-| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor |
+| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`), arayüzde açık/kapalı gerekçesi. İstemi sağlayıcıya **gönderen** uçtan uca akış hâlâ yok |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
@@ -496,8 +496,11 @@ izinli argv, allowlist ortam, boş `0700` kum havuzu, 30 sn sınır, iptal.
 
 `gate_open` yalnız `declared` durumunda `true`; `gate_reasons` makine okunur
 `yetenek:durum` listesidir (`tool_free:no_path`). Arayüz bunu okunur satıra
-çevirir. **Bugün kapı yalnız raporlanıyor**: istem gönderen yol (T06–T08) henüz
-yok; olduğunda `ensure_capable` benzeri bir çağrı bu raporu kullanacak.
+çevirir. **Bugün bu rapor istem gönderim kapısını da besler** (2026-11-12):
+`prompt_shape` içindeki `printable` yalnız toplu yürütme açık **ve** `tool_free`
+`Declared` ise `true`; değilse `printable=false` ve neden yazılır — yani
+"araçsız kip kanıtlanmadıysa istem gönderilmez" kuralı matrisin kanıtına
+bağlanmıştır (bkz. "İstem argv biçimi ve `--print` kapısı").
 
 ### Matris ile argüman kapısı ayrışmasın
 
@@ -539,6 +542,11 @@ Codex'te `--sandbox read-only` araçları kısıtlar ama kapatmaz; bu yüzden
 - **Argüman kapısı**: `build_args` — `allowed_args` + `version_args` dışındaki
   bayrak `E_CLI_ARGUMENT`, süreç **başlatılmadan** reddedilir. Shell string
   birleştirme yok.
+- **İstem kapısı** (`ensure_prompt_shape`, F10-T08): değer alan `--print`
+  (bugün Antigravity) **çıplak** kalır ve yanındaki belirteç `-` ile başlarsa
+  reddedilir (`E_CLI_ARGUMENT`) — vendor o belirteci istem sanıp sertleştirme
+  bayrağını **uygulamaz** (ölçüldü). Kapı adaptör-farkındadır: Claude'un boolean
+  `--print`i etkilenmez.
 - **Yol**: yürütülebilir **mutlak** olmalı (`E_CLI_EXEC_PATH`) ve çalıştırılabilir
   olmalı (`E_CLI_EXEC_MISSING`).
 - **İş dizini kapsamı** (`sandbox::check_workdir`, F10-T05): mutlak, sembolik bağ
@@ -572,6 +580,96 @@ Codex'te `--sandbox read-only` araçları kısıtlar ama kapatmaz; bu yüzden
   denenir; kalıcı hatalar (`NotFound`, `PermissionDenied`) ilk denemede döner,
   son hata metni `E_CLI_EXEC_SPAWN` ile raporlanır (aşağıdaki "Başlatma
   yarışı" bölümü).
+
+## İstem argv biçimi ve `--print` kapısı (F10-T08, 2026-11-12)
+
+**Ölçülen kusur (bu makine, kurulu `agy` 1.4.12):**
+
+```
+$ agy --print --sandbox --output-format json
+Error: --print took "--sandbox" as its prompt, so the intended prompt was
+left as an argument and ignored.
+Attach the prompt to the flag (--print='your prompt') and move --sandbox elsewhere.
+```
+
+Yani Antigravity'de `--print` **değer alan** bir bayraktır: komşu belirteç ne
+olursa olsun **istem** sayılır. Ürün sertleştirme bayrağını `--print`in yanına
+koyarsa bayrak **uygulanmaz** ve sessizce isteme dönüşür — sertleştirmenin
+sessizce kaybolması, "ölçüldü" demeden görülemeyecek bir kusurdur. `--print=`
+biçimi ayrı ayrışır (ölçüldü: `--print= --sandbox` → "empty prompt", bayrak
+hatası yok) — bu yüzden biçim **tek belirteçli** olmak zorunda.
+
+**Yazılan (çekirdek, `crates/cli-adapters/src/exec.rs`):**
+
+- `PROMPT_MAX_BYTES` = **16 KiB**: istem ürün tarafından üretilir; sınırsız metin
+  argv boyutunu, alt süreç davranışını ve denetim kaydını belirsizleştirir.
+- `validate_prompt` — dört kapı: **boş** olamaz (boş çağrı abonelikten kota
+  harcar), **`-` ile başlayamaz** (bayrak sanılır), kontrol karakteri taşıyamaz
+  (NUL dâhil; `\n\r\t` serbest), sınırı aşamaz. Hata `AdapterError::InvalidPrompt`
+  → **`E_CLI_ARGUMENT`** (argüman kapısı ailesiyle aynı kod).
+- `prompt_argv(adapter, prompt)` — biçimin **tek** kaynağı: `antigravity-cli`
+  `--print=<istem>` (tek belirteç), `claude-code` `--print <istem>` (boolean
+  bayrak + ayrı belirteç), `codex-cli` `exec <istem>` (konumsal), `kimi-cli`
+  `E_CLI_BATCH_FORBIDDEN`. Bilinmeyen adaptörde istem yolu **tanımlı değil**.
+  Dönen argv `build_args` kapısından geçmez: istem **konumsaldır**, bayrak değil;
+  bu yüzden istem yalnız burada, doğrulandıktan sonra argv'ye girer — arayüzden
+  istem metni de bayrak da geçirilemez.
+- `PromptShape` + `prompt_shape(adapter)` — arayüzün okuduğu biçim. `printable`
+  yalnız **toplu yürütme açık** *ve* **araçsız kip doğrulanmış** (`tool_free`
+  `Declared`) ise `true`; değilse `reason` = `batch_forbidden` /
+  `tool_free_unverified` ve `tool_free` durumu (`verified` / `no_path` /
+  `missing`). "Sandbox var" **varsayılmaz**.
+- `ensure_prompt_shape(adapter, args)` — `run_cli` içinde, süreç başlamadan:
+  çıplak `--print` + yanında `-` ile başlayan belirteç → `AdapterError::PromptShape`
+  → **`E_CLI_ARGUMENT`**. Kapı **adaptör-farkındadır**: yalnız `--print`i değer
+  olarak alan adaptör (bugün Antigravity) denetlenir; Claude'un boolean `--print`i
+  yanındaki bayrağı normal ayrıştırdığı için etkilenmez (ilk sürüm bunu
+  ayırmıyordu ve **10 mevcut testi kırmızıya düşürdü** — ölçüldü, kapı
+  adaptör-farkında yapıldı).
+
+**Arayüz:** `cli_capability_matrix` yanıtındaki adaptör görünümüne `prompt` alanı
+eklendi (`CliPromptShapeView`: `argv`, `printable`, `reason`, `toolFree`) —
+**çekirdekten** okunur, arayüzde yeniden üretilmez. Providers kartında adaptör
+başına satır: “İstem biçimi `--print=<istem>` · araçsız kip doğrulandı, istem
+gönderimi açık.” ya da “… gönderim kapalı: <neden>”. 5 sözlük anahtarı.
+
+**Doğrulama (gerçek koşular):**
+
+- `cargo test -p dim-cli-adapters --lib` → **125 passed · 0 failed** (7 yeni
+  test: dört biçim, kimi kapalı, `-` ile başlayan istem, boş/kontrol/aşırı uzun
+  istem, çıplak `--print` kapısı, sertleştirme biçimi bozmuyor, araçsız kip
+  kapısı, şekil↔builder eşitliği).
+- Masaüstü (Tauri) `cargo check` **temiz** (28,21 s) — `commands.rs` değişikliği
+  derlenerek doğrulandı; `cli-adapters` + masaüstü `clippy --all-targets
+  -D warnings` **temiz**; iki manifest `cargo fmt --check` **temiz**.
+- `tsc --noEmit` **temiz**; hedefli vitest **139 test** yeşil
+  (`providers.test.ts` 22, `capability.test.ts` 8, `i18n-bindings.test.ts` 54,
+  `Providers.test.tsx` 55).
+- `cargo test -p dim-cli-adapters --all-targets` → **125 lib + 5 entegrasyon**
+  testi yeşil (1 gerçek-CLI testi yoksayılı — kullanıcı aboneliği, elle).
+- **Dürüst not (ilk CI koşusu kırmızıydı):** `43108471774` koşusunda iki `rust`
+  işi `tool_free_proof::antigravity_hardening_reaches_the_process` testinde
+  düştü. Test **eski (hatalı) biçimi** kuruyordu — çıplak `--print` + sertleştirme
+  bayrakları — ve yalnız argv metnine bakıyordu, vendor davranışına değil; yani
+  kusuru **kanıtlamıyor**, aksine kusurlu biçimi sabitliyordu. Test doğru
+  sözleşmeye çekildi (`--print=<istem>`) ve kapı için **yeni entegrasyon testi**
+  eklendi (çıplak `--print` → `E_CLI_ARGUMENT`, süreç **hiç başlamaz**).
+
+**Dürüst sınırlar (T08):**
+
+- (a) `prompt_argv` **üretimde henüz çağrılmıyor** — istemi sağlayıcıya gönderen
+  uçtan uca akış (T06–T08) yok; bu tur **biçimi ve kapıyı** sözleşmeye bağladı,
+  sağlayıcıya istem göndermedi.
+- (b) `printable` **bildirilen** kanıta bakar (yetenek matrisi `--help` çıktısı),
+  davranış ölçümüne değil; Antigravity `--sandbox` dosya okumayı engellemediği
+  için (T12'de ölçüldü) `tool_free` bugün `no_path` kalır → istem gönderimi
+  **kapalı** görünür.
+- (c) Kapı yalnız **çıplak** `--print`i yakalar; `--print=` biçiminde istem zaten
+  tek belirteçtir (ayrı ayrıştığı ölçüldü).
+- (d) İstem metni **denetim kaydına yazılmaz**; kayıt yalnız biçim/karar taşır.
+- (e) Uçtan uca gerçek CLI koşusu bu turda **yapılmadı** (gönderen yol yok);
+  arayüz jsdom ile ölçüldü → gerçek Tauri penceresi + **görsel QA insan
+  bekliyor**.
 
 ## Başlatma yarışı — yalnız `ETXTBSY` yeniden denenir (F10-T14 ek turu, 2026-11-04)
 
