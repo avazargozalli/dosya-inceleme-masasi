@@ -373,7 +373,11 @@ async function resolveAs<T>(value: MaybeAsync<T> | undefined, fallback: T[]): Pr
 }
 
 function setup(
-  overrides: { quoteCheck?: InTextQuoteCheck; byCase?: Record<string, CaseFixtures> } = {},
+  overrides: {
+    quoteCheck?: InTextQuoteCheck;
+    byCase?: Record<string, CaseFixtures>;
+    outbox?: unknown[];
+  } = {},
 ) {
   const byCase = overrides.byCase ?? {};
   mocks.caseList.mockResolvedValue([CASE, CASE2]);
@@ -383,7 +387,9 @@ function setup(
   mocks.documentList.mockImplementation(async (id: string) =>
     resolveAs(byCase[id]?.documents, DOCUMENTS),
   );
-  mocks.reviewOutboxPending.mockResolvedValue([{ id: "o1" }]);
+  mocks.reviewOutboxPending.mockResolvedValue(
+    overrides.outbox ?? [{ id: "o1", eventType: "task.reminder_due" }],
+  );
   mocks.contradictionAssessments.mockResolvedValue([]);
   mocks.evidenceLinkList.mockResolvedValue([]);
   mocks.claimRelationList.mockResolvedValue([]);
@@ -441,6 +447,22 @@ describe("inceleme ekranı davranışı", () => {
 
     // Hedef kimliği karar listesinde rozet olarak görünür (ilk 8 hane).
     expect(screen.getByText(t("review.targetBadge", { id: "9f8e7d6c" }))).toBeTruthy();
+  });
+
+  it("alan olayları bildirim sayılmaz; ayrı cümleyle yazılır", async () => {
+    // İki alan olayı + bir gerçek hatırlatıcı: "bildirim bekliyor" sayısı
+    // yalnız hatırlatıcıyı sayar, olaylar kendi cümlesinde görünür.
+    setup({
+      outbox: [
+        { id: "o1", eventType: "task.reminder_due" },
+        { id: "o2", eventType: "review.decision_committed" },
+        { id: "o3", eventType: "review.item_decided" },
+      ],
+    });
+    expect(
+      await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 })),
+    ).toBeTruthy();
+    expect(screen.getByText(t("review.outboxDomainNote", { count: 2 }))).toBeTruthy();
   });
 
   it("kabul, hedef kayıt seçilmeden açılmaz ve seçilince tek işlemde yazılır", async () => {

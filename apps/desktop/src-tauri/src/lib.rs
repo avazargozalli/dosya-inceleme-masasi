@@ -10,6 +10,10 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Bildirim eklentisi yalnız **Rust** tarafından kullanılır
+        // (`notifications_deliver`); JS yüzeyi capability'ye eklenmez (ADR-02:
+        // en az yetki — arayüz bildirim API'sini doğrudan çağıramaz).
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Kasa durumu süreç ömrü boyunca tek örnektir; ikinci pencere ayrı
             // DB yazıcısı açmaz (ADR-02, 06.5).
@@ -64,6 +68,7 @@ pub fn run() {
             commands::task_confirm_date,
             commands::task_reminders,
             commands::task_reminders_enqueue,
+            commands::notifications_deliver,
             commands::document_pages,
             commands::document_page_preview,
             commands::document_inventory,

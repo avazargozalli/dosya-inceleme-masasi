@@ -170,6 +170,40 @@ export function Tasks() {
     }
   }
 
+  async function sendReminders() {
+    const target = caseId;
+    const seq = ++busySeq.current;
+    setError(null);
+    setReminderNote("");
+    setBusy(true);
+    try {
+      // Gerçek teslim: OS bildirimi kabul etmezse çekirdek satırı kapatmaz
+      // (`failed` artar, satır kuyrukta kalır). İzin yoksa hata kodu döner ve
+      // "gönderildi" yazılmaz.
+      const result = await api.notificationsDeliver(target);
+      if (caseRef.current !== target) return;
+      setReminderNote(
+        result.failed > 0
+          ? t("tasks.notifyPartial", {
+              sent: result.sent,
+              failed: result.failed,
+              remaining: result.remaining,
+            })
+          : result.sent === 0
+            ? t("tasks.notifyNone", { remaining: result.remaining })
+            : t("tasks.notifySent", {
+                sent: result.sent,
+                remaining: result.remaining,
+              }),
+      );
+    } catch (e) {
+      if (caseRef.current !== target) return;
+      setError(toApiError(e));
+    } finally {
+      if (seq === busySeq.current) setBusy(false);
+    }
+  }
+
   async function complete(id: string) {
     const target = caseId;
     const seq = ++busySeq.current;
@@ -339,9 +373,22 @@ export function Tasks() {
               {t("tasks.remindersSub", { count: reminders.length, day: localIsoDay() })}
             </p>
           </div>
-          <button className="btn" disabled={busy || !caseId} onClick={() => void enqueueReminders()}>
-            {t("tasks.enqueue")}
-          </button>
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              className="btn"
+              disabled={busy || !caseId}
+              onClick={() => void enqueueReminders()}
+            >
+              {t("tasks.enqueue")}
+            </button>
+            <button
+              className="btn"
+              disabled={busy || !caseId}
+              onClick={() => void sendReminders()}
+            >
+              {t("tasks.notify")}
+            </button>
+          </div>
         </div>
 
         {reminders.length === 0 ? (

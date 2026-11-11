@@ -137,6 +137,10 @@ export function Review() {
   const [targetKinds, setTargetKinds] = useState<Record<string, ReviewTargetKind>>({});
   const [targetClaimKinds, setTargetClaimKinds] = useState<Record<string, string>>({});
   const [outboxPending, setOutboxPending] = useState(0);
+  // Teslim edilmemiş **alan olayları** (bildirim değil): ayrı sayılır, ayrı
+  // cümleyle yazılır. İkisini tek sayıda toplamak "bildirim bekliyor" yalanı
+  // üretiyordu (olaylar hiçbir zaman bildirim olmayacak).
+  const [outboxDomain, setOutboxDomain] = useState(0);
   // Karar geçmişi (F08-T04): kalem başına **istek üzerine** okunur — liste
   // açılışında her kalem için ayrı okuma yapılmaz.
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null);
@@ -236,7 +240,12 @@ export function Review() {
         ),
       ]);
       if (!fresh()) return;
-      setOutboxPending(outboxRows.length);
+      // Sınıf ayrımı **okunan satırdan** yapılır: `task.reminder_due` bildirim,
+      // diğerleri alan olayıdır. Arayüz tür listesini kendi uydurmaz; çekirdek
+      // `event_type`ı zaten taşır.
+      const notifications = outboxRows.filter((r) => r.eventType === "task.reminder_due").length;
+      setOutboxPending(notifications);
+      setOutboxDomain(outboxRows.length - notifications);
       setAssessments(Object.fromEntries(pairs));
       setSelectedClaim((prev) => (prev ? claimRows.find((c) => c.id === prev.id) ?? null : null));
     } catch (e) {
@@ -249,6 +258,7 @@ export function Review() {
       setAnchors([]);
       setDocuments([]);
       setOutboxPending(0);
+      setOutboxDomain(0);
       setAssessments({});
       setSelectedClaim(null);
     }
@@ -962,6 +972,11 @@ export function Review() {
                   outbox: outboxPending,
                 })}
               </p>
+              {outboxDomain > 0 ? (
+                <p className="muted small" style={{ margin: 0 }}>
+                  {t("review.outboxDomainNote", { count: outboxDomain })}
+                </p>
+              ) : null}
             </div>
           </div>
 

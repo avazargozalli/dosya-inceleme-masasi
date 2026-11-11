@@ -183,6 +183,11 @@ export const tr = {
     remindersTitle: "Yerel hatırlatıcılar",
     remindersSub: "{count} hatırlatıcı · {day}",
     enqueue: "Bildirim kuyruğuna yaz",
+    notify: "Bildirimleri gönder",
+    notifySent: "{sent} bildirim gönderildi · {remaining} bekliyor.",
+    notifyNone: "Gönderilen bildirim yok · {remaining} bekliyor.",
+    notifyPartial:
+      "{sent} gönderildi · {failed} başarısız · {remaining} bekliyor. Başarısız satır kuyrukta kalır; yeniden denenebilir.",
     noReminders:
       "Bugün için hatırlatıcı yok. Göreve tarih ve hatırlatma seçilip tarih onaylanmalı.",
     noNewReminders: "Yeni hatırlatıcı yok (bugün için zaten kuyrukta).",
@@ -2359,6 +2364,8 @@ export const tr = {
     relationHint: "Yanıt belgeye değil yanıtlanan iddiaya bağlanır; ilişki türü açıkça seçilir.",
     queueTitle: "İnceleme kuyruğu",
     queueSummary: "{pending} bekleyen · {decided} karar verilmiş · {outbox} bildirim bekliyor",
+    outboxDomainNote:
+      "{count} alan olayı teslim edilmedi — bunlar bildirim değildir (bildirim gösterilmez, tüketici bekler).",
     draftTitle: "Alıntıdan aday oluştur",
     sourceLabel: "Kaynak",
     secondSourceLabel: "İkinci kaynak",

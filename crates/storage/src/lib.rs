@@ -26,6 +26,7 @@ mod intext_quotes;
 pub mod job_state;
 mod marks;
 mod notes;
+mod notifications;
 mod outbound_mask;
 mod parsing;
 mod pre_update;
@@ -82,6 +83,10 @@ pub use intext_quotes::{
 };
 pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
+pub use notifications::{
+    delivery_stamp, notification_text, PendingNotification, MAX_NOTIFICATIONS_PER_CALL,
+    NOTIFICATION_EVENT_TYPES,
+};
 pub use outbound_mask::{
     fold_char, mask_terms, parse_runs, validate_terms, MaskError, MaskRun, MaskedText,
     MASK_PLACEHOLDER, MAX_MASK_TERMS, MAX_MASK_TERM_CHARS, MIN_MASK_TERM_CHARS,

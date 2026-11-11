@@ -56,6 +56,7 @@ const mocks = vi.hoisted(() => ({
   taskDelete: vi.fn(),
   taskReminders: vi.fn(),
   taskRemindersEnqueue: vi.fn(),
+  notificationsDeliver: vi.fn(),
 }));
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -169,6 +170,7 @@ function setup(options: {
   mocks.taskComplete.mockResolvedValue(T1);
   mocks.taskDelete.mockResolvedValue(undefined);
   mocks.taskRemindersEnqueue.mockResolvedValue({ queued: 0, reminders: [] });
+  mocks.notificationsDeliver.mockResolvedValue({ sent: 1, failed: 0, remaining: 0 });
   return render(<Tasks />);
 }
 
@@ -362,6 +364,44 @@ describe("görevler ekranı davranışı", () => {
     // Önceki (0) bildirimi yeni sonucun yerine geçer.
     expect(screen.queryByText(t("tasks.noNewReminders"))).toBeNull();
     await waitFor(() => expect(mocks.taskList).toHaveBeenCalledTimes(3));
+  });
+
+  it("bildirim gönderimi gerçek komutu çağırır ve sonucu (gönderilen/kalan) yazar", async () => {
+    setup();
+    await loaded();
+
+    mocks.notificationsDeliver.mockResolvedValue({ sent: 2, failed: 0, remaining: 0 });
+    fireEvent.click(screen.getByText(t("tasks.notify")));
+    expect(
+      await screen.findByText(t("tasks.notifySent", { sent: 2, remaining: 0 })),
+    ).toBeTruthy();
+    expect(mocks.notificationsDeliver).toHaveBeenCalledWith("p1");
+
+    // OS bir satırı reddederse "gönderildi" denmez: başarısız ve kalan ayrı yazılır.
+    mocks.notificationsDeliver.mockResolvedValue({ sent: 1, failed: 2, remaining: 2 });
+    fireEvent.click(screen.getByText(t("tasks.notify")));
+    expect(
+      await screen.findByText(t("tasks.notifyPartial", { sent: 1, failed: 2, remaining: 2 })),
+    ).toBeTruthy();
+    expect(screen.queryByText(t("tasks.notifySent", { sent: 1, remaining: 2 }))).toBeNull();
+  });
+
+  it("bildirim izni yoksa hata kodu görünür ve \"gönderildi\" yazılmaz", async () => {
+    setup();
+    await loaded();
+
+    mocks.notificationsDeliver.mockRejectedValue({
+      code: "E_NOTIFY_PERMISSION",
+      message: "Bildirim izni verilmedi. Sistem ayarlarından izin verin.",
+    });
+    fireEvent.click(screen.getByText(t("tasks.notify")));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_NOTIFY_PERMISSION");
+    expect(alert.textContent).toContain("Bildirim izni verilmedi");
+    // Hiçbir "gönderildi" cümlesi yazılmaz.
+    expect(screen.queryByText(t("tasks.notifySent", { sent: 0, remaining: 0 }))).toBeNull();
+    expect(screen.queryByText(t("tasks.notifyNone", { remaining: 0 }))).toBeNull();
   });
 
   it("hatırlatıcı satırında eşleşmeyen görev ve bilinmeyen politika uydurulmaz", async () => {

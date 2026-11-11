@@ -1635,6 +1635,14 @@ export type ReminderRow = {
   localDay: string;
 };
 
+/** `notifications_deliver` sonucu. `sent` OS'un kabul ettiği (sicilde kapanan)
+ *  satır sayısıdır; `failed` denemesi artan satır sayısıdır ve satır kuyrukta kalır. */
+export type NotificationDelivery = {
+  sent: number;
+  failed: number;
+  remaining: number;
+};
+
 export type ReminderEnqueueResult = {
   queued: number;
   reminders: ReminderRow[];
@@ -2146,6 +2154,10 @@ export const api = {
     invoke<ReminderRow[]>("task_reminders", { caseId, today }),
   taskRemindersEnqueue: (caseId: string, today: string) =>
     invoke<ReminderEnqueueResult>("task_reminders_enqueue", { caseId, today }),
+  /** Kuyruktaki hatırlatıcıları **yerel bildirim** olarak gösterir (REQ-028).
+   *  `delivered_at` yalnız OS kabul ettiğinde yazılır; metin görev/dosya adı taşımaz. */
+  notificationsDeliver: (caseId: string) =>
+    invoke<NotificationDelivery>("notifications_deliver", { caseId }),
 
   anchorList: (caseId: string) => invoke<AnchorRow[]>("anchor_list", { caseId }),
   anchorLocate: (anchorId: string) =>

@@ -783,6 +783,93 @@ pub fn task_reminders_enqueue(
     Ok(db.enqueue_task_reminders(&case_id, &today)?)
 }
 
+/// Yerel bildirim teslimi sonucu (REQ-028).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationDelivery {
+    /// OS'un kabul ettiği ve `delivered_at` ile kapatılan satır sayısı.
+    pub sent: usize,
+    /// OS'un reddettiği deneme sayısı; satır **kuyrukta kalır**.
+    pub failed: usize,
+    /// Bu çağrıdan sonra kuyrukta kalan bildirim sayısı.
+    pub remaining: i64,
+}
+
+/// Kuyruktaki hatırlatıcı bildirimlerini OS bildirimi olarak gösterir.
+///
+/// Sözleşme:
+/// - yalnız **bildirim** sınıfı olaylar okunur (`task.reminder_due`); alan
+///   olayları (`review.decision_committed`) bildirim sayılmaz,
+/// - metin çekirdekten gelir ve yalnız zaman ifadesi taşır — görev başlığı,
+///   dosya adı, taraf adı bildirime **girmez** (şartname §331),
+/// - `delivered_at` **yalnız** OS bildirimi kabul ettiğinde yazılır; hata
+///   `attempt_count`ı artırır, satır "gönderildi" görünmez,
+/// - izin verilmediyse `E_NOTIFY_PERMISSION` döner ve **hiçbir** satır
+///   kapatılmaz (izin yokken "gönderildi" denmez).
+#[tauri::command]
+pub fn notifications_deliver(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<NotificationDelivery, ApiError> {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let pending =
+        db.pending_notifications(Some(&case_id), dim_storage::MAX_NOTIFICATIONS_PER_CALL)?;
+    if pending.is_empty() {
+        return Ok(NotificationDelivery {
+            sent: 0,
+            failed: 0,
+            remaining: 0,
+        });
+    }
+
+    let notifier = app.notification();
+    let mut permission = notifier.permission_state().map_err(|_| {
+        ApiError::new(
+            "E_NOTIFY_BACKEND",
+            "Bildirim durumu okunamadı; işletim sistemi bildirim servisi yanıt vermedi.",
+        )
+    })?;
+    if matches!(
+        permission,
+        PermissionState::Prompt | PermissionState::PromptWithRationale
+    ) {
+        permission = notifier.request_permission().map_err(|_| {
+            ApiError::new(
+                "E_NOTIFY_PERMISSION",
+                "Bildirim izni istenemedi. Sistem ayarlarından izin verin.",
+            )
+        })?;
+    }
+    if permission != PermissionState::Granted {
+        return Err(ApiError::new(
+            "E_NOTIFY_PERMISSION",
+            "Bildirim izni verilmedi. Sistem ayarlarından izin verin.",
+        ));
+    }
+
+    let mut delivered: Vec<String> = Vec::new();
+    let mut failed_ids: Vec<String> = Vec::new();
+    for item in &pending {
+        let (title, body) = dim_storage::notification_text(item.policy.as_deref());
+        match notifier.builder().title(title).body(body).show() {
+            Ok(()) => delivered.push(item.id.clone()),
+            Err(_) => failed_ids.push(item.id.clone()),
+        }
+    }
+    let sent = db.mark_notifications_delivered(&delivered, &dim_storage::delivery_stamp())?;
+    let failed = db.record_notification_failures(&failed_ids)?;
+    let remaining = db.pending_notification_count(Some(&case_id))?;
+    Ok(NotificationDelivery {
+        sent,
+        failed,
+        remaining,
+    })
+}
+
 #[tauri::command]
 pub fn document_pages(
     state: State<'_, AppState>,
