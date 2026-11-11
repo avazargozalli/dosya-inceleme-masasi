@@ -362,6 +362,29 @@ export function capabilityGateText(
   return t("probe.gateClosed", { link: view.linkLabel, detail });
 }
 
+/**
+ * İstem argv biçimi ve **istem gönderim kapısı** (F10-T08). Biçim çekirdekten
+ * gelir (`prompt_shape`), arayüzde yeniden üretilmez: `agy` `--print`e komşu
+ * bayrağı istem sanıyor (ölçüldü), bu yüzden istem `=` ile bağlanır. Araçsız
+ * kip doğrulanmamış adaptörde gönderim kapalıdır — "sandbox var" denmez.
+ */
+export function promptShapeText(
+  view: Pick<CliCapabilityAdapter, "prompt">,
+): { text: string; tone: ProbeTone } {
+  const { prompt } = view;
+  const argv = prompt.argv.length > 0 ? prompt.argv.join(" ") : "—";
+  if (prompt.printable) {
+    return { text: t("probe.promptOpen", { argv }), tone: "ok" };
+  }
+  const reason =
+    prompt.reason === "batch_forbidden"
+      ? t("probe.promptReasonBatch")
+      : prompt.reason === "tool_free_unverified"
+        ? t("probe.promptReasonToolFree")
+        : t("probe.promptReasonUnknown");
+  return { text: t("probe.promptClosed", { argv, reason }), tone: "warn" };
+}
+
 /** Dürüstlük uyarıları: okunamayan yardım, kesik çıktı, eksik bayrak. */
 export function capabilityWarnings(
   view: Pick<CliCapabilityAdapter, "helpError" | "helpRead" | "rows">,

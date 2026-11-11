@@ -1054,6 +1054,16 @@ export type CliCapabilityRow = {
   detail: string;
 };
 
+/** F10-T08: ürünün ürettiği istem argv'si ve istem gönderim kapısı. */
+export type CliPromptShape = {
+  /** İstem yerine `<istem>` yer tutucu. */
+  argv: string[];
+  /** Yalnız toplu yürütme açık ve araçsız kip doğrulanmışsa `true`. */
+  printable: boolean;
+  reason: "batch_forbidden" | "tool_free_unverified" | null;
+  toolFree: "verified" | "no_path" | "missing";
+};
+
 export type CliCapabilityAdapter = {
   adapterId: string;
   displayName: string;
@@ -1066,6 +1076,7 @@ export type CliCapabilityAdapter = {
   linkLabel: string;
   gateOpen: boolean;
   gateReasons: string[];
+  prompt: CliPromptShape;
   rows: CliCapabilityRow[];
 };
 

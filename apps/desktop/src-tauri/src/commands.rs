@@ -4151,6 +4151,20 @@ pub struct CliCapabilityRowView {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CliPromptShapeView {
+    /// Ürünün ürettiği istem argv'si; istem yerine `<istem>` yer tutucu.
+    pub argv: Vec<String>,
+    /// İstem gönderimi açık mı? Yalnız toplu yürütme açık **ve** araçsız kip
+    /// doğrulanmış bir bayrakla bildirilmişse `true`.
+    pub printable: bool,
+    /// `printable=false` ise neden kodu (`batch_forbidden` / `tool_free_unverified`).
+    pub reason: Option<&'static str>,
+    /// Araçsız kip durumu: `verified` / `no_path` / `missing`.
+    pub tool_free: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CliCapabilityAdapterView {
     pub adapter_id: &'static str,
     pub display_name: &'static str,
@@ -4163,6 +4177,8 @@ pub struct CliCapabilityAdapterView {
     pub link_label: &'static str,
     pub gate_open: bool,
     pub gate_reasons: Vec<String>,
+    /// İstem argv biçimi ve istem gönderim kapısı (F10-T08 ölçülen kusuru).
+    pub prompt: CliPromptShapeView,
     pub rows: Vec<CliCapabilityRowView>,
 }
 
@@ -4282,6 +4298,15 @@ pub async fn cli_capability_matrix(
                 link_label: report.link.label(),
                 gate_open: report.gate_open,
                 gate_reasons: report.gate_reasons.clone(),
+                prompt: {
+                    let shape = dim_cli_adapters::prompt_shape(adapter.id);
+                    CliPromptShapeView {
+                        argv: shape.as_ref().map(|s| s.argv.clone()).unwrap_or_default(),
+                        printable: shape.as_ref().is_some_and(|s| s.printable),
+                        reason: shape.as_ref().and_then(|s| s.reason),
+                        tool_free: shape.as_ref().map_or("missing", |s| s.tool_free),
+                    }
+                },
                 rows: capability_rows(&report),
             });
         }

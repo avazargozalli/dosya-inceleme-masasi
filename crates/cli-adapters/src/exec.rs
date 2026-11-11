@@ -321,6 +321,9 @@ pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutco
     ensure_batch_allowed(&req.adapter_id)?;
     let args = build_args(&req.adapter_id, &req.args)?;
     let args = hardened_args(&req.adapter_id, args);
+    // İstem biçimi kapısı: `--print`e komşu bir bayrak, sağlayıcıda **istem**
+    // olur (ölçüldü, `agy`); sertleştirme bayrağı sessizce isteme dönüşmesin.
+    ensure_prompt_shape(&req.adapter_id, &args)?;
     if !req.executable.is_absolute() {
         return Err(RunError::RelativeExecutable);
     }
@@ -601,6 +604,163 @@ pub fn hardened_args(adapter_id: &str, mut args: Vec<String>) -> Vec<String> {
         args.extend(group.iter().map(|arg| (*arg).to_string()));
     }
     args
+}
+
+/// İstem metninin üst sınırı. İstem **ürün** tarafından üretilir; sınırsız metin
+/// argv boyutunu, alt süreç davranışını ve denetim kaydını belirsizleştirir.
+pub const PROMPT_MAX_BYTES: usize = 16 * 1024;
+
+/// İstem argv'ye konmadan önce doğrulanır. Üç kapı:
+///
+/// 1. **Boş olamaz** (sağlayıcı boş istemi reddeder, ama ürün boş istem
+///    göndermemeli: boş çağrı kullanıcının aboneliğinden kota harcar).
+/// 2. **`-` ile başlayamaz** — CLI'lar argv'yi soldan sağa ayrıştırır; `-` ile
+///    başlayan istem bayrak sanılır ve istenmeyen bir kip açar. Ölçüldü (agy
+///    1.4.12): `--print --sandbox` → "`--print` took `--sandbox` as its prompt".
+/// 3. Kontrol karakteri (NUL dâhil; `\n\r\t` serbest) taşıyamaz ve
+///    [`PROMPT_MAX_BYTES`] sınırını aşamaz.
+pub fn validate_prompt(prompt: &str) -> Result<(), AdapterError> {
+    if prompt.trim().is_empty() {
+        return Err(AdapterError::InvalidPrompt("istem boş".to_string()));
+    }
+    if prompt.starts_with('-') {
+        return Err(AdapterError::InvalidPrompt(
+            "istem '-' ile başlayamaz: bayrak sanılır".to_string(),
+        ));
+    }
+    if let Some(bad) = prompt
+        .chars()
+        .find(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(AdapterError::InvalidPrompt(format!(
+            "istem kontrol karakteri taşıyor (U+{:04X})",
+            u32::from(bad)
+        )));
+    }
+    if prompt.len() > PROMPT_MAX_BYTES {
+        return Err(AdapterError::InvalidPrompt(format!(
+            "istem {} bayt; sınır {PROMPT_MAX_BYTES}",
+            prompt.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Yazdırma kipinde **istem taşıyan** argv. Biçim sağlayıcıya göre değişir ve
+/// ölçülerek sabitlendi (agy 1.4.12 / `--help`, 2026-11-11):
+///
+/// - `antigravity-cli`: `--print=<istem>` — **tek belirteç**. Vendor hatası
+///   birebir: *"`--print` took \"--sandbox\" as its prompt, so the intended
+///   prompt was left as an argument and ignored. Attach the prompt to the flag
+///   (`--print='your prompt'`) and move `--sandbox` elsewhere."* Yani bayrak
+///   `--print`e komşu olursa **istem** olur ve sertleştirme bayrağı uygulanmaz.
+/// - `claude-code`: `--print <istem>` — `--print` boolean; istem ayrı belirteç.
+/// - `codex-cli`: `exec <istem>` — alt komut + konumsal istem.
+/// - `kimi-cli`: toplu yürütme kapalı → istem argv'si **yok**.
+///
+/// Dönen argv [`crate::build_args`] kapısından **geçmez**: istem konumsaldır ve
+/// bayrak değildir. Bu yüzden istem yalnız burada, [`validate_prompt`] sonrası
+/// argv'ye girer; arayüzden istem metni ya da bayrak geçirilemez.
+pub fn prompt_argv(adapter_id: &str, prompt: &str) -> Result<Vec<String>, AdapterError> {
+    let spec = crate::spec(adapter_id)
+        .ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
+    if spec.batch_forbidden {
+        return Err(AdapterError::BatchForbidden);
+    }
+    validate_prompt(prompt)?;
+    Ok(match spec.id {
+        "antigravity-cli" => vec![format!("--print={prompt}")],
+        "claude-code" => vec!["--print".to_string(), prompt.to_string()],
+        "codex-cli" => vec!["exec".to_string(), prompt.to_string()],
+        other => {
+            return Err(AdapterError::InvalidPrompt(format!(
+                "{other}: bu adaptörde istem yolu tanımlı değil"
+            )))
+        }
+    })
+}
+
+/// Arayüzde gösterilen istem biçimi: argv (istem yerine `<istem>` yer tutucu)
+/// ve istem gönderiminin **açık** olup olmadığı. `printable` yalnız iki koşul
+/// birlikte sağlanınca `true` olur: adaptör toplu yürütmeye açık **ve** araçsız
+/// kipi (ToolFree) doğrulanmış bir bayrakla bildirilmiş. Araçsız kip
+/// kanıtlanamıyorsa istem gönderimi kapalıdır — "sandbox var" varsayımı yapılmaz.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptShape {
+    pub adapter_id: &'static str,
+    pub argv: Vec<String>,
+    pub printable: bool,
+    /// `printable=false` ise nedeni (`batch_forbidden` / `tool_free_unverified`).
+    pub reason: Option<&'static str>,
+    /// Araçsız kip durumu: `verified` / `no_path` / `missing`.
+    pub tool_free: &'static str,
+}
+
+#[must_use]
+pub fn prompt_shape(adapter_id: &str) -> Option<PromptShape> {
+    let spec = crate::spec(adapter_id)?;
+    let placeholder = "<istem>";
+    let argv = match spec.id {
+        "antigravity-cli" => vec![format!("--print={placeholder}")],
+        "claude-code" => vec!["--print".to_string(), placeholder.to_string()],
+        "codex-cli" => vec!["exec".to_string(), placeholder.to_string()],
+        _ => Vec::new(),
+    };
+    let caps = crate::capabilities(adapter_id)?;
+    let tool_free = caps
+        .requirements
+        .iter()
+        .find(|requirement| requirement.capability == crate::Capability::ToolFree);
+    let (tool_free_state, tool_free_verified) = match tool_free {
+        Some(requirement) => match requirement.mechanism {
+            crate::Mechanism::NoVerifiedPath => ("no_path", false),
+            _ => ("verified", true),
+        },
+        None => ("missing", false),
+    };
+    let (printable, reason) = if spec.batch_forbidden {
+        (false, Some("batch_forbidden"))
+    } else if !tool_free_verified {
+        (false, Some("tool_free_unverified"))
+    } else {
+        (true, None)
+    };
+    Some(PromptShape {
+        adapter_id: spec.id,
+        argv,
+        printable,
+        reason,
+        tool_free: tool_free_state,
+    })
+}
+
+/// `--print` **çıplak** kalırsa ve yanındaki belirteç bir bayraksa, CLI onu
+/// istem sanar: sertleştirme bayrağı sessizce isteme dönüşür ve **uygulanmaz**.
+/// Bu kapı yürütmeden önce durur (ölçülen vendor davranışı, `agy` 1.4.12).
+///
+/// Kapı **yalnız** `--print`i değer alan adaptörlere uygulanır: Antigravity'de
+/// `--print` istemi değer olarak alır; Claude Code'da `--print` boolean'dır ve
+/// yanındaki bayrak normal ayrıştırılır. Adaptörü olmayan çağrı kapıyı atlar
+/// (`run_cli` adaptörü zaten `build_args`ta doğrular).
+pub fn ensure_prompt_shape(adapter_id: &str, args: &[String]) -> Result<(), AdapterError> {
+    let takes_value = matches!(adapter_id, "antigravity-cli");
+    if !takes_value {
+        return Ok(());
+    }
+    for (index, arg) in args.iter().enumerate() {
+        if arg != "--print" {
+            continue;
+        }
+        if let Some(next) = args.get(index + 1) {
+            if next.starts_with('-') {
+                return Err(AdapterError::PromptShape(format!(
+                    "--print yanındaki '{}' bayrak; istem sanılır",
+                    next.split('=').next().unwrap_or(next)
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -1174,6 +1334,137 @@ mod hardening_tests {
     fn adapters_without_hardening_rules_are_untouched() {
         let args = hardened_args("kimi-cli", vec!["--print".into()]);
         assert_eq!(args, vec!["--print".to_string()]);
+    }
+
+    // --- İstem biçimi (F10-T08 ölçülen kusuru) ---
+
+    /// Sağlayıcıya göre **ölçülmüş** istem argv'si. Antigravity istemi `=` ile
+    /// bağlar: çıplak `--print` yanındaki bayrağı istem sanar (vendor hatası).
+    #[test]
+    fn prompt_argv_shapes_are_vendor_correct() {
+        let anti = prompt_argv("antigravity-cli", "Merhaba dünya").expect("agy");
+        assert_eq!(anti, vec!["--print=Merhaba dünya".to_string()]);
+        let claude = prompt_argv("claude-code", "Merhaba").expect("claude");
+        assert_eq!(claude, vec!["--print".to_string(), "Merhaba".to_string()]);
+        let codex = prompt_argv("codex-cli", "Merhaba").expect("codex");
+        assert_eq!(codex, vec!["exec".to_string(), "Merhaba".to_string()]);
+    }
+
+    #[test]
+    fn kimi_has_no_prompt_argv() {
+        let err = prompt_argv("kimi-cli", "Merhaba").unwrap_err();
+        assert_eq!(err.code(), "E_CLI_BATCH_FORBIDDEN");
+    }
+
+    /// İstem bayrak sanılacak biçimde olamaz: `-` ile başlayan metin argv'ye
+    /// girmez (CLI onu bayrak olarak ayrıştırır).
+    #[test]
+    fn prompt_that_starts_with_dash_is_rejected() {
+        for adapter in ["antigravity-cli", "claude-code", "codex-cli"] {
+            let err = prompt_argv(adapter, "--sandbox").unwrap_err();
+            assert_eq!(err.code(), "E_CLI_ARGUMENT", "{adapter}");
+        }
+    }
+
+    #[test]
+    fn empty_control_and_oversized_prompts_are_rejected() {
+        assert_eq!(
+            prompt_argv("claude-code", "   ").unwrap_err().code(),
+            "E_CLI_ARGUMENT"
+        );
+        assert_eq!(
+            prompt_argv("claude-code", "a\u{0}b").unwrap_err().code(),
+            "E_CLI_ARGUMENT"
+        );
+        let long = "a".repeat(PROMPT_MAX_BYTES + 1);
+        assert_eq!(
+            prompt_argv("antigravity-cli", &long).unwrap_err().code(),
+            "E_CLI_ARGUMENT"
+        );
+        // Sınırda kalan istem geçer; satır sonu ve sekme serbest.
+        let edge = "a".repeat(PROMPT_MAX_BYTES - 2) + "\n\t";
+        assert!(prompt_argv("claude-code", &edge).is_ok());
+    }
+
+    /// Ölçülen kusur: `agy --print --sandbox` → "--print took \"--sandbox\" as
+    /// its prompt". Kapı bu biçimi yürütmeden **önce** reddeder; böylece
+    /// sertleştirme bayrağı sessizce isteme dönüşemez.
+    #[test]
+    fn bare_print_before_a_flag_is_refused() {
+        let args = vec!["--print".to_string(), "--sandbox".to_string()];
+        let err = ensure_prompt_shape("antigravity-cli", &args).unwrap_err();
+        assert_eq!(err.code(), "E_CLI_ARGUMENT");
+        assert!(err.to_string().contains("--sandbox"), "{err}");
+        // İstem yanında bayrak yoksa biçim geçerli.
+        assert!(ensure_prompt_shape(
+            "antigravity-cli",
+            &["--print".to_string(), "metin".to_string()]
+        )
+        .is_ok());
+        assert!(ensure_prompt_shape("antigravity-cli", &["--print=metin".to_string()]).is_ok());
+        // Sonda kalan çıplak `--print` istem sanmaz: sağlayıcı "boş istem" der.
+        assert!(ensure_prompt_shape("antigravity-cli", &["--print".to_string()]).is_ok());
+        // Claude'da `--print` boolean: yanındaki bayrak istem sanılmaz.
+        assert!(ensure_prompt_shape(
+            "claude-code",
+            &["--print".to_string(), "--tools".to_string(), String::new()]
+        )
+        .is_ok());
+    }
+
+    /// Sertleştirme, istem argv'sini **bozmaz**: üretilen argv'ye zorunlu
+    /// bayraklar eklendiğinde `--print` ile istem arasına bayrak girmez ve
+    /// kapıdan geçer.
+    #[test]
+    fn hardening_never_breaks_the_prompt_shape() {
+        for adapter in ["antigravity-cli", "claude-code", "codex-cli"] {
+            let argv = prompt_argv(adapter, "kısa istem").expect("argv");
+            let hardened = hardened_args(adapter, argv.clone());
+            ensure_prompt_shape(adapter, &hardened)
+                .unwrap_or_else(|err| panic!("{}: {err} ({hardened:?})", adapter));
+            // İstem kaybolmadı ve bozulmadı.
+            assert!(
+                hardened.iter().any(|arg| arg.contains("kısa istem")),
+                "{adapter}: {hardened:?}"
+            );
+            // Antigravity'de istem daima bağlı (`--print=…`) kalır.
+            if adapter == "antigravity-cli" {
+                assert!(hardened.iter().any(|arg| arg == "--print=kısa istem"));
+                assert!(!hardened.iter().any(|arg| arg == "--print"));
+            }
+        }
+    }
+
+    /// Arayüzde gösterilen biçim, çalıştırılan argv ile aynı yer tutucuyu taşır.
+    #[test]
+    fn prompt_shape_matches_the_builder() {
+        for adapter in crate::SPECS {
+            let Some(shape) = prompt_shape(adapter.id) else {
+                panic!("{}: şekil yok", adapter.id);
+            };
+            if shape.argv.is_empty() {
+                assert_eq!(adapter.id, "kimi-cli");
+                assert!(!shape.printable);
+                assert_eq!(shape.reason, Some("batch_forbidden"));
+                continue;
+            }
+            let built = prompt_argv(adapter.id, "<istem>").expect("builder");
+            assert_eq!(shape.argv, built, "{}", adapter.id);
+        }
+    }
+
+    /// Araçsız kipi doğrulanmamış adaptörde istem gönderimi **kapalı**:
+    /// "sandbox var" varsayımı yapılmaz (ölçüldü: agy `--sandbox` dosya
+    /// okumayı engellemiyor).
+    #[test]
+    fn prompt_gate_requires_a_verified_tool_free_path() {
+        let anti = prompt_shape("antigravity-cli").expect("agy");
+        assert!(!anti.printable);
+        assert_eq!(anti.reason, Some("tool_free_unverified"));
+        assert_eq!(anti.tool_free, "no_path");
+        let claude = prompt_shape("claude-code").expect("claude");
+        assert!(claude.printable, "{claude:?}");
+        assert_eq!(claude.tool_free, "verified");
     }
 }
 

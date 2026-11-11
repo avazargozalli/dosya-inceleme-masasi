@@ -74,6 +74,7 @@ import {
   capabilityWarnings,
   linkTone,
   matrixWorstLink,
+  promptShapeText,
   residueAge,
   residueCleanupSummary,
   residueCleanupTargets,
@@ -544,6 +545,7 @@ export function Providers() {
             <div style={{ display: "grid", gap: "var(--space-3)" }}>
               {matrix.adapters.map((adapter) => {
                 const warnings = capabilityWarnings(adapter);
+                const prompt = promptShapeText(adapter);
                 return (
                   <div
                     key={adapter.adapterId}
@@ -596,6 +598,12 @@ export function Providers() {
                     </ul>
                     <div className="muted small" style={{ marginTop: "var(--space-2)" }}>
                       {capabilitySummary(adapter)} · {capabilityGateText(adapter)}
+                    </div>
+                    <div
+                      className={prompt.tone === "warn" ? "notice danger" : "notice"}
+                      style={{ fontSize: 12, marginTop: "var(--space-2)" }}
+                    >
+                      {prompt.text}
                     </div>
                     {warnings.map((warning) => (
                       <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>

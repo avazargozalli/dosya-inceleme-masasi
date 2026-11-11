@@ -13,6 +13,7 @@ import {
   probeStatusLabel,
   probeSummary,
   probeWarnings,
+  promptShapeText,
   residueAge,
   residueCleanupSummary,
   residueCleanupTargets,
@@ -325,5 +326,43 @@ describe("residue", () => {
     ]);
     expect(warnings.join(" ")).not.toContain("  ");
     expect(warnings.join(" ")).not.toContain("metninde  yok");
+  });
+});
+
+describe("promptShapeText", () => {
+  it("açık istem kapısında argv biçimini yazar", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: ["--print=<istem>"],
+        printable: true,
+        reason: null,
+        toolFree: "verified",
+      },
+    });
+    expect(line.tone).toBe("ok");
+    expect(line.text).toContain("--print=<istem>");
+    expect(line.text).toContain("istem gönderimi açık");
+  });
+
+  it("araçsız kip doğrulanmadıysa kapalıdır ve neden yazılır", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: ["--print=<istem>"],
+        printable: false,
+        reason: "tool_free_unverified",
+        toolFree: "no_path",
+      },
+    });
+    expect(line.tone).toBe("warn");
+    expect(line.text).toContain("araçsız kip doğrulanamadı");
+    expect(line.text).not.toContain("açık");
+  });
+
+  it("toplu yürütme kapalıysa nedeni ayrı yazar", () => {
+    const line = promptShapeText({
+      prompt: { argv: [], printable: false, reason: "batch_forbidden", toolFree: "no_path" },
+    });
+    expect(line.text).toContain("otomatik yürütme kapalı");
+    expect(line.text).toContain("—");
   });
 });

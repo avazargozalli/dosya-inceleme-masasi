@@ -140,6 +140,7 @@ import {
   capabilityWarnings,
   matrixWorstLink,
   persistenceText,
+  promptShapeText,
   probeArgv,
   probeOutputs,
   probeScopeLines,
@@ -305,6 +306,12 @@ const MATRIX: CliCapabilityMatrix = {
       linkLabel: "bildirildi",
       gateOpen: true,
       gateReasons: [],
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: true,
+        reason: null,
+        toolFree: "verified",
+      },
       rows: [
         {
           capability: "print",
@@ -340,6 +347,7 @@ const MATRIX: CliCapabilityMatrix = {
       linkLabel: "kurulu değil",
       gateOpen: false,
       gateReasons: ["path yok"],
+      prompt: { argv: [], printable: false, reason: null, toolFree: "missing" },
       rows: [
         {
           capability: "print",
@@ -953,6 +961,8 @@ describe("sağlayıcılar ekranı davranışı", () => {
     for (const warning of capabilityWarnings(MATRIX.adapters[0]!)) {
       expect(within(first).getByText(warning)).toBeTruthy();
     }
+    // İstem biçimi çekirdekten gelir (`prompt_shape`), arayüzde üretilmez.
+    expect(within(first).getByText(promptShapeText(MATRIX.adapters[0]!).text)).toBeTruthy();
 
     // İkinci adaptör: sürüm yok → "sürüm okunamadı", yardım okunamadı uyarısı.
     const second = screen.getByRole("heading", { level: 3, name: "Gemini (matris)" }).closest(".card") as HTMLElement;
@@ -969,11 +979,38 @@ describe("sağlayıcılar ekranı davranışı", () => {
     for (const warning of capabilityWarnings(MATRIX.adapters[1]!)) {
       expect(within(second).getByText(warning)).toBeTruthy();
     }
+    expect(within(second).getByText(promptShapeText(MATRIX.adapters[1]!).text)).toBeTruthy();
 
     // Sınırlar açılır listede; notlar sunucudan geldiği gibi yazılır.
     for (const note of MATRIX.notes) {
       expect(screen.getByText(note)).toBeTruthy();
     }
+  });
+
+  it("istem gönderimi yalnız araçsız kip doğrulandığında açık yazılır", async () => {
+    // Aynı adaptör, kapalı istem kapısı: satır nedeni yazar, "açık" demez.
+    const closed: CliCapabilityMatrix = {
+      ...MATRIX,
+      adapters: [
+        {
+          ...MATRIX.adapters[0]!,
+          prompt: {
+            argv: ["--print=<istem>"],
+            printable: false,
+            reason: "tool_free_unverified",
+            toolFree: "no_path",
+          },
+        },
+      ],
+    };
+    setup({ matrix: async () => closed });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(".card") as HTMLElement;
+
+    expect(within(card).getByText(promptShapeText(closed.adapters[0]!).text)).toBeTruthy();
+    expect(within(card).getByText(/araçsız kip doğrulanamadı/)).toBeTruthy();
+    expect(within(card).queryByText(t("probe.promptOpen", { argv: "--print=<istem>" }))).toBeNull();
   });
 
   it("matris koşusu başarısız olursa önceki matris ekranda kalmaz", async () => {

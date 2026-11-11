@@ -40,6 +40,7 @@ function adapter(overrides: Partial<CliCapabilityAdapter> = {}): CliCapabilityAd
     linkLabel: "bildirildi · denenmedi",
     gateOpen: true,
     gateReasons: [],
+    prompt: { argv: ["--print", "<istem>"], printable: true, reason: null, toolFree: "verified" },
     rows: [
       row(),
       row({ capability: "hook_mcp_off", label: "Hook / MCP kapalı", flags: ["--bare", "--strict-mcp-config"] }),

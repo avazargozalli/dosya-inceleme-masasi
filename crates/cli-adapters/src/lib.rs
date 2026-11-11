@@ -36,8 +36,9 @@ pub use capability::{
 };
 pub use events::{final_message, parse_codex_json_lines, CodexEvent, CodexUsage, EventError};
 pub use exec::{
-    clamp_timeout, default_env_allowlist, retry_while_busy, run_cli, sanitize_env, CliRunRequest,
-    RunError, RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT,
+    clamp_timeout, default_env_allowlist, ensure_prompt_shape, prompt_argv, prompt_shape,
+    retry_while_busy, run_cli, sanitize_env, validate_prompt, CliRunRequest, PromptShape, RunError,
+    RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT, PROMPT_MAX_BYTES,
     SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
 };
 pub use probe::{probe_request, run_probe, ProbeReport, PROBE_TIMEOUT};
@@ -166,6 +167,16 @@ pub enum AdapterError {
     DisallowedArgument(String),
     #[error("toplu/otomatik kullanım bu sağlayıcıda engelli")]
     BatchForbidden,
+    /// İstem metni argv'ye **güvenle** konamaz (boş, `-` ile başlıyor, kontrol
+    /// karakteri taşıyor ya da sınırı aşıyor). İstem ürün tarafından üretilir;
+    /// bayrak sanılacak bir metin alt sürece istem olarak verilmez.
+    #[error("geçersiz istem: {0}")]
+    InvalidPrompt(String),
+    /// `--print` çıplak kaldı ve yanındaki belirteç bir bayrak: sağlayıcı onu
+    /// **istem** sanar (ölçüldü, `agy`), yani sertleştirme bayrağı sessizce
+    /// isteme dönüşür. Kapı bunu yürütmeden önce reddeder.
+    #[error("istem biçimi geçersiz: {0}")]
+    PromptShape(String),
     #[error("araç kurulu değil")]
     NotInstalled,
     #[error("sürüm yoklaması başarısız")]
@@ -178,6 +189,8 @@ impl AdapterError {
             Self::UnknownAdapter(_) => "E_CLI_UNKNOWN",
             Self::DisallowedArgument(_) => "E_CLI_ARGUMENT",
             Self::BatchForbidden => "E_CLI_BATCH_FORBIDDEN",
+            Self::InvalidPrompt(_) => "E_CLI_ARGUMENT",
+            Self::PromptShape(_) => "E_CLI_ARGUMENT",
             Self::NotInstalled => "E_CLI_NOT_INSTALLED",
             Self::ProbeFailed => "E_CLI_PROBE",
         }
