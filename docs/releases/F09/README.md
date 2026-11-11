@@ -763,6 +763,11 @@ değişmez.
   uzlaştırmasında da geçiyor; iki mutasyon yalnız `ai_run` bloğuna özgü
   bağlamla yeniden yazıldı ve 6/6 yeniden ölçüldü (ilk koşunun 4/6'sı kanıt
   sayılmadı).
+- **CI (ölçüldü):** kod `129882b` (6 dosya, **+278/−2**) → run `42986282535`
+  **10/10 YEŞİL** (`dim-storage` **526** hem `macos-15` 260,30 s hem
+  `ubuntu-latest` 648,53 s — **birebir**; `arayüz` **65 dosya / 1359 test**;
+  paket `index-D53oJrbQ.js` **668,64 kB** / gzip **178,77 kB**; `masaüstü kabuk`
+  40/0/5 + yoksayılan koşu 5 passed · 40 filtered; diğer altı iş yeşil).
 - **Dürüst sınırlar:** (a) uzlaştırma yalnız **kasa açılışında** koşar — açık
   oturumda süreç ölürse satır bir sonraki açılışa kadar `running` görünür
   (doğru: o oturumda sonuç gelmemişti); (b) durum `failed` + işaret: DB'yi
