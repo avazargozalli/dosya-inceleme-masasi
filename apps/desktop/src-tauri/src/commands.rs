@@ -217,6 +217,11 @@ fn remember(
     // `attempted` satır "hâlâ uçuşta" gibi görünmesin; kesin duruma çevrilir.
     // Ayrıntı: `Database::reconcile_attempted_receipts`.
     let _ = db.reconcile_attempted_receipts();
+    // F09: çalıştırma satırı da aynı tehlikeyi taşır — süreç gönderim sırasında
+    // ölürse `ai_runs.status` sonsuza kadar `running` kalır ve ekran aylar sonra
+    // da "sürüyor" der. Açılışta canlı çağrı olamaz (kasa kilidi çalıştırma
+    // boyunca tutulur). Ayrıntı: `Database::reconcile_running_ai_runs`.
+    let _ = db.reconcile_running_ai_runs();
     let info = VaultInfo {
         vault_path: path.to_string_lossy().to_string(),
         vault_id: vault_id.clone(),

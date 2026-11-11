@@ -1325,6 +1325,53 @@ impl Database {
         Ok(changed)
     }
 
+    /// Kasa açılışında **yarım kalmış çalıştırmalar** kesin duruma bağlanır.
+    ///
+    /// `start_ai_run` satırı `running` olarak açar; durumu yalnız
+    /// `finish_ai_run` yazar. Süreç çalıştırma sırasında ölürse satır **sonsuza
+    /// kadar `running`** kalıyordu: aylar sonra açılan ekranda "sürüyor" gibi
+    /// görünüyordu — oysa onu bitirecek çağrı artık yok.
+    ///
+    /// Kasa açılışında hiçbir çalıştırma uçuşta olamaz: `ai_run_execute` kasa
+    /// kilidini çalıştırmanın tamamı boyunca tutar (`commands.rs`), yani açılış
+    /// anında `running` satırın sonucunu yazacak **canlı bir çağrı yoktur**;
+    /// ya süreç çökmüştür ya da final yazımı düşmüştür.
+    ///
+    /// `ai_runs.status` CHECK kümesi `interrupted` taşımaz (şemayı değiştirmek
+    /// tabloyu yeniden kurmayı gerektirir) → durum `failed` yazılır ve ayrım
+    /// **`usage_report`** içinde taşınır (`error=interrupted`); ekran bu
+    /// işareti görünce "oturum kesildi · sonuç yazılmadı" der, "başarısız" ya
+    /// da "sürüyor" demez. `completed_at` **yazılmaz**: bitiş zamanı bilinmiyor,
+    /// açılış saatini yazmak uydurma olurdu.
+    ///
+    /// Geçiş tek koşullu `UPDATE`dir; sonuçlanmış satıra dokunmaz ve ikinci
+    /// açılış 0 döner (idempotent). Kaç satırın kapandığı denetime yazılır;
+    /// satır kimlikleri ve çalıştırma içeriği **yazılmaz**.
+    pub fn reconcile_running_ai_runs(&self) -> Result<usize, StorageError> {
+        let report = serde_json::json!({
+            "billing": "unknown",
+            "error": "interrupted",
+            "reason": "process_exit",
+        })
+        .to_string();
+        let changed = self.conn().execute(
+            "UPDATE ai_runs SET status='failed', usage_report=?1 WHERE status='running'",
+            [report],
+        )?;
+        if changed > 0 {
+            // Denetim yazılamazsa kasa açılışı düşmez: satırlar zaten kesin
+            // durumda (makbuz uzlaştırmasıyla aynı gerekçe).
+            let _ = self.append_audit(
+                "ai_run",
+                None,
+                "interrupt",
+                "local-system",
+                &serde_json::json!({ "interrupted": changed }),
+            );
+        }
+        Ok(changed)
+    }
+
     /// Dosyanın aktarım makbuzları — **en yeni önce**.
     ///
     /// Makbuz `ai_runs`a bağlıdır; dosya kapsamı `ai_runs.case_id` üzerinden
@@ -3459,6 +3506,73 @@ mod tests {
         assert!(
             !metadata.contains(&orphan),
             "makbuz kimliği denetime girmez"
+        );
+    }
+
+    /// Açılış uzlaştırması: sonucu yazılmadan kapanmış **çalıştırmalar**
+    /// sonsuza kadar `running` görünmez. Kesin durum `failed` + `usage_report`
+    /// işaretiyle yazılır; bitiş zamanı uydurulmaz, sonuçlanmış satıra
+    /// dokunulmaz ve ikinci açılış 0 döner.
+    #[test]
+    fn reconcile_closes_orphaned_runs_as_interrupted() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let orphan = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let done = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        db.finish_ai_run(&done.id, "succeeded", "{\"billing\":\"unknown\"}")
+            .expect("bitir");
+
+        assert_eq!(
+            db.reconcile_running_ai_runs().expect("uzlaştırma"),
+            1,
+            "yalnız yarım kalan çalıştırma kapanır"
+        );
+
+        let orphan_row = db.get_ai_run(&orphan.id).expect("oku").expect("satır");
+        assert_eq!(orphan_row.status, "failed");
+        assert_eq!(
+            orphan_row.completed_at, None,
+            "bitiş zamanı bilinmiyor; uydurulmaz"
+        );
+        let report: serde_json::Value =
+            serde_json::from_str(&orphan_row.usage_report).expect("rapor");
+        assert_eq!(report["error"], "interrupted");
+        assert_eq!(report["reason"], "process_exit");
+
+        let done_row = db.get_ai_run(&done.id).expect("oku").expect("satır");
+        assert_eq!(
+            done_row.status, "succeeded",
+            "sonuçlanmış çalıştırma geriye dönük değişmez"
+        );
+        assert!(done_row.completed_at.is_some());
+
+        assert_eq!(
+            db.reconcile_running_ai_runs().expect("yeniden"),
+            0,
+            "idempotent"
+        );
+
+        let (count, metadata): (i64, String) = db
+            .conn()
+            .query_row(
+                "SELECT count(*), coalesce(max(metadata_allowlist),'') FROM audit_events \
+                 WHERE operation='interrupt' AND category='ai_run'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("denetim");
+        assert_eq!(count, 1, "uzlaştırma denetime bir kez yazılır");
+        assert!(
+            metadata.contains("\"interrupted\":1"),
+            "sayı denetime yazılır: {metadata}"
+        );
+        assert!(
+            !metadata.contains(&orphan.id),
+            "çalıştırma kimliği denetime girmez"
         );
     }
 

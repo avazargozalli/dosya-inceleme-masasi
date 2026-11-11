@@ -6,6 +6,7 @@ import {
   type AiContextItemRow,
   type AiMessageRow,
   type AiOverview,
+  type AiRunRow,
   type ApiError,
   type CandidateReport,
   type CaseRow,
@@ -105,6 +106,44 @@ function receiptStateTone(status: string): string {
   if (status === "dispatched") return "ok";
   if (status === "failed") return "danger";
   return "warn";
+}
+
+/**
+ * Çalıştırma durumu. Açılış uzlaştırması kesilmiş satırı `failed` yazar ama
+ * ayrımı `usageReport.error=interrupted` taşır: ekran bunu "başarısız" diye
+ * okumaz — istek çıkmış olabilir, sonucu yazacak çağrı artık yoktur ve
+ * "sürüyor" da denmez. Bilinmeyen durum olduğu gibi yazılır.
+ */
+function runInterrupted(run: AiRunRow): boolean {
+  if (run.status !== "failed") return false;
+  try {
+    const report: unknown = JSON.parse(run.usageReport);
+    return (
+      typeof report === "object" &&
+      report !== null &&
+      (report as { error?: unknown }).error === "interrupted"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function runStateLabel(run: AiRunRow): string {
+  if (runInterrupted(run)) return t("ai.runInterrupted");
+  if (run.status === "succeeded") return t("ai.runSucceeded");
+  if (run.status === "failed") return t("ai.runFailed");
+  if (run.status === "running") return t("ai.runRunning");
+  if (run.status === "partial") return t("ai.runPartial");
+  if (run.status === "cancelled") return t("ai.runCancelled");
+  return run.status;
+}
+
+function runStateTone(run: AiRunRow): string {
+  if (runInterrupted(run)) return "warn";
+  if (run.status === "succeeded") return "ok";
+  if (run.status === "failed") return "danger";
+  if (run.status === "partial") return "warn";
+  return "";
 }
 
 /**
@@ -1091,7 +1130,7 @@ export function Ai() {
               {overview.runs.map((run) => (
                 <tr key={run.id}>
                   <td>{run.taskType}</td>
-                  <td><span className={`badge ${run.status === "succeeded" ? "ok" : ""}`}>{run.status}</span></td>
+                  <td><span className={`badge ${runStateTone(run)}`}>{runStateLabel(run)}</span></td>
                   <td>{formatDateTime(run.createdAt)}</td>
                   <td>
                     <button className="btn ghost" onClick={() => void selectRun(run.id)}>

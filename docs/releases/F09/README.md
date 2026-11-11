@@ -9,7 +9,7 @@
 | F09-T01 tek `Provider` sözleşmesi | ✅ | `crates/providers` |
 | F09-T02 `OffProvider` | ✅ | her istek `E_AI_OFF` |
 | F09-T03 aktarım onayı | ✅ | `transfer_consents`; onay **belge kümesine** bağlı (boş seçim, başka dosyanın belgesi ve silinmiş belge reddedilir) — ölçüldü 2026-10-28, aşağıdaki "Aktarım kapsamı" bölümü |
-| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10). **Gönderim sicili de okunur** (`list_context_items` + `ai_context_items` + "Gönderilen içerik" kartı: belge adı, sürüm, gerekçe, bayt; 2026-11-06) |
+| F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10). **Gönderim sicili de okunur** (`list_context_items` + `ai_context_items` + "Gönderilen içerik" kartı: belge adı, sürüm, gerekçe, bayt; 2026-11-06). **Çalıştırma satırı uzlaştırması (2026-11-11):** açılışta `running` kalan satır kesin duruma bağlanır (`failed` + `usage_report.error=interrupted`); ekran «oturum kesildi · sonuç yazılmadı» yazar (aşağıdaki bölüm) |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT`: onay yok / iptal / süresi geçmiş / **belge seçimi boş** / seçili belge silinmiş (7 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
 | F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS + Windows** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** tutulur — macOS **Anahtar Zinciri** (`security-framework`), Windows **Kimlik Yöneticisi** (`keyring` 3.6.3, 2026-11-06); sıra **depo → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows tatbikatı gerçek Credential Manager üzerinde CI `windows-latest` işinde **koştu** (25/25). Linux Secret Service **uygulanmadı** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölümler |
@@ -719,3 +719,57 @@ değişmez.
   altyapısı yok) — kablolama check+clippy, davranış storage düzeyinde gerçek
   SQLite; (g) jsdom tarayıcı değil → gerçek Tauri penceresi + **görsel QA insan
   bekliyor**.
+
+## Kesilen çalıştırma açılışta kesin duruma bağlanır (2026-11-11 — F09-T04 eki)
+
+- **Ölçülen boşluk:** `start_ai_run` satırı `running` açar; durumu yalnız
+  `finish_ai_run` yazar. Süreç gönderim sırasında ölürse satır **sonsuza kadar
+  `running`** kalıyordu — Ai ekranının "Çalıştırmalar" tablosu aylar sonra da
+  ham `running` yazıyordu, oysa sonucu yazacak çağrı yoktu. Makbuzlar için aynı
+  boşluk 2026-11-11 turunda kapatılmıştı (`reconcile_attempted_receipts`);
+  `ai_runs` satırının eşdeğeri yoktu.
+- **Yazılan:** `reconcile_running_ai_runs()` — kasa açılışında tek koşullu
+  `UPDATE … WHERE status='running'` → `failed` + `usage_report`
+  `{"billing":"unknown","error":"interrupted","reason":"process_exit"}`.
+  Gerekçe kodda yazılı: `ai_run_execute` kasa kilidini çalıştırmanın tamamı
+  boyunca tutar → açılışta hiçbir çalıştırma uçuşta olamaz; `running` satırın
+  sonucunu yazacak **canlı çağrı yoktur**. `ai_runs.status` CHECK kümesi
+  `interrupted` taşımadığı için ayrım `usage_report`ta taşınır (şema değişikliği
+  tabloyu yeniden kurmayı gerektirirdi). `completed_at` **yazılmaz** — bitiş
+  zamanı bilinmiyor; açılış saatini yazmak uydurma olurdu. Sonuçlanmış satıra
+  dokunulmaz, ikinci açılış 0 döner (idempotent), sayı denetime girer
+  (**kimlik/içerik yok**). `remember()` iş kurtarması ve makbuz uzlaştırmasının
+  yanında çağırır.
+- **Arayüz:** "Çalıştırmalar" tablosu durumu artık **Türkçe** yazar
+  (başarılı/başarısız/sürüyor/kısmi/iptal edildi);
+  `usageReport.error=interrupted` taşıyan `failed` satır **«oturum kesildi ·
+  sonuç yazılmadı»** (warn) olur — "başarısız" ya da "sürüyor" demez. Bilinmeyen
+  durum ham kalır (ekran tanımadığı değeri uydurmaz).
+- **Testler:** `ai::tests` **+1** (`reconcile_closes_orphaned_runs_as_interrupted`)
+  → `dim-storage --lib` **525 → 526** (279,39 s, güncel kodla); `Ai.test.tsx`
+  **+3** → **114 test** (dosya); `tsc --noEmit` temiz; `cargo fmt` iki manifest
+  temiz; storage + masaüstü `clippy --all-targets -D warnings` temiz; i18n
+  bağlama testleri **60/60**.
+- **Kapı kanıtı (gerçek koşular; betikler `dim-run-reconcile-gates-core.py` ve
+  `-ui.py`, her mutasyon tek başına, `try/finally` + sha256 birebir —
+  `ai.rs ba6fb019…`, `Ai.tsx 81c4907…`):** **10/10 KIRMIZI** — S1 uzlaştırma hiç
+  kapatmaz · S2 sonuçlanmış satır da ezilir · S3 kesinti işareti yazılmaz ·
+  S4 bitiş zamanı uydurulur · S5 denetim yazılmaz · S6 denetim sayıyı taşımaz;
+  U1 kesilen çalıştırma etiketi yazılmaz · U2 kesilen çalıştırma yeşil rozet
+  alır · U3 bilinmeyen durum uydurma etikete düşer · U4 başarılı çalıştırma ham
+  yazılır.
+- **Dürüst (kendi hatam):** S5/S6'nın ilk betiği **EŞLEŞMEDİ (2)** verdi —
+  aynı `if changed > 0 {` ve `"interrupted": changed` kalıpları makbuz
+  uzlaştırmasında da geçiyor; iki mutasyon yalnız `ai_run` bloğuna özgü
+  bağlamla yeniden yazıldı ve 6/6 yeniden ölçüldü (ilk koşunun 4/6'sı kanıt
+  sayılmadı).
+- **Dürüst sınırlar:** (a) uzlaştırma yalnız **kasa açılışında** koşar — açık
+  oturumda süreç ölürse satır bir sonraki açılışa kadar `running` görünür
+  (doğru: o oturumda sonuç gelmemişti); (b) durum `failed` + işaret: DB'yi
+  okuyan denetçi `interrupted` sözcüğünü `usage_report`ta bulur, `status`ta
+  bulamaz (CHECK kümesi genişletilmedi — tablo yeniden kurulumu bu turun
+  kapsamı dışında); (c) kesilen çalıştırmanın adayı/yanıtı yoktur — içerik
+  çıkmış olabilir, sicilden kanıtlanamaz (makbuz ayrı satırdır); (d) komut yolu
+  (`remember`) **komut olarak koşulmadı** (`State<AppState>` altyapısı yok) —
+  kablolama check+clippy, davranış storage düzeyinde gerçek SQLite; (e) jsdom
+  tarayıcı değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.

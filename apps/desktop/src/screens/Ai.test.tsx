@@ -35,6 +35,7 @@ import type {
   AiContextItemRow,
   AiMessageRow,
   AiOverview,
+  AiRunRow,
   CandidateReport,
   CaseRow,
   ConsentPreview,
@@ -3256,5 +3257,62 @@ describe("AI ekranı — model yanıtı (ai_messages)", () => {
       ).toBeNull(),
     );
     expect(within(card).getByText(t("ai.answerNoRun"))).toBeTruthy();
+  });
+});
+
+describe("AI ekranı — çalıştırma durumu", () => {
+  /** Açılış uzlaştırmasının yazdığı kesin durum: `failed` + `usageReport` işareti. */
+  const INTERRUPTED: AiRunRow = {
+    id: "r-int",
+    caseId: "p1",
+    taskType: "summarize",
+    providerId: "prov-a",
+    modelSnapshot: "claude-sonnet-4-5",
+    status: "failed",
+    usageReport: '{"billing":"unknown","error":"interrupted","reason":"process_exit"}',
+    createdAt: "2026-10-22T09:00:00.000Z",
+    completedAt: null,
+  };
+
+  function overviewWithRuns(runs: AiRunRow[]): AiOverview {
+    return { ...OVERVIEW_A, runs };
+  }
+
+  it("kesilen çalıştırma 'başarısız' ya da 'sürüyor' demez", async () => {
+    setup({ overview: async () => overviewWithRuns([INTERRUPTED]) });
+    await screen.findByText("api:claude (api)");
+    const row = runRows()[0]!;
+    const badge = row.querySelector(".badge");
+    expect(badge?.textContent).toBe(t("ai.runInterrupted"));
+    expect(badge?.className).toContain("warn");
+    // "başarısız" (ya da ham `failed`) yazılmaz: sonucu yazacak çağrı yok,
+    // istek çıkmış olabilir.
+    expect(within(row).queryByText(t("ai.runFailed"))).toBeNull();
+  });
+
+  it("bilinen durumlar Türkçe yazılır, bilinmeyen durum ham kalır", async () => {
+    setup({
+      overview: async () =>
+        overviewWithRuns([
+          { ...OVERVIEW_A.runs[0]!, id: "r-ok", status: "succeeded" },
+          { ...OVERVIEW_A.runs[0]!, id: "r-unknown", status: "kuyruk" },
+        ]),
+    });
+    await screen.findByText("api:claude (api)");
+    const rows = runRows();
+    const ok = rows[0]!.querySelector(".badge");
+    expect(ok?.textContent).toBe(t("ai.runSucceeded"));
+    expect(ok?.className).toContain("ok");
+    expect(rows[1]!.querySelector(".badge")?.textContent).toBe("kuyruk");
+  });
+
+  it("işaretsiz düşen çalıştırma 'başarısız' yazar", async () => {
+    setup({
+      overview: async () => overviewWithRuns([{ ...OVERVIEW_A.runs[1]!, usageReport: "{}" }]),
+    });
+    await screen.findByText("api:claude (api)");
+    const badge = runRows()[0]!.querySelector(".badge");
+    expect(badge?.textContent).toBe(t("ai.runFailed"));
+    expect(badge?.className).toContain("danger");
   });
 });
