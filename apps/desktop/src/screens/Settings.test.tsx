@@ -89,6 +89,7 @@ import type {
   AuditChainStatus,
   AuditEventRow,
   BackupResult,
+  BackupRetentionReport,
   BackupRunRow,
   JobQueueView,
   PreUpdateBackup,
@@ -106,6 +107,7 @@ const mocks = vi.hoisted(() => ({
   vaultPreUpdateBackups: vi.fn(),
   vaultRollbackPreUpdate: vi.fn(),
   vaultBackup: vi.fn(),
+  vaultBackupRetention: vi.fn(),
   backupRunList: vi.fn(),
   vaultSettingGet: vi.fn(),
   vaultSettingSet: vi.fn(),
@@ -251,6 +253,75 @@ const GC_CLEAN: VaultGcResult = {
   missingFiles: ["blob-7.bin"],
 };
 
+/** Otomatik yedek planı (hedef klasör kasa ayarında). */
+const SCHEDULE_ROW: SettingRow = {
+  scope: "vault",
+  key: "backup.schedule",
+  value: { destination: "/Volumes/OtoYedek", days: 7 },
+  version: 3,
+  updatedAt: ISO,
+};
+
+/**
+ * Saklama taraması (dry run): biri silinecek (bu kasanın, politikayı aşan),
+ * biri korunacak (bu kasanın, en yeni), biri **başka kasanın** (asla silinmez).
+ * Ayrıca yedek sayılmayan bir girdi raporlanır.
+ */
+const RETENTION_SCAN: BackupRetentionReport = {
+  root: "/Volumes/OtoYedek",
+  dryRun: true,
+  keepDaily: 7,
+  keepWeekly: 4,
+  snapshots: [
+    {
+      name: "DimYedek-20261001-0900",
+      createdAt: "2026-10-01T09:00:00.000Z",
+      directoryBytes: 900_000,
+      archiveBytes: 100_000,
+      totalBytes: 1_000_000,
+      attribution: "own",
+      willDelete: true,
+    },
+    {
+      name: "DimYedek-20261108-0900",
+      createdAt: "2026-11-08T09:00:00.000Z",
+      directoryBytes: 2_000_000,
+      archiveBytes: 0,
+      totalBytes: 2_000_000,
+      attribution: "own",
+      willDelete: false,
+    },
+    {
+      name: "DimYedek-20260601-0900",
+      createdAt: "2026-06-01T09:00:00.000Z",
+      directoryBytes: 500_000,
+      archiveBytes: 0,
+      totalBytes: 500_000,
+      attribution: "foreign",
+      willDelete: false,
+    },
+  ],
+  ignored: [{ name: "notlar.txt", reason: "ad tanınmadı" }],
+  scanned: 3,
+  totalBytes: 3_500_000,
+  candidateCount: 1,
+  candidateBytes: 1_000_000,
+  deleted: [],
+  freedBytes: 0,
+  errors: [],
+};
+
+/** Onaylı silmenin sonucu: aynı tarama, tek yedek gerçekten silinmiş. */
+const RETENTION_DELETED: BackupRetentionReport = {
+  ...RETENTION_SCAN,
+  dryRun: false,
+  deleted: [RETENTION_SCAN.snapshots[0]!],
+  freedBytes: 1_000_000,
+};
+
+/** Saklama politikasının cihaz tercihi anahtarı (`lib/backup-retention`). */
+const RETENTION_KEY = "dim.backup.retention";
+
 /* ------------------------------------------------------------------- harness */
 
 type SetupOptions = {
@@ -329,6 +400,14 @@ function radioRow(prefix: string): HTMLElement {
   const node = screen.getByText(prefix, { exact: false });
   const row = node.closest("label");
   if (!row) throw new Error(`"${prefix}" satırı bulunamadı`);
+  return row as HTMLElement;
+}
+
+/** Saklama tablosunda yedek adından satırı bul (durum sütununu ölçmek için). */
+function retentionRow(name: string): HTMLElement {
+  const node = screen.getByText(name);
+  const row = node.closest("tr");
+  if (!row) throw new Error(`"${name}" satırı bulunamadı`);
   return row as HTMLElement;
 }
 
@@ -1724,5 +1803,244 @@ describe("yedek geçmişi kartı", () => {
     first.resolve([{ ...HISTORY_VERIFIED, id: "eski", snapshotId: "ESKI-YEDEK" }]);
     await waitFor(() => expect(within(card).queryByText("ESKI-YEDEK")).toBeNull());
     expect(within(card).getByText(HISTORY_VERIFIED.snapshotId)).toBeTruthy();
+  });
+
+  /* ------------------------------------------------ yedek saklama (retention) */
+
+  it("otomatik yedek klasörü yokken saklama taraması kapalı ve nedeni yazılı", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    const card = cardOf(t("settings.retentionTitle"));
+    const scan = within(card).getByRole("button", {
+      name: t("settings.retentionScan"),
+    }) as HTMLButtonElement;
+    expect(scan.disabled).toBe(true);
+    expect(within(card).getByText(t("settings.retentionNoTarget"))).toBeTruthy();
+    fireEvent.click(scan);
+    expect(mocks.vaultBackupRetention).not.toHaveBeenCalled();
+  });
+
+  it("tarama politikayı çekirdeğe birebir gönderir; satır durumları ve sayılar rapordan yazılır", async () => {
+    setup({ scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    mocks.vaultBackupRetention.mockResolvedValue(RETENTION_SCAN);
+
+    const card = cardOf(t("settings.retentionTitle"));
+    // Hedef **kasadaki** plandan yazılır, arayüz kendi yolu uydurmaz.
+    expect(card.textContent).toContain(
+      t("settings.retentionTarget", { dir: "/Volumes/OtoYedek" }),
+    );
+    const scan = within(card).getByRole("button", {
+      name: t("settings.retentionScan"),
+    }) as HTMLButtonElement;
+    expect(scan.disabled).toBe(false);
+    fireEvent.click(scan);
+
+    // Tarama **dry run**tır; politika cihaz tercihindeki varsayılan (7/4).
+    await waitFor(() => expect(mocks.vaultBackupRetention).toHaveBeenCalledWith(true, 7, 4));
+    await waitFor(() => expect(screen.getByText(RETENTION_SCAN.snapshots[0]!.name)).toBeTruthy());
+
+    const text = card.textContent ?? "";
+    expect(text).toContain(
+      t("settings.retentionSummary", { count: 3, size: formatSize(3_500_000) }),
+    );
+    // Silinecekler uyarısı (role=status) sayı ve gerçek baytla yazılır.
+    const notice = within(card).getByRole("status");
+    expect(notice.textContent).toContain(
+      t("settings.retentionCandidates", { count: 1, size: formatSize(1_000_000) }),
+    );
+    // Satır durumları: silinecek · korunuyor · dokunulmadı.
+    expect(retentionRow(RETENTION_SCAN.snapshots[0]!.name).textContent).toContain(
+      t("settings.retentionStateWillDelete"),
+    );
+    expect(retentionRow(RETENTION_SCAN.snapshots[0]!.name).textContent).toContain(
+      formatSize(1_000_000),
+    );
+    expect(retentionRow(RETENTION_SCAN.snapshots[1]!.name).textContent).toContain(
+      t("settings.retentionStateKeep"),
+    );
+    // Başka kasanın yedeği "dokunulmadı" yazar; "silinecek" demez.
+    const foreign = retentionRow(RETENTION_SCAN.snapshots[2]!.name);
+    expect(foreign.textContent).toContain(t("settings.retentionStateProtected"));
+    expect(foreign.textContent).not.toContain(t("settings.retentionStateWillDelete"));
+    // Korunan sayısı ve yedek sayılmayan girdi gizlenmez.
+    expect(text).toContain(t("settings.retentionProtected", { count: 1 }));
+    expect(text).toContain(t("settings.retentionIgnored", { count: 1, list: "notlar.txt" }));
+    // Silme yalnız onayla: henüz istek ikinci kez gitmedi.
+    expect(mocks.vaultBackupRetention).toHaveBeenCalledTimes(1);
+    expect(
+      within(card).getByRole("button", { name: t("settings.retentionApply") }),
+    ).toBeTruthy();
+  });
+
+  it("çekirdeğin kabul ettiği saklama sayıları cihaz tercihine geri yazılır", async () => {
+    setup({ scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    // Çekirdek kırpar/doğrular: arayüz kendi sayısını değil **kabul edileni** saklar.
+    mocks.vaultBackupRetention.mockResolvedValue({ ...RETENTION_SCAN, keepDaily: 10, keepWeekly: 2 });
+
+    fireEvent.click(
+      within(cardOf(t("settings.retentionTitle"))).getByRole("button", {
+        name: t("settings.retentionScan"),
+      }),
+    );
+    await waitFor(() => expect(mocks.vaultBackupRetention).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(byId<HTMLInputElement>("retention-daily").value).toBe("10"));
+    expect(byId<HTMLInputElement>("retention-weekly").value).toBe("2");
+    expect(localStorage.getItem(RETENTION_KEY)).toBe(JSON.stringify({ daily: 10, weekly: 2 }));
+  });
+
+  it("silme onaydan önce gitmez; 'Onayla ve sil' dryRun=false gönderir ve silinenler 'silindi' yazar", async () => {
+    setup({ scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    mocks.vaultBackupRetention
+      .mockResolvedValueOnce(RETENTION_SCAN)
+      .mockResolvedValueOnce(RETENTION_DELETED);
+
+    const card = cardOf(t("settings.retentionTitle"));
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionScan") }));
+    await waitFor(() => expect(screen.getByText(RETENTION_SCAN.snapshots[0]!.name)).toBeTruthy());
+
+    // "Silinecekleri sil" yalnız **onay panelini** açar; istek gitmez.
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionApply") }));
+    expect(mocks.vaultBackupRetention).toHaveBeenCalledTimes(1);
+    const confirm = within(card).getByRole("alert");
+    expect(confirm.textContent).toContain(
+      t("settings.retentionConfirm", { count: 1, size: formatSize(1_000_000) }),
+    );
+
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionConfirmYes") }));
+    await waitFor(() => expect(mocks.vaultBackupRetention).toHaveBeenCalledWith(false, 7, 4));
+    await waitFor(() =>
+      expect(within(card).getByRole("status").textContent).toContain(
+        t("settings.retentionDeleted", { count: 1, size: formatSize(1_000_000) }),
+      ),
+    );
+    // Silinen satır "silindi" yazar; onay paneli ve "sil" düğmesi kalkar.
+    expect(retentionRow(RETENTION_SCAN.snapshots[0]!.name).textContent).toContain(
+      t("settings.retentionStateDeleted"),
+    );
+    expect(within(card).queryByRole("button", { name: t("settings.retentionConfirmYes") })).toBeNull();
+    expect(within(card).queryByRole("button", { name: t("settings.retentionApply") })).toBeNull();
+  });
+
+  it("geçersiz saklama sayısı çekirdeğe gitmez; eski rapor ekrandan düşer", async () => {
+    setup({ scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    mocks.vaultBackupRetention.mockResolvedValue(RETENTION_SCAN);
+
+    const card = cardOf(t("settings.retentionTitle"));
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionScan") }));
+    await waitFor(() => expect(screen.getByText(RETENTION_SCAN.snapshots[0]!.name)).toBeTruthy());
+
+    // Politika değişti: eski plan artık bu politikaya ait değil → rapor düşer.
+    fireEvent.change(byId("retention-daily"), { target: { value: "0" } });
+    expect(screen.queryByText(RETENTION_SCAN.snapshots[0]!.name)).toBeNull();
+
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionScan") }));
+    // Bozuk sayı çekirdeğe **gitmez**; hata kodu ve açıklaması yazılır.
+    expect(mocks.vaultBackupRetention).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(within(card).getByRole("alert").textContent).toContain("E_BACKUP_RETENTION"),
+    );
+    expect(within(card).getByRole("alert").textContent).toContain(
+      t("settings.retentionInvalid"),
+    );
+    expect(screen.queryByText(RETENTION_SCAN.snapshots[0]!.name)).toBeNull();
+  });
+
+  it("düşen tarama önceki 'silinecek' satırını ve silme düğmesini bırakmaz", async () => {
+    setup({ scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    mocks.vaultBackupRetention.mockResolvedValue(RETENTION_SCAN);
+
+    const card = cardOf(t("settings.retentionTitle"));
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionScan") }));
+    await waitFor(() => expect(screen.getByText(RETENTION_SCAN.snapshots[0]!.name)).toBeTruthy());
+
+    mocks.vaultBackupRetention.mockRejectedValue({
+      code: "E_IO",
+      message: "klasör okunamadı",
+      retryable: true,
+    });
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionScan") }));
+
+    await waitFor(() => expect(within(card).getByRole("alert").textContent).toContain("E_IO"));
+    expect(screen.queryByText(RETENTION_SCAN.snapshots[0]!.name)).toBeNull();
+    expect(within(card).queryByRole("button", { name: t("settings.retentionApply") })).toBeNull();
+    expect(notices().join("\n")).not.toContain(t("settings.retentionCandidates", {
+      count: 1,
+      size: formatSize(1_000_000),
+    }));
+  });
+
+  it("hedef klasör değişince eski klasörün tarama raporu ekranda kalmaz", async () => {
+    setup({ scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    mocks.vaultBackupRetention.mockResolvedValue(RETENTION_SCAN);
+
+    const card = cardOf(t("settings.retentionTitle"));
+    fireEvent.click(within(card).getByRole("button", { name: t("settings.retentionScan") }));
+    await waitFor(() => expect(screen.getByText(RETENTION_SCAN.snapshots[0]!.name)).toBeTruthy());
+
+    // Yeni hedef seçilir: eski klasörün "silinecek" satırları yeni plana ait değil.
+    dialog.open.mockResolvedValue("/Volumes/YeniYedek");
+    fireEvent.click(
+      within(cardOf(t("settings.autoTitle"))).getByRole("button", {
+        name: t("settings.autoPick"),
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.vaultSettingSet).toHaveBeenCalledWith("backup.schedule", {
+        destination: "/Volumes/YeniYedek",
+        days: 7,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByText(RETENTION_SCAN.snapshots[0]!.name)).toBeNull());
+    expect(
+      within(cardOf(t("settings.retentionTitle"))).queryByRole("button", {
+        name: t("settings.retentionApply"),
+      }),
+    ).toBeNull();
+    expect(cardOf(t("settings.retentionTitle")).textContent).toContain(
+      t("settings.retentionTarget", { dir: "/Volumes/YeniYedek" }),
+    );
+  });
+
+  it("kasa kilitlenince saklama raporu ve düğmeleri düşer (dosya adları kilitli ekranda kalmaz)", async () => {
+    setup({ backups: [B_OK], scheduleRow: SCHEDULE_ROW });
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+    mocks.vaultBackupRetention.mockResolvedValue(RETENTION_SCAN);
+
+    fireEvent.click(
+      within(cardOf(t("settings.retentionTitle"))).getByRole("button", {
+        name: t("settings.retentionScan"),
+      }),
+    );
+    await waitFor(() => expect(screen.getByText(RETENTION_SCAN.snapshots[0]!.name)).toBeTruthy());
+
+    // Geri dönüş denemesi kasayı kilitsiz bırakamaz: durum kilitliye döner.
+    mocks.status.mockResolvedValue(LOCKED);
+    mocks.vaultRollbackPreUpdate.mockRejectedValue({
+      code: "E_DB_ROLLBACK_REOPEN",
+      message: "Geri dönüş sonrası kasa açılamadı.",
+      retryable: false,
+    });
+    fireEvent.change(byId("rollback-confirm"), { target: { value: t("rollback.confirmToken") } });
+    fireEvent.click(
+      within(cardOf(t("settings.rollbackTitle"))).getByRole("button", {
+        name: t("settings.rollbackSubmit"),
+      }),
+    );
+    await waitFor(() => expect(screen.getByText(t("settings.vaultLockedBadge"))).toBeTruthy());
+
+    const card = cardOf(t("settings.retentionTitle"));
+    expect(within(card).queryByText(RETENTION_SCAN.snapshots[0]!.name)).toBeNull();
+    expect(within(card).queryByRole("button", { name: t("settings.retentionApply") })).toBeNull();
+    const scan = within(card).getByRole("button", {
+      name: t("settings.retentionScan"),
+    }) as HTMLButtonElement;
+    expect(scan.disabled).toBe(true);
   });
 });

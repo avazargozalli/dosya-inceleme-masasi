@@ -11,6 +11,7 @@ mod anchors;
 pub mod atomic;
 pub mod audit;
 pub mod backup;
+pub mod backup_retention;
 pub mod backup_runs;
 mod cases;
 mod checklists;
@@ -58,6 +59,11 @@ pub use ai_candidate::{
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};
 pub use audit::{AuditChainStatus, AuditEventRow, DEFAULT_AUDIT_EVENTS, MAX_AUDIT_EVENTS};
+pub use backup_retention::{
+    apply_retention, plan_retention, BackupAttribution, BackupIgnoredEntry, BackupRetentionReport,
+    BackupSnapshot, RetentionPolicy, DEFAULT_KEEP_DAILY, DEFAULT_KEEP_WEEKLY, MAX_KEEP_DAILY,
+    MAX_KEEP_WEEKLY,
+};
 pub use backup_runs::{BackupRunRow, NewBackupRun, BACKUP_RUN_STATUSES, MAX_BACKUP_RUN_LIST};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use checklists::{

@@ -1452,6 +1452,44 @@ export type BackupResult = {
   historyError: string | null;
 };
 
+/** Yedek saklama (retention) taramasının tek satırı. */
+export type BackupRetentionSnapshot = {
+  /** Yedek klasörünün adı, ör. `DimYedek-20261107-183000`. */
+  name: string;
+  /** Manifestteki zaman (yoksa adın damgası), RFC3339. */
+  createdAt: string;
+  directoryBytes: number;
+  archiveBytes: number;
+  totalBytes: number;
+  /**
+   * `own` = bu kasanın yedeği; `missing` = eski biçim (kimlik yok);
+   * `foreign` = başka kasanın yedeği. Son ikisi **asla silinmez**.
+   */
+  attribution: "own" | "missing" | "foreign";
+  /** Bu plana göre silinecek mi (yalnız `own` olabilir). */
+  willDelete: boolean;
+};
+
+/** Taranan ama yedek sayılmayan girdi (silinmez, raporda görünür). */
+export type BackupRetentionIgnored = { name: string; reason: string };
+
+export type BackupRetentionReport = {
+  root: string;
+  dryRun: boolean;
+  keepDaily: number;
+  keepWeekly: number;
+  snapshots: BackupRetentionSnapshot[];
+  ignored: BackupRetentionIgnored[];
+  scanned: number;
+  totalBytes: number;
+  candidateCount: number;
+  candidateBytes: number;
+  deleted: BackupRetentionSnapshot[];
+  freedBytes: number;
+  /** Silinemeyen yedeklerin adı + nedeni (yutulmaz). */
+  errors: string[];
+};
+
 /** Kasa yedeği geçmişi satırı (`backup_runs`). */
 export type BackupRunRow = {
   id: string;
@@ -2028,6 +2066,17 @@ export const api = {
     invoke<VaultInfo>("vault_open_with_recovery", { path, recoveryKey }),
   lockVault: () => invoke<void>("vault_lock"),
   vaultBackup: (destDir: string) => invoke<BackupResult>("vault_backup", { destDir }),
+  /**
+   * Otomatik yedek klasörünü saklama politikasına göre tarar. Hedef **kasadaki**
+   * `backup.schedule` ayarından okunur; keyfi yol verilemez. `dryRun=false`
+   * yalnız bu kasanın kimliğini taşıyan yedekleri siler.
+   */
+  vaultBackupRetention: (dryRun: boolean, keepDaily: number, keepWeekly: number) =>
+    invoke<BackupRetentionReport>("vault_backup_retention", {
+      dryRun,
+      keepDaily,
+      keepWeekly,
+    }),
   backupRunList: (limit = 20) => invoke<BackupRunRow[]>("backup_run_list", { limit }),
   /** Kasa ayarı okur (kapsam `vault`). Kayıt yoksa `null` — "boş değer" değil. */
   vaultSettingGet: (key: string) => invoke<SettingRow | null>("vault_setting_get", { key }),

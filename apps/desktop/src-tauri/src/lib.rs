@@ -121,6 +121,7 @@ pub fn run() {
             commands::checklist_items,
             commands::checklist_item_state,
             commands::vault_backup,
+            commands::vault_backup_retention,
             commands::backup_run_list,
             commands::vault_setting_get,
             commands::vault_setting_set,

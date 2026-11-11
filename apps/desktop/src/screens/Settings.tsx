@@ -10,6 +10,7 @@ import {
   type AuditChainStatus,
   type AuditEventRow,
   type BackupResult,
+  type BackupRetentionReport,
   type BackupRunRow,
   type PreUpdateBackup,
   type RollbackResult,
@@ -37,6 +38,15 @@ import {
   type BackupScheduleLoad,
   type BackupScheduleSource,
 } from "../lib/backup-config";
+import {
+  MAX_RETENTION_DAILY,
+  MAX_RETENTION_WEEKLY,
+  MIN_RETENTION_DAILY,
+  MIN_RETENTION_WEEKLY,
+  parseRetentionPolicy,
+  readRetentionPolicy,
+  writeRetentionPolicy,
+} from "../lib/backup-retention";
 import {
   backupStatusText,
   backupVersionLabel,
@@ -138,6 +148,16 @@ export function Settings() {
   const [historyError, setHistoryError] = useState<ApiError | null>(null);
   const historySeq = useRef(0);
 
+  // Yedek saklama (retention): tarama → plan → **açık onayla** silme. Kilitte
+  // tüm durum düşer; kilitli ekranda hangi yedeğin silineceği görünmez (K0).
+  const [retentionDaily, setRetentionDaily] = useState(() => readRetentionPolicy().daily);
+  const [retentionWeekly, setRetentionWeekly] = useState(() => readRetentionPolicy().weekly);
+  const [retention, setRetention] = useState<BackupRetentionReport | null>(null);
+  const [retentionBusy, setRetentionBusy] = useState(false);
+  const [retentionError, setRetentionError] = useState<ApiError | null>(null);
+  const [retentionConfirm, setRetentionConfirm] = useState(false);
+  const retentionSeq = useRef(0);
+
   useEffect(() => {
     void api.status().then(setStatus).catch((e) => setError(toApiError(e)));
   }, []);
@@ -197,6 +217,12 @@ export function Settings() {
       setHistoryBusy(false);
       setHistoryError(null);
       setFreshness(null);
+      // Saklama taraması da kilitte düşer: dosya adı/boyutu hassas bağlamdır.
+      retentionSeq.current += 1;
+      setRetention(null);
+      setRetentionBusy(false);
+      setRetentionError(null);
+      setRetentionConfirm(false);
       return;
     }
     void loadHistory();
@@ -303,6 +329,48 @@ export function Settings() {
       }
     } finally {
       if (seq === historySeq.current) setHistoryBusy(false);
+    }
+  }
+
+  /**
+   * Saklama taraması/silmesi. Politika **gönderilmeden önce** doğrulanır;
+   * bozuk sayı çekirdeğe gitmez. Yanıt yalnız en son isteğin neslinde yazılır
+   * (geç gelen tarama yeni politikayı/raporu ezmez). `dryRun=false` yalnız
+   * kullanıcı onayından sonra çağrılır.
+   */
+  async function runRetention(dryRun: boolean) {
+    const policy = parseRetentionPolicy({
+      daily: retentionDaily,
+      weekly: retentionWeekly,
+    });
+    if (!policy) {
+      setRetentionError({
+        code: "E_BACKUP_RETENTION",
+        message: t("settings.retentionInvalid"),
+        retryable: false,
+      });
+      setRetention(null);
+      return;
+    }
+    const seq = ++retentionSeq.current;
+    setRetentionBusy(true);
+    setRetentionError(null);
+    setRetentionConfirm(false);
+    try {
+      const report = await api.vaultBackupRetention(dryRun, policy.daily, policy.weekly);
+      if (seq !== retentionSeq.current) return;
+      // Çekirdeğin kabul ettiği sayılar geri yazılır (arayüz kendi sınırını
+      // uydurmaz; politika cihaz tercihi olarak saklanır).
+      const saved = writeRetentionPolicy({ daily: report.keepDaily, weekly: report.keepWeekly });
+      setRetentionDaily(saved.daily);
+      setRetentionWeekly(saved.weekly);
+      setRetention(report);
+    } catch (e) {
+      if (seq !== retentionSeq.current) return;
+      setRetentionError(toApiError(e));
+      setRetention(null);
+    } finally {
+      if (seq === retentionSeq.current) setRetentionBusy(false);
     }
   }
 
@@ -529,6 +597,15 @@ export function Settings() {
       setBusy(false);
     }
   }
+
+  // Rapor satırlarında tekrar tekrar hesaplanmasın: silinen adlar kümesi ve
+  // "dokunulmayan" (kimliksiz/yabancı) yedek sayısı.
+  const retentionDeletedNames = new Set(
+    (retention?.deleted ?? []).map((snapshot) => snapshot.name),
+  );
+  const retentionProtected = (retention?.snapshots ?? []).filter(
+    (snapshot) => snapshot.attribution !== "own",
+  ).length;
 
   return (
     <div className="page" style={{ maxWidth: 820 }}>
@@ -939,6 +1016,13 @@ export function Settings() {
                 });
                 setScheduleSource("vault");
                 setAutoBackup((prev) => ({ ...prev, dir: saved.dir, days: saved.days }));
+                // Hedef değişti: eski klasörün tarama raporu artık bu plana
+                // ait değildir; ekranda "silinecek" gibi kalmaz.
+                retentionSeq.current += 1;
+                setRetention(null);
+                setRetentionError(null);
+                setRetentionBusy(false);
+                setRetentionConfirm(false);
               } catch (e) {
                 const err = toApiError(e);
                 setScheduleError(err.code);
@@ -1013,6 +1097,11 @@ export function Settings() {
                 await clearBackupSchedule();
                 setScheduleSource("none");
                 setAutoBackup((prev) => ({ ...prev, dir: "", days: DEFAULT_BACKUP_DAYS }));
+                retentionSeq.current += 1;
+                setRetention(null);
+                setRetentionError(null);
+                setRetentionBusy(false);
+                setRetentionConfirm(false);
               } catch (e) {
                 const err = toApiError(e);
                 setScheduleError(err.code);
@@ -1049,6 +1138,179 @@ export function Settings() {
             {t("settings.autoReset")}
           </button>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("settings.retentionTitle")}</h2>
+            <p className="card-sub">{t("settings.retentionSub")}</p>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div className="field" style={{ flex: "0 1 120px" }}>
+            <label htmlFor="retention-daily">{t("settings.retentionDaily")}</label>
+            <input
+              id="retention-daily"
+              type="number"
+              min={MIN_RETENTION_DAILY}
+              max={MAX_RETENTION_DAILY}
+              value={retentionDaily}
+              onChange={(e) => {
+                setRetentionDaily(Number(e.target.value));
+                // Politika değişti: eski plan artık bu politikaya ait değil.
+                setRetention(null);
+                setRetentionConfirm(false);
+              }}
+            />
+          </div>
+          <div className="field" style={{ flex: "0 1 120px" }}>
+            <label htmlFor="retention-weekly">{t("settings.retentionWeekly")}</label>
+            <input
+              id="retention-weekly"
+              type="number"
+              min={MIN_RETENTION_WEEKLY}
+              max={MAX_RETENTION_WEEKLY}
+              value={retentionWeekly}
+              onChange={(e) => {
+                setRetentionWeekly(Number(e.target.value));
+                setRetention(null);
+                setRetentionConfirm(false);
+              }}
+            />
+          </div>
+          <button
+            className="btn ghost"
+            disabled={!unlocked || !autoBackup.dir || retentionBusy}
+            onClick={() => void runRetention(true)}
+          >
+            {retentionBusy ? t("settings.retentionBusy") : t("settings.retentionScan")}
+          </button>
+        </div>
+        {autoBackup.dir ? (
+          <p className="hint" style={{ margin: 0 }}>
+            {t("settings.retentionTarget", { dir: autoBackup.dir })}
+          </p>
+        ) : (
+          <p className="hint" style={{ margin: 0 }}>{t("settings.retentionNoTarget")}</p>
+        )}
+        {retentionError ? (
+          <div className="notice danger" role="alert">
+            <strong>{retentionError.code}</strong> — {retentionError.message}
+          </div>
+        ) : null}
+        {retention ? (
+          <div>
+            <p className="muted small" style={{ margin: 0 }}>
+              {t("settings.retentionSummary", {
+                count: retention.scanned,
+                size: formatSize(retention.totalBytes),
+              })}
+            </p>
+            {retention.dryRun && retention.candidateCount > 0 ? (
+              <p className="notice warn" role="status">
+                {t("settings.retentionCandidates", {
+                  count: retention.candidateCount,
+                  size: formatSize(retention.candidateBytes),
+                })}
+              </p>
+            ) : null}
+            {retention.dryRun && retention.candidateCount === 0 ? (
+              <p className="hint" style={{ margin: 0 }}>{t("settings.retentionNothing")}</p>
+            ) : null}
+            {!retention.dryRun && retention.deleted.length > 0 ? (
+              <p className="notice ok" role="status">
+                {t("settings.retentionDeleted", {
+                  count: retention.deleted.length,
+                  size: formatSize(retention.freedBytes),
+                })}
+              </p>
+            ) : null}
+            {retention.snapshots.length > 0 ? (
+              <table style={{ width: "100%", marginTop: 6 }}>
+                <thead>
+                  <tr>
+                    <th>{t("settings.retentionColName")}</th>
+                    <th>{t("settings.retentionColTime")}</th>
+                    <th>{t("settings.retentionColSize")}</th>
+                    <th>{t("settings.retentionColState")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {retention.snapshots.map((snapshot) => {
+                    const state = retentionDeletedNames.has(snapshot.name)
+                      ? t("settings.retentionStateDeleted")
+                      : snapshot.willDelete
+                        ? t("settings.retentionStateWillDelete")
+                        : snapshot.attribution === "own"
+                          ? t("settings.retentionStateKeep")
+                          : t("settings.retentionStateProtected");
+                    return (
+                      <tr key={snapshot.name}>
+                        <td style={{ fontFamily: "var(--mono)", fontSize: 12 }}>{snapshot.name}</td>
+                        <td>{formatDateTime(snapshot.createdAt)}</td>
+                        <td>{formatSize(snapshot.totalBytes)}</td>
+                        <td>{state}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : null}
+            {retentionProtected > 0 ? (
+              <p className="hint" style={{ margin: 0 }}>
+                {t("settings.retentionProtected", { count: retentionProtected })}
+              </p>
+            ) : null}
+            {retention.ignored.length > 0 ? (
+              <p className="hint" style={{ margin: 0 }}>
+                {t("settings.retentionIgnored", {
+                  count: retention.ignored.length,
+                  list: retention.ignored
+                    .slice(0, 3)
+                    .map((entry) => entry.name)
+                    .join(", "),
+                })}
+              </p>
+            ) : null}
+            {retention.errors.length > 0 ? (
+              <div className="notice danger" role="alert">
+                {t("settings.retentionErrors", { list: retention.errors.join("; ") })}
+              </div>
+            ) : null}
+            {retention.dryRun && retention.candidateCount > 0 && !retentionConfirm ? (
+              <button className="btn" onClick={() => setRetentionConfirm(true)}>
+                {t("settings.retentionApply")}
+              </button>
+            ) : null}
+            {retentionConfirm ? (
+              <div>
+                <p className="notice danger" role="alert">
+                  {t("settings.retentionConfirm", {
+                    count: retention.candidateCount,
+                    size: formatSize(retention.candidateBytes),
+                  })}
+                </p>
+                <div className="row" style={{ gap: 6 }}>
+                  <button
+                    className="btn danger"
+                    disabled={retentionBusy}
+                    onClick={() => void runRetention(false)}
+                  >
+                    {t("settings.retentionConfirmYes")}
+                  </button>
+                  <button
+                    className="btn ghost"
+                    disabled={retentionBusy}
+                    onClick={() => setRetentionConfirm(false)}
+                  >
+                    {t("settings.retentionCancel")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="card">

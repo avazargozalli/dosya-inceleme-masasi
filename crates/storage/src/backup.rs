@@ -27,6 +27,10 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const VAULT_FILE: &str = "vault.dimvault";
 pub const DB_FILE: &str = "vault.db";
 pub const BLOBS_DIR: &str = "blobs";
+/// Yedek klasörü adının ön eki: `DimYedek-YYYYMMDD-HHMMSS`.
+pub const NAME_PREFIX: &str = "DimYedek-";
+/// Tek dosyalık taşınabilir arşivin uzantısı (klasör adı + uzantı).
+pub const ARCHIVE_EXT: &str = ".dimbak";
 /// Kasa künye dosyası bilinçli olarak `vault.dimvault` adını taşır.
 pub const REQUIRED_FILES: [&str; 3] = [VAULT_FILE, DB_FILE, MANIFEST_FILE];
 
@@ -47,6 +51,12 @@ pub struct BackupManifest {
     pub format: String,
     pub version: u32,
     pub created_at: String,
+    /// Yedeği üreten kasanın kimliği (saklama/temizlik için **aidiyet** izi).
+    /// Sonradan eklendi: eski yedeklerde yoktur ve bu yüzden saklama
+    /// temizliğinde **dokunulmaz** (kimliksiz yedeği silmek başka kasanın
+    /// yedeğini silmek olabilir).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_id: Option<String>,
     pub vault_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_bytes: Option<u64>,
@@ -167,7 +177,21 @@ pub fn sha256_file(path: &Path) -> Result<String, StorageError> {
 
 /// Yedek klasörünün manifestini **hesaplayıp** atomik yazar. Klasörde
 /// `vault.dimvault` ve `vault.db` bulunmalıdır; yoksa yedek üretilmez.
+///
+/// Kasa kimliği taşımayan eski çağrı biçimi; üretim yolu
+/// [`write_backup_manifest_with_vault`] kullanır (saklama temizliği için
+/// aidiyet izi gerekir).
 pub fn write_backup_manifest(dir: &Path) -> Result<WrittenManifest, StorageError> {
+    write_backup_manifest_with_vault(dir, None)
+}
+
+/// Manifesti yazar ve isteğe bağlı kasa kimliğini **aidiyet izi** olarak ekler.
+/// Kimlik yalnız saklama/temizlik kararında kullanılır; geri yükleme onu
+/// gerektirmez (eski yedekler kimliksiz açılmaya devam eder).
+pub fn write_backup_manifest_with_vault(
+    dir: &Path,
+    vault_id: Option<&str>,
+) -> Result<WrittenManifest, StorageError> {
     let vault_path = dir.join(VAULT_FILE);
     let db_path = dir.join(DB_FILE);
     for required in [&vault_path, &db_path] {
@@ -216,6 +240,10 @@ pub fn write_backup_manifest(dir: &Path) -> Result<WrittenManifest, StorageError
         format: BACKUP_FORMAT.to_string(),
         version: BACKUP_VERSION,
         created_at: crate::now_iso(),
+        vault_id: vault_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
         vault_sha256: sha256_file(&vault_path)?,
         vault_bytes: Some(vault_meta.len()),
         db_sha256: sha256_file(&db_path)?,
@@ -233,6 +261,41 @@ pub fn write_backup_manifest(dir: &Path) -> Result<WrittenManifest, StorageError
         manifest_sha256,
         manifest_bytes,
     })
+}
+
+/// Yedeğin manifestini **okur ve biçim/sürüm kapısından geçirir**; dosya
+/// içeriklerini doğrulamaz (sha256 taraması için `verify_backup_dir`).
+///
+/// Saklama taraması bunu kullanır: bir klasörün bizim yedeğimiz olduğunu
+/// anlamak için tam sha256 turu gereksizdir; ancak tanınmayan biçim/ileri
+/// sürüm **yedek sayılmaz** ve silinmez.
+pub fn read_backup_manifest(dir: &Path) -> Result<BackupManifest, StorageError> {
+    let raw = fs::read(dir.join(MANIFEST_FILE)).map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            return StorageError::BackupInvalid {
+                reason: format!("yedek manifesti yok ({MANIFEST_FILE})"),
+            };
+        }
+        atomic::map_io(err)
+    })?;
+    let manifest: BackupManifest =
+        serde_json::from_slice(&raw).map_err(|_| StorageError::BackupInvalid {
+            reason: "yedek manifesti okunamadı".to_string(),
+        })?;
+    if manifest.format != BACKUP_FORMAT {
+        return Err(StorageError::BackupInvalid {
+            reason: format!("tanınmayan yedek biçimi: {}", manifest.format),
+        });
+    }
+    if manifest.version > BACKUP_VERSION {
+        return Err(StorageError::BackupInvalid {
+            reason: format!(
+                "yedek biçimi bu sürümden yeni ({} > {BACKUP_VERSION})",
+                manifest.version
+            ),
+        });
+    }
+    Ok(manifest)
 }
 
 /// Yedeği **kopyalamadan önce** doğrular: biçim, sürüm, boyut ve sha256.

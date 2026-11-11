@@ -3096,14 +3096,18 @@ pub fn vault_backup(state: State<'_, AppState>, dest_dir: String) -> Result<Back
         .chars()
         .take(15)
         .collect::<String>();
-    let backup_dir = root.join(format!("DimYedek-{stamp}"));
+    let backup_dir = root.join(format!("{}{stamp}", dim_storage::backup::NAME_PREFIX));
     if backup_dir.exists() {
         return Err(ApiError::new(
             "E_BACKUP_EXISTS",
             "Aynı adlı yedek klasörü zaten var.",
         ));
     }
-    let archive = root.join(format!("DimYedek-{stamp}.dimbak"));
+    let archive = root.join(format!(
+        "{}{stamp}{}",
+        dim_storage::backup::NAME_PREFIX,
+        dim_storage::backup::ARCHIVE_EXT
+    ));
 
     let staging = dim_storage::atomic::temp_sibling(&backup_dir, "dimpart");
     dim_storage::atomic::remove_tree(&staging);
@@ -3256,7 +3260,7 @@ fn build_backup_staging(
         }
     }
 
-    let written = dim_storage::backup::write_backup_manifest(staging)?;
+    let written = dim_storage::backup::write_backup_manifest_with_vault(staging, Some(vault_id))?;
     total += std::fs::metadata(&backup_db)?.len();
 
     // Yedeğin gerçekten açıldığını doğrula: bozuk yedek "başarılı" sayılmaz.
@@ -3266,6 +3270,66 @@ fn build_backup_staging(
     }
 
     Ok((blob_count + 3, total, written.manifest_sha256))
+}
+
+/// Otomatik yedek klasöründeki **kendi** yedeklerini saklama politikasına göre
+/// tarar; `dry_run=false` ise silinecekleri gerçekten siler.
+///
+/// Hedef **kasadaki** `backup.schedule` ayarından okunur: komut keyfi bir yol
+/// üzerinde dosya silmez. Kimlik taşımayan eski yedekler ve başka kasanın
+/// yedekleri **hiçbir zaman** silinmez; sayıları raporda ayrı döner.
+#[tauri::command]
+pub fn vault_backup_retention(
+    state: State<'_, AppState>,
+    dry_run: bool,
+    keep_daily: u32,
+    keep_weekly: u32,
+) -> Result<dim_storage::BackupRetentionReport, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_id = guard
+        .vault_id
+        .clone()
+        .ok_or_else(|| ApiError::new("E_VAULT_LOCKED", "Kasa kimliği yok."))?;
+    let policy = dim_storage::RetentionPolicy::new(keep_daily, keep_weekly)?;
+    let schedule = db.get_setting("vault", "backup.schedule")?.ok_or_else(|| {
+        ApiError::new(
+            "E_BACKUP_NO_TARGET",
+            "Otomatik yedek klasörü seçilmemiş; saklama taraması yapılmadı.",
+        )
+    })?;
+    let dir = schedule
+        .value
+        .get("destination")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                "E_BACKUP_NO_TARGET",
+                "Otomatik yedek klasörü seçilmemiş; saklama taraması yapılmadı.",
+            )
+        })?;
+    let report =
+        dim_storage::apply_retention(std::path::Path::new(dir), &vault_id, policy, dry_run)?;
+    if !dry_run && !report.deleted.is_empty() {
+        // Silme **gerçekleşti**; denetim yazımı düşerse komut başarısız
+        // gösterilmez (kullanıcı silinenleri raporda görür). Denetim kaydı
+        // yalnız sayı taşır — dosya adı/yolu yazılmaz.
+        let _ = db.append_audit(
+            "backup",
+            None,
+            "retention_delete",
+            "local-user",
+            &serde_json::json!({
+                "count": report.deleted.len(),
+                "freedBytes": report.freed_bytes,
+                "keepDaily": policy.keep_daily,
+                "keepWeekly": policy.keep_weekly,
+            }),
+        );
+    }
+    Ok(report)
 }
 
 /// Yedek klasörünü yeni bir kasa dizinine kopyalar. Hedef boş olmalıdır;
