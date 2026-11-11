@@ -11,6 +11,7 @@
 | F08-T03 | ✅ | onay (`draft → confirmed`) ve denetim kaydı |
 | F08-T04 | ✅ | iddia–delil matrisi, inceleme kuyruğu, kabul/ret/düzelt geçmişi (**arayüzde görünür**: kalem başına "Geçmişi göster") |
 | F08-T05 | ✅ | görevler: kullanıcı tarihi, tamamlama, silme |
+| F08-T05 *(REQ-028 yerel bildirim)* | 🚧 | **hatırlatıcı bildirimi gerçekten teslim edilir**: `outbox_events.delivered_at`ı yazan kod **yoktu** (her satır sonsuza kadar “bekliyor”); `pending_notifications`/`mark_notifications_delivered`/`record_notification_failures` + Tauri `notifications_deliver` (`tauri-plugin-notification`) + Tasks “Bildirimleri gönder” düğmesi; metin görev/dosya/taraf adı taşımaz; alan olayları bildirim sayılmaz; 12/12 mutasyon (2026-11-11). **Kalan:** gerçek OS bildirimi bu ortamda koşulamadı (pencere/izin) — insan |
 | F08-T06 | ✅ | not ↔ kaynak alıntı bağı (`source_anchor_ids`) |
 | F08-T01 *(şartname numarası)* | ✅ | **kişi/kurum + dosya rolü** ve **geri alınabilir birleştirme**: `actors` / `case_participants` tabloları ilk kez kullanılır; `actor_merges` (şema **v25**); arayüzde “Dosya tarafları” kartı — 14/14 mutasyon (2026-11-08) |
 | F08-T03 *(şartname numarası)* | ✅ | **kesin/yaklaşık/aralık/bilinmeyen tarih sıralaması, gün uydurmadan**: ay/yıl kesinliğinde gün **saklanmaz ve gösterilmez**, aralık iki uçlu tek değer (`başlangıç/bitiş`, başlangıçla sıralanır), ham tarih metni düzenlemede **korunur**, CSV kesinliğe uyar; `E_EVENT_DATE`; 11/11 mutasyon (2026-11-10) |
@@ -628,3 +629,104 @@ düzeyinde **gerçek SQLite**. (f) jsdom tarayıcı değil: `type="month"` /
 `type="date"` davranışı gerçek Tauri penceresinde (WKWebView) ve **görsel QA
 insan bekliyor**. (g) CSV tarih sütunu artık kesinliğe uyar; Excel/LibreOffice
 aç–kaydet turu hâlâ **insan/ortam bekliyor** (F14'teki açık madde).
+
+## Yerel bildirim gerçekten teslim edilir — outbox teslim defteri (ek, 2026-11-11)
+
+**ÖLÇÜLEN KUSUR (iki tanesi).** (1) `outbox_events` tablosunun `delivered_at`
+sütununu **yazan hiçbir kod yoktu**: `task_reminders_enqueue` ve
+`commit_review_decision` satırı `delivered_at NULL` ile açıyor, sonrasında
+kimse kapatmıyordu. Yani “bildirim kuyruğa yazıldı” gerçekti ama **hiçbir
+bildirim gönderilmiyordu** ve satır sonsuza kadar “bekliyor” kalıyordu
+(şartname REQ-028 “görev ve kullanıcı onaylı tarih, **yerel bildirim**”).
+(2) `Review` ekranı `review_outbox_pending`in döndürdüğü **tüm** satırları
+sayıp “N bildirim bekliyor” yazıyordu; oysa bu satırların bir kısmı
+`review.decision_committed` / `review.item_decided` gibi **alan olaylarıdır** —
+bildirim değildir, hiçbir zaman kullanıcıya gösterilmez. İki sınıf tek sayıda
+toplanınca sayı hem yanlış hem **hiç düşmeyen** bir sayıydı.
+
+**Yazılan — çekirdek (`crates/storage/src/notifications.rs`, yeni).**
+- `NOTIFICATION_EVENT_TYPES` **kapalı küme** (bugün `task.reminder_due`):
+  bilinmeyen tür “bildirim” sayılmaz; yeni tür eklemek bilinçli karardır.
+- `pending_notifications(case_id, limit)` — yalnız bildirim sınıfı, yalnız
+  `delivered_at IS NULL`, sıra `created_at ASC, rowid ASC`; `limit` çekirdekte
+  `MAX_NOTIFICATIONS_PER_CALL = 50` ile kırpılır.
+- `pending_notification_count(case_id)` — aynı kapsamda sayı.
+- `mark_notifications_delivered(ids, at)` — **koşullu** `UPDATE … WHERE
+  delivered_at IS NULL AND event_type IN (bildirim türleri)`; gerçekten
+  değişen satır sayısını döndürür (ikinci çağrı **0**), alan olayı kimliği
+  verilirse **hiçbir şey değişmez**.
+- `record_notification_failures(ids)` — `attempt_count`ı artırır,
+  `delivered_at`ı **açmaz**: gönderilemeyen satır “gönderildi” görünmez.
+- `notification_text(policy)` — metin **yalnız politikadan** üretilir:
+  “Bugün son günü olan bir göreviniz var.” / “Yarın …” / genel cümle. Görev
+  başlığı, dosya adı, taraf adı, kimlik **girmez** (şartname §331: kilit
+  ekranı bildirimi genel metindir). Bozuk payload satırı **düşürmez**;
+  politika `None` olur ve metin genel cümleye düşer.
+
+**Yazılan — masaüstü.** `tauri-plugin-notification = "2"` (yalnız **Rust**
+tarafından kullanılır; JS yüzeyi capability'ye **eklenmedi** — ADR-02 en az
+yetki). Yeni komut `notifications_deliver(caseId)`:
+izin `permission_state` ile sorulur, `Prompt` ise `request_permission`;
+izin yoksa **`E_NOTIFY_PERMISSION`** döner ve **hiçbir satır kapatılmaz**
+(“izin yok” ile “gönderildi” karışmaz). Her satır için OS bildirimi
+gösterilir; `Ok` → `mark_notifications_delivered`, `Err` →
+`record_notification_failures`. Sonuç `{sent, failed, remaining}`.
+
+**Yazılan — arayüz.** `Tasks` ekranındaki “Yerel hatırlatıcılar” kartına
+**“Bildirimleri gönder”** düğmesi (`api.notificationsDeliver`): sonuç üç ayrı
+cümleyle yazılır — “{sent} bildirim gönderildi · {remaining} bekliyor.”,
+“Gönderilen bildirim yok · {remaining} bekliyor.”, “{sent} gönderildi ·
+{failed} başarısız · {remaining} bekliyor. Başarısız satır kuyrukta kalır;
+yeniden denenebilir.” İzin hatası `role="alert"` satırında **koduyla** görünür.
+`Review` kuyruk özeti artık **yalnız hatırlatıcıyı** “bildirim bekliyor” diye
+sayar; alan olayları varsa ayrı cümle yazılır: “{count} alan olayı teslim
+edilmedi — bunlar bildirim değildir (bildirim gösterilmez, tüketici bekler).”
+5 sözlük anahtarı (`tasks.notify*`, `review.outboxDomainNote`).
+
+**Testler.** `notifications::tests` **9** (yeni) → `dim-storage --lib`
+**526 → 535** (294,44 s, güncel kodla): alan olayı bildirim sayılmaz ·
+teslim idempotent (ikinci çağrı 0) · alan olayı `delivered` kapatılamaz ·
+başarısız deneme satırı kapatmaz · metin görev/dosya adı sızdırmaz · bozuk
+payload satırı kaybettirmez · limit çekirdekte kırpılır · sıra yazılma
+sırasıdır · dosya kapsamı. `Tasks.test.tsx` **+2 → 38**, `Review.test.tsx`
+**+1 → 43**; tam vitest **65 dosya / 1370 test** yeşil. `tsc --noEmit` temiz;
+i18n bağlama **60/60** (54 + 6); `cargo fmt` iki manifest temiz; storage +
+masaüstü `clippy --all-targets -D warnings` temiz.
+
+**Kapı kanıtı (gerçek koşular; betikler `scratch/dim-notify-gates-core.py` ve
+`-ui.py`; her mutasyon tek başına, `try/finally` + sha256 birebir —
+`notifications.rs 3c2e10d9…`, `Tasks.tsx 5be4bf48…`, `Review.tsx 144ec9ae…`):**
+**12/12 KIRMIZI** — S1 alan olayları da bildirim sayılır · S2 teslim kapısı
+idempotent değil · S3 alan olayı “teslim edildi” kapatılabilir · S4 başarısız
+deneme satırı kapatır · S5 metin görev/dosya adı sızdırır · S6 limit
+kırpılmaz · S7 bozuk payload uydurma politikaya düşer · S8 sıra ters;
+U1 gönder düğmesi çekirdeği çağırmaz · U2 başarısız satır yine “gönderildi”
+yazar · U3 izin hatası yutulur · U4 alan olayları bildirim sayılır.
+
+**CI (ölçüldü).** Kod `03eda2b` (15 dosya, **+1790/−16**) + bildirim tazeleme
+`2b4dea7` (`THIRD_PARTY_NOTICES.md`, +2500/−240) → run **`43002028988` 10/10
+YEŞİL**: `dim-storage` **535** hem `macos-15` (242,81 s) hem `ubuntu-latest`
+(639,46 s) — **birebir**; `arayüz` **65 dosya / 1362 test** (yerel 1370 farkı
+ağaçtaki başka ajanın commit'siz testleri), paket `index-Dsl5Bs53.js`
+**669,79 kB** / gzip **179,15 kB**; `masaüstü kabuk` 40/0/5; diğer yedi iş
+yeşil — **`rust (ubuntu-latest)` dahil**: eklentinin Linux derlemesi (zbus,
+saf Rust) doğrulandı. **Dürüst ara koşu:** ilk koşu `43000986797` SBOM işinde
+**düştü** (yeni bağımlılıklar `THIRD_PARTY_NOTICES.md`ye girmemişti; kod işleri
+yeşildi) → bildirim üretildi, `2b4dea7` ile kapı geçti.
+
+**Dürüst sınırlar.** (a) **Gerçek OS bildirimi bu ortamda koşulmadı**: bildirim
+bir Tauri penceresi ve sistem izni ister; jsdom/headless doğrulaması yoktur →
+macOS/Win bildirim merkezinde görünme ve izin diyaloğu **insan bekliyor**.
+(b) Teslim **kullanıcı eylemiyle** çalışır; arka plan zamanlayıcı yoktur
+(uygulama kapalıyken hatırlatıcı gönderilmez) — zamanlama ürün kararı.
+(c) Alan olayları (`review.*`) **bilerek teslim edilmez**: tüketicileri yok;
+arayüz bunu artık ayrı ve doğru cümleyle söyler, “bildirim” demez.
+(d) `attempt_count` artar ama **üst sınır/geri çekilme yoktur**; satır kuyrukta
+kaldığı sürece her “gönder” çağrısında yeniden denenir. (e) İzin verilmediğinde
+satırlar **kuyrukta kalır** (kaybolmaz); izin sonradan verilirse gönderilir.
+(f) Bildirim metni **sabittir** (politika + genel cümle): görev kimliği
+gösterilmez, kullanıcı bildirime tıklayınca uygulama içinde ilgili göreve
+**gitmez** (tıklama eylemi yok). (g) Komut **komut olarak koşulmadı**
+(`State<AppState>` altyapısı yok) — kablolama `cargo check` + `clippy`,
+davranış storage düzeyinde **gerçek SQLite**; OS çağrısı derlenir ama
+çalıştırılamaz.
