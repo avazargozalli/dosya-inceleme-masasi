@@ -3,9 +3,10 @@
 - **Sürüm etiketi:** `v0.9.0` (hedef)
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
   **mimari uyum denetimi (T01)**, **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
-  **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)** ve
-  **arayüzden tetiklenen gerçek sınama** hazır; sağlayıcıya özel akışlar
-  (T06–T08, T10) yok
+  **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)**,
+  **istem argv biçimi + `--print` kapısı (T08 kısmi)** ve **arayüzden tetiklenen gerçek
+  sınama** hazır; **istem gönderen** uçtan uca sağlayıcı akışı (T08) ve Kimi API profili
+  (T10) yok
 - **Tarih:** 2026-10-24
 
 | İş | Durum | Kanıt |
@@ -654,6 +655,14 @@ gönderimi açık.” ya da “… gönderim kapalı: <neden>”. 5 sözlük ana
   kusuru **kanıtlamıyor**, aksine kusurlu biçimi sabitliyordu. Test doğru
   sözleşmeye çekildi (`--print=<istem>`) ve kapı için **yeni entegrasyon testi**
   eklendi (çıplak `--print` → `E_CLI_ARGUMENT`, süreç **hiç başlamaz**).
+- **CI (ölçüldü):** kod `d3267cf` → run `43108471774` **kırmızı** (iki `rust`
+  işi, yukarıdaki entegrasyon testi) → test + belge `e27e1e8` → run `43109504236`
+  **10/10 YEŞİL**: `dim-storage` **544** hem `macos-15` (253,90 s) hem
+  `ubuntu-latest` (377,60 s) — **birebir**; `dim-cli-adapters` **125** ve
+  `tool_free_proof` **5 passed · 1 ignored** iki OS'ta; `arayüz` **66 dosya /
+  1379 test**, paket `index-zWkVRsW5.js` **677,58 kB** / gzip **181,10 kB**;
+  `masaüstü kabuk`, `windows güvenli depo`, `sözleşmeler`, `kaynak arşivi`,
+  `paket manifesti`, `belge worker'ı`, `SBOM` yeşil.
 
 **Dürüst sınırlar (T08):**
 
