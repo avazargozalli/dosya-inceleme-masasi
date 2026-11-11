@@ -14,6 +14,7 @@
 | F14-T06 şifreli devir paketi | ✅ | klasör → zip → Argon2id + AES-256-GCM `.dimpak`; parola verilmezse açık klasör kalır |
 | F14-T07 yedek zamanlaması / bildirim | ✅ | Otomatik yedek: klasör + 7 gün aralık + son tarih; App saatte bir kontrol eder, Settings kartında **son başarılı yedek · son deneme (neden koduyla) · sıradaki plan** ayrı gösterilir; başarısız deneme tazeliği ilerletmez; **başarılı yedekler kasa içi `backup_runs` geçmişine yazılır ve Ayarlar'da okunur** (2026-11-07); **plan (hedef + aralık) kasa ayarında (`settings`, kapsam `vault`) saklanır, cihaz kaydındaki eski plan bir kez göç eder** (2026-11-07); **"son başarılı yedek" tazeliği de kasadan okunur, cihaz kaydı yalnız yedektir ve çelişki gizlenmez** (2026-11-07) |
 | F14-T08 PDF çıktısında Türkçe font gömme | ✅ | Gömülü **Charis SIL** (Type0/Identity-H); `test_pdf_report_embeds_unicode_font_and_keeps_turkish` |
+| F14-T09 yedek saklama (retention) | ✅ | Otomatik yedek klasöründe **son 7 günlük + 4 haftalık** politika (değiştirilebilir); tarama → önizleme → **açık onay** → silme. **Yalnız bu kasanın** yedekleri silinir (manifest `vaultId`); kimliksiz eski yedek, başka kasanın yedeği, symlink ve bozuk manifest **dokunulmaz**; en yeni yedek her zaman korunur; boşalan bayt ölçülür (2026-11-11; aşağıdaki bölüm) |
 | Yarım çıktı bırakma / atomik yazım (şartname F14-T11) | ✅ | Beş dışa aktarma ve devir paketi `atomic::write_atomic_verified` ile yazılır (geçici ad → geri okunan özet → `rename`); 2026-11-07 ölçüm + 8/8 mutasyon (aşağıdaki bölüm) |
 
 ## Dürüst durum
@@ -615,3 +616,93 @@ düzeyinde gerçek SQLite; (f) jsdom tarayıcı değil → gerçek Tauri pencere
 `index-CbO_Ee7q.js` **665,39 kB** / gzip **177,97 kB** (CSS 7,28 / 2,07);
 `masaüstü kabuk` `40 koştu · 0 düştü · 5 yoksayıldı` + yoksayılan koşu
 `5 passed · 40 filtered`; diğer altı iş yeşil.
+
+## Yedek saklama — son N günlük + M haftalık, yalnız kendi yedeklerimiz (2026-11-11)
+
+**Ölçülen kusur:** her otomatik yedek hedef klasörde `DimYedek-…` klasörü **ve**
+varsa `.dimbak` arşivi bırakıyordu; **hiçbir temizlik yolu yoktu**. Şartname
+(Bölüm 05.5, F14-T09) "son 7 günlük ve 4 haftalık yedek saklama önerisi
+değiştirilebilir; disk doluluğu görünürdür" der. Sekiz gigabaytlık hedef cihazda
+haftalık yedekler zamanla diski doldurur — **dolan disk yeni yedeği de engeller**
+(yedekleme kendi kendini durdurur). Dahası: yedek manifestinde **kasa kimliği
+yoktu**, yani temizlik "hangi yedek benim" sorusunu kanıtlayamazdı; yanlış
+kurgulanmış bir süpürme **başka kasanın** yedeğini silerdi.
+
+**Yazılan (çekirdek):**
+- `backup.rs`: manifeste **`vaultId` aidiyet izi** (`#[serde(default)]` — eski
+  yedekler kimliksizdir ve **silinmez**); `write_backup_manifest_with_vault`
+  (üretim yolu `vault_backup` kasa kimliğini geçirir, eski imza `None` ile
+  korunur); `read_backup_manifest` **biçim/sürüm kapısı** (tanınmayan biçim ve
+  ileri sürüm yedek sayılmaz, silinmez); `NAME_PREFIX` / `ARCHIVE_EXT` sabitleri
+  (komut ad biçimini iki yerde ayrı yazmaz).
+- Yeni `backup_retention.rs`: `RetentionPolicy` (**günlük 1–365, haftalık
+  0–52**; "hiç yedek tutma" yoktur — yanlış yapılandırma tüm yedekleri
+  silemez), `plan_retention` (tarama + plan; **hiçbir dosya silinmez**) ve
+  `apply_retention` (yalnız `dry_run=false`).
+- **Güvenlik kuralları (kaldırılamaz):** yalnız manifestteki `vaultId` bu
+  kasanın kimliğiyle **birebir** eşleşen yedek silinir; kimliksiz/başka kasanın
+  yedeği **asla**; symlink, klasör olmayan girdi ve manifesti bozuk/ileri sürüm
+  klasör yedek sayılmaz (`ignored` — sessizce yutulmaz); **en yeni yedek her
+  zaman korunur**; **önce `.dimbak`, sonra klasör** silinir (arşiv silinemezse
+  klasöre dokunulmaz); silme anında manifest **yeniden** okunur (tarama ile
+  silme arasında kimlik değiştiyse hiçbir şey silinmez); silinemeyenler
+  `errors`ta adı+nedeniyle raporlanır; `freedBytes` yalnız **gerçekten** silinen
+  yedeklerin ölçülen baytıdır.
+- Komut `vault_backup_retention(dryRun, keepDaily, keepWeekly)`: hedef **kasadaki
+  `backup.schedule` ayarından** okunur — komut keyfi bir yol üzerinde dosya
+  silmez; hedef yoksa `E_BACKUP_NO_TARGET`; denetim kaydı yalnız sayı taşır
+  (`count`, `freedBytes`, politika), **dosya adı/yolu yazılmaz**.
+
+**Yazılan (masaüstü + arayüz):** `api.vaultBackupRetention` +
+`BackupRetentionReport` tipleri; Ayarlar'da **"Yedek saklama"** kartı: cihaz
+tercihi (localStorage; sınırlar çekirdekle **aynı**), "Yedekleri tara" (dry run)
+→ önizleme tablosu (satır durumları: **silindi / silinecek / korunuyor /
+dokunulmadı**; korunan sayısı ve yedek sayılmayan girdiler ayrı cümleyle) →
+"Silinecekleri sil" → **onay paneli** ("N yedek ve arşivleri kalıcı olarak
+silinecek… geri alınamaz") → "Onayla ve sil". `retentionSeq` geç yanıt kapısı;
+**politika veya hedef değişince ve kasa kilitlenince rapor düşer** (dosya
+adları/boyutları kilitli ekranda kalmaz); bozuk sayı **çekirdeğe gitmez**;
+çekirdeğin kabul ettiği sayılar cihaz tercihine **geri yazılır**.
+
+**Testler:** `backup_retention::tests` **9** (ölçüm/arşiv · gün+hafta planı · en
+yeni koruması · kimliksiz/yabancı · gerçek silme + boşalan bayt + idempotent ·
+kimlik değişince ret · geçersiz politika/kök · symlink · **arşiv dosya değilse
+klasör silinmez**) → `dim-storage --lib` **535 → 544**; `backup-retention.test.ts`
+**5**; `Settings.test.tsx` **49 → 57** (+8) → yerel **66 dosya / 1383 test**.
+
+**Kapı kanıtı (gerçek koşular; betikler `dim-retention-gates-core.py` ve
+`-ui.py`, her mutasyon tek başına, `try/finally` + sha256 birebir —
+`backup_retention.rs f9919dd8…`, `Settings.tsx a402a2d8…`):** **17/17 KIRMIZI** —
+S1 kimliksiz eski yedek "own" sayılır · S2 başka kasanın yedeği "own" · S3 günlük
+bütçe bir fazla tutar · S4 haftalık koruma işaretlenmez · S5 silme anında kimlik
+yeniden doğrulanmaz · S6 symlink yedek sayılır · S7 arşiv bayta sayılmaz ·
+S8 arşiv dosya değilse klasör yine silinir; U1 onay paneli atlanır (tek tıkla
+siler) · U2 geçersiz günlük sayı sessizce 1'e tamir edilir · U3 düşen tarama
+eski raporu bırakır · U4 politika değişince rapor düşmez · U5 hedef değişince
+rapor düşmez · U6 kilitte rapor düşmez · U7 yabancı yedek "korunuyor" yazar ·
+U8 silinen satır "silindi" yazmaz · U9 hedef yokken tarama açık.
+
+**CI (ölçüldü):** kod `ae50498` (11 dosya, **+1697/−3**) → run `43027650809`
+**10/10 YEŞİL**: `dim-storage` **544** hem `macos-15` (278,69 s) hem
+`ubuntu-latest` (504,71 s) — **birebir**; `arayüz` **66 dosya / 1375 test** (yerel
+1383 farkı ağaçtaki başka ajanın commit'siz testleri), paket
+`index-DmhY8TBs.js` **676,72 kB** / gzip **180,77 kB**; `masaüstü kabuk`
+`40 koştu · 0 düştü · 5 yoksayıldı` + yoksayılan koşu `5 passed · 40 filtered`;
+diğer altı iş yeşil.
+
+**Dürüst sınırlar:** (a) temizlik **yalnız kullanıcı eylemiyle** koşar —
+otomatik zamanlanmış süpürme yok (ürün kararı); (b) politika **cihaz tercihidir**
+(localStorage), kasa politikası değildir; aynı kasa başka cihazda farklı sayılarla
+taranabilir; (c) **kimliksiz eski yedekler hiç silinmez** — raporda "dokunulmadı"
+sayılır; üründe elle yedek silme yolu olmadığı için bu yedekler Finder'dan
+silinmeli (tahminle silmek başka kasanın yedeğini silmek olabilir); (d)
+"haftalık" **ISO takvim haftasıdır**; yıl sınırında aynı hafta iki gruba
+düşebilir → **fazla** tutar, fazla silmez; (e) disk doluluğu ölçülür ve yazılır
+(taranan toplam, boşalan bayt) ama **eşik uyarısı/tahmini yok**; (f) önce arşiv
+silinir: ikisi arasında süreç ölürse klasör arşivsiz kalır, sonraki tarama onu
+yine bu kasanın yedeği sayar; (g) yalnız `backup.schedule` hedefi taranır — elle
+seçilen başka klasörlerdeki yedekler kapsam dışıdır; (h) manifest zamanı
+okunamazsa ad damgası kullanılır (uydurma değil, adın taşıdığı zaman); (i) komut
+**komut olarak koşulmadı** (`State<AppState>` altyapısı yok) — kablolama
+check+clippy, davranış storage düzeyinde gerçek dosya sistemi; (j) jsdom tarayıcı
+değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
