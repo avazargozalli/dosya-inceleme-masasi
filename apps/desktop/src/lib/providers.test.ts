@@ -7,6 +7,7 @@ import type {
   CliResidueScan,
 } from "./api";
 import {
+  adapterAliasName,
   capabilityWarnings,
   formatBytes,
   hardeningProbeText,
@@ -432,5 +433,19 @@ describe("hardeningProbeText", () => {
     expect(result.tone).toBe("warn");
     expect(result.text).toContain("timed_out");
     expect(result.text).not.toContain("KANIT.txt");
+  });
+});
+
+describe("adapterAliasName — eş ad çözümü (F10-T08c)", () => {
+  it("bildirilen adla bulunduysa eş ad yazılmaz", () => {
+    expect(adapterAliasName({ command: "claude", resolvedCommand: "claude" })).toBeNull();
+  });
+
+  it("eş adla bulunduysa bulunan ad döner", () => {
+    expect(adapterAliasName({ command: "antigravity", resolvedCommand: "agy" })).toBe("agy");
+  });
+
+  it("kurulu değilse (resolvedCommand yok) eş ad uydurulmaz", () => {
+    expect(adapterAliasName({ command: "antigravity", resolvedCommand: null })).toBeNull();
   });
 });

@@ -196,6 +196,7 @@ const CLAUDE: AdapterView = {
   id: "claude-code",
   displayName: "Claude Code",
   command: "claude",
+  resolvedCommand: "claude",
   state: "installed",
   version: "2.1.303",
   authMode: "subscription",
@@ -210,6 +211,7 @@ const ANTIGRAVITY: AdapterView = {
   id: "antigravity",
   displayName: "Antigravity",
   command: "antigravity",
+  resolvedCommand: null,
   state: "unverified",
   version: null,
   authMode: "interactive_only",
@@ -224,6 +226,7 @@ const KIMI: AdapterView = {
   id: "kimi",
   displayName: "Kimi",
   command: "kimi",
+  resolvedCommand: null,
   state: "installed",
   version: "1.2.0",
   authMode: "api_key",
@@ -243,11 +246,24 @@ const KIMI: AdapterView = {
   },
 };
 
+/**
+ * Eş adla bulunan adaptör (ölçüldü 2026-11-12): ürün `antigravity` arar,
+ * kurulu ikili `agy`. Kart iki adı da yazar; `command`ı değiştirmez.
+ */
+const ALIASED: AdapterView = {
+  ...ANTIGRAVITY,
+  state: "installed",
+  version: "1.5.6",
+  resolvedCommand: "agy",
+  path: "/opt/homebrew/bin/agy",
+};
+
 /** Hiç kurulu olmayan sağlayıcı: yoklanamaz, eksik alan uydurulmaz. */
 const GEMINI: AdapterView = {
   id: "gemini",
   displayName: "Gemini",
   command: "gemini",
+  resolvedCommand: null,
   state: "not_installed",
   version: null,
   authMode: "subscription",
@@ -300,6 +316,7 @@ const MATRIX: CliCapabilityMatrix = {
       adapterId: "claude-code",
       displayName: "Claude Code (matris)",
       command: "claude",
+      resolvedCommand: "claude",
       version: "2.1.303",
       helpArgs: ["--help"],
       helpRead: true,
@@ -341,6 +358,7 @@ const MATRIX: CliCapabilityMatrix = {
       adapterId: "gemini",
       displayName: "Gemini (matris)",
       command: "gemini",
+      resolvedCommand: null,
       version: null,
       helpArgs: ["--help"],
       helpRead: false,
@@ -757,6 +775,16 @@ describe("sağlayıcılar ekranı davranışı", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("eş adla bulunan adaptör bulunan adı yazar; bildirilen adla bulunan adaptörde eş ad satırı yoktur", async () => {
+    setup({ rows: [ALIASED, CLAUDE, GEMINI] });
+    await ready();
+    const aliased = adapterCard("Antigravity");
+    expect(within(aliased).getByText(byTextContent("antigravity · eş ad: agy"))).toBeTruthy();
+    // Bildirilen adla bulunan adaptörde ek satır uydurulmaz.
+    const plain = adapterCard("Claude Code");
+    expect(plain.textContent).not.toContain("eş ad");
   });
 
   it("API profili iki alan dolmadan kaydedilmez; kaydetme tam sözleşmeyle gider, hata sessiz yutulmaz", async () => {

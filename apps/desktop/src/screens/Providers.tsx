@@ -56,6 +56,7 @@ import {
   verificationCounts,
 } from "../lib/package";
 import {
+  adapterAliasName,
   formatBytes,
   persistenceText,
   probeArgv,
@@ -1172,12 +1173,16 @@ export function Providers() {
               ? [...probeWarnings(result), ...probeScopeWarnings(result)]
               : [];
             const outputs = result ? probeOutputs(result) : [];
+            const aliasName = adapterAliasName(row);
             return (
               <div key={row.id} className="card tight" style={{ background: "var(--surface)" }}>
                 <div className="card-head">
                   <div>
                     <h2>{row.displayName}</h2>
-                    <p className="card-sub" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>{row.command}</p>
+                    <p className="card-sub" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+                      {row.command}
+                      {aliasName ? ` · ${t("providers.aliasCommand", { name: aliasName })}` : null}
+                    </p>
                   </div>
                   <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
                     <span

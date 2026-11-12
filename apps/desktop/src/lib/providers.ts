@@ -5,6 +5,7 @@
 import { formatSize } from "./format";
 import { t } from "./i18n";
 import type {
+  AdapterView,
   CliCapabilityAdapter,
   CliCapabilityMatrix,
   CliCapabilityRow,
@@ -37,6 +38,19 @@ export function probeStatusLabel(
     default:
       return { label: t("probe.statusUnknown"), tone: "plain" };
   }
+}
+
+/**
+ * Eş ad çözümü (F10-T08c): adaptör PATH'te **bildirilen** adla değil eş adla
+ * bulunduysa bulunan adı döndürür, aksi hâlde `null`. Karşılaştırma birebir
+ * dize eşitliğidir — arayüz çekirdeğin sırasını yeniden üretmez.
+ */
+export function adapterAliasName(
+  view: Pick<AdapterView, "command" | "resolvedCommand">,
+): string | null {
+  const name = view.resolvedCommand ?? null;
+  if (!name || name === view.command) return null;
+  return name;
 }
 
 /** Gerçekten çalıştırılan komut satırı; kullanıcı ne çalıştığını görür. */
@@ -308,9 +322,11 @@ export function linkTone(link: string): ProbeTone {
 
 /** Gerçekten yoklanan komut: kullanıcı ne çalıştığını görür. */
 export function capabilityHelpCommand(
-  view: Pick<CliCapabilityAdapter, "command" | "helpArgs">,
+  view: Pick<CliCapabilityAdapter, "command" | "resolvedCommand" | "helpArgs">,
 ): string {
-  return [view.command, ...view.helpArgs].join(" ");
+  // Eş adla bulunduysa **çalışan** ad yazılır: kullanıcı satırı kopyalayıp
+  // çalıştırabilmeli (ölçüldü: `antigravity` PATH'te yok, `agy` var).
+  return [view.resolvedCommand ?? view.command, ...view.helpArgs].join(" ");
 }
 
 /** Tek satır özet: kaç yetenek bildirildi / yok / doğrulanamadı. */

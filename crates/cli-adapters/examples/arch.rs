@@ -9,7 +9,7 @@
 //! biçim (Mach-O/ELF/PE/betik), mimari dilimleri ve uygulamanın mimarisiyle
 //! karşılaştırma. Süreç **başlatılmaz**; dosya çalıştırılmaz.
 
-use dim_cli_adapters::{app_arch_label, find_on_path, inspect_path, spec, SPECS};
+use dim_cli_adapters::{app_arch_label, inspect_path, resolve_adapter_executable, spec, SPECS};
 
 fn main() {
     let requested: Vec<String> = std::env::args().skip(1).collect();
@@ -26,7 +26,7 @@ fn main() {
             continue;
         };
         println!("== {} ({})", adapter.display_name, adapter.id);
-        let Some(executable) = find_on_path(adapter.command) else {
+        let Some((_, executable)) = resolve_adapter_executable(adapter) else {
             println!("   yol      : PATH'te yok");
             continue;
         };

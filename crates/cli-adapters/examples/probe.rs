@@ -11,7 +11,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use dim_cli_adapters::{find_on_path, run_probe, spec};
+use dim_cli_adapters::{resolve_adapter_executable, run_probe, spec};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,7 +20,7 @@ fn main() {
         eprintln!("bilinmeyen adaptör: {id}");
         std::process::exit(2);
     };
-    let Some(executable) = find_on_path(adapter.command) else {
+    let Some((command, executable)) = resolve_adapter_executable(adapter) else {
         println!("{}: PATH üzerinde bulunamadı", adapter.display_name);
         std::process::exit(3);
     };
@@ -28,7 +28,7 @@ fn main() {
     println!("yürütülebilir: {}", executable.display());
     println!(
         "argv        : {} {:?}",
-        adapter.command,
+        command,
         adapter.version_args.first()
     );
 

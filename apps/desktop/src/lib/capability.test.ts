@@ -32,6 +32,7 @@ function adapter(overrides: Partial<CliCapabilityAdapter> = {}): CliCapabilityAd
     adapterId: "claude-code",
     displayName: "Claude Code",
     command: "claude",
+    resolvedCommand: "claude",
     version: "2.1.303",
     helpArgs: ["--help"],
     helpRead: true,
@@ -155,9 +156,17 @@ describe("yetenek matrisi sunumu (F10-T11)", () => {
 
   it("yoklanan komut ve ayrıntı metni gerçeği yansıtır", () => {
     expect(capabilityHelpCommand(adapter())).toBe("claude --help");
-    expect(capabilityHelpCommand(adapter({ command: "codex", helpArgs: ["exec", "--help"] }))).toBe(
-      "codex exec --help",
-    );
+    expect(
+      capabilityHelpCommand(
+        adapter({ command: "codex", resolvedCommand: "codex", helpArgs: ["exec", "--help"] }),
+      ),
+    ).toBe("codex exec --help");
+    // Eş adla bulunduysa **çalışan** ad yazılır (kopyalanabilir komut).
+    expect(
+      capabilityHelpCommand(
+        adapter({ command: "antigravity", resolvedCommand: "agy", helpArgs: ["--help"] }),
+      ),
+    ).toBe("agy --help");
     expect(capabilityDetailText(row({ detail: "  " }))).toBe("—");
     expect(capabilityDetailText(row({ detail: "eksik: --json-schema" }))).toBe("eksik: --json-schema");
   });

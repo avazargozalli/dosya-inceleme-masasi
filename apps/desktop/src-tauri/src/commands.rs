@@ -5,7 +5,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use dim_cli_adapters::{
-    discover, find_on_path, run_probe, spec as adapter_spec, DiscoveryState, RunStatus, SPECS,
+    discover, resolve_adapter_executable, run_probe, spec as adapter_spec, DiscoveryState,
+    RunStatus, SPECS,
 };
 use dim_ingest::budget::{BudgetReport, WorkerBudget, WorkerKind};
 use dim_ingest::inventory::DocumentInventory;
@@ -3686,7 +3687,11 @@ pub struct AdapterArchView {
 pub struct AdapterView {
     pub id: &'static str,
     pub display_name: &'static str,
+    /// Bildirilen komut adı (PATH'te **önce** aranan ad).
     pub command: &'static str,
+    /// Gerçekten bulunan ad; `command`dan farklıysa eş adla bulundu
+    /// (ölçüldü: Antigravity `agy`). Kurulu değilse `None`.
+    pub resolved_command: Option<&'static str>,
     pub state: &'static str,
     pub version: Option<String>,
     pub auth_mode: &'static str,
@@ -3720,6 +3725,9 @@ pub fn provider_probe() -> Vec<AdapterView> {
         .iter()
         .map(|spec| {
             let discovery = discover(spec);
+            // Eş ad çözümü: "kurulu değil" ile "kurulu ama farklı adla" ayrılsın
+            // (arayüz `command`ı değil bulunan adı da yazar).
+            let resolved_command = resolve_adapter_executable(spec).map(|(name, _)| name);
             let (state, version, path) = match discovery.state {
                 DiscoveryState::Installed { version, path } => {
                     ("installed", Some(version), Some(path))
@@ -3734,6 +3742,7 @@ pub fn provider_probe() -> Vec<AdapterView> {
                 id: spec.id,
                 display_name: spec.display_name,
                 command: spec.command,
+                resolved_command,
                 state,
                 version,
                 auth_mode: match spec.auth_mode {
@@ -3829,12 +3838,14 @@ pub async fn provider_probe_run(
             "Bu sağlayıcıda otomatik yürütme kapalı; yalnız etkileşimli kullanım var.",
         ));
     }
-    let executable = find_on_path(spec.command).ok_or_else(|| {
-        ApiError::new(
-            "E_CLI_NOT_INSTALLED",
-            "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
-        )
-    })?;
+    let executable = resolve_adapter_executable(spec)
+        .map(|(_, path)| path)
+        .ok_or_else(|| {
+            ApiError::new(
+                "E_CLI_NOT_INSTALLED",
+                "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
+            )
+        })?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -4019,12 +4030,14 @@ pub async fn cli_hardening_probe(
             "Bu sağlayıcıda otomatik yürütme kapalı; istem gönderilemez.",
         ));
     }
-    let executable = find_on_path(spec.command).ok_or_else(|| {
-        ApiError::new(
-            "E_CLI_NOT_INSTALLED",
-            "Araç PATH üzerinde bulunamadı; sınama yapılamaz.",
-        )
-    })?;
+    let executable = resolve_adapter_executable(spec)
+        .map(|(_, path)| path)
+        .ok_or_else(|| {
+            ApiError::new(
+                "E_CLI_NOT_INSTALLED",
+                "Araç PATH üzerinde bulunamadı; sınama yapılamaz.",
+            )
+        })?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -4191,7 +4204,7 @@ pub struct CliArchReportView {
 pub fn cli_arch_report(state: State<'_, AppState>) -> Result<CliArchReportView, ApiError> {
     let mut adapters: Vec<CliArchAdapterView> = Vec::new();
     for adapter in SPECS {
-        let executable = find_on_path(adapter.command);
+        let executable = resolve_adapter_executable(adapter).map(|(_, path)| path);
         let Some(path) = executable else {
             adapters.push(CliArchAdapterView {
                 adapter_id: adapter.id,
@@ -4342,7 +4355,11 @@ pub struct CliPromptShapeView {
 pub struct CliCapabilityAdapterView {
     pub adapter_id: &'static str,
     pub display_name: &'static str,
+    /// Bildirilen ad (yardım metni bu adla istendi).
     pub command: &'static str,
+    /// Bulunan ad; eş adla bulunduysa `command`dan farklı (arayüz gerçek
+    /// komutu yazar: `agy --help`).
+    pub resolved_command: Option<&'static str>,
     pub version: Option<String>,
     pub help_args: Vec<String>,
     pub help_read: bool,
@@ -4433,7 +4450,7 @@ pub async fn cli_capability_matrix(
             let (help, help_error) =
                 match (&discovery.state, dim_cli_adapters::capabilities(adapter.id)) {
                     (DiscoveryState::Installed { .. }, Some(caps)) if caps.help_probe => {
-                        match find_on_path(adapter.command) {
+                        match resolve_adapter_executable(adapter).map(|(_, path)| path) {
                             Some(executable) => {
                                 match dim_cli_adapters::run_help_probe(
                                     adapter,
@@ -4464,6 +4481,7 @@ pub async fn cli_capability_matrix(
                 adapter_id: report.adapter_id,
                 display_name: adapter.display_name,
                 command: adapter.command,
+                resolved_command: resolve_adapter_executable(adapter).map(|(name, _)| name),
                 version: report.installed_version.clone(),
                 help_args: report.help_args.clone(),
                 help_read: report.help_read,
@@ -4697,7 +4715,7 @@ pub async fn cli_attack_probe(state: State<'_, AppState>) -> Result<CliAttackVie
                 adapters.push(row);
                 continue;
             }
-            let Some(executable) = find_on_path(adapter.command) else {
+            let Some(executable) = resolve_adapter_executable(adapter).map(|(_, path)| path) else {
                 row.skipped = Some("executable_missing");
                 adapters.push(row);
                 continue;
@@ -5010,12 +5028,14 @@ pub async fn cli_residue_measure(
             "Bu sağlayıcıda otomatik yürütme kapalı; ölçüm yapılmaz.",
         ));
     }
-    let executable = find_on_path(spec.command).ok_or_else(|| {
-        ApiError::new(
-            "E_CLI_NOT_INSTALLED",
-            "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
-        )
-    })?;
+    let executable = resolve_adapter_executable(spec)
+        .map(|(_, path)| path)
+        .ok_or_else(|| {
+            ApiError::new(
+                "E_CLI_NOT_INSTALLED",
+                "Araç PATH üzerinde bulunamadı; kurulum rehberine bakın.",
+            )
+        })?;
     let home = user_home()?;
     let measured_at = SystemTime::now();
     let measured_at_unix = measured_at

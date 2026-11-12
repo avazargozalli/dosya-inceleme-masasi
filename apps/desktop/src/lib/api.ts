@@ -928,7 +928,10 @@ export type AdapterArch = {
 export type AdapterView = {
   id: string;
   displayName: string;
+  /** Bildirilen komut adı (PATH'te önce bu aranır). */
   command: string;
+  /** Gerçekten bulunan ad; `command`dan farklıysa eş adla bulundu (ör. `agy`). */
+  resolvedCommand: string | null;
   state: "installed" | "not_installed" | "unverified";
   version: string | null;
   authMode: "subscription" | "api_key" | "interactive_only";
@@ -1098,7 +1101,10 @@ export type CliPromptShape = {
 export type CliCapabilityAdapter = {
   adapterId: string;
   displayName: string;
+  /** Bildirilen ad (yardım isteği bu adla kurulur). */
   command: string;
+  /** Bulunan ad; eş adla bulunduysa `command`dan farklıdır (ör. `agy`). */
+  resolvedCommand: string | null;
   version: string | null;
   helpArgs: string[];
   helpRead: boolean;

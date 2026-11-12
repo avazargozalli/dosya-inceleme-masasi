@@ -13,8 +13,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use dim_cli_adapters::{
-    capabilities, discover, evaluate, find_on_path, help_text_of, run_help_probe, spec,
-    DiscoveryState, SPECS,
+    capabilities, discover, evaluate, help_text_of, resolve_adapter_executable, run_help_probe,
+    spec, DiscoveryState, SPECS,
 };
 
 fn main() {
@@ -53,7 +53,7 @@ fn main() {
         println!("   yardım   : {:?}", caps.help_args);
 
         let (help, help_error) = if version.is_some() && caps.help_probe {
-            match find_on_path(adapter.command) {
+            match resolve_adapter_executable(adapter).map(|(_, path)| path) {
                 Some(executable) => {
                     let cancel = Arc::new(AtomicBool::new(false));
                     match run_help_probe(adapter, &executable, &cancel) {

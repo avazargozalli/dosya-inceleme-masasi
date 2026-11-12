@@ -74,7 +74,13 @@ pub enum AuthMode {
 pub struct AdapterSpec {
     pub id: &'static str,
     pub display_name: &'static str,
+    /// PATH'te **önce** aranan ad (bildirilen komut).
     pub command: &'static str,
+    /// Kurulu ikilinin gerçek adı bildirilenden farklı olabiliyor (ölçüldü:
+    /// Antigravity `agy` olarak kurulur). Eş adlar **bildirilen addan sonra**
+    /// denenir; sessizce başka bir araca bağlanmamak için liste kapalı ve
+    /// kısa tutulur.
+    pub aliases: &'static [&'static str],
     pub version_args: &'static [&'static str],
     /// Yürütmede kabul edilen ek bayraklar. Listede olmayan bayrak reddedilir.
     pub allowed_args: &'static [&'static str],
@@ -92,6 +98,7 @@ pub const SPECS: &[AdapterSpec] = &[
         id: "claude-code",
         display_name: "Claude Code",
         command: "claude",
+        aliases: &[],
         version_args: COMMON,
         allowed_args: &[
             "--print",
@@ -115,6 +122,7 @@ pub const SPECS: &[AdapterSpec] = &[
         id: "codex-cli",
         display_name: "Codex CLI",
         command: "codex",
+        aliases: &[],
         version_args: COMMON,
         allowed_args: &[
             "exec",
@@ -137,6 +145,10 @@ pub const SPECS: &[AdapterSpec] = &[
         id: "antigravity-cli",
         display_name: "Antigravity CLI",
         command: "antigravity",
+        // Ölçüldü (2026-11-12): Antigravity CLI 1.5.6 Homebrew'da **`agy`**
+        // adıyla kurulur; ürün `antigravity` aradığı için "kurulu değil"
+        // diyordu ve sertleştirme sınaması koşulamıyordu.
+        aliases: &["agy"],
         version_args: COMMON,
         allowed_args: &[
             "--print",
@@ -157,6 +169,7 @@ pub const SPECS: &[AdapterSpec] = &[
         id: "kimi-cli",
         display_name: "Kimi CLI",
         command: "kimi",
+        aliases: &[],
         version_args: COMMON,
         allowed_args: &["--print", "--model"],
         // Kimi aboneliği etkileşimli kullanım içindir; otomatik toplu iş engellenir.
@@ -164,6 +177,15 @@ pub const SPECS: &[AdapterSpec] = &[
         batch_forbidden: true,
     },
 ];
+
+impl AdapterSpec {
+    /// PATH'te aranacak adlar: **bildirilen ad önce**, sonra eş adlar. Sıra
+    /// sözleşmedir: kurulu iki ad varsa bildirilen ad kazanır (sessizce eş ada
+    /// kayma olmaz).
+    pub fn command_candidates(&self) -> impl Iterator<Item = &'static str> + '_ {
+        std::iter::once(self.command).chain(self.aliases.iter().copied())
+    }
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AdapterError {
@@ -234,7 +256,7 @@ pub struct Discovery {
 /// okunamazsa "kurulu" denmez; `Unverified` döner.
 #[must_use]
 pub fn discover(spec: &AdapterSpec) -> Discovery {
-    let Some(path) = find_on_path(spec.command) else {
+    let Some((_, path)) = resolve_adapter_executable(spec) else {
         return Discovery {
             adapter_id: spec.id,
             state: DiscoveryState::NotInstalled,
@@ -291,25 +313,58 @@ fn probe_version(path: &Path, spec: &AdapterSpec) -> Result<String, AdapterError
     parse_version_output(&text).ok_or(AdapterError::ProbeFailed)
 }
 
+/// PATH üzerinde **tek** bir komut adı arar (yorumlayıcı çözümü gibi tek adlı
+/// aramalar için). Adaptör yürütülebiliri için [`resolve_adapter_executable`]
+/// kullan: eş adlar orada denenir.
 #[must_use]
 pub fn find_on_path(command: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(command);
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-        #[cfg(windows)]
-        {
-            for ext in ["exe", "cmd", "bat"] {
-                let c = dir.join(format!("{command}.{ext}"));
-                if is_executable(&c) {
-                    return Some(c);
-                }
+    std::env::split_paths(&path).find_map(|dir| find_in_dir(&dir, command))
+}
+
+/// Verilen dizinde komut adını arar; Windows'ta yürütülebilir uzantılarını da
+/// dener.
+fn find_in_dir(dir: &Path, command: &str) -> Option<PathBuf> {
+    // Boş ad ya da yol ayırıcı taşıyan ad (`a/b`) dosya adı olarak kullanılmaz:
+    // eş ad listesi sabittir, yine de kapı burada tutulur.
+    if command.is_empty() || command.contains('/') || command.contains('\\') {
+        return None;
+    }
+    let candidate = dir.join(command);
+    if is_executable(&candidate) {
+        return Some(candidate);
+    }
+    #[cfg(windows)]
+    {
+        for ext in ["exe", "cmd", "bat"] {
+            let c = dir.join(format!("{command}.{ext}"));
+            if is_executable(&c) {
+                return Some(c);
             }
         }
     }
     None
+}
+
+/// Adaptörün yürütülebilirini PATH üzerinde arar: **bildirilen ad önce**
+/// (`spec.command`), sonra eş adlar (`spec.aliases`). Dönen ad, hangi adın
+/// bulunduğunu söyler — arayüz "eş ad: agy" yazabilsin diye.
+#[must_use]
+pub fn resolve_adapter_executable(spec: &AdapterSpec) -> Option<(&'static str, PathBuf)> {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    resolve_in_dirs(spec, &dirs)
+}
+
+/// [`resolve_adapter_executable`]in test edilebilir çekirdeği: PATH yerine
+/// verilen dizinlerde arar (ortam değişkenini değiştirmeden ölçülür).
+#[must_use]
+pub fn resolve_in_dirs(spec: &AdapterSpec, dirs: &[PathBuf]) -> Option<(&'static str, PathBuf)> {
+    spec.command_candidates().find_map(|name| {
+        dirs.iter()
+            .find_map(|dir| find_in_dir(dir, name).map(|path| (name, path)))
+    })
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -375,6 +430,89 @@ mod tests {
         for id in ["claude-code", "codex-cli", "antigravity-cli", "kimi-cli"] {
             assert!(spec(id).is_some(), "{id}");
         }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("dim-alias-{}-{stamp}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dizin");
+        dir
+    }
+
+    fn touch_executable(dir: &Path, name: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("yaz");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("izin");
+        }
+    }
+
+    /// Ölçülen kusur (2026-11-12): Antigravity CLI bu makinede **`agy`** adıyla
+    /// kurulu, ürün `antigravity` arıyordu → "kurulu değil". Eş ad çözümü,
+    /// bildirilen ad yoksa eş adı dener.
+    #[test]
+    fn alias_is_resolved_when_declared_command_is_absent() {
+        let dir = temp_dir("alias");
+        touch_executable(&dir, "agy");
+        let adapter = spec("antigravity-cli").expect("spec");
+        let (name, path) = resolve_in_dirs(adapter, std::slice::from_ref(&dir)).expect("eş ad bulunmalı");
+        assert_eq!(name, "agy");
+        assert_eq!(path, dir.join("agy"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Sıra sözleşmedir: iki ad da kuruluysa **bildirilen** ad kazanır.
+    #[test]
+    fn declared_command_wins_over_alias() {
+        let dir = temp_dir("declared");
+        touch_executable(&dir, "agy");
+        touch_executable(&dir, "antigravity");
+        let adapter = spec("antigravity-cli").expect("spec");
+        let (name, path) = resolve_in_dirs(adapter, std::slice::from_ref(&dir)).expect("bildirilen ad");
+        assert_eq!(name, "antigravity");
+        assert_eq!(path, dir.join("antigravity"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Eş ad listesi **adaptöre özgüdür**: başka adaptör `agy` adını aramaz.
+    #[test]
+    fn aliases_do_not_leak_to_other_adapters() {
+        let dir = temp_dir("leak");
+        touch_executable(&dir, "agy");
+        let codex = spec("codex-cli").expect("spec");
+        assert!(resolve_in_dirs(codex, std::slice::from_ref(&dir)).is_none());
+        assert_eq!(
+            spec("antigravity-cli")
+                .expect("spec")
+                .command_candidates()
+                .collect::<Vec<_>>(),
+            vec!["antigravity", "agy"]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ad listesi kapalı: yol ayırıcı taşıyan ya da boş ad dosya adı olarak
+    /// aranmaz. Üst dizinde gerçekten bir `agy` varken `../agy` **bulunmamalı**;
+    /// yoksa ad listesi PATH dışına çözülür.
+    #[test]
+    fn only_plain_names_are_searched() {
+        let dir = temp_dir("plain");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).expect("alt dizin");
+        touch_executable(&dir, "agy");
+        assert!(find_in_dir(&sub, "../agy").is_none());
+        assert!(find_in_dir(&sub, "agy").is_none());
+        assert!(find_in_dir(&dir, "agy").is_some());
+        assert!(find_in_dir(&dir, "").is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

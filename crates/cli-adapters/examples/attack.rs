@@ -16,8 +16,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use dim_cli_adapters::{
-    capabilities, discover, evaluate, find_on_path, help_text_of, outcomes, run_real_attack, spec,
-    AttackFixture, AttackVector, DiscoveryState, HelpProbe, RealAttack, RunStatus, SPECS,
+    capabilities, discover, evaluate, help_text_of, outcomes, resolve_adapter_executable,
+    run_real_attack, spec, AttackFixture, AttackVector, DiscoveryState, HelpProbe, RealAttack,
+    RunStatus, SPECS,
 };
 
 fn print_fixture(result: &dim_cli_adapters::FixtureResult) {
@@ -141,7 +142,7 @@ fn main() {
             println!("   saldırı  : koşulmadı (kurulu değil ya da etkileşimli-only)");
             continue;
         }
-        let Some(executable) = find_on_path(adapter.command) else {
+        let Some((_, executable)) = resolve_adapter_executable(adapter) else {
             println!("   saldırı  : koşulmadı (yürütülebilir bulunamadı)");
             continue;
         };

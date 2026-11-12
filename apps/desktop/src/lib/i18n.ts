@@ -2203,6 +2203,7 @@ export const tr = {
     stateLimited: "sınırlı",
     stateMissing: "kurulu değil",
     pathNotOnPath: "PATH üzerinde bulunamadı",
+    aliasCommand: "eş ad: {name}",
     batchForbidden:
       "Bu sağlayıcıda otomatik/toplu kullanım engellenir; yalnız etkileşimli kullanım. Sınama düğmesi bu yüzden kapalı.",
     probeUnavailable:

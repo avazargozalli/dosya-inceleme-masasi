@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dim_cli_adapters::{
-    cleanup_created, find_on_path, measure_residue, persistence_control, residue_paths, spec,
-    sweep_stale_sandboxes, STALE_SANDBOX_AGE,
+    cleanup_created, measure_residue, persistence_control, residue_paths,
+    resolve_adapter_executable, spec, sweep_stale_sandboxes, STALE_SANDBOX_AGE,
 };
 
 fn main() {
@@ -36,7 +36,7 @@ fn main() {
         eprintln!("bilinmeyen adaptör: {adapter}");
         std::process::exit(2);
     };
-    let Some(executable) = find_on_path(spec.command) else {
+    let Some((_, executable)) = resolve_adapter_executable(spec) else {
         eprintln!("{} PATH üzerinde bulunamadı", spec.command);
         std::process::exit(3);
     };

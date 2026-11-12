@@ -18,7 +18,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use dim_cli_adapters::{discover, find_on_path, run_hardening_probe, spec, DiscoveryState, SPECS};
+use dim_cli_adapters::{
+    discover, resolve_adapter_executable, run_hardening_probe, spec, DiscoveryState, SPECS,
+};
 
 fn main() {
     let requested: Vec<String> = std::env::args().skip(1).collect();
@@ -46,7 +48,7 @@ fn main() {
                 continue;
             }
         };
-        let Some(executable) = find_on_path(adapter.command) else {
+        let Some((_, executable)) = resolve_adapter_executable(adapter) else {
             println!("{id}: yürütülebilir bulunamadı");
             continue;
         };
