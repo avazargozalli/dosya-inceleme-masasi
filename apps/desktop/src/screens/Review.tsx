@@ -159,6 +159,11 @@ export function Review() {
   const linksSeq = useRef(0);
   const linksClaimRef = useRef<string | null>(null);
   const quoteSeq = useRef(0);
+  // Alıntı **denetimi** nesli: metin, kapsam ya da kaynak iddia değişince
+  // uçuştaki denetim geçersizdir ve yanıtı yazılmaz. `quoteSeq` yazma kilidini
+  // (denetim + kaynağa bağlama) yönetir; ikisini tek sayaçta tutmak bir
+  // bağlamanın uçuştaki denetimi sessizce düşürmesine yol açardı.
+  const quoteCheckSeq = useRef(0);
   // Tek yazma kilidi: her yazma kendi **neslini** taşır. Dosya değişimi kilidi
   // devreder; devredilen isteğin kapanışı, yeni dosyada başlatılan yazmanın
   // kilidini erken açmaz.
@@ -386,10 +391,29 @@ export function Review() {
       });
   }, [selectedClaim]);
 
+  /**
+   * Alıntı girdisi değişti: ekrandaki hüküm artık bu metne ait değil.
+   *
+   * Yalnız `setQuoteCheck(null)` yetmez — **uçuştaki** denetimin yanıtı da
+   * düşürülmeli, yoksa eski metnin hükmü yeni metnin altında belirir ve
+   * "Kaynağa bağla" o eski alıntının çapasını bağlar (INV-05: kanıt yanlış
+   * metne işaret eder). Nesil burada artırılır; `runQuoteCheck` yanıt yazarken
+   * kendi neslini karşılaştırır.
+   */
+  function invalidateQuoteCheck() {
+    quoteCheckSeq.current += 1;
+    setQuoteCheck(null);
+    setQuoteBindings({});
+  }
+
   async function runQuoteCheck() {
     if (!caseId || quoteText.trim().length === 0) return;
     const asked = caseId;
     const seq = ++quoteSeq.current;
+    // Denetimin **girdisi** de nesil taşır: yanıt yalnız metin/kapsam hâlâ
+    // gönderilen değerse yazılır. Dosya kapısı (`caseRef`) bunu kapsamaz —
+    // aynı dosyada metin değişmiş olabilir.
+    const checkSeq = ++quoteCheckSeq.current;
     setError(null);
     setQuoteBusy(true);
     try {
@@ -397,12 +421,12 @@ export function Review() {
         text: quoteText,
         documentId: quoteScope === "" ? null : quoteScope,
       });
-      // Dosya değiştiyse hüküm artık ekrandaki dosyaya ait değildir.
-      if (caseRef.current !== asked) return;
+      // Dosya ya da denetlenen metin/kapsam değiştiyse hüküm ekrandakine ait değildir.
+      if (caseRef.current !== asked || quoteCheckSeq.current !== checkSeq) return;
       setQuoteCheck(report);
       setQuoteBindings({});
     } catch (e) {
-      if (caseRef.current !== asked) return;
+      if (caseRef.current !== asked || quoteCheckSeq.current !== checkSeq) return;
       setError(toApiError(e));
     } finally {
       if (quoteSeq.current === seq) setQuoteBusy(false);
@@ -1303,8 +1327,7 @@ export function Review() {
                 const claim = claims.find((c) => c.id === id);
                 if (claim) {
                   setQuoteText(claim.claimText);
-                  setQuoteCheck(null);
-                  setQuoteBindings({});
+                  invalidateQuoteCheck();
                 }
               }}
             >
@@ -1324,8 +1347,7 @@ export function Review() {
               value={quoteScope}
               onChange={(e) => {
                 setQuoteScope(e.target.value);
-                setQuoteCheck(null);
-                setQuoteBindings({});
+                invalidateQuoteCheck();
               }}
             >
               <option value="">{t("review.scopeAll")}</option>
@@ -1346,8 +1368,7 @@ export function Review() {
             value={quoteText}
             onChange={(e) => {
               setQuoteText(e.target.value);
-              setQuoteCheck(null);
-              setQuoteBindings({});
+              invalidateQuoteCheck();
             }}
             placeholder={t("review.quotePlaceholder")}
           />

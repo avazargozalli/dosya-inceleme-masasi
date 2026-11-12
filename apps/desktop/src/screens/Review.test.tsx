@@ -773,6 +773,105 @@ describe("inceleme yazma yolları ve kapsam kapıları", () => {
     expect(screen.queryByText(summary)).toBeNull();
   });
 
+  it("alıntı denetimi uçuşta metin değişirse eski metnin hükmü yeni metnin altında yazılmaz", async () => {
+    const slowCheck = deferred<InTextQuoteCheck>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.inTextQuoteCheck.mockReturnValue(slowCheck.promise);
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+
+    // Uçuşta metin değişir: eski metnin hükmü geldiğinde **yeni** metnin
+    // altında belirmemeli (yoksa "Kaynağa bağla" eski alıntının çapasını bağlar).
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "başka bir alıntı" },
+    });
+    await act(async () => {
+      slowCheck.resolve(check());
+    });
+
+    expect(screen.queryByText(quoteCheckSummary(check()))).toBeNull();
+    // Yanıt düşürüldü ama kilit açılır: düğme yeni denetimi engellemez.
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: t("review.quoteRun") }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+  });
+
+  it("alıntı denetimi uçuşta kapsam değişirse eski hükmü yazmaz", async () => {
+    const slowCheck = deferred<InTextQuoteCheck>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.inTextQuoteCheck.mockReturnValue(slowCheck.promise);
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+    expect(mocks.inTextQuoteCheck).toHaveBeenLastCalledWith("c1", {
+      text: "kira bedeli ödenmedi",
+      documentId: null,
+    });
+
+    fireEvent.change(byId<HTMLSelectElement>("rv-qscope"), { target: { value: "d1" } });
+    await act(async () => {
+      slowCheck.resolve(check());
+    });
+
+    expect(screen.queryByText(quoteCheckSummary(check()))).toBeNull();
+  });
+
+  it("alıntı denetimi uçuşta kaynak iddia değişirse eski hükmü yazmaz", async () => {
+    const slowCheck = deferred<InTextQuoteCheck>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.inTextQuoteCheck.mockReturnValue(slowCheck.promise);
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+
+    // İddia seçilir: metin kutuyu doldurur, uçuştaki denetim başka metne aittir.
+    fireEvent.change(byId<HTMLSelectElement>("rv-qclaim"), { target: { value: "cl1" } });
+    await act(async () => {
+      slowCheck.resolve(check());
+    });
+
+    expect(screen.queryByText(quoteCheckSummary(check()))).toBeNull();
+  });
+
+  it("alıntı denetimi uçuşta metin değişirse eski hatayı da yazmaz", async () => {
+    const slowCheck = deferred<InTextQuoteCheck>();
+    setup();
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    mocks.inTextQuoteCheck.mockReturnValue(slowCheck.promise);
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "başka bir alıntı" },
+    });
+    await act(async () => {
+      slowCheck.reject(new Error("db down"));
+    });
+
+    // Eski metnin hatası yeni metnin altında kırmızı satır bırakmaz.
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("uçuşta bağlanan çapa yeni dosyanın kaynak listesine eklenmez", async () => {
     const slowBind = deferred<AnchorRow>();
     setup({
