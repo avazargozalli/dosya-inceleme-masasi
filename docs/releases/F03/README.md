@@ -128,10 +128,57 @@ edildi (yeni push), kırmızı değildi.
   gösterilmeyen kayıtları seçer; `document_versions` FK'si `RESTRICT` olduğu
   için yanlış silme veritabanı tarafından da engellenir.
 - `blob_inventory()` toplam/referanssız/boyut özeti verir.
-- `vault_gc` Tauri komutu kuru çalıştırma ve gerçek silme sunar; dosya
-  silinemezse `missingFiles` ile dürüstçe raporlar.
+- `vault_gc` Tauri komutu kuru çalıştırma ve gerçek silme sunar.
 - Ayarlar'da iki adımlı akış: **Tara** → **Temizle**.
-- 3 storage testi (referanslı blob korunur, boş kasa no-op, türev yolu).
+- 5 storage testi (referanslı blob korunur, boş kasa no-op, türev yolu,
+  kimlikle silme referanslıyı korur, aday/envanter birebir).
+
+### Sıra düzeltmesi + disk tarafı (2026-11-12)
+
+**Ölçülen kusur (iki parçalı):** (1) `vault_gc` önce **kaydı** siliyor, sonra
+dosyayı siliyordu. Dosya silinemezse (izin, kilit, süreç ölümü) geriye
+veritabanında **hiçbir izi olmayan** bir dosya kalıyordu: `blobs` tablosundan
+türeyen hiçbir envanter onu göremez, ürün onu bir daha silemez. (2)
+`VaultFile::write_blob` geçici dosyaya yazıp `rename` ediyor, **hata hâlinde
+temizlemiyordu** → yarım `.blb.tmp` diskte kalıyordu (aynı sınıf: kaydı yok,
+görünmez). Projenin kendi `dim_storage::atomic` kuralı "hata olursa geçici
+dosya silinir" derken kasa yazımı bu kuralın dışında kalmıştı.
+
+**Yazılan:**
+
+- `gc.rs`: `orphan_blob_candidates()` (yalnız seçim) + `delete_unreferenced_blobs(ids)`
+  (koşullu: iki adım arasında referans doğmuşsa satır **korunur**; tek işlem,
+  denetim yalnız sayı). `garbage_collect_blobs` ikisinin sarmalayıcısı; SQL
+  koşulu (`UNREFERENCED`) **tek kaynak** — aday, silme ve envanter aynı ifadeyi
+  kullanır.
+- `vault_gc`: **önce dosya, sonra kayıt.** Dosyası silinemeyen kayıt korunur ve
+  `blocked` alanında `ad: neden` olarak raporlanır (sonraki deneme yine aday).
+  Diskte dosyası olmayan kayıt `missingFiles` ile bildirilir ve kaydı düşer
+  (diskte veri yok; tutmak hiçbir şeyi kurtarmaz — ama sessizce geçilmez).
+- `VaultFile::write_blob_with_id` + `write_tmp_then_rename`: hata hâlinde geçici
+  dosya silinir; parola değişikliğinin başlık yazımı da aynı yardımcıyı kullanır.
+- Yeni `crates/storage/src/blob_disk.rs`: `blobs/` klasörünün **disk tarafı**
+  envanteri — `scan_blob_dir()` ve `sweep_blob_orphans()`. Kapalı küme ad biçimi
+  (`<32 küçük hex>.blb`, `.<32 küçük hex>.blb.tmp`), symlink/dizin **dokunulmaz**,
+  **yaş eşiği** (varsayılan 600 sn) uçuştaki içe aktarmayı korur, silme anında
+  kayıt yeniden sorulur, liste kırpılırsa `truncated` yazılır, denetim yalnız sayı.
+- Yeni komut `vault_blob_disk_sweep(dry_run)`; Ayarlar → **Kullanılmayan veriler**
+  kartında "Diskteki artıkları tara" → onay paneli → "Onayla ve sil". Yaş eşiği
+  ve liste sınırı arayüze **çekirdekten** gelir (kopya sayı yok).
+- Testler: `blob_disk` **9**, `gc` **3 → 5**, vault **+3**, masaüstü kapısı
+  **46 → 51** (kaynak 56; 5 gerçek worker testi `#[ignore]`); `Settings.test.tsx`
+  **57 → 60**.
+
+**Dürüst sınırlar:** (a) disk taraması **yalnız** kasanın `blobs/` klasörünü
+tarar; başka klasörlere kopyalanmış blob dosyaları kapsam dışı. (b) Yaş eşiği
+sabittir (600 sn), arayüzden değiştirilemez; saat geri alınırsa dosya "yeni"
+sayılıp **korunur** (temkinli taraf). (c) Silme **yalnız kullanıcı eylemiyle**
+koşar; otomatik süpürme yok. (d) `missing` kayıtlar **onarılmaz** — yalnız
+bildirilir; kurtarma yedeğe döner. (e) Komut yolu (`vault_gc`,
+`vault_blob_disk_sweep`) `State<AppState>` aldığı için **komut olarak
+koşulmadı**; kablolama `cargo check`/`clippy`, davranış `gc_vault_blobs` ve
+`blob_disk_view` yardımcılarıyla gerçek dosya sistemi + bellek içi kasada
+ölçüldü. (f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
 
 ## Parola değiştirme (ek)
 
