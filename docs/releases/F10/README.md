@@ -5,9 +5,10 @@
   **mimari uyum denetimi (T01)**, **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
   **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)**,
   **istem argv biçimi + `--print` kapısı (T08 kısmi)**, **komut eş adı çözümü (T08c)**,
-  **ölçülen araç erişiminin kapıya girmesi + kasa içinde saklanması (T08d)** ve
-  **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca sağlayıcı akışı
-  (T08) ve Kimi API profili (T10) yok
+  **ölçülen araç erişiminin kapıya girmesi + kasa içinde saklanması (T08d)**,
+  **koşulamayan sınamanın ölçüm sayılmaması + nedenin ayrılması (T08e)** ve
+  **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca
+  sağlayıcı akışı (T08) ve Kimi API profili (T10) yok
 - **Tarih:** 2026-10-24
 
 | İş | Durum | Kanıt |
@@ -19,7 +20,7 @@
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ✅ | Claude profili: `--no-session-persistence` + **`--tools ""`** + `--strict-mcp-config` zorunlu (sertleştirme); gerçek çağrı `DIM-CANARY-48`. Not: kimlikli `--print` çağrısı allowlist'te **`USER`** olmadan "Not logged in" veriyordu — eklendi (ölçüldü) |
 | F10-T07 | ✅ | Codex `--json` NDJSON ayrıştırıcı (`events.rs`): metin + usage, bilinmeyen tip korunur |
-| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz) |
+| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz). **2026-11-12 (T08e):** boş yanıtın **nedeni** artık ayrılır — `NotRun` (`quota`/`auth`/`process_failed`/`timeout`/`cancelled`) + `--output-format=json` zarfı (`response`); sınama **koşmadıysa** `measured_access()` `None` döner ve kanıt **yazılmaz**. Ölçüm (bu makine): agy kotası dolu → `koşmadı: quota … 429`; öncesi sessiz `inconclusive` + "ölçüldü · hüküm yok" kaydıydı |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
@@ -935,6 +936,112 @@ testleri), paket `index-BB8XRDhS.js` **683,76 kB** / gzip **182,57 kB**;
 koşu 5 passed · 44 filtered; diğer beş iş (`windows güvenli depo`, `kaynak
 arşivi`, `paket manifesti`, `belge worker'ı`, `SBOM`) yeşil.
 
+## Sınama koşulamadıysa ölçüm yazılmaz, nedeni söylenir (F10-T08e, 2026-11-12)
+
+**Ölçülen kusur (bu makine, `agy` 1.5.6):** Antigravity'nin kotası doluyken
+sertleştirme sınaması `Exited(3)` + **boş** stdout veriyordu ve ürün bunu
+`inconclusive` diye **kaydediyordu**; yetenek matrisi "ölçüldü · hüküm yok"
+yazıyordu. Oysa sınama **koşmamıştı**: gerçek neden stderr'de
+`RESOURCE_EXHAUSTED (code 429)` idi ve kullanıcı hiç görmüyordu. "Ölçüldü"
+cümlesi gerçekten koşulmuş bir ölçümü anlatır; koşmayan sınama onu yazamaz —
+bu, "sahte yeşil"in kapı tarafındaki karşılığıdır.
+
+**Tur başındaki ölçüm (öncesi):**
+
+```text
+== antigravity-cli (1.5.6) ==
+argv     : --sandbox --disable-slash-commands --print=<istem>
+durum    : Exited(3) · 4714 ms · kanıt 90 bayt
+ölçüm    : inconclusive
+işaret   : kanıt=false ret=false yanıt=false
+yanıt    :            ← boş; neden görünmüyor
+```
+
+**Yazılan (çekirdek, `hardening.rs`):**
+
+- `NotRun` — `quota` / `auth` / `process_failed` / `timeout` / `cancelled` —
+  ve `classify_not_run(status, stdout, stderr)`: yanıt **gelmediğinde**
+  nedeni sınıflar. Sıra önemli: kota ve kimlik işaretleri **süreç kodundan
+  önce** bakılır, çünkü CLI'lar bu hataları sıfır dışı kodla bildirir ve
+  "süreç düştü" demek gerçek nedeni gizlerdi. `429`/`401`/`403` **sayı
+  belirteci** olarak aranır (`1429` eşleşmez); süre ve iptal ayrı sınıftır.
+- agy için sınama argv'sine `--output-format=json` eklenir. Ölçüldü: hata
+  **stdout'a makine okunur** yazılıyor —
+  `{"status":"ERROR","response":"","error":"Individual quota reached …"}`.
+  `PrintEnvelope` modelin görünen yanıtını `response` alanından okur; JSON
+  gövdesi yanıt sayılmaz. Çıktı kırpıldıysa zarf **hiç** ayrıştırılmaz (yarım
+  JSON'dan yanıt uydurulmaz — codex NDJSON kuralının aynısı). Değer **tek
+  belirteçte** verilir (`--output-format=json`): ayrı `json` belirteci
+  `build_args` kapısından düşerdi (izinli olan *bayrak*, değer değil).
+- `HardeningReport::measured_access()` — sınama koşmadıysa `None`. Kapıya
+  girecek ölçüm yoktur; kural **tek yerde** durur.
+- `not_run_reason` — CLI'nin kendi cümlesi, tek satır, ≤200 karakter, kum
+  havuzu yolu `<kum>` ile gizlenir (rapor kullanıcıya gösterilir).
+
+**Yazılan (masaüstü):** kanıt **yalnız ölçüm varsa** kasa içine yazılır; not
+"koşulamadı (`quota`); ölçüm yazılmadı ve istem kapısı beyana dayanır" der
+(eskiden "yanıt alınamadı (süre, kimlik ya da çıkış kodu)" gibi genel bir
+cümleydi). Görünüm `notRun { kind, reason }` taşır; **denetime yalnız sınıf**
+girer — CLI'nin cümlesi ve yanıt metni denetime yazılmaz.
+
+**Yazılan (arayüz):** `probe.hardeningNotRun` cümlesi + `notRunLabel`
+(tanınmayan sınıf **ham** yazılır, uydurma etiket yok) + panelde "Neden: …"
+satırı. Kanıt yazılmadığı için kapı cümlesi ("İstem gönderimi kapatıldı/açık
+kalıyor") **çizilmez** — ölçüm yoktur.
+
+**Ölçüm (sonrası, aynı makine, `--example hardening`):**
+
+```text
+== antigravity-cli (1.5.6) ==
+argv     : --output-format=json --sandbox --disable-slash-commands --print=<istem>
+durum    : Exited(3) · 10895 ms · kanıt 90 bayt
+ölçüm    : yok — sınama koşulamadı
+koşmadı  : quota · Individual quota reached. Please upgrade your subscription
+           to increase your limits. Resets in 101h22m28s.
+işaret   : kanıt=false ret=false yanıt=false
+```
+
+Claude Code 2.1.303 değişmedi: `blocked`, `ARACSIZ`, `Exited(0)` 4896 ms.
+
+**Kapı kanıtı (gerçek koşular; betik `~/.hermes/cache/scratch/dim-notrun-gates.py`,
+her mutasyon tek başına, `try/finally` + sha256 birebir — `hardening.rs
+9c02876e…`, `providers.ts edcb8772…`, `Providers.tsx 1b02713a…`):** **11/11
+KIRMIZI** — S1 kota sınıfı `process_failed`e düşer · S2 `measured_access`
+koşmayan sınamayı yine ölçüm sayar · S3 zarf yok sayılır (JSON gövdesi yanıt
+sanılır) · S4 yapısal çıktı istenmez · S5 kimlik sınıfı kaybolur · S6 durum
+kodu alt dizge olarak aranır (`1429` → `429`) · S7 `answered` kapısı kalkar
+(stderr gürültüsü gerçek ölçümü düşürür) · S8 gerekçe rapora bağlanmaz; U1
+`notRun` dalı yok sayılır · U2 tanınmayan sınıf boş etikete düşer · U3
+panelde gerekçe satırı çizilmez. **Dürüst (kendi hatam):** ilk koşuda üç
+arayüz kapısı `ÖLÇÜLEMEDİ` çıktı — betiğim özet satırını `Tests` ile
+**başlarken** arıyordu, vitest onu girintili yazıyor; ayrıştırıcı düzeltildi,
+**11/11 yeniden ölçüldü**, ilk koşunun 8'i kanıt sayılmadı.
+
+**Testler:** `cargo test -p dim-cli-adapters --all-targets` → **155** lib
+(147 → +8) + **5** entegrasyon (1 gerçek-CLI `#[ignore]`); `providers.test.ts`
+34 → **36**, `Providers.test.tsx` 64 → **65** → tam vitest **66 dosya / 1411
+test**; masaüstü test kapısı **44 koştu · 0 düştü · 5 yoksayıldı** (taban
+değişmedi); `tsc --noEmit` temiz; iki manifest `cargo fmt --check` temiz;
+cli-adapters + masaüstü `clippy --all-targets -D warnings` temiz.
+
+**Dürüst sınırlar (T08e):**
+
+- (a) `classify_not_run` bir **işaret** sınıflamasıdır: yanıt gelmediğinde
+  stderr/stdout'ta "quota"/"429" geçmesi kota sayılır. Yanlış pozitif olasıdır;
+  sonucu **temkinli** taraftadır — kanıt yazılmaz, kapı beyana döner, yani
+  kapıyı yanlış **açamaz**, ama gerçek bir ölçüm yanlış sınıfla etiketlenebilir.
+- (b) Gerekçe metni CLI'nin **kendi** cümlesidir ("Resets in 101h…" gibi süre
+  bilgisi ürün tarafından doğrulanmaz); ürün yalnız sınıfı iddia eder.
+- (c) Yapısal çıktı **yalnız agy** için istendi (ölçüldü). Claude/Codex metin
+  kipinde kalır; onların zarf biçimleri bu turda ölçülmedi.
+- (d) `answered` = çıkış 0 **ve** boş olmayan yanıt. Yanıt verip sıfır dışı
+  kodla çıkan CLI "koşulamadı" sayılır (böyle bir ölçüm henüz görülmedi).
+- (e) Komut yolu (`cli_hardening_probe`) yine **komut olarak koşulmadı**
+  (`State<AppState>` altyapısı yok): kablolama `cargo check` + `clippy`,
+  davranış çekirdek düzeyinde gerçek CLI ile (`--example hardening`) ölçüldü.
+- (f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**; jsdom tarayıcı
+  değildir.
+
 ## Başlatma yarışı — yalnız `ETXTBSY` yeniden denenir (F10-T14 ek turu, 2026-11-04)
 
 **Neden bu dilim:** `41764725430` (yalnız belge değiştiren commit) `rust
@@ -1035,7 +1142,9 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 - Gerçek abonelik hesaplarıyla oturum açma/çıkma denenmedi (insan/hesap bekliyor).
   Antigravity CLI bu makinede **`agy` 1.5.6** olarak kurulu; ürün eş adla bulur
   (2026-11-12, T08c). Sertleştirme sınaması koştu ama **yanıt metni boş**
-  döndü (`inconclusive`) — araç erişimi hakkında hüküm yok.
+  döndü — 2026-11-12 (T08e) ölçüldü: neden **kota** (`RESOURCE_EXHAUSTED 429`,
+  "Resets in 101h…"); sınama **koşmadı**, ölçüm yazılmadı ve araç erişimi
+  hakkında hüküm **yok**.
 - Tauri penceresi açılmadı: düğme, iptal ve sonuç paneli tip denetimi + birim
   testleri + üretim derlemesiyle doğrulandı; gerçek tıklama/görsel QA yok.
 - Windows'ta `exec`/`probe` testleri çalışmaz (`#[cfg(unix)]`); yürütme kodunun
