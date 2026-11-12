@@ -23,6 +23,7 @@ function row(overrides: Partial<CliCapabilityRow> = {}): CliCapabilityRow {
     stateLabel: "bildirildi · denenmedi",
     flags: ["--tools"],
     detail: "--tools",
+    measured: null,
     ...overrides,
   };
 }
@@ -41,7 +42,15 @@ function adapter(overrides: Partial<CliCapabilityAdapter> = {}): CliCapabilityAd
     linkLabel: "bildirildi · denenmedi",
     gateOpen: true,
     gateReasons: [],
-    prompt: { argv: ["--print", "<istem>"], printable: true, reason: null, toolFree: "verified" },
+    evidence: null,
+    evidenceAtUnix: null,
+    prompt: {
+      argv: ["--print", "<istem>"],
+      printable: true,
+      reason: null,
+      toolFree: "verified",
+      evidence: null,
+    },
     rows: [
       row(),
       row({ capability: "hook_mcp_off", label: "Hook / MCP kapalı", flags: ["--bare", "--strict-mcp-config"] }),
@@ -55,6 +64,8 @@ function adapter(overrides: Partial<CliCapabilityAdapter> = {}): CliCapabilityAd
 describe("yetenek matrisi sunumu (F10-T11)", () => {
   it("durum tonları: eksik kırmızı, doğrulanamayan sarı, bildirilen de yeşil değil", () => {
     expect(capabilityTone("missing")).toBe("danger");
+    // Ölçüm beyanı çürüttüyse rozet kırmızıdır.
+    expect(capabilityTone("contradicted")).toBe("danger");
     expect(capabilityTone("no_path")).toBe("warn");
     expect(capabilityTone("unread")).toBe("warn");
     // `declared` davranış kanıtı değildir; yeşil gösterilmez.

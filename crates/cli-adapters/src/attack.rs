@@ -850,6 +850,12 @@ pub fn guard_state(report: &CapabilityReport, vector: AttackVector) -> GuardStat
         CapabilityState::NoPath { .. } | CapabilityState::Unread { .. } => {
             GuardState::Unverified { reason: row.note }
         }
+        // Ölçüm beyanı çürüttü: bayrak bildirilmişti ama araç erişimini
+        // engellemedi → "doğrulanmış kapatma yolu yok" (bayrağı varmış gibi
+        // göstermek yanlış olur).
+        CapabilityState::Contradicted => GuardState::Unverified {
+            reason: "ölçüldü: araç erişimi var",
+        },
     }
 }
 

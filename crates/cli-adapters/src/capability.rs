@@ -12,6 +12,13 @@
 //! raporlanır; gerekli bir yetenek `Missing` ise bağlantı **uyumsuz**, `NoPath`
 //! ya da `Unread` ise **sınırlı** olur ve yetenek kapısı kapanır.
 //!
+//! **Ölçüm beyanı çürütebilir (F10-T08d):** sertleştirme sınaması gerçek bir
+//! istem gönderip araç erişimini ölçer (`hardening.rs`). Kayıt `granted` ise
+//! — model kanıt dosyasını okudu — `--help` beyanı ne derse desin ToolFree
+//! satırı `Contradicted` olur ve bağlantı **uyumsuz**a çekilir. Ölçüm beyanı
+//! **doğrulamaz**: `blocked` yalnız "bu istemde araç çağrısı görülmedi"
+//! demektir, "araçsız kip var" kanıtı değildir; kapı yine beyana bakar.
+//!
 //! Kimlik dosyası okunmaz, token kopyalanmaz (INV-11). Yardım yoklaması da
 //! `exec::run_cli` üzerinden gider: izinli argv, allowlist ortam, boş `0700`
 //! kum havuzu, süre sınırı ve iptal.
@@ -241,6 +248,9 @@ pub enum CapabilityState {
     NoPath { reason: &'static str },
     /// Yardım metni okunamadı (kurulu değil, çıkış kodu, süre, iptal).
     Unread { reason: String },
+    /// **Ölçüm beyanı çürüttü:** sertleştirme sınamasında model kanıt
+    /// dosyasını okudu; `--help` ne derse desin araçsız kip yok.
+    Contradicted,
 }
 
 impl CapabilityState {
@@ -251,6 +261,7 @@ impl CapabilityState {
             Self::Missing { .. } => "missing",
             Self::NoPath { .. } => "no_path",
             Self::Unread { .. } => "unread",
+            Self::Contradicted => "contradicted",
         }
     }
 
@@ -261,6 +272,7 @@ impl CapabilityState {
             Self::Missing { .. } => "kurulu sürümde yok",
             Self::NoPath { .. } => "doğrulanmış yol yok",
             Self::Unread { .. } => "okunamadı",
+            Self::Contradicted => "ölçüldü · araç erişimi var",
         }
     }
 
@@ -274,7 +286,69 @@ impl CapabilityState {
     pub const fn is_missing(&self) -> bool {
         matches!(self, Self::Missing { .. })
     }
+
+    /// Ölçüm beyanı çürüttü: gerekli yetenek **fiilen yok**; bağlantı uyumsuz.
+    #[must_use]
+    pub const fn is_contradicted(&self) -> bool {
+        matches!(self, Self::Contradicted)
+    }
 }
+
+/// Bir sertleştirme sınaması **kaydından** gelen araç erişimi. Beyanı yalnız
+/// **çürütebilir**, asla doğrulamaz: `Blocked` bu istemde araç çağrısı
+/// görülmedi demektir, "araçsız kip çalışıyor" kanıtı değildir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasuredAccess {
+    /// Ölçüldü: model kanıt dosyasını okudu (`hardening::ToolAccess::Granted`).
+    Granted,
+    /// Ölçüldü: model okuyamadığını söyledi (çıkarım, kanıt değil).
+    Blocked,
+    /// Ölçüm hüküm vermedi (ne kanıt ne ret).
+    Inconclusive,
+    /// Kayıt var ama çözülemedi: temkinli taraf — kapı kapalı.
+    Unreadable,
+}
+
+impl MeasuredAccess {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Blocked => "blocked",
+            Self::Inconclusive => "inconclusive",
+            Self::Unreadable => "unreadable",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Granted => "ölçüldü · araç erişimi var",
+            Self::Blocked => "ölçüldü · araç çağrısı görülmedi",
+            Self::Inconclusive => "ölçüldü · hüküm yok",
+            Self::Unreadable => "sınama kaydı okunamadı",
+        }
+    }
+
+    /// Kapıyı kapatan ölçümler: kanıt (granted) ya da okunamayan kayıt.
+    #[must_use]
+    pub const fn closes_the_gate(self) -> bool {
+        matches!(self, Self::Granted | Self::Unreadable)
+    }
+}
+
+impl From<crate::hardening::ToolAccess> for MeasuredAccess {
+    fn from(access: crate::hardening::ToolAccess) -> Self {
+        match access {
+            crate::hardening::ToolAccess::Granted => Self::Granted,
+            crate::hardening::ToolAccess::Blocked => Self::Blocked,
+            crate::hardening::ToolAccess::Inconclusive => Self::Inconclusive,
+        }
+    }
+}
+
+/// `Unread` gerekçesi: sınama kaydı okunamadı (bozuk değer / okuma hatası).
+pub const EVIDENCE_UNREADABLE: &str = "sınama kaydı okunamadı";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkState {
@@ -315,6 +389,9 @@ pub struct CapabilityRow {
     pub required: bool,
     pub note: &'static str,
     pub state: CapabilityState,
+    /// Bu satıra ait **ölçülmüş** davranış kaydı (`granted` / `blocked` /
+    /// `inconclusive` / `unreadable`). Yalnız `ToolFree` satırı ölçülür.
+    pub measured: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,13 +411,30 @@ pub struct CapabilityReport {
 }
 
 /// Saf değerlendirme: yardım metni ve sürüm verilir, rapor üretilir. Süreç
-/// başlatmaz; testler gerçek CLI olmadan da aynı kuralları doğrular.
+/// başlatmaz; testler gerçek CLI olmadan da aynı kuralları doğrular. Ölçüm
+/// kaydı yoksa (bugüne kadarki davranış) yalnız beyana bakar.
 #[must_use]
 pub fn evaluate(
     adapter_id: &str,
     version: Option<&str>,
     help: Option<&str>,
     help_error: Option<&str>,
+) -> Option<CapabilityReport> {
+    evaluate_with_evidence(adapter_id, version, help, help_error, None)
+}
+
+/// [`evaluate`] + **ölçülmüş** araç erişimi. Ölçüm yalnız `ToolFree` satırına
+/// ve yalnız **kurulu** adaptöre uygulanır (kurulu değilken sınama koşamaz):
+/// `granted` satırı `Contradicted` yapar (bağlantı uyumsuz, kapı kapalı),
+/// `unreadable` satırı `Unread` yapar (temkinli taraf). `blocked` /
+/// `inconclusive` yalnız `measured` alanında görünür; beyanı **değiştirmez**.
+#[must_use]
+pub fn evaluate_with_evidence(
+    adapter_id: &str,
+    version: Option<&str>,
+    help: Option<&str>,
+    help_error: Option<&str>,
+    evidence: Option<MeasuredAccess>,
 ) -> Option<CapabilityReport> {
     let adapter = capabilities(adapter_id)?;
     let mut rows = Vec::with_capacity(adapter.requirements.len());
@@ -376,18 +470,36 @@ pub fn evaluate(
                 reason: help_error.unwrap_or("help_unavailable").to_string(),
             },
         };
+        let (state, measured) = match evidence {
+            Some(access) if requirement.capability == Capability::ToolFree && version.is_some() => {
+                let state = match access {
+                    MeasuredAccess::Granted => CapabilityState::Contradicted,
+                    MeasuredAccess::Unreadable => CapabilityState::Unread {
+                        reason: EVIDENCE_UNREADABLE.to_string(),
+                    },
+                    MeasuredAccess::Blocked | MeasuredAccess::Inconclusive => state,
+                };
+                (state, Some(access.id()))
+            }
+            _ => (state, None),
+        };
         rows.push(CapabilityRow {
             capability: requirement.capability,
             required: requirement.required,
             note: requirement.note,
             state,
+            measured,
         });
     }
 
     let batch_forbidden = spec(adapter_id).is_some_and(|s| s.batch_forbidden);
     let link = if version.is_none() {
         LinkState::NotInstalled
-    } else if batch_forbidden || rows.iter().any(|r| r.required && r.state.is_missing()) {
+    } else if batch_forbidden
+        || rows
+            .iter()
+            .any(|r| r.required && (r.state.is_missing() || r.state.is_contradicted()))
+    {
         LinkState::Incompatible
     } else if rows.iter().any(|r| r.required && !r.state.is_declared()) {
         LinkState::Limited
@@ -629,6 +741,100 @@ mod tests {
             report.rows.iter().filter(|r| r.state.is_declared()).count(),
             3
         );
+    }
+
+    #[test]
+    fn measured_file_read_makes_the_adapter_incompatible() {
+        let report = evaluate_with_evidence(
+            "claude-code",
+            Some("2.1.303"),
+            Some(CLAUDE_HELP),
+            None,
+            Some(MeasuredAccess::Granted),
+        )
+        .expect("rapor");
+        let tool_free = report
+            .rows
+            .iter()
+            .find(|r| r.capability == Capability::ToolFree)
+            .expect("satır");
+        assert_eq!(tool_free.state.id(), "contradicted");
+        assert_eq!(tool_free.measured, Some("granted"));
+        assert_eq!(report.link, LinkState::Incompatible);
+        assert!(!report.gate_open);
+        assert_eq!(report.gate_reasons, vec!["tool_free:contradicted"]);
+        // Diğer üç yetenek beyana göre kalır: ölçüm yalnız ToolFree'yi çürütür.
+        assert_eq!(
+            report.rows.iter().filter(|r| r.state.is_declared()).count(),
+            3
+        );
+        assert!(report
+            .rows
+            .iter()
+            .filter(|r| r.capability != Capability::ToolFree)
+            .all(|r| r.measured.is_none()));
+    }
+
+    #[test]
+    fn tool_call_not_seen_never_upgrades_a_declaration() {
+        // Codex `--help`te araçsız kip bildirmiyor; sınama "araç çağrısı
+        // görülmedi" dese bile beyan değişmez, kapı açılmaz.
+        let report = evaluate_with_evidence(
+            "codex-cli",
+            Some("0.159.2"),
+            Some(CODEX_HELP),
+            None,
+            Some(MeasuredAccess::Blocked),
+        )
+        .expect("rapor");
+        let tool_free = report
+            .rows
+            .iter()
+            .find(|r| r.capability == Capability::ToolFree)
+            .expect("satır");
+        assert_eq!(tool_free.state.id(), "no_path");
+        assert_eq!(tool_free.measured, Some("blocked"));
+        assert_eq!(report.link, LinkState::Limited);
+        assert!(!report.gate_open);
+        assert_eq!(report.gate_reasons, vec!["tool_free:no_path"]);
+    }
+
+    #[test]
+    fn unreadable_evidence_keeps_the_gate_closed() {
+        let report = evaluate_with_evidence(
+            "claude-code",
+            Some("2.1.303"),
+            Some(CLAUDE_HELP),
+            None,
+            Some(MeasuredAccess::Unreadable),
+        )
+        .expect("rapor");
+        let tool_free = report
+            .rows
+            .iter()
+            .find(|r| r.capability == Capability::ToolFree)
+            .expect("satır");
+        assert_eq!(tool_free.state.id(), "unread");
+        assert_eq!(tool_free.measured, Some("unreadable"));
+        assert!(!report.gate_open);
+        assert_eq!(report.link, LinkState::Limited);
+    }
+
+    #[test]
+    fn evidence_is_ignored_when_the_adapter_is_not_installed() {
+        // Kurulu olmayan adaptörde sınama koşamaz: eski bir kayıt bağlantıyı
+        // "uyumsuz"a çekmez, durum "kurulu değil" kalır.
+        let report = evaluate_with_evidence(
+            "claude-code",
+            None,
+            None,
+            None,
+            Some(MeasuredAccess::Granted),
+        )
+        .expect("rapor");
+        assert_eq!(report.link, LinkState::NotInstalled);
+        assert!(report.rows.iter().all(|r| r.state.id() == "unread"));
+        assert!(report.rows.iter().all(|r| r.measured.is_none()));
     }
 
     #[test]

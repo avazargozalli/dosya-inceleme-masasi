@@ -758,19 +758,37 @@ pub fn splice_prompt(
 /// birlikte sağlanınca `true` olur: adaptör toplu yürütmeye açık **ve** araçsız
 /// kipi (ToolFree) doğrulanmış bir bayrakla bildirilmiş. Araçsız kip
 /// kanıtlanamıyorsa istem gönderimi kapalıdır — "sandbox var" varsayımı yapılmaz.
+/// **Ölçüm de kapıya girer** ([`prompt_shape_with_evidence`]): sınama araç
+/// erişimini gösterdiyse beyan ne derse desin gönderim kapalıdır.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptShape {
     pub adapter_id: &'static str,
     pub argv: Vec<String>,
     pub printable: bool,
-    /// `printable=false` ise nedeni (`batch_forbidden` / `tool_free_unverified`).
+    /// `printable=false` ise nedeni (`batch_forbidden` / `tool_access_granted` /
+    /// `evidence_unreadable` / `tool_free_unverified`).
     pub reason: Option<&'static str>,
     /// Araçsız kip durumu: `verified` / `no_path` / `missing`.
     pub tool_free: &'static str,
+    /// Saklanan davranış ölçümü: `granted` / `blocked` / `inconclusive` /
+    /// `unreadable`; kayıt yoksa `None`.
+    pub evidence: Option<&'static str>,
 }
 
 #[must_use]
 pub fn prompt_shape(adapter_id: &str) -> Option<PromptShape> {
+    prompt_shape_with_evidence(adapter_id, None)
+}
+
+/// [`prompt_shape`] + ölçülmüş araç erişimi. Kural **tek yönlüdür**: ölçüm
+/// beyanı yalnız **kapatabilir** (`granted` = kanıt, `unreadable` = temkinli
+/// taraf); `blocked` bu istemde araç çağrısı görülmedi demektir, "araçsız kip
+/// var" kanıtı olmadığı için kapıyı **açmaz**.
+#[must_use]
+pub fn prompt_shape_with_evidence(
+    adapter_id: &str,
+    evidence: Option<crate::MeasuredAccess>,
+) -> Option<PromptShape> {
     let spec = crate::spec(adapter_id)?;
     let placeholder = "<istem>";
     let argv = match spec.id {
@@ -793,6 +811,10 @@ pub fn prompt_shape(adapter_id: &str) -> Option<PromptShape> {
     };
     let (printable, reason) = if spec.batch_forbidden {
         (false, Some("batch_forbidden"))
+    } else if evidence == Some(crate::MeasuredAccess::Granted) {
+        (false, Some("tool_access_granted"))
+    } else if evidence == Some(crate::MeasuredAccess::Unreadable) {
+        (false, Some("evidence_unreadable"))
     } else if !tool_free_verified {
         (false, Some("tool_free_unverified"))
     } else {
@@ -804,6 +826,7 @@ pub fn prompt_shape(adapter_id: &str) -> Option<PromptShape> {
         printable,
         reason,
         tool_free: tool_free_state,
+        evidence: evidence.map(crate::MeasuredAccess::id),
     })
 }
 
@@ -1267,6 +1290,7 @@ mod tests {
 #[cfg(test)]
 mod hardening_tests {
     use super::*;
+    use crate::MeasuredAccess;
 
     #[test]
     fn codex_always_gets_config_and_rule_isolation() {
@@ -1607,9 +1631,46 @@ mod hardening_tests {
         assert!(!anti.printable);
         assert_eq!(anti.reason, Some("tool_free_unverified"));
         assert_eq!(anti.tool_free, "no_path");
+        assert_eq!(anti.evidence, None);
         let claude = prompt_shape("claude-code").expect("claude");
         assert!(claude.printable, "{claude:?}");
         assert_eq!(claude.tool_free, "verified");
+    }
+
+    /// Ölçüm **yalnız kapatır**: sınama kanıt dosyasını okuduysa beyan ne derse
+    /// desin istem gönderimi kapalıdır. `blocked` (araç çağrısı görülmedi) kapıyı
+    /// **açmaz** — "araçsız kip var" kanıtı değildir.
+    #[test]
+    fn measured_evidence_can_only_close_the_prompt_gate() {
+        let granted = prompt_shape_with_evidence("claude-code", Some(MeasuredAccess::Granted))
+            .expect("claude");
+        assert!(!granted.printable, "{granted:?}");
+        assert_eq!(granted.reason, Some("tool_access_granted"));
+        assert_eq!(granted.evidence, Some("granted"));
+        // Beyan "verified" kalır: çelişki gizlenmez, ikisi de yazılır.
+        assert_eq!(granted.tool_free, "verified");
+
+        // `blocked` beyanı doğrulamaz: Antigravity'de kapı kapalı kalır.
+        let blocked = prompt_shape_with_evidence("antigravity-cli", Some(MeasuredAccess::Blocked))
+            .expect("agy");
+        assert!(!blocked.printable);
+        assert_eq!(blocked.reason, Some("tool_free_unverified"));
+        assert_eq!(blocked.evidence, Some("blocked"));
+
+        // Claude'da `blocked` kapıyı açık bırakır (beyan zaten doğrulanmış),
+        // ama ölçüm satırda görünür.
+        let claude_blocked =
+            prompt_shape_with_evidence("claude-code", Some(MeasuredAccess::Blocked))
+                .expect("claude");
+        assert!(claude_blocked.printable);
+        assert_eq!(claude_blocked.evidence, Some("blocked"));
+
+        // Okunamayan kayıt temkinli tarafta: kapı kapalı.
+        let unreadable =
+            prompt_shape_with_evidence("claude-code", Some(MeasuredAccess::Unreadable))
+                .expect("claude");
+        assert!(!unreadable.printable);
+        assert_eq!(unreadable.reason, Some("evidence_unreadable"));
     }
 }
 

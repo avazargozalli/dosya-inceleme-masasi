@@ -2042,6 +2042,7 @@ export const tr = {
     summaryAdded: "+{size}",
     capabilityDeclared: "{declared}/{total} bildirildi",
     capabilityMissing: "{count} yok",
+    capabilityContradicted: "{count} ölçümle çürütüldü",
     capabilityUnknown: "{count} doğrulanamadı",
     capabilityUntested: "davranış denenmedi",
     cleanupRemoved: "{count} dosya silindi",
@@ -2052,6 +2053,7 @@ export const tr = {
     reasonMissing: "kurulu sürümde yok",
     reasonNoPath: "doğrulanmış yol yok",
     reasonUnread: "okunamadı",
+    reasonContradicted: "ölçüldü · araç erişimi var",
     reasonLine: "{label}: {state}",
     gateOpen:
       "Yetenek kapısı açık: gerekli yeteneklerin hepsi kurulu sürümün yardım metninde bildirildi; davranış denenmedi.",
@@ -2061,7 +2063,20 @@ export const tr = {
     promptClosed: "İstem biçimi {argv} · istem gönderimi kapalı: {reason}",
     promptReasonBatch: "bu sağlayıcıda otomatik yürütme kapalı",
     promptReasonToolFree: "araçsız kip doğrulanamadı",
+    promptReasonToolAccess:
+      "ölçüm araç erişimini gösterdi — sertleştirme dosya okumayı engellemiyor",
+    promptReasonEvidenceUnreadable: "sınama kaydı okunamadı (temkinli taraf)",
     promptReasonUnknown: "bu adaptörde istem biçimi tanımlı değil",
+    evidenceGranted: "ölçüldü · araç erişimi var",
+    evidenceBlocked: "ölçüldü · araç çağrısı görülmedi",
+    evidenceInconclusive: "ölçüldü · hüküm yok",
+    evidenceUnreadable: "sınama kaydı okunamadı",
+    evidenceLine: "Son sertleştirme sınaması: {label}",
+    evidenceLineAt: "Son sertleştirme sınaması: {label} · {at}",
+    evidenceGateClosed:
+      "İstem gönderimi kapatıldı: ölçüm araç erişimini gösterdi ve kayıt kasa içine yazıldı. Matris yeniden çalıştırılınca kart da bu kaydı gösterir.",
+    evidenceGateOpen:
+      "İstem gönderimi açık kalıyor: ölçüm beyanı çürütmedi, ama doğrulamaz da.",
     hardeningGranted:
       "Ölçüm: model {file} dosyasını okudu (yanıtta {token} var) — sertleştirme dosya okumayı engellemiyor. {ms} ms.",
     hardeningBlocked:

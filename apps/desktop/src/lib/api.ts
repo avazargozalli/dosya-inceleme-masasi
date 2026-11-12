@@ -1071,11 +1071,25 @@ export type CliHardeningProbe = {
   sandboxFiles: number;
   sandboxBytes: number;
   probedAtUnix: number;
+  /**
+   * Ölçüm kasa içine yazıldı mı? Yazılamadıysa istem kapısı ölçüme dayanmaz
+   * (beyana döner) — `notes` nedenini yazar.
+   */
+  evidenceRecorded: boolean;
+  /** Bu ölçümden **sonra** istem gönderim kapısı (kayıt yazıldıysa onunla). */
+  prompt: CliPromptShape;
   notes: string[];
 };
 
 /** F10-T11: yetenek matrisi. Yetenek kanıtı kurulu sürümün `--help` metnidir. */
-export type CliCapabilityState = "declared" | "missing" | "no_path" | "unread";
+export type CliCapabilityState = "declared" | "missing" | "no_path" | "unread" | "contradicted";
+
+/**
+ * F10-T08d: sertleştirme sınamasının **ölçülmüş** araç erişimi. `granted` =
+ * model kanıt dosyasını okudu (beyan çürüdü), `blocked` = okuyamadığını söyledi,
+ * `inconclusive` = hüküm yok, `unreadable` = kayıt okunamadı.
+ */
+export type CliMeasuredAccess = "granted" | "blocked" | "inconclusive" | "unreadable";
 
 export type CliCapabilityRow = {
   capability: string;
@@ -1086,6 +1100,8 @@ export type CliCapabilityRow = {
   stateLabel: string;
   flags: string[];
   detail: string;
+  /** Bu satırın ölçülmüş davranış kaydı; kayıt yoksa `null`. */
+  measured: CliMeasuredAccess | null;
 };
 
 /** F10-T08: ürünün ürettiği istem argv'si ve istem gönderim kapısı. */
@@ -1094,8 +1110,15 @@ export type CliPromptShape = {
   argv: string[];
   /** Yalnız toplu yürütme açık ve araçsız kip doğrulanmışsa `true`. */
   printable: boolean;
-  reason: "batch_forbidden" | "tool_free_unverified" | null;
+  reason:
+    | "batch_forbidden"
+    | "tool_access_granted"
+    | "evidence_unreadable"
+    | "tool_free_unverified"
+    | null;
   toolFree: "verified" | "no_path" | "missing";
+  /** Saklanan sınama kaydı; yoksa `null`. */
+  evidence: CliMeasuredAccess | null;
 };
 
 export type CliCapabilityAdapter = {
@@ -1114,6 +1137,10 @@ export type CliCapabilityAdapter = {
   gateOpen: boolean;
   gateReasons: string[];
   prompt: CliPromptShape;
+  /** Saklanan sınama kaydı (F10-T08d); yoksa `null`. */
+  evidence: CliMeasuredAccess | null;
+  /** Kaydın ölçüm zamanı (unix sn); yoksa `null`. */
+  evidenceAtUnix: number | null;
   rows: CliCapabilityRow[];
 };
 

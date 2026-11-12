@@ -140,6 +140,7 @@ import {
   capabilitySummary,
   capabilityWarnings,
   matrixWorstLink,
+  measuredEvidenceLine,
   persistenceText,
   promptShapeText,
   probeArgv,
@@ -325,11 +326,14 @@ const MATRIX: CliCapabilityMatrix = {
       linkLabel: "bildirildi",
       gateOpen: true,
       gateReasons: [],
+      evidence: null,
+      evidenceAtUnix: null,
       prompt: {
         argv: ["--print", "<istem>"],
         printable: true,
         reason: null,
         toolFree: "verified",
+        evidence: null,
       },
       rows: [
         {
@@ -341,6 +345,7 @@ const MATRIX: CliCapabilityMatrix = {
           stateLabel: "bildirildi",
           flags: ["--print"],
           detail: "--print",
+          measured: null,
         },
         {
           capability: "mcp",
@@ -351,6 +356,7 @@ const MATRIX: CliCapabilityMatrix = {
           stateLabel: "yok",
           flags: [],
           detail: "",
+          measured: null,
         },
       ],
     },
@@ -367,7 +373,15 @@ const MATRIX: CliCapabilityMatrix = {
       linkLabel: "kurulu değil",
       gateOpen: false,
       gateReasons: ["path yok"],
-      prompt: { argv: [], printable: false, reason: null, toolFree: "missing" },
+      evidence: null,
+      evidenceAtUnix: null,
+      prompt: {
+        argv: [],
+        printable: false,
+        reason: null,
+        toolFree: "missing",
+        evidence: null,
+      },
       rows: [
         {
           capability: "print",
@@ -378,6 +392,7 @@ const MATRIX: CliCapabilityMatrix = {
           stateLabel: "okunamadı",
           flags: [],
           detail: "",
+          measured: null,
         },
       ],
     },
@@ -765,6 +780,14 @@ const HARDENING: CliHardeningProbe = {
   sandboxFiles: 2,
   sandboxBytes: 2048,
   probedAtUnix: 1770000000,
+  evidenceRecorded: true,
+  prompt: {
+    argv: ["--print", "<istem>"],
+    printable: true,
+    reason: null,
+    toolFree: "verified",
+    evidence: "blocked",
+  },
   notes: [],
 };
 
@@ -1059,6 +1082,7 @@ describe("sağlayıcılar ekranı davranışı", () => {
             printable: false,
             reason: "tool_free_unverified",
             toolFree: "no_path",
+            evidence: null,
           },
         },
       ],
@@ -2431,6 +2455,116 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
     );
     // Hem ölçüm cümlesinde hem yanıt panelinde görünür.
     expect(within(card).getAllByText(/DIM-CANARY-50/).length).toBeGreaterThan(0);
+  });
+
+  it("kayıt yazıldıysa ölçümün istem kapısını kapattığını söyler", async () => {
+    const granted: CliHardeningProbe = {
+      ...HARDENING,
+      toolAccess: "granted",
+      canaryInReply: true,
+      declineInReply: false,
+      replyHead: "DIM-CANARY-50",
+      evidenceRecorded: true,
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: false,
+        reason: "tool_access_granted",
+        toolFree: "verified",
+        evidence: "granted",
+      },
+    };
+    setup({ hardening: async () => granted });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+
+    await waitFor(() =>
+      expect(within(card).getByText(/İstem gönderimi kapatıldı/)).toBeTruthy(),
+    );
+    // Kayıt yazıldığı söylenir; "kaydedilemedi" cümlesi çıkmaz.
+    expect(within(card).queryByText(/yazılamadı/)).toBeNull();
+  });
+
+  it("kayıt yazılamadıysa kapı cümlesi uydurulmaz, neden yazılır", async () => {
+    const granted: CliHardeningProbe = {
+      ...HARDENING,
+      toolAccess: "granted",
+      canaryInReply: true,
+      declineInReply: false,
+      replyHead: "DIM-CANARY-50",
+      evidenceRecorded: false,
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: true,
+        reason: null,
+        toolFree: "verified",
+        evidence: null,
+      },
+      notes: ["Ölçüm kasa içine yazılamadı (disk); istem kapısı ölçüme değil beyana dayanır."],
+    };
+    setup({ hardening: async () => granted });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+
+    await waitFor(() => expect(within(card).getByText(/engellemiyor/)).toBeTruthy());
+    expect(within(card).queryByText(/İstem gönderimi kapatıldı/)).toBeNull();
+    expect(within(card).getByText(/yazılamadı \(disk\)/)).toBeTruthy();
+  });
+
+  it("matris kartı saklanan ölçümü ve çürütülen yeteneği yazar", async () => {
+    const contradicted: CliCapabilityMatrix = {
+      ...MATRIX,
+      adapters: [
+        {
+          ...MATRIX.adapters[0]!,
+          link: "incompatible",
+          linkLabel: "uyumsuz",
+          gateOpen: false,
+          gateReasons: ["tool_free:contradicted"],
+          evidence: "granted",
+          evidenceAtUnix: 1770000300,
+          prompt: {
+            argv: ["--print", "<istem>"],
+            printable: false,
+            reason: "tool_access_granted",
+            toolFree: "verified",
+            evidence: "granted",
+          },
+          rows: [
+            {
+              ...MATRIX.adapters[0]!.rows[0]!,
+              state: "contradicted",
+              stateLabel: "ölçüldü · araç erişimi var",
+              measured: "granted",
+            },
+            MATRIX.adapters[0]!.rows[1]!,
+          ],
+        },
+      ],
+    };
+    setup({ matrix: async () => contradicted });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+
+    // Saklanan ölçüm satırı (tarihiyle) kartta görünür.
+    expect(
+      within(card).getByText(measuredEvidenceLine(contradicted.adapters[0]!)!.text),
+    ).toBeTruthy();
+    // Çürütülen satır çekirdeğin etiketini taşır.
+    expect(within(card).getByText("ölçüldü · araç erişimi var")).toBeTruthy();
+    // İstem kapısı kapalı ve nedeni **ölçüm**.
+    expect(within(card).getByText(/ölçüm araç erişimini gösterdi/)).toBeTruthy();
+    expect(within(card).queryByText(t("probe.promptOpen", { argv: "--print <istem>" }))).toBeNull();
   });
 
   it("sınama düşerse önceki ölçüm ekranda kalmaz", async () => {

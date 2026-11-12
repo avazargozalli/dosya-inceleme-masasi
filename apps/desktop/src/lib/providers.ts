@@ -2,7 +2,7 @@
 // çağırır, böylece etiket/uyarı mantığı DOM olmadan test edilir.
 // Metinler F04-T08 gereği merkezi sözlükten gelir (`lib/i18n.ts`).
 
-import { formatSize } from "./format";
+import { formatSize, formatUnixSeconds } from "./format";
 import { t } from "./i18n";
 import type {
   AdapterView,
@@ -11,6 +11,7 @@ import type {
   CliCapabilityRow,
   CliHardeningProbe,
   CliProbeView,
+  CliPromptShape,
   CliResidueCleanup,
   CliResidueMeasure,
   CliResiduePath,
@@ -292,10 +293,12 @@ export function sandboxSweepSummary(
 /**
  * Yetenek durumunun rozet tonu. `declared` **yeşil değildir**: bayrak yardım
  * metninde bildirildi ama davranış (araç çağrısı/oturum yazımı) denenmedi.
+ * `contradicted` kırmızıdır: ölçüm beyanı çürüttü.
  */
 export function capabilityTone(state: string): ProbeTone {
   switch (state) {
     case "missing":
+    case "contradicted":
       return "danger";
     case "no_path":
     case "unread":
@@ -329,19 +332,39 @@ export function capabilityHelpCommand(
   return [view.resolvedCommand ?? view.command, ...view.helpArgs].join(" ");
 }
 
-/** Tek satır özet: kaç yetenek bildirildi / yok / doğrulanamadı. */
+/** Tek satır özet: kaç yetenek bildirildi / yok / ölçümle çürütüldü / doğrulanamadı. */
 export function capabilitySummary(
   view: Pick<CliCapabilityAdapter, "rows">,
 ): string {
   const total = view.rows.length;
   const declared = view.rows.filter((row) => row.state === "declared").length;
   const missing = view.rows.filter((row) => row.state === "missing").length;
-  const unknown = total - declared - missing;
+  const contradicted = view.rows.filter((row) => row.state === "contradicted").length;
+  const unknown = total - declared - missing - contradicted;
   const parts = [t("probe.capabilityDeclared", { declared, total })];
   if (missing > 0) parts.push(t("probe.capabilityMissing", { count: missing }));
+  if (contradicted > 0) {
+    parts.push(t("probe.capabilityContradicted", { count: contradicted }));
+  }
   if (unknown > 0) parts.push(t("probe.capabilityUnknown", { count: unknown }));
   if (view.rows.some((row) => row.state === "declared")) parts.push(t("probe.capabilityUntested"));
   return parts.join(" · ");
+}
+
+/** Gerekçe satırındaki durum etiketi: bilinen durumlar sözlükten, bilinmeyen ham. */
+function capabilityStateLabel(row: Pick<CliCapabilityRow, "state" | "stateLabel">): string {
+  switch (row.state) {
+    case "missing":
+      return t("probe.reasonMissing");
+    case "no_path":
+      return t("probe.reasonNoPath");
+    case "contradicted":
+      return t("probe.reasonContradicted");
+    case "unread":
+      return t("probe.reasonUnread");
+    default:
+      return row.stateLabel;
+  }
 }
 
 /** Gerekçe kodu (`tool_free:no_path`) → okunur satır (`Araçsız çalışma: …`). */
@@ -349,18 +372,10 @@ export function capabilityReasonLines(
   view: Pick<CliCapabilityAdapter, "rows" | "gateReasons">,
 ): string[] {
   return view.gateReasons.map((reason) => {
-    const [id, state] = reason.split(":");
+    const [id] = reason.split(":");
     const row = view.rows.find((candidate) => candidate.capability === id);
     if (!row) return reason;
-    const stateLabel =
-      row.state === "missing"
-        ? t("probe.reasonMissing")
-        : row.state === "no_path"
-          ? t("probe.reasonNoPath")
-          : row.state === "unread"
-            ? t("probe.reasonUnread")
-            : row.stateLabel;
-    return t("probe.reasonLine", { label: row.label, state: stateLabel });
+    return t("probe.reasonLine", { label: row.label, state: capabilityStateLabel(row) });
   });
 }
 
@@ -384,6 +399,8 @@ export function capabilityGateText(
  * gelir (`prompt_shape`), arayüzde yeniden üretilmez: `agy` `--print`e komşu
  * bayrağı istem sanıyor (ölçüldü), bu yüzden istem `=` ile bağlanır. Araçsız
  * kip doğrulanmamış adaptörde gönderim kapalıdır — "sandbox var" denmez.
+ * **Ölçüm de kapıdır (F10-T08d):** sınama araç erişimini gösterdiyse
+ * (`tool_access_granted`) kapı kırmızı yazılır; kayıt okunamıyorsa temkinli.
  */
 export function promptShapeText(
   view: Pick<CliCapabilityAdapter, "prompt">,
@@ -393,13 +410,79 @@ export function promptShapeText(
   if (prompt.printable) {
     return { text: t("probe.promptOpen", { argv }), tone: "ok" };
   }
-  const reason =
-    prompt.reason === "batch_forbidden"
-      ? t("probe.promptReasonBatch")
-      : prompt.reason === "tool_free_unverified"
-        ? t("probe.promptReasonToolFree")
-        : t("probe.promptReasonUnknown");
-  return { text: t("probe.promptClosed", { argv, reason }), tone: "warn" };
+  const reason = promptCloseReason(prompt.reason);
+  const tone: ProbeTone = prompt.reason === "tool_access_granted" ? "danger" : "warn";
+  return { text: t("probe.promptClosed", { argv, reason }), tone };
+}
+
+/** Kapalı kapının nedeni; bilinmeyen kod **ham** kalmaz, "tanımsız" yazılır. */
+function promptCloseReason(reason: CliPromptShape["reason"]): string {
+  switch (reason) {
+    case "batch_forbidden":
+      return t("probe.promptReasonBatch");
+    case "tool_access_granted":
+      return t("probe.promptReasonToolAccess");
+    case "evidence_unreadable":
+      return t("probe.promptReasonEvidenceUnreadable");
+    case "tool_free_unverified":
+      return t("probe.promptReasonToolFree");
+    default:
+      return t("probe.promptReasonUnknown");
+  }
+}
+
+/** Ölçülmüş araç erişiminin etiketi; bilinmeyen değer ham yazılır. */
+export function measuredAccessLabel(evidence: string): string {
+  switch (evidence) {
+    case "granted":
+      return t("probe.evidenceGranted");
+    case "blocked":
+      return t("probe.evidenceBlocked");
+    case "inconclusive":
+      return t("probe.evidenceInconclusive");
+    case "unreadable":
+      return t("probe.evidenceUnreadable");
+    default:
+      return evidence;
+  }
+}
+
+/**
+ * Matris kartındaki **saklanan ölçüm** satırı (F10-T08d). Kayıt yoksa satır
+ * yoktur; ölçüm `granted` ise kırmızı, okunamıyorsa sarı yazılır.
+ */
+export function measuredEvidenceLine(
+  view: Pick<CliCapabilityAdapter, "evidence" | "evidenceAtUnix">,
+): { text: string; tone: ProbeTone } | null {
+  if (!view.evidence) return null;
+  const label = measuredAccessLabel(view.evidence);
+  const tone: ProbeTone =
+    view.evidence === "granted" ? "danger" : view.evidence === "unreadable" ? "warn" : "plain";
+  if (view.evidenceAtUnix === null) {
+    return { text: t("probe.evidenceLine", { label }), tone };
+  }
+  return {
+    text: t("probe.evidenceLineAt", { label, at: formatUnixSeconds(view.evidenceAtUnix) }),
+    tone,
+  };
+}
+
+/**
+ * Sınama sonucunun **kapıya** etkisi: yalnız kayıt yazıldıysa tek cümle.
+ * Yazılamadıysa susar (nedeni raporun `notes` alanında yazar) — "kapı kapandı"
+ * denemez.
+ */
+export function evidenceGateText(
+  probe: Pick<CliHardeningProbe, "evidenceRecorded" | "prompt">,
+): string | null {
+  if (!probe.evidenceRecorded) return null;
+  if (probe.prompt.reason === "tool_access_granted") {
+    return t("probe.evidenceGateClosed");
+  }
+  if (probe.prompt.printable) {
+    return t("probe.evidenceGateOpen");
+  }
+  return null;
 }
 
 /**

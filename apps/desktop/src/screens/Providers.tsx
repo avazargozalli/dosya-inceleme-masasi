@@ -74,9 +74,12 @@ import {
   capabilitySummary,
   capabilityTone,
   capabilityWarnings,
+  evidenceGateText,
   hardeningProbeText,
   linkTone,
   matrixWorstLink,
+  measuredAccessLabel,
+  measuredEvidenceLine,
   promptShapeText,
   residueAge,
   residueCleanupSummary,
@@ -586,6 +589,8 @@ export function Providers() {
                 const prompt = promptShapeText(adapter);
                 const measured = hardening[adapter.adapterId];
                 const measuredText = measured ? hardeningProbeText(measured) : null;
+                const measuredGate = measured ? evidenceGateText(measured) : null;
+                const evidenceLine = measuredEvidenceLine(adapter);
                 const probeError = hardeningErrors[adapter.adapterId];
                 return (
                   <div
@@ -630,7 +635,12 @@ export function Providers() {
                                 {t("providers.requiredSuffix")}
                               </span>
                             ) : null}
-                            <div style={MONO}>{capabilityDetailText(row)}</div>
+                            <div style={MONO}>
+                              {capabilityDetailText(row)}
+                              {row.measured && row.state !== "contradicted"
+                                ? ` · ${measuredAccessLabel(row.measured)}`
+                                : ""}
+                            </div>
                             <div className="muted small">{row.note}</div>
                           </div>
                           <span className={`badge ${capabilityTone(row.state)}`}>{row.stateLabel}</span>
@@ -640,8 +650,16 @@ export function Providers() {
                     <div className="muted small" style={{ marginTop: "var(--space-2)" }}>
                       {capabilitySummary(adapter)} · {capabilityGateText(adapter)}
                     </div>
+                    {evidenceLine ? (
+                      <div
+                        className={evidenceLine.tone === "danger" ? "notice danger" : "muted small"}
+                        style={{ marginTop: "var(--space-1)" }}
+                      >
+                        {evidenceLine.text}
+                      </div>
+                    ) : null}
                     <div
-                      className={prompt.tone === "warn" ? "notice danger" : "notice"}
+                      className={prompt.tone === "ok" ? "notice" : "notice danger"}
                       style={{ fontSize: 12, marginTop: "var(--space-2)" }}
                     >
                       {prompt.text}
@@ -680,6 +698,18 @@ export function Providers() {
                             >
                               {measuredText.text}
                             </div>
+                            {measuredGate ? (
+                              <div
+                                className={
+                                  measured.prompt.reason === "tool_access_granted"
+                                    ? "notice danger"
+                                    : "notice"
+                                }
+                                style={{ fontSize: 12 }}
+                              >
+                                {measuredGate}
+                              </div>
+                            ) : null}
                             <div className="muted small" style={MONO}>
                               {t("providers.hardeningArgv", {
                                 argv: measured.argvTemplate.join(" "),

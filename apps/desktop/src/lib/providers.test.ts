@@ -9,8 +9,11 @@ import type {
 import {
   adapterAliasName,
   capabilityWarnings,
+  evidenceGateText,
   formatBytes,
   hardeningProbeText,
+  measuredAccessLabel,
+  measuredEvidenceLine,
   persistenceText,
   probeArgv,
   probeCanRun,
@@ -302,6 +305,7 @@ describe("residue", () => {
           stateLabel: "okunamadı",
           flags: [],
           detail: "",
+          measured: null,
         },
         {
           capability: "json",
@@ -312,6 +316,7 @@ describe("residue", () => {
           stateLabel: "okunamadı",
           flags: ["--json"],
           detail: "",
+          measured: null,
         },
         {
           capability: "stream",
@@ -322,6 +327,7 @@ describe("residue", () => {
           stateLabel: "bildirildi",
           flags: ["--stream"],
           detail: "",
+          measured: null,
         },
       ],
     });
@@ -344,6 +350,7 @@ describe("promptShapeText", () => {
         printable: true,
         reason: null,
         toolFree: "verified",
+        evidence: null,
       },
     });
     expect(line.tone).toBe("ok");
@@ -358,6 +365,7 @@ describe("promptShapeText", () => {
         printable: false,
         reason: "tool_free_unverified",
         toolFree: "no_path",
+        evidence: null,
       },
     });
     expect(line.tone).toBe("warn");
@@ -367,7 +375,13 @@ describe("promptShapeText", () => {
 
   it("toplu yürütme kapalıysa nedeni ayrı yazar", () => {
     const line = promptShapeText({
-      prompt: { argv: [], printable: false, reason: "batch_forbidden", toolFree: "no_path" },
+      prompt: {
+        argv: [],
+        printable: false,
+        reason: "batch_forbidden",
+        toolFree: "no_path",
+        evidence: null,
+      },
     });
     expect(line.text).toContain("otomatik yürütme kapalı");
     expect(line.text).toContain("—");
@@ -398,6 +412,14 @@ function hardeningProbe(overrides: Partial<CliHardeningProbe> = {}): CliHardenin
     sandboxFiles: 2,
     sandboxBytes: 4096,
     probedAtUnix: 1770000000,
+    evidenceRecorded: true,
+    prompt: {
+      argv: ["--tools", "", "--print", "<istem>"],
+      printable: true,
+      reason: null,
+      toolFree: "verified",
+      evidence: "blocked",
+    },
     notes: [],
     ...overrides,
   };
@@ -447,5 +469,69 @@ describe("adapterAliasName — eş ad çözümü (F10-T08c)", () => {
 
   it("kurulu değilse (resolvedCommand yok) eş ad uydurulmaz", () => {
     expect(adapterAliasName({ command: "antigravity", resolvedCommand: null })).toBeNull();
+  });
+});
+
+describe("ölçülen araç erişimi kapıya girer (F10-T08d)", () => {
+  it("ölçüm araç erişimini gösterdiyse istem kapısı kırmızı yazılır", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: false,
+        reason: "tool_access_granted",
+        toolFree: "verified",
+        evidence: "granted",
+      },
+    });
+    expect(line.tone).toBe("danger");
+    expect(line.text).toContain("ölçüm araç erişimini gösterdi");
+    expect(line.text).not.toContain("istem gönderimi açık");
+  });
+
+  it("okunamayan kayıt nedeni yazar ve kapı kapalı kalır", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: ["--print=<istem>"],
+        printable: false,
+        reason: "evidence_unreadable",
+        toolFree: "verified",
+        evidence: "unreadable",
+      },
+    });
+    expect(line.tone).toBe("warn");
+    expect(line.text).toContain("sınama kaydı okunamadı");
+  });
+
+  it("ölçüm satırı kayıt yoksa yazılmaz, varsa tarihiyle yazılır", () => {
+    expect(measuredEvidenceLine({ evidence: null, evidenceAtUnix: null })).toBeNull();
+    const granted = measuredEvidenceLine({ evidence: "granted", evidenceAtUnix: 1770000000 });
+    expect(granted?.tone).toBe("danger");
+    expect(granted?.text).toContain("araç erişimi var");
+    const blocked = measuredEvidenceLine({ evidence: "blocked", evidenceAtUnix: null });
+    expect(blocked?.tone).toBe("plain");
+    expect(blocked?.text).toContain("araç çağrısı görülmedi");
+    expect(measuredEvidenceLine({ evidence: "unreadable", evidenceAtUnix: null })?.tone).toBe("warn");
+  });
+
+  it("bilinmeyen ölçüm kimliği uydurma etikete düşmez", () => {
+    expect(measuredAccessLabel("weird")).toBe("weird");
+    expect(measuredAccessLabel("granted")).toContain("araç erişimi var");
+  });
+
+  it("sınama sonucunun kapıya etkisi yalnız kayıt yazıldıysa yazılır", () => {
+    expect(evidenceGateText(hardeningProbe({ evidenceRecorded: false }))).toBeNull();
+    const base = hardeningProbe();
+    const closed = evidenceGateText({
+      ...base,
+      prompt: { ...base.prompt, printable: false, reason: "tool_access_granted", evidence: "granted" },
+    });
+    expect(closed).toContain("İstem gönderimi kapatıldı");
+    expect(evidenceGateText(base)).toContain("açık kalıyor");
+    // Kayıt yazıldı ama kapı **başka** nedenle kapalı: kapı cümlesi uydurulmaz.
+    const other = evidenceGateText({
+      ...base,
+      prompt: { ...base.prompt, printable: false, reason: "tool_free_unverified", evidence: "blocked" },
+    });
+    expect(other).toBeNull();
   });
 });

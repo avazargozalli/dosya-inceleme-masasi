@@ -4010,6 +4010,11 @@ pub struct CliHardeningProbeView {
     pub sandbox_files: usize,
     pub sandbox_bytes: u64,
     pub probed_at_unix: u64,
+    /// Ölçüm kasa içine **yazıldı** mı? Yazılamadıysa istem kapısı ölçüme
+    /// dayanmaz (beyana döner) ve bu raporda not olarak yazar.
+    pub evidence_recorded: bool,
+    /// Bu ölçümden **sonra** istem gönderim kapısı (kayıt yazıldıysa onunla).
+    pub prompt: CliPromptShapeView,
     pub notes: Vec<String>,
 }
 
@@ -4029,6 +4034,12 @@ pub async fn cli_hardening_probe(
             "E_CLI_BATCH_FORBIDDEN",
             "Bu sağlayıcıda otomatik yürütme kapalı; istem gönderilemez.",
         ));
+    }
+    // Ölçüm **kota harcar** ve sonucu kapıya girer: kaydedilemeyecek bir koşu
+    // başlatılmaz (kasa kilitliyken yazacak yer yok). Bu kapı model çağrısından
+    // **önce** durur — boşa kota harcanmaz.
+    if state.lock().db.is_none() {
+        return Err(ApiError::vault_locked());
     }
     let executable = resolve_adapter_executable(spec)
         .map(|(_, path)| path)
@@ -4089,7 +4100,7 @@ pub async fn cli_hardening_probe(
             "Yanıt alınamadı (süre, kimlik ya da çıkış kodu); sonuç hüküm sayılmaz.".to_string(),
         );
     }
-    let view = CliHardeningProbeView {
+    let mut view = CliHardeningProbeView {
         adapter_id: report.adapter_id.clone(),
         display_name: spec.display_name.to_string(),
         executable: report.executable.to_string_lossy().to_string(),
@@ -4112,13 +4123,39 @@ pub async fn cli_hardening_probe(
         sandbox_files: report.outcome.scope.inventory.len(),
         sandbox_bytes: report.outcome.scope.inventory_total_bytes,
         probed_at_unix,
+        evidence_recorded: false,
+        // Kapı **kayıt yazılırsa** ölçüme dayanır; yazılamazsa beyana döner.
+        prompt: prompt_shape_view(spec.id, None),
         notes,
     };
 
-    // Denetim: **yanıt metni yazılmaz** (model çıktısı kullanıcı verisi
-    // taşıyabilir); yalnız ölçüm ve kimlik.
+    // Ölçüm kasa içine yazılır (F10-T08d): kapı sonraki açılışlarda da ölçüme
+    // dayanır. Yazma düşerse ölçüm gerçektir ama **kapıya girmez** — raporda
+    // açıkça yazar, "kaydedildi" denmez.
     {
         let guard = state.lock();
+        let written = match guard.db.as_ref() {
+            Some(db) => record_cli_evidence(
+                db,
+                &view.adapter_id,
+                report.tool_access,
+                view.answered,
+                probed_at_unix,
+            ),
+            None => Err("kasa kilitli".to_string()),
+        };
+        match written {
+            Ok(()) => {
+                view.evidence_recorded = true;
+                view.prompt = prompt_shape_view(spec.id, Some(report.tool_access.into()));
+            }
+            Err(error) => view.notes.push(format!(
+                "Ölçüm kasa içine yazılamadı ({error}); istem kapısı ölçüme değil beyana dayanır."
+            )),
+        }
+
+        // Denetim: **yanıt metni yazılmaz** (model çıktısı kullanıcı verisi
+        // taşıyabilir); yalnız ölçüm ve kimlik.
         if let Some(db) = guard.db.as_ref() {
             let metadata = serde_json::json!({
                 "adapterId": view.adapter_id,
@@ -4136,6 +4173,7 @@ pub async fn cli_hardening_probe(
                 "homeIsolation": view.home_isolation,
                 "sandboxFileCount": view.sandbox_files,
                 "sandboxTotalBytes": view.sandbox_bytes,
+                "evidenceRecorded": view.evidence_recorded,
             });
             db.append_audit("cli_hardening", None, "run", "local-user", &metadata)?;
         }
@@ -4334,6 +4372,9 @@ pub struct CliCapabilityRowView {
     pub flags: Vec<String>,
     /// Durumun ayrıntısı: bayrak listesi, eksik bayraklar ya da neden kodu.
     pub detail: String,
+    /// Bu satırın **ölçülmüş** davranış kaydı (`granted` / `blocked` /
+    /// `inconclusive` / `unreadable`); kayıt yoksa `null`.
+    pub measured: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -4344,10 +4385,94 @@ pub struct CliPromptShapeView {
     /// İstem gönderimi açık mı? Yalnız toplu yürütme açık **ve** araçsız kip
     /// doğrulanmış bir bayrakla bildirilmişse `true`.
     pub printable: bool,
-    /// `printable=false` ise neden kodu (`batch_forbidden` / `tool_free_unverified`).
+    /// `printable=false` ise neden kodu (`batch_forbidden` /
+    /// `tool_access_granted` / `evidence_unreadable` / `tool_free_unverified`).
     pub reason: Option<&'static str>,
     /// Araçsız kip durumu: `verified` / `no_path` / `missing`.
     pub tool_free: &'static str,
+    /// Saklanan sınama kaydı (`granted` / `blocked` / `inconclusive` /
+    /// `unreadable`); kayıt yoksa `null`.
+    pub evidence: Option<&'static str>,
+}
+
+fn prompt_shape_view(
+    adapter_id: &str,
+    evidence: Option<dim_cli_adapters::MeasuredAccess>,
+) -> CliPromptShapeView {
+    let shape = dim_cli_adapters::prompt_shape_with_evidence(adapter_id, evidence);
+    CliPromptShapeView {
+        argv: shape.as_ref().map(|s| s.argv.clone()).unwrap_or_default(),
+        printable: shape.as_ref().is_some_and(|s| s.printable),
+        reason: shape.as_ref().and_then(|s| s.reason),
+        tool_free: shape.as_ref().map_or("missing", |s| s.tool_free),
+        evidence: shape.as_ref().and_then(|s| s.evidence),
+    }
+}
+
+// --- F10-T08d: ölçülen araç erişimi kapıya girer ve kasa içinde saklanır ---
+
+/// Sınama kaydı `settings` tablosunun **device** kapsamında tutulur: kanıt
+/// cihaza aittir. Değer yalnız ölçümü taşır — argv, yanıt metni ve dosya yolu
+/// **yazılmaz**.
+const CLI_EVIDENCE_SCOPE: &str = "device";
+
+fn cli_evidence_key(adapter_id: &str) -> String {
+    format!("cli.evidence.{adapter_id}")
+}
+
+/// Kayıttan çözülen ölçüm. Bilinmeyen/eksik `access` **sessizce yok
+/// sayılmaz**: `Unreadable` döner ki kapı temkinli tarafta kalsın (bozuk kayıt
+/// "kayıt yok" gibi okunup kapıyı açmaz).
+fn parse_cli_evidence(value: &serde_json::Value) -> dim_cli_adapters::MeasuredAccess {
+    match value.get("access").and_then(|access| access.as_str()) {
+        Some("granted") => dim_cli_adapters::MeasuredAccess::Granted,
+        Some("blocked") => dim_cli_adapters::MeasuredAccess::Blocked,
+        Some("inconclusive") => dim_cli_adapters::MeasuredAccess::Inconclusive,
+        _ => dim_cli_adapters::MeasuredAccess::Unreadable,
+    }
+}
+
+struct StoredEvidence {
+    access: dim_cli_adapters::MeasuredAccess,
+    at_unix: Option<u64>,
+}
+
+/// Adaptörün son sınama kaydı. `None` = kayıt yok. Okuma hatası da
+/// `Unreadable` döner: kayıt varken okunamıyorsa kapı kapanır.
+fn read_cli_evidence(db: &Database, adapter_id: &str) -> Option<StoredEvidence> {
+    match db.get_setting(CLI_EVIDENCE_SCOPE, &cli_evidence_key(adapter_id)) {
+        Ok(None) => None,
+        Ok(Some(row)) => Some(StoredEvidence {
+            access: parse_cli_evidence(&row.value),
+            at_unix: row
+                .value
+                .get("measuredAtUnix")
+                .and_then(serde_json::Value::as_u64),
+        }),
+        Err(_) => Some(StoredEvidence {
+            access: dim_cli_adapters::MeasuredAccess::Unreadable,
+            at_unix: None,
+        }),
+    }
+}
+
+/// Ölçümü kasa içine yazar. Hata dönerse ölçüm **yine gerçektir**: çağıran
+/// raporda not düşer ve kapıyı ölçüme dayandırmaz ("kaydedildi" demez).
+fn record_cli_evidence(
+    db: &Database,
+    adapter_id: &str,
+    access: dim_cli_adapters::ToolAccess,
+    answered: bool,
+    at_unix: u64,
+) -> Result<(), String> {
+    let value = serde_json::json!({
+        "access": access.id(),
+        "answered": answered,
+        "measuredAtUnix": at_unix,
+    });
+    db.set_setting(CLI_EVIDENCE_SCOPE, &cli_evidence_key(adapter_id), &value)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]
@@ -4370,6 +4495,11 @@ pub struct CliCapabilityAdapterView {
     pub gate_reasons: Vec<String>,
     /// İstem argv biçimi ve istem gönderim kapısı (F10-T08 ölçülen kusuru).
     pub prompt: CliPromptShapeView,
+    /// Saklanan sınama kaydı (F10-T08d): `granted` / `blocked` /
+    /// `inconclusive` / `unreadable`; kayıt yoksa `null`.
+    pub evidence: Option<&'static str>,
+    /// Kaydın ölçüm zamanı (unix sn); kayıt yoksa `null`.
+    pub evidence_at_unix: Option<u64>,
     pub rows: Vec<CliCapabilityRowView>,
 }
 
@@ -4402,6 +4532,11 @@ fn capability_rows(report: &dim_cli_adapters::CapabilityReport) -> Vec<CliCapabi
                 dim_cli_adapters::CapabilityState::Unread { reason } => {
                     (Vec::new(), reason.clone())
                 }
+                dim_cli_adapters::CapabilityState::Contradicted => (
+                    Vec::new(),
+                    "sınama kanıt dosyasını okudu: sertleştirme araç erişimini engellemiyor"
+                        .to_string(),
+                ),
             };
             CliCapabilityRowView {
                 capability: row.capability.id(),
@@ -4412,6 +4547,7 @@ fn capability_rows(report: &dim_cli_adapters::CapabilityReport) -> Vec<CliCapabi
                 state_label: row.state.label(),
                 flags,
                 detail,
+                measured: row.measured,
             }
         })
         .collect()
@@ -4425,6 +4561,23 @@ fn capability_rows(report: &dim_cli_adapters::CapabilityReport) -> Vec<CliCapabi
 pub async fn cli_capability_matrix(
     state: State<'_, AppState>,
 ) -> Result<CliCapabilityMatrixView, ApiError> {
+    // Sınama kayıtları (F10-T08d) **bir kez** kasa içinden okunur: ölçüm
+    // beyanı çürüttüyse kapı ona göre kapanır. Kasa kilitliyse kayıt yoktur;
+    // rapor bunu not olarak yazar, "beyan yeterli" diye sessizleşmez.
+    let mut stored: std::collections::HashMap<&'static str, StoredEvidence> =
+        std::collections::HashMap::new();
+    let mut evidence_readable = false;
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            evidence_readable = true;
+            for adapter in SPECS {
+                if let Some(evidence) = read_cli_evidence(db, adapter.id) {
+                    stored.insert(adapter.id, evidence);
+                }
+            }
+        }
+    }
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut slot = state.cli_probe_lock();
@@ -4469,11 +4622,12 @@ pub async fn cli_capability_matrix(
                     }
                     _ => (None, None),
                 };
-            let Some(report) = dim_cli_adapters::evaluate(
+            let Some(report) = dim_cli_adapters::evaluate_with_evidence(
                 adapter.id,
                 version.as_deref(),
                 help.as_deref(),
                 help_error.as_deref(),
+                stored.get(adapter.id).map(|evidence| evidence.access),
             ) else {
                 continue;
             };
@@ -4490,15 +4644,12 @@ pub async fn cli_capability_matrix(
                 link_label: report.link.label(),
                 gate_open: report.gate_open,
                 gate_reasons: report.gate_reasons.clone(),
-                prompt: {
-                    let shape = dim_cli_adapters::prompt_shape(adapter.id);
-                    CliPromptShapeView {
-                        argv: shape.as_ref().map(|s| s.argv.clone()).unwrap_or_default(),
-                        printable: shape.as_ref().is_some_and(|s| s.printable),
-                        reason: shape.as_ref().and_then(|s| s.reason),
-                        tool_free: shape.as_ref().map_or("missing", |s| s.tool_free),
-                    }
-                },
+                prompt: prompt_shape_view(
+                    adapter.id,
+                    stored.get(adapter.id).map(|evidence| evidence.access),
+                ),
+                evidence: stored.get(adapter.id).map(|evidence| evidence.access.id()),
+                evidence_at_unix: stored.get(adapter.id).and_then(|evidence| evidence.at_unix),
                 rows: capability_rows(&report),
             });
         }
@@ -4550,11 +4701,20 @@ pub async fn cli_capability_matrix(
         probed_at_unix,
         help_timeout_ms: u64::try_from(dim_cli_adapters::HELP_TIMEOUT.as_millis())
             .unwrap_or(u64::MAX),
-        notes: vec![
-            "Yetenek kanıtı kurulu sürümün kendi --help metnidir; davranış (araç çağrısı, oturum yazımı) ölçülmedi.",
-            "Gerekli bir yetenek yardım metninde yoksa bağlantı uyumsuz, doğrulanamıyorsa sınırlı olur ve yetenek kapısı kapanır.",
-            "Kesilmiş, boş ya da sıfır olmayan çıkışlı yardım çıktısı kanıt sayılmaz.",
-        ],
+        notes: {
+            let mut notes = vec![
+                "Yetenek kanıtı kurulu sürümün kendi --help metnidir; davranış (araç çağrısı, oturum yazımı) ölçülmedi.",
+                "Gerekli bir yetenek yardım metninde yoksa bağlantı uyumsuz, doğrulanamıyorsa sınırlı olur ve yetenek kapısı kapanır.",
+                "Kesilmiş, boş ya da sıfır olmayan çıkışlı yardım çıktısı kanıt sayılmaz.",
+                "Sertleştirme sınaması araç erişimini gösterdiyse satır «ölçüldü · araç erişimi var» olur ve bağlantı uyumsuza çekilir; ölçüm beyanı yalnız kapatabilir.",
+            ];
+            if !evidence_readable {
+                notes.push(
+                    "Kasa kilitli: sınama kayıtları okunamadı, kapı yalnız beyana dayanıyor.",
+                );
+            }
+            notes
+        },
     })
 }
 

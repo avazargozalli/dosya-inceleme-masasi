@@ -1902,3 +1902,91 @@ fn export_writes_only_go_through_the_verified_atomic_writer() {
         "komut yüzeyinde ham `std::fs::write` kalmamalı (yarım çıktı geçerli adla kalır)"
     );
 }
+
+// --- F10-T08d: ölçülen araç erişimi kasa içinde saklanır ve kapıya girer ---
+
+fn evidence_db() -> Database {
+    Database::open_in_memory(&DatabaseKey::new([7u8; 32])).expect("bellek kasası")
+}
+
+#[test]
+fn evidence_key_is_scoped_per_adapter() {
+    assert_eq!(cli_evidence_key("claude-code"), "cli.evidence.claude-code");
+    assert_ne!(cli_evidence_key("a"), cli_evidence_key("b"));
+}
+
+/// Ölçüm **kasa içinde** (device kapsamı) gerçekten kalır: sonraki açılışta
+/// kapı beyana değil bu kayda dayanır. Kayıt yalnız ölçümü taşır — argv, yanıt
+/// metni ve dosya yolu yazılmaz.
+#[test]
+fn measured_evidence_round_trips_through_the_vault() {
+    let db = evidence_db();
+    assert!(
+        read_cli_evidence(&db, "claude-code").is_none(),
+        "başta kayıt yok"
+    );
+    record_cli_evidence(
+        &db,
+        "claude-code",
+        dim_cli_adapters::ToolAccess::Granted,
+        true,
+        1_760_000_000,
+    )
+    .expect("yazıldı");
+
+    let stored = read_cli_evidence(&db, "claude-code").expect("kayıt");
+    assert_eq!(stored.access, dim_cli_adapters::MeasuredAccess::Granted);
+    assert_eq!(stored.at_unix, Some(1_760_000_000));
+
+    let row = db
+        .get_setting("device", "cli.evidence.claude-code")
+        .expect("okuma")
+        .expect("satır");
+    assert_eq!(row.value["access"], "granted");
+    assert!(row.value.get("reply").is_none(), "yanıt metni yazılmaz");
+    assert!(row.value.get("argv").is_none(), "argv yazılmaz");
+    // Kayıt adaptöre özgü: başka adaptörün kapısı kapanmaz.
+    assert!(read_cli_evidence(&db, "codex-cli").is_none());
+}
+
+/// Bozuk kayıt **"kayıt yok" gibi okunmaz**: `unreadable` döner, kapı temkinli
+/// tarafta kapanır (bozuk ayar sessizce kapıyı açmaz).
+#[test]
+fn corrupt_evidence_is_unreadable_not_missing() {
+    let db = evidence_db();
+    db.set_setting(
+        "device",
+        &cli_evidence_key("claude-code"),
+        &serde_json::json!({"note": "access alanı yok"}),
+    )
+    .expect("yazıldı");
+    let stored = read_cli_evidence(&db, "claude-code").expect("kayıt var");
+    assert_eq!(stored.access, dim_cli_adapters::MeasuredAccess::Unreadable);
+
+    db.set_setting(
+        "device",
+        &cli_evidence_key("codex-cli"),
+        &serde_json::json!({"access": "granted"}),
+    )
+    .expect("yazıldı");
+    let codex = read_cli_evidence(&db, "codex-cli").expect("kayıt var");
+    assert_eq!(codex.access, dim_cli_adapters::MeasuredAccess::Granted);
+    assert_eq!(codex.at_unix, None, "zaman yoksa uydurulmaz");
+}
+
+/// Arayüzün gördüğü kapı **ölçümle** kapanır; kayıt yoksa beyana döner.
+#[test]
+fn prompt_view_closes_when_the_measurement_showed_tool_access() {
+    let closed = prompt_shape_view(
+        "claude-code",
+        Some(dim_cli_adapters::MeasuredAccess::Granted),
+    );
+    assert!(!closed.printable);
+    assert_eq!(closed.reason, Some("tool_access_granted"));
+    assert_eq!(closed.evidence, Some("granted"));
+
+    let declared_only = prompt_shape_view("claude-code", None);
+    assert!(declared_only.printable);
+    assert_eq!(declared_only.reason, None);
+    assert_eq!(declared_only.evidence, None);
+}
