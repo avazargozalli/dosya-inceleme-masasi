@@ -16,7 +16,7 @@ import {
   type RollbackResult,
   type VaultStatus,
 } from "../lib/api";
-import type { VaultGcResult } from "../lib/api";
+import type { BlobDiskResult, VaultGcResult } from "../lib/api";
 import { formatDateTime, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
 import { version as appVersion } from "../../package.json";
@@ -98,6 +98,12 @@ export function Settings() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [gc, setGc] = useState<VaultGcResult | null>(null);
+  // Diskteki artıklar: sayılar **çekirdekten** gelir (tarama komutu); arayüz
+  // kendi başına dosya saymaz, ad biçimi kuralı kopyalamaz.
+  const [disk, setDisk] = useState<BlobDiskResult | null>(null);
+  const [diskBusy, setDiskBusy] = useState(false);
+  const [diskConfirm, setDiskConfirm] = useState(false);
+  const diskSeq = useRef(0);
   const [autoBackup, setAutoBackup] = useState(() => readBackupStatus());
   // Tazelik **kasadan** (`backup_runs`) okunur; cihaz kaydı yalnız yedektir.
   // `null` = henüz okunmadı (ekran "hiç" demez), `error` = kasa okunamadı.
@@ -532,6 +538,32 @@ export function Settings() {
       setError(toApiError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * `blobs/` klasörünün **disk tarafı**. `dryRun=true` yalnız tarar; silme
+   * kullanıcı onayından sonra `dryRun=false` ile koşar. Çekirdek yalnız ad
+   * biçimine uyan, yaş eşiğini geçmiş ve silme anında kaydı **olmayan**
+   * dosyalara dokunur; kayıt varsa dosya korunur.
+   */
+  async function runDiskSweep(dryRun: boolean) {
+    const seq = ++diskSeq.current;
+    setDiskBusy(true);
+    setError(null);
+    setDiskConfirm(false);
+    // Düşen işlem önceki sayıları bırakmamalı: "3 artık" satırı yeni hatayla
+    // birlikte güncel sonuç gibi okunurdu (GC kartındaki dersin aynısı).
+    setDisk(null);
+    try {
+      const report = await api.vaultBlobDiskSweep(dryRun);
+      if (seq !== diskSeq.current) return;
+      setDisk(report);
+    } catch (e) {
+      if (seq !== diskSeq.current) return;
+      setError(toApiError(e));
+    } finally {
+      if (seq === diskSeq.current) setDiskBusy(false);
     }
   }
 
@@ -1349,12 +1381,134 @@ export function Settings() {
                 {t("settings.gcMissing", { files: gc.missingFiles.join("; ") })}
               </>
             ) : null}
+            {gc.blocked.length > 0 ? (
+              <>
+                <br />
+                {t("settings.gcBlocked", { files: gc.blocked.join("; ") })}
+              </>
+            ) : null}
           </div>
         ) : (
           <p className="hint" style={{ margin: 0 }}>
             {t("settings.gcHint")}
           </p>
         )}
+
+        {/* Disk tarafı: `vault_gc` kayıtlara bakar; kaydı olmayan dosyaları
+            yalnız bu tarama görür. Silme iki adımlıdır (tara → onayla). */}
+        <div style={{ marginTop: 12 }}>
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              className="btn"
+              disabled={busy || diskBusy}
+              onClick={() => void runDiskSweep(true)}
+            >
+              {diskBusy ? t("settings.gcDiskBusy") : t("settings.gcDiskScan")}
+            </button>
+            <button
+              className="btn danger"
+              disabled={
+                diskBusy ||
+                !disk ||
+                disk.removed.length > 0 ||
+                disk.unlistedTotal + disk.staleTempTotal === 0
+              }
+              onClick={() => setDiskConfirm(true)}
+            >
+              {t("settings.gcDiskClean")}
+            </button>
+          </div>
+          {disk ? (
+            <div
+              className={disk.removed.length > 0 ? "notice ok" : "notice"}
+              style={{ marginTop: 8 }}
+            >
+              <p style={{ margin: 0 }}>
+                {t("settings.gcDiskLine", {
+                  listed: disk.listedFiles,
+                  unlisted: disk.unlistedTotal,
+                  size: formatSize(disk.unlistedBytes),
+                  temps: disk.staleTempTotal,
+                  tempSize: formatSize(disk.staleTempBytes),
+                })}
+              </p>
+              <p className="hint" style={{ margin: 0 }}>
+                {t("settings.gcDiskThreshold", { seconds: disk.minAgeSeconds })}
+              </p>
+              {disk.removed.length > 0 ? (
+                <p style={{ margin: 0 }}>
+                  {t("settings.gcDiskSwept", {
+                    count: disk.removed.length,
+                    size: formatSize(disk.freedBytes),
+                  })}
+                </p>
+              ) : null}
+              {disk.missingTotal > 0 ? (
+                <p style={{ margin: 0 }}>
+                  {t("settings.gcDiskMissing", { count: disk.missingTotal })}
+                </p>
+              ) : null}
+              {disk.youngProtected > 0 ? (
+                <p style={{ margin: 0 }}>
+                  {t("settings.gcDiskProtected", { count: disk.youngProtected })}
+                </p>
+              ) : null}
+              {disk.ignoredTotal > 0 ? (
+                <p style={{ margin: 0 }}>
+                  {t("settings.gcDiskIgnored", { count: disk.ignoredTotal })}
+                </p>
+              ) : null}
+              {disk.keptListed.length > 0 ? (
+                <p style={{ margin: 0 }}>
+                  {t("settings.gcDiskKeptListed", { count: disk.keptListed.length })}
+                </p>
+              ) : null}
+              {disk.truncated ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  {t("settings.gcDiskTruncated", {
+                    max: disk.listLimit,
+                    total: disk.unlistedTotal + disk.staleTempTotal,
+                  })}
+                </p>
+              ) : null}
+              {disk.errors.length > 0 ? (
+                <p className="hint" style={{ margin: 0 }}>
+                  {t("settings.gcDiskErrors", { files: disk.errors.join("; ") })}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+              {t("settings.gcDiskHint")}
+            </p>
+          )}
+          {diskConfirm && disk ? (
+            <div className="notice warn" style={{ marginTop: 8 }}>
+              <p style={{ margin: 0 }}>
+                {t("settings.gcDiskConfirm", {
+                  count: disk.unlistedTotal,
+                  size: formatSize(disk.unlistedBytes),
+                })}
+              </p>
+              <div className="row" style={{ gap: 6, marginTop: 6 }}>
+                <button
+                  className="btn danger"
+                  disabled={diskBusy}
+                  onClick={() => void runDiskSweep(false)}
+                >
+                  {t("settings.gcDiskConfirmYes")}
+                </button>
+                <button
+                  className="btn ghost"
+                  disabled={diskBusy}
+                  onClick={() => setDiskConfirm(false)}
+                >
+                  {t("settings.gcDiskCancel")}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="card">

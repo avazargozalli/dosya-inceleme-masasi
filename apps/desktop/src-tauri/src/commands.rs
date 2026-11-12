@@ -26,20 +26,19 @@ use dim_storage::{
     ChecklistCopyResult, ChecklistTemplateRow, CitationCheckRow, CitationContext, ClaimRelationRow,
     ClaimRow, ConsentPreview, ContradictionAssessmentRow, CorpusCoverage, CorpusMode,
     CoverageReport, Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch,
-    EventRow, EventSourceRow, EvidenceLinkRow, ExportCoverage, ExportRow, GcReport,
-    InTextQuoteCheck, InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, MarkRow,
-    NewAiContextItem, NewAiRun, NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck,
-    NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
-    NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
-    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
-    OutboxEventRow, PageRow, ParseRun, ParticipantRow, PrecedentBibliography,
-    PrecedentDocumentText, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
-    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
-    SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow, TaskRow, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
+    EventRow, EventSourceRow, EvidenceLinkRow, ExportCoverage, ExportRow, InTextQuoteCheck,
+    InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiContextItem, NewAiRun,
+    NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck, NewClaim, NewClaimRelation,
+    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
+    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
+    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
+    ParticipantRow, PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
+    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
+    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
+    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -7478,6 +7477,65 @@ pub struct VaultGcView {
     pub deleted: Vec<dim_storage::GcBlobRow>,
     pub freed_bytes: i64,
     pub missing_files: Vec<String>,
+    /// Dosyası silinemediği için **kaydı da korunan** blob'lar (`ad: neden`).
+    pub blocked: Vec<String>,
+}
+
+/// Referanssız blob'ları **önce dosya, sonra kayıt** sırasıyla temizler.
+///
+/// Sıra güvenlik kuralıdır: kayıt önce silinirse dosya silinemezse geriye
+/// veritabanında izi olmayan bir dosya kalır ve hiçbir envanter onu göremez
+/// (`dim_storage::blob_disk`). Dosyası silinemeyen kayıt **korunur**; sonraki
+/// deneme yine aday olur. `State` almaz — bu yüzden doğrudan test edilir.
+fn gc_vault_blobs(db: &Database, blob_dir: &Path, dry_run: bool) -> Result<VaultGcView, ApiError> {
+    let candidates = db.orphan_blob_candidates()?;
+    if dry_run {
+        return Ok(VaultGcView {
+            dry_run: true,
+            candidates,
+            deleted: Vec::new(),
+            freed_bytes: 0,
+            missing_files: Vec::new(),
+            blocked: Vec::new(),
+        });
+    }
+
+    let mut gone = Vec::new();
+    let mut freed_bytes = 0i64;
+    let mut missing_files = Vec::new();
+    let mut blocked = Vec::new();
+    for blob in &candidates {
+        let path = blob_dir.join(format!("{}.blb", blob.storage_id));
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    freed_bytes = freed_bytes.saturating_add(blob.encrypted_size);
+                    gone.push(blob.clone());
+                }
+                Err(error) => blocked.push(format!("{}: {error}", blob.storage_id)),
+            },
+            // Symlink/dizin: kapsam dışı, dokunulmaz.
+            Ok(_) => blocked.push(format!("{}: dosya değil", blob.storage_id)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Diskte veri yok: kaydı tutmak hiçbir şeyi kurtarmaz, ama
+                // sessizce geçilmez — eksik dosya bildirilir.
+                missing_files.push(format!("{}: dosya yok", blob.storage_id));
+                gone.push(blob.clone());
+            }
+            Err(error) => blocked.push(format!("{}: {error}", blob.storage_id)),
+        }
+    }
+
+    let ids: Vec<String> = gone.iter().map(|b| b.id.clone()).collect();
+    db.delete_unreferenced_blobs(&ids)?;
+    Ok(VaultGcView {
+        dry_run: false,
+        candidates,
+        deleted: gone,
+        freed_bytes,
+        missing_files,
+        blocked,
+    })
 }
 
 /// Referanssız blob kayıtlarını (isteğe bağlı olarak dosyalarıyla) temizler.
@@ -7487,33 +7545,99 @@ pub fn vault_gc(state: State<'_, AppState>, dry_run: bool) -> Result<VaultGcView
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let blob_dir = dim_storage::blob_dir_for_vault(vault_path);
+    gc_vault_blobs(db, &blob_dir, dry_run)
+}
 
-    let report: GcReport = db.garbage_collect_blobs(dry_run)?;
-    let mut missing_files = Vec::new();
-    if !dry_run {
-        let blob_dir = vault_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("blobs");
-        for blob in &report.deleted {
-            let path = blob_dir.join(format!("{}.blb", blob.storage_id));
-            if path.exists() {
-                if let Err(error) = std::fs::remove_file(&path) {
-                    missing_files.push(format!("{}: {error}", blob.storage_id));
-                }
-            } else {
-                missing_files.push(format!("{}: dosya yok", blob.storage_id));
-            }
-        }
-    }
+/// `blobs/` klasörünün disk tarafı envanteri: veritabanında karşılığı olmayan
+/// dosyalar, eşikten eski geçici dosyalar, kaydı olup dosyası olmayanlar.
+///
+/// `dry_run` değilse yalnız **kanıtlı artıklar** silinir (bkz.
+/// `dim_storage::blob_disk`); kayıtlara dokunulmaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobDiskView {
+    pub dry_run: bool,
+    pub dir_present: bool,
+    pub entries: u64,
+    pub listed_files: u64,
+    pub listed_bytes: i64,
+    pub unlisted: Vec<dim_storage::DiskBlobFile>,
+    pub unlisted_total: u64,
+    pub unlisted_bytes: i64,
+    pub stale_temps: Vec<dim_storage::DiskBlobFile>,
+    pub stale_temp_total: u64,
+    pub stale_temp_bytes: i64,
+    pub young_protected: u64,
+    pub missing: Vec<String>,
+    pub missing_total: u64,
+    pub ignored_total: u64,
+    pub truncated: bool,
+    pub db_total: i64,
+    pub db_orphans: i64,
+    pub db_orphan_bytes: i64,
+    pub removed: Vec<dim_storage::DiskBlobFile>,
+    pub freed_bytes: i64,
+    pub kept_listed: Vec<String>,
+    pub errors: Vec<String>,
+    /// Yaş eşiği (saniye) — arayüz sayıyı çekirdekten okur, kopyalamaz.
+    pub min_age_seconds: i64,
+    /// Listelerin üst sınırı (kırpma gizlenmez) — arayüz kendi sayısını uydurmaz.
+    pub list_limit: u32,
+}
 
-    Ok(VaultGcView {
-        dry_run: report.dry_run,
-        candidates: report.candidates,
-        deleted: report.deleted,
-        freed_bytes: report.freed_bytes,
-        missing_files,
+fn blob_disk_view(db: &Database, blob_dir: &Path, dry_run: bool) -> Result<BlobDiskView, ApiError> {
+    let min_age_seconds = dim_storage::DEFAULT_MIN_AGE_SECS;
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let scan = db.scan_blob_dir(blob_dir, min_age_seconds, now)?;
+    // Silme kararı **taze taramayla** verilir; kuru çalıştırma raporu yalnız
+    // planı gösterir.
+    let sweep = if dry_run {
+        dim_storage::BlobDiskSweep::planned_only(&scan)
+    } else {
+        db.sweep_blob_orphans(blob_dir, false, min_age_seconds)?
+    };
+    Ok(BlobDiskView {
+        dry_run,
+        dir_present: scan.dir_present,
+        entries: scan.entries,
+        listed_files: scan.listed_files,
+        listed_bytes: scan.listed_bytes,
+        unlisted: scan.unlisted,
+        unlisted_total: scan.unlisted_total,
+        unlisted_bytes: scan.unlisted_bytes,
+        stale_temps: scan.stale_temps,
+        stale_temp_total: scan.stale_temp_total,
+        stale_temp_bytes: scan.stale_temp_bytes,
+        young_protected: scan.young_protected,
+        missing_total: scan.missing_total,
+        missing: scan.missing,
+        ignored_total: scan.ignored_total,
+        truncated: scan.truncated,
+        db_total: scan.db_total,
+        db_orphans: scan.db_orphans,
+        db_orphan_bytes: scan.db_orphan_bytes,
+        removed: sweep.removed,
+        freed_bytes: sweep.freed_bytes,
+        kept_listed: sweep.kept_listed,
+        errors: sweep.errors,
+        min_age_seconds,
+        list_limit: u32::try_from(dim_storage::MAX_DISK_LIST).unwrap_or(u32::MAX),
     })
+}
+
+#[tauri::command]
+pub fn vault_blob_disk_sweep(
+    state: State<'_, AppState>,
+    dry_run: bool,
+) -> Result<BlobDiskView, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let vault_path = guard.path.as_ref().ok_or_else(ApiError::vault_locked)?;
+    let blob_dir = dim_storage::blob_dir_for_vault(vault_path);
+    blob_disk_view(db, &blob_dir, dry_run)
 }
 
 /// Parolayı değiştirir. Yalnız parola yuvası yeniden sarılır; ana anahtar ve

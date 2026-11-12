@@ -13,6 +13,7 @@ pub mod audit;
 pub mod backup;
 pub mod backup_retention;
 pub mod backup_runs;
+pub mod blob_disk;
 mod cases;
 mod checklists;
 mod claims;
@@ -65,6 +66,10 @@ pub use backup_retention::{
     MAX_KEEP_WEEKLY,
 };
 pub use backup_runs::{BackupRunRow, NewBackupRun, BACKUP_RUN_STATUSES, MAX_BACKUP_RUN_LIST};
+pub use blob_disk::{
+    blob_dir_for_vault, BlobDiskScan, BlobDiskSweep, DiskBlobFile, DEFAULT_MIN_AGE_SECS,
+    MAX_DISK_LIST,
+};
 pub use cases::{AiPolicy, Case, CaseKind, CasePatch, CaseStatus, NewCase, Sensitivity};
 pub use checklists::{
     CaseChecklistItemRow, ChecklistCopyResult, ChecklistTemplateRef, ChecklistTemplateRow,

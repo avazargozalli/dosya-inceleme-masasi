@@ -2051,3 +2051,164 @@ fn stale_evidence_keeps_the_gate_closed_and_is_flagged() {
     assert!(view.evidence_stale);
     assert_eq!(view.evidence_version, None);
 }
+
+// ---- Blob temizliği: önce dosya, sonra kayıt (F03/F15 eki) ----
+
+fn blob_test_setup(tag: &str) -> (Database, std::path::PathBuf) {
+    let db = Database::open_in_memory(&DatabaseKey::new([42u8; 32])).expect("kasa");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("dim-blobgc-{tag}-{}-{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dizin");
+    (db, dir)
+}
+
+fn age_file(path: &std::path::Path) {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .expect("aç");
+    let age = std::time::Duration::from_secs(
+        2 * u64::try_from(dim_storage::DEFAULT_MIN_AGE_SECS).expect("eşik"),
+    );
+    file.set_modified(std::time::SystemTime::now() - age)
+        .expect("damga");
+}
+
+/// GC **önce dosyayı** siler: dosya silinemezse kayıt korunur, böylece hiçbir
+/// dosya veritabanında izi olmadan diskte kalmaz.
+#[test]
+fn gc_removes_the_file_before_the_row() {
+    let (db, dir) = blob_test_setup("file-first");
+    let storage_id = "a".repeat(32);
+    db.create_blob_record(&storage_id, 120, "aad")
+        .expect("kayıt");
+    std::fs::write(dir.join(format!("{storage_id}.blb")), vec![1u8; 120]).expect("yaz");
+
+    let view = gc_vault_blobs(&db, &dir, false).expect("gc");
+    assert_eq!(view.deleted.len(), 1);
+    assert_eq!(view.freed_bytes, 120);
+    assert!(view.blocked.is_empty());
+    assert!(!dir.join(format!("{storage_id}.blb")).exists());
+    assert!(!db.file_has_blob_record(&storage_id).expect("kayıt"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gc_keeps_the_row_when_the_file_cannot_be_removed() {
+    let (db, dir) = blob_test_setup("blocked");
+    let storage_id = "b".repeat(32);
+    db.create_blob_record(&storage_id, 50, "aad")
+        .expect("kayıt");
+    // Son yol bir **dizin**: `remove_file` başarısız olur.
+    std::fs::create_dir(dir.join(format!("{storage_id}.blb"))).expect("dizin");
+
+    let view = gc_vault_blobs(&db, &dir, false).expect("gc");
+    assert!(view.deleted.is_empty());
+    assert_eq!(view.blocked.len(), 1);
+    assert!(
+        db.file_has_blob_record(&storage_id).expect("kayıt"),
+        "kayıt korunmalı: sonraki deneme yine aday olsun"
+    );
+    assert_eq!(db.orphan_blob_candidates().expect("aday").len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gc_reports_a_missing_file_and_drops_the_row() {
+    let (db, dir) = blob_test_setup("missing");
+    let storage_id = "c".repeat(32);
+    db.create_blob_record(&storage_id, 20, "aad")
+        .expect("kayıt");
+
+    let view = gc_vault_blobs(&db, &dir, false).expect("gc");
+    assert_eq!(view.missing_files.len(), 1);
+    assert!(view.missing_files[0].contains("dosya yok"));
+    // Diskte veri yok; kayıt tutulmaz ama sessizce de geçilmez.
+    assert!(!db.file_has_blob_record(&storage_id).expect("kayıt"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Disk tarafı: kaydı olmayan dosya görünür, yaş eşiğinden yeni olan korunur,
+/// silme yalnız kanıtlı artığa dokunur.
+#[test]
+fn disk_view_shows_orphans_and_sweeps_only_them() {
+    let (db, dir) = blob_test_setup("disk");
+    let listed = "d".repeat(32);
+    db.create_blob_record(&listed, 10, "aad").expect("kayıt");
+    std::fs::write(dir.join(format!("{listed}.blb")), vec![0u8; 10]).expect("yaz");
+    let orphan = "e".repeat(32);
+    std::fs::write(dir.join(format!("{orphan}.blb")), vec![0u8; 30]).expect("yaz");
+    age_file(&dir.join(format!("{listed}.blb")));
+    age_file(&dir.join(format!("{orphan}.blb")));
+    // Genç dosya: aday değil.
+    let young = "f".repeat(32);
+    std::fs::write(dir.join(format!("{young}.blb")), vec![0u8; 5]).expect("yaz");
+
+    let scan = blob_disk_view(&db, &dir, true).expect("tarama");
+    assert!(scan.dir_present);
+    assert_eq!(scan.listed_files, 1);
+    assert_eq!(scan.unlisted_total, 1);
+    assert_eq!(scan.young_protected, 1);
+    assert_eq!(scan.min_age_seconds, dim_storage::DEFAULT_MIN_AGE_SECS);
+    assert!(scan.removed.is_empty());
+
+    let real = blob_disk_view(&db, &dir, false).expect("sil");
+    assert_eq!(real.removed.len(), 1);
+    assert_eq!(real.freed_bytes, 30);
+    assert!(dir.join(format!("{listed}.blb")).exists());
+    assert!(dir.join(format!("{young}.blb")).exists());
+    assert!(!dir.join(format!("{orphan}.blb")).exists());
+    // Disk temizliği kayıtlara dokunmaz.
+    assert!(db.file_has_blob_record(&listed).expect("kayıt"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Silme **izin** yüzünden düşerse kayıt korunur ve neden raporlanır: aksi
+/// hâlde dosya diskte kalır, kaydı düşer ve hiçbir envanter onu göremez.
+///
+/// `chmod` senaryosu root'ta kurulamaz (root izin kapısını atlar); o durumda
+/// test erken döner — sessizce "geçti" demez, gerekçeyi yazar.
+#[cfg(unix)]
+#[test]
+fn gc_reports_a_file_that_cannot_be_removed_because_of_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (db, dir) = blob_test_setup("perm");
+    let storage_id = "e".repeat(32);
+    db.create_blob_record(&storage_id, 10, "aad")
+        .expect("kayıt");
+    std::fs::write(dir.join(format!("{storage_id}.blb")), vec![0u8; 10]).expect("yaz");
+    let probe = dir.join("probe.bin");
+    std::fs::write(&probe, b"x").expect("yaz");
+
+    let original = std::fs::metadata(&dir).expect("meta").permissions();
+    let mut locked = original.clone();
+    locked.set_mode(0o555);
+    std::fs::set_permissions(&dir, locked).expect("chmod");
+
+    // Root ise silme başarılı olur: senaryo kurulamaz.
+    if std::fs::remove_file(&probe).is_ok() {
+        std::fs::set_permissions(&dir, original).expect("geri");
+        eprintln!("root: izin senaryosu kurulamadı, test ölçüm yapmadı");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let view = gc_vault_blobs(&db, &dir, false).expect("gc");
+    std::fs::set_permissions(&dir, original).expect("geri");
+
+    assert!(
+        view.deleted.is_empty(),
+        "silinemediği hâlde silindi sayıldı"
+    );
+    assert_eq!(view.blocked.len(), 1);
+    assert!(
+        db.file_has_blob_record(&storage_id).expect("kayıt"),
+        "kayıt korunmalı: dosya diskte, izi veritabanında kalmalı"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

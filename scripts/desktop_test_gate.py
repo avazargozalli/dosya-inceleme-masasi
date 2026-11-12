@@ -45,7 +45,7 @@ SOURCES = (
 
 #: Ölçülen taban (2026-11-12, macOS + CI): 51 testin 46'sı koşar, 5'i gerçek
 #: worker/tesseract ister ve `#[ignore]` taşır.
-BASELINE_PASSED = 46
+BASELINE_PASSED = 51
 BASELINE_IGNORED = 5
 
 #: `--ignored` koşusunun tabanı: beş test de **gerçekten** koşmalı. Bu koşu

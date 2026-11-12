@@ -3,12 +3,18 @@
 //! Bir blob yalnız hiçbir belge sürümü ve türev sayfa onu göstermiyorsa
 //! silinebilir. `document_versions.blob_id` FK'si `RESTRICT` olduğundan yanlış
 //! silme veritabanı tarafından da engellenir; yine de GC önce açıkça sayar.
-//! Dosya silme çağıranda (Tauri) yapılır; burada yalnız kayıt kaldırılır.
+//!
+//! **Dosya silme çağıranda (Tauri) yapılır** ve bu yüzden sıra önemlidir:
+//! önce dosya, sonra kayıt. Ters sırada dosya silinemezse geriye veritabanında
+//! izi olmayan bir dosya kalır — hiçbir envanter onu göremez (bkz.
+//! `blob_disk`). Bu yüzden bu modül adayları (`orphan_blob_candidates`) ve kayıt
+//! silmeyi (`delete_unreferenced_blobs`) ayrı sunar; `garbage_collect_blobs`
+//! ikisini birleştiren eski kapıdır.
 
-use rusqlite::Row;
+use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
-use crate::{now_iso, Database, StorageError};
+use crate::{Database, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,17 +33,20 @@ pub struct GcReport {
     pub freed_bytes: i64,
 }
 
+/// Referanssız blob koşulu: hiçbir belge sürümü ve hiçbir türev sayfa
+/// göstermiyor. **Tek kaynak** — aday seçimi, silme kapısı ve envanter aynı
+/// ifadeyi kullanır; üç ayrı kopya ayrışırsa "aday" ile "silinebilir" farklı
+/// kümeler olur.
+const UNREFERENCED: &str = "NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.blob_id = b.id)
+       AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.derivative_blob_id = b.id)";
+
 impl Database {
-    /// Referanssız blob'ları bulur; `dry_run` değilse siler. Hiçbir zaman
-    /// referanslı bir blob'a dokunmaz.
-    pub fn garbage_collect_blobs(&self, dry_run: bool) -> Result<GcReport, StorageError> {
-        let mut stmt = self.conn().prepare(
-            "SELECT b.id, b.storage_id, b.encrypted_size
-             FROM blobs b
-             WHERE NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.blob_id = b.id)
-               AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.derivative_blob_id = b.id)
-             ORDER BY b.created_at",
-        )?;
+    /// Referanssız blob kayıtlarını **seçer**, hiçbir şey silmez.
+    pub fn orphan_blob_candidates(&self) -> Result<Vec<GcBlobRow>, StorageError> {
+        let sql = format!(
+            "SELECT b.id, b.storage_id, b.encrypted_size FROM blobs b WHERE {UNREFERENCED} ORDER BY b.created_at"
+        );
+        let mut stmt = self.conn().prepare(&sql)?;
         let rows = stmt.query_map([], |row: &Row<'_>| {
             Ok(GcBlobRow {
                 id: row.get(0)?,
@@ -45,12 +54,51 @@ impl Database {
                 encrypted_size: row.get(2)?,
             })
         })?;
-        let mut candidates = Vec::new();
+        let mut out = Vec::new();
         for row in rows {
-            candidates.push(row?);
+            out.push(row?);
         }
-        drop(stmt);
+        Ok(out)
+    }
 
+    /// Verilen kayıtları **yalnız hâlâ referanssızsa** siler; iki adım arasında
+    /// referans doğmuşsa satır korunur. Tek işlemde koşar; denetim yalnız sayı
+    /// taşır. Gerçekten silinen satır sayısını döndürür.
+    pub fn delete_unreferenced_blobs(&self, ids: &[String]) -> Result<usize, StorageError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let lookup =
+            format!("SELECT b.encrypted_size FROM blobs b WHERE b.id = ?1 AND {UNREFERENCED}");
+        let tx = self.conn().unchecked_transaction()?;
+        let mut deleted = 0usize;
+        let mut freed = 0i64;
+        for id in ids {
+            let size: Option<i64> = tx.query_row(&lookup, [id], |row| row.get(0)).optional()?;
+            let Some(size) = size else { continue };
+            if tx.execute("DELETE FROM blobs WHERE id=?1", [id])? == 1 {
+                deleted += 1;
+                freed = freed.saturating_add(size);
+            }
+        }
+        tx.commit()?;
+
+        if deleted > 0 {
+            self.append_audit(
+                "blob_gc",
+                None,
+                "delete",
+                "local-user",
+                &serde_json::json!({"count": deleted, "freedBytes": freed}),
+            )?;
+        }
+        Ok(deleted)
+    }
+
+    /// Referanssız blob'ları bulur; `dry_run` değilse siler. Hiçbir zaman
+    /// referanslı bir blob'a dokunmaz.
+    pub fn garbage_collect_blobs(&self, dry_run: bool) -> Result<GcReport, StorageError> {
+        let candidates = self.orphan_blob_candidates()?;
         if dry_run || candidates.is_empty() {
             return Ok(GcReport {
                 dry_run,
@@ -59,27 +107,17 @@ impl Database {
                 deleted: Vec::new(),
             });
         }
-
-        let tx = self.conn().unchecked_transaction()?;
+        let ids: Vec<String> = candidates.iter().map(|b| b.id.clone()).collect();
+        self.delete_unreferenced_blobs(&ids)?;
+        // Rapor yalnız gerçekten silinenleri gösterir: arada referans doğmuş bir
+        // satır silinmez ve `deleted` içinde yer almaz.
         let mut deleted = Vec::new();
         for blob in &candidates {
-            let changed = tx.execute("DELETE FROM blobs WHERE id=?1", [&blob.id])?;
-            if changed == 1 {
+            if !self.blob_exists(&blob.id)? {
                 deleted.push(blob.clone());
             }
         }
-        tx.commit()?;
-
         let freed_bytes = deleted.iter().map(|b| b.encrypted_size).sum();
-        self.append_audit(
-            "blob_gc",
-            None,
-            "delete",
-            "local-user",
-            &serde_json::json!({"count": deleted.len(), "freedBytes": freed_bytes}),
-        )?;
-        let _ = now_iso();
-
         Ok(GcReport {
             dry_run: false,
             candidates,
@@ -88,25 +126,26 @@ impl Database {
         })
     }
 
+    /// Satır hâlâ duruyor mu (GC raporu için).
+    fn blob_exists(&self, id: &str) -> Result<bool, StorageError> {
+        let count: i64 = self.conn().query_row(
+            "SELECT count(*) FROM blobs WHERE id=?1",
+            [id],
+            |row: &Row<'_>| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Kasa bütünlüğü için özet: toplam blob, referanssız blob ve boyut.
     pub fn blob_inventory(&self) -> Result<(i64, i64, i64), StorageError> {
         let total: i64 = self
             .conn()
             .query_row("SELECT count(*) FROM blobs", [], |r| r.get(0))?;
-        let orphans: i64 = self.conn().query_row(
-            "SELECT count(*) FROM blobs b
-             WHERE NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.blob_id = b.id)
-               AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.derivative_blob_id = b.id)",
-            [],
-            |r| r.get(0),
-        )?;
-        let bytes: i64 = self.conn().query_row(
-            "SELECT coalesce(sum(b.encrypted_size),0) FROM blobs b
-             WHERE NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.blob_id = b.id)
-               AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.derivative_blob_id = b.id)",
-            [],
-            |r| r.get(0),
-        )?;
+        let orphans_sql = format!("SELECT count(*) FROM blobs b WHERE {UNREFERENCED}");
+        let orphans: i64 = self.conn().query_row(&orphans_sql, [], |r| r.get(0))?;
+        let bytes_sql =
+            format!("SELECT coalesce(sum(b.encrypted_size),0) FROM blobs b WHERE {UNREFERENCED}");
+        let bytes: i64 = self.conn().query_row(&bytes_sql, [], |r| r.get(0))?;
         Ok((total, orphans, bytes))
     }
 }
@@ -197,5 +236,45 @@ mod tests {
         // referanssız yolun çalıştığını ve hata vermediğini doğrular.
         let report = db.garbage_collect_blobs(false).expect("gc");
         assert_eq!(report.deleted.len(), 1);
+    }
+
+    #[test]
+    fn delete_by_id_refuses_a_referenced_row() {
+        // Silme iki adımlıdır (dosya → kayıt): araya giren bir referans,
+        // kimlikle silme çağrılsa bile satırı korumalı.
+        let (db, case_id) = setup();
+        let blob = db.create_blob_record("st-late", 10, "aad").expect("blob");
+        let doc = db
+            .create_document(&case_id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        db.add_version(
+            &doc.id,
+            &case_id,
+            &blob,
+            &"b".repeat(64),
+            10,
+            "application/pdf",
+        )
+        .expect("sürüm");
+
+        let deleted = db
+            .delete_unreferenced_blobs(std::slice::from_ref(&blob))
+            .expect("sil");
+        assert_eq!(deleted, 0);
+        assert!(db.blob_exists(&blob).expect("kayıt"));
+    }
+
+    #[test]
+    fn candidates_and_inventory_agree() {
+        let (db, _) = setup();
+        db.create_blob_record("st-a", 5, "aad").expect("a");
+        db.create_blob_record("st-b", 7, "aad").expect("b");
+        let candidates = db.orphan_blob_candidates().expect("aday");
+        let (_, orphans, bytes) = db.blob_inventory().expect("envanter");
+        assert_eq!(i64::try_from(candidates.len()).unwrap(), orphans);
+        assert_eq!(
+            candidates.iter().map(|c| c.encrypted_size).sum::<i64>(),
+            bytes
+        );
     }
 }

@@ -97,6 +97,7 @@ import type {
   RollbackResult,
   SettingRow,
   SystemInfo,
+  BlobDiskResult,
   VaultGcResult,
   VaultStatus,
   WorkerBudgetProfile,
@@ -113,6 +114,7 @@ const mocks = vi.hoisted(() => ({
   vaultSettingSet: vi.fn(),
   vaultSettingDelete: vi.fn(),
   vaultGc: vi.fn(),
+  vaultBlobDiskSweep: vi.fn(),
   vaultRestore: vi.fn(),
   vaultChangePassword: vi.fn(),
   jobQueueStatus: vi.fn(),
@@ -243,6 +245,7 @@ const GC_SCAN: VaultGcResult = {
   deleted: [],
   freedBytes: 0,
   missingFiles: [],
+  blocked: [],
 };
 
 const GC_CLEAN: VaultGcResult = {
@@ -251,6 +254,58 @@ const GC_CLEAN: VaultGcResult = {
   deleted: [{ id: "b1", storageId: "s1", encryptedSize: 1_048_576 }],
   freedBytes: 1_048_576,
   missingFiles: ["blob-7.bin"],
+  blocked: [],
+};
+
+/** Disk tarafı taraması: kaydı olmayan bir dosya + eski bir geçici dosya. */
+const DISK_SCAN: BlobDiskResult = {
+  dryRun: true,
+  dirPresent: true,
+  entries: 6,
+  listedFiles: 2,
+  listedBytes: 4096,
+  unlisted: [
+    { fileName: `${"a".repeat(32)}.blb`, storageId: "a".repeat(32), bytes: 2048, modifiedUnix: 1 },
+  ],
+  unlistedTotal: 1,
+  unlistedBytes: 2048,
+  staleTemps: [
+    {
+      fileName: `.${"b".repeat(32)}.blb.tmp`,
+      storageId: "b".repeat(32),
+      bytes: 512,
+      modifiedUnix: 1,
+    },
+  ],
+  staleTempTotal: 1,
+  staleTempBytes: 512,
+  youngProtected: 1,
+  missing: ["c".repeat(32)],
+  missingTotal: 1,
+  ignoredTotal: 1,
+  truncated: false,
+  dbTotal: 2,
+  dbOrphans: 0,
+  dbOrphanBytes: 0,
+  removed: [],
+  freedBytes: 0,
+  keptListed: [],
+  errors: [],
+  // Çekirdeğin varsayılanı 600; fikstür **farklı** bir sayı taşır ki arayüz
+  // sayıyı kopyalamak yerine çekirdekten okuduğu ölçülebilsin.
+  minAgeSeconds: 900,
+  listLimit: 100,
+};
+
+const DISK_SWEPT: BlobDiskResult = {
+  ...DISK_SCAN,
+  dryRun: false,
+  unlistedTotal: 1,
+  staleTempTotal: 1,
+  removed: [
+    { fileName: `${"a".repeat(32)}.blb`, storageId: "a".repeat(32), bytes: 2048, modifiedUnix: 1 },
+  ],
+  freedBytes: 2048,
 };
 
 /** Otomatik yedek planı (hedef klasör kasa ayarında). */
@@ -956,6 +1011,154 @@ describe("ayarlar ekranı davranışı", () => {
     // ÖLÇÜLEN KUSUR (C): düşen işlem önceki "N aday" bildirimini bırakmamalı.
     expect(notices().join("\n")).not.toContain(scanText);
     expect(within(cardOf(t("settings.gcTitle"))).getByText(t("settings.gcHint"))).toBeTruthy();
+  });
+
+  it("disk artıkları: tarama sayıları çekirdekten yazar, silme onay ister ve yalnız onaydan sonra koşar", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    const gcCard = cardOf(t("settings.gcTitle"));
+    const clean = within(gcCard).getByRole("button", {
+      name: t("settings.gcDiskClean"),
+    }) as HTMLButtonElement;
+    // Tarama yokken silme kapalı: arayüz "artık var" bilmediği hâlde silmez.
+    expect(clean.disabled).toBe(true);
+
+    mocks.vaultBlobDiskSweep.mockResolvedValueOnce(DISK_SCAN);
+    fireEvent.click(within(gcCard).getByRole("button", { name: t("settings.gcDiskScan") }));
+    await waitFor(() => expect(mocks.vaultBlobDiskSweep).toHaveBeenNthCalledWith(1, true));
+
+    const line = t("settings.gcDiskLine", {
+      listed: DISK_SCAN.listedFiles,
+      unlisted: DISK_SCAN.unlistedTotal,
+      size: formatSize(DISK_SCAN.unlistedBytes),
+      temps: DISK_SCAN.staleTempTotal,
+      tempSize: formatSize(DISK_SCAN.staleTempBytes),
+    });
+    expect(await screen.findByText(line)).toBeTruthy();
+    // Eşik ve korunan sayı çekirdekten yazılır.
+    expect(
+      screen.getByText(t("settings.gcDiskThreshold", { seconds: DISK_SCAN.minAgeSeconds })),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(t("settings.gcDiskProtected", { count: DISK_SCAN.youngProtected })),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(t("settings.gcDiskMissing", { count: DISK_SCAN.missingTotal })),
+    ).toBeTruthy();
+    expect(
+      (within(cardOf(t("settings.gcTitle"))).getByRole("button", {
+        name: t("settings.gcDiskClean"),
+      }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    // Silme tek tıkla olmaz: önce onay paneli, sonra ikinci tık.
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", {
+        name: t("settings.gcDiskClean"),
+      }),
+    );
+    expect(mocks.vaultBlobDiskSweep).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText(
+        t("settings.gcDiskConfirm", {
+          count: DISK_SCAN.unlistedTotal,
+          size: formatSize(DISK_SCAN.unlistedBytes),
+        }),
+      ),
+    ).toBeTruthy();
+
+    mocks.vaultBlobDiskSweep.mockResolvedValueOnce(DISK_SWEPT);
+    fireEvent.click(screen.getByRole("button", { name: t("settings.gcDiskConfirmYes") }));
+    await waitFor(() => expect(mocks.vaultBlobDiskSweep).toHaveBeenNthCalledWith(2, false));
+    expect(
+      await screen.findByText(
+        t("settings.gcDiskSwept", {
+          count: DISK_SWEPT.removed.length,
+          size: formatSize(DISK_SWEPT.freedBytes),
+        }),
+      ),
+    ).toBeTruthy();
+    // Silme sonrası aynı tarama sayılarıyla yeniden silme açılmaz.
+    expect(
+      (within(cardOf(t("settings.gcTitle"))).getByRole("button", {
+        name: t("settings.gcDiskClean"),
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("disk taraması düşerse önceki sayılar ekranda kalmaz ve hata görünür", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    mocks.vaultBlobDiskSweep.mockResolvedValueOnce(DISK_SCAN);
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", {
+        name: t("settings.gcDiskScan"),
+      }),
+    );
+    const line = t("settings.gcDiskLine", {
+      listed: DISK_SCAN.listedFiles,
+      unlisted: DISK_SCAN.unlistedTotal,
+      size: formatSize(DISK_SCAN.unlistedBytes),
+      temps: DISK_SCAN.staleTempTotal,
+      tempSize: formatSize(DISK_SCAN.staleTempBytes),
+    });
+    await waitFor(() => expect(notices().join("\n")).toContain(line));
+
+    mocks.vaultBlobDiskSweep.mockRejectedValueOnce({
+      code: "E_VAULT_LOCKED",
+      message: "Kasa kilitli.",
+      retryable: false,
+    });
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", {
+        name: t("settings.gcDiskClean"),
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: t("settings.gcDiskConfirmYes") }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_VAULT_LOCKED");
+    // Düşen tarama eski sayıları "güncel" gibi bırakmamalı.
+    expect(notices().join("\n")).not.toContain(line);
+    expect(
+      within(cardOf(t("settings.gcTitle"))).getByText(t("settings.gcDiskHint")),
+    ).toBeTruthy();
+  });
+
+  it("gc dosyası silinemeyen kaydı 'korundu' diye yazar", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    mocks.vaultGc.mockResolvedValueOnce(GC_SCAN);
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", { name: t("settings.gcScan") }),
+    );
+    await waitFor(() =>
+      expect(notices().join("\n")).toContain(
+        t("settings.gcCandidates", {
+          count: GC_SCAN.candidates.length,
+          size: formatSize(1_048_576 + 524_288),
+        }),
+      ),
+    );
+
+    mocks.vaultGc.mockResolvedValueOnce({
+      ...GC_CLEAN,
+      deleted: [],
+      freedBytes: 0,
+      missingFiles: [],
+      blocked: ["s3: dosya değil"],
+    });
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", { name: t("settings.gcClean") }),
+    );
+    await waitFor(() =>
+      expect(notices().join("\n")).toContain(
+        t("settings.gcBlocked", { files: "s3: dosya değil" }),
+      ),
+    );
   });
 
   it("geri yükleme hedef konum ister; iptal edilen seçim istek üretmez, hedef kırpılarak gider", async () => {

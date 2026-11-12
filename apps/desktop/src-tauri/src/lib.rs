@@ -191,6 +191,7 @@ pub fn run() {
             commands::citation_context,
             commands::vault_restore,
             commands::vault_gc,
+            commands::vault_blob_disk_sweep,
             commands::vault_change_password,
             commands::vault_pre_update_backups,
             commands::vault_rollback_pre_update,

@@ -111,11 +111,26 @@ impl UnlockedVault {
 
     /// Kasa anahtarıyla bir blob'u dosyaya şifreler (atomik: geçici dosya + rename).
     pub fn write_blob(&self, dir: &Path, plain: &[u8], aad: &[u8]) -> Result<PathBuf, VaultError> {
+        self.write_blob_with_id(dir, &random_storage_id(), plain, aad)
+    }
+
+    /// Kimliği çağıranın verdiği atomik blob yazımı (test edilebilir).
+    ///
+    /// **Hata hâlinde geçici dosya silinir.** Silinmezse yarım `.blb.tmp`
+    /// diskte kalır: hiçbir kaydı yoktur, `vault_gc` onu görmez ve kasa
+    /// klasöründe sonsuza kadar yer kaplar. Kural `dim_storage::atomic` ile
+    /// aynıdır: yarım kalan yazım hedefte görünmez, artığı da kalmaz.
+    pub fn write_blob_with_id(
+        &self,
+        dir: &Path,
+        storage_id: &str,
+        plain: &[u8],
+        aad: &[u8],
+    ) -> Result<PathBuf, VaultError> {
         fs::create_dir_all(dir)?;
-        let storage_id = random_storage_id();
         let final_path = dir.join(format!("{storage_id}.blb"));
         let tmp_path = dir.join(format!(".{storage_id}.blb.tmp"));
-        {
+        let write = (|| -> Result<(), VaultError> {
             let mut out = OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -123,8 +138,16 @@ impl UnlockedVault {
             encrypt_blob(plain, &mut out, &self.master_key, aad)?;
             out.flush()?;
             out.sync_all()?;
+            drop(out);
+            fs::rename(&tmp_path, &final_path)?;
+            Ok(())
+        })();
+        if write.is_err() {
+            // Geçici dosya her hâlükârda temizlenir; silinemezse asıl hata
+            // yutulmaz (raporlanan hata yazma hatasıdır).
+            let _ = fs::remove_file(&tmp_path);
         }
-        fs::rename(&tmp_path, &final_path)?;
+        write?;
         sync_dir(dir)?;
         Ok(final_path)
     }
@@ -360,6 +383,28 @@ fn random_storage_id() -> String {
     data_encoding::HEXLOWER.encode(&buf)
 }
 
+/// Geçici dosyaya yazıp `rename` ile yerleştirir; **hata hâlinde geçici dosya
+/// silinir.** Kasa klasöründe sahipsiz `.tmp` bırakmamak için tek yol.
+fn write_tmp_then_rename(tmp: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), VaultError> {
+    let write = (|| -> Result<(), VaultError> {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(tmp)?;
+        f.write_all(bytes)?;
+        f.flush()?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(tmp, final_path)?;
+        Ok(())
+    })();
+    if write.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    write
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -411,20 +456,84 @@ impl VaultFile {
         header.rewrap_password_slot(unlocked.master_key(), &kek)?;
 
         let tmp = path.with_extension("dimvault.tmp");
-        {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&tmp)?;
-            f.write_all(&header.to_bytes())?;
-            f.flush()?;
-            f.sync_all()?;
-        }
-        std::fs::rename(&tmp, path)?;
+        write_tmp_then_rename(&tmp, path, &header.to_bytes())?;
         if let Some(parent) = path.parent() {
             sync_dir(parent)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod blob_write_tests {
+    use super::*;
+
+    fn unlocked(dir: &Path) -> UnlockedVault {
+        let (_file, _recovery, vault) =
+            VaultFile::create(&dir.join("v.dimvault"), "parola-uzun-123").expect("kasa");
+        vault
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir)
+            .expect("oku")
+            .map(|entry| {
+                entry
+                    .expect("girdi")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn blob_write_roundtrip_leaves_no_temp_file() {
+        let tmp = tempfile::tempdir().expect("dizin");
+        let vault = unlocked(tmp.path());
+        let blobs = tmp.path().join("blobs");
+        let path = vault
+            .write_blob(&blobs, b"kira sozlesmesi", b"case-1")
+            .expect("yaz");
+        assert!(path.exists());
+        let opened = vault.read_blob(&path, b"case-1").expect("oku");
+        assert_eq!(opened, b"kira sozlesmesi");
+        let names = names(&blobs);
+        assert_eq!(names.len(), 1, "artık dosya kaldı: {names:?}");
+        assert!(!names[0].ends_with(".tmp"));
+    }
+
+    #[test]
+    fn blob_write_removes_the_temp_file_when_placement_fails() {
+        // Son yol bir dizin: `rename` başarısız olur. Geçici dosya kalmamalı —
+        // kalsaydı hiçbir kaydı olmadığı için ürün onu bir daha silemezdi.
+        let tmp = tempfile::tempdir().expect("dizin");
+        let vault = unlocked(tmp.path());
+        let blobs = tmp.path().join("blobs");
+        std::fs::create_dir_all(&blobs).expect("dizin");
+        let storage_id = "a".repeat(32);
+        std::fs::create_dir(blobs.join(format!("{storage_id}.blb"))).expect("çakışan dizin");
+
+        let result = vault.write_blob_with_id(&blobs, &storage_id, b"gizli", b"case-1");
+        assert!(result.is_err(), "yerleştirme başarısız olmalıydı");
+        let names = names(&blobs);
+        assert!(
+            !names.iter().any(|name| name.ends_with(".tmp")),
+            "geçici dosya kaldı: {names:?}"
+        );
+    }
+
+    #[test]
+    fn atomic_sibling_write_removes_the_temp_file_when_rename_fails() {
+        let tmp = tempfile::tempdir().expect("dizin");
+        let target = tmp.path().join("hedef");
+        std::fs::create_dir(&target).expect("dizin");
+        let temp = tmp.path().join(".hedef.tmp");
+
+        let result = write_tmp_then_rename(&temp, &target, b"govde");
+        assert!(result.is_err(), "rename başarısız olmalıydı");
+        assert!(!temp.exists(), "geçici dosya kaldı");
     }
 }

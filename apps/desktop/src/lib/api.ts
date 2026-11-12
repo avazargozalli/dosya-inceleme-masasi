@@ -1531,6 +1531,50 @@ export type VaultGcResult = {
   deleted: GcBlobRow[];
   freedBytes: number;
   missingFiles: string[];
+  /** Dosyası silinemediği için kaydı da korunan blob'lar (`ad: neden`). */
+  blocked: string[];
+};
+
+/** Diskte bulunan tek bir blob dosyası (raporda ad ve boyut). */
+export type DiskBlobFile = {
+  fileName: string;
+  storageId: string;
+  bytes: number;
+  modifiedUnix: number;
+};
+
+/**
+ * `blobs/` klasörünün **disk tarafı** envanteri. Sayılar çekirdekten gelir;
+ * arayüz kendi başına dosya saymaz.
+ */
+export type BlobDiskResult = {
+  dryRun: boolean;
+  dirPresent: boolean;
+  entries: number;
+  listedFiles: number;
+  listedBytes: number;
+  unlisted: DiskBlobFile[];
+  unlistedTotal: number;
+  unlistedBytes: number;
+  staleTemps: DiskBlobFile[];
+  staleTempTotal: number;
+  staleTempBytes: number;
+  youngProtected: number;
+  missing: string[];
+  missingTotal: number;
+  ignoredTotal: number;
+  truncated: boolean;
+  dbTotal: number;
+  dbOrphans: number;
+  dbOrphanBytes: number;
+  removed: DiskBlobFile[];
+  freedBytes: number;
+  keptListed: string[];
+  errors: string[];
+  /** Yaş eşiği (saniye) — sayı çekirdekten okunur, kopyalanmaz. */
+  minAgeSeconds: number;
+  /** Listelerin üst sınırı — kırpma gizlenmez. */
+  listLimit: number;
 };
 
 export type BackupResult = {
@@ -2181,6 +2225,12 @@ export const api = {
   /** Kasa ayarını siler; satır var mıydı bilgisini döndürür. */
   vaultSettingDelete: (key: string) => invoke<boolean>("vault_setting_delete", { key }),
   vaultGc: (dryRun: boolean) => invoke<VaultGcResult>("vault_gc", { dryRun }),
+  /**
+   * `blobs/` klasörünün disk tarafı: kaydı olmayan dosyalar ve eşikten eski
+   * geçici dosyalar. `dryRun=false` yalnız **kanıtlı artıkları** siler.
+   */
+  vaultBlobDiskSweep: (dryRun: boolean) =>
+    invoke<BlobDiskResult>("vault_blob_disk_sweep", { dryRun }),
   vaultChangePassword: (oldPassword: string, newPassword: string) =>
     invoke<void>("vault_change_password", { oldPassword, newPassword }),
   vaultRestore: (backupDir: string, destDir: string) =>
