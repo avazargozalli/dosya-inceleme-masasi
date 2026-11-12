@@ -387,6 +387,23 @@ describe("promptShapeText", () => {
     expect(line.text).toContain("otomatik yürütme kapalı");
     expect(line.text).toContain("—");
   });
+
+  // Yolu olmayan adaptör "tanımsız" demez: neden bilinir ve yazılır. Bu satır
+  // eskiden `tool_free_unverified`a düşüyordu (yanlış neden).
+  it("istem yolu yoksa kendi nedenini yazar", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: [],
+        printable: false,
+        reason: "no_prompt_path",
+        toolFree: "verified",
+        evidence: null,
+      },
+    });
+    expect(line.tone).toBe("warn");
+    expect(line.text).toContain("istem yolu tanımlı değil");
+    expect(line.text).not.toContain("tanımsız");
+  });
 });
 
 function hardeningProbe(overrides: Partial<CliHardeningProbe> = {}): CliHardeningProbe {

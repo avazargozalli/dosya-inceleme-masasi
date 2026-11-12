@@ -677,6 +677,10 @@ pub fn validate_prompt(prompt: &str) -> Result<(), AdapterError> {
     Ok(())
 }
 
+/// İstem yerine arayüzde/raporda gösterilen yer tutucu. Biçim tablosu **tek**
+/// yerde ([`prompt_argv`]) durur; gösterim de aynı fonksiyondan üretilir.
+pub const PROMPT_PLACEHOLDER: &str = "<istem>";
+
 /// Yazdırma kipinde **istem taşıyan** argv. Biçim sağlayıcıya göre değişir ve
 /// ölçülerek sabitlendi (agy 1.4.12 / `--help`, 2026-11-11):
 ///
@@ -713,42 +717,40 @@ pub fn prompt_argv(adapter_id: &str, prompt: &str) -> Result<Vec<String>, Adapte
 
 /// İstem argv'sini **adaptörün kendi biçiminde** yerleştirir (F10-T08).
 ///
-/// Biçim tek kaynaktan gelir ([`prompt_argv`]); burada yalnız **sıra** belirlenir
-/// ve çağıranın bıraktığı istem bayrakları temizlenir (yinelenen `--print`
-/// olmasın). Sıralar ölçülerek sabitlendi:
+/// Biçim **tek kaynaktan** gelir ([`prompt_argv`]); burada yalnız **sıra**
+/// belirlenir ve çağıranın bıraktığı istem bayrakları temizlenir (yinelenen
+/// `--print` olmasın). Sıralar ölçülerek sabitlendi:
 ///
 /// - `antigravity-cli`: `--print=<istem>` **tek** belirteç → sona eklenir;
 ///   komşu belirteç olmadığı için sertleştirme bayrakları bayrak olarak kalır.
 /// - `claude-code`: `--print` boolean → `--print <istem>` sona eklenir.
-/// - `codex-cli`: `exec` bir **alt komut**tur ve ilk belirteç olmalıdır
+/// - `codex-cli`: `exec` bir **alt komuttur** ve ilk belirteç olmalıdır
 ///   (`codex exec --help`: `Usage: codex exec [OPTIONS] [PROMPT]`); bayraklar alt
 ///   komuttan **sonra**, istem en sonda.
+///
+/// Adaptör biçimleri burada **yeniden yazılmaz**: hangi belirtecin alt komut
+/// olduğu [`prompt_argv`]nin çıktısından okunur (`exec` ilk belirteç), kalanı
+/// olduğu gibi sona eklenir. Yeni bir biçim eklendiğinde bu fonksiyon değişmez.
 pub fn splice_prompt(
     adapter_id: &str,
     args: Vec<String>,
     prompt: &str,
 ) -> Result<Vec<String>, AdapterError> {
-    let shaped = prompt_argv(adapter_id, prompt)?;
+    let mut shaped = prompt_argv(adapter_id, prompt)?;
     let mut out = args;
     // Çağıran istem bayrağını kendisi vermiş olabilir: ikinci bir `--print`
     // (ya da `exec`) aynı argv'de iki farklı anlam yaratır.
     strip_flag(&mut out, "--print", false);
     strip_flag(&mut out, "exec", false);
-    match shaped.as_slice() {
-        [attached] if attached.starts_with("--print=") => out.push(attached.clone()),
-        [flag, text] if flag == "--print" => {
-            out.push(flag.clone());
-            out.push(text.clone());
-        }
-        [subcommand, text] if subcommand == "exec" => {
-            out.push(text.clone());
-            out.insert(0, subcommand.clone());
-        }
-        _ => {
-            return Err(AdapterError::InvalidPrompt(format!(
-                "{adapter_id}: bu adaptörde istem yolu tanımlı değil"
-            )))
-        }
+    // `codex-cli` biçimi alt komutla başlar; alt komut **ilk** belirteç olmalı.
+    let subcommand = if shaped.first().is_some_and(|first| first == "exec") {
+        Some(shaped.remove(0))
+    } else {
+        None
+    };
+    out.extend(shaped);
+    if let Some(subcommand) = subcommand {
+        out.insert(0, subcommand);
     }
     Ok(out)
 }
@@ -790,12 +792,13 @@ pub fn prompt_shape_with_evidence(
     evidence: Option<crate::MeasuredAccess>,
 ) -> Option<PromptShape> {
     let spec = crate::spec(adapter_id)?;
-    let placeholder = "<istem>";
-    let argv = match spec.id {
-        "antigravity-cli" => vec![format!("--print={placeholder}")],
-        "claude-code" => vec!["--print".to_string(), placeholder.to_string()],
-        "codex-cli" => vec!["exec".to_string(), placeholder.to_string()],
-        _ => Vec::new(),
+    // Biçim **burada yeniden yazılmaz**: arayüzde görünen argv, ürünün gerçekten
+    // koşacağı argv'nin ta kendisidir ([`prompt_argv`], istem yerine yer tutucu).
+    // İkinci bir biçim tablosu, arayüzün hiç koşmayacağı bir komutu "koşulacak"
+    // gibi göstermesine yol açardı; test bunu değil, **tek kaynak** kuralını korur.
+    let (argv, has_path) = match prompt_argv(spec.id, PROMPT_PLACEHOLDER) {
+        Ok(argv) => (argv, true),
+        Err(_) => (Vec::new(), false),
     };
     let caps = crate::capabilities(adapter_id)?;
     let tool_free = caps
@@ -809,17 +812,8 @@ pub fn prompt_shape_with_evidence(
         },
         None => ("missing", false),
     };
-    let (printable, reason) = if spec.batch_forbidden {
-        (false, Some("batch_forbidden"))
-    } else if evidence == Some(crate::MeasuredAccess::Granted) {
-        (false, Some("tool_access_granted"))
-    } else if evidence == Some(crate::MeasuredAccess::Unreadable) {
-        (false, Some("evidence_unreadable"))
-    } else if !tool_free_verified {
-        (false, Some("tool_free_unverified"))
-    } else {
-        (true, None)
-    };
+    let (printable, reason) =
+        prompt_gate(spec.batch_forbidden, has_path, tool_free_verified, evidence);
     Some(PromptShape {
         adapter_id: spec.id,
         argv,
@@ -828,6 +822,32 @@ pub fn prompt_shape_with_evidence(
         tool_free: tool_free_state,
         evidence: evidence.map(crate::MeasuredAccess::id),
     })
+}
+
+/// İstem kapısının **kararı** — saf fonksiyon, yan etkisiz. Sıra bilinçlidir:
+/// yapısal engeller (toplu yürütme kapalı, istem yolu yok) **ölçümden önce**
+/// gelir, çünkü istem hiç gönderilemiyorsa "araç erişimi" sorusu anlamsızdır;
+/// ölçüm beyanı yalnız **kapatır** (`blocked` kapıyı açmaz).
+fn prompt_gate(
+    batch_forbidden: bool,
+    has_path: bool,
+    tool_free_verified: bool,
+    evidence: Option<crate::MeasuredAccess>,
+) -> (bool, Option<&'static str>) {
+    if batch_forbidden {
+        (false, Some("batch_forbidden"))
+    } else if !has_path {
+        // Yolu olmayan adaptörde istem **hiç** gönderilemez: kapı kapalı.
+        (false, Some("no_prompt_path"))
+    } else if evidence == Some(crate::MeasuredAccess::Granted) {
+        (false, Some("tool_access_granted"))
+    } else if evidence == Some(crate::MeasuredAccess::Unreadable) {
+        (false, Some("evidence_unreadable"))
+    } else if !tool_free_verified {
+        (false, Some("tool_free_unverified"))
+    } else {
+        (true, None)
+    }
 }
 
 /// `--print` **çıplak** kalırsa ve yanındaki belirteç bir bayraksa, CLI onu
@@ -1604,21 +1624,93 @@ mod hardening_tests {
         );
     }
 
-    /// Arayüzde gösterilen biçim, çalıştırılan argv ile aynı yer tutucuyu taşır.
+    /// Arayüzde gösterilen biçim, çalıştırılan argv ile **aynı kaynaktan** gelir.
+    /// Test bir eşitliği değil **tek kaynak** kuralını korur: `prompt_shape`
+    /// içine ikinci bir biçim tablosu yazıldığı anda düşer.
     #[test]
-    fn prompt_shape_matches_the_builder() {
+    fn prompt_shape_comes_from_the_builder_only() {
         for adapter in crate::SPECS {
             let Some(shape) = prompt_shape(adapter.id) else {
                 panic!("{}: şekil yok", adapter.id);
             };
-            if shape.argv.is_empty() {
-                assert_eq!(adapter.id, "kimi-cli");
-                assert!(!shape.printable);
-                assert_eq!(shape.reason, Some("batch_forbidden"));
-                continue;
+            match prompt_argv(adapter.id, PROMPT_PLACEHOLDER) {
+                Ok(built) => {
+                    assert!(!built.is_empty(), "{}: boş biçim", adapter.id);
+                    assert_eq!(shape.argv, built, "{}", adapter.id);
+                }
+                Err(_) => assert!(
+                    shape.argv.is_empty(),
+                    "{}: istem yolu yok ama argv yazılmış: {:?}",
+                    adapter.id,
+                    shape.argv
+                ),
             }
-            let built = prompt_argv(adapter.id, "<istem>").expect("builder");
-            assert_eq!(shape.argv, built, "{}", adapter.id);
+            // Boş argv'li satır **asla** "gönderim açık" diyemez.
+            if shape.argv.is_empty() {
+                assert!(!shape.printable, "{}", adapter.id);
+                assert!(shape.reason.is_some(), "{}", adapter.id);
+            }
+        }
+    }
+
+    /// Bugün dört adaptörün de istem yolu var (Kimi toplu yürütmeye kapalı).
+    /// Yolu olmayan yeni bir adaptör `SPECS`e eklenirse bu test düşer:
+    /// `no_prompt_path` sessizce "gönderim açık"a dönüşmesin diye bilinçli karar
+    /// ister (kapı yine kapalı yazılır, ama nedenin tanınması gerekir).
+    #[test]
+    fn no_adapter_is_missing_a_prompt_path_today() {
+        for adapter in crate::SPECS {
+            let shape = prompt_shape(adapter.id).expect("şekil");
+            assert_ne!(
+                shape.reason,
+                Some("no_prompt_path"),
+                "{}: yeni adaptörün istem yolu tanımlı değil",
+                adapter.id
+            );
+        }
+    }
+
+    /// Kapı kararı **saf** fonksiyonda: her dal tek tek ölçülür (özellikle
+    /// bugün hiçbir adaptörün tetiklemediği `no_prompt_path` — yeni adaptör
+    /// eklendiğinde sessizce "açık"a dönmesin).
+    #[test]
+    fn prompt_gate_covers_every_branch() {
+        use MeasuredAccess::{Blocked, Granted, Inconclusive, Unreadable};
+        // (batch_forbidden, has_path, tool_free_verified, evidence) → (printable, reason)
+        for (case, expected) in [
+            ((true, true, true, None), (false, Some("batch_forbidden"))),
+            ((true, false, false, None), (false, Some("batch_forbidden"))),
+            ((false, false, true, None), (false, Some("no_prompt_path"))),
+            (
+                (false, false, false, Some(Granted)),
+                (false, Some("no_prompt_path")),
+            ),
+            (
+                (false, true, true, Some(Granted)),
+                (false, Some("tool_access_granted")),
+            ),
+            (
+                (false, true, true, Some(Unreadable)),
+                (false, Some("evidence_unreadable")),
+            ),
+            (
+                (false, true, false, Some(Blocked)),
+                (false, Some("tool_free_unverified")),
+            ),
+            (
+                (false, true, false, Some(Inconclusive)),
+                (false, Some("tool_free_unverified")),
+            ),
+            ((false, true, true, Some(Blocked)), (true, None)),
+            ((false, true, true, Some(Inconclusive)), (true, None)),
+            ((false, true, true, None), (true, None)),
+        ] {
+            let (batch_forbidden, has_path, verified, evidence) = case;
+            assert_eq!(
+                prompt_gate(batch_forbidden, has_path, verified, evidence),
+                expected,
+                "{case:?}"
+            );
         }
     }
 

@@ -420,6 +420,8 @@ function promptCloseReason(reason: CliPromptShape["reason"]): string {
   switch (reason) {
     case "batch_forbidden":
       return t("probe.promptReasonBatch");
+    case "no_prompt_path":
+      return t("probe.promptReasonNoPath");
     case "tool_access_granted":
       return t("probe.promptReasonToolAccess");
     case "evidence_unreadable":

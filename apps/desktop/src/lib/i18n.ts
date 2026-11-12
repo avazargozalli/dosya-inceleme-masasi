@@ -2062,11 +2062,12 @@ export const tr = {
     promptOpen: "İstem biçimi {argv} · araçsız kip doğrulandı, istem gönderimi açık.",
     promptClosed: "İstem biçimi {argv} · istem gönderimi kapalı: {reason}",
     promptReasonBatch: "bu sağlayıcıda otomatik yürütme kapalı",
+    promptReasonNoPath: "bu adaptörde istem yolu tanımlı değil — istem gönderilemez",
     promptReasonToolFree: "araçsız kip doğrulanamadı",
     promptReasonToolAccess:
       "ölçüm araç erişimini gösterdi — sertleştirme dosya okumayı engellemiyor",
     promptReasonEvidenceUnreadable: "sınama kaydı okunamadı (temkinli taraf)",
-    promptReasonUnknown: "bu adaptörde istem biçimi tanımlı değil",
+    promptReasonUnknown: "kapının nedeni tanımsız",
     evidenceGranted: "ölçüldü · araç erişimi var",
     evidenceBlocked: "ölçüldü · araç çağrısı görülmedi",
     evidenceInconclusive: "ölçüldü · hüküm yok",

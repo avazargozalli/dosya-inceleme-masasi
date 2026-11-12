@@ -1123,6 +1123,7 @@ export type CliPromptShape = {
   printable: boolean;
   reason:
     | "batch_forbidden"
+    | "no_prompt_path"
     | "tool_access_granted"
     | "evidence_unreadable"
     | "tool_free_unverified"

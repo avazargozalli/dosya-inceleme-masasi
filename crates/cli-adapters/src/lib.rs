@@ -42,7 +42,7 @@ pub use exec::{
     prompt_shape, prompt_shape_with_evidence, retry_while_busy, run_cli, run_cli_with_prompt,
     sanitize_env, splice_prompt, validate_prompt, CliRunRequest, PromptShape, RunError, RunOutcome,
     RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT, PROMPT_MAX_BYTES,
-    SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
+    PROMPT_PLACEHOLDER, SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
 };
 pub use hardening::{
     canary_body, classify_not_run, classify_reply, probe_prompt, run_hardening_probe,
