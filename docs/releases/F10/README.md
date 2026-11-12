@@ -7,7 +7,8 @@
   **istem argv biçimi + `--print` kapısı (T08 kısmi)**, **komut eş adı çözümü (T08c)**,
   **ölçülen araç erişiminin kapıya girmesi + kasa içinde saklanması (T08d)**,
   **koşulamayan sınamanın ölçüm sayılmaması + nedenin ayrılması (T08e)**,
-  **istem biçiminin tek kaynaktan gelmesi (T08f)** ve
+  **istem biçiminin tek kaynaktan gelmesi (T08f)**, **ölçümün sürümle
+  bağlanması (T08g)** ve
   **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca
   sağlayıcı akışı (T08) ve Kimi API profili (T10) yok
 - **Tarih:** 2026-10-24
@@ -21,7 +22,7 @@
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ✅ | Claude profili: `--no-session-persistence` + **`--tools ""`** + `--strict-mcp-config` zorunlu (sertleştirme); gerçek çağrı `DIM-CANARY-48`. Not: kimlikli `--print` çağrısı allowlist'te **`USER`** olmadan "Not logged in" veriyordu — eklendi (ölçüldü) |
 | F10-T07 | ✅ | Codex `--json` NDJSON ayrıştırıcı (`events.rs`): metin + usage, bilinmeyen tip korunur |
-| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz). **2026-11-12 (T08e):** boş yanıtın **nedeni** artık ayrılır — `NotRun` (`quota`/`auth`/`process_failed`/`timeout`/`cancelled`) + `--output-format=json` zarfı (`response`); sınama **koşmadıysa** `measured_access()` `None` döner ve kanıt **yazılmaz**. Ölçüm (bu makine): agy kotası dolu → `koşmadı: quota … 429`; öncesi sessiz `inconclusive` + "ölçüldü · hüküm yok" kaydıydı. **2026-11-12 (T08f):** istem biçimi **tek kaynaktan** (`prompt_argv`); `prompt_shape` yeniden tablo yazmaz, kapı kararı saf `prompt_gate`te (`no_prompt_path` nedeni dâhil), `splice_prompt` biçim bilmez |
+| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz). **2026-11-12 (T08e):** boş yanıtın **nedeni** artık ayrılır — `NotRun` (`quota`/`auth`/`process_failed`/`timeout`/`cancelled`) + `--output-format=json` zarfı (`response`); sınama **koşmadıysa** `measured_access()` `None` döner ve kanıt **yazılmaz**. Ölçüm (bu makine): agy kotası dolu → `koşmadı: quota … 429`; öncesi sessiz `inconclusive` + "ölçüldü · hüküm yok" kaydıydı. **2026-11-12 (T08f):** istem biçimi **tek kaynaktan** (`prompt_argv`); `prompt_shape` yeniden tablo yazmaz, kapı kararı saf `prompt_gate`te (`no_prompt_path` nedeni dâhil), `splice_prompt` biçim bilmez. **2026-11-12 (T08g):** sınama kaydı **hangi sürümde** alındığını taşır (`measuredVersion`); matris ve istem kapısı ölçümü kurulu sürümle karşılaştırır — bayat kayıt "bu sürüm ölçüldü" **diyemez** (kapı yine temkinli tarafta kapalı kalır) |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
@@ -1327,3 +1328,65 @@ Gerekçe:
 2. Kullanıcı hook'ları sürece girebilir; Codex'te bu yalnız `--ignore-user-config
    --ignore-rules` ile kapatılabildi (bkz. `HOOKS.md`).
 3. CLI çıktısı kararlı bir şema değildir; `--json` taşıması Codex'e özgüdür.
+
+## Ölçüm hangi sürüme ait (F10-T08g, 2026-11-12)
+
+**Ölçülen kusur:** sertleştirme sınamasının sonucu kasa içine yazılıyordu ama
+**hangi ikilide** ölçüldüğü yazılmıyordu; yetenek matrisi kaydı kurulu sürüme
+olduğu gibi uyguluyordu. Codex `0.159.2`de alınan `granted` kaydı, kurulu
+`0.170.0` için "ölçüldü · araç erişimi var" diye okunur; `blocked` kaydı ise hiç
+ölçülmemiş bir sürüm için "araç çağrısı görülmedi" der. İkisi de kanıtın kime
+ait olduğunu gizler — biri ölçülmemiş ikiliyi çürütür, öteki kanıtsız güven verir.
+
+**Yazılan (çekirdek):** `MeasuredEvidence { access, version }` — `covers()` /
+`is_stale()`; sürüm yazılmamış eski kayıt **hiçbir** sürümü kapsamaz ("bilinmeyen"
+ile "aynı" aynı şey değildir). `evaluate_with_measurement` (+
+`evaluate_with_evidence` sarmalayıcı) raporu `evidence_version` /
+`evidence_stale` ile döndürür. `PromptShape.evidence_version` /
+`evidence_stale` + `prompt_shape_with_measurement` (+ sarmalayıcılar).
+
+**Yazılan (masaüstü):** kayıt `measuredVersion` taşır (yazan: `record_cli_evidence`,
+okuyan: `read_cli_evidence`; eski kayıtta alan yok → `null`). `cli_hardening_probe`
+sınama anındaki sürümü `--version`dan okur ve kayda geçirir. `cli_capability_matrix`
+ölçümü kurulu sürümle karşılaştırır; görünüm `evidenceVersion` + `evidenceStale`
+taşır.
+
+**Yazılan (arayüz):** bayat kayıtta satır "ölçüm X sürümünde alındı; kurulu sürüm
+Y ölçülmedi" yazar (sürüm yazılmamışsa "sürüm yazılmamış (eski kayıt)") ve en az
+`warn` tonundadır; bayat `granted` için ayrı kapı cümlesi kullanılır — "bu sürümde
+araç erişimi var" **denmez**. 4 sözlük anahtarı.
+
+**Karar değişmedi:** ölçüm yalnız **kapatır**. Bayat `granted` / `unreadable` kapıyı
+yine kapatır (temkinli taraf), `blocked` / `inconclusive` beyanı doğrulamaz.
+Değişen şey, kanıtın **kime ait** olduğunun yazılmasıdır.
+
+**Testler:** `dim-cli-adapters --lib` 157 → **161** (+4) + 5 entegrasyon
+(1 `#[ignore]`); masaüstü kapısı **46** koştu · 0 düştü · 5 yoksayıldı
+(taban 44 → 46); `providers.test.ts` 37 → **39**, `Providers.test.tsx` 65 → **66**
+→ tam vitest **66 dosya / 1415** (yerel; CI sayısı ağaçtaki başka ajanın
+commit'siz testlerine göre düşük olabilir).
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-t08g-gates.py`, her mutasyon tek
+başına, `try/finally` + sha256 birebir — `capability.rs`, `exec.rs`, `commands.rs`,
+`providers.ts`):** **11/11 KIRMIZI, taban yeşilken** — S1 sürüm yazılmamış ölçüm
+her sürümü kapsar · S2 rapor sürüm uyuşmazlığını yok sayar · S3 istem şekli
+bayatlığı yazmaz · S4 istem şekli ölçüm sürümünü taşımaz · S5 kayıt ölçülen
+sürümü yazmaz · S6 okuyucu sürümü yok sayar · S7 arayüz görünümü bayatlığı
+yazmaz; U1 arayüz bayat kaydı yeni sürüm gibi yazar · U2 bayat satır ölçülen
+sürümü gizler · U3 kapı cümlesi bayatlığı yok sayar · U4 kart bayat satırı
+çizmez. **Dürüst (kendi hatam):** betiğin ilk sürümü `--exact` + kısa filtre
+kullandı → hiçbir test seçilmedi, çıkış kodu 0 ve 11/11 "YEŞİL" **sahte** kanıt
+çıktı; `--exact` kaldırıldı, `0 passed` artık ÖLÇÜLEMEDİ sayılıyor ve 11/11
+yeniden ölçüldü.
+
+**Dürüst sınırlar:**
+- Ölçüm **hâlâ tek istemdir**; sürüm yalnız `--version` metninden okunur. Aynı
+  sürüm numarasını taşıyan farklı bir ikili (yeniden derleme, aynı sürümle
+  yamanmış dağıtım) ayırt edilmez.
+- Sürüm yazılmamış **eski kayıtlar** temkinli tarafta kapatmaya devam eder;
+  arayüz "hangi sürümde ölçüldüğü yazılmamış" der. Elle taşıma/silme yolu yok
+  (yeni sınama kaydı yazar).
+- **Komut yolu** (`cli_hardening_probe`, `cli_capability_matrix`) komut olarak
+  koşulmadı (`State<AppState>` altyapısı yok): kablolama `cargo check` + clippy,
+  davranış storage düzeyinde gerçek SQLite ve birim testleriyle ölçüldü.
+- Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
