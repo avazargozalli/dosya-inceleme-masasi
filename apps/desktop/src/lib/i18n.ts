@@ -1361,6 +1361,7 @@ export const tr = {
     gcCandidates: "{count} aday · {size}",
     gcDeleted: "{count} kayıt silindi · {size} boşaldı",
     gcMissing: "Dosya uyarısı: {files}",
+    gcKept: "Korundu (silme anında referans doğdu): {files}",
     gcHint: "Önce \"Tara\" ile adayları görün; silme yalnız referanssız kayıtlara dokunur.",
     gcBlocked: "Dosyası silinemedi, kaydı korundu: {files}",
     gcDiskScan: "Diskteki artıkları tara",

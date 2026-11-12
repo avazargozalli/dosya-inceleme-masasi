@@ -245,6 +245,7 @@ const GC_SCAN: VaultGcResult = {
   deleted: [],
   freedBytes: 0,
   missingFiles: [],
+  kept: [],
   blocked: [],
 };
 
@@ -254,6 +255,7 @@ const GC_CLEAN: VaultGcResult = {
   deleted: [{ id: "b1", storageId: "s1", encryptedSize: 1_048_576 }],
   freedBytes: 1_048_576,
   missingFiles: ["blob-7.bin"],
+  kept: [],
   blocked: [],
 };
 
@@ -1159,6 +1161,42 @@ describe("ayarlar ekranı davranışı", () => {
         t("settings.gcBlocked", { files: "s3: dosya değil" }),
       ),
     );
+  });
+
+  it("gc silme anında referans doğan dosyayı 'korundu' diye yazar", async () => {
+    setup();
+    expect(await screen.findByText(B_OK.fileName)).toBeTruthy();
+
+    mocks.vaultGc.mockResolvedValueOnce(GC_SCAN);
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", { name: t("settings.gcScan") }),
+    );
+    await waitFor(() =>
+      expect(notices().join("\n")).toContain(
+        t("settings.gcCandidates", {
+          count: GC_SCAN.candidates.length,
+          size: formatSize(1_048_576 + 524_288),
+        }),
+      ),
+    );
+
+    mocks.vaultGc.mockResolvedValueOnce({
+      ...GC_CLEAN,
+      deleted: [],
+      freedBytes: 0,
+      missingFiles: [],
+      kept: ["s4: referans doğdu"],
+    });
+    fireEvent.click(
+      within(cardOf(t("settings.gcTitle"))).getByRole("button", { name: t("settings.gcClean") }),
+    );
+    await waitFor(() =>
+      expect(notices().join("\n")).toContain(
+        t("settings.gcKept", { files: "s4: referans doğdu" }),
+      ),
+    );
+    // Korunan aday "silindi" sayılmaz: silinen 0 yazar.
+    expect(notices().join("\n")).toContain(t("settings.gcDeleted", { count: 0, size: formatSize(0) }));
   });
 
   it("geri yükleme hedef konum ister; iptal edilen seçim istek üretmez, hedef kırpılarak gider", async () => {

@@ -1531,6 +1531,8 @@ export type VaultGcResult = {
   deleted: GcBlobRow[];
   freedBytes: number;
   missingFiles: string[];
+  /** Arada referans doğduğu için dosyası da korunan adaylar (`ad: neden`). */
+  kept: string[];
   /** Dosyası silinemediği için kaydı da korunan blob'lar (`ad: neden`). */
   blocked: string[];
 };

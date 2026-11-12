@@ -1381,6 +1381,12 @@ export function Settings() {
                 {t("settings.gcMissing", { files: gc.missingFiles.join("; ") })}
               </>
             ) : null}
+            {gc.kept.length > 0 ? (
+              <>
+                <br />
+                {t("settings.gcKept", { files: gc.kept.join("; ") })}
+              </>
+            ) : null}
             {gc.blocked.length > 0 ? (
               <>
                 <br />

@@ -13,6 +13,7 @@
 
 use rusqlite::{OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::{Database, StorageError};
 
@@ -33,12 +34,43 @@ pub struct GcReport {
     pub freed_bytes: i64,
 }
 
-/// Referanssız blob koşulu: hiçbir belge sürümü ve hiçbir türev sayfa
-/// göstermiyor. **Tek kaynak** — aday seçimi, silme kapısı ve envanter aynı
-/// ifadeyi kullanır; üç ayrı kopya ayrışırsa "aday" ile "silinebilir" farklı
-/// kümeler olur.
+/// Artık blob'ların **dosyalarıyla birlikte** toplanmasının raporu.
+///
+/// Sıra **dosya → kayıt**tır (bkz. modül dokümanı). Her aday için silme anında
+/// referans yeniden sorulur; arada referans doğduysa **ne dosyaya ne kayda**
+/// dokunulur ve bu `kept_referenced`ta görünür.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GcFileReport {
+    pub dry_run: bool,
+    /// Gerçekten silinen kayıtlar.
+    pub deleted: Vec<GcBlobRow>,
+    /// Diskte dosyası bulunmayan adaylar (`storage_id: neden`); kaydı düşer.
+    pub missing_files: Vec<String>,
+    /// **Korundu**: arada referans doğdu, dosya silinmedi.
+    pub kept_referenced: Vec<String>,
+    /// Silinemedi (symlink/dizin/izin) ya da koşullu silme kaydı korudu.
+    pub blocked: Vec<String>,
+    pub freed_bytes: i64,
+}
+
+/// Referanssız blob koşulu: **şemadaki her blob sütunu** bu blob'u göstermiyorsa
+/// referanssızdır. **Tek kaynak** — aday seçimi, silme kapısı ve envanter aynı
+/// ifadeyi kullanır; kopyalar ayrışırsa "aday" ile "silinebilir" farklı kümeler
+/// olur.
+///
+/// Bugün **dört** sütun blob kimliği taşıyabilir; ikisi FK ile korunur
+/// (`document_versions.blob_id` RESTRICT, `pages.derivative_blob_id` SET NULL),
+/// ikisinin **FK'si yoktur** (`render_derivatives.blob_id`,
+/// `ai_cache_entries.output_blob_id`). FK'siz sütunlar bu koşulda sayılmazsa GC
+/// onları "referanssız" sanar: kayıt silinir, disk tarafı da dosyayı süpürür →
+/// canlı bir türev/önbellek blob'u sessizce yok olur. Bu yüzden koşul şemanın
+/// tamamı üzerinden kapalıdır; yeni bir blob sütunu eklenirse
+/// `every_blob_column_is_covered_by_the_reference_gate` testi düşer.
 const UNREFERENCED: &str = "NOT EXISTS (SELECT 1 FROM document_versions v WHERE v.blob_id = b.id)
-       AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.derivative_blob_id = b.id)";
+       AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.derivative_blob_id = b.id)
+       AND NOT EXISTS (SELECT 1 FROM render_derivatives d WHERE d.blob_id = b.id)
+       AND NOT EXISTS (SELECT 1 FROM ai_cache_entries c WHERE c.output_blob_id = b.id)";
 
 impl Database {
     /// Referanssız blob kayıtlarını **seçer**, hiçbir şey silmez.
@@ -93,6 +125,89 @@ impl Database {
             )?;
         }
         Ok(deleted)
+    }
+
+    /// Bir blob kaydı **bugün** herhangi bir yerden gösteriliyor mu? Silme anı
+    /// kapısı. Ayrı bir SQL yazılmaz: cevap [`UNREFERENCED`]in olumsuzudur, yani
+    /// "aday" ile "silinebilir" aynı ifadeyi kullanmaya devam eder.
+    pub fn blob_is_referenced(&self, id: &str) -> Result<bool, StorageError> {
+        let sql = format!("SELECT count(*) FROM blobs b WHERE b.id = ?1 AND NOT ({UNREFERENCED})");
+        let count: i64 = self
+            .conn()
+            .query_row(&sql, [id], |row: &Row<'_>| row.get(0))?;
+        Ok(count > 0)
+    }
+
+    /// Artık blob'ları **dosyalarıyla birlikte** toplar: aday seçimi, dosya
+    /// silme ve koşullu kayıt silme tek yerde.
+    ///
+    /// Sıra bilinçli: **önce dosya, sonra kayıt**. Ters sırada dosya
+    /// silinemezse geriye veritabanında izi olmayan bir `.blb` kalırdı — hiçbir
+    /// envanter onu göremez. Dosyası olmayan adayın kaydı düşer (diskte veri
+    /// yok) ama **sessizce** değil: `missing_files`ta bildirilir.
+    pub fn collect_orphan_blob_files(
+        &self,
+        dir: &Path,
+        dry_run: bool,
+    ) -> Result<GcFileReport, StorageError> {
+        let candidates = self.orphan_blob_candidates()?;
+        let mut report = GcFileReport {
+            dry_run,
+            ..GcFileReport::default()
+        };
+        if dry_run {
+            return Ok(report);
+        }
+
+        let mut files_removed = Vec::new();
+        for blob in &candidates {
+            if self.blob_is_referenced(&blob.id)? {
+                // Aradaki referans: dosya ve kayıt **korunur**.
+                report
+                    .kept_referenced
+                    .push(format!("{}: referans doğdu", blob.storage_id));
+                continue;
+            }
+            let path = dir.join(format!("{}.blb", blob.storage_id));
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_file() => match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        report.freed_bytes = report.freed_bytes.saturating_add(blob.encrypted_size);
+                        files_removed.push(blob.clone());
+                    }
+                    Err(error) => report.blocked.push(format!("{}: {error}", blob.storage_id)),
+                },
+                // Symlink/dizin: kapsam dışı, dokunulmaz.
+                Ok(_) => report
+                    .blocked
+                    .push(format!("{}: dosya değil", blob.storage_id)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    report
+                        .missing_files
+                        .push(format!("{}: dosya yok", blob.storage_id));
+                    files_removed.push(blob.clone());
+                }
+                Err(error) => report.blocked.push(format!("{}: {error}", blob.storage_id)),
+            }
+        }
+
+        let ids: Vec<String> = files_removed.iter().map(|b| b.id.clone()).collect();
+        self.delete_unreferenced_blobs(&ids)?;
+        // Rapor **gerçekten silineni** yazar. Koşullu silme bir satırı korursa
+        // dosyası çoktan silinmiş olabilir; "silindi" denmez, açıkça bildirilir —
+        // kaydı olup dosyası olmayan bir satır kullanıcının bilmesi gereken bir
+        // tutarsızlıktır.
+        for blob in files_removed {
+            if self.blob_exists(&blob.id)? {
+                report.blocked.push(format!(
+                    "{}: kayıt korundu (referans doğdu) — dosya silinmişti",
+                    blob.storage_id
+                ));
+            } else {
+                report.deleted.push(blob);
+            }
+        }
+        Ok(report)
     }
 
     /// Referanssız blob'ları bulur; `dry_run` değilse siler. Hiçbir zaman
@@ -172,6 +287,12 @@ mod tests {
         (db, case.id)
     }
 
+    /// Disk adı biçimi `<32 küçük hex>.blb`: test kimlikleri de aynı biçimde
+    /// kurulur (gerçek üretim kimliğiyle aynı ad alanı).
+    fn hex(digit: &str) -> String {
+        std::iter::repeat_n(digit, 32).collect()
+    }
+
     #[test]
     fn orphan_blob_is_collected_and_referenced_blob_survives() {
         let (db, case_id) = setup();
@@ -227,15 +348,226 @@ mod tests {
 
     #[test]
     fn derivative_page_blob_is_protected() {
+        // Ölçülen kusur (2026-11-12): bu testin eski hâli "türev korunur" diyordu
+        // ama **hiç `pages` satırı kurmuyordu** ve blob'un silinmesini doğruluyordu
+        // — yani koruma iddiası ölçülmüyordu. Artık gerçek bir türev sayfası
+        // kurulur: blob aday **değildir**; sayfa silinince aday olur (referansın
+        // koruyan şey olduğu iki yönlü gösterilir).
         let (db, case_id) = setup();
-        let _derivative = db
-            .create_blob_record("st-deriv", 50, "aad-d")
-            .expect("blob");
-        let _ = case_id;
-        // Türev blob'u olmayan kayıt GC'ye aday olur; bu test yalnız
-        // referanssız yolun çalıştığını ve hata vermediğini doğrular.
-        let report = db.garbage_collect_blobs(false).expect("gc");
+        let main = db
+            .create_blob_record(&hex("1"), 100, "aad-m")
+            .expect("ana blob");
+        let deriv = db
+            .create_blob_record(&hex("2"), 50, "aad-d")
+            .expect("türev blob");
+        let doc = db
+            .create_document(&case_id, "Taranmış", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &main,
+                &"c".repeat(64),
+                100,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        let run = db
+            .start_parse_run(&version.id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        db.conn()
+            .execute(
+                "INSERT INTO pages (id,parse_run_id,page_index,text_origin,quality_flags,derivative_blob_id)
+                 VALUES ('pg-1',?1,0,'native','[]',?2)",
+                rusqlite::params![run.id, deriv],
+            )
+            .expect("sayfa");
+
+        assert!(
+            db.orphan_blob_candidates().expect("aday").is_empty(),
+            "türev sayfa gösteren blob aday olamaz"
+        );
+        assert!(db.blob_is_referenced(&deriv).expect("referans"));
+        let (_, orphans, _) = db.blob_inventory().expect("envanter");
+        assert_eq!(orphans, 0);
+
+        // Sayfa gidince blob referanssız kalır: koruyan şey referanstır.
+        db.conn()
+            .execute("DELETE FROM pages WHERE id='pg-1'", [])
+            .expect("sayfa sil");
+        let candidates = db.orphan_blob_candidates().expect("aday");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, deriv);
+    }
+
+    #[test]
+    fn render_derivative_blob_is_not_collected() {
+        // `render_derivatives.blob_id` **FK taşımaz**: koşulda sayılmazsa GC onu
+        // referanssız sanıp kaydı ve dosyayı silerdi.
+        let (db, _case) = setup();
+        let blob = db.create_blob_record(&hex("3"), 64, "aad-r").expect("blob");
+        db.conn()
+            .execute(
+                "INSERT INTO render_derivatives (id,document_version_id,parse_run_id,blob_id,
+                   renderer_version,settings_hash,page_manifest,content_hash,created_at)
+                 VALUES ('rd-1','v1',NULL,?1,'1.0','h','[]','c','2026-01-01T00:00:00Z')",
+                [&blob],
+            )
+            .expect("türev");
+        assert!(db.blob_is_referenced(&blob).expect("referans"));
+        assert!(db.orphan_blob_candidates().expect("aday").is_empty());
+        let dir = tempfile::tempdir().expect("dizin");
+        // Dosya **diskte olsa** korunmalı: referansı olan blob'un dosyasına
+        // dokunulmaz (korunan şey yalnız kayıt değil).
+        let path = dir.path().join(format!("{}.blb", hex("3")));
+        std::fs::write(&path, b"canli").expect("yaz");
+        let report = db
+            .collect_orphan_blob_files(dir.path(), false)
+            .expect("topla");
+        assert!(report.deleted.is_empty());
+        assert!(path.exists(), "referanslı blob'un dosyası silinmemeli");
+        assert!(db.blob_exists(&blob).expect("kayıt"));
+    }
+
+    #[test]
+    fn cache_entry_blob_is_not_collected() {
+        // `ai_cache_entries.output_blob_id` de FK'sizdir; aynı kapı kapsamalı.
+        let (db, case_id) = setup();
+        let blob = db.create_blob_record(&hex("4"), 32, "aad-c").expect("blob");
+        db.conn()
+            .execute(
+                "INSERT INTO ai_cache_entries (id,case_id,cache_key,ai_run_id,output_blob_id,
+                   validation_version,created_at)
+                 VALUES ('ac-1',?1,'k',NULL,?2,'1','2026-01-01T00:00:00Z')",
+                rusqlite::params![case_id, &blob],
+            )
+            .expect("önbellek");
+        assert!(db.blob_is_referenced(&blob).expect("referans"));
+        assert!(db.orphan_blob_candidates().expect("aday").is_empty());
+    }
+
+    /// Şemadaki **her** blob kimliği sütunu referans kapısında sayılmalı.
+    /// Yeni bir tablo/sütun eklenip kapı güncellenmezse bu test düşer: aksi
+    /// hâlde GC canlı bir blob'u "referanssız" sanıp silebilir.
+    #[test]
+    fn every_blob_column_is_covered_by_the_reference_gate() {
+        let (db, _case) = setup();
+        let flat = UNREFERENCED
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let tables: Vec<String> = {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+                .expect("tablolar");
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("sorgu");
+            rows.collect::<Result<_, _>>().expect("satır")
+        };
+        let mut checked = 0;
+        for table in tables {
+            if table == "blobs" {
+                continue;
+            }
+            let cols: Vec<String> = {
+                let mut stmt = db
+                    .conn()
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .expect("pragma");
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .expect("sorgu");
+                rows.collect::<Result<_, _>>().expect("satır")
+            };
+            for col in cols {
+                if col != "blob_id" && !col.ends_with("_blob_id") {
+                    continue;
+                }
+                assert!(
+                    flat.contains(&format!("FROM {table} "))
+                        && flat.contains(&format!(".{col} = b.id")),
+                    "{table}.{col} referans kapısında yok: GC onu referanssız sanıp silebilir"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 4,
+            "şemadaki blob sütunu sayısı değişti ({checked}); kapı ve bu sayı birlikte güncellenmeli"
+        );
+    }
+
+    #[test]
+    fn collect_removes_the_file_then_the_record() {
+        let (db, _case) = setup();
+        let dir = tempfile::tempdir().expect("dizin");
+        let storage = hex("a");
+        let blob = db.create_blob_record(&storage, 123, "aad").expect("blob");
+        let path = dir.path().join(format!("{storage}.blb"));
+        std::fs::write(&path, b"govde").expect("yaz");
+        let report = db
+            .collect_orphan_blob_files(dir.path(), false)
+            .expect("topla");
         assert_eq!(report.deleted.len(), 1);
+        assert_eq!(report.freed_bytes, 123);
+        assert!(report.missing_files.is_empty());
+        assert!(report.blocked.is_empty());
+        assert!(!path.exists(), "dosya silinmeli");
+        assert!(!db.blob_exists(&blob).expect("kayıt"), "kayıt silinmeli");
+    }
+
+    #[test]
+    fn missing_file_drops_the_record_and_is_reported() {
+        let (db, _case) = setup();
+        let dir = tempfile::tempdir().expect("dizin");
+        let storage = hex("b");
+        let _blob = db.create_blob_record(&storage, 9, "aad").expect("blob");
+        let report = db
+            .collect_orphan_blob_files(dir.path(), false)
+            .expect("topla");
+        assert_eq!(report.missing_files.len(), 1);
+        assert!(report.missing_files[0].starts_with(&storage));
+        assert_eq!(report.deleted.len(), 1);
+        assert_eq!(report.freed_bytes, 0, "diskte veri yoktu");
+        assert_eq!(db.blob_inventory().expect("envanter").0, 0);
+    }
+
+    #[test]
+    fn unremovable_file_keeps_its_record() {
+        let (db, _case) = setup();
+        let dir = tempfile::tempdir().expect("dizin");
+        let storage = hex("c");
+        let blob = db.create_blob_record(&storage, 11, "aad").expect("blob");
+        // Aynı adda **dizin**: `remove_file` uygulanmaz, kayıt korunmalı.
+        std::fs::create_dir(dir.path().join(format!("{storage}.blb"))).expect("dizin");
+        let report = db
+            .collect_orphan_blob_files(dir.path(), false)
+            .expect("topla");
+        assert_eq!(report.blocked.len(), 1);
+        assert!(report.blocked[0].contains("dosya değil"));
+        assert!(report.deleted.is_empty());
+        assert!(db.blob_exists(&blob).expect("kayıt"));
+    }
+
+    #[test]
+    fn collect_dry_run_touches_nothing() {
+        let (db, _case) = setup();
+        let dir = tempfile::tempdir().expect("dizin");
+        let storage = hex("f");
+        let blob = db.create_blob_record(&storage, 5, "aad").expect("blob");
+        let path = dir.path().join(format!("{storage}.blb"));
+        std::fs::write(&path, b"x").expect("yaz");
+        let report = db
+            .collect_orphan_blob_files(dir.path(), true)
+            .expect("kuru");
+        assert!(report.dry_run);
+        assert!(report.deleted.is_empty());
+        assert_eq!(report.freed_bytes, 0);
+        assert!(path.exists(), "kuru çalıştırma dosyaya dokunmaz");
+        assert!(db.blob_exists(&blob).expect("kayıt"));
     }
 
     #[test]

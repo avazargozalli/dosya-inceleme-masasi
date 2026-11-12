@@ -7477,6 +7477,8 @@ pub struct VaultGcView {
     pub deleted: Vec<dim_storage::GcBlobRow>,
     pub freed_bytes: i64,
     pub missing_files: Vec<String>,
+    /// Arada referans doğduğu için **dosyası da korunan** adaylar (`ad: neden`).
+    pub kept: Vec<String>,
     /// Dosyası silinemediği için **kaydı da korunan** blob'lar (`ad: neden`).
     pub blocked: Vec<String>,
 }
@@ -7488,6 +7490,9 @@ pub struct VaultGcView {
 /// (`dim_storage::blob_disk`). Dosyası silinemeyen kayıt **korunur**; sonraki
 /// deneme yine aday olur. `State` almaz — bu yüzden doğrudan test edilir.
 fn gc_vault_blobs(db: &Database, blob_dir: &Path, dry_run: bool) -> Result<VaultGcView, ApiError> {
+    // Aday seçimi, dosya silme ve koşullu kayıt silme **çekirdekte tek yerde**
+    // (`dim_storage::gc::collect_orphan_blob_files`): bu katman SQL ya da
+    // silme sırası bilmez, yalnız raporu görünüme çevirir.
     let candidates = db.orphan_blob_candidates()?;
     if dry_run {
         return Ok(VaultGcView {
@@ -7496,45 +7501,20 @@ fn gc_vault_blobs(db: &Database, blob_dir: &Path, dry_run: bool) -> Result<Vault
             deleted: Vec::new(),
             freed_bytes: 0,
             missing_files: Vec::new(),
+            kept: Vec::new(),
             blocked: Vec::new(),
         });
     }
 
-    let mut gone = Vec::new();
-    let mut freed_bytes = 0i64;
-    let mut missing_files = Vec::new();
-    let mut blocked = Vec::new();
-    for blob in &candidates {
-        let path = blob_dir.join(format!("{}.blb", blob.storage_id));
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_file() => match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    freed_bytes = freed_bytes.saturating_add(blob.encrypted_size);
-                    gone.push(blob.clone());
-                }
-                Err(error) => blocked.push(format!("{}: {error}", blob.storage_id)),
-            },
-            // Symlink/dizin: kapsam dışı, dokunulmaz.
-            Ok(_) => blocked.push(format!("{}: dosya değil", blob.storage_id)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // Diskte veri yok: kaydı tutmak hiçbir şeyi kurtarmaz, ama
-                // sessizce geçilmez — eksik dosya bildirilir.
-                missing_files.push(format!("{}: dosya yok", blob.storage_id));
-                gone.push(blob.clone());
-            }
-            Err(error) => blocked.push(format!("{}: {error}", blob.storage_id)),
-        }
-    }
-
-    let ids: Vec<String> = gone.iter().map(|b| b.id.clone()).collect();
-    db.delete_unreferenced_blobs(&ids)?;
+    let report = db.collect_orphan_blob_files(blob_dir, false)?;
     Ok(VaultGcView {
         dry_run: false,
         candidates,
-        deleted: gone,
-        freed_bytes,
-        missing_files,
-        blocked,
+        deleted: report.deleted,
+        freed_bytes: report.freed_bytes,
+        missing_files: report.missing_files,
+        kept: report.kept_referenced,
+        blocked: report.blocked,
     })
 }
 
