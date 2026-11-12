@@ -9,7 +9,7 @@
 | F03-T01 | ✅ | `crates/vault`: rastgele ana anahtar, Argon2id, sürümlü başlık |
 | F03-T02 | ✅ | parola + kurtarma yuvası ayrı sarılı; `open_with_recovery` |
 | F03-T04 | ✅ | `crates/storage`: 54 tablo tanımı (şema v24), FK/CHECK, migrasyon checksum |
-| F03-T05 | ✅ | rastgele `storage_id`, chunked AEAD blob, atomik rename |
+| F03-T05 | ✅ | rastgele `storage_id`, chunked AEAD blob, atomik rename. **2026-11-12:** referans kapısı **şemanın tamamını** kapsar (dört blob sütunu + şema türetimli guard testi); silme raporu gerçekten silineni yazar (`kept`/`blocked`) — ayrıntı: *Referans kapısı şemanın tamamını kapsar* |
 | F03-T07 | ✅ | **2026-10-26 düzeltmesi:** `crates/jobs` yalnız *kuralları* taşıyordu; `jobs` tablosu salt-yazılıydı. Kuyruk artık `crates/storage/src/queue.rs`'te gerçek: idempotent ekleme, atomik sahiplenme (lease + `job_attempts`), öncelik/yaş sırası, bağımlılık kapısı, doğrulama adımı, tamamlama/kısmi, hata + artan bekleme, engel, iptal, kullanıcı yeniden denemesi. **§17.2 durum makinesi tam** (migration 0021) |
 | F03-T08 | ✅ | **Açılışta kurtarma (2026-10-26, süreç öldürme 2026-10-29):** §17.6 iki adım — kesilen `running/validating/canceling` önce `interrupted`, sonra `queued` (bütçe varsa) / `failed` (bütçe bittiyse); iptal istenmiş iş `canceled`. `vault_open` **kiraya bakmadan** yapar (`recover_orphaned_jobs`; çökme sonrası kira hâlâ gelecekte olabilir — ölçüldü), orta oturumdaki "Bekleyen işleri kurtar" kiraya saygı duyar. Kurtarılan iş `queued` kalır; **"Başlat"** (`job_run`) gerçekten çalıştırır |
 | F03-T10 | ✅ | `backup_to` (SQLCipher backup API), yanlış anahtarla açılmaz |
@@ -179,6 +179,71 @@ bildirilir; kurtarma yedeğe döner. (e) Komut yolu (`vault_gc`,
 koşulmadı**; kablolama `cargo check`/`clippy`, davranış `gc_vault_blobs` ve
 `blob_disk_view` yardımcılarıyla gerçek dosya sistemi + bellek içi kasada
 ölçüldü. (f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+### Referans kapısı şemanın tamamını kapsar (2026-11-12, F03-T06)
+
+**Ölçülen kusur (üç parçalı):**
+
+1. `UNREFERENCED` — aday seçimi, silme kapısı ve envanterin **tek kaynağı** —
+   şemadaki **dört** blob sütunundan yalnız ikisini sayıyordu.
+   `render_derivatives.blob_id` ve `ai_cache_entries.output_blob_id` **FK
+   taşımaz**: yanlış silmeyi veritabanı da engellemez. Bu iki tablo bugün
+   **yazılmıyor** (F07/önbellek ürün kararıdır), yani bugün canlı veri riski
+   yoktur; ama yazılmaya başlandığı gün GC canlı bir blob'u "referanssız" sayıp
+   kaydıyla ve dosyasıyla silerdi.
+2. `derivative_page_blob_is_protected` testi "türev blob'u korunur" diyordu ama
+   **hiç `pages` satırı kurmuyordu** ve blob'un **silinmesini** doğruluyordu:
+   koruma iddiası ölçülmüyordu.
+3. `vault_gc` dosyayı silmeden önce kaydın hâlâ referanssız olduğunu
+   sormuyordu: koşullu silme kaydı koruduğunda dosya çoktan silinmiş oluyor ve
+   rapor onu "silindi" sayıyordu (kaydı olup dosyası olmayan satır).
+
+**Yazılan:**
+
+- `gc.rs`: `UNREFERENCED` **dört** sütunu da kapsar (`document_versions`,
+  `pages`, `render_derivatives`, `ai_cache_entries`). `blob_is_referenced(id)`
+  cevabı aynı ifadenin olumsuzudur — ikinci bir SQL yazılmadı.
+- `collect_orphan_blob_files(dir, dry_run)`: aday seçimi, **önce dosya sonra
+  kayıt** silme ve rapor **tek yerde**. Her aday için silme anında referans
+  yeniden sorulur; dosyası olmayan adayın kaydı düşer ama `missingFiles`ta
+  bildirilir. Rapor **gerçekten silineni** yazar: koşullu silme bir satırı
+  koruduysa dosyası silinmiş olsa bile "silindi" denmez.
+- Şema türetimli guard testi
+  (`every_blob_column_is_covered_by_the_reference_gate`): `sqlite_master` +
+  `PRAGMA table_info` ile **her** `blob_id` / `*_blob_id` sütunu bulunur ve
+  kapıda sayıldığı doğrulanır; yeni bir blob sütunu eklenirse test **düşer**.
+- `vault_gc` ince sarmalayıcıya indi (SQL/sıra bilmez); `VaultGcView.kept` ve
+  Ayarlar'da "Korundu (silme anında referans doğdu): …" satırı — korunan aday
+  "silindi" sayılmaz.
+- Testler: `gc` **5 → 12** (+7: türev sayfa iki yönlü, render türevi, önbellek,
+  şema guard'ı, dosya+ kayıt, eksik dosya, silinemeyen dosya, kuru çalıştırma);
+  `Settings.test.tsx` **60 → 61**; tam vitest **66 dosya / 1419**.
+
+**Kapı kanıtı (gerçek koşular; `dim-gc-refs-gates.py`, her mutasyon tek başına,
+`try/finally` + sha256 birebir — `gc.rs 473f72c3…`, `Settings.tsx 35fc06d5…`):**
+**8/8 KIRMIZI, taban 9/9 yeşilken** — S1 `render_derivatives` koşulu düşer ·
+S2 `ai_cache_entries` koşulu düşer · S3 `pages` koşulu düşer · S4
+`blob_is_referenced` her zaman false · S5 **önce kayıt sonra dosya** · S6 kuru
+çalıştırma gerçekten siler · S8 dosyası olmayan aday sessizce geçilir (kayıt da
+düşmez, bildirilmez); U1 arayüz "korundu" satırını çizmez.
+
+**CI (ölçüldü):** kod `1d445bf` (6 dosya, **+403/−44**) → run `43303174222`
+**10/10 YEŞİL** (ilk koşu): `dim-storage` **562** hem `ubuntu-latest`
+366,74 s hem `macos-15` 286,26 s — **birebir**; `arayüz` **66 dosya / 1411
+test** (yerel 1419 farkı ağaçtaki başka ajanın commit'siz testleri), paket
+`index-Ce6h74_O.js` **690,01 kB** / gzip **184,08 kB**; `masaüstü kabuk`
+**51 koştu · 0 düştü · 5 yoksayıldı** (kaynak 56) + yoksayılan koşu 5 passed ·
+51 filtered; `windows güvenli depo` 28 passed; diğer beş iş yeşil.
+
+**Dürüst sınırlar:** (a) Düzeltme **kapanış** niteliğindedir: iki tablo bugün
+yazılmadığı için bugünkü canlı hatayı düzeltmez; sınıfı kapatır (yeni sütun
+eklenirse guard testi düşer, kapı sessizce eskimez). (b) Döngü içindeki
+"silme anında referans yeniden sor" dalı **kapı olarak ölçülemedi**: aday listesi
+zaten aynı koşuldan gelir, referans ancak iki sorgu arasında doğabilir ve kasa
+kilidi altında bu pencere kapalıdır — savunma olarak durur, testle üretilemez.
+(c) FK'siz iki sütun için veritabanı garantisi **yoktur**; tek savunma bu kapı ve
+guard testidir. (d) Guard testi yeni sütunu yakalar ama **kapıyı otomatik
+güncellemez**: migrasyonu yazan kişi koşulu da güncellemek zorundadır.
 
 ## Parola değiştirme (ek)
 
