@@ -4,7 +4,8 @@
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
   **mimari uyum denetimi (T01)**, **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
   **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)**,
-  **istem argv biçimi + `--print` kapısı (T08 kısmi)**, **komut eş adı çözümü (T08c)** ve
+  **istem argv biçimi + `--print` kapısı (T08 kısmi)**, **komut eş adı çözümü (T08c)**,
+  **ölçülen araç erişiminin kapıya girmesi + kasa içinde saklanması (T08d)** ve
   **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca sağlayıcı akışı
   (T08) ve Kimi API profili (T10) yok
 - **Tarih:** 2026-10-24
@@ -18,7 +19,7 @@
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ✅ | Claude profili: `--no-session-persistence` + **`--tools ""`** + `--strict-mcp-config` zorunlu (sertleştirme); gerçek çağrı `DIM-CANARY-48`. Not: kimlikli `--print` çağrısı allowlist'te **`USER`** olmadan "Not logged in" veriyordu — eklendi (ölçüldü) |
 | F10-T07 | ✅ | Codex `--json` NDJSON ayrıştırıcı (`events.rs`): metin + usage, bilinmeyen tip korunur |
-| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive` |
+| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz) |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
@@ -835,6 +836,104 @@ koşmuştu). Biçim düzeltmesi `c388d24` → run `43191676475` **10/10 YEŞİL*
 **681,31 kB** / gzip **181,97 kB**; `masaüstü kabuk` 40 koştu · 0 düştü ·
 5 yoksayıldı + yoksayılan koşu 5 passed; diğer altı iş yeşil). Yerel 1400 test
 farkı ağaçtaki başka ajanın commit'siz testleri.
+
+## Ölçülen araç erişimi kapıya girer ve kasa içinde saklanır (F10-T08d, 2026-11-12)
+
+**Ölçülen boşluk (iki parçalı):**
+
+1. Sertleştirme sınaması gerçek istemi gönderip araç erişimini ölçüyordu ama
+   sonuç **yalnız ekran durumunda** kalıyordu: paneli kapatıp açmak ya da
+   uygulamayı yeniden başlatmak ölçümü siliyor, yetenek matrisi yine salt
+   `--help` beyanına dönüyordu. Kapı bir **güvenlik kapısıdır**; kanıtı
+   arayüz belleğinde tutulamaz.
+2. Aynı kartta **çelişki** görünüyordu: matris "istem gönderimi açık" derken
+   altındaki ölçüm "araç erişimi var" diyebiliyordu. Beyan ile ölçüm ayrı
+   yerlerde duruyor, ölçüm kapıya hiç girmiyordu.
+
+**Yazılan (çekirdek):**
+
+- `capability::MeasuredAccess` (`granted` / `blocked` / `inconclusive` /
+  `unreadable`) ve yeni `CapabilityState::Contradicted`
+  ("ölçüldü · araç erişimi var"). `evaluate_with_evidence(...)` ölçümü **yalnız
+  `ToolFree` satırına** ve **yalnız kurulu** adaptöre uygular:
+  - `granted` → satır `contradicted`, bağlantı **uyumsuz**, yetenek kapısı
+    kapanır, gerekçe `tool_free:contradicted`;
+  - `unreadable` → satır `unread` (temkinli taraf; bozuk kayıt "kayıt yok"
+    sayılıp kapıyı açmaz);
+  - `blocked` / `inconclusive` → beyan **değişmez**, yalnız `measured`
+    alanında görünür. Kural tek yönlüdür: **ölçüm kapıyı açmaz, yalnız
+    kapatır.** `blocked` "bu istemde araç çağrısı görülmedi" demektir;
+    "araçsız kip var" kanıtı değildir.
+- `exec::prompt_shape_with_evidence` aynı kaydı istem kapısına geçirir:
+  `tool_access_granted` / `evidence_unreadable` nedenleri ve
+  `PromptShape.evidence` alanı. `prompt_shape` (kayıtsız) davranışı korunur.
+
+**Yazılan (masaüstü):**
+
+- Ölçüm `settings` tablosunun **device** kapsamına yazılır
+  (`cli.evidence.<adapter>`); değer yalnız `access` + `answered` +
+  `measuredAtUnix` taşır — **argv, yanıt metni ve dosya yolu yazılmaz**.
+- `cli_hardening_probe` kasa kilitliyken **başlamaz** (`E_VAULT_LOCKED`):
+  kaydedilemeyecek bir koşu için kota harcanmaz. Yazma düşerse ölçüm yine
+  gerçektir ama rapor "kaydedildi" demez; `evidence_recorded=false` + not
+  düşer ve istem kapısı **beyana** döner.
+- `cli_capability_matrix` kayıtları bir kez okur, `evaluate_with_evidence` ve
+  `prompt_shape_with_evidence`e geçirir; satırda `measured`, adaptörde
+  `evidence` + `evidenceAtUnix`, istem görünümünde `evidence` alanı. Kasa
+  kilitliyse rapor bunu **not** olarak yazar (sessizleşmez).
+
+**Yazılan (arayüz):** kartta "Son sertleştirme sınaması: … · tarih" satırı,
+çürütülen satır kırmızı rozetle ve nedeniyle, istem kapısı ölçüm nedeniyle
+kapalı ve kırmızı; sınama panelinde "İstem gönderimi kapatıldı…" cümlesi
+(yalnız **kayıt yazıldıysa**; yazılamadıysa neden yazılır, "kapandı" denmez).
+
+**Dürüst sınırlar (T08d):**
+
+- (a) Kayıt **kasa içindedir**: kasa kilitliyken okunamaz → matris o an yalnız
+  beyana dayanır ve bunu not olarak yazar. Kasa oluşturulmadan sınama
+  koşulamaz (komut `E_VAULT_LOCKED` verir) — ürün ekranı zaten kilitliyken
+  açılmaz.
+- (b) Kayıt **cihaz** kapsamındadır, kasa verisine karışmaz; yeni bir kasada
+  ölçüm geçmişi yoktur (yeniden sınama gerekir).
+- (c) Ölçüm **yalnız kapatır**: `blocked` bir beyanı doğrulamaz. "Araçsız kip
+  çalışıyor" iddiası hâlâ `--help` beyanına dayanır ve öyle etiketlenir.
+- (d) Tek ölçüm tek istemdir: aynı adaptörün farklı istemlerde farklı
+  davranması bu kapıyla yakalanmaz; son kayıt geçerlidir.
+- (e) Komut yolu (`cli_hardening_probe`, `cli_capability_matrix`) **komut
+  olarak koşulmadı** (`State<AppState>` altyapısı yok) — kablolama
+  `cargo check` + `clippy`, davranış storage düzeyinde gerçek SQLite
+  (`open_in_memory`) ile ölçüldü.
+- (f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**; jsdom tarayıcı
+  değildir.
+
+**Kapı kanıtı (gerçek koşular; betik
+`~/.hermes/cache/scratch/dim-evidence-gates.py`, her mutasyon tek başına,
+`try/finally` + sha256 birebir):** **14/14 KIRMIZI** — S1 ölçüm `granted`
+satırı çürütmez · S2 `contradicted` bağlantıyı uyumsuza çekmez · S3 `blocked`
+çürütme sayılır (aşırı iddia) · S4 `unreadable` yok sayılır · S5 kurulu
+olmayan adaptörde ölçüm uygulanır · S6 ölçüm bütün yeteneklere sızar · S7
+istem kapısı `granted`ı yok sayar · S8 `unreadable` kapıyı kapatmaz · S9
+bozuk kayıt `blocked` okunur (kapı açılır); U1 ölçüm nedeni sarı yazılır · U2
+saklanan ölçüm satırı çizilmez · U3 kayıt yokken kapı cümlesi yazılır · U4
+kartta ölçüm satırı render edilmez · U5 `contradicted` rozeti yeşil/renksiz.
+
+**Testler:** `cargo test -p dim-cli-adapters --all-targets` → **147** lib
+(+5) + **5** entegrasyon (1 gerçek-CLI `#[ignore]`); masaüstü test kapısı
+**40 → 44** koşan (49 testin 5'i `#[ignore]`); `providers.test.ts` 29 → **34**,
+`capability.test.ts` 8 (bir ton iddiası eklendi), `Providers.test.tsx`
+61 → **64** → tam vitest **66 dosya / 1408 test**; `tsc --noEmit` temiz; iki
+manifest `cargo fmt --check` temiz; cli-adapters + masaüstü
+`clippy --all-targets -D warnings` temiz.
+
+**CI (ölçüldü):** kod `bc501c5` (14 dosya, **+966/−58**) → run `43206873718`
+**10/10 YEŞİL** (ilk koşu): `dim-cli-adapters` **147** iki OS'ta (5,53 s /
+5,21 s) + `tool_free_proof` **5 passed · 1 ignored**; `dim-storage` **544** hem
+`macos-15` 286,52 s hem `ubuntu-latest` 413,51 s — **birebir**; `arayüz`
+**66 dosya / 1400 test** (yerel 1408 farkı ağaçtaki başka ajanın commit'siz
+testleri), paket `index-BB8XRDhS.js` **683,76 kB** / gzip **182,57 kB**;
+`masaüstü kabuk` **44 koştu · 0 düştü · 5 yoksayıldı** (kaynak 49) + yoksayılan
+koşu 5 passed · 44 filtered; diğer beş iş (`windows güvenli depo`, `kaynak
+arşivi`, `paket manifesti`, `belge worker'ı`, `SBOM`) yeşil.
 
 ## Başlatma yarışı — yalnız `ETXTBSY` yeniden denenir (F10-T14 ek turu, 2026-11-04)
 
