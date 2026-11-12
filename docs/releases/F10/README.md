@@ -4,9 +4,9 @@
 - **Durum:** Devam ediyor — sicil, argüman kapısı, izinli yürütme çekirdeği,
   **mimari uyum denetimi (T01)**, **iş dizini kum havuzu (T05)**, **yetenek matrisi (T11)**,
   **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)**,
-  **istem argv biçimi + `--print` kapısı (T08 kısmi)** ve **arayüzden tetiklenen gerçek
-  sınama** hazır; **istem gönderen** uçtan uca sağlayıcı akışı (T08) ve Kimi API profili
-  (T10) yok
+  **istem argv biçimi + `--print` kapısı (T08 kısmi)**, **komut eş adı çözümü (T08c)** ve
+  **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca sağlayıcı akışı
+  (T08) ve Kimi API profili (T10) yok
 - **Tarih:** 2026-10-24
 
 | İş | Durum | Kanıt |
@@ -18,7 +18,7 @@
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ✅ | Claude profili: `--no-session-persistence` + **`--tools ""`** + `--strict-mcp-config` zorunlu (sertleştirme); gerçek çağrı `DIM-CANARY-48`. Not: kimlikli `--print` çağrısı allowlist'te **`USER`** olmadan "Not logged in" veriyordu — eklendi (ölçüldü) |
 | F10-T07 | ✅ | Codex `--json` NDJSON ayrıştırıcı (`events.rs`): metin + usage, bilinmeyen tip korunur |
-| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) |
+| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive` |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
@@ -759,6 +759,83 @@ gzip **181,89 kB**; `masaüstü kabuk` 5 passed · 40 filtered; `windows güvenl
 depo`, `sözleşmeler`, `kaynak arşivi`, `paket manifesti`, `belge worker'ı`,
 `SBOM` yeşil. Yerel 1396 test farkı ağaçtaki başka ajanın commit'siz testleri.
 
+## Komut eş adı çözümü — kurulu ikili `agy` (F10-T08c, 2026-11-12)
+
+**Ölçülen boşluk:** sicil Antigravity'yi `command: "antigravity"` ile arıyordu;
+bu makinede kurulu ikili **`agy` 1.5.6** (`/opt/homebrew/bin/agy`). Sonuç: ürün
+"kurulu değil" diyordu, yetenek matrisi 4/4 `Unread` kalıyordu ve sertleştirme
+davranış sınaması **hiç koşulamıyordu** (T08b'nin açık kaydı). Kusur yalnız
+arayüz metni değildi: `discover`, `provider_probe_run`, `cli_hardening_probe`,
+`cli_arch_report`, `cli_capability_matrix`, `cli_attack_probe`,
+`cli_residue_measure` — hepsi `find_on_path(<bildirilen ad>)` çağırıyordu.
+
+**Yazılan:**
+
+- `AdapterSpec.aliases` + `command_candidates()`: **bildirilen ad önce**, sonra
+  eş adlar (`antigravity-cli` → `["antigravity", "agy"]`). Diğer üç adaptörde
+  liste **boş**: eş ad adaptöre özgüdür, başka adaptöre sızmaz.
+- `resolve_adapter_executable(spec)` (PATH) + test edilebilir çekirdeği
+  `resolve_in_dirs(spec, dirs)`: hangi adın bulunduğunu da döndürür. Ad kapısı:
+  boş ya da yol ayırıcı taşıyan ad dosya adı olarak **aranmaz** (`../agy` üst
+  dizine çözülmez); Windows'ta `.exe/.cmd/.bat` denenir.
+- `discover` ve altı Tauri komutu aynı çözümü kullanır (`find_on_path(spec.command)`
+  çağrısı kalmadı). Arayüz **bulunan adı** yazar: adaptör kartında
+  `antigravity · eş ad: agy`, yetenek matrisinde kopyalanabilir komut
+  `agy --help`. Her iki alan da **çekirdekten** okunur (`resolvedCommand`);
+  arayüz çözüm sırasını yeniden üretmez.
+
+**Gerçek ölçüm (bu makine, macOS aarch64, 2026-11-12):**
+
+| Adım | Sonuç |
+|---|---|
+| `--example probe -- antigravity-cli` | `/opt/homebrew/bin/agy` · `Exited(0)` · 5.348 ms · çıktı `1.5.6` (önce: "PATH üzerinde bulunamadı") |
+| `--example caps -- antigravity-cli` | sürüm **1.5.6**, yardım 110 ms, bağlantı **sınırlı**, kapı kapalı (4/4 `NoPath`) |
+| `--example hardening -- antigravity-cli` | `--sandbox --disable-slash-commands --print=<istem>` · `Exited(0)` · 15.771 ms · **`inconclusive`** (yanıt metni boş) |
+
+Yani ürün artık "kurulu değil" demiyor; araç gerçekten koşuyor. Antigravity'nin
+sertleştirme davranışı bu koşuda **ölçülemedi**: boş yanıt `granted`/`blocked`
+hükmü vermiyor. Yardım metni `--sandbox` + `--disable-slash-commands` bildiriyor
+ama `tool_free` hâlâ `NoPath` — kanıt yok, iddia da yok.
+
+**Dürüst sınırlar (T08c):**
+
+- (a) **`inconclusive` hüküm değildir:** boş yanıt modelin reddini de, oturum/
+  kotayı da, çıktı biçimini de gösterebilir; üçünü tek koşuyla ayıramayız.
+- (b) Eş ad listesi **elle** tutulur ve kapalıdır (bugün yalnız `agy`). Yeni bir
+  dağıtım başka ad kullanırsa ürün yine "kurulu değil" der — keşif otomatik
+  değildir (bilinmeyen adı tahmin etmek yanlış araca bağlanma riski taşır).
+- (c) Eş adla bulunan yürütülebilirin sürümü yine `--version` ile okunur; sürüm
+  aralığının doğrulanması F10 uyumluluk sicilindedir.
+- (d) Windows'ta yalnız uzantı denemesi kodda; eş ad gerçek Windows kurulumunda
+  **denenmedi**.
+- (e) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Kapı kanıtı (gerçek koşular; betik
+`~/.hermes/cache/scratch/dim-cli-alias-gates.py`, her mutasyon tek başına,
+`try/finally` + sha256 birebir — `lib.rs 2b370e27…`, `Providers.tsx c5c98800…`,
+`providers.ts ca9a6cb3…`):** **8/8 KIRMIZI** — S1 eş ad sırası ters (eş ad önce) ·
+S2 eş ad hiç denenmez · S3 eş ad listesi bütün adaptörlere sızar · S4 ad kapısı
+yol ayırıcıyı kabul eder; U1 arayüz eş adı hiç yazmaz · U2 eşitlik kapısı yok
+(aynı ad da yazılır) · U3 arayüz çekirdeğin alanını yok sayar · U4 yardım komutu
+eş adı yok sayar.
+
+**Testler:** `cargo test -p dim-cli-adapters --all-targets` → **142** lib (+4) +
+**5** entegrasyon (1 gerçek-CLI `#[ignore]`); `providers.test.ts` 26 → **29**,
+`capability.test.ts` 7 → **8**, `Providers.test.tsx` 60 → **61** → tam vitest
+**66 dosya / 1400 test**; `tsc --noEmit` temiz; iki manifest `cargo fmt --check`
+temiz; cli-adapters + masaüstü `clippy --all-targets -D warnings` temiz.
+
+**CI (ölçüldü):** kod `78b442d` (15 dosya, **+298/−57**) → run `43190756305`
+**KIRMIZI** — yalnız `cargo fmt --all -- --check` iki `rust` işinde: yeni test
+satırları 100 sütunu aşıyordu (yerel `cargo fmt` bu satırlar eklenmeden önce
+koşmuştu). Biçim düzeltmesi `c388d24` → run `43191676475` **10/10 YEŞİL**
+(`dim-cli-adapters` **142** iki OS'ta; `tool_free_proof` 5 passed · 1 ignored;
+`dim-storage` **544** hem `macos-15` 257,32 s hem `ubuntu-latest` 374,24 s —
+**birebir**; `arayüz` **66 dosya / 1392 test**, paket `index-BD210ieX.js`
+**681,31 kB** / gzip **181,97 kB**; `masaüstü kabuk` 40 koştu · 0 düştü ·
+5 yoksayıldı + yoksayılan koşu 5 passed; diğer altı iş yeşil). Yerel 1400 test
+farkı ağaçtaki başka ajanın commit'siz testleri.
+
 ## Başlatma yarışı — yalnız `ETXTBSY` yeniden denenir (F10-T14 ek turu, 2026-11-04)
 
 **Neden bu dilim:** `41764725430` (yalnız belge değiştiren commit) `rust
@@ -826,7 +903,7 @@ aynı yol:
 | Claude Code | `~/.npm-global/bin/claude` | `Exited(0)` | 463 ms | `2.1.303 (Claude Code)` |
 | Codex CLI | `~/.local/bin/codex` | `Exited(0)` | 197 ms | `codex-cli 0.159.2` |
 | Kimi | `~/.local/bin/kimi` | `E_CLI_BATCH_FORBIDDEN` | — | (tasarım gereği kapalı) |
-| Antigravity | — | kurulu değil | — | — |
+| Antigravity | `/opt/homebrew/bin/agy` | `Exited(0)` | 5.348 ms | `1.5.6` (eş ad; 2026-11-12) |
 
 Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 
@@ -857,7 +934,9 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
   uygulanamaz: dosya boyutu sınırı (64 MiB) **sonradan** ölçülür, süreç
   durdurulmaz. Bu yüzden arayüz serbest istem/argüman kabul etmiyor.
 - Gerçek abonelik hesaplarıyla oturum açma/çıkma denenmedi (insan/hesap bekliyor).
-  Antigravity bu makinede kurulu değil.
+  Antigravity CLI bu makinede **`agy` 1.5.6** olarak kurulu; ürün eş adla bulur
+  (2026-11-12, T08c). Sertleştirme sınaması koştu ama **yanıt metni boş**
+  döndü (`inconclusive`) — araç erişimi hakkında hüküm yok.
 - Tauri penceresi açılmadı: düğme, iptal ve sonuç paneli tip denetimi + birim
   testleri + üretim derlemesiyle doğrulandı; gerçek tıklama/görsel QA yok.
 - Windows'ta `exec`/`probe` testleri çalışmaz (`#[cfg(unix)]`); yürütme kodunun
@@ -867,6 +946,10 @@ Ortam üçünde de yalnız `PATH, HOME, TMPDIR`; iş dizini boş geçici dizin.
 
 ## Doğrulama
 
+- **T08c (2026-11-12):** `cargo test -p dim-cli-adapters --all-targets` → **142**
+  lib (+4: eş ad çözümü sırası, sızıntı kapısı, ad kapısı) + **5** entegrasyon
+  (1 `#[ignore]`); tam vitest **66 dosya / 1400 test**; mutasyon kapıları
+  **8/8 kırmızı**; ölçümler yukarıdaki T08c bölümünde.
 - **T08b (2026-11-12):** `cargo test -p dim-cli-adapters --all-targets` → **138**
   lib + **5** entegrasyon (1 gerçek-CLI `#[ignore]`) — 13 yeni lib testi (istem
   sınıflaması, uzun-yankı ret kapısı, argv şablonu, sahte CLI ile uçtan uca
