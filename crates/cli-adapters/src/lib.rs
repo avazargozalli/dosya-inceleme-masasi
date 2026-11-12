@@ -463,7 +463,8 @@ mod tests {
         let dir = temp_dir("alias");
         touch_executable(&dir, "agy");
         let adapter = spec("antigravity-cli").expect("spec");
-        let (name, path) = resolve_in_dirs(adapter, std::slice::from_ref(&dir)).expect("eş ad bulunmalı");
+        let (name, path) =
+            resolve_in_dirs(adapter, std::slice::from_ref(&dir)).expect("eş ad bulunmalı");
         assert_eq!(name, "agy");
         assert_eq!(path, dir.join("agy"));
         std::fs::remove_dir_all(&dir).ok();
@@ -476,7 +477,8 @@ mod tests {
         touch_executable(&dir, "agy");
         touch_executable(&dir, "antigravity");
         let adapter = spec("antigravity-cli").expect("spec");
-        let (name, path) = resolve_in_dirs(adapter, std::slice::from_ref(&dir)).expect("bildirilen ad");
+        let (name, path) =
+            resolve_in_dirs(adapter, std::slice::from_ref(&dir)).expect("bildirilen ad");
         assert_eq!(name, "antigravity");
         assert_eq!(path, dir.join("antigravity"));
         std::fs::remove_dir_all(&dir).ok();
