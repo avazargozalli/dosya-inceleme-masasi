@@ -6,7 +6,8 @@
   **başlangıç saldırı testleri (T12)**, **kalıntı ölçümü/temizliği (T13)**,
   **istem argv biçimi + `--print` kapısı (T08 kısmi)**, **komut eş adı çözümü (T08c)**,
   **ölçülen araç erişiminin kapıya girmesi + kasa içinde saklanması (T08d)**,
-  **koşulamayan sınamanın ölçüm sayılmaması + nedenin ayrılması (T08e)** ve
+  **koşulamayan sınamanın ölçüm sayılmaması + nedenin ayrılması (T08e)**,
+  **istem biçiminin tek kaynaktan gelmesi (T08f)** ve
   **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca
   sağlayıcı akışı (T08) ve Kimi API profili (T10) yok
 - **Tarih:** 2026-10-24
@@ -20,7 +21,7 @@
 | F10-T05 | ✅ | `sandbox::check_workdir` (mutlak/bağsız/boş/ev dışı/`0700`) + `E_CLI_WORKDIR_PERM`; kum havuzu içinde `HOME`/`TMPDIR`; stdin ≤ 1 MiB (`E_CLI_STDIN`); çalıştırma sonrası dosya sayımı `RunScope`; arayüzde kapsam paneli; gerçek CLI koşusunda doğrulandı |
 | F10-T06 | ✅ | Claude profili: `--no-session-persistence` + **`--tools ""`** + `--strict-mcp-config` zorunlu (sertleştirme); gerçek çağrı `DIM-CANARY-48`. Not: kimlikli `--print` çağrısı allowlist'te **`USER`** olmadan "Not logged in" veriyordu — eklendi (ölçüldü) |
 | F10-T07 | ✅ | Codex `--json` NDJSON ayrıştırıcı (`events.rs`): metin + usage, bilinmeyen tip korunur |
-| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz). **2026-11-12 (T08e):** boş yanıtın **nedeni** artık ayrılır — `NotRun` (`quota`/`auth`/`process_failed`/`timeout`/`cancelled`) + `--output-format=json` zarfı (`response`); sınama **koşmadıysa** `measured_access()` `None` döner ve kanıt **yazılmaz**. Ölçüm (bu makine): agy kotası dolu → `koşmadı: quota … 429`; öncesi sessiz `inconclusive` + "ölçüldü · hüküm yok" kaydıydı |
+| F10-T08 | 🚧 | Antigravity 1.4.7: `--print/--output-format/--json-schema/--sandbox/--print-timeout/--disable-slash-commands`; `--sandbox` + slash kapatma zorunlu, `DIM-CANARY-49`. **Eksik:** `--sandbox` dosya okumayı engellemiyor (canary okundu, ölçüldü) ve araçsız kip yok; `--print` yanındaki bayrağı istem sanıyor — **istem argv biçimi ölçüldü ve kapıya bağlandı (2026-11-12)**: `prompt_argv`/`prompt_shape` + `ensure_prompt_shape` (`E_CLI_ARGUMENT`). **İstemi gönderen uçtan uca akış var (2026-11-12, T08b):** `run_cli_with_prompt`/`splice_prompt` + `hardening.rs` davranış sınaması — ölçüldü: Claude `blocked`, **Codex `granted`** (kanıt dosyasını okudu). Antigravity üründe **koşulamadı**: `command` adı `antigravity`, kurulu ikili `agy` (açık kayıt) — **2026-11-12 (T08c): eş ad çözümü eklendi**, ürün `agy` 1.5.6'yı buluyor; davranış sınaması koştu, yanıt boş → `inconclusive`. **2026-11-12 (T08d):** sınama kaydı kasa içine (`device` kapsamı) yazılır; `granted` beyanı çürütür → satır `contradicted`, bağlantı **uyumsuz**, istem kapısı `tool_access_granted` ile kapanır. Ölçüm kapıyı yalnız **kapatır** (`blocked` beyanı doğrulamaz). **2026-11-12 (T08e):** boş yanıtın **nedeni** artık ayrılır — `NotRun` (`quota`/`auth`/`process_failed`/`timeout`/`cancelled`) + `--output-format=json` zarfı (`response`); sınama **koşmadıysa** `measured_access()` `None` döner ve kanıt **yazılmaz**. Ölçüm (bu makine): agy kotası dolu → `koşmadı: quota … 429`; öncesi sessiz `inconclusive` + "ölçüldü · hüküm yok" kaydıydı. **2026-11-12 (T08f):** istem biçimi **tek kaynaktan** (`prompt_argv`); `prompt_shape` yeniden tablo yazmaz, kapı kararı saf `prompt_gate`te (`no_prompt_path` nedeni dâhil), `splice_prompt` biçim bilmez |
 | F10-T09 | ✅ | Kimi `InteractiveOnly` + `batch_forbidden` → `E_CLI_BATCH_FORBIDDEN` (arayüz düğmesi de kapalı) |
 | F10-T10 | ⬜ | Kimi API profili yok |
 | F10-T11 | ✅ | yetenek matrisi: adaptör × kurulu sürüm × `--help` kanıtı; gerekli yetenek `Missing` → **uyumsuz**, doğrulanamıyor → **sınırlı**, kapı kapanır; arayüzde “Yetenekleri sına” |
@@ -935,6 +936,100 @@ testleri), paket `index-BB8XRDhS.js` **683,76 kB** / gzip **182,57 kB**;
 `masaüstü kabuk` **44 koştu · 0 düştü · 5 yoksayıldı** (kaynak 49) + yoksayılan
 koşu 5 passed · 44 filtered; diğer beş iş (`windows güvenli depo`, `kaynak
 arşivi`, `paket manifesti`, `belge worker'ı`, `SBOM`) yeşil.
+
+## İstem biçimi tek kaynaktan gelir — arayüzde yazan argv koşulan argv'dir (F10-T08f, 2026-11-12)
+
+**Ölçülen kusur (kaynak düzeyinde, iki parçalı):**
+
+1. `prompt_argv` istem argv'sinin biçimini **tek** yerde tanımlıyordu ama
+   `prompt_shape_with_evidence` aynı tabloyu **ikinci kez** yazıyordu
+   (`match spec.id` → `--print=<istem>` / `--print <istem>` / `exec <istem>`).
+   Bu, kapı metninin kaynağıdır: kullanıcı "İstem biçimi …" satırında ürünün
+   **koşacağı** komutu okur. İki tablo ayrışırsa arayüz hiç koşulmayacak bir
+   komutu "koşulacak" gibi gösterir; bunu tutan tek şey bir **testin** iki
+   uygulamayı karşılaştırmasıydı — çalışma zamanında garanti yoktu.
+2. Aynı fonksiyonda bilinmeyen adaptör dalı `_ => Vec::new()` idi. Yolu
+   olmayan bir adaptör eklendiğinde satır **boş argv** ile, araçsız kip
+   "doğrulanmış" görünüyorsa `printable=true` ("istem gönderimi açık")
+   yazabilirdi — koşulacak komut **yokken** yeşil kapı.
+
+**Yazılan (çekirdek, `exec.rs`):**
+
+- `PROMPT_PLACEHOLDER` (`"<istem>"`) sabiti; `prompt_shape_with_evidence`
+  argv'yi **`prompt_argv(spec.id, PROMPT_PLACEHOLDER)`** ile üretir. İkinci
+  biçim tablosu **silindi** — biçim artık tek yerde.
+- Kapı kararı saf `prompt_gate(batch_forbidden, has_path, tool_free_verified,
+  evidence)` fonksiyonuna çıkarıldı; sıra bilinçli: `batch_forbidden` →
+  `no_prompt_path` → `granted` → `unreadable` → `tool_free_unverified` → açık.
+  Yeni neden `no_prompt_path`: istem yolu yoksa kapı kapalı ve **nedeni
+  yazılır** (eskiden bu durum `tool_free_unverified`a düşerdi ya da açık kalırdı).
+- `splice_prompt` artık adaptör biçimlerini **bilmiyor**: hangi belirtecin alt
+  komut olduğunu `prompt_argv`nin çıktısından okur (`exec` ilk belirteç),
+  kalanını olduğu gibi sona ekler. Üçüncü bir biçim tablosu da böylece gitti;
+  yeni biçim eklendiğinde bu fonksiyon değişmez.
+
+**Yazılan (arayüz):** `CliPromptShape.reason` birleşimine `no_prompt_path`;
+`promptCloseReason` bu nedeni **kendi cümlesiyle** yazar
+(`probe.promptReasonNoPath`). `promptReasonUnknown` metni artık kendi adını
+doğru söylüyor ("kapının nedeni tanımsız") — eskiden `no_prompt_path`in
+tanımını taşıyordu, yani iki ayrı durum aynı cümleye düşüyordu.
+
+**Kapı kanıtı (gerçek koşular; betik
+`~/.hermes/cache/scratch/dim-prompt-source-gates.py`, her mutasyon tek başına,
+`try/finally` + sha256 birebir — `exec.rs`, `providers.ts`):** **8/8 KIRMIZI** —
+S1 `prompt_shape` ikinci bir biçim tablosu yazar (arayüz drift) · S2 istem yolu
+yokken kapı açık kalır · S3 `batch_forbidden` "yol yok"tan sonra bakılır (neden
+yanlış) · S4 ölçülen `granted` kapıyı açık bırakır · S5 codex alt komutu sonda
+kalır · S6 çağıranın bıraktığı `--print` temizlenmez; U1 arayüz
+`no_prompt_path`i eşlemez ("tanımsız" der) · U2 `no_prompt_path` yanlış nedene
+(araçsız kip) bağlanır.
+
+**Dürüst (kendi hatam, iki tanesi — ikisi de ölçüm hatasıydı):**
+
+1. Betiğin ilk sürümü test komutlarını `| tail` ile koşuyordu; dönen çıkış kodu
+   `tail`in koduydu (**hep 0**) → 8/8 "YEŞİL (kapı tutmadı)" çıktı. Bu bir kapı
+   değil, ölçüm hatasıydı: boru kaldırıldı, çıkış kodu doğrudan okundu.
+2. İkinci koşuda **taban (K0) kırmızı** çıktı: yaz–geri yaz aynı saniye içinde
+   bittiği için cargo kaynağı değişmemiş sayıp **mutasyonlu derlemeyi** yeniden
+   kullandı. Betiğe zorunlu damga ilerletme (`os.utime`, +1 s) ve **taban
+   çizgisi** adımı eklendi; ilk iki koşunun hiçbir sonucu kanıt sayılmadı.
+   **8/8 kırmızı, taban yeşilken** yeniden ölçüldü.
+
+**Testler:** `cargo test -p dim-cli-adapters --all-targets` → **157** lib
+(155 → +2: `prompt_gate_covers_every_branch`, `no_adapter_is_missing_a_prompt_path_today`;
+`prompt_shape_matches_the_builder` → `prompt_shape_comes_from_the_builder_only`)
++ **5** entegrasyon (1 gerçek-CLI `#[ignore]`); `providers.test.ts` 36 → **37**
+→ tam vitest **66 dosya / 1412 test**; `tsc --noEmit` temiz; iki manifest
+`cargo fmt --check` temiz; cli-adapters `clippy --all-targets -D warnings` temiz;
+masaüstü `cargo check --all-targets` temiz.
+
+**CI (ölçüldü):** kod `2ae324c` (6 dosya, **+159/−46**) → run `43232558183`
+**10/10 YEŞİL**: `dim-cli-adapters` **157** iki OS'ta (5,48 s / 5,10 s) +
+`tool_free_proof` **5 passed · 1 ignored**; `dim-storage` **544** hem
+`macos-15` 246,75 s hem `ubuntu-latest` 367,90 s — **birebir**; `arayüz`
+**66 dosya / 1404 test** (yerel 1412 farkı ağaçtaki başka ajanın commit'siz
+testleri), paket `index-F_Biwn-5.js` **684,74 kB** / gzip **182,85 kB**;
+`masaüstü kabuk` **44 koştu · 0 düştü · 5 yoksayıldı** + yoksayılan koşu
+5 passed · 44 filtered; diğer beş iş yeşil.
+
+**Dürüst sınırlar (T08f):**
+
+- (a) Bu dilim **yapısaldır**: ikinci tablo kaldırıldı, davranış aynı kaldı
+  (dört adaptörün argv'si birebir aynı). Bugün kullanıcıda görünen bir hata
+  düzeltmez; arayüz ile yürütmenin **ayrışmasını imkânsız** kılar.
+- (b) `no_prompt_path` bugün **hiçbir** adaptörde tetiklenmiyor; dal saf
+  fonksiyonda birim testiyle ölçülüyor ve yeni adaptör istem yolu olmadan
+  `SPECS`e eklenirse `no_adapter_is_missing_a_prompt_path_today` **düşer**
+  (bilinçli karar ister).
+- (c) `splice_prompt` hâlâ `exec`in **alt komut** olduğunu bilir (sıra bilgisi);
+  bilmediği şey biçim tablosudur.
+- (d) `printable` yine **beyana** dayanır (`--help` kanıtı + saklanan ölçüm);
+  bu dilim kanıt türünü değiştirmedi.
+- (e) Komut yolu (`cli_capability_matrix`) **komut olarak koşulmadı**
+  (`State<AppState>` altyapısı yok): kablolama `cargo check` + `clippy`,
+  davranış çekirdek düzeyinde birim testleriyle ölçüldü.
+- (f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**; jsdom tarayıcı
+  değildir.
 
 ## Sınama koşulamadıysa ölçüm yazılmaz, nedeni söylenir (F10-T08e, 2026-11-12)
 
