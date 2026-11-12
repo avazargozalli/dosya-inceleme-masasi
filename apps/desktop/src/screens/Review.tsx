@@ -112,6 +112,10 @@ export function Review() {
   const [quoteSource, setQuoteSource] = useState("");
   const [quoteCheck, setQuoteCheck] = useState<InTextQuoteCheck | null>(null);
   const [quoteBindings, setQuoteBindings] = useState<Record<number, string>>({});
+  // Uçuştaki "Kaynağa bağla" **yazıldı** ama rozete bağlanamadı: alıntı girdisi
+  // bu sırada değişti. Yazıldığı söylenmezse kullanıcı göremez ve yeniden
+  // tıklayıp **ikinci** çapa üretir (çekirdekte iki kanıt, biri görünmez).
+  const [quoteBindNotice, setQuoteBindNotice] = useState<string | null>(null);
   const [quoteBusy, setQuoteBusy] = useState(false);
 
   const [claimText, setClaimText] = useState("");
@@ -355,6 +359,7 @@ export function Review() {
     setHistoryBusyId(null);
     setQuoteCheck(null);
     setQuoteBindings({});
+    setQuoteBindNotice(null);
     setQuoteSource("");
     setQuoteScope("");
     setDraftAnchor("");
@@ -404,6 +409,9 @@ export function Review() {
     quoteCheckSeq.current += 1;
     setQuoteCheck(null);
     setQuoteBindings({});
+    // `quoteBindNotice` **bilerek** burada silinmez: o cümle geçmişte kalmış
+    // bir yazmayı anlatır (çapa çekirdekte), sonraki tuş vuruşuyla yok olursa
+    // kullanıcı yazıldığını bir daha göremez ve ikinci çapa üretir.
   }
 
   async function runQuoteCheck() {
@@ -415,6 +423,8 @@ export function Review() {
     // aynı dosyada metin değişmiş olabilir.
     const checkSeq = ++quoteCheckSeq.current;
     setError(null);
+    // Yeni denetim yeni hüküm demek: önceki bağlamanın bildirimi düşer.
+    setQuoteBindNotice(null);
     setQuoteBusy(true);
     try {
       const report = await api.inTextQuoteCheck(asked, {
@@ -443,11 +453,22 @@ export function Review() {
     setQuoteBusy(true);
     try {
       const anchor = await api.anchorCreate(input);
-      // Hedef dosya ya da alıntı hükmü (metin/kapsam) değiştiyse bu bağ
-      // ekrandaki alıntıya ait değildir: ne rozet ne kaynak listesi yazılır.
-      if (caseRef.current !== asked || quoteRef.current !== captured) return;
-      setQuoteBindings((prev) => ({ ...prev, [finding.index]: anchor.id }));
-      setAnchors((prev) => [anchor, ...prev]);
+      // Hedef dosya değiştiyse bu bağ ekrandaki dosyaya ait değildir: hiçbir
+      // liste yazılmaz (öteki yazma yollarıyla aynı kural).
+      if (caseRef.current !== asked) return;
+      // Çapa **çekirdekte yazıldı** ve dosyaya aittir: kaynak listesi onu
+      // göstermek zorunda. Bu satır eskiden hüküm kapısının arkasındaydı →
+      // girdi uçuşta değişince çapa yazılıyor, listede görünmüyordu; kullanıcı
+      // yazıldığını göremeyip yeniden tıklıyor ve **ikinci** çapa üretiyordu.
+      setAnchors((prev) => (prev.some((row) => row.id === anchor.id) ? prev : [anchor, ...prev]));
+      if (quoteRef.current === captured) {
+        setQuoteBindings((prev) => ({ ...prev, [finding.index]: anchor.id }));
+        setQuoteBindNotice(null);
+      } else {
+        // Hüküm artık ekrandaki alıntı değil: rozet **yanlış alıntıya**
+        // bağlanmaz (INV-05). Ama yazıldığı söylenir — sessiz başarı da yalan.
+        setQuoteBindNotice(anchor.id);
+      }
     } catch (e) {
       if (caseRef.current !== asked) return;
       setError(toApiError(e));
@@ -1385,6 +1406,14 @@ export function Review() {
             {quoteBusy ? t("review.quoteBusy") : t("review.quoteRun")}
           </button>
         </div>
+
+        {quoteBindNotice ? (
+          // Hüküm bloğunun **dışında**: çapa yazıldığında alıntı listesi
+          // değişmiş olabilir, yani aşağıdaki blok ekranda olmayabilir.
+          <p className="hint" style={{ margin: 0 }} role="status">
+            {t("review.bindKeptNote", { id: quoteBindNotice.slice(0, 8) })}
+          </p>
+        ) : null}
 
         {quoteCheck ? (
           <div className="card tight" style={{ background: "var(--surface)" }}>

@@ -901,6 +901,83 @@ describe("inceleme yazma yolları ve kapsam kapıları", () => {
     expect(values).toEqual(["", "b1"]);
   });
 
+  it("uçuşta metin değişirse bağlanan çapa kaynak listesine yine de yazılır", async () => {
+    // Çapa **çekirdekte** yazıldı (dosyaya aittir). Alıntı girdisi bu sırada
+    // değiştiği için rozet **yanlış alıntıya** bağlanmaz (INV-05) — ama çapa
+    // kaynak listesinden de düşerse kullanıcı yazıldığını hiç göremez ve
+    // yeniden tıklayıp ikinci bir çapa üretir (sessiz başarı = yalan).
+    const slowBind = deferred<AnchorRow>();
+    setup({ quoteCheck: check({ quotes: [finding({ index: 0, quote: "kira bedeli ödenmedi" })] }) });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+
+    mocks.anchorCreate.mockReturnValue(slowBind.promise);
+    fireEvent.click(await screen.findByRole("button", { name: t("review.bindQuoteAction") }));
+    await waitFor(() => expect(mocks.anchorCreate).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "başka bir alıntı" },
+    });
+    await act(async () => {
+      slowBind.resolve(anchor("an-new-1", "kira bedeli ödenmedi", 10));
+    });
+
+    // Kaynak listesi (delil bağlama seçicisi) çapayı gösterir.
+    const values = Array.from(byId<HTMLSelectElement>("rv-danchor").options).map((o) => o.value);
+    expect(values).toContain("an-new-1");
+    // Rozet bağlanmaz: hüküm artık ekrandaki alıntı değil.
+    expect(screen.queryByText(t("review.boundBadge", { id: "an-new-1" }))).toBeNull();
+    // Ama sessiz de kalınmaz.
+    expect(screen.getByText(t("review.bindKeptNote", { id: "an-new-1" }))).toBeTruthy();
+  });
+
+  it("alıntı girdisi değişmeden bağlanan çapa rozete bağlanır ve bildirim yazılmaz", async () => {
+    setup({ quoteCheck: check({ quotes: [finding({ index: 0, quote: "kira bedeli ödenmedi" })] }) });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    fireEvent.click(await screen.findByRole("button", { name: t("review.bindQuoteAction") }));
+
+    expect(await screen.findByText(t("review.boundBadge", { id: "an-12345" }))).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("yeni denetim başlayınca önceki bağlama bildirimi düşer", async () => {
+    const slowBind = deferred<AnchorRow>();
+    setup({ quoteCheck: check({ quotes: [finding({ index: 0, quote: "kira bedeli ödenmedi" })] }) });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "kira bedeli ödenmedi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(1));
+
+    mocks.anchorCreate.mockReturnValue(slowBind.promise);
+    fireEvent.click(await screen.findByRole("button", { name: t("review.bindQuoteAction") }));
+    await waitFor(() => expect(mocks.anchorCreate).toHaveBeenCalledTimes(1));
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "başka bir alıntı" },
+    });
+    await act(async () => {
+      slowBind.resolve(anchor("an-new-2", "kira bedeli ödenmedi", 10));
+    });
+    expect(screen.getByRole("status")).toBeTruthy();
+
+    // Yeni denetim çalışır: yeni hüküm ve rozetler için temiz sayfa.
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+    await waitFor(() => expect(mocks.inTextQuoteCheck).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("düşen alıntı bağlamadan sonra başarılı bağlama kırmızı hatayı siler", async () => {
     setup({ quoteCheck: check({ quotes: [finding({ index: 0, quote: "kira bedeli ödenmedi" })] }) });
     await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));

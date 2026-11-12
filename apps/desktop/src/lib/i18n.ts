@@ -2529,6 +2529,10 @@ export const tr = {
     oldVersionBadge: "eski sürüm",
     boundBadge: "Kaynağa bağlandı · {id}",
     bindQuoteAction: "Kaynağa bağla",
+    // Uçuştaki bağlama sırasında alıntı girdisi değişti: çapa **yazıldı**, ama
+    // hangi alıntıya ait olduğu ekrandaki liste artık başka olduğu için rozete
+    // bağlanmadı. Söylenmezse kullanıcı yazıldığını göremez ve ikinci çapa üretir.
+    bindKeptNote: "Çapa yazıldı · {id} — alıntı listesi bu sırada değişti, bu yüzden rozete bağlanmadı; çapa kaynak listesinde.",
     notesSummary: "Denetimin sınırları ({count})",
     errContradictionSources: "Çelişki için iki farklı kaynak alıntı seçilmeli.",
     errEditJson: "Düzeltilmiş içerik geçerli JSON değil.",
