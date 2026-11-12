@@ -3957,6 +3957,180 @@ pub fn provider_probe_cancel(state: State<'_, AppState>) -> bool {
     }
 }
 
+// --- F10-T08: sertleştirmenin davranışla ölçülmesi ---
+
+/// Sınama girdisi: adaptör kimliği. Serbest istem/argüman **alınmaz** — istem
+/// ürünün sabit sınamasıdır (`dim_cli_adapters::probe_prompt`).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliHardeningInput {
+    pub adapter_id: String,
+}
+
+/// Arayüzün gördüğü sınama sonucu: hangi argv ile (istem yerine `<istem>`),
+/// ne kadar sürdü, model ne yanıtladı ve **araç erişimi** ölçüldü mü.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliHardeningProbeView {
+    pub adapter_id: String,
+    pub display_name: String,
+    pub executable: String,
+    pub argv_template: Vec<String>,
+    pub timeout_ms: u64,
+    pub status: &'static str,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    /// `granted` / `blocked` / `inconclusive` — **ölçülen** durum.
+    pub tool_access: &'static str,
+    /// Süreç 0 ile çıktı ve yanıt boş değil.
+    pub answered: bool,
+    pub canary_in_reply: bool,
+    pub decline_in_reply: bool,
+    pub reply_head: String,
+    pub reply_truncated: bool,
+    /// Hata akışı başı (süreç düştüyse nedeni).
+    pub stderr_head: String,
+    /// `sandbox` / `user_home` — sınama kimlik için ev dizinini kullanır.
+    pub home_isolation: &'static str,
+    pub canary_bytes_after: u64,
+    pub canary_token: &'static str,
+    pub canary_file: &'static str,
+    /// Kum havuzunda kalan dosya sayısı/baytı (içerik okunmaz).
+    pub sandbox_files: usize,
+    pub sandbox_bytes: u64,
+    pub probed_at_unix: u64,
+    pub notes: Vec<String>,
+}
+
+/// **Sertleştirme davranış sınaması** (F10-T08): ürünün sabit istemi gerçek
+/// CLI'ya gönderilir, kum havuzundaki kanıt dosyasını okuyup okuyamadığı
+/// **ölçülür**. Yetenek matrisinin `--help` beyanını davranışla karşılaştırır;
+/// düğme yalnız kullanıcı eylemiyle çalışır (gerçek model çağrısı = kota).
+#[tauri::command]
+pub async fn cli_hardening_probe(
+    state: State<'_, AppState>,
+    input: CliHardeningInput,
+) -> Result<CliHardeningProbeView, ApiError> {
+    let spec = adapter_spec(&input.adapter_id)
+        .ok_or_else(|| ApiError::new("E_CLI_UNKNOWN", "Bilinmeyen adaptör kimliği."))?;
+    if spec.batch_forbidden {
+        return Err(ApiError::new(
+            "E_CLI_BATCH_FORBIDDEN",
+            "Bu sağlayıcıda otomatik yürütme kapalı; istem gönderilemez.",
+        ));
+    }
+    let executable = find_on_path(spec.command).ok_or_else(|| {
+        ApiError::new(
+            "E_CLI_NOT_INSTALLED",
+            "Araç PATH üzerinde bulunamadı; sınama yapılamaz.",
+        )
+    })?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.cli_probe_lock();
+        if slot.is_some() {
+            return Err(ApiError::new(
+                "E_CLI_BUSY",
+                "Zaten çalışan bir CLI işlemi var.",
+            ));
+        }
+        *slot = Some(Arc::clone(&cancel));
+    }
+    let run_cancel = Arc::clone(&cancel);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        dim_cli_adapters::run_hardening_probe(spec, executable, &run_cancel)
+    })
+    .await;
+    // Yuva her durumda boşaltılır: iptal/düşen koşu yeniyi engellemez.
+    {
+        let mut slot = state.cli_probe_lock();
+        *slot = None;
+    }
+
+    let report = match joined {
+        Ok(Ok(report)) => report,
+        Ok(Err(err)) => return Err(ApiError::new(err.code(), &err.to_string())),
+        Err(_) => {
+            return Err(ApiError::new(
+                "E_CLI_EXEC_SPAWN",
+                "Sınama görevi tamamlanamadı.",
+            ))
+        }
+    };
+
+    let exit_code = match report.outcome.status {
+        RunStatus::Exited(code) => Some(code),
+        _ => None,
+    };
+    let probed_at_unix = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut notes = Vec::new();
+    if report.canary_bytes_after == 0 {
+        notes.push("Kanıt dosyası sınama sonrası bulunamadı; ölçüm geçersiz.".to_string());
+    }
+    if !report.answered() {
+        notes.push(
+            "Yanıt alınamadı (süre, kimlik ya da çıkış kodu); sonuç hüküm sayılmaz.".to_string(),
+        );
+    }
+    let view = CliHardeningProbeView {
+        adapter_id: report.adapter_id.clone(),
+        display_name: spec.display_name.to_string(),
+        executable: report.executable.to_string_lossy().to_string(),
+        argv_template: report.argv_template.clone(),
+        timeout_ms: u64::try_from(report.timeout.as_millis()).unwrap_or(u64::MAX),
+        status: probe_status_label(&report.outcome.status),
+        exit_code,
+        duration_ms: report.outcome.duration_ms,
+        tool_access: report.tool_access.id(),
+        answered: report.answered(),
+        canary_in_reply: report.canary_in_reply,
+        decline_in_reply: report.decline_in_reply,
+        reply_head: report.reply_head.clone(),
+        reply_truncated: report.outcome.stdout_truncated,
+        stderr_head: report.stderr_head.clone(),
+        home_isolation: report.outcome.scope.home_isolation.as_str(),
+        canary_bytes_after: report.canary_bytes_after,
+        canary_token: dim_cli_adapters::CANARY_TOKEN,
+        canary_file: dim_cli_adapters::CANARY_FILE,
+        sandbox_files: report.outcome.scope.inventory.len(),
+        sandbox_bytes: report.outcome.scope.inventory_total_bytes,
+        probed_at_unix,
+        notes,
+    };
+
+    // Denetim: **yanıt metni yazılmaz** (model çıktısı kullanıcı verisi
+    // taşıyabilir); yalnız ölçüm ve kimlik.
+    {
+        let guard = state.lock();
+        if let Some(db) = guard.db.as_ref() {
+            let metadata = serde_json::json!({
+                "adapterId": view.adapter_id,
+                "status": view.status,
+                "exitCode": view.exit_code,
+                "durationMs": view.duration_ms,
+                "toolAccess": view.tool_access,
+                "answered": view.answered,
+                "canaryInReply": view.canary_in_reply,
+                "declineInReply": view.decline_in_reply,
+                "canaryBytesAfter": view.canary_bytes_after,
+                "replyChars": view.reply_head.chars().count(),
+                "replyTruncated": view.reply_truncated,
+                "stderrChars": view.stderr_head.chars().count(),
+                "homeIsolation": view.home_isolation,
+                "sandboxFileCount": view.sandbox_files,
+                "sandboxTotalBytes": view.sandbox_bytes,
+            });
+            db.append_audit("cli_hardening", None, "run", "local-user", &metadata)?;
+        }
+    }
+
+    Ok(view)
+}
+
 // --- F10-T01: mimari uyum denetimi ---
 
 #[derive(Serialize)]

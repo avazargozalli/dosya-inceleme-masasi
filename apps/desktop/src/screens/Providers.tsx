@@ -8,6 +8,7 @@ import {
   type CliArchReport,
   type CliAttackReport,
   type CliCapabilityMatrix,
+  type CliHardeningProbe,
   type CliProbeView,
   type CliResidueCleanup,
   type CliResidueMeasure,
@@ -72,6 +73,7 @@ import {
   capabilitySummary,
   capabilityTone,
   capabilityWarnings,
+  hardeningProbeText,
   linkTone,
   matrixWorstLink,
   promptShapeText,
@@ -150,6 +152,10 @@ export function Providers() {
   const [matrix, setMatrix] = useState<CliCapabilityMatrix | null>(null);
   const [matrixBusy, setMatrixBusy] = useState(false);
   const [matrixError, setMatrixError] = useState<ApiError | null>(null);
+  /** F10-T08: adaptör başına **ölçülen** sertleştirme davranışı. */
+  const [hardening, setHardening] = useState<Record<string, CliHardeningProbe>>({});
+  const [hardeningBusy, setHardeningBusy] = useState<string | null>(null);
+  const [hardeningErrors, setHardeningErrors] = useState<Record<string, ApiError>>({});
   const [attack, setAttack] = useState<CliAttackReport | null>(null);
   const [attackBusy, setAttackBusy] = useState(false);
   const [attackError, setAttackError] = useState<ApiError | null>(null);
@@ -181,6 +187,9 @@ export function Providers() {
       // temizlenir).
       setResults({});
       setRunErrors({});
+      // Sürüm/yol değişmiş olabilir: ölçülen sertleştirme davranışı da düşer.
+      setHardening({});
+      setHardeningErrors({});
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -254,6 +263,34 @@ export function Providers() {
     } finally {
       setCoreBusy(false);
       setMatrixBusy(false);
+    }
+  }
+
+  /**
+   * Sertleştirme davranış sınaması: **gerçek istem** gönderir (kota harcar).
+   * Sonuç adaptör kimliğine bağlanır; düşen istek eski ölçümü bırakmaz.
+   */
+  async function runHardening(adapterId: string) {
+    setCoreBusy(true);
+    setHardeningBusy(adapterId);
+    setHardeningErrors((prev) => {
+      const next = { ...prev };
+      delete next[adapterId];
+      return next;
+    });
+    setHardening((prev) => {
+      const next = { ...prev };
+      delete next[adapterId];
+      return next;
+    });
+    try {
+      const probe = await api.cliHardeningProbe(adapterId);
+      setHardening((prev) => ({ ...prev, [adapterId]: probe }));
+    } catch (e) {
+      setHardeningErrors((prev) => ({ ...prev, [adapterId]: toApiError(e) }));
+    } finally {
+      setCoreBusy(false);
+      setHardeningBusy(null);
     }
   }
 
@@ -546,6 +583,9 @@ export function Providers() {
               {matrix.adapters.map((adapter) => {
                 const warnings = capabilityWarnings(adapter);
                 const prompt = promptShapeText(adapter);
+                const measured = hardening[adapter.adapterId];
+                const measuredText = measured ? hardeningProbeText(measured) : null;
+                const probeError = hardeningErrors[adapter.adapterId];
                 return (
                   <div
                     key={adapter.adapterId}
@@ -605,6 +645,88 @@ export function Providers() {
                     >
                       {prompt.text}
                     </div>
+                    {adapter.prompt.argv.length > 0 ? (
+                      <div style={{ marginTop: "var(--space-2)", display: "grid", gap: 6 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: "var(--space-2)",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <button
+                            className="btn"
+                            disabled={coreBusy}
+                            onClick={() => void runHardening(adapter.adapterId)}
+                          >
+                            {hardeningBusy === adapter.adapterId
+                              ? t("providers.hardeningBusy")
+                              : t("providers.hardeningRun")}
+                          </button>
+                          <span className="muted small">{t("providers.hardeningHint")}</span>
+                        </div>
+                        {probeError ? (
+                          <div className="notice danger" role="alert" style={{ fontSize: 12 }}>
+                            <strong>{probeError.code}</strong> — {probeError.message}
+                          </div>
+                        ) : null}
+                        {measured && measuredText ? (
+                          <>
+                            <div
+                              className={measuredText.tone === "ok" ? "notice" : "notice danger"}
+                              style={{ fontSize: 12 }}
+                            >
+                              {measuredText.text}
+                            </div>
+                            <div className="muted small" style={MONO}>
+                              {t("providers.hardeningArgv", {
+                                argv: measured.argvTemplate.join(" "),
+                              })}
+                            </div>
+                            <details>
+                              <summary className="muted small" style={{ cursor: "pointer" }}>
+                                {t("providers.hardeningReply")}
+                              </summary>
+                              <pre
+                                className="small"
+                                style={{
+                                  whiteSpace: "pre-wrap",
+                                  margin: "var(--space-1) 0 0",
+                                  maxHeight: 180,
+                                  overflow: "auto",
+                                }}
+                              >
+                                {measured.replyHead || t("providers.hardeningNoText")}
+                              </pre>
+                              {measured.stderrHead ? (
+                                <>
+                                  <div className="muted small" style={{ marginTop: 4 }}>
+                                    {t("providers.hardeningStderr")}
+                                  </div>
+                                  <pre
+                                    className="small"
+                                    style={{
+                                      whiteSpace: "pre-wrap",
+                                      margin: "var(--space-1) 0 0",
+                                      maxHeight: 140,
+                                      overflow: "auto",
+                                    }}
+                                  >
+                                    {measured.stderrHead}
+                                  </pre>
+                                </>
+                              ) : null}
+                              {measured.notes.map((note) => (
+                                <div key={note} className="muted small">
+                                  {note}
+                                </div>
+                              ))}
+                            </details>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {warnings.map((warning) => (
                       <div key={warning} className="notice" style={{ fontSize: 12, marginTop: "var(--space-2)" }}>
                         {warning}

@@ -90,6 +90,7 @@ import type {
   CliArchReport,
   CliAttackReport,
   CliCapabilityMatrix,
+  CliHardeningProbe,
   CliProbeView,
   CliResidueCleanup,
   CliResidueMeasure,
@@ -162,6 +163,7 @@ const mocks = vi.hoisted(() => ({
   aiSecretStore: vi.fn(),
   aiSecretClear: vi.fn(),
   cliCapabilityMatrix: vi.fn(),
+  cliHardeningProbe: vi.fn(),
   cliAttackProbe: vi.fn(),
   cliArchReport: vi.fn(),
   workerPackageReport: vi.fn(),
@@ -651,6 +653,7 @@ type SetupOptions = {
   probeCancel?: () => Promise<boolean>;
   probeList?: () => Promise<AdapterView[]>;
   matrix?: () => Promise<CliCapabilityMatrix>;
+  hardening?: (adapterId: string) => Promise<CliHardeningProbe>;
   attack?: () => Promise<CliAttackReport>;
   arch?: () => Promise<CliArchReport>;
   pkg?: () => Promise<WorkerPackageView>;
@@ -670,6 +673,7 @@ function setup(options: SetupOptions = {}) {
   mocks.aiSecretStore.mockImplementation(async () => KEYCHAIN_STATUS);
   mocks.aiSecretClear.mockImplementation(async () => MISSING_STATUS);
   mocks.cliCapabilityMatrix.mockImplementation(options.matrix ?? (async () => MATRIX));
+  mocks.cliHardeningProbe.mockImplementation(options.hardening ?? (async () => HARDENING));
   mocks.cliAttackProbe.mockImplementation(options.attack ?? (async () => ATTACK));
   mocks.cliArchReport.mockImplementation(options.arch ?? (async () => ARCH_REPORT));
   mocks.workerPackageReport.mockImplementation(options.pkg ?? (async () => PKG));
@@ -717,6 +721,34 @@ function button(name: string, scope: HTMLElement = document.body): HTMLButtonEle
 async function ready(displayName = "Claude Code") {
   await screen.findByRole("heading", { level: 2, name: displayName });
 }
+
+
+/** F10-T08: ölçülen sertleştirme davranışı (varsayılan: dosya okunamadı). */
+const HARDENING: CliHardeningProbe = {
+  adapterId: "claude-code",
+  displayName: "Claude Code (matris)",
+  executable: "/opt/homebrew/bin/claude",
+  argvTemplate: ["--tools", "", "--print", "<istem>"],
+  timeoutMs: 180000,
+  status: "exited",
+  exitCode: 0,
+  durationMs: 3100,
+  toolAccess: "blocked",
+  answered: true,
+  canaryInReply: false,
+  declineInReply: true,
+  replyHead: "ARACSIZ",
+  replyTruncated: false,
+  stderrHead: "",
+  homeIsolation: "user_home",
+  canaryBytesAfter: 88,
+  canaryToken: "DIM-CANARY-50",
+  canaryFile: "KANIT.txt",
+  sandboxFiles: 2,
+  sandboxBytes: 2048,
+  probedAtUnix: 1770000000,
+  notes: [],
+};
 
 describe("sağlayıcılar ekranı davranışı", () => {
   beforeEach(() => {
@@ -2315,5 +2347,117 @@ describe("API anahtarı deposu", () => {
     expect(button(t("providers.keyClear")).disabled).toBe(true);
     // Neden kullanılamadığı da yazılır (anahtar değeri değil).
     expect(screen.getByText(/yalnız macOS Anahtar Zinciri/)).toBeTruthy();
+  });
+});
+
+describe("sertleştirme davranış sınaması (F10-T08)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    cleanup();
+  });
+
+  /** Matrisi koşar ve Claude kartını döndürür. */
+  async function openMatrix(): Promise<HTMLElement> {
+    setup();
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const heading = await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" });
+    return heading.closest(".card") as HTMLElement;
+  }
+
+  it("ölçülen sonucu, çalışan argv'yi ve modelin yanıtını yazar", async () => {
+    const card = await openMatrix();
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+
+    await waitFor(() =>
+      expect(within(card).getByText(/araç çağrısı görülmedi/)).toBeTruthy(),
+    );
+    expect(mocks.cliHardeningProbe).toHaveBeenCalledWith("claude-code");
+    // Çalışan komut istem yerine yer tutucu taşır.
+    expect(within(card).getAllByText(/--print <istem>/).length).toBeGreaterThan(0);
+    // Yanıt metni kullanıcıya görünür; "okundu" iddiası yok.
+    expect(within(card).getByText("ARACSIZ")).toBeTruthy();
+    expect(within(card).queryByText(/DIM-CANARY-50/)).toBeNull();
+  });
+
+  it("dosya okunduysa kırmızı yazar ve kanıt belirtecini gösterir", async () => {
+    const granted: CliHardeningProbe = {
+      ...HARDENING,
+      toolAccess: "granted",
+      canaryInReply: true,
+      declineInReply: false,
+      replyHead: "DIM-CANARY-50",
+    };
+    setup({ hardening: async () => granted });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+
+    await waitFor(() =>
+      expect(within(card).getByText(/engellemiyor/)).toBeTruthy(),
+    );
+    // Hem ölçüm cümlesinde hem yanıt panelinde görünür.
+    expect(within(card).getAllByText(/DIM-CANARY-50/).length).toBeGreaterThan(0);
+  });
+
+  it("sınama düşerse önceki ölçüm ekranda kalmaz", async () => {
+    mocks.cliHardeningProbe
+      .mockResolvedValueOnce(HARDENING)
+      .mockRejectedValueOnce({ code: "E_CLI_TIMEOUT_", message: "sınama düştü" });
+    setup();
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+    await waitFor(() => expect(within(card).getByText("ARACSIZ")).toBeTruthy());
+
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+    expect(await within(card).findByText("E_CLI_TIMEOUT_")).toBeTruthy();
+    expect(within(card).queryByText("ARACSIZ")).toBeNull();
+    expect(within(card).queryByText(/araç çağrısı görülmedi/)).toBeNull();
+  });
+
+  it("istem yolu olmayan adaptörde sınama düğmesi yok", async () => {
+    setup();
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const gemini = (await screen.findByRole("heading", { level: 3, name: "Gemini (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+    expect(within(gemini).queryByRole("button", { name: t("providers.hardeningRun") })).toBeNull();
+    expect(within(gemini).queryByText(t("providers.hardeningHint"))).toBeNull();
+  });
+
+  it("sınama sürerken diğer CLI düğmeleri kapalıdır", async () => {
+    let release: (value: CliHardeningProbe) => void = () => {};
+    const pending = new Promise<CliHardeningProbe>((resolve) => {
+      release = resolve;
+    });
+    setup({ hardening: () => pending });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+    await waitFor(() => expect(button(t("providers.matrixRun")).disabled).toBe(true));
+    expect(
+      (within(card).getByRole("button", { name: t("providers.hardeningBusy") }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      release(HARDENING);
+    });
+    await waitFor(() => expect(button(t("providers.matrixRun")).disabled).toBe(false));
   });
 });

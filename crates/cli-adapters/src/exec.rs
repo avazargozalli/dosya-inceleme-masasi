@@ -315,12 +315,43 @@ fn spawn_with_retry(command: &mut Command) -> Result<std::process::Child, RunErr
 
 /// CLI'yi çalıştırır. `cancel` işaretlenirse süreç öldürülür ve `Cancelled`
 /// döner; süre aşılırsa `TimedOut`. Kısmi çıktı her iki durumda da raporlanır.
+///
+/// İstem **göndermez**: argv yalnız çağıranın verdiği izinli bayraklardan
+/// oluşur (sürüm yoklaması, yardım, saldırı sınaması). İstem taşıyan çağrı
+/// [`run_cli_with_prompt`]tir ve istem metni **ürün** tarafından üretilir.
 pub fn run_cli(req: &CliRunRequest, cancel: &Arc<AtomicBool>) -> Result<RunOutcome, RunError> {
+    run_cli_inner(req, None, cancel)
+}
+
+/// İstemi **argv'ye ekleyerek** yürütür (F10-T08). İstem metni arayüzden
+/// gelmez: bugün tek çağıran [`crate::hardening::run_hardening_probe`] ve
+/// orada metin ürünün sabit sınamasıdır. Kapılar [`run_cli`] ile birebir
+/// aynıdır; ek olarak [`splice_prompt`] istemi adaptörün kendi biçiminde
+/// yerleştirir ve [`ensure_prompt_shape`] son argv'yi yeniden denetler.
+pub fn run_cli_with_prompt(
+    req: &CliRunRequest,
+    prompt: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Result<RunOutcome, RunError> {
+    run_cli_inner(req, Some(prompt), cancel)
+}
+
+fn run_cli_inner(
+    req: &CliRunRequest,
+    prompt: Option<&str>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<RunOutcome, RunError> {
     // Abonelik/etkileşim kapıları: Kimi gibi etkileşimli-only sağlayıcılar
     // otomatik yürütmeye açılmaz.
     ensure_batch_allowed(&req.adapter_id)?;
     let args = build_args(&req.adapter_id, &req.args)?;
     let args = hardened_args(&req.adapter_id, args);
+    // İstem **sertleştirmeden sonra** girer: istem belirteçleri bayrak kapısından
+    // geçmez (konumsaldır), ama bayraklar da istemin içine karışmaz.
+    let args = match prompt {
+        Some(text) => splice_prompt(&req.adapter_id, args, text)?,
+        None => args,
+    };
     // İstem biçimi kapısı: `--print`e komşu bir bayrak, sağlayıcıda **istem**
     // olur (ölçüldü, `agy`); sertleştirme bayrağı sessizce isteme dönüşmesin.
     ensure_prompt_shape(&req.adapter_id, &args)?;
@@ -678,6 +709,48 @@ pub fn prompt_argv(adapter_id: &str, prompt: &str) -> Result<Vec<String>, Adapte
             )))
         }
     })
+}
+
+/// İstem argv'sini **adaptörün kendi biçiminde** yerleştirir (F10-T08).
+///
+/// Biçim tek kaynaktan gelir ([`prompt_argv`]); burada yalnız **sıra** belirlenir
+/// ve çağıranın bıraktığı istem bayrakları temizlenir (yinelenen `--print`
+/// olmasın). Sıralar ölçülerek sabitlendi:
+///
+/// - `antigravity-cli`: `--print=<istem>` **tek** belirteç → sona eklenir;
+///   komşu belirteç olmadığı için sertleştirme bayrakları bayrak olarak kalır.
+/// - `claude-code`: `--print` boolean → `--print <istem>` sona eklenir.
+/// - `codex-cli`: `exec` bir **alt komut**tur ve ilk belirteç olmalıdır
+///   (`codex exec --help`: `Usage: codex exec [OPTIONS] [PROMPT]`); bayraklar alt
+///   komuttan **sonra**, istem en sonda.
+pub fn splice_prompt(
+    adapter_id: &str,
+    args: Vec<String>,
+    prompt: &str,
+) -> Result<Vec<String>, AdapterError> {
+    let shaped = prompt_argv(adapter_id, prompt)?;
+    let mut out = args;
+    // Çağıran istem bayrağını kendisi vermiş olabilir: ikinci bir `--print`
+    // (ya da `exec`) aynı argv'de iki farklı anlam yaratır.
+    strip_flag(&mut out, "--print", false);
+    strip_flag(&mut out, "exec", false);
+    match shaped.as_slice() {
+        [attached] if attached.starts_with("--print=") => out.push(attached.clone()),
+        [flag, text] if flag == "--print" => {
+            out.push(flag.clone());
+            out.push(text.clone());
+        }
+        [subcommand, text] if subcommand == "exec" => {
+            out.push(text.clone());
+            out.insert(0, subcommand.clone());
+        }
+        _ => {
+            return Err(AdapterError::InvalidPrompt(format!(
+                "{adapter_id}: bu adaptörde istem yolu tanımlı değil"
+            )))
+        }
+    }
+    Ok(out)
 }
 
 /// Arayüzde gösterilen istem biçimi: argv (istem yerine `<istem>` yer tutucu)
@@ -1433,6 +1506,78 @@ mod hardening_tests {
                 assert!(!hardened.iter().any(|arg| arg == "--print"));
             }
         }
+    }
+
+    /// İstem argv'si **adaptör sırasına** göre yerleşir ve sertleştirme
+    /// bayrakları korunur; çağıranın bıraktığı istem bayrağı yinelenmez.
+    #[test]
+    fn splice_prompt_keeps_vendor_order_and_hardening() {
+        let claude = splice_prompt(
+            "claude-code",
+            hardened_args("claude-code", Vec::new()),
+            "kısa istem",
+        )
+        .expect("claude");
+        // `--print` + istem **sonda**; araya bayrak girmez.
+        let len = claude.len();
+        assert_eq!(claude[len - 2], "--print");
+        assert_eq!(claude[len - 1], "kısa istem");
+        assert!(claude.iter().any(|arg| arg == "--tools"));
+
+        let codex = splice_prompt(
+            "codex-cli",
+            hardened_args("codex-cli", Vec::new()),
+            "kısa istem",
+        )
+        .expect("codex");
+        // `exec` **ilk** belirteç (alt komut), istem en sonda.
+        assert_eq!(codex.first().map(String::as_str), Some("exec"));
+        assert_eq!(codex.last().map(String::as_str), Some("kısa istem"));
+
+        let agy = splice_prompt(
+            "antigravity-cli",
+            hardened_args("antigravity-cli", Vec::new()),
+            "kısa istem",
+        )
+        .expect("agy");
+        // Tek belirteç: çıplak `--print` **yok**, sertleştirme bayrakları duruyor.
+        assert!(agy.iter().any(|arg| arg == "--print=kısa istem"));
+        assert!(!agy.iter().any(|arg| arg == "--print"));
+        assert!(agy.iter().any(|arg| arg == "--sandbox"));
+        for (adapter, argv) in [
+            ("claude-code", &claude),
+            ("codex-cli", &codex),
+            ("antigravity-cli", &agy),
+        ] {
+            ensure_prompt_shape(adapter, argv).expect("kapı");
+        }
+
+        // Çağıran `--print`i kendisi verdiyse ikinci kez eklenmez.
+        let duplicated = splice_prompt(
+            "claude-code",
+            vec!["--print".to_string(), "--bare".to_string()],
+            "kısa istem",
+        )
+        .expect("dedupe");
+        assert_eq!(
+            duplicated.iter().filter(|arg| *arg == "--print").count(),
+            1,
+            "{duplicated:?}"
+        );
+        // İstem kapısı burada da geçerli.
+        assert_eq!(
+            splice_prompt("claude-code", Vec::new(), "--bayrak")
+                .unwrap_err()
+                .code(),
+            "E_CLI_ARGUMENT"
+        );
+        // Kimi'de istem yolu yok.
+        assert_eq!(
+            splice_prompt("kimi-cli", Vec::new(), "metin")
+                .unwrap_err()
+                .code(),
+            "E_CLI_BATCH_FORBIDDEN"
+        );
     }
 
     /// Arayüzde gösterilen biçim, çalıştırılan argv ile aynı yer tutucuyu taşır.

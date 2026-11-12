@@ -16,6 +16,7 @@ pub mod attack;
 pub mod capability;
 mod events;
 pub mod exec;
+pub mod hardening;
 pub mod probe;
 pub mod residue;
 pub mod sandbox;
@@ -36,10 +37,15 @@ pub use capability::{
 };
 pub use events::{final_message, parse_codex_json_lines, CodexEvent, CodexUsage, EventError};
 pub use exec::{
-    clamp_timeout, default_env_allowlist, ensure_prompt_shape, prompt_argv, prompt_shape,
-    retry_while_busy, run_cli, sanitize_env, validate_prompt, CliRunRequest, PromptShape, RunError,
-    RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT, PROMPT_MAX_BYTES,
-    SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
+    clamp_timeout, default_env_allowlist, ensure_prompt_shape, hardened_args, prompt_argv,
+    prompt_shape, retry_while_busy, run_cli, run_cli_with_prompt, sanitize_env, splice_prompt,
+    validate_prompt, CliRunRequest, PromptShape, RunError, RunOutcome, RunScope, RunStatus,
+    MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT, PROMPT_MAX_BYTES, SPAWN_ATTEMPTS,
+    SPAWN_RETRY_DELAY,
+};
+pub use hardening::{
+    canary_body, classify_reply, probe_prompt, run_hardening_probe, HardeningReport, ToolAccess,
+    CANARY_FILE, CANARY_TOKEN, REPLY_HEAD_CHARS,
 };
 pub use probe::{probe_request, run_probe, ProbeReport, PROBE_TIMEOUT};
 pub use residue::{

@@ -1040,6 +1040,37 @@ export type CliProbeView = {
   sandbox: CliProbeSandbox;
 };
 
+/** F10-T08: sertleştirmenin **davranışla** ölçülmesi (gerçek istem gönderilir). */
+export type CliHardeningProbe = {
+  adapterId: string;
+  displayName: string;
+  executable: string;
+  /** Çalışan argv; istem yerine `<istem>`. */
+  argvTemplate: string[];
+  timeoutMs: number;
+  status: "exited" | "timed_out" | "cancelled" | "signaled";
+  exitCode: number | null;
+  durationMs: number;
+  /** Ölçülen araç erişimi: `granted` = dosya okundu, `blocked` = okunamadı. */
+  toolAccess: "granted" | "blocked" | "inconclusive";
+  answered: boolean;
+  canaryInReply: boolean;
+  declineInReply: boolean;
+  replyHead: string;
+  replyTruncated: boolean;
+  /** Hata akışı başı (süreç düştüyse nedeni). */
+  stderrHead: string;
+  /** `sandbox` ya da `user_home` (sınama kimlik için ev dizinini kullanır). */
+  homeIsolation: "sandbox" | "user_home";
+  canaryBytesAfter: number;
+  canaryToken: string;
+  canaryFile: string;
+  sandboxFiles: number;
+  sandboxBytes: number;
+  probedAtUnix: number;
+  notes: string[];
+};
+
 /** F10-T11: yetenek matrisi. Yetenek kanıtı kurulu sürümün `--help` metnidir. */
 export type CliCapabilityState = "declared" | "missing" | "no_path" | "unread";
 
@@ -2231,6 +2262,9 @@ export const api = {
   /** §17.3 kaynak bütçesi profilleri (tek kaynak: çekirdek `budget.rs`). */
   workerBudgets: () => invoke<WorkerBudgetProfile[]>("worker_budgets"),
   cliCapabilityMatrix: () => invoke<CliCapabilityMatrix>("cli_capability_matrix"),
+  /** F10-T08: sertleştirme davranış sınaması — **gerçek istem** gönderir. */
+  cliHardeningProbe: (adapterId: string) =>
+    invoke<CliHardeningProbe>("cli_hardening_probe", { input: { adapterId } }),
   cliAttackProbe: () => invoke<CliAttackReport>("cli_attack_probe"),
   cliResidueScan: (adapterId: string) =>
     invoke<CliResidueScan>("cli_residue_scan", { input: { adapterId } }),

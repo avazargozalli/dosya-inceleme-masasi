@@ -2062,6 +2062,13 @@ export const tr = {
     promptReasonBatch: "bu sağlayıcıda otomatik yürütme kapalı",
     promptReasonToolFree: "araçsız kip doğrulanamadı",
     promptReasonUnknown: "bu adaptörde istem biçimi tanımlı değil",
+    hardeningGranted:
+      "Ölçüm: model {file} dosyasını okudu (yanıtta {token} var) — sertleştirme dosya okumayı engellemiyor. {ms} ms.",
+    hardeningBlocked:
+      "Ölçüm: model {file} dosyasını okuyamadığını söyledi — bu istemde araç çağrısı görülmedi. {ms} ms.",
+    hardeningInconclusive:
+      "Ölçüm sonuç vermedi (ne kanıt ne ret): {file} okunup okunmadığı bilinmiyor. {ms} ms.",
+    hardeningNoAnswer: "Yanıt alınamadı (durum: {status}); sonuç hüküm sayılmaz.",
     warnHelpError: "Yardım metni okunamadı ({error}); yetenekler \"okunamadı\" kalır.",
     warnHelpUnread: "Yardım metni okunamadı; yetenekler doğrulanmadı.",
     warnFlagMissing: "{label}: kurulu sürümün yardım metninde {flags} yok.",
@@ -2120,6 +2127,14 @@ export const tr = {
     gateClosed: "kapı kapalı",
     requiredSuffix: "· gerekli",
     matrixLimits: "Matrisin sınırları",
+    hardeningRun: "Sertleştirmeyi sına (istem gönderir)",
+    hardeningBusy: "Sınanıyor…",
+    hardeningHint:
+      "Gerçek model çağrısıdır: aboneliğinizden kota harcar. İstem sabittir; kum havuzuna yalnız kanıt dosyası yazılır. Sınama sizin oturumunuzla koşar — kimlik dosyanız ürün tarafından okunmaz.",
+    hardeningArgv: "Çalışan komut: {argv}",
+    hardeningReply: "Modelin yanıtı",
+    hardeningStderr: "Hata akışı",
+    hardeningNoText: "(yanıt metni boş)",
     matrixIdleBefore: "Henüz yoklanmadı. “Yetenekleri sına” dört adaptörün kurulu sürümünü ve",
     matrixIdleAfter: "metnini yoklar; istem gönderilmez.",
     packageTitle: "Yerel worker paketi",

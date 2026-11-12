@@ -129,6 +129,7 @@ pub fn run() {
             commands::provider_probe,
             commands::provider_probe_run,
             commands::provider_probe_cancel,
+            commands::cli_hardening_probe,
             commands::cli_arch_report,
             commands::cli_capability_matrix,
             commands::cli_attack_probe,

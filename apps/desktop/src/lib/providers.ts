@@ -8,6 +8,7 @@ import type {
   CliCapabilityAdapter,
   CliCapabilityMatrix,
   CliCapabilityRow,
+  CliHardeningProbe,
   CliProbeView,
   CliResidueCleanup,
   CliResidueMeasure,
@@ -383,6 +384,47 @@ export function promptShapeText(
         ? t("probe.promptReasonToolFree")
         : t("probe.promptReasonUnknown");
   return { text: t("probe.promptClosed", { argv, reason }), tone: "warn" };
+}
+
+/**
+ * F10-T08: sertleştirme davranış sınamasının cümlesi. Sonuç **ölçümdür**:
+ * `granted` = model kanıt dosyasını okudu (sertleştirme yetmiyor), `blocked` =
+ * okuyamadığını söyledi, `inconclusive` = ölçüm sonuç vermedi (hüküm değil).
+ * Yanıt gelmediyse hiçbir durum yazılmaz.
+ */
+export function hardeningProbeText(
+  probe: Pick<
+    CliHardeningProbe,
+    "toolAccess" | "answered" | "canaryToken" | "canaryFile" | "durationMs" | "status"
+  >,
+): { text: string; tone: ProbeTone } {
+  if (!probe.answered) {
+    return {
+      text: t("probe.hardeningNoAnswer", { status: probe.status }),
+      tone: "warn",
+    };
+  }
+  switch (probe.toolAccess) {
+    case "granted":
+      return {
+        text: t("probe.hardeningGranted", {
+          file: probe.canaryFile,
+          token: probe.canaryToken,
+          ms: probe.durationMs,
+        }),
+        tone: "danger",
+      };
+    case "blocked":
+      return {
+        text: t("probe.hardeningBlocked", { file: probe.canaryFile, ms: probe.durationMs }),
+        tone: "ok",
+      };
+    default:
+      return {
+        text: t("probe.hardeningInconclusive", { file: probe.canaryFile, ms: probe.durationMs }),
+        tone: "warn",
+      };
+  }
 }
 
 /** Dürüstlük uyarıları: okunamayan yardım, kesik çıktı, eksik bayrak. */

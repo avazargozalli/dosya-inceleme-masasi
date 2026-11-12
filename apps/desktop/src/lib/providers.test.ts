@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { CliProbeView, CliResidueMeasure, CliResidueScan } from "./api";
+import type {
+  CliHardeningProbe,
+  CliProbeView,
+  CliResidueMeasure,
+  CliResidueScan,
+} from "./api";
 import {
   capabilityWarnings,
   formatBytes,
+  hardeningProbeText,
   persistenceText,
   probeArgv,
   probeCanRun,
@@ -364,5 +370,67 @@ describe("promptShapeText", () => {
     });
     expect(line.text).toContain("otomatik yürütme kapalı");
     expect(line.text).toContain("—");
+  });
+});
+
+function hardeningProbe(overrides: Partial<CliHardeningProbe> = {}): CliHardeningProbe {
+  return {
+    adapterId: "claude-code",
+    displayName: "Claude Code",
+    executable: "/usr/local/bin/claude",
+    argvTemplate: ["--tools", "", "--print", "<istem>"],
+    timeoutMs: 180000,
+    status: "exited",
+    exitCode: 0,
+    durationMs: 4200,
+    toolAccess: "blocked",
+    answered: true,
+    canaryInReply: false,
+    declineInReply: true,
+    replyHead: "ARACSIZ",
+    replyTruncated: false,
+    stderrHead: "",
+    homeIsolation: "user_home",
+    canaryBytesAfter: 88,
+    canaryToken: "DIM-CANARY-50",
+    canaryFile: "KANIT.txt",
+    sandboxFiles: 2,
+    sandboxBytes: 4096,
+    probedAtUnix: 1770000000,
+    notes: [],
+    ...overrides,
+  };
+}
+
+describe("hardeningProbeText", () => {
+  it("dosya okunduysa sertleştirmenin yetmediğini kırmızı yazar", () => {
+    const result = hardeningProbeText(hardeningProbe({ toolAccess: "granted", canaryInReply: true }));
+    expect(result.tone).toBe("danger");
+    expect(result.text).toContain("KANIT.txt");
+    expect(result.text).toContain("DIM-CANARY-50");
+    expect(result.text).toContain("engellemiyor");
+  });
+
+  it("ret yanıtı yeşil değil ama 'ok' tonunda yazılır ve hükmü sınırlar", () => {
+    const result = hardeningProbeText(hardeningProbe());
+    expect(result.tone).toBe("ok");
+    expect(result.text).toContain("araç çağrısı görülmedi");
+    // "Araçsız kip doğrulandı" demez: gözlem budur.
+    expect(result.text).not.toContain("doğrulandı");
+  });
+
+  it("sonuç vermeyen ölçüm hüküm sayılmaz", () => {
+    const result = hardeningProbeText(hardeningProbe({ toolAccess: "inconclusive" }));
+    expect(result.tone).toBe("warn");
+    expect(result.text).toContain("bilinmiyor");
+  });
+
+  it("yanıt gelmediyse durum yazılmaz", () => {
+    const result = hardeningProbeText(
+      hardeningProbe({ answered: false, toolAccess: "inconclusive", status: "timed_out" }),
+    );
+    expect(result.tone).toBe("warn");
+    expect(result.text).toContain("timed_out");
+    expect(result.text).not.toContain("KANIT.txt");
   });
 });
