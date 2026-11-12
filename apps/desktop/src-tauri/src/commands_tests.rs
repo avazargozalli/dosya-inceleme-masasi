@@ -1931,22 +1931,54 @@ fn measured_evidence_round_trips_through_the_vault() {
         dim_cli_adapters::MeasuredAccess::Granted,
         true,
         1_760_000_000,
+        Some("2.1.303"),
     )
     .expect("yazıldı");
 
     let stored = read_cli_evidence(&db, "claude-code").expect("kayıt");
     assert_eq!(stored.access, dim_cli_adapters::MeasuredAccess::Granted);
     assert_eq!(stored.at_unix, Some(1_760_000_000));
+    assert_eq!(
+        stored.version.as_deref(),
+        Some("2.1.303"),
+        "ölçüm hangi ikiliye ait: sürüm kayda geçer"
+    );
 
     let row = db
         .get_setting("device", "cli.evidence.claude-code")
         .expect("okuma")
         .expect("satır");
     assert_eq!(row.value["access"], "granted");
+    assert_eq!(row.value["measuredVersion"], "2.1.303");
     assert!(row.value.get("reply").is_none(), "yanıt metni yazılmaz");
     assert!(row.value.get("argv").is_none(), "argv yazılmaz");
     // Kayıt adaptöre özgü: başka adaptörün kapısı kapanmaz.
     assert!(read_cli_evidence(&db, "codex-cli").is_none());
+}
+
+/// Sürüm yazılmamış eski kayıt **sürüm uydurmaz**: `version` `None` kalır ve
+/// ölçüm hiçbir sürümü kapsamaz (arayüz "bu sürüm ölçüldü" diyemez).
+#[test]
+fn legacy_evidence_without_a_version_stays_unknown() {
+    let db = evidence_db();
+    db.set_setting(
+        "device",
+        &cli_evidence_key("claude-code"),
+        &serde_json::json!({"access": "blocked", "answered": true, "measuredAtUnix": 1_760_000_000u64}),
+    )
+    .expect("yazıldı");
+    let stored = read_cli_evidence(&db, "claude-code").expect("kayıt var");
+    assert_eq!(stored.access, dim_cli_adapters::MeasuredAccess::Blocked);
+    assert_eq!(
+        stored.version, None,
+        "sürüm yazılmamışsa uydurulmaz; ölçüm hiçbir sürümü kapsamaz"
+    );
+    let measurement = dim_cli_adapters::MeasuredEvidence {
+        access: stored.access,
+        version: stored.version.clone(),
+    };
+    assert!(!measurement.covers(Some("2.1.303")));
+    assert!(!measurement.covers(None));
 }
 
 /// Bozuk kayıt **"kayıt yok" gibi okunmaz**: `unreadable` döner, kapı temkinli
@@ -1977,16 +2009,45 @@ fn corrupt_evidence_is_unreadable_not_missing() {
 /// Arayüzün gördüğü kapı **ölçümle** kapanır; kayıt yoksa beyana döner.
 #[test]
 fn prompt_view_closes_when_the_measurement_showed_tool_access() {
-    let closed = prompt_shape_view(
-        "claude-code",
-        Some(dim_cli_adapters::MeasuredAccess::Granted),
-    );
+    let measurement = dim_cli_adapters::MeasuredEvidence {
+        access: dim_cli_adapters::MeasuredAccess::Granted,
+        version: Some("2.1.303".to_string()),
+    };
+    let closed = prompt_shape_view("claude-code", Some("2.1.303"), Some(&measurement));
     assert!(!closed.printable);
     assert_eq!(closed.reason, Some("tool_access_granted"));
     assert_eq!(closed.evidence, Some("granted"));
+    assert_eq!(closed.evidence_version.as_deref(), Some("2.1.303"));
+    assert!(!closed.evidence_stale, "ölçüm kurulu sürümü kapsıyor");
 
-    let declared_only = prompt_shape_view("claude-code", None);
+    let declared_only = prompt_shape_view("claude-code", Some("2.1.303"), None);
     assert!(declared_only.printable);
     assert_eq!(declared_only.reason, None);
     assert_eq!(declared_only.evidence, None);
+    assert!(!declared_only.evidence_stale);
+}
+
+/// **F10-T08g:** ölçüm başka bir sürümde alındıysa kapı yine temkinli tarafta
+/// kapalı kalır, ama arayüz ölçümü kurulu sürüme **yazamaz** (`evidence_stale`).
+#[test]
+fn stale_evidence_keeps_the_gate_closed_and_is_flagged() {
+    let measurement = dim_cli_adapters::MeasuredEvidence {
+        access: dim_cli_adapters::MeasuredAccess::Granted,
+        version: Some("0.159.2".to_string()),
+    };
+    let view = prompt_shape_view("codex-cli", Some("0.170.0"), Some(&measurement));
+    assert!(!view.printable, "ölçüm yine kapatır (temkinli taraf)");
+    assert_eq!(view.reason, Some("tool_access_granted"));
+    assert_eq!(view.evidence, Some("granted"));
+    assert_eq!(view.evidence_version.as_deref(), Some("0.159.2"));
+    assert!(view.evidence_stale, "kurulu sürüm ölçülmedi");
+
+    // Sürüm yazılmamış eski kayıt da hiçbir sürümü kapsamaz.
+    let legacy = dim_cli_adapters::MeasuredEvidence {
+        access: dim_cli_adapters::MeasuredAccess::Blocked,
+        version: None,
+    };
+    let view = prompt_shape_view("codex-cli", Some("0.170.0"), Some(&legacy));
+    assert!(view.evidence_stale);
+    assert_eq!(view.evidence_version, None);
 }

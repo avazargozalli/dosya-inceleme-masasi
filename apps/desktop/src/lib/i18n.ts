@@ -2066,6 +2066,8 @@ export const tr = {
     promptReasonToolFree: "araçsız kip doğrulanamadı",
     promptReasonToolAccess:
       "ölçüm araç erişimini gösterdi — sertleştirme dosya okumayı engellemiyor",
+    promptReasonToolAccessStale:
+      "araç erişimi eski bir sürümde ölçüldü — kurulu sürüm ölçülmedi, kapı temkinli tarafta kapalı",
     promptReasonEvidenceUnreadable: "sınama kaydı okunamadı (temkinli taraf)",
     promptReasonUnknown: "kapının nedeni tanımsız",
     evidenceGranted: "ölçüldü · araç erişimi var",
@@ -2074,6 +2076,11 @@ export const tr = {
     evidenceUnreadable: "sınama kaydı okunamadı",
     evidenceLine: "Son sertleştirme sınaması: {label}",
     evidenceLineAt: "Son sertleştirme sınaması: {label} · {at}",
+    evidenceLineStale:
+      "Son sertleştirme sınaması: {label} · {at} · ölçüm {measured} sürümünde alındı; kurulu sürüm {installed} ölçülmedi.",
+    evidenceLineStaleNoDate:
+      "Son sertleştirme sınaması: {label} · ölçüm {measured} sürümünde alındı; kurulu sürüm {installed} ölçülmedi.",
+    evidenceVersionUnknown: "sürüm yazılmamış (eski kayıt)",
     evidenceGateClosed:
       "İstem gönderimi kapatıldı: ölçüm araç erişimini gösterdi ve kayıt kasa içine yazıldı. Matris yeniden çalıştırılınca kart da bu kaydı gösterir.",
     evidenceGateOpen:

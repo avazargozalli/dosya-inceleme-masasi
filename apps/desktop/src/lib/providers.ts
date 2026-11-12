@@ -410,7 +410,12 @@ export function promptShapeText(
   if (prompt.printable) {
     return { text: t("probe.promptOpen", { argv }), tone: "ok" };
   }
-  const reason = promptCloseReason(prompt.reason);
+  // Ölçüm kurulu sürümde alınmadıysa neden cümlesi bunu **söyler** (F10-T08g):
+  // kapı temkinli tarafta kapalı, ama "bu sürümde araç erişimi var" denemez.
+  const reason =
+    prompt.reason === "tool_access_granted" && prompt.evidenceStale
+      ? t("probe.promptReasonToolAccessStale")
+      : promptCloseReason(prompt.reason);
   const tone: ProbeTone = prompt.reason === "tool_access_granted" ? "danger" : "warn";
   return { text: t("probe.promptClosed", { argv, reason }), tone };
 }
@@ -452,12 +457,38 @@ export function measuredAccessLabel(evidence: string): string {
 /**
  * Matris kartındaki **saklanan ölçüm** satırı (F10-T08d). Kayıt yoksa satır
  * yoktur; ölçüm `granted` ise kırmızı, okunamıyorsa sarı yazılır.
+ *
+ * **F10-T08g:** ölçüm kurulu sürümde alınmadıysa (`evidenceStale`) satır bunu
+ * yazar: eski ikilinin davranışı kurulu sürüme mal edilmez.
  */
 export function measuredEvidenceLine(
-  view: Pick<CliCapabilityAdapter, "evidence" | "evidenceAtUnix">,
+  view: Pick<
+    CliCapabilityAdapter,
+    "evidence" | "evidenceAtUnix" | "evidenceVersion" | "evidenceStale" | "version"
+  >,
 ): { text: string; tone: ProbeTone } | null {
   if (!view.evidence) return null;
   const label = measuredAccessLabel(view.evidence);
+  if (view.evidenceStale) {
+    const measured = view.evidenceVersion ?? t("probe.evidenceVersionUnknown");
+    const installed = view.version ?? t("providers.versionUnknown");
+    const tone: ProbeTone = view.evidence === "granted" ? "danger" : "warn";
+    if (view.evidenceAtUnix === null) {
+      return {
+        text: t("probe.evidenceLineStaleNoDate", { label, measured, installed }),
+        tone,
+      };
+    }
+    return {
+      text: t("probe.evidenceLineStale", {
+        label,
+        at: formatUnixSeconds(view.evidenceAtUnix),
+        measured,
+        installed,
+      }),
+      tone,
+    };
+  }
   const tone: ProbeTone =
     view.evidence === "granted" ? "danger" : view.evidence === "unreadable" ? "warn" : "plain";
   if (view.evidenceAtUnix === null) {

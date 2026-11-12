@@ -775,21 +775,45 @@ pub struct PromptShape {
     /// Saklanan davranış ölçümü: `granted` / `blocked` / `inconclusive` /
     /// `unreadable`; kayıt yoksa `None`.
     pub evidence: Option<&'static str>,
+    /// Ölçümün alındığı CLI sürümü; kayıt yoksa ya da sürüm yazılmamışsa `None`.
+    pub evidence_version: Option<String>,
+    /// Ölçüm kurulu sürümü kapsamıyor: kapı yine temkinli tarafta kapalı kalır
+    /// ama arayüz bunu **bu sürümün** ölçümü gibi yazamaz.
+    pub evidence_stale: bool,
 }
 
 #[must_use]
 pub fn prompt_shape(adapter_id: &str) -> Option<PromptShape> {
-    prompt_shape_with_evidence(adapter_id, None)
+    prompt_shape_with_measurement(adapter_id, None, None)
 }
 
-/// [`prompt_shape`] + ölçülmüş araç erişimi. Kural **tek yönlüdür**: ölçüm
-/// beyanı yalnız **kapatabilir** (`granted` = kanıt, `unreadable` = temkinli
-/// taraf); `blocked` bu istemde araç çağrısı görülmedi demektir, "araçsız kip
-/// var" kanıtı olmadığı için kapıyı **açmaz**.
+/// [`prompt_shape`] + ölçülmüş araç erişimi (sürümü bilinmeyen sarmalayıcı).
+/// Kural **tek yönlüdür**: ölçüm beyanı yalnız **kapatabilir** (`granted` =
+/// kanıt, `unreadable` = temkinli taraf); `blocked` bu istemde araç çağrısı
+/// görülmedi demektir, "araçsız kip var" kanıtı olmadığı için kapıyı **açmaz**.
+/// Sürüm yazılmamış ölçüm `evidence_stale` işaretlenir (F10-T08g).
 #[must_use]
 pub fn prompt_shape_with_evidence(
     adapter_id: &str,
     evidence: Option<crate::MeasuredAccess>,
+) -> Option<PromptShape> {
+    let measurement = evidence.map(|access| crate::MeasuredEvidence {
+        access,
+        version: None,
+    });
+    prompt_shape_with_measurement(adapter_id, None, measurement.as_ref())
+}
+
+/// [`prompt_shape_with_evidence`] + **kurulu sürüm** ve ölçümün sürümü.
+///
+/// Ölçüm, kurulu sürümü kapsamıyorsa (farklı sürüm ya da sürüm yazılmamış):
+/// karar **değişmez** — `granted` kapıyı yine kapatır (temkinli taraf) — ama
+/// şekil `evidence_stale` taşır, yani arayüz "kurulu sürüm ölçüldü" diyemez.
+#[must_use]
+pub fn prompt_shape_with_measurement(
+    adapter_id: &str,
+    installed_version: Option<&str>,
+    measurement: Option<&crate::MeasuredEvidence>,
 ) -> Option<PromptShape> {
     let spec = crate::spec(adapter_id)?;
     // Biçim **burada yeniden yazılmaz**: arayüzde görünen argv, ürünün gerçekten
@@ -812,6 +836,7 @@ pub fn prompt_shape_with_evidence(
         },
         None => ("missing", false),
     };
+    let evidence = measurement.map(|m| m.access);
     let (printable, reason) =
         prompt_gate(spec.batch_forbidden, has_path, tool_free_verified, evidence);
     Some(PromptShape {
@@ -821,6 +846,8 @@ pub fn prompt_shape_with_evidence(
         reason,
         tool_free: tool_free_state,
         evidence: evidence.map(crate::MeasuredAccess::id),
+        evidence_version: measurement.and_then(|m| m.version.clone()),
+        evidence_stale: measurement.is_some_and(|m| m.is_stale(installed_version)),
     })
 }
 
@@ -1651,6 +1678,50 @@ mod hardening_tests {
                 assert!(shape.reason.is_some(), "{}", adapter.id);
             }
         }
+    }
+
+    /// **F10-T08g:** ölçüm hangi sürüme ait? Farklı sürümde alınan `granted`
+    /// ölçümü kapıyı yine kapatır (temkinli taraf) ama şekil bunu **bu
+    /// sürümün** ölçümü gibi sunmaz; sürüm yazılmamış kayıt hiçbir sürümü
+    /// kapsamaz.
+    #[test]
+    fn prompt_shape_binds_evidence_to_the_measured_version() {
+        let same = crate::MeasuredEvidence {
+            access: MeasuredAccess::Granted,
+            version: Some("2.1.303".into()),
+        };
+        let shape = prompt_shape_with_measurement("claude-code", Some("2.1.303"), Some(&same))
+            .expect("şekil");
+        assert!(!shape.printable);
+        assert_eq!(shape.reason, Some("tool_access_granted"));
+        assert_eq!(shape.evidence_version.as_deref(), Some("2.1.303"));
+        assert!(!shape.evidence_stale);
+
+        let older = crate::MeasuredEvidence {
+            access: MeasuredAccess::Granted,
+            version: Some("2.1.300".into()),
+        };
+        let shape = prompt_shape_with_measurement("claude-code", Some("2.1.303"), Some(&older))
+            .expect("şekil");
+        assert!(!shape.printable, "temkinli taraf: ölçüm yine kapatır");
+        assert_eq!(shape.reason, Some("tool_access_granted"));
+        assert!(shape.evidence_stale);
+        assert_eq!(shape.evidence_version.as_deref(), Some("2.1.300"));
+
+        // Sürüm yazılmamış kayıt (eski kayıt) hiçbir sürümü kapsamaz.
+        let unknown = crate::MeasuredEvidence {
+            access: MeasuredAccess::Blocked,
+            version: None,
+        };
+        let shape = prompt_shape_with_measurement("codex-cli", Some("0.170.0"), Some(&unknown))
+            .expect("şekil");
+        assert!(shape.evidence_stale);
+        assert_eq!(shape.evidence_version, None);
+
+        // Ölçüm yoksa bayatlık da yok.
+        let none = prompt_shape("claude-code").expect("şekil");
+        assert!(!none.evidence_stale);
+        assert_eq!(none.evidence_version, None);
     }
 
     /// Bugün dört adaptörün de istem yolu var (Kimi toplu yürütmeye kapalı).

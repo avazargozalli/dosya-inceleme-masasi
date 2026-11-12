@@ -652,7 +652,13 @@ export function Providers() {
                     </div>
                     {evidenceLine ? (
                       <div
-                        className={evidenceLine.tone === "danger" ? "notice danger" : "muted small"}
+                        className={
+                          evidenceLine.tone === "danger"
+                            ? "notice danger"
+                            : evidenceLine.tone === "warn"
+                              ? "notice warn"
+                              : "muted small"
+                        }
                         style={{ marginTop: "var(--space-1)" }}
                       >
                         {evidenceLine.text}

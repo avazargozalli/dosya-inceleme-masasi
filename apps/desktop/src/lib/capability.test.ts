@@ -44,12 +44,16 @@ function adapter(overrides: Partial<CliCapabilityAdapter> = {}): CliCapabilityAd
     gateReasons: [],
     evidence: null,
     evidenceAtUnix: null,
+    evidenceVersion: null,
+    evidenceStale: false,
     prompt: {
       argv: ["--print", "<istem>"],
       printable: true,
       reason: null,
       toolFree: "verified",
       evidence: null,
+      evidenceVersion: null,
+      evidenceStale: false,
     },
     rows: [
       row(),

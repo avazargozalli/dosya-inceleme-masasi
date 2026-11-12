@@ -347,6 +347,39 @@ impl From<crate::hardening::ToolAccess> for MeasuredAccess {
     }
 }
 
+/// Sınama kaydının **hangi ikiliye** ait olduğu (F10-T08g).
+///
+/// Ölçüm sürüm yazılmadan saklanırsa, kurulu CLI güncellenince eski ikilinin
+/// davranışı yenisine mal edilir: `blocked` ölçümü "bu sürümde araç çağrısı
+/// görülmedi" diye okunur (kanıtsız güven), `granted` ise hiç ölçülmemiş bir
+/// sürümü çürütmüş gibi görünür. Sürüm yazılmamışsa (eski kayıt) ölçüm
+/// **hiçbir** sürümü kapsamaz: kapı temkinli tarafta kalır ama arayüz
+/// "bu sürüm ölçüldü" diyemez.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeasuredEvidence {
+    pub access: MeasuredAccess,
+    /// Ölçümün alındığı CLI sürümü (`--version` çıktısı); eski kayıtta `None`.
+    pub version: Option<String>,
+}
+
+impl MeasuredEvidence {
+    /// Ölçüm kurulu sürüme mi ait? **Sürüm bilinmiyorsa hiçbir sürümü
+    /// kapsamaz** — "bilinmeyen" ile "aynı" aynı şey değildir.
+    #[must_use]
+    pub fn covers(&self, installed: Option<&str>) -> bool {
+        match (self.version.as_deref(), installed) {
+            (Some(measured), Some(installed)) => measured.trim() == installed.trim(),
+            _ => false,
+        }
+    }
+
+    /// Ölçüm kurulu sürümü kapsamıyor: arayüz ölçümü **bu sürüme** yazamaz.
+    #[must_use]
+    pub fn is_stale(&self, installed: Option<&str>) -> bool {
+        !self.covers(installed)
+    }
+}
+
 /// `Unread` gerekçesi: sınama kaydı okunamadı (bozuk değer / okuma hatası).
 pub const EVIDENCE_UNREADABLE: &str = "sınama kaydı okunamadı";
 
@@ -408,6 +441,12 @@ pub struct CapabilityReport {
     pub gate_open: bool,
     /// Kapanış gerekçeleri: `yetenek:durum` (metin/çıktı içermez).
     pub gate_reasons: Vec<String>,
+    /// Ölçümün alındığı sürüm; kayıt yoksa ya da sürüm yazılmamışsa `None`.
+    pub evidence_version: Option<String>,
+    /// Ölçüm kurulu sürümü **kapsamıyor** (farklı sürüm ya da sürüm yazılmamış).
+    /// Satır durumu değişmez — ölçüm yine yalnız kapatır — ama rapor ölçümü
+    /// kurulu ikiliye mal edemez.
+    pub evidence_stale: bool,
 }
 
 /// Saf değerlendirme: yardım metni ve sürüm verilir, rapor üretilir. Süreç
@@ -428,6 +467,10 @@ pub fn evaluate(
 /// `granted` satırı `Contradicted` yapar (bağlantı uyumsuz, kapı kapalı),
 /// `unreadable` satırı `Unread` yapar (temkinli taraf). `blocked` /
 /// `inconclusive` yalnız `measured` alanında görünür; beyanı **değiştirmez**.
+///
+/// Ölçümün **hangi sürüme** ait olduğu bilinmiyorsa (bu sarmalayıcı) rapor
+/// `evidence_stale = true` yazar: kayıt kurulu ikiliye mal edilemez. Sürümü
+/// bilen çağıran [`evaluate_with_measurement`] kullanır.
 #[must_use]
 pub fn evaluate_with_evidence(
     adapter_id: &str,
@@ -436,7 +479,29 @@ pub fn evaluate_with_evidence(
     help_error: Option<&str>,
     evidence: Option<MeasuredAccess>,
 ) -> Option<CapabilityReport> {
+    let measurement = evidence.map(|access| MeasuredEvidence {
+        access,
+        version: None,
+    });
+    evaluate_with_measurement(adapter_id, version, help, help_error, measurement.as_ref())
+}
+
+/// [`evaluate_with_evidence`] + ölçümün **alındığı sürüm**. Ölçüm yalnız
+/// kapatır; sürüm uyuşmazlığı satır durumunu değiştirmez ama rapor ölçümü
+/// kurulu sürüme yazamaz (`evidence_stale`) — eski ikilinin davranışı yenisine
+/// mal edilmez.
+#[must_use]
+pub fn evaluate_with_measurement(
+    adapter_id: &str,
+    version: Option<&str>,
+    help: Option<&str>,
+    help_error: Option<&str>,
+    measurement: Option<&MeasuredEvidence>,
+) -> Option<CapabilityReport> {
     let adapter = capabilities(adapter_id)?;
+    let evidence = measurement.map(|m| m.access);
+    let evidence_version = measurement.and_then(|m| m.version.clone());
+    let evidence_stale = measurement.is_some_and(|m| m.is_stale(version));
     let mut rows = Vec::with_capacity(adapter.requirements.len());
     for requirement in adapter.requirements {
         let state = match (version, help) {
@@ -524,6 +589,8 @@ pub fn evaluate_with_evidence(
         link,
         gate_open,
         gate_reasons,
+        evidence_version,
+        evidence_stale,
     })
 }
 
@@ -835,6 +902,93 @@ mod tests {
         assert_eq!(report.link, LinkState::NotInstalled);
         assert!(report.rows.iter().all(|r| r.state.id() == "unread"));
         assert!(report.rows.iter().all(|r| r.measured.is_none()));
+    }
+
+    /// **F10-T08g:** ölçüm hangi ikiliye ait? Sürüm bilinmiyorsa hiçbir sürümü
+    /// kapsamaz — "bilinmeyen" ile "aynı" aynı şey değildir.
+    #[test]
+    fn measured_evidence_covers_only_the_version_it_was_taken_on() {
+        let measured = MeasuredEvidence {
+            access: MeasuredAccess::Granted,
+            version: Some("2.1.303".into()),
+        };
+        assert!(measured.covers(Some("2.1.303")));
+        assert!(!measured.covers(Some("2.1.304")));
+        assert!(!measured.covers(None));
+
+        let legacy = MeasuredEvidence {
+            access: MeasuredAccess::Blocked,
+            version: None,
+        };
+        assert!(!legacy.covers(Some("2.1.303")));
+        assert!(!legacy.covers(None));
+        assert!(legacy.is_stale(Some("2.1.303")));
+    }
+
+    /// Ölçüm eski sürümde alındıysa satır yine `contradicted` kalır (temkinli
+    /// taraf) ama rapor ölçümü **kurulu sürüme yazamaz**.
+    #[test]
+    fn evidence_from_an_older_binary_is_marked_stale() {
+        let measurement = MeasuredEvidence {
+            access: MeasuredAccess::Granted,
+            version: Some("2.1.300".into()),
+        };
+        let report = evaluate_with_measurement(
+            "claude-code",
+            Some("2.1.303"),
+            Some(CLAUDE_HELP),
+            None,
+            Some(&measurement),
+        )
+        .expect("rapor");
+        let tool_free = report
+            .rows
+            .iter()
+            .find(|r| r.capability == Capability::ToolFree)
+            .expect("satır");
+        assert_eq!(tool_free.state.id(), "contradicted");
+        assert_eq!(tool_free.measured, Some("granted"));
+        assert_eq!(report.link, LinkState::Incompatible);
+        assert_eq!(report.evidence_version.as_deref(), Some("2.1.300"));
+        assert!(
+            report.evidence_stale,
+            "ölçüm eski sürüme ait: kurulu sürüm ölçülmedi"
+        );
+    }
+
+    /// Aynı sürümde alınan ölçüm bayat değildir; sürüm bilinmiyorsa (eski
+    /// kayıt / sarmalayıcı) bayattır.
+    #[test]
+    fn only_same_version_evidence_is_current() {
+        let current = MeasuredEvidence {
+            access: MeasuredAccess::Blocked,
+            version: Some("0.159.2".into()),
+        };
+        let report = evaluate_with_measurement(
+            "codex-cli",
+            Some("0.159.2"),
+            Some(CODEX_HELP),
+            None,
+            Some(&current),
+        )
+        .expect("rapor");
+        assert_eq!(report.evidence_version.as_deref(), Some("0.159.2"));
+        assert!(!report.evidence_stale);
+
+        // Sürümü yazılmamış kayıt (sarmalayıcı) hiçbir sürümü kapsamaz.
+        let legacy = evaluate_with_evidence(
+            "codex-cli",
+            Some("0.159.2"),
+            Some(CODEX_HELP),
+            None,
+            Some(MeasuredAccess::Blocked),
+        )
+        .expect("rapor");
+        assert_eq!(legacy.evidence_version, None);
+        assert!(
+            legacy.evidence_stale,
+            "sürüm yazılmamış ölçüm kurulu sürüme mal edilemez"
+        );
     }
 
     #[test]

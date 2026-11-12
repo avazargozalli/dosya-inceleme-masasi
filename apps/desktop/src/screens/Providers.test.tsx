@@ -328,12 +328,16 @@ const MATRIX: CliCapabilityMatrix = {
       gateReasons: [],
       evidence: null,
       evidenceAtUnix: null,
+      evidenceVersion: null,
+      evidenceStale: false,
       prompt: {
         argv: ["--print", "<istem>"],
         printable: true,
         reason: null,
         toolFree: "verified",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
       rows: [
         {
@@ -375,12 +379,16 @@ const MATRIX: CliCapabilityMatrix = {
       gateReasons: ["path yok"],
       evidence: null,
       evidenceAtUnix: null,
+      evidenceVersion: null,
+      evidenceStale: false,
       prompt: {
         argv: [],
         printable: false,
         reason: null,
         toolFree: "missing",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
       rows: [
         {
@@ -788,6 +796,8 @@ const HARDENING: CliHardeningProbe = {
     reason: null,
     toolFree: "verified",
     evidence: "blocked",
+    evidenceVersion: null,
+    evidenceStale: false,
   },
   notes: [],
 };
@@ -1084,6 +1094,8 @@ describe("sağlayıcılar ekranı davranışı", () => {
             reason: "tool_free_unverified",
             toolFree: "no_path",
             evidence: null,
+            evidenceVersion: null,
+            evidenceStale: false,
           },
         },
       ],
@@ -2480,6 +2492,8 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
         reason: "tool_free_unverified",
         toolFree: "no_path",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     };
     setup({ hardening: async () => quota });
@@ -2517,6 +2531,8 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
         reason: "tool_access_granted",
         toolFree: "verified",
         evidence: "granted",
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     };
     setup({ hardening: async () => granted });
@@ -2548,6 +2564,8 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
         reason: null,
         toolFree: "verified",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
       notes: ["Ölçüm kasa içine yazılamadı (disk); istem kapısı ölçüme değil beyana dayanır."],
     };
@@ -2576,12 +2594,16 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
           gateReasons: ["tool_free:contradicted"],
           evidence: "granted",
           evidenceAtUnix: 1770000300,
+          evidenceVersion: null,
+          evidenceStale: false,
           prompt: {
             argv: ["--print", "<istem>"],
             printable: false,
             reason: "tool_access_granted",
             toolFree: "verified",
             evidence: "granted",
+            evidenceVersion: null,
+            evidenceStale: false,
           },
           rows: [
             {
@@ -2611,6 +2633,46 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
     // İstem kapısı kapalı ve nedeni **ölçüm**.
     expect(within(card).getByText(/ölçüm araç erişimini gösterdi/)).toBeTruthy();
     expect(within(card).queryByText(t("probe.promptOpen", { argv: "--print <istem>" }))).toBeNull();
+  });
+
+  it("matris kartı eski sürümde alınan ölçümü bu sürüme yazmaz", async () => {
+    // F10-T08g: ölçüm hangi ikiliye ait? Kurulu sürüm ölçülmediyse kart bunu
+    // söyler; eski davranış "bu sürümde araç erişimi var" diyebiliyordu.
+    const stale: CliCapabilityMatrix = {
+      ...MATRIX,
+      adapters: [
+        {
+          ...MATRIX.adapters[0]!,
+          version: "0.170.0",
+          evidence: "blocked",
+          evidenceAtUnix: 1770000300,
+          evidenceVersion: "0.159.2",
+          evidenceStale: true,
+          prompt: {
+            argv: ["exec", "<istem>"],
+            printable: false,
+            reason: "tool_access_granted",
+            toolFree: "verified",
+            evidence: "granted",
+            evidenceVersion: "0.159.2",
+            evidenceStale: true,
+          },
+        },
+      ],
+    };
+    setup({ matrix: async () => stale });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+
+    const line = measuredEvidenceLine(stale.adapters[0]!)!;
+    expect(line.text).toContain("0.159.2");
+    expect(within(card).getByText(line.text)).toBeTruthy();
+    // İstem kapısı da ölçümü bu sürüme yazmaz.
+    expect(within(card).getByText(/eski bir sürümde ölçüldü/)).toBeTruthy();
+    expect(within(card).queryByText(/sertleştirme dosya okumayı engellemiyor/)).toBeNull();
   });
 
   it("sınama düşerse önceki ölçüm ekranda kalmaz", async () => {

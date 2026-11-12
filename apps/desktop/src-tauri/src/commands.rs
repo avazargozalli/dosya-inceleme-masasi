@@ -4062,6 +4062,13 @@ pub async fn cli_hardening_probe(
                 "Araç PATH üzerinde bulunamadı; sınama yapılamaz.",
             )
         })?;
+    // Ölçüm **hangi ikiliye** ait: sürüm sınama anında okunur ve kayda geçer
+    // (F10-T08g). Sürüm okunamazsa `None` yazılır — ölçüm hiçbir sürüme mal
+    // edilemez, arayüz bunu söyler.
+    let measured_version = match discover(spec).state {
+        DiscoveryState::Installed { version, .. } => Some(version),
+        _ => None,
+    };
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -4150,7 +4157,7 @@ pub async fn cli_hardening_probe(
         evidence_recorded: false,
         not_run,
         // Kapı **kayıt yazılırsa** ölçüme dayanır; yazılamazsa beyana döner.
-        prompt: prompt_shape_view(spec.id, None),
+        prompt: prompt_shape_view(spec.id, measured_version.as_deref(), None),
         notes,
     };
 
@@ -4166,9 +4173,14 @@ pub async fn cli_hardening_probe(
         let written = match measured {
             None => None,
             Some(access) => Some(match guard.db.as_ref() {
-                Some(db) => {
-                    record_cli_evidence(db, &view.adapter_id, access, view.answered, probed_at_unix)
-                }
+                Some(db) => record_cli_evidence(
+                    db,
+                    &view.adapter_id,
+                    access,
+                    view.answered,
+                    probed_at_unix,
+                    measured_version.as_deref(),
+                ),
                 None => Err("kasa kilitli".to_string()),
             }),
         };
@@ -4176,7 +4188,14 @@ pub async fn cli_hardening_probe(
             None => {}
             Some(Ok(())) => {
                 view.evidence_recorded = true;
-                view.prompt = prompt_shape_view(spec.id, Some(report.tool_access.into()));
+                // Ölçüm **bu ikilide** alındı: kayıt sürümü taşır, kapı da
+                // sürümü kapsayan ölçüme dayanır.
+                let measurement = dim_cli_adapters::MeasuredEvidence {
+                    access: report.tool_access.into(),
+                    version: measured_version.clone(),
+                };
+                view.prompt =
+                    prompt_shape_view(spec.id, measured_version.as_deref(), Some(&measurement));
             }
             Some(Err(error)) => view.notes.push(format!(
                 "Ölçüm kasa içine yazılamadı ({error}); istem kapısı ölçüme değil beyana dayanır."
@@ -4425,19 +4444,27 @@ pub struct CliPromptShapeView {
     /// Saklanan sınama kaydı (`granted` / `blocked` / `inconclusive` /
     /// `unreadable`); kayıt yoksa `null`.
     pub evidence: Option<&'static str>,
+    /// Ölçümün alındığı CLI sürümü; kayıt yoksa ya da sürüm yazılmamışsa `null`.
+    pub evidence_version: Option<String>,
+    /// Ölçüm kurulu sürümü kapsamıyor (farklı sürüm ya da sürüm yazılmamış).
+    pub evidence_stale: bool,
 }
 
 fn prompt_shape_view(
     adapter_id: &str,
-    evidence: Option<dim_cli_adapters::MeasuredAccess>,
+    installed_version: Option<&str>,
+    measurement: Option<&dim_cli_adapters::MeasuredEvidence>,
 ) -> CliPromptShapeView {
-    let shape = dim_cli_adapters::prompt_shape_with_evidence(adapter_id, evidence);
+    let shape =
+        dim_cli_adapters::prompt_shape_with_measurement(adapter_id, installed_version, measurement);
     CliPromptShapeView {
         argv: shape.as_ref().map(|s| s.argv.clone()).unwrap_or_default(),
         printable: shape.as_ref().is_some_and(|s| s.printable),
         reason: shape.as_ref().and_then(|s| s.reason),
         tool_free: shape.as_ref().map_or("missing", |s| s.tool_free),
         evidence: shape.as_ref().and_then(|s| s.evidence),
+        evidence_version: shape.as_ref().and_then(|s| s.evidence_version.clone()),
+        evidence_stale: shape.as_ref().is_some_and(|s| s.evidence_stale),
     }
 }
 
@@ -4467,6 +4494,9 @@ fn parse_cli_evidence(value: &serde_json::Value) -> dim_cli_adapters::MeasuredAc
 struct StoredEvidence {
     access: dim_cli_adapters::MeasuredAccess,
     at_unix: Option<u64>,
+    /// Ölçümün alındığı CLI sürümü (F10-T08g). Eski kayıtlarda yok → `None`:
+    /// sürümü yazılmamış ölçüm kurulu ikiliye mal edilemez.
+    version: Option<String>,
 }
 
 /// Adaptörün son sınama kaydı. `None` = kayıt yok. Okuma hatası da
@@ -4480,27 +4510,38 @@ fn read_cli_evidence(db: &Database, adapter_id: &str) -> Option<StoredEvidence> 
                 .value
                 .get("measuredAtUnix")
                 .and_then(serde_json::Value::as_u64),
+            version: row
+                .value
+                .get("measuredVersion")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         }),
         Err(_) => Some(StoredEvidence {
             access: dim_cli_adapters::MeasuredAccess::Unreadable,
             at_unix: None,
+            version: None,
         }),
     }
 }
 
 /// Ölçümü kasa içine yazar. Hata dönerse ölçüm **yine gerçektir**: çağıran
 /// raporda not düşer ve kapıyı ölçüme dayandırmaz ("kaydedildi" demez).
+///
+/// `version` **zorunlu alan**: hangi ikilinin ölçüldüğü yazılmazsa, sonraki
+/// sürümde eski davranış yenisine mal edilir (F10-T08g).
 fn record_cli_evidence(
     db: &Database,
     adapter_id: &str,
     access: dim_cli_adapters::MeasuredAccess,
     answered: bool,
     at_unix: u64,
+    version: Option<&str>,
 ) -> Result<(), String> {
     let value = serde_json::json!({
         "access": access.id(),
         "answered": answered,
         "measuredAtUnix": at_unix,
+        "measuredVersion": version,
     });
     db.set_setting(CLI_EVIDENCE_SCOPE, &cli_evidence_key(adapter_id), &value)
         .map(|_| ())
@@ -4532,6 +4573,10 @@ pub struct CliCapabilityAdapterView {
     pub evidence: Option<&'static str>,
     /// Kaydın ölçüm zamanı (unix sn); kayıt yoksa `null`.
     pub evidence_at_unix: Option<u64>,
+    /// Kaydın alındığı CLI sürümü (F10-T08g); eski kayıtta `null`.
+    pub evidence_version: Option<String>,
+    /// Kayıt **kurulu sürümü kapsamıyor**: arayüz ölçümü bu sürüme yazamaz.
+    pub evidence_stale: bool,
     pub rows: Vec<CliCapabilityRowView>,
 }
 
@@ -4654,12 +4699,19 @@ pub async fn cli_capability_matrix(
                     }
                     _ => (None, None),
                 };
-            let Some(report) = dim_cli_adapters::evaluate_with_evidence(
+            let measurement =
+                stored
+                    .get(adapter.id)
+                    .map(|evidence| dim_cli_adapters::MeasuredEvidence {
+                        access: evidence.access,
+                        version: evidence.version.clone(),
+                    });
+            let Some(report) = dim_cli_adapters::evaluate_with_measurement(
                 adapter.id,
                 version.as_deref(),
                 help.as_deref(),
                 help_error.as_deref(),
-                stored.get(adapter.id).map(|evidence| evidence.access),
+                measurement.as_ref(),
             ) else {
                 continue;
             };
@@ -4676,12 +4728,11 @@ pub async fn cli_capability_matrix(
                 link_label: report.link.label(),
                 gate_open: report.gate_open,
                 gate_reasons: report.gate_reasons.clone(),
-                prompt: prompt_shape_view(
-                    adapter.id,
-                    stored.get(adapter.id).map(|evidence| evidence.access),
-                ),
+                prompt: prompt_shape_view(adapter.id, version.as_deref(), measurement.as_ref()),
                 evidence: stored.get(adapter.id).map(|evidence| evidence.access.id()),
                 evidence_at_unix: stored.get(adapter.id).and_then(|evidence| evidence.at_unix),
+                evidence_version: report.evidence_version.clone(),
+                evidence_stale: report.evidence_stale,
                 rows: capability_rows(&report),
             });
         }

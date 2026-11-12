@@ -352,6 +352,8 @@ describe("promptShapeText", () => {
         reason: null,
         toolFree: "verified",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     });
     expect(line.tone).toBe("ok");
@@ -367,6 +369,8 @@ describe("promptShapeText", () => {
         reason: "tool_free_unverified",
         toolFree: "no_path",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     });
     expect(line.tone).toBe("warn");
@@ -382,6 +386,8 @@ describe("promptShapeText", () => {
         reason: "batch_forbidden",
         toolFree: "no_path",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     });
     expect(line.text).toContain("otomatik yürütme kapalı");
@@ -398,6 +404,8 @@ describe("promptShapeText", () => {
         reason: "no_prompt_path",
         toolFree: "verified",
         evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     });
     expect(line.tone).toBe("warn");
@@ -438,6 +446,8 @@ function hardeningProbe(overrides: Partial<CliHardeningProbe> = {}): CliHardenin
       reason: null,
       toolFree: "verified",
       evidence: "blocked",
+      evidenceVersion: null,
+      evidenceStale: false,
     },
     notes: [],
     ...overrides,
@@ -534,6 +544,8 @@ describe("ölçülen araç erişimi kapıya girer (F10-T08d)", () => {
         reason: "tool_access_granted",
         toolFree: "verified",
         evidence: "granted",
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     });
     expect(line.tone).toBe("danger");
@@ -549,6 +561,8 @@ describe("ölçülen araç erişimi kapıya girer (F10-T08d)", () => {
         reason: "evidence_unreadable",
         toolFree: "verified",
         evidence: "unreadable",
+        evidenceVersion: null,
+        evidenceStale: false,
       },
     });
     expect(line.tone).toBe("warn");
@@ -556,14 +570,84 @@ describe("ölçülen araç erişimi kapıya girer (F10-T08d)", () => {
   });
 
   it("ölçüm satırı kayıt yoksa yazılmaz, varsa tarihiyle yazılır", () => {
-    expect(measuredEvidenceLine({ evidence: null, evidenceAtUnix: null })).toBeNull();
-    const granted = measuredEvidenceLine({ evidence: "granted", evidenceAtUnix: 1770000000 });
+    expect(
+      measuredEvidenceLine({
+        evidence: null,
+        evidenceAtUnix: null,
+        evidenceVersion: null,
+        evidenceStale: false,
+        version: "2.1.303",
+      }),
+    ).toBeNull();
+    const granted = measuredEvidenceLine({
+      evidence: "granted",
+      evidenceAtUnix: 1770000000,
+      evidenceVersion: "2.1.303",
+      evidenceStale: false,
+      version: "2.1.303",
+    });
     expect(granted?.tone).toBe("danger");
     expect(granted?.text).toContain("araç erişimi var");
-    const blocked = measuredEvidenceLine({ evidence: "blocked", evidenceAtUnix: null });
+    const blocked = measuredEvidenceLine({
+      evidence: "blocked",
+      evidenceAtUnix: null,
+      evidenceVersion: "0.159.2",
+      evidenceStale: false,
+      version: "0.159.2",
+    });
     expect(blocked?.tone).toBe("plain");
     expect(blocked?.text).toContain("araç çağrısı görülmedi");
-    expect(measuredEvidenceLine({ evidence: "unreadable", evidenceAtUnix: null })?.tone).toBe("warn");
+    expect(
+      measuredEvidenceLine({
+        evidence: "unreadable",
+        evidenceAtUnix: null,
+        evidenceVersion: null,
+        evidenceStale: true,
+        version: "2.1.303",
+      })?.tone,
+    ).toBe("warn");
+  });
+
+  it("ölçüm eski sürüme aitse satır hangi sürümde ölçüldüğünü söyler", () => {
+    // F10-T08g: eski ikilinin davranışı kurulu sürüme mal edilmez.
+    const stale = measuredEvidenceLine({
+      evidence: "blocked",
+      evidenceAtUnix: 1770000000,
+      evidenceVersion: "0.159.2",
+      evidenceStale: true,
+      version: "0.170.0",
+    });
+    expect(stale?.tone).toBe("warn");
+    expect(stale?.text).toContain("0.159.2");
+    expect(stale?.text).toContain("0.170.0");
+    expect(stale?.text).toContain("ölçülmedi");
+
+    const unknownVersion = measuredEvidenceLine({
+      evidence: "granted",
+      evidenceAtUnix: null,
+      evidenceVersion: null,
+      evidenceStale: true,
+      version: "0.170.0",
+    });
+    expect(unknownVersion?.tone).toBe("danger");
+    expect(unknownVersion?.text).toContain("sürüm yazılmamış");
+  });
+
+  it("eski sürümde alınan ölçüm 'bu sürümde araç erişimi var' demez", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: ["exec", "<istem>"],
+        printable: false,
+        reason: "tool_access_granted",
+        toolFree: "verified",
+        evidence: "granted",
+        evidenceVersion: "0.159.2",
+        evidenceStale: true,
+      },
+    });
+    expect(line.tone).toBe("danger");
+    expect(line.text).toContain("eski bir sürümde ölçüldü");
+    expect(line.text).not.toContain("sertleştirme dosya okumayı engellemiyor");
   });
 
   it("bilinmeyen ölçüm kimliği uydurma etikete düşmez", () => {

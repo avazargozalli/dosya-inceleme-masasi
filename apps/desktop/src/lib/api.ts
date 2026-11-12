@@ -1129,8 +1129,12 @@ export type CliPromptShape = {
     | "tool_free_unverified"
     | null;
   toolFree: "verified" | "no_path" | "missing";
-  /** Saklanan sınama kaydı; yoksa `null`. */
+  /** Saklanan davranış ölçümü; kayıt yoksa `null`. */
   evidence: CliMeasuredAccess | null;
+  /** Ölçümün alındığı CLI sürümü; kayıt yoksa/sürüm yazılmamışsa `null`. */
+  evidenceVersion: string | null;
+  /** Ölçüm kurulu sürümü kapsamıyor: "bu sürüm ölçüldü" denemez (F10-T08g). */
+  evidenceStale: boolean;
 };
 
 export type CliCapabilityAdapter = {
@@ -1153,6 +1157,10 @@ export type CliCapabilityAdapter = {
   evidence: CliMeasuredAccess | null;
   /** Kaydın ölçüm zamanı (unix sn); yoksa `null`. */
   evidenceAtUnix: number | null;
+  /** Kaydın alındığı CLI sürümü (F10-T08g); eski kayıtta `null`. */
+  evidenceVersion: string | null;
+  /** Kayıt **kurulu sürümü kapsamıyor**: ölçüm bu sürüme yazılamaz. */
+  evidenceStale: boolean;
   rows: CliCapabilityRow[];
 };
 

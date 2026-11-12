@@ -31,18 +31,18 @@ pub use attack::{
     RealAttack, ATTACK_MARKER_ENV,
 };
 pub use capability::{
-    capabilities, evaluate, evaluate_with_evidence, help_text_of, mentions_flag, run_help_probe,
-    AdapterCapabilities, Capability, CapabilityReport, CapabilityRequirement, CapabilityRow,
-    CapabilityState, HelpProbe, LinkState, MeasuredAccess, Mechanism, EVIDENCE_UNREADABLE,
-    HELP_TIMEOUT, MATRIX,
+    capabilities, evaluate, evaluate_with_evidence, evaluate_with_measurement, help_text_of,
+    mentions_flag, run_help_probe, AdapterCapabilities, Capability, CapabilityReport,
+    CapabilityRequirement, CapabilityRow, CapabilityState, HelpProbe, LinkState, MeasuredAccess,
+    MeasuredEvidence, Mechanism, EVIDENCE_UNREADABLE, HELP_TIMEOUT, MATRIX,
 };
 pub use events::{final_message, parse_codex_json_lines, CodexEvent, CodexUsage, EventError};
 pub use exec::{
     clamp_timeout, default_env_allowlist, ensure_prompt_shape, hardened_args, prompt_argv,
-    prompt_shape, prompt_shape_with_evidence, retry_while_busy, run_cli, run_cli_with_prompt,
-    sanitize_env, splice_prompt, validate_prompt, CliRunRequest, PromptShape, RunError, RunOutcome,
-    RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT, MIN_TIMEOUT, PROMPT_MAX_BYTES,
-    PROMPT_PLACEHOLDER, SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
+    prompt_shape, prompt_shape_with_evidence, prompt_shape_with_measurement, retry_while_busy,
+    run_cli, run_cli_with_prompt, sanitize_env, splice_prompt, validate_prompt, CliRunRequest,
+    PromptShape, RunError, RunOutcome, RunScope, RunStatus, MAX_OUTPUT_BYTES, MAX_TIMEOUT,
+    MIN_TIMEOUT, PROMPT_MAX_BYTES, PROMPT_PLACEHOLDER, SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
 };
 pub use hardening::{
     canary_body, classify_not_run, classify_reply, probe_prompt, run_hardening_probe,
