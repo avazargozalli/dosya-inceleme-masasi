@@ -2084,6 +2084,13 @@ export const tr = {
     hardeningInconclusive:
       "Ölçüm sonuç vermedi (ne kanıt ne ret): {file} okunup okunmadığı bilinmiyor. {ms} ms.",
     hardeningNoAnswer: "Yanıt alınamadı (durum: {status}); sonuç hüküm sayılmaz.",
+    hardeningNotRun:
+      "Sınama koşulamadı: {kind}. Ölçüm yazılmadı; istem kapısı beyana dayanır.",
+    notRunQuota: "sağlayıcı kotası/limiti doldu",
+    notRunAuth: "oturum/kimlik yok",
+    notRunProcessFailed: "süreç başarısız çıktı",
+    notRunTimeout: "süre aşıldı",
+    notRunCancelled: "iptal edildi",
     warnHelpError: "Yardım metni okunamadı ({error}); yetenekler \"okunamadı\" kalır.",
     warnHelpUnread: "Yardım metni okunamadı; yetenekler doğrulanmadı.",
     warnFlagMissing: "{label}: kurulu sürümün yardım metninde {flags} yok.",
@@ -2150,6 +2157,7 @@ export const tr = {
     hardeningReply: "Modelin yanıtı",
     hardeningStderr: "Hata akışı",
     hardeningNoText: "(yanıt metni boş)",
+    hardeningNotRunReason: "Neden: {reason}",
     matrixIdleBefore: "Henüz yoklanmadı. “Yetenekleri sına” dört adaptörün kurulu sürümünü ve",
     matrixIdleAfter: "metnini yoklar; istem gönderilmez.",
     packageTitle: "Yerel worker paketi",

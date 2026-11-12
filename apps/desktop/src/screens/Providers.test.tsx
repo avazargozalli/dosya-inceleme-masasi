@@ -781,6 +781,7 @@ const HARDENING: CliHardeningProbe = {
   sandboxBytes: 2048,
   probedAtUnix: 1770000000,
   evidenceRecorded: true,
+  notRun: null,
   prompt: {
     argv: ["--print", "<istem>"],
     printable: true,
@@ -2455,6 +2456,51 @@ describe("sertleştirme davranış sınaması (F10-T08)", () => {
     );
     // Hem ölçüm cümlesinde hem yanıt panelinde görünür.
     expect(within(card).getAllByText(/DIM-CANARY-50/).length).toBeGreaterThan(0);
+  });
+
+  // Ölçüldü (agy 1.5.6, 2026-11-12): kota doluyken sınama **koşulamadı**;
+  // ürün "hüküm yok" yazmamalı ve kanıt yazılmadığı için kapı cümlesi
+  // çizilmemeli.
+  it("sınama koşulamadıysa nedeni yazar ve kapı cümlesi çizilmez", async () => {
+    const reason = "Individual quota reached. Resets in 101h.";
+    const quota: CliHardeningProbe = {
+      ...HARDENING,
+      answered: false,
+      toolAccess: "inconclusive",
+      exitCode: 3,
+      replyHead: "",
+      declineInReply: false,
+      stderrHead: "AGY_ERROR: RESOURCE_EXHAUSTED (code 429)",
+      evidenceRecorded: false,
+      notRun: { kind: "quota", reason },
+      notes: [],
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: false,
+        reason: "tool_free_unverified",
+        toolFree: "no_path",
+        evidence: null,
+      },
+    };
+    setup({ hardening: async () => quota });
+    await ready();
+    fireEvent.click(button(t("providers.matrixRun")));
+    const card = (await screen.findByRole("heading", { level: 3, name: "Claude Code (matris)" })).closest(
+      ".card",
+    ) as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: t("providers.hardeningRun") }));
+
+    const sentence = t("probe.hardeningNotRun", { kind: t("probe.notRunQuota") });
+    await waitFor(() =>
+      expect(within(card).getByText(byTextContent(sentence))).toBeTruthy(),
+    );
+    // CLI'nin kendi cümlesi de görünür: kullanıcı ne olduğunu okuyabilir.
+    expect(
+      within(card).getByText(byTextContent(t("providers.hardeningNotRunReason", { reason }))),
+    ).toBeTruthy();
+    // Kayıt yazılmadı → ölçüm kapıya girmedi, kapı cümlesi yok.
+    expect(within(card).queryByText(/İstem gönderimi kapatıldı/)).toBeNull();
+    expect(within(card).queryByText(/İstem gönderimi açık kalıyor/)).toBeNull();
   });
 
   it("kayıt yazıldıysa ölçümün istem kapısını kapattığını söyler", async () => {

@@ -4013,9 +4013,22 @@ pub struct CliHardeningProbeView {
     /// Ölçüm kasa içine **yazıldı** mı? Yazılamadıysa istem kapısı ölçüme
     /// dayanmaz (beyana döner) ve bu raporda not olarak yazar.
     pub evidence_recorded: bool,
+    /// Sınama **koşulamadı** (kota/kimlik/süreç/süre/iptal): ölçüm yoktur ve
+    /// kanıt **yazılmaz**. `None` = sınama koştu (hükmü olmasa bile).
+    pub not_run: Option<CliProbeNotRun>,
     /// Bu ölçümden **sonra** istem gönderim kapısı (kayıt yazıldıysa onunla).
     pub prompt: CliPromptShapeView,
     pub notes: Vec<String>,
+}
+
+/// Sınamanın koşulamama nedeni: sınıf (kapalı küme) + CLI'nin kendi cümlesi.
+/// Yanıt metni taşınmaz; gerekçe kum havuzu yolunu taşımaz.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliProbeNotRun {
+    /// `quota` / `auth` / `process_failed` / `timeout` / `cancelled`.
+    pub kind: &'static str,
+    pub reason: String,
 }
 
 /// **Sertleştirme davranış sınaması** (F10-T08): ürünün sabit istemi gerçek
@@ -4095,10 +4108,21 @@ pub async fn cli_hardening_probe(
     if report.canary_bytes_after == 0 {
         notes.push("Kanıt dosyası sınama sonrası bulunamadı; ölçüm geçersiz.".to_string());
     }
-    if !report.answered() {
-        notes.push(
+    // Sınama **koşulamadıysa** bunu söyle: "yanıt alınamadı" demek gerçek
+    // nedeni (kota/kimlik) gizler ve ölçüm varmış gibi bir kayıt bırakırdı.
+    let not_run = report.not_run.map(|kind| CliProbeNotRun {
+        kind: kind.id(),
+        reason: report.not_run_reason.clone().unwrap_or_default(),
+    });
+    match &not_run {
+        Some(reason) => notes.push(format!(
+            "Sınama koşulamadı ({}); ölçüm yazılmadı ve istem kapısı beyana dayanır.",
+            reason.kind
+        )),
+        None if !report.answered() => notes.push(
             "Yanıt alınamadı (süre, kimlik ya da çıkış kodu); sonuç hüküm sayılmaz.".to_string(),
-        );
+        ),
+        None => {}
     }
     let mut view = CliHardeningProbeView {
         adapter_id: report.adapter_id.clone(),
@@ -4124,6 +4148,7 @@ pub async fn cli_hardening_probe(
         sandbox_bytes: report.outcome.scope.inventory_total_bytes,
         probed_at_unix,
         evidence_recorded: false,
+        not_run,
         // Kapı **kayıt yazılırsa** ölçüme dayanır; yazılamazsa beyana döner.
         prompt: prompt_shape_view(spec.id, None),
         notes,
@@ -4134,22 +4159,26 @@ pub async fn cli_hardening_probe(
     // açıkça yazar, "kaydedildi" denmez.
     {
         let guard = state.lock();
-        let written = match guard.db.as_ref() {
-            Some(db) => record_cli_evidence(
-                db,
-                &view.adapter_id,
-                report.tool_access,
-                view.answered,
-                probed_at_unix,
-            ),
-            None => Err("kasa kilitli".to_string()),
+        // Sınama koşulamadıysa **hiçbir kayıt yazılmaz**: "ölçüldü · hüküm yok"
+        // satırı gerçekten koşulmuş bir ölçümü anlatır, kota hatasını değil.
+        // Kural çekirdekte tek yerde: `HardeningReport::measured_access`.
+        let measured = report.measured_access();
+        let written = match measured {
+            None => None,
+            Some(access) => Some(match guard.db.as_ref() {
+                Some(db) => {
+                    record_cli_evidence(db, &view.adapter_id, access, view.answered, probed_at_unix)
+                }
+                None => Err("kasa kilitli".to_string()),
+            }),
         };
         match written {
-            Ok(()) => {
+            None => {}
+            Some(Ok(())) => {
                 view.evidence_recorded = true;
                 view.prompt = prompt_shape_view(spec.id, Some(report.tool_access.into()));
             }
-            Err(error) => view.notes.push(format!(
+            Some(Err(error)) => view.notes.push(format!(
                 "Ölçüm kasa içine yazılamadı ({error}); istem kapısı ölçüme değil beyana dayanır."
             )),
         }
@@ -4174,6 +4203,9 @@ pub async fn cli_hardening_probe(
                 "sandboxFileCount": view.sandbox_files,
                 "sandboxTotalBytes": view.sandbox_bytes,
                 "evidenceRecorded": view.evidence_recorded,
+                // Ölçüm **yoksa** nedeni denetime sınıf olarak girer; CLI'nin
+                // cümlesi ve yanıt metni **yazılmaz**.
+                "notRun": view.not_run.as_ref().map(|reason| reason.kind),
             });
             db.append_audit("cli_hardening", None, "run", "local-user", &metadata)?;
         }
@@ -4461,7 +4493,7 @@ fn read_cli_evidence(db: &Database, adapter_id: &str) -> Option<StoredEvidence> 
 fn record_cli_evidence(
     db: &Database,
     adapter_id: &str,
-    access: dim_cli_adapters::ToolAccess,
+    access: dim_cli_adapters::MeasuredAccess,
     answered: bool,
     at_unix: u64,
 ) -> Result<(), String> {

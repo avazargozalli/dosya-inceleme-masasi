@@ -1928,7 +1928,7 @@ fn measured_evidence_round_trips_through_the_vault() {
     record_cli_evidence(
         &db,
         "claude-code",
-        dim_cli_adapters::ToolAccess::Granted,
+        dim_cli_adapters::MeasuredAccess::Granted,
         true,
         1_760_000_000,
     )

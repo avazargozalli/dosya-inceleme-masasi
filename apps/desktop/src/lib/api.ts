@@ -1076,9 +1076,20 @@ export type CliHardeningProbe = {
    * (beyana döner) — `notes` nedenini yazar.
    */
   evidenceRecorded: boolean;
+  /**
+   * Sınama **koşulamadı** (kota/kimlik/süreç/süre/iptal): ölçüm yoktur ve
+   * kanıt **yazılmadı**. `null` = sınama koştu (hükmü olmasa bile).
+   */
+  notRun: CliProbeNotRun | null;
   /** Bu ölçümden **sonra** istem gönderim kapısı (kayıt yazıldıysa onunla). */
   prompt: CliPromptShape;
   notes: string[];
+};
+
+/** Sınamanın koşulamama nedeni: sınıf (kapalı küme) + CLI'nin kendi cümlesi. */
+export type CliProbeNotRun = {
+  kind: "quota" | "auth" | "process_failed" | "timeout" | "cancelled";
+  reason: string;
 };
 
 /** F10-T11: yetenek matrisi. Yetenek kanıtı kurulu sürümün `--help` metnidir. */

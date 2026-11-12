@@ -60,7 +60,19 @@ fn main() {
                     "durum    : {:?} · {} ms · kanıt {} bayt",
                     report.outcome.status, report.outcome.duration_ms, report.canary_bytes_after
                 );
-                println!("ölçüm    : {}", report.tool_access.id());
+                // Ölçüm **yoksa** nedeni yazılır: "inconclusive" tek başına
+                // kota/kimlik hatasını gizler (ölçüldü: agy 1.5.6 kotada 3).
+                match report.not_run {
+                    Some(kind) => {
+                        println!("ölçüm    : yok — sınama koşulamadı");
+                        println!(
+                            "koşmadı  : {} · {}",
+                            kind.id(),
+                            report.not_run_reason.clone().unwrap_or_default()
+                        );
+                    }
+                    None => println!("ölçüm    : {}", report.tool_access.id()),
+                }
                 println!(
                     "işaret   : kanıt={} ret={} yanıt={}",
                     report.canary_in_reply,

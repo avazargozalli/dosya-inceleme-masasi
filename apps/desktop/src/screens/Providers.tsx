@@ -698,6 +698,13 @@ export function Providers() {
                             >
                               {measuredText.text}
                             </div>
+                            {measured.notRun && measured.notRun.reason ? (
+                              <div className="muted small" style={MONO}>
+                                {t("providers.hardeningNotRunReason", {
+                                  reason: measured.notRun.reason,
+                                })}
+                              </div>
+                            ) : null}
                             {measuredGate ? (
                               <div
                                 className={

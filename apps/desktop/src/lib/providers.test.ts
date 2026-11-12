@@ -14,6 +14,7 @@ import {
   hardeningProbeText,
   measuredAccessLabel,
   measuredEvidenceLine,
+  notRunLabel,
   persistenceText,
   probeArgv,
   probeCanRun,
@@ -413,6 +414,7 @@ function hardeningProbe(overrides: Partial<CliHardeningProbe> = {}): CliHardenin
     sandboxBytes: 4096,
     probedAtUnix: 1770000000,
     evidenceRecorded: true,
+    notRun: null,
     prompt: {
       argv: ["--tools", "", "--print", "<istem>"],
       printable: true,
@@ -455,6 +457,40 @@ describe("hardeningProbeText", () => {
     expect(result.tone).toBe("warn");
     expect(result.text).toContain("timed_out");
     expect(result.text).not.toContain("KANIT.txt");
+  });
+
+  // Ölçüldü (agy 1.5.6, 2026-11-12): kota doluyken süreç 3 ile çıkıyor ve
+  // yanıt boş kalıyordu; cümle "hüküm yok" değil **koşulamadı** demeli.
+  it("sınama koşulamadıysa nedenini yazar, hüküm yazmaz", () => {
+    const result = hardeningProbeText(
+      hardeningProbe({
+        answered: false,
+        toolAccess: "inconclusive",
+        status: "exited",
+        exitCode: 3,
+        evidenceRecorded: false,
+        notRun: {
+          kind: "quota",
+          reason: "Individual quota reached. Resets in 101h.",
+        },
+      }),
+    );
+    expect(result.tone).toBe("warn");
+    expect(result.text).toContain("koşulamadı");
+    expect(result.text).toContain("kota");
+    expect(result.text).toContain("Ölçüm yazılmadı");
+    expect(result.text).not.toContain("hüküm yok");
+    expect(result.text).not.toContain("KANIT.txt");
+  });
+
+  it("koşulamama sınıfı kapalı kümede etiketlenir, bilinmeyen ham yazılır", () => {
+    expect(notRunLabel("quota")).toBe("sağlayıcı kotası/limiti doldu");
+    expect(notRunLabel("auth")).toBe("oturum/kimlik yok");
+    expect(notRunLabel("process_failed")).toBe("süreç başarısız çıktı");
+    expect(notRunLabel("timeout")).toBe("süre aşıldı");
+    expect(notRunLabel("cancelled")).toBe("iptal edildi");
+    // İleri sürüm yeni bir sınıf gönderirse uydurma etiket yok.
+    expect(notRunLabel("billing_hold")).toBe("billing_hold");
   });
 });
 

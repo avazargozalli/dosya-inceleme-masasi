@@ -486,17 +486,46 @@ export function evidenceGateText(
 }
 
 /**
+ * Sınamanın koşulamama sınıfının etiketi. **Kapalı küme** değil: tanınmayan
+ * sınıf ham yazılır (ileri sürüm yeni bir sınıf gönderirse uydurma etiket
+ * üretilmez).
+ */
+export function notRunLabel(kind: string): string {
+  switch (kind) {
+    case "quota":
+      return t("probe.notRunQuota");
+    case "auth":
+      return t("probe.notRunAuth");
+    case "process_failed":
+      return t("probe.notRunProcessFailed");
+    case "timeout":
+      return t("probe.notRunTimeout");
+    case "cancelled":
+      return t("probe.notRunCancelled");
+    default:
+      return kind;
+  }
+}
+
+/**
  * F10-T08: sertleştirme davranış sınamasının cümlesi. Sonuç **ölçümdür**:
  * `granted` = model kanıt dosyasını okudu (sertleştirme yetmiyor), `blocked` =
  * okuyamadığını söyledi, `inconclusive` = ölçüm sonuç vermedi (hüküm değil).
- * Yanıt gelmediyse hiçbir durum yazılmaz.
+ * Sınama **koşulamadıysa** (kota/kimlik/süreç/süre/iptal) "hüküm yok" denmez:
+ * ölçüm yoktur, nedeni yazılır ve kanıt **yazılmaz**.
  */
 export function hardeningProbeText(
   probe: Pick<
     CliHardeningProbe,
-    "toolAccess" | "answered" | "canaryToken" | "canaryFile" | "durationMs" | "status"
+    "toolAccess" | "answered" | "canaryToken" | "canaryFile" | "durationMs" | "status" | "notRun"
   >,
 ): { text: string; tone: ProbeTone } {
+  if (probe.notRun) {
+    return {
+      text: t("probe.hardeningNotRun", { kind: notRunLabel(probe.notRun.kind) }),
+      tone: "warn",
+    };
+  }
   if (!probe.answered) {
     return {
       text: t("probe.hardeningNoAnswer", { status: probe.status }),

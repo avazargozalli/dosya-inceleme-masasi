@@ -45,8 +45,9 @@ pub use exec::{
     SPAWN_ATTEMPTS, SPAWN_RETRY_DELAY,
 };
 pub use hardening::{
-    canary_body, classify_reply, probe_prompt, run_hardening_probe, HardeningReport, ToolAccess,
-    CANARY_FILE, CANARY_TOKEN, REPLY_HEAD_CHARS,
+    canary_body, classify_not_run, classify_reply, probe_prompt, run_hardening_probe,
+    HardeningReport, NotRun, PrintEnvelope, ToolAccess, CANARY_FILE, CANARY_TOKEN,
+    JSON_PRINT_ADAPTERS, NOT_RUN_REASON_CHARS, REPLY_HEAD_CHARS,
 };
 pub use probe::{probe_request, run_probe, ProbeReport, PROBE_TIMEOUT};
 pub use residue::{

@@ -21,6 +21,11 @@
 //! - `blocked` bir **çıkarımdır**, kanıt değil: model reddetti diye dosya okuma
 //!   yolu yoktur demek değil; "bu istemde araç çağrısı görülmedi" demektir.
 //! - `granted` **kesin**dir: kanıt belirteci istemde yok, yalnız dosyada var.
+//! - Sınama **koşulamadıysa** ölçüm yoktur: sağlayıcı kotası dolduysa, oturum
+//!   yoksa ya da süreç düştüyse sonuç "hüküm yok" diye **kaydedilmez**
+//!   ([`NotRun`]). Ölçüldü (2026-11-12): Antigravity kotası doluyken sınama
+//!   `Exited(3)` + boş stdout veriyordu ve ürün bunu `inconclusive` diye
+//!   yazıyordu; gerçek neden stderr'de `RESOURCE_EXHAUSTED (code 429)` idi.
 //! - Kimlik: sınama **kullanıcı ev diziniyle** koşar (`HomeIsolation::UserHome`).
 //!   Ölçüldü (claude 2.1.303, 2026-11-12): kum havuzu `HOME`'inde CLI oturumu
 //!   açmıyor — `--print` çağrısı "Not logged in · Please run /login" ile düşüyor,
@@ -39,7 +44,7 @@ use std::time::Duration;
 
 use crate::{
     default_env_allowlist, hardened_args, run_cli_with_prompt, splice_prompt, AdapterSpec,
-    CliRunRequest, HomeIsolation, RunError, RunOutcome, RunSandbox,
+    CliRunRequest, HomeIsolation, RunError, RunOutcome, RunSandbox, RunStatus,
 };
 
 /// Kum havuzu köküne yazılan kanıt dosyası.
@@ -80,6 +85,153 @@ impl ToolAccess {
             Self::Inconclusive => "inconclusive",
         }
     }
+}
+
+/// Sınamanın **koşulamadığı** hâller: süreç modelden yanıt üretmedi çünkü
+/// sağlayıcı ya da süreç engelledi. Bu hâllerde **ölçüm yoktur**: kanıt
+/// yazılmaz ve yetenek matrisi "ölçüldü · hüküm yok" **demez** — o cümle
+/// gerçekten koşulmuş bir ölçümü anlatır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRun {
+    /// Sağlayıcı kota/limit hatası verdi (`RESOURCE_EXHAUSTED`, `429`, "quota").
+    Quota,
+    /// Oturum/kimlik yok ("not logged in", `401`, `403`).
+    Auth,
+    /// Süreç sıfır dışı kodla çıktı; nedeni sınıflandırılamadı.
+    ProcessFailed,
+    /// Süre sınırı aşıldı; süreç öldürüldü.
+    Timeout,
+    /// Kullanıcı iptal etti.
+    Cancelled,
+}
+
+impl NotRun {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Quota => "quota",
+            Self::Auth => "auth",
+            Self::ProcessFailed => "process_failed",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Kota/limit işaretleri (küçük harfe çevrilmiş çıktıda aranır).
+const QUOTA_MARKERS: &[&str] = &[
+    "resource_exhausted",
+    "quota",
+    "rate limit",
+    "too many requests",
+    "limit reached",
+    "insufficient credits",
+];
+/// Kimlik işaretleri.
+const AUTH_MARKERS: &[&str] = &[
+    "not logged in",
+    "unauthorized",
+    "not authenticated",
+    "invalid api key",
+    "please run /login",
+];
+/// Rapora taşınan "koşulamadı" gerekçesinin üst uzunluğu (karakter).
+pub const NOT_RUN_REASON_CHARS: usize = 200;
+
+/// Yanıt **gelmediğinde** nedenini sınıflar. `None` = tanınan bir engel yok
+/// (süreç 0 ile çıktı ama model bir şey yazmadı): bu ölçümdür, hükmü yoktur.
+///
+/// Sıra önemli: kota ve kimlik işaretleri **süreç kodundan önce** bakılır,
+/// çünkü CLI'lar bu hataları sıfır dışı kodla bildirir ve "süreç düştü" demek
+/// gerçek nedeni gizlerdi.
+#[must_use]
+pub fn classify_not_run(status: &RunStatus, stdout: &str, stderr: &str) -> Option<NotRun> {
+    match status {
+        RunStatus::TimedOut => return Some(NotRun::Timeout),
+        RunStatus::Cancelled => return Some(NotRun::Cancelled),
+        RunStatus::Exited(_) | RunStatus::Signaled => {}
+    }
+    let haystack = format!("{stdout}\n{stderr}").to_lowercase();
+    if QUOTA_MARKERS.iter().any(|marker| haystack.contains(marker))
+        || has_status_code(&haystack, "429")
+    {
+        return Some(NotRun::Quota);
+    }
+    if AUTH_MARKERS.iter().any(|marker| haystack.contains(marker))
+        || has_status_code(&haystack, "401")
+        || has_status_code(&haystack, "403")
+    {
+        return Some(NotRun::Auth);
+    }
+    match status {
+        RunStatus::Exited(0) => None,
+        _ => Some(NotRun::ProcessFailed),
+    }
+}
+
+/// `haystack` içinde **sayı belirteci** olarak `code` var mı: `429` bir
+/// belge numarasıyla (ör. `1429`) eşleşmesin.
+fn has_status_code(haystack: &str, code: &str) -> bool {
+    haystack
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|token| token == code)
+}
+
+/// Süreç durumunun kısa metni (gerekçe boşsa rapora bu yazılır).
+fn run_status_text(status: &RunStatus) -> String {
+    match status {
+        RunStatus::Exited(code) => format!("çıkış kodu {code}"),
+        RunStatus::TimedOut => "süre aşıldı".to_string(),
+        RunStatus::Cancelled => "iptal edildi".to_string(),
+        RunStatus::Signaled => "sinyalle sonlandı".to_string(),
+    }
+}
+
+/// `--output-format=json` (agy 1.5.6) çıktısı. Ölçüldü (2026-11-12): başarıda
+/// `{"status":"OK","response":"…"}`, hatada `{"status":"ERROR","response":"",
+/// "error":"Individual quota reached …"}` — yani hata **stdout'a makine
+/// okunur** yazılıyor. Modelin görünen yanıtı `response` alanındadır; zarf
+/// varsa sınıflama bu metin üzerinden yapılır (JSON gövdesi yanıt sayılmaz).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintEnvelope {
+    pub status: Option<String>,
+    pub response: String,
+    pub error: Option<String>,
+}
+
+/// Yapısal çıktı **istenen** adaptörler (ölçüldü; liste kapalı ve kısa).
+pub const JSON_PRINT_ADAPTERS: &[&str] = &["antigravity-cli"];
+
+/// `stdout`un ilk JSON nesnesini zarfa çözer. Bozuk/yarım gövde ya da
+/// `response` alanı yoksa `None` (uydurma yanıt yok); çağıran ham çıktıya düşer.
+fn parse_print_envelope(stdout: &str) -> Option<PrintEnvelope> {
+    let line = stdout.lines().map(str::trim).find(|l| l.starts_with('{'))?;
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let object = value.as_object()?;
+    let text = |key: &str| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let response = text("response")?;
+    let error = text("error").filter(|text| !text.trim().is_empty());
+    Some(PrintEnvelope {
+        status: text("status"),
+        response,
+        error,
+    })
+}
+
+/// Gerekçeyi tek satıra indirir: kum havuzu yolu **yazılmaz** ve uzunluk
+/// sınırlanır (rapor kullanıcıya gösterilir).
+fn not_run_reason(raw: &str, sandbox_root: &str) -> String {
+    let without_root = raw.replace(sandbox_root, "<kum>");
+    let collapsed = without_root
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.chars().take(NOT_RUN_REASON_CHARS).collect()
 }
 
 /// Kanıt dosyasının gövdesi: belirteç kendi satırında, açıklama ayrı satırda.
@@ -137,13 +289,29 @@ pub struct HardeningReport {
     /// Sınama **sonrası** kanıt dosyası boyutu: CLI dosyayı silmiş/bozmuşsa
     /// buradan görünür (0 = dosya yok).
     pub canary_bytes_after: u64,
+    /// Sınama **koşulamadı** (kota, kimlik, süreç, süre, iptal): ölçüm yoktur,
+    /// kanıt yazılmaz. `None` = sınama gerçekten koştu (hükmü olmasa bile).
+    pub not_run: Option<NotRun>,
+    /// Koşulamama gerekçesi (CLI'nin kendi cümlesi, tek satır, ≤200 karakter).
+    pub not_run_reason: Option<String>,
 }
 
 impl HardeningReport {
-    /// Yanıt gerçekten geldi mi: süreç 0 ile çıktı **ve** boş olmayan çıktı var.
+    /// Yanıt gerçekten geldi mi: süreç 0 ile çıktı **ve** boş olmayan yanıt var.
     #[must_use]
     pub fn answered(&self) -> bool {
         self.outcome.succeeded() && !self.reply_head.trim().is_empty()
+    }
+
+    /// Kapıya girecek ölçüm: **sınama koşulamadıysa `None`**. `inconclusive`
+    /// yalnız gerçekten koşulmuş (yanıt gelmiş ya da süreç normal çıkmış ama
+    /// hüküm vermeyen) bir ölçümü anlatır.
+    #[must_use]
+    pub fn measured_access(&self) -> Option<crate::MeasuredAccess> {
+        if self.not_run.is_some() {
+            return None;
+        }
+        Some(self.tool_access.into())
     }
 }
 
@@ -171,6 +339,7 @@ pub fn run_hardening_probe(
     }
 
     let sandbox = RunSandbox::create()?;
+    let sandbox_root = sandbox.path().to_string_lossy().to_string();
     let workdir = sandbox.path().join(WORK_DIR);
     std::fs::create_dir_all(&workdir)
         .map_err(|err| RunError::WorkdirUnavailable(err.to_string()))?;
@@ -184,10 +353,18 @@ pub fn run_hardening_probe(
     // Codex boş dizinde çalışmayı reddeder (ölçüldü 0.159.2: "Not inside a
     // trusted directory and --skip-git-repo-check was not specified"); sınama
     // dizini kasıtlı olarak boş bir kum havuzudur, depo değildir.
-    let extra: Vec<String> = match spec.id {
+    let mut extra: Vec<String> = match spec.id {
         "codex-cli" => vec!["--skip-git-repo-check".to_string()],
         _ => Vec::new(),
     };
+    // Yapısal çıktı: sağlayıcı hatası **stdout'a makine okunur** yazılsın
+    // (ölçüldü: agy 1.5.6 kotada `{"status":"ERROR",…,"error":"…429…"}`).
+    // Değer **tek belirteçte** verilir: ayrı `json` belirteci `build_args`
+    // kapısından düşerdi (izinli olan *bayrak*, değer değil).
+    let structured = JSON_PRINT_ADAPTERS.contains(&spec.id);
+    if structured {
+        extra.push("--output-format=json".to_string());
+    }
     let request = CliRunRequest {
         adapter_id: spec.id.to_string(),
         executable: executable.clone(),
@@ -204,9 +381,41 @@ pub fn run_hardening_probe(
         .map_err(RunError::Adapter)?;
 
     let outcome = run_cli_with_prompt(&request, &prompt, cancel)?;
-    let reply_head: String = outcome.stdout_head.chars().take(REPLY_HEAD_CHARS).collect();
+    // Yarım JSON'dan yanıt uydurulmaz (codex NDJSON kuralının aynısı).
+    let envelope = if structured && !outcome.stdout_truncated {
+        parse_print_envelope(&outcome.stdout_head)
+    } else {
+        None
+    };
+    let answer = envelope
+        .as_ref()
+        .map_or(outcome.stdout_head.as_str(), |parsed| {
+            parsed.response.as_str()
+        });
+    let reply_head: String = answer.chars().take(REPLY_HEAD_CHARS).collect();
     let stderr_head: String = outcome.stderr_head.chars().take(600).collect();
-    let (tool_access, canary_in_reply, decline_in_reply) = classify_reply(&outcome.stdout_head);
+    let (tool_access, canary_in_reply, decline_in_reply) = classify_reply(answer);
+    let answered = matches!(outcome.status, RunStatus::Exited(0)) && !answer.trim().is_empty();
+    let not_run = if answered {
+        None
+    } else {
+        classify_not_run(&outcome.status, &outcome.stdout_head, &outcome.stderr_head)
+    };
+    let not_run_reason = not_run.map(|_| {
+        let raw = envelope
+            .as_ref()
+            .and_then(|parsed| parsed.error.clone())
+            .or_else(|| {
+                outcome
+                    .stderr_head
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| run_status_text(&outcome.status));
+        not_run_reason(&raw, &sandbox_root)
+    });
     let canary_bytes_after = std::fs::metadata(&canary_path)
         .map(|meta| meta.len())
         .unwrap_or(0);
@@ -223,6 +432,8 @@ pub fn run_hardening_probe(
         reply_head,
         stderr_head,
         canary_bytes_after,
+        not_run,
+        not_run_reason,
     })
 }
 
@@ -418,6 +629,160 @@ mod tests {
                 // workdir kum havuzunun altındadır; kum havuzu silinince yok olur.
                 !report.outcome.scope.workdir.join(CANARY_FILE).exists()
             }
+        );
+    }
+
+    /// Ölçülen vaka (agy 1.5.6, 2026-11-12): kota doluyken süreç **3** ile
+    /// çıkar, hata JSON'u **stdout'a** yazılır ve model yanıtı boştur. Ürün
+    /// bunu "kota" diye söylemeli ve **kanıt yazmamalı** — "ölçüldü · hüküm
+    /// yok" demek gerçekten koşulmuş bir ölçümü anlatır.
+    #[test]
+    fn quota_error_means_the_probe_did_not_run() {
+        let dir = tempdir();
+        let exe = script(
+            dir.path(),
+            "printf '%s\\n' '{\"conversation_id\":\"x\",\"status\":\"ERROR\",\"response\":\"\",\"error\":\"Individual quota reached. Resets in 101h.\"}' && \
+             printf 'error: Individual quota reached.\\nAGY_ERROR: {\"status\":\"RESOURCE_EXHAUSTED\",\"error_code\":429}\\n' >&2 && exit 3",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_hardening_probe(spec("antigravity-cli"), exe, &cancel).expect("probe");
+        assert_eq!(report.not_run, Some(NotRun::Quota));
+        assert!(report.measured_access().is_none(), "kanıt yazılmamalı");
+        assert!(!report.answered());
+        assert!(report.reply_head.is_empty(), "JSON gövdesi yanıt değil");
+        let reason = report.not_run_reason.clone().unwrap_or_default();
+        assert!(reason.contains("quota reached"), "{reason}");
+    }
+
+    /// Yapısal çıktıda modelin yanıtı `response` alanındadır: sınıflama **o
+    /// metin** üzerinden yapılır, JSON gövdesi üzerinden değil. Aksi hâlde
+    /// çalışan bir ölçüm "hüküm yok" görünürdü.
+    #[test]
+    fn envelope_answer_is_classified_on_the_response_field() {
+        let dir = tempdir();
+        let exe = script(
+            dir.path(),
+            "printf '%s\\n' '{\"status\":\"OK\",\"response\":\"DIM-CANARY-50\",\"error\":null}'",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_hardening_probe(spec("antigravity-cli"), exe, &cancel).expect("probe");
+        assert_eq!(report.tool_access, ToolAccess::Granted);
+        assert!(report.answered());
+        assert_eq!(report.reply_head, CANARY_TOKEN);
+        assert_eq!(report.not_run, None);
+        assert_eq!(
+            report.measured_access(),
+            Some(crate::MeasuredAccess::Granted)
+        );
+        // Yapısal çıktı **istenir** ve değer tek belirteçte verilir.
+        assert!(
+            report
+                .argv_template
+                .iter()
+                .any(|arg| arg == "--output-format=json"),
+            "{:?}",
+            report.argv_template
+        );
+    }
+
+    /// Kimlik yok: yanıt gelmiyor ama bu bir **ölçüm** değil.
+    #[test]
+    fn auth_failure_is_not_a_measurement() {
+        let dir = tempdir();
+        let exe = script(
+            dir.path(),
+            "printf 'Not logged in · Please run /login\\n' >&2 && exit 1",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_hardening_probe(spec("claude-code"), exe, &cancel).expect("probe");
+        assert_eq!(report.not_run, Some(NotRun::Auth));
+        assert!(report.measured_access().is_none());
+    }
+
+    /// Tanınmayan sıfır dışı çıkış: neden bilinmiyor ama ölçüm de yok.
+    #[test]
+    fn unclassified_non_zero_exit_is_not_a_measurement() {
+        let dir = tempdir();
+        let exe = script(dir.path(), "printf 'beklenmeyen\\n' >&2 && exit 2");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_hardening_probe(spec("claude-code"), exe, &cancel).expect("probe");
+        assert_eq!(report.not_run, Some(NotRun::ProcessFailed));
+        assert!(report.measured_access().is_none());
+        assert!(report
+            .not_run_reason
+            .clone()
+            .unwrap_or_default()
+            .contains("beklenmeyen"));
+    }
+
+    /// Sınır: süreç 0 ile çıktı ama model bir şey yazmadı → sınama **koştu**,
+    /// hükmü yok. Bu kayıt tutulur (davranış önceki turlarda sabitlendi).
+    #[test]
+    fn empty_success_stays_a_measurement_without_verdict() {
+        let dir = tempdir();
+        let exe = script(dir.path(), "exit 0");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_hardening_probe(spec("claude-code"), exe, &cancel).expect("probe");
+        assert_eq!(report.not_run, None);
+        assert!(!report.answered());
+        assert_eq!(
+            report.measured_access(),
+            Some(crate::MeasuredAccess::Inconclusive)
+        );
+    }
+
+    /// Model yanıt verdiyse **stderr gürültüsü** ölçümü düşürmez: bazı CLI'lar
+    /// yanıt verirken uyarı yazar (ör. "rate limit yaklaşıyor"). `answered`
+    /// kapısı bunun için var; olmasaydı gerçek bir ölçüm "koşulamadı" sayılırdı.
+    #[test]
+    fn an_answer_wins_over_stderr_noise() {
+        let dir = tempdir();
+        let exe = script(
+            dir.path(),
+            "printf 'ARACSIZ\\n' && printf 'uyarı: rate limit yaklaşıyor\\n' >&2",
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_hardening_probe(spec("claude-code"), exe, &cancel).expect("probe");
+        assert!(report.answered());
+        assert_eq!(
+            report.not_run, None,
+            "yanıt varken stderr gürültüsü ölçümü düşürmez"
+        );
+        assert_eq!(report.tool_access, ToolAccess::Blocked);
+        assert_eq!(
+            report.measured_access(),
+            Some(crate::MeasuredAccess::Blocked)
+        );
+    }
+
+    /// Sınıflama **saf**: süre/iptal sinyali süreç kodundan önce gelir.
+    #[test]
+    fn timeout_and_cancel_are_not_run() {
+        assert_eq!(
+            classify_not_run(&RunStatus::TimedOut, "", ""),
+            Some(NotRun::Timeout)
+        );
+        assert_eq!(
+            classify_not_run(&RunStatus::Cancelled, "", ""),
+            Some(NotRun::Cancelled)
+        );
+        assert_eq!(
+            classify_not_run(&RunStatus::Signaled, "", ""),
+            Some(NotRun::ProcessFailed)
+        );
+        assert_eq!(classify_not_run(&RunStatus::Exited(0), "", ""), None);
+    }
+
+    /// `429` bir **sayı belirteci** olarak aranır: belge numarası eşleşmemeli.
+    #[test]
+    fn status_codes_need_token_boundaries() {
+        assert_eq!(
+            classify_not_run(&RunStatus::Exited(1), "sayfa 1429/2", ""),
+            Some(NotRun::ProcessFailed)
+        );
+        assert_eq!(
+            classify_not_run(&RunStatus::Exited(1), "", "HTTP 429"),
+            Some(NotRun::Quota)
         );
     }
 }
