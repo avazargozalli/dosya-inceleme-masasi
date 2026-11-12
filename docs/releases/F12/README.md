@@ -1050,3 +1050,53 @@ yazmalar paralel başlamaz (düğmeler kapalı).
 korunur ama kaydedilmemiş olabilir (hata görünür, kullanıcı yeniden dener);
 (b) aynı künye metni yeniden yazıldıysa "değişmedi" sayılır ve alan temizlenir
 (bilinçli); (c) görsel QA + gerçek Tauri penceresi **insan bekliyor**.
+
+## F12-T14e — alıntı denetimi uçuşta girdi değişirse bayat hüküm yazılmaz (2026-11-13)
+
+**Ölçülen kusur (düzeltme öncesi bileşen, dört yeni test):** Review ekranındaki
+“Alıntıları denetle” isteği uçuşta iken kullanıcı **metni** düzenlerse hüküm
+temizleniyordu (`setQuoteCheck(null)`) ama **uçuştaki yanıt** geldiğinde yalnız
+dosya kapısı (`caseRef`) aranıyordu. Aynı dosyada metin değişmiş olsa da yanıt
+yazılıyor, eski metnin hükmü **yeni metnin altında** beliriyordu. Sonuç yalnız
+görsel değil: o hükümdeki “Kaynağa bağla” düğmesi **eski alıntının** çapasını
+bağlıyor, yani delil ekrandaki metne değil başka bir alıntıya işaret ediyordu
+(INV-05). Aynı boşluk **kapsam** (belge) ve **kaynak iddia** seçimlerinde de
+vardı; düşen isteğin hatası da yeni metnin altında kırmızı satır bırakıyordu.
+
+**Yazılan (`screens/Review.tsx`):** yeni `quoteCheckSeq` — denetimin **girdisi**
+nesil taşır; başarı **ve** hata yolları kendi neslini karşılaştırır
+(`caseRef` yalnız dosyayı kapsar). Üç girdi yolu (metin, kapsam, kaynak iddia)
+tek yardımcıdan geçer: `invalidateQuoteCheck()` temizliği yapar **ve** nesli
+artırır. Yazma kilidi `quoteSeq` ayrı tutuldu: bir “Kaynağa bağla” işlemi
+uçuştaki denetimi sessizce düşürmemeli. Denetim düğmesi hâlâ `quoteBusy` ile
+kapalı olduğundan **aynı dosyada iki denetim aynı anda uçuşta olamaz**; kusur
+tek istek + girdi değişimiyle üretildi.
+
+**Testler (`Review.test.tsx` 43 → 47, +4):** uçuşta metin değişimi (başarı
+kapısı), uçuşta metin değişimi (hata kapısı), uçuşta kapsam değişimi, uçuşta
+kaynak iddia değişimi. **Ham koşu:** düzeltme öncesi bileşenle
+**4 failed | 43 passed**; düzeltmeyle **47/47**. Tam vitest yerel **66 dosya /
+1423 test** (CI 1415 — fark ağaçtaki başka ajanın commit'siz testleri),
+`tsc --noEmit` temiz, `npm run build` temiz.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-t12-gates.py`, her mutasyon
+tek başına, `try/finally` + sha256 birebir — `Review.tsx 35369b98…`):**
+**5/5 KIRMIZI, taban 47/47 yeşilken** — M1 geçersiz kılma nesli artmaz (4 test) ·
+M2 başarı kapısı yalnız dosyaya bakar (3) · M3 hata kapısı yalnız dosyaya bakar
+(1) · M4 kapsam değişimi geçersiz kılmaz (1) · M5 kaynak iddia değişimi geçersiz
+kılmaz (1).
+
+**CI (ölçüldü):** kod `351b352` → run `43316540150` **10/10 YEŞİL** (ilk koşu):
+`arayüz` **66 dosya / 1415 test**, paket `index-BEc6nbia.js` **690,19 kB** /
+gzip **184,10 kB**; `dim-storage` **562** (macos-15, 274,80 s); diğer sekiz iş
+yeşil.
+
+**Dürüst sınırlar:** (a) kapı **arayüz düzeyindedir** — doğrudan IPC bu kapıyı
+atlar; çekirdek `check_in_text_quotes` zaten durumsuzdur (her istek kendi
+girdisini taşır), kusur ekranın bayat yanıtı yazmasıydı. (b) Aynı metin/kapsamla
+**yeniden** denetim yeni nesil açar ve eskisini düşürür; bu bilinçli (son istek
+kazanır). (c) Uçuşta “Kaynağa bağla” + aynı anda ikinci denetim: çapa çekirdekte
+gerçekten yazılır ama rapor kimliği değiştiği için **rozet ve kaynak listesi
+güncellenmez** (INV-05 kapısı bilinçli; çapanın ekranda görünmesi **açık kayıt**).
+(d) jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek tıklama ve **görsel QA
+insan bekliyor**; `api` mock'lu olduğu için `in_text_quote_check` SQL'i koşmaz.
