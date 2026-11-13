@@ -42,6 +42,14 @@ pub struct NewAiRun {
     pub prompt_version: String,
     pub output_schema_version: String,
     pub consent_id: String,
+    /// Gönderilecek **maske terimleri** (plandan türetilenler dâhil; boş liste
+    /// = maskesiz gönderim).
+    ///
+    /// Onay maskeye bağlıdır: alan **tip düzeyinde zorunludur** ki çağıran
+    /// "maskeyi iletmeyi unutarak" onaylanan maskeyi sessizce düşüremesin
+    /// (eksik iletiş = maskesiz istek = onay maskeli ise `E_AI_MASK_CHANGED`).
+    #[serde(default)]
+    pub mask_terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +64,12 @@ pub struct TransferConsentRow {
     pub consent_text_version: String,
     pub approved_at: String,
     pub revoked_at: Option<String>,
+    /// Onayın bağlandığı **maske tanımı** (`outbound_transforms` kimliği).
+    ///
+    /// `None` = onay bu sütundan önce alınmış: onaylanan maske **bilinmiyor**,
+    /// bu yüzden çalıştırma reddedilir (`E_AI_CONSENT_UNBOUND`). Yeni onaylar
+    /// maskesizken de bir tanıma (terim sayısı 0) bağlanır.
+    pub outbound_transform_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +86,15 @@ pub struct NewTransferConsent {
     #[serde(default)]
     pub expires_at: Option<String>,
     pub consent_text_version: String,
+    /// Onaylanan **maske terimleri** (serbest metin). Terimler kasaya
+    /// yazılmaz: onay yalnız tanımın özetine (`outbound_transforms`) bağlanır.
+    #[serde(default)]
+    pub mask_terms: Vec<String>,
+    /// Onaylanan **karartma planı** (varsa). Plan bölgelerinden türetilen
+    /// terimler onayın parçasıdır; plan onayın kapsamındaki bir belgeye ait
+    /// olmalıdır (`E_MASK_PLAN_SCOPE`, gönderim yoluyla aynı kapı).
+    #[serde(default)]
+    pub mask_plan_id: Option<String>,
 }
 
 /// Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik.
@@ -93,6 +116,11 @@ pub struct TransferConsentListRow {
     /// yürütülemez. `active` yalnız iptal/süreye bakar — "kayıt yürürlükte" ile
     /// "yürütülebilir" aynı şey değildir; ekran ikisini ayrı yazar.
     pub provider_current: bool,
+    /// Onayın bağlandığı maske tanımındaki **terim sayısı** (0 = maskesiz).
+    /// Terimlerin kendisi saklanmaz; envanter yalnız "maskeli onay mı, kaç
+    /// terimle" sorusunu yanıtlar. Bağ yoksa (eski onay) 0'dır ve
+    /// `consent.outbound_transform_id` `None` kalır — ekran ikisini ayrı yazar.
+    pub mask_term_count: i64,
 }
 
 /// Bir aktarım makbuzunun **okunabilir** satırı.
@@ -411,13 +439,55 @@ impl Database {
         }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
+        // **Maske onayın parçasıdır** (şartname §763): onaylanan maske tanımı
+        // kayda bağlanır. Terimler saklanmaz — `outbound_transforms` yalnız
+        // kanonik terim listesinin özetini ve sayısını taşır (0027 sözleşmesi).
+        // Plan seçildiyse bölgelerden türetilen terimler de onayın parçasıdır;
+        // plan onayın kapsamındaki bir belgeye ait olmalıdır (gönderim yoluyla
+        // **aynı** kapı ve aynı hata kodu).
+        let mut approved_terms = canonical_mask_terms(&new.mask_terms)?;
+        if let Some(plan_id) = new.mask_plan_id.as_deref() {
+            // Kapsam kapısı **türetmeden önce**: plan onayın kapsamındaki bir
+            // belgenin *güncel* sürümüne ait değilse hangi terimleri
+            // bağlayacağımızı sormak anlamsız (ve gönderim yoluyla aynı kod).
+            let plan = self
+                .get_redaction_plan(plan_id)?
+                .ok_or(StorageError::NotFound)?;
+            if plan.case_id != new.case_scope {
+                return Err(StorageError::NotFound);
+            }
+            let mut plan_in_scope = false;
+            for document_id in &selected {
+                let current: Option<Option<String>> = self
+                    .conn()
+                    .query_row(
+                        "SELECT current_version_id FROM documents
+                         WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                        rusqlite::params![document_id, new.case_scope],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(Some(version_id)) = current {
+                    if version_id == plan.document_version_id {
+                        plan_in_scope = true;
+                    }
+                }
+            }
+            if !plan_in_scope {
+                return Err(StorageError::MaskRejected("E_MASK_PLAN_SCOPE"));
+            }
+            let derived = self.outbound_terms_from_plan(&new.case_scope, plan_id)?;
+            approved_terms.extend(derived.terms.iter().cloned());
+            approved_terms = canonical_mask_terms(&approved_terms)?;
+        }
         // Onay **aynı amaç** için yenilendiyse önceki etkin onay kapanır: o
         // yetkinin güncel kapsamı en son onaydır (varış yeri değişse bile).
         // Farklı amaç ayrı yetkidir; ona dokunulmaz.
         let tx = self.conn().unchecked_transaction()?;
+        let transform_id = ensure_outbound_transform(&tx, &approved_terms)?;
         tx.execute(
-            "INSERT INTO transfer_consents (id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO transfer_consents (id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at,outbound_transform_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             rusqlite::params![
                 id,
                 snapshot,
@@ -426,7 +496,8 @@ impl Database {
                 serde_json::to_string(&selected).unwrap_or_else(|_| "[]".into()),
                 new.expires_at,
                 new.consent_text_version,
-                now
+                now,
+                transform_id
             ],
         )?;
         let superseded: Vec<String> = {
@@ -472,7 +543,7 @@ impl Database {
         id: &str,
     ) -> Result<Option<TransferConsentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at,revoked_at
+            "SELECT id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at,revoked_at,outbound_transform_id
              FROM transfer_consents WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_consent).optional()?)
@@ -506,18 +577,23 @@ impl Database {
         case_id: &str,
     ) -> Result<Vec<TransferConsentListRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,provider_snapshot,case_scope,purpose,selected_document_ids,expires_at,consent_text_version,approved_at,revoked_at
-             FROM transfer_consents WHERE case_scope=?1
-             ORDER BY approved_at DESC, id DESC",
+            "SELECT c.id,c.provider_snapshot,c.case_scope,c.purpose,c.selected_document_ids,c.expires_at,c.consent_text_version,c.approved_at,c.revoked_at,c.outbound_transform_id,
+                    COALESCE(t.term_count, 0)
+             FROM transfer_consents c
+             LEFT JOIN outbound_transforms t ON t.id = c.outbound_transform_id
+             WHERE c.case_scope=?1
+             ORDER BY c.approved_at DESC, c.id DESC",
         )?;
-        let rows = stmt.query_map([case_id], map_consent)?;
+        let rows = stmt.query_map([case_id], |row| {
+            Ok((map_consent(row)?, row.get::<_, i64>(10)?))
+        })?;
         let now = now_iso();
         // Yürürlükteki varış yerleri **bir kez** okunur: satır başına ayrı
         // sorgu, aynı liste içinde farklı anların karışmasına yol açardı.
         let current = self.current_provider_snapshots()?;
         let mut out = Vec::new();
         for row in rows {
-            let consent = row?;
+            let (consent, mask_term_count) = row?;
             let active = consent_active_at(&consent, &now);
             let provider_current = current
                 .iter()
@@ -526,6 +602,7 @@ impl Database {
                 consent,
                 active,
                 provider_current,
+                mask_term_count,
             });
         }
         Ok(out)
@@ -608,6 +685,23 @@ impl Database {
         if consent.provider_snapshot.trim() != current {
             // "Onay yok" demek yanlış olurdu: onay **var**, varış yeri değişti.
             return Err(StorageError::AiProviderChanged);
+        }
+        // **Maske onayın parçasıdır** (şartname §763): onaylanan maske tanımı
+        // ile gönderilecek maske aynı olmalı. Maskenin kaldırılması izni
+        // **genişletir**; onaylanmayan bir maske de onaylanmayan metin
+        // gönderir — ikisi de yeni onay ister. Onay maskesiz alınmışsa
+        // gönderilecek maske de boş olmalıdır (eşitlik, tek yön değil).
+        let Some(approved_transform) = consent.outbound_transform_id.as_deref() else {
+            return Err(StorageError::AiConsentUnbound);
+        };
+        let approved_hash: String = self.conn().query_row(
+            "SELECT settings_hash FROM outbound_transforms WHERE id=?1",
+            [approved_transform],
+            |row| row.get(0),
+        )?;
+        let wanted_hash = outbound_settings_hash(&canonical_mask_terms(&new.mask_terms)?);
+        if approved_hash != wanted_hash {
+            return Err(StorageError::AiMaskChanged);
         }
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
@@ -2256,6 +2350,7 @@ fn map_consent(row: &Row<'_>) -> rusqlite::Result<TransferConsentRow> {
         consent_text_version: row.get(6)?,
         approved_at: row.get(7)?,
         revoked_at: row.get(8)?,
+        outbound_transform_id: row.get(9)?,
     })
 }
 
@@ -2273,13 +2368,14 @@ fn identity_runs(len: usize) -> Vec<MaskRun> {
     }]
 }
 
-/// Dönüşüm sürümünü **içerik adresli** olarak bulur/oluşturur. Aynı terim
-/// listesi aynı satırı kullanır; terimlerin kendisi saklanmaz, yalnız özeti
-/// (`settings_hash`) ve sayısı.
-fn ensure_outbound_transform(
-    tx: &rusqlite::Transaction<'_>,
-    terms: &[String],
-) -> Result<String, StorageError> {
+/// Maske **tanımının** içerik adresi: terim listesi kanonik biçimde özetlenir
+/// (terimlerin kendisi saklanmaz — maskenin amacı terimi kasadan çıkarmamak).
+///
+/// Tek kaynak: gönderim sicili (`outbound_transforms`), onay bağı
+/// (`transfer_consents.outbound_transform_id`) ve çalıştırma kapısı **aynı**
+/// işlevi kullanır. İki ayrı biçim yazılsaydı onay ile gönderim sessizce
+/// ayrışırdı (kapı yeşilken içerik farklı çıkardı).
+fn outbound_settings_hash(terms: &[String]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"dim-outbound-transform-v1");
     hasher.update(MASK_PLACEHOLDER.as_bytes());
@@ -2287,11 +2383,39 @@ fn ensure_outbound_transform(
         hasher.update(b"\x1f");
         hasher.update(term.as_bytes());
     }
-    let settings_hash: String = hasher
+    hasher
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Maskeyi **kanonik** biçime getirir (kırp, boşları at, doğrula, tekilleştir,
+/// uzundan kısaya sırala).
+///
+/// Boş liste geçerlidir: "maske yok" bir maskesizlik kararıdır, geçersiz terim
+/// değil (`validate_terms` boş listeyi reddeder — o yüzden bu sarmalayıcı var).
+fn canonical_mask_terms(terms: &[String]) -> Result<Vec<String>, StorageError> {
+    let cleaned: Vec<String> = terms
+        .iter()
+        .map(|term| term.trim())
+        .filter(|term| !term.is_empty())
+        .map(str::to_string)
         .collect();
+    if cleaned.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_terms(&cleaned).map_err(mask_storage_error)
+}
+
+/// Dönüşüm sürümünü **içerik adresli** olarak bulur/oluşturur. Aynı terim
+/// listesi aynı satırı kullanır; terimlerin kendisi saklanmaz, yalnız özeti
+/// (`settings_hash`) ve sayısı.
+fn ensure_outbound_transform(
+    tx: &rusqlite::Transaction<'_>,
+    terms: &[String],
+) -> Result<String, StorageError> {
+    let settings_hash = outbound_settings_hash(terms);
     let existing: Option<String> = tx
         .query_row(
             "SELECT id FROM outbound_transforms WHERE settings_hash=?1",
@@ -2356,6 +2480,8 @@ mod tests {
             selected_document_ids: vec![document_id],
             expires_at: None,
             consent_text_version: "1".into(),
+            mask_terms: Vec::new(),
+            mask_plan_id: None,
         })
         .expect("onay")
     }
@@ -2369,6 +2495,7 @@ mod tests {
             prompt_version: "p1".into(),
             output_schema_version: "1".into(),
             consent_id: consent_id.into(),
+            mask_terms: Vec::new(),
         }
     }
 
@@ -2400,6 +2527,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: Some("2000-01-01T00:00:00Z".into()),
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         assert_eq!(
@@ -2423,6 +2552,8 @@ mod tests {
             selected_document_ids: documents,
             expires_at: None,
             consent_text_version: "1".into(),
+            mask_terms: Vec::new(),
+            mask_plan_id: None,
         })
         .expect("onay")
     }
@@ -2475,6 +2606,8 @@ mod tests {
                 selected_document_ids: vec![document_id.clone()],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("ilk onay");
         db.register_api_profile("https://b.example/v1", "model-b")
@@ -2487,6 +2620,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("yeni onay");
         assert!(
@@ -2512,6 +2647,8 @@ mod tests {
                 selected_document_ids: vec![document_id.clone()],
                 expires_at: Some("2000-01-01T00:00:00Z".into()),
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("süresi geçmiş onay");
 
@@ -2577,6 +2714,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: Some("2000-01-01T00:00:00Z".into()),
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("süresi geçmiş onay");
 
@@ -2633,6 +2772,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
 
@@ -2699,6 +2840,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let rows = db.list_provider_profiles().expect("profiller");
@@ -3073,6 +3216,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let mut approved = run(&case_id, &c.id);
@@ -3105,6 +3250,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let mut approved = run(&case_id, &c.id);
@@ -3134,6 +3281,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect_err("bilinmeyen sağlayıcı");
         assert_eq!(err.code(), "E_AI_PROVIDER");
@@ -3154,6 +3303,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect_err("AI kapalı");
         assert_eq!(err.code(), "E_AI_OFF");
@@ -3243,6 +3394,8 @@ mod tests {
                 selected_document_ids: vec![document_id.clone()],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let started = db
@@ -3897,6 +4050,8 @@ mod tests {
                 selected_document_ids: ids,
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -3943,6 +4098,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -3966,6 +4123,8 @@ mod tests {
                 selected_document_ids: vec![approved],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -3987,6 +4146,8 @@ mod tests {
                 selected_document_ids: vec![document_id.clone()],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         db.conn()
@@ -4050,6 +4211,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -4130,6 +4293,8 @@ mod tests {
                     selected_document_ids: ids,
                     expires_at: None,
                     consent_text_version: "1".into(),
+                    mask_terms: Vec::new(),
+                    mask_plan_id: None,
                 })
                 .expect_err(label);
             assert_eq!(err.code(), "E_AI_CONSENT", "{label}");
@@ -4148,6 +4313,8 @@ mod tests {
                 selected_document_ids: vec![],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect_err("boş seçim");
         assert_eq!(err.code(), "E_AI_CONSENT");
@@ -4178,6 +4345,8 @@ mod tests {
             selected_document_ids: vec![document_id.to_string()],
             expires_at: None,
             consent_text_version: "1".into(),
+            mask_terms: Vec::new(),
+            mask_plan_id: None,
         })
         .expect("onay")
     }
@@ -4383,6 +4552,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -4469,6 +4640,8 @@ mod tests {
                 selected_document_ids: vec![document_id.clone(), placeholder_document],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -4539,6 +4712,8 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
@@ -4731,5 +4906,289 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// Belge + sürüm + sayfa + **tek metin bloğu** (bölge kesişimi için).
+    ///
+    /// `document_with_text` blok kutusu yazmaz; plan maskesi blok–bölge
+    /// kesişiminden türediği için bu fikstür gerekli.
+    fn document_with_block(
+        db: &Database,
+        case_id: &str,
+        name: &str,
+        text: &str,
+        bbox: [f64; 4],
+    ) -> (String, String) {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let document = db
+            .create_document(case_id, name, "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &document.id,
+                case_id,
+                &blob,
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("run");
+        let pages = vec![crate::NewPage {
+            index: 0,
+            text: text.into(),
+            width: Some(595.0),
+            height: Some(842.0),
+            origin: "native".into(),
+            warnings: Vec::new(),
+            rotation: 0,
+            coordinate_space: Some("unrotated_cropbox_points".into()),
+            page_label: None,
+            blocks: vec![crate::SegmentBlock {
+                start: 0,
+                end: i64::try_from(text.chars().count()).unwrap_or(i64::MAX),
+                bbox: Some(bbox),
+                lines: Vec::new(),
+                path: None,
+                kind: None,
+            }],
+        }];
+        db.store_pages(&run.id, case_id, &pages).expect("pages");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("finish");
+        (document.id, version.id)
+    }
+
+    // ---- Onay maskeye bağlıdır (şartname §763) ----
+
+    /// Onay **maskeyle** alınır: serbest terimler + (varsa) plandan türetilen
+    /// terimler onayın parçasıdır. Terimler kasaya yazılmaz — onay yalnız
+    /// `outbound_transforms` tanımına bağlanır.
+    fn consent_with_mask(
+        db: &Database,
+        case_id: &str,
+        document_id: &str,
+        terms: &[&str],
+    ) -> TransferConsentRow {
+        db.create_transfer_consent(&NewTransferConsent {
+            provider_id: "p1".into(),
+            case_scope: case_id.into(),
+            purpose: "ozet".into(),
+            selected_document_ids: vec![document_id.to_string()],
+            expires_at: None,
+            consent_text_version: "1".into(),
+            mask_terms: terms.iter().map(|term| (*term).to_string()).collect(),
+            mask_plan_id: None,
+        })
+        .expect("onay")
+    }
+
+    fn run_with_mask(consent_id: &str, terms: &[&str]) -> NewAiRun {
+        NewAiRun {
+            mask_terms: terms.iter().map(|term| (*term).to_string()).collect(),
+            ..run("", consent_id)
+        }
+    }
+
+    #[test]
+    fn consent_binds_the_mask_that_was_approved() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz sözleşmeyi imzaladı"],
+        );
+        let consent = consent_with_mask(&db, &case_id, &document_id, &["Ahmet Yılmaz"]);
+        assert!(
+            consent.outbound_transform_id.is_some(),
+            "onay maskeye bağlanmalı"
+        );
+        // Aynı maske → çalışır.
+        db.start_ai_run(&case_id, &run_with_mask(&consent.id, &["Ahmet Yılmaz"]))
+            .expect("aynı maske");
+        // Kanonik biçim eşitliği: kırpma/tekrar aynı tanımdır (yeni onay istemez).
+        db.start_ai_run(
+            &case_id,
+            &run_with_mask(&consent.id, &["  Ahmet Yılmaz  ", "Ahmet Yılmaz"]),
+        )
+        .expect("kanonik eşit maske");
+        // Maskenin **kaldırılması** izni genişletir → reddedilir.
+        assert_eq!(
+            db.start_ai_run(&case_id, &run_with_mask(&consent.id, &[]))
+                .unwrap_err()
+                .code(),
+            "E_AI_MASK_CHANGED"
+        );
+        // Farklı maske de onaylanmayan bir metin gönderir → reddedilir.
+        assert_eq!(
+            db.start_ai_run(&case_id, &run_with_mask(&consent.id, &["Mehmet Demir"]))
+                .unwrap_err()
+                .code(),
+            "E_AI_MASK_CHANGED"
+        );
+    }
+
+    #[test]
+    fn consent_without_mask_refuses_a_mask_at_execution() {
+        let (db, case_id, _) = setup();
+        let consent = consent(&db, &case_id);
+        assert!(
+            consent.outbound_transform_id.is_some(),
+            "maskesiz onay da bir maske tanımına (0 terim) bağlanır"
+        );
+        db.start_ai_run(&case_id, &run(&case_id, &consent.id))
+            .expect("maskesiz onay + maskesiz gönderim");
+        assert_eq!(
+            db.start_ai_run(&case_id, &run_with_mask(&consent.id, &["Ahmet Yılmaz"]))
+                .unwrap_err()
+                .code(),
+            "E_AI_MASK_CHANGED",
+            "maskesiz onayla maskeli gönderim onaylanmayan metin üretir"
+        );
+    }
+
+    #[test]
+    fn pre_v30_consent_without_mask_binding_is_refused() {
+        let (db, case_id, _) = setup();
+        let consent = consent(&db, &case_id);
+        // v29 kasasından gelen onay: maske bağı yok (\u2192 NULL).
+        db.conn()
+            .execute(
+                "UPDATE transfer_consents SET outbound_transform_id=NULL WHERE id=?1",
+                [&consent.id],
+            )
+            .expect("eski onay");
+        assert_eq!(
+            db.start_ai_run(&case_id, &run(&case_id, &consent.id))
+                .unwrap_err()
+                .code(),
+            "E_AI_CONSENT_UNBOUND",
+            "bağ bilinmiyorsa maskesiz gönderim sessizce geçmemeli"
+        );
+    }
+
+    #[test]
+    fn consent_mask_plan_terms_are_part_of_the_binding() {
+        let (db, case_id, _) = setup();
+        let (document_id, version_id) = document_with_block(
+            &db,
+            &case_id,
+            "Karar",
+            "Ahmet Yılmaz",
+            [0.0, 0.0, 200.0, 50.0],
+        );
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &crate::NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "b".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        db.add_redaction_regions(
+            &plan.id,
+            &[crate::RedactionRegionInput {
+                page_index: 0,
+                rect: [10.0, 10.0, 150.0, 40.0],
+                term_hash: "h".into(),
+            }],
+        )
+        .expect("bölge");
+        let derived = db
+            .outbound_terms_from_plan(&case_id, &plan.id)
+            .expect("plan terimleri");
+        assert!(
+            !derived.terms.is_empty(),
+            "bölge kesişen bloktan terim üretmeli: {derived:?}"
+        );
+        let consent = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: Some(plan.id.clone()),
+            })
+            .expect("planlı onay");
+        // Plandan türetilen terimler onayın parçasıdır: maskesiz gönderim reddedilir.
+        assert_eq!(
+            db.start_ai_run(&case_id, &run(&case_id, &consent.id))
+                .unwrap_err()
+                .code(),
+            "E_AI_MASK_CHANGED"
+        );
+        db.start_ai_run(
+            &case_id,
+            &NewAiRun {
+                mask_terms: derived.terms.clone(),
+                ..run(&case_id, &consent.id)
+            },
+        )
+        .expect("plan maskesi onayla eşleşir");
+    }
+
+    #[test]
+    fn consent_refuses_a_plan_outside_the_selected_documents() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["metin"]);
+        let (_other_document, other_version) =
+            document_with_text(&db, &case_id, "Başka belge", &["başka metin"]);
+        let plan = db
+            .create_redaction_plan(
+                &case_id,
+                &crate::NewRedactionPlan {
+                    document_version_id: other_version,
+                    parse_run_id: None,
+                    render_hash: "d".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan");
+        let error = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: Some(plan.id),
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), "E_MASK_PLAN_SCOPE");
+    }
+
+    #[test]
+    fn consent_list_reports_the_mask_definition() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["metin"]);
+        let masked = consent_with_mask(&db, &case_id, &document_id, &["Ahmet", "Yılmaz"]);
+        let plain = consent(&db, &case_id);
+        let rows = db.list_transfer_consents(&case_id).expect("liste");
+        let masked_row = rows
+            .iter()
+            .find(|row| row.consent.id == masked.id)
+            .expect("maskeli satır");
+        assert_eq!(masked_row.mask_term_count, 2);
+        let plain_row = rows
+            .iter()
+            .find(|row| row.consent.id == plain.id)
+            .expect("düz satır");
+        assert_eq!(plain_row.mask_term_count, 0);
+        assert!(plain_row.consent.outbound_transform_id.is_some());
     }
 }

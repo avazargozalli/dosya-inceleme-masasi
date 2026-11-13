@@ -123,6 +123,16 @@ pub enum StorageError {
     /// yenilenmeli" denir.
     #[error("sağlayıcının varış yeri (uç nokta/model) değişti; onay yenilenmeli")]
     AiProviderChanged,
+    /// Onay **maskeye bağlıdır** (şartname §763 — «maskelemenin kaldırılması
+    /// izni genişletir»): çalıştırmanın maskesi onaylanan maskeyle aynı değil.
+    /// `E_AI_CONSENT`ten ayrıdır — kullanıcıya "onay yok" değil "maske değişti,
+    /// onay yenilenmeli" denir.
+    #[error("maskenin onaylanan maske tanımıyla eşleşmiyor; onay yenilenmeli")]
+    AiMaskChanged,
+    /// Onay bu sürümden **önce** alınmış (maske bağı yok): onaylanan maske
+    /// bilinmediği için hiçbir gönderim yapılmaz — yeniden onay gerekir.
+    #[error("onay maske bağını taşımıyor (eski onay); yeniden onay gerekir")]
+    AiConsentUnbound,
     #[error("sağlayıcı profili bulunamadı")]
     AiProvider,
     #[error("AI kapalı: sağlayıcı bağlanmadan aktarım onayı alınamaz")]
@@ -243,6 +253,8 @@ impl StorageError {
             Self::QuoteHashMismatch => "E_QUOTE_HASH",
             Self::AiConsent => "E_AI_CONSENT",
             Self::AiProviderChanged => "E_AI_PROVIDER_CHANGED",
+            Self::AiMaskChanged => "E_AI_MASK_CHANGED",
+            Self::AiConsentUnbound => "E_AI_CONSENT_UNBOUND",
             Self::AiProvider => "E_AI_PROVIDER",
             Self::AiOff => "E_AI_OFF",
             Self::AiReceipt(_) => "E_AI_RECEIPT",

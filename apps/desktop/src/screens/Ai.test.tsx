@@ -291,6 +291,7 @@ const CONSENT: TransferConsentRow = {
   consentTextVersion: "2",
   approvedAt: "2026-10-21T10:00:00.000Z",
   revokedAt: null,
+  outboundTransformId: "t-mask-1",
 };
 
 function quote(overrides: Partial<QuoteMatchReport> = {}): QuoteMatchReport {
@@ -615,6 +616,9 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
       "prov-a",
       "iddia_cikarimi",
       ["d1", "d2"],
+      // Maske girilmedi: onay **maskesiz** tanıma bağlanır (null, null).
+      null,
+      null,
     );
 
     // Onay satırı: kapsam **ve** onay kimliği birlikte yazılır.
@@ -984,6 +988,8 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
         "prov-a",
         "ozet",
         ["d1", "d2"],
+        null,
+        null,
       ),
     );
 
@@ -1842,6 +1848,8 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
         "prov-a",
         "iddia_cikarimi",
         ["d1", "d2"],
+        null,
+        null,
       ),
     );
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
@@ -1915,6 +1923,8 @@ describe("AI ekranı — aktarım onayı envanteri", () => {
       revokedAt: null,
       active: true,
       providerCurrent: true,
+      outboundTransformId: "t-mask-1",
+      maskTermCount: 0,
       ...overrides,
     };
   }
@@ -1951,6 +1961,30 @@ describe("AI ekranı — aktarım onayı envanteri", () => {
     expect(within(rows[0]!).getByRole("button", { name: t("ai.revoke") })).toBeTruthy();
     expect(within(rows[1]!).queryByRole("button", { name: t("ai.revoke") })).toBeNull();
     expect(within(rows[2]!).queryByRole("button", { name: t("ai.revoke") })).toBeNull();
+  });
+
+  it("maske sütunu onaylanan maskeyi yazar: terim sayısı, maskesiz, bağ yok", async () => {
+    // Şartname §763: maske onayın parçasıdır; envanter "hangi maske onaylandı"
+    // sorusunu yanıtlar. Terimler saklanmaz — yalnız sayı ve bağın varlığı.
+    const masked = consentListRow({ id: "c1", maskTermCount: 3 });
+    const plain = consentListRow({ id: "c2", purpose: "olay_cikarimi", maskTermCount: 0 });
+    const unbound = consentListRow({
+      id: "c3",
+      purpose: "iddia_cikarimi",
+      outboundTransformId: null,
+      maskTermCount: 0,
+    });
+    setup({ consents: async () => [masked, plain, unbound] });
+
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.consentsTitle"));
+    await within(card).findByText(t("ai.consentMaskTerms", { terms: 3 }));
+    const rows = within(card).getAllByRole("row").slice(1);
+    expect(rows[0]!.textContent).toContain(t("ai.consentMaskTerms", { terms: 3 }));
+    expect(rows[1]!.textContent).toContain(t("ai.consentMaskNone"));
+    // Bağ yokluğu "maskesiz" diye yazılmaz: onaylanan maske **bilinmiyor**.
+    expect(rows[2]!.textContent).toContain(t("ai.consentMaskUnbound"));
+    expect(rows[2]!.textContent).not.toContain(t("ai.consentMaskNone"));
   });
 
   it("envanterden iptal çekirdeğe gider ve liste çekirdekten tazelenir", async () => {
@@ -2164,6 +2198,8 @@ describe("AI ekranı — sağlayıcı değişimi ve onayın yürütülebilirliğ
       revokedAt: null,
       active: true,
       providerCurrent: true,
+      outboundTransformId: "t-mask-1",
+      maskTermCount: 0,
       ...overrides,
     };
   }
@@ -2873,6 +2909,16 @@ describe("AI ekranı — gönderim maskesi", () => {
     expect(screen.getByText(t("ai.maskCount", { count: 2 }))).toBeTruthy();
     fireEvent.click(button(t("ai.approve")));
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    // Maske **onayın parçasıdır**: terimler onay çağrısına gider, çekirdek
+    // maskeyi onaya bağlar; çalıştırma farklı maske getirirse reddeder (§763).
+    expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
+      "p1",
+      "prov-a",
+      "ozet",
+      ["d1", "d2"],
+      ["Ahmet Yılmaz", "Acme Ltd."],
+      null,
+    );
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
     expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize", [

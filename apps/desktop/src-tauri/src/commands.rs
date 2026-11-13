@@ -7263,6 +7263,8 @@ pub fn ai_consent_create(
     provider_id: String,
     purpose: String,
     document_ids: Vec<String>,
+    mask_terms: Option<Vec<String>>,
+    mask_plan_id: Option<String>,
 ) -> Result<TransferConsentRow, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
@@ -7273,6 +7275,11 @@ pub fn ai_consent_create(
         selected_document_ids: document_ids,
         expires_at: None,
         consent_text_version: "1".into(),
+        // Onaylanan maske **onayın parçasıdır**: çalıştırma aynı maskeyi
+        // getirmezse çekirdek reddeder (`E_AI_MASK_CHANGED`). Terimler kasaya
+        // yazılmaz; onay yalnız maskenin tanım özetine bağlanır.
+        mask_terms: mask_terms.unwrap_or_default(),
+        mask_plan_id,
     })?)
 }
 
@@ -7309,40 +7316,12 @@ pub fn ai_receipt_list(
     Ok(db.list_transfer_receipts(&case_id)?)
 }
 
-#[tauri::command]
-pub fn ai_run_start(
-    state: State<'_, AppState>,
-    case_id: String,
-    provider_id: String,
-    consent_id: String,
-    task_type: String,
-) -> Result<AiRunRow, ApiError> {
-    let guard = state.lock();
-    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    let profile = db
-        .list_provider_profiles()?
-        .into_iter()
-        .find(|p| p.id == provider_id)
-        .ok_or_else(|| ApiError::new("E_AI_PROVIDER", "Sağlayıcı profili bulunamadı."))?;
-    if profile.provider_type == "off" {
-        return Err(ApiError::new(
-            "E_AI_OFF",
-            "AI kapalı. Sağlayıcı bağlanmadan hiçbir içerik cihazdan çıkmaz.",
-        ));
-    }
-    Ok(db.start_ai_run(
-        &case_id,
-        &dim_storage::NewAiRun {
-            task_type,
-            provider_id,
-            model_snapshot: "unknown".into(),
-            input_manifest_hash: "pending".into(),
-            prompt_version: "1".into(),
-            output_schema_version: "1".into(),
-            consent_id,
-        },
-    )?)
-}
+/// **Kaldırıldı (2026-11-14):** eskiden burada `ai_run_start` vardı — hiçbir
+/// arayüz tüketicisi olmayan, `ai_runs` satırını `input_manifest_hash:
+/// "pending"` ile açan bir komut. İki kusuru vardı: (1) sicile **uydurma**
+/// manifest yazıyordu ("pending" bir özet değil), (2) çalıştırma yolu
+/// (`ai_run_execute`) maskeyi onayla karşılaştırırken bu komut kapıyı
+/// atlıyordu. Tek üretim yolu `ai_run_execute`; ölü yüzey silindi.
 
 #[tauri::command]
 pub fn ai_context_items(
@@ -7848,6 +7827,9 @@ pub fn ai_run_execute(
             prompt_version: "1".to_string(),
             output_schema_version: "candidate.v1".to_string(),
             consent_id,
+            // Onay maskeye bağlıdır: gönderilecek maskeyi **çekirdek** denetler
+            // (plandan türetilen terimler dâhil). Fark varsa süreç başlamaz.
+            mask_terms: mask_list.clone(),
         },
     )?;
 

@@ -314,6 +314,14 @@ export type TransferConsentRow = {
   consentTextVersion: string;
   approvedAt: string;
   revokedAt: string | null;
+  /**
+   * Onayın bağlandığı **maske tanımı** (`outbound_transforms` kimliği).
+   *
+   * `null` = onay maske bağından önce alınmış: onaylanan maske bilinmiyor,
+   * çekirdek çalıştırmayı reddeder (`E_AI_CONSENT_UNBOUND`). Yeni onaylar
+   * maskesizken de bir tanıma (0 terim) bağlanır.
+   */
+  outboundTransformId: string | null;
 };
 
 /** Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik. */
@@ -321,6 +329,8 @@ export type TransferConsentListRow = TransferConsentRow & {
   active: boolean;
   /** Onayın varış yeri hâlâ yürürlükteki bir profille eşleşiyor mu? */
   providerCurrent: boolean;
+  /** Onayın maskesindeki terim sayısı (0 = maskesiz). Terimler saklanmaz. */
+  maskTermCount: number;
 };
 
 /**
@@ -2436,8 +2446,28 @@ export const api = {
       maskTerms: maskTerms ?? null,
       maskPlanId: maskPlanId ?? null,
     }),
-  aiConsentCreate: (caseId: string, providerId: string, purpose: string, documentIds: string[]) =>
-    invoke<TransferConsentRow>("ai_consent_create", { caseId, providerId, purpose, documentIds }),
+  /**
+   * Onay alır. **Maske onayın parçasıdır**: `maskTerms`/`maskPlanId` verilirse
+   * onaylanan maske tanımı kayda bağlanır ve çalıştırma aynı maskeyi getirmezse
+   * çekirdek reddeder (`E_AI_MASK_CHANGED`). Terimler kasaya yazılmaz, yalnız
+   * tanım özeti (`outboundTransformId`) saklanır.
+   */
+  aiConsentCreate: (
+    caseId: string,
+    providerId: string,
+    purpose: string,
+    documentIds: string[],
+    maskTerms: string[] | null = null,
+    maskPlanId: string | null = null,
+  ) =>
+    invoke<TransferConsentRow>("ai_consent_create", {
+      caseId,
+      providerId,
+      purpose,
+      documentIds,
+      maskTerms,
+      maskPlanId,
+    }),
   aiConsentRevoke: (consentId: string) => invoke<void>("ai_consent_revoke", { consentId }),
   aiConsentList: (caseId: string) =>
     invoke<TransferConsentListRow[]>("ai_consent_list", { caseId }),
@@ -2465,8 +2495,6 @@ export const api = {
       maskTerms,
       maskPlanId,
     }),
-  aiRunStart: (caseId: string, providerId: string, consentId: string, taskType: string) =>
-    invoke<AiRunRow>("ai_run_start", { caseId, providerId, consentId, taskType }),
   aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),
   /** Çalıştırmada cihazdan **çıkan** belge sürümleri (gönderim sicili). */
   aiContextItems: (runId: string) => invoke<AiContextItemRow[]>("ai_context_items", { runId }),

@@ -330,9 +330,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0029_redaction_plan_output_trace",
         sql: include_str!("migrations/0029_redaction_plan_output_trace.sql"),
     },
+    Migration {
+        version: 30,
+        name: "0030_consent_mask_binding",
+        sql: include_str!("migrations/0030_consent_mask_binding.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 29;
+pub const CURRENT_SCHEMA_VERSION: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

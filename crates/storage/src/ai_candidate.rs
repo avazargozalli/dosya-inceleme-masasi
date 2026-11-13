@@ -1478,6 +1478,8 @@ mod tests {
                 selected_document_ids: vec![document.id.clone()],
                 expires_at: None,
                 consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
             })
             .expect("consent");
         let run = db
@@ -1491,6 +1493,7 @@ mod tests {
                     prompt_version: "1".into(),
                     output_schema_version: "1".into(),
                     consent_id: consent.id,
+                    mask_terms: Vec::new(),
                 },
             )
             .expect("run");

@@ -1,0 +1,22 @@
+-- 0030: aktarım onayı **maskeyi bağlar** (şartname §763: «maskelemenin
+-- kaldırılması … izni genişletir; uygulama mevcut izni kendiliğinden
+-- genişletemez»).
+--
+-- Bugüne kadar onay yalnız belge kümesi + sağlayıcı + amaca bağlıydı; **maske
+-- onayın dışındaydı**: `ai_run_execute` maskeyi çağrı anında alıyor, çekirdek
+-- onayla karşılaştırmıyordu. "Maske değişince Çalıştır kapanır" kapısı yalnız
+-- arayüzdeydi (`maskChangedSincePreview`) — doğrudan IPC ile onaylanan maskeli
+-- önizleme yerine **maskesiz** içerik gönderilebiliyordu (onaylanan içerik ≠
+-- gönderilen içerik).
+--
+-- `outbound_transform_id` onayın bağlandığı maske **tanımını** gösterir
+-- (`outbound_transforms.settings_hash`: terimler saklanmaz, yalnız ayar özeti +
+-- sayı — 0027'nin aynı sözleşmesi). Yabancı anahtar **değildir** (0029'daki
+-- `output_version_ref` gibi): dönüşüm satırı silinmez, ama bağ okunamazsa
+-- çalıştırma zaten reddedilir.
+--
+-- NULL = bu sütundan **önce** alınmış onay: maske bağı bilinmiyor, çalıştırma
+-- reddedilir (temkinli taraf) — kullanıcı yeniden onay alır. Yeni onaylar
+-- maskesiz olsa bile bir dönüşüm satırına (terim sayısı 0) bağlanır, böylece
+-- "maskesiz onay" ile "bağ bilinmiyor" ayırt edilebilir.
+ALTER TABLE transfer_consents ADD COLUMN outbound_transform_id TEXT;

@@ -75,6 +75,15 @@ function purposeLabel(purpose: string): string {
  * değiştiyse kayıt yürürlükte kalır ama hiçbir profille çalıştırılamaz —
  * ekran bunu satırda yazar, kullanıcı "Çalıştır"a basana kadar gizlemez.
  */
+function consentMaskLabel(row: TransferConsentListRow): string {
+  // Maske **onayın parçasıdır** (şartname §763): envanter "hangi maske
+  // onaylandı" sorusunu yanıtlar. Terimlerin kendisi saklanmaz — yalnız sayı.
+  if (row.outboundTransformId === null) return t("ai.consentMaskUnbound");
+  return row.maskTermCount > 0
+    ? t("ai.consentMaskTerms", { terms: row.maskTermCount })
+    : t("ai.consentMaskNone");
+}
+
 function consentStateLabel(row: TransferConsentListRow): string {
   if (row.revokedAt) return t("ai.consentRevoked");
   if (!row.active) return t("ai.consentExpired");
@@ -502,7 +511,17 @@ export function Ai() {
       // Onay **sağlayıcı profiline** bağlanır: kimlik dizesini arayüz kurmaz,
       // çekirdek profilden türetir (uç nokta + model parmak izi dahil). Böylece
       // sağlayıcı değişince eski onay kendiliğinden geçersizleşir.
-      const nextConsent = await api.aiConsentCreate(caseId, provider.id, purpose, ids);
+      const nextConsent = await api.aiConsentCreate(
+        caseId,
+        provider.id,
+        purpose,
+        ids,
+        // Maske **onayın parçasıdır**: onaylanan terimler/plan kayda bağlanır;
+        // çalıştırma aynı maskeyi getirmezse çekirdek reddeder (şartname §763:
+        // maskenin kaldırılması izni genişletir).
+        maskTerms.length > 0 ? maskTerms : null,
+        maskPlanId || null,
+      );
       if (caseGen.current !== gen) return;
       setConsent(nextConsent);
       // Envanter tazelenir: yeni onay (ve aynı amaçla kapanan önceki) listede görünür.
@@ -1070,6 +1089,7 @@ export function Ai() {
                 <th>{t("ai.consentsColPurpose")}</th>
                 <th>{t("ai.consentsColProvider")}</th>
                 <th>{t("ai.consentsColDocuments")}</th>
+                <th>{t("ai.consentsColMask")}</th>
                 <th>{t("ai.consentsColApproved")}</th>
                 <th>{t("ai.consentsColExpires")}</th>
                 <th>{t("ai.consentsColState")}</th>
@@ -1084,6 +1104,7 @@ export function Ai() {
                     <code>{row.providerSnapshot}</code>
                   </td>
                   <td>{row.selectedDocumentIds.length}</td>
+                  <td>{consentMaskLabel(row)}</td>
                   <td>{formatDateTime(row.approvedAt)}</td>
                   <td>{row.expiresAt ? formatDateTime(row.expiresAt) : t("ai.consentNoExpiry")}</td>
                   <td>

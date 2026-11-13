@@ -635,6 +635,7 @@ export const tr = {
     consentsColPurpose: "Amaç",
     consentsColProvider: "Sağlayıcı",
     consentsColDocuments: "Belge",
+    consentsColMask: "Maske",
     consentsColApproved: "Onay zamanı",
     consentsColExpires: "Bitiş",
     consentsColState: "Durum",
@@ -644,6 +645,10 @@ export const tr = {
     consentExpired: "süresi geçti",
     consentProviderChanged: "sağlayıcı değişti",
     consentNoExpiry: "süresiz",
+    consentMaskNone: "maskesiz",
+    consentMaskTerms: "{terms} terim maskeli",
+    consentMaskUnbound:
+      "maske bağı yok (eski onay) — çalıştırılamaz, yeniden onay alın",
     consentStale:
       "Bu onay {provider} varış yerine bağlı; sağlayıcının uç noktası/modeli " +
       "değiştiği için artık yürütülemez. Gönderim için yeniden aktarım onayı verin.",
