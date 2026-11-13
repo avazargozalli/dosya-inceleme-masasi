@@ -1357,3 +1357,112 @@ kaydetmeye çalışınca hata görür — otomatik kayıt metni kaybettirmez.
 **tanımı tek kaynağa** indirdi, veri değişmedi. (f) Tauri komutları
 (`note_create`/`note_update`) ve gerçek pencere **insan bekliyor** — davranış
 storage düzeyinde gerçek SQLite ile ölçüldü.
+
+## F12-T14i — metin katmanı olmayan sayfa “tarandı” sayılmaz: okunamayan kapsam “Bulunamadı” hükmü almaz (2026-11-13)
+
+T14h'in dürüst sınırları (a) `notes.source_anchor_ids` JSON kimlik listesi ve
+(b) `ambiguous`/`unresolved` üreten kodun bugün olmaması **veri/ürün** konusu;
+bu tur onlara dokunmadı. Aynı ailede **ölçülebilir bir doğruluk kusuru**
+kapatıldı: denetimin “tarandı” dediği sayfa ile gerçekten okuduğu sayfa aynı
+değildi.
+
+**Tur başında (dürüst):** `HEAD == origin/main` = `eea4c5f`; ağaçta önceki
+turun bıraktığı tek artık **F12 T14h belgesiydi** (kod `482c795`, CI
+`43410744336` bu turda ölçüldü: **10/10 YEŞİL**; `dim-storage` **584** iki
+OS'ta birebir 426,88 s / 261,33 s, `arayüz` 66 dosya / **1421** test). Belge
+ölçülen CI kanıtı + dürüst sınırlarla tamamlanıp commit edildi (`02680c7`,
+CI `43417276438` **10/10 YEŞİL**). Ağaçta **başka ajanın 11 dosyası**
+(2026-11-07'den beri) — dokunulmadı; `i18n.ts`te yalnız benim bir satırlık
+hunk'ım sahneye alındı (`git show :…i18n.ts | grep -c parseStatus` → **0**).
+Disk tur başında **6,9 G**; commit'te `disk-guard` temiz.
+
+**Ölçülen kusur (üç yüzü):**
+
+1. `pages_scanned` **kapsamdaki bütün `pages` satırlarını** sayıyordu
+   (`SELECT count(*) FROM pages`), oysa tarayıcı metni boş sayfayı atlıyordu.
+   OCR'sız taranmış bir PDF'te `store_pages` her sayfa için `pages` satırı
+   yazar (`text_origin='none'`) ama **metin segmenti yazmaz** (ölçüldü:
+   `parsing.rs::parse_run_stores_pages_and_search_finds_them` — 2 sayfadan
+   `stored == 1`). Sonuç: hiçbir sayfası okunamayan belge “2 sayfa tarandı”
+   görünüyordu.
+2. Bu yüzden tek “doğrulanamadı” yolu (`pages_scanned == 0`) hiç
+   tetiklenmiyordu: **hiç okunamayan** kapsamda bile alıntılar `not_found`
+   (“Bulunamadı”) hükmü alıyordu. Modülün kendi dokümanı “taranmış (OCR'sız)
+   sayfada görünen metin bu denetimde bulunamaz” diyor; ekran bunu yazmıyordu
+   → avukat müvekkilin alıntısını **uydurma** sanabilirdi (INV-02 sınıfı).
+3. `documents_with_text` “ayrıştırma koşusu var mı”ya bakıyordu: bütün
+   sayfaları metinsiz taranmış belge “metni var” sayılıyor, “N belgenin güncel
+   sürümünde ayrıştırılmış metin yok (bu belgeler taranamadı)” notu
+   verilmiyordu.
+
+**Yazılan (çekirdek, `intext_quotes.rs`):**
+
+- `PAGE_TEXT_EXPR` — “sayfada kullanılabilir metin var mı” tanımı **tek
+  yerde**; `scope_page_sql()` (tarayıcı) ve `page_counts()` (sayım) aynı
+  ifadeyi kullanır. Tarayıcı da aynı ölçütle atlar (`text.trim().is_empty()`);
+  iki tanım ayrışırsa “tarandı” denilen sayfa taranmaz.
+- `PageCounts { with_text, without_text }`: `pages_scanned` artık **gerçekten
+  aranan** sayfa; yeni `pages_without_text` güncel sürümlerde aranamayan
+  sayfa. Maliyet kapısı (20.000 sayfa) **toplam** üzerinden işler (eski
+  davranış korunur).
+- `documents_with_text` = **en az bir aranabilir sayfası olan** belge; notu
+  artık OCR'sız taranmış belgeyi de sayar.
+- Yeni not: “Güncel sürümlerde N sayfanın metin katmanı yok (OCR'sız tarama);
+  alıntı yalnız bu sayfalarda geçiyorsa bulunamaz — bu sayfalar taranmadı.”
+- Eski sürüm taramasında aranamayan sayfalar `pages_without_text`e
+  **eklenmez** (alan güncel sürümü anlatır); yalnız aranan sayfalar
+  `pages_scanned`a eklenir.
+
+**Yazılan (arayüz):** `InTextQuoteCheck.pagesWithoutText`; Review özetinin
+hemen altında “N sayfada metin katmanı yok (taranamadı)” satırı — gerekçe
+`<details>` içindeki notlarda gizli kalmaz. 1 sözlük anahtarı.
+
+**Testler (güncel kodla):** `intext_quotes::tests` **37 → 40** (+3: metinsiz
+sayfa “tarandı” sayılmaz + `not_found` hükmü nitelenir · hiç okunamayan belge
+`unverifiable`+`no_text`, belge sayımı ve notlar · karışık kapsamda belge
+sayımı/notlar) → `dim-storage --lib` **587** (368,36 s); `Review.test.tsx`
+**51 → 52** → tam vitest **66 dosya / 1430** (yerel); `intext_real_layout`
+entegrasyonu **1 passed**; `tsc --noEmit` temiz; iki manifest `cargo fmt
+--check` temiz; `clippy -p dim-storage --all-targets -D warnings` temiz;
+masaüstü `cargo check --all-targets` temiz (1 dk 11 s).
+
+**Kapı kanıtı (gerçek koşular; betik
+`~/.hermes/cache/scratch/dim-intext-page-gates.py`, her mutasyon tek başına,
+`try/finally` + `os.utime` damgası + sha256 birebir — `intext_quotes.rs
+5e6a6eaa…`, `Review.tsx cd612369…`):** **6/6 KIRMIZI, taban 40/40 yeşilken**
+— G1 sayım eski davranışa döner (3 test) · G2 belge “metinli” sayılırken
+ayrıştırma koşusu yeter (2) · G3 hiç okunamayan kapsam `not_found` alır (2) ·
+G4 raporda metinsiz sayı sıfırlanır (2) · G5 metinsiz sayfa notu yazılmaz (3) ·
+U1 arayüz satırı çizilmez. Geri yazım sonrası sha256 birebir; taban tekrar
+40/40.
+**Dürüst (kendi hatam, iki ölçüm hatası):** (1) betiğin ilk koşusunda
+`test result:` ayrıştırıcısı `part.split()[0]` ile “test” kelimesini sayıya
+çevirmeye çalıştı → `ValueError`, hiçbir kapı ölçülmedi; regex'e çevrildi.
+(2) İlk 6/6 koşusundan sonra `cargo fmt` çalıştırdım; kanıtın sha256'sının
+commit'lenecek baytlarla aynı olduğunu **ölçmeden** bilemezdim → gate'ler
+**son hâl üzerinde yeniden koşuldu**; yalnız ikinci koşu kanıt sayıldı.
+Sha256 iki koşuda da `5e6a6eaa…` (dosya değişmemiş), yani biçimlendirme
+kanıtı bozmamıştı. **Düzeltme öncesi ham koşu yapılmadı:** yeni testler yeni
+alanları (`pages_without_text`) kullandığı için eski dosyayla derlenmez;
+eski davranış üç ayrı mutasyonla (G1/G2/G3) birebir yeniden üretildi.
+
+**CI (ölçüldü):** kod `0988330` (6 dosya, **+281/−27**) → run
+`43421361613` **10/10 YEŞİL** (ilk koşu): `dim-storage` **587** hem
+`macos-15` 272,77 s hem `ubuntu-latest` 544,88 s — **birebir**; `arayüz`
+66 dosya / **1422** test (yerel 1430 farkı ağaçtaki başka ajanın commit'siz
+testleri), paket `index-BxnDNJl2.js` **691,72 kB** / gzip **184,55 kB**;
+`masaüstü kabuk` 51 koştu · 0 düştü · 5 yoksayıldı + yoksayılan koşu 5
+passed; `dim-cli-adapters` **161**; diğer beş iş yeşil.
+
+**Dürüst sınırlar:** (a) “Metin var” ölçütü sayfa düzeyindedir: bir sayfada
+tek satır metin varsa sayfa aranmış sayılır; sayfanın **kalanı** OCR'sız
+görüntüyse alıntı yine bulunamaz — rapor bunu ayırmaz (parmak izi yok).
+(b) `pages_without_text` yalnız **güncel** sürümler içindir; eski sürümlerin
+metinsiz sayfaları ayrıca raporlanmaz. (c) `not_found` hükmü hâlâ
+“bulunamadı” der; metinsiz sayfa varsa yanına not ve satır eklenir, hüküm
+`unverifiable`a **yalnız** hiç aranabilir sayfa yoksa döner (tek sayfa bile
+okunabildiyse hüküm `not_found` kalır — bilinçli: okunabilen metinde yok).
+(d) Değişiklik `check_in_text_quotes` yolundadır; aynı sayımı kullanan başka
+bir yol yok (tek tüketici `in_text_quote_check`). (e) Tauri komutu ve gerçek
+pencere **insan bekliyor**; davranış storage düzeyinde gerçek SQLite ile
+ölçüldü, arayüz jsdom'da.
