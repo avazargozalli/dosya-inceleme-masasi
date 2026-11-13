@@ -8,7 +8,7 @@
 |---|---|---|
 | F09-T01 tek `Provider` sözleşmesi | ✅ | `crates/providers` |
 | F09-T02 `OffProvider` | ✅ | her istek `E_AI_OFF` |
-| F09-T03 aktarım onayı | ✅ | `transfer_consents`; onay **belge kümesine** bağlı (boş seçim, başka dosyanın belgesi ve silinmiş belge reddedilir) — ölçüldü 2026-10-28, aşağıdaki "Aktarım kapsamı" bölümü |
+| F09-T03 aktarım onayı | ✅ | `transfer_consents`; onay **belge kümesine** bağlı (boş seçim, başka dosyanın belgesi ve silinmiş belge reddedilir) — ölçüldü 2026-10-28, aşağıdaki "Aktarım kapsamı" bölümü. **Maskeye de bağlanır** (2026-11-14, F09-T09b): onaylanan maske tanımı kayda yazılır, çalıştırma aynı maskeyi getirmezse reddedilir (`E_AI_MASK_CHANGED`); maske bağını taşımayan eski onay çalıştırılamaz (`E_AI_CONSENT_UNBOUND`) |
 | F09-T04 çalıştırma sicili | ✅ | `ai_runs`, `ai_context_items`, `transfer_receipts` — **artık gerçek yolda yazılıyor**: gönderim öncesi belge/sürüm/bayt sicili, gönderim sonrası hedef + çıkan baytların sha256'sı (`ai_run_execute`). Makbuz **deneme anında** `attempted` açılır, `dispatched`/`failed` ile kapanır ve **okunabilir** (`list_transfer_receipts` + `ai_receipt_list` + ekran kartı; 2026-11-05 F09-T10). **Gönderim sicili de okunur** (`list_context_items` + `ai_context_items` + "Gönderilen içerik" kartı: belge adı, sürüm, gerekçe, bayt; 2026-11-06). **Çalıştırma satırı uzlaştırması (2026-11-11):** açılışta `running` kalan satır kesin duruma bağlanır (`failed` + `usage_report.error=interrupted`); ekran «oturum kesildi · sonuç yazılmadı» yazar (aşağıdaki bölüm) |
 | F09-T05 onaysız çalıştırma reddi | ✅ | `E_AI_CONSENT`: onay yok / iptal / süresi geçmiş / **belge seçimi boş** / seçili belge silinmiş (7 test) |
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
@@ -20,8 +20,9 @@
 ## Dürüst durum
 
 AI **varsayılan olarak kapalıdır**. Kayıtlı tek profil `off` ise arayüz `E_AI_OFF`
-gösterir ve çalıştırma başlatılamaz. Gerçek sağlayıcı bağlanmadı; `ai_run_start`
-sağlayıcı `off` değilse kayıt açar, ancak gerçek yürütücü F11 kapsamındadır.
+gösterir ve çalıştırma başlatılamaz. Gönderim yolu `ai_run_execute`dir (tek yol);
+onaysız/iptal/süresi geçmiş onayla, maskesi onaylananla eşleşmeyen gönderimle ve
+kapsam dışı belgeyle **çalıştırma başlamaz**.
 
 ## Aktarım kapsamı ve sicil (2026-10-28 — kusur #69/#70/#71)
 
@@ -778,3 +779,77 @@ değişmez.
   (`remember`) **komut olarak koşulmadı** (`State<AppState>` altyapısı yok) —
   kablolama check+clippy, davranış storage düzeyinde gerçek SQLite; (e) jsdom
   tarayıcı değil → gerçek Tauri penceresi + **görsel QA insan bekliyor**.
+
+## Onay **maskeye bağlanır** — maskenin kaldırılması izni genişletir (2026-11-14 — F09-T09b)
+
+- **Ölçülen boşluk (üç yüzü):** şartname §763 «maskelemenin kaldırılması … izni
+  genişletir; uygulama mevcut izni kendiliğinden genişletemez» diyordu ama onay
+  maskeyi **hiç bağlamıyordu**: (1) `ai_consent_create` maskeyi **almıyordu** —
+  onayın maske hakkında hiçbir bilgisi yoktu; (2) `ai_run_execute` maskeyi **çağrı
+  anında** alıyor, çekirdek onayla **karşılaştırmıyordu** — aynı onayla istenen her
+  maske (maskesiz dâhil) gönderilebiliyordu; (3) "maske değişince Çalıştır kapanır"
+  kapısı **yalnız arayüzdeydi** (`maskChangedSincePreview`). Sonuç: onaylanan
+  **maskeli** önizleme yerine doğrudan IPC ile **maskesiz** içerik gönderilebiliyor,
+  yani onaylanan içerik ≠ gönderilen içerik oluyordu (INV-05 sınıfı) — kullanıcı
+  maskeyi onayladığını sanırken ham metin cihazdan çıkıyordu.
+- **Yazılan (şema v30):** `transfer_consents.outbound_transform_id` — onay artık
+  **maske tanımına** bağlanır (`outbound_transforms.settings_hash`). Terimler
+  saklanmaz; yalnız tanım özeti + terim sayısı (0027'nin sözleşmesi). `NULL` = bu
+  sütundan **önce** alınmış onay → maske bağı **bilinmiyor**, çalıştırma
+  reddedilir (temkinli taraf; kullanıcı yeniden onay alır). Yeni onaylar
+  **maskesizken de** bir tanıma (0 terim) bağlanır, böylece "maskesiz onay" ile
+  "bağ bilinmiyor" ayırt edilebilir.
+- **Yazılan (çekirdek):** `outbound_settings_hash` **tek kaynak** — gönderim sicili,
+  onay bağı ve çalıştırma kapısı aynı işlevi kullanır; `canonical_mask_terms`
+  (kırpma/tekrar tek tanım). `NewTransferConsent{mask_terms, mask_plan_id}`: plan
+  seçildiyse bölgelerden **türetilen** terimler de onayın parçasıdır ve kapsam
+  kapısı gönderim yoluyla **aynı** (`E_MASK_PLAN_SCOPE`, türetmeden **önce**).
+  `NewAiRun.mask_terms` alanı **tip düzeyinde zorunlu** — çağıran "unutarak"
+  maskeyi düşüremez; `start_ai_run` onaylanan maske özetiyle karşılaştırır, fark
+  varsa `E_AI_MASK_CHANGED`, bağ yoksa `E_AI_CONSENT_UNBOUND` (süreç **başlamadan**).
+  Eşitlik **tek yön değil**: maskenin kaldırılması da **artırılması** da yeni onay
+  ister (onaylanmayan maske onaylanmayan metin gönderir).
+- **Ölü yüzey silindi:** `ai_run_start` komutu — hiçbir arayüz tüketicisi yoktu,
+  `ai_runs` satırını uydurma `input_manifest_hash:"pending"` ile açıyordu ve maske
+  kapısını **atlıyordu**; tek üretim yolu `ai_run_execute`. `api.ts` bağı ve
+  `generate_handler` satırı da kaldırıldı.
+- **Arayüz:** `approve()` maskeyi ve planı **onaya** gönderir (eskiden yalnız
+  önizlemeye gönderiyordu); envantere **"Maske"** sütunu eklendi — «N terim
+  maskeli» / «maskesiz» / «maske bağı yok (eski onay) — çalıştırılamaz, yeniden
+  onay alın». Bağ yokluğu **"maskesiz" diye yazılmaz** (bilinmiyor ≠ yok).
+- **Testler (güncel kodla, gerçek koşular):** `ai::tests` **+6**
+  (`consent_binds_the_mask_that_was_approved`, `consent_without_mask_refuses_a_mask_at_execution`,
+  `pre_v30_consent_without_mask_binding_is_refused`, `consent_mask_plan_terms_are_part_of_the_binding`,
+  `consent_refuses_a_plan_outside_the_selected_documents`, `consent_list_reports_the_mask_definition`)
+  → `dim-storage --lib` **593 → 599** (382,44 s); `Ai.test.tsx` **114 → 115**
+  (+1: maske sütunu üç hâli ayırır; 3 mevcut assertion maske argümanlarını kapsayacak
+  şekilde düzeltildi) → tam vitest **66 dosya / 1431 test** (yerel); `tsc --noEmit`
+  temiz; `cargo fmt` (kök + masaüstü manifesti) temiz; `clippy -D warnings` storage
+  **ve** masaüstü temiz; masaüstü `cargo check --all-targets` temiz.
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-mask-consent-gates.py`, her
+  mutasyon tek başına, `try/finally` + `os.utime` damgası + sha256 birebir —
+  `ai.rs c2fb4e0c…`, `Ai.tsx bbec39c5…`):** **10/10 KIRMIZI, taban yeşilken**
+  (taban: `consent` süzgeci **24/24**, arayüz **2/2**; geri yazım sha256 birebir,
+  taban tekrar 24/24 + 2/2) — M1 onay maskeyi bağlamaz · M2 çalıştırma onaylanan
+  maskeyle karşılaştırmaz · M3 maskesiz eski onay sessizce maskesiz sayılır ·
+  M4 kanonik eşitlik kaybolur · M5 plan kapsam kapısı düşer · M6 plan terimleri
+  onayın parçası olmaz · M7 envanter terim sayısını sıfırlar · U1 onay çağrısı
+  maskeyi taşımaz · U2 maske sütunu çizilmez · U3 bağ yokluğu «maskesiz» yazılır.
+- **CI (ölçüldü):** kod `18389bf` (11 dosya, **+640/−58**) → run `43528475117`
+  **10/10 YEŞİL** (`dim-storage` **599** iki OS'ta birebir: macos-15 274,47 s /
+  ubuntu-latest 565,07 s; `arayüz` 66 dosya / **1423** test — yerel 1431 farkı
+  ağaçtaki başka ajanın commit'siz testleri; paket `index-Byj9hYJj.js` **692,43 kB**
+  / gzip **184,77 kB**; `masaüstü kabuk` 51/0/5 (kaynak 56) + gerçek worker 5/0/0).
+- **Dürüst sınırlar:** (a) **serbest terimlerin içeriği onayda saklanmaz** — yalnız
+  tanım özeti (sha256) ve terim sayısı; sözlük saldırısına açık bir özet bilinçli
+  kabul edildi (0027 sözleşmesi: kasada düz metin maske terimi tutulmaz). (b)
+  Eşitlik **iki yönlü**: onaylanandan **fazla** maske de yeni onay ister (izni
+  daraltır ama onaylanan metni değiştirir — bilinçli). (c) `E_AI_MASK_CHANGED`
+  sonrası arayüzde "onayı yenile" akışı **yok**: kullanıcı onayı yeniden verir
+  (ekran hatayı yazar, kendiliğinden tazelemez). (d) `outbound_transform_id`
+  **yabancı anahtar değil** (0029 deseni): dönüşüm satırı silinirse bağ okunamaz →
+  çalıştırma reddedilir (fail-closed), ama DB bağı zorlamaz. (e) Plan terimleri
+  onay anında türetilir; plan sonradan değişirse (bölge eklenirse) **yeni onay**
+  gerekir — eski onay eski terim kümesini bağlar. (f) Tauri komutu
+  (`ai_consent_create`) ve gerçek pencere **insan bekliyor**; davranış storage
+  düzeyinde gerçek SQLite ile, arayüz jsdom'da ölçüldü.
