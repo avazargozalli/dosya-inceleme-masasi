@@ -124,8 +124,52 @@ pub struct RebindSuggestion {
     pub candidates: Vec<RebindCandidate>,
 }
 
+/// Bir segmentin kimlik kapsamı: metin, sayfa, dosya, ayrıştırma koşusu ve o
+/// koşunun belge sürümü. Kimlik **tek yerden** çözülür; `create_anchor` ve
+/// `rebind_anchor` aynı çözümü kullanır (sürüm/koşu çelişkisi iki yolda da
+/// aynı kapıdan geçer).
+struct SegmentScope {
+    raw_text: String,
+    page_id: Option<String>,
+    case_id: String,
+    parse_run_id: String,
+    document_version_id: String,
+}
+
 impl Database {
+    /// Segmenti dosya/ayrıştırma koşulu/sürüm kapsamıyla birlikte okur.
+    /// Segment yoksa ya da koşu kaydı segmentinkiyle çelişiyorsa `NotFound`.
+    fn segment_scope(&self, segment_id: &str) -> Result<SegmentScope, StorageError> {
+        self.conn()
+            .query_row(
+                "SELECT s.raw_text, s.page_id, s.case_id, s.parse_run_id, pr.document_version_id
+                   FROM text_segments s
+                   JOIN parse_runs pr ON pr.id = s.parse_run_id AND pr.case_id = s.case_id
+                  WHERE s.id=?1",
+                [segment_id],
+                |row| {
+                    Ok(SegmentScope {
+                        raw_text: row.get(0)?,
+                        page_id: row.get(1)?,
+                        case_id: row.get(2)?,
+                        parse_run_id: row.get(3)?,
+                        document_version_id: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)
+    }
+
     /// Alıntıyı segment üzerinde doğrular ve anchor kaydı oluşturur.
+    ///
+    /// Kimlik **çekirdekte** doğrulanır: segment, verilen dosya ve ayrıştırma
+    /// koşusuna ait olmalı **ve** o koşunun belge sürümü verilen sürümle
+    /// eşleşmelidir (üçü ayrışırsa `E_NOT_FOUND`). Aynı kanıt konumu (aynı
+    /// segment, aralık ve alıntı) ikinci kez **yazılmaz**: var olan
+    /// `active`/`rebound` anchor döner. Böylece iki tıklama iki kaynak satırı
+    /// üretmez; farklı iddia/işaret/not aynı anchor'ı paylaşır
+    /// (`source_anchor_ids` bunun içindir).
     pub fn create_anchor(&self, input: &NewAnchor) -> Result<AnchorRow, StorageError> {
         let quote = input.exact_quote.as_str();
         if quote.trim().is_empty() {
@@ -138,18 +182,15 @@ impl Database {
             return Err(StorageError::InvalidSetting);
         }
 
-        let (raw, page_id, segment_case, segment_run): (String, Option<String>, String, String) = self
-            .conn()
-            .query_row(
-                "SELECT raw_text, page_id, case_id, parse_run_id FROM text_segments WHERE id=?1",
-                [&input.segment_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?
-            .ok_or(StorageError::NotFound)?;
-
-        // Dosya kapsamı ve ayrıştırma koşulu tutmalı.
-        if segment_case != input.case_id || segment_run != input.parse_run_id {
+        let scope = self.segment_scope(&input.segment_id)?;
+        let raw = scope.raw_text;
+        let page_id = scope.page_id;
+        // Dosya, ayrıştırma koşusu ve sürüm kapsamı birlikte tutmalı: anchor
+        // bir sürümün metnine işaret ederken başka sürüm adına yazılamaz.
+        if scope.case_id != input.case_id
+            || scope.parse_run_id != input.parse_run_id
+            || scope.document_version_id != input.document_version_id
+        {
             return Err(StorageError::NotFound);
         }
 
@@ -166,6 +207,32 @@ impl Database {
                 return Err(StorageError::QuoteNotFound)
             }
             QuoteMatch::HashMismatch => return Err(StorageError::QuoteHashMismatch),
+        }
+
+        // Kanıt konumu kimliği: aynı segment + aralık + alıntı tek satırdır.
+        // Doğrulamadan **sonra** bakılır: geçersiz istek var olan kayda dönemez.
+        let existing: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT id FROM source_anchors
+                 WHERE case_id=?1 AND document_version_id=?2 AND parse_run_id=?3
+                   AND segment_id=?4 AND start_offset=?5 AND end_offset=?6 AND exact_quote=?7
+                   AND anchor_status IN ('active','rebound')
+                 LIMIT 1",
+                rusqlite::params![
+                    input.case_id,
+                    input.document_version_id,
+                    input.parse_run_id,
+                    input.segment_id,
+                    input.start_offset,
+                    input.end_offset,
+                    quote
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return self.get_anchor(&id)?.ok_or(StorageError::NotFound);
         }
 
         let (prefix, suffix) = context_around(&raw, start, end, 24);
@@ -423,30 +490,14 @@ impl Database {
         start_offset: i64,
     ) -> Result<AnchorRow, StorageError> {
         let anchor = self.get_anchor(anchor_id)?.ok_or(StorageError::NotFound)?;
-        let segment: Option<(String, String, Option<String>, String)> = self
-            .conn()
-            .query_row(
-                "SELECT raw_text, parse_run_id, page_id, case_id FROM text_segments WHERE id=?1",
-                [segment_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-        let (raw, run_id, page_id, segment_case) = segment.ok_or(StorageError::NotFound)?;
-        if segment_case != anchor.case_id {
+        let scope = self.segment_scope(segment_id)?;
+        if scope.case_id != anchor.case_id {
             return Err(StorageError::NotFound);
         }
-        let run: Option<(String, String)> = self
-            .conn()
-            .query_row(
-                "SELECT document_version_id, case_id FROM parse_runs WHERE id=?1",
-                [&run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let (version_id, run_case) = run.ok_or(StorageError::NotFound)?;
-        if run_case != anchor.case_id {
-            return Err(StorageError::NotFound);
-        }
+        let raw = scope.raw_text;
+        let run_id = scope.parse_run_id;
+        let page_id = scope.page_id;
+        let version_id = scope.document_version_id;
         let start = usize::try_from(start_offset).map_err(|_| StorageError::InvalidSetting)?;
         // `verify_quote` başlangıç ipucunu **öneri** olarak kullanır ve alıntıyı
         // segmentin başka yerinde bulursa yine `Exact` döner. Yeniden bağlamada
@@ -474,13 +525,18 @@ impl Database {
         }
         let end_offset =
             start_offset + i64::try_from(anchor.exact_quote.chars().count()).unwrap_or(0);
+        // Bağlam **yeni konumdan** yeniden üretilir: not/kanıt görünümü
+        // `prefix`/`suffix`i kanıtın çevresi olarak gösterir; eski konumun
+        // bağlamı yeni kanıtın yanında yanlış metin gösterirdi.
+        let (prefix, suffix) = context_around(&raw, start, start + quote_chars.len(), 24);
         // Durum değişikliği ve denetim kaydı tek işlemde: denetim yazılamazsa
         // bağ da değişmez (yarım kalan "rebound" görüntüsü olmaz).
         self.write_atomically(|| {
             self.conn().execute(
                 "UPDATE source_anchors
                  SET document_version_id=?2, parse_run_id=?3, page_id=?4, segment_id=?5,
-                     start_offset=?6, end_offset=?7, anchor_status='rebound', updated_at=?8
+                     start_offset=?6, end_offset=?7, anchor_status='rebound', updated_at=?8,
+                     prefix=?9, suffix=?10
                  WHERE id=?1",
                 rusqlite::params![
                     anchor_id,
@@ -490,7 +546,9 @@ impl Database {
                     segment_id,
                     start_offset,
                     end_offset,
-                    now_iso()
+                    now_iso(),
+                    prefix,
+                    suffix
                 ],
             )?;
             self.append_audit(
@@ -810,6 +868,321 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err.code(), "E_NOT_FOUND");
+    }
+
+    #[test]
+    fn same_evidence_is_written_once() {
+        let (db, case_id, version_id, run_id, segment_id) = setup();
+        let quote = "itirazın reddine";
+        let input = NewAnchor {
+            case_id: case_id.clone(),
+            document_version_id: version_id,
+            parse_run_id: run_id,
+            segment_id,
+            start_offset: 8,
+            end_offset: 8 + i64::try_from(quote.chars().count()).unwrap(),
+            exact_quote: quote.into(),
+        };
+        let first = db.create_anchor(&input).expect("ilk");
+        let second = db.create_anchor(&input).expect("ikinci");
+        assert_eq!(first.id, second.id, "aynı kanıt ikinci satır açmamalı");
+        assert_eq!(db.list_anchors(&case_id).expect("liste").len(), 1);
+        let creates: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM audit_events
+                 WHERE category='source_anchor' AND entity_id=?1 AND operation='create'",
+                [&first.id],
+                |row| row.get(0),
+            )
+            .expect("denetim");
+        assert_eq!(creates, 1, "ikinci çağrı yeni 'create' denetimi yazmamalı");
+    }
+
+    #[test]
+    fn the_same_quote_in_two_segments_stays_two_anchors() {
+        let db = Database::open_in_memory(&DatabaseKey::new([41u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "İki sayfa".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db.create_blob_record("st-iki", 10, "aad").expect("blob");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("run");
+        let text = "Mahkeme itirazın reddine karar verdi.";
+        db.store_pages(
+            &run.id,
+            &case.id,
+            &[
+                NewPage {
+                    index: 0,
+                    text: text.into(),
+                    width: None,
+                    height: None,
+                    origin: "native".into(),
+                    warnings: vec![],
+                    ..Default::default()
+                },
+                NewPage {
+                    index: 1,
+                    text: text.into(),
+                    width: None,
+                    height: None,
+                    origin: "native".into(),
+                    warnings: vec![],
+                    ..Default::default()
+                },
+            ],
+        )
+        .expect("pages");
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT id FROM text_segments WHERE parse_run_id=?1 ORDER BY rowid")
+            .expect("stmt");
+        let segments: Vec<String> = stmt
+            .query_map([&run.id], |row| row.get(0))
+            .expect("segments")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("ids");
+        assert_eq!(segments.len(), 2, "iki sayfa iki segment");
+        let quote = "itirazın reddine";
+        let mut ids = Vec::new();
+        for segment_id in &segments {
+            let anchor = db
+                .create_anchor(&NewAnchor {
+                    case_id: case.id.clone(),
+                    document_version_id: version.id.clone(),
+                    parse_run_id: run.id.clone(),
+                    segment_id: segment_id.clone(),
+                    start_offset: 8,
+                    end_offset: 8 + i64::try_from(quote.chars().count()).unwrap(),
+                    exact_quote: quote.into(),
+                })
+                .expect("anchor");
+            ids.push(anchor.id);
+        }
+        assert_ne!(ids[0], ids[1], "aynı alıntı başka segmentte ayrı kanıttır");
+        assert_eq!(db.list_anchors(&case.id).expect("liste").len(), 2);
+    }
+
+    #[test]
+    fn anchor_version_must_match_the_parse_run() {
+        let (db, case_id, v1, _run1, v2, _anchor, run2) =
+            setup_two_versions(&["Mahkeme, itirazın reddine karar verdi."]);
+        let segment2: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run2],
+                |row| row.get(0),
+            )
+            .expect("segment2");
+        let quote = "itirazın reddine";
+        let len = i64::try_from(quote.chars().count()).unwrap();
+        let err = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                // Segment run2'ye (v2) ait; iddia edilen sürüm v1 → çelişki.
+                document_version_id: v1,
+                parse_run_id: run2.clone(),
+                segment_id: segment2.clone(),
+                start_offset: 9,
+                end_offset: 9 + len,
+                exact_quote: quote.into(),
+            })
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        let ok = db
+            .create_anchor(&NewAnchor {
+                case_id,
+                document_version_id: v2.clone(),
+                parse_run_id: run2,
+                segment_id: segment2,
+                start_offset: 9,
+                end_offset: 9 + len,
+                exact_quote: quote.into(),
+            })
+            .expect("doğru sürüm");
+        assert_eq!(ok.document_version_id, v2);
+    }
+
+    #[test]
+    fn anchor_run_must_match_the_segment() {
+        // Aynı sürüm iki kez ayrıştırılır: sürüm ve dosya aynı, koşu farklı.
+        // Kimlik kapısı koşuyu da ayırt etmezse anchor, segmentin ait olmadığı
+        // koşu adına yazılır (locate/rebind yanlış koşuya bakar).
+        let db = Database::open_in_memory(&DatabaseKey::new([43u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "İki koşu".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db
+            .create_blob_record("st-iki-run", 10, "aad")
+            .expect("blob");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"d".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
+        let text = "Mahkeme itirazın reddine karar verdi.";
+        let run1 = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{\"v\":1}")
+            .expect("run1");
+        db.store_pages(
+            &run1.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: text.into(),
+                origin: "native".into(),
+                ..Default::default()
+            }],
+        )
+        .expect("pages1");
+        db.finish_parse_run(&run1.id, "succeeded", &[])
+            .expect("finish1");
+        let run2 = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{\"v\":2}")
+            .expect("run2");
+        db.store_pages(
+            &run2.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: text.into(),
+                origin: "native".into(),
+                ..Default::default()
+            }],
+        )
+        .expect("pages2");
+        db.finish_parse_run(&run2.id, "succeeded", &[])
+            .expect("finish2");
+        let segment2: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run2.id],
+                |row| row.get(0),
+            )
+            .expect("segment2");
+        let quote = "itirazın reddine";
+        // Sürüm doğru (v1), koşu yanlış (run1) — segment run2'ye ait.
+        let err = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id.clone(),
+                document_version_id: version.id.clone(),
+                parse_run_id: run1.id.clone(),
+                segment_id: segment2.clone(),
+                start_offset: 8,
+                end_offset: 8 + i64::try_from(quote.chars().count()).unwrap(),
+                exact_quote: quote.into(),
+            })
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        // Doğru koşuyla aynı istek yazılır.
+        let ok = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id,
+                document_version_id: version.id,
+                parse_run_id: run2.id.clone(),
+                segment_id: segment2,
+                start_offset: 8,
+                end_offset: 8 + i64::try_from(quote.chars().count()).unwrap(),
+                exact_quote: quote.into(),
+            })
+            .expect("doğru koşu");
+        assert_eq!(ok.parse_run_id, run2.id);
+    }
+
+    #[test]
+    fn rebound_anchor_is_reused_at_its_new_position() {
+        let (db, case_id, _v1, _run1, v2, anchor_id, run2) =
+            setup_two_versions(&["Mahkeme, itirazın reddine karar verdi."]);
+        let segment2: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run2],
+                |row| row.get(0),
+            )
+            .expect("segment2");
+        let rebound = db.rebind_anchor(&anchor_id, &segment2, 9).expect("rebind");
+        assert_eq!(rebound.anchor_status, "rebound");
+        let quote = "itirazın reddine";
+        let again = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: v2,
+                parse_run_id: run2,
+                segment_id: segment2,
+                start_offset: 9,
+                end_offset: 9 + i64::try_from(quote.chars().count()).unwrap(),
+                exact_quote: quote.into(),
+            })
+            .expect("yeniden");
+        assert_eq!(again.id, anchor_id, "rebound anchor yeni satır açmamalı");
+        assert_eq!(db.list_anchors(&case_id).expect("liste").len(), 1);
+    }
+
+    #[test]
+    fn rebind_refreshes_the_context_of_the_new_position() {
+        let (db, _case_id, _v1, _run1, _v2, anchor_id, run2) =
+            setup_two_versions(&["Karar: Mahkeme itirazın reddine karar verdi."]);
+        let segment2: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run2],
+                |row| row.get(0),
+            )
+            .expect("segment2");
+        let rebound = db.rebind_anchor(&anchor_id, &segment2, 15).expect("rebind");
+        assert!(
+            rebound.prefix.contains("Karar"),
+            "bağlam yeni konumdan gelmeli: {:?}",
+            rebound.prefix
+        );
+        assert!(
+            rebound.suffix.contains("karar verdi"),
+            "suffix yeni konumdan gelmeli: {:?}",
+            rebound.suffix
+        );
     }
 
     /// İki sürümlü belge: v1'e anchor bağlanır, v2 belgenin güncel sürümüdür.

@@ -1588,19 +1588,8 @@ impl Database {
         };
         let length = i64::try_from(quote.quote.chars().count()).unwrap_or(0);
         let end_offset = char_start.saturating_add(length);
-        let existing: Option<String> = self
-            .conn()
-            .query_row(
-                "SELECT id FROM source_anchors
-                 WHERE segment_id=?1 AND start_offset=?2 AND end_offset=?3 AND exact_quote=?4
-                   AND anchor_status IN ('active','rebound') LIMIT 1",
-                rusqlite::params![segment_id, char_start, end_offset, quote.quote],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(id) = existing {
-            return Ok(Some(id));
-        }
+        // Kimlik ve tekilleştirme **çekirdekte** (`create_anchor`) tek yerde:
+        // aynı kanıt konumu ikinci kez yazılmaz, var olan anchor döner.
         let anchor = self.create_anchor(&NewAnchor {
             case_id: case_id.to_string(),
             document_version_id: quote.document_version_id.clone(),

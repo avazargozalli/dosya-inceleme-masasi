@@ -456,10 +456,11 @@ export function Review() {
       // Hedef dosya değiştiyse bu bağ ekrandaki dosyaya ait değildir: hiçbir
       // liste yazılmaz (öteki yazma yollarıyla aynı kural).
       if (caseRef.current !== asked) return;
-      // Çapa **çekirdekte yazıldı** ve dosyaya aittir: kaynak listesi onu
-      // göstermek zorunda. Bu satır eskiden hüküm kapısının arkasındaydı →
-      // girdi uçuşta değişince çapa yazılıyor, listede görünmüyordu; kullanıcı
-      // yazıldığını göremeyip yeniden tıklıyor ve **ikinci** çapa üretiyordu.
+      // Çapa **çekirdekte kayıtlıdır** (yeni yazıldı ya da aynı kanıt zaten
+      // vardı) ve dosyaya aittir: kaynak listesi onu göstermek zorunda. Bu
+      // satır eskiden hüküm kapısının arkasındaydı → girdi uçuşta değişince
+      // çapa yazılıyor, listede görünmüyordu; kullanıcı yazıldığını göremeyip
+      // yeniden tıklıyor ve ikinci çapa üretiyordu.
       setAnchors((prev) => (prev.some((row) => row.id === anchor.id) ? prev : [anchor, ...prev]));
       if (quoteRef.current === captured) {
         setQuoteBindings((prev) => ({ ...prev, [finding.index]: anchor.id }));
