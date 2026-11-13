@@ -610,7 +610,7 @@ export const tr = {
     coverage: "Kapsam",
     coverageLine:
       "{documents} belge · {pages} sayfa · {ocrPages} OCR · {emptyPages} boş sayfa · " +
-      "{unparsed} ayrıştırılmamış",
+      "{unparsed} ayrıştırılmamış · {noText} metinsiz belge",
     purpose: "Amaç",
     purposeSummary: "Özet",
     purposeEvents: "Olay çıkarımı",
@@ -1024,10 +1024,11 @@ export const tr = {
       emptyPages: "Boş sayfa",
       segments: "Metin segmenti",
       unparsed: "Ayrıştırılmamış belge",
+      noTextDocuments: "Okunabilir metni olmayan belge",
       failedRuns: "Başarısız ayrıştırma koşusu",
     },
     headline:
-      "{documents} belge · {pages} sayfa ({textPages} metinli, {ocrPages} OCR, {emptyPages} boş) · {unparsed} ayrıştırılmamış belge",
+      "{documents} belge · {pages} sayfa ({textPages} metinli, {ocrPages} OCR, {emptyPages} boş) · {unparsed} ayrıştırılmamış belge · {noText} metinsiz belge",
     state: {
       none: "Kapsam yok",
       full: "Kapsam tam",

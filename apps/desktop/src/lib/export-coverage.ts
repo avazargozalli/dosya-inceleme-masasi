@@ -55,6 +55,11 @@ export function coverageRows(coverage: ExportCoverage): CoverageRow[] {
       tone: coverage.unparsedDocuments > 0 ? "warn" : "plain",
     },
     {
+      label: t("exportCoverage.row.noTextDocuments"),
+      value: coverage.documentsWithoutText,
+      tone: coverage.documentsWithoutText > 0 ? "warn" : "plain",
+    },
+    {
       label: t("exportCoverage.row.failedRuns"),
       value: coverage.failedParseRuns,
       tone: coverage.failedParseRuns > 0 ? "warn" : "plain",
@@ -71,6 +76,7 @@ export function coverageHeadline(coverage: ExportCoverage): string {
     ocrPages: coverage.ocrPages,
     emptyPages: coverage.emptyPages,
     unparsed: coverage.unparsedDocuments,
+    noText: coverage.documentsWithoutText,
   });
 }
 

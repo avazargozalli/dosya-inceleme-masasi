@@ -181,6 +181,7 @@ const OVERVIEW_A: AiOverview = {
     segments: 480,
     emptyPages: 2,
     unparsedDocuments: 1,
+    documentsWithoutText: 1,
     failedParseRuns: 0,
   },
 };
@@ -207,6 +208,7 @@ const OVERVIEW_OFF: AiOverview = {
     segments: 0,
     emptyPages: 0,
     unparsedDocuments: 0,
+    documentsWithoutText: 0,
     failedParseRuns: 0,
   },
 };
@@ -233,6 +235,7 @@ const OVERVIEW_B: AiOverview = {
     segments: 21,
     emptyPages: 0,
     unparsedDocuments: 0,
+    documentsWithoutText: 0,
     failedParseRuns: 0,
   },
 };
@@ -520,6 +523,7 @@ function coverageLine(overview: AiOverview): string {
     ocrPages: overview.coverage.ocrPages,
     emptyPages: overview.coverage.emptyPages,
     unparsed: overview.coverage.unparsedDocuments,
+    noText: overview.coverage.documentsWithoutText,
   });
 }
 
@@ -562,6 +566,7 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
           ocrPages: 9,
           emptyPages: 2,
           unparsed: 1,
+          noText: 1,
         }),
       ),
     ).toBeTruthy();

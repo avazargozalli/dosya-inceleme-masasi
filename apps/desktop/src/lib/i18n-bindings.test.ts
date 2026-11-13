@@ -200,6 +200,7 @@ function coverage(partial: Partial<ExportCoverage> = {}): ExportCoverage {
     segments: 0,
     emptyPages: 0,
     unparsedDocuments: 0,
+    documentsWithoutText: 0,
     failedParseRuns: 0,
     complete: false,
     warnings: [],
@@ -312,6 +313,7 @@ describe("yardımcı lib metinleri sözlükten gelir", () => {
         ocrPages: 1,
         emptyPages: 0,
         unparsed: 0,
+        noText: 0,
       }),
     );
     expect(headline).not.toContain("{");

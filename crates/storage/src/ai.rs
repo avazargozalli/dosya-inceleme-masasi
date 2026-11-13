@@ -1445,17 +1445,33 @@ pub struct AiCandidateRow {
 
 /// Kapsamlılık raporu: hangi belge gerçekten ayrıştırıldı, hangi sayfa boş,
 /// nerede OCR kullanıldı. "İncelenmedi" ile "temiz" karıştırılmaz.
+///
+/// Sayımlar **gönderilebilir korpusu** anlatır: her belgenin güncel sürümü ve o
+/// sürümün sayfa üreten en yeni ayrıştırma koşusu (gönderim kapsamıyla aynı
+/// kural). `versions`/`parse_runs`/`failed_parse_runs` **tarihçedir**.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageReport {
+    /// Silinmemiş belge sayısı.
     pub documents: i64,
+    /// Bütün belge sürümleri (tarihçe).
     pub versions: i64,
+    /// Bütün ayrıştırma koşuları (tarihçe).
     pub parse_runs: i64,
+    /// **Gönderilebilir** korpustaki sayfa sayısı (güncel sürümlerin en yeni
+    /// sayfa üreten koşuları); eski sürümler ve önceki koşular sayılmaz.
     pub pages: i64,
     pub ocr_pages: i64,
     pub segments: i64,
+    /// Bu korpusta kullanılabilir metni olmayan sayfa (metin katmanı yok).
     pub empty_pages: i64,
+    /// Güncel sürümü olmayan ya da güncel sürümü hiç ayrıştırılmamış belge.
+    /// Eski sürümün metni gönderilmediği için bu belge "ayrıştırıldı" sayılmaz.
     pub unparsed_documents: i64,
+    /// Ayrıştırma koşusu olup **hiçbir** sayfasında kullanılabilir metin
+    /// olmayan belge (OCR'sız tarama). Gönderim kapsamı bu belgeyi atlar.
+    pub documents_without_text: i64,
+    /// Bütün başarısız koşular (tarihçe; bugünkü korpusu anlatmaz).
     pub failed_parse_runs: i64,
 }
 
@@ -1657,20 +1673,71 @@ impl Database {
         })
     }
 
+    /// Kapsam raporu **gönderim kapsamıyla aynı kuralı** kullanır: her belgenin
+    /// güncel sürümü ve o sürümün **sayfa üreten en yeni** ayrıştırma koşusu
+    /// (`resolve_transfer_scope` ile birebir aynı seçim). Böylece rapor,
+    /// gönderilemeyecek bir belgeyi "ayrıştırıldı" saymaz ve `complete`
+    /// ("Kapsam tam") yalnız gerçekten gönderilebilir korpusta doğrudur.
+    ///
+    /// "Sayfada kullanılabilir metin" ölçütü alıntı denetimiyle **tek**
+    /// tanımdır ([`crate::intext_quotes::PAGE_TEXT_EXPR`]): boşluktan ibaret
+    /// sayfa metinli sayılmaz, OCR'sız taranmış sayfa sayıya "metinli" girmez.
     pub fn coverage_report(&self, case_id: &str) -> Result<CoverageReport, StorageError> {
+        // Gönderilebilir korpus: belge başına güncel sürümün en yeni **sayfa
+        // üreten** koşusu. `run_id` NULL ise belge gönderilemez.
+        const CURRENT_RUNS: &str = "WITH current_runs AS (\
+               SELECT d.id AS document_id, \
+                      (SELECT pr.id FROM parse_runs pr \
+                        WHERE pr.document_version_id=d.current_version_id \
+                          AND EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=pr.id) \
+                        ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1) AS run_id \
+                 FROM documents d \
+                WHERE d.case_id=?1 AND d.deleted_at IS NULL\
+             )";
         let q = |sql: &str| -> Result<i64, StorageError> {
             Ok(self.conn().query_row(sql, [case_id], |r| r.get(0))?)
         };
+        let run_q = |tail: &str| format!("{CURRENT_RUNS} {tail}");
+        let page_text = crate::intext_quotes::PAGE_TEXT_EXPR;
+        let (text_pages, empty_pages, ocr_pages) = self.conn().query_row(
+            &run_q(&format!(
+                "SELECT \
+                 COALESCE(sum(CASE WHEN trim({page_text}) <> '' THEN 1 ELSE 0 END),0),\
+                 COALESCE(sum(CASE WHEN trim({page_text}) = '' THEN 1 ELSE 0 END),0),\
+                 COALESCE(sum(CASE WHEN p.text_origin IN ('ocr','mixed') THEN 1 ELSE 0 END),0) \
+                 FROM pages p JOIN current_runs c ON c.run_id=p.parse_run_id"
+            )),
+            [case_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
         Ok(CoverageReport {
-            documents: q("SELECT count(*) FROM documents WHERE case_id=?1 AND deleted_at IS NULL")?,
+            documents: q(&run_q("SELECT count(*) FROM current_runs"))?,
             versions: q("SELECT count(*) FROM document_versions WHERE case_id=?1")?,
             parse_runs: q("SELECT count(*) FROM parse_runs WHERE case_id=?1")?,
-            pages: q("SELECT count(*) FROM pages p JOIN parse_runs r ON r.id=p.parse_run_id WHERE r.case_id=?1")?,
-            ocr_pages: q("SELECT count(*) FROM pages p JOIN parse_runs r ON r.id=p.parse_run_id WHERE r.case_id=?1 AND p.text_origin IN ('ocr','mixed')")?,
-            segments: q("SELECT count(*) FROM text_segments s JOIN pages p ON p.id=s.page_id JOIN parse_runs r ON r.id=p.parse_run_id WHERE r.case_id=?1")?,
-            empty_pages: q("SELECT count(*) FROM pages p JOIN parse_runs r ON r.id=p.parse_run_id LEFT JOIN text_segments s ON s.page_id=p.id WHERE r.case_id=?1 AND s.id IS NULL")?,
-            unparsed_documents: q("SELECT count(*) FROM documents d WHERE d.case_id=?1 AND d.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM parse_runs r JOIN document_versions v ON v.id=r.document_version_id WHERE v.document_id=d.id)")?,
-            failed_parse_runs: q("SELECT count(*) FROM parse_runs WHERE case_id=?1 AND status='failed'")?,
+            pages: text_pages.saturating_add(empty_pages),
+            ocr_pages,
+            segments: q(&run_q(
+                "SELECT count(*) FROM text_segments s JOIN pages p ON p.id=s.page_id \
+                 JOIN current_runs c ON c.run_id=p.parse_run_id",
+            ))?,
+            empty_pages,
+            unparsed_documents: q(&run_q(
+                "SELECT count(*) FROM current_runs WHERE run_id IS NULL",
+            ))?,
+            documents_without_text: q(&run_q(&format!(
+                "SELECT count(*) FROM current_runs c WHERE c.run_id IS NOT NULL \
+                 AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=c.run_id \
+                                 AND trim({page_text}) <> '')"
+            )))?,
+            failed_parse_runs: q(
+                "SELECT count(*) FROM parse_runs WHERE case_id=?1 AND status='failed'",
+            )?,
         })
     }
 }
@@ -2751,6 +2818,135 @@ mod tests {
         let report = db.coverage_report(&case_id).expect("rapor");
         assert_eq!(report.documents, 0);
         assert_eq!(report.empty_pages, 0);
+    }
+
+    /// Kapsam raporu **gönderilebilir korpusu** anlatır: aynı sürümün ikinci
+    /// ayrıştırması sayfa sayısını ikiye katlamaz, yalnız en yeni sayfa üreten
+    /// koşu sayılır (gönderim kapsamıyla aynı kural).
+    #[test]
+    fn coverage_report_counts_the_corpus_an_ai_run_would_see() {
+        let (db, case_id, _) = setup();
+        let (_doc, version) =
+            document_with_text(&db, &case_id, "Dilekçe", &["birinci sayfa", "ikinci sayfa"]);
+        let run = db
+            .start_parse_run(&version, &case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("koşu");
+        db.store_pages(
+            &run.id,
+            &case_id,
+            &[page(0, "bir"), page(1, "iki"), page(2, "üç")],
+        )
+        .expect("sayfalar");
+        db.finish_parse_run(&run.id, "succeeded", &[])
+            .expect("bitir");
+        let report = db.coverage_report(&case_id).expect("rapor");
+        assert_eq!(report.documents, 1);
+        assert_eq!(report.parse_runs, 2, "koşu sayısı tarihçedir");
+        assert_eq!(report.pages, 3, "yalnız en yeni sayfa üreten koşu");
+        assert_eq!(report.segments, 3);
+        assert_eq!(report.empty_pages, 0);
+    }
+
+    /// Güncel sürüm ayrıştırılmadıysa belge **ayrıştırılmamış** sayılır: eski
+    /// sürümün metni gönderim kapsamına girmez, kapsam raporu da onu saymaz.
+    #[test]
+    fn coverage_report_counts_a_document_whose_current_version_is_unparsed() {
+        let (db, case_id, _) = setup();
+        let (document_id, _v1) = document_with_text(&db, &case_id, "Dilekçe", &["eski metin"]);
+        let _v2 = unparsed_version(&db, &case_id, &document_id);
+        let report = db.coverage_report(&case_id).expect("rapor");
+        assert_eq!(report.documents, 1);
+        assert_eq!(report.unparsed_documents, 1, "güncel sürüm taranmadı");
+        assert_eq!(report.pages, 0, "eski sürümün sayfaları sayılmaz");
+        assert_eq!(report.segments, 0);
+        assert_eq!(report.empty_pages, 0);
+    }
+
+    /// Ayrıştırma koşusu olup hiçbir sayfasında kullanılabilir metin olmayan
+    /// belge "metinli" sayılmaz: OCR'sız taranmış belge gönderilemez.
+    #[test]
+    fn coverage_report_counts_documents_without_usable_text() {
+        let (db, case_id, _) = setup();
+        document_with_text(&db, &case_id, "Taranmış", &["", "   "]);
+        let report = db.coverage_report(&case_id).expect("rapor");
+        assert_eq!(report.documents, 1);
+        assert_eq!(report.unparsed_documents, 0, "koşu var, metin yok");
+        assert_eq!(report.pages, 2);
+        assert_eq!(report.empty_pages, 2);
+        assert_eq!(report.documents_without_text, 1);
+    }
+
+    /// "Metin var" ölçütü alıntı denetimiyle **aynı**dır: yalnız boşluk taşıyan
+    /// segment satırı metin sayılmaz (iki tanım ayrışırsa kapsam "metinli"
+    /// derken alıntı taraması sayfayı atlardı).
+    #[test]
+    fn coverage_report_treats_a_whitespace_only_segment_as_no_text() {
+        let (db, case_id, _) = setup();
+        let (_doc, version) = document_with_text(&db, &case_id, "Boşluk", &[""]);
+        let run: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM parse_runs WHERE document_version_id=?1",
+                [&version],
+                |row| row.get(0),
+            )
+            .expect("koşu");
+        let page_id: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM pages WHERE parse_run_id=?1",
+                [&run],
+                |row| row.get(0),
+            )
+            .expect("sayfa");
+        // Doğrudan yazım (store_pages boş metni zaten yazmaz): yalnız boşluk
+        // taşıyan bir segment satırı, "metin var" sayılmamalı.
+        db.conn()
+            .execute(
+                "INSERT INTO text_segments
+                 (id,parse_run_id,page_id,case_id,structural_path,raw_text,normalized_text,offset_map,bbox_list,created_at)
+                 VALUES (?1,?2,?3,?4,'page/0',?5,?5,'[]','[]',?6)",
+                rusqlite::params![
+                    uuid::Uuid::now_v7().to_string(),
+                    &run,
+                    &page_id,
+                    &case_id,
+                    "   ",
+                    crate::now_iso(),
+                ],
+            )
+            .expect("segment");
+        let report = db.coverage_report(&case_id).expect("rapor");
+        assert_eq!(report.pages, 1);
+        assert_eq!(report.empty_pages, 1, "boşluk metin değildir");
+        assert_eq!(report.documents_without_text, 1);
+        assert_eq!(report.segments, 1, "segment satırı yine sayılır");
+    }
+
+    /// Tek kural kanıtı: kapsam raporunun "metni var" saydığı belge sayısı,
+    /// aktarım kapsamının gerçekten kabul ettiği belge sayısına eşittir.
+    #[test]
+    fn coverage_report_agrees_with_the_transfer_scope() {
+        let (db, case_id, _) = setup();
+        let (ok, _) = document_with_text(&db, &case_id, "Tam", &["alıntı metni"]);
+        let (stale, _) = document_with_text(&db, &case_id, "Eski", &["başka metin"]);
+        let _v2 = unparsed_version(&db, &case_id, &stale);
+        let (blank, _) = document_with_text(&db, &case_id, "Taranmış", &[""]);
+        let ids = vec![ok, stale, blank];
+        let scope = db
+            .resolve_transfer_scope(&case_id, &ids)
+            .expect("gönderim kapsamı");
+        assert_eq!(scope.documents.len(), 1, "yalnız 'Tam' gönderilebilir");
+        assert_eq!(scope.skipped.len(), 2);
+        let report = db.coverage_report(&case_id).expect("rapor");
+        assert_eq!(
+            report.documents - report.unparsed_documents - report.documents_without_text,
+            i64::try_from(scope.documents.len()).unwrap_or(i64::MAX),
+            "kapsam raporu ile gönderim kapsamı aynı dili konuşur"
+        );
+        assert_eq!(report.pages, 2, "gönderilebilir korpusun sayfaları");
+        assert_eq!(report.empty_pages, 1, "taranmış belgenin sayfası metinsiz");
+        assert_eq!(report.segments, 1);
     }
 
     #[test]

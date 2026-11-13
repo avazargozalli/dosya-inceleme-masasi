@@ -54,9 +54,11 @@ const MAX_HISTORICAL_VERSIONS_PER_DOCUMENT: usize = 5;
 /// ([`Database::scan_quote_tier`]) ve sayım ([`Database::page_counts`]) aynı
 /// ifadeyi kullanır; iki tanım ayrışırsa `pages_scanned` "tarandı" dediği
 /// sayfayı taramayabilir (metin katmanı olmayan sayfa `not_found` hükmü
-/// üretirdi — alıntı uydurma sanılırdı).
-const PAGE_TEXT_EXPR: &str =
-    "COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'')";
+/// üretirdi — alıntı uydurma sanılırdı). Kapsam raporu
+/// (`ai::Database::coverage_report`) da aynı ifadeyi kullanır: "metinli sayfa"
+/// iki yerde farklı tanımlanamaz.
+pub(crate) const PAGE_TEXT_EXPR: &str =
+    "COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id ORDER BY s.rowid LIMIT 1),'')";
 
 /// Kapsam sayfalarını okur: kimlik, indeks, metin kaynağı, segment ve **ham**
 /// metin. Metin ifadesi [`PAGE_TEXT_EXPR`]den gelir.

@@ -150,9 +150,10 @@ mod tests {
             segments: 12,
             empty_pages: 0,
             unparsed_documents: 1,
+            documents_without_text: 0,
             failed_parse_runs: 0,
             complete: false,
-            warnings: vec!["1 belge hiç ayrıştırılmadı".into()],
+            warnings: vec!["1 belgenin güncel sürümü ayrıştırılmadı".into()],
             statement: COVERAGE_STATEMENT.to_string(),
             generated_at: "2026-11-08T00:00:00Z".into(),
         }

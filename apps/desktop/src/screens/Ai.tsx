@@ -871,6 +871,7 @@ export function Ai() {
                   ocrPages: overview.coverage.ocrPages,
                   emptyPages: overview.coverage.emptyPages,
                   unparsed: overview.coverage.unparsedDocuments,
+                  noText: overview.coverage.documentsWithoutText,
                 })
               : t("common.unknown")}
           </dd>

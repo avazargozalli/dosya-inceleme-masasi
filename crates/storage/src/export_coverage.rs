@@ -20,9 +20,11 @@ pub const COVERAGE_STATEMENT: &str =
 kapsar; kapsam dışında kalan belge ve sayfalar incelenmiş sayılmaz.";
 
 /// Sayımların nasıl okunacağını söyleyen teknik not (markdown çıktısında).
-pub const COVERAGE_COUNTING_NOTE: &str = "Sayımlar kasadaki ayrıştırma koşuları üzerinden alınır: \
-aynı belge birden çok kez ayrıştırıldıysa sayfa sayısı koşu sayısıyla birlikte artar. \
-Belge sayısı silinmemiş kayıtları sayar.";
+pub const COVERAGE_COUNTING_NOTE: &str = "Sayımlar gönderim kapsamıyla **aynı kuraldan** gelir: \
+her belgenin güncel sürümü ve o sürümün sayfa üreten en yeni ayrıştırma koşusu sayılır; \
+eski sürümler ve önceki koşular sayfa/segment sayısına girmez. Belge sürümü, ayrıştırma koşusu \
+ve başarısız koşu sayıları tarihçedir. Metin ölçütü alıntı denetimiyle aynıdır: boşluktan ibaret \
+sayfa metinli sayılmaz.";
 
 /// Dışa aktarma çıktısına gömülen kapsam bloğu.
 ///
@@ -41,6 +43,9 @@ pub struct ExportCoverage {
     pub segments: i64,
     pub empty_pages: i64,
     pub unparsed_documents: i64,
+    /// Güncel sürümü ayrıştırılmış ama **hiçbir** sayfasında okunabilir metin
+    /// olmayan belge (OCR'sız tarama); gönderim kapsamı bu belgeyi atlar.
+    pub documents_without_text: i64,
     pub failed_parse_runs: i64,
     /// Kapsam tam mı? Uyarı varsa `false`.
     pub complete: bool,
@@ -62,8 +67,15 @@ impl ExportCoverage {
         }
         if report.unparsed_documents > 0 {
             warnings.push(format!(
-                "{} belge hiç ayrıştırılmadı; içerikleri incelenmedi.",
+                "{} belgenin güncel sürümü ayrıştırılmadı; içerikleri incelenmedi.",
                 report.unparsed_documents
+            ));
+        }
+        if report.documents_without_text > 0 {
+            warnings.push(format!(
+                "{} belgenin güncel sürümünde okunabilir metin yok (OCR'sız tarama olabilir); \
+                 bu belgeler incelemeye alınamaz.",
+                report.documents_without_text
             ));
         }
         if report.empty_pages > 0 {
@@ -74,7 +86,8 @@ impl ExportCoverage {
         }
         if report.failed_parse_runs > 0 {
             warnings.push(format!(
-                "{} ayrıştırma koşusu başarısız oldu; o koşuların sayfaları eksik olabilir.",
+                "{} ayrıştırma koşusu başarısız oldu (tarihçe); o koşuların sayfaları eksik \
+                 olabilir.",
                 report.failed_parse_runs
             ));
         }
@@ -86,6 +99,7 @@ impl ExportCoverage {
         }
         let complete = report.documents > 0
             && report.unparsed_documents == 0
+            && report.documents_without_text == 0
             && report.empty_pages == 0
             && report.failed_parse_runs == 0;
         Self {
@@ -98,6 +112,7 @@ impl ExportCoverage {
             segments: report.segments,
             empty_pages: report.empty_pages,
             unparsed_documents: report.unparsed_documents,
+            documents_without_text: report.documents_without_text,
             failed_parse_runs: report.failed_parse_runs,
             complete,
             warnings,
@@ -119,6 +134,10 @@ impl ExportCoverage {
             ("Boş sayfa", self.empty_pages),
             ("Metin segmenti", self.segments),
             ("Ayrıştırılmamış belge", self.unparsed_documents),
+            (
+                "Okunabilir metni olmayan belge",
+                self.documents_without_text,
+            ),
             ("Başarısız ayrıştırma koşusu", self.failed_parse_runs),
         ]
     }
@@ -127,13 +146,15 @@ impl ExportCoverage {
     #[must_use]
     pub fn headline(&self) -> String {
         format!(
-            "{} belge · {} sayfa ({} metinli, {} OCR, {} boş) · {} ayrıştırılmamış belge",
+            "{} belge · {} sayfa ({} metinli, {} OCR, {} boş) · {} ayrıştırılmamış belge · \
+             {} metinsiz belge",
             self.documents,
             self.pages,
             self.text_pages,
             self.ocr_pages,
             self.empty_pages,
-            self.unparsed_documents
+            self.unparsed_documents,
+            self.documents_without_text
         )
     }
 
@@ -222,6 +243,7 @@ mod tests {
             segments: 120,
             empty_pages: 2,
             unparsed_documents: 1,
+            documents_without_text: 1,
             failed_parse_runs: 1,
         }
     }
@@ -237,6 +259,7 @@ mod tests {
             segments: 30,
             empty_pages: 0,
             unparsed_documents: 0,
+            documents_without_text: 0,
             failed_parse_runs: 0,
         });
         assert!(coverage.complete);
@@ -249,12 +272,43 @@ mod tests {
     fn warnings_name_every_gap_with_numbers() {
         let coverage = ExportCoverage::from_report(&report());
         assert!(!coverage.complete);
-        assert_eq!(coverage.warnings.len(), 4);
-        assert!(coverage.warnings[0].contains("1 belge hiç ayrıştırılmadı"));
-        assert!(coverage.warnings[1].contains("2 sayfada metin yok"));
-        assert!(coverage.warnings[2].contains("1 ayrıştırma koşusu başarısız"));
-        assert!(coverage.warnings[3].contains("3 sayfa OCR"));
+        assert_eq!(coverage.warnings.len(), 5);
+        assert!(coverage.warnings[0].contains("1 belgenin güncel sürümü ayrıştırılmadı"));
+        assert!(coverage.warnings[1].contains("1 belgenin güncel sürümünde okunabilir metin yok"));
+        assert!(coverage.warnings[2].contains("2 sayfada metin yok"));
+        assert!(coverage.warnings[3].contains("1 ayrıştırma koşusu başarısız"));
+        assert!(coverage.warnings[4].contains("3 sayfa OCR"));
         assert_eq!(coverage.text_pages, 38);
+    }
+
+    /// Ayrıştırma koşusu olup hiçbir sayfasında okunabilir metin olmayan belge
+    /// kapsamı **tam** yapamaz: OCR'sız taranmış belge incelemeye alınamaz.
+    #[test]
+    fn a_document_without_usable_text_cannot_complete_the_scope() {
+        let coverage = ExportCoverage::from_report(&CoverageReport {
+            documents: 1,
+            versions: 1,
+            parse_runs: 1,
+            pages: 2,
+            ocr_pages: 0,
+            segments: 0,
+            empty_pages: 2,
+            unparsed_documents: 0,
+            documents_without_text: 1,
+            failed_parse_runs: 0,
+        });
+        assert!(
+            !coverage.complete,
+            "metinsiz belge varken kapsam tam olamaz"
+        );
+        assert!(coverage
+            .warnings
+            .iter()
+            .any(|w| w.contains("1 belgenin güncel sürümünde okunabilir metin yok")));
+        assert!(coverage.headline().contains("1 metinsiz belge"));
+        assert!(coverage
+            .markdown("Dosya")
+            .contains("| Okunabilir metni olmayan belge | 1 |"));
     }
 
     #[test]
@@ -268,6 +322,7 @@ mod tests {
             segments: 0,
             empty_pages: 0,
             unparsed_documents: 0,
+            documents_without_text: 0,
             failed_parse_runs: 0,
         });
         assert!(!coverage.complete);
@@ -297,7 +352,7 @@ mod tests {
         let csv = coverage.csv_comment_block();
         assert!(csv.contains("# kapsam=kısmi"));
         assert!(csv.contains("4 belge · 40 sayfa (38 metinli, 3 OCR, 2 boş)"));
-        assert!(csv.contains("# UYARI: 1 belge hiç ayrıştırılmadı"));
+        assert!(csv.contains("# UYARI: 1 belgenin güncel sürümü ayrıştırılmadı"));
     }
 
     #[test]
@@ -343,6 +398,7 @@ mod tests {
         assert!(!coverage.complete);
         let value = serde_json::to_value(&coverage).expect("json");
         assert_eq!(value["unparsedDocuments"], 0);
+        assert_eq!(value["documentsWithoutText"], 0);
         assert_eq!(value["textPages"], 0);
         assert_eq!(value["statement"], COVERAGE_STATEMENT);
         assert!(value["warnings"][0]

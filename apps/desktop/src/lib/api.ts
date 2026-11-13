@@ -244,6 +244,8 @@ export type CoverageReport = {
   segments: number;
   emptyPages: number;
   unparsedDocuments: number;
+  /** Güncel sürümü ayrıştırılmış ama hiçbir sayfasında okunabilir metin yok. */
+  documentsWithoutText: number;
   failedParseRuns: number;
 };
 
@@ -259,6 +261,8 @@ export type ExportCoverage = {
   segments: number;
   emptyPages: number;
   unparsedDocuments: number;
+  /** Güncel sürümü ayrıştırılmış ama hiçbir sayfasında okunabilir metin yok. */
+  documentsWithoutText: number;
   failedParseRuns: number;
   complete: boolean;
   warnings: string[];

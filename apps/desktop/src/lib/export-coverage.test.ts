@@ -22,11 +22,12 @@ function coverage(overrides: Partial<ExportCoverage> = {}): ExportCoverage {
     segments: 120,
     emptyPages: 2,
     unparsedDocuments: 1,
+    documentsWithoutText: 1,
     failedParseRuns: 1,
     complete: false,
     warnings: [
-      "1 belge hiç ayrıştırılmadı; içerikleri incelenmedi.",
-      "2 sayfada metin yok (taranmış görüntü olabilir); bu sayfalar okunmadı.",
+      "1 belgenin güncel sürümü ayrıştırılmadı; içerikleri incelenmedi.",
+      "1 belgenin güncel sürümünde okunabilir metin yok (OCR'sız tarama olabilir); bu belgeler incelemeye alınamaz.",
     ],
     statement: "İncelenmedi ≠ temiz: bu çıktı yalnız kasadaki ayrıştırılmış metni kapsar.",
     generatedAt: "2026-10-25T09:00:00Z",
@@ -35,19 +36,22 @@ function coverage(overrides: Partial<ExportCoverage> = {}): ExportCoverage {
 }
 
 describe("coverageRows", () => {
-  it("çekirdek sırasını korur ve on satır döner", () => {
+  it("çekirdek sırasını korur ve on bir satır döner", () => {
     const rows = coverageRows(coverage());
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(11);
     expect(rows[0]?.label).toBe("Belge");
     expect(rows[4]?.label).toBe("Metinli sayfa");
     expect(rows[4]?.value).toBe(38);
-    expect(rows[9]?.label).toBe("Başarısız ayrıştırma koşusu");
+    expect(rows[9]?.label).toBe("Okunabilir metni olmayan belge");
+    expect(rows[9]?.value).toBe(1);
+    expect(rows[10]?.label).toBe("Başarısız ayrıştırma koşusu");
   });
 
   it("eksik kapsamı uyarı tonuyla işaretler", () => {
     const rows = coverageRows(coverage());
     expect(rows.find((r) => r.label === "Boş sayfa")?.tone).toBe("warn");
     expect(rows.find((r) => r.label === "OCR ile okunan sayfa")?.tone).toBe("warn");
+    expect(rows.find((r) => r.label === "Okunabilir metni olmayan belge")?.tone).toBe("warn");
     expect(rows.find((r) => r.label === "Metinli sayfa")?.tone).toBe("plain");
   });
 
@@ -60,7 +64,7 @@ describe("coverageRows", () => {
 describe("coverageHeadline", () => {
   it("sayıları tek satırda toplar", () => {
     expect(coverageHeadline(coverage())).toBe(
-      "4 belge · 40 sayfa (38 metinli, 3 OCR, 2 boş) · 1 ayrıştırılmamış belge",
+      "4 belge · 40 sayfa (38 metinli, 3 OCR, 2 boş) · 1 ayrıştırılmamış belge · 1 metinsiz belge",
     );
   });
 });
@@ -92,7 +96,8 @@ describe("coverageWarnings", () => {
   it("çekirdeğin cümlelerini olduğu gibi taşır", () => {
     const warnings = coverageWarnings(coverage());
     expect(warnings).toHaveLength(2);
-    expect(warnings[0]).toContain("hiç ayrıştırılmadı");
+    expect(warnings[0]).toContain("güncel sürümü ayrıştırılmadı");
+    expect(warnings[1]).toContain("okunabilir metin yok");
   });
 });
 
@@ -109,7 +114,7 @@ describe("coverageEmbedNote", () => {
   it("bilinmeyen formatta yeri uydurmaz", () => {
     const note = coverageEmbedNote("xml", coverage());
     expect(note).toBe(
-      "Kapsam çıktıya gömüldü: 4 belge · 40 sayfa (38 metinli, 3 OCR, 2 boş) · 1 ayrıştırılmamış belge",
+      "Kapsam çıktıya gömüldü: 4 belge · 40 sayfa (38 metinli, 3 OCR, 2 boş) · 1 ayrıştırılmamış belge · 1 metinsiz belge",
     );
   });
 });

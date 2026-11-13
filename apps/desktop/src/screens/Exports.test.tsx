@@ -187,6 +187,7 @@ function coverage(overrides: Partial<ExportCoverage> = {}): ExportCoverage {
     segments: 640,
     emptyPages: 2,
     unparsedDocuments: 0,
+    documentsWithoutText: 0,
     failedParseRuns: 0,
     complete: true,
     warnings: [],
