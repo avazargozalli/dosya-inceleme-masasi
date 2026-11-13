@@ -21,7 +21,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dim_cli_adapters::{retry_while_busy, run_cli, CliRunRequest, HomeIsolation, RunStatus};
+use dim_cli_adapters::{
+    retry_while_busy, run_cli, run_cli_with_prompt, CliRunRequest, HomeIsolation, RunStatus,
+};
 
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
@@ -130,14 +132,22 @@ fn antigravity_hardening_reaches_the_process() {
     let work = empty_workdir(tmp.path());
     let cancel = Arc::new(AtomicBool::new(false));
 
-    // İstem **tek belirteç** olarak verilir (`--print=<istem>`): `agy` `--print`i
-    // **değer alan** bayrak sayar. Çıplak `--print` + komşu bayrak, bayrağı isteme
-    // çevirip sertleştirmeyi sessizce düşürür (ölçüldü 1.4.12; `prompt_argv`).
-    let outcome = run_cli(
-        &request("antigravity-cli", exe, work, &["--print=DIM-CANARY-49"]),
+    // İstem **ürün yoluyla** verilir (`run_cli_with_prompt` → `prompt_argv`):
+    // `agy` `--print`i **değer alan** bayrak sayar, istem tek belirteçte
+    // (`--print=<istem>`) gider. Argüman kapısından istem geçemez (2026-11-13);
+    // çıplak `--print` + komşu bayrak ise sertleştirmeyi sessizce düşürür
+    // (ölçüldü 1.4.12).
+    let outcome = run_cli_with_prompt(
+        &request("antigravity-cli", exe, work, &[]),
+        "DIM-CANARY-49",
         &cancel,
     )
     .expect("run");
+    assert!(
+        outcome.stdout_head.contains("--print=DIM-CANARY-49"),
+        "istem argv'ye girmedi: {}",
+        outcome.stdout_head
+    );
     assert!(
         outcome.stdout_head.contains("--sandbox"),
         "{}",

@@ -44,8 +44,8 @@ use std::sync::Arc;
 
 use crate::capability::{Capability, CapabilityReport, CapabilityState, HELP_TIMEOUT};
 use crate::{
-    build_args, check_workdir, default_env_allowlist, run_cli, AdapterSpec, CliRunRequest,
-    HomeIsolation, RunError, RunSandbox, RunStatus,
+    build_args, check_workdir, default_env_allowlist, run_cli, AdapterSpec, ArgValue,
+    CliRunRequest, HomeIsolation, RunError, RunSandbox, RunStatus,
 };
 
 /// Fikstür kök dizininin öneki (geçici dizinde oluşturulur, bırakılınca silinir).
@@ -912,15 +912,23 @@ pub fn hardening_argv(adapter_id: &str) -> Result<Vec<String>, RunError> {
             continue;
         }
         for flag in requirement.flags {
-            if VALUE_ONLY_FLAGS.contains(flag) {
+            // Değer kararı **sicilden** okunur (tek kaynak): bayrak değer
+            // almıyorsa çıplak eklenir, ürünün sabitlediği boş değer varsa
+            // `--tools ""` biçiminde eklenir, değeri ürün sabitlemiyorsa
+            // saldırı koşusuna değer uydurulmaz.
+            let Some(rule) = crate::spec(adapter_id).and_then(|spec| spec.arg_rule(flag)) else {
                 continue;
-            }
-            flags.push((*flag).to_string());
-            if EMPTY_VALUE_FLAGS.contains(flag) {
-                // Değer **ayrı belirteç** olmalı: `--tools ""`. Ölçüldü
-                // (Claude Code 2.1.303, 2026-10-27): `--tools=` biçimi araçları
-                // kapatmıyor; model araç çağrısı üretmeye devam ediyor.
-                flags.push(String::new());
+            };
+            match rule {
+                ArgValue::None => flags.push((*flag).to_string()),
+                ArgValue::OneOf(values) if values == [""] => {
+                    // Değer **ayrı belirteç** olmalı: `--tools ""`. Ölçüldü
+                    // (Claude Code 2.1.303, 2026-10-27): `--tools=` biçimi araçları
+                    // kapatmıyor; model araç çağrısı üretmeye devam ediyor.
+                    flags.push((*flag).to_string());
+                    flags.push(String::new());
+                }
+                ArgValue::OneOf(_) | ArgValue::Free(_) => {}
             }
         }
     }
@@ -933,11 +941,6 @@ pub fn hardening_argv(adapter_id: &str) -> Result<Vec<String>, RunError> {
     build_args(adapter_id, &args)?;
     Ok(args)
 }
-
-/// Değer isteyen ve saldırı koşusuna girmeyen bayraklar (şema/MCP dosyası).
-const VALUE_ONLY_FLAGS: &[&str] = &["--json-schema", "--output-schema", "--mcp-config"];
-/// Değer isteyen ama boş değerle anlamlı olan bayraklar.
-const EMPTY_VALUE_FLAGS: &[&str] = &["--tools"];
 
 /// Gerçek CLI koşusunun sonucu.
 #[derive(Debug, Clone, PartialEq, Eq)]

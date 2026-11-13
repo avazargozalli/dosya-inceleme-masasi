@@ -3695,7 +3695,7 @@ pub struct AdapterView {
     pub version: Option<String>,
     pub auth_mode: &'static str,
     pub batch_forbidden: bool,
-    pub allowed_args: &'static [&'static str],
+    pub allowed_args: Vec<&'static str>,
     /// PATH'te bulunan yürütülebilir (varsa); bağ çözümüyle birlikte.
     pub path: Option<String>,
     /// Başlık baytlarından okunan mimari (F10-T01). Kurulu değilse `None`.
@@ -3750,7 +3750,7 @@ pub fn provider_probe() -> Vec<AdapterView> {
                     dim_cli_adapters::AuthMode::InteractiveOnly => "interactive_only",
                 },
                 batch_forbidden: spec.batch_forbidden,
-                allowed_args: spec.allowed_args,
+                allowed_args: spec.allowed_flags().collect(),
                 path: path.map(|p| p.to_string_lossy().to_string()),
                 architecture,
             }

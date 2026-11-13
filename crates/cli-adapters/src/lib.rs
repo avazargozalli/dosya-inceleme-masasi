@@ -72,6 +72,68 @@ pub enum AuthMode {
     InteractiveOnly,
 }
 
+/// İzinli bir bayrağın **değer** politikası. Argüman kapısı yalnız bayrak adına
+/// bakmaz: değeri bir güvenlik/format kararı taşıyan bayraklar kapalı küme
+/// bildirir, geri kalanı gerekçesiyle `Free` işaretlenir.
+///
+/// **Neden:** kapı yalnız adı denetlediğinde "izinli argüman" güvenlik kararını
+/// taşımıyordu. Ölçüldü (codex-cli 0.159.2 `--help`): `--sandbox` için olası
+/// değerler `read-only · workspace-write · danger-full-access`; adı izinli
+/// olduğu için `--sandbox=danger-full-access` kapıdan **geçiyordu**. Aynı sınıf:
+/// claude `--tools` (2.1.303 `--help`: `""` tüm araçları kapatır, `default`
+/// hepsini açar) — `--tools=default` adı izinli olduğu için geçerdi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgValue {
+    /// Bayrak değer **almaz**: hem `--bayrak=değer` hem `--bayrak değer`
+    /// reddedilir (değer sessizce yorumlanmasın).
+    None,
+    /// Yalnız bu değerler kabul edilir. Boş dize de bir değerdir (`--tools ""`).
+    OneOf(&'static [&'static str]),
+    /// Değer serbest: bayrak adı denetimi yeterli, değer güvenlik/format kapısı
+    /// taşımıyor. Gerekçe **zorunlu** alan — kararı yazmadan bayrak eklenemez.
+    Free(&'static str),
+}
+
+impl ArgValue {
+    /// Bayrak değer alıyor mu? (Ayrı belirteçli biçimi kabul eden tek durum.)
+    #[must_use]
+    pub const fn takes_value(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// `allowed_args` girişi: bayrak **ve** değer kararı tek satırda durur. Kararı
+/// atlamak mümkün değil — yeni bayrak ekleyen tip sistemi karar vermeye zorlar.
+#[derive(Debug, Clone, Copy)]
+pub struct AllowedArg {
+    pub flag: &'static str,
+    pub value: ArgValue,
+}
+
+/// Değer almayan (boolean/alt komut) bayrak.
+const fn plain(flag: &'static str) -> AllowedArg {
+    AllowedArg {
+        flag,
+        value: ArgValue::None,
+    }
+}
+
+/// Değeri **kapalı küme** olan bayrak: güvenlik/format kararı taşır.
+const fn closed(flag: &'static str, values: &'static [&'static str]) -> AllowedArg {
+    AllowedArg {
+        flag,
+        value: ArgValue::OneOf(values),
+    }
+}
+
+/// Değeri serbest ama gerekçesi yazılmış bayrak.
+const fn free(flag: &'static str, why: &'static str) -> AllowedArg {
+    AllowedArg {
+        flag,
+        value: ArgValue::Free(why),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AdapterSpec {
     pub id: &'static str,
@@ -84,11 +146,29 @@ pub struct AdapterSpec {
     /// kısa tutulur.
     pub aliases: &'static [&'static str],
     pub version_args: &'static [&'static str],
-    /// Yürütmede kabul edilen ek bayraklar. Listede olmayan bayrak reddedilir.
-    pub allowed_args: &'static [&'static str],
+    /// Yürütmede kabul edilen ek bayraklar **ve değer kararları**. Listede
+    /// olmayan bayrak, izinli olmayan değer reddedilir.
+    pub allowed_args: &'static [AllowedArg],
     pub auth_mode: AuthMode,
     /// Abonelik modunda otomatik/toplu kullanımın yasak olduğu sağlayıcılar.
     pub batch_forbidden: bool,
+}
+
+impl AdapterSpec {
+    /// Bayrağın değer kararı. Ortak sürüm bayrakları (`--version`, `--help`)
+    /// değer almaz. Listede olmayan bayrak `None` döner → kapı reddeder.
+    #[must_use]
+    pub fn arg_rule(&self, flag: &str) -> Option<ArgValue> {
+        if let Some(entry) = self.allowed_args.iter().find(|entry| entry.flag == flag) {
+            return Some(entry.value);
+        }
+        self.version_args.contains(&flag).then_some(ArgValue::None)
+    }
+
+    /// İzinli bayrak **adları** (arayüz/sicil görünümü; değer kararı taşımaz).
+    pub fn allowed_flags(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.allowed_args.iter().map(|entry| entry.flag)
+    }
 }
 
 const COMMON: &[&str] = &["--version", "--help"];
@@ -103,19 +183,30 @@ pub const SPECS: &[AdapterSpec] = &[
         aliases: &[],
         version_args: COMMON,
         allowed_args: &[
-            "--print",
-            "--output-format",
-            "--model",
-            "--max-turns",
+            plain("--print"),
+            // Ürün düz metin okur; `stream-json` ayrıştırıcısı yok.
+            closed("--output-format", &["text", "json"]),
+            free("--model", "model adı; güvenlik/format denetimi taşımaz"),
+            free(
+                "--max-turns",
+                "sayı; ürün tur sınırını ayrıca timeout ile koyar",
+            ),
             // `claude --help` (2.1.303) ile doğrulandı: yalnız `--print` ile.
-            "--no-session-persistence",
+            plain("--no-session-persistence"),
             // F10-T11 yetenek matrisi: yardım metninde bildirilen kapatma yolları.
             // Matris ile kapı ayrışmasın diye `capability::MATRIX` ile birlikte
             // tutulur (`declared_capability_flags_pass_the_argument_gate`).
-            "--tools",
-            "--bare",
-            "--strict-mcp-config",
-            "--json-schema",
+            // ÖLÇÜLDÜ (2.1.303 `--help`): değer `""` **tüm** araçları kapatır,
+            // `default` hepsini açar, araç adları seçer. Ürün yalnız kapatmayı
+            // kullanır; kapıdan başka değer geçemez (`--tools=default` reddedilir).
+            closed("--tools", &[""]),
+            // `--bare` oturumu düşürüyor (ölçüldü: "Not logged in") — boolean.
+            plain("--bare"),
+            plain("--strict-mcp-config"),
+            free(
+                "--json-schema",
+                "satır içi JSON şema; ürün şemayı kendi üretir",
+            ),
         ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
@@ -127,18 +218,21 @@ pub const SPECS: &[AdapterSpec] = &[
         aliases: &[],
         version_args: COMMON,
         allowed_args: &[
-            "exec",
-            "--json",
-            "--model",
-            "--sandbox",
-            "--skip-git-repo-check",
+            plain("exec"),
+            plain("--json"),
+            free("--model", "model adı; güvenlik/format denetimi taşımaz"),
+            // ÖLÇÜLDÜ (codex-cli 0.159.2 `exec --help`): olası değerler
+            // `read-only · workspace-write · danger-full-access`. Ürün **tam
+            // erişim istemez**; adı izinli diye `danger-full-access` geçemez.
+            closed("--sandbox", &["read-only", "workspace-write"]),
+            plain("--skip-git-repo-check"),
             // `codex exec --help` (0.159.2) ile doğrulandı: oturum dosyası yazmaz.
-            "--ephemeral",
+            plain("--ephemeral"),
             // F10-T11 yetenek matrisi: yapılandırma/kural yüklemeyi kapatma ve
             // şemalı çıktı bayrakları.
-            "--output-schema",
-            "--ignore-user-config",
-            "--ignore-rules",
+            free("--output-schema", "JSON şema **dosyası** yolu"),
+            plain("--ignore-user-config"),
+            plain("--ignore-rules"),
         ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
@@ -153,16 +247,23 @@ pub const SPECS: &[AdapterSpec] = &[
         aliases: &["agy"],
         version_args: COMMON,
         allowed_args: &[
-            "--print",
-            "--model",
-            // `agy --help` (1.4.2) ile doğrulandı.
-            "--output-format",
-            "--json-schema",
-            "--sandbox",
+            // `--print` **değer alır** (istem `=` ile bağlanır) — ama istem
+            // yalnız `prompt_argv`den, `validate_prompt` sonrası girer. Argüman
+            // kapısından istem geçemez; bu yüzden burada değer kabul edilmez.
+            plain("--print"),
+            free("--model", "model adı; güvenlik/format denetimi taşımaz"),
+            // `agy --help` (1.4.2) ile doğrulandı. Ürün yalnız `json` zarfını
+            // okur (T08e): başka biçim ayrıştırıcıyı kırar.
+            closed("--output-format", &["json"]),
+            free(
+                "--json-schema",
+                "satır içi JSON şema; ürün şemayı kendi üretir",
+            ),
+            plain("--sandbox"),
             // `agy --help` (1.4.7) ile doğrulandı: print kipinde slash komut ve
             // skill genişlemesini kapatır (sertleştirmede zorunlu).
-            "--disable-slash-commands",
-            "--print-timeout",
+            plain("--disable-slash-commands"),
+            free("--print-timeout", "süre; biçim sağlayıcıya bağlı"),
         ],
         auth_mode: AuthMode::Subscription,
         batch_forbidden: false,
@@ -173,7 +274,10 @@ pub const SPECS: &[AdapterSpec] = &[
         command: "kimi",
         aliases: &[],
         version_args: COMMON,
-        allowed_args: &["--print", "--model"],
+        allowed_args: &[
+            plain("--print"),
+            free("--model", "model adı; güvenlik/format denetimi taşımaz"),
+        ],
         // Kimi aboneliği etkileşimli kullanım içindir; otomatik toplu iş engellenir.
         auth_mode: AuthMode::InteractiveOnly,
         batch_forbidden: true,
@@ -195,6 +299,11 @@ pub enum AdapterError {
     UnknownAdapter(String),
     #[error("izin verilmeyen argüman: {0}")]
     DisallowedArgument(String),
+    /// Bayrak izinli ama **değeri** değil. Ad denetimi tek başına yetmiyordu:
+    /// `--sandbox=danger-full-access` gibi bir değer sertleştirmeyi sessizce
+    /// kaldırır (ölçüldü: codex-cli 0.159.2 `--help` olası değerleri sayar).
+    #[error("izin verilmeyen argüman değeri: {flag} — {reason}")]
+    ArgumentValue { flag: String, reason: String },
     #[error("toplu/otomatik kullanım bu sağlayıcıda engelli")]
     BatchForbidden,
     /// İstem metni argv'ye **güvenle** konamaz (boş, `-` ile başlıyor, kontrol
@@ -218,6 +327,7 @@ impl AdapterError {
         match self {
             Self::UnknownAdapter(_) => "E_CLI_UNKNOWN",
             Self::DisallowedArgument(_) => "E_CLI_ARGUMENT",
+            Self::ArgumentValue { .. } => "E_CLI_ARGUMENT",
             Self::BatchForbidden => "E_CLI_BATCH_FORBIDDEN",
             Self::InvalidPrompt(_) => "E_CLI_ARGUMENT",
             Self::PromptShape(_) => "E_CLI_ARGUMENT",
@@ -386,30 +496,117 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// İzinli argüman kapısı. `--flag=value` biçimi de kabul edilir; bayrak adı
-/// listede yoksa istek reddedilir (INV-10). Sicilde tanımlı **sürüm bayrakları**
-/// (`version_args`) ayrıca izinlidir: yoklama kendi sicilindeki bayrağı
-/// kullanabildiği hâlde kapıya takılmamalı.
+/// İzinli argüman kapısı. `--flag=value` ve `--flag value` biçimleri aynı
+/// kurallardan geçer; bayrak adı listede yoksa istek reddedilir (INV-10).
+/// Sicilde tanımlı **sürüm bayrakları** (`version_args`) ayrıca izinlidir:
+/// yoklama kendi sicilindeki bayrağı kullanabildiği hâlde kapıya takılmamalı.
 ///
-/// Boş dize tek başına anlamlı bir argüman değildir; yalnız bir bayrağın boş
-/// değeri olarak kullanılır (`--tools ""`). İçerik taşımadığı için kapıyı
-/// gevşetmez: serbest metin (istem, yol, komut) hâlâ reddedilir.
+/// Her belirteç **bayrak adı** ve — varsa — **değeri** ile denetlenir. Adı
+/// izinli olmak yetmez: değer bir güvenlik/format kararı taşıyorsa [`ArgValue`]
+/// kapalı kümesine uymalıdır (`--sandbox=danger-full-access` reddedilir). Boş
+/// belirteç bayrak sayılmaz; yalnız kapalı kümesinde boş değer ilan edilmiş bir
+/// bayrağın değeri olarak geçebilir (`--tools ""`). Değer `-` ile başlayamaz:
+/// CLI onu bayrak sanar (istem kapısındaki kuralın aynısı).
 pub fn build_args(adapter_id: &str, extra: &[String]) -> Result<Vec<String>, AdapterError> {
     let spec =
         spec(adapter_id).ok_or_else(|| AdapterError::UnknownAdapter(adapter_id.to_string()))?;
     let mut out = Vec::with_capacity(extra.len());
-    for arg in extra {
+    let mut index = 0;
+    while index < extra.len() {
+        let arg = &extra[index];
         if arg.is_empty() {
-            out.push(arg.clone());
-            continue;
+            return Err(AdapterError::ArgumentValue {
+                flag: String::new(),
+                reason: "boş belirteç bayrak değildir (yalnız değer olarak geçebilir)".to_string(),
+            });
         }
-        let flag = arg.split('=').next().unwrap_or(arg);
-        if !spec.allowed_args.contains(&flag) && !spec.version_args.contains(&flag) {
-            return Err(AdapterError::DisallowedArgument(flag.to_string()));
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (arg.as_str(), None),
+        };
+        let rule = spec
+            .arg_rule(flag)
+            .ok_or_else(|| AdapterError::DisallowedArgument(flag.to_string()))?;
+        match (rule, inline) {
+            (ArgValue::None, None) => {
+                out.push(arg.clone());
+                index += 1;
+            }
+            (ArgValue::None, Some(_)) => {
+                return Err(AdapterError::ArgumentValue {
+                    flag: flag.to_string(),
+                    reason: "bayrak değer almaz".to_string(),
+                })
+            }
+            (rule, Some(value)) => {
+                check_arg_value(flag, rule, value, true)?;
+                out.push(arg.clone());
+                index += 1;
+            }
+            (rule, None) => {
+                // Ayrı belirteçli değer: değer **tek** belirteçtir ve bayrak
+                // gibi görünemez; eksikse istek reddedilir.
+                let value = extra
+                    .get(index + 1)
+                    .ok_or_else(|| AdapterError::ArgumentValue {
+                        flag: flag.to_string(),
+                        reason: "değer eksik".to_string(),
+                    })?;
+                check_arg_value(flag, rule, value, false)?;
+                out.push(arg.clone());
+                out.push(value.clone());
+                index += 2;
+            }
         }
-        out.push(arg.clone());
     }
     Ok(out)
+}
+
+/// Değer kapısı.
+///
+/// - Boş değer **yalnız** ayrı belirteçte ve yalnız kapalı kümesinde boş değer
+///   ilan edilmiş bayrakta geçer. Ölçüldü (Claude Code 2.1.303): `--tools=""`
+///   araçları **kapatmıyor**, `--tools ""` kapatıyor → `=` ile boş değer
+///   reddedilir, yoksa kapı ürünün kapatma yolunu sessizce etkisiz kılardı.
+/// - `-` ile başlayan değer bayrak sanılır.
+/// - Kapalı küme bildiren bayrakta değer kümede olmalıdır.
+fn check_arg_value(
+    flag: &str,
+    rule: ArgValue,
+    value: &str,
+    attached: bool,
+) -> Result<(), AdapterError> {
+    if value.is_empty() {
+        let empty_allowed =
+            !attached && matches!(rule, ArgValue::OneOf(values) if values.contains(&""));
+        if !empty_allowed {
+            let reason = if attached {
+                "boş değer '=' ile verilemez: bayrağı kapatmaz (ayrı belirteç kullanın)"
+            } else {
+                "değer boş olamaz"
+            };
+            return Err(AdapterError::ArgumentValue {
+                flag: flag.to_string(),
+                reason: reason.to_string(),
+            });
+        }
+    }
+    if value.starts_with('-') {
+        return Err(AdapterError::ArgumentValue {
+            flag: flag.to_string(),
+            reason: "değer '-' ile başlayamaz: bayrak sanılır".to_string(),
+        });
+    }
+    if let ArgValue::OneOf(allowed) = rule {
+        if !allowed.contains(&value) {
+            let shown: String = value.chars().take(40).collect();
+            return Err(AdapterError::ArgumentValue {
+                flag: flag.to_string(),
+                reason: format!("değer izinli kümede değil ({shown})"),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Toplu iş kapısı: etkileşimli-only sağlayıcıda batch çağrısı yapılamaz.
@@ -531,6 +728,147 @@ mod tests {
         let args =
             build_args("codex-cli", &["--model=gpt-x".into(), "--json".into()]).expect("izinli");
         assert_eq!(args.len(), 2);
+    }
+
+    /// Ölçülen kusur (2026-11-13): kapı yalnız **bayrak adına** bakıyordu, yani
+    /// `--sandbox=danger-full-access` "izinli argüman" sayılıyordu. Codex
+    /// `exec --help` (0.159.2) olası değerleri sayar:
+    /// `read-only · workspace-write · danger-full-access`. Ürün tam erişim
+    /// istemez; değer kapıda reddedilir.
+    #[test]
+    fn closed_set_flag_rejects_a_value_outside_the_set() {
+        let danger = build_args("codex-cli", &["--sandbox=danger-full-access".into()]).unwrap_err();
+        assert_eq!(danger.code(), "E_CLI_ARGUMENT");
+        assert!(danger.to_string().contains("--sandbox"), "{danger}");
+        // Ayrı belirteçli yazım da aynı kümeden geçer.
+        let danger2 = build_args(
+            "codex-cli",
+            &["--sandbox".into(), "danger-full-access".into()],
+        )
+        .unwrap_err();
+        assert_eq!(danger2.code(), "E_CLI_ARGUMENT");
+        // Ürünün kabul ettiği değerler geçer (iki yazım da).
+        assert!(build_args("codex-cli", &["--sandbox=read-only".into()]).is_ok());
+        assert_eq!(
+            build_args("codex-cli", &["--sandbox".into(), "workspace-write".into()])
+                .expect("izinli"),
+            vec!["--sandbox".to_string(), "workspace-write".to_string()]
+        );
+    }
+
+    /// Aynı sınıf, sertleştirme bayrağında: claude `--tools` değeri `""` tüm
+    /// araçları kapatır, `default` hepsini **açar** (2.1.303 `--help`).
+    /// `--tools=default` adı izinli olduğu için kapıdan geçerdi.
+    #[test]
+    fn hardening_flag_value_cannot_be_replaced() {
+        for attempt in ["--tools=default", "--tools=Bash,Read", "--tools="] {
+            let err = build_args("claude-code", &[attempt.to_string()]).unwrap_err();
+            assert_eq!(err.code(), "E_CLI_ARGUMENT", "{attempt}");
+        }
+        // Ürünün kullandığı biçim geçer: ayrı belirteçte boş değer.
+        assert_eq!(
+            build_args("claude-code", &["--tools".into(), String::new()]).expect("izinli"),
+            vec!["--tools".to_string(), String::new()]
+        );
+    }
+
+    /// Değer almayan bayrağa değer verilemez: `--ephemeral=false` gibi bir
+    /// yazım bayrağı sessizce kapatabilir. Her iki yazım da reddedilir.
+    #[test]
+    fn value_on_a_plain_flag_is_rejected() {
+        for (adapter, arg) in [
+            ("codex-cli", "--ephemeral=false"),
+            ("claude-code", "--strict-mcp-config=false"),
+            ("claude-code", "--no-session-persistence=0"),
+            ("antigravity-cli", "--sandbox=false"),
+        ] {
+            let err = build_args(adapter, &[arg.to_string()]).unwrap_err();
+            assert_eq!(err.code(), "E_CLI_ARGUMENT", "{adapter} {arg}");
+        }
+        // Ayrı belirteçli değer de kabul edilmez: `--ephemeral false`.
+        let err = build_args("codex-cli", &["--ephemeral".into(), "false".into()]).unwrap_err();
+        assert_eq!(err.code(), "E_CLI_ARGUMENT");
+    }
+
+    /// Değer `-` ile başlayamaz: CLI onu bayrak sanar (istem kapısındaki
+    /// kuralın aynısı) → `--model --dangerously-skip-permissions` sızamaz.
+    #[test]
+    fn value_that_looks_like_a_flag_is_rejected() {
+        for arg in ["--model=--yolo", "--model=-x"] {
+            let err = build_args("claude-code", &[arg.to_string()]).unwrap_err();
+            assert_eq!(err.code(), "E_CLI_ARGUMENT", "{arg}");
+        }
+        let err = build_args("claude-code", &["--model".into(), "--yolo".into()]).unwrap_err();
+        assert_eq!(err.code(), "E_CLI_ARGUMENT");
+        // Değer eksikse istek reddedilir (sessizce bayrak eklenmez).
+        let err = build_args("claude-code", &["--model".into()]).unwrap_err();
+        assert_eq!(err.code(), "E_CLI_ARGUMENT");
+    }
+
+    /// AntiGravity istemi `--print=<istem>` ile taşır; istem yolu
+    /// `prompt_argv`dir ve `validate_prompt`den geçer. Argüman kapısından
+    /// istem geçemez — aksi hâlde istem doğrulaması atlanırdı.
+    #[test]
+    fn prompt_cannot_enter_through_the_argument_gate() {
+        let err = build_args("antigravity-cli", &["--print=uzun bir istem".into()]).unwrap_err();
+        assert_eq!(err.code(), "E_CLI_ARGUMENT");
+        assert!(build_args("antigravity-cli", &["--print".into()]).is_ok());
+        // agy'nin zarf biçimi kapalı: ürün yalnız `json` okur (T08e).
+        assert!(build_args("antigravity-cli", &["--output-format=json".into()]).is_ok());
+        assert_eq!(
+            build_args("antigravity-cli", &["--output-format=text".into()])
+                .unwrap_err()
+                .code(),
+            "E_CLI_ARGUMENT"
+        );
+    }
+
+    /// Sicil sözleşmesi: değer kararı **verilmeden** bayrak eklenemez; her
+    /// izinli bayrak tam olarak bir karar taşır ve `version_args` değer almaz.
+    #[test]
+    fn every_allowed_flag_carries_a_value_decision() {
+        for adapter in SPECS {
+            let flags: Vec<&str> = adapter.allowed_flags().collect();
+            let mut unique = flags.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                flags.len(),
+                "{}: yinelenen bayrak",
+                adapter.id
+            );
+            for flag in flags {
+                assert!(
+                    adapter.arg_rule(flag).is_some(),
+                    "{}: {flag} kararı yok",
+                    adapter.id
+                );
+                assert!(!flag.is_empty(), "{}: boş bayrak", adapter.id);
+                // Sürüm bayrakları ayrı listede; çakışma olmamalı.
+                assert!(
+                    !adapter.version_args.contains(&flag),
+                    "{}: {flag} hem izinli hem sürüm bayrağı",
+                    adapter.id
+                );
+            }
+            for flag in adapter.version_args {
+                assert_eq!(adapter.arg_rule(flag), Some(ArgValue::None), "{flag}");
+            }
+            // Kapalı küme boş olamaz: boş küme bayrağı sessizce kapatırdı.
+            for entry in adapter.allowed_args {
+                if let ArgValue::OneOf(values) = entry.value {
+                    assert!(
+                        !values.is_empty(),
+                        "{}: {} boş kapalı küme",
+                        adapter.id,
+                        entry.flag
+                    );
+                }
+            }
+            // Listedeki hiçbir bayrak kapının dışında kalmaz.
+            assert!(adapter.arg_rule("--nope-not-listed").is_none());
+        }
     }
 
     #[test]

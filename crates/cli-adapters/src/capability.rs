@@ -687,7 +687,7 @@ pub fn help_text_of(probe: &HelpProbe) -> Result<&str, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{build_args, spec};
+    use crate::{build_args, spec, ArgValue};
     use std::path::PathBuf;
 
     /// Gerçek `claude --help` (2.1.303) metninden kısaltılmış örnek.
@@ -1026,7 +1026,35 @@ mod tests {
             }
             for requirement in adapter.requirements {
                 for flag in requirement.flags {
-                    build_args(adapter.adapter_id, &[(*flag).to_string()]).unwrap_or_else(|err| {
+                    // Matris bayrağı sicilde **değer kararıyla** bulunmalı:
+                    // `--tools` gibi bir bayrak çıplak geçmez, ürünün sabitlediği
+                    // değerle geçer (tek kaynak: `AdapterSpec.allowed_args`).
+                    let rule = crate::spec(adapter.adapter_id)
+                        .and_then(|spec| spec.arg_rule(flag))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{}: {flag} izinli argüman sicilinde yok",
+                                adapter.adapter_id
+                            )
+                        });
+                    let mut argv = vec![(*flag).to_string()];
+                    match rule {
+                        ArgValue::None => {}
+                        ArgValue::OneOf(values) => {
+                            assert_eq!(
+                                values.len(),
+                                1,
+                                "{}: {flag} matris bayrağının değeri ürün tarafından sabitlenmeli",
+                                adapter.adapter_id
+                            );
+                            argv.push(values[0].to_string());
+                        }
+                        // Serbest değerli bayrak: ürün değeri sabitlemiyor, bu
+                        // yüzden argv **uydurulmaz**. Denetlenen şey sicilde
+                        // izinli olması (yukarıdaki `arg_rule`).
+                        ArgValue::Free(_) => continue,
+                    }
+                    build_args(adapter.adapter_id, &argv).unwrap_or_else(|err| {
                         panic!("{}: {flag} kapıya takıldı: {err}", adapter.adapter_id)
                     });
                 }
