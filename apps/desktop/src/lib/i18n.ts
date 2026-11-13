@@ -2373,6 +2373,7 @@ export const tr = {
     scopeDocument: "Kapsam: yalnız “{name}” belgesinin güncel sürümü",
     scopeCase: "Kapsam: dosyadaki {count} belgenin güncel sürümü",
     pagesScanned: "{count} sayfa",
+    pagesWithoutText: "{count} sayfada metin katmanı yok (taranamadı)",
   },
   parties: {
     title: "Dosya tarafları",

@@ -260,6 +260,7 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     documentsWithText: 1,
     documentsWithoutText: 0,
     pagesScanned: 3,
+    pagesWithoutText: 0,
     versionsScanned: 1,
     historicalVersionsScanned: 0,
     foundInOldVersion: 0,
@@ -522,6 +523,22 @@ describe("inceleme ekranı davranışı", () => {
       text: "kira bedeli ödenmedi",
       documentId: "d1",
     });
+  });
+
+  it("metin katmanı olmayan sayfa sayısı özetin altında yazılır", async () => {
+    // Taranmış (OCR'sız) belgede alıntı "bulunamadı" görünür; ekran bunun
+    // nedenini — okunamayan sayfaları — gizlemez.
+    setup({ quoteCheck: check({ exact: 0, notFound: 1, pagesWithoutText: 2 }) });
+    await screen.findByText(t("review.queueSummary", { pending: 3, decided: 2, outbox: 1 }));
+
+    fireEvent.change(byId<HTMLTextAreaElement>("rv-qtext"), {
+      target: { value: "“uzun bir alıntı metni”" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("review.quoteRun") }));
+
+    expect(
+      await screen.findByText(t("intext.pagesWithoutText", { count: 2 })),
+    ).toBeTruthy();
   });
 
   it("yalnız bağlanabilir alıntı düğme alır; sayfa sınırını aşan alıntı bağlanmaz", async () => {

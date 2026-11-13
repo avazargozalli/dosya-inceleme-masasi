@@ -73,6 +73,7 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     documentsWithText: 2,
     documentsWithoutText: 0,
     pagesScanned: 4,
+    pagesWithoutText: 0,
     versionsScanned: 2,
     historicalVersionsScanned: 0,
     foundInOldVersion: 0,

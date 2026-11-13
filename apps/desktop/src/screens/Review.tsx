@@ -1433,6 +1433,13 @@ export function Review() {
                   .join(" · ")}
               </span>
             </div>
+            {quoteCheck.pagesWithoutText > 0 ? (
+              // Metin katmanı olmayan sayfa "tarandı" sayılmaz: alıntı orada
+              // geçiyorsa bulunamaz. Kullanıcı bunu özetin hemen altında görür.
+              <p className="hint" style={{ margin: 0 }}>
+                {t("intext.pagesWithoutText", { count: quoteCheck.pagesWithoutText })}
+              </p>
+            ) : null}
             {skippedLabel(quoteCheck) ? (
               <p className="hint" style={{ margin: 0 }}>{skippedLabel(quoteCheck)}</p>
             ) : null}

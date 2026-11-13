@@ -1398,6 +1398,8 @@ export type InTextQuoteCheck = {
   documentsWithText: number;
   documentsWithoutText: number;
   pagesScanned: number;
+  /** Güncel sürümlerde metin katmanı olmayan (taranamayan) sayfa sayısı. */
+  pagesWithoutText: number;
   /** Taranan sürüm sayısı (güncel + eski) ve bunlardan eski olanlar. */
   versionsScanned: number;
   historicalVersionsScanned: number;

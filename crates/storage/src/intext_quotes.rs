@@ -50,10 +50,24 @@ const MAX_SCOPE_PAGES: i64 = 20_000;
 /// notlarda yazılır (sessiz kesme yok).
 const MAX_HISTORICAL_VERSIONS_PER_DOCUMENT: usize = 5;
 
-const SCOPE_PAGE_SQL: &str = "SELECT p.id,p.page_index,p.text_origin,
-        (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1),
-        COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'')
-     FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index";
+/// "Sayfada kullanılabilir metin var mı" tanımı **tek yerde**. Sayfa taraması
+/// ([`Database::scan_quote_tier`]) ve sayım ([`Database::page_counts`]) aynı
+/// ifadeyi kullanır; iki tanım ayrışırsa `pages_scanned` "tarandı" dediği
+/// sayfayı taramayabilir (metin katmanı olmayan sayfa `not_found` hükmü
+/// üretirdi — alıntı uydurma sanılırdı).
+const PAGE_TEXT_EXPR: &str =
+    "COALESCE((SELECT s.raw_text FROM text_segments s WHERE s.page_id=p.id LIMIT 1),'')";
+
+/// Kapsam sayfalarını okur: kimlik, indeks, metin kaynağı, segment ve **ham**
+/// metin. Metin ifadesi [`PAGE_TEXT_EXPR`]den gelir.
+fn scope_page_sql() -> String {
+    format!(
+        "SELECT p.id,p.page_index,p.text_origin,\
+         (SELECT s.id FROM text_segments s WHERE s.page_id=p.id LIMIT 1),\
+         {PAGE_TEXT_EXPR} \
+         FROM pages p WHERE p.parse_run_id=?1 ORDER BY p.page_index"
+    )
+}
 
 /// Metinden çıkarılmış tek alıntı. `start`/`end`, alıntı **içeriğinin**
 /// (tırnaklar hariç) karakter aralığıdır.
@@ -217,7 +231,13 @@ pub struct InTextQuoteCheck {
     pub documents_total: usize,
     pub documents_with_text: usize,
     pub documents_without_text: usize,
+    /// **Gerçekten aranan** sayfa sayısı: yalnız metin katmanı olan sayfalar.
+    /// Metin katmanı olmayan sayfa bu sayıya girmez (`pages_without_text`).
     pub pages_scanned: usize,
+    /// Kapsamın **güncel** sürümlerinde metin katmanı olmayan (aranamayan)
+    /// sayfa sayısı. `> 0` ise alıntı yalnız bu sayfalarda geçiyor olabilir;
+    /// `not_found` hükmü "uydurma" değildir.
+    pub pages_without_text: usize,
     /// Taranan sürüm sayısı (güncel + eski).
     pub versions_scanned: usize,
     /// Bunlardan **eski** sürüm sayısı.
@@ -271,6 +291,25 @@ struct VersionScope {
     /// Bu kapsam belgenin **güncel** sürümü mü?
     is_current: bool,
     parse_run_id: Option<String>,
+}
+
+/// Bir kapsamın sayfa sayımı: **aranabilir** (metin katmanı olan) ve
+/// aranamayan sayfalar. `pages_scanned` yalnız `with_text`i sayar.
+#[derive(Debug, Clone, Copy, Default)]
+struct PageCounts {
+    with_text: usize,
+    without_text: usize,
+}
+
+impl PageCounts {
+    fn add(&mut self, other: Self) {
+        self.with_text = self.with_text.saturating_add(other.with_text);
+        self.without_text = self.without_text.saturating_add(other.without_text);
+    }
+
+    fn total(self) -> usize {
+        self.with_text.saturating_add(self.without_text)
+    }
 }
 
 /// `resolve_historical_scopes` içinde belge başına sürüm toplama torbası.
@@ -454,10 +493,16 @@ impl Database {
         }
         let scopes = self.resolve_quote_scopes(case_id, input.document_id.as_deref())?;
         let documents_total = scopes.len();
-        let documents_with_text = scopes
-            .iter()
-            .filter(|scope| scope.parse_run_id.is_some())
-            .count();
+        // "Metni var" = **en az bir aranabilir sayfa**. Ayrıştırma koşusu olup
+        // bütün sayfaları metin katmanısız olan belge (OCR'sız tarama) metinli
+        // sayılmaz: aksi hâlde "taranamadı" notu verilmez ve alıntılar
+        // `not_found` ("Bulunamadı") hükmü alırdı.
+        let mut documents_with_text = 0usize;
+        for scope in &scopes {
+            if self.page_counts(scope)?.with_text > 0 {
+                documents_with_text += 1;
+            }
+        }
         let documents_without_text = documents_total - documents_with_text;
 
         let mut notes = vec![
@@ -488,7 +533,11 @@ impl Database {
         let mut accum = (0..extracted.quotes.len())
             .map(|_| QuoteAccum::default())
             .collect::<Vec<_>>();
+        // `pages_scanned` yalnız **gerçekten aranan** (metin katmanı olan)
+        // sayfaları sayar; `pages_without_text` güncel sürümlerde aranamayan
+        // sayfaları ayrı bildirir. `pages_total` maliyet kapısı içindir.
         let mut pages_scanned = 0usize;
+        let mut pages_without_text = 0usize;
         let mut versions_scanned = 0usize;
         let mut historical_versions_scanned = 0usize;
         let mut historical_truncated_documents = 0usize;
@@ -497,12 +546,15 @@ impl Database {
             notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
         } else {
             let max_pages = usize::try_from(MAX_SCOPE_PAGES).unwrap_or(usize::MAX);
-            pages_scanned = self.count_scope_pages(&scopes)?;
+            let current_pages = self.count_scope_pages(&scopes)?;
+            pages_scanned = current_pages.with_text;
+            pages_without_text = current_pages.without_text;
+            let mut pages_total = current_pages.total();
             versions_scanned = scopes
                 .iter()
                 .filter(|scope| scope.parse_run_id.is_some())
                 .count();
-            if pages_scanned > max_pages {
+            if pages_total > max_pages {
                 return Err(StorageError::QuoteScopeTooLarge);
             }
             // Eski sürüm kapsamları yalnız güncel sürümde bir şey bulunamazsa
@@ -537,13 +589,17 @@ impl Database {
                     let (historic, truncated) =
                         self.resolve_historical_scopes(case_id, input.document_id.as_deref())?;
                     historical_truncated_documents = truncated;
-                    let extra_pages = self.count_scope_pages(&historic)?;
-                    if extra_pages > 0 && pages_scanned.saturating_add(extra_pages) > max_pages {
+                    let extra = self.count_scope_pages(&historic)?;
+                    if extra.total() > 0 && pages_total.saturating_add(extra.total()) > max_pages {
                         // Sessizce kesmek yerine hiç taranmaz ve nedeni yazılır.
                         historical_skipped_for_pages = true;
                         historical = Some(Vec::new());
                     } else {
-                        pages_scanned = pages_scanned.saturating_add(extra_pages);
+                        pages_total = pages_total.saturating_add(extra.total());
+                        // Eski sürümlerde aranamayan sayfalar güncel belgenin
+                        // "metinsiz sayfa" sayısına eklenmez (not güncel
+                        // sürümü anlatır); yalnız aranan sayfalar eklenir.
+                        pages_scanned = pages_scanned.saturating_add(extra.with_text);
                         historical_versions_scanned = historic
                             .iter()
                             .filter(|scope| scope.parse_run_id.is_some())
@@ -736,6 +792,13 @@ impl Database {
                     .to_string(),
             );
         }
+        if pages_without_text > 0 {
+            notes.push(format!(
+                "Güncel sürümlerde {pages_without_text} sayfanın metin katmanı yok \
+                 (OCR'sız tarama); alıntı yalnız bu sayfalarda geçiyorsa bulunamaz — \
+                 bu sayfalar taranmadı."
+            ));
+        }
         if pages_scanned == 0 && !extracted.quotes.is_empty() {
             notes.push(
                 "Taranacak ayrıştırılmış metin bulunamadı; alıntılar bu denetimde \
@@ -774,6 +837,7 @@ impl Database {
             documents_with_text,
             documents_without_text,
             pages_scanned,
+            pages_without_text,
             versions_scanned,
             historical_versions_scanned,
             found_in_old_version,
@@ -936,18 +1000,35 @@ impl Database {
             .optional()?)
     }
 
-    fn count_scope_pages(&self, scopes: &[VersionScope]) -> Result<usize, StorageError> {
-        let mut total: i64 = 0;
+    /// Bir ayrıştırma koşusunun sayfalarını **metinli / metinsiz** olarak
+    /// sayar. "Metinli" ölçütü tarayıcının kullandığı [`PAGE_TEXT_EXPR`]dir:
+    /// `pages_scanned` yalnız gerçekten aranan sayfaları sayar, metin katmanı
+    /// olmayan sayfa "tarandı" görünmez.
+    fn page_counts(&self, scope: &VersionScope) -> Result<PageCounts, StorageError> {
+        let Some(run_id) = scope.parse_run_id.as_deref() else {
+            return Ok(PageCounts::default());
+        };
+        let sql = format!(
+            "SELECT \
+             COALESCE(sum(CASE WHEN trim({PAGE_TEXT_EXPR}) <> '' THEN 1 ELSE 0 END),0),\
+             COALESCE(sum(CASE WHEN trim({PAGE_TEXT_EXPR}) = '' THEN 1 ELSE 0 END),0) \
+             FROM pages p WHERE p.parse_run_id=?1"
+        );
+        let (with_text, without_text): (i64, i64) =
+            self.conn()
+                .query_row(&sql, [run_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(PageCounts {
+            with_text: usize::try_from(with_text).unwrap_or(usize::MAX),
+            without_text: usize::try_from(without_text).unwrap_or(usize::MAX),
+        })
+    }
+
+    fn count_scope_pages(&self, scopes: &[VersionScope]) -> Result<PageCounts, StorageError> {
+        let mut total = PageCounts::default();
         for scope in scopes {
-            if let Some(run_id) = scope.parse_run_id.as_deref() {
-                total += self.conn().query_row(
-                    "SELECT count(*) FROM pages WHERE parse_run_id=?1",
-                    [run_id],
-                    |row| row.get::<_, i64>(0),
-                )?;
-            }
+            total.add(self.page_counts(scope)?);
         }
-        Ok(usize::try_from(total).unwrap_or(usize::MAX))
+        Ok(total)
     }
 
     /// Tek bir eşleşme katmanını tarar. `active` yalnız o kata bakılacak
@@ -984,7 +1065,7 @@ impl Database {
             .collect();
 
         let connection = self.conn();
-        let mut stmt = connection.prepare(SCOPE_PAGE_SQL)?;
+        let mut stmt = connection.prepare(&scope_page_sql())?;
         for scope in scopes {
             let Some(run_id) = scope.parse_run_id.as_deref() else {
                 continue;
@@ -1000,7 +1081,7 @@ impl Database {
             })?;
             for row in rows {
                 let (page_id, page_index, text_origin, segment_id, text) = row?;
-                if text.is_empty() {
+                if text.trim().is_empty() {
                     continue;
                 }
                 match tier {
@@ -1131,7 +1212,7 @@ impl Database {
         // pencere başlangıcı yetmeyebilir (dürüst sınır, README'de yazılı).
         let carry_limit = MAX_SPAN_CHARS + 64;
         let connection = self.conn();
-        let mut stmt = connection.prepare(SCOPE_PAGE_SQL)?;
+        let mut stmt = connection.prepare(&scope_page_sql())?;
         for scope in scopes {
             let Some(run_id) = scope.parse_run_id.as_deref() else {
                 continue;
@@ -1149,7 +1230,7 @@ impl Database {
             let mut metas: Vec<PageMeta> = Vec::new();
             for row in rows {
                 let (page_id, page_index, text_origin, segment_id, text) = row?;
-                if text.is_empty() {
+                if text.trim().is_empty() {
                     continue;
                 }
                 let mut window: Vec<WindowChar> =
@@ -2480,5 +2561,150 @@ mod tests {
 
         assert_eq!(report.exact, 1, "birebir eşleşme en güçlü katmanda kalmalı");
         assert_eq!(report.quotes[0].state, "exact");
+    }
+
+    /// Belge + sürüm + ayrıştırma; sayfalar **metin kaynağıyla** verilir.
+    /// `origin="none"` = metin katmanı yok: `pages` satırı yazılır, metin
+    /// segmenti yazılmaz (gerçek OCR'sız taramanın ürettiği durum).
+    fn add_document_with_origins(
+        db: &Database,
+        case_id: &str,
+        name: &str,
+        pages: &[(&str, &str)],
+    ) -> String {
+        let blob = db
+            .create_blob_record(&uuid::Uuid::now_v7().to_string(), 10, "aad")
+            .expect("blob");
+        let document = db
+            .create_document(case_id, name, "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &document.id,
+                case_id,
+                &blob,
+                &"a".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "pdf|ocr=false")
+            .expect("run");
+        let stored: Vec<NewPage> = pages
+            .iter()
+            .enumerate()
+            .map(|(index, (text, origin))| NewPage {
+                origin: (*origin).into(),
+                warnings: if *origin == "none" {
+                    vec!["metin katmanı yok".into()]
+                } else {
+                    Vec::new()
+                },
+                ..page(i64::try_from(index).unwrap_or(i64::MAX), text)
+            })
+            .collect();
+        db.store_pages(&run.id, case_id, &stored).expect("pages");
+        db.finish_parse_run(&run.id, "partial", &["metin katmanı yok".into()])
+            .expect("finish");
+        document.id
+    }
+
+    #[test]
+    fn page_without_text_layer_is_not_counted_as_scanned() {
+        let db = db();
+        let case_id = new_case(&db, "Taranmış sayfa");
+        add_document_with_origins(
+            &db,
+            &case_id,
+            "Tapu taranmış.pdf",
+            &[
+                ("Kira bedeli ödenmedi ve temerrüt oluştu.", "native"),
+                ("", "none"),
+            ],
+        );
+
+        let report = check(&db, &case_id, "“Kira bedeli ödenmedi”", None);
+
+        assert_eq!(report.quotes[0].state, "exact");
+        assert_eq!(report.pages_scanned, 1, "yalnız metinli sayfa arandı");
+        assert_eq!(
+            report.pages_without_text, 1,
+            "metin katmanı olmayan sayfa 'tarandı' sayılmamalı"
+        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("1 sayfanın metin katmanı yok")));
+
+        // Aynı kapsamda bulunamayan alıntı "uydurma" değildir: metinsiz sayfa
+        // var, alıntı orada geçiyor olabilir — rapor bunu ayrı söyler.
+        let missing = check(&db, &case_id, "“tamamen başka bir cümle burada”", None);
+        assert_eq!(missing.quotes[0].state, "not_found");
+        assert_eq!(missing.pages_without_text, 1);
+    }
+
+    #[test]
+    fn scanned_document_without_any_text_layer_is_unverifiable_not_not_found() {
+        let db = db();
+        let case_id = new_case(&db, "OCR'sız tarama");
+        add_document_with_origins(
+            &db,
+            &case_id,
+            "Taranmış vekaletname.pdf",
+            &[("", "none"), ("   ", "none")],
+        );
+
+        let report = check(&db, &case_id, "“uzun bir alıntı metni” var.", None);
+
+        assert_eq!(report.documents_total, 1);
+        assert_eq!(
+            report.documents_with_text, 0,
+            "hiç metinli sayfası olmayan belge metinli sayılmamalı"
+        );
+        assert_eq!(report.documents_without_text, 1);
+        assert_eq!(report.pages_scanned, 0, "aranacak sayfa yok");
+        assert_eq!(report.pages_without_text, 2);
+        assert_eq!(
+            report.quotes[0].state, "unverifiable",
+            "hiçbir sayfa okunamadıysa 'Bulunamadı' hükmü verilmez"
+        );
+        assert_eq!(report.quotes[0].reason.as_deref(), Some("no_text"));
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("2 sayfanın metin katmanı yok")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("ayrıştırılmış metin yok")));
+    }
+
+    #[test]
+    fn scanned_document_counts_as_without_text_beside_a_readable_one() {
+        let db = db();
+        let case_id = new_case(&db, "Karışık kapsam");
+        add_document(
+            &db,
+            &case_id,
+            "Dilekçe.pdf",
+            &["Kira bedeli ödenmedi ve temerrüt oluştu."],
+        );
+        add_document_with_origins(&db, &case_id, "Ekran görüntüsü.pdf", &[("", "none")]);
+
+        let report = check(&db, &case_id, "“Kira bedeli ödenmedi”", None);
+
+        assert_eq!(report.quotes[0].state, "exact");
+        assert_eq!(report.documents_total, 2);
+        assert_eq!(report.documents_with_text, 1);
+        assert_eq!(report.documents_without_text, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("1 belgenin güncel sürümünde ayrıştırılmış metin yok")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("1 sayfanın metin katmanı yok")));
     }
 }
