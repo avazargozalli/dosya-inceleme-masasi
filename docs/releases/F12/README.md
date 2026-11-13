@@ -1100,3 +1100,63 @@ gerçekten yazılır ama rapor kimliği değiştiği için **rozet ve kaynak lis
 güncellenmez** (INV-05 kapısı bilinçli; çapanın ekranda görünmesi **açık kayıt**).
 (d) jsdom tarayıcı değil — gerçek Tauri penceresi, gerçek tıklama ve **görsel QA
 insan bekliyor**; `api` mock'lu olduğu için `in_text_quote_check` SQL'i koşmaz.
+
+## F12-T14f — uçuşta bağlanan çapa ekranda görünür, rozet yanlış alıntıya bağlanmaz (2026-11-13)
+
+T14e'nin **açık kaydı** kapatıldı. Eski kayıt “uçuşta ‘Kaynağa bağla’ + aynı anda
+ikinci denetim” diyordu; ölçüm kaydı düzeltti: denetim düğmesi `quoteBusy` ile
+kapalı olduğu için **uçuştaki bağlama sırasında ikinci denetim başlatılamaz**.
+Gerçek yol **girdi değişimidir** (metin kutusu, kapsam seçicisi, kaynak iddia
+seçicisi — üçü de `quoteBusy`den bağımsız).
+
+**Ölçülen kusur (düzeltme öncesi bileşende kırmızı):** `bindQuote` başarısı **tek**
+kapının arkasındaydı: `caseRef.current !== asked || quoteRef.current !== captured`.
+Girdi uçuşta değişince hüküm temizleniyor (`setQuoteCheck(null)`), dolayısıyla
+yanıt geldiğinde kimlik tutmuyor ve **her iki liste de** yazılmıyordu. Oysa çapa
+çekirdekte **gerçekten yazılmıştı** (dosyaya ait bir kanıt). Sonuç: kaynak
+listesinde görünmeyen bir çapa, hiçbir bildirim yok — kullanıcı tıklamanın
+başarısız olduğunu sanıp yeniden tıklıyor ve **ikinci** çapa üretiyor (aynı
+alıntıya iki kanıt, biri görünmez). Sessiz başarı, sessiz hatadan daha pahalıydı.
+
+**Yazılan (`screens/Review.tsx`, +34/−5):** kapı ikiye ayrıldı.
+- **Dosya kapısı** (`caseRef !== asked`) aynen durur: başka dosyanın listesine
+  hiçbir şey yazılmaz (öteki yazma yollarıyla aynı kural).
+- Aynı dosyada `setAnchors` **her zaman** çalışır (çapa dosyaya aittir; kimlikle
+  tekilleştirilir), **rozet** ise yalnız hüküm kimliği (`quoteRef === captured`)
+  aynıysa bağlanır — değişmiş hükme rozet bağlamak INV-05'i çiğnerdi.
+- Rozet bağlanamadığında yeni `quoteBindNotice` (rol `status`) yazılır:
+  “Çapa yazıldı · {id} — alıntı listesi bu sırada değişti, bu yüzden rozete
+  bağlanmadı; çapa kaynak listesinde.” Bildirim **hüküm bloğunun dışında**
+  çizilir: girdi değiştiğinde o blok ekranda olmayabilir.
+- Bildirimin ömrü bilinçli: **yeni denetimde**, aynı hükme **başarılı**
+  bağlamada ve **dosya değişiminde** düşer; **girdi değişiminde düşmez** — cümle
+  geçmişte kalmış bir yazmayı anlatır, sonraki tuş vuruşuyla yok olursa
+  kullanıcı yazıldığını bir daha göremez.
+
+**Testler (`Review.test.tsx` 47 → 50, +3):** uçuşta metin değişimi → çapa kaynak
+listesinde + rozet yok + bildirim var; girdi değişmeden bağlama → rozet var,
+bildirim yok; yeni denetim → bildirim düşer.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-t14f-gates.py`, her mutasyon tek
+başına, `try/finally` + sha256 birebir — `Review.tsx 1e3a338c…`):** **6/6 KIRMIZI,
+taban 50/50 yeşilken** — M1 çapa listesi hüküm kapısının arkasında · M2 bildirim
+hiç yazılmaz · M3 yeni denetim bildirimi temizlemez · M4 rozet bağlanırken de
+bildirim yazılır · M5 hüküm kimliği kapısı yok (rozet **değişmiş** hükme bağlanır,
+INV-05) · M6 dosya kapısı yok (eski dosyanın çapası yeni dosyanın listesine
+yazılır; bunu **mevcut** test yakalıyor).
+
+**CI (ölçüldü):** kod `af0612c` → run `43328561678` **10/10 YEŞİL** (ilk koşu;
+`arayüz` **66 dosya / 1418 test**, paket `index-BvT1Pd_d.js` **690,59 kB** / gzip
+**184,26 kB**; `dim-storage` **562** hem `macos-15` 251,76 s hem `ubuntu-latest`
+402,59 s — **birebir**; diğer sekiz iş yeşil).
+
+**Dürüst sınırlar:** (a) kapı **arayüz düzeyinde**; doğrudan IPC bu kapıyı atlar
+(çekirdek `anchorCreate` zaten dosya kapsamlı). (b) Aynı metinle **yeniden**
+denetim rozeti düşürür: çapa kaynak listesinde kalır ama rozet yeni hükme
+bağlanmaz (rozet hüküm kimliğine bağlı — bilinçli; “aynı alıntı metni” eşleştirmesi
+yapılmaz). (c) Bildirim **tek satırlık** bir bilgi; tıklayıp çapayı gösterme,
+rozeti elle bağlama gibi bir eylem yok. (d) Aynı çapayı **ikinci kez** bağlamayı
+engelleyen bir çekirdek kapısı yok — bildirim yalnız kullanıcıyı uyarır; gerçek
+tekilleştirme (`exactQuote` + aralık) ayrı iş. (e) jsdom tarayıcı değil; gerçek
+Tauri penceresi, gerçek tıklama ve **görsel QA insan bekliyor**.
+
