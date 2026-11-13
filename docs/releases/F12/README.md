@@ -1246,3 +1246,114 @@ durumları yazan kod yok. (e) Tauri komutu (`anchor_create`) ve gerçek pencere
 (f) T14f bildirimi artık “kayıtlı” diyor ama **yeni mi yazıldı, var olan mı
 kullanıldı** ayrımını ekranda göstermiyor (tek satırlık bilgi) — bilinçli.
 
+
+## F12-T14h — "kullanılabilir kaynak" tek tanım: yeniden bağlanmış çapa da kanıttır, not kaynağı çekirdekte doğrulanır (2026-11-13)
+
+T14g'nin dürüst sınırları (a) "kopya satırlar temizlenmez" ve (f) "bildirim
+yeni/var olan ayrımını göstermiyor" **veri/ürün kararı**; bu tur onlara
+dokunmadı. Onun yerine aynı ailede **ölçülebilir üç kusur** kapatıldı. Dilim
+F07-T09/T10/T12'nin kaynak bağını da kapsar (not, işaret, yeniden bağlama).
+
+**Tur başında (dürüst):** `HEAD == origin/main` = `eea4c5f`. Ağaçta **başka
+ajanın 11 dosyası** (2026-11-07'den beri; `DualReader`, `format*`, `i18n` üç
+hunk, `Cases*`, `Precedents*`, `Redaction*`, `app.css`) — dokunulmadı;
+`i18n.ts`te yalnız benim iki hunk'ım sahneye alındı (`git show :…i18n.ts |
+grep -c parseStatus` → **0**). Disk tur başında **6,3 G**; commit'te `disk-guard`
+temiz (repo 2 G → 0, boş 6 G).
+
+**Ölçülen kusur (üç):**
+
+1. **Ekranın sunduğu kaynağı çekirdek reddediyordu.** `list_anchors` çapa
+   listesini `active` **ve** `rebound` ile döndürür; Review ekranındaki
+   "Kaynağa bağla" seçimi bu listeden beslenir. Ama `anchor_in_case` yalnız
+   `anchor_status='active'` sayıyordu → kullanıcı yeniden bağlanmış bir çapayı
+   seçip "Bağla"ya bastığında istek **`E_NOT_FOUND`** ile dönüyordu; ekran
+   "kaynak yok" diyordu, oysa kaynak listede duruyordu. Aynı sınıf
+   `create_text_mark`ta: `anchor_status != "active"` → `E_DB_SETTING`
+   (biçim hatası gibi okunuyordu).
+2. **"Kullanılabilir çapa" tanımı iki yerde ayrı yazılıydı:** `anchors.rs`
+   (liste + `create_anchor` tekilleştirmesi `IN ('active','rebound')`) ile
+   `claims.rs`/`marks.rs` (yalnız `active`). İki liste ayrışınca ekran ile
+   çekirdek ayrıştı; bunu tutan hiçbir kapı yoktu.
+3. **Notun kaynak listesi hiç doğrulanmıyordu.** `notes.source_anchor_ids`
+   `create_note`/`update_note` içinde olduğu gibi yazılıyordu: **var olmayan**
+   kimlik, **başka dosyanın** çapası ve **doğrulanmamış** (`ambiguous`/
+   `unresolved`) çapa kabul ediliyordu; yinelenen kimlik de iki "kaynak"
+   olarak kalıyordu. `note_from_selection`'ın kendi dokümanı "doğrulanmamış
+   kaynak kimliği notta kalmaz" diyordu — `create_note` bunu garanti etmiyordu
+   (INV-02).
+
+**Yazılan (çekirdek):**
+
+- `USABLE_ANCHOR_STATUSES` (`active`, `rebound`) + `anchor_status_is_usable`
+  + `usable_status_sql` — **tek kaynak**. `list_anchors`, `create_anchor`
+  tekilleştirmesi, `anchor_in_case` ve `create_text_mark` aynı tanımı kullanır;
+  sorgular durum listesini elle yazmaz (`format!` ile tek kaynaktan üretilir).
+- Yeni hata `E_ANCHOR_NOT_USABLE` ("kaynak doğrulanmış değil; işaret
+  bağlanmaz") — `E_DB_SETTING` (istek biçimi) ile aynı cümleye düşmez.
+- `validate_note_anchors(case_id, ids)`: yinelenen kimlik **tekilleşir**
+  (sıra korunur), en çok **50** kaynak (`MAX_NOTE_SOURCES`), her kimlik
+  **var olmalı**, **bu dosyaya** ait olmalı ve **doğrulanmış** olmalı; hata
+  nedeni taşır (`E_NOTE_SOURCE`): "bulunamadı" / "başka dosyaya ait" /
+  "doğrulanmış değil (durum: …)". `create_note`, `update_note` **ve**
+  geri/ileri al yazımı aynı kapıdan geçer (kapı her yazma yolunda aynı):
+  kaynağı silinmiş bir revizyon, doğrulanmamış kimliği nota geri getiremez.
+- Taslak katmanı (`note_drafts`) **bilinçli** olarak doğrulamaz: yarıda kalan
+  otomatik kayıt kullanıcının metnini kaybettirmemeli; geçersiz kimlik
+  taslakta durabilir, **kaydetmede** `E_NOTE_SOURCE` döner.
+
+**Yazılan (arayüz):**
+
+- Notes kaynak seçicisi `rebound` çapayı "· yeniden bağlandı" diye işaretler
+  (kaynağın taşındığı görünür).
+- **Listede olmayan seçili kaynak** artık görünür ve kaldırılabilir: çapa
+  silinmişse kimlik `picked` içinde kalıyordu, onay kutusu çizilmediği için
+  kullanıcı **kaldıramıyordu** ve not (çekirdek kapısıyla) hiç
+  kaydedilemiyordu. Uyarı satırı + "Kaynağı seçimden kaldır" düğmesi (besteci
+  ve düzenleme paneli).
+- Review "Kaynağa bağla" seçiminde aynı işaret. 3 sözlük anahtarı.
+
+**Testler (güncel kodla):** `dim-storage --lib` **568 → 584** (+16: notes 8,
+claims 3, marks 2, anchors 3 — hepsi gerçek SQLite ile); tam vitest **66 dosya
+/ 1429** (+3: `Notes.test.tsx` 37 → 39, `Review.test.tsx` 50 → 51);
+`tsc --noEmit` temiz; iki manifest `cargo fmt --check` temiz; `clippy
+-p dim-storage --all-targets -D warnings` temiz; masaüstü `cargo check
+--all-targets` temiz (2 dk 12 s).
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-note-source-gates.py`, her
+mutasyon tek başına, `try/finally` + `os.utime` damgası + sha256 birebir —
+`notes.rs a6caae07…`, `claims.rs d4473c3e…`, `marks.rs f5655049…`,
+`anchors.rs 34b83b1e…`, `error.rs f7cff6a8…`):** **11/11 KIRMIZI, taban
+yeşilken** (K0: dört filtre yeşil; geri yazma sonrası sha256 birebir) —
+M1 `create_note` doğrulamaz (4 test) · M2 `update_note` doğrulamaz (1) ·
+M3 geri al yolunda kapı düşer (1) · M4 dosya aidiyeti düşer (2) ·
+M5 doğrulanmışlık kapısı düşer (1) · M6 tekilleştirme düşer (1) ·
+M7 iddia/delil kapısı `active`e döner (2) · M8 işaret kapısı `active`e döner
+(1) · M9 çapa listesi `rebound`u düşürür (1) · M10 durum listesi daralır (1) ·
+M11 hata kodu `E_DB_SETTING`e döner (1).
+**Dürüst (kendi hatam, bir ölçüm hatası):** M2'nin deseni ilk koşuda
+**EŞLEŞMEDİ (0)** — `cargo fmt` satırı ikiye bölmüştü; desen sarılı hâliyle
+güncellendi, M2 **tek başına yeniden ölçüldü** (1/1 kırmızı). İlk koşunun
+M2'si kanıt sayılmadı; 10/11 + 1/1 = 11/11.
+
+**CI (ölçüldü):** kod `482c795` (10 dosya, **+849/−14**) → run
+`43410744336` **10/10 YEŞİL** (ilk koşu): ölçülen işler:
+`dim-storage` **584** hem `ubuntu-latest` 426,88 s hem `macos-15` 261,33 s —
+**birebir**; `arayüz` **66 dosya / 1421 test** (yerel 1429 farkı ağaçtaki
+başka ajanın commit'siz testleri); `masaüstü kabuk` 51 koştu · 0 düştü ·
+5 yoksayıldı + yoksayılan koşu 5 passed; `dim-cli-adapters` **161**; diğer
+beş iş yeşil.
+
+**Dürüst sınırlar:** (a) `notes.source_anchor_ids` **JSON kimlik listesidir**;
+DB'de FK yok — doğrudan SQL yazan bir yol (bugün yok) kapıyı atlar, tek
+savunma çekirdek sorgusu. (b) `ambiguous`/`unresolved` üreten kod bugün
+**yok**; o durumların reddedildiği yalnız birim testiyle ölçülür (kapı
+ileride yazan kodu bekler). (c) Geri/ileri alma kaynağı **silinmişse
+yazmaz** — sessizce düşürmez, `E_NOTE_SOURCE` döner; yani eski bir revizyon
+kaynağı yoksa geri alınamaz (bilinçli: doğrulanmamış kimlik nota giremez).
+(d) Taslak (`note_drafts`) geçersiz kimlik taşıyabilir; kullanıcı taslağı
+kaydetmeye çalışınca hata görür — otomatik kayıt metni kaybettirmez.
+(e) `rebound` çapa durumu `list_anchors`ta zaten dönüyordu; bu tur yalnız
+**tanımı tek kaynağa** indirdi, veri değişmedi. (f) Tauri komutları
+(`note_create`/`note_update`) ve gerçek pencere **insan bekliyor** — davranış
+storage düzeyinde gerçek SQLite ile ölçüldü.
