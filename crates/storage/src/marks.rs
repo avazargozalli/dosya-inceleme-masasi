@@ -129,9 +129,10 @@ impl Database {
             return Err(StorageError::NotFound);
         }
         // Çözümlenmemiş/belirsiz anchor işaretlenmez: kaynağı doğrulanmamış
-        // bir alıntı "işaretlendi" görüntüsü almaz.
-        if anchor.anchor_status != "active" {
-            return Err(StorageError::InvalidSetting);
+        // bir alıntı "işaretlendi" görüntüsü almaz. `rebound` **doğrulanmıştır**
+        // (alıntı yeni konumda birebir bulundu) — liste de onu gösterir.
+        if !crate::anchors::anchor_status_is_usable(&anchor.anchor_status) {
+            return Err(StorageError::AnchorNotUsable);
         }
         if let Some(existing) = self.mark_for_anchor(&new.anchor_id)? {
             return Ok(existing);
@@ -602,5 +603,120 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "E_DB_SETTING");
         assert_eq!(db.list_anchors(&case_id).expect("anchor").len(), 0);
+    }
+}
+
+/// İşaret kapısı, çapa listesinin gösterdiğiyle aynı tanımı kullanır: yeniden
+/// bağlanmış (`rebound`) çapa da **doğrulanmış** kaynaktır.
+#[cfg(test)]
+mod usable_anchor_mark_tests {
+    use super::*;
+    use crate::cases::{CaseKind, NewCase};
+    use crate::{DatabaseKey, NewAnchor, NewPage};
+
+    fn setup() -> (Database, String, String, String) {
+        let db = Database::open_in_memory(&DatabaseKey::new([67u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db
+            .create_blob_record("st-mark-usable", 10, "aad")
+            .expect("blob");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("run");
+        db.store_pages(
+            &run.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: "Mahkeme itirazın reddine karar verdi.".into(),
+                width: Some(595.0),
+                height: Some(842.0),
+                origin: "native".into(),
+                warnings: vec![],
+                ..Default::default()
+            }],
+        )
+        .expect("pages");
+        let segment: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run.id],
+                |r| r.get(0),
+            )
+            .expect("segment");
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id.clone(),
+                document_version_id: version.id,
+                parse_run_id: run.id,
+                segment_id: segment.clone(),
+                start_offset: 8,
+                end_offset: 24,
+                exact_quote: "itirazın reddine".into(),
+            })
+            .expect("anchor");
+        (db, case.id, anchor.id, segment)
+    }
+
+    #[test]
+    fn text_mark_accepts_a_rebound_anchor() {
+        let (db, case_id, anchor_id, segment) = setup();
+        let rebound = db.rebind_anchor(&anchor_id, &segment, 8).expect("rebind");
+        assert_eq!(rebound.anchor_status, "rebound");
+        let mark = db
+            .create_text_mark(&NewTextMark {
+                case_id,
+                anchor_id: anchor_id.clone(),
+                label: "Önemli".into(),
+            })
+            .expect("işaret");
+        assert_eq!(mark.anchor_id.as_deref(), Some(anchor_id.as_str()));
+    }
+
+    #[test]
+    fn text_mark_refuses_an_unverified_anchor_with_its_own_code() {
+        let (db, case_id, anchor_id, _segment) = setup();
+        db.conn()
+            .execute(
+                "UPDATE source_anchors SET anchor_status='unresolved' WHERE id=?1",
+                [&anchor_id],
+            )
+            .expect("durum");
+        let err = db
+            .create_text_mark(&NewTextMark {
+                case_id,
+                anchor_id,
+                label: "Önemli".into(),
+            })
+            .unwrap_err();
+        assert_eq!(err.code(), "E_ANCHOR_NOT_USABLE");
+        assert_eq!(
+            err.to_string(),
+            "kaynak doğrulanmış değil; işaret bağlanmaz"
+        );
     }
 }

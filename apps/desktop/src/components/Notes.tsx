@@ -82,10 +82,40 @@ function AnchorPicker({
             <span style={{ display: "block", fontSize: 13 }}>“{anchor.exactQuote.slice(0, 140)}”</span>
             <span className="muted small">
               {anchor.prefix.slice(-24)} … {anchor.suffix.slice(0, 24)}
+              {anchor.anchorStatus === "rebound" ? ` · ${t("review.anchorRebound")}` : ""}
             </span>
           </span>
         </label>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Seçili ama listede olmayan kaynaklar. Çapa silinmişse (belge sürümü kasadan
+ * kalkmışsa) kimlik `picked` içinde kalır; onay kutusu **çizilmediği** için
+ * kullanıcı onu kaldıramaz ve not kaydedilemezdi. Çekirdek artık doğrulanmamış
+ * kaynağı kabul etmiyor: bu satır kimliği **görünür ve kaldırılabilir** yapar.
+ */
+function StaleAnchorNotice({
+  anchors,
+  picked,
+  onDrop,
+  idPrefix,
+}: {
+  anchors: AnchorRow[];
+  picked: string[];
+  onDrop: () => void;
+  idPrefix: string;
+}) {
+  const stale = picked.filter((id) => !anchors.some((anchor) => anchor.id === id));
+  if (stale.length === 0) return null;
+  return (
+    <div className="notice warn" role="status" id={`${idPrefix}-stale`} style={{ marginTop: 6 }}>
+      {t("notes.staleAnchors", { count: stale.length })}{" "}
+      <button className="btn" type="button" onClick={onDrop}>
+        {t("notes.staleAnchorsDrop")}
+      </button>
     </div>
   );
 }
@@ -341,6 +371,13 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
     const apply = (prev: string[]) => (checked ? [...prev, id] : prev.filter((value) => value !== id));
     if (target === "composer") setPicked(apply);
     else setEditAnchors(apply);
+  }
+
+  /** Listede artık olmayan (silinmiş) kaynak kimliklerini seçimden düşürür. */
+  function dropStaleAnchors(target: "composer" | "edit") {
+    const keep = (prev: string[]) => prev.filter((id) => anchors.some((anchor) => anchor.id === id));
+    if (target === "composer") setPicked(keep);
+    else setEditAnchors(keep);
   }
 
   async function addNote() {
@@ -694,6 +731,12 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
           idPrefix="note-new"
           onToggle={(id, checked) => toggleAnchor("composer", id, checked)}
         />
+        <StaleAnchorNotice
+          anchors={anchors}
+          picked={picked}
+          idPrefix="note-new"
+          onDrop={() => dropStaleAnchors("composer")}
+        />
       </div>
       <div className="field">
         <label htmlFor="note-body">{t("notes.body")}</label>
@@ -898,6 +941,12 @@ export function Notes({ caseId, anchors }: { caseId: string; anchors: AnchorRow[
               picked={editAnchors}
               idPrefix="note-edit"
               onToggle={(id, checked) => toggleAnchor("edit", id, checked)}
+            />
+            <StaleAnchorNotice
+              anchors={anchors}
+              picked={editAnchors}
+              idPrefix="note-edit"
+              onDrop={() => dropStaleAnchors("edit")}
             />
           </div>
           <div className="field">

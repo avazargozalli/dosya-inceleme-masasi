@@ -180,7 +180,10 @@ impl Database {
 
     fn anchor_in_case(&self, anchor_id: &str, case_id: &str) -> Result<bool, StorageError> {
         let count: i64 = self.conn().query_row(
-            "SELECT count(*) FROM source_anchors WHERE id=?1 AND case_id=?2 AND anchor_status='active'",
+            &format!(
+                "SELECT count(*) FROM source_anchors WHERE id=?1 AND case_id=?2 AND anchor_status IN ({})",
+                crate::anchors::usable_status_sql()
+            ),
             rusqlite::params![anchor_id, case_id],
             |r| r.get(0),
         )?;
@@ -1628,5 +1631,166 @@ mod tests {
                 .expect("liste");
         assert_eq!(list[0].id, first.id, "önce erken an gelmeli");
         assert_eq!(list[1].id, second.id, "sonra geç an gelmeli");
+    }
+}
+
+/// "Kanıt olarak kullanılabilir çapa" tek tanımdır: `active` **ve** `rebound`
+/// doğrulanmış bağdır; `ambiguous`/`unresolved` değildir. Arayüz çapa listesi
+/// (`list_anchors`) ikisini de gösterdiği için çekirdek de ikisini kabul etmeli;
+/// aksi hâlde ekranın sunduğu kaynak "bulunamadı" ile döner.
+#[cfg(test)]
+mod usable_source_tests {
+    use super::*;
+    use crate::cases::{CaseKind, NewCase};
+    use crate::{DatabaseKey, NewAnchor, NewPage};
+
+    fn setup() -> (Database, String, String, String) {
+        let db = Database::open_in_memory(&DatabaseKey::new([66u8; 32])).expect("db");
+        let case = db
+            .create_case(&NewCase {
+                title: "Kira".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("case");
+        let blob = db.create_blob_record("st-usable", 10, "aad").expect("blob");
+        let doc = db
+            .create_document(&case.id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case.id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v");
+        let run = db
+            .start_parse_run(&version.id, &case.id, "pymupdf", "1.24", "{}")
+            .expect("run");
+        db.store_pages(
+            &run.id,
+            &case.id,
+            &[NewPage {
+                index: 0,
+                text: "Ödeme yapılmadı.".into(),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+                ..Default::default()
+            }],
+        )
+        .expect("pages");
+        let segment: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run.id],
+                |r| r.get(0),
+            )
+            .expect("segment");
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case.id.clone(),
+                document_version_id: version.id,
+                parse_run_id: run.id,
+                segment_id: segment.clone(),
+                start_offset: 0,
+                end_offset: 16,
+                exact_quote: "Ödeme yapılmadı.".into(),
+            })
+            .expect("anchor");
+        (db, case.id, anchor.id, segment)
+    }
+
+    #[test]
+    fn evidence_link_accepts_a_rebound_anchor() {
+        let (db, case_id, anchor_id, segment) = setup();
+        let rebound = db
+            .rebind_anchor(&anchor_id, &segment, 0)
+            .expect("yeniden bağlama");
+        assert_eq!(rebound.anchor_status, "rebound");
+        let claim = db
+            .create_claim(
+                &case_id,
+                &NewClaim {
+                    claimant_actor_id: None,
+                    claim_text: "Kira ödenmedi.".into(),
+                    claim_kind: "allegation".into(),
+                    source_anchor_id: None,
+                },
+            )
+            .expect("iddia");
+        let link = db
+            .link_evidence(
+                &case_id,
+                &NewEvidenceLink {
+                    claim_id: claim.id,
+                    source_anchor_id: anchor_id,
+                    relation: "supports_candidate".into(),
+                    rationale: String::new(),
+                },
+            )
+            .expect("bağ");
+        assert_eq!(link.source_anchor_id, rebound.id);
+    }
+
+    #[test]
+    fn review_item_accepts_a_rebound_anchor() {
+        let (db, case_id, anchor_id, segment) = setup();
+        db.rebind_anchor(&anchor_id, &segment, 0).expect("rebind");
+        let item = db
+            .create_review_item(
+                &case_id,
+                &NewReviewItem {
+                    item_kind: "note_candidate".into(),
+                    payload: serde_json::json!({"text": "Kira ödenmedi."}),
+                    source_anchor_ids: vec![anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("öğe");
+        assert_eq!(item.source_anchor_ids, vec![anchor_id]);
+    }
+
+    #[test]
+    fn an_unverified_anchor_is_still_refused() {
+        let (db, case_id, anchor_id, _segment) = setup();
+        db.conn()
+            .execute(
+                "UPDATE source_anchors SET anchor_status='ambiguous' WHERE id=?1",
+                [&anchor_id],
+            )
+            .expect("durum");
+        let claim = db
+            .create_claim(
+                &case_id,
+                &NewClaim {
+                    claimant_actor_id: None,
+                    claim_text: "Kira ödenmedi.".into(),
+                    claim_kind: "allegation".into(),
+                    source_anchor_id: None,
+                },
+            )
+            .expect("iddia");
+        let err = db
+            .link_evidence(
+                &case_id,
+                &NewEvidenceLink {
+                    claim_id: claim.id,
+                    source_anchor_id: anchor_id,
+                    relation: "supports_candidate".into(),
+                    rationale: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOT_FOUND");
     }
 }

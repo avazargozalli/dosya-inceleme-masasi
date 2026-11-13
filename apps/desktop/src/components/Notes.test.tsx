@@ -1200,3 +1200,52 @@ describe("düzenleme taslağı yazma sırası", () => {
     expect(screen.queryByText(t("notes.draftFailed"))).toBeNull();
   });
 });
+
+// F07-T10 eki: not kaynakları çekirdekte doğrulanır. Ekranın payı: **listede
+// olmayan** seçili kaynağı görünür ve kaldırılabilir kılmak (aksi hâlde kimlik
+// `picked` içinde kalır, onay kutusu çizilmediği için kaldırılamaz ve not
+// kaydedilemezdi) + yeniden bağlanmış kaynağı işaretlemek.
+describe("not kaynakları (F07-T10 eki)", () => {
+  it("listede olmayan seçili kaynağı gösterir; kaldırılınca nota yazılmaz", async () => {
+    mocks.noteDraftGet.mockResolvedValue(
+      draft({
+        title: "Gözlem",
+        body: "Kira ödenmedi.",
+        sourceAnchorIds: ["silinmis-capa"],
+        updatedAt: ISO,
+      }),
+    );
+    mocks.noteCreate.mockResolvedValue(note({ id: "n9" }));
+
+    await mount({ anchors: [anchor()] });
+
+    expect(screen.getByText(/artık listede yok/)).toBeTruthy();
+
+    fireEvent.click(button(t("notes.staleAnchorsDrop")));
+    await flush();
+    expect(screen.queryByText(/artık listede yok/)).toBeNull();
+
+    fireEvent.click(button(t("notes.add")));
+    await flush();
+    expect(mocks.noteCreate).toHaveBeenCalledWith("c1", {
+      title: "Gözlem",
+      body: "Kira ödenmedi.",
+      sourceAnchorIds: [],
+    });
+  });
+
+  it("yeniden bağlanmış kaynağı işaretler, doğrulanmış olanı işaretlemez", async () => {
+    await mount({
+      anchors: [
+        anchor({ id: "a1", anchorStatus: "rebound" }),
+        anchor({ id: "a2", exactQuote: "İkinci alıntı", anchorStatus: "active" }),
+      ],
+    });
+
+    const marker = `· ${t("review.anchorRebound")}`;
+    const marked = screen
+      .getAllByText((_, element) => (element?.textContent ?? "").includes(marker))
+      .filter((element) => element.className === "muted small");
+    expect(marked.length).toBe(1);
+  });
+});

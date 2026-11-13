@@ -14,6 +14,11 @@ use crate::{now_iso, Database, StorageError};
 /// Geri/ileri al yığınlarında tutulan en fazla sürüm sayısı.
 const HISTORY_LIMIT: usize = 50;
 
+/// Bir notun taşıyabileceği en çok kaynak sayısı. Sınır **çekirdekte** durur:
+/// sınırsız kimlik listesi hem not satırını hem revizyon geçmişini şişirir.
+/// 50, bir notun dayanabileceği kanıt sayısı için geniş bir üst sınırdır.
+pub const MAX_NOTE_SOURCES: usize = 50;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteRow {
@@ -124,11 +129,15 @@ impl Database {
         if exists == 0 {
             return Err(StorageError::NotFound);
         }
+        // Kaynaklar **yazımdan önce** doğrulanır: not, var olmayan/başka dosyaya
+        // ait/doğrulanmamış bir çapayı gösteremez (INV-02). Yinelenen kimlik
+        // tekilleşir — aynı kanıt iki "kaynak" değildir.
+        let source_anchor_ids = self.validate_note_anchors(case_id, &new.source_anchor_ids)?;
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         // Gövde düz metin olarak JSON zarfında tutulur; HTML çalıştırılmaz.
         let body_ast = encode_body(new.body.trim());
-        let anchors = encode_anchors(&new.source_anchor_ids);
+        let anchors = encode_anchors(&source_anchor_ids);
         self.note_write(|conn| {
             conn.execute(
                 "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at,row_version)
@@ -193,9 +202,13 @@ impl Database {
         }
         let (mut undo, _) = self.history_stacks(id)?;
         undo = push_stack(undo, current.revision_no);
+        // Düzenleme de kaynak sözleşmesine tabidir: not, düzenlemeyle başka
+        // dosyanın/doğrulanmamış bir çapanın kimliğini kazanamaz.
+        let source_anchor_ids =
+            self.validate_note_anchors(&current.case_id, &edit.source_anchor_ids)?;
         let now = now_iso();
         let body_ast = encode_body(edit.body.trim());
-        let anchors = encode_anchors(&edit.source_anchor_ids);
+        let anchors = encode_anchors(&source_anchor_ids);
         let next_rev = current.revision_no.saturating_add(1);
         let mut written = 0usize;
         self.note_write(|conn| {
@@ -420,9 +433,14 @@ impl Database {
                 "ileri alınacak sürüm yok".into()
             })
         })?;
-        let (title, body_ast, anchors) = self
+        let (title, body_ast, anchors_raw) = self
             .revision_raw(id, target)?
             .ok_or(StorageError::NotFound)?;
+        // Geri/ileri al kaydı kasadaki geçmişten gelir; yine de **yazarken**
+        // doğrulanır: kaynağı silinmiş bir revizyon, doğrulanmamış bir kimliği
+        // nota geri getiremez (kapı her yazma yolunda aynı).
+        let stored: Vec<String> = serde_json::from_str(&anchors_raw).unwrap_or_default();
+        let anchors = encode_anchors(&self.validate_note_anchors(&current.case_id, &stored)?);
         if backward {
             redo = push_stack(redo, current.revision_no);
         } else {
@@ -475,6 +493,70 @@ impl Database {
             &serde_json::json!({"restoredRevision": target, "rowVersion": expected_row_version.saturating_add(1)}),
         )?;
         self.get_note(id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// Notun kaynak listesini doğrular. Sözleşme:
+    ///
+    /// - **yinelenen** kimlik tekilleşir (aynı çapa iki kez "kaynak" değildir),
+    /// - en çok [`MAX_NOTE_SOURCES`] kaynak,
+    /// - her kimlik **var olmalı**, **bu dosyaya** ait olmalı ve **doğrulanmış**
+    ///   (`active`/`rebound`) olmalı.
+    ///
+    /// Taslak katmanı bilinçli olarak doğrulamaz (yarıda kalan otomatik kayıt
+    /// kullanıcının metnini kaybettirmemeli); **gerçek** not yazımı doğrulanmamış
+    /// kaynağı kabul etmez. Hata sebebi taşır: "bulunamadı" ile "başka dosyaya
+    /// ait" ve "doğrulanmamış" aynı cümleye düşmez.
+    fn validate_note_anchors(
+        &self,
+        case_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<String>, StorageError> {
+        let mut unique: Vec<String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if id.trim().is_empty() {
+                return Err(StorageError::NoteSourceInvalid {
+                    reason: "kaynak kimliği boş".into(),
+                });
+            }
+            if unique.iter().any(|seen| seen == id) {
+                continue;
+            }
+            unique.push(id.clone());
+        }
+        if unique.len() > MAX_NOTE_SOURCES {
+            return Err(StorageError::NoteSourceInvalid {
+                reason: format!(
+                    "kaynak sınırı {MAX_NOTE_SOURCES}; {} kaynak verildi",
+                    unique.len()
+                ),
+            });
+        }
+        for id in &unique {
+            let row: Option<(String, String)> = self
+                .conn()
+                .query_row(
+                    "SELECT case_id, anchor_status FROM source_anchors WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((anchor_case, status)) = row else {
+                return Err(StorageError::NoteSourceInvalid {
+                    reason: "kaynak bulunamadı (silinmiş ya da hiç var olmamış)".into(),
+                });
+            };
+            if anchor_case != case_id {
+                return Err(StorageError::NoteSourceInvalid {
+                    reason: "kaynak başka dosyaya ait".into(),
+                });
+            }
+            if !crate::anchors::anchor_status_is_usable(&status) {
+                return Err(StorageError::NoteSourceInvalid {
+                    reason: format!("kaynak doğrulanmış değil (durum: {status})"),
+                });
+            }
+        }
+        Ok(unique)
     }
 
     /// Revizyonun ham içeriği (`body_ast` çözülmeden), geri/ileri al için.
@@ -959,5 +1041,231 @@ mod tests {
     fn acme_anchor_id() -> String {
         // Taslak yalnız kimlik taşır; anchor varlığı bu katmanda doğrulanmaz.
         "anchor-test".to_string()
+    }
+}
+
+/// Not kaynakları sözleşmesi (F07-T10 eki): notun gösterdiği çapa **çekirdekte**
+/// doğrulanır. Taslak katmanı bilinçli olarak kimlik taşır (bkz. `acme_anchor_id`);
+/// gerçek not yazımı ise doğrulanmamış kaynağı kabul etmez.
+#[cfg(test)]
+mod note_source_tests {
+    use super::*;
+    use crate::cases::{CaseKind, NewCase};
+    use crate::{DatabaseKey, NewAnchor, NewPage};
+
+    fn case(db: &Database, title: &str) -> String {
+        db.create_case(&NewCase {
+            title: title.into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: crate::Sensitivity::Normal,
+            default_ai_policy: crate::AiPolicy::Off,
+        })
+        .expect("case")
+        .id
+    }
+
+    /// Bir dosyaya gerçek belge/sürüm/koşu/segment yazıp doğrulanmış çapa üretir.
+    fn anchor(db: &Database, case_id: &str, tag: &str) -> (String, String) {
+        let blob = db
+            .create_blob_record(&format!("st-note-{tag}"), 10, "aad")
+            .expect("blob");
+        let doc = db
+            .create_document(case_id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                case_id,
+                &blob,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("version");
+        let run = db
+            .start_parse_run(&version.id, case_id, "pymupdf", "1.24", "{}")
+            .expect("run");
+        let quote = "Ödeme yapılmadı.";
+        db.store_pages(
+            &run.id,
+            case_id,
+            &[NewPage {
+                index: 0,
+                text: format!("{quote} Kira dönemi."),
+                width: None,
+                height: None,
+                origin: "native".into(),
+                warnings: vec![],
+                ..Default::default()
+            }],
+        )
+        .expect("pages");
+        let segment: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run.id],
+                |r| r.get(0),
+            )
+            .expect("segment");
+        let created = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.into(),
+                document_version_id: version.id,
+                parse_run_id: run.id,
+                segment_id: segment,
+                start_offset: 0,
+                end_offset: i64::try_from(quote.chars().count()).unwrap_or(0),
+                exact_quote: quote.into(),
+            })
+            .expect("anchor");
+        (created.id, created.segment_id)
+    }
+
+    fn with_source(ids: Vec<String>) -> NewNote {
+        NewNote {
+            title: "İzlenim".into(),
+            body: "Kira ödenmedi.".into(),
+            source_anchor_ids: ids,
+        }
+    }
+
+    #[test]
+    fn note_sources_reject_an_unknown_anchor() {
+        let db = Database::open_in_memory(&DatabaseKey::new([71u8; 32])).unwrap();
+        let case_id = case(&db, "Kira");
+        let err = db
+            .create_note(&case_id, &with_source(vec!["yok-boyle-bir-capa".into()]))
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOTE_SOURCE");
+        assert!(db.list_notes(&case_id).expect("liste").is_empty());
+    }
+
+    #[test]
+    fn note_sources_reject_another_cases_anchor() {
+        let db = Database::open_in_memory(&DatabaseKey::new([72u8; 32])).unwrap();
+        let mine = case(&db, "Benim dosyam");
+        let other = case(&db, "Başka dosya");
+        let (foreign, _) = anchor(&db, &other, "foreign");
+        let err = db
+            .create_note(&mine, &with_source(vec![foreign]))
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOTE_SOURCE");
+        assert!(db.list_notes(&mine).expect("liste").is_empty());
+    }
+
+    #[test]
+    fn note_sources_are_deduplicated() {
+        let db = Database::open_in_memory(&DatabaseKey::new([73u8; 32])).unwrap();
+        let case_id = case(&db, "Kira");
+        let (anchor_id, _) = anchor(&db, &case_id, "dup");
+        let saved = db
+            .create_note(
+                &case_id,
+                &with_source(vec![anchor_id.clone(), anchor_id.clone()]),
+            )
+            .expect("not");
+        assert_eq!(saved.source_anchor_ids, vec![anchor_id]);
+    }
+
+    #[test]
+    fn note_sources_reject_an_anchor_that_is_not_verified() {
+        let db = Database::open_in_memory(&DatabaseKey::new([74u8; 32])).unwrap();
+        let case_id = case(&db, "Kira");
+        let (anchor_id, _) = anchor(&db, &case_id, "unres");
+        db.conn()
+            .execute(
+                "UPDATE source_anchors SET anchor_status='unresolved' WHERE id=?1",
+                [&anchor_id],
+            )
+            .expect("durum");
+        let err = db
+            .create_note(&case_id, &with_source(vec![anchor_id]))
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOTE_SOURCE");
+    }
+
+    #[test]
+    fn note_sources_accept_a_rebound_anchor() {
+        let db = Database::open_in_memory(&DatabaseKey::new([75u8; 32])).unwrap();
+        let case_id = case(&db, "Kira");
+        let (anchor_id, segment_id) = anchor(&db, &case_id, "rebound");
+        let rebound = db
+            .rebind_anchor(&anchor_id, &segment_id, 0)
+            .expect("yeniden bağlama");
+        assert_eq!(rebound.anchor_status, "rebound");
+        let saved = db
+            .create_note(&case_id, &with_source(vec![anchor_id.clone()]))
+            .expect("not");
+        assert_eq!(saved.source_anchor_ids, vec![anchor_id]);
+    }
+
+    #[test]
+    fn note_edit_rejects_a_foreign_source() {
+        let db = Database::open_in_memory(&DatabaseKey::new([76u8; 32])).unwrap();
+        let mine = case(&db, "Benim dosyam");
+        let other = case(&db, "Başka dosya");
+        let (foreign, _) = anchor(&db, &other, "edit-foreign");
+        let created = db.create_note(&mine, &with_source(vec![])).expect("not");
+        let err = db
+            .update_note(
+                &created.id,
+                created.row_version,
+                &NoteEdit {
+                    title: "İzlenim".into(),
+                    body: "Kira ödenmedi.".into(),
+                    source_anchor_ids: vec![foreign],
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err.code(), "E_NOTE_SOURCE");
+        let after = db.get_note(&created.id).expect("okuma").expect("kayıt");
+        assert!(after.source_anchor_ids.is_empty());
+        assert_eq!(after.row_version, created.row_version);
+    }
+
+    #[test]
+    fn note_sources_are_capped() {
+        let db = Database::open_in_memory(&DatabaseKey::new([77u8; 32])).unwrap();
+        let case_id = case(&db, "Kira");
+        let ids: Vec<String> = (0..super::MAX_NOTE_SOURCES + 1)
+            .map(|i| format!("capa-{i}"))
+            .collect();
+        let err = db.create_note(&case_id, &with_source(ids)).unwrap_err();
+        assert_eq!(err.code(), "E_NOTE_SOURCE");
+        assert!(err.to_string().contains("kaynak sınırı"), "{err}");
+    }
+
+    #[test]
+    fn undo_reports_a_source_that_no_longer_exists() {
+        let db = Database::open_in_memory(&DatabaseKey::new([78u8; 32])).unwrap();
+        let case_id = case(&db, "Kira");
+        let (anchor_id, _) = anchor(&db, &case_id, "undo");
+        let created = db
+            .create_note(&case_id, &with_source(vec![anchor_id.clone()]))
+            .expect("not");
+        // İkinci revizyon kaynağı kaldırır: geri alma hedefi (rev 1) kaynağı taşır.
+        let second = db
+            .update_note(
+                &created.id,
+                created.row_version,
+                &NoteEdit {
+                    title: "İzlenim".into(),
+                    body: "Kaynak kaldırıldı.".into(),
+                    source_anchor_ids: vec![],
+                },
+            )
+            .expect("düzenleme");
+        db.conn()
+            .execute("DELETE FROM source_anchors WHERE id=?1", [&anchor_id])
+            .expect("çapa silindi");
+        let err = db.undo_note(&created.id, second.row_version).unwrap_err();
+        assert_eq!(err.code(), "E_NOTE_SOURCE");
+        let after = db.get_note(&created.id).expect("okuma").expect("kayıt");
+        assert_eq!(after.body, "Kaynak kaldırıldı.");
+        assert_eq!(after.row_version, second.row_version);
     }
 }

@@ -11,6 +11,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::{now_iso, Database, StorageError};
 
+/// **Kanıt olarak kullanılabilir** çapa durumları: `active` (alıntı özgün
+/// konumda birebir doğrulandı) ve `rebound` (alıntı yeni konumda yeniden
+/// doğrulandı). `ambiguous` (birden çok eşleşme) ve `unresolved` (bulunamadı)
+/// **kanıt değildir**; bugün bu durumları yazan bir yol yoktur.
+///
+/// Bu liste **tek** kaynaktır: sorgular da, Rust tarafı kapılar da buradan
+/// türetilir. İkinci bir liste, ekranın gösterdiği kaynağı (`list_anchors`:
+/// active + rebound) çekirdeğin reddettiği kaynaktan ayırırdı.
+pub const USABLE_ANCHOR_STATUSES: [&str; 2] = ["active", "rebound"];
+
+/// Bir çapa durumunun kanıt olarak kullanılabilir olup olmadığı.
+pub fn anchor_status_is_usable(status: &str) -> bool {
+    USABLE_ANCHOR_STATUSES.contains(&status)
+}
+
+/// [`USABLE_ANCHOR_STATUSES`]'ın SQL `IN` listesi (`'active','rebound'`).
+/// Sorgular durum listesini elle yazmaz; tek kaynaktan üretir.
+pub(crate) fn usable_status_sql() -> String {
+    USABLE_ANCHOR_STATUSES
+        .iter()
+        .map(|status| format!("'{status}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnchorRow {
@@ -214,11 +239,14 @@ impl Database {
         let existing: Option<String> = self
             .conn()
             .query_row(
-                "SELECT id FROM source_anchors
+                &format!(
+                    "SELECT id FROM source_anchors
                  WHERE case_id=?1 AND document_version_id=?2 AND parse_run_id=?3
                    AND segment_id=?4 AND start_offset=?5 AND end_offset=?6 AND exact_quote=?7
-                   AND anchor_status IN ('active','rebound')
+                   AND anchor_status IN ({})
                  LIMIT 1",
+                    usable_status_sql()
+                ),
                 rusqlite::params![
                     input.case_id,
                     input.document_version_id,
@@ -276,10 +304,11 @@ impl Database {
     }
 
     pub fn list_anchors(&self, case_id: &str) -> Result<Vec<AnchorRow>, StorageError> {
-        let mut stmt = self.conn().prepare(
+        let mut stmt = self.conn().prepare(&format!(
             "SELECT id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,exact_quote,prefix,suffix,quote_hash,anchor_status,created_at
-             FROM source_anchors WHERE case_id=?1 AND anchor_status IN ('active','rebound') ORDER BY created_at DESC",
-        )?;
+             FROM source_anchors WHERE case_id=?1 AND anchor_status IN ({}) ORDER BY created_at DESC",
+            usable_status_sql()
+        ))?;
         let rows = stmt.query_map([case_id], map_anchor)?;
         let mut out = Vec::new();
         for row in rows {
@@ -589,7 +618,7 @@ mod tests {
     use crate::cases::{CaseKind, NewCase};
     use crate::{DatabaseKey, NewPage};
 
-    fn setup() -> (Database, String, String, String, String) {
+    pub(super) fn setup() -> (Database, String, String, String, String) {
         let db = Database::open_in_memory(&DatabaseKey::new([29u8; 32])).expect("db");
         let case = db
             .create_case(&NewCase {
@@ -1509,5 +1538,64 @@ mod tests {
             db.rebind_suggestion(&anchor.id).expect("öneri").status,
             "current"
         );
+    }
+}
+
+/// "Kullanılabilir çapa" tanımının **tek** kaynağı olduğunu koruyan kapılar.
+#[cfg(test)]
+mod usable_status_guard_tests {
+    use super::*;
+
+    #[test]
+    fn usable_status_is_one_definition() {
+        assert!(anchor_status_is_usable("active"));
+        assert!(anchor_status_is_usable("rebound"));
+        assert!(!anchor_status_is_usable("ambiguous"));
+        assert!(!anchor_status_is_usable("unresolved"));
+        assert!(!anchor_status_is_usable(""));
+        assert_eq!(usable_status_sql(), "'active','rebound'");
+    }
+
+    /// Yeniden bağlanmış çapa **listede kalır**: arayüz çapa listesini buradan
+    /// okur; `rebound` düşseydi "kaynağa git" bağı ekrandan kaybolurdu.
+    #[test]
+    fn rebound_anchor_stays_in_the_case_list() {
+        let (db, case_id, version_id, run_id, segment_id) = super::tests::setup();
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: version_id,
+                parse_run_id: run_id,
+                segment_id: segment_id.clone(),
+                start_offset: 8,
+                end_offset: 24,
+                exact_quote: "itirazın reddine".into(),
+            })
+            .expect("anchor");
+        let moved = db
+            .rebind_anchor(&anchor.id, &segment_id, 8)
+            .expect("rebind");
+        assert_eq!(moved.anchor_status, "rebound");
+        let list = db.list_anchors(&case_id).expect("liste");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, anchor.id);
+        assert_eq!(list[0].anchor_status, "rebound");
+    }
+
+    /// Sorgular durum listesini **yazmaz**: ikinci bir liste, ekranın gösterdiği
+    /// kaynakla çekirdeğin kabul ettiği kaynağı ayırır (ölçülen kusur).
+    #[test]
+    fn no_module_hardcodes_a_second_status_list() {
+        for (name, source) in [
+            ("claims.rs", include_str!("claims.rs")),
+            ("marks.rs", include_str!("marks.rs")),
+            ("notes.rs", include_str!("notes.rs")),
+        ] {
+            assert!(
+                !source.contains("anchor_status='active'")
+                    && !source.contains("anchor_status IN ('active'"),
+                "{name} ikinci bir 'kullanılabilir çapa' durum listesi yazıyor"
+            );
+        }
     }
 }

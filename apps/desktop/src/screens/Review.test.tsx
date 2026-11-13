@@ -1764,3 +1764,45 @@ describe("karar geçmişi", () => {
     expect(mocks.reviewHistory).toHaveBeenCalledTimes(2);
   });
 });
+
+// F07-T12 eki: çapa listesi `active` **ve** `rebound` gösterir. Çekirdek ikisini
+// de kanıt sayar (ölçülen kusur: ekranın sunduğu yeniden bağlanmış kaynak
+// "bulunamadı" ile dönüyordu). Ekranın payı: kaynağın taşındığını yazmak.
+describe("yeniden bağlanmış kaynak (F07-T12 eki)", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("listede işaretlenir ve bağlama isteği o çapayla gider", async () => {
+    const rebound: AnchorRow = {
+      ...anchor("a1", "Kira bedeli ödenmedi", 10),
+      anchorStatus: "rebound",
+    };
+    setup({
+      byCase: {
+        c1: { claims: [CLAIMS[0]!], items: [], anchors: [rebound, ANCHORS[1]!], documents: DOCUMENTS },
+      },
+    });
+
+    await screen.findByText(t("review.claimsCount", { count: 1 }));
+    fireEvent.click(await screen.findByRole("button", { name: /Kira bedeli ödenmedi/ }));
+
+    const select = byId<HTMLSelectElement>("rv-anchor");
+    const option = Array.from(select.options).find((row) => row.value === "a1");
+    expect(option?.textContent).toContain(t("review.anchorRebound"));
+
+    fireEvent.change(select, { target: { value: "a1" } });
+    fireEvent.change(byId<HTMLSelectElement>("rv-rel"), { target: { value: "context" } });
+    const bind = () =>
+      screen.getByRole("button", { name: t("review.bindAction") }) as HTMLButtonElement;
+    expect(bind().disabled).toBe(false);
+
+    fireEvent.click(bind());
+    await waitFor(() =>
+      expect(mocks.evidenceLinkCreate).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ sourceAnchorId: "a1" }),
+      ),
+    );
+  });
+});

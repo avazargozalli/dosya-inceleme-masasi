@@ -62,6 +62,16 @@ pub enum StorageError {
     RedactionPlanInvalid { reason: String },
     #[error("geçersiz ayar değeri")]
     InvalidSetting,
+    /// Notun kaynak listesi sözleşmesi (F07-T10 eki): kimlik biçimi, varlık,
+    /// dosya aidiyeti, doğrulanmışlık ve sayı sınırı. **Neden** taşır; not
+    /// doğrulanmamış kaynak kimliğiyle yazılmaz (INV-02).
+    #[error("not kaynağı geçersiz: {reason}")]
+    NoteSourceInvalid { reason: String },
+    /// Çapa "kanıt" olarak kullanılamaz (`ambiguous`/`unresolved`): alıntı
+    /// doğrulanmış bir konuma bağlı değil. `InvalidSetting`ten ayrıdır çünkü
+    /// neden **kaynağın kendisidir**, istek biçimi değil.
+    #[error("kaynak doğrulanmış değil; işaret bağlanmaz")]
+    AnchorNotUsable,
     /// Olay tarihi sözleşmesi (şartname F08-T03): değer seçilen **kesinliğe**
     /// uymuyor (ay için gün, yıl için ay taşınamaz) ya da aralık sırası ters.
     /// **Neden** taşır; eksik gün uydurulmaz.
@@ -213,6 +223,8 @@ impl StorageError {
             Self::PlanMaskInvalid { .. } => "E_MASK_PLAN",
             Self::RedactionPlanInvalid { .. } => "E_REDACTION_PLAN",
             Self::InvalidSetting => "E_DB_SETTING",
+            Self::NoteSourceInvalid { .. } => "E_NOTE_SOURCE",
+            Self::AnchorNotUsable => "E_ANCHOR_NOT_USABLE",
             Self::EventDateInvalid(_) => "E_EVENT_DATE",
             Self::ExportSourceInvalid { .. } => "E_EXPORT_SOURCE",
             Self::SettingInvalid { .. } => "E_DB_SETTING",

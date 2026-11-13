@@ -916,7 +916,10 @@ export function Review() {
                 <select id="rv-anchor" className="input" value={linkAnchor} onChange={(e) => setLinkAnchor(e.target.value)}>
                   <option value="">{t("common.select")}</option>
                   {anchors.map((a) => (
-                    <option key={a.id} value={a.id}>“{a.exactQuote.slice(0, 70)}”</option>
+                    <option key={a.id} value={a.id}>
+                      “{a.exactQuote.slice(0, 70)}”
+                      {a.anchorStatus === "rebound" ? ` · ${t("review.anchorRebound")}` : ""}
+                    </option>
                   ))}
                 </select>
               </div>

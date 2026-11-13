@@ -1481,6 +1481,9 @@ export const tr = {
     noAnchors: "Kaynak alıntı yok. Okuyucuda metin seçip “Seçimi kaynak olarak kaydet” deyin.",
     titleOptional: "Başlık (isteğe bağlı)",
     sourceAnchors: "Kaynak alıntılar",
+    staleAnchors:
+      "Seçili {count} kaynak artık listede yok (çapa silinmiş olabilir); not bu kaynakla kaydedilemez.",
+    staleAnchorsDrop: "Kaynağı seçimden kaldır",
     body: "Not",
     bodyPlaceholder: "Gözlem, eksik belge, duruşma notu…",
     lockedDraft: "kasa kilitliyse taslak yazılamaz",
@@ -2454,6 +2457,7 @@ export const tr = {
     evidenceEmpty: "Bu iddiaya bağlı belge yok.",
     quoteFallback: "alıntı",
     anchorLabel: "Kaynak alıntı",
+    anchorRebound: "yeniden bağlandı",
     relationLabel: "İlişki",
     relationPlaceholder: "İlişki seçin…",
     rationaleLabel: "Gerekçe",
