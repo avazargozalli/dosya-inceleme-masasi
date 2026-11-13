@@ -8,7 +8,7 @@
 |---|---|---|
 | F11-T01 aday kaydı | ✅ | `ai_candidates`, `valid/invalid/partial`; altı aday türü şeması |
 | F11-T02 aday → inceleme kuyruğu | ✅ | `promote_candidate`, `review_items` `pending`, doğrulanmış alıntı → `source_anchors` |
-| F11-T03 kapsamlılık raporu | ✅ | belge/sayfa/OCR/boş sayfa/ayrıştırılmamış sayıları |
+| F11-T03 kapsamlılık raporu | ✅ | belge/sayfa/OCR/boş sayfa/ayrıştırılmamış sayıları; **sayımlar gönderim kapsamıyla tek kuraldan** (güncel sürüm + en yeni sayfa üreten koşu) ve "metinsiz belge" ayrı sayılır — 2026-11-13, aşağıdaki bölüm |
 | F11-T04 gerçek model çağrısı | ✅ | `ApiProvider`/`LocalProvider` + `ai_run_execute`: onay + profil + kapsam sicili, hata run'ı `failed` kapatır; onay **varış yerine** bağlı (`provider_id` → türetilmiş `adapter@politika#parmak izi`) |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, `ai_candidate_validate`; alıntı **önce gönderilen metinde** aranır (şema v26, `transfer_segments` + `record_transfer_segments`) |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
@@ -771,3 +771,92 @@ hem `ubuntu-latest` (479,66 s) — **birebir**; `arayüz` **65 dosya / 1356 test
 --cacheinfo` ile HEAD içeriği + benim değişikliklerim blob olarak yazıldı); başka
 ajanın `parseStatus*` üç anahtarı commit'e **girmedi**
 (`git show HEAD:…i18n.ts | grep -c parseStatus` → **0**; ağaçta 3).
+
+## F11-T03 eki — kapsam raporu **gönderilebilir korpusu** anlatır (2026-11-13)
+
+**Ölçülen kusur (üç yüzü; düzeltme öncesi sayımla yeniden üretildi).** Kapsam raporu
+(`Database::coverage_report`) her dışa aktarmaya gömülen **kanıt** bloğudur (`KAPSAM.md`,
+JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu) ve "İncelenmedi ≠ temiz" cümlesini taşır.
+Oysa sayıları gönderim kapsamıyla **aynı dili konuşmuyordu**:
+
+1. `pages`/`segments` vakadaki **bütün** ayrıştırma koşularını sayıyordu: aynı sürüm ikinci
+   kez ayrıştırıldığında sayfa sayısı ikiye katlanıyor (ölçüm: 3 sayfa → **5**), eski
+   sürümlerin sayfaları da ekleniyordu.
+2. `unparsed_documents` "belgenin **herhangi** bir sürümü ayrıştırıldı mı"ya bakıyordu.
+   Güncel sürümü hiç ayrıştırılmamış belge (v1 ayrıştırıldı, v2 geldi) "ayrıştırıldı"
+   sayılıyordu; oysa `resolve_transfer_scope` aynı belgeyi `not_parsed` ile **atlıyor** →
+   ihraç "Kapsam durumu: **tam**" derken AI çalıştırması belgeyi sessizce göndermiyordu
+   (ölçüm: rapor 2 gönderilebilir belge, gönderim **1**).
+3. "Metinli sayfa" **ikinci** bir tanımla (`text_segments` satırı var mı) ölçülüyordu;
+   alıntı denetimi ise `trim(...) <> ''` diyor (F12-T14i). Yalnız boşluk taşıyan segment
+   kapsamda "metinli", alıntı taramasında "taranmadı" olurdu.
+
+**Yazılan.**
+
+- `coverage_report` **tek kural** kullanır: her belgenin **güncel sürümü + o sürümün sayfa
+  üreten en yeni ayrıştırma koşusu** (CTE `current_runs`; `resolve_transfer_scope` ile
+  birebir aynı seçim, aynı `ORDER BY`). `pages`/`segments`/`empty_pages`/`ocr_pages`
+  yalnız bu korpustan sayılır; `versions`/`parse_runs`/`failed_parse_runs` **tarihçedir**.
+- `unparsed_documents` = güncel sürümü olmayan **ya da** güncel sürümü hiç ayrıştırılmamış
+  belge (gönderimin `no_current_version`/`not_parsed` atlamalarıyla aynı).
+- Yeni **`documents_without_text`**: ayrıştırma koşusu var ama hiçbir sayfasında okunabilir
+  metin yok (OCR'sız tarama) — gönderim bu belgeyi `empty_text` ile atlar; `complete`
+  ("Kapsam tam") artık bunu da ister (bugün `empty_pages > 0` tarafından da kapsanır;
+  belge düzeyindeki kapı savunma olarak durur).
+- "Sayfada kullanılabilir metin" **tek tanım**: `intext_quotes::PAGE_TEXT_EXPR` `pub(crate)`
+  oldu, kapsam raporu aynı ifadeyi kullanır; `ORDER BY s.rowid` eklendi (`LIMIT 1` artık
+  deterministik, tarayıcıyla aynı satır).
+- Çıktı yüzeyleri: `rows()` "Okunabilir metni olmayan belge", yeni uyarı ("… bu belgeler
+  incelemeye alınamaz"), tek satır özet "· N metinsiz belge"; sayım notu artık **gönderim
+  kuralını** yazar (eskiden "koşu sayısıyla birlikte artar" diyordu). Arayüz: Çıktılar
+  tablosu satırı + AI ekranı kapsam satırı (`noText`); 2 sözlük anahtarı.
+
+**Ham koşu (ölçüldü).** Yeni testler düzeltme öncesi sayımla **3 kırmızı** (`pages` 5≠3 ·
+`unparsed_documents` 0≠1 · kapsam↔gönderim paritesi 2≠1); düzeltmeyle **5/5 yeşil**
+(`coverage_report_counts_the_corpus_an_ai_run_would_see`,
+`…_a_document_whose_current_version_is_unparsed`, `…_documents_without_usable_text`,
+`…_treats_a_whitespace_only_segment_as_no_text`, `coverage_report_agrees_with_the_transfer_scope`).
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-coverage-gates.py`, her mutasyon tek
+başına, `try/finally` + `os.utime` damgası + sha256 birebir).** **9/9 KIRMIZI, taban
+yeşilken** (taban: çekirdek 15, dışa aktarma 9, arayüz 14, AI ekranı 114 test) —
+M1 sayfa/segment bütün koşulardan sayılır (3 test) · M2 `unparsed_documents` eski kurala
+döner (2) · M3 metinsiz belge "segment satırı yok" ile tanımlanır (1) · M4 metinsiz belge
+uyarısı yazılmaz (2) · M5 raporda satır çizilmez (1) · M6 tek satır özet yazmaz (1) ·
+U1 arayüz satırı çizilmez (2) · U2 özete `noText` geçirilmez (3) · U3 AI ekranı `noText`
+geçirmez (**114 test düştü**, i18n eksik-parametre). **Dürüst (kendi hatam, iki ölçüm
+hatası):** (1) betiğin ilk sürümünde vitest çökme biçimi ("Tests 114 failed (114)")
+tanınmadı → U3 "bilinmiyor" çıktı ve 8/9 sayıldı; U3 **ayrı betikle yeniden ölçüldü**
+(114/114 düştü, `Error: i18n: "ai.coverageLine" için eksik parametre: noText`, geri yazım
+sha `15851d62…` birebir). (2) İlk koşuda `cargo fmt` sonrası üç kapı metni birebir
+eşleşmedi ("EŞLEŞMEDİ") → metinler son biçime göre yazıldı, **tüm kapılar son hâl üzerinde**
+yeniden koşuldu; yalnız bu koşu kanıt sayıldı, her mutasyonun geri yazımı birebir.
+
+**Testler (güncel kodla).** `ai` kapsam testleri 4 → 9 (+5), `export_coverage` 9 → 10 (+1)
+→ `dim-storage --lib` **587 → 593** (298,11 s); tam vitest **66 dosya / 1430** yerel;
+`tsc --noEmit` temiz; iki manifest `cargo fmt --check` temiz;
+`clippy -p dim-storage --all-targets -D warnings` temiz.
+
+**Dürüst sınırlar.**
+
+- "Metin var" ölçütü **ilk segmente** bakar; üretim yolu (`store_pages`) sayfa başına tek
+  segment yazar, çok segmentli sayfada ikinci segment taranmaz — alıntı denetimiyle aynı
+  sınır (tek tanım bilinçli).
+- `documents` silinmemiş belgeleri sayar; `versions`/`parse_runs`/`failed_parse_runs`
+  tarihçedir ve silinmiş belgelerin kayıtlarını da içerir.
+- `complete` geçmişteki **başarısız** koşu yüzünden "kısmi" kalır (fail-closed: kanıt
+  yokken temiz demez); başarısız koşunun hangi sürüme ait olduğu ayrıca raporlanmaz.
+- Sayfa düzeyi ayrım yok (hibrit sayfa): tek sayfada hem metin hem OCR'sız görüntü varsa
+  sayfa "metinli" sayılır.
+- Tauri komutları (`case_coverage`, dört dışa aktarma, devir paketi) **komut olarak
+  koşulmadı** (`State<AppState>` altyapısı yok): kablolama `cargo check`/`clippy`,
+  davranış storage düzeyinde gerçek SQLite (`open_in_memory`).
+- jsdom tarayıcı değil → gerçek Tauri penceresi ve **görsel QA insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `abc4ccc` (12 dosya, **+314/−34**) → run `43436689213`
+**10/10 YEŞİL** (ilk koşu): `dim-storage` **593** iki OS'ta birebir (macos-15 286,86 s /
+ubuntu-latest 705,05 s), `arayüz` 66 dosya / **1422** test (yerel 1430 farkı ağaçtaki
+başka ajanın commit'siz testleri), paket `index-WZ8frWYD.js` 692,02 kB / gzip 184,65 kB,
+`masaüstü kabuk` 51/0/5 + yoksayılan 5 passed; diğer altı iş yeşil.
+**i18n hunk ayrımı:** 5 hunk'tan yalnız benim `noText` hunk'larım `git apply --cached
+--recount` ile sahneye alındı (`git show :…i18n.ts | grep -c parseStatus` → **0**).
