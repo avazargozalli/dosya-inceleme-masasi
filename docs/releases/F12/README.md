@@ -1160,3 +1160,89 @@ engelleyen bir çekirdek kapısı yok — bildirim yalnız kullanıcıyı uyarı
 tekilleştirme (`exactQuote` + aralık) ayrı iş. (e) jsdom tarayıcı değil; gerçek
 Tauri penceresi, gerçek tıklama ve **görsel QA insan bekliyor**.
 
+## F12-T14g — çapa kimliği çekirdekte doğrulanır: aynı kanıt iki kez yazılmaz, sürüm/koşu çelişkisi reddedilir (2026-11-13)
+
+T14f'nin dürüst sınırı (d) — “aynı çapayı ikinci kez bağlamayı engelleyen bir
+çekirdek kapısı yok; gerçek tekilleştirme ayrı iş” — kapandı. Ölçüm üç kusur
+gösterdi (ikisi yeni):
+
+1. **Kopya çapa:** `create_anchor` her çağrıda yeni satır açıyordu. Aynı kanıt
+   (aynı segment + aralık + alıntı) ikinci kez bağlanınca `source_anchors`ta
+   ikinci satır oluşuyordu; iki tıklama iki kaynak satırı. Tekilleştirme yalnız
+   `ai.rs::ensure_anchor` içinde — yani **AI adayı yolunda** — vardı; çekirdeğin
+   kendi kapısı değildi (ikinci uygulama, `segment_id` sorgusu).
+2. **Sürüm çelişkisi:** `create_anchor` segmentin dosyasını (`case_id`) ve
+   ayrıştırma koşusunu (`parse_run_id`) doğruluyor, ama `document_version_id`yi
+   **okumuyordu**. v1 adına yazılan çapa, v2'nin koşusundaki segmente işaret
+   edebiliyordu; `locate_anchor`/`rebind_*` sürümü bu alandan okur → “kaynağa
+   git” yanlış sürümü açardı. Sürüm, çağırandan gelen **doğrulanmamış bir
+   iddiaydı** (M3 mutasyonu bu davranışı yeniden üretir).
+3. **Bayat bağlam (aynı sınıf):** `rebind_anchor` satırı yeni konuma taşıyor ama
+   `prefix`/`suffix`i **tazelemiyordu**; `Notes` görünümü kanıtın çevresini bu
+   alanlardan yazdığı için yeniden bağlanmış çapa **eski konumun metnini**
+   gösterebiliyordu. Tekilleştirme rebound satırını yeniden kullandığı için bu
+   boşluk kapatılmadan bırakılamazdı.
+
+**Yazılan (çekirdek, `crates/storage/src/anchors.rs`):**
+- `segment_scope(segment_id)` — segmenti dosya + ayrıştırma koşusu + **koşunun
+  belge sürümü** ile tek sorguda çözer (`JOIN parse_runs pr ON
+  pr.id=s.parse_run_id AND pr.case_id=s.case_id`). `create_anchor` ve
+  `rebind_anchor` aynı çözümü kullanır: iki kopya SQL tek kaynağa indi,
+  sürüm/koşu çelişkisi iki yolda da aynı kapıdan geçer.
+- `create_anchor`: kapsam üçlüsü (dosya, koşu, sürüm) tutmazsa `E_NOT_FOUND`.
+- **Tekilleştirme:** alıntı doğrulandıktan **sonra** aynı (dosya, sürüm, koşu,
+  segment, aralık, alıntı) `active`/`rebound` çapa aranır; varsa **o satır döner**
+  (yeni `INSERT` yok, yeni `create` denetim kaydı yok). Doğrulamadan önce
+  bakılmaz: geçersiz istek var olan kayda dönemez. Farklı iddia/işaret/not aynı
+  çapayı paylaşır — `source_anchor_ids`/`evidence_links` bunun için çokludur.
+- `rebind_anchor`: bağlam (`prefix`/`suffix`) **yeni konumdan** yeniden üretilip
+  yazılır.
+- `ai.rs::ensure_anchor`: kendi kopya sorgusu silindi; `create_anchor`ı çağırır
+  (kimlik ve tekilleştirme tek yerde).
+
+**Yazılan (arayüz):** `review.bindKeptNote` metni “Çapa yazıldı” → “Çapa
+kayıtlı” (aynı kanıt zaten varsa “yazıldı” demek yalan olurdu); `Review.tsx`
+yorumu aynı gerçeğe çekildi. Davranış değişmedi: liste kimlikle tekilleştirilir,
+rozet hüküm kimliğine bağlanır.
+
+**Testler (güncel kodla):** `anchors::tests` **13 → 19** (+6: aynı kanıt tek
+satır + tek `create` denetimi · aynı alıntı iki segmentte iki ayrı çapa · sürüm
+çelişkisi reddedilir + doğru sürüm yazılır · aynı sürümün iki koşusu — koşu
+çelişkisi reddedilir · rebound çapa yeni konumunda yeniden kullanılır · yeniden
+bağlama bağlamı tazeler) → `dim-storage --lib` **568** (562 → +6, güncel kodla
+354,28 s); tam vitest **66 dosya / 1426** (yerel; T14f'nin +3'ü dâhil), `tsc
+--noEmit` temiz; `cargo fmt --all -- --check` temiz; `clippy -p dim-storage
+--all-targets -- -D warnings` temiz.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-t14g-gates.py`, her mutasyon tek
+başına, `try/finally` + sha256 birebir — `anchors.rs 253c9d75…`):** **6/6 KIRMIZI,
+taban 19/19 yeşilken** — M1 tekilleştirme kapısı kapanır (2 test) · M2 segment
+ayrımı yok sayılır (başka segmentteki aynı alıntı çalınır) · M3 sürüm çelişkisi
+kabul edilir · M4 koşu çelişkisi kabul edilir · M5 dosya kapsamı düşer (mevcut
+test) · M6 yeniden bağlama eski bağlamı taşır. **Dürüst (kendi hatam, iki ölçüm
+hatası):** (1) ilk betikte M1 deseni **2 kez** eşleşti — `list_anchors` da aynı
+status filtresini taşıyor; desen tekilleştirme sorgusuna özgü bağlamla
+daraltıldı. (2) M4 **YEŞİL** kaldı: ilk koşu testi sürüm çelişkisiyle
+üretilmişti, sürüm kapısı koşu kapısını gölgeliyordu → test **aynı sürümün iki
+ayrıştırma koşusu** ile yeniden yazıldı (asıl kusur: segment run2'de, iddia
+run1); 6/6 yeniden ölçüldü, ilk koşunun 3'ü kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `b15586f` (4 dosya, **+421/−57**) → run `43395760642`
+**10/10 YEŞİL** (ilk koşu; `arayüz` **66 dosya / 1418 test**, paket
+`index-4FIWsvOh.js` **690,59 kB** / gzip **184,26 kB**; `dim-storage` **568** hem
+`macos-15` 268,03 s hem `ubuntu-latest` 674,28 s — **birebir**; diğer sekiz iş
+yeşil).
+
+**Dürüst sınırlar:** (a) tekilleştirme **çekirdek sorgusudur**; DB'de benzersizlik
+kısıtı yok — şema v30 (kısmi benzersiz indeks) bugünkü kopyaları temizlemeyi
+gerektirdiği için alınmadı; doğrudan SQL yazan bir yol kopya üretebilir. (b) Var
+olan kopya satırlar **temizlenmez** (listede görünmeye devam eder); birleştirme,
+`anchor_id`ye bağlı işaret/not/kanıt satırlarını yeniden işaretlemeyi gerektirir —
+ayrı iş. (c) Yeniden kullanımda `created_at` eski kalır → yeniden yüklemede satır
+listenin altında görünebilir (oturum içinde başa eklenir). (d) `active`/`rebound`
+dışındaki durumlar (`ambiguous`, `unresolved`) yeniden kullanılmaz; bugün bu
+durumları yazan kod yok. (e) Tauri komutu (`anchor_create`) ve gerçek pencere
+**insan bekliyor**; davranış storage düzeyinde gerçek SQLite ile ölçüldü.
+(f) T14f bildirimi artık “kayıtlı” diyor ama **yeni mi yazıldı, var olan mı
+kullanıldı** ayrımını ekranda göstermiyor (tek satırlık bilgi) — bilinçli.
+
