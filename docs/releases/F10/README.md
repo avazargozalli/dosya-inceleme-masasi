@@ -8,10 +8,10 @@
   **ölçülen araç erişiminin kapıya girmesi + kasa içinde saklanması (T08d)**,
   **koşulamayan sınamanın ölçüm sayılmaması + nedenin ayrılması (T08e)**,
   **istem biçiminin tek kaynaktan gelmesi (T08f)**, **ölçümün sürümle
-  bağlanması (T08g)** ve
+  bağlanması (T08g)**, **argüman kapısının değeri de denetlemesi (T08h)** ve
   **arayüzden tetiklenen gerçek sınama** hazır; **istem gönderen** uçtan uca
   sağlayıcı akışı (T08) ve Kimi API profili (T10) yok
-- **Tarih:** 2026-10-24
+- **Tarih:** 2026-10-24 (son tur: 2026-11-13, T08h)
 
 | İş | Durum | Kanıt |
 |---|---|---|
@@ -40,6 +40,9 @@ Uygulamada düğmenin arkasında gerçek çekirdek var; sahte yerel durum yok.
   → `run_cli`. Arayüz ile testler **aynı** fonksiyonu çalıştırır.
 - **Serbest argüman yok:** arayüz yalnız adaptör kimliği gönderir; argv sicildeki
   `version_args[0]` (`--version`) olarak kurulur. UI'dan bayrak geçirilemez.
+  Argüman kapısı **değeri de** denetler (T08h): her izinli bayrak bir değer
+  kararı taşır (değersiz / kapalı küme / gerekçeli serbest) — `--sandbox=danger-full-access`
+  ve `--tools=default` reddedilir.
 - **Boş geçici iş dizini:** `dim-cli-probe-<pid>-<n>` sistem geçici dizininde
   açılır, **boş** olduğu test edilir, yürütmeden sonra silinir. Böylece depodaki
   `AGENTS.md`/`CLAUDE.md` gibi proje talimatları ve kullanıcı dosyaları alt sürece
@@ -1389,4 +1392,125 @@ yeniden ölçüldü.
 - **Komut yolu** (`cli_hardening_probe`, `cli_capability_matrix`) komut olarak
   koşulmadı (`State<AppState>` altyapısı yok): kablolama `cargo check` + clippy,
   davranış storage düzeyinde gerçek SQLite ve birim testleriyle ölçüldü.
+- Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## Argüman kapısı değeri de denetler — izinli bayrak "izinli değer" demek değil (F10-T08h, 2026-11-13)
+
+**Ölçülen kusur (2026-11-13, bu makine).** Argüman kapısı (`build_args`, INV-10)
+yalnız **bayrak adına** bakıyordu: `arg.split('=').next()` ile adı alıp
+`allowed_args`/`version_args` listesinde arıyor, **değeri hiç denetlemiyordu**.
+Yani "izinli argüman" güvenlik kararını taşımıyordu. Kurulu ikililerin kendi
+yardım metinleriyle ölçüldü:
+
+```
+$ codex exec --help      # codex-cli 0.159.2
+  -s, --sandbox <SANDBOX_MODE>
+          Select the sandbox policy to use when executing model-generated shell commands
+          [possible values: read-only, workspace-write, danger-full-access]
+
+$ claude --help          # 2.1.303 (Claude Code)
+  --tools <tools...>     Specify the list of available tools from the built-in set.
+                         Use "" to disable all tools, "default" to use all tools, or
+                         specify tool names
+```
+
+`--sandbox` ve `--tools` **adları** izinli olduğu için:
+`--sandbox=danger-full-access` (codex'e **tam** dosya/ağ erişimi) ve
+`--tools=default` (kapalı araçları **hepsini açar**) kapıdan **geçiyordu**.
+`--tools` bugün `hardened_args` tarafından geri yazıldığı için canlı sızıntı
+değildi; `--sandbox` için aynı koruma **yok** (codex'in sertleştirme grubu yalnız
+`--ignore-user-config`, `--ignore-rules`). Aynı sınıf: değer almayan bayrağa
+`=` ile değer vermek (`--ephemeral=false`, `--strict-mcp-config=false`,
+`--no-session-persistence=0`) ve boş belirtecin her yerde kabul edilmesi.
+
+**Yazılan (çekirdek, `crates/cli-adapters/src/lib.rs`).**
+- `ArgValue` — her izinli bayrağın **değer kararı**: `None` (değer almaz),
+  `OneOf(&[…])` (kapalı küme), `Free(gerekçe)` (güvenlik/format kapısı taşımaz).
+  `AllowedArg { flag, value }` ile karar **sicilin satırında** durur; tip sistemi
+  kararı atlamayı imkânsız kılar (yeni bayrak ekleyen karar yazmak zorunda).
+- `build_args` iki yazımı da aynı kurallardan geçirir: `--bayrak=değer` ve
+  `--bayrak değer`. Değer `-` ile başlayamaz (bayrak sanılır); değer almayan
+  bayrak `=` değeri kabul etmez; kapalı kümede olmayan değer
+  `AdapterError::ArgumentValue` → **`E_CLI_ARGUMENT`**, süreç **başlamadan**.
+- **Boş değer kuralı ölçüme dayanır:** `--tools=""` (tek belirteç) araçları
+  **kapatmıyor**, `--tools ""` (ayrı belirteç) kapatıyor (2.1.303, 2026-10-27).
+  Bu yüzden `=` ile boş değer reddedilir; ayrı belirteçte boş değer yalnız
+  kapalı kümesinde `""` ilan edilmiş bayrakta geçer.
+- **İstem argüman kapısından geçemez:** `antigravity-cli --print` burada
+  `None`'dır; istem yalnız `prompt_argv` → `validate_prompt` yolundan girer
+  (aksi hâlde istem doğrulaması atlanırdı).
+- **Tek kaynak:** `attack.rs::hardening_argv` kendi `VALUE_ONLY_FLAGS` /
+  `EMPTY_VALUE_FLAGS` tablolarını **bıraktı**; değer kararını sicilden okur
+  (`arg_rule`). `capability` testi matris bayrağını sicildeki değer kararıyla
+  birlikte denetler (matris ile kapı ayrışamaz).
+- `AdapterView.allowed_args` arayüzde **ad listesi** olarak kalır
+  (`spec.allowed_flags()`), değer kararı çekirdekte kalır.
+
+**Sicildeki kabul kararları (bugünkü değerler):**
+
+| Adaptör | Kapalı küme | Gerekçe |
+|---|---|---|
+| codex-cli | `--sandbox` = `read-only` \| `workspace-write` | `danger-full-access` ürün politikası dışı (ölçülen olası değerler) |
+| claude-code | `--tools` = `""` | tek kapatma yolu; `default`/araç adları araçları açar |
+| claude-code | `--output-format` = `text` \| `json` | `stream-json` ayrıştırıcısı yok |
+| antigravity-cli | `--output-format` = `json` | ürün yalnız JSON zarfını okur (T08e) |
+
+Değeri serbest bırakılan bayraklar gerekçesiyle işaretli: `--model`,
+`--max-turns`, `--json-schema` (satır içi şema), `--output-schema` (şema dosyası
+yolu), `--print-timeout`.
+
+**Testler (güncel kodla):** `dim-cli-adapters --lib` **161 → 167** (+6:
+`closed_set_flag_rejects_a_value_outside_the_set`,
+`hardening_flag_value_cannot_be_replaced`, `value_on_a_plain_flag_is_rejected`,
+`value_that_looks_like_a_flag_is_rejected`,
+`prompt_cannot_enter_through_the_argument_gate`,
+`every_allowed_flag_carries_a_value_decision`) + `--all-targets` **5 entegrasyon**
+(1 `#[ignore]`); `tool_free_proof::antigravity_hardening_reaches_the_process`
+artık istemi **ürün yoluyla** (`run_cli_with_prompt`) veriyor.
+
+**Düzeltme öncesi davranışın yeniden üretimi (gerçek koşu; betik
+`scratch/dim-argvalue-oldbehavior.py`):** eski kapı (yalnız ad denetimi) yeni
+tiplerle yeniden kuruldu → `FAILED 162 passed 5 failed`; düşen beş test
+yukarıdaki değer testleridir. Geri yazım sha256 birebir (`lib.rs 649d8f35…`),
+taban tekrar **167/167**. (Yeni testler yeni alanı kullandığı için eski dosyayla
+derlenmez; eski davranış bu yüzden ayrı koşuyla üretildi.)
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-argvalue-gates.py`, her
+mutasyon tek başına, `try/finally` + `os.utime` damgası + sha256 birebir —
+`lib.rs 649d8f35…`, `attack.rs 24a0f398…`):** **9/9 KIRMIZI, taban yeşilken**
+(M1 kapalı küme hiç denetlenmez · M2 `=` değeri denetlenmez · M3 değersiz bayrak
+`=` değerini kabul eder · M4 `=` ile boş değer kabul edilir · M5 bayrak gibi
+görünen değer sızar · M6 ayrı belirteçli değer tüketilmez (**aşırı sıkı** kapı da
+yakalanır) · M7 sürüm bayrakları kapıdan geçemez · M8 sicilde olmayan bayrak
+geçer · M9 saldırı argv'si ürünün boş değerini kaybeder). **Dürüst (kendi
+hatam):** ilk koşuda M4 ve M7 **EŞLEŞMEDİ (0)** — `cargo fmt` sonrası desenler
+bayattı (satır kırılması değişmiş) → desenler düzeltildi, 9/9 **yeniden**
+ölçüldü; ilk koşunun 7'si kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `5ae22e2` (5 dosya, **+447/−68**) → run `43477502628`
+**10/10 YEŞİL** (ilk koşu): `dim-cli-adapters` **167** iki OS'ta **birebir**
+(macos-15 5,48 s / ubuntu-latest 5,12 s) + `tool_free_proof` 5 passed · 1
+ignored; `dim-storage` **593** iki OS'ta birebir (269,43 s / 446,06 s);
+`arayüz` 66 dosya / **1422** test, paket `index-WZ8frWYD.js` 692,02 kB / gzip
+184,65 kB; `masaüstü kabuk` 51/0/5 + yoksayılan 5 passed.
+
+**Dürüst sınırlar:**
+- **Bugün canlı sızıntı yoktu:** arayüz bayrak göndermiyor (`provider_probe_run`
+  yalnız `--version` kurar); kusur kapının **sözleşmesindeydi**, bugünkü bir
+  kullanıcı hatasında değil. `--tools` zaten `hardened_args` ile geri
+  yazılıyordu; `--sandbox` için böyle bir koruma yoktu.
+- **Kısa bayraklar (`-s`) ve birleşik yazımlar kapalı:** kapı yalnız uzun
+  adları tanır (`-s read-only` reddedilir). Ürünün kullandığı yol uzun adlardır.
+- **Kapalı kümeler ürün kararı + yardım metniyle sabitlendi**; sağlayıcı yeni bir
+  güvenli değer eklerse ürün onu **kendiliğinden** kabul etmez (elle karar
+  gerekir — bilinçli, sessiz genişleme olmasın).
+- `Free` bayrakların **değeri** hâlâ serbesttir (model adı, şema yolu); bunlar
+  güvenlik kapısı taşımıyor diye işaretlendi, ama şema **dosyası yolu** CLI'ya
+  okutulur — ürün bu yolu bugün üretmiyor.
+- **Kanca noktaları:** `run_cli_inner` istem splice'ını `build_args`tan **sonra**
+  yapar; `prompt_argv` çıktısı bu kapıdan geçmez (bilinçli — istem konumsaldır,
+  `validate_prompt` ayrı kapıdır).
+- Komut yolu (`provider_probe_run`, `cli_hardening_probe`) **komut olarak
+  koşulmadı** (`State<AppState>` altyapısı yok); kablolama `cargo check --all-targets`
+  (1 dk 13 s) + `clippy -D warnings` + CI ile doğrulandı.
 - Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
