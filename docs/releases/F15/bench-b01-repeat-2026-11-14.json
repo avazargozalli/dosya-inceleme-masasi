@@ -1,0 +1,3853 @@
+{
+  "b01": {
+    "applies": true,
+    "coreMaxMs": 10607.388,
+    "coreP50Ms": 1411.87,
+    "coreP95Met": true,
+    "coreP95Ms": 1714.1875,
+    "deferredPageP95Met": true,
+    "deferredPageP95Ms": 931.90815,
+    "deferredPageQueries": 20,
+    "note": "Çekirdek p95 ölçüldü. B-01 toplam süreyi (çekirdek+IPC+arayüz) kapsar; bu sayı alt sınırdır ve yalnız bu makine için geçerlidir.",
+    "queries": 200,
+    "requirement": "1.000 belge · 100.000 segment · 200 sabit sorgu · ilk 50 sonuç · p95 ≤ 2.000 ms (çekirdek+IPC+UI)",
+    "segments": 100000
+  },
+  "corpus": {
+    "documents": 1000,
+    "pages": 100000,
+    "pagesPerDocument": 100,
+    "segments": 100000
+  },
+  "corpusGenerator": "lcg-6364136223846793005-v1 (46 kelime, 8 cümle × 12 kelime, Esas 2024/N E.)",
+  "costPerSegmentMs": {
+    "p50": 0.014119999999999999,
+    "p95": 0.01714
+  },
+  "firstPage": {
+    "p50Ms": 0.297,
+    "p95Ms": 0.32255,
+    "pagesInVersion": 100,
+    "samples": 50
+  },
+  "generatedAt": "2026-11-14T15:09:36.590178Z",
+  "ingest": {
+    "documentsPerSecond": 22.59,
+    "pagesPerSecond": 2258.91,
+    "phaseMs": {
+      "blob": 193.77,
+      "document": 401.45,
+      "pages": 43018.52,
+      "parseRun": 166.85,
+      "version": 458.98
+    },
+    "seconds": 44.269
+  },
+  "machine": {
+    "arch": "aarch64",
+    "cpuModel": "Apple M2",
+    "cpus": 8,
+    "memoryBytes": 17179869184,
+    "os": "macos",
+    "storage": "Mac14,7"
+  },
+  "memory": {
+    "afterSearchRssMb": 188.88,
+    "peakRssBytes": 11042816,
+    "peakRssMb": 10.53,
+    "samplingIntervalMs": 2000
+  },
+  "modeResolution": "auto: tırnaklı metin → ifade, 2024/N E. → esas/karar no",
+  "pageLookupAb": null,
+  "perQuery": [
+    {
+      "deferredTotalMs": 954.76,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 859.66,
+      "text": "tapu",
+      "total": 87877,
+      "withTotalMs": 1506.72
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"beyan talep\"",
+      "total": 4322,
+      "withTotalMs": 536.74
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "temyiz",
+      "total": 87949,
+      "withTotalMs": 1813.96
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1000 E.",
+      "total": 100,
+      "withTotalMs": 30.52
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "beyan",
+      "total": 98630,
+      "withTotalMs": 1714.9
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tanık tapu\"",
+      "total": 4393,
+      "withTotalMs": 542.64
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "tanik",
+      "total": 87929,
+      "withTotalMs": 1589.42
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1037 E.",
+      "total": 100,
+      "withTotalMs": 25.77
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "ihtarname",
+      "total": 87646,
+      "withTotalMs": 1539.53
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"ipotek bedeli\"",
+      "total": 4019,
+      "withTotalMs": 576.07
+    },
+    {
+      "deferredTotalMs": 752.25,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 870.27,
+      "text": "raporu",
+      "total": 87880,
+      "withTotalMs": 1907.1
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1074 E.",
+      "total": 100,
+      "withTotalMs": 28.25
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "bilirkişi",
+      "total": 88001,
+      "withTotalMs": 1459.23
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"gereği hususunda\"",
+      "total": 4330,
+      "withTotalMs": 556.77
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "yonunden",
+      "total": 87822,
+      "withTotalMs": 1441.25
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1111 E.",
+      "total": 100,
+      "withTotalMs": 31.12
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "vekili",
+      "total": 87938,
+      "withTotalMs": 1824.84
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"senet bedeli\"",
+      "total": 4453,
+      "withTotalMs": 536.18
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "esas",
+      "total": 100000,
+      "withTotalMs": 1562.57
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1148 E.",
+      "total": 100,
+      "withTotalMs": 25.68
+    },
+    {
+      "deferredTotalMs": 621.35,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 870.33,
+      "text": "senet",
+      "total": 87892,
+      "withTotalMs": 1463.92
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"takip talep\"",
+      "total": 4276,
+      "withTotalMs": 543.39
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "sure",
+      "total": 98572,
+      "withTotalMs": 1593.62
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1185 E.",
+      "total": 100,
+      "withTotalMs": 26.0
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "hak",
+      "total": 87752,
+      "withTotalMs": 1419.14
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tanık bilirkişi\"",
+      "total": 4402,
+      "withTotalMs": 541.44
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "haciz",
+      "total": 88060,
+      "withTotalMs": 1430.99
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1222 E.",
+      "total": 100,
+      "withTotalMs": 26.3
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "süre",
+      "total": 98572,
+      "withTotalMs": 1664.19
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tanık bilirkişi\"",
+      "total": 4402,
+      "withTotalMs": 533.49
+    },
+    {
+      "deferredTotalMs": 622.69,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 808.38,
+      "text": "talep",
+      "total": 87969,
+      "withTotalMs": 1419.31
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1259 E.",
+      "total": 100,
+      "withTotalMs": 26.11
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "gereği",
+      "total": 88003,
+      "withTotalMs": 1450.08
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"beyan borç\"",
+      "total": 4478,
+      "withTotalMs": 529.95
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "suret",
+      "total": 87843,
+      "withTotalMs": 1436.47
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1296 E.",
+      "total": 100,
+      "withTotalMs": 26.53
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "süre",
+      "total": 98572,
+      "withTotalMs": 1740.28
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"şerh icra\"",
+      "total": 3976,
+      "withTotalMs": 569.33
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "numarali",
+      "total": 87969,
+      "withTotalMs": 1473.55
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1333 E.",
+      "total": 100,
+      "withTotalMs": 29.24
+    },
+    {
+      "deferredTotalMs": 671.35,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 890.79,
+      "text": "tebliğ",
+      "total": 88064,
+      "withTotalMs": 1636.93
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"borç ipotek\"",
+      "total": 4041,
+      "withTotalMs": 573.89
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "borc",
+      "total": 87992,
+      "withTotalMs": 1714.15
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1370 E.",
+      "total": 100,
+      "withTotalMs": 91.64
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "senet",
+      "total": 87892,
+      "withTotalMs": 1756.36
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"itirazın kira\"",
+      "total": 4249,
+      "withTotalMs": 576.03
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "incelenmesi",
+      "total": 87938,
+      "withTotalMs": 1488.66
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1407 E.",
+      "total": 100,
+      "withTotalMs": 26.54
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "verildi",
+      "total": 87865,
+      "withTotalMs": 1531.19
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"noter senet\"",
+      "total": 4364,
+      "withTotalMs": 732.65
+    },
+    {
+      "deferredTotalMs": 649.62,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 852.35,
+      "text": "kayit",
+      "total": 87787,
+      "withTotalMs": 2896.02
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1444 E.",
+      "total": 100,
+      "withTotalMs": 28.58
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "takip",
+      "total": 88064,
+      "withTotalMs": 1559.74
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"reddine süre\"",
+      "total": 4305,
+      "withTotalMs": 543.25
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "noter",
+      "total": 87921,
+      "withTotalMs": 1465.9
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1481 E.",
+      "total": 100,
+      "withTotalMs": 26.81
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "temyiz",
+      "total": 87949,
+      "withTotalMs": 1448.81
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"beyanları hak\"",
+      "total": 4234,
+      "withTotalMs": 525.26
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "takip",
+      "total": 88064,
+      "withTotalMs": 1478.37
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1518 E.",
+      "total": 100,
+      "withTotalMs": 27.25
+    },
+    {
+      "deferredTotalMs": 626.88,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 916.28,
+      "text": "tanık",
+      "total": 87929,
+      "withTotalMs": 1614.76
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"sözleşme gereği\"",
+      "total": 4552,
+      "withTotalMs": 539.44
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "sozlesme",
+      "total": 88108,
+      "withTotalMs": 1451.13
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1555 E.",
+      "total": 100,
+      "withTotalMs": 28.34
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "ödenmedi",
+      "total": 87987,
+      "withTotalMs": 1485.14
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tebliğ faiz\"",
+      "total": 4321,
+      "withTotalMs": 571.25
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "borc",
+      "total": 87992,
+      "withTotalMs": 1564.17
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1592 E.",
+      "total": 100,
+      "withTotalMs": 27.33
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "dosya",
+      "total": 87760,
+      "withTotalMs": 1447.74
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"itirazın tebliğ\"",
+      "total": 3895,
+      "withTotalMs": 527.51
+    },
+    {
+      "deferredTotalMs": 613.84,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 802.73,
+      "text": "yonunden",
+      "total": 87822,
+      "withTotalMs": 1453.76
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1629 E.",
+      "total": 100,
+      "withTotalMs": 26.91
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "süre",
+      "total": 98572,
+      "withTotalMs": 1616.78
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"faiz reddine\"",
+      "total": 4449,
+      "withTotalMs": 552.98
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "raporu",
+      "total": 87880,
+      "withTotalMs": 1470.32
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1666 E.",
+      "total": 100,
+      "withTotalMs": 27.61
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "bilirkişi",
+      "total": 88001,
+      "withTotalMs": 1484.09
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"bedeli temyiz\"",
+      "total": 4251,
+      "withTotalMs": 527.24
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "faiz",
+      "total": 87971,
+      "withTotalMs": 1458.23
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1703 E.",
+      "total": 100,
+      "withTotalMs": 27.92
+    },
+    {
+      "deferredTotalMs": 617.33,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 851.7,
+      "text": "ek",
+      "total": 87915,
+      "withTotalMs": 1524.8
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"davacı gereği\"",
+      "total": 4398,
+      "withTotalMs": 545.9
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "dosya",
+      "total": 87760,
+      "withTotalMs": 1540.1
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1740 E.",
+      "total": 100,
+      "withTotalMs": 56.39
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "mahkeme",
+      "total": 87834,
+      "withTotalMs": 1676.88
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"noter bedeli\"",
+      "total": 4399,
+      "withTotalMs": 542.97
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "kira",
+      "total": 87820,
+      "withTotalMs": 1516.13
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1777 E.",
+      "total": 100,
+      "withTotalMs": 26.94
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "reddine",
+      "total": 87957,
+      "withTotalMs": 1430.11
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"ipotek bilirkişi\"",
+      "total": 3986,
+      "withTotalMs": 526.01
+    },
+    {
+      "deferredTotalMs": 646.86,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 843.29,
+      "text": "numarali",
+      "total": 87969,
+      "withTotalMs": 1443.31
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1814 E.",
+      "total": 100,
+      "withTotalMs": 30.53
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "temyiz",
+      "total": 87949,
+      "withTotalMs": 1554.46
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"senet tapu\"",
+      "total": 4397,
+      "withTotalMs": 555.12
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "bilirkisi",
+      "total": 88001,
+      "withTotalMs": 1496.29
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1851 E.",
+      "total": 100,
+      "withTotalMs": 28.47
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "beyan",
+      "total": 98630,
+      "withTotalMs": 1674.55
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"borç bedeli\"",
+      "total": 4323,
+      "withTotalMs": 553.58
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "bedeli",
+      "total": 87729,
+      "withTotalMs": 1679.01
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1888 E.",
+      "total": 100,
+      "withTotalMs": 30.15
+    },
+    {
+      "deferredTotalMs": 2625.22,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 895.46,
+      "text": "takip",
+      "total": 88064,
+      "withTotalMs": 1633.99
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"ödenmedi bilirkişi\"",
+      "total": 4482,
+      "withTotalMs": 5886.08
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "raporu",
+      "total": 87880,
+      "withTotalMs": 3791.24
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1925 E.",
+      "total": 100,
+      "withTotalMs": 63.83
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "davacı",
+      "total": 87799,
+      "withTotalMs": 1685.14
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"onaylı kayıt\"",
+      "total": 4328,
+      "withTotalMs": 10607.39
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "temyiz",
+      "total": 87949,
+      "withTotalMs": 1523.78
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1962 E.",
+      "total": 100,
+      "withTotalMs": 27.28
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "noter",
+      "total": 87921,
+      "withTotalMs": 1428.23
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"sözleşme bilirkişi\"",
+      "total": 4490,
+      "withTotalMs": 534.28
+    },
+    {
+      "deferredTotalMs": 626.98,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 819.3,
+      "text": "teblig",
+      "total": 88064,
+      "withTotalMs": 1436.23
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/1999 E.",
+      "total": 100,
+      "withTotalMs": 31.09
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "numaralı",
+      "total": 87969,
+      "withTotalMs": 1423.49
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"davacı temyiz\"",
+      "total": 4345,
+      "withTotalMs": 525.58
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "duzenlenen",
+      "total": 87873,
+      "withTotalMs": 1425.27
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2036 E.",
+      "total": 0,
+      "withTotalMs": 4.41
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "talep",
+      "total": 87969,
+      "withTotalMs": 1432.88
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"senet talep\"",
+      "total": 4323,
+      "withTotalMs": 524.09
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "tanik",
+      "total": 87929,
+      "withTotalMs": 1440.03
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2073 E.",
+      "total": 0,
+      "withTotalMs": 4.41
+    },
+    {
+      "deferredTotalMs": 639.62,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 855.02,
+      "text": "gereği",
+      "total": 88003,
+      "withTotalMs": 1480.49
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"temyiz esas\"",
+      "total": 6542,
+      "withTotalMs": 656.07
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "alacak",
+      "total": 87901,
+      "withTotalMs": 1441.6
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2110 E.",
+      "total": 0,
+      "withTotalMs": 4.66
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "vekili",
+      "total": 87938,
+      "withTotalMs": 1449.21
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tarih kayıt\"",
+      "total": 4468,
+      "withTotalMs": 528.21
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "noter",
+      "total": 87921,
+      "withTotalMs": 1425.88
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2147 E.",
+      "total": 0,
+      "withTotalMs": 4.56
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "tebliğ",
+      "total": 88064,
+      "withTotalMs": 1528.78
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"onaylı tebliğ\"",
+      "total": 4343,
+      "withTotalMs": 519.71
+    },
+    {
+      "deferredTotalMs": 631.26,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 836.88,
+      "text": "tanik",
+      "total": 87929,
+      "withTotalMs": 1423.52
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2184 E.",
+      "total": 0,
+      "withTotalMs": 4.55
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "kayıt",
+      "total": 87787,
+      "withTotalMs": 1481.34
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tapu hususunda\"",
+      "total": 4343,
+      "withTotalMs": 536.21
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "sure",
+      "total": 98572,
+      "withTotalMs": 1617.39
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2221 E.",
+      "total": 0,
+      "withTotalMs": 4.42
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "ipotek",
+      "total": 87926,
+      "withTotalMs": 1424.87
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"esas onaylı\"",
+      "total": 4216,
+      "withTotalMs": 648.34
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "temyiz",
+      "total": 87949,
+      "withTotalMs": 1471.29
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2258 E.",
+      "total": 0,
+      "withTotalMs": 4.44
+    },
+    {
+      "deferredTotalMs": 626.86,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 840.02,
+      "text": "tanık",
+      "total": 87929,
+      "withTotalMs": 1468.95
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"bedeli dosya\"",
+      "total": 4270,
+      "withTotalMs": 531.48
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "incelenmesi",
+      "total": 87938,
+      "withTotalMs": 1430.72
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2295 E.",
+      "total": 0,
+      "withTotalMs": 4.49
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "talep",
+      "total": 87969,
+      "withTotalMs": 1423.04
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tanık sözleşme\"",
+      "total": 4454,
+      "withTotalMs": 524.92
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "kira",
+      "total": 87820,
+      "withTotalMs": 1413.38
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2332 E.",
+      "total": 0,
+      "withTotalMs": 4.39
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "bedeli",
+      "total": 87729,
+      "withTotalMs": 1414.45
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"numaralı reddine\"",
+      "total": 4480,
+      "withTotalMs": 524.63
+    },
+    {
+      "deferredTotalMs": 615.43,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 798.17,
+      "text": "itirazin",
+      "total": 87934,
+      "withTotalMs": 1413.59
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2369 E.",
+      "total": 0,
+      "withTotalMs": 4.46
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "suret",
+      "total": 87843,
+      "withTotalMs": 1428.95
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"faiz esas\"",
+      "total": 6523,
+      "withTotalMs": 621.6
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "kayit",
+      "total": 87787,
+      "withTotalMs": 1415.68
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2406 E.",
+      "total": 0,
+      "withTotalMs": 4.54
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "kayıt",
+      "total": 87787,
+      "withTotalMs": 1406.71
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"gereği gereği\"",
+      "total": 4444,
+      "withTotalMs": 1515.47
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "sure",
+      "total": 98572,
+      "withTotalMs": 1583.6
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2443 E.",
+      "total": 0,
+      "withTotalMs": 4.44
+    },
+    {
+      "deferredTotalMs": 683.99,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 954.24,
+      "text": "süre",
+      "total": 98572,
+      "withTotalMs": 1630.62
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"dosya dosya\"",
+      "total": 4295,
+      "withTotalMs": 1517.01
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "ihtarname",
+      "total": 87646,
+      "withTotalMs": 1419.53
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2480 E.",
+      "total": 0,
+      "withTotalMs": 4.41
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "dosya",
+      "total": 87760,
+      "withTotalMs": 1420.77
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"faiz bedeli\"",
+      "total": 4380,
+      "withTotalMs": 523.91
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "haciz",
+      "total": 88060,
+      "withTotalMs": 1410.99
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2517 E.",
+      "total": 0,
+      "withTotalMs": 4.45
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "senet",
+      "total": 87892,
+      "withTotalMs": 1422.41
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"tebliğ borç\"",
+      "total": 4188,
+      "withTotalMs": 527.79
+    },
+    {
+      "deferredTotalMs": 677.72,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 895.96,
+      "text": "esas",
+      "total": 100000,
+      "withTotalMs": 1536.58
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2554 E.",
+      "total": 0,
+      "withTotalMs": 4.56
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "davacı",
+      "total": 87799,
+      "withTotalMs": 1427.5
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"ödenmedi mahkeme\"",
+      "total": 4521,
+      "withTotalMs": 531.75
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "senet",
+      "total": 87892,
+      "withTotalMs": 1421.36
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2591 E.",
+      "total": 0,
+      "withTotalMs": 4.45
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "ihtarname",
+      "total": 87646,
+      "withTotalMs": 1416.35
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"itirazın takip\"",
+      "total": 4302,
+      "withTotalMs": 541.42
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "ihtarname",
+      "total": 87646,
+      "withTotalMs": 1431.76
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2628 E.",
+      "total": 0,
+      "withTotalMs": 4.49
+    },
+    {
+      "deferredTotalMs": 629.56,
+      "filter": "documentType=petition",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 868.93,
+      "text": "tebliğ",
+      "total": 88064,
+      "withTotalMs": 1497.28
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"ipotek tanık\"",
+      "total": 4102,
+      "withTotalMs": 528.42
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "noter",
+      "total": 87921,
+      "withTotalMs": 1420.01
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2665 E.",
+      "total": 0,
+      "withTotalMs": 4.52
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "borç",
+      "total": 87992,
+      "withTotalMs": 1421.78
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"beyanları ödenmedi\"",
+      "total": 4575,
+      "withTotalMs": 526.77
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "beyanlari",
+      "total": 87942,
+      "withTotalMs": 1422.27
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2702 E.",
+      "total": 0,
+      "withTotalMs": 4.44
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "noter",
+      "total": 87921,
+      "withTotalMs": 1414.29
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"takip davacı\"",
+      "total": 4591,
+      "withTotalMs": 525.38
+    },
+    {
+      "deferredTotalMs": 668.37,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": 930.73,
+      "text": "beyan",
+      "total": 98630,
+      "withTotalMs": 1591.12
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2739 E.",
+      "total": 0,
+      "withTotalMs": 4.44
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "tapu",
+      "total": 87877,
+      "withTotalMs": 1429.62
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"düzenlenen noter\"",
+      "total": 4308,
+      "withTotalMs": 535.55
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "kayit",
+      "total": 87787,
+      "withTotalMs": 1412.75
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2776 E.",
+      "total": 0,
+      "withTotalMs": 4.48
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "word",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "mahkeme",
+      "total": 87834,
+      "withTotalMs": 1408.72
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "phrase",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Phrase",
+      "pageOnlyMs": null,
+      "text": "\"bilirkişi incelenmesi\"",
+      "total": 4011,
+      "withTotalMs": 523.33
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "folded",
+      "hasMore": true,
+      "hits": 50,
+      "mode": "Flexible",
+      "pageOnlyMs": null,
+      "text": "hak",
+      "total": 87752,
+      "withTotalMs": 1402.4
+    },
+    {
+      "deferredTotalMs": null,
+      "filter": "",
+      "group": "docket",
+      "hasMore": false,
+      "hits": 0,
+      "mode": "Docket",
+      "pageOnlyMs": null,
+      "text": "2024/2813 E.",
+      "total": 0,
+      "withTotalMs": 4.45
+    }
+  ],
+  "profile": "core-only (IPC/UI yok) — B-01 alt sınırı",
+  "queryList": [
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tapu"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"beyan talep\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "temyiz"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1000 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "beyan"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tanık tapu\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "tanik"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1037 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "ihtarname"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"ipotek bedeli\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "raporu"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1074 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "bilirkişi"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"gereği hususunda\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "yonunden"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1111 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "vekili"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"senet bedeli\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "esas"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1148 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "senet"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"takip talep\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "sure"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1185 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "hak"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tanık bilirkişi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "haciz"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1222 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "süre"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tanık bilirkişi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "talep"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1259 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "gereği"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"beyan borç\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "suret"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1296 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "süre"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"şerh icra\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "numarali"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1333 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tebliğ"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"borç ipotek\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "borc"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1370 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "senet"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"itirazın kira\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "incelenmesi"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1407 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "verildi"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"noter senet\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "kayit"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1444 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "takip"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"reddine süre\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "noter"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1481 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "temyiz"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"beyanları hak\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "takip"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1518 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tanık"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"sözleşme gereği\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "sozlesme"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1555 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "ödenmedi"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tebliğ faiz\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "borc"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1592 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "dosya"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"itirazın tebliğ\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "yonunden"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1629 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "süre"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"faiz reddine\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "raporu"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1666 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "bilirkişi"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"bedeli temyiz\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "faiz"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1703 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "ek"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"davacı gereği\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "dosya"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1740 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "mahkeme"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"noter bedeli\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "kira"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1777 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "reddine"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"ipotek bilirkişi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "numarali"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1814 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "temyiz"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"senet tapu\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "bilirkisi"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1851 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "beyan"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"borç bedeli\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "bedeli"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1888 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "takip"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"ödenmedi bilirkişi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "raporu"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1925 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "davacı"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"onaylı kayıt\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "temyiz"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1962 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "noter"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"sözleşme bilirkişi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "teblig"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/1999 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "numaralı"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"davacı temyiz\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "duzenlenen"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2036 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "talep"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"senet talep\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "tanik"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2073 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "gereği"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"temyiz esas\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "alacak"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2110 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "vekili"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tarih kayıt\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "noter"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2147 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tebliğ"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"onaylı tebliğ\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "tanik"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2184 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "kayıt"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tapu hususunda\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "sure"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2221 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "ipotek"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"esas onaylı\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "temyiz"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2258 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tanık"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"bedeli dosya\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "incelenmesi"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2295 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "talep"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tanık sözleşme\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "kira"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2332 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "bedeli"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"numaralı reddine\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "itirazin"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2369 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "suret"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"faiz esas\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "kayit"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2406 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "kayıt"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"gereği gereği\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "sure"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2443 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "süre"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"dosya dosya\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "ihtarname"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2480 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "dosya"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"faiz bedeli\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "haciz"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2517 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "senet"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"tebliğ borç\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "esas"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2554 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "davacı"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"ödenmedi mahkeme\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "senet"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2591 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "ihtarname"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"itirazın takip\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "ihtarname"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2628 E."
+    },
+    {
+      "filter": "documentType=petition",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tebliğ"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"ipotek tanık\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "noter"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2665 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "borç"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"beyanları ödenmedi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "beyanlari"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2702 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "noter"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"takip davacı\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "beyan"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2739 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "tapu"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"düzenlenen noter\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "kayit"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2776 E."
+    },
+    {
+      "filter": "",
+      "group": "word",
+      "mode": "Flexible",
+      "text": "mahkeme"
+    },
+    {
+      "filter": "",
+      "group": "phrase",
+      "mode": "Phrase",
+      "text": "\"bilirkişi incelenmesi\""
+    },
+    {
+      "filter": "",
+      "group": "folded",
+      "mode": "Flexible",
+      "text": "hak"
+    },
+    {
+      "filter": "",
+      "group": "docket",
+      "mode": "Docket",
+      "text": "2024/2813 E."
+    }
+  ],
+  "queryListSha256": "6a9081416fb10775a6532e32dd54552f463c627a2d51c5b85ea247c324087d8c",
+  "repeatSlow": {
+    "items": [
+      {
+        "filtered": false,
+        "firstRunMs": 10607.39,
+        "group": "phrase",
+        "maxMs": 522.116,
+        "minMs": 509.247,
+        "outlierRuns": 0,
+        "p50Ms": 510.807,
+        "p95Ms": 521.6827000000001,
+        "runs": [
+          510.94,
+          510.44,
+          510.52,
+          510.68,
+          509.25,
+          522.12,
+          511.83,
+          520.88
+        ],
+        "text": "\"onaylı kayıt\""
+      },
+      {
+        "filtered": false,
+        "firstRunMs": 5886.08,
+        "group": "phrase",
+        "maxMs": 526.988,
+        "minMs": 525.398,
+        "outlierRuns": 0,
+        "p50Ms": 526.201,
+        "p95Ms": 526.8858,
+        "runs": [
+          526.14,
+          526.7,
+          525.65,
+          526.27,
+          525.83,
+          525.4,
+          526.99,
+          526.6
+        ],
+        "text": "\"ödenmedi bilirkişi\""
+      },
+      {
+        "filtered": false,
+        "firstRunMs": 3791.24,
+        "group": "folded",
+        "maxMs": 1424.679,
+        "minMs": 1407.959,
+        "outlierRuns": 0,
+        "p50Ms": 1408.8775,
+        "p95Ms": 1420.7975,
+        "runs": [
+          1408.9,
+          1408.55,
+          1409.19,
+          1424.68,
+          1407.96,
+          1408.69,
+          1408.85,
+          1413.59
+        ],
+        "text": "raporu"
+      },
+      {
+        "filtered": false,
+        "firstRunMs": 2896.02,
+        "group": "folded",
+        "maxMs": 1430.302,
+        "minMs": 1408.447,
+        "outlierRuns": 0,
+        "p50Ms": 1418.7675,
+        "p95Ms": 1429.21875,
+        "runs": [
+          1408.45,
+          1416.2,
+          1427.21,
+          1413.96,
+          1430.3,
+          1423.02,
+          1421.33,
+          1411.06
+        ],
+        "text": "kayit"
+      },
+      {
+        "filtered": false,
+        "firstRunMs": 1907.1,
+        "group": "folded",
+        "maxMs": 1436.237,
+        "minMs": 1411.446,
+        "outlierRuns": 0,
+        "p50Ms": 1415.331,
+        "p95Ms": 1434.802,
+        "runs": [
+          1414.53,
+          1436.24,
+          1418.06,
+          1411.45,
+          1415.7,
+          1432.14,
+          1414.97,
+          1414.13
+        ],
+        "text": "raporu"
+      }
+    ],
+    "note": "Aynı sorgu tekrar koşulur: aykırı değer yine çıkıyorsa yapısal kuyruk, çıkmıyorsa tek seferlik makine olayı. `firstRunMs` ilk turun ölçümüdür.",
+    "outlierFactor": 2.0,
+    "outlierRuns": 0,
+    "queries": 5,
+    "runsPerQuery": 8,
+    "totalRuns": 40
+  },
+  "schemaVersion": 2,
+  "search": {
+    "includeTotal": true,
+    "limit": 50,
+    "maxMs": 10607.388,
+    "p50Ms": 1411.87,
+    "p95Ms": 1714.1875,
+    "queries": 200,
+    "seconds": 232.63,
+    "totalHits": 8900
+  },
+  "searchByGroup": {
+    "docket": {
+      "maxMs": 91.638,
+      "p50Ms": 26.0525,
+      "p95Ms": 45.02094999999992,
+      "queries": 50
+    },
+    "folded": {
+      "maxMs": 3791.237,
+      "p50Ms": 1455.9955,
+      "p95Ms": 1865.1862499999997,
+      "queries": 50
+    },
+    "phrase": {
+      "maxMs": 10607.388,
+      "p50Ms": 538.09,
+      "p95Ms": 1516.31765,
+      "queries": 50
+    },
+    "word": {
+      "maxMs": 1824.835,
+      "p50Ms": 1474.7215,
+      "p95Ms": 1728.85625,
+      "queries": 50
+    }
+  },
+  "searchPageOnly": {
+    "identicalFirstPageChecked": 20,
+    "maxMs": 954.236,
+    "note": "Sayfa adayları bm25 sırasında pencere pencere doğrular ve dolduğu an keser; adayların tamamı doğrulanmaz. Sıra/sonuç değişmez (test: candidate_window_does_not_change_results).",
+    "overheadP50Ms": 554.53,
+    "overheadP95Ms": 782.28,
+    "p50Ms": 857.3355,
+    "p95Ms": 931.90815,
+    "queries": 20,
+    "stoppedEarlySamples": 20,
+    "verifiedCandidates": 1020,
+    "verifiedCandidatesAvg": 51.0,
+    "verifiedCandidatesMax": 51,
+    "window": 200
+  },
+  "searchTotalDeferred": {
+    "identicalTotalsChecked": 20,
+    "matchesPageTotal": true,
+    "note": "Sayfa `include_total=false` ile gelir; sayı ayrı komutla sonradan istenir. `pageP*` kullanıcının beklediği süredir (ilk sayfa), `totalP*` arka plandaki tam sayım.",
+    "pageP50Ms": 857.3355,
+    "pageP95Ms": 931.90815,
+    "queries": 20,
+    "totalMaxMs": 2625.225,
+    "totalP50Ms": 635.4475,
+    "totalP95Ms": 1038.2927500000012
+  },
+  "storage": {
+    "bytesPerSegment": 2945,
+    "dbBytes": 294510592,
+    "dbMb": 280.87,
+    "shmBytes": 32768,
+    "walBytes": 10328872
+  }
+}

@@ -107,9 +107,52 @@ stdout'ta kaldı. Düzeltme: göreli yol **depo köküne**
 `bench_out_relative_path_resolves_against_repo_root`. Koşu 2 düzeltilmiş
 koşucuyla yazıldı (`[rapor] …/docs/releases/F15/bench-b01-2026-11-14.json`).
 
+### Tekrar ölçümü — `max` tek seferlik mi? (2026-11-14, üçüncü koşu)
+
+**Neden:** iki koşunun `max` değeri 1,96 ve 5,59 sn, Ekim'de 35,99 / 53,88 sn —
+aynı profil, aynı sorgu listesi, **25× fark**. `max` tek koşunun en yavaş örneği
+olduğu için "hangi sorgu, tekrar koşunca yine yavaş mı?" sorusu yanıtsızdı. İkisi
+farklı iş gerektirir: yapısal kuyruk sorgu planına, tek seferlik sıçrama makine
+olayına işaret eder.
+
+**Yöntem:** koşucuya `DIM_BENCH_REPEAT_SLOW` eklendi (kod `ad6e5f9`): ilk turun en
+yavaş N sorgusu `DIM_BENCH_REPEAT_TIMES` kez yeniden koşulur, rapora `repeatSlow`
+yazılır (sorgu başına koşular, p50/p95/max, `outlierRuns`; aykırı ölçütü kendi
+medyanının 2 katı). Tekrar ölçümü ilk sayfanın isabet sayısını ilk koşuyla
+**assert** eder — farklı sonuç kümesini ölçmek yanlış soruyu yanıtlar.
+
+| Sorgu (grup, sıra) | İlk koşu | Tekrar p50 | Tekrar max | Aykırı |
+|---|---|---|---|---|
+| `"onaylı kayıt"` (phrase, #105) | **10.607 ms** | **511 ms** | 522 ms | 0/8 |
+| `"ödenmedi bilirkişi"` (phrase, #101) | **5.886 ms** | **526 ms** | 527 ms | 0/8 |
+| `raporu` (folded, #102) | 3.791 ms | 1.409 ms | 1.425 ms | 0/8 |
+| `kayit` (folded, #50) | 2.896 ms | 1.419 ms | 1.430 ms | 0/8 |
+| `raporu` (folded, #10) | 1.907 ms | 1.415 ms | 1.436 ms | 0/8 |
+
+- **Sonuç: `max` yapısal değil.** En yavaş beş sorgu 8'er kez yeniden
+  koşulduğunda **40/40 koşuda aykırı yok**; phrase sorguları ilk koşunun
+  **7–20 katı hızlı**. Aynı sorgunun yapısal maliyeti 0,51 sn (phrase) /
+  1,41 sn (folded) — 10,6 sn sorgunun kendisinden gelmiyor.
+- **Sıçramalar tek pencerede kümeleniyor:** en yavaş dört ölçümün üçü #101–#105
+  arasında (5,9 / 3,8 / 10,6 sn); arada kalan #103–#104 normal. Bu, sorguya
+  değil **o ana** işaret eder.
+- **Koşu özeti (üçüncü koşu):** p50 **1.411,9 ms**, p95 **1.714,2 ms**, max
+  **10.607,4 ms**; yükleme 44,3 sn. Grup p50: word 1.475 / folded 1.456 /
+  phrase 538 / docket 26 ms; >2 sn dört, >1 sn 104 sorgu. Arayüz yolu (20 örnek):
+  sayfa p50 **857 ms** / p95 **932 ms**, ayrı sayım p50 **635** / p95 **1.038 ms**;
+  sayfa toplamı **20/20** birebir. DB **280,87 MB / 2.945 B/segment**, WAL 10,3 MB.
+- **Dürüst:** (a) iki açıklama **ayrılmadı** — ilk dokunuşta soğuk sayfa önbelleği
+  (tekrarlar 200 sorgu + 40 tekrardan sonra, sıcak) ile geçici makine olayı
+  (kontrol noktası / OS G/Ç) aynı veriyle ayırt edilemez; kümelenme ikinciyi
+  düşündürür, **kanıtlamaz**. (b) Tekrar ölçümü tanımı gereği bu koşunun en yavaş
+  beşini seçer; rastgele örnek değildir. (c) Tek makine, tek korpus. (d) Soğuk
+  önbellek koşusu (sayfa önbelleğini boşaltan) yapılmadı. Ham rapor:
+  `bench-b01-repeat-2026-11-14.json`.
+
 **Dürüst sınırlar (yeni ölçüm):** tek makine (Apple M2, 16 GB), yalnız
-çekirdek; uçtan uca süre yok; iki koşu p95 için yeterli, **max için değil**
-(1,96 / 5,59 sn oynaklığı); arayüz yolu yalnız 20 örnek (kuyruk sorgusu
+çekirdek; uçtan uca süre yok; iki koşu p95 için yeterli, max oynaklığı
+(1,96 / 5,59 sn) üçüncü koşuda **tekrar ölçümüyle** ayrıştırıldı (yukarıda:
+tek seferlik); arayüz yolu yalnız 20 örnek (kuyruk sorgusu
 örnekte olmayabilir); 100.000 belge / 1 milyon sayfa kapasite testi hâlâ
 yapılmadı.
 
