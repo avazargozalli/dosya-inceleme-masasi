@@ -15,6 +15,7 @@
 | F08-T06 | ✅ | not ↔ kaynak alıntı bağı (`source_anchor_ids`) |
 | F08-T01 *(şartname numarası)* | ✅ | **kişi/kurum + dosya rolü** ve **geri alınabilir birleştirme**: `actors` / `case_participants` tabloları ilk kez kullanılır; `actor_merges` (şema **v25**); arayüzde “Dosya tarafları” kartı — 14/14 mutasyon (2026-11-08) |
 | F08-T03 *(şartname numarası)* | ✅ | **kesin/yaklaşık/aralık/bilinmeyen tarih sıralaması, gün uydurmadan**: ay/yıl kesinliğinde gün **saklanmaz ve gösterilmez**, aralık iki uçlu tek değer (`başlangıç/bitiş`, başlangıçla sıralanır), ham tarih metni düzenlemede **korunur**, CSV kesinliğe uyar; `E_EVENT_DATE`; 11/11 mutasyon (2026-11-10) |
+| F08-T04e | ✅ | **kanıt ve iddia referansları dosya sınırını aşamaz** (şema **v32**): `claims`, `evidence_links`, `event_sources`, `claim_relations`, `tasks` × BEFORE INSERT/UPDATE = **10 tetikleyici**; ölçülen kusur: B dosyasının belgesi silinince A'nın kanıt bağı `CASCADE` ile **sessizce** yok oluyordu; `scope_violations()` 13 tabloyu sayar; 7/7 mutasyon (2026-11-14) |
 
 ## Doğrulama
 
@@ -730,3 +731,100 @@ gösterilmez, kullanıcı bildirime tıklayınca uygulama içinde ilgili göreve
 (`State<AppState>` altyapısı yok) — kablolama `cargo check` + `clippy`,
 davranış storage düzeyinde **gerçek SQLite**; OS çağrısı derlenir ama
 çalıştırılamaz.
+
+## F08-T04e — kanıt ve iddia referansları dosya sınırını aşamaz (şema v32, 2026-11-14)
+
+**Neden.** F05-T03c kapsam kuralını şemaya taşıdı (v31) ama yalnız **zincir**
+için: belge → sürüm → koşu → segment → çapa. Dürüst sınırı (b) şuydu: bir
+satırın **işaret ettiği** kanıt/iddia hâlâ başka dosyadan olabiliyordu —
+`claims.source_anchor_id`, `evidence_links` (`claim_id` + `source_anchor_id`),
+`event_sources` (satırda `case_id` yok: olayın dosyası ile çapanın dosyası),
+`claim_relations` (iki iddia), `tasks.source_anchor_id`. Çekirdek bu yolların
+hepsini kendi sorgusunda doğruluyordu (`anchor_in_case`, `add_event_source`,
+`link_claim_relation`), yani **bugünkü ürün yollarında canlı sızıntı yoktu**;
+ama doğrudan SQL yazan bir yol (yeni bir komut, bir betik, ileride eklenecek
+toplu içe aktarma) kapıyı atlıyordu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite; geçici sonda, sonra silindi).**
+Beş çapraz satır da **kabul edildi** ve `scope_violations()` **0** dedi
+(tarama kördü). Sonuç zinciri ölçüldü: **B dosyasının belgesi silinince A
+dosyasının kanıt bağı `ON DELETE CASCADE` ile sessizce yok oldu** (1 → 0), olay
+kaynağı da (1 → 0), iddianın çapası `SET NULL` ile düştü — denetime **tek
+satır** yazılmadı. Yani bir dosyanın kanıtı, sahibi olmadığı bir dosyanın
+silinmesiyle kayboluyordu ve hiçbir yerde görünmüyordu. `anchor_locate` gibi
+kimlikle okuyan yollar ise A dosyasında B dosyasının belge adını/sayfasını
+gösterebilir.
+
+**Yazılan (şema v32, `migrations/0032_reference_scope_guards.sql`).** Kural
+şemada: referansın hedefi **kendi dosyasındaki** kayıt olmalı; hedef yoksa satır
+yazılmaz (fail-closed). **5 tablo × BEFORE INSERT/UPDATE = 10 tetikleyici**:
+
+- `claims` → `source_anchor_id` (varsa) aynı dosyada
+- `evidence_links` → `claim_id` **ve** `source_anchor_id` satırın dosyasında
+- `event_sources` → `event.case_id` = `source_anchors.case_id` (satırda `case_id`
+  yok; iki üst kayıt karşılaştırılır)
+- `claim_relations` → `claim_id` **ve** `related_claim_id` satırın dosyasında
+- `tasks` → `source_anchor_id` (varsa) aynı dosyada
+
+Reddetme sabit önekle: `RAISE(ABORT,'DIM_SCOPE:<tablo>')` →
+`StorageError::ScopeViolation` → **`E_DB_SCOPE`** (v31 sözleşmesi; hata işlem
+içinde oluşur, kısmi satır kalmaz). Kapı **yalnız dosya sınırını** denetler:
+çapa durumu (`anchor_status`), `deleted_at`, ilişki türü gibi ürün politikaları
+çekirdek sorgusunda kalır — tetikleyici politika öğrenirse eski veri bir anda
+"yazılamaz" hâle gelirdi.
+
+**Mevcut veri.** `Database::scope_violations()` artık **13 tabloyu** ayrı ayrı
+sayar (8 zincir + 5 referans); kimlik/içerik taşımaz. Güncelleme anında
+(`upgrade_with_backup`) toplam sıfırdan büyükse sayı denetime
+(`vault_upgrade` / `scope_violations`; yeni `claims`, `evidenceLinks`,
+`eventSources`, `claimRelations`, `tasks` alanlarıyla) yazılır.
+
+**Testler.** `scope_guard::tests` **11 → 17** (+6: her tablo için çapraz
+INSERT + UPDATE ile taşıma, meşru yolun **yeşil** kaldığı, eski satırı sayan
+tarama, **şemadan türetilen** "her kapsam tablosunun kapısı var mı") +
+`upgrade_tests::upgrade_reports_cross_case_references_left_by_the_previous_schema`
+(v31 kasa → güncelleme → denetimde beş ayrı sayı; yeni çapraz yazma reddedilir)
+→ `dim-storage --lib` **619 → 626** (yerel 383,03 s, 0 düştü). `cargo fmt`
+temiz; tsc/clippy etkilenmedi (yalnız storage).
+
+**Maliyet (ölçüldü; `crates/storage/tests/scope_guard_cost.rs`, `#[ignore]`,
+debug, bellek içi, 20.000 satır, **tek sıra** `--test-threads=1`, iki koşu).**
+Referans kapıları (iddia → çapa): tetikleyicili **80,8 / 90,6 µs**, tetikleyicisiz
+**70,2 / 71,5 µs** → **+10,6 / +19,1 µs/satır (%15 / %27)**; `scope_violations()`
+40.000 iddiada **24,4 / 24,5 ms** (yalnız güncellemede). Aynı koşularda v31
+segment kontrolü **+4,2 / +5,6 µs** verdi (önceki turla uyumlu). **Dürüst ölçüm
+notu:** bu iki ölçüm testi **paralel** koştuğunda aynı sayılar +51,8 µs ve
++230,6 µs çıktı — çekişme ölçümü kirletiyor; bu yüzden yalnız tek sıra koşular
+kanıt sayıldı (ilk paralel koşu raporlanmadı). İddia/kanıt yazımı kullanıcı
+eylemi başına bir satırdır; toplu içe aktarma yolunda bu bedel ölçülmelidir.
+
+**Kapı kanıtı (gerçek koşular; betik `~/.hermes/cache/scratch/dim-ref-scope-gates.py`,
+her mutasyon tek başına, `try/finally` + `os.utime` + sha256 birebir —
+`0032…sql 069eea3e…`, `scope_guard.rs d68f853c…`):** **7/7 KIRMIZI, taban 2/2
+yeşilken** — M1 claims kapısı düşer · M2 evidence_links · M3 event_sources ·
+M4 claim_relations · M5 tasks · M6 tarama sayımının dosya koşulu bozulur ·
+M7 şemadan türetim kuralı referans sütununu görmez (kapı testi kırmızı).
+Geri yazım sha256 birebir; taban tekrar 17/17.
+
+**CI (ölçüldü, ilk koşu).** Kod `3be75ba` (5 dosya, **+542/−20**) → run
+**`43634459038` 10/10 YEŞİL**: `dim-storage` **626** iki OS'ta birebir
+(`ubuntu-latest` **301,82 s** / `macos-15` **347,64 s**; yedi yeni test logda tek
+tek `ok`), `dim-cli-adapters` **168** iki OS'ta, `arayüz` 66 dosya / **1428**
+test, paket `index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB (arayüz değişmedi),
+`masaüstü kabuk`, `windows güvenli depo`, `belge worker'ı`, `sözleşmeler`,
+`SBOM`, `kaynak arşivi` ve `sürüm paketi manifesti` yeşil.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler **yeni** yazmayı engeller; v32 öncesi
+çapraz referanslar **sayılır, düzeltilmez** — ve o satırlar için sessiz kaybolma
+riski **sürer** (temizlik ayrı veri işi). (b) **JSON dizi** sütunları
+(`notes.source_anchor_ids`, `note_revisions.source_anchor_ids`,
+`review_items.source_anchor_ids`, `note_drafts.source_anchor_ids`) bu kapının
+dışında: çekirdek `validate_note_anchors` doğrular; şema düzeyinde dizi elemanı
+denetlenmez (JSON1 sorgusu gerekir — ayrı iş). (c) `tasks.source_anchor_id`
+bugün **hiç yazılmıyor** (sütun ileriye dönük); tetikleyicisi o yüzden bugünkü
+yollar için ileriye dönük. (d) Kapı yalnız **dosya sınırı**; kanıtın hâlâ
+geçerli bir çapaya işaret ettiği (silinmemiş segment, `anchor_status`) çekirdek
+kapısıdır. (e) SQLite dosyasını doğrudan düzenleyen (anahtarı olan) bir saldırgan
+tetikleyiciyi de düşürebilir; bu kapı uygulama hatasına karşı. (f) Tauri
+komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage düzeyinde
+ölçüldü; arayüz değişmedi.
