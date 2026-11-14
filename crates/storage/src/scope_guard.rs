@@ -1,16 +1,18 @@
-//! Dosya kapsamı **veritabanı düzeyinde** (şema v31 + v32 + v33): tetikleyiciler
+//! Dosya kapsamı **veritabanı düzeyinde** (şema v31 + v32 + v33 + v34): tetikleyiciler
 //! ve mevcut satır taraması.
 //!
 //! Neden: çekirdek yazma yolları (`add_version_with_parent`, `start_parse_run`,
-//! `store_pages`, `create_anchor`, `create_claim`, `link_evidence`, …) kapsamı
-//! kendi sorgularında doğrular, ama **doğrudan SQL** yazan bir yol bu kapıyı
-//! atlar. Kapsam ihlali P0 kabul engelidir: A dosyasının metni B dosyasının
-//! aramasında bulunur. Bu yüzden kural artık şemada da durur
-//! (`migrations/0031_scope_guards.sql` zincir, `migrations/0032_reference_scope_guards.sql`
-//! kanıt/iddia referansları, `migrations/0033_json_reference_scope_guards.sql`
-//! JSON dizi kanıt listeleri).
+//! `store_pages`, `create_anchor`, `create_claim`, `link_evidence`,
+//! `record_context_items`, …) kapsamı kendi sorgularında doğrular, ama **doğrudan
+//! SQL** yazan bir yol bu kapıyı atlar. Kapsam ihlali P0 kabul engelidir: A
+//! dosyasının metni B dosyasının aramasında bulunur. Bu yüzden kural artık şemada
+//! da durur (`migrations/0031_scope_guards.sql` zincir,
+//! `migrations/0032_reference_scope_guards.sql` kanıt/iddia referansları,
+//! `migrations/0033_json_reference_scope_guards.sql` JSON dizi kanıt listeleri,
+//! `migrations/0034_remaining_reference_scope_guards.sql` soy ağacı, maskeleme
+//! çıktısı ve gönderim sicili).
 //!
-//! Üç sınıf kapı vardır:
+//! Dört sınıf kapı vardır:
 //!
 //! * **zincir** (v31) — `case_id` taşıyan satırın üst kaydı aynı dosyada olmalı
 //!   (belge → sürüm → koşu → segment → çapa).
@@ -25,6 +27,12 @@
 //!   `source_anchor_ids`). Her eleman kendi dosyasının çapası olmalı;
 //!   `note_drafts` bilinçli olarak **daha gevşektir** (var olmayan kimlik
 //!   kalabilir — taslak metni kurtarır — ama başka dosyanın çapası giremez).
+//! * **kalan referanslar** (v34) — soy ağacı (`document_versions.parent_version_id`),
+//!   maskeleme çıktısı (`redaction_plans.output_version_id`) ve gönderim sicili
+//!   (`ai_context_items.document_version_id` / `source_anchor_id` / `segment_ids`).
+//!   Sicil, `case_id` taşımadığı için dosyayı **üst kaydından** (`ai_runs`) okur;
+//!   0033'ün taslak kuralıyla aynı gevşeklikte: başka dosyada **var olan** bağ
+//!   reddedilir, var olmayan kimlik denetim izinde kalabilir.
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -32,7 +40,8 @@
 //!   satırların sayısı (tetikleyiciler yalnız yeni yazmayı engeller; eski veri
 //!   kendiliğinden düzelmez). Kimlik/İçerik taşımaz; yalnız sayı.
 //! * Kapı testleri — her kapsam sütunu taşıyan tablonun tetikleyicisi **var mı**
-//!   (şemadan türetilir; yeni tablo sessizce kapısız kalamaz).
+//!   (şemadan türetilir; yeni tablo ya da yeni referans sütunu sessizce
+//!   kapısız kalamaz).
 
 #[cfg(test)]
 use rusqlite::OptionalExtension;
@@ -45,10 +54,13 @@ use crate::{Database, StorageError};
 ///
 /// İlk sekizi **zincir** kapısıdır (v31): satırın `case_id`'si üst kaydının
 /// dosyasıyla aynı olmalı. Sonraki beşi **referans** kapısıdır (v32): satırın
-/// işaret ettiği kanıt/iddia kendi dosyasından olmalı. Son dördü **JSON dizi
-/// referansı** kapısıdır (v33): `source_anchor_ids` dizisinin her elemanı.
+/// işaret ettiği kanıt/iddia kendi dosyasından olmalı. Sonraki dördü **JSON dizi
+/// referansı** kapısıdır (v33): `source_anchor_ids` dizisinin her elemanı. Son
+/// gelen **kalan referans** kapısıdır (v34): soy ağacı, maskeleme çıktısı ve
+/// gönderim sicili (`ai_context_items` — kendi `case_id`'si yoktur, dosyayı
+/// `ai_runs`tan okur).
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 17] = [
+pub(crate) const GUARDED_TABLES: [&str; 19] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -69,6 +81,9 @@ pub(crate) const GUARDED_TABLES: [&str; 17] = [
     "note_revisions",
     "review_items",
     "note_drafts",
+    // kalan referans (v34)
+    "ai_context_items",
+    "transfer_segments",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -93,6 +108,8 @@ pub struct ScopeViolationCounts {
     pub note_revisions: i64,
     pub review_items: i64,
     pub note_drafts: i64,
+    pub ai_context_items: i64,
+    pub transfer_segments: i64,
 }
 
 impl ScopeViolationCounts {
@@ -116,6 +133,8 @@ impl ScopeViolationCounts {
             + self.note_revisions
             + self.review_items
             + self.note_drafts
+            + self.ai_context_items
+            + self.transfer_segments
     }
 }
 
@@ -132,7 +151,10 @@ impl Database {
             document_versions: count(
                 "SELECT count(*) FROM document_versions dv
                   WHERE NOT EXISTS (SELECT 1 FROM documents d
-                                     WHERE d.id = dv.document_id AND d.case_id = dv.case_id)",
+                                     WHERE d.id = dv.document_id AND d.case_id = dv.case_id)
+                     OR (dv.parent_version_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM document_versions p
+                            WHERE p.id = dv.parent_version_id AND p.case_id = dv.case_id))",
             )?,
             parse_runs: count(
                 "SELECT count(*) FROM parse_runs pr
@@ -153,6 +175,9 @@ impl Database {
                                      WHERE dv.id = a.document_version_id AND dv.case_id = a.case_id)
                      OR NOT EXISTS (SELECT 1 FROM parse_runs pr
                                      WHERE pr.id = a.parse_run_id AND pr.case_id = a.case_id)
+                     OR (a.page_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM pages p
+                            WHERE p.id = a.page_id AND p.parse_run_id = a.parse_run_id))
                      OR NOT EXISTS (SELECT 1 FROM text_segments s
                                      WHERE s.id = a.segment_id
                                        AND s.parse_run_id = a.parse_run_id
@@ -165,6 +190,10 @@ impl Database {
                      OR (m.parse_run_id IS NOT NULL AND NOT EXISTS (
                            SELECT 1 FROM parse_runs pr
                             WHERE pr.id = m.parse_run_id AND pr.case_id = m.case_id))
+                     OR (m.page_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM pages p
+                             JOIN parse_runs pr ON pr.id = p.parse_run_id
+                            WHERE p.id = m.page_id AND pr.case_id = m.case_id))
                      OR (m.anchor_id IS NOT NULL AND NOT EXISTS (
                            SELECT 1 FROM source_anchors a
                             WHERE a.id = m.anchor_id AND a.case_id = m.case_id))",
@@ -175,7 +204,10 @@ impl Database {
                                      WHERE dv.id = rp.document_version_id AND dv.case_id = rp.case_id)
                      OR (rp.parse_run_id IS NOT NULL AND NOT EXISTS (
                            SELECT 1 FROM parse_runs pr
-                            WHERE pr.id = rp.parse_run_id AND pr.case_id = rp.case_id))",
+                            WHERE pr.id = rp.parse_run_id AND pr.case_id = rp.case_id))
+                     OR (rp.output_version_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM document_versions ov
+                            WHERE ov.id = rp.output_version_id AND ov.case_id = rp.case_id))",
             )?,
             document_tags: count(
                 "SELECT count(*) FROM document_tags t
@@ -250,6 +282,9 @@ impl Database {
             review_items: count(
                 "SELECT count(*) FROM review_items i
                   WHERE NOT json_valid(i.source_anchor_ids)
+                     OR (i.ai_run_id IS NOT NULL AND EXISTS (
+                           SELECT 1 FROM ai_runs r
+                            WHERE r.id = i.ai_run_id AND r.case_id <> i.case_id))
                      OR EXISTS (
                           SELECT 1 FROM json_each(
                                  CASE WHEN json_valid(i.source_anchor_ids)
@@ -263,12 +298,42 @@ impl Database {
             note_drafts: count(
                 "SELECT count(*) FROM note_drafts d
                   WHERE NOT json_valid(d.source_anchor_ids)
+                     OR (d.note_id <> '' AND EXISTS (
+                           SELECT 1 FROM notes n
+                            WHERE n.id = d.note_id AND n.case_id <> d.case_id))
                      OR EXISTS (
                           SELECT 1 FROM json_each(
                                  CASE WHEN json_valid(d.source_anchor_ids)
                                       THEN d.source_anchor_ids ELSE '[]' END) j
                             JOIN source_anchors a ON a.id = j.value
                            WHERE a.case_id <> d.case_id)",
+            )?,
+            // v34 — gönderim sicili. Dosya, üst kaydın (`ai_runs`) dosyasıdır.
+            // Tarama yalnız **dosya sınırını** sayar (sürüm/çapa başka dosyada
+            // *var*): var olmayan kimlik bu tabloda meşru bir denetim izidir
+            // (belge gönderimden sonra silinmiş olabilir). Segment listesinin
+            // sürüme aidiyeti çekirdek + tetikleyici kapısındadır.
+            ai_context_items: count(
+                "SELECT count(*) FROM ai_context_items c
+                  WHERE EXISTS (
+                          SELECT 1 FROM document_versions dv
+                           WHERE dv.id = c.document_version_id
+                             AND dv.case_id <> (SELECT r.case_id FROM ai_runs r
+                                                 WHERE r.id = c.ai_run_id))
+                     OR (c.source_anchor_id IS NOT NULL AND EXISTS (
+                           SELECT 1 FROM source_anchors a
+                            WHERE a.id = c.source_anchor_id
+                              AND a.case_id <> (SELECT r.case_id FROM ai_runs r
+                                                 WHERE r.id = c.ai_run_id)))",
+            )?,
+            // v34 — giden segment sicili (maskelenmiş metnin kendisi bu tabloda).
+            transfer_segments: count(
+                "SELECT count(*) FROM transfer_segments t
+                  WHERE t.document_version_id IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM document_versions dv
+                           WHERE dv.id = t.document_version_id
+                             AND dv.case_id <> (SELECT r.case_id FROM ai_runs r
+                                                 WHERE r.id = t.ai_run_id))",
             )?,
         })
     }
@@ -481,6 +546,18 @@ mod tests {
             [],
         );
         scope_error(cross_run, "source_anchors");
+        // Sayfa başka koşunun (p2, r2), çapa r1 diyor: çapa yanlış belgenin
+        // geometrisini gösterir (0031 `text_segments.page_id` kuralının ikizi).
+        let foreign_page = db.conn().execute(
+            "INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                exact_quote,quote_hash,created_at,updated_at)
+             VALUES ('az','c1','v1','r1','p2','s1',0,6,'itiraz',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [],
+        );
+        scope_error(foreign_page, "source_anchors");
     }
 
     #[test]
@@ -882,6 +959,225 @@ mod tests {
             [],
         );
         scope_error(moved, "note_drafts");
+
+        // v34: taslağın bağlandığı **not** da kendi dosyasından olmalı.
+        db.conn()
+            .execute_batch(
+                "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+                 VALUES ('n1','c1','Not','{}','user','case_private','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('n9','c2','Diger not','{}','user','case_private','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+            )
+            .expect("notlar");
+        let draft_of = |note_id: &str| {
+            db.conn().execute(
+                "INSERT INTO note_drafts (case_id,note_id,title,body,source_anchor_ids,updated_at)
+                 VALUES ('c1',?1,'Taslak','yaziyor','[]','2026-01-01T00:00:00Z')",
+                [note_id],
+            )
+        };
+        draft_of("n1").expect("kendi dosyasının notu meşru");
+        draft_of("henuz-yok").expect("var olmayan not taslakta meşru");
+        scope_error(draft_of("n9"), "note_drafts");
+    }
+
+    /// v34: maskeleme planının **çıktı sürümü** kendi dosyasından olmalı.
+    ///
+    /// Ölçülen kusur (düzeltme öncesi): doğrudan SQL ile A dosyasının planına B
+    /// dosyasının sürümü çıktı olarak yazılabiliyordu; `list_redaction_plans`
+    /// A dosyasının sicilinde **B'nin belge adını** gösteriyordu.
+    #[test]
+    fn a_redaction_plan_output_cannot_be_another_cases_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        // Aynı dosyada, kaynağın alt sürümü (meşru maskeleme çıktısı).
+        db.conn()
+            .execute_batch(
+                "INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,parent_version_id)
+                 VALUES ('vc','d2','c1',1,'b1','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',10,
+                         'application/pdf','2026-01-01T00:00:00Z','v1');",
+            )
+            .expect("meşru çıktı sürümü");
+        let plan = |id: &str, output: &str| {
+            db.conn().execute(
+                "INSERT INTO redaction_plans
+                   (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,
+                    output_profile,created_at,updated_at,output_version_id)
+                 VALUES (?1,'c1','v1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         'pdf_page_points',1,'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?2)",
+                rusqlite::params![id, output],
+            )
+        };
+        plan("p1", "vc").expect("aynı dosyanın çıktısı meşru");
+        scope_error(plan("px", "v9"), "redaction_plans");
+        // UPDATE ile taşıma da kapıda durur (INSERT kapısı tek başına yetmez).
+        let moved = db.conn().execute(
+            "UPDATE redaction_plans SET output_version_id='v9' WHERE id='p1'",
+            [],
+        );
+        scope_error(moved, "redaction_plans");
+        let kept: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT output_version_id FROM redaction_plans WHERE id='p1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("plan");
+        assert_eq!(kept.as_deref(), Some("vc"), "reddedilen yazma planı bozmaz");
+        assert_eq!(
+            count(&db, "redaction_plans"),
+            1,
+            "reddedilen plan iz bırakmaz"
+        );
+    }
+
+    /// v34: sürüm **soy ağacı** dosya sınırını aşmaz (maskeleme izi).
+    #[test]
+    fn a_version_parent_cannot_be_another_cases_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let version = |id: &str, doc: &str, parent: &str| {
+            db.conn().execute(
+                "INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,
+                    imported_at,parent_version_id)
+                 VALUES (?1,?2,'c1',2,'b1','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                         10,'application/pdf','2026-01-01T00:00:00Z',?3)",
+                rusqlite::params![id, doc, parent],
+            )
+        };
+        scope_error(version("vp-x", "d1", "v9"), "document_versions");
+        // Aynı dosyada **başka belgenin** sürümü ebeveyn olabilir (maskeli kopya yolu).
+        version("vp", "d2", "v1").expect("aynı dosyada türev meşru");
+        // UPDATE ile taşıma da reddedilir.
+        let moved = db.conn().execute(
+            "UPDATE document_versions SET parent_version_id='v9' WHERE id='vp'",
+            [],
+        );
+        scope_error(moved, "document_versions");
+        // Ebeveynsiz sürüm (NULL) kapıya takılmaz.
+        db.conn()
+            .execute(
+                "INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+                 VALUES ('vn','d1','c1',3,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,
+                         'application/pdf','2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("ebeveynsiz sürüm");
+    }
+
+    /// v34: adayın **kökeni** (`review_items.ai_run_id`) kendi dosyasından.
+    ///
+    /// Var olmayan çalıştırma kimliği eski satırlarda kalabilir (kapı yalnız
+    /// başka dosyada **var olan** kimliği reddeder).
+    #[test]
+    fn a_review_item_cannot_cite_another_cases_ai_run() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z'),
+                        ('run9','c2','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("çalıştırmalar");
+        let item = |id: &str, run: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO review_items (id,case_id,item_kind,payload,source_anchor_ids,ai_run_id,created_at,updated_at)
+                 VALUES (?1,'c1','claim_candidate','{}','[]',?2,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, run],
+            )
+        };
+        item("i1", Some("run1")).expect("aynı dosyanın çalıştırması meşru");
+        item("i-kaynak-yok", Some("olmayan-run")).expect("var olmayan köken meşru");
+        item("i-run-yok", None).expect("köken yok meşru");
+        scope_error(item("i9", Some("run9")), "review_items");
+        assert_eq!(count(&db, "review_items"), 3, "yalnız meşru satırlar");
+    }
+
+    /// v34: **gönderim sicili** kendi dosyasının sürümünü/çapasını gösterir.
+    ///
+    /// Ölçülen kusur (düzeltme öncesi): `record_context_items` çekirdek kapısı
+    /// yoktu — A dosyasının çalıştırmasına B dosyasının sürümü + çapası yazıldı
+    /// ve `list_context_items` A dosyasının ekranında **B'nin belge adını**
+    /// gösterdi. Var olmayan kimlik ise meşru denetim izidir (belge gönderimden
+    /// sonra silinebilir) — kapı onu reddetmez.
+    #[test]
+    fn an_ai_context_item_cannot_link_another_cases_version_or_anchor() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("çalıştırma");
+        let item = |id: &str, version: &str, anchor: Option<&str>, segments: &str| {
+            db.conn().execute(
+                "INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
+                 VALUES (?1,'run1',?2,?3,?4,'onaylanan belge',7)",
+                rusqlite::params![id, version, anchor, segments],
+            )
+        };
+        item("ci-ok", "v1", Some("a1"), "[\"s1\"]").expect("aynı dosyanın bağı meşru");
+        item("ci-gone", "silinmis-surum", None, "[]")
+            .expect("var olmayan kimlik denetim izinde kalır");
+        scope_error(item("ci-x", "v9", None, "[]"), "ai_context_items");
+        scope_error(item("ci-y", "v1", Some("a9"), "[]"), "ai_context_items");
+        // Segment listesi satırın **kendi** sürümünün segmentleri olmalı.
+        scope_error(item("ci-z", "v1", None, "[\"s9\"]"), "ai_context_items");
+        scope_error(item("ci-w", "v1", None, "bozuk-json"), "ai_context_items");
+        assert_eq!(
+            count(&db, "ai_context_items"),
+            2,
+            "yalnız iki meşru satır yazıldı"
+        );
+        // UPDATE ile taşıma da kapıda durur.
+        let moved = db.conn().execute(
+            "UPDATE ai_context_items SET document_version_id='v9' WHERE id='ci-ok'",
+            [],
+        );
+        scope_error(moved, "ai_context_items");
+    }
+
+    /// v34: **giden segment sicili** kendi dosyasının sürümünü gösterir.
+    ///
+    /// Tablo maskelenmiş metnin kendisini taşır; sürüm başka dosyadan ise A
+    /// dosyasının gönderim sicili B dosyasının metnini gösterir. `document_version_id`
+    /// NULL olabilir (0026 öncesi satır) — NULL kapıya takılmaz.
+    #[test]
+    fn a_transfer_segment_cannot_record_another_cases_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("çalıştırma");
+        let segment = |id: &str, version: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES (?1,'run1',?1,?2,'itiraz','hash')",
+                rusqlite::params![id, version],
+            )
+        };
+        segment("t1", Some("v1")).expect("aynı dosyanın sürümü meşru");
+        segment("t-null", None).expect("eski satır (sürüm yok) meşru");
+        scope_error(segment("t-x", Some("v9")), "transfer_segments");
+        let moved = db.conn().execute(
+            "UPDATE transfer_segments SET document_version_id='v9' WHERE id='t1'",
+            [],
+        );
+        scope_error(moved, "transfer_segments");
+        assert_eq!(count(&db, "transfer_segments"), 2, "yalnız meşru satırlar");
     }
 
     /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri
@@ -971,6 +1267,63 @@ mod tests {
         assert_eq!(counts.source_anchors, 0);
     }
 
+    /// v34 taraması: bu şema sürümünden önce yazılmış soy ağacı, maskeleme
+    /// çıktısı ve gönderim sicili bağları **sayılır** (silinmez). Tarama yalnız
+    /// dosya sınırını sayar: gönderim sicilindeki var olmayan kimlik meşru bir
+    /// denetim izidir.
+    #[test]
+    fn the_scan_counts_remaining_reference_links_written_before_the_guards_existed() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("çalıştırma");
+        assert_eq!(db.scope_violations().expect("tarama").total(), 0);
+        // v34 öncesi kasa: üç sınıfın tetikleyicileri yokken yazılmış çapraz bağlar.
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_document_versions_parent_bi;
+                 DROP TRIGGER scope_guard_redaction_plans_output_bi;
+                 DROP TRIGGER scope_guard_ai_context_items_bi;
+                 DROP TRIGGER scope_guard_transfer_segments_bi;
+                 DROP TRIGGER scope_guard_source_marks_page_bi;
+                 INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,parent_version_id)
+                 VALUES ('old-vp','d1','c1',5,'b1','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',10,
+                         'application/pdf','2026-01-01T00:00:00Z','v9');
+                 INSERT INTO redaction_plans
+                   (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id,output_version_ref)
+                 VALUES ('old-p','c1','v1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pdf_page_points',1,
+                         'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','v9','v9');
+                 INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
+                 VALUES ('old-c','run1','v9','a9','[]','onaylanan belge',7),
+                        ('old-gone','run1','silinmis-surum',NULL,'[]','onaylanan belge',7);
+                 INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES ('old-t','run1','s9','v9','gizli','hash');
+                 INSERT INTO source_marks
+                   (id,case_id,document_version_id,parse_run_id,anchor_id,page_id,mark_kind,start_offset,end_offset,
+                    quoted_text,rects_json,label,created_at)
+                 VALUES ('old-m','c1','v1','r1','a1','p9','text',0,6,'itiraz','[]','','2026-01-01T00:00:00Z');",
+            )
+            .expect("eski çapraz bağlar");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.document_versions, 1, "soy ağacı sayılır");
+        assert_eq!(counts.redaction_plans, 1, "maskeleme çıktısı sayılır");
+        assert_eq!(counts.ai_context_items, 1, "gönderim sicili sayılır");
+        assert_eq!(counts.transfer_segments, 1, "giden segment sicili sayılır");
+        assert_eq!(counts.source_marks, 1, "işaretin sayfası sayılır");
+        assert_eq!(counts.total(), 5, "var olmayan denetim izi aykırı değil");
+        // Diğer sınıflar temiz: tarama sınıfları ayırır.
+        assert_eq!(counts.claims, 0);
+        assert_eq!(counts.notes, 0);
+        // Satırlar silinmez, yalnız sayılır.
+        assert_eq!(count(&db, "ai_context_items"), 2);
+    }
+
     /// Maskeli kopya meşru: **aynı dosyada başka belge** ebeveyn olabilir.
     #[test]
     fn a_derivative_version_in_the_same_case_still_writes() {
@@ -1048,6 +1401,28 @@ mod tests {
             "anchor_id",
             "claim_id",
             "related_claim_id",
+            // kalan referans (v34)
+            "parent_version_id",
+            "output_version_id",
+        ];
+        // Referans sütunlarının **tam** listesi: bir kapsamlı tabloda bu
+        // sütunlardan biri varsa, o tablonun tetikleyicilerinden biri sütunu
+        // adıyla anmalı (kapı sessizce yeni bir sütunu atlayamaz).
+        let reference_columns = [
+            "document_id",
+            "document_version_id",
+            "parent_version_id",
+            "output_version_id",
+            "parse_run_id",
+            "segment_id",
+            "page_id",
+            "source_anchor_id",
+            "anchor_id",
+            "claim_id",
+            "related_claim_id",
+            "event_id",
+            "ai_run_id",
+            "note_id",
         ];
         // JSON dizi referansı taşıyan tablolar: kapı `json_each` ile dizinin
         // **her** elemanını denetlemeli.
@@ -1081,6 +1456,9 @@ mod tests {
             let has = |wanted: &str| columns.iter().any(|c| c == wanted);
             if (has("case_id") && scope_columns.iter().any(|c| has(c)))
                 || (has("event_id") && has("source_anchor_id"))
+                // `case_id`'si olmayan, kapsamı üst kaydından miras alan ama
+                // **kanıt referansı** taşıyan tablo (gönderim sicili).
+                || (has("ai_run_id") && has("document_version_id"))
                 || columns.iter().any(|c| c.ends_with("_anchor_ids"))
             {
                 derived.push(table);
@@ -1096,6 +1474,13 @@ mod tests {
 
         for table in GUARDED_TABLES {
             let names = db.scope_trigger_names(table).expect("tetikleyiciler");
+            let mut all_sql = String::new();
+            for name in &names {
+                if let Some(sql) = db.trigger_sql(name).expect("gövde") {
+                    all_sql.push_str(&sql);
+                    all_sql.push('\n');
+                }
+            }
             for suffix in ["_bi", "_bu"] {
                 let expected = format!("scope_guard_{table}{suffix}");
                 assert!(
@@ -1113,6 +1498,32 @@ mod tests {
                         "{expected} dizinin elemanlarını denetlemiyor"
                     );
                 }
+            }
+            // Sütun kapsamı: tablodaki her referans sütunu bir tetikleyicide
+            // **adıyla** anılmalı. Yeni bir referans sütunu eklendiğinde bu test
+            // kapıyı olmadan geçmez.
+            let mut info = db
+                .conn()
+                .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                .expect("sütunlar");
+            let columns: Vec<String> = info
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("sütunlar")
+                .collect::<Result<_, _>>()
+                .expect("sütunlar");
+            for column in reference_columns {
+                if columns.iter().any(|c| c == column) {
+                    assert!(
+                        all_sql.contains(column),
+                        "{table}.{column} hiçbir kapsam tetikleyicisinde anılmıyor"
+                    );
+                }
+            }
+            if table == "ai_context_items" {
+                assert!(
+                    all_sql.contains("json_each("),
+                    "ai_context_items segment listesini denetlemiyor"
+                );
             }
         }
     }

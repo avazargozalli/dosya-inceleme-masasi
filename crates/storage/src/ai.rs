@@ -790,13 +790,35 @@ impl Database {
         run_id: &str,
         items: &[NewAiContextItem],
     ) -> Result<usize, StorageError> {
-        if self.get_ai_run(run_id)?.is_none() {
-            return Err(StorageError::NotFound);
-        }
+        let run = self.get_ai_run(run_id)?.ok_or(StorageError::NotFound)?;
         let tx = self.conn().unchecked_transaction()?;
         for item in items {
             if item.bytes_sent < 0 {
                 return Err(StorageError::InvalidSetting);
+            }
+            // **Dosya sınırı** (INV-05): gönderim sicili başka dosyanın sürümünü
+            // ya da çapasını gösteremez. Gönderimden sonra silinmiş bir belge
+            // meşrudur (denetim satırı yaşamalıdır) — bu yüzden yalnız **başka
+            // dosyada var olan** kimlik reddedilir, var olmayan kimlik kalır.
+            // Aynı kural şemada da durur (`0034_remaining_reference_scope_guards.sql`).
+            let foreign_version: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM document_versions dv
+                  WHERE dv.id=?1 AND dv.case_id<>?2",
+                rusqlite::params![item.document_version_id, run.case_id],
+                |row| row.get(0),
+            )?;
+            if foreign_version > 0 {
+                return Err(StorageError::NotFound);
+            }
+            if let Some(anchor_id) = item.source_anchor_id.as_deref() {
+                let foreign_anchor: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM source_anchors a WHERE a.id=?1 AND a.case_id<>?2",
+                    rusqlite::params![anchor_id, run.case_id],
+                    |row| row.get(0),
+                )?;
+                if foreign_anchor > 0 {
+                    return Err(StorageError::NotFound);
+                }
             }
             // Segment kimlikleri **kasadan** doğrulanır: var olmayan ya da
             // başka sürüme ait bir kimlik yazılamaz. Boş liste «bilinmiyor»
@@ -955,6 +977,13 @@ impl Database {
         if self.get_ai_run(run_id)?.is_none() {
             return Err(StorageError::NotFound);
         }
+        // Koşunun dosyası: giden segment satırı yalnız bu dosyanın sürümünü
+        // gösterebilir (aşağıdaki aramada `dv.case_id=?3`).
+        let run_case: String =
+            self.conn()
+                .query_row("SELECT case_id FROM ai_runs WHERE id=?1", [run_id], |row| {
+                    row.get(0)
+                })?;
         let terms = match mask {
             Some(mask) => validate_terms(&mask.terms).map_err(mask_storage_error)?,
             None => Vec::new(),
@@ -996,10 +1025,15 @@ impl Database {
             }
             let stored: Option<String> = tx
                 .query_row(
+                    // **Dosya sınırı** (INV-05): sürüm, çalıştırmanın dosyasında
+                    // olmalı. Aksi hâlde A dosyasının giden segment sicili B
+                    // dosyasının metnini taşır. Aynı kural şemada da durur
+                    // (`0034_remaining_reference_scope_guards.sql`).
                     "SELECT s.raw_text FROM text_segments s
                      JOIN parse_runs pr ON pr.id = s.parse_run_id
-                     WHERE s.id=?1 AND pr.document_version_id=?2",
-                    rusqlite::params![segment.segment_id, segment.document_version_id],
+                     JOIN document_versions dv ON dv.id = pr.document_version_id
+                     WHERE s.id=?1 AND pr.document_version_id=?2 AND dv.case_id=?3",
+                    rusqlite::params![segment.segment_id, segment.document_version_id, run_case],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -4515,6 +4549,75 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), "E_DB_SETTING", "mükerrer satır reddedilir");
         assert_eq!(db.list_transfer_segments(&r.id).expect("liste").len(), 1);
+    }
+
+    /// **v34 (düzeltme öncesi ölçülen kusur):** gönderim sicili başka dosyanın
+    /// sürümünü/çapasını gösteremez. Ölçüm: v33'te `record_context_items` yabancı
+    /// sürüm + çapayı **kabul ediyordu** (`Ok(1)`) ve `list_context_items` A
+    /// dosyasının ekranında **B'nin belge adını** yazıyordu ("GIZLI diger dosya
+    /// belgesi"). Var olmayan kimlik ise meşru denetim izidir: belge gönderimden
+    /// sonra silinmiş olabilir — satır yaşamalıdır.
+    #[test]
+    fn context_items_cannot_point_at_another_cases_version_or_anchor() {
+        let (db, case_id, _) = setup();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+                 VALUES ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+                 VALUES ('b9','bb22',1,10,'ref','2026-01-01T00:00:00Z');
+                 INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+                 VALUES ('d9','c2','GIZLI diger dosya belgesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+                 VALUES ('v9','d9','c2',1,'b9','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,
+                         'application/pdf','2026-01-01T00:00:00Z');
+                 INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+                 VALUES ('r9','v9','c2','pymupdf','1.24','h9','succeeded','2026-01-01T00:00:00Z');
+                 INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+                 VALUES ('p9','r9',0,'native');
+                 INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+                 VALUES ('s9','r9','p9','c2','gizli','gizli','2026-01-01T00:00:00Z');
+                 INSERT INTO source_anchors
+                   (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                    exact_quote,quote_hash,created_at,updated_at)
+                 VALUES ('a9','c2','v9','r9','p9','s9',0,5,'gizli',
+                         'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+            )
+            .expect("yabancı zincir");
+        let c = consent(&db, &case_id);
+        let r = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        let item = |version: &str, anchor: Option<&str>| NewAiContextItem {
+            document_version_id: version.into(),
+            source_anchor_id: anchor.map(str::to_string),
+            inclusion_reason: "onaylanan belge".into(),
+            bytes_sent: 11,
+            segment_ids: Vec::new(),
+        };
+
+        let err = db
+            .record_context_items(&r.id, &[item("v9", None)])
+            .expect_err("yabancı sürüm reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        let err = db
+            .record_context_items(&r.id, &[item("v9", Some("a9"))])
+            .expect_err("yabancı çapa reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        assert_eq!(
+            db.list_context_items(&r.id).expect("liste").len(),
+            0,
+            "reddedilen gönderim sicile satır bırakmaz"
+        );
+
+        // Var olmayan kimlik meşru: denetim satırı yaşar, ad uydurulmaz.
+        db.record_context_items(&r.id, &[item("gonderimden-sonra-silindi", None)])
+            .expect("denetim izi");
+        let listed = db.list_context_items(&r.id).expect("liste");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].document_title, None);
     }
 
     /// `ai_context_items.segment_ids` artık gerçek kimlikleri taşır; uydurma

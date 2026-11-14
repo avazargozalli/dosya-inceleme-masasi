@@ -347,6 +347,139 @@ fn upgrade_reports_cross_case_json_anchor_lists_left_by_the_previous_schema() {
 }
 
 #[test]
+fn upgrade_reports_cross_case_output_and_context_links_left_by_the_previous_schema() {
+    // Şema v33'te zincir, kanıt referansları ve JSON dizi listeleri kapılıydı
+    // ama **soy ağacı** (`document_versions.parent_version_id`), **maskeleme
+    // çıktısı** (`redaction_plans.output_version_id`) ve **gönderim sicili**
+    // (`ai_context_items`) kapı dışındaydı: A dosyasının planı/çalıştırması B
+    // dosyasının sürümünü/çapasını gösterebiliyordu. v34 tetikleyicileri yalnız
+    // **yeni** yazmayı engeller; eski satırlar güncelleme anında sayı olarak
+    // denetime düşer (kimlik/içerik yok).
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 33);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d2','c2','Diger belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v2','d2','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z'),
+                    ('r2','v2','c2','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z');
+             INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+             VALUES ('p1','r1',0,'native'),('p2','r2',0,'native');
+             INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s1','r1','p1','c1','itiraz','itiraz','2026-01-01T00:00:00Z'),
+                    ('s2','r2','p2','c2','gizli','gizli','2026-01-01T00:00:00Z');
+             INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                exact_quote,quote_hash,created_at,updated_at)
+             VALUES ('a1','c1','v1','r1','p1','s1',0,6,'itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('a2','c2','v2','r2','p2','s2',0,5,'gizli','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+             VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');
+             -- v33'te kabul edilen çapraz bağlar.
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,parent_version_id)
+             VALUES ('v-old','d1','c1',2,'b1','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',10,
+                     'application/pdf','2026-01-01T00:00:00Z','v2');
+             INSERT INTO redaction_plans
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id,output_version_ref)
+             VALUES ('p-old','c1','v1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pdf_page_points',1,
+                     'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','v2','v2');
+             INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
+             VALUES ('ctx-old','run1','v2','a2','[]','onaylanan belge',7);
+             INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('t-old','run1','s2','v2','gizli','hash');",
+        )
+        .expect("v33 çapraz bağlar");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["documentVersions"], 1, "soy ağacı sayılır");
+    assert_eq!(parsed["redactionPlans"], 1, "maskeleme çıktısı sayılır");
+    assert_eq!(parsed["aiContextItems"], 1, "gönderim sicili sayılır");
+    assert_eq!(
+        parsed["transferSegments"], 1,
+        "giden segment sicili sayılır"
+    );
+    assert_eq!(parsed["notes"], 0, "v33 sınıfı temiz");
+    // Satırlar **silinmez**: tarama yalnız sayar.
+    let contexts: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM ai_context_items", [], |r| r.get(0))
+        .expect("sayım");
+    assert_eq!(contexts, 1);
+
+    // Yeni çapraz bağlar artık kapıda durur (E_DB_SCOPE) — her sınıf ayrı.
+    for (sql, table) in [
+        (
+            "UPDATE ai_context_items SET source_anchor_id='a1' WHERE id='ctx-old'",
+            "ai_context_items",
+        ),
+        (
+            "INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
+             VALUES ('ctx-new','run1','v2',NULL,'[]','onaylanan belge',7)",
+            "ai_context_items",
+        ),
+        (
+            "INSERT INTO redaction_plans
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id)
+             VALUES ('p-new','c1','v1','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','pdf_page_points',1,
+                     'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','v2')",
+            "redaction_plans",
+        ),
+        (
+            "INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at,parent_version_id)
+             VALUES ('v-new','d1','c1',3,'b1','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',10,
+                     'application/pdf','2026-01-01T00:00:00Z','v2')",
+            "document_versions",
+        ),
+        (
+            "INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('t-new','run1','s2','v2','gizli','hash')",
+            "transfer_segments",
+        ),
+    ] {
+        let rejected = db.conn().execute(sql, []);
+        match rejected.map_err(StorageError::from) {
+            Err(StorageError::ScopeViolation { table: found }) => assert_eq!(found, table),
+            other => panic!("v34 kapısı yeni çapraz bağı reddetmeli ({table}): {other:?}"),
+        }
+    }
+    // Aynı dosyadaki meşru yollar açık kalır.
+    db.conn()
+        .execute(
+            "INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
+             VALUES ('ctx-ok','run1','v1','a1','[\"s1\"]','onaylanan belge',7)",
+            [],
+        )
+        .expect("aynı dosyanın bağı meşru");
+}
+
+#[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("vault.db");

@@ -257,3 +257,101 @@ fn json_scope_triggers_add_a_predictable_cost_per_note() {
         NOTE_ROWS * 2
     );
 }
+
+const REMAIN_ROWS: i64 = 20_000;
+
+/// `from..from+REMAIN_ROWS` aralığında **meşru** gönderim sicili satırı yazar
+/// (çalıştırma `run1` dosya `c1`, sürüm `v1`); satır başına mikrosaniye döner.
+fn insert_context_items(db: &Database, from: i64) -> f64 {
+    let started = Instant::now();
+    let tx = db.conn().unchecked_transaction().expect("işlem");
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO ai_context_items (id,ai_run_id,document_version_id,source_anchor_id,segment_ids,inclusion_reason,bytes_sent)
+                 VALUES (?1,'run1','v1',NULL,'[]','onaylanan belge',7)",
+            )
+            .expect("hazırlık");
+        for index in from..from + REMAIN_ROWS {
+            stmt.execute(rusqlite::params![format!("ctx{index}")])
+                .expect("bağlam");
+        }
+    }
+    tx.commit().expect("commit");
+    started.elapsed().as_secs_f64() * 1_000_000.0 / REMAIN_ROWS as f64
+}
+
+/// `from..from+REMAIN_ROWS` aralığında **meşru** giden segment satırı yazar.
+fn insert_transfer_segments(db: &Database, from: i64) -> f64 {
+    let started = Instant::now();
+    let tx = db.conn().unchecked_transaction().expect("işlem");
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES (?1,'run1',?1,'v1','itiraz','hash')",
+            )
+            .expect("hazırlık");
+        for index in from..from + REMAIN_ROWS {
+            stmt.execute(rusqlite::params![format!("ts{index}")])
+                .expect("giden segment");
+        }
+    }
+    tx.commit().expect("commit");
+    started.elapsed().as_secs_f64() * 1_000_000.0 / REMAIN_ROWS as f64
+}
+
+/// Şema v34 kapıları: gönderim sicili (`ai_context_items`) ve giden segment
+/// sicili (`transfer_segments`) satır başına ne kadar maliyetli? İkisi de
+/// kullanıcı eylemi başına **az** satır yazar (çalıştırma başına belge/segment
+/// sayısı kadar); ölçüm oranı görünür kılmak için.
+#[test]
+#[ignore = "ölçüm testi: v34 kalan referans kapılarının maliyeti"]
+fn remaining_reference_triggers_add_a_predictable_cost_per_row() {
+    let db = Database::open_in_memory(&DatabaseKey::new([83u8; 32])).expect("db");
+    chain(&db);
+    db.conn()
+        .execute_batch(
+            "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+             VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+        )
+        .expect("çalıştırma");
+
+    let context_with = insert_context_items(&db, 0);
+    let transfer_with = insert_transfer_segments(&db, 0);
+    for trigger in [
+        "scope_guard_ai_context_items_bi",
+        "scope_guard_ai_context_items_bu",
+        "scope_guard_transfer_segments_bi",
+        "scope_guard_transfer_segments_bu",
+    ] {
+        db.conn()
+            .execute(&format!("DROP TRIGGER {trigger}"), [])
+            .expect("tetikleyici düşür");
+    }
+    let context_without = insert_context_items(&db, REMAIN_ROWS);
+    let transfer_without = insert_transfer_segments(&db, REMAIN_ROWS);
+
+    let scan_started = Instant::now();
+    let counts = db.scope_violations().expect("tarama");
+    let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(counts.total(), 0, "yazılan satırlar tutarlı");
+
+    println!(
+        "gönderim sicili (ai_context_items): {REMAIN_ROWS} satır tetikleyicili {context_with:.2} µs/satır, \
+         tetikleyicisiz {context_without:.2} µs/satır, fark {:.2} µs ({:.0}%)",
+        context_with - context_without,
+        (context_with / context_without - 1.0) * 100.0
+    );
+    println!(
+        "giden segment (transfer_segments): {REMAIN_ROWS} satır tetikleyicili {transfer_with:.2} µs/satır, \
+         tetikleyicisiz {transfer_without:.2} µs/satır, fark {:.2} µs ({:.0}%)",
+        transfer_with - transfer_without,
+        (transfer_with / transfer_without - 1.0) * 100.0
+    );
+    println!(
+        "scope_violations() taraması: {} bağlam + {} giden segment satırında {scan_ms:.1} ms",
+        REMAIN_ROWS * 2,
+        REMAIN_ROWS * 2
+    );
+}
