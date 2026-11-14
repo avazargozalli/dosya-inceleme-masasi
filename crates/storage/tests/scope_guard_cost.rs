@@ -175,3 +175,85 @@ fn reference_triggers_add_a_predictable_cost_per_row() {
         REF_ROWS * 2
     );
 }
+
+const NOTE_ROWS: i64 = 20_000;
+
+/// `from..from+NOTE_ROWS` aralığında **meşru** not yazar (kaynak: aynı
+/// dosyadaki `a1` ve `a2`); satır başına mikrosaniye döner.
+///
+/// Not yazımı kullanıcı eylemi başına **tek** satırdır; asıl bedel, listenin
+/// her elemanı için yapılan çapa aramasıdır (`json_each` + indeks).
+fn insert_notes(db: &Database, from: i64) -> f64 {
+    let started = Instant::now();
+    let tx = db.conn().unchecked_transaction().expect("işlem");
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+                 VALUES (?1,'c1','Not','{\"v\":1,\"text\":\"metin\"}','user','case_private','[\"a1\",\"a2\"]',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            )
+            .expect("hazırlık");
+        for index in from..from + NOTE_ROWS {
+            stmt.execute(rusqlite::params![format!("n{index}")])
+                .expect("not");
+        }
+    }
+    tx.commit().expect("commit");
+    started.elapsed().as_secs_f64() * 1_000_000.0 / NOTE_ROWS as f64
+}
+
+/// Şema v33 **JSON dizi** kapıları (not → iki çapa) satır başına ne kadar
+/// maliyetli? Kapı, listenin her elemanı için bir indeksli arama yapar.
+#[test]
+#[ignore = "ölçüm testi: JSON dizi kapsam kapılarının maliyeti"]
+fn json_scope_triggers_add_a_predictable_cost_per_note() {
+    let db = Database::open_in_memory(&DatabaseKey::new([79u8; 32])).expect("db");
+    chain(&db);
+    db.conn()
+        .execute_batch(
+            "INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s-base','r1','p1','c1','itiraz','itiraz','2026-01-01T00:00:00Z'),
+                    ('s-iki','r1','p1','c1','odeme','odeme','2026-01-01T00:00:00Z');
+             INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                exact_quote,quote_hash,created_at,updated_at)
+             VALUES ('a1','c1','v1','r1','p1','s-base',0,6,'itiraz',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('a2','c1','v1','r1','p1','s-iki',0,5,'odeme',
+                     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .expect("iki çapa");
+
+    let with_guards = insert_notes(&db, 0);
+    for trigger in ["scope_guard_notes_bi", "scope_guard_notes_bu"] {
+        db.conn()
+            .execute(&format!("DROP TRIGGER {trigger}"), [])
+            .expect("tetikleyici düşür");
+    }
+    let without_guards = insert_notes(&db, NOTE_ROWS);
+
+    let stored: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM notes", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(stored, NOTE_ROWS * 2, "iki koşu da yazılmalı");
+
+    let scan_started = Instant::now();
+    let counts = db.scope_violations().expect("tarama");
+    let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(counts.total(), 0, "yazılan satırlar tutarlı");
+
+    println!(
+        "JSON dizi kapıları (not → 2 çapa): {NOTE_ROWS} satır tetikleyicili {with_guards:.1} µs/satır, \
+         tetikleyicisiz {without_guards:.1} µs/satır, fark {:.1} µs/satır ({:.0}%)",
+        with_guards - without_guards,
+        (with_guards / without_guards - 1.0) * 100.0
+    );
+    println!(
+        "scope_violations() taraması: {} notta {scan_ms:.1} ms",
+        NOTE_ROWS * 2
+    );
+}
