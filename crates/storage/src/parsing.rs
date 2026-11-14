@@ -178,6 +178,20 @@ impl Database {
         engine_version: &str,
         settings: &str,
     ) -> Result<ParseRun, StorageError> {
+        // Kapsam çağıranın sözüne bırakılmaz (INV-05): koşu, ancak sürümün
+        // kendi dosyası adına açılır. Yanlış `case_id` kabul edilirse koşu ve
+        // ondan türeyen segmentler başka dosyanın aramasında görünür.
+        let version_case: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT case_id FROM document_versions WHERE id=?1",
+                [version_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if version_case.as_deref() != Some(case_id) {
+            return Err(StorageError::NotFound);
+        }
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
         self.conn().execute(
@@ -222,6 +236,23 @@ impl Database {
         case_id: &str,
         pages: &[NewPage],
     ) -> Result<usize, StorageError> {
+        // **Kritik kapı (INV-05):** `text_segments.case_id` buradan yazılır ve
+        // arama tam olarak bu sütunla kapsam daraltır (`s.case_id = ?`). Yanlış
+        // `case_id` kabul edilirse bir dosyanın metni **başka dosyanın**
+        // aramasında görünür, kendi dosyasında görünmez. Ölçüldü (2026-11-14):
+        // yanlış dosyayla yazılan sayfa B aramasında 1, A aramasında 0 sonuç
+        // veriyordu.
+        let run_case: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT case_id FROM parse_runs WHERE id=?1",
+                [parse_run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if run_case.as_deref() != Some(case_id) {
+            return Err(StorageError::NotFound);
+        }
         let tx = self.conn().unchecked_transaction()?;
         let now = now_iso();
         let mut stored = 0usize;
@@ -2089,6 +2120,107 @@ mod tests {
             )
             .expect("v");
         (db, case.id, version.id)
+    }
+
+    /// İkinci dosya: kapsam kapıları iki dosya arasında ölçülür.
+    fn second_case(db: &Database) -> String {
+        db.create_case(&NewCase {
+            title: "Diğer dosya".into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: crate::Sensitivity::Normal,
+            default_ai_policy: crate::AiPolicy::Off,
+        })
+        .expect("ikinci dosya")
+        .id
+    }
+
+    /// **F06-T02b (2026-11-14):** ayrıştırma koşulu ancak sürümün kendi dosyası
+    /// adına açılır. Ölçülen kusur: yanlış `case_id` ile koşu açılabiliyor,
+    /// koşu satırı yabancı dosyayı gösteriyordu.
+    #[test]
+    fn parse_run_is_opened_only_for_its_own_case() {
+        let (db, case_id, version_id) = setup();
+        let other = second_case(&db);
+        let err = db
+            .start_parse_run(&version_id, &other, "pymupdf", "1.24", "{}")
+            .expect_err("yanlış dosya reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        let runs: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM parse_runs", [], |r| r.get(0))
+            .expect("sayım");
+        assert_eq!(runs, 0, "reddedilen koşu satır bırakmamalı");
+        let ok = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("kendi dosyası");
+        assert_eq!(ok.case_id, case_id);
+    }
+
+    /// **F06-T02b — ölçülen sızıntı:** `store_pages` `text_segments.case_id`
+    /// sütununu **çağıranın** verdiği dosyayla yazıyordu ve arama tam olarak bu
+    /// sütunla daralıyor. Ölçüm (düzeltme öncesi): yanlış dosyayla yazılan sayfa
+    /// B aramasında **1**, kendi dosyası A'da **0** sonuç veriyordu. Kapı
+    /// reddedince metin hiçbir dosyaya sızmaz; doğru dosyayla yazınca görünür.
+    #[test]
+    fn store_pages_refuses_a_foreign_case_and_leaks_nothing() {
+        let (db, case_id, version_id) = setup();
+        let other = second_case(&db);
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        let pages = [NewPage {
+            index: 0,
+            text: "Gizli kira metni yalnizca A dosyasinda".into(),
+            origin: "native".into(),
+            ..Default::default()
+        }];
+        let err = db
+            .store_pages(&run.id, &other, &pages)
+            .expect_err("yanlış dosya reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        let page_rows: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM pages", [], |r| r.get(0))
+            .expect("sayfa");
+        let segment_rows: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM text_segments", [], |r| r.get(0))
+            .expect("segment");
+        assert_eq!(
+            (page_rows, segment_rows),
+            (0, 0),
+            "reddedilen yazma iz bırakmamalı"
+        );
+        for case in [&case_id, &other] {
+            let page = db
+                .search_segments_page(case, "Gizli", &SearchFilters::default(), 10, None, false)
+                .expect("arama");
+            assert!(page.hits.is_empty(), "metin sızdı: {case}");
+        }
+        // Doğru dosyayla yazmak hâlâ çalışır; metin yalnız kendi dosyasında.
+        assert_eq!(
+            db.store_pages(&run.id, &case_id, &pages)
+                .expect("kendi dosyası"),
+            1
+        );
+        let own = db
+            .search_segments_page(
+                &case_id,
+                "Gizli",
+                &SearchFilters::default(),
+                10,
+                None,
+                false,
+            )
+            .expect("arama");
+        assert_eq!(own.hits.len(), 1);
+        let foreign = db
+            .search_segments_page(&other, "Gizli", &SearchFilters::default(), 10, None, false)
+            .expect("arama");
+        assert!(foreign.hits.is_empty());
     }
 
     /// F15-T05 kusuru: `text_segments.page_id` indekssizken `pages_for_run`

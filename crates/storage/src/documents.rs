@@ -136,6 +136,32 @@ impl Database {
         if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(StorageError::InvalidSetting);
         }
+        // Kapsam **çağıranın sözüne bırakılmaz** (INV-05): sürüm, ancak kendi
+        // belgesinin dosyası adına yazılır. Aksi hâlde `document_versions` bir
+        // dosyanın sürümünü başka dosya altında kaydeder, belgenin
+        // `current_version_id`'si çapraz dosyaya döner ve kapsam raporu boş bir
+        // dosyada sürüm sayar. Ölçüldü (2026-11-14): yanlış `case_id` ile
+        // yazılan sürüm kabul ediliyordu.
+        let owner_case = self.document_case(document_id)?;
+        if owner_case != case_id {
+            return Err(StorageError::NotFound);
+        }
+        // Ebeveyn **aynı dosyada** olmalı. Türev sürümün ebeveyni başka bir
+        // *belgenin* sürümü olabilir (maskeli kopya yeni belge açar), ama asla
+        // başka bir *dosyanın* sürümü olamaz — soy ağacı dosya sınırını aşmaz.
+        if let Some(parent_id) = parent_version_id {
+            let parent_case: Option<String> = self
+                .conn()
+                .query_row(
+                    "SELECT case_id FROM document_versions WHERE id=?1",
+                    [parent_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if parent_case.as_deref() != Some(case_id) {
+                return Err(StorageError::NotFound);
+            }
+        }
         let next: i64 = self.conn().query_row(
             "SELECT COALESCE(MAX(version_no),0)+1 FROM document_versions WHERE document_id=?1",
             [document_id],
@@ -186,6 +212,19 @@ impl Database {
              FROM documents WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_document).optional()?)
+    }
+
+    /// Belgenin **dosyası** (silinmemiş satırdan). Kapsam kapılarının tek
+    /// kaynağı: çağıranın verdiği `case_id` bu değerle karşılaştırılır.
+    pub(crate) fn document_case(&self, document_id: &str) -> Result<String, StorageError> {
+        self.conn()
+            .query_row(
+                "SELECT case_id FROM documents WHERE id=?1 AND deleted_at IS NULL",
+                [document_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or(StorageError::NotFound)
     }
 
     pub fn list_documents(&self, case_id: &str) -> Result<Vec<Document>, StorageError> {
@@ -379,6 +418,198 @@ mod tests {
         assert_eq!(listed[0].id, v2.id);
         assert_eq!(listed[1].id, v.id);
         assert!(db.list_versions("yok").expect("boş").is_empty());
+    }
+
+    /// Yardımcı: ikinci bir dosya. Kapsam kapıları iki dosya arasında ölçülür.
+    fn second_case(db: &Database) -> String {
+        db.create_case(&NewCase {
+            title: "Diğer dosya".into(),
+            case_kind: CaseKind::Review,
+            reference_code: None,
+            jurisdiction_label: None,
+            practice_area: None,
+            sensitivity: crate::Sensitivity::Normal,
+            default_ai_policy: crate::AiPolicy::Off,
+        })
+        .expect("ikinci dosya")
+        .id
+    }
+
+    fn version_count(db: &Database) -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM document_versions", [], |r| r.get(0))
+            .expect("sayım")
+    }
+
+    fn blob_refs(db: &Database, blob_id: &str) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT reference_count FROM blobs WHERE id=?1",
+                [blob_id],
+                |r| r.get(0),
+            )
+            .expect("blob")
+    }
+
+    /// **F05-T03b (2026-11-14):** sürüm, ancak kendi belgesinin dosyası adına
+    /// yazılır. Ölçülen kusur: yanlış `case_id` ile yazılan sürüm kabul
+    /// ediliyor, belgenin `current_version_id`'si o satıra dönüyor ve kapsam
+    /// raporu **boş** bir dosyada sürüm sayıyordu.
+    #[test]
+    fn version_is_written_only_under_its_own_case() {
+        let (db, case_id) = db_with_case();
+        let other = second_case(&db);
+        let doc = db
+            .create_document(&case_id, "Belge", "pdf", None, "unknown")
+            .expect("belge");
+        let b = blob(&db, "s1");
+        let v1 = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b,
+                &"a".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v1");
+        let versions_before = version_count(&db);
+        let refs_before = blob_refs(&db, &b);
+
+        let err = db
+            .add_version(&doc.id, &other, &b, &"b".repeat(64), 10, "application/pdf")
+            .expect_err("yanlış dosya reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        // Reddedilen yazma **hiçbir** iz bırakmaz: satır yok, işaretçi yok,
+        // blob sayacı artmadı, sürüm numarası tüketilmedi.
+        assert_eq!(version_count(&db), versions_before);
+        assert_eq!(blob_refs(&db, &b), refs_before);
+        let doc_after = db.get_document(&doc.id).expect("get").expect("var");
+        assert_eq!(
+            doc_after.current_version_id.as_deref(),
+            Some(v1.id.as_str())
+        );
+
+        // Aynı dosya adına yazmak hâlâ çalışır (kapı yalnız yanlışı keser).
+        let v2 = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b,
+                &"c".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v2");
+        assert_eq!(v2.version_no, 2);
+
+        // Silinmiş belgeye sürüm eklenemez: kapı silme izini de okur.
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at=?1 WHERE id=?2",
+                rusqlite::params![now_iso(), doc.id],
+            )
+            .expect("sil");
+        let err = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b,
+                &"f".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect_err("silinmiş belge reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        assert_eq!(version_count(&db), versions_before + 1);
+    }
+
+    /// **F05-T03b:** türev sürümün ebeveyni aynı **dosyada** olmalı. Maskeli
+    /// kopya yeni bir *belge* açar, yani ebeveyn başka belgenin sürümü
+    /// olabilir; ama başka *dosyanın* sürümü olamaz — soy ağacı dosya sınırını
+    /// aşmaz.
+    #[test]
+    fn derived_version_parent_stays_inside_the_case() {
+        let (db, case_id) = db_with_case();
+        let other = second_case(&db);
+        let sha = "a".repeat(64);
+        let source = db
+            .create_document(&case_id, "Kaynak", "pdf", None, "unknown")
+            .expect("kaynak");
+        let source_version = db
+            .add_version(
+                &source.id,
+                &case_id,
+                &blob(&db, "s1"),
+                &sha,
+                10,
+                "application/pdf",
+            )
+            .expect("kaynak sürüm");
+        let target = db
+            .create_document(&case_id, "Maskeli kopya", "pdf", None, "unknown")
+            .expect("hedef");
+        // 1) Başka dosyanın sürümü ebeveyn olamaz.
+        let foreign = db
+            .create_document(&other, "Yabancı", "pdf", None, "unknown")
+            .expect("yabancı");
+        let foreign_version = db
+            .add_version(
+                &foreign.id,
+                &other,
+                &blob(&db, "s2"),
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("yabancı sürüm");
+        let err = db
+            .add_version_with_parent(
+                &target.id,
+                &case_id,
+                &blob(&db, "s3"),
+                &"c".repeat(64),
+                10,
+                "application/pdf",
+                Some(&foreign_version.id),
+            )
+            .expect_err("çapraz dosya ebeveyn reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        // 2) Var olmayan ebeveyn de reddedilir (uydurma bağ yazılmaz).
+        let err = db
+            .add_version_with_parent(
+                &target.id,
+                &case_id,
+                &blob(&db, "s4"),
+                &"d".repeat(64),
+                10,
+                "application/pdf",
+                Some("olmayan-sürüm"),
+            )
+            .expect_err("olmayan ebeveyn reddedilir");
+        assert_eq!(err.code(), "E_NOT_FOUND");
+        // 3) Aynı dosyadaki başka belgenin sürümü ebeveyn olabilir (maskeli
+        //    kopya yolu budur) ve bağ gerçekten yazılır.
+        let masked = db
+            .add_version_with_parent(
+                &target.id,
+                &case_id,
+                &blob(&db, "s5"),
+                &"e".repeat(64),
+                10,
+                "application/pdf",
+                Some(&source_version.id),
+            )
+            .expect("aynı dosyada türev");
+        let parent: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT parent_version_id FROM document_versions WHERE id=?1",
+                [&masked.id],
+                |r| r.get(0),
+            )
+            .expect("ebeveyn");
+        assert_eq!(parent.as_deref(), Some(source_version.id.as_str()));
     }
 
     #[test]
