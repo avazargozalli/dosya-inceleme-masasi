@@ -920,6 +920,13 @@ mod tests {
             .expect("plan");
         // Sürüm bağı yabancı anahtar değil: satır silinse/taşınsa bile denetim
         // kaydı **düşmez**, ad uydurulmaz (None).
+        //
+        // v31 kapsam kapısı bu durumu **artık üretmez** (plan, var olmayan bir
+        // sürüme bağlanamaz). Test, eski/bozuk bir kasadan gelebilecek satırın
+        // görüntüsünü ölçtüğü için kapı burada bilinçli düşürülür.
+        db.conn()
+            .execute_batch("DROP TRIGGER scope_guard_redaction_plans_bu;")
+            .expect("kapı düşür");
         db.conn()
             .execute(
                 "UPDATE redaction_plans SET document_version_id='yok' WHERE id=?1",
@@ -1367,6 +1374,13 @@ mod tests {
         let plan = plan_with_regions(&db, &case_id, &version_id, &[(0, [5.0, 5.0, 210.0, 35.0])]);
         // Plan satırındaki dosya kapsamı bozulursa **sürüm** bağı hâlâ doğru
         // olsa bile plan yabancı sayılır: satır kendi başına yetki vermez.
+        //
+        // v31 kapsam kapısı bu bozulmayı SQL üzerinden engeller; test, elle
+        // kurcalanmış/eski bir kasadan gelebilecek satırı ölçtüğü için kapı
+        // burada bilinçli düşürülür (okuma yolu hâlâ kendi doğrulamasını yapar).
+        db.conn()
+            .execute_batch("DROP TRIGGER scope_guard_redaction_plans_bu;")
+            .expect("kapı düşür");
         let other = db
             .create_case(&NewCase {
                 title: "Başka".into(),

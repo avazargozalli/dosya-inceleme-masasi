@@ -38,6 +38,7 @@ mod precedents;
 pub mod queue;
 mod redactions;
 mod review_commit;
+mod scope_guard;
 pub mod settings;
 mod tags;
 mod tasks;
@@ -335,9 +336,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0030_consent_mask_binding",
         sql: include_str!("migrations/0030_consent_mask_binding.sql"),
     },
+    Migration {
+        version: 31,
+        name: "0031_scope_guards",
+        sql: include_str!("migrations/0031_scope_guards.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 30;
+pub const CURRENT_SCHEMA_VERSION: u32 = 31;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -487,6 +493,30 @@ impl Database {
             "system",
             &serde_json::json!({"from": before, "to": outcome.current, "backup": true}),
         );
+        // Şema v31: kapsam tetikleyicileri **yeni** yazmayı engeller; bu
+        // sürümden önce yazılmış çapraz dosya satırları kendiliğinden
+        // düzelmez. Güncelleme anı, taramanın hem ucuz hem anlamlı olduğu tek
+        // yer: sayı (kimlik/içerik değil) denetime yazılır, sıfırsa yazılmaz.
+        if let Ok(counts) = self.scope_violations() {
+            if counts.total() > 0 {
+                let _ = self.append_audit(
+                    "vault_upgrade",
+                    None,
+                    "scope_violations",
+                    "system",
+                    &serde_json::json!({
+                        "documentVersions": counts.document_versions,
+                        "parseRuns": counts.parse_runs,
+                        "textSegments": counts.text_segments,
+                        "sourceAnchors": counts.source_anchors,
+                        "sourceMarks": counts.source_marks,
+                        "redactionPlans": counts.redaction_plans,
+                        "documentTags": counts.document_tags,
+                        "embeddings": counts.embeddings,
+                    }),
+                );
+            }
+        }
         Ok(outcome)
     }
 

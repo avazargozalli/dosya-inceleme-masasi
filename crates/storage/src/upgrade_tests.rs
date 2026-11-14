@@ -99,6 +99,72 @@ fn upgrade_takes_verified_backup_before_migrating() {
 }
 
 #[test]
+fn upgrade_reports_cross_case_rows_left_by_the_previous_schema() {
+    // Şema v30'da kapsam tetikleyicisi yoktu: çapraz dosya satırı yazmak
+    // mümkündü. v31 tetikleyicileri yalnız **yeni** yazmayı engeller; eski
+    // satır güncelleme anında sayı olarak denetime düşer (kimlik/içerik yok).
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 30);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diğer','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v-old','d1','c2',2,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z');
+             INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+             VALUES ('p1','r1',0,'native');
+             INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s-old','r1','p1','c2','metin','metin','2026-01-01T00:00:00Z');",
+        )
+        .expect("v30 çapraz satırlar");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["documentVersions"], 1, "çapraz sürüm sayılır");
+    assert_eq!(parsed["textSegments"], 1, "çapraz segment sayılır");
+    assert_eq!(parsed["parseRuns"], 0);
+    // Satırlar **silinmez**: tarama yalnız sayar.
+    let versions: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM document_versions", [], |r| r.get(0))
+        .expect("sayım");
+    assert_eq!(versions, 2);
+    // Yeni çapraz yazma artık kapıda durur.
+    let rejected = db.conn().execute(
+        "INSERT INTO document_versions
+           (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+         VALUES ('v-new','d1','c2',3,'b1','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',10,'application/pdf','2026-01-01T00:00:00Z')",
+        [],
+    );
+    assert!(
+        rejected.is_err(),
+        "v31 kapısı yeni çapraz yazmayı reddetmeli"
+    );
+}
+
+#[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("vault.db");

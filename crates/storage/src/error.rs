@@ -40,6 +40,12 @@ pub enum StorageError {
     RestoreDestNotEmpty,
     #[error("bütünlük kontrolü başarısız: {0}")]
     Integrity(String),
+    /// Veritabanı düzeyindeki dosya kapsamı kapısı (şema v31): bir satır, üst
+    /// kaydının dosyasından farklı bir dosyaya yazılmak istendi ve tetikleyici
+    /// reddetti. Çekirdek kapıları bunu daha erken (`E_NOT_FOUND`) yakalar; bu
+    /// kod yalnız **doğrudan SQL** yazan yolu durdurur.
+    #[error("dosya kapsamı ihlali: {table} satırı üst kaydının dosyasına bağlı değil")]
+    ScopeViolation { table: String },
     #[error("SQL hatası: {0}")]
     Sql(rusqlite::Error),
 
@@ -211,6 +217,16 @@ impl From<rusqlite::Error> for StorageError {
                 reason: value.to_string(),
             };
         }
+        // Şema v31 kapsam tetikleyicileri `RAISE(ABORT, 'DIM_SCOPE:<tablo>')`
+        // kullanır. Önek **sabittir** (yerelleştirilmiş metin değil): başka bir
+        // SQLite hatası bu koda düşmez.
+        if let rusqlite::Error::SqliteFailure(_, Some(message)) = &value {
+            if let Some(table) = message.strip_prefix("DIM_SCOPE:") {
+                return Self::ScopeViolation {
+                    table: table.to_string(),
+                };
+            }
+        }
         Self::Sql(value)
     }
 }
@@ -232,6 +248,7 @@ impl StorageError {
             Self::BackupInvalid { .. } => "E_BACKUP_INVALID",
             Self::RestoreDestNotEmpty => "E_RESTORE_DEST_NOT_EMPTY",
             Self::Integrity(_) => "E_DB_INTEGRITY",
+            Self::ScopeViolation { .. } => "E_DB_SCOPE",
             Self::Sql(_) => "E_DB_SQL",
             Self::Io(_) => "E_IO",
             Self::MaskRejected(code) => code,
