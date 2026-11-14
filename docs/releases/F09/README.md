@@ -14,15 +14,15 @@
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
 | F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS + Windows** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** tutulur — macOS **Anahtar Zinciri** (`security-framework`), Windows **Kimlik Yöneticisi** (`keyring` 3.6.3, 2026-11-06); sıra **depo → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows tatbikatı gerçek Credential Manager üzerinde CI `windows-latest` işinde **koştu** (25/25). Linux Secret Service **uygulanmadı** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölümler |
 | F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt, 200 karakter örnek ve **kapsam dışı belgeler + nedeni**; gönderim yolu aynı çözümleyiciyi kullanır. Önceden SQL hatası veriyordu (aşağıdaki bölüm) |
-| F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
+| F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Görev türü artık çekirdekte onaydan türetilir** (2026-11-14, F09-T09c): `NewAiRun.task_type` kaldırıldı, amaç **kapalı küme** (`E_AI_PURPOSE`), tanınmayan amaç eski onayla çalıştırılamaz. **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
 | Şartname §06.3 eki — `ai_messages` görünen yanıt sicili | ✅ | Sağlayıcının **görünen** yanıt metni her çalıştırmada kaydedilir; JSON şemaya uymayan yanıt da saklanır (`E_AI_SCHEMA` yolunda kaybolmaz), özel akıl yürütme alanı yazılmaz; rol/durum kapalı küme, 262.144 karakter sınırında kırpma (`truncated`), kaynak başvurusu kapısı — kusurlu satır yazılmaz; yeni komut `ai_messages_list` + Ai ekranında "Model yanıtı" kartı (2026-11-10) |
 
 ## Dürüst durum
 
 AI **varsayılan olarak kapalıdır**. Kayıtlı tek profil `off` ise arayüz `E_AI_OFF`
 gösterir ve çalıştırma başlatılamaz. Gönderim yolu `ai_run_execute`dir (tek yol);
-onaysız/iptal/süresi geçmiş onayla, maskesi onaylananla eşleşmeyen gönderimle ve
-kapsam dışı belgeyle **çalıştırma başlamaz**.
+onaysız/iptal/süresi geçmiş onayla, maskesi onaylananla eşleşmeyen gönderimle,
+**onaylanan amaç dışındaki görevle** ve kapsam dışı belgeyle **çalıştırma başlamaz**.
 
 ## Aktarım kapsamı ve sicil (2026-10-28 — kusur #69/#70/#71)
 
@@ -852,4 +852,66 @@ değişmez.
   onay anında türetilir; plan sonradan değişirse (bölge eklenirse) **yeni onay**
   gerekir — eski onay eski terim kümesini bağlar. (f) Tauri komutu
   (`ai_consent_create`) ve gerçek pencere **insan bekliyor**; davranış storage
+  düzeyinde gerçek SQLite ile, arayüz jsdom'da ölçüldü.
+
+## Onay **amaca bağlıdır** — görev türü onaydan türetilir (2026-11-14 — F09-T09c)
+
+- **Ölçülen boşluk:** şartname §13.5 «kullanıcı sağlayıcı/modeli, **amaç** ve
+  kapsamı görür; mevcut izin aynı kapsamda yeniden kullanılabilir» diyor; F09-T09
+  satırı da «görev türü onayın amacından çözülür» diye **✅** yazıyordu. Gerçekte
+  eşleme **yalnız arayüzdeydi** (`PURPOSE_TASKS`): (1) `ai_run_execute` görev
+  türünü **çağırandan** alıyordu, (2) `transfer_consents.purpose` **serbest metin**
+  olarak yazılıyordu (tanınmayan amaç kabul), (3) `start_ai_run` onayın amacıyla
+  görev türünü **hiç karşılaştırmıyordu**. Sonuç: doğrudan IPC ile **"Özet"
+  onayı** altında `extract_claims` koşturulabiliyordu — model istemi
+  «Görev: extract_claims» diyor, yani kullanıcının onaylamadığı bir görev
+  cihazdan çıkıyordu (INV-05 sınıfı). Düzeltme öncesi ölçüm (gerçek koşu,
+  `scratch/dim-purpose-before.sh` + geçici prob testi, HEAD `ai.rs c2fb4e0c…`):
+  `ozet` onayıyla koşan görev `extract_claims` **kabul edildi**; `serbest metin`
+  amacı onaya **yazıldı** — ikisi de kusurun kanıtı.
+- **Yazılan (çekirdek):** `purpose_task_type` — eşleme **tek kaynak**
+  (`ozet→summarize`, `olay_cikarimi→extract_events`,
+  `iddia_cikarimi→extract_claims`). `create_transfer_consent` amacı **kapalı küme**
+  olarak denetler (`E_AI_PURPOSE`, hiçbir satır yazılmadan — reddedilen istek
+  etkin onayı kapatmaz); `NewAiRun.task_type` alanı **kaldırıldı**: görev türü
+  `start_ai_run` içinde onayın amacından türetilir, tanınmayan amaç (eski/elle
+  kayıt) **tahmin edilmez**, `E_AI_PURPOSE` ile reddedilir (fail-closed;
+  «bilinmeyen amaç» sessizce özete düşmez).
+- **Yazılan (masaüstü + arayüz):** `ai_run_execute` imzasından `task_type` çıktı;
+  `AiRequest` ve `record_ai_candidate` görev türünü **satırdan** okur. Arayüz
+  `PURPOSE_TASKS` kopyasını ve üç dallı çağrıyı bıraktı: tek `aiRunExecute`
+  çağrısı, görev türü parametresi yok.
+- **Testler (güncel kodla):** `ai::tests` **+4** (`consent_purpose_is_a_closed_set`,
+  `a_refused_purpose_does_not_supersede_the_active_consent`,
+  `run_task_type_is_derived_from_the_consent_purpose`,
+  `legacy_consent_with_an_unknown_purpose_cannot_start_a_run`) →
+  `dim-storage --lib` **599 → 603** (334,69 s); `Ai.test.tsx` **115/115** (amaç
+  testleri yeni sözleşmeye göre yazıldı; `aiRunExecute` çağrı biçimleri
+  güncellendi) → tam vitest **66 dosya / 1431** (yerel); `tsc --noEmit` temiz;
+  fmt (kök + masaüstü manifesti) temiz; `clippy -D warnings` storage **ve**
+  masaüstü temiz; masaüstü `cargo check --all-targets` temiz.
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-purpose-gates.py`, her
+  mutasyon tek başına, `try/finally` + `os.utime` damgası + sha256 birebir —
+  `ai.rs 2fe9c59c…`, `Ai.tsx 6135e899…`):** **5/5 KIRMIZI, taban yeşilken**
+  (taban `purpose` süzgeci **6/6**, arayüz **115/115**; geri yazım birebir, taban
+  tekrar yeşil) — M1 amaç kapalı küme denetimi kaldırılır (2 test) · M2 iddia
+  çıkarımı yanlış göreve eşlenir · M3 tanınmayan amaç sessizce özete düşer
+  (fail-open) · M4 satıra görev türü sabit yazılır (onay okunmaz) · U1 arayüz
+  yeniden görev türü gönderir (11 test).
+- **CI (ölçüldü):** kod `c3732ea` (7 dosya, **+202/−78**) → run `43580516983`
+  **10/10 YEŞİL** (`dim-storage` **603** iki OS'ta birebir: macos-15 274,80 s /
+  ubuntu-latest 726,61 s; `arayüz` 66 dosya / **1423** test — yerel 1431 farkı
+  ağaçtaki başka ajanın commit'siz testleri; paket `index-_i7_5PW9.js`
+  **692,17 kB** / gzip **184,70 kB**; `masaüstü kabuk` 51/0/5 + gerçek worker
+  5/0/0).
+- **Dürüst sınırlar:** (a) `ai_runs.task_type` satırda kalır (sicil); çalıştırma
+  anında «hangi görev» ondan okunur — onayla eşleşmesi türetimle garantidir.
+  (b) Amaç kümesi **kapalı ve elle**: yeni bir amaç eklenirse
+  `purpose_task_type` güncellenmeli; bugün ürün kararı yalnız üç amacı tanıyor.
+  (c) Eski onaylar `purpose` alanında tanınmayan bir değer taşıyorsa artık
+  **çalıştırılamaz** (fail-closed) — üretimde bugüne dek yalnız üç değer yazıldığı
+  için beklenen etki yok; elle düzenlenmiş kasa yeniden onay ister. (d) Arayüzde
+  görev türü artık **gösterilmiyor**: kullanıcı yalnız amacı seçer (bilinçli —
+  ikinci kopya drift kaynağıydı). (e) Tauri komutu (`ai_run_execute`,
+  `ai_consent_create`) ve gerçek pencere **insan bekliyor**; davranış storage
   düzeyinde gerçek SQLite ile, arayüz jsdom'da ölçüldü.
