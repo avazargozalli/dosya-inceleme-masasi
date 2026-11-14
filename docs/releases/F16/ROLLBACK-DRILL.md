@@ -241,3 +241,28 @@ kasa **925.696 bayt**, yedek **921.600 bayt**, imaj 48 KiB boşlukla dolduruldu 
 yer açıldıktan sonra aynı çağrı başarılı ve `vault.db.rollback-…safety` güvenlik kopyası
 **925.696 bayt**; `1 passed · 0 failed` (2,44 s). Şema büyüdüğü için kasa boyutu 2026-10-26
 ölçümünden (876.544 bayt) farklı — tatbikat yine **gerçek dosyalarla**.
+
+### 2026-11-14 yeniden koşum (şema v30, iki ayak)
+
+Şema v30 (onay-maske bağı) sonrası tatbikatın **iki ayağı** da yeniden koşuldu:
+
+- **Süreç öldürme** (hata ayıklama derlemesi, `drill_pause` kancası):
+  `cargo test -p dim-storage --test rollback_drill -- --test-threads=1` →
+  `2 passed · 0 failed · 1 ignored` (0,92 s). Kasa öldürmeden sonra **yerinde**
+  ve açılabilir; yedeği yerine koyma adımı çalışmamış (301 kayıt değil, güncelleme
+  sonrası veri); çökme geçici dosya + güvenlik kopyası bırakmış; **tekrar deneme**
+  artıkları süpürüp yedekteki veriye dönmüş.
+- **Gerçek disk dolması** (release,
+  `cargo test --release -p dim-storage --test rollback_drill -- --ignored
+  --test-threads=1`): kasa **925.696 bayt**, yedek **921.600 bayt** (v29 ile aynı
+  boyut — v30 bu profilde yer büyütmedi), imaj 48 KiB boşlukla dolduruldu
+  (**5.111.808 bayt**) → `rollback_vault` **`E_DISK_FULL`**; kasa dosyası yerinde
+  ve **bayt bayt değişmedi**; bizim geçici/güvenlik artığımız kalmadı; dolu
+  diskte `Database::open` **`E_DB_IO`**; yer açılınca kasa **301** kayıtla açıldı,
+  aynı çağrı başarılı oldu, **300** kayda döndü ve güvenlik kopyası
+  **925.696 bayt** yazıldı; `1 passed · 0 failed` (2,70 s).
+
+**Dürüst sınır (değişmedi):** öldürme ayağı yalnız macOS/APFS + hata ayıklama
+derlemesinde ölçülür; `hard_link` desteklemeyen dosya sistemindeki kopya yolu,
+ağ birimi `rename` semantiği, uyku/uyanma ve harici disk kopması hâlâ
+denenmedi. Arayüz görsel QA'sı insan bekliyor.

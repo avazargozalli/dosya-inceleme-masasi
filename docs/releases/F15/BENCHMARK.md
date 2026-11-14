@@ -1,12 +1,16 @@
 # F15 — Kapasite ve gecikme ölçümü
 
 - **Tarih:** 2026-10-24 (düzeltme öncesi/sonrası, debug) · **2026-10-25** (B-01 tam
-  profil ölçümü, release)
-- **Durum:** B-01 profili **artık ölçüldü** (1.000 belge / 100.000 segment / 200
-  sabit sorgu). Sonuç: **p50 1,25 sn**, **p95 iki koşuda 1,53 sn ve 2,18 sn** → 2 sn
-  hedefi **sınırda ve tutarlı biçimde karşılanmıyor**; asıl sorun kuyruk (tek
-  sorguda 36–54 sn). 100.000 **belge** / 1 milyon sayfa kapasite testi (F15-T04)
-  hâlâ yapılmadı.
+  profil ölçümü, release) · **2026-11-14** (B-01 güncel kodla iki koşu + koşucu
+  yüzdelik dilim/rapor yolu düzeltmesi)
+- **Durum:** B-01 profili **ölçüldü** (1.000 belge / 100.000 segment / 200
+  sabit sorgu). **Ekim 2026** (eski kod): p50 **1,25 sn**, p95 iki koşuda
+  **1,53 / 2,18 sn**, kuyruk **36–54 sn**. **2026-11-14, güncel kod, iki koşu:**
+  p50 **1,39 / 1,40 sn**, p95 **1,57 / 1,58 sn** — çekirdek p95 iki koşuda da
+  2 sn hedefinin **altında**; en kötü tek sorgu **1,96 / 5,59 sn** (kuyruk
+  36–54 sn değil). Arayüz yolu (`include_total=false`) p95 **1,05 / 0,92 sn**.
+  100.000 **belge** / 1 milyon sayfa kapasite testi (F15-T04) hâlâ yapılmadı —
+  ayrı, uzun bir koşu ister.
 - **Koşucu:** `crates/storage/tests/bench_scale.rs` (elle, `#[ignore]`)
 
 ## Yöntem
@@ -45,6 +49,69 @@
 > 2026-10-24 tabloları **optimize edilmemiş** (`cargo test`, debug) derlemeyle
 > alınmıştı; 2026-10-25 satırları release. İki profil **birbiriyle
 > karşılaştırılmaz**; ayrı başlıklarda verilir.
+
+## B-01 güncel kodla yeniden ölçüldü — 2026-11-14 (iki koşu, release)
+
+**Neden:** 2026-10-25 satırları **aday penceresi + tembel doğrulama**
+(2026-10-26) ve **ertelenmiş toplam sayım** öncesiydi; "100.000 segmentte
+kuyruk yeniden ölçülmedi" dürüst sınırı kapanmamıştı. Aynı B-01 profili
+(1.000 belge / 100.000 segment / 200 sabit sorgu, aynı korpus üreticisi, aynı
+sorgu listesi `6a908141…`) güncel kodla **iki kez** koşuldu.
+
+**Yöntem düzeltmesi (aynı turda):** `bench_scale` yüzdelik dilimi en yakın
+sıraya yuvarlıyordu, `bench_ocr` ise doğrusal ara değer kullanıyordu — aynı
+"p95" adı iki tanımla hesaplanıyordu ve B-01 hedefi p95'e bağlı. Artık tek
+tanım: `(n-1)*p` + floor/ceil ağırlığı (iki birim testi). 2026-10-25 sayıları
+en yakın sırayla alınmıştı; p50'de fark en çok bir örnek kadardır.
+
+| Koşu | Yükleme | Arama p50 | Arama p95 | Arama max | Sorgu süresi |
+|---|---|---|---|---|---|
+| 1 | 42,9 sn (23,3 belge/sn · 2.330 sayfa/sn) | **1.399,5 ms** | **1.579,6 ms** | **1.955,6 ms** | 208,1 sn |
+| 2 | 42,0 sn (23,8 belge/sn · 2.380 sayfa/sn) | **1.394,4 ms** | **1.572,8 ms** | **5.587,9 ms** | 208,9 sn |
+
+- **p50 ve p95 kararlı:** iki koşuda p50 **1,39–1,40 sn**, p95 **1,57–1,58 sn**
+  → çekirdek p95 iki koşuda da 2 sn hedefinin **altında**
+  (`b01.coreP95Met=true`). Hedef uçtan uca (IPC + arayüz) ölçülmedi; bu sayı
+  alt sınırdır.
+- **Kuyruk artık 36–54 sn değil, ama sıfır da değil:** en kötü tek sorgu
+  **1,96 sn** (koşu 1) ve **5,59 sn** (koşu 2, sorgu `suret`, 87.843 aday).
+  Tek aykırı örnek iki koşuda 3,6× oynuyor; p95 etkilenmiyor.
+- **Ödenen bedel (dürüst):** p50 Ekim'de **1.241–1.248 ms** iken bugün
+  **1.394–1.399 ms** (~%12 yüksek). Aday penceresi yoğun eşleşen sorgularda
+  pencere başına doğrulama maliyeti ekliyor; kuyruk düşüşüyle birlikte
+  okunmalı. Ayrı bir A/B (pencere açık/kapalı, aynı gün) yapılmadı — bu turda
+  ölçülen iki koşu yalnız güncel kodu gösterir.
+- **Arayüz yolu** (`include_total=false`, her 10. sorguda 20 örnek): p50
+  **838 / 830 ms**, p95 **1.048 / 922 ms**, max 3.301 / 966 ms. Toplam sayı
+  ayrı gelir: p50 **625 / 626 ms**, p95 **696 / 733 ms**, max 1.298 / 760 ms.
+  Toplamsız ilk sayfa toplamlıyla **20/20 birebir aynı**.
+- **Doğruluk kapıları koştu:** 20/20 örnekte `search_total` sayfayla birebir
+  (`matchesPageTotal=true`); aday penceresi örnek başına ortalama **51** aday
+  doğruladı, 20/20 örnekte erken kesme; ilk sayfa p50 **0,313 ms** (Ekim'le
+  aynı).
+- **Depolama:** 280,87 MB / 100.000 segment (**2.945 B/segment**) — Ekim
+  ölçümüyle aynı sınıf; şema v30 bu profilde ölçülebilir yer maliyeti
+  getirmedi.
+- Ham raporlar: `bench-b01-2026-11-14.json` (koşu 2, koşucunun yazdığı dosya)
+  ve `bench-b01-2026-11-14-run1.json` (koşu 1; rapor yolu kusuru yüzünden
+  stdout'tan alındı — aşağıda).
+
+### Koşucu kusuru — rapor yolu (2026-11-14, düzeltildi)
+
+İlk koşu (254 s) bütün assert'leri geçti ama raporu **yazamadı**:
+`DIM_BENCH_OUT` göreli yolu `cargo test` sürecinin çalışma dizinine
+(`crates/storage`) çözülüyordu → `docs/releases/...` orada yok →
+`rapor yazılır: Os { code: 2, kind: NotFound }`. Dört dakikalık ölçüm yalnız
+stdout'ta kaldı. Düzeltme: göreli yol **depo köküne**
+(`CARGO_MANIFEST_DIR/../..`) çözülür ve yazılan yol bildirilir; birim testi
+`bench_out_relative_path_resolves_against_repo_root`. Koşu 2 düzeltilmiş
+koşucuyla yazıldı (`[rapor] …/docs/releases/F15/bench-b01-2026-11-14.json`).
+
+**Dürüst sınırlar (yeni ölçüm):** tek makine (Apple M2, 16 GB), yalnız
+çekirdek; uçtan uca süre yok; iki koşu p95 için yeterli, **max için değil**
+(1,96 / 5,59 sn oynaklığı); arayüz yolu yalnız 20 örnek (kuyruk sorgusu
+örnekte olmayabilir); 100.000 belge / 1 milyon sayfa kapasite testi hâlâ
+yapılmadı.
 
 ## B-01 tam profil — 2026-10-25 (release, 1.000 belge / 100.000 segment / 200 sorgu)
 
