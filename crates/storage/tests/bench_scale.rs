@@ -306,12 +306,70 @@ fn fixed_queries(per_group: usize) -> Vec<BenchQuery> {
     out
 }
 
+/// Yüzdelik dilim: **doğrusal ara değer** (`(n-1)*p` + floor/ceil ağırlık).
+///
+/// En yakın sıraya yuvarlama küçük örnekte p50'yi yukarı kaydırır (10 örnekte
+/// 4,5 → 5. sıra) ve `bench_ocr` ile aynı "p95" adını iki farklı tanımla
+/// hesaplar. B-01 hedefi p95'e bağlı olduğu için tanım tek olmalı.
 fn percentile(sorted: &[u128], p: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }
-    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
-    sorted[idx] as f64 / 1000.0
+    let position = (sorted.len() as f64 - 1.0) * p.clamp(0.0, 1.0);
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    let weight = position - lower as f64;
+    let low = sorted[lower] as f64;
+    let high = sorted[upper] as f64;
+    (low + (high - low) * weight) / 1000.0
+}
+
+#[test]
+fn percentile_uses_linear_interpolation_not_nearest_rank() {
+    // 10/20/30/40 ms: p50 iki ortadakinin ortası olmalı (25 ms).
+    // En yakın sıra 30 ms verirdi (4 örnekte 1,5 → 2. sıra).
+    let micros = [10_000u128, 20_000, 30_000, 40_000];
+    assert!((percentile(&micros, 0.50) - 25.0).abs() < 1e-9);
+    // Uçlar kaymaz.
+    assert!((percentile(&micros, 0.0) - 10.0).abs() < 1e-9);
+    assert!((percentile(&micros, 1.0) - 40.0).abs() < 1e-9);
+    // Boş örnek 0 döner (panik yok).
+    assert_eq!(percentile(&[], 0.95), 0.0);
+}
+
+/// `DIM_BENCH_OUT` göreli verilirse **depo köküne** göre çözülür.
+///
+/// `cargo test` süreci crate klasöründe koşar; göreli yol olduğu gibi
+/// kullanılırsa rapor `crates/storage/docs/...` altına düşer ya da hiç
+/// yazılmaz — ölçüm 4 dakika sürdükten sonra dosya kaybolur (ölçüldü
+/// 2026-11-14: `rapor yazılır: Os { code: 2, kind: NotFound }`).
+fn resolve_out_path(value: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(value);
+    if path.is_absolute() {
+        return path;
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path)
+}
+
+#[test]
+fn bench_out_relative_path_resolves_against_repo_root() {
+    let resolved = resolve_out_path("docs/releases/F15/ornek.json");
+    assert!(resolved.is_absolute(), "göreli yol mutlak olmalı");
+    assert!(
+        resolved.ends_with("docs/releases/F15/ornek.json"),
+        "yol korunmalı: {}",
+        resolved.display()
+    );
+    assert!(
+        resolved.to_string_lossy().contains("crates/storage/../.."),
+        "depo köküne göre çözülmeli: {}",
+        resolved.display()
+    );
+    // Mutlak yol olduğu gibi kalır.
+    let absolute = resolve_out_path("/tmp/ornek.json");
+    assert_eq!(absolute, std::path::PathBuf::from("/tmp/ornek.json"));
 }
 
 fn rounded(value: f64) -> f64 {
@@ -333,7 +391,9 @@ fn bench_scale_report() {
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(10);
     let progress_every = env_usize("DIM_BENCH_PROGRESS_EVERY", std::cmp::max(docs / 20, 200));
-    let out_path = std::env::var("DIM_BENCH_OUT").ok();
+    let out_path = std::env::var("DIM_BENCH_OUT")
+        .ok()
+        .map(|value| resolve_out_path(&value));
 
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("bench.db");
@@ -828,6 +888,8 @@ fn bench_scale_report() {
     let text = serde_json::to_string_pretty(&report).expect("json");
     println!("{text}");
     if let Some(path) = out_path {
-        std::fs::write(path, &text).expect("rapor yazılır");
+        std::fs::write(&path, &text)
+            .unwrap_or_else(|err| panic!("rapor yazılamadı ({}): {err}", path.display()));
+        println!("[rapor] {}", path.display());
     }
 }
