@@ -20,6 +20,11 @@
 //! - `DIM_BENCH_QUERIES_PER_GROUP` (50) → toplam 4×N sorgu; B-01 için N=50.
 //! - `DIM_BENCH_PAGE_ONLY_EVERY` (10) — her N. sorguda toplam sayı **istenmeden**
 //!   de ölçülür; `include_total` maliyeti ayrı raporlanır (0 = kapalı).
+//!   Arayüz yolunun p95'i tüm sorgularda isteniyorsa `1` ver.
+//! - `DIM_BENCH_REPEAT_SLOW` (0 = kapalı) — ilk turun en yavaş N sorgusu
+//!   `DIM_BENCH_REPEAT_TIMES` (8) kez yeniden koşulur. `max` değerinin
+//!   **yapısal** (aynı sorguda yine çıkar) mı, tek seferlik makine olayı mı
+//!   olduğunu ayırır; sonuç rapora `repeatSlow` olarak yazılır.
 //! - `DIM_BENCH_PROGRESS_EVERY` (otomatik) — yükleme sırasında ilerleme satırı.
 //! - `DIM_BENCH_PAGE_AB=1` — indeksli/indekssiz `pages_for_run` A/B ölçümü
 //!   (indeks geçici düşürülür, ölçümden sonra geri kurulur).
@@ -324,6 +329,37 @@ fn percentile(sorted: &[u128], p: f64) -> f64 {
     (low + (high - low) * weight) / 1000.0
 }
 
+/// `withTotalMs` değerlerine göre **en yavaş** `n` sorgunun sıra numaraları.
+///
+/// Tekrar ölçümünün hangi sorguları seçtiği, ölçümün kendisi kadar önemlidir:
+/// ters sıralama (en hızlılar) sessizce yanlış soruyu yanıtlar. Eşit sürede
+/// küçük sıra önce gelir (rapor deterministik kalır).
+fn slowest_indices(with_total_ms: &[f64], n: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..with_total_ms.len()).collect();
+    order.sort_by(|a, b| {
+        with_total_ms[*b]
+            .partial_cmp(&with_total_ms[*a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.cmp(b))
+    });
+    order.truncate(n.min(order.len()));
+    order
+}
+
+#[test]
+fn slowest_indices_picks_the_slowest_queries_in_order() {
+    let ms = [10.0, 500.0, 20.0, 900.0, 900.0];
+    // En yavaş iki: 3 ve 4; eşitlikte küçük sıra önce.
+    assert_eq!(slowest_indices(&ms, 2), vec![3, 4]);
+    // n > uzunluk → hepsi, yine yavaştan hızlıya.
+    assert_eq!(slowest_indices(&ms, 9), vec![3, 4, 1, 2, 0]);
+    // n = 0 → boş; boş girdi paniklemez.
+    assert!(slowest_indices(&ms, 0).is_empty());
+    assert!(slowest_indices(&[], 3).is_empty());
+    // Tek örnek: seçim yine doğru (ters sıralama burada da yakalanır).
+    assert_eq!(slowest_indices(&[7.0], 5), vec![0]);
+}
+
 #[test]
 fn percentile_uses_linear_interpolation_not_nearest_rank() {
     // 10/20/30/40 ms: p50 iki ortadakinin ortası olmalı (25 ms).
@@ -391,6 +427,13 @@ fn bench_scale_report() {
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(10);
     let progress_every = env_usize("DIM_BENCH_PROGRESS_EVERY", std::cmp::max(docs / 20, 200));
+    // Yavaş sorguların tekrar ölçümü: tek koşunun `max` değeri sorguya özgü
+    // **yapısal** bir kuyruk mu, yoksa tek seferlik makine olayı mı? 0 = kapalı.
+    let repeat_slow = std::env::var("DIM_BENCH_REPEAT_SLOW")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let repeat_times = env_usize("DIM_BENCH_REPEAT_TIMES", 8);
     let out_path = std::env::var("DIM_BENCH_OUT")
         .ok()
         .map(|value| resolve_out_path(&value));
@@ -604,6 +647,83 @@ fn bench_scale_report() {
     page_only_us.sort_unstable();
     let search_secs = search_start.elapsed().as_secs_f64();
 
+    // --- Yavaş sorguların tekrar ölçümü (max'ın kaynağı) ------------------
+    // `search.maxMs` tek koşunun en yavaş örneğidir. Aynı sorgu yeniden
+    // koşulduğunda aykırı değer **yine** çıkıyorsa yapısal (sorguya özgü)
+    // kuyruktur; çıkmıyorsa tek seferlik makine olayıdır (WAL kontrol
+    // noktası, sayfa önbelleği, başka süreç). İkisi farklı iş gerektirdiği
+    // için rapor ikisini ayrı yazar: `outlierRuns` = kendi medyanının
+    // `outlierFactor` katını aşan koşu sayısı.
+    let mut repeat_slow_report = serde_json::Value::Null;
+    if repeat_slow > 0 {
+        let first: Vec<(f64, i64)> = per_query
+            .iter()
+            .map(|entry| {
+                (
+                    entry
+                        .get("withTotalMs")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0),
+                    entry.get("hits").and_then(|v| v.as_i64()).unwrap_or(0),
+                )
+            })
+            .collect();
+        let with_total: Vec<f64> = first.iter().map(|(ms, _)| *ms).collect();
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        let mut outlier_runs = 0usize;
+        let mut total_runs = 0usize;
+        for index in slowest_indices(&with_total, repeat_slow) {
+            let query = &queries[index];
+            let mut f = filters.clone();
+            if query.with_filter {
+                f.document_types = vec!["petition".into()];
+            }
+            let mut runs: Vec<u128> = Vec::with_capacity(repeat_times);
+            for _ in 0..repeat_times {
+                let started = Instant::now();
+                let page = db
+                    .search_segments_page(&case.id, &query.text, &f, 50, None, true)
+                    .expect("arama (tekrar)");
+                runs.push(started.elapsed().as_micros());
+                assert_eq!(
+                    page.hits.len() as i64,
+                    first[index].1,
+                    "tekrar ölçümünde ilk sayfa ilk koşuyla aynı olmalı"
+                );
+            }
+            let mut sorted = runs.clone();
+            sorted.sort_unstable();
+            let median = percentile(&sorted, 0.50);
+            let outliers = sorted
+                .iter()
+                .filter(|us| **us as f64 / 1000.0 > median * 2.0)
+                .count();
+            outlier_runs += outliers;
+            total_runs += sorted.len();
+            items.push(serde_json::json!({
+                "text": query.text,
+                "group": query.group,
+                "filtered": query.with_filter,
+                "firstRunMs": rounded(first[index].0),
+                "runs": runs.iter().map(|us| rounded(*us as f64 / 1000.0)).collect::<Vec<_>>(),
+                "minMs": percentile(&sorted, 0.0),
+                "p50Ms": median,
+                "p95Ms": percentile(&sorted, 0.95),
+                "maxMs": percentile(&sorted, 1.0),
+                "outlierRuns": outliers,
+            }));
+        }
+        repeat_slow_report = serde_json::json!({
+            "queries": items.len(),
+            "runsPerQuery": repeat_times,
+            "totalRuns": total_runs,
+            "outlierFactor": 2.0,
+            "outlierRuns": outlier_runs,
+            "items": items,
+            "note": "Aynı sorgu tekrar koşulur: aykırı değer yine çıkıyorsa yapısal kuyruk, çıkmıyorsa tek seferlik makine olayı. `firstRunMs` ilk turun ölçümüdür.",
+        });
+    }
+
     // "İlk sayfa" gecikmesi: son belgenin ilk sayfasını oku.
     let last_run = run_ids.last().expect("en az bir belge");
     let mut page_us: Vec<u128> = Vec::with_capacity(50);
@@ -765,6 +885,8 @@ fn bench_scale_report() {
         "queryList": query_list,
         // Sorgu bazında ölçüm: p95'in sakladığı aykırı değerler burada görünür.
         "perQuery": per_query,
+        // Yavaş sorguların tekrar ölçümü: `max` yapısal mı, tek seferlik mi?
+        "repeatSlow": repeat_slow_report,
         "ingest": {
             "seconds": (ingest_secs * 1000.0).round() / 1000.0,
             "documentsPerSecond": rounded(docs as f64 / ingest_secs),
