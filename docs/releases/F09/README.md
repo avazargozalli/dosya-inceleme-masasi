@@ -14,7 +14,7 @@
 | F09-T06 yerel model indirme/doğrulama | ⬜ | — |
 | F09-T07 API anahtarı (şartname: OS güvenli deposu) | 🚧 **macOS + Windows** | `crates/providers/src/secret.rs`: anahtar **OS güvenli deposunda** tutulur — macOS **Anahtar Zinciri** (`security-framework`), Windows **Kimlik Yöneticisi** (`keyring` 3.6.3, 2026-11-06); sıra **depo → `DIM_API_KEY`**, seçilen hedef ekranda ve profil künyesinde (`auth_mode_verified`) **yazılır** — sabit iddia yok. Windows tatbikatı gerçek Credential Manager üzerinde CI `windows-latest` işinde **koştu** (25/25). Linux Secret Service **uygulanmadı** (`E_AI_SECRET_UNSUPPORTED` + ortam değişkeni). Aşağıdaki bölümler |
 | F09-T08 gönderim önizlemesi (tam) | ✅ | `consent_preview`: belge, segment, bayt, 200 karakter örnek ve **kapsam dışı belgeler + nedeni**; gönderim yolu aynı çözümleyiciyi kullanır. Önceden SQL hatası veriyordu (aşağıdaki bölüm) |
-| F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Görev türü artık çekirdekte onaydan türetilir** (2026-11-14, F09-T09c): `NewAiRun.task_type` kaldırıldı, amaç **kapalı küme** (`E_AI_PURPOSE`), tanınmayan amaç eski onayla çalıştırılamaz. **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
+| F09-T09 onay yenileme + iptal kapısı | 🚧 **arayüz kapsamı** | Ölçüldü 2026-11-05: dosya değişiminde onay düşer, **amaç** değişiminde onay düşer, iptali uçuşta olan onayla **yeni gönderim başlamaz**; görev türü onayın amacından çözülür. **Onay envanteri** eklendi: aynı dosya+amaç yeniden onaylanınca önceki yetki kapanır (denetimli), bütün onaylar görünür ve etkin olan iptal edilebilir (aşağıdaki bölüm). Çekirdek `start_ai_run` onayın `provider_snapshot`ını çalıştırılan profille karşılaştırır (F11-T04). **Görev türü artık çekirdekte onaydan türetilir** (2026-11-14, F09-T09c): `NewAiRun.task_type` kaldırıldı, amaç **kapalı küme** (`E_AI_PURPOSE`), tanınmayan amaç eski onayla çalıştırılamaz. **Reddedilen onay yenilenebilir** (2026-11-14, F09-T09d): çekirdek reddi (`E_AI_MASK_CHANGED`/`E_AI_CONSENT_UNBOUND`/`E_AI_PURPOSE`/`E_AI_CONSENT`) sonrası onay ve ondan türeyen önizleme ekrandan düşer, envanter çekirdekten tazelenir, tek yenileme yolu “Onayla”dır — sessiz kapanan düğme yok. **Kalan:** sağlayıcı değişiminde yenileme ekranda ulaşılabilir değil (sağlayıcı seçici yok, rota değişiminde ekran yeniden kuruluyor) |
 | Şartname §06.3 eki — `ai_messages` görünen yanıt sicili | ✅ | Sağlayıcının **görünen** yanıt metni her çalıştırmada kaydedilir; JSON şemaya uymayan yanıt da saklanır (`E_AI_SCHEMA` yolunda kaybolmaz), özel akıl yürütme alanı yazılmaz; rol/durum kapalı küme, 262.144 karakter sınırında kırpma (`truncated`), kaynak başvurusu kapısı — kusurlu satır yazılmaz; yeni komut `ai_messages_list` + Ai ekranında "Model yanıtı" kartı (2026-11-10) |
 
 ## Dürüst durum
@@ -846,7 +846,8 @@ değişmez.
   Eşitlik **iki yönlü**: onaylanandan **fazla** maske de yeni onay ister (izni
   daraltır ama onaylanan metni değiştirir — bilinçli). (c) `E_AI_MASK_CHANGED`
   sonrası arayüzde "onayı yenile" akışı **yok**: kullanıcı onayı yeniden verir
-  (ekran hatayı yazar, kendiliğinden tazelemez). (d) `outbound_transform_id`
+  (ekran hatayı yazar, kendiliğinden tazelemez). → **2026-11-14, T09d ile kapandı**
+  (aşağıdaki bölüm). (d) `outbound_transform_id`
   **yabancı anahtar değil** (0029 deseni): dönüşüm satırı silinirse bağ okunamaz →
   çalıştırma reddedilir (fail-closed), ama DB bağı zorlamaz. (e) Plan terimleri
   onay anında türetilir; plan sonradan değişirse (bölge eklenirse) **yeni onay**
@@ -915,3 +916,58 @@ değişmez.
   ikinci kopya drift kaynağıydı). (e) Tauri komutu (`ai_run_execute`,
   `ai_consent_create`) ve gerçek pencere **insan bekliyor**; davranış storage
   düzeyinde gerçek SQLite ile, arayüz jsdom'da ölçüldü.
+
+## Onay reddedilirse **yenileme yolu** — onay ve önizleme düşer (2026-11-14 — F09-T09d)
+
+- **Neden bu dilim:** T09b'nin dürüst sınırı (c) — «`E_AI_MASK_CHANGED` sonrası
+  arayüzde "onayı yenile" akışı **yok**: kullanıcı onayı yeniden verir (ekran
+  hatayı yazar, kendiliğinden tazelemez)». Çekirdek kararı **durumsuz** verir
+  (`start_ai_run`: maske tanımı, amaç, maske bağı, belge canlılığı); reddedilen
+  onay ekranda **çalıştırılabilir** kalıyordu → “Çalıştır” ikinci kez de aynı
+  hatayı verir, kullanıcı ne yapacağını görmez.
+- **Ölçülen erişim yolu:** arayüzün kendi kapısı `maskChangedSincePreview` yalnız
+  **metin/plan kimliği** değişimini görür. Planın **bölgeleri** onaydan sonra
+  değişirse (Redaksiyon ekranı aynı planı güncelliyor; terimler çekirdekte
+  türetilir, arayüze dönmez) arayüzün imzası değişmez → gönderim çekirdekte
+  `E_AI_MASK_CHANGED` ile reddedilir. İkinci yol: başka pencere/IPC ya da eski
+  kasa kaydı (`E_AI_CONSENT_UNBOUND`, `E_AI_PURPOSE`, `E_AI_CONSENT`).
+- **Düzeltme öncesi (gerçek koşu):** HEAD bileşeni (`Ai.tsx 6135e899…`, T09c) ile
+  yeni testlerin **4/5**'i düştü (`4 failed | 1 passed | 115 skipped`); beşinci
+  (aşırı tetikleme nöbetçisi) tasarımı gereği önce de yeşildi — kapısı U5.
+- **Yazılan (`Ai.tsx`):** `CONSENT_RENEWAL_CODES` (`E_AI_CONSENT`,
+  `E_AI_CONSENT_UNBOUND`, `E_AI_MASK_CHANGED`, `E_AI_PURPOSE`) +
+  `consentNeedsRenewal`. `start()` reddi bu sınıftaysa: onay **düşer** (“Çalıştır”
+  kapanır), ondan türeyen **önizleme ve imzası** düşer (çekirdek, onaylanan maske
+  tanımının bugünkünden farklı olduğunu söyledi; ekran o önizlemenin baytlarını
+  garanti edemez), `renewNeeded` ile **neden + tek yenileme yolu** yazılır, onay
+  envanteri **çekirdekten** tazelenir. “Onayla” başarısı uyarıyı kapatır (yeni
+  onay ve önizleme birlikte gelir). Yenileme sınıfı **olmayan** hata (ör.
+  `E_AI_SCHEMA`) onayı düşürmez — aşırı tetikleme yok. 1 sözlük anahtarı
+  (`ai.consentRenewNeeded`).
+- **Testler (güncel kodla):** `Ai.test.tsx` **115 → 120** (+5: maske reddi tam
+  akış, yenilemenin Onayla ile kapanması, iki kod için tablo testi, aşırı
+  tetikleme nöbetçisi) → tam vitest **66 dosya / 1436** yerel; `tsc --noEmit`
+  temiz; `npm run build` temiz (`index-rthf-ww4.js` **695,22 kB** / gzip
+  **185,49 kB** — ağaçtaki başka ajanın kodu dâhil).
+- **Kapı kanıtı (gerçek koşular; betik `scratch/dim-consent-renew-gates.py`, her
+  mutasyon tek başına, `try/finally` + `os.utime` damgası + sha256 birebir —
+  `Ai.tsx ffea4df1…`, `Ai.test.tsx b5fbaba5…`):** **6/6 KIRMIZI, taban 120/120
+  yeşilken** (K0 ve K1 taban yeşil, geri yazım birebir) — U1 reddedilen onay
+  ekranda kalır (**3** test) · U2 bayat önizleme kalır (1) · U3 yenileme nedeni
+  yazılmaz (**4**) · U4 envanter tazelenmez (1) · U5 yenileme sınıfı aşırı geniş
+  (1) · U6 uyarı yeni onayla kapanmaz (1).
+- **CI (ölçüldü):** kod `1d8aa94` (3 dosya, **+150/−1**) → run `43587089330`
+  **10/10 YEŞİL** (`arayüz` 66 dosya / **1428** test — yerel 1436 farkı ağaçtaki
+  başka ajanın commit'siz testleri; paket `index-BPk1_PbH.js` **692,77 kB** /
+  gzip **184,88 kB**; `dim-storage` **603** iki OS'ta birebir: macos-15 326,55 s /
+  ubuntu-latest 748,94 s; `masaüstü kabuk` 51/0/5 + gerçek worker 5/0/0).
+- **Dürüst sınırlar:** (a) Karar **arayüzde**: doğrudan IPC bu ekran akışını
+  atlar — çekirdek zaten fail-closed (T09b/T09c). (b) “Onayla” yenilemesi
+  kullanıcının **onay eylemidir**; ekran kendiliğinden onay **alamaz** (bilinçli)
+  — bu yüzden akış “tek tık” değil, “tek yol”. (c) Reddedilen onayın **sicili**
+  silinmez: envanterde satırı kalır (etkin/iptal durumu çekirdekten okunur),
+  yalnız ekranın çalıştırma yetkisi düşer. (d) Plan bölgesi değişimi **ancak
+  gönderimde** görülür: arayüz plan terimlerini bilemez (tasarım gereği arayüze
+  dönmez) — bu yüzden ön-uçuş (gönderim öncesi) denetimi yok. (e) Tauri komutu
+  (`ai_consent_create`, `ai_run_execute`) ve gerçek pencere **insan bekliyor**;
+  davranış jsdom'da ölçüldü.
