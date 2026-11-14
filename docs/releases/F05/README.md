@@ -92,4 +92,5 @@ olarak koşulmadı; davranış storage düzeyinde gerçek SQLite ile ölçüldü
 ubuntu-latest 580,79 s), `arayüz` 66 dosya / **1428** test, paket
 `index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB; `masaüstü kabuk`, `windows
 güvenli depo`, `kaynak arşivi`, `SBOM`, `belge worker'ı`, `sözleşmeler` ve
-`sürüm paketi manifesti` yeşil.
+`sürüm paketi manifesti` yeşil. Belgeler `785b869` → run `43617628086`
+**10/10 YEŞİL**.
