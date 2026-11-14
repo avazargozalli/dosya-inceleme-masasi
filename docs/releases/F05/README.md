@@ -94,3 +94,80 @@ ubuntu-latest 580,79 s), `arayüz` 66 dosya / **1428** test, paket
 güvenli depo`, `kaynak arşivi`, `SBOM`, `belge worker'ı`, `sözleşmeler` ve
 `sürüm paketi manifesti` yeşil. Belgeler `785b869` → run `43617628086`
 **10/10 YEŞİL**.
+
+## F05-T03c — kapsam kapısı şemada: doğrudan SQL de çapraz dosya yazamaz (şema v31, 2026-11-14)
+
+**Neden.** T03b'nin dürüst sınırı (b) şuydu: `document_versions.case_id` ile
+`documents.case_id` arasında veritabanı düzeyinde kısıt/tetikleyici **yoktu**;
+savunma yalnız çekirdek sorgusundaydı. Yani doğrudan SQL yazan bir yol (yeni bir
+komut, bir betik, ileride eklenecek toplu içe aktarma) A dosyasının sürümünü,
+koşusunu veya segmentini B dosyası adına yazabiliyordu — P0 sınıfı sızıntı.
+
+**Yazılan (şema v31, `migrations/0031_scope_guards.sql`).** Kural artık
+şemada: bir satırın `case_id`'si üst kayıtlarının dosyasıyla birebir aynı
+olmalı; üst kayıt yoksa satır yazılmaz (fail-closed). **8 tablo × BEFORE
+INSERT/UPDATE = 16 tetikleyici**:
+
+- `document_versions` → `documents.case_id`
+- `parse_runs` → `document_versions.case_id`
+- `text_segments` → `parse_runs.case_id` **+** `page_id` kendi koşusunun sayfası
+  olmalı (yanlış sayfa = alıntı yanlış belgeye konumlanır)
+- `source_anchors` → sürümün dosyası, koşunun dosyası **ve** segmentin
+  (`segment_id` metin; yabancı anahtar değil) aynı koşu + dosyada olması
+- `source_marks` → sürüm dosyası (+ varsa koşu ve çapa dosyası)
+- `redaction_plans` → sürüm dosyası (+ varsa koşu dosyası)
+- `document_tags` → belgenin dosyası
+- `embeddings` → segmentin dosyası
+
+Reddetme sabit önekle yapılır: `RAISE(ABORT, 'DIM_SCOPE:<tablo>')` →
+`StorageError::ScopeViolation` → **`E_DB_SCOPE`** (mesaj metni başka bir SQLite
+hatasıyla karışmaz; hata işlem içinde oluşur, kısmi satır kalmaz).
+
+**Mevcut veri.** Tetikleyiciler yalnız **yeni** yazmayı engeller; v31'den önce
+yazılmış çapraz satırlar silinmez/değiştirilmez. `Database::scope_violations()`
+8 tabloyu ayrı ayrı **sayar** (kimlik/içerik yok). Güncelleme anında
+(`upgrade_with_backup`) toplam sıfırdan büyükse sayı denetime
+(`vault_upgrade` / `scope_violations`) yazılır — taramanın hem ucuz hem anlamlı
+olduğu tek yer.
+
+**Testler.** `scope_guard::tests` **+11** (her tablo için çapraz INSERT, sayfa
+üyeliği, UPDATE ile taşıma, aynı dosyada türev sürümün **meşru** kaldığı,
+taramanın eski satırı saydığı, şemadan türetilen "her kapsam tablosunun kapısı
+var mı" testi) + `upgrade_tests::upgrade_reports_cross_case_rows_left_by_the_previous_schema`
+→ `dim-storage --lib` **607 → 619**. İki redaction testi (`plan_list_keeps_row_when_version_is_missing`,
+`tampered_plan_case_scope_is_not_trusted`) artık bozuk satırı üretmeden önce
+**kapıyı bilinçli düşürür**: bu testler eski/kurcalanmış kasadan gelebilecek
+satırın **okuma** davranışını ölçer; v31 o durumu SQL üzerinden üretmez
+(yorumlarda yazılı).
+
+**Maliyet (ölçüldü; `crates/storage/tests/scope_guard_cost.rs`, `#[ignore]`,
+debug, tek makine).** 20.000 segment: tetikleyicili **110,9 µs/satır**,
+tetikleyicisiz **105,4 µs/satır** → **+5,5 µs/satır (%5)**.
+`scope_violations()` 40.000 segmentte **40,7 ms** (yalnız güncelleme anında).
+
+**Kapı kanıtı (gerçek koşular; betik `~/.hermes/cache/scratch/dim-scope-db-gates.py`,
+her mutasyon tek başına, `try/finally` + `os.utime` + sha256 birebir — sonra
+taban tekrar yeşil):** **9/9 KIRMIZI, taban 11/11 yeşilken** — M1–M8 her
+tetikleyici tek tek düşürülür (ilgili test kırmızı) · M9 tarama sayımının dosya
+koşulu bozulur (tarama testi kırmızı).
+
+**Dürüst sınırlar.** (a) Kapı **yeni yazma** içindir; eski aykırı satırlar
+sayılır ama **düzeltilmez** (birleştirme ayrı veri işi). (b) `anchor_id` /
+`source_anchor_id` / `output_version_id` gibi **kanıt referansı** sütunları bu
+turda kapsam dışı (çekirdek kapıları var; DB tetikleyicisi yok). (c)
+`document_tags` ve `embeddings` tetikleyicileri bugünkü yazma yolları için
+**ileriye dönük** (embeddings tablosuna bugün satır yazan yol yok). (d) SQLite
+dosyasını **doğrudan** düzenleyen bir saldırgan (kasa anahtarıyla) tetikleyiciyi
+de düşürebilir; bu kapı uygulama hatalarına karşı, dosya kurcalamasına karşı
+değil. (e) Tauri komutları komut olarak koşulmadı; davranış gerçek SQLite ile
+storage düzeyinde ölçüldü.
+
+**CI (ölçüldü).** Kod `20d7525` (7 dosya, **+999/−1**) → run `43626252354`
+**10/10 YEŞİL** (ilk koşu): `dim-storage` **619** iki OS'ta birebir (macos-15
+**266,87 s** / ubuntu-latest **301,26 s**; yeni 11 `scope_guard` testi logda tek
+tek `ok`), `dim-cli-adapters` **168**, `arayüz` 66 dosya / **1428** test, paket
+`index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB (arayüz değişmedi),
+`masaüstü kabuk` 51/0/5 + gerçek worker 5/0/0, `windows güvenli depo` 28,
+`SBOM` / `kaynak arşivi` / `sözleşmeler` / `sürüm paketi manifesti` yeşil.
+Yerel koşu **619/619** (415,18 s), `clippy -p dim-storage --all-targets
+-D warnings` ve masaüstü `cargo check --all-targets` temiz.

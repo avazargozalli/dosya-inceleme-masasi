@@ -157,3 +157,29 @@ gerçek SQLite ile storage düzeyinde ölçüldü.
 `parsing::tests` yeni iki test dâhil `dim-storage` **607** iki OS'ta birebir
 (macos-15 231,73 s / ubuntu-latest 580,79 s). Tauri komutu + gerçek pencere
 **insan bekliyor**.
+
+## F06-T02c — koşu/sayfa kapısı artık şemada (2026-11-14)
+
+T02b'nin dürüst sınırları (b) ve (c) kapandı: kapsam kuralı **şema v31**
+tetikleyicileriyle veritabanında durur (ayrıntı: F05-T03c bölümü).
+
+- `parse_runs`: `case_id`, `document_version_id`'nin dosyasıyla aynı olmalı.
+- `text_segments`: `case_id`, `parse_run_id`'nin dosyasıyla aynı olmalı **ve**
+  `page_id` kendi koşusunun sayfası olmalı (yanlış sayfa, alıntı geometrisini
+  yanlış belgeye bağlardı).
+- Reddedilen yazma `E_DB_SCOPE` verir; işlem içinde durur, kısmi sayfa/segment
+  kalmaz. Doğrudan SQL yazan bir yol artık kapıyı **atlayamaz**.
+
+**Testler.** `scope_guard::tests::a_parse_run_cannot_be_written_into_another_case`,
+`…a_segment_cannot_be_written_into_another_case_or_onto_a_foreign_page` ve
+şemadan türetilen kapı testi (`every_case_scoped_table_has_guard_triggers`) →
+`dim-storage --lib` **619**. **Maliyet (ölçüldü, debug):** segment yazımında
+**+5,5 µs/satır (%5)** (`tests/scope_guard_cost.rs`). Mutasyon kanıtı: F05-T03c
+9/9 (M2 koşu, M3 segment/sayfa tetikleyicisi düşünce ilgili testler kırmızı).
+
+**Dürüst sınırlar.** Tetikleyiciler yalnız yeni yazmayı engeller; v31 öncesi
+yazılmış çapraz satırlar sayılır (`scope_violations()`), düzeltilmez.
+
+**CI (ölçüldü).** Kod `20d7525` → run `43626252354` **10/10 YEŞİL**;
+`dim-storage` **619** iki OS'ta birebir (macos-15 266,87 s / ubuntu-latest
+301,26 s), `arayüz` 1428 test.
