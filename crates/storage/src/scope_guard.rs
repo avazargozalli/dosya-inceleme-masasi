@@ -1,5 +1,5 @@
-//! Dosya kapsamı **veritabanı düzeyinde** (şema v31 + v32): tetikleyiciler ve
-//! mevcut satır taraması.
+//! Dosya kapsamı **veritabanı düzeyinde** (şema v31 + v32 + v33): tetikleyiciler
+//! ve mevcut satır taraması.
 //!
 //! Neden: çekirdek yazma yolları (`add_version_with_parent`, `start_parse_run`,
 //! `store_pages`, `create_anchor`, `create_claim`, `link_evidence`, …) kapsamı
@@ -7,9 +7,10 @@
 //! atlar. Kapsam ihlali P0 kabul engelidir: A dosyasının metni B dosyasının
 //! aramasında bulunur. Bu yüzden kural artık şemada da durur
 //! (`migrations/0031_scope_guards.sql` zincir, `migrations/0032_reference_scope_guards.sql`
-//! kanıt/iddia referansları).
+//! kanıt/iddia referansları, `migrations/0033_json_reference_scope_guards.sql`
+//! JSON dizi kanıt listeleri).
 //!
-//! İki sınıf kapı vardır:
+//! Üç sınıf kapı vardır:
 //!
 //! * **zincir** (v31) — `case_id` taşıyan satırın üst kaydı aynı dosyada olmalı
 //!   (belge → sürüm → koşu → segment → çapa).
@@ -19,6 +20,11 @@
 //!   B dosyasındaki belge silinince A'nın kanıt bağı sessizce yok olur ve
 //!   kimlikle okuyan yollar (`anchor_locate`) A dosyasında B'nin metnini
 //!   gösterir.
+//! * **JSON dizi referansı** (v33) — kanıt listesi taşıyan dört sütun
+//!   (`notes`, `note_revisions`, `review_items`, `note_drafts` →
+//!   `source_anchor_ids`). Her eleman kendi dosyasının çapası olmalı;
+//!   `note_drafts` bilinçli olarak **daha gevşektir** (var olmayan kimlik
+//!   kalabilir — taslak metni kurtarır — ama başka dosyanın çapası giremez).
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -38,10 +44,11 @@ use crate::{Database, StorageError};
 /// test bu liste ile veritabanının gerçeğini karşılaştırır.
 ///
 /// İlk sekizi **zincir** kapısıdır (v31): satırın `case_id`'si üst kaydının
-/// dosyasıyla aynı olmalı. Son beşi **referans** kapısıdır (v32): satırın
-/// işaret ettiği kanıt/iddia kendi dosyasından olmalı.
+/// dosyasıyla aynı olmalı. Sonraki beşi **referans** kapısıdır (v32): satırın
+/// işaret ettiği kanıt/iddia kendi dosyasından olmalı. Son dördü **JSON dizi
+/// referansı** kapısıdır (v33): `source_anchor_ids` dizisinin her elemanı.
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 13] = [
+pub(crate) const GUARDED_TABLES: [&str; 17] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -57,6 +64,11 @@ pub(crate) const GUARDED_TABLES: [&str; 13] = [
     "event_sources",
     "claim_relations",
     "tasks",
+    // JSON dizi referansı (v33)
+    "notes",
+    "note_revisions",
+    "review_items",
+    "note_drafts",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -77,6 +89,10 @@ pub struct ScopeViolationCounts {
     pub event_sources: i64,
     pub claim_relations: i64,
     pub tasks: i64,
+    pub notes: i64,
+    pub note_revisions: i64,
+    pub review_items: i64,
+    pub note_drafts: i64,
 }
 
 impl ScopeViolationCounts {
@@ -96,6 +112,10 @@ impl ScopeViolationCounts {
             + self.event_sources
             + self.claim_relations
             + self.tasks
+            + self.notes
+            + self.note_revisions
+            + self.review_items
+            + self.note_drafts
     }
 }
 
@@ -200,6 +220,55 @@ impl Database {
                   WHERE t.source_anchor_id IS NOT NULL AND NOT EXISTS (
                         SELECT 1 FROM source_anchors a
                          WHERE a.id = t.source_anchor_id AND a.case_id = t.case_id)",
+            )?,
+            // v33 — JSON dizi kanıt listeleri. Bozuk JSON da aykırı sayılır:
+            // referans doğrulanamıyorsa "temiz" denemez.
+            notes: count(
+                "SELECT count(*) FROM notes n
+                  WHERE NOT json_valid(n.source_anchor_ids)
+                     OR EXISTS (
+                          SELECT 1 FROM json_each(
+                                 CASE WHEN json_valid(n.source_anchor_ids)
+                                      THEN n.source_anchor_ids ELSE '[]' END) j
+                           WHERE j.type <> 'text'
+                              OR NOT EXISTS (SELECT 1 FROM source_anchors a
+                                              WHERE a.id = j.value AND a.case_id = n.case_id))",
+            )?,
+            note_revisions: count(
+                "SELECT count(*) FROM note_revisions r
+                  WHERE NOT json_valid(r.source_anchor_ids)
+                     OR NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = r.note_id)
+                     OR EXISTS (
+                          SELECT 1 FROM json_each(
+                                 CASE WHEN json_valid(r.source_anchor_ids)
+                                      THEN r.source_anchor_ids ELSE '[]' END) j
+                           WHERE j.type <> 'text'
+                              OR NOT EXISTS (SELECT 1 FROM source_anchors a
+                                               JOIN notes n ON n.id = r.note_id
+                                              WHERE a.id = j.value AND a.case_id = n.case_id))",
+            )?,
+            review_items: count(
+                "SELECT count(*) FROM review_items i
+                  WHERE NOT json_valid(i.source_anchor_ids)
+                     OR EXISTS (
+                          SELECT 1 FROM json_each(
+                                 CASE WHEN json_valid(i.source_anchor_ids)
+                                      THEN i.source_anchor_ids ELSE '[]' END) j
+                           WHERE j.type <> 'text'
+                              OR NOT EXISTS (SELECT 1 FROM source_anchors a
+                                              WHERE a.id = j.value AND a.case_id = i.case_id))",
+            )?,
+            // Taslak bilinçli olarak yalnız **başka dosyada var olan** çapayı
+            // aykırı sayar (var olmayan kimlik taslakta meşru: metni kurtarır).
+            note_drafts: count(
+                "SELECT count(*) FROM note_drafts d
+                  WHERE NOT json_valid(d.source_anchor_ids)
+                     OR EXISTS (
+                          SELECT 1 FROM json_each(
+                                 CASE WHEN json_valid(d.source_anchor_ids)
+                                      THEN d.source_anchor_ids ELSE '[]' END) j
+                            JOIN source_anchors a ON a.id = j.value
+                           WHERE a.case_id <> d.case_id)",
             )?,
         })
     }
@@ -669,6 +738,196 @@ mod tests {
         scope_error(moved, "tasks");
     }
 
+    /// v33 — notun **JSON dizi** kaynak listesi: her eleman kendi dosyasının
+    /// çapası olmalı. Bugünkü canlı yol: `validate_note_anchors` doğruluyor,
+    /// ama doğrudan SQL yazan bir yol bu kapıyı atlar.
+    #[test]
+    fn a_note_cannot_cite_another_cases_anchor_in_its_source_list() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let insert = |id: &str, case: &str, anchors: &str| {
+            db.conn().execute(
+                "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+                 VALUES (?1,?2,'Not','{\"v\":1,\"text\":\"metin\"}','user','case_private',?3,
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, anchors],
+            )
+        };
+
+        scope_error(insert("nx", "c1", "[\"a9\"]"), "notes");
+        scope_error(insert("ny", "c1", "[\"a1\",\"a9\"]"), "notes");
+        // Var olmayan kimlik de yazılmaz: doğrulanamayan referans kabul edilmez.
+        scope_error(insert("nz", "c1", "[\"yok\"]"), "notes");
+        // Bozuk JSON: kapı kendi koduyla reddeder (SQLite "malformed JSON" değil).
+        scope_error(insert("nw", "c1", "[\"a9\""), "notes");
+        assert_eq!(count(&db, "notes"), 0, "reddedilen yazma iz bırakmaz");
+
+        insert("n1", "c1", "[\"a1\"]").expect("aynı dosyada kaynak yazılır");
+        insert("n2", "c1", "[]").expect("kaynaksız not meşru");
+
+        let moved = db.conn().execute(
+            "UPDATE notes SET source_anchor_ids='[\"a9\"]' WHERE id='n1'",
+            [],
+        );
+        scope_error(moved, "notes");
+        let kept: String = db
+            .conn()
+            .query_row(
+                "SELECT source_anchor_ids FROM notes WHERE id='n1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("not");
+        assert_eq!(kept, "[\"a1\"]", "reddedilen UPDATE satırı bırakır");
+    }
+
+    /// v33 — revizyonda `case_id` yok: dosya **üst nottan** okunur.
+    #[test]
+    fn a_note_revision_cannot_cite_another_cases_anchor() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+                 VALUES ('n1','c1','Not','{\"v\":1,\"text\":\"metin\"}','user','case_private','[\"a1\"]',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('n9','c2','Diger not','{\"v\":1,\"text\":\"gizli\"}','user','case_private','[\"a9\"]',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+            )
+            .expect("notlar");
+        let insert = |note: &str, anchors: &str| {
+            db.conn().execute(
+                "INSERT INTO note_revisions (note_id,revision_no,title,body_ast,source_anchor_ids,origin,created_at)
+                 VALUES (?1,2,'Not','{\"v\":1,\"text\":\"metin\"}',?2,'edit','2026-01-01T00:00:00Z')",
+                rusqlite::params![note, anchors],
+            )
+        };
+
+        scope_error(insert("n1", "[\"a9\"]"), "note_revisions");
+        scope_error(insert("n1", "[\"a1\",\"a9\"]"), "note_revisions");
+        scope_error(insert("n9", "[\"a1\"]"), "note_revisions");
+        assert_eq!(count(&db, "note_revisions"), 0, "hiçbir revizyon yazılmadı");
+
+        insert("n1", "[\"a1\"]").expect("üst notun dosyasındaki çapa meşru");
+        let moved = db.conn().execute(
+            "UPDATE note_revisions SET source_anchor_ids='[\"a9\"]' WHERE note_id='n1'",
+            [],
+        );
+        scope_error(moved, "note_revisions");
+    }
+
+    /// v33 — inceleme öğesinin kanıt listesi kendi dosyasından.
+    #[test]
+    fn a_review_item_cannot_cite_another_cases_anchor_in_its_source_list() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let insert = |id: &str, case: &str, anchors: &str| {
+            db.conn().execute(
+                "INSERT INTO review_items (id,case_id,item_kind,payload,source_anchor_ids,created_at,updated_at)
+                 VALUES (?1,?2,'claim_candidate','{}',?3,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, anchors],
+            )
+        };
+
+        scope_error(insert("ix", "c1", "[\"a9\"]"), "review_items");
+        scope_error(insert("iw", "c1", "[\"a1\",\"a9\"]"), "review_items");
+        assert_eq!(count(&db, "review_items"), 0);
+
+        insert("i1", "c1", "[\"a1\"]").expect("aynı dosyada öneri yazılır");
+        let moved = db.conn().execute(
+            "UPDATE review_items SET source_anchor_ids='[\"a9\"]' WHERE id='i1'",
+            [],
+        );
+        scope_error(moved, "review_items");
+    }
+
+    /// v33 — taslak bilinçli olarak **gevşek**: var olmayan kimlik kalır (metin
+    /// kurtarılır), başka dosyanın çapası girmez.
+    #[test]
+    fn a_note_draft_keeps_a_missing_anchor_but_not_a_foreign_one() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let save = |posture: &str, anchors: &str| {
+            db.conn().execute(
+                "INSERT INTO note_drafts (case_id,note_id,title,body,source_anchor_ids,updated_at)
+                 VALUES ('c1',?1,'Taslak','yaziyor',?2,'2026-01-01T00:00:00Z')
+                 ON CONFLICT(case_id,note_id) DO UPDATE SET source_anchor_ids=excluded.source_anchor_ids",
+                rusqlite::params![posture, anchors],
+            )
+        };
+
+        // Yarım kalan otomatik kayıt: çapa henüz yok → metin kaybolmaz.
+        save("", "[\"henuz-yok\"]").expect("var olmayan kimlik taslakta meşru");
+        save("", "[\"a1\"]").expect("aynı dosyanın çapası meşru");
+        // INSERT yolu (yeni taslak) ve UPDATE yolu (var olan taslak) ayrı kapılar.
+        scope_error(save("yeni-not", "[\"a9\"]"), "note_drafts");
+        scope_error(save("", "[\"a9\"]"), "note_drafts");
+        scope_error(save("", "[\"a1\",\"a9\"]"), "note_drafts");
+        let kept: String = db
+            .conn()
+            .query_row(
+                "SELECT source_anchor_ids FROM note_drafts WHERE case_id='c1' AND note_id=''",
+                [],
+                |r| r.get(0),
+            )
+            .expect("taslak");
+        assert_eq!(kept, "[\"a1\"]", "reddedilen yazma taslağı bozmaz");
+
+        let moved = db.conn().execute(
+            "UPDATE note_drafts SET source_anchor_ids='[\"a9\"]' WHERE case_id='c1'",
+            [],
+        );
+        scope_error(moved, "note_drafts");
+    }
+
+    /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri
+    /// **sayılır** (silinmez); bozuk JSON da "doğrulanamıyor" diye sayılır.
+    #[test]
+    fn the_scan_counts_json_array_rows_written_before_the_guards_existed() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        assert_eq!(db.scope_violations().expect("tarama").total(), 0);
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_notes_bi;
+                 DROP TRIGGER scope_guard_note_revisions_bi;
+                 DROP TRIGGER scope_guard_review_items_bi;
+                 DROP TRIGGER scope_guard_note_drafts_bi;",
+            )
+            .expect("tetikleyici düşür");
+        db.conn()
+            .execute_batch(
+                "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+                 VALUES ('old-n','c1','Eski not','{\"v\":1,\"text\":\"x\"}','user','case_private','[\"a9\"]',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO note_revisions (note_id,revision_no,title,body_ast,source_anchor_ids,origin,created_at)
+                 VALUES ('old-n',1,'Eski not','{\"v\":1,\"text\":\"x\"}','[\"a9\"]','create','2026-01-01T00:00:00Z');
+                 INSERT INTO review_items (id,case_id,item_kind,payload,source_anchor_ids,created_at,updated_at)
+                 VALUES ('old-i','c1','claim_candidate','{}','[\"a9\"]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO note_drafts (case_id,note_id,title,body,source_anchor_ids,updated_at)
+                 VALUES ('c1','','Taslak','x','[\"a9\"]','2026-01-01T00:00:00Z');
+                 INSERT INTO note_drafts (case_id,note_id,title,body,source_anchor_ids,updated_at)
+                 VALUES ('c1','bozuk','Taslak','x','[oops','2026-01-01T00:00:00Z');",
+            )
+            .expect("eski çapraz diziler");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.notes, 1, "çapraz not kaynağı sayılır");
+        assert_eq!(counts.note_revisions, 1);
+        assert_eq!(counts.review_items, 1);
+        assert_eq!(counts.note_drafts, 2, "çapraz + bozuk JSON");
+        assert_eq!(counts.total(), 5);
+        // Diğer sınıflar temiz: tarama sınıfları ayırır.
+        assert_eq!(counts.claims, 0);
+        assert_eq!(counts.document_versions, 0);
+        // Satırlar silinmez, yalnız sayılır.
+        assert_eq!(count(&db, "notes"), 1);
+    }
+
     #[test]
     fn the_scan_counts_reference_rows_written_before_the_guards_existed() {
         let db = db();
@@ -770,9 +1029,11 @@ mod tests {
     /// adlandırmalı. Yeni bir tablo ya da yeni bir referans sütunu sessizce
     /// kapısız kalamaz.
     ///
-    /// İki kural: (1) `case_id` + zincir/referans sütunu; (2) `case_id`
+    /// Üç kural: (1) `case_id` + zincir/referans sütunu; (2) `case_id`
     /// taşımayan ama iki kapsamlı kaydı bağlayan tablo (`event_sources`:
-    /// `event_id` + `source_anchor_id`).
+    /// `event_id` + `source_anchor_id`); (3) **JSON dizi** kanıt listesi
+    /// (`*_anchor_ids` — `note_revisions`in `case_id`'si yoktur, dosya üst
+    /// nottan okunur; kural yalnız sütun adına bakar).
     #[test]
     fn every_case_scoped_table_has_guard_triggers() {
         let db = db();
@@ -788,6 +1049,9 @@ mod tests {
             "claim_id",
             "related_claim_id",
         ];
+        // JSON dizi referansı taşıyan tablolar: kapı `json_each` ile dizinin
+        // **her** elemanını denetlemeli.
+        let json_anchor_tables = ["notes", "note_revisions", "review_items", "note_drafts"];
         let mut stmt = db
             .conn()
             .prepare(
@@ -817,6 +1081,7 @@ mod tests {
             let has = |wanted: &str| columns.iter().any(|c| c == wanted);
             if (has("case_id") && scope_columns.iter().any(|c| has(c)))
                 || (has("event_id") && has("source_anchor_id"))
+                || columns.iter().any(|c| c.ends_with("_anchor_ids"))
             {
                 derived.push(table);
             }
@@ -842,6 +1107,12 @@ mod tests {
                     sql.contains(&format!("DIM_SCOPE:{table}")),
                     "{expected} kendi tablosunu adlandırmıyor"
                 );
+                if json_anchor_tables.contains(&table) {
+                    assert!(
+                        sql.contains("json_each("),
+                        "{expected} dizinin elemanlarını denetlemiyor"
+                    );
+                }
             }
         }
     }

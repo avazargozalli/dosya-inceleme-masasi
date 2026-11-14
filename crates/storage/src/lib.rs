@@ -346,9 +346,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0032_reference_scope_guards",
         sql: include_str!("migrations/0032_reference_scope_guards.sql"),
     },
+    Migration {
+        version: 33,
+        name: "0033_json_reference_scope_guards",
+        sql: include_str!("migrations/0033_json_reference_scope_guards.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 32;
+pub const CURRENT_SCHEMA_VERSION: u32 = 33;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -523,6 +528,10 @@ impl Database {
                         "eventSources": counts.event_sources,
                         "claimRelations": counts.claim_relations,
                         "tasks": counts.tasks,
+                        "notes": counts.notes,
+                        "noteRevisions": counts.note_revisions,
+                        "reviewItems": counts.review_items,
+                        "noteDrafts": counts.note_drafts,
                     }),
                 );
             }

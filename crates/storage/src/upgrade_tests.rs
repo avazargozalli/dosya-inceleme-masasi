@@ -259,6 +259,94 @@ fn upgrade_reports_cross_case_references_left_by_the_previous_schema() {
 }
 
 #[test]
+fn upgrade_reports_cross_case_json_anchor_lists_left_by_the_previous_schema() {
+    // Şema v32'de tek sütunlu kanıt referansları kapılıydı ama **JSON dizi**
+    // sütunları (`source_anchor_ids`) kapı dışındaydı: not, revizyon, inceleme
+    // öğesi ve taslak başka dosyanın çapasını "kaynağım" diye taşıyabiliyordu.
+    // v33 tetikleyicileri yalnız **yeni** yazmayı engeller; eski satırlar
+    // güncelleme anında sayı olarak denetime düşer (kimlik/içerik yok).
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 32);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d2','c2','Diger belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v2','d2','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z'),
+                    ('r2','v2','c2','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z');
+             INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+             VALUES ('p1','r1',0,'native'),('p2','r2',0,'native');
+             INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s1','r1','p1','c1','itiraz','itiraz','2026-01-01T00:00:00Z'),
+                    ('s2','r2','p2','c2','gizli','gizli','2026-01-01T00:00:00Z');
+             INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                exact_quote,quote_hash,created_at,updated_at)
+             VALUES ('a1','c1','v1','r1','p1','s1',0,6,'itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('a2','c2','v2','r2','p2','s2',0,5,'gizli','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             -- v32'de kabul edilen çapraz JSON dizi referansları.
+             INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+             VALUES ('n-old','c1','Eski not','{\"v\":1,\"text\":\"metin\"}','user','case_private','[\"a2\"]',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO note_revisions (note_id,revision_no,title,body_ast,source_anchor_ids,origin,created_at)
+             VALUES ('n-old',2,'Eski not','{\"v\":1,\"text\":\"metin\"}','[\"a2\"]','edit','2026-01-01T00:00:00Z');
+             INSERT INTO review_items (id,case_id,item_kind,payload,source_anchor_ids,created_at,updated_at)
+             VALUES ('i-old','c1','claim_candidate','{}','[\"a2\"]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO note_drafts (case_id,note_id,title,body,source_anchor_ids,updated_at)
+             VALUES ('c1','','Taslak','yarim','[\"a2\"]','2026-01-01T00:00:00Z');",
+        )
+        .expect("v32 çapraz JSON dizileri");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["notes"], 1, "çapraz not kaynağı sayılır");
+    assert_eq!(parsed["noteRevisions"], 1);
+    assert_eq!(parsed["reviewItems"], 1);
+    assert_eq!(parsed["noteDrafts"], 1);
+    assert_eq!(parsed["claims"], 0, "v32 sınıfı temiz");
+    // Satırlar **silinmez**: tarama yalnız sayar.
+    let notes: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM notes", [], |r| r.get(0))
+        .expect("sayım");
+    assert_eq!(notes, 1);
+    // Yeni çapraz dizi artık kapıda durur (E_DB_SCOPE).
+    let rejected = db.conn().execute(
+        "INSERT INTO notes (id,case_id,title,body_ast,author_kind,visibility_label,source_anchor_ids,created_at,updated_at)
+         VALUES ('n-new','c1','Yeni not','{\"v\":1,\"text\":\"metin\"}','user','case_private','[\"a2\"]',
+                 '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        [],
+    );
+    match rejected.map_err(StorageError::from) {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "notes"),
+        other => panic!("v33 kapısı yeni çapraz diziyi reddetmeli: {other:?}"),
+    }
+}
+
+#[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("vault.db");
