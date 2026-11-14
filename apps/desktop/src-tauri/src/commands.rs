@@ -7715,17 +7715,18 @@ pub fn ai_consent_preview(
 
 /// Onaylı aktarımı **gerçekten** yürütür. Gönderilecek içerik **onayın belge
 /// listesinden** çözülür — çağıranın verdiği listeden değil; böylece onay
-/// sonradan sessizce genişletilemez. Gönderim öncesi `ai_context_items`
-/// (hangi sürüm, kaç bayt), başarılı gönderimden sonra `transfer_receipts`
-/// (hedef, çıkan baytların sha256'sı) yazılır. Onay yoksa, kapsam boşsa veya
-/// profil tanımlı değilse çağrı hiç kurulmaz.
+/// sonradan sessizce genişletilemez. Görev türü de **çağırandan alınmaz**:
+/// onayın amacından çekirdekte türetilir (tanınmayan amaçta `E_AI_PURPOSE`).
+/// Gönderim öncesi `ai_context_items` (hangi sürüm, kaç bayt), başarılı
+/// gönderimden sonra `transfer_receipts` (hedef, çıkan baytların sha256'sı)
+/// yazılır. Onay yoksa, kapsam boşsa veya profil tanımlı değilse çağrı hiç
+/// kurulmaz.
 #[tauri::command]
 pub fn ai_run_execute(
     state: State<'_, AppState>,
     case_id: String,
     provider_id: String,
     consent_id: String,
-    task_type: String,
     mask_terms: Option<Vec<String>>,
     mask_plan_id: Option<String>,
 ) -> Result<AiCandidateRow, ApiError> {
@@ -7820,7 +7821,6 @@ pub fn ai_run_execute(
     let run = db.start_ai_run(
         &case_id,
         &NewAiRun {
-            task_type: task_type.clone(),
             provider_id,
             model_snapshot: model.clone(),
             input_manifest_hash: manifest,
@@ -7918,7 +7918,9 @@ pub fn ai_run_execute(
 
     let request = AiRequest {
         case_id,
-        task_type: task_type.clone(),
+        // Görev türü **satırdan** okunur: `start_ai_run` onu onayın amacından
+        // türetip yazdı; çağıranın ayrı bir iddiası yok.
+        task_type: run.task_type.clone(),
         prompt_version: "1".to_string(),
         output_schema_version: "candidate.v1".to_string(),
         segments: outbound_record
@@ -8036,7 +8038,7 @@ pub fn ai_run_execute(
     // `partial` yazılır — "gönderildi ama sicili yok" sessizce başarı sayılmaz.
     let receipt = db.finish_transfer_receipt(&attempt, "dispatched");
     let payload = serde_json::to_string(&candidate.payload).unwrap_or_else(|_| "{}".to_string());
-    let row = db.record_ai_candidate(&run.id, &task_type, &payload)?;
+    let row = db.record_ai_candidate(&run.id, &run.task_type, &payload)?;
     let report = serde_json::json!({
         "segments": scope.segments.len(),
         "documents": scope.documents.len(),

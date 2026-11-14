@@ -38,20 +38,9 @@ import {
   warningCount,
 } from "../lib/candidate";
 
-/**
- * Onay **amaca özgüdür** (F09-T09): çalıştırmanın görev türü, onaylanan amaca
- * göre koşar. `summarize` sabiti, "İddia çıkarımı" için onay alınmışken modele
- * "özetle" demek olurdu.
- */
-const PURPOSE_TASKS: Record<string, string> = {
-  ozet: "summarize",
-  olay_cikarimi: "extract_events",
-  iddia_cikarimi: "extract_claims",
-};
-
-function purposeTask(purpose: string): string {
-  return PURPOSE_TASKS[purpose] ?? purpose;
-}
+// Onay **amaca özgüdür** (F09-T09): amaç onay kaydına yazılır, çalıştırmanın
+// görev türünü **çekirdek** ondan türetir. Arayüz görev türü üretmez —
+// buradaki eşlemenin ikinci bir kopyası olsaydı ikisi ayrışabilirdi.
 
 function purposeLabel(purpose: string): string {
   switch (purpose) {
@@ -542,33 +531,19 @@ export function Ai() {
     setError(null);
     try {
       // Gönderim kapsamı **onaydan** çözülür; burada belge listesi verilmez.
-      // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak koşmaz.
-      // Maske **yalnız** girildiyse/seçildiyse gönderilir: boş liste göndermek,
-      // "maske istendi ama uygulanmadı" izlenimi verirdi. Plan seçiliyse
-      // terimler çekirdekte türetilir; arayüz yalnız plan kimliğini taşır.
-      const candidate = maskPlanId
-        ? await api.aiRunExecute(
-            caseId,
-            consentProvider.id,
-            consent.id,
-            purposeTask(consent.purpose),
-            maskTerms.length > 0 ? maskTerms : null,
-            maskPlanId,
-          )
-        : maskTerms.length > 0
-          ? await api.aiRunExecute(
-              caseId,
-              consentProvider.id,
-              consent.id,
-              purposeTask(consent.purpose),
-              maskTerms,
-            )
-          : await api.aiRunExecute(
-              caseId,
-              consentProvider.id,
-              consent.id,
-              purposeTask(consent.purpose),
-            );
+      // Görev türü de onaydan gelir: "İddia çıkarımı" onayı özet olarak
+      // koşmaz — arayüz görev türü **göndermez**, çekirdek onayın amacından
+      // türetir. Maske **yalnız** girildiyse/seçildiyse gönderilir: boş liste
+      // göndermek, "maske istendi ama uygulanmadı" izlenimi verirdi. Plan
+      // seçiliyse terimler çekirdekte türetilir; arayüz yalnız plan kimliğini
+      // taşır.
+      const candidate = await api.aiRunExecute(
+        caseId,
+        consentProvider.id,
+        consent.id,
+        maskTerms.length > 0 ? maskTerms : null,
+        maskPlanId || null,
+      );
       const next = await api.aiOverview(caseId);
       if (caseGen.current !== gen) return;
       setOverview(next);

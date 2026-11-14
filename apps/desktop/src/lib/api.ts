@@ -2478,12 +2478,14 @@ export const api = {
    * maskelenir; terimler kasadan çıkmaz, yalnız sayı ve özet sicile düşer.
    * `maskPlanId` verilirse karartma planının bölgelerinden türetilen terimler
    * de aynı maskeye eklenir (terimler arayüze dönmez).
+   *
+   * **Görev türü gönderilmez**: çekirdek onu onayın amacından türetir
+   * (şartname §13.5) — onaylanan amaç dışında bir görev koşturulamaz.
    */
   aiRunExecute: (
     caseId: string,
     providerId: string,
     consentId: string,
-    taskType: string,
     maskTerms: string[] | null = null,
     maskPlanId: string | null = null,
   ) =>
@@ -2491,7 +2493,6 @@ export const api = {
       caseId,
       providerId,
       consentId,
-      taskType,
       maskTerms,
       maskPlanId,
     }),

@@ -649,7 +649,7 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
     // Gönderim kapsamı onaydan çözülür: belge listesi burada verilmez.
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
     expect(mocks.documentList).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(overviewCalls).toBe(2));
   });
@@ -1041,7 +1041,7 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() =>
-      expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize"),
+      expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null),
     );
 
     switchCase("p2");
@@ -1829,14 +1829,14 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT_NEW.id, "summarize");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT_NEW.id, null, null);
 
     revokeGate.resolve();
     // Eski onayın geç iptali yeni onayı silmez.
     await waitFor(() => expect(button(t("ai.revoke")).disabled).toBe(false));
   });
 
-  it("çalıştırma onayın amacıyla koşar: iddia çıkarımı özet diye gönderilmez", async () => {
+  it("onay amacı kayda geçer; görev türünü arayüz göndermez (çekirdek türetir)", async () => {
     setup({ consent: async () => ({ ...CONSENT, purpose: "iddia_cikarimi" }) });
     await screen.findByText("api:claude (api)");
 
@@ -1856,10 +1856,11 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
 
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "extract_claims");
+    // Görev türü IPC'de taşınmaz: onay kimliği gider, çekirdek amacı okur.
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
   });
 
-  it("olay çıkarımı onayı olay göreviyle koşar", async () => {
+  it("olay çıkarımı onayı da görev türünü arayüzde hesaplamaz", async () => {
     setup({ consent: async () => ({ ...CONSENT, purpose: "olay_cikarimi" }) });
     await screen.findByText("api:claude (api)");
 
@@ -1869,7 +1870,7 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
 
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "extract_events");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
   });
 
   it("onaydan sonra amaç değişirse onay düşer ve yeni gönderim yeniden onay ister", async () => {
@@ -1885,13 +1886,13 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     expect(button(t("ai.run")).disabled).toBe(true);
     expect(mocks.aiRunExecute).toHaveBeenCalledTimes(0);
 
-    // Yeniden onay: gönderim yeni amacın göreviyle koşar.
+    // Yeniden onay: amaç yeni onay kaydına geçer; görev türünü çekirdek türetir.
     mocks.aiConsentCreate.mockResolvedValueOnce({ ...CONSENT, purpose: "iddia_cikarimi" });
     fireEvent.click(button(t("ai.approve")));
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "extract_claims");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
   });
 
   it("onay satırı onaylanan amacı yazar", async () => {
@@ -2265,7 +2266,7 @@ describe("AI ekranı — sağlayıcı değişimi ve onayın yürütülebilirliğ
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
   });
 
   it("E_AI_PROVIDER_CHANGED ekranı tazeler: varış yeri yazılır, çalıştır kapanır", async () => {
@@ -2921,20 +2922,23 @@ describe("AI ekranı — gönderim maskesi", () => {
     );
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize", [
-      "Ahmet Yılmaz",
-      "Acme Ltd.",
-    ]);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith(
+      "p1",
+      "prov-a",
+      CONSENT.id,
+      ["Ahmet Yılmaz", "Acme Ltd."],
+      null,
+    );
   });
 
-  it("maske girilmezse çağrı dört argümanla kalır (maske istenmedi)", async () => {
+  it("maske girilmezse çalıştırma maskesiz/plansız gider (null)", async () => {
     setup();
     await screen.findByText("api:claude (api)");
     fireEvent.click(button(t("ai.approve")));
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, "summarize");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
   });
 
   it("geçersiz terim (tek karakter) çalıştırmayı kapatır ve nedenini yazar", async () => {
@@ -3132,7 +3136,6 @@ describe("AI ekranı — gönderim maskesi", () => {
       "p1",
       "prov-a",
       CONSENT.id,
-      "summarize",
       null,
       "plan-1",
     );
@@ -3169,7 +3172,7 @@ describe("AI ekranı — gönderim maskesi", () => {
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p2", "prov-local", CONSENT.id, "summarize");
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p2", "prov-local", CONSENT.id, null, null);
   });
 });
 

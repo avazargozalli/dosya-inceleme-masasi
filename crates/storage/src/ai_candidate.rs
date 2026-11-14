@@ -1486,7 +1486,6 @@ mod tests {
             .start_ai_run(
                 &case.id,
                 &NewAiRun {
-                    task_type: "summarize".into(),
                     provider_id: "p1".into(),
                     model_snapshot: "unknown".into(),
                     input_manifest_hash: "h".into(),

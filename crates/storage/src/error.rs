@@ -133,6 +133,11 @@ pub enum StorageError {
     /// bilinmediği için hiçbir gönderim yapılmaz — yeniden onay gerekir.
     #[error("onay maske bağını taşımıyor (eski onay); yeniden onay gerekir")]
     AiConsentUnbound,
+    /// Onay **amaca özgüdür** (şartname §13.5): onaylanan amaç, çalıştırmanın
+    /// görev türünü belirler. Tanınmayan amaç ne onaya yazılır ne de bir
+    /// göreve eşlenir — bilinmeyen amaç sessizce "özet" koşmaz.
+    #[error("aktarım onayı tanınmayan amaç taşıyor: «{0}»")]
+    AiPurpose(String),
     #[error("sağlayıcı profili bulunamadı")]
     AiProvider,
     #[error("AI kapalı: sağlayıcı bağlanmadan aktarım onayı alınamaz")]
@@ -255,6 +260,7 @@ impl StorageError {
             Self::AiProviderChanged => "E_AI_PROVIDER_CHANGED",
             Self::AiMaskChanged => "E_AI_MASK_CHANGED",
             Self::AiConsentUnbound => "E_AI_CONSENT_UNBOUND",
+            Self::AiPurpose(_) => "E_AI_PURPOSE",
             Self::AiProvider => "E_AI_PROVIDER",
             Self::AiOff => "E_AI_OFF",
             Self::AiReceipt(_) => "E_AI_RECEIPT",

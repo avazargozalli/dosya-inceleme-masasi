@@ -35,7 +35,11 @@ pub struct AiRunRow {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAiRun {
-    pub task_type: String,
+    // Not: `task_type` **çağırandan alınmaz**. Onay amaca bağlıdır
+    // (şartname §13.5); görev türü onayın `purpose` alanından **çekirdekte**
+    // türetilir (`purpose_task_type`). Alanı burada tutmak, arayüzün ya da
+    // doğrudan IPC çağıranın onaylanan amaçtan başka bir görevi
+    // koşturmasına izin verirdi.
     pub provider_id: String,
     pub model_snapshot: String,
     pub input_manifest_hash: String,
@@ -95,6 +99,21 @@ pub struct NewTransferConsent {
     /// olmalıdır (`E_MASK_PLAN_SCOPE`, gönderim yoluyla aynı kapı).
     #[serde(default)]
     pub mask_plan_id: Option<String>,
+}
+
+/// Onay **amaca özgüdür** (şartname §13.5: kullanıcı «sağlayıcı/modeli, amaç
+/// ve kapsamı» görür). Onay kaydındaki `purpose`, çalıştırmanın **görev
+/// türünü** belirler; eşleme tek yerde durur — arayüzün kendi kopyası yoktur.
+///
+/// Tanınmayan amaç `None`: ne onaya yazılır ne de bir göreve eşlenir
+/// (bilinmeyen amaç sessizce "özet" koşmaz; `E_AI_PURPOSE`).
+pub fn purpose_task_type(purpose: &str) -> Option<&'static str> {
+    match purpose {
+        "ozet" => Some("summarize"),
+        "olay_cikarimi" => Some("extract_events"),
+        "iddia_cikarimi" => Some("extract_claims"),
+        _ => None,
+    }
 }
 
 /// Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik.
@@ -396,6 +415,13 @@ impl Database {
         if new.case_scope.trim().is_empty() || new.purpose.trim().is_empty() {
             return Err(StorageError::InvalidSetting);
         }
+        // Amaç **kapalı küme**: tanınmayan amaç onaya yazılmaz — yazılsaydı
+        // çalıştırma sırasında hangi göreve karşılık geldiği bilinemezdi
+        // (ve `E_AI_PURPOSE` ile zaten çalıştırılamazdı).
+        let purpose = new.purpose.trim();
+        if purpose_task_type(purpose).is_none() {
+            return Err(StorageError::AiPurpose(purpose.to_string()));
+        }
         let profile = self
             .profile_record(&new.provider_id)?
             .ok_or(StorageError::AiProvider)?;
@@ -492,7 +518,7 @@ impl Database {
                 id,
                 snapshot,
                 new.case_scope,
-                new.purpose.trim(),
+                purpose,
                 serde_json::to_string(&selected).unwrap_or_else(|_| "[]".into()),
                 new.expires_at,
                 new.consent_text_version,
@@ -507,10 +533,10 @@ impl Database {
                    AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?3)
                    AND id<>?4",
             )?;
-            let rows = stmt.query_map(
-                rusqlite::params![new.case_scope, new.purpose.trim(), now, id],
-                |row| row.get(0),
-            )?;
+            let rows = stmt
+                .query_map(rusqlite::params![new.case_scope, purpose, now, id], |row| {
+                    row.get(0)
+                })?;
             rows.collect::<rusqlite::Result<Vec<String>>>()?
         };
         for previous in &superseded {
@@ -655,6 +681,12 @@ impl Database {
         if consent.case_scope != case_id {
             return Err(StorageError::AiConsent);
         }
+        // Görev türü **onaydan** türetilir (şartname §13.5): çağıranın "hangi
+        // görev" dediği değil, kullanıcının onayladığı amaç koşar. Tanınmayan
+        // amaç (elle/eski kayıt) tahmin edilmez — hangi görevin onaylandığı
+        // bilinmiyordur, çalıştırma reddedilir.
+        let task_type = purpose_task_type(consent.purpose.trim())
+            .ok_or_else(|| StorageError::AiPurpose(consent.purpose.clone()))?;
         if consent.selected_document_ids.is_empty() {
             return Err(StorageError::AiConsent);
         }
@@ -710,7 +742,7 @@ impl Database {
             rusqlite::params![
                 id,
                 case_id,
-                new.task_type,
+                task_type,
                 new.provider_id,
                 new.model_snapshot,
                 new.input_manifest_hash,
@@ -2488,7 +2520,6 @@ mod tests {
 
     fn run(_case_id: &str, consent_id: &str) -> NewAiRun {
         NewAiRun {
-            task_type: "summarize".into(),
             provider_id: "p1".into(),
             model_snapshot: "claude-sonnet".into(),
             input_manifest_hash: "h".into(),
@@ -5190,5 +5221,112 @@ mod tests {
             .expect("düz satır");
         assert_eq!(plain_row.mask_term_count, 0);
         assert!(plain_row.consent.outbound_transform_id.is_some());
+    }
+
+    /// Amaç **kapalı küme** (şartname §13.5): tanınmayan amaç onaya yazılmaz.
+    /// Yazılsaydı çalıştırma sırasında hangi göreve karşılık geldiği
+    /// bilinemezdi — "bilinmeyen amaç" sessizce bir göreve eşlenmemeli.
+    #[test]
+    fn consent_purpose_is_a_closed_set() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["metin"]);
+        let error = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "serbest metin".into(),
+                selected_document_ids: vec![document_id],
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), "E_AI_PURPOSE");
+        assert!(purpose_task_type("serbest metin").is_none());
+        assert_eq!(
+            db.list_transfer_consents(&case_id).expect("liste").len(),
+            0,
+            "reddedilen onay satır yazmamalı"
+        );
+    }
+
+    /// Reddedilen amaç **var olan yetkiyi kapatmaz**: doğrulama, önceki onayı
+    /// geçersiz kılan işlemden önce yapılır (fail-closed, yan etkisiz).
+    #[test]
+    fn a_refused_purpose_does_not_supersede_the_active_consent() {
+        let (db, case_id, _) = setup();
+        let active = consent(&db, &case_id);
+        let error = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case_id.clone(),
+                purpose: "elle".into(),
+                selected_document_ids: active.selected_document_ids.clone(),
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), "E_AI_PURPOSE");
+        assert!(
+            db.consent_is_active(&active.id).expect("etkinlik"),
+            "reddedilen istek etkin onayı kapatmamalı"
+        );
+    }
+
+    /// Görev türü **çağırandan alınmaz**: onayın amacından türetilir. Üç amaç
+    /// da kendi görevini üretir; alan `NewAiRun`dan kaldırıldığı için
+    /// "yanlış görev göndermek" tip düzeyinde imkânsızdır.
+    #[test]
+    fn run_task_type_is_derived_from_the_consent_purpose() {
+        let (db, case_id, _) = setup();
+        for (purpose, task) in [
+            ("ozet", "summarize"),
+            ("olay_cikarimi", "extract_events"),
+            ("iddia_cikarimi", "extract_claims"),
+        ] {
+            let (document_id, _) = document_with_text(
+                &db,
+                &case_id,
+                &format!("Belge {purpose}"),
+                &["Sözleşme metni"],
+            );
+            let consent = db
+                .create_transfer_consent(&NewTransferConsent {
+                    provider_id: "p1".into(),
+                    case_scope: case_id.clone(),
+                    purpose: purpose.into(),
+                    selected_document_ids: vec![document_id],
+                    expires_at: None,
+                    consent_text_version: "1".into(),
+                    mask_terms: Vec::new(),
+                    mask_plan_id: None,
+                })
+                .expect("onay");
+            let run = db
+                .start_ai_run(&case_id, &run(&case_id, &consent.id))
+                .expect("çalıştırma");
+            assert_eq!(run.task_type, task, "amaç {purpose} görevi {task} olmalı");
+        }
+    }
+
+    /// Eski/elle yazılmış onay tanınmayan amaç taşıyorsa **tahmin edilmez**:
+    /// hangi görevin onaylandığı bilinmiyordur, çalıştırma reddedilir.
+    #[test]
+    fn legacy_consent_with_an_unknown_purpose_cannot_start_a_run() {
+        let (db, case_id, _) = setup();
+        let consent = consent(&db, &case_id);
+        db.conn()
+            .execute(
+                "UPDATE transfer_consents SET purpose='elle' WHERE id=?1",
+                [&consent.id],
+            )
+            .expect("amaç bozuldu");
+        let error = db
+            .start_ai_run(&case_id, &run(&case_id, &consent.id))
+            .unwrap_err();
+        assert_eq!(error.code(), "E_AI_PURPOSE");
     }
 }
