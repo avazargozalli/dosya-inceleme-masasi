@@ -2298,6 +2298,106 @@ describe("AI ekranı — sağlayıcı değişimi ve onayın yürütülebilirliğ
   });
 });
 
+describe("AI ekranı — çekirdek onayı reddederse yenileme yolu", () => {
+  /**
+   * Çekirdek `start_ai_run` içinde **durumsuz** karar verir: onay maskeye/amaca/
+   * kapsama uymuyorsa aynı onayla ikinci deneme de düşer. Ekran onayı
+   * çalıştırılabilir tutarsa “Çalıştır” yalnız aynı hatayı yineler — düğme
+   * kapanmalı, nedeni ve yenileme yolu yazılmalı.
+   */
+  // Onayın ekranda **çalıştırılabilir** durup durmadığının işareti: onay
+  // satırındaki “İptal et” düğmesi (envanter varsayılan olarak boş).
+  const consentCard = () => screen.queryByRole("button", { name: t("ai.revoke") });
+
+  async function approveAndArm() {
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    expect(consentCard()).toBeTruthy();
+    expect(screen.getByText(t("ai.previewTitle"))).toBeTruthy();
+  }
+
+  it("E_AI_MASK_CHANGED: onay ve önizleme düşer, yenileme yazılır, envanter tazelenir", async () => {
+    setup({
+      runExecute: async () => {
+        throw { code: "E_AI_MASK_CHANGED", message: "onaylanan maske tanımı değişti" };
+      },
+    });
+    await approveAndArm();
+    const listCalls = mocks.aiConsentList.mock.calls.length;
+
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("E_AI_MASK_CHANGED"),
+    );
+
+    // Onay ekranda **tutulmaz**: aynı onayla yeniden denemek yine reddedilirdi.
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(true));
+    expect(consentCard()).toBeNull();
+    // Önizleme de düşer: çekirdek, onaylanan maske tanımının bugünkü tanımdan
+    // farklı olduğunu söyledi; ekran bu önizlemenin baytlarını garanti edemez.
+    expect(screen.queryByText(t("ai.previewTitle"))).toBeNull();
+    // Sessiz kapanan düğme yok: neden ve tek yenileme yolu yazılır.
+    expect(screen.getByText(t("ai.consentRenewNeeded"))).toBeTruthy();
+    // Envanter **çekirdekten** tazelenir (ekranın varsayımı değil).
+    await waitFor(() => expect(mocks.aiConsentList.mock.calls.length).toBeGreaterThan(listCalls));
+  });
+
+  it("yenileme uyarısı Onayla ile kapanır: yeni onay + önizleme gelir, Çalıştır açılır", async () => {
+    setup({
+      runExecute: async () => {
+        throw { code: "E_AI_MASK_CHANGED", message: "onaylanan maske tanımı değişti" };
+      },
+    });
+    await approveAndArm();
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(screen.getByText(t("ai.consentRenewNeeded"))).toBeTruthy());
+    expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(t("ai.consentRenewNeeded"))).toBeNull());
+    expect(consentCard()).toBeTruthy();
+    expect(screen.getByText(t("ai.previewTitle"))).toBeTruthy();
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+  });
+
+  for (const code of ["E_AI_CONSENT_UNBOUND", "E_AI_PURPOSE"]) {
+    it(`${code}: onay ekranda tutulmaz, yenileme yazılır`, async () => {
+      setup({
+        runExecute: async () => {
+          throw { code, message: "çekirdek reddetti" };
+        },
+      });
+      await approveAndArm();
+
+      fireEvent.click(button(t("ai.run")));
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(code));
+
+      await waitFor(() => expect(button(t("ai.run")).disabled).toBe(true));
+      expect(consentCard()).toBeNull();
+      expect(screen.getByText(t("ai.consentRenewNeeded"))).toBeTruthy();
+    });
+  }
+
+  it("yenileme sınıfı olmayan hata onayı düşürmez (aşırı tetikleme yok)", async () => {
+    setup({
+      runExecute: async () => {
+        throw { code: "E_AI_SCHEMA", message: "yanıt şemaya uymadı" };
+      },
+    });
+    await approveAndArm();
+
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("E_AI_SCHEMA"));
+
+    // Şema hatası onayı **geçersiz kılmaz**: gönderim oldu, onay yerinde kalır.
+    expect(consentCard()).toBeTruthy();
+    expect(screen.queryByText(t("ai.consentRenewNeeded"))).toBeNull();
+    expect(screen.getByText(t("ai.previewTitle"))).toBeTruthy();
+  });
+});
+
 describe("AI ekranı — aktarım makbuzu envanteri", () => {
   function receiptRow(
     overrides: Partial<TransferReceiptRow> & { id: string },

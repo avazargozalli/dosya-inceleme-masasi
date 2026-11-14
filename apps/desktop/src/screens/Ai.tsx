@@ -159,6 +159,24 @@ function outboundLabel(state: string): string {
   return state;
 }
 
+/**
+ * Çekirdek, onayın **isteği kapsamadığını** söylediğinde (maske/amaç/bağ/kapsam)
+ * aynı onayla ikinci deneme de reddedilir: karar `start_ai_run` içinde ve
+ * durumsuzdur (`consent.outbound_transform_id` / `purpose` / belge canlılığı).
+ * Bu yüzden ekran onayı **çalıştırılabilir** tutamaz; yenileme yolu tektir:
+ * yeni onay (`Onayla`) — önizleme de onunla birlikte tazelenir.
+ */
+const CONSENT_RENEWAL_CODES: readonly string[] = [
+  "E_AI_CONSENT",
+  "E_AI_CONSENT_UNBOUND",
+  "E_AI_MASK_CHANGED",
+  "E_AI_PURPOSE",
+];
+
+function consentNeedsRenewal(code: string): boolean {
+  return CONSENT_RENEWAL_CODES.includes(code);
+}
+
 export function Ai() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
@@ -206,6 +224,10 @@ export function Ai() {
   const [messagesError, setMessagesError] = useState<ApiError | null>(null);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
+  // Onay **reddedildi**: çekirdek “bu onay isteği kapsamıyor” dedi. Onay
+  // ekranda tutulmaz (Çalıştır yalnız aynı hatayı yinelerdi) ama kullanıcı
+  // nedenini ve tek yenileme yolunu görür — sessiz kapanan düğme yok.
+  const [renewNeeded, setRenewNeeded] = useState(false);
   const [busy, setBusy] = useState(false);
   // Gönderim ve iptal **kendi** uçuş bayraklarını taşır: biri askıdayken
   // diğeri açık kalır (onay iptali yeni onayı engellemez), ama aynı düğme
@@ -403,6 +425,7 @@ export function Ai() {
     setRevokeTarget(null);
     setOverview(null);
     setConsent(null);
+    setRenewNeeded(false);
     setMaskText("");
     setConsents([]);
     setConsentListBusy(false);
@@ -513,7 +536,9 @@ export function Ai() {
       );
       if (caseGen.current !== gen) return;
       setConsent(nextConsent);
-      // Envanter tazelenir: yeni onay (ve aynı amaçla kapanan önceki) listede görünür.
+      // Yeni onay **yenileme**dir: reddedilen onayın yerine geçen künye geldi,
+      // “onayı yenile” uyarısı artık geçerli değil.
+      setRenewNeeded(false);
       void loadConsents(caseId);
     } catch (e) {
       if (caseGen.current === gen) setError(toApiError(e));
@@ -563,6 +588,20 @@ export function Ai() {
           // birincil hata yukarıda yazıldı
         }
         if (caseGen.current === gen) void loadConsents(caseId);
+      }
+      // Onay **artık isteği kapsamıyor** (maske tanımı değişti, amaç tanınmıyor,
+      // maske bağı yok ya da kapsam daraldı): çekirdek kararı durumsuz verir,
+      // aynı onayla ikinci deneme de düşer. Onay ve ondan türeyen önizleme
+      // ekranda tutulmaz — Çalıştır yalnız aynı hatayı yinelerdi; yenileme yolu
+      // tek: “Onayla” (onay + önizleme birlikte tazelenir).
+      if (consentNeedsRenewal(failure.code) && caseGen.current === gen) {
+        setConsent(null);
+        setPreview(null);
+        setPreviewMaskSig(null);
+        setRenewNeeded(true);
+        // Envanter çekirdekten tazelenir: hangi onayın hâlâ etkin olduğu
+        // ekranın varsayımı değil, kasadaki satır olsun.
+        void loadConsents(caseId);
       }
     } finally {
       // Makbuz envanteri **her** denemeden sonra tazelenir: başarılı gönderim
@@ -964,6 +1003,11 @@ export function Ai() {
           {maskChangedSincePreview ? (
             <div className="notice warn" role="status">
               {t("ai.maskChangedSincePreview")}
+            </div>
+          ) : null}
+          {renewNeeded ? (
+            <div className="notice warn" role="status">
+              {t("ai.consentRenewNeeded")}
             </div>
           ) : null}
         </div>

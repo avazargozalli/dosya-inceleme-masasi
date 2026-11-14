@@ -780,6 +780,11 @@ export const tr = {
     maskChangedSincePreview:
       "Maske önizlemeden/onaydan sonra değişti. Gönderim, önizlenen metinle aynı " +
       "olmaz — “Onayla”ya basıp önizlemeyi yenileyin.",
+    consentRenewNeeded:
+      "Çekirdek bu gönderimi reddetti: onay isteği artık kapsamıyor (maske tanımı " +
+      "ya da amaç değişmiş, maske bağı yok veya kapsam daralmış). Aynı onayla " +
+      "yeniden denemek yine reddedilir — “Onayla” onayı ve önizlemeyi birlikte " +
+      "yeniler; sonra “Çalıştır” açılır.",
     validateTitle: "Aday doğrula ve kaydet",
     validateSub:
       "Yük şemaya göre doğrulanır, alıntılar belgenin gerçek metninde aranır; durum " +
