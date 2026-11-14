@@ -7,7 +7,7 @@
 | İş | Durum | Kanıt |
 |---|---|---|
 | F06-T01 | ✅ | sürümlü `parse_run`, sayfa ve metin segmentleri |
-| F06-T02 | ✅ | PyMuPDF metin çıkarma (worker), `text_origin` |
+| F06-T02 | ✅ | PyMuPDF metin çıkarma (worker), `text_origin`. **F06-T02b (2026-11-14):** koşu ve segmentler dosya sınırını aşmaz — `start_parse_run` sürümün dosyasını, `store_pages` koşunun dosyasını doğrular; ölçülen sızıntı + 3 mutasyon kapısı (aşağıdaki bölüm) |
 | F06-T03 | ✅ | worker istemcisi: 1 MiB çerçeve, parçalı yanıt (`part`/`parts`) birleştirme, zaman aşımı, süreç ölümü |
 | F06-T04 | ✅ | ayrıştırma durumu (`succeeded`/`partial`), uyarılar |
 | F06-T05 | ✅ | OCR: Tesseract (`tur+eng` — tek kaynak `DEFAULT_OCR_LANG`), 300 dpi; dil keşfi + eksik pakette **adıyla** `E_OCR_LANG_MISSING` |
@@ -113,3 +113,47 @@ yoktur — yanlış görünürse kodlama elle seçilir.
   ve insan işaretlemesi gerektirir; CI'da üretilemez.
 - **T06**: `tur` dil paketi bu ortamda ve CI'da yok; hash yalnız `eng` için
   doğrulanabilir, `tur` uyarı olarak kalır.
+
+## F06-T02b — koşu ve segmentler dosya sınırını aşmaz (2026-11-14)
+
+**Ölçülen sızıntı (asıl kusur).** `store_pages(parse_run_id, case_id, pages)`
+`text_segments.case_id` sütununu **çağıranın** verdiği dosyayla yazıyordu ve
+arama tam olarak bu sütunla kapsam daraltıyor (`s.case_id = ?`). Yanlış
+`case_id` kabul edilirse bir dosyanın metni **başka dosyanın** aramasında
+görünür, kendi dosyasında görünmez — INV-05 ("başka dosyanın verisi örtük olarak
+eklenmez") ihlali.
+
+**Düzeltme öncesi gerçek koşu (geçici sonda, silindi):** A dosyasının sürümü
+için `start_parse_run(..., case_id=B)` → `Ok`; `store_pages(run, B, [...])` →
+`Ok(1)`; arama: **A=0 sonuç, B=1 sonuç**. Yani metin yalnız yanlış dosyada
+bulunuyordu.
+
+**Yazılan (çekirdek).**
+
+- `start_parse_run` sürümün `case_id`'sini okur, çağıranınkiyle karşılaştırır;
+  tutmazsa `E_NOT_FOUND` — koşu satırı yazılmaz.
+- `store_pages` koşunun `case_id`'sini okur; tutmazsa `E_NOT_FOUND` — sayfa ve
+  segment yazılmaz (transaction açılmadan önce).
+- İki kapı da **tek kaynak** sorgudur; kapsam arayüzden/çağırandan bağımsızdır.
+
+**Testler.** `parsing::tests::parse_run_is_opened_only_for_its_own_case`,
+`parsing::tests::store_pages_refuses_a_foreign_case_and_leaks_nothing` (+2).
+İkincisi reddedilen yazmanın **hiçbir iz bırakmadığını** (0 sayfa, 0 segment) ve
+metnin iki dosyada da bulunmadığını; doğru dosyayla yazınca yalnız kendi
+dosyasında bulunduğunu **ölçer**.
+
+**Kapı kanıtı.** F05-T03b bölümündeki 5/5 mutasyon turunun parçası: M3 (koşu
+kapısı düşer) ve M4 (sayfa kapısı düşer) kırmızı; taban yeşil, geri yazım
+sha256 birebir.
+
+**Dürüst sınırlar.** (a) Bugün ürün yolu (`commit_parse`) `case_id`'yi sürüm
+satırından okur → canlı sızıntı yok; kapı sınıfı kapatır. (b) `text_segments.
+case_id` ile `pages.parse_run_id` arasında DB düzeyinde bileşik kısıt yok;
+savunma çekirdek sorgusundadır. (c) Doğrudan SQL yazan bir yol (bugün üründe
+yok) bu kapıyı atlar. (d) Ayrıştırma koşusu komut olarak koşulmadı; davranış
+gerçek SQLite ile storage düzeyinde ölçüldü.
+
+**CI (ölçüldü).** Kod `0465eb6` → run `43616435408` **10/10 YEŞİL**;
+`parsing::tests` yeni iki test dâhil `dim-storage` **607** iki OS'ta birebir
+(macos-15 231,73 s / ubuntu-latest 580,79 s). Tauri komutu + gerçek pencere
+**insan bekliyor**.
