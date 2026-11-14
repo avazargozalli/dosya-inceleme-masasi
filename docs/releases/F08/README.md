@@ -16,6 +16,7 @@
 | F08-T01 *(şartname numarası)* | ✅ | **kişi/kurum + dosya rolü** ve **geri alınabilir birleştirme**: `actors` / `case_participants` tabloları ilk kez kullanılır; `actor_merges` (şema **v25**); arayüzde “Dosya tarafları” kartı — 14/14 mutasyon (2026-11-08) |
 | F08-T03 *(şartname numarası)* | ✅ | **kesin/yaklaşık/aralık/bilinmeyen tarih sıralaması, gün uydurmadan**: ay/yıl kesinliğinde gün **saklanmaz ve gösterilmez**, aralık iki uçlu tek değer (`başlangıç/bitiş`, başlangıçla sıralanır), ham tarih metni düzenlemede **korunur**, CSV kesinliğe uyar; `E_EVENT_DATE`; 11/11 mutasyon (2026-11-10) |
 | F08-T04e | ✅ | **kanıt ve iddia referansları dosya sınırını aşamaz** (şema **v32**): `claims`, `evidence_links`, `event_sources`, `claim_relations`, `tasks` × BEFORE INSERT/UPDATE = **10 tetikleyici**; ölçülen kusur: B dosyasının belgesi silinince A'nın kanıt bağı `CASCADE` ile **sessizce** yok oluyordu; `scope_violations()` 13 tabloyu sayar; 7/7 mutasyon (2026-11-14) |
+| F08-T04f | ✅ | **JSON dizi kanıt listeleri dosya sınırını aşamaz** (şema **v33**): `notes`, `note_revisions`, `review_items`, `note_drafts` → `source_anchor_ids` × BEFORE INSERT/UPDATE = **8 tetikleyici** (`json_each`); ölçülen kusur: v33 kapıları yokken A notuna B çapası yazılıyor, B belgesi silinince çapa gidiyor, notta kimlik kalıyor, denetim 0; `scope_violations()` 17 tabloyu sayar; 9/9 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -828,3 +829,112 @@ kapısıdır. (e) SQLite dosyasını doğrudan düzenleyen (anahtarı olan) bir 
 tetikleyiciyi de düşürebilir; bu kapı uygulama hatasına karşı. (f) Tauri
 komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage düzeyinde
 ölçüldü; arayüz değişmedi.
+
+## F08-T04f — JSON dizi kanıt referansları dosya sınırını aşamaz (şema v33, 2026-11-15)
+
+**Neden.** F08-T04e tek sütunlu kanıt referanslarını şemada kapıladı (v32) ve
+dürüst sınırı (b) olarak şunu bıraktı: kanıt listesi taşıyan dört tablo
+(`notes`, `note_revisions`, `review_items`, `note_drafts`) `source_anchor_ids`
+**JSON dizisi** kullanıyor ve bu sütunlar kapının dışında — çekirdek
+`validate_note_anchors` doğruluyor, ama doğrudan SQL yazan bir yol (yeni komut,
+betik, ileride toplu içe aktarma) atlıyordu. `note_revisions`de `case_id` yok
+(dosya üst nottan okunur), `note_drafts` ise bilinçli olarak doğrulamıyor
+(yarıda kalan otomatik kayıt kullanıcının metnini kaybettirmemeli).
+
+**Ölçülen kusur (düzeltme öncesi davranış; v33 tetikleyicileri düşürülerek
+gerçek SQLite'ta ölçüldü, geçici sonda sonra silindi).** A dosyasının notuna B
+dosyasının çapası **yazıldı** (`Ok(1)`). Sonra B dosyasının belgesi silindi:
+çapa `ON DELETE CASCADE` ile gitti (1 → 0), notta `["a9"]` **kaldı**, denetime
+**tek satır** düşmedi. v32 taramasında bu dört tablonun alanı yoktu — yani
+kusur ne engelleniyor ne sayılıyordu. Not, kimlikle okuyan yollarda (çapa
+çözümleme) A dosyasında B dosyasının belgesini gösterebilir; B silinince
+kaynak sessizce boşalır (INV-05 / P0 sınıfı).
+
+**Yazılan (şema v33, `migrations/0033_json_reference_scope_guards.sql`).** Kural
+şemada: dizinin **her elemanı** kendi dosyasındaki `source_anchors` kaydını
+göstermeli; gösteremiyorsa satır yazılmaz (fail-closed). **4 tablo × BEFORE
+INSERT/UPDATE = 8 tetikleyici** (`json_each`), reddetme sabit önekle
+`RAISE(ABORT,'DIM_SCOPE:<tablo>')` → `StorageError::ScopeViolation` →
+**`E_DB_SCOPE`** (v31/v32 sözleşmesi):
+
+- `notes` / `review_items` → eleman `NEW.case_id` dosyasında olmalı
+- `note_revisions` → eleman **üst notun** dosyasında olmalı (satırda `case_id`
+  yok; üst not yoksa yazma reddedilir)
+- `note_drafts` → **daha gevşek**: var olmayan/doğrulanmamış kimlik kalabilir
+  (taslak metni kurtarır), yalnız **başka dosyada var olan** çapa reddedilir
+- Bozuk JSON ya da dizi olmayan değer **reddedilir**: doğrulanamayan referans
+  yazılmaz. `json_each`e her zaman geçerli metin verilir
+  (`CASE WHEN json_valid(...) THEN ... ELSE '[]' END`) ki hata, SQLite'ın
+  "malformed JSON" hatası yerine kapının kendi kodu olsun.
+
+Kapı yalnız **dosya sınırını** denetler; `anchor_status`, `deleted_at`, kaynak
+sayısı sınırı (`MAX_NOTE_SOURCES`) gibi ürün politikaları çekirdek sorgusunda
+kalır — tetikleyici politika öğrenirse eski veri bir anda "yazılamaz" hâle
+gelirdi.
+
+**Mevcut veri.** `Database::scope_violations()` artık **17 tabloyu** sayar
+(8 zincir + 5 referans + 4 JSON dizi); bozuk JSON "doğrulanamıyor" diye
+aykırı **sayılır**. Güncelleme anında toplam sıfırdan büyükse sayı denetime
+(`vault_upgrade` / `scope_violations`) dört yeni alanla yazılır: `notes`,
+`noteRevisions`, `reviewItems`, `noteDrafts`.
+
+**Testler.** `scope_guard::tests` **17 → 22** (+5: not / revizyon / inceleme
+öğesi / taslak için çapraz INSERT + UPDATE, taslakta "eksik kimlik meşru,
+yabancı kimlik değil", bozuk JSON reddi, eski satırı sayan tarama) → yeni
+`the_scan_counts_json_array_rows_written_before_the_guards_existed`;
+`upgrade_tests::upgrade_reports_cross_case_json_anchor_lists_left_by_the_previous_schema`
+(v32 kasa → güncelleme → denetimde dört ayrı sayı; yeni çapraz dizi reddedilir)
+→ `dim-storage --lib` **626 → 632** (yerel 430,19 s, 0 düştü). Şemadan türetilen
+"her kapsam tablosunun kapısı var mı" testi artık `*_anchor_ids` sütunlarını da
+kapsar ve JSON tablolarında gövdede `json_each(` arar.
+
+**Maliyet (ölçüldü; `scope_guard_cost.rs`, `#[ignore]`, debug, bellek içi,
+20.000 meşru not × 2 çapa, **tek sıra** `--test-threads=1`, iki koşu).**
+Tetikleyicili **62,9 / 55,1 µs/satır**, tetikleyicisiz **37,4 / 34,3 µs/satır**
+→ fark **+25,5 / +20,8 µs/satır (%68 / %61)**. `scope_violations()` 40.000
+notta **79,2 / 71,7 ms**. Not yazımı kullanıcı eylemi başına **tek satırdır**;
+mutlak bedel bu yüzden küçük, ama oran yüksek — toplu içe aktarma yolunda bu
+bedel ayrıca ölçülmelidir (bugün böyle bir yol not yazmıyor).
+
+**Kapı kanıtı (gerçek koşular; betik `~/.hermes/cache/scratch/dim-json-scope-gates.py`,
+her mutasyon tek başına, `try/finally` + `os.utime` + sha256 birebir —
+`0033…sql 257e5a97…`, `scope_guard.rs d107cd70…`):** **9/9 KIRMIZI, taban iki
+uçta yeşilken** — M1 notes BI kapısı düşer (3 test) · M2 notes BU çapayı
+dosyasıyla karşılaştırmaz · M3 revizyon üst notun dosyasını görmez · M4
+review_items · M5 taslak INSERT · M6 bozuk JSON kapıdan geçer · M7 tarama not
+dizilerini saymaz · M8 şemadan türetim JSON sütununu görmez · M9 taslak UPDATE.
+Geri yazım sha256 birebir; taban tekrar 22/22.
+**Dürüst (kendi hatam, iki ölçüm hatası — ilk koşu kanıt sayılmadı):** ilk
+koşuda **8/9** çıktı. (1) M5 yeşil kaldı: taslak testi yalnız **UPDATE** yolunu
+deniyordu (ilk kayıttan sonra hepsi `ON CONFLICT`), INSERT kapısı ölçülmüyordu →
+teste yeni taslak (INSERT) yolu eklendi ve M9 (UPDATE) ayrıldı. (2) M6 yeşil
+kaldı: `CASE … ELSE '[]'` mutasyonu **davranışı değiştirmiyordu**, çünkü bozuk
+JSON'u zaten birinci disjunct (`NOT json_valid`) yakalıyor — bu yüzden M6, o
+disjunctı kaldıracak şekilde yeniden yazıldı (o zaman test kırmızı). Yalnız
+düzeltilmiş betiğin 9/9 koşusu kanıt sayıldı.
+
+**CI (ölçüldü, ilk koşu).** Kod `3ace064` + ölçüm testi `0bec743` → run
+**`43644744375` 10/10 YEŞİL**: `dim-storage` **632** iki OS'ta birebir
+(`ubuntu-latest` **311,95 s** / `macos-15` **299,09 s**; altı yeni test logda tek
+tek `ok`), `dim-cli-adapters` **168**, `arayüz` 66 dosya / **1428** test, paket
+`index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB (arayüz değişmedi), `masaüstü
+kabuk`, `windows güvenli depo`, `belge worker'ı`, `sözleşmeler`, `SBOM`,
+`kaynak arşivi`, `sürüm paketi manifesti` yeşil. (İlk push'un koşusu
+`43644449302`, ikinci push gelince concurrency ile **cancelled**; geçerli kanıt
+HEAD'i kapsayan `43644744375`.)
+
+**Dürüst sınırlar.** (a) Tetikleyiciler **yeni** yazmayı engeller; v33 öncesi
+çapraz diziler **sayılır, düzeltilmez** — o satırlarda sessiz kaybolma riski
+sürer (temizlik ayrı veri işi). (b) `note_drafts` bilinçli olarak **gevşek**:
+var olmayan kimlik taslakta kalabilir; bir çapa taslakta yazıldıktan **sonra**
+başka dosyada oluşturulursa taslak o kimliği taşır (okuma yolu çapa
+çözümlemez; nota dönüşürken `validate_note_anchors` yine reddeder). (c)
+`notes.undo_stack` / `redo_stack` birer **anlık görüntü**dür (revizyon
+numaraları), referans değildir; `payload` içindeki serbest JSON yorumlanmaz.
+(d) Kapı yalnız dosya sınırı; kaynak sayısı/durum politikası çekirdekte.
+(e) SQLite dosyasını doğrudan düzenleyen (anahtarı olan) saldırgan tetikleyiciyi
+de düşürebilir; bu kapı uygulama hatasına karşı. (f) Maliyet debug derlemede,
+tek makinede (Apple M2), iki koşu; üretim derlemesinde oran ölçülmedi. (g)
+Tauri komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage
+düzeyinde ölçüldü, arayüz değişmedi — görsel QA + gerçek pencere **insan
+bekliyor**.
