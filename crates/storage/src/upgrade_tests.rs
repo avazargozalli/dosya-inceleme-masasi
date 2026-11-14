@@ -165,6 +165,100 @@ fn upgrade_reports_cross_case_rows_left_by_the_previous_schema() {
 }
 
 #[test]
+fn upgrade_reports_cross_case_references_left_by_the_previous_schema() {
+    // Şema v31'de zincir kapısı vardı ama **referans** kapısı yoktu: iddia,
+    // kanıt bağı, olay kaynağı, iddia ilişkisi ve görev başka dosyanın çapasına
+    // bağlanabiliyordu. v32 tetikleyicileri yalnız **yeni** yazmayı engeller;
+    // eski satır güncelleme anında sayı olarak denetime düşer (kimlik/içerik yok).
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 31);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d2','c2','Diger belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v2','d2','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z'),
+                    ('r2','v2','c2','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z');
+             INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+             VALUES ('p1','r1',0,'native'),('p2','r2',0,'native');
+             INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s1','r1','p1','c1','itiraz','itiraz','2026-01-01T00:00:00Z'),
+                    ('s2','r2','p2','c2','gizli','gizli','2026-01-01T00:00:00Z');
+             INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                exact_quote,quote_hash,created_at,updated_at)
+             VALUES ('a1','c1','v1','r1','p1','s1',0,6,'itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('a2','c2','v2','r2','p2','s2',0,5,'gizli','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO claims (id,case_id,claim_text,claim_kind,status,created_at,updated_at)
+             VALUES ('k1','c1','Iddia','allegation','draft','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('k2','c2','Diger iddia','allegation','draft','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO events (id,case_id,event_kind,date_precision,date_role,title,created_at,updated_at)
+             VALUES ('e1','c1','payment','day','event','Kira odendi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             -- v31'de kabul edilen çapraz referanslar.
+             UPDATE claims SET source_anchor_id='a2' WHERE id='k1';
+             INSERT INTO evidence_links (id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at,updated_at)
+             VALUES ('el-old','c1','k1','a2','supports_candidate','','accepted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO event_sources (id,event_id,source_anchor_id,relation,user_confirmed)
+             VALUES ('es-old','e1','a2','supports',1);
+             INSERT INTO claim_relations (id,case_id,claim_id,related_claim_id,relation,rationale,created_at,updated_at)
+             VALUES ('cr-old','c1','k1','k2','response_to','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO tasks (id,case_id,title,source_anchor_id,created_at,updated_at)
+             VALUES ('t-old','c1','Dilekce','a2','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .expect("v31 çapraz referanslar");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["claims"], 1, "çapraz iddia çapası sayılır");
+    assert_eq!(parsed["evidenceLinks"], 1);
+    assert_eq!(parsed["eventSources"], 1);
+    assert_eq!(parsed["claimRelations"], 1);
+    assert_eq!(parsed["tasks"], 1);
+    assert_eq!(parsed["documentVersions"], 0, "zincir temiz");
+    // Satırlar **silinmez**: tarama yalnız sayar.
+    let links: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM evidence_links", [], |r| r.get(0))
+        .expect("sayım");
+    assert_eq!(links, 1);
+    // Yeni çapraz referans artık kapıda durur (E_DB_SCOPE).
+    let rejected = db.conn().execute(
+        "INSERT INTO evidence_links (id,case_id,claim_id,source_anchor_id,relation,rationale,review_state,created_at,updated_at)
+         VALUES ('el-new','c1','k2','a1','supports_candidate','','accepted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        [],
+    );
+    match rejected.map_err(StorageError::from) {
+        Err(StorageError::ScopeViolation { table }) => {
+            assert_eq!(table, "evidence_links")
+        }
+        other => panic!("v32 kapısı yeni çapraz yazmayı reddetmeli: {other:?}"),
+    }
+}
+
+#[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("vault.db");

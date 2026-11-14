@@ -341,9 +341,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0031_scope_guards",
         sql: include_str!("migrations/0031_scope_guards.sql"),
     },
+    Migration {
+        version: 32,
+        name: "0032_reference_scope_guards",
+        sql: include_str!("migrations/0032_reference_scope_guards.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 31;
+pub const CURRENT_SCHEMA_VERSION: u32 = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -493,8 +498,8 @@ impl Database {
             "system",
             &serde_json::json!({"from": before, "to": outcome.current, "backup": true}),
         );
-        // Şema v31: kapsam tetikleyicileri **yeni** yazmayı engeller; bu
-        // sürümden önce yazılmış çapraz dosya satırları kendiliğinden
+        // Şema v31/v32: kapsam tetikleyicileri **yeni** yazmayı engeller; bu
+        // sürümlerden önce yazılmış çapraz dosya satırları kendiliğinden
         // düzelmez. Güncelleme anı, taramanın hem ucuz hem anlamlı olduğu tek
         // yer: sayı (kimlik/içerik değil) denetime yazılır, sıfırsa yazılmaz.
         if let Ok(counts) = self.scope_violations() {
@@ -513,6 +518,11 @@ impl Database {
                         "redactionPlans": counts.redaction_plans,
                         "documentTags": counts.document_tags,
                         "embeddings": counts.embeddings,
+                        "claims": counts.claims,
+                        "evidenceLinks": counts.evidence_links,
+                        "eventSources": counts.event_sources,
+                        "claimRelations": counts.claim_relations,
+                        "tasks": counts.tasks,
                     }),
                 );
             }

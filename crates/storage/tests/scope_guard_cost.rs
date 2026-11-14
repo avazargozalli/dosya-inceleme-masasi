@@ -1,4 +1,5 @@
-//! Şema v31 kapsam tetikleyicilerinin **toplu yazma maliyeti**.
+//! Şema v31 (zincir) ve v32 (referans) kapsam tetikleyicilerinin **yazma
+//! maliyeti**.
 //!
 //! Tetikleyiciler her `text_segments` satırında iki birincil anahtar araması
 //! yapar (koşunun dosyası + sayfanın koşusu). Bu test aynı işi tetikleyicili ve
@@ -94,5 +95,83 @@ fn scope_triggers_add_a_predictable_cost_per_segment() {
     println!(
         "scope_violations() taraması: {} segmentte {scan_ms:.1} ms",
         ROWS * 2
+    );
+}
+
+const REF_ROWS: i64 = 20_000;
+
+/// `from..from+REF_ROWS` aralığında **meşru** iddia yazar (çapa `a1`, dosya
+/// `c1`); satır başına mikrosaniye döner.
+fn insert_claims(db: &Database, from: i64) -> f64 {
+    let started = Instant::now();
+    let tx = db.conn().unchecked_transaction().expect("işlem");
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO claims (id,case_id,claim_text,claim_kind,status,source_anchor_id,created_at,updated_at)
+                 VALUES (?1,'c1',?2,'allegation','draft','a1','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            )
+            .expect("hazırlık");
+        for index in from..from + REF_ROWS {
+            let text = format!("iddia {index}");
+            stmt.execute(rusqlite::params![format!("c{index}"), text])
+                .expect("iddia");
+        }
+    }
+    tx.commit().expect("commit");
+    started.elapsed().as_secs_f64() * 1_000_000.0 / REF_ROWS as f64
+}
+
+/// Şema v32 **referans** kapıları (iddia → çapa) satır başına ne kadar
+/// maliyetli? Yazma hacmi düşük (kullanıcı eylemi başına bir satır) ama sayı
+/// ölçülmeden "ihmal edilebilir" denmez.
+#[test]
+#[ignore = "ölçüm testi: kanıt referansı kapılarının maliyeti"]
+fn reference_triggers_add_a_predictable_cost_per_row() {
+    let db = Database::open_in_memory(&DatabaseKey::new([78u8; 32])).expect("db");
+    chain(&db);
+    // `chain()` çapa kurmaz (maliyet testi yalnız sayfa/sürüm kurar): meşru
+    // iddia için kendi dosyasında bir segment + çapa gerekir.
+    db.conn()
+        .execute_batch(
+            "INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s-base','r1','p1','c1','itiraz','itiraz','2026-01-01T00:00:00Z');
+             INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,start_offset,end_offset,
+                exact_quote,quote_hash,created_at,updated_at)
+             VALUES ('a1','c1','v1','r1','p1','s-base',0,6,'itiraz',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .expect("çapa");
+
+    let with_guards = insert_claims(&db, 0);
+    for trigger in ["scope_guard_claims_bi", "scope_guard_claims_bu"] {
+        db.conn()
+            .execute(&format!("DROP TRIGGER {trigger}"), [])
+            .expect("tetikleyici düşür");
+    }
+    let without_guards = insert_claims(&db, REF_ROWS);
+
+    let stored: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM claims", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(stored, REF_ROWS * 2, "iki koşu da yazılmalı");
+
+    let scan_started = Instant::now();
+    let counts = db.scope_violations().expect("tarama");
+    let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(counts.total(), 0, "yazılan satırlar tutarlı");
+
+    println!(
+        "referans kapıları (iddia → çapa): {REF_ROWS} satır tetikleyicili {with_guards:.1} µs/satır, \
+         tetikleyicisiz {without_guards:.1} µs/satır, fark {:.1} µs/satır ({:.0}%)",
+        with_guards - without_guards,
+        (with_guards / without_guards - 1.0) * 100.0
+    );
+    println!(
+        "scope_violations() taraması: {} iddiada {scan_ms:.1} ms",
+        REF_ROWS * 2
     );
 }
