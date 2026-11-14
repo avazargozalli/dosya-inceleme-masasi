@@ -548,16 +548,35 @@ mod tests {
         }
     }
     fn tempdir() -> TempDir {
+        // Sıra numarası: zaman damgası tek başına yetmiyor. CI'da iki test aynı
+        // (kaba çözünürlüklü) damgayı alınca **aynı** dizini paylaştı; biri
+        // diğerinin `fake-cli` betiğini ezip yanlış yanıtı ölçtü (ölçüldü
+        // 2026-11-14, `rust (macos-15)`: `prompt_reaches_the_process…` kotayla
+        // düşen başka bir testin JSON yanıtını okudu).
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let base = std::env::temp_dir().join(format!(
-            "dim-hardening-test-{}-{}",
+            "dim-hardening-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            seq
         ));
         std::fs::create_dir_all(&base).expect("tempdir");
         TempDir(base)
+    }
+
+    #[test]
+    fn tempdirs_are_unique_even_with_the_same_timestamp() {
+        let first = tempdir();
+        let second = tempdir();
+        assert_ne!(
+            first.path(),
+            second.path(),
+            "iki test aynı dizini paylaşmamalı"
+        );
     }
 
     /// Sahte CLI istem argv'sini **gerçekten** alıyor mu: yankılanan argv'de
