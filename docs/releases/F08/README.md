@@ -21,6 +21,7 @@
 | F08-T04h | ✅ | **belgenin güncel sürümü kendi belgesi olmalı** (şema **v35**): `documents.current_version_id` × BEFORE INSERT/UPDATE + ters yön (`document_versions.document_id` taşıması) = **3 tetikleyici**; ölçülen kusur: tek bir doğrudan `UPDATE` belgeyi **başka dosyanın** sürümüne çeviriyordu — kapsam raporu B'nin 2 sayfasını A'da saydı, A'nın «gizli metin» alıntısı B'nin metninde **`exact`** döndü (INV-05); `scope_violations()` **20 tabloyu** sayar (+`documents`); 7/7 mutasyon (2026-11-15) |
 | F08-T04i | ✅ | **güncel sürüm okuması kendi belgesine bağlı kalır** (şema **v36**): `current_document_versions` görünümü — yedi okuma yolu (belge künyesi, ayrıştırma kuyruğu, kapsam raporu, alıntı taraması, gönderim kapsamı, plan kapsamı, çapa/plan okumaları) **tek tanımdan** geçer; ölçülen kusur: v35 öncesi çapraz işaretçi okumada **yabancı metni** A'nın kapsamına sokuyordu (rapor 1 sayfa/1 segment, alıntı `exact`, önizleme örneği «gizli tutanak»); 8/8 mutasyon (2026-11-15) |
 | F08-T04j | ✅ | **sürüm izi sicilleri kendi dosyasına bağlanır** (şema **v37**): `citation_checks.case_id` + göç, 2 tablo × BEFORE INSERT/UPDATE = **4 tetikleyici** (`export_items` dosyayı `exports`tan okur); ölçülen kusur: `record_citation_check` çapraz sürümü kabul ediyor, `list_citation_checks('v9')` **B dosyasının ekranında** A'nın metnini gösteriyordu (INV-05), doğrudan SQL A'nın dışa aktarmasına B'nin sürümünü yazabiliyor ve `scope_violations()` ikisinde de **0** diyordu; liste **iki anahtarlı** (dosya + sürüm); 11/11 mutasyon (2026-11-15) |
+| F08-T04k | ✅ | **giden segment sicili kendi segmentine bağlıdır** (şema **v38**): 0034'ün iki `transfer_segments` tetikleyicisi genişletildi — satırın **iki segment kolonu** (`outbound_segment_id`, `source_segment_id`) **var olan** bir segment ise gösterilen sürümün segmenti olmalı (sürüm `NULL` ise çalıştırmanın dosyasında); ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına A'nın sürümü + **B'nin segmenti** yazılıyor, A'nın gönderim sicili B'nin parçasını gösteriyordu ve `scope_violations()` **0** diyordu (kör); `transfer_segments` sayımı genişledi (yeni tablo yok); 6/6 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -1409,3 +1410,97 @@ belge/sürüm silinmesinden sonra yaşamalı). (e) Tetikleyiciler yalnız **yeni
 yazmayı engeller; anahtarı olan saldırgan düşürebilir (uygulama hatasına karşı).
 (f) Tauri komutları komut olarak koşulmadı; arayüz davranışı jsdom’da ölçüldü —
 gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04k — giden segment sicili kendi segmentine bağlıdır (şema v38, 2026-11-15)
+
+**Neden.** 0034, giden segment sicilinin gösterdiği **sürümün** kendi dosyasından
+olmasını kapıladı; satırın gösterdiği **segment kimliği** hiç denetlenmedi.
+`transfer_segments` giden metnin kendisini (maskelenmiş hâli) ve o metnin hangi
+parçadan geldiğini (`outbound_segment_id` = `source_segment_id`) birlikte taşır:
+satır “V sürümünün S segmenti gönderildi” der. Şema bu iki alanın birbirini
+tutmasını istemiyordu, `scope_violations()` de bu sınıfı **hiç saymıyordu** (kör).
+Sicil, cihazdan **ne** çıktığının kaydıdır; yanlış belgeyi göstermesi P0 sınıfıdır.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v37; göç dosyaları doğrudan
+uygulandı, sonda sonra silindi — `scratch/schema-probe/measure_v38.py`).**
+
+1. Doğrudan SQL ile A dosyasının çalıştırmasına (`run1`, `c1`) **A'nın sürümü**
+   (`v1`) + **B dosyasının segmenti** (`s9`, `v9`) yazıldı; satır **kabul
+   edildi** (`DIM_SCOPE` yok).
+2. `list_transfer_segments('run1')` — A dosyasının gönderim sicili —
+   `('forged','run1','v1','s9','gizli tutanak metni')` döndürdü: kayıt A'nın
+   belgesinden çıkmış gibi görünürken gösterdiği segment **B'nin** parçası.
+3. Aynı kasada v34 taraması **0** dedi (kör); v38 taraması **1** diyor.
+4. Düzeltmeden sonra aynı satır `DIM_SCOPE:transfer_segments` ile **reddedildi**
+   (v38 kasası: yazma yok, tarama 0).
+
+**Yazılan (şema v38, `0038_transfer_segment_identity_guard.sql`).**
+
+* 0034'ün iki tetikleyicisi (`scope_guard_transfer_segments_bi` / `_bu`)
+  **genişletilerek** yeniden yazıldı (tek tanım kalsın diye `DROP` + `CREATE`):
+  v34 kuralı (sürüm başka dosyada **var ise** reddet) korunur.
+* Yeni kural: satırın **iki segment kolonundan** biri (`outbound_segment_id` —
+  ekranın gösterdiği alan — ve `source_segment_id`) **var olan** bir segment ise
+  gösterilen sürümün segmenti olmalı; sürüm `NULL` ise (0026 öncesi biçim)
+  segment **çalıştırmanın dosyasında** olmalı. İki kolon birden denetlenir
+  (`s.id IN (…, …)`): üretim yolu ikisini aynı değerle yazar
+  (`record_outbound_segments`), ama ayrışırlarsa **gösterilen** alan da kapıdan
+  geçmek zorundadır (bu, ilk yazdığım `COALESCE` hâlinin açığıydı — kendi
+  kapımı ölçerken buldum, testi ve mutasyonu var).
+* `Database::scope_violations()` `transfer_segments` alanını **genişletti**
+  (yeni tablo yok): sürüm çaprazlığı **ya da** segment uyuşmazlığı.
+* Ret `RAISE(ABORT,'DIM_SCOPE:transfer_segments')` → `StorageError::ScopeViolation`
+  → **`E_DB_SCOPE`**.
+* **Bilinçli gevşeklik** (0033/0034/0037 ile aynı): **var olmayan** segment
+  kimliği sicilde kalabilir — `transfer_segments` bir denetim izidir, belge/sürüm
+  silinince segmenti de gider, satır yaşamalıdır (bu tabloda segment yabancı
+  anahtar değildir). Kapı yalnız **var olan ama başka sürüme/dosyaya ait**
+  segmenti reddeder; tarama da yalnız kanıtlanabilir uyuşmazlığı sayar.
+
+**Testler (güncel kodla).** `scope_guard::tests`
+`a_transfer_segment_cannot_claim_a_segment_of_another_version` (kendi sürümünün
+iki koşusunun segmenti meşru · var olmayan segment serbest · B'nin segmenti sürüm
+`v1` altında **ve** sürüm `NULL` iken reddedilir · iki kolon ayrışırsa reddedilir ·
+`UPDATE` ile segment taşıma reddedilir) · `the_scan_counts_transfer_segments_claiming_another_versions_segment`
+(kapı düşürülüp eski satır yazılır → tarama **1**; segmenti silinmiş satır aykırı
+**değil**) · `upgrade_tests::upgrade_reports_transfer_segments_claiming_another_versions_segment`
+(v37 kasa → güncelleme → denetimde `transferSegments: 1`, yeni çapraz yazma
+reddedilir, kendi segmenti serbest) → `dim-storage --lib` **658 → 661**
+(yerel **465,66 s**, 0 düştü). Arayüz dosyası **değişmedi** (bu dilim şema +
+çekirdek sayımı), bu yüzden vitest/tsc koşulmadı. fmt (iki manifest) /
+`clippy -p dim-storage --all-targets -D warnings` / masaüstü
+`cargo check --all-targets` temiz.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-v38-gates.py`, her mutasyon tek
+başına, `try/finally` + `os.utime` + sha256 birebir — `0038…sql fde88192…`,
+`scope_guard.rs a836068b…`; koşu **son hâl** üzerinde, `cargo fmt --check` iki
+manifestte temiz olduğu doğrulandıktan sonra):** **6/6 KIRMIZI, taban iki uçta
+yeşilken** (4/4, koşu sonunda taban tekrar yeşil) — M1 INSERT kapısı segment
+kimliğini denetlemez · M2 UPDATE kapısı segment kolonlarında koşmaz · M3 sürümü
+`NULL` satırın dosya ölçütü düşer · M4 tarama segment uyuşmazlığını saymaz ·
+M5 v34 sürüm/dosya kuralı düşer · M6 iki segment kolonu birlikte denetlenmez.
+
+**Dürüst (kendi hatam, iki ölçüm hatası).**
+
+1. İlk kural `COALESCE(source_segment_id, outbound_segment_id)` kullanıyordu:
+   `source_segment_id` meşru + `outbound_segment_id` yabancı olan satır kapıdan
+   **geçerdi** — ve ekranın gösterdiği alan tam da `outbound_segment_id`. Kural
+   iki kolonu birden denetleyecek biçime çevrildi, testi (M6) eklendi.
+2. İlk kapı koşusu **4/5** verdi: M5 “YEŞİL” kaldı çünkü betiğin test süzgeci
+   v34 testini (`a_transfer_segment_cannot_record_another_cases_version`)
+   içermiyordu — mutasyon o dalı düşürüyor, hiçbir test onu görmüyordu. Süzgeç
+   düzeltildi, **6/6** yeniden ölçüldü; ilk koşunun 4'ü kanıt sayılmadı.
+   **Ders:** mutasyonun hangi testi kıracağı yazılmadan “kırmızı” sayılmaz.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v38
+öncesi yanlış segmentli satırlar **silinmez**, sayılır (temizlik ürün kararı).
+(b) Var olmayan segment kimliği bilinçli serbesttir: uydurulmuş kimlikli satır
+kapıdan geçer — kapı *kanıtlanabilir* uyuşmazlığı durdurur, uydurmayı değil.
+(c) Satırın metni (`outbound_text`) segmentin metniyle **karşılaştırılmaz**
+(maskeli kopya tanımı gereği farklıdır); anahtarı olan bir yazıcı geçerli segment
+kimliğiyle keyfî metin yazabilir — bu kapı **kimlik tutarlılığını** korur, içerik
+kaynağını kanıtlamaz. (d) Sürümü `NULL` eski biçim satırlarda ölçüt **dosya**
+üyeliğidir (sürüm kimliğinden daha zayıf). (e) Tetikleyicileri anahtarı olan
+saldırgan düşürebilir (uygulama hatasına karşı). (f) Tauri komutları komut olarak
+koşulmadı; arayüz bu turda değişmedi, gerçek pencere + görsel QA **insan
+bekliyor**.
