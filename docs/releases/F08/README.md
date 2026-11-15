@@ -19,6 +19,7 @@
 | F08-T04f | ✅ | **JSON dizi kanıt listeleri dosya sınırını aşamaz** (şema **v33**): `notes`, `note_revisions`, `review_items`, `note_drafts` → `source_anchor_ids` × BEFORE INSERT/UPDATE = **8 tetikleyici** (`json_each`); ölçülen kusur: v33 kapıları yokken A notuna B çapası yazılıyor, B belgesi silinince çapa gidiyor, notta kimlik kalıyor, denetim 0; `scope_violations()` 17 tabloyu sayar; 9/9 mutasyon (2026-11-15) |
 | F08-T04g | ✅ | **kalan referanslar dosya sınırında** (şema **v34**): soy ağacı (`parent_version_id`), maskeleme çıktısı (`output_version_id`), gönderim sicili (`ai_context_items` sürüm/çapa/`segment_ids`), giden segment sicili (`transfer_segments`), çapa/işaret sayfası, aday kökeni, taslağın notu × BEFORE INSERT/UPDATE = **14 tetikleyici** (7 tablo); ölçülen kusur: v33'te A dosyasının AI çalıştırmasına B dosyasının sürümü+çapası yazılıyor (`Ok(1)`) ve ekran **B'nin belge adını** gösteriyordu; plan çıktısı ve soy ağacı da doğrudan SQL ile çapraz yazılabiliyordu; `scope_violations()` **19 tabloyu** sayar (+`aiContextItems`, `transferSegments`); 13/13 mutasyon (2026-11-15) |
 | F08-T04h | ✅ | **belgenin güncel sürümü kendi belgesi olmalı** (şema **v35**): `documents.current_version_id` × BEFORE INSERT/UPDATE + ters yön (`document_versions.document_id` taşıması) = **3 tetikleyici**; ölçülen kusur: tek bir doğrudan `UPDATE` belgeyi **başka dosyanın** sürümüne çeviriyordu — kapsam raporu B'nin 2 sayfasını A'da saydı, A'nın «gizli metin» alıntısı B'nin metninde **`exact`** döndü (INV-05); `scope_violations()` **20 tabloyu** sayar (+`documents`); 7/7 mutasyon (2026-11-15) |
+| F08-T04i | ✅ | **güncel sürüm okuması kendi belgesine bağlı kalır** (şema **v36**): `current_document_versions` görünümü — yedi okuma yolu (belge künyesi, ayrıştırma kuyruğu, kapsam raporu, alıntı taraması, gönderim kapsamı, plan kapsamı, çapa/plan okumaları) **tek tanımdan** geçer; ölçülen kusur: v35 öncesi çapraz işaretçi okumada **yabancı metni** A'nın kapsamına sokuyordu (rapor 1 sayfa/1 segment, alıntı `exact`, önizleme örneği «gizli tutanak»); 8/8 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -1169,3 +1170,114 @@ düşürebilir; bu kapı uygulama hatasına karşı. (f) Maliyet debug derlemede
 makinede (Apple M2), iki koşu; üretim derlemesinde oran ölçülmedi. (g) Tauri
 komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage düzeyinde
 ölçüldü, arayüz değişmedi — görsel QA + gerçek pencere **insan bekliyor**.
+
+## F08-T04i — güncel sürüm **okunurken** kendi belgesine bağlı kalır (şema v36, 2026-11-15)
+
+**Neden.** T04h (`0035_document_current_version_guard.sql`) yalnız **yeni**
+yazmayı kapıladı ve dürüst sınırını şöyle yazdı: “v35 öncesi çapraz işaretçiler
+sayılır, düzeltilmez — veri temizliğine kadar yanlış okuma riski sürer; okuma
+sorgularına `dv.document_id=d.id` eklenmedi.” Bu tur o sınırı kapatır: **eski**
+çapraz satır artık yanlış veri üretmez, “veri yok” üretir (fail-closed).
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite, v35; tetikleyiciler bilinçli
+düşürülüp eski satır taklit edildi, geçici sonda sonra silindi).**
+`UPDATE documents SET current_version_id='v9' WHERE id='d1'` (v9 = **başka
+dosyanın** sürümü) sonrası okuma yolları:
+
+1. `coverage_report('c1')` → `pages=1 segments=1` (A'nın kendi sürümü hiç
+   sayılmadı; B'nin sayfası/segmenti A'nın kapsamına girdi).
+2. `check_in_text_quotes` — «gizli tutanak» alıntısı **yalnız B'nin metninde**
+   geçtiği hâlde A'nın belgesinde **`exact`** döndü (INV-05).
+3. `consent_preview_masked('c1', ['d1'])` → `documents=1 segments=1 sample="gizli
+   tutanak metni"` — onaylanacak önizleme **yabancı metni** taşıyordu.
+4. `documents_pending_parse` belgeyi **yabancı** sürüm kimliğiyle listeliyor;
+   `get_document`/`list_documents` yabancı sürümü “güncel” diye döndürüyor;
+   `locate_anchor` / plan okuması yabancı sürüm numarasını yazıyordu.
+
+**Yazılan (şema v36, `0036_current_version_read_view.sql`).** Tek tanım:
+`current_document_versions` görünümü (`document_id, case_id, version_id,
+version_no, byte_size`) — `documents` ile `document_versions` yalnız
+`v.id = d.current_version_id **AND v.document_id = d.id**` iken birleşir.
+Bütün okuma yolları bu görünümden geçer (kopya `JOIN`/alt sorgu yok):
+
+* `documents::get_document` / `list_documents` — künyedeki `current_version_id`;
+* `documents::documents_pending_parse` — kuyruk (görünümle `INNER JOIN`);
+* `ai::coverage_report` (`CURRENT_RUNS`) — “gönderilebilir korpus”;
+* `ai::resolve_transfer_scope` + `ai::create_transfer_consent` plan kapsamı —
+  gönderim/onay kapsamı;
+* `intext_quotes::resolve_quote_scopes` + `resolve_historical_scopes` — alıntı
+  taraması ve **güncel sürüm dışlama** kuralı;
+* `anchors::locate_anchor` / `rebind_suggestion` — çapa okumaları;
+* `redactions::get_redaction_plan` / `list_redaction_plans` (güncel sürüm
+  numarası + `version_superseded` nedeni) ve `plan_mask_terms_for_send` —
+  plan okuması ve gönderim maskesi kapısı.
+
+**Davranış.** İşaretçi çaprazsa (ya da sürümü silinmişse) belgenin güncel
+sürümü **yoktur**: numara uydurulmaz, başka sürüme düşülmez. Bozukluk
+`Database::scope_violations()` tarafından **sayılmaya devam eder**; görünüm
+onu gizlemez, yalnız okumaya sokmaz. `deleted_at` süzgeci görünümde değil,
+çağıranda kalır (mevcut silme politikası değişmedi).
+
+**Testler (güncel kodla).** `scope_guard::tests` **33 → 40** (+7):
+`current_version_view_requires_the_same_document` (şemadan türetim: görünüm
+kendi belgesini denetler) · `stale_cross_pointer_is_not_read_as_a_current_version`
+(künye + kapsam raporu) · `stale_cross_pointer_is_not_queued_for_parse` ·
+`stale_cross_pointer_does_not_verify_a_quote_in_foreign_text` (alıntı
+`not_found`, konum yok; yalnız belgenin **kendi** eski sürümü taranır) ·
+`stale_cross_pointer_is_not_sent_in_the_transfer_scope` (`no_current_version`,
+boş örnek) · `stale_cross_pointer_is_not_the_current_version_in_anchor_reads`
+· `stale_cross_pointer_is_not_the_current_version_in_redaction_reads`
+(`current_version_no = None`, neden `version_superseded` korunur) →
+`dim-storage --lib` **646 → 653** (yerel **396,75 s**, 0 düştü). fmt (iki
+manifest) / `clippy -p dim-storage --all-targets -D warnings` / masaüstü
+`cargo check --all-targets` temiz.
+
+**Maliyet (ölçüldü; `tests/scope_guard_cost.rs`, `#[ignore]`, debug, bellek
+içi, 20.000 belge, iki koşu).** Aynı sorgunun görünümlü ve ham işaretçili hâli
+yan yana: kapsam sorgusu **99,4 / 98,4 ms** (ham **54,5 / 53,7 ms**) → **+44,9
+/ +44,7 ms** (+%82 / +%83, belge başına **+2,2 µs**); kuyruk sorgusu **48,3 /
+48,1 ms** (ham **33,5 / 33,2 ms**) → **+14,8 / +14,9 ms** (+%44 / +%45, belge
+başına **+0,7 µs**). Sorgu planı (`EXPLAIN QUERY PLAN`, gerçek şema): görünüm
+belge başına **iki PK araması** ekler (belge + sürüm); `parse_runs` araması
+`idx_parse_runs_version` üzerinden `SEARCH`. Okuma yolu kullanıcı eylemi
+başına bir kez koşar; 1.000 belgeli B-01 korpusunda bedel ≈ **+2,2 ms** /
+**+0,7 ms**.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-current-version-read-gates.py`,
+her mutasyon tek başına, `try/finally` + `os.utime` + sha256 birebir —
+`0036…sql fcb789e2…`, `lib.rs 1775727b…`, `documents.rs 345013e4…`,
+`intext_quotes.rs 7af00a76…`, `ai.rs 05a7f4e8…`, `anchors.rs 260a12ca…`,
+`redactions.rs 61fc5419…`, `scope_guard.rs 6a8fbff7…`,
+`scope_guard_cost.rs 0f1e9bb3…`):** **8/8 KIRMIZI, taban iki uçta 7/7
+yeşilken** (koşu **son hâl** üzerinde, fmt sonrası, yeniden ölçüldü) — M1
+görünüm kendi belgesini denetlemez · M2 belge künyesi ham işaretçiyi okur ·
+M3 kuyruk ham işaretçiyle birleşir · M4 alıntı taraması ham işaretçiyi çözer ·
+M5 kapsam raporu ham işaretçiyi kullanır · M6 gönderim kapsamı ham işaretçiyi
+kullanır · M7 çapa okuması ham işaretçiye döner · M8 plan okuması ham
+işaretçiye döner.
+
+**CI (ölçüldü).** Kod `a3a5402` (9 dosya, **+408/−28**) → run `43714629712`
+**10/10 YEŞİL**: `dim-storage` **653** iki OS'ta birebir (macos-15 **338,47 s** /
+ubuntu-latest **856,48 s**), `dim-cli-adapters` **168**, `arayüz` 66 dosya /
+**1428** test, paket `index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB (**arayüz
+değişmedi**); `masaüstü kabuk` 51/0/5 + gerçek worker 5/0/0, `windows güvenli
+depo` 28, `belge worker'ı`, `sözleşmeler`, `SBOM`, `kaynak arşivi`, `sürüm
+paketi manifesti` yeşil.
+
+**Dürüst sınırlar.** (a) Görünüm **okuma**yı düzeltir; v35 öncesi çapraz
+satırlar kasada **durur**, silinmez (veri temizliği ayrı ürün kararı) — ama
+artık yanlış okuma üretmezler, yalnız belgeyi “sürümsüz” gösterirler ve
+`scope_violations()` sayar. (b) Sürümsüz görünen belge **kuyrukta listelenmez**:
+çapraz işaretçili belge otomatik ayrıştırmaya alınmaz; nedeni tarama
+sayısındadır, kullanıcı belgeyi yeniden içe alana kadar sessiz kalır. (c)
+`ai::create_transfer_consent` plan kapsamı denetimi de görünümden okur; burada
+davranış **değişmez** (çapraz işaretçide plan zaten reddediliyordu) — tek
+tanım için yapıldı, ayrı mutasyonla ölçülemez. (d) `redaction_plans`
+`version_superseded` nedeni korunur (plan gerçekten güncel değildir); yalnız
+uydurma sürüm numarası kaldırıldı. (e) Görünüm **her** okuma yolunun onu
+kullanmasını zorlamaz: yeni bir sorgu ham sütunu okursa kapı dışında kalır —
+yeni `current_version` işaretçileri için `scope_guard` şemadan türetim testi
+vardır, okuma yolu için statik bir kapı yok. (f) Maliyet debug derlemede, tek
+makinede (Apple M2); üretim derlemesinde ölçülmedi. (g) Tauri komutları komut
+olarak koşulmadı, arayüz değişmedi — gerçek pencere + görsel QA **insan
+bekliyor**.
