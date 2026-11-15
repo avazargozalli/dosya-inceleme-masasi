@@ -386,9 +386,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0040_review_target_scope_guard",
         sql: include_str!("migrations/0040_review_target_scope_guard.sql"),
     },
+    Migration {
+        version: 41,
+        name: "0041_review_supersede_scope_guard",
+        sql: include_str!("migrations/0041_review_supersede_scope_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 40;
+pub const CURRENT_SCHEMA_VERSION: u32 = 41;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

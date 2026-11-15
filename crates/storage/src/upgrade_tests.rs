@@ -893,6 +893,79 @@ fn upgrade_reports_review_items_pointing_at_another_cases_entity() {
     );
 }
 
+/// v41 — kapıdan **önce** yazılmış çapraz/damgasız yerine-geçen bağları
+/// güncellemede sayılır (silinmez), denetime düşer ve yeni yazma kapıda durur.
+#[test]
+fn upgrade_reports_cross_case_and_half_written_supersede_pointers() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 40);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO review_items
+               (id,case_id,item_kind,payload,source_anchor_ids,created_at,updated_at)
+             VALUES ('old-a','c1','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('old-b','c1','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('old-9','c2','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             -- Çapraz bağ (v40 kapısı bu sütunu hiç denetlemiyordu).
+             UPDATE review_items SET superseded_by_item_id='old-9', superseded_at='2026-02-01T00:00:00Z'
+              WHERE id='old-a';
+             -- Damgasız yarım yazım: öğe kuyrukta karara açık kalıyordu.
+             UPDATE review_items SET superseded_by_item_id='old-b' WHERE id='old-9';",
+        )
+        .expect("v40 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let counts = db.scope_violations().expect("tarama");
+    assert_eq!(counts.review_items, 2, "çapraz bağ + damgasız bağ sayılır");
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["reviewItems"], 2);
+    // Yeni çapraz bağ kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE review_items SET superseded_by_item_id='old-9', superseded_at='2026-03-01T00:00:00Z'
+              WHERE id='old-b'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "review_items"),
+        other => panic!("v41 kapısı çapraz bağı reddetmeli: {other:?}"),
+    }
+    // Eski aykırı satır **karara bağlanabilir kalır**: kapı yalnız kapsam
+    // sütunlarına dokunan yazmada koşar; eski satır silinmez, sayılır.
+    db.conn()
+        .execute(
+            "UPDATE review_items SET state='rejected' WHERE id='old-a'",
+            [],
+        )
+        .expect("eski satırın durumu güncellenebilmeli");
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT count(*) FROM review_items", [], |row| row
+                .get::<_, i64>(0))
+            .expect("sayım"),
+        3,
+        "satırlar silinmez"
+    );
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");

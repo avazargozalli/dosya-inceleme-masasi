@@ -367,7 +367,13 @@ impl Database {
                             WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id
                            UNION ALL
                            SELECT 1 FROM events x
-                            WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id))",
+                            WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id))
+                     OR (i.superseded_by_item_id IS NOT NULL AND (
+                           i.superseded_at IS NULL
+                           OR i.superseded_by_item_id = i.id
+                           OR EXISTS (SELECT 1 FROM review_items s
+                                       WHERE s.id = i.superseded_by_item_id
+                                         AND s.case_id <> i.case_id)))",
             )?,
             // Taslak bilinçli olarak yalnız **başka dosyada var olan** çapayı
             // aykırı sayar (var olmayan kimlik taslakta meşru: metni kurtarır).
@@ -1654,6 +1660,126 @@ mod tests {
         let counts = db.scope_violations().expect("tarama");
         assert_eq!(counts.review_items, 1, "yalnız çapraz hedef");
         assert_eq!(count(&db, "review_items"), 3, "satırlar silinmez");
+    }
+
+    /// v41 — **yerine geçen kayıt** (`review_items.superseded_by_item_id`) kendi
+    /// dosyasında ve zaman damgasıyla birlikte yazılmalı; öğe kendini gösteremez.
+    /// Ölçülen kusur (v40): çapraz, kendini gösteren ve **damgasız** yazım kabul
+    /// ediliyordu; damgasız satır kuyrukta karara açık kalıp çekirdeğin sonraki
+    /// `supersede` UPDATE'iyle ilk işareti sessizce eziyordu.
+    #[test]
+    fn a_superseded_review_item_points_at_its_own_case() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let insert = |id: &str, case: &str, pointer: Option<&str>, at: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,superseded_by_item_id,superseded_at,created_at,updated_at)
+                 VALUES (?1,?2,'claim_candidate','{}','[]',?3,?4,
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, pointer, at],
+            )
+        };
+
+        // Yabancı dosyanın öğesi önce var olmalı: yoksa yabancı anahtar kapıdan
+        // önce düşer ve ölçüm "kapı çalıştı" sanılır.
+        insert("j9", "c2", None, None).expect("yabancı dosyanın öğesi");
+        // (a) damgasız bağ · (b) kendini gösterme · (c) çapraz dosya: üçü de kapıda.
+        scope_error(insert("ix", "c1", Some("i2"), None), "review_items");
+        scope_error(
+            insert("iy", "c1", Some("iy"), Some("2026-02-01T00:00:00Z")),
+            "review_items",
+        );
+        scope_error(
+            insert("iz", "c1", Some("j9"), Some("2026-02-01T00:00:00Z")),
+            "review_items",
+        );
+        assert_eq!(
+            count(&db, "review_items"),
+            1,
+            "reddedilen yazma iz bırakmaz (yalnız yabancı öğe kalır)"
+        );
+
+        insert("i1", "c1", None, None).expect("bağsız öğe meşru");
+        insert("i2", "c1", None, None).expect("bağsız öğe meşru");
+        insert("i3", "c1", Some("i2"), Some("2026-02-01T00:00:00Z")).expect("aynı dosyada bağ");
+        // Damga var, işaret yok: 0006'nın `ON DELETE SET NULL` biçimi meşru kalır.
+        insert("i4", "c1", None, Some("2026-02-01T00:00:00Z")).expect("damga tek başına meşru");
+
+        // UPDATE: bağı çapraz dosyaya taşımak…
+        let crossed = db.conn().execute(
+            "UPDATE review_items SET superseded_by_item_id='j9', superseded_at='2026-02-02T00:00:00Z' WHERE id='i1'",
+            [],
+        );
+        scope_error(crossed, "review_items");
+        // …öğeyi kendine bağlamak…
+        let itself = db.conn().execute(
+            "UPDATE review_items SET superseded_by_item_id='i1', superseded_at='2026-02-02T00:00:00Z' WHERE id='i1'",
+            [],
+        );
+        scope_error(itself, "review_items");
+        // …damgasız yarım yazım…
+        let half = db.conn().execute(
+            "UPDATE review_items SET superseded_by_item_id='i3' WHERE id='i1'",
+            [],
+        );
+        scope_error(half, "review_items");
+        // …hepsi reddedilir; çekirdek yolu aynı dosyada damgayla yazar.
+        db.conn()
+            .execute(
+                "UPDATE review_items SET superseded_by_item_id='i2', superseded_at='2026-02-02T00:00:00Z' WHERE id='i1'",
+                [],
+            )
+            .expect("çekirdek supersede geçer");
+        // Durum/`row_version` güncellemesi kapıya takılmaz (v35 dersi).
+        db.conn()
+            .execute("UPDATE review_items SET state='accepted' WHERE id='i1'", [])
+            .expect("durum guncellemesi kapidan gecer");
+        // Dosya taşımak bağı yabancılaştırır: `i3` (c1) `i2`yi gösteriyor.
+        let escaped = db
+            .conn()
+            .execute("UPDATE review_items SET case_id='c2' WHERE id='i3'", []);
+        scope_error(escaped, "review_items");
+    }
+
+    /// v41 — tarama, kapıdan önce yazılmış **çapraz**, **kendini gösteren** ve
+    /// **damgasız** yerine-geçen bağlarını sayar; damga var/işaret yok biçimi
+    /// (`ON DELETE SET NULL`) sayılmaz ve satırlar silinmez.
+    #[test]
+    fn the_scan_counts_cross_case_and_half_written_supersede_pointers() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        assert_eq!(
+            db.scope_violations().expect("tarama").review_items,
+            0,
+            "temiz kasa"
+        );
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_review_items_bi;
+                 DROP TRIGGER scope_guard_review_items_bu;
+                 INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,created_at,updated_at)
+                 VALUES ('base1','c1','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('base2','c1','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('base3','c1','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('base9','c2','claim_candidate','{}','[]','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 UPDATE review_items SET superseded_by_item_id='base9', superseded_at='2026-02-01T00:00:00Z'
+                  WHERE id='base1';
+                 UPDATE review_items SET superseded_by_item_id='base9', superseded_at='2026-02-01T00:00:00Z'
+                  WHERE id='base9';
+                 UPDATE review_items SET superseded_by_item_id='base1' WHERE id='base2';
+                 UPDATE review_items SET superseded_at='2026-02-01T00:00:00Z' WHERE id='base3';",
+            )
+            .expect("eski satirlar");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(
+            counts.review_items, 3,
+            "çapraz + kendini gösteren + damgasız sayılır"
+        );
+        assert_eq!(count(&db, "review_items"), 4, "satırlar silinmez");
     }
 
     /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri
