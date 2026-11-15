@@ -1492,6 +1492,14 @@ M5 v34 sürüm/dosya kuralı düşer · M6 iki segment kolonu birlikte denetlenm
    düzeltildi, **6/6** yeniden ölçüldü; ilk koşunun 4'ü kanıt sayılmadı.
    **Ders:** mutasyonun hangi testi kıracağı yazılmadan “kırmızı” sayılmaz.
 
+**CI (ölçüldü).** Kod + belge `9c8c8b1` (5 dosya, **+407/−4**) → run `43739891732`
+**10/10 YEŞİL**: `dim-storage` **661** iki OS'ta birebir (macos-15 **358,54 s** /
+ubuntu-latest **886,09 s**), `dim-cli-adapters` **168** (5,49 / 5,09 s), `arayüz` 66
+dosya / **1434** test, paket `index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB —
+**değişmedi** (arayüz dosyasına dokunulmadı); `masaüstü kabuk` (clippy + test),
+`windows güvenli depo` 28, `workers`, `sözleşmeler`, `SBOM`, `kaynak arşivi`,
+`sürüm paketi manifesti` yeşil.
+
 **Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v38
 öncesi yanlış segmentli satırlar **silinmez**, sayılır (temizlik ürün kararı).
 (b) Var olmayan segment kimliği bilinçli serbesttir: uydurulmuş kimlikli satır
