@@ -58,6 +58,14 @@
 //!   kapılıyordu; segment kimliği serbestti (ölçüldü: A'nın gönderim sicili B
 //!   dosyasının segmentini gösterdi). Var olmayan segment kimliği bilinçli
 //!   olarak serbesttir (denetim izi; segment sonradan silinebilir).
+//! * **aktarım onayının belge listesi** (v39) — `transfer_consents`
+//!   (`case_scope` + `selected_document_ids`) satırı "şu belgeler için aktarım
+//!   izni verildi" der; cihazdan ne çıkabileceğinin tek yetki kaydıdır. Dizinin
+//!   her elemanı kendi dosyasında **silinmemiş** bir belge olmalı, liste boş
+//!   olamaz. Ölçüldü (v38): doğrudan SQL ile A'nın onayına B'nin belgesi
+//!   yazılıyor ve envanter onu A'nın onaylanmış kapsamı diye sayıyordu; bozuk
+//!   JSON sessizce "0 belge" okunuyordu. Gönderim yolu çapraz kimliği zaten
+//!   atlar (bayt çıkmaz) — kusur yetki **kaydındaydı**.
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -86,9 +94,12 @@ use crate::{Database, StorageError};
 /// `ai_runs`tan okur). Sonraki **güncel sürüm işaretçisi**dir (v35):
 /// `documents.current_version_id` kendi belgesinin sürümünü gösterir. Son iki
 /// **sürüm izi sicili**dir (v37): `citation_checks` (kendi `case_id`'si) ve
-/// `export_items` (dosyayı `exports`tan okur).
+/// `export_items` (dosyayı `exports`tan okur). Son gelen **aktarım onayının
+/// belge listesi**dir (v39): `transfer_consents` kapsam sütununu `case_scope`
+/// adıyla taşır; `selected_document_ids` dizisinin her elemanı kendi
+/// dosyasında silinmemiş bir belge olmalı.
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 22] = [
+pub(crate) const GUARDED_TABLES: [&str; 23] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -117,6 +128,8 @@ pub(crate) const GUARDED_TABLES: [&str; 22] = [
     // sürüm izi sicilleri (v37)
     "citation_checks",
     "export_items",
+    // aktarım onayının belge listesi (v39)
+    "transfer_consents",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -151,6 +164,12 @@ pub struct ScopeViolationCounts {
     /// Dışa aktarma kalemi, üst kaydın dosyasından olmayan bir sürümü gösteren
     /// satır sayısı (v37).
     pub export_items: i64,
+    /// Aktarım onayı, kendi dosyasında **var olmayan/silinmiş** ya da başka
+    /// dosyaya ait bir belgeyi gösteren (ya da listesi boş/bozuk) satır sayısı
+    /// (v39). Yalnız **kanıtlanabilir** uyuşmazlık sayılır: başka dosyada
+    /// bulunan kimlik, boş liste, bozuk JSON. Sonradan silinmiş belge kimliği
+    /// denetim izidir — aykırı sayılmaz (0038 ile aynı gevşeklik).
+    pub transfer_consents: i64,
 }
 
 impl ScopeViolationCounts {
@@ -179,6 +198,7 @@ impl ScopeViolationCounts {
             + self.documents
             + self.citation_checks
             + self.export_items
+            + self.transfer_consents
     }
 }
 
@@ -427,6 +447,27 @@ impl Database {
                             JOIN documents d ON d.id = v.document_id
                            WHERE e.id = ei.export_id
                              AND e.case_id <> d.case_id)",
+            )?,
+            // v39 — aktarım onayının belge listesi. Yalnız kanıtlanabilir
+            // uyuşmazlık sayılır: **başka dosyada var olan** belge kimliği,
+            // boş liste, bozuk/array olmayan JSON. Sonradan silinmiş ya da
+            // hiç var olmamış kimlik denetim izidir (gönderim yolu onu atlar);
+            // aykırı sayılmaz — 0038'in `transfer_segments` kuralıyla aynı.
+            transfer_consents: count(
+                "SELECT count(*) FROM transfer_consents c
+                  WHERE NOT json_valid(c.selected_document_ids)
+                     OR json_type(c.selected_document_ids) <> 'array'
+                     OR (CASE WHEN json_valid(c.selected_document_ids)
+                                   AND json_type(c.selected_document_ids) = 'array'
+                              THEN json_array_length(c.selected_document_ids) ELSE -1 END) = 0
+                     OR EXISTS (
+                          SELECT 1 FROM json_each(
+                                 CASE WHEN json_valid(c.selected_document_ids)
+                                      THEN c.selected_document_ids ELSE '[]' END) j
+                           WHERE j.type <> 'text'
+                              OR EXISTS (SELECT 1 FROM documents d
+                                          WHERE d.id = j.value
+                                            AND d.case_id <> c.case_scope))",
             )?,
         })
     }
@@ -1379,6 +1420,127 @@ mod tests {
         assert_eq!(count(&db, "transfer_segments"), 2);
     }
 
+    /// v39: **aktarım onayı** kendi dosyasının **silinmemiş** belgelerini
+    /// gösterir.
+    ///
+    /// Onay satırı "şu belgeler için aktarım izni verildi" der — cihazdan ne
+    /// çıkabileceğinin tek yetki kaydıdır. Şema hiçbir şey istemiyordu:
+    /// ölçüldü (v38, geçici sonda), doğrudan SQL ile A dosyasının onayına
+    /// **B dosyasının belgesi** yazılıyor ve `list_transfer_consents('c1')`
+    /// A'nın envanterinde `["d9"]` gösteriyordu; boş liste (`[]`), bozuk JSON
+    /// ve silinmiş belge kimliği de kabul ediliyordu. Kapı çekirdeğin
+    /// `create_transfer_consent` kuralının aynısıdır: her eleman `case_scope`
+    /// dosyasında, silinmemiş bir belge olmalı; liste boş olamaz.
+    /// **Sonradan** silinen belge kimliği denetim izidir (kapı yalnız yeni
+    /// yazmada koşar; tarama da onu aykırı saymaz).
+    #[test]
+    fn a_transfer_consent_cannot_name_another_cases_document() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let consent = |id: &str, case: &str, ids: &str| {
+            db.conn().execute(
+                "INSERT INTO transfer_consents
+                   (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+                 VALUES (?1,'snap',?2,'ozet',?3,'1','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, ids],
+            )
+        };
+        // Kendi dosyasının belgeleri meşru — tek ve iki elemanlı liste.
+        consent("tc1", "c1", r#"["d1"]"#).expect("kendi belgesi meşru");
+        consent("tc2", "c1", r#"["d1","d2"]"#).expect("iki belge meşru");
+        // B dosyasının belgesi A'nın onayına yazılamaz (ve ters yön de kapalı).
+        scope_error(consent("tc-x", "c1", r#"["d9"]"#), "transfer_consents");
+        scope_error(consent("tc-y", "c2", r#"["d1"]"#), "transfer_consents");
+        // Boş liste hiçbir şeyi yetkilendirmez; bozuk/array olmayan JSON
+        // doğrulanamaz; var olmayan belge kimliği yetki kaydına giremez.
+        scope_error(consent("tc-empty", "c1", "[]"), "transfer_consents");
+        scope_error(consent("tc-bad", "c1", "bozuk-json"), "transfer_consents");
+        scope_error(
+            consent("tc-obj", "c1", r#"{"belge":"d1"}"#),
+            "transfer_consents",
+        );
+        scope_error(
+            consent("tc-none", "c1", r#"["olmayan-belge"]"#),
+            "transfer_consents",
+        );
+        // Silinmiş belge yeni onaya yazılamaz.
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at='2026-02-01T00:00:00Z' WHERE id='d2'",
+                [],
+            )
+            .expect("sil");
+        scope_error(consent("tc-del", "c1", r#"["d2"]"#), "transfer_consents");
+        // UPDATE ile kapsamı genişletmek/taşımak da kapıda durur.
+        scope_error(
+            db.conn().execute(
+                "UPDATE transfer_consents SET selected_document_ids='[\"d9\"]' WHERE id='tc1'",
+                [],
+            ),
+            "transfer_consents",
+        );
+        scope_error(
+            db.conn().execute(
+                "UPDATE transfer_consents SET case_scope='c2' WHERE id='tc1'",
+                [],
+            ),
+            "transfer_consents",
+        );
+        // İptal (kapsam dışı sütun) kapıya takılmaz — v35 dersi.
+        db.conn()
+            .execute(
+                "UPDATE transfer_consents SET revoked_at='2026-03-01T00:00:00Z' WHERE id='tc1'",
+                [],
+            )
+            .expect("iptal kapıya takılmamalı");
+        assert_eq!(count(&db, "transfer_consents"), 2, "yalnız meşru satırlar");
+    }
+
+    /// v39 taraması: kapıdan önce yazılmış çapraz/boş/bozuk onay satırları
+    /// **sayılır** (silinmez); sonradan silinmiş belgeyi gösteren satır aykırı
+    /// **değildir** (onay verildikten sonra belge silinebilir — denetim izi).
+    #[test]
+    fn the_scan_counts_transfer_consents_written_before_the_guard_existed() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        assert_eq!(
+            db.scope_violations().expect("tarama").transfer_consents,
+            0,
+            "temiz kasa"
+        );
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_transfer_consents_bi;
+                 DROP TRIGGER scope_guard_transfer_consents_bu;
+                 INSERT INTO transfer_consents
+                   (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+                 VALUES ('old-x','snap','c1','ozet','[\"d9\"]','1','2026-01-01T00:00:00Z'),
+                        ('old-empty','snap','c1','ozet','[]','1','2026-01-01T00:00:00Z'),
+                        ('old-bad','snap','c1','ozet','[oops','1','2026-01-01T00:00:00Z'),
+                        ('old-ok','snap','c1','ozet','[\"d1\"]','1','2026-01-01T00:00:00Z');",
+            )
+            .expect("eski satırlar");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.transfer_consents, 3, "çapraz + boş + bozuk");
+        assert_eq!(counts.total(), 3);
+        // Belge sonradan silinirse kimliği aykırı sayılmaz (gönderim yolu onu atlar).
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at='2026-02-01T00:00:00Z' WHERE id='d1'",
+                [],
+            )
+            .expect("sil");
+        assert_eq!(
+            db.scope_violations().expect("tarama").transfer_consents,
+            3,
+            "silinmiş belge aykırı değil"
+        );
+        // Satırlar silinmez, yalnız sayılır.
+        assert_eq!(count(&db, "transfer_consents"), 4);
+    }
+
     /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri
     /// **sayılır** (silinmez); bozuk JSON da "doğrulanamıyor" diye sayılır.
     #[test]
@@ -1633,6 +1795,8 @@ mod tests {
             "input_document_version_id",
             "source_version_id",
             "export_id",
+            // aktarım onayının belge listesi (v39)
+            "selected_document_ids",
         ];
         // JSON dizi referansı taşıyan tablolar: kapı `json_each` ile dizinin
         // **her** elemanını denetlemeli.
@@ -1672,6 +1836,10 @@ mod tests {
                 // `case_id`'si olmayan, kapsamı üst kaydından (`exports`)
                 // miras alan **sürüm izi sicili** (v37).
                 || (has("export_id") && has("source_version_id"))
+                // Kapsam sütunu `case_scope` adını taşıyan **aktarım onayı**
+                // (v39): belge listesi (`selected_document_ids`) kendi
+                // dosyasının belgelerini göstermeli.
+                || (has("case_scope") && has("selected_document_ids"))
                 || columns.iter().any(|c| c.ends_with("_anchor_ids"))
             {
                 derived.push(table);
@@ -1732,10 +1900,10 @@ mod tests {
                     );
                 }
             }
-            if table == "ai_context_items" {
+            if table == "ai_context_items" || table == "transfer_consents" {
                 assert!(
                     all_sql.contains("json_each("),
-                    "ai_context_items segment listesini denetlemiyor"
+                    "{table} JSON listesini denetlemiyor"
                 );
             }
         }

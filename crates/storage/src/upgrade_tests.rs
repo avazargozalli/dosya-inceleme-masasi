@@ -737,6 +737,89 @@ fn upgrade_reports_transfer_segments_claiming_another_versions_segment() {
         .expect("kendi sürümünün segmenti meşru");
 }
 
+/// v38'de **aktarım onayının belge listesi** kapı dışıydı: çekirdek
+/// `create_transfer_consent` doğruluyordu, şema hiçbir şey istemiyordu.
+/// Ölçüldü (v38, geçici sonda): doğrudan SQL ile A dosyasının onayına B
+/// dosyasının belgesi yazılıyor, A'nın onay envanteri B'nin belgesini
+/// "onaylanmış kapsam" diye sayıyordu; boş liste ve bozuk JSON da kabul
+/// ediliyordu. v39 kapısı yeni yazmayı durdurur; eski satır olduğu gibi kalır
+/// ve **sayılır** (sonradan silinmiş belge kimliği aykırı sayılmaz — denetim
+/// izi; gönderim yolu onu zaten atlar).
+#[test]
+fn upgrade_reports_transfer_consents_naming_another_cases_document() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 38);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Kira sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d9','c2','Diger dosya belgesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO transfer_consents
+               (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+             VALUES ('old-x','snap','c1','ozet','[\"d9\"]','1','2026-01-01T00:00:00Z'),
+                    ('old-empty','snap','c1','ozet','[]','1','2026-01-01T00:00:00Z'),
+                    ('old-bad','snap','c1','ozet','[oops','1','2026-01-01T00:00:00Z'),
+                    ('old-ok','snap','c1','ozet','[\"d1\"]','1','2026-01-01T00:00:00Z');",
+        )
+        .expect("v38 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let counts = db.scope_violations().expect("tarama");
+    assert_eq!(
+        counts.transfer_consents, 3,
+        "çapraz + boş + bozuk onay sayılır"
+    );
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["transferConsents"], 3);
+    // Yeni çapraz yazma kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO transfer_consents
+               (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+             VALUES ('new-x','snap','c1','ozet','[\"d9\"]','1','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "transfer_consents"),
+        other => panic!("v39 kapısı çapraz belgeyi reddetmeli: {other:?}"),
+    }
+    // Kendi dosyasının belgesi serbest.
+    db.conn()
+        .execute(
+            "INSERT INTO transfer_consents
+               (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+             VALUES ('new-ok','snap','c1','ozet','[\"d1\"]','1','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("kendi dosyasının belgesi meşru");
+    // Eski aykırı satır **iptal edilebilir**: iptal kapsam sütunlarına dokunmaz,
+    // kapı yalnız kapsamı değiştiren yazmada koşar (v35 dersi).
+    db.conn()
+        .execute(
+            "UPDATE transfer_consents SET revoked_at='2026-02-01T00:00:00Z' WHERE id='old-x'",
+            [],
+        )
+        .expect("eski satırın iptali kapıya takılmamalı");
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");

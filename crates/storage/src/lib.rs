@@ -376,9 +376,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0038_transfer_segment_identity_guard",
         sql: include_str!("migrations/0038_transfer_segment_identity_guard.sql"),
     },
+    Migration {
+        version: 39,
+        name: "0039_transfer_consent_document_scope",
+        sql: include_str!("migrations/0039_transfer_consent_document_scope.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 38;
+pub const CURRENT_SCHEMA_VERSION: u32 = 39;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -562,6 +567,7 @@ impl Database {
                         "documents": counts.documents,
                         "citationChecks": counts.citation_checks,
                         "exportItems": counts.export_items,
+                        "transferConsents": counts.transfer_consents,
                     }),
                 );
             }
