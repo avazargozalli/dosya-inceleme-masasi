@@ -33,6 +33,13 @@
 //!   Sicil, `case_id` taşımadığı için dosyayı **üst kaydından** (`ai_runs`) okur;
 //!   0033'ün taslak kuralıyla aynı gevşeklikte: başka dosyada **var olan** bağ
 //!   reddedilir, var olmayan kimlik denetim izinde kalabilir.
+//! * **güncel sürüm işaretçisi** (v35) — `documents.current_version_id` kendi
+//!   belgesinin sürümünü göstermeli. Bu işaretçi her okuma yolunun çıkış
+//!   noktasıdır: kapsam raporu, alıntı denetimi ve AI gövdesi “güncel sürüm”ü
+//!   buradan çözer. Tek bir doğrudan `UPDATE` belgeyi başka dosyanın sürümüne
+//!   çevirebiliyordu (ölçüldü: A dosyasının alıntısı B dosyasının metninde
+//!   `exact` döndü). Aynı değişmez ters yönden de korunur: güncel sürüm
+//!   işaretçisi olan satır başka belgeye taşınamaz.
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -58,9 +65,10 @@ use crate::{Database, StorageError};
 /// referansı** kapısıdır (v33): `source_anchor_ids` dizisinin her elemanı. Son
 /// gelen **kalan referans** kapısıdır (v34): soy ağacı, maskeleme çıktısı ve
 /// gönderim sicili (`ai_context_items` — kendi `case_id`'si yoktur, dosyayı
-/// `ai_runs`tan okur).
+/// `ai_runs`tan okur). Sonuncusu **güncel sürüm işaretçisi**dir (v35):
+/// `documents.current_version_id` kendi belgesinin sürümünü gösterir.
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 19] = [
+pub(crate) const GUARDED_TABLES: [&str; 20] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -84,6 +92,8 @@ pub(crate) const GUARDED_TABLES: [&str; 19] = [
     // kalan referans (v34)
     "ai_context_items",
     "transfer_segments",
+    // güncel sürüm işaretçisi (v35)
+    "documents",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -110,6 +120,8 @@ pub struct ScopeViolationCounts {
     pub note_drafts: i64,
     pub ai_context_items: i64,
     pub transfer_segments: i64,
+    /// Güncel sürüm işaretçisi başka belgeyi gösteren belge sayısı (v35).
+    pub documents: i64,
 }
 
 impl ScopeViolationCounts {
@@ -135,6 +147,7 @@ impl ScopeViolationCounts {
             + self.note_drafts
             + self.ai_context_items
             + self.transfer_segments
+            + self.documents
     }
 }
 
@@ -334,6 +347,16 @@ impl Database {
                            WHERE dv.id = t.document_version_id
                              AND dv.case_id <> (SELECT r.case_id FROM ai_runs r
                                                  WHERE r.id = t.ai_run_id))",
+            )?,
+            // v35 — belgenin güncel sürüm işaretçisi **başka belgeyi** gösteriyor.
+            // (Sürümü silinmiş, boşta kalmış işaretçi çapraz okuma üretmez; bu
+            // sayıma girmez — kapı yalnız yeni yazmayı engeller.)
+            documents: count(
+                "SELECT count(*) FROM documents d
+                  WHERE d.current_version_id IS NOT NULL AND EXISTS (
+                          SELECT 1 FROM document_versions dv
+                           WHERE dv.id = d.current_version_id
+                             AND dv.document_id <> d.id)",
             )?,
         })
     }
@@ -1404,6 +1427,8 @@ mod tests {
             // kalan referans (v34)
             "parent_version_id",
             "output_version_id",
+            // güncel sürüm işaretçisi (v35)
+            "current_version_id",
         ];
         // Referans sütunlarının **tam** listesi: bir kapsamlı tabloda bu
         // sütunlardan biri varsa, o tablonun tetikleyicilerinden biri sütunu
@@ -1526,5 +1551,197 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Tetikleyicileri geçici düşürüp **v35 öncesi** bozuk satırı üretir, sonra
+    /// aynı gövdeleri geri kurar (eski kasadan gelen satırı taklit eder).
+    fn write_legacy_pointer(db: &Database, document_id: &str, version_id: &str) {
+        let bi = db
+            .trigger_sql("scope_guard_documents_bi")
+            .expect("gövde")
+            .expect("var");
+        let bu = db
+            .trigger_sql("scope_guard_documents_bu")
+            .expect("gövde")
+            .expect("var");
+        let mv = db
+            .trigger_sql("scope_guard_document_versions_current_ref_bu")
+            .expect("gövde")
+            .expect("var");
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_documents_bi;
+                 DROP TRIGGER scope_guard_documents_bu;
+                 DROP TRIGGER scope_guard_document_versions_current_ref_bu;",
+            )
+            .expect("düşür");
+        db.conn()
+            .execute(
+                "UPDATE documents SET current_version_id=?1 WHERE id=?2",
+                rusqlite::params![version_id, document_id],
+            )
+            .expect("eski satır");
+        db.conn()
+            .execute_batch(&format!("{bi};\n{bu};\n{mv};"))
+            .expect("geri kur");
+    }
+
+    /// v35: belgenin güncel sürüm işaretçisi başka dosyanın (ya da aynı dosyada
+    /// başka belgenin) sürümünü gösteremez. Ölçülen kusur (düzeltme öncesi):
+    /// bu UPDATE kabul ediliyor, kapsam raporu B'nin sayfalarını A'da sayıyor
+    /// ve A'nın alıntısı B'nin metninde `exact` dönüyordu.
+    #[test]
+    fn documents_cannot_point_at_a_foreign_or_sibling_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        // Başka dosyanın sürümü (c2 → c1 belgesi).
+        scope_error(
+            db.conn().execute(
+                "UPDATE documents SET current_version_id='v9' WHERE id='d1'",
+                [],
+            ),
+            "documents",
+        );
+        // Aynı dosyada **başka belgenin** sürümü de olamaz (v1 → d2).
+        scope_error(
+            db.conn().execute(
+                "UPDATE documents SET current_version_id='v1' WHERE id='d2'",
+                [],
+            ),
+            "documents",
+        );
+        // INSERT yolu: var olan yabancı sürüm.
+        scope_error(
+            db.conn().execute(
+                "INSERT INTO documents (id,case_id,display_name,current_version_id,created_at,updated_at)
+                 VALUES ('d-yeni','c1','Yeni','v9','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            ),
+            "documents",
+        );
+        // INSERT yolu: olmayan sürüm de yazılmaz (fail-closed).
+        scope_error(
+            db.conn().execute(
+                "INSERT INTO documents (id,case_id,display_name,current_version_id,created_at,updated_at)
+                 VALUES ('d-yeni2','c1','Yeni','v-yok','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            ),
+            "documents",
+        );
+        // Meşru yol: belgenin **kendi** sürümü.
+        let changed = db
+            .conn()
+            .execute(
+                "UPDATE documents SET current_version_id='v1' WHERE id='d1'",
+                [],
+            )
+            .expect("kendi sürümü");
+        assert_eq!(changed, 1);
+        // NULL her zaman serbest (belge henüz sürümsüz).
+        db.conn()
+            .execute(
+                "UPDATE documents SET current_version_id=NULL WHERE id='d1'",
+                [],
+            )
+            .expect("null");
+    }
+
+    /// Eski kasadan gelen **boşta kalmış** işaretçi (sürümü silinmiş) başka
+    /// alanların güncellenmesini engellemez; yalnız işaretçiyi **değiştiren**
+    /// yazma kapıda durur. Aksi hâlde bozuk tek satır belgeyi kilitleyirdi.
+    #[test]
+    fn a_dangling_pointer_does_not_block_other_updates() {
+        let db = db();
+        chain(&db);
+        write_legacy_pointer(&db, "d2", "v-silinmis");
+        let changed = db
+            .conn()
+            .execute(
+                "UPDATE documents SET display_name='Yeni ad', current_version_id=current_version_id
+                  WHERE id='d2'",
+                [],
+            )
+            .expect("adlandırma engellenmemeli");
+        assert_eq!(changed, 1);
+        scope_error(
+            db.conn().execute(
+                "UPDATE documents SET current_version_id='v1' WHERE id='d2'",
+                [],
+            ),
+            "documents",
+        );
+    }
+
+    /// Değişmez **ters yönden** de korunur: bir belgenin güncel sürümünü
+    /// gösteren satır başka belgeye taşınamaz (kapı sürüm satırı taşınarak
+    /// atlatılamaz). İşaretçi çekilince taşıma serbesttir.
+    #[test]
+    fn a_document_current_version_cannot_move_to_another_document() {
+        let db = db();
+        chain(&db);
+        db.conn()
+            .execute(
+                "UPDATE documents SET current_version_id='v1' WHERE id='d1'",
+                [],
+            )
+            .expect("işaretçi");
+        scope_error(
+            db.conn().execute(
+                "UPDATE document_versions SET document_id='d2' WHERE id='v1'",
+                [],
+            ),
+            "documents",
+        );
+        db.conn()
+            .execute(
+                "UPDATE documents SET current_version_id=NULL WHERE id='d1'",
+                [],
+            )
+            .expect("çek");
+        let moved = db
+            .conn()
+            .execute(
+                "UPDATE document_versions SET document_id='d2' WHERE id='v1'",
+                [],
+            )
+            .expect("taşıma");
+        assert_eq!(moved, 1);
+    }
+
+    /// Tarama **eski** çapraz işaretçiyi sayar, silmez; boşta kalmış işaretçiyi
+    /// çapraz saymaz (o çapraz okuma üretmez).
+    #[test]
+    fn scope_scan_counts_documents_with_a_foreign_current_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        write_legacy_pointer(&db, "d1", "v9");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.documents, 1, "çapraz işaretçi sayılır");
+        assert!(counts.total() >= 1);
+        assert_eq!(count(&db, "documents"), 3, "satır silinmez");
+        db.conn()
+            .execute(
+                "UPDATE documents SET current_version_id=NULL WHERE id='d1'",
+                [],
+            )
+            .expect("temizle");
+        write_legacy_pointer(&db, "d2", "v-yok");
+        let counts = db.scope_violations().expect("tarama 2");
+        assert_eq!(counts.documents, 0, "boşta kalan işaretçi çapraz sayılmaz");
+    }
+
+    /// Meşru yazma yolu (çekirdek) etkilenmez: yeni sürüm belgenin kendi
+    /// işaretçisini günceller.
+    #[test]
+    fn adding_a_version_still_points_the_document_at_its_own_version() {
+        let db = db();
+        chain(&db);
+        let version = db
+            .add_version("d1", "c1", "b1", &"c".repeat(64), 10, "application/pdf")
+            .expect("sürüm");
+        let doc = db.get_document("d1").expect("belge").expect("var");
+        assert_eq!(doc.current_version_id.as_deref(), Some(version.id.as_str()));
     }
 }

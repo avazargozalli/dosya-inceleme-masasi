@@ -355,3 +355,81 @@ fn remaining_reference_triggers_add_a_predictable_cost_per_row() {
         REMAIN_ROWS * 2
     );
 }
+
+/// `from`dan başlayarak `ROWS` kez **güncel sürüm işaretçisini** iki sürüm
+/// arasında döndürür (her yazma kapıdan geçer); satır başına mikrosaniye.
+fn toggle_current_version(db: &Database, from: i64) -> f64 {
+    let started = Instant::now();
+    let tx = db.conn().unchecked_transaction().expect("işlem");
+    {
+        let mut stmt = tx
+            .prepare("UPDATE documents SET current_version_id=?1 WHERE id='d1'")
+            .expect("hazırlık");
+        for index in from..from + ROWS {
+            let version = if index % 2 == 0 { "v2" } else { "v3" };
+            stmt.execute([version]).expect("işaretçi");
+        }
+    }
+    tx.commit().expect("commit");
+    started.elapsed().as_secs_f64() * 1_000_000.0 / ROWS as f64
+}
+
+/// Şema v35 kapısı: belgenin güncel sürüm işaretçisi kendi belgesine bağlı.
+/// İşaretçi **sürüm eklenirken** yazılır (kullanıcı eylemi başına bir kez),
+/// yani maliyet seyrek bir yolda; ölçüm oranı görünür kılmak için. Tarama
+/// yalnız kasa güncellemesinde koşar.
+#[test]
+#[ignore = "ölçüm testi: v35 güncel sürüm işaretçisi kapısının maliyeti"]
+fn current_version_guard_adds_a_predictable_cost_per_write() {
+    let db = Database::open_in_memory(&DatabaseKey::new([84u8; 32])).expect("db");
+    chain(&db);
+    db.conn()
+        .execute_batch(
+            "INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v2','d1','c1',2,'b1','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v3','d1','c1',3,'b1','cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',10,'application/pdf','2026-01-01T00:00:00Z');",
+        )
+        .expect("sürümler");
+
+    let with_guard = toggle_current_version(&db, 0);
+    for trigger in ["scope_guard_documents_bi", "scope_guard_documents_bu"] {
+        db.conn()
+            .execute(&format!("DROP TRIGGER {trigger}"), [])
+            .expect("tetikleyici düşür");
+    }
+    let without_guard = toggle_current_version(&db, 1);
+
+    // Tarama: `ROWS` belge üzerinde (hepsi tutarlı; tarama yalnız sayar).
+    {
+        let tx = db.conn().unchecked_transaction().expect("işlem");
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+                     VALUES (?1,'c1',?2,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                )
+                .expect("hazırlık");
+            for index in 0..ROWS {
+                stmt.execute(rusqlite::params![
+                    format!("dx{index}"),
+                    format!("Belge {index}")
+                ])
+                .expect("belge");
+            }
+        }
+        tx.commit().expect("commit");
+    }
+    let scan_started = Instant::now();
+    let counts = db.scope_violations().expect("tarama");
+    let scan_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(counts.documents, 0, "yazılan belgeler tutarlı");
+
+    println!(
+        "güncel sürüm işaretçisi (documents): {ROWS} yazma tetikleyicili {with_guard:.2} µs/satır, \
+         tetikleyicisiz {without_guard:.2} µs/satır, fark {:.2} µs ({:.0}%)",
+        with_guard - without_guard,
+        (with_guard / without_guard - 1.0) * 100.0
+    );
+    println!("scope_violations() taraması: {ROWS} belgede {scan_ms:.1} ms");
+}

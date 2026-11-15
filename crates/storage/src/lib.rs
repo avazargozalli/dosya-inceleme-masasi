@@ -356,9 +356,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0034_remaining_reference_scope_guards",
         sql: include_str!("migrations/0034_remaining_reference_scope_guards.sql"),
     },
+    Migration {
+        version: 35,
+        name: "0035_document_current_version_guard",
+        sql: include_str!("migrations/0035_document_current_version_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 34;
+pub const CURRENT_SCHEMA_VERSION: u32 = 35;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -539,6 +544,7 @@ impl Database {
                         "noteDrafts": counts.note_drafts,
                         "aiContextItems": counts.ai_context_items,
                         "transferSegments": counts.transfer_segments,
+                        "documents": counts.documents,
                     }),
                 );
             }

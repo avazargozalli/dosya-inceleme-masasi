@@ -479,6 +479,80 @@ fn upgrade_reports_cross_case_output_and_context_links_left_by_the_previous_sche
         .expect("aynı dosyanın bağı meşru");
 }
 
+/// v34'te zincir, referanslar ve JSON diziler kapılıydı ama
+/// `documents.current_version_id` **kendi belgesine** bağlı değildi: tek bir
+/// doğrudan `UPDATE` belgeyi başka dosyanın sürümüne çevirebiliyordu (ölçüldü:
+/// A'nın alıntısı B'nin metninde `exact` dönüyor, kapsam raporu B'nin
+/// sayfalarını A'da sayıyordu). v35 tetikleyicileri yalnız **yeni** yazmayı
+/// engeller; eski satır güncelleme anında sayı olarak denetime düşer
+/// (kimlik/içerik yok).
+#[test]
+fn upgrade_reports_a_document_pointing_at_another_documents_version() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 34);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d2','c1','Kopya','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d9','c2','Diger dosya','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v2','d2','c1',1,'b1','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v9','d9','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             -- v34'te kabul edilen işaretçiler: (1) başka dosyanın sürümü,
+             -- (2) aynı dosyada başka belgenin sürümü.
+             UPDATE documents SET current_version_id='v9' WHERE id='d1';
+             UPDATE documents SET current_version_id='v1' WHERE id='d2';",
+        )
+        .expect("v34 bozuk işaretçiler");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["documents"], 2, "iki bozuk işaretçi sayılır");
+    // Satırlar **silinmez**: tarama yalnız sayar.
+    let documents: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM documents", [], |r| r.get(0))
+        .expect("sayım");
+    assert_eq!(documents, 3);
+    // Yeni çapraz işaretçi kapıda durur (E_DB_SCOPE).
+    let rejected = db.conn().execute(
+        "UPDATE documents SET current_version_id='v2' WHERE id='d1'",
+        [],
+    );
+    match rejected.map_err(StorageError::from) {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "documents"),
+        other => panic!("v35 kapısı yeni çapraz işaretçiyi reddetmeli: {other:?}"),
+    }
+    // Kendi sürümüne dönmek serbest.
+    db.conn()
+        .execute(
+            "UPDATE documents SET current_version_id='v2' WHERE id='d2'",
+            [],
+        )
+        .expect("kendi sürümü meşru");
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
