@@ -20,6 +20,7 @@
 | F08-T04g | ✅ | **kalan referanslar dosya sınırında** (şema **v34**): soy ağacı (`parent_version_id`), maskeleme çıktısı (`output_version_id`), gönderim sicili (`ai_context_items` sürüm/çapa/`segment_ids`), giden segment sicili (`transfer_segments`), çapa/işaret sayfası, aday kökeni, taslağın notu × BEFORE INSERT/UPDATE = **14 tetikleyici** (7 tablo); ölçülen kusur: v33'te A dosyasının AI çalıştırmasına B dosyasının sürümü+çapası yazılıyor (`Ok(1)`) ve ekran **B'nin belge adını** gösteriyordu; plan çıktısı ve soy ağacı da doğrudan SQL ile çapraz yazılabiliyordu; `scope_violations()` **19 tabloyu** sayar (+`aiContextItems`, `transferSegments`); 13/13 mutasyon (2026-11-15) |
 | F08-T04h | ✅ | **belgenin güncel sürümü kendi belgesi olmalı** (şema **v35**): `documents.current_version_id` × BEFORE INSERT/UPDATE + ters yön (`document_versions.document_id` taşıması) = **3 tetikleyici**; ölçülen kusur: tek bir doğrudan `UPDATE` belgeyi **başka dosyanın** sürümüne çeviriyordu — kapsam raporu B'nin 2 sayfasını A'da saydı, A'nın «gizli metin» alıntısı B'nin metninde **`exact`** döndü (INV-05); `scope_violations()` **20 tabloyu** sayar (+`documents`); 7/7 mutasyon (2026-11-15) |
 | F08-T04i | ✅ | **güncel sürüm okuması kendi belgesine bağlı kalır** (şema **v36**): `current_document_versions` görünümü — yedi okuma yolu (belge künyesi, ayrıştırma kuyruğu, kapsam raporu, alıntı taraması, gönderim kapsamı, plan kapsamı, çapa/plan okumaları) **tek tanımdan** geçer; ölçülen kusur: v35 öncesi çapraz işaretçi okumada **yabancı metni** A'nın kapsamına sokuyordu (rapor 1 sayfa/1 segment, alıntı `exact`, önizleme örneği «gizli tutanak»); 8/8 mutasyon (2026-11-15) |
+| F08-T04j | ✅ | **sürüm izi sicilleri kendi dosyasına bağlanır** (şema **v37**): `citation_checks.case_id` + göç, 2 tablo × BEFORE INSERT/UPDATE = **4 tetikleyici** (`export_items` dosyayı `exports`tan okur); ölçülen kusur: `record_citation_check` çapraz sürümü kabul ediyor, `list_citation_checks('v9')` **B dosyasının ekranında** A'nın metnini gösteriyordu (INV-05), doğrudan SQL A'nın dışa aktarmasına B'nin sürümünü yazabiliyor ve `scope_violations()` ikisinde de **0** diyordu; liste **iki anahtarlı** (dosya + sürüm); 11/11 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -1281,3 +1282,130 @@ vardır, okuma yolu için statik bir kapı yok. (f) Maliyet debug derlemede, tek
 makinede (Apple M2); üretim derlemesinde ölçülmedi. (g) Tauri komutları komut
 olarak koşulmadı, arayüz değişmedi — gerçek pencere + görsel QA **insan
 bekliyor**.
+
+## F08-T04j — sürüm izi sicilleri kendi dosyasına bağlanır (şema v37, 2026-11-15)
+
+**Neden.** 0031–0036 zinciri kanıt referanslarını, JSON dizilerini, soy ağacını,
+maskeleme çıktısını, gönderim sicilini ve “güncel sürüm” işaretçisini kapıladı.
+Şema taraması **iki sicili hiç görmüyordu**: ikisi de `case_id` taşımıyor,
+kapsamı üst kaydından miras alıyor ve gösterdikleri sürüm kimliği serbest metin:
+
+* `citation_checks.input_document_version_id` → sürümün **belgesinin** dosyası;
+* `export_items.source_version_id` → sahibi üst satırın (`exports`) dosyası.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v36; geçici sonda sonra
+silindi).**
+
+1. `record_citation_check` **hiçbir kapı taşımıyordu**: A dosyası adına B
+   dosyasının sürümüne atıf kontrolü yazıldı (`Ok(<id>`) ve
+   `list_citation_checks('v9')` **B dosyasının ekranında** A'nın belgesinden
+   çıkarılmış metni gösterdi («gizli tutanak metni») — INV-05. Var olmayan
+   sürüm kimliği de kabul ediliyordu; tabloda `case_id` sütunu yoktu.
+2. `record_export` **çekirdek** kapısı doğru çalışıyordu (`E_EXPORT_SOURCE`),
+   ama şemada kapı yoktu: doğrudan SQL ile A'nın dışa aktarmasına B'nin sürümü
+   yazıldı ve `list_export_items` A'nın kayıt defterinde **B'nin belge adını**
+   («Diger dosya belgesi») gösterdi.
+3. Her iki durumda `scope_violations()` **0** dedi (kör).
+
+**Yazılan (şema v37, `0037_version_trace_scope_guards.sql`).**
+
+* `citation_checks.case_id` sütunu — satır **hangi dosyada** yazıldı. Göç: eski
+  satırlar başvurdukları sürümün dosyasına atfedilir (başka bilgi hiç yoktu);
+  sürümü silinmiş satırda `NULL` kalır — **uydurulmaz**, tarama “aidiyeti
+  yazılmamış” diye sayar, liste göstermez.
+* **4 tetikleyici** (2 tablo × BEFORE INSERT/UPDATE): satırın gösterdiği sürüm
+  **başka dosyada var ise** yazma reddedilir; `citation_checks` kendi
+  `case_id`'sini taşır (zorunlu), `export_items` dosyayı `exports` satırından
+  okur (0034'ün `ai_context_items` kuralıyla aynı: kapsam üst kayıttan miras).
+* `Database::scope_violations()` **20 → 22 tabloyu** sayar; kasa güncellemesi
+  denetimine `citationChecks` / `exportItems` alanları eklendi (kimlik/içerik
+  taşımaz).
+* **Bilinçli gevşeklik** (0033 `note_drafts` / 0034 `ai_context_items` ile
+  aynı): **var olmayan** sürüm kimliği sicilde kalabilir — bu iki sütun yabancı
+  anahtar değildir (denetim izi; belge/sürüm sonradan silinebilir). Kapı yalnız
+  **başka dosyada var olan** sürümü reddeder; tarama da yalnız onu sayar.
+* Ret `RAISE(ABORT,'DIM_SCOPE:<tablo>')` → `StorageError::ScopeViolation` →
+  **`E_DB_SCOPE`**.
+
+**Yazılan (çekirdek).** `record_citation_check` kapsam kapısı (`E_NOT_FOUND`,
+satır **hiç** yazılmaz) · `CitationCheckRow`/`NewCitationCheck` `case_id` alanı ·
+`list_citation_checks(case_id, version_id)` **iki anahtarlı** (B dosyasının sürüm
+kimliği A'nın listesine karışamaz; çapraz yazılmış eski satır **kendi** dosyasının
+listesinde kalır) · `exports.rs` kaynak sorgusu tek tanıma indi (`documents`
+üzerinden; şema tetikleyicisiyle aynı kaynak) · `get_citation_check` sütun
+sırası.
+
+**Yazılan (arayüz).** Tauri `citation_check_list(case_id, version_id)`;
+`api.ts` `citationCheckList(caseId, versionId)` + `citationCheckCreate.caseId`;
+`Precedents.tsx` yazmada dosya kimliğini gönderir, listeyi iki anahtarla okur.
+Ek olarak kontrol listesinin **okuma durumu** (`idle/loading/ready/error`):
+düşen okuma **“0 kontrol” demez**, koduyla yazar ve yeniden denenebilir; sürüm
+değişiminde önceki sürümün satırları **anında** kalkar; geç yanıt sıra
+numarasıyla ezilmez (`checksSeq`); anlam panelinin bağlam hatası ayrı yazılır
+(`meaningError`). 8 sözlük anahtarı.
+
+**Testler (güncel kodla).** `scope_guard::tests` **40 → 43** (+3:
+`a_citation_check_cannot_reference_another_cases_version`,
+`an_export_item_cannot_reference_another_cases_version`,
+`scope_violations_reports_cross_case_version_traces`) — ayrıca şemadan türetim
+testi iki sicili **kural olarak** kapsar (4. kural: `export_id` +
+`source_version_id`; `reference_columns` iki sütun daha) · `precedents::tests`
++1 (`citation_check_cannot_reference_another_cases_version`) · `upgrade_tests`
++1 (`upgrade_reports_version_traces_left_by_the_previous_schema`) →
+`dim-storage --lib` **653 → 658** (yerel **501,83 s**, 0 düştü).
+`Precedents.test.tsx` **55 → 56** → tam vitest **66 dosya / 1437** test yeşil;
+`tsc --noEmit` temiz; fmt (iki manifest) / `clippy -p dim-storage --all-targets
+-D warnings` / masaüstü `cargo check --all-targets` temiz.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-v37-gates.py`, her mutasyon
+tek başına, `try/finally` + `os.utime` + sha256 birebir — `0037…sql
+67e07b37…`, `scope_guard.rs f40dd850…`, `precedents.rs 407ad7de…`,
+`Precedents.tsx b7f55871…`; koşu **son hâl** üzerinde, `cargo fmt --check` iki
+manifestte temiz olduğu doğrulandıktan sonra):** **11/11 KIRMIZI, taban iki
+uçta yeşilken** (rust 4/4, arayüz 4/4, koşu sonunda taban tekrar yeşil) — M1
+atıf kontrolü INSERT kapısı düşer · M2 aynı tablonun UPDATE kapısı · M3 dışa
+aktarma kalemi INSERT · M4 aynı tablonun UPDATE · M5 çekirdek çapraz sürüm
+kapısı · M6 liste iki anahtarı bırakır (yalnız sürüm) · M7 satır kendi dosyasını
+taşımak zorunda değil (`case_id IS NULL`) · M8 tarama çapraz satırı görmez ·
+M9 şemadan türetim atıf tablosunu görmez · U1 arayüz yazmada dosya kimliğini
+göndermez · U2 arayüz listeyi yalnız sürümle okur.
+
+**Dürüst (kendi hatam, iki ölçüm hatası).** Betiğin ilk sürümü **9/11** verdi ve
+M9/U1'i “YEŞİL” sandı; ikisi de **kapı boşluğu değil, ölçüm hatasıydı**:
+
+1. M9, `GUARDED_TABLES` dizisinden eleman **siliyordu** → `[&str; 22]` 21
+   elemanla **derlenmiyordu**; çıktıda `test result:` olmadığı için betik
+   derleme hatasını okuyamadı ve YEŞİL yazdı. Düzeltme: derleme hatası ayrı
+   hüküm (**kanıt değil**, kapı başarısız) ve mutasyon **derlenen** anlamsal
+   biçime çevrildi (eleman sayısı korunur, tablo listeden düşer).
+2. U1'de vitest `-t` süzgeci özeti `Tests  1 failed | 55 skipped` yazar; betik
+   yalnız `passed` aradığı için hiçbir sayı okuyamadı → YEŞİL. Düzeltme:
+   `failed/passed/skipped` birlikte okunur; hiç test koşmadıysa hüküm
+   **ÖLÇÜLEMEDİ** olur ve kapı başarısız sayılır.
+
+Yalnız düzeltilmiş betiğin koşusu (11/11) kanıt sayıldı; dosyalar sha256
+birebir geri yazıldı. **Ders:** kapı betiğinin kendi ayrıştırıcısı da ölçülmeli —
+“YEŞİL” hükmü testin gerçekten koştuğunun kanıtı değilse kanıt sayılmaz.
+
+**CI (ölçüldü).** Kod `909b54e` (11 dosya, **+948/−70**) → run `43729719259`
+**10/10 YEŞİL**: `dim-storage` **658** iki OS'ta birebir (macos-15 **337,52 s** /
+ubuntu-latest **932,35 s**), `dim-cli-adapters` **168**, `arayüz` 66 dosya /
+**1434** test (yerel 1437 — fark ağaçtaki başka ajanın commit'siz testleri),
+paket `index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB (**arayüz bu turda
+değişti**); `masaüstü kabuk` 51/0/5 + gerçek worker 5/0/0, `windows güvenli
+depo` 28, `sözleşmeler`, `belge worker'ı`, `SBOM`, `kaynak arşivi`, `sürüm
+paketi manifesti` yeşil.
+
+**Dürüst sınırlar.** (a) v37 öncesi çapraz `citation_checks` satırı göçte
+başvurduğu sürümün dosyasına **atfedilir** — satırda yazılı dosya bilgisi hiç
+yoktu, gerçek aidiyet ayırt **edilemez**; bu satırların temizliği ürün kararıdır.
+(b) Var olmayan sürüm kimliği sicilde kalabilir (bilinçli denetim izi); kapı
+yalnız “başka dosyada var olan” sürümü reddeder, `case_id`i `NULL` kalmış eski
+satır hiçbir listede **görünmez** (tarama sayar). (c) `export_items` kendi
+`case_id`'sini taşımaz: dosya üst kayıttan okunur, `exports.case_id` sonradan
+değişirse eski kalemler yeni dosyaya “taşınmış” görünür — bugün böyle bir
+güncelleme yolu yok. (d) `citation_checks.case_id` **FK değil** (sicil satırı
+belge/sürüm silinmesinden sonra yaşamalı). (e) Tetikleyiciler yalnız **yeni**
+yazmayı engeller; anahtarı olan saldırgan düşürebilir (uygulama hatasına karşı).
+(f) Tauri komutları komut olarak koşulmadı; arayüz davranışı jsdom’da ölçüldü —
+gerçek pencere + görsel QA **insan bekliyor**.
