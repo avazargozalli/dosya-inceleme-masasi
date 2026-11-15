@@ -487,8 +487,10 @@ impl Database {
                 let current: Option<Option<String>> = self
                     .conn()
                     .query_row(
-                        "SELECT current_version_id FROM documents
-                         WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                        "SELECT (SELECT cv.version_id FROM current_document_versions cv
+                                  WHERE cv.document_id=d.id)
+                         FROM documents d
+                         WHERE d.id=?1 AND d.case_id=?2 AND d.deleted_at IS NULL",
                         rusqlite::params![document_id, new.case_scope],
                         |row| row.get(0),
                     )
@@ -1848,7 +1850,9 @@ impl Database {
         const CURRENT_RUNS: &str = "WITH current_runs AS (\
                SELECT d.id AS document_id, \
                       (SELECT pr.id FROM parse_runs pr \
-                        WHERE pr.document_version_id=d.current_version_id \
+                        WHERE pr.document_version_id=(SELECT cv.version_id \
+                                                        FROM current_document_versions cv \
+                                                       WHERE cv.document_id=d.id) \
                           AND EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=pr.id) \
                         ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1) AS run_id \
                  FROM documents d \
@@ -2115,8 +2119,10 @@ impl Database {
             let version_id: Option<Option<String>> = self
                 .conn()
                 .query_row(
-                    "SELECT current_version_id FROM documents
-                     WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                    "SELECT (SELECT cv.version_id FROM current_document_versions cv
+                              WHERE cv.document_id=d.id)
+                     FROM documents d
+                     WHERE d.id=?1 AND d.case_id=?2 AND d.deleted_at IS NULL",
                     rusqlite::params![document_id, case_id],
                     |row| row.get::<_, Option<String>>(0),
                 )

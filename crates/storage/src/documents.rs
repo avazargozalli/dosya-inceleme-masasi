@@ -208,7 +208,9 @@ impl Database {
 
     pub fn get_document(&self, id: &str) -> Result<Option<Document>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,case_id,display_name,document_type,status,current_version_id,declared_document_date,created_at,updated_at,row_version
+            "SELECT id,case_id,display_name,document_type,status,
+                    (SELECT cv.version_id FROM current_document_versions cv WHERE cv.document_id=documents.id),
+                    declared_document_date,created_at,updated_at,row_version
              FROM documents WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_document).optional()?)
@@ -229,7 +231,9 @@ impl Database {
 
     pub fn list_documents(&self, case_id: &str) -> Result<Vec<Document>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,case_id,display_name,document_type,status,current_version_id,declared_document_date,created_at,updated_at,row_version
+            "SELECT id,case_id,display_name,document_type,status,
+                    (SELECT cv.version_id FROM current_document_versions cv WHERE cv.document_id=documents.id),
+                    declared_document_date,created_at,updated_at,row_version
              FROM documents WHERE case_id=?1 AND deleted_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([case_id], map_document)?;
@@ -304,13 +308,13 @@ impl Database {
     ) -> Result<Vec<PendingParse>, StorageError> {
         let limit = limit.clamp(1, 50);
         let mut stmt = self.conn().prepare(
-            "SELECT d.id, d.display_name, v.id, v.byte_size
+            "SELECT d.id, d.display_name, v.version_id, v.byte_size
              FROM documents d
-             JOIN document_versions v ON v.id = d.current_version_id
+             JOIN current_document_versions v ON v.document_id = d.id
              WHERE d.case_id = ?1 AND d.deleted_at IS NULL
                AND NOT EXISTS (
                  SELECT 1 FROM parse_runs r
-                 WHERE r.document_version_id = v.id
+                 WHERE r.document_version_id = v.version_id
                    AND r.status IN ('succeeded','partial')
                )
              ORDER BY d.created_at, d.id

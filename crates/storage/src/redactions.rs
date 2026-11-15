@@ -267,7 +267,7 @@ impl Database {
                     CASE
                       WHEN p.state NOT IN ('approved','applied') THEN NULL
                       WHEN v.id IS NULL OR d.id IS NULL OR d.deleted_at IS NOT NULL THEN 'version_missing'
-                      WHEN d.current_version_id IS NULL OR d.current_version_id <> p.document_version_id THEN 'version_superseded'
+                      WHEN cv.version_id IS NULL OR cv.version_id <> p.document_version_id THEN 'version_superseded'
                       WHEN v.original_sha256 <> p.render_hash THEN 'render_changed'
                       WHEN p.parse_run_id IS NOT NULL AND p.parse_run_id <> COALESCE((
                           SELECT pr.id FROM parse_runs pr
@@ -280,7 +280,7 @@ impl Database {
              FROM redaction_plans p
              LEFT JOIN document_versions v ON v.id = p.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
-             LEFT JOIN document_versions cv ON cv.id = d.current_version_id
+             LEFT JOIN current_document_versions cv ON cv.document_id = d.id
              LEFT JOIN document_versions ov ON ov.id = p.output_version_id
              LEFT JOIN documents od ON od.id = ov.document_id
              WHERE p.id=?1",
@@ -304,7 +304,7 @@ impl Database {
                     CASE
                       WHEN p.state NOT IN ('approved','applied') THEN NULL
                       WHEN v.id IS NULL OR d.id IS NULL OR d.deleted_at IS NOT NULL THEN 'version_missing'
-                      WHEN d.current_version_id IS NULL OR d.current_version_id <> p.document_version_id THEN 'version_superseded'
+                      WHEN cv.version_id IS NULL OR cv.version_id <> p.document_version_id THEN 'version_superseded'
                       WHEN v.original_sha256 <> p.render_hash THEN 'render_changed'
                       WHEN p.parse_run_id IS NOT NULL AND p.parse_run_id <> COALESCE((
                           SELECT pr.id FROM parse_runs pr
@@ -317,7 +317,7 @@ impl Database {
              FROM redaction_plans p
              LEFT JOIN document_versions v ON v.id = p.document_version_id
              LEFT JOIN documents d ON d.id = v.document_id
-             LEFT JOIN document_versions cv ON cv.id = d.current_version_id
+             LEFT JOIN current_document_versions cv ON cv.document_id = d.id
              LEFT JOIN document_versions ov ON ov.id = p.output_version_id
              LEFT JOIN documents od ON od.id = ov.document_id
              WHERE p.case_id=?1 ORDER BY p.created_at DESC, p.rowid DESC",
@@ -492,8 +492,10 @@ impl Database {
         let current: Option<String> = self
             .conn()
             .query_row(
-                "SELECT current_version_id FROM documents
-                 WHERE id=?1 AND case_id=?2 AND deleted_at IS NULL",
+                "SELECT (SELECT cv.version_id FROM current_document_versions cv
+                          WHERE cv.document_id=d.id)
+                 FROM documents d
+                 WHERE d.id=?1 AND d.case_id=?2 AND d.deleted_at IS NULL",
                 rusqlite::params![version.document_id, case_id],
                 |row| row.get::<_, Option<String>>(0),
             )

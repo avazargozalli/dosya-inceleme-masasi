@@ -1744,4 +1744,177 @@ mod tests {
         let doc = db.get_document("d1").expect("belge").expect("var");
         assert_eq!(doc.current_version_id.as_deref(), Some(version.id.as_str()));
     }
+
+    // ---- v36: çapraz işaretçi **okuma** yolunda güncel sürüm sayılmaz ----
+    //
+    // v35 yalnız **yeni** yazmayı kapıladı; v35 öncesi çapraz satır bugün de
+    // kasada olabilir. v36 görünümü (`current_document_versions`) okuma
+    // yollarında yabancı sürümü "güncel" saymaz: belge **sürümsüz** görünür
+    // (fail-closed) — yanlış veri değil, veri yok.
+
+    /// Belge künyesi, kapsam raporu ve ayrıştırma kuyruğu aynı görünümden
+    /// okur: yabancı işaretçi hiçbirine "güncel sürüm" diye girmez.
+    #[test]
+    fn stale_cross_pointer_is_not_read_as_a_current_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        write_legacy_pointer(&db, "d1", "v9");
+        // Künye: yabancı kimlik dönmez.
+        let doc = db.get_document("d1").expect("belge").expect("var");
+        assert_eq!(doc.current_version_id, None, "yabancı işaretçi okunmaz");
+        let listed = db.list_documents("c1").expect("liste");
+        let d1 = listed.iter().find(|d| d.id == "d1").expect("d1");
+        assert_eq!(d1.current_version_id, None);
+        // Kapsam raporu yabancı sürümün sayfa/segmentini saymaz.
+        let report = db.coverage_report("c1").expect("rapor");
+        assert_eq!(report.pages, 0, "yabancı sürümün sayfası sayılmaz");
+        assert_eq!(report.segments, 0, "yabancı sürümün segmenti sayılmaz");
+        assert_eq!(report.unparsed_documents, 2, "iki belge de sürümsüz");
+    }
+
+    /// Ayrıştırma kuyruğu belgeyi **yabancı** sürüm kimliğiyle listelemez
+    /// (kuyruk işi yanlış sürümü ayrıştırmaya gitmez).
+    #[test]
+    fn stale_cross_pointer_is_not_queued_for_parse() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        // Koşusu olmayan yabancı sürüm: geçerli işaretçiyle kuyruğa girerdi.
+        db.conn()
+            .execute_batch(
+                "INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+                 VALUES ('v8','d9','c2',2,'b1','dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',11,'application/pdf','2026-01-01T00:00:00Z');",
+            )
+            .expect("koşusuz yabancı sürüm");
+        write_legacy_pointer(&db, "d2", "v8");
+        assert!(
+            db.documents_pending_parse("c1", 50)
+                .expect("kuyruk")
+                .is_empty(),
+            "yabancı sürüm kimliğiyle belge listelenmemeli"
+        );
+    }
+
+    /// Plan okuması yabancı sürüm numarasını "belgenin güncel sürümü" diye
+    /// yazmaz; plan yine `version_superseded` der (yeniden inceleme nedeni
+    /// korunur, numara uydurulmaz).
+    #[test]
+    fn stale_cross_pointer_is_not_the_current_version_in_redaction_reads() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute(
+                "INSERT INTO redaction_plans
+                   (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at)
+                 VALUES ('rp1','c1','v1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pdf_page_points',1,'approved','masked','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("plan");
+        write_legacy_pointer(&db, "d1", "v9");
+        let plan = db
+            .get_redaction_plan("rp1")
+            .expect("plan okuma")
+            .expect("var");
+        assert_eq!(
+            plan.current_version_no, None,
+            "yabancı sürüm numarası yazılmaz"
+        );
+        assert_eq!(
+            plan.reinspect_reason.as_deref(),
+            Some("version_superseded"),
+            "plan güncel sürümde değil"
+        );
+    }
+
+    /// Alıntı denetimi yabancı metinde eşleşme bulmaz: sayfa taranmaz, hüküm
+    /// `unverifiable` (INV-05: alıntı ekrandaki belgede geçmiyor).
+    #[test]
+    fn stale_cross_pointer_does_not_verify_a_quote_in_foreign_text() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        write_legacy_pointer(&db, "d1", "v9");
+        // Yabancı segmentin metni kısa alıntı eşiğinin üstünde olmalı.
+        db.conn()
+            .execute(
+                "UPDATE text_segments SET raw_text='gizli tutanak metni', normalized_text='gizli tutanak metni' WHERE id='s9'",
+                [],
+            )
+            .expect("yabancı metin");
+        let input = crate::intext_quotes::InTextQuoteInput {
+            text: "Metinde «gizli tutanak» geçiyor.".into(),
+            document_id: Some("d1".into()),
+        };
+        let check = db.check_in_text_quotes("c1", &input).expect("denetim");
+        assert_eq!(check.exact, 0, "yabancı metinde eşleşme sayılmaz");
+        assert_eq!(check.quotes[0].state, "not_found");
+        assert!(
+            check.quotes[0].position.is_none(),
+            "yabancı segmentte konum üretilmez"
+        );
+        assert!(
+            check.historical_versions_scanned >= 1,
+            "yalnız belgenin **kendi** eski sürümü taranır"
+        );
+    }
+
+    /// Gönderim önizlemesi (onayla aynı kapsam çözümü) yabancı metni
+    /// göndermez; belge **nedeniyle** kapsam dışıdır (sessiz atlama yok).
+    #[test]
+    fn stale_cross_pointer_is_not_sent_in_the_transfer_scope() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        write_legacy_pointer(&db, "d1", "v9");
+        let preview = db
+            .consent_preview_masked("c1", &["d1".to_string()], &[], None)
+            .expect("önizleme");
+        assert_eq!(preview.documents, 0, "yabancı sürüm gönderilmez");
+        assert_eq!(preview.segments, 0);
+        assert_eq!(preview.bytes, 0);
+        assert!(preview.sample.is_empty(), "yabancı metin örneği sızmaz");
+        assert_eq!(
+            preview.skipped.first().map(|skip| skip.reason.as_str()),
+            Some("no_current_version")
+        );
+    }
+
+    /// Çapa okumaları yabancı sürümü "belgenin güncel sürümü" diye yazmaz
+    /// (numara uydurulmaz; yeniden bağlama önerisi de yabancı sürüme gitmez).
+    #[test]
+    fn stale_cross_pointer_is_not_the_current_version_in_anchor_reads() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        write_legacy_pointer(&db, "d1", "v9");
+        let location = db.locate_anchor("a1").expect("konum").expect("var");
+        assert_eq!(location.current_version_id, None);
+        assert!(!location.is_current_version);
+        assert_eq!(location.current_version_no, None);
+        let suggestion = db.rebind_suggestion("a1").expect("öneri");
+        assert_eq!(suggestion.current_version_id, None);
+    }
+
+    /// Şemadan türetim: görünüm **tek tanım** olarak durur ve kendi belgesine
+    /// ait olma koşulunu taşır (gevşetilirse bütün okuma yolları sessizce
+    /// yabancı sürüme döner).
+    #[test]
+    fn current_version_view_requires_the_same_document() {
+        let db = db();
+        let sql: String = db
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='view' AND name='current_document_versions'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("current_document_versions görünümü yok");
+        assert!(
+            sql.contains("v.document_id = d.id"),
+            "görünüm kendi belgesini denetlemiyor: {sql}"
+        );
+    }
 }

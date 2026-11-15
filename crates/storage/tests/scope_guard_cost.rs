@@ -433,3 +433,144 @@ fn current_version_guard_adds_a_predictable_cost_per_write() {
     );
     println!("scope_violations() taraması: {ROWS} belgede {scan_ms:.1} ms");
 }
+
+/// Aynı sorguyu `runs` kez koşar, **en hızlı** koşuyu döndürür (µs). Tek
+/// seferlik sıçramalar (OS G/Ç, önbellek) ölçüme karışmasın.
+fn read_micros(db: &Database, sql: &str, runs: usize) -> f64 {
+    let mut best = f64::MAX;
+    for _ in 0..runs {
+        let started = Instant::now();
+        let _: i64 = db
+            .conn()
+            .query_row(sql, [], |row| row.get(0))
+            .expect("sorgu");
+        let elapsed = started.elapsed().as_secs_f64() * 1_000_000.0;
+        if elapsed < best {
+            best = elapsed;
+        }
+    }
+    best
+}
+
+/// Şema v36: "güncel sürüm" **okumaları** `current_document_versions`
+/// görünümünden geçer (v35 öncesi çapraz işaretçi yanlış okuma üretmesin).
+/// Görünüm satır başına bir `document_id` eşitliği daha yapar. Ölçüm **aynı
+/// sorgunun** görünümlü ve ham işaretçili hâlini yan yana koşar; fark görünümün
+/// bedelidir. Okuma yolu kullanıcı eylemi başına bir kez (rapor/kuyruk) koşar.
+#[test]
+#[ignore = "ölçüm testi: v36 okuma görünümünün maliyeti"]
+fn current_version_view_adds_a_predictable_read_cost() {
+    let db = Database::open_in_memory(&DatabaseKey::new([91u8; 32])).expect("db");
+    chain(&db);
+    {
+        let tx = db.conn().unchecked_transaction().expect("işlem");
+        {
+            let mut doc = tx
+                .prepare(
+                    "INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+                     VALUES (?1,'c1',?2,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                )
+                .expect("belge hazırlık");
+            let mut version = tx
+                .prepare(
+                    "INSERT INTO document_versions
+                       (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+                     VALUES (?1,?2,'c1',1,'b1',?3,10,'application/pdf','2026-01-01T00:00:00Z')",
+                )
+                .expect("sürüm hazırlık");
+            let mut run = tx
+                .prepare(
+                    "INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+                     VALUES (?1,?2,'c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z')",
+                )
+                .expect("koşu hazırlık");
+            let mut page = tx
+                .prepare("INSERT INTO pages (id,parse_run_id,page_index,text_origin) VALUES (?1,?2,0,'native')")
+                .expect("sayfa hazırlık");
+            let mut pointer = tx
+                .prepare("UPDATE documents SET current_version_id=?1 WHERE id=?2")
+                .expect("işaretçi hazırlık");
+            for index in 0..ROWS {
+                let doc_id = format!("dx{index}");
+                let version_id = format!("vx{index}");
+                let run_id = format!("rx{index}");
+                doc.execute(rusqlite::params![doc_id, format!("Belge {index}")])
+                    .expect("belge");
+                version
+                    .execute(rusqlite::params![
+                        version_id,
+                        doc_id,
+                        format!("{index:064x}")
+                    ])
+                    .expect("sürüm");
+                run.execute(rusqlite::params![run_id, version_id])
+                    .expect("koşu");
+                // İşaretçi ancak sürüm **vardıktan sonra** yazılır (v35 kapısı).
+                pointer
+                    .execute(rusqlite::params![version_id, doc_id])
+                    .expect("işaretçi");
+                page.execute(rusqlite::params![format!("px{index}"), run_id])
+                    .expect("sayfa");
+            }
+        }
+        tx.commit().expect("commit");
+    }
+
+    // `coverage_report`un sayfa sayımı: güncel sürümün sayfa üreten en yeni koşusu.
+    let view_query = "WITH current_runs AS (\
+           SELECT d.id AS document_id, \
+                  (SELECT pr.id FROM parse_runs pr \
+                    WHERE pr.document_version_id=(SELECT cv.version_id \
+                                                    FROM current_document_versions cv \
+                                                   WHERE cv.document_id=d.id) \
+                      AND EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=pr.id) \
+                    ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1) AS run_id \
+             FROM documents d \
+            WHERE d.case_id='c1' AND d.deleted_at IS NULL\
+         ) \
+         SELECT count(*) FROM pages p JOIN current_runs c ON c.run_id=p.parse_run_id";
+    let raw_query = "WITH current_runs AS (\
+           SELECT d.id AS document_id, \
+                  (SELECT pr.id FROM parse_runs pr \
+                    WHERE pr.document_version_id=d.current_version_id \
+                      AND EXISTS (SELECT 1 FROM pages p WHERE p.parse_run_id=pr.id) \
+                    ORDER BY pr.created_at DESC, pr.id DESC LIMIT 1) AS run_id \
+             FROM documents d \
+            WHERE d.case_id='c1' AND d.deleted_at IS NULL\
+         ) \
+         SELECT count(*) FROM pages p JOIN current_runs c ON c.run_id=p.parse_run_id";
+
+    let view_us = read_micros(&db, view_query, 5);
+    let raw_us = read_micros(&db, raw_query, 5);
+
+    // Kuyruk: görünümle birleşen sorgu ile ham işaretçiyle birleşen sorgu.
+    let view_pending = "SELECT count(*) FROM documents d \
+         JOIN current_document_versions v ON v.document_id = d.id \
+         WHERE d.case_id='c1' AND d.deleted_at IS NULL \
+           AND NOT EXISTS (SELECT 1 FROM parse_runs r \
+                            WHERE r.document_version_id = v.version_id \
+                              AND r.status IN ('succeeded','partial'))";
+    let raw_pending = "SELECT count(*) FROM documents d \
+         JOIN document_versions v ON v.id = d.current_version_id \
+         WHERE d.case_id='c1' AND d.deleted_at IS NULL \
+           AND NOT EXISTS (SELECT 1 FROM parse_runs r \
+                            WHERE r.document_version_id = v.id \
+                              AND r.status IN ('succeeded','partial'))";
+    let view_pending_us = read_micros(&db, view_pending, 5);
+    let raw_pending_us = read_micros(&db, raw_pending, 5);
+
+    // Davranış kontrolü: iki biçim de aynı sayıyı vermeli (tutarlı kasa).
+    let view_count = read_micros(&db, view_query, 1);
+    assert!(view_count > 0.0);
+
+    println!(
+        "güncel sürüm okuması ({} belge): kapsam sorgusu görünümlü {view_us:.1} µs / ham {raw_us:.1} µs, \
+         fark {:.1} µs ({:+.0}%); kuyruk görünümlü {view_pending_us:.1} µs / ham {raw_pending_us:.1} µs, \
+         fark {:.1} µs ({:+.0}%)",
+        ROWS,
+        view_us - raw_us,
+        (view_us / raw_us - 1.0) * 100.0,
+        view_pending_us - raw_pending_us,
+        (view_pending_us / raw_pending_us - 1.0) * 100.0
+    );
+}

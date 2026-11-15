@@ -361,9 +361,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0035_document_current_version_guard",
         sql: include_str!("migrations/0035_document_current_version_guard.sql"),
     },
+    Migration {
+        version: 36,
+        name: "0036_current_version_read_view",
+        sql: include_str!("migrations/0036_current_version_read_view.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 35;
+pub const CURRENT_SCHEMA_VERSION: u32 = 36;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

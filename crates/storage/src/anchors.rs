@@ -330,7 +330,7 @@ impl Database {
                         a.parse_run_id, a.page_id, p.page_index, a.segment_id,
                         a.start_offset, a.end_offset, a.exact_quote, a.anchor_status,
                         a.quote_hash, s.raw_text, s.bbox_list, p.rotation, p.coordinate_space,
-                        d.current_version_id, dv.version_no, cv.version_no,
+                        cv.version_id, dv.version_no, cv.version_no,
                         (SELECT pr.id FROM parse_runs pr
                           WHERE pr.document_version_id = a.document_version_id
                             AND pr.status IN ('succeeded','partial')
@@ -339,7 +339,7 @@ impl Database {
                  FROM source_anchors a
                  LEFT JOIN document_versions dv ON dv.id = a.document_version_id
                  LEFT JOIN documents d ON d.id = dv.document_id
-                 LEFT JOIN document_versions cv ON cv.id = d.current_version_id
+                 LEFT JOIN current_document_versions cv ON cv.document_id = d.id
                  LEFT JOIN pages p ON p.id = a.page_id
                  LEFT JOIN text_segments s ON s.id = a.segment_id
                  WHERE a.id = ?1",
@@ -403,7 +403,7 @@ impl Database {
             .conn()
             .query_row(
                 "SELECT a.case_id, a.document_version_id, a.exact_quote,
-                        d.current_version_id, dv.version_no, cv.version_no, a.parse_run_id,
+                        cv.version_id, dv.version_no, cv.version_no, a.parse_run_id,
                         (SELECT pr.id FROM parse_runs pr
                           WHERE pr.document_version_id = a.document_version_id
                             AND pr.status IN ('succeeded','partial')
@@ -412,7 +412,7 @@ impl Database {
                  FROM source_anchors a
                  JOIN document_versions dv ON dv.id = a.document_version_id
                  JOIN documents d ON d.id = dv.document_id
-                 LEFT JOIN document_versions cv ON cv.id = d.current_version_id
+                 LEFT JOIN current_document_versions cv ON cv.document_id = d.id
                  WHERE a.id = ?1",
                 [anchor_id],
                 |row| {

@@ -860,9 +860,11 @@ impl Database {
             let row: Option<(String, String, Option<String>, i64)> = self
                 .conn()
                 .query_row(
-                    "SELECT d.id,d.display_name,d.current_version_id,
-                            COALESCE((SELECT v.version_no FROM document_versions v
-                                      WHERE v.id=d.current_version_id),0)
+                    "SELECT d.id,d.display_name,
+                            (SELECT cv.version_id FROM current_document_versions cv
+                              WHERE cv.document_id=d.id),
+                            COALESCE((SELECT cv.version_no FROM current_document_versions cv
+                                      WHERE cv.document_id=d.id),0)
                      FROM documents d
                      WHERE d.id=?1 AND d.case_id=?2 AND d.deleted_at IS NULL",
                     [document_id, case_id],
@@ -887,9 +889,11 @@ impl Database {
             return Ok(scopes);
         }
         let mut stmt = self.conn().prepare(
-            "SELECT d.id,d.display_name,d.current_version_id,
-                    COALESCE((SELECT v.version_no FROM document_versions v
-                              WHERE v.id=d.current_version_id),0)
+            "SELECT d.id,d.display_name,
+                    (SELECT cv.version_id FROM current_document_versions cv
+                      WHERE cv.document_id=d.id),
+                    COALESCE((SELECT cv.version_no FROM current_document_versions cv
+                              WHERE cv.document_id=d.id),0)
              FROM documents d
              WHERE d.case_id=?1 AND d.deleted_at IS NULL ORDER BY d.created_at DESC, d.id DESC",
         )?;
@@ -937,9 +941,10 @@ impl Database {
         let mut stmt = self.conn().prepare(
             "SELECT v.document_id,d.display_name,v.id,v.version_no
              FROM document_versions v JOIN documents d ON d.id=v.document_id
+             LEFT JOIN current_document_versions cv ON cv.document_id=d.id
              WHERE d.case_id=?1 AND d.deleted_at IS NULL
                AND (?2 IS NULL OR d.id=?2)
-               AND (d.current_version_id IS NULL OR v.id<>d.current_version_id)
+               AND (cv.version_id IS NULL OR v.id<>cv.version_id)
              ORDER BY v.document_id, v.version_no DESC, v.id DESC",
         )?;
         let rows = stmt.query_map(rusqlite::params![case_id, document_id], |row| {
