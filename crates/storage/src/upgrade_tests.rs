@@ -655,6 +655,88 @@ fn upgrade_reports_version_traces_left_by_the_previous_schema() {
         .expect("aynı dosya meşru");
 }
 
+/// v37'de giden segment sicilinin yalnız **sürümü** kapılıydı: satırın gösterdiği
+/// segment kimliği serbestti. Ölçüldü: A'nın çalıştırmasına A'nın sürümü + B'nin
+/// segmenti yazılabiliyor, A'nın gönderim sicili B dosyasının parçasını
+/// gösteriyordu. v38 kapısı yeni yazmayı durdurur; eski satır olduğu gibi kalır
+/// ve **sayılır** (var olmayan segment kimliği aykırı sayılmaz — denetim izi).
+#[test]
+fn upgrade_reports_transfer_segments_claiming_another_versions_segment() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 37);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Kira sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d9','c2','Diger dosya belgesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v9','d9','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z'),
+                    ('r9','v9','c2','pymupdf','1.24','h9','succeeded','2026-01-01T00:00:00Z');
+             INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+             VALUES ('p1','r1',0,'native'),('p9','r9',0,'native');
+             INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s1','r1','p1','c1','itiraz','itiraz','2026-01-01T00:00:00Z'),
+                    ('s9','r9','p9','c2','gizli','gizli','2026-01-01T00:00:00Z');
+             INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+             VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');
+             INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('old-ts','run1','s9','s9','v1','gizli','hash'),
+                    ('old-gone','run1','silinmis-segment','silinmis-segment','v1','metin','hash');",
+        )
+        .expect("v37 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let counts = db.scope_violations().expect("tarama");
+    assert_eq!(counts.transfer_segments, 1, "yanlış segment sayılır");
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["transferSegments"], 1);
+    // Yeni çapraz segment yazma kapıda durur; kendi segmenti serbest.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('new-ts','run1','s9','v1','gizli','hash')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "transfer_segments"),
+        other => panic!("v38 kapısı yanlış segmenti reddetmeli: {other:?}"),
+    }
+    db.conn()
+        .execute(
+            "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('new-ok','run1','s1','v1','itiraz','hash')",
+            [],
+        )
+        .expect("kendi sürümünün segmenti meşru");
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");

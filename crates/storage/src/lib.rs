@@ -371,9 +371,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0037_version_trace_scope_guards",
         sql: include_str!("migrations/0037_version_trace_scope_guards.sql"),
     },
+    Migration {
+        version: 38,
+        name: "0038_transfer_segment_identity_guard",
+        sql: include_str!("migrations/0038_transfer_segment_identity_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 37;
+pub const CURRENT_SCHEMA_VERSION: u32 = 38;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

@@ -52,6 +52,12 @@
 //!   yalnız çekirdekte doğrulanıyordu (doğrudan SQL A'nın kaydında B'nin belge
 //!   adını gösterdi). `citation_checks` kendi `case_id`'sini taşır;
 //!   `export_items` dosyayı `exports` satırından okur.
+//! * **giden segment kimliği** (v38) — `transfer_segments` satırı "V sürümünün
+//!   S segmenti gönderildi" der; S **var olan** bir segment ise V'nin segmenti
+//!   olmalı (sürüm `NULL` ise çalıştırmanın dosyasında). 0034 yalnız sürümü
+//!   kapılıyordu; segment kimliği serbestti (ölçüldü: A'nın gönderim sicili B
+//!   dosyasının segmentini gösterdi). Var olmayan segment kimliği bilinçli
+//!   olarak serbesttir (denetim izi; segment sonradan silinebilir).
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -364,14 +370,26 @@ impl Database {
                               AND a.case_id <> (SELECT r.case_id FROM ai_runs r
                                                  WHERE r.id = c.ai_run_id)))",
             )?,
-            // v34 — giden segment sicili (maskelenmiş metnin kendisi bu tabloda).
+            // v34 + v38 — giden segment sicili (maskelenmiş metnin kendisi bu
+            // tabloda): sürüm başka dosyadan **ya da** gösterilen segment başka
+            // sürümün/dosyanın segmenti olamaz.
             transfer_segments: count(
                 "SELECT count(*) FROM transfer_segments t
-                  WHERE t.document_version_id IS NOT NULL AND EXISTS (
+                  WHERE (t.document_version_id IS NOT NULL AND EXISTS (
                           SELECT 1 FROM document_versions dv
                            WHERE dv.id = t.document_version_id
                              AND dv.case_id <> (SELECT r.case_id FROM ai_runs r
-                                                 WHERE r.id = t.ai_run_id))",
+                                                 WHERE r.id = t.ai_run_id)))
+                     OR EXISTS (
+                          SELECT 1
+                            FROM text_segments s
+                            JOIN parse_runs pr ON pr.id = s.parse_run_id
+                           WHERE s.id IN (t.outbound_segment_id, t.source_segment_id)
+                             AND ((t.document_version_id IS NOT NULL
+                                   AND pr.document_version_id IS NOT t.document_version_id)
+                               OR (t.document_version_id IS NULL
+                                   AND pr.case_id IS NOT (SELECT r.case_id FROM ai_runs r
+                                                           WHERE r.id = t.ai_run_id))))",
             )?,
             // v35 — belgenin güncel sürüm işaretçisi **başka belgeyi** gösteriyor.
             // (Sürümü silinmiş, boşta kalmış işaretçi çapraz okuma üretmez; bu
@@ -1253,6 +1271,112 @@ mod tests {
         );
         scope_error(moved, "transfer_segments");
         assert_eq!(count(&db, "transfer_segments"), 2, "yalnız meşru satırlar");
+    }
+
+    /// v38: giden segment sicili **kendi segmentine** bağlıdır.
+    ///
+    /// Satır "V sürümünün S segmenti gönderildi" der; S **var olan** bir segment
+    /// ise V'nin segmenti olmalı. 0034 yalnız gösterilen sürümü kapılıyordu —
+    /// segment kimliği serbestti: doğrudan SQL ile A'nın çalıştırmasına A'nın
+    /// sürümü + **B'nin segmenti** yazılıyor ve A'nın gönderim sicili B'nin
+    /// parçasını gösteriyordu (denetim izi yanlış belgeyi yazar). Sürüm `NULL`
+    /// olan eski biçimde ölçüt çalıştırmanın dosyasıdır. Var olmayan segment
+    /// kimliği bilinçli olarak serbesttir (denetim izi; segment sonradan
+    /// silinebilir) — bu test o gevşekliği de sabitler.
+    #[test]
+    fn a_transfer_segment_cannot_claim_a_segment_of_another_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\\\"billing\\\":\\\"unknown\\\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("çalıştırma");
+        let row = |id: &str, segment: &str, version: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES (?1,'run1',?2,?2,?3,'itiraz','hash')",
+                rusqlite::params![id, segment, version],
+            )
+        };
+        // Kendi sürümünün segmentleri meşru — iki ayrı koşunun segmenti de.
+        row("t1", "s1", Some("v1")).expect("kendi sürümünün segmenti meşru");
+        row("t2", "s2", Some("v1")).expect("aynı sürümün ikinci koşusunun segmenti meşru");
+        row("t-gone", "silinmis-segment", Some("v1")).expect("var olmayan segment denetim izi");
+        // B dosyasının segmenti A'nın sürümü altında yazılamaz; sürüm yoksa da
+        // (dosya ölçütü) yazılamaz.
+        scope_error(row("t-x", "s9", Some("v1")), "transfer_segments");
+        scope_error(row("t-y", "s9", None), "transfer_segments");
+        // İki segment kolonu ayrışırsa **gösterilen** alan da denetlenir:
+        // `source_segment_id` meşru olması `outbound_segment_id`i aklamaz.
+        scope_error(
+            db.conn().execute(
+                "INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES ('t-split','run1','s9','s1','v1','gizli','hash')",
+                [],
+            ),
+            "transfer_segments",
+        );
+        // UPDATE ile segment değiştirme de kapıda durur.
+        scope_error(
+            db.conn().execute(
+                "UPDATE transfer_segments SET outbound_segment_id='s9', source_segment_id='s9'
+                  WHERE id='t1'",
+                [],
+            ),
+            "transfer_segments",
+        );
+        assert_eq!(count(&db, "transfer_segments"), 3, "yalnız meşru satırlar");
+    }
+
+    /// v38 taraması: kapıdan önce yazılmış **yanlış segmentli** giden sicil
+    /// satırları sayılır (silinmez); var olmayan segment kimliği aykırı
+    /// **değildir** (denetim izi — kanıtlanabilir uyuşmazlık yok).
+    #[test]
+    fn the_scan_counts_transfer_segments_claiming_another_versions_segment() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\\\"billing\\\":\\\"unknown\\\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("çalıştırma");
+        assert_eq!(db.scope_violations().expect("tarama").transfer_segments, 0);
+        // v38 öncesi kasa: kapı yokken yazılmış yanlış segmentli satır.
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_transfer_segments_bi;
+                 DROP TRIGGER scope_guard_transfer_segments_bu;
+                 INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES ('old-t','run1','s9','s9','v1','gizli','hash');",
+            )
+            .expect("eski yanlış segmentli satır");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.transfer_segments, 1, "yanlış segment sayılır");
+        assert_eq!(counts.total(), 1);
+        // Segmenti artık kasada olmayan satır aykırı sayılmaz (bilinçli).
+        db.conn()
+            .execute(
+                "INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+                 VALUES ('old-gone','run1','silinmis-segment','v1','metin','hash')",
+                [],
+            )
+            .expect("segmenti silinmiş satır");
+        assert_eq!(
+            db.scope_violations().expect("tarama").transfer_segments,
+            1,
+            "var olmayan segment aykırı değil"
+        );
+        // Satırlar silinmez, yalnız sayılır.
+        assert_eq!(count(&db, "transfer_segments"), 2);
     }
 
     /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri
