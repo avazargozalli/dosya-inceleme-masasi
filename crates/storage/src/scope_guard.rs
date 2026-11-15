@@ -355,7 +355,19 @@ impl Database {
                                       THEN i.source_anchor_ids ELSE '[]' END) j
                            WHERE j.type <> 'text'
                               OR NOT EXISTS (SELECT 1 FROM source_anchors a
-                                              WHERE a.id = j.value AND a.case_id = i.case_id))",
+                                              WHERE a.id = j.value AND a.case_id = i.case_id))
+                     OR (i.target_entity_id IS NOT NULL AND EXISTS (
+                           SELECT 1 FROM claims x
+                            WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id
+                           UNION ALL
+                           SELECT 1 FROM notes x
+                            WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id
+                           UNION ALL
+                           SELECT 1 FROM tasks x
+                            WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id
+                           UNION ALL
+                           SELECT 1 FROM events x
+                            WHERE x.id = i.target_entity_id AND x.case_id <> i.case_id))",
             )?,
             // Taslak bilinçli olarak yalnız **başka dosyada var olan** çapayı
             // aykırı sayar (var olmayan kimlik taslakta meşru: metni kurtarır).
@@ -1539,6 +1551,109 @@ mod tests {
         );
         // Satırlar silinmez, yalnız sayılır.
         assert_eq!(count(&db, "transfer_consents"), 4);
+    }
+
+    /// v40 — **karar hedefi** (`review_items.target_entity_id`) kendi dosyasında
+    /// olmalı. Ölçülen kusur: doğrudan SQL ile A'nın öğesine B'nin iddiası/notu
+    /// yazılıyor, `list_review_items` onu A'nın öğesi diye gösteriyor (arayüzde
+    /// hedef rozeti) ve öğe yanlış hedefle bir daha karara bağlanamıyordu.
+    #[test]
+    fn a_review_item_cannot_point_at_another_cases_entity() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO claims (id,case_id,claim_text,claim_kind,status,created_at,updated_at)
+                 VALUES ('x1','c1','A iddiasi','allegation','asserted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('x9','c2','B iddiasi','allegation','asserted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO notes (id,case_id,title,body_ast,author_kind,created_at,updated_at)
+                 VALUES ('n1','c1','A notu','{}','user','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('n9','c2','B notu','{}','user','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO tasks (id,case_id,title,created_at,updated_at)
+                 VALUES ('t1','c1','A gorevi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('t9','c2','B gorevi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO events (id,case_id,event_kind,title,date_precision,date_role,created_at,updated_at)
+                 VALUES ('e1','c1','hearing','A durusmasi','unknown','hearing','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('e9','c2','hearing','B durusmasi','unknown','hearing','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+            )
+            .expect("hedef kayitlar");
+        let insert = |id: &str, case: &str, target: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,target_entity_id,created_at,updated_at)
+                 VALUES (?1,?2,'claim_candidate','{}','[]',?3,
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, target],
+            )
+        };
+
+        for foreign in ["x9", "n9", "t9", "e9"] {
+            scope_error(insert("ix", "c1", Some(foreign)), "review_items");
+        }
+        assert_eq!(
+            count(&db, "review_items"),
+            0,
+            "reddedilen yazma iz bırakmaz"
+        );
+
+        // Kendi dosyasının kaydı ve hedefsiz öğe meşru.
+        insert("i1", "c1", Some("x1")).expect("kendi iddiasi");
+        insert("i2", "c1", Some("n1")).expect("kendi notu");
+        insert("i3", "c1", None).expect("hedefsiz oge");
+        // Var olmayan/silinmiş hedef serbesttir: karar verildikten sonra kayıt
+        // silinebilir, bu denetim izidir (kanıtlanabilir uyuşmazlık değil).
+        insert("i4", "c1", Some("sonradan-silinmis")).expect("var olmayan hedef serbest");
+
+        // UPDATE ile yabancı hedefe taşımak reddedilir…
+        let moved = db.conn().execute(
+            "UPDATE review_items SET target_entity_id='x9' WHERE id='i1'",
+            [],
+        );
+        scope_error(moved, "review_items");
+        // …durum/row_version güncellemesi takılmaz (v35 dersi).
+        db.conn()
+            .execute("UPDATE review_items SET state='accepted' WHERE id='i1'", [])
+            .expect("durum guncellemesi kapidan gecer");
+        // Dosya değiştirmek hedefi yabancılaştırır: `i2` kendi notunu (`n1`, c1)
+        // gösteriyor; satırı c2'ye taşımak kapıya takılır.
+        let escaped = db
+            .conn()
+            .execute("UPDATE review_items SET case_id='c2' WHERE id='i2'", []);
+        scope_error(escaped, "review_items");
+    }
+
+    /// v40 — tarama, kapıdan önce yazılmış **çapraz karar hedeflerini** sayar;
+    /// var olmayan hedef sayılmaz ve satırlar silinmez.
+    #[test]
+    fn the_scan_counts_review_items_pointing_at_another_cases_entity() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        assert_eq!(
+            db.scope_violations().expect("tarama").review_items,
+            0,
+            "temiz kasa"
+        );
+        db.conn()
+            .execute_batch(
+                "INSERT INTO claims (id,case_id,claim_text,claim_kind,status,created_at,updated_at)
+                 VALUES ('x9','c2','B iddiasi','allegation','asserted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 DROP TRIGGER scope_guard_review_items_bi;
+                 DROP TRIGGER scope_guard_review_items_bu;
+                 INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,target_entity_id,created_at,updated_at)
+                 VALUES ('old-x','c1','claim_candidate','{}','[]','x9',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('old-ghost','c1','claim_candidate','{}','[]','yok',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('old-ok','c1','claim_candidate','{}','[]',NULL,
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+            )
+            .expect("eski satirlar");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.review_items, 1, "yalnız çapraz hedef");
+        assert_eq!(count(&db, "review_items"), 3, "satırlar silinmez");
     }
 
     /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri

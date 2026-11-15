@@ -820,6 +820,79 @@ fn upgrade_reports_transfer_consents_naming_another_cases_document() {
         .expect("eski satırın iptali kapıya takılmamalı");
 }
 
+/// v40 — kapıdan **önce** yazılmış çapraz karar hedefleri güncellemede sayılır
+/// (silinmez), denetime düşer ve yeni çapraz yazma kapıda durur.
+#[test]
+fn upgrade_reports_review_items_pointing_at_another_cases_entity() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 39);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO claims (id,case_id,claim_text,claim_kind,status,created_at,updated_at)
+             VALUES ('x9','c2','B iddiasi','allegation','asserted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO review_items
+               (id,case_id,item_kind,payload,source_anchor_ids,target_entity_id,created_at,updated_at)
+             VALUES ('old-x','c1','claim_candidate','{}','[]','x9',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('old-ok','c1','claim_candidate','{}','[]',NULL,
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .expect("v39 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let counts = db.scope_violations().expect("tarama");
+    assert_eq!(counts.review_items, 1, "çapraz karar hedefi sayılır");
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["reviewItems"], 1);
+    // Yeni çapraz yazma kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO review_items
+               (id,case_id,item_kind,payload,source_anchor_ids,target_entity_id,created_at,updated_at)
+             VALUES ('new-x','c1','claim_candidate','{}','[]','x9',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "review_items"),
+        other => panic!("v40 kapısı çapraz hedefi reddetmeli: {other:?}"),
+    }
+    // Eski aykırı satır **karara bağlanabilir kalır**: kapı yalnız kapsam
+    // sütunlarına dokunan yazmada koşar; eski satır silinmez, sayılır.
+    db.conn()
+        .execute(
+            "UPDATE review_items SET state='rejected' WHERE id='old-x'",
+            [],
+        )
+        .expect("eski satırın durumu güncellenebilmeli");
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT count(*) FROM review_items", [], |row| row
+                .get::<_, i64>(0))
+            .expect("sayım"),
+        2,
+        "satırlar silinmez"
+    );
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");

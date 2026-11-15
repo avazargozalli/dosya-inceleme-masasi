@@ -381,9 +381,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0039_transfer_consent_document_scope",
         sql: include_str!("migrations/0039_transfer_consent_document_scope.sql"),
     },
+    Migration {
+        version: 40,
+        name: "0040_review_target_scope_guard",
+        sql: include_str!("migrations/0040_review_target_scope_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 39;
+pub const CURRENT_SCHEMA_VERSION: u32 = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
