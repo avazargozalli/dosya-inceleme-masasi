@@ -18,6 +18,7 @@
 | F08-T04e | ✅ | **kanıt ve iddia referansları dosya sınırını aşamaz** (şema **v32**): `claims`, `evidence_links`, `event_sources`, `claim_relations`, `tasks` × BEFORE INSERT/UPDATE = **10 tetikleyici**; ölçülen kusur: B dosyasının belgesi silinince A'nın kanıt bağı `CASCADE` ile **sessizce** yok oluyordu; `scope_violations()` 13 tabloyu sayar; 7/7 mutasyon (2026-11-14) |
 | F08-T04f | ✅ | **JSON dizi kanıt listeleri dosya sınırını aşamaz** (şema **v33**): `notes`, `note_revisions`, `review_items`, `note_drafts` → `source_anchor_ids` × BEFORE INSERT/UPDATE = **8 tetikleyici** (`json_each`); ölçülen kusur: v33 kapıları yokken A notuna B çapası yazılıyor, B belgesi silinince çapa gidiyor, notta kimlik kalıyor, denetim 0; `scope_violations()` 17 tabloyu sayar; 9/9 mutasyon (2026-11-15) |
 | F08-T04g | ✅ | **kalan referanslar dosya sınırında** (şema **v34**): soy ağacı (`parent_version_id`), maskeleme çıktısı (`output_version_id`), gönderim sicili (`ai_context_items` sürüm/çapa/`segment_ids`), giden segment sicili (`transfer_segments`), çapa/işaret sayfası, aday kökeni, taslağın notu × BEFORE INSERT/UPDATE = **14 tetikleyici** (7 tablo); ölçülen kusur: v33'te A dosyasının AI çalıştırmasına B dosyasının sürümü+çapası yazılıyor (`Ok(1)`) ve ekran **B'nin belge adını** gösteriyordu; plan çıktısı ve soy ağacı da doğrudan SQL ile çapraz yazılabiliyordu; `scope_violations()` **19 tabloyu** sayar (+`aiContextItems`, `transferSegments`); 13/13 mutasyon (2026-11-15) |
+| F08-T04h | ✅ | **belgenin güncel sürümü kendi belgesi olmalı** (şema **v35**): `documents.current_version_id` × BEFORE INSERT/UPDATE + ters yön (`document_versions.document_id` taşıması) = **3 tetikleyici**; ölçülen kusur: tek bir doğrudan `UPDATE` belgeyi **başka dosyanın** sürümüne çeviriyordu — kapsam raporu B'nin 2 sayfasını A'da saydı, A'nın «gizli metin» alıntısı B'nin metninde **`exact`** döndü (INV-05); `scope_violations()` **20 tabloyu** sayar (+`documents`); 7/7 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -1067,3 +1068,104 @@ tek makinede (Apple M2), iki koşu; üretim derlemesinde oran ölçülmedi.
 (h) Tauri komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage
 düzeyinde ölçüldü, arayüz değişmedi — görsel QA + gerçek pencere **insan
 bekliyor**.
+
+## F08-T04h — belgenin güncel sürümü kendi belgesi olmalı (şema v35, 2026-11-15)
+
+**Neden.** v31 zinciri, v32 tek sütunlu kanıt referanslarını, v33 JSON dizi kanıt
+listelerini, v34 kalan referansları kapıladı. `documents.current_version_id` bu
+zincirin **çıkış noktasıdır** ve şemada ne FK'si ne tetikleyicisi vardı: her
+okuma yolu “güncel sürüm”ü buradan çözer —
+
+* `coverage_report` güncel sürümün ayrıştırma koşusunun sayfa/segmentlerini sayar;
+* `check_in_text_quotes` alıntıyı o koşunun sayfalarında arar;
+* AI kapsamı gönderilecek gövdeyi o sürümden toplar.
+
+Tek bir doğrudan `UPDATE documents SET current_version_id=…` belgeyi başka bir
+belgenin (başka dosyada olabilir) sürümüne çevirebiliyordu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite, v34; geçici sonda sonra
+silindi).** `UPDATE documents SET current_version_id='pv9' WHERE id='pd1'`
+**kabul edildi** (`rows=1`); `pd1.current_version_id = Some("pv9")` (B dosyası).
+Sonuçlar:
+
+1. `coverage_report('p1c')` → `documents=1 versions=1 parse_runs=1 pages=2
+   segments=2`; A dosyasının kendi belgesinde **1** sayfa/segment varken B
+   dosyasının iki sayfası A'nın kapsamına girdi.
+2. A dosyasının belgesinde «gizli metin» alıntısı: **önce** `exact=0
+   normalized=0 not_found=1 pages_scanned=1`; **sonra** `exact=1
+   pages_scanned=2` — alıntı yalnız B dosyasının metninde geçtiği hâlde A
+   dosyasının belgesinde “bulundu” hükmü aldı (INV-05: delil ekrandaki belgeye
+   işaret etmez).
+
+**Yazılan (şema v35, `0035_document_current_version_guard.sql`).**
+`current_version_id` NULL olabilir; doluysa **var olan** ve **aynı belgeye** ait
+bir sürümü göstermeli. **3 tetikleyici**:
+
+* `documents` → `scope_guard_documents_bi` (INSERT) ve `_bu` (UPDATE): yabancı /
+  olmayan sürüm işaretçisi yazılmaz (fail-closed).
+* **Ters yön** → `scope_guard_document_versions_current_ref_bu`: bir belgenin
+  güncel sürümünü gösteren sürüm satırı başka belgeye taşınamaz (kapı sürüm
+  satırı taşınarak atlatılamaz; taşımak isteyen önce işaretçiyi NULL'a çeker).
+
+Bilinçli ayrım — **eski/boşta kalmış işaretçi** (sürümü silinmiş) başka
+alanların güncellenmesini **engellemez**: UPDATE kapısı yalnız işaretçiyi
+**değiştiren** yazmada koşar (`NEW.current_version_id IS NOT OLD...`). Aksi
+hâlde eski bir kasada bozuk tek satır belgeyi yeniden adlandırılamaz hâle
+getirirdi. Boşta kalan işaretçi çapraz okuma da üretmez (sürüm yok → koşu yok);
+bu yüzden tarama sayımına da girmez. Reddetme `RAISE(ABORT,'DIM_SCOPE:documents')`
+→ `StorageError::ScopeViolation` → **`E_DB_SCOPE`**.
+
+**Çekirdek.** Değişiklik gerekmedi: `add_version_with_parent` işaretçiyi zaten
+yalnız kendi belgesinin yeni sürümüne yazıyor. Kapı **doğrudan SQL** yazan yol
+için; meşru yazma yolu testle doğrulandı (`adding_a_version_still_points_the_document_at_its_own_version`).
+`scope_violations()` artık **20 tabloyu** sayar; yeni alan `documents` (güncel
+sürümü başka belgeyi gösteren belge sayısı) ve güncelleme denetimine
+`"documents"` alanı yazılır.
+
+**Testler (güncel kodla).** `scope_guard::tests` **28 → 33** (+5: yabancı/aynı
+dosyada başka belge/olmayan sürüm INSERT + UPDATE, ters yön taşıma, boşta
+kalan işaretçinin güncellemeyi engellememesi, tarama sayımı, meşru
+`add_version` yolu) + `upgrade_tests::upgrade_reports_a_document_pointing_at_another_documents_version`
+(v34 kasa → güncelleme → denetimde **2** sayı + yeni çapraz yazma reddi) →
+`dim-storage --lib` **640 → 646** (yerel **407,95 s**, 0 düştü). Şemadan türetilen
+test artık `current_version_id` sütununu da görür: `documents` kapılı tablo
+kümesine girer (`GUARDED_TABLES` 19 → 20); yeni bir “güncel sürüm” işaretçisi
+sessizce kapısız eklenemez.
+
+**Maliyet (ölçüldü; `tests/scope_guard_cost.rs`, `#[ignore]`, debug, bellek içi,
+20.000 yazma, iki koşu).** Güncel sürüm işaretçisi yazımı tetikleyicili **11,15 /
+11,15 µs/satır**, tetikleyicisiz **1,29 / 1,30** → **+9,86 / +9,85 µs/satır
+(%764 / %758)**; `scope_violations()` 20.000 belgede **2,0 / 2,0 ms**. Yol
+**seyrek**: işaretçi sürüm eklenirken kullanıcı eylemi başına bir kez yazılır;
+tarama yalnız kasa güncellemesinde koşar.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-v35-gates.py`, her mutasyon
+tek başına, `try/finally` + `os.utime` + sha256 birebir —
+`0035…sql aba1d9f5…`, `scope_guard.rs d7cdbfec…`, `lib.rs 02bfa0e4…`):**
+**7/7 KIRMIZI, taban iki uçta yeşilken** (taban `scope_guard::tests` **33/33**,
+upgrade testi 1/1; geri yazım birebir, taban tekrar yeşil) — M1 belge INSERT
+kapısı · M2 belge UPDATE kapısı · M3 ters yön taşıma kapısı · M4 tarama
+işaretçiyi hiç saymaz · M5 güncelleme denetimi sayıyı yazmaz · M6 şemadan
+türetim sütunu görmez · M7 boşta kalan işaretçi belgeyi kilitler.
+
+**CI (ölçüldü).** Kod `25c5210` (5 dosya, **+452/−3**) → run `43660270080`
+**10/10 YEŞİL**: `dim-storage` **646** iki OS'ta birebir (macos-15 **347,47 s** /
+ubuntu **653,43 s**), `dim-cli-adapters` **168**, `arayüz` 66 dosya / **1428**
+test, paket `index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB (**arayüz
+değişmedi**); `masaüstü kabuk`, `windows güvenli depo`, `belge worker'ı`,
+`sözleşmeler`, `SBOM`, `kaynak arşivi`, `sürüm paketi manifesti` yeşil.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v35
+öncesi çapraz işaretçiler **sayılır, düzeltilmez** — o satırlar için yanlış
+okuma riski, veri temizliğine kadar sürer. (b) Okuma yolları işaretçiye
+güvenmeye devam eder (sorgulara `dv.document_id=d.id` koşulu eklenmedi); kapı
+yeni bozulmayı durdurur, eski bozulmayı gizlemez — tarama sayısı güncellemede
+denetime düşer. (c) **Boşta kalan** işaretçi (sürüm silinmiş) bilinçli olarak
+güncellemeyi engellemez ve çapraz sayılmaz; bugün üretimde sürüm silme yolu
+yok, yalnız testlerde var. (d) Aynı belgenin **eski** sürümünü göstermek
+meşrudur (geri alma); kapı yalnız *başka belge* işaretçisini reddeder. (e)
+SQLite dosyasını doğrudan düzenleyen (anahtarı olan) saldırgan tetikleyiciyi de
+düşürebilir; bu kapı uygulama hatasına karşı. (f) Maliyet debug derlemede, tek
+makinede (Apple M2), iki koşu; üretim derlemesinde oran ölçülmedi. (g) Tauri
+komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage düzeyinde
+ölçüldü, arayüz değişmedi — görsel QA + gerçek pencere **insan bekliyor**.
