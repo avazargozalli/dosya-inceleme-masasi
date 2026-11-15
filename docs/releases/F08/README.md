@@ -22,6 +22,7 @@
 | F08-T04i | ✅ | **güncel sürüm okuması kendi belgesine bağlı kalır** (şema **v36**): `current_document_versions` görünümü — yedi okuma yolu (belge künyesi, ayrıştırma kuyruğu, kapsam raporu, alıntı taraması, gönderim kapsamı, plan kapsamı, çapa/plan okumaları) **tek tanımdan** geçer; ölçülen kusur: v35 öncesi çapraz işaretçi okumada **yabancı metni** A'nın kapsamına sokuyordu (rapor 1 sayfa/1 segment, alıntı `exact`, önizleme örneği «gizli tutanak»); 8/8 mutasyon (2026-11-15) |
 | F08-T04j | ✅ | **sürüm izi sicilleri kendi dosyasına bağlanır** (şema **v37**): `citation_checks.case_id` + göç, 2 tablo × BEFORE INSERT/UPDATE = **4 tetikleyici** (`export_items` dosyayı `exports`tan okur); ölçülen kusur: `record_citation_check` çapraz sürümü kabul ediyor, `list_citation_checks('v9')` **B dosyasının ekranında** A'nın metnini gösteriyordu (INV-05), doğrudan SQL A'nın dışa aktarmasına B'nin sürümünü yazabiliyor ve `scope_violations()` ikisinde de **0** diyordu; liste **iki anahtarlı** (dosya + sürüm); 11/11 mutasyon (2026-11-15) |
 | F08-T04k | ✅ | **giden segment sicili kendi segmentine bağlıdır** (şema **v38**): 0034'ün iki `transfer_segments` tetikleyicisi genişletildi — satırın **iki segment kolonu** (`outbound_segment_id`, `source_segment_id`) **var olan** bir segment ise gösterilen sürümün segmenti olmalı (sürüm `NULL` ise çalıştırmanın dosyasında); ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına A'nın sürümü + **B'nin segmenti** yazılıyor, A'nın gönderim sicili B'nin parçasını gösteriyordu ve `scope_violations()` **0** diyordu (kör); `transfer_segments` sayımı genişledi (yeni tablo yok); 6/6 mutasyon (2026-11-15) |
+| F08-T04l | ✅ | **aktarım onayı kendi dosyasının belgelerini gösterir** (şema **v39**): `transfer_consents` üzerinde **2 tetikleyici** — `selected_document_ids` geçerli JSON dizi, elemanları metin, liste boş olamaz ve her eleman `case_scope` dosyasında **silinmemiş** bir belge olmalı; ölçülen kusur: doğrudan SQL ile A'nın onayına **B'nin belgesi** yazılıyor, `list_transfer_consents('c1')` onu A'nın onaylanmış kapsamı diye sayıyor, boş/bozuk liste sessizce “0 belge” okunuyor ve `scope_violations()` **0** diyordu (kör); `transfer_consents` sayımı **eklendi** (23. tablo, türetim kuralı `case_scope` çiftini kapsar); 8/8 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -1511,4 +1512,116 @@ kaynağını kanıtlamaz. (d) Sürümü `NULL` eski biçim satırlarda ölçüt 
 üyeliğidir (sürüm kimliğinden daha zayıf). (e) Tetikleyicileri anahtarı olan
 saldırgan düşürebilir (uygulama hatasına karşı). (f) Tauri komutları komut olarak
 koşulmadı; arayüz bu turda değişmedi, gerçek pencere + görsel QA **insan
+bekliyor**.
+
+## F08-T04l — aktarım onayı kendi dosyasının belgelerini gösterir (şema v39, 2026-11-15)
+
+**Neden.** `transfer_consents` satırı “şu belgeler için aktarım izni verildi” der:
+cihazdan **ne** çıkabileceğinin tek yetki kaydıdır. Çekirdek `create_transfer_consent`
+listeyi doğruluyor (her kimlik `case_scope` dosyasında, silinmemiş bir belge olmalı;
+boş seçim hiçbir şeyi yetkilendirmez), ama **şemada hiçbir kapı yoktu** — sütun
+serbest metin, `scope_violations()` de bu tabloyu hiç saymıyordu (kör). 0031–0038
+serisinin son açık JSON dizi referansı buydu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v38; geçici sonda
+`crates/storage/tests/probe_consent_scope.rs` — kanıt alındıktan sonra silindi).**
+
+1. Doğrudan SQL ile A dosyasının onayına **B dosyasının belgesi** yazıldı:
+   `UPDATE transfer_consents SET selected_document_ids='["d9"]'` → **`Ok(1)`**.
+2. `list_transfer_consents('c1')` — A dosyasının onay envanteri — `belge_sayisi=1
+   kimlikler=["d9"]` döndürdü: ekranın “onaylanan belgeler” sütunu B dosyasının
+   belgesini A'nın onaylanmış kapsamı diye sayar (sicil yanlış dosyayı gösterir).
+3. Boş liste (`[]`) ve **bozuk JSON** (`bozuk-json`) onay satırı olarak yazılabildi;
+   bozuk satır `serde_json::from_str(...).unwrap_or_default()` ile **sessizce**
+   “0 belge” okunur — yetki kaydı çöker, kimse görmez.
+4. Silinmiş belgenin kimliği de yazılabildi (`deleted_at` denetlenmiyor).
+5. `scope_violations()` toplam **0** dedi (sınıf hiç sayılmıyordu).
+6. Düzeltmeden sonra aynı yazmalar `DIM_SCOPE:transfer_consents` ile **reddedildi**;
+   meşru onay (kendi belgesi) ve **iptal** (`revoked_at`) çalışmaya devam etti.
+
+**Dürüst sınır (kusurun gerçek ağırlığı).** Gönderim yolu çapraz kimliği **zaten**
+düşürüyordu: `consent_scope_segments` → `resolve_transfer_scope` dosya süzgeciyle
+belgeyi `missing` diye atlar, `ai_run_execute` gönderilecek segment yoksa
+`E_AI_UNSUPPORTED` verir — yani çapraz onay satırı **bayt çıkarmıyordu**. Kusur
+yetki **kaydındaydı** (envanter yanlış kapsam gösterir, tarama görmez), 0031/0033
+ile aynı sınıf: doğrudan SQL yazan bir yol çekirdek kapısını atlar.
+
+**Yazılan (şema v39, `0039_transfer_consent_document_scope.sql`).**
+
+* **2 tetikleyici** (`scope_guard_transfer_consents_bi` / `_bu`):
+  `selected_document_ids` **geçerli JSON dizi** olmalı, elemanları metin, liste
+  **boş olamaz**; dizinin **her elemanı** `case_scope` dosyasında **silinmemiş**
+  bir `documents` satırı göstermeli (yoksa satır yazılmaz — fail-closed). Kural
+  çekirdeğin `create_transfer_consent` kapısının **aynısı**.
+* `UPDATE OF case_scope, selected_document_ids`: yalnız bu iki sütunu değiştiren
+  yazma kapıdan geçer. **İptal** ve süre güncellemesi takılmaz (v35 dersi:
+  eskimiş referans başka alanın güncellemesini engellememeli). Eski aykırı satır
+  bu yüzden hâlâ **iptal edilebilir**.
+* `json_array_length` yalnız `json_valid(...) AND json_type(...)='array'` olan
+  değerde `CASE` ile çağrılır: bozuk JSON'da SQLite'ın “malformed JSON” hatası
+  değil kapının kendi kodu döner.
+* `Database::scope_violations()` **`transfer_consents` alanı** eklendi (yeni tablo
+  yok): çapraz dosya belgesi, boş liste, bozuk/array olmayan JSON. `GUARDED_TABLES`
+  22 → **23**; şemadan türetim kuralı `(case_scope + selected_document_ids)`
+  çiftini kapsar (kapsam sütunu `case_id` adını taşımayan ilk tablo).
+* Ret `RAISE(ABORT,'DIM_SCOPE:transfer_consents')` → `StorageError::ScopeViolation`
+  → **`E_DB_SCOPE`**.
+* **Bilinçli gevşeklik** (0033/0034/0038 ile aynı): **var olmayan** ya da sonradan
+  **silinmiş** belge kimliği ne kapıya takılır ne taranır — onay verildikten sonra
+  belge silinmiş olabilir; bu denetim izidir, kanıtlanabilir uyuşmazlık değildir
+  (gönderim yolu onu yine atlar).
+
+**Testler (güncel kodla).** `scope_guard::tests`
+`a_transfer_consent_cannot_name_another_cases_document` (kendi belgeleri meşru —
+tek ve iki elemanlı · B'nin belgesi ve **ters yön** reddedilir · boş liste · bozuk
+JSON · dizi olmayan değer · var olmayan kimlik · silinmiş belge reddedilir ·
+`UPDATE` ile kapsam genişletme/taşıma reddedilir · **iptal takılmaz**) ·
+`the_scan_counts_transfer_consents_written_before_the_guard_existed` (kapı
+düşürülüp eski satırlar yazılır → tarama **3** = çapraz + boş + bozuk; sonradan
+silinen belge aykırı **değil**; satırlar silinmez) ·
+`upgrade_tests::upgrade_reports_transfer_consents_naming_another_cases_document`
+(v38 kasa → güncelleme → denetimde `transferConsents: 3`, yeni çapraz yazma
+reddedilir, kendi belgesi serbest, eski aykırı satır **iptal edilebilir**) →
+`dim-storage --lib` **661 → 664** (yerel **464,49 s**, 0 düştü). Arayüz dosyası
+**değişmedi** (bu dilim şema + çekirdek sayımı) → vitest/tsc koşulmadı. fmt (iki
+manifest) / `clippy -p dim-storage --all-targets -D warnings` temiz.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-v39-gates.py`, her mutasyon tek
+başına, `try/finally` + `os.utime` + sha256 birebir — `0039…sql 0addec9c…`,
+`scope_guard.rs f1b254e4…`; koşu **son hâl** üzerinde, `cargo fmt` sonrası):**
+**8/8 KIRMIZI, taban iki uçta yeşilken** (K0: kapı+tarama+upgrade **3/3**, türetim
+**1/1**; koşu sonunda K1 aynı, geri yazım birebir) — M1 INSERT kapısı belgenin
+dosyasını/silinmesini denetlemez · M2 boş liste kapısı düşer · M3 JSON
+geçerlilik/tür kapısı düşer · M4 `UPDATE OF` listesinde belge listesi yok (kapsam
+genişletme geçer) · M5 UPDATE kapısı **yeni** dosyayı değil **eski** dosyayı
+denetler · M6 tarama çapraz belgeyi saymaz · M7 tablo listesinden çıkarma
+(şemadan türetim testi yakalar) · M8 tarama boş listeyi saymaz.
+
+**Dürüst (kendi hatam).** Kapı betiğinin ilk koşusu **hiç başlamadı**: M1 deseni
+(`WHERE d.id = j.value AND d.case_id = NEW.case_scope …`) BI **ve** BU
+gövdelerinde birebir aynı olduğu için “2 kez eşleşti” hatası verdi; BI'ye özgü
+`first()` yardımcısı eklendi (M2/M3 de aynı nedenle), 8/8 yeniden ölçüldü. İlk
+koşunun hiçbir hükmü kanıt sayılmadı. **Ders:** ortak gövde metni taşıyan iki
+tetikleyicide mutasyon deseni tekilliğini doğrulamadan koşmamalı.
+
+**CI (ölçüldü).** Kod `709b6be` (4 dosya, **+358/−5**) → run `43748617813`
+**10/10 YEŞİL** (`dim-storage` **664** iki OS'ta birebir: macos-15 **324,80 s** /
+ubuntu-latest **730,69 s**; `arayüz` 66 dosya / **1434** test, paket
+`index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB — **değişmedi**; `masaüstü kabuk`
+clippy+test, `windows güvenli depo` 28, `workers`, `sözleşmeler`, `SBOM`,
+`kaynak arşivi`, `sürüm paketi manifesti`). `HEAD == origin/main` = `709b6be`;
+ağaçta yalnız başka ajanın 9 dosyası.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v39
+öncesi çapraz/boş/bozuk onay satırları **silinmez**, sayılır (temizlik ürün
+kararı; v39 öncesi `[]` satırı 2026-10-29'dan önceki kural boşluğundan da gelebilir).
+(b) Kapı **kaydı** korur, **onay eylemini** kanıtlamaz: anahtarı olan bir yazıcı
+aynı dosyanın **başka** canlı belgesini listeye ekleyebilir — bu, onaylanan
+kapsamı sessizce genişletir; çekirdek yolu bunu yapmaz, şema düzeyinde
+“kullanıcı neyi onayladı” bilgisi yoktur (kayıt **kendisi** onaydır).
+(c) Var olmayan/silinmiş belge kimliği bilinçli serbesttir; uydurulmuş kimlikli
+satır geçer. (d) `case_scope` **FK değil**: var olmayan dosyayı gösteren onay
+satırı hiçbir listede görünmez (sayılmaz). (e) Tetikleyicileri anahtarı olan
+saldırgan düşürebilir (uygulama hatasına karşı). (f) Tauri komutları komut olarak
+koşulmadı; arayüz bu turda değişmedi — gerçek pencere + görsel QA **insan
 bekliyor**.
