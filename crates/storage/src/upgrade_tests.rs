@@ -553,6 +553,108 @@ fn upgrade_reports_a_document_pointing_at_another_documents_version() {
         .expect("kendi sürümü meşru");
 }
 
+/// v36'da iki **sürüm izi sicili** dosya sınırını bilmiyordu: atıf kontrolü
+/// (çekirdek **ve** şema) hiçbir kapı taşımıyordu; dışa aktarma kalemi yalnız
+/// çekirdekte doğrulanıyordu. Ölçüldü: A'nın belgesinden çıkarılmış metin B
+/// dosyasının ekranında göründü, A'nın kayıt defteri B'nin belge adını yazdı.
+/// v37 göçü atıf satırını **başvurduğu sürümün** dosyasına atfeder (başka bilgi
+/// yoktu) ve sürümü silinmiş satırı "aidiyeti yazılmamış" sayar; çapraz dışa
+/// aktarma kalemi olduğu gibi kalır ve sayılır. Yeni çapraz yazma kapıda durur.
+#[test]
+fn upgrade_reports_version_traces_left_by_the_previous_schema() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 36);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Kira sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d9','c2','Diger dosya belgesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                    ('v9','d9','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO exports (id,case_id,type,status,destination_kind,output_hash,created_at,completed_at)
+             VALUES ('x1','c1','case_report','ready','folder','hash','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO export_items (id,export_id,source_version_id,redaction_state)
+             VALUES ('xi1','x1','v9','none');
+             INSERT INTO citation_checks
+               (id,input_document_version_id,extracted_citation,identity_match,quote_match,
+                meaning_review,reason_codes,created_at)
+             VALUES ('cc1','v9','gizli tutanak metni','unknown','not_checked','not_reviewed','[]',
+                     '2026-01-01T00:00:00Z'),
+                    ('cc2','silinmis-surum','baska metin','unknown','not_checked','not_reviewed','[]',
+                     '2026-01-01T00:00:00Z');",
+        )
+        .expect("v36 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["exportItems"], 1, "çapraz kalem sayılır");
+    assert_eq!(
+        parsed["citationChecks"], 1,
+        "aidiyeti yazılmamış satır sayılır (çapraz satır göçle atfedildi)"
+    );
+    // Göç atfı: var olan sürümün dosyası yazılır; sürümü silinmiş satırda NULL.
+    let case_of = |id: &str| -> Option<String> {
+        db.conn()
+            .query_row(
+                "SELECT case_id FROM citation_checks WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("satır")
+    };
+    assert_eq!(case_of("cc1").as_deref(), Some("c2"));
+    assert_eq!(case_of("cc2"), None, "uydurulmaz");
+    // Yeni çapraz yazma kapıda durur (E_DB_SCOPE).
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO export_items (id,export_id,source_version_id,redaction_state)
+             VALUES ('xi2','x1','v9','none')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "export_items"),
+        other => panic!("v37 kapısı çapraz kalemi reddetmeli: {other:?}"),
+    }
+    match db
+        .conn()
+        .execute("UPDATE citation_checks SET case_id='c1' WHERE id='cc1'", [])
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "citation_checks"),
+        other => panic!("v37 kapısı çapraz atfı reddetmeli: {other:?}"),
+    }
+    // Meşru yazma serbest: aynı dosyanın sürümü.
+    db.conn()
+        .execute(
+            "INSERT INTO export_items (id,export_id,source_version_id,redaction_state)
+             VALUES ('xi3','x1','v1','none')",
+            [],
+        )
+        .expect("aynı dosya meşru");
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");

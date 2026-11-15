@@ -93,6 +93,9 @@ pub struct NewPrecedentNote {
 #[serde(rename_all = "camelCase")]
 pub struct CitationCheckRow {
     pub id: String,
+    /// Satırın yazıldığı **dosya**. v37'den önce yazılmış satırlarda göç
+    /// sırasında başvurduğu sürümün dosyasından türetilir (başka bilgi yoktu).
+    pub case_id: String,
     pub input_document_version_id: String,
     pub extracted_citation: String,
     pub candidate_precedent_id: Option<String>,
@@ -201,6 +204,10 @@ pub struct PrecedentSearchPage {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCitationCheck {
+    /// Kontrolün yazıldığı **dosya**. Çekirdek, sürüm **başka dosyada var ise**
+    /// yazmayı reddeder (v37, `E_NOT_FOUND`) — satır yazılmaz. Var olmayan
+    /// sürüm kimliği denetim izinde kalabilir (0033/0034 gevşekliği).
+    pub case_id: String,
     pub input_document_version_id: String,
     pub extracted_citation: String,
     #[serde(default)]
@@ -830,6 +837,12 @@ impl Database {
 
     /// Atıf kontrolü kaydı. `identity_match`/`quote_match` ayrı boyutlardır;
     /// hiçbiri tek başına “sahte” hükmü üretmez.
+    ///
+    /// Kapsam (v37): kontrol, **kendi dosyasının** belge sürümüne yazılır.
+    /// Sürüm **başka dosyada var ise** satır yazılmaz (`E_NOT_FOUND`) — aksi
+    /// hâlde A'nın belgesinden çıkarılmış alıntı B dosyasının ekranında
+    /// görünürdü (INV-05). Var olmayan sürüm kimliği denetim izinde kalabilir
+    /// (0033/0034 gevşekliği).
     pub fn record_citation_check(
         &self,
         new: &NewCitationCheck,
@@ -840,6 +853,25 @@ impl Database {
         {
             return Err(StorageError::InvalidSetting);
         }
+        let case_id = new.case_id.trim();
+        if case_id.is_empty() {
+            return Err(StorageError::InvalidSetting);
+        }
+        // Kapsam (v37): sürüm **başka dosyada var ise** reddedilir. Var olmayan
+        // kimlik denetim izinde kalabilir (0033/0034 gevşekliği: belge/sürüm
+        // sonradan silinebilir, satır yaşamalıdır).
+        let foreign: bool = self.conn().query_row(
+            "SELECT EXISTS (
+                SELECT 1
+                  FROM document_versions v
+                  JOIN documents d ON d.id = v.document_id
+                 WHERE v.id = ?1 AND d.case_id <> ?2)",
+            rusqlite::params![new.input_document_version_id, case_id],
+            |row| row.get(0),
+        )?;
+        if foreign {
+            return Err(StorageError::NotFound);
+        }
         if let Some(precedent_id) = &new.candidate_precedent_id {
             if self.get_precedent(precedent_id)?.is_none() {
                 return Err(StorageError::NotFound);
@@ -847,10 +879,11 @@ impl Database {
         }
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
-            "INSERT INTO citation_checks (id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,reason_codes,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO citation_checks (id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,reason_codes,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             rusqlite::params![
                 id,
+                case_id,
                 new.input_document_version_id,
                 new.extracted_citation.trim(),
                 new.candidate_precedent_id,
@@ -873,21 +906,30 @@ impl Database {
 
     pub fn get_citation_check(&self, id: &str) -> Result<Option<CitationCheckRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,reason_codes,created_at
+            "SELECT id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,reason_codes,created_at
              FROM citation_checks WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_check).optional()?)
     }
 
+    /// Bir **dosyanın** belirli bir sürümü için yazılmış atıf kontrolleri.
+    ///
+    /// Kapsam iki anahtarla sorulur (v37): satırın `case_id`'si ve sürümü.
+    /// Böylece B dosyasının sürüm kimliği A dosyasının listesine karışamaz;
+    /// çapraz yazılmış eski bir satır **kendi** dosyasının listesinde kalır ama
+    /// başka dosyanın sürümü altında görünmez.
     pub fn list_citation_checks(
         &self,
+        case_id: &str,
         version_id: &str,
     ) -> Result<Vec<CitationCheckRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,reason_codes,created_at
-             FROM citation_checks WHERE input_document_version_id=?1 ORDER BY created_at DESC",
+            "SELECT id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,reason_codes,created_at
+             FROM citation_checks
+             WHERE case_id=?1 AND input_document_version_id=?2
+             ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map([version_id], map_check)?;
+        let rows = stmt.query_map([case_id, version_id], map_check)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -1725,19 +1767,20 @@ fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
 }
 
 fn map_check(row: &Row<'_>) -> rusqlite::Result<CitationCheckRow> {
-    let reasons: String = row.get(9)?;
+    let reasons: String = row.get(10)?;
     Ok(CitationCheckRow {
         id: row.get(0)?,
-        input_document_version_id: row.get(1)?,
-        extracted_citation: row.get(2)?,
-        candidate_precedent_id: row.get(3)?,
-        identity_match: row.get(4)?,
-        quote_match: row.get(5)?,
-        meaning_review: row.get(6)?,
-        meaning_note: row.get(7)?,
-        meaning_reviewed_at: row.get(8)?,
+        case_id: row.get(1)?,
+        input_document_version_id: row.get(2)?,
+        extracted_citation: row.get(3)?,
+        candidate_precedent_id: row.get(4)?,
+        identity_match: row.get(5)?,
+        quote_match: row.get(6)?,
+        meaning_review: row.get(7)?,
+        meaning_note: row.get(8)?,
+        meaning_reviewed_at: row.get(9)?,
         reason_codes: serde_json::from_str(&reasons).unwrap_or_default(),
-        created_at: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
@@ -1845,6 +1888,7 @@ mod tests {
             .expect("emsal");
         let check = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "version-1".into(),
                 extracted_citation: "Yargıtay 1. HD 2024/1".into(),
                 candidate_precedent_id: Some(p.id.clone()),
@@ -1858,9 +1902,85 @@ mod tests {
         assert_eq!(check.quote_match, "not_checked");
         assert_ne!(check.identity_match, "mismatch");
         assert_eq!(
-            db.list_citation_checks("version-1").expect("liste").len(),
+            db.list_citation_checks("c1", "version-1")
+                .expect("liste")
+                .len(),
             1
         );
+        // Aynı sürüm kimliği **başka** dosyada bu satırı göstermez (v37):
+        // kapsam iki anahtarlıdır.
+        assert!(db
+            .list_citation_checks("c2", "version-1")
+            .expect("liste")
+            .is_empty());
+    }
+
+    /// v37: atıf kontrolü **kendi dosyasının** sürümüne yazılır. Ölçülen kusur
+    /// (düzeltme öncesi, gerçek SQLite v36): A dosyası adına B dosyasının
+    /// sürümüne kontrol yazıldı (`Ok`) ve `list_citation_checks('v9')` **B
+    /// dosyasının** ekranında A'nın belgesinden çıkarılmış metni gösterdi.
+    /// Var olmayan sürüm kimliği ise denetim izi olarak kalabilir (0033/0034
+    /// gevşekliği) — kapı yalnız **var olan çapraz** sürümü reddeder.
+    #[test]
+    fn citation_check_cannot_reference_another_cases_version() {
+        let db = db();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+                 VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+                 VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+                 INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+                 VALUES ('d1','c1','Kira sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                        ('d9','c2','Diger dosya belgesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+                 VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,'application/pdf','2026-01-01T00:00:00Z'),
+                        ('v9','d9','c2',1,'b1','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',10,'application/pdf','2026-01-01T00:00:00Z');",
+            )
+            .expect("zincir");
+        let new = |case: &str, version: &str| NewCitationCheck {
+            case_id: case.into(),
+            input_document_version_id: version.into(),
+            extracted_citation: "gizli tutanak metni".into(),
+            candidate_precedent_id: None,
+            identity_match: "unknown".into(),
+            quote_match: "not_checked".into(),
+            meaning_review: "not_reviewed".into(),
+            reason_codes: vec![],
+        };
+        // Çapraz yazma reddedilir; satır **hiç** yazılmaz.
+        assert_eq!(
+            db.record_citation_check(&new("c1", "v9"))
+                .expect_err("çapraz sürüm kapıda durmalı")
+                .code(),
+            "E_NOT_FOUND"
+        );
+        let count = |db: &Database| -> i64 {
+            db.conn()
+                .query_row("SELECT count(*) FROM citation_checks", [], |r| r.get(0))
+                .expect("sayım")
+        };
+        assert_eq!(count(&db), 0, "reddedilen yazma iz bırakmaz");
+        // Kendi sürümüne yazmak serbest; satır dosyasını taşır.
+        let check = db
+            .record_citation_check(&new("c1", "v1"))
+            .expect("kendi dosyası");
+        assert_eq!(check.case_id, "c1");
+        assert_eq!(check.input_document_version_id, "v1");
+        assert_eq!(db.list_citation_checks("c1", "v1").expect("liste").len(), 1);
+        // Aynı sürüm kimliği başka dosyanın listesinde görünmez.
+        assert!(db
+            .list_citation_checks("c2", "v1")
+            .expect("liste")
+            .is_empty());
+        // Var olmayan sürüm kimliği denetim izinde kalır (çökme yok).
+        let ghost = db
+            .record_citation_check(&new("c1", "olmayan-surum"))
+            .expect("denetim izi");
+        assert_eq!(ghost.case_id, "c1");
+        assert_eq!(count(&db), 2);
     }
 
     #[test]
@@ -1871,6 +1991,7 @@ mod tests {
             .expect("emsal");
         let check = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v-meaning".into(),
                 extracted_citation: "Yargıtay 1. HD 2024/9".into(),
                 candidate_precedent_id: Some(p.id.clone()),
@@ -1925,6 +2046,7 @@ mod tests {
         .expect("metin");
         let check = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v-context".into(),
                 extracted_citation: quote.into(),
                 candidate_precedent_id: Some(p.id.clone()),
@@ -1951,6 +2073,7 @@ mod tests {
             .expect("emsal");
         let no_text = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v".into(),
                 extracted_citation: "uzun bir alıntı metni burada".into(),
                 candidate_precedent_id: Some(p.id),
@@ -1966,6 +2089,7 @@ mod tests {
 
         let no_candidate = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v2".into(),
                 extracted_citation: "başka alıntı".into(),
                 candidate_precedent_id: None,
@@ -1984,6 +2108,7 @@ mod tests {
     fn invalid_match_values_rejected() {
         let db = db();
         let mut check = NewCitationCheck {
+            case_id: "c1".into(),
             input_document_version_id: "v".into(),
             extracted_citation: "x".into(),
             candidate_precedent_id: None,
@@ -2279,6 +2404,7 @@ mod tests {
         db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
         let check = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v-span".into(),
                 extracted_citation: quote.into(),
                 candidate_precedent_id: Some(p.id.clone()),
@@ -2305,6 +2431,7 @@ mod tests {
             .expect("metin");
         let check2 = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v-span-2".into(),
                 extracted_citation: "kira bedellini ödemeyen kiracı".into(),
                 candidate_precedent_id: Some(p2.id.clone()),
@@ -2509,6 +2636,7 @@ mod tests {
             .expect("v2");
         let check = db
             .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
                 input_document_version_id: "v-old".into(),
                 extracted_citation: quote.into(),
                 candidate_precedent_id: Some(p.id.clone()),

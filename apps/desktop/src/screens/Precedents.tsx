@@ -140,8 +140,13 @@ export function Precedents() {
   const [identity, setIdentity] = useState<"match" | "mismatch" | "unknown">("unknown");
   const [quoteMatch, setQuoteMatch] = useState<"match" | "mismatch" | "not_checked" | "unknown">("not_checked");
   const [checks, setChecks] = useState<CitationCheckRow[]>([]);
+  // Kontrol listesinin **okuma durumu**: düşen okuma "0 kontrol" gibi
+  // gösterilmez; sürüm değişiminde önceki sürümün satırları anında kalkar.
+  const [checksStatus, setChecksStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [checksError, setChecksError] = useState<ApiError | null>(null);
   const [meaningFor, setMeaningFor] = useState<string | null>(null);
   const [meaningContext, setMeaningContext] = useState<CitationContext | null>(null);
+  const [meaningError, setMeaningError] = useState<ApiError | null>(null);
   const [meaningNote, setMeaningNote] = useState("");
 
   const [versions, setVersions] = useState<PrecedentVersionRow[]>([]);
@@ -162,6 +167,8 @@ export function Precedents() {
   const srcCaseRef = useRef("");
   const srcDocRef = useRef("");
   const versionRef = useRef("");
+  /** Kontrol listesi okumalarının sırası: geç yanıt yeni isteği ezmez. */
+  const checksSeq = useRef(0);
   const meaningForRef = useRef<string | null>(null);
   const meaningSeq = useRef(0);
   const citationRef = useRef("");
@@ -374,22 +381,51 @@ export function Precedents() {
       });
   }, [srcDocId]);
 
+  /**
+   * Atıf kontrollerini okur. Kapı: yanıt yalnız **en son** istek ve hâlâ
+   * seçili dosya + sürüm için yazılır; düşen okuma "0 kontrol" gibi gösterilmez.
+   * Kapsam **iki anahtarlıdır** (v37): dosya + sürüm; başka dosyanın sürüm
+   * kimliği bu dosyanın listesine karışmaz.
+   */
+  const fetchChecks = useCallback(async (cid: string, vid: string) => {
+    const seq = ++checksSeq.current;
+    setChecksStatus("loading");
+    setChecksError(null);
+    try {
+      const rows = await api.citationCheckList(cid, vid);
+      if (
+        checksSeq.current !== seq ||
+        versionRef.current !== vid ||
+        caseRef.current !== cid
+      )
+        return;
+      setChecks(rows);
+      setChecksStatus("ready");
+    } catch (e) {
+      if (
+        checksSeq.current !== seq ||
+        versionRef.current !== vid ||
+        caseRef.current !== cid
+      )
+        return;
+      // Önceki satırlar bu sürümün gerçeği değil: liste boşaltılır ve durum
+      // hatası yazılır — bayat liste "bu sürümün kontrolleri" gibi kalmaz.
+      setChecks([]);
+      setChecksError(toApiError(e));
+      setChecksStatus("error");
+    }
+  }, []);
+
   useEffect(() => {
     versionRef.current = versionId;
-    if (!versionId) {
-      setChecks([]);
-      return;
-    }
-    // Geç gelen kontrol listesi yeni sürümün altında çizilmez.
-    void api
-      .citationCheckList(versionId)
-      .then((rows) => {
-        if (versionRef.current === versionId) setChecks(rows);
-      })
-      .catch((e) => {
-        if (versionRef.current === versionId) setError(toApiError(e));
-      });
-  }, [versionId]);
+    // Sürüm değişimi: önceki sürümün kontrol listesi **anında** kalkar (INV-05).
+    checksSeq.current += 1;
+    setChecks([]);
+    setChecksError(null);
+    setChecksStatus(caseId && versionId ? "loading" : "idle");
+    if (!caseId || !versionId) return;
+    void fetchChecks(caseId, versionId);
+  }, [caseId, versionId, fetchChecks]);
 
   async function add() {
     setError(null);
@@ -729,7 +765,25 @@ export function Precedents() {
     }
   }
 
-  async function openMeaning(id: string) {
+  /**
+   * Açık panelli kontrolün bağlamını okur. Düşen okuma **"yükleniyor"da
+   * bırakmaz**: panel kendi hatasını yazar ve yeniden denenebilir.
+   */
+  async function loadMeaning(id: string) {
+    const req = ++meaningSeq.current;
+    setMeaningError(null);
+    setMeaningContext(null);
+    try {
+      const context = await api.citationContext(id);
+      if (req !== meaningSeq.current) return;
+      setMeaningContext(context);
+    } catch (e) {
+      if (req !== meaningSeq.current) return;
+      setMeaningError(toApiError(e));
+    }
+  }
+
+  function openMeaning(id: string) {
     setError(null);
     // Tek panel: hangi kontrol açıksa bağlam **onun** olmalı; geç gelen bağlam
     // başka kontrolün panelinde çizilmez.
@@ -738,14 +792,9 @@ export function Precedents() {
     setMeaningFor(next);
     setMeaningNote("");
     setMeaningContext(null);
-    const req = ++meaningSeq.current;
+    meaningSeq.current += 1;
     if (!next) return;
-    try {
-      const context = await api.citationContext(id);
-      if (req === meaningSeq.current && meaningForRef.current === id) setMeaningContext(context);
-    } catch (e) {
-      if (req === meaningSeq.current) setError(toApiError(e));
-    }
+    void loadMeaning(id);
   }
 
   async function reviewMeaning(id: string, review: string) {
@@ -755,10 +804,12 @@ export function Precedents() {
     setError(null);
     // Kabul/ret, istek anındaki belge sürümünün listesini tazeler.
     const vid = versionId;
+    const cid = caseRef.current;
     try {
       await api.citationMeaningReview(id, review, meaningNote);
-      const rows = await api.citationCheckList(vid);
-      if (versionRef.current === vid) setChecks(rows);
+      // Hüküm yazıldı: liste ve **okuma durumu** aynı yoldan tazelenir.
+      if (versionRef.current === vid && caseRef.current === cid)
+        await fetchChecks(cid, vid);
       if (meaningForRef.current === id) {
         meaningForRef.current = null;
         setMeaningFor(null);
@@ -784,13 +835,15 @@ export function Precedents() {
       });
       return;
     }
-    // Kontrol, istek anındaki belge sürümüne yazılır; yanıt başka sürümün
-    // listesini ezmez.
+    // Kontrol, istek anındaki **dosya + belge sürümüne** yazılır; yanıt başka
+    // sürümün/dosyanın listesini ezmez (kapsam iki anahtarlı).
     const vid = versionId;
+    const cid = caseId;
     const sent = citation.trim();
     setBusy(true);
     try {
       await api.citationCheckCreate({
+        caseId: cid,
         inputDocumentVersionId: vid,
         extractedCitation: sent,
         candidatePrecedentId: candidate || null,
@@ -803,8 +856,9 @@ export function Precedents() {
         citationRef.current = "";
         setCitation("");
       }
-      const rows = await api.citationCheckList(vid);
-      if (versionRef.current === vid) setChecks(rows);
+      // Tazeleme **okuma durumunu** da taşır: düşen tazeleme "kontrol yok" demez.
+      if (versionRef.current === vid && caseRef.current === cid)
+        await fetchChecks(cid, vid);
     } catch (e) {
       // Yazma eski sürüme aitti: hatası yeni sürümün altında görünmez.
       if (versionRef.current === vid) setError(toApiError(e));
@@ -1507,7 +1561,15 @@ export function Precedents() {
         <div className="card-head">
           <div>
             <h2>{t("precedents.checkTitle")}</h2>
-            <p className="card-sub">{t("precedents.checkSub", { count: checks.length })}</p>
+            <p className="card-sub">
+              {checksStatus === "ready"
+                ? t("precedents.checkSub", { count: checks.length })
+                : checksStatus === "idle"
+                  ? t("precedents.checkSubIdle")
+                  : checksStatus === "loading"
+                    ? t("precedents.checkSubLoading")
+                    : t("precedents.checkSubUnreadable")}
+            </p>
           </div>
         </div>
         <div className="row">
@@ -1558,6 +1620,28 @@ export function Precedents() {
           </div>
           <button className="btn" disabled={busy} onClick={() => void addCheck()}>{t("precedents.checkSave")}</button>
         </div>
+        {checksStatus === "loading" ? (
+          <p className="hint" role="status" style={{ margin: 0 }}>
+            {t("precedents.checksLoading")}
+          </p>
+        ) : null}
+        {checksStatus === "error" && checksError ? (
+          <div className="notice danger" role="alert">
+            {t("precedents.checksUnreadable")} <strong>{checksError.code}</strong> — {checksError.message}
+            <button
+              className="btn ghost"
+              style={{ marginLeft: 8 }}
+              onClick={() => {
+                if (caseId && versionId) void fetchChecks(caseId, versionId);
+              }}
+            >
+              {t("precedents.checksRetry")}
+            </button>
+          </div>
+        ) : null}
+        {checksStatus === "ready" && checks.length === 0 ? (
+          <p className="hint" style={{ margin: 0 }}>{t("precedents.checksNone")}</p>
+        ) : null}
         {checks.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {checks.map((check) => (
@@ -1585,7 +1669,18 @@ export function Precedents() {
                 </div>
                 {meaningFor === check.id ? (
                   <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 8 }}>
-                    {meaningContext ? (
+                    {meaningError ? (
+                      <div className="notice danger" role="alert" style={{ marginBottom: 6 }}>
+                        <strong>{meaningError.code}</strong> — {meaningError.message}
+                        <button
+                          className="btn ghost"
+                          style={{ marginLeft: 8 }}
+                          onClick={() => void loadMeaning(check.id)}
+                        >
+                          {t("precedents.contextRetry")}
+                        </button>
+                      </div>
+                    ) : meaningContext ? (
                       meaningContext.found ? (
                         <p className="small" style={{ margin: "0 0 6px" }}>
                           …{meaningContext.before}

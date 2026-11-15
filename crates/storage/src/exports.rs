@@ -151,10 +151,15 @@ impl Database {
                     reason: format!("aynı kaynak sürüm iki kez yazılmış: {version_id}"),
                 });
             }
+            // Dosya, sürümün **belgesinden** okunur (tek tanım; v37 şema
+            // tetikleyicisi de aynı kaynağı kullanır — iki tanım ayrışamaz).
             let owner: Option<String> = self
                 .conn()
                 .query_row(
-                    "SELECT case_id FROM document_versions WHERE id=?1",
+                    "SELECT d.case_id
+                       FROM document_versions v
+                       JOIN documents d ON d.id = v.document_id
+                      WHERE v.id=?1",
                     [version_id],
                     |row| row.get(0),
                 )

@@ -758,6 +758,8 @@ export type PrecedentNoteRow = {
 
 export type CitationCheckRow = {
   id: string;
+  /** Satırın yazıldığı dosya (v37): liste dosya + sürüm anahtarıyla okunur. */
+  caseId: string;
   inputDocumentVersionId: string;
   extractedCitation: string;
   candidatePrecedentId: string | null;
@@ -2596,13 +2598,14 @@ export const api = {
   }) => invoke<BulkImportReport>("precedent_bulk_import", { input }),
   /** Dış bağlayıcı sicili: belgelenmiş kaynaklar, hiçbiri etkin değil. */
   precedentConnectorList: () => invoke<ConnectorCatalog>("precedent_connector_list"),
-  citationCheckList: (versionId: string) =>
-    invoke<CitationCheckRow[]>("citation_check_list", { versionId }),
+  citationCheckList: (caseId: string, versionId: string) =>
+    invoke<CitationCheckRow[]>("citation_check_list", { caseId, versionId }),
   citationMeaningReview: (checkId: string, review: string, note: string) =>
     invoke<CitationCheckRow>("citation_meaning_review", { checkId, review, note }),
   citationContext: (checkId: string, radius = 120) =>
     invoke<CitationContext>("citation_context", { checkId, radius }),
   citationCheckCreate: (input: {
+    caseId: string;
     inputDocumentVersionId: string;
     extractedCitation: string;
     candidatePrecedentId: string | null;

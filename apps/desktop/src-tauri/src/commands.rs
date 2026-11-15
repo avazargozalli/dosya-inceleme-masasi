@@ -5506,11 +5506,12 @@ pub fn citation_check_create(
 #[tauri::command]
 pub fn citation_check_list(
     state: State<'_, AppState>,
+    case_id: String,
     version_id: String,
 ) -> Result<Vec<CitationCheckRow>, ApiError> {
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
-    Ok(db.list_citation_checks(&version_id)?)
+    Ok(db.list_citation_checks(&case_id, &version_id)?)
 }
 
 /// Karar tam metnini kasaya kaydeder (F12-T05). Metin şifreli veritabanında

@@ -366,9 +366,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0036_current_version_read_view",
         sql: include_str!("migrations/0036_current_version_read_view.sql"),
     },
+    Migration {
+        version: 37,
+        name: "0037_version_trace_scope_guards",
+        sql: include_str!("migrations/0037_version_trace_scope_guards.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 36;
+pub const CURRENT_SCHEMA_VERSION: u32 = 37;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -550,6 +555,8 @@ impl Database {
                         "aiContextItems": counts.ai_context_items,
                         "transferSegments": counts.transfer_segments,
                         "documents": counts.documents,
+                        "citationChecks": counts.citation_checks,
+                        "exportItems": counts.export_items,
                     }),
                 );
             }

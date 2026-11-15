@@ -40,6 +40,18 @@
 //!   çevirebiliyordu (ölçüldü: A dosyasının alıntısı B dosyasının metninde
 //!   `exact` döndü). Aynı değişmez ters yönden de korunur: güncel sürüm
 //!   işaretçisi olan satır başka belgeye taşınamaz.
+//! * **okuma görünümü** (v36) — güncel sürüm işaretçisi çaprazsa belge
+//!   *sürümsüz* görünür; yedi okuma yolu tek tanımdan
+//!   (`current_document_versions`) geçer, böylece eski bozuk satır yanlış veri
+//!   değil “veri yok” üretir.
+//! * **sürüm izi sicilleri** (v37) — `citation_checks.input_document_version_id`
+//!   ve `export_items.source_version_id`: bir sicil satırının gösterdiği belge
+//!   sürümü **kendi dosyasından** olmalı. İkisi de `case_id` taşımıyordu;
+//!   atıf kontrolü çekirdekte de kapısızdı (ölçüldü: A'nın çekirdeğinden
+//!   çıkarılmış metin B dosyasının ekranında göründü), dışa aktarma kalemi ise
+//!   yalnız çekirdekte doğrulanıyordu (doğrudan SQL A'nın kaydında B'nin belge
+//!   adını gösterdi). `citation_checks` kendi `case_id`'sini taşır;
+//!   `export_items` dosyayı `exports` satırından okur.
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -65,10 +77,12 @@ use crate::{Database, StorageError};
 /// referansı** kapısıdır (v33): `source_anchor_ids` dizisinin her elemanı. Son
 /// gelen **kalan referans** kapısıdır (v34): soy ağacı, maskeleme çıktısı ve
 /// gönderim sicili (`ai_context_items` — kendi `case_id`'si yoktur, dosyayı
-/// `ai_runs`tan okur). Sonuncusu **güncel sürüm işaretçisi**dir (v35):
-/// `documents.current_version_id` kendi belgesinin sürümünü gösterir.
+/// `ai_runs`tan okur). Sonraki **güncel sürüm işaretçisi**dir (v35):
+/// `documents.current_version_id` kendi belgesinin sürümünü gösterir. Son iki
+/// **sürüm izi sicili**dir (v37): `citation_checks` (kendi `case_id`'si) ve
+/// `export_items` (dosyayı `exports`tan okur).
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 20] = [
+pub(crate) const GUARDED_TABLES: [&str; 22] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -94,6 +108,9 @@ pub(crate) const GUARDED_TABLES: [&str; 20] = [
     "transfer_segments",
     // güncel sürüm işaretçisi (v35)
     "documents",
+    // sürüm izi sicilleri (v37)
+    "citation_checks",
+    "export_items",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -122,6 +139,12 @@ pub struct ScopeViolationCounts {
     pub transfer_segments: i64,
     /// Güncel sürüm işaretçisi başka belgeyi gösteren belge sayısı (v35).
     pub documents: i64,
+    /// Atıf kontrolü satırı kendi dosyasının sürümünü göstermeyen (ya da
+    /// dosyası yazılmamış, `case_id IS NULL`) satır sayısı (v37).
+    pub citation_checks: i64,
+    /// Dışa aktarma kalemi, üst kaydın dosyasından olmayan bir sürümü gösteren
+    /// satır sayısı (v37).
+    pub export_items: i64,
 }
 
 impl ScopeViolationCounts {
@@ -148,6 +171,8 @@ impl ScopeViolationCounts {
             + self.ai_context_items
             + self.transfer_segments
             + self.documents
+            + self.citation_checks
+            + self.export_items
     }
 }
 
@@ -357,6 +382,33 @@ impl Database {
                           SELECT 1 FROM document_versions dv
                            WHERE dv.id = d.current_version_id
                              AND dv.document_id <> d.id)",
+            )?,
+            // v37 — atıf kontrolü **kendi dosyasının** sürümünü gösterir.
+            // Dosyası yazılmamış (`case_id IS NULL`) satır da sayılır: hangi
+            // dosyaya ait olduğu kanıtlanamıyor (sürümü silinmiş eski satır).
+            // Var **olmayan** sürüm kimliği sayılmaz: bu tabloda denetim izi
+            // olarak meşrudur (kapı yalnız "başka dosyada var olan"ı reddeder).
+            // Dürüst sınır: v37 öncesi **çapraz** satır göçle başvurduğu
+            // sürümün dosyasına atfedildiği için burada görünmez.
+            citation_checks: count(
+                "SELECT count(*) FROM citation_checks c
+                  WHERE c.case_id IS NULL OR EXISTS (
+                          SELECT 1 FROM document_versions v
+                            JOIN documents d ON d.id = v.document_id
+                           WHERE v.id = c.input_document_version_id
+                             AND d.case_id <> c.case_id)",
+            )?,
+            // v37 — dışa aktarma kalemi, **üst kaydın** dosyasının sürümünü
+            // gösterir (satırın kendi `case_id`'si yok; 0034 `ai_context_items`
+            // kuralıyla aynı; var olmayan sürüm iz sayılmaz).
+            export_items: count(
+                "SELECT count(*) FROM export_items ei
+                  WHERE EXISTS (
+                          SELECT 1 FROM exports e
+                            JOIN document_versions v ON v.id = ei.source_version_id
+                            JOIN documents d ON d.id = v.document_id
+                           WHERE e.id = ei.export_id
+                             AND e.case_id <> d.case_id)",
             )?,
         })
     }
@@ -1405,11 +1457,13 @@ mod tests {
     /// adlandırmalı. Yeni bir tablo ya da yeni bir referans sütunu sessizce
     /// kapısız kalamaz.
     ///
-    /// Üç kural: (1) `case_id` + zincir/referans sütunu; (2) `case_id`
+    /// Üç kural: (1) `case_id` + zincir/referans sürüm sütunu; (2) `case_id`
     /// taşımayan ama iki kapsamlı kaydı bağlayan tablo (`event_sources`:
     /// `event_id` + `source_anchor_id`); (3) **JSON dizi** kanıt listesi
     /// (`*_anchor_ids` — `note_revisions`in `case_id`'si yoktur, dosya üst
-    /// nottan okunur; kural yalnız sütun adına bakar).
+    /// nottan okunur; kural yalnız sütun adına bakar). Dördüncü kural (v37):
+    /// `case_id`'si olmayan, dosyayı üst kaydından miras alan sürüm izi sicili
+    /// (`export_id` + `source_version_id`).
     #[test]
     fn every_case_scoped_table_has_guard_triggers() {
         let db = db();
@@ -1429,6 +1483,9 @@ mod tests {
             "output_version_id",
             // güncel sürüm işaretçisi (v35)
             "current_version_id",
+            // sürüm izi sicilleri (v37) — sürümü **adıyla** gösteren sütunlar
+            "input_document_version_id",
+            "source_version_id",
         ];
         // Referans sütunlarının **tam** listesi: bir kapsamlı tabloda bu
         // sütunlardan biri varsa, o tablonun tetikleyicilerinden biri sütunu
@@ -1448,6 +1505,10 @@ mod tests {
             "event_id",
             "ai_run_id",
             "note_id",
+            // sürüm izi sicilleri (v37)
+            "input_document_version_id",
+            "source_version_id",
+            "export_id",
         ];
         // JSON dizi referansı taşıyan tablolar: kapı `json_each` ile dizinin
         // **her** elemanını denetlemeli.
@@ -1484,6 +1545,9 @@ mod tests {
                 // `case_id`'si olmayan, kapsamı üst kaydından miras alan ama
                 // **kanıt referansı** taşıyan tablo (gönderim sicili).
                 || (has("ai_run_id") && has("document_version_id"))
+                // `case_id`'si olmayan, kapsamı üst kaydından (`exports`)
+                // miras alan **sürüm izi sicili** (v37).
+                || (has("export_id") && has("source_version_id"))
                 || columns.iter().any(|c| c.ends_with("_anchor_ids"))
             {
                 derived.push(table);
@@ -1896,6 +1960,185 @@ mod tests {
         assert_eq!(location.current_version_no, None);
         let suggestion = db.rebind_suggestion("a1").expect("öneri");
         assert_eq!(suggestion.current_version_id, None);
+    }
+
+    /// v37: atıf kontrolü **kendi dosyasının** sürümünü gösterir. Ölçülen
+    /// kusur (düzeltme öncesi, v36): B dosyasının sürümüne A dosyası adına
+    /// satır yazılabiliyor ve B dosyasının listesinde A'nın metni görünüyordu.
+    #[test]
+    fn a_citation_check_cannot_reference_another_cases_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let write = |id: &str, case: Option<&str>, version: &str| {
+            db.conn().execute(
+                "INSERT INTO citation_checks
+                   (id,case_id,input_document_version_id,extracted_citation,identity_match,
+                    quote_match,meaning_review,reason_codes,created_at)
+                 VALUES (?1,?2,?3,'gizli tutanak metni','unknown','not_checked','not_reviewed','[]',
+                         '2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, version],
+            )
+        };
+        write("cc-ok", Some("c1"), "v1").expect("aynı dosyanın sürümü meşru");
+        // Var olmayan sürüm kimliği denetim izinde kalabilir (0033/0034
+        // gevşekliği); kapı yalnız **var olan çapraz** sürümü reddeder.
+        write("cc-gone", Some("c1"), "silinmis-surum").expect("var olmayan kimlik meşru");
+        scope_error(write("cc-x", Some("c1"), "v9"), "citation_checks");
+        // Satır kendi dosyasını **taşımak zorunda** (NULL yazılamaz).
+        scope_error(write("cc-null", None, "v1"), "citation_checks");
+        assert_eq!(
+            count(&db, "citation_checks"),
+            2,
+            "yalnız meşru satırlar yazıldı"
+        );
+        // UPDATE ile taşıma da kapıda durur.
+        scope_error(
+            db.conn().execute(
+                "UPDATE citation_checks SET input_document_version_id='v9' WHERE id='cc-ok'",
+                [],
+            ),
+            "citation_checks",
+        );
+        scope_error(
+            db.conn().execute(
+                "UPDATE citation_checks SET case_id='c2' WHERE id='cc-ok'",
+                [],
+            ),
+            "citation_checks",
+        );
+        // Anlam incelemesi (kapsam dışı sütun) kapıya takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE citation_checks SET meaning_review='accurate' WHERE id='cc-ok'",
+                [],
+            )
+            .expect("anlam incelemesi serbest");
+    }
+
+    /// v37: dışa aktarma kalemi, **üst kaydın** dosyasının sürümünü gösterir.
+    /// Ölçülen kusur (düzeltme öncesi, v36): `record_export` çekirdek kapısı
+    /// doğruydu ama doğrudan SQL çapraz sürümü yazabiliyor, `list_export_items`
+    /// A'nın kayıt defterinde **B'nin belge adını** gösteriyordu.
+    #[test]
+    fn an_export_item_cannot_reference_another_cases_version() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let export = db
+            .record_export(
+                "c1",
+                "case_report",
+                Some("case-report@1"),
+                &[],
+                "folder",
+                "",
+                "hash",
+            )
+            .expect("dışa aktarma");
+        let item = |id: &str, version: &str| {
+            db.conn().execute(
+                "INSERT INTO export_items
+                   (id,export_id,source_version_id,output_page_range,citation_label,redaction_state)
+                 VALUES (?1,?2,?3,NULL,NULL,'none')",
+                rusqlite::params![id, &export.id, version],
+            )
+        };
+        item("ei-ok", "v1").expect("aynı dosyanın sürümü meşru");
+        item("ei-gone", "silinmis-surum").expect("var olmayan iz meşru");
+        scope_error(item("ei-x", "v9"), "export_items");
+        assert_eq!(count(&db, "export_items"), 2, "yalnız meşru kalemler");
+        scope_error(
+            db.conn().execute(
+                "UPDATE export_items SET source_version_id='v9' WHERE id='ei-ok'",
+                [],
+            ),
+            "export_items",
+        );
+        // Okuma, çapraz satırı gösteremez: varsa da adı yabancı belgeden gelir —
+        // bu yüzden kapı yazmayı reddeder (aşağıdaki tarama testi).
+    }
+
+    /// v37 taraması: kapı düşürülüp yazılmış çapraz satırlar **sayılır**
+    /// (kimlik/içerik taşımadan). Gerçek bir saldırgan da tetikleyiciyi
+    /// düşürebilir; tarama o durumu görünür kılar.
+    #[test]
+    fn scope_violations_reports_cross_case_version_traces() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        let export = db
+            .record_export(
+                "c1",
+                "case_report",
+                Some("case-report@1"),
+                &[],
+                "folder",
+                "",
+                "hash",
+            )
+            .expect("dışa aktarma");
+        let names = [
+            "scope_guard_citation_checks_bi",
+            "scope_guard_citation_checks_bu",
+            "scope_guard_export_items_bi",
+            "scope_guard_export_items_bu",
+        ];
+        let mut bodies = Vec::new();
+        for name in names {
+            bodies.push(
+                db.trigger_sql(name)
+                    .expect("gövde")
+                    .unwrap_or_else(|| panic!("{name} yok")),
+            );
+            db.conn()
+                .execute_batch(&format!("DROP TRIGGER {name};"))
+                .expect("düşür");
+        }
+        db.conn()
+            .execute(
+                "INSERT INTO citation_checks
+                   (id,case_id,input_document_version_id,extracted_citation,identity_match,
+                    quote_match,meaning_review,reason_codes,created_at)
+                 VALUES ('cc-lege','c1','v9','gizli tutanak metni','unknown','not_checked',
+                         'not_reviewed','[]','2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("eski çapraz satır");
+        db.conn()
+            .execute(
+                "INSERT INTO export_items
+                   (id,export_id,source_version_id,output_page_range,citation_label,redaction_state)
+                 VALUES ('ei-lege',?1,'v9',NULL,NULL,'none')",
+                [&export.id],
+            )
+            .expect("eski çapraz kalem");
+        db.conn()
+            .execute_batch(&format!("{};", bodies.join(";\n")))
+            .expect("geri kur");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.citation_checks, 1);
+        assert_eq!(counts.export_items, 1);
+        assert_eq!(counts.total(), 2);
+        // Satırlar silinmez; tarama yalnız sayar.
+        assert_eq!(count(&db, "citation_checks"), 1);
+        assert_eq!(count(&db, "export_items"), 1);
+        // Okuma iki anahtarlıdır (dosya + sürüm): satır **yazan** dosyanın
+        // listesinde kalır. Bu yüzden v37 öncesi çapraz satır "çapraz" diye
+        // ayırt edilemez (satırda yazan dosya bilgisi hiç yoktu) — dürüst sınır;
+        // temizliği ürün kararıdır.
+        assert_eq!(
+            db.list_citation_checks("c1", "v9").expect("liste").len(),
+            1,
+            "göç satırı başvurduğu sürümün dosyasına atfeder"
+        );
+        let items = db.list_export_items(&export.id).expect("kalemler");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].document_title.as_deref(),
+            Some("Diger dosya belgesi"),
+            "eski çapraz satır yabancı künyeyi gösterir — temizliği ürün kararı"
+        );
     }
 
     /// Şemadan türetim: görünüm **tek tanım** olarak durur ve kendi belgesine

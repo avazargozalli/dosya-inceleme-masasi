@@ -376,6 +376,7 @@ const CATALOG: ConnectorCatalog = {
 
 const CHECK: CitationCheckRow = {
   id: "ch1",
+  caseId: "c1",
   inputDocumentVersionId: "v1",
   extractedCitation: "Yargıtay 1. HD 2024/123",
   candidatePrecedentId: null,
@@ -506,7 +507,7 @@ type SetupOptions = {
   bibliography?: (precedentId: string) => Promise<PrecedentBibliography>;
   terms?: (precedentId: string) => Promise<PrecedentUsageTerms>;
   coverage?: CorpusCoverage;
-  checks?: (versionId: string) => Promise<CitationCheckRow[]>;
+  checks?: (caseId: string, versionId: string) => Promise<CitationCheckRow[]>;
   openDialogResult?: string | string[] | null;
   saveDialogResult?: string | null;
 };
@@ -967,7 +968,7 @@ describe("emsal ekranı davranışı", () => {
     mocks.citationCheckCreate.mockResolvedValue(CHECK);
     setup({ checks: async () => [CHECK] });
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     expect(await screen.findByText(t("precedents.checkSub", { count: 1 }))).toBeTruthy();
     expect(screen.getByText(CHECK.extractedCitation)).toBeTruthy();
     expect(screen.getByText(t("precedents.badgeIdentity", { value: "mismatch" }))).toBeTruthy();
@@ -991,6 +992,7 @@ describe("emsal ekranı davranışı", () => {
 
     await waitFor(() => expect(mocks.citationCheckCreate).toHaveBeenCalledTimes(1));
     expect(mocks.citationCheckCreate).toHaveBeenCalledWith({
+      caseId: "c1",
       inputDocumentVersionId: "v1",
       extractedCitation: "Yargıtay 1. HD 2024/123",
       candidatePrecedentId: "p1",
@@ -1021,7 +1023,7 @@ describe("emsal ekranı davranışı", () => {
     mocks.citationMeaningReview.mockResolvedValue({ ...CHECK, meaningReview: "misleading" });
     setup({ checks: async () => [CHECK] });
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
 
     await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
@@ -1146,10 +1148,10 @@ describe("emsal ekranı davranışı", () => {
     setup({
       cases: [CASE, CASE2],
       documents: (caseId) => (caseId === "c1" ? Promise.resolve([DOC]) : pendingDocs),
-      checks: async (versionId) => (versionId === "v1" ? [CHECK] : []),
+      checks: async (_caseId, versionId) => (versionId === "v1" ? [CHECK] : []),
     });
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     expect(await screen.findByText(CHECK.extractedCitation)).toBeTruthy();
     expect(byId<HTMLSelectElement>("c-doc").value).toBe("v1");
 
@@ -1615,12 +1617,12 @@ describe("emsal ekranı: geç yanıtlar seçim nesline bağlanır", () => {
     setup({
       cases: [CASE, CASE2],
       documents: async (id) => (id === "c1" ? [DOC] : [DOC2]),
-      checks: (versionId) => (versionId === "v1" ? a.promise : b.promise),
+      checks: (_caseId, versionId) => (versionId === "v1" ? a.promise : b.promise),
     });
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     fireEvent.change(byId<HTMLSelectElement>("c-case"), { target: { value: "c2" } });
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v2"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c2", "v2"));
 
     b.resolve([CHECK_B]);
     expect(await screen.findByText(CHECK_B.extractedCitation)).toBeTruthy();
@@ -1703,7 +1705,7 @@ describe("emsal ekranı: geç yanıtlar seçim nesline bağlanır", () => {
     mocks.citationCheckCreate.mockReturnValue(created.promise);
     setup({ checks: async () => [] });
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     fireEvent.change(byId<HTMLInputElement>("c-text"), {
       target: { value: "Yargıtay 1. HD 2024/123" },
     });
@@ -1830,7 +1832,7 @@ describe("emsal ekranı: geç yanıtlar seçim nesline bağlanır", () => {
     setup({
       cases: [CASE, CASE2],
       documents: async (id) => (id === "c1" ? [DOC] : [DOC2]),
-      checks: (versionId) => {
+      checks: (_caseId, versionId) => {
         if (versionId !== "v1") return Promise.resolve([CHECK_B]);
         v1Calls += 1;
         return v1Calls === 1 ? Promise.resolve([CHECK]) : lateChecks.promise;
@@ -1974,7 +1976,7 @@ describe("emsal ekranı: korpus aktarımı ve anlam hükmü", () => {
     setup({ checks: async () => [CHECK] });
     mocks.citationMeaningReview.mockReturnValue(reviewed.promise);
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
     await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
     expect(await screen.findByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
@@ -2010,7 +2012,7 @@ describe("emsal ekranı: korpus aktarımı ve anlam hükmü", () => {
       retryable: true,
     });
 
-    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("v1"));
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
     fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
     await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
     fireEvent.change(byId<HTMLInputElement>("mn-ch1"), { target: { value: "gerekçe metni" } });
@@ -2225,7 +2227,7 @@ describe("emsal ekranı: uçuştaki yazmalar ve geç etiketler", () => {
     mocks.citationMeaningReview.mockReturnValue(pending.promise);
     setup({
       cases: [CASE, CASE2],
-      checks: async (versionId) => (versionId === "v1" ? [CHECK] : []),
+      checks: async (_caseId, versionId) => (versionId === "v1" ? [CHECK] : []),
       documents: async (caseId) => (caseId === "c2" ? [DOC2] : [DOC]),
     });
     expect(await screen.findByText(CHECK.extractedCitation)).toBeTruthy();
@@ -2353,5 +2355,169 @@ describe("emsal ekranı: uçuştaki yazmalar ve geç etiketler", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: t("precedents.bibCopied") })).toBeNull(),
     );
+  });
+});
+
+// 2026-11-11 turu: atıf kontrolü kartı ve anlam paneli **okuma durumunu**
+// dürüst yazar. Ölçülen kusurlar: (1) sürüm değişince önceki sürümün kontrol
+// listesi yeni sürümün altında kalıyordu; (2) düşen liste okuması "0 kayıt"
+// gibi görünüyordu; (3) düşen bağlam okuması panelde sonsuza kadar
+// "Bağlam yükleniyor…" yazıyordu (hata sayfanın tepesindeydi, panelde değil).
+describe("emsal ekranı: okuma durumu dürüst yazılır", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("sürüm değişince önceki sürümün kontrol listesi anında kalkar; sayı uydurulmaz", async () => {
+    const pending = deferred<CitationCheckRow[]>();
+    setup({
+      documents: async () => [DOC, DOC_EK],
+      checks: (_caseId, versionId) => (versionId === "v1" ? Promise.resolve([CHECK]) : pending.promise),
+    });
+
+    expect(await screen.findByText(CHECK.extractedCitation)).toBeTruthy();
+    fireEvent.change(byId<HTMLSelectElement>("c-doc"), { target: { value: "v2" } });
+
+    // Yanıt gelmeden: eski sürümün satırı ekranda yok, "0 kayıt" da denmez.
+    expect(screen.queryByText(CHECK.extractedCitation)).toBeNull();
+    expect(screen.getByText(t("precedents.checkSubLoading"))).toBeTruthy();
+    expect(screen.getByText(t("precedents.checksLoading"))).toBeTruthy();
+    expect(screen.queryByText(t("precedents.checkSub", { count: 0 }))).toBeNull();
+
+    pending.resolve([CHECK_B]);
+    expect(await screen.findByText(CHECK_B.extractedCitation)).toBeTruthy();
+    expect(screen.getByText(t("precedents.checkSub", { count: 1 }))).toBeTruthy();
+    expect(screen.queryByText(t("precedents.checkSubLoading"))).toBeNull();
+  });
+
+  it("düşen kontrol listesi okuması '0 kontrol' demez; koduyla yazar ve yeniden denenebilir", async () => {
+    let call = 0;
+    setup({
+      checks: async () => {
+        call += 1;
+        if (call === 1) {
+          throw { code: "E_DB_IO", message: "kasa okunamadı", retryable: true };
+        }
+        return [CHECK];
+      },
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DB_IO");
+    expect(alert.textContent).toContain("kasa okunamadı");
+    expect(screen.getByText(t("precedents.checkSubUnreadable"))).toBeTruthy();
+    expect(screen.queryByText(t("precedents.checkSub", { count: 0 }))).toBeNull();
+    expect(screen.queryByText(CHECK.extractedCitation)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.checksRetry") }));
+    expect(await screen.findByText(CHECK.extractedCitation)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(t("precedents.checkSub", { count: 1 }))).toBeTruthy();
+  });
+
+  it("düşen bağlam okuması paneli 'yükleniyor'da bırakmaz; yeniden deneme bağlamı yazar", async () => {
+    setup({ checks: async () => [CHECK] });
+    mocks.citationContext.mockRejectedValueOnce({
+      code: "E_DB_IO",
+      message: "bağlam okunamadı",
+      retryable: true,
+    });
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
+    fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DB_IO");
+    // Panel artık "yükleniyor" demez: düşen okuma yükleme gibi görünmez.
+    expect(screen.queryByText(t("precedents.contextLoading"))).toBeNull();
+
+    mocks.citationContext.mockResolvedValue(CONTEXT);
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.contextRetry") }));
+    expect(await screen.findByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("panel kapanınca bağlam hatası ekranda kalmaz; yeniden açılış temiz başlar", async () => {
+    setup({ checks: async () => [CHECK] });
+    mocks.citationContext.mockRejectedValueOnce({
+      code: "E_DB_IO",
+      message: "bağlam okunamadı",
+    });
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
+    fireEvent.click(await screen.findByRole("button", { name: t("precedents.meaning") }));
+    expect((await screen.findByRole("alert")).textContent).toContain("E_DB_IO");
+
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.close") }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    mocks.citationContext.mockResolvedValue(CONTEXT);
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaning") }));
+    expect(await screen.findByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("geç gelen bağlam hatası başka kontrolün panelinde yazılmaz", async () => {
+    const failing = deferredWithReject<CitationContext>();
+    setup({ checks: async () => [CHECK, CHECK_B] });
+    mocks.citationContext.mockImplementation((id: string) =>
+      id === "ch1" ? failing.promise : Promise.resolve(CONTEXT),
+    );
+
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
+    const [first] = await screen.findAllByRole("button", { name: t("precedents.meaning") });
+    fireEvent.click(first!);
+    await waitFor(() => expect(mocks.citationContext).toHaveBeenCalledWith("ch1"));
+
+    // Başka kontrolün paneli açılır; geç gelen hata **onun** altına yazılmamalı.
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.meaning") }));
+    expect(await screen.findByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
+
+    failing.reject({ code: "E_DB_IO", message: "geç gelen hata" });
+    await act(async () => {
+      await failing.promise.catch(() => undefined);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(CONTEXT.quote, { selector: "mark" })).toBeTruthy();
+  });
+});
+
+// 2026-11-15 turu (v37): atıf kontrolü **kendi dosyasına** yazılır. Çekirdek
+// başka dosyanın sürümünü reddeder; yazma dosya kimliğini taşımazsa kapı hiç
+// çalışmaz.
+describe("emsal ekranı: atıf kontrolü dosya kimliğiyle yazılır", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("yazma dosya + sürüm gönderir; çekirdek reddederse hata görünür ve liste bozulmaz", async () => {
+    setup({ checks: async () => [CHECK] });
+    await waitFor(() => expect(mocks.citationCheckList).toHaveBeenCalledWith("c1", "v1"));
+    expect(await screen.findByText(CHECK.extractedCitation)).toBeTruthy();
+
+    mocks.citationCheckCreate.mockRejectedValue({
+      code: "E_NOT_FOUND",
+      message: "kaynak sürüm bulunamadı",
+      retryable: false,
+    });
+    fireEvent.change(byId<HTMLInputElement>("c-text"), {
+      target: { value: "Yargıtay 1. HD 2024/123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedents.checkSave") }));
+
+    await waitFor(() => expect(screen.getByText("E_NOT_FOUND")).toBeTruthy());
+    expect(mocks.citationCheckCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ caseId: "c1", inputDocumentVersionId: "v1" }),
+    );
+    // Çekirdeğin reddettiği yazma mevcut listeyi silmez.
+    expect(screen.getByText(CHECK.extractedCitation)).toBeTruthy();
   });
 });
