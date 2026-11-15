@@ -17,6 +17,7 @@
 | F08-T03 *(şartname numarası)* | ✅ | **kesin/yaklaşık/aralık/bilinmeyen tarih sıralaması, gün uydurmadan**: ay/yıl kesinliğinde gün **saklanmaz ve gösterilmez**, aralık iki uçlu tek değer (`başlangıç/bitiş`, başlangıçla sıralanır), ham tarih metni düzenlemede **korunur**, CSV kesinliğe uyar; `E_EVENT_DATE`; 11/11 mutasyon (2026-11-10) |
 | F08-T04e | ✅ | **kanıt ve iddia referansları dosya sınırını aşamaz** (şema **v32**): `claims`, `evidence_links`, `event_sources`, `claim_relations`, `tasks` × BEFORE INSERT/UPDATE = **10 tetikleyici**; ölçülen kusur: B dosyasının belgesi silinince A'nın kanıt bağı `CASCADE` ile **sessizce** yok oluyordu; `scope_violations()` 13 tabloyu sayar; 7/7 mutasyon (2026-11-14) |
 | F08-T04f | ✅ | **JSON dizi kanıt listeleri dosya sınırını aşamaz** (şema **v33**): `notes`, `note_revisions`, `review_items`, `note_drafts` → `source_anchor_ids` × BEFORE INSERT/UPDATE = **8 tetikleyici** (`json_each`); ölçülen kusur: v33 kapıları yokken A notuna B çapası yazılıyor, B belgesi silinince çapa gidiyor, notta kimlik kalıyor, denetim 0; `scope_violations()` 17 tabloyu sayar; 9/9 mutasyon (2026-11-15) |
+| F08-T04g | ✅ | **kalan referanslar dosya sınırında** (şema **v34**): soy ağacı (`parent_version_id`), maskeleme çıktısı (`output_version_id`), gönderim sicili (`ai_context_items` sürüm/çapa/`segment_ids`), giden segment sicili (`transfer_segments`), çapa/işaret sayfası, aday kökeni, taslağın notu × BEFORE INSERT/UPDATE = **14 tetikleyici** (7 tablo); ölçülen kusur: v33'te A dosyasının AI çalıştırmasına B dosyasının sürümü+çapası yazılıyor (`Ok(1)`) ve ekran **B'nin belge adını** gösteriyordu; plan çıktısı ve soy ağacı da doğrudan SQL ile çapraz yazılabiliyordu; `scope_violations()` **19 tabloyu** sayar (+`aiContextItems`, `transferSegments`); 13/13 mutasyon (2026-11-15) |
 
 ## Doğrulama
 
@@ -936,5 +937,133 @@ numaraları), referans değildir; `payload` içindeki serbest JSON yorumlanmaz.
 de düşürebilir; bu kapı uygulama hatasına karşı. (f) Maliyet debug derlemede,
 tek makinede (Apple M2), iki koşu; üretim derlemesinde oran ölçülmedi. (g)
 Tauri komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage
+düzeyinde ölçüldü, arayüz değişmedi — görsel QA + gerçek pencere **insan
+bekliyor**.
+
+## F08-T04g — kalan referanslar dosya sınırında: soy ağacı, maskeleme çıktısı,
+## gönderim ve giden segment sicili (şema v34, 2026-11-15)
+
+**Neden.** v32 tek sütunlu kanıt referanslarını, v33 JSON dizi kanıt listelerini
+kapıladı. Şemadan türetilen kural (test) hâlâ **yedi** referans sütununu
+görmüyordu — hiçbiri `case_id` + bilinen kapsam sütunu kalıbına girmiyor ya da
+tablo kendi `case_id`'sini taşımıyordu:
+
+| Sütun | Dosya nereden okunur | Bugünkü durum |
+|---|---|---|
+| `document_versions.parent_version_id` | satırın `case_id`'si | çekirdek doğruluyor, **şema kapısı yok** |
+| `redaction_plans.output_version_id` | satırın `case_id`'si | çekirdek doğruluyor, **şema kapısı yok** |
+| `ai_context_items.document_version_id` | üst kayıt `ai_runs.case_id` | **çekirdek kapısı da yoktu** |
+| `ai_context_items.source_anchor_id` | üst kayıt `ai_runs.case_id` | **çekirdek kapısı da yoktu** |
+| `ai_context_items.segment_ids` (JSON) | satırın sürümü | çekirdek doğruluyor, şema kapısı yok |
+| `transfer_segments.document_version_id` | üst kayıt `ai_runs.case_id` | **çekirdek kapısı da yoktu** |
+| `source_anchors.page_id`, `source_marks.page_id` | sayfanın koşusu | çekirdek doğruluyor, şema kapısı yok |
+| `review_items.ai_run_id`, `note_drafts.note_id` | çalıştırma / not | çekirdek doğruluyor, şema kapısı yok |
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite, geçici sonda sonra silindi;
+v33 şeması).** Üç sınıf da kapıyı atlıyordu:
+
+1. `record_context_items` **çekirdek kapısı yoktu**: A dosyasının çalıştırmasına
+   B dosyasının sürümü + çapası yazıldı (`Ok(1)`) ve `list_context_items`
+   A dosyasının ekranında **B'nin belge adını** gösterdi
+   (`GIZLI diger dosya belgesi`). Gönderim sicili, cihazdan çıkan içeriğin
+   kaydıdır; yanlış dosyayı göstermesi P0 sınıfıdır.
+2. `redaction_plans.output_version_id`: doğrudan SQL ile A dosyasının planına
+   B dosyasının sürümü çıktı olarak yazıldı; `list_redaction_plans` A dosyasının
+   sicilinde **B'nin belge adını** gösterdi.
+3. `document_versions.parent_version_id`: A dosyasının sürümü B dosyasının
+   sürümünü ebeveyn gösterdi (maskeleme izi yanlış dosyayı gösterir).
+
+**Yazılan (şema v34, `0034_remaining_reference_scope_guards.sql`).** Referansın
+hedefi kendi dosyasında olmalı; yoksa satır yazılmaz (fail-closed).
+**7 tablo × BEFORE INSERT/UPDATE = 14 tetikleyici**:
+
+* `document_versions` → `parent_version_id` (ebeveyn aynı dosyada; aynı dosyada
+  **başka belgenin** sürümü meşru — maskeli kopya yolu korunur).
+* `redaction_plans` → `output_version_id` (çıktı sürümü aynı dosyada).
+* `ai_context_items` → sürüm + çapa (`ai_runs.case_id` ile) + `segment_ids`
+  (`json_each`: her eleman satırın **kendi** sürümünün segmenti; bozuk JSON
+  reddedilir). Tablonun `case_id`'si yoktur; dosya üst kayıttan okunur.
+* `transfer_segments` → `document_version_id` (giden segment sicili; `NULL`
+  eski satır kapıya takılmaz).
+* `source_anchors` → `page_id` **kendi koşusunun** sayfası olmalı (0031'in
+  `text_segments.page_id` kuralının ikizi).
+* `source_marks` → `page_id` kendi **dosyasında** olmalı (sayfa-koşu üyeliği
+  geometri politikası olarak çekirdekte kalır).
+* `review_items` → `ai_run_id` (aday kökeni), `note_drafts` → `note_id`
+  (taslağın bağlandığı not). İkisi de **gevşek**: var olmayan kimlik kalır
+  (eski satır/denetim izi), yalnız **başka dosyada var olan** kimlik reddedilir.
+
+**Çekirdek.** `record_context_items` çalıştırmanın dosyasını okur; başka
+dosyada **var olan** sürüm/çapa `E_NOT_FOUND` ile reddedilir (gönderimden sonra
+silinmiş belge meşru kalır — denetim satırı yaşamalıdır). `record_outbound_segments`
+segment aramasını `JOIN document_versions … AND dv.case_id=run.case_id` ile
+yapar: yabancı sürümün metni giden sicile yazılamaz. `scope_violations()`
+**19 tabloyu** sayar; `documentVersions` (soy ağacı), `redactionPlans` (çıktı),
+`sourceAnchors` (sayfa), `sourceMarks` (sayfa), `reviewItems` (köken),
+`noteDrafts` (not) sayımlarına yeni koşullar, yeni alan **`aiContextItems`** ve
+**`transferSegments`**; güncelleme denetimine iki yeni alan yazılır.
+
+**Testler (güncel kodla).** `scope_guard::tests` **22 → 28** (+6: plan çıktısı
+INSERT/UPDATE + meşru yol · soy ağacı + meşru türev + NULL · gönderim sicili
+sürüm/çapa/segment/bozuk JSON + var olmayan kimlik · giden segment ·
+aday kökeni · taslağın notu · eski satırları sayan tarama) + `ai::tests` **+1**
+(`context_items_cannot_point_at_another_cases_version_or_anchor`) +
+`upgrade_tests::upgrade_reports_cross_case_output_and_context_links_left_by_the_previous_schema`
+(v33 kasa → güncelleme → denetimde üç ayrı sayı + dört yeni çapraz yazma reddi)
+→ `dim-storage --lib` **632 → 640** (yerel **445,94 s**, 0 düştü). Şemadan
+türetilen test artık **sütun kapsamını** da denetler: kapsamlı bir tabloda
+`document_id`/`document_version_id`/`parent_version_id`/`output_version_id`/
+`parse_run_id`/`segment_id`/`page_id`/`source_anchor_id`/`anchor_id`/`claim_id`/
+`related_claim_id`/`event_id`/`ai_run_id`/`note_id` sütunlarından biri varsa, o
+tablonun bir tetikleyicisi sütunu **adıyla** anmalı; yeni bir referans sütunu
+kapısız eklenemez. `ai_context_items` ayrıca `json_each(` arar.
+
+**Maliyet (ölçüldü; `tests/scope_guard_cost.rs`, `#[ignore]`, debug, bellek
+içi, 20.000 satır, `--test-threads=1`, iki koşu).** Gönderim sicili **+24,91 /
++25,06 µs/satır** (3,51 → 28,42; 710–728%); giden segment **+32,94 / +32,84
+µs/satır** (7,78 → 40,62; 422–423%); `scope_violations()` 40.000 bağlam +
+40.000 giden segment satırında **77,5 / 78,0 ms**. Bu iki tabloya yazan hacim
+düşüktür (çalıştırma başına belge/segment sayısı kadar satır); toplu ithal yolu
+yok, olursa ayrıca ölçülmeli.
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-v34-gates.py`, her mutasyon
+tek başına, `try/finally` + `os.utime` + sha256 birebir —
+`0034…sql 1ffcc6d9…`, `scope_guard.rs c8f9206c…`, `ai.rs d2cd8e70…`):**
+**13/13 KIRMIZI, taban iki uçta yeşilken** (taban `scope_guard::tests` **28/28**,
+`ai::tests::context_items…` 1/1, upgrade testi 1/1; geri yazım birebir, taban
+tekrar yeşil) — M1 plan çıktısı INSERT · M2 plan çıktısı UPDATE · M3 soy ağacı ·
+M4 gönderim sicili INSERT · M5 gönderim sicili UPDATE · M6 giden segment ·
+M7 aday kökeni · M8 taslağın notu · M9 çapanın sayfa üyeliği · M10 kapılı tablo
+listesi (şemadan türetim ayrışır) · M11 tarama gönderim sicilini hiç saymaz ·
+M12 segment listesi kapıdan çıkar · M13 çekirdek kapsam kapısı düşer.
+**Dürüst (kendi hatam, iki ölçüm hatası — ilk koşular kanıt sayılmadı):**
+(1) ilk tam koşuda **12/13** çıktı: M11 YEŞİL kaldı, çünkü mutasyon yalnız
+sürüm koşulunu çeviriyordu ve aynı satırı **çapa** koşulu yakalıyordu → M11
+"tarama bu tabloyu hiç saymaz" olarak yeniden yazıldı, ayrı koşuda KIRMIZI
+ölçüldü. (2) iki test fixture'ında sha256 alanı 62 karakterdi (CHECK
+`length=64`) → düzeltildi; o koşular kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `e25f0bc` (6 dosya, **+1063/−21**) → run `43653196298`
+**10/10 YEŞİL**: `dim-storage` **640** iki OS'ta birebir (ubuntu **846,13 s** /
+macos-15 **314,26 s**), `dim-cli-adapters` **168**, `arayüz` 66 dosya / paket
+`index-BPk1_PbH.js` 692,77 kB / gzip 184,88 kB (**arayüz değişmedi**);
+`masaüstü kabuk`, `windows güvenli depo`, `belge worker'ı`, `sözleşmeler`,
+`SBOM`, `kaynak arşivi`, `sürüm paketi manifesti` yeşil.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v34
+öncesi çapraz bağlar **sayılır, düzeltilmez** (temizlik ayrı veri işi).
+(b) `ai_context_items`, `review_items.ai_run_id`, `note_drafts.note_id` bilinçli
+**gevşek**: var olmayan kimlik kalır (denetim izi/eski satır); yalnız başka
+dosyada **var olan** kimlik reddedilir. (c) Maskeleme çıktısı kapısı yalnız
+**dosya sınırı**dır; "çıktı, kaynağın alt sürümü olmalı" politikası çekirdekte
+(`create_redaction_plan`) kalır — doğrudan SQL aynı dosyada yanlış sürümü çıktı
+gösterebilir. (d) `source_marks.page_id` için kural dosya sınırıdır; sayfanın
+**kendi koşusunun** sayfası olması (`source_anchors`ta olduğu gibi) geometri
+politikası olarak çekirdekte. (e) `transfer_segments` `document_version_id`'si
+`NULL` olan eski satırlar kapıya takılmaz ve "gönderilmiş" sayılmaz.
+(f) SQLite dosyasını doğrudan düzenleyen (anahtarı olan) saldırgan tetikleyiciyi
+de düşürebilir; bu kapı uygulama hatasına karşı. (g) Maliyet debug derlemede,
+tek makinede (Apple M2), iki koşu; üretim derlemesinde oran ölçülmedi.
+(h) Tauri komutları komut olarak koşulmadı; davranış gerçek SQLite ile storage
 düzeyinde ölçüldü, arayüz değişmedi — görsel QA + gerçek pencere **insan
 bekliyor**.
