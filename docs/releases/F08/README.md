@@ -23,6 +23,7 @@
 | F08-T04j | ✅ | **sürüm izi sicilleri kendi dosyasına bağlanır** (şema **v37**): `citation_checks.case_id` + göç, 2 tablo × BEFORE INSERT/UPDATE = **4 tetikleyici** (`export_items` dosyayı `exports`tan okur); ölçülen kusur: `record_citation_check` çapraz sürümü kabul ediyor, `list_citation_checks('v9')` **B dosyasının ekranında** A'nın metnini gösteriyordu (INV-05), doğrudan SQL A'nın dışa aktarmasına B'nin sürümünü yazabiliyor ve `scope_violations()` ikisinde de **0** diyordu; liste **iki anahtarlı** (dosya + sürüm); 11/11 mutasyon (2026-11-15) |
 | F08-T04k | ✅ | **giden segment sicili kendi segmentine bağlıdır** (şema **v38**): 0034'ün iki `transfer_segments` tetikleyicisi genişletildi — satırın **iki segment kolonu** (`outbound_segment_id`, `source_segment_id`) **var olan** bir segment ise gösterilen sürümün segmenti olmalı (sürüm `NULL` ise çalıştırmanın dosyasında); ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına A'nın sürümü + **B'nin segmenti** yazılıyor, A'nın gönderim sicili B'nin parçasını gösteriyordu ve `scope_violations()` **0** diyordu (kör); `transfer_segments` sayımı genişledi (yeni tablo yok); 6/6 mutasyon (2026-11-15) |
 | F08-T04l | ✅ | **aktarım onayı kendi dosyasının belgelerini gösterir** (şema **v39**): `transfer_consents` üzerinde **2 tetikleyici** — `selected_document_ids` geçerli JSON dizi, elemanları metin, liste boş olamaz ve her eleman `case_scope` dosyasında **silinmemiş** bir belge olmalı; ölçülen kusur: doğrudan SQL ile A'nın onayına **B'nin belgesi** yazılıyor, `list_transfer_consents('c1')` onu A'nın onaylanmış kapsamı diye sayıyor, boş/bozuk liste sessizce “0 belge” okunuyor ve `scope_violations()` **0** diyordu (kör); `transfer_consents` sayımı **eklendi** (23. tablo, türetim kuralı `case_scope` çiftini kapsar); 8/8 mutasyon (2026-11-15) |
+| F08-T04m | ✅ | **karar hedefi kendi dosyasında olmalı** (şema **v40**): 0033'ün iki `review_items` tetikleyicisi genişletildi — `target_entity_id` doluysa kimlik `claims`/`notes`/`tasks`/`events`ten **birinde var** ise satırın `case_id`'si aynı olmalı, `UPDATE OF` listesine `target_entity_id` eklendi; ölçülen kusur: doğrudan SQL ile A'nın öğesine **B dosyasının** iddiası/notu yazılıyor, `list_review_items('c1')` onu A'nın öğesi diye döndürüyor (arayüzde hedef rozeti), öğe yanlış hedefle **karara kilitleniyor** ve `scope_violations()` **0** diyordu (kör); tarama `review_items` alanı genişledi (yeni tablo yok, 23 kalır); 8/8 mutasyon (2026-11-16) |
 
 ## Doğrulama
 
@@ -1625,3 +1626,82 @@ satırı hiçbir listede görünmez (sayılmaz). (e) Tetikleyicileri anahtarı o
 saldırgan düşürebilir (uygulama hatasına karşı). (f) Tauri komutları komut olarak
 koşulmadı; arayüz bu turda değişmedi — gerçek pencere + görsel QA **insan
 bekliyor**.
+
+## F08-T04m — karar hedefi kendi dosyasında olmalı (şema v40, 2026-11-16)
+
+**Neden.** `review_items.target_entity_id`, avukatın onayladığı önerinin dönüştüğü
+kalıcı kaydı (`claims` / `notes` / `tasks` / `events`) gösterir. Arayüz onu
+`review.targetBadge` ile öğenin üstünde **ilk 8 karakter** olarak yazar; öğe
+`target_entity_id IS NULL` şartı yüzünden „karara bağlandı“ sayılır ve bir daha
+karara bağlanamaz. Şemada hiçbir kapı yoktu; `scope_violations()` bu tabloyu
+sayıyor ama **bu sütunu hiç denetlemiyordu**.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v39; `scratch/schema-probe/measure_v40.py`,
+log `scratch/dim-v40-measure.log`, kasa `scratch/schema-probe/probe-39-target.db`):**
+
+1. Doğrudan SQL ile A dosyasının öğesine **B dosyasının** `claim9` / `n9` kimliği
+   yazıldı → **KABUL** (`rows=1`).
+2. `list_review_items('c1')` — okuma yolunun aynısı — onu A'nın öğesi diye
+   döndürdü: ekran B dosyasının kaydının kimliğini A'nın kararı sanar.
+3. v39 taraması **0** dedi (sınıf hiç sayılmıyordu); önerilen ek koşul **2** buldu.
+4. Karar kapısı yanlış hedefle **kilitleniyordu** (`UPDATE … WHERE target_entity_id
+   IS NULL` → `changed=0`): öğe bir daha karara bağlanamaz.
+5. Var olmayan kimlik **geçiyor** — hedef sonradan silinebilir, bu bilinçli
+   serbest olmalı (0033/0038/0039 gevşekliği).
+
+**Yazılan (şema v40, `0040_review_target_scope_guard.sql`).** 0033'ün iki
+tetikleyicisi (`scope_guard_review_items_bi/_bu`) `DROP` + `CREATE` ile
+**genişletildi** (tek tanım): `target_entity_id` doluysa kimlik `claims` /
+`notes` / `tasks` / `events` tablolarından **birinde var** ise satırın `case_id`'si
+aynı olmalı; yoksa satır yazılmaz (fail-closed). `UPDATE OF case_id,
+source_anchor_ids, target_entity_id`: yalnız bu üç sütunu değiştiren yazma
+kapıdan geçer — **durum/`row_version` güncellemesi takılmaz** (v35 dersi), eski
+aykırı satır bu yüzden karara bağlanabilir/reddedilebilir kalır. **Bilinçli
+gevşeklik** (0033/0034/0038/0039 ile aynı): var olmayan/silinmiş hedef kimliği ne
+kapıya takılır ne taranır (denetim izi). `scope_violations()` `review_items` alanı
+**genişledi** (yeni tablo yok → `GUARDED_TABLES` **23 kalır**, şemadan türetim
+testi değişmedi). Ret `RAISE(ABORT,'DIM_SCOPE:review_items')` →
+`StorageError::ScopeViolation` → **`E_DB_SCOPE`**.
+
+**Testler.** `scope_guard::tests` **+2**
+(`a_review_item_cannot_point_at_another_cases_entity`: dört tablo için çapraz
+hedef reddi · kendi dosyasının kaydı/hedefsiz/var olmayan serbest · UPDATE ile
+taşıma reddi · durum güncellemesi geçer · dosya değiştirme hedefi yabancılaştırır ·
+`the_scan_counts_review_items_pointing_at_another_cases_entity`: kapı düşürülüp
+eski satırlar yazılır → tarama **1**, var olmayan hedef sayılmaz, satırlar
+silinmez), `upgrade_tests` **+1** (v39 kasa → güncelleme → denetimde
+`reviewItems: 1`, yeni çapraz yazma reddi, eski satırın durumu güncellenebilir) →
+`dim-storage --lib` **664 → 667**. Hedefli koşu `cargo test -p dim-storage --lib
+review_item` **9/9 yeşil**; **tam `--lib` bu turda yerelde koşulmadı** (tur
+bütçesi) — tam paket CI'da `cargo test --workspace --all-targets` ile koşuyor.
+`cargo fmt` (iki manifest) temiz; clippy yerelde koşulmadı (CI `-D warnings`).
+
+**Kapı kanıtı (gerçek koşular; betik `scratch/dim-v40-gates.py`, log
+`scratch/dim-v40-gates.log`; her mutasyon tek başına, `try/finally` + `os.utime` +
+sha256 birebir — `0040…sql df5b9aa1c7ccc116`, `scope_guard.rs d998e54851261b7c`):**
+**8/8 KIRMIZI, taban iki uçta yeşilken** (K0 **9/9**, K1 **9/9**) — M1 BI hedef
+kuralı düşer · M2 BU hedef kuralı düşer · M3 BI eşitliği ters (meşru hedef
+reddedilir) · M4 `UPDATE OF` listesinden target kolonu düşer · M5 BI yalnız
+`claims`i denetler (notes/tasks/events kör) · M6 tarama hedef koşulu düşer ·
+M7 tarama eşitliği ters · M8 tarama yalnız `notes`a bakar (claims kör).
+**Dürüst (kendi hatam):** ilk koşu **M3'te durdu** — `x.case_id <> NEW.case_id`
+BI gövdesinde **4 kez** geçiyor (dört tablo), tekillik assert'i yakaladı ve betik
+hiçbir hüküm yazmadan çıktı; desen `claims` satırıyla daraltıldı, **8/8 yeniden
+ölçüldü**. İlk koşunun iki hükmü (M1/M2) kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `ad66689` (4 dosya, **+293/−2**) → run `43769333157`
+**10/10 YEŞİL** (`dim-storage` **667** iki OS'ta birebir: macos-15 **352,99 s** /
+ubuntu-latest **364,78 s**; `arayüz` 66 dosya / **1434** test, paket
+`index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB — **değişmedi**; `masaüstü kabuk`
+clippy+test, `windows güvenli depo` 28, `workers`, `sözleşmeler`, `SBOM`,
+`kaynak arşivi`, `sürüm paketi manifesti`). `HEAD == origin/main` = `ad66689`.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v40
+öncesi çapraz hedefler **silinmez**, sayılır (temizlik ürün kararı). (b) Hedefin
+**türü** ile `item_kind` karşılaştırılmaz (şemada tür bilgisi tek sütunda değil):
+kapı kimliğin **dosyasını** korur, „bu öğe bu tür kayda dönüştü“ iddiasını
+kanıtlamaz. (c) Var olmayan/silinmiş hedef bilinçli serbesttir; uydurulmuş
+kimlikli satır geçer. (d) `review_items.superseded_by_item_id` (aynı tabloya
+referans) bu dilimin dışında. (e) Tetikleyicileri anahtarı olan saldırgan
+düşürebilir (uygulama hatasına karşı). (f) Arayüz bu turda değişmedi; Tauri
+komutları komut olarak koşulmadı — gerçek pencere + görsel QA **insan bekliyor**.
