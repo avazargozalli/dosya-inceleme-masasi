@@ -391,9 +391,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0041_review_supersede_scope_guard",
         sql: include_str!("migrations/0041_review_supersede_scope_guard.sql"),
     },
+    Migration {
+        version: 42,
+        name: "0042_checklist_link_scope_guard",
+        sql: include_str!("migrations/0042_checklist_link_scope_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 41;
+pub const CURRENT_SCHEMA_VERSION: u32 = 42;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -578,6 +583,7 @@ impl Database {
                         "citationChecks": counts.citation_checks,
                         "exportItems": counts.export_items,
                         "transferConsents": counts.transfer_consents,
+                        "caseChecklistItems": counts.case_checklist_items,
                     }),
                 );
             }

@@ -66,6 +66,12 @@
 //!   yazılıyor ve envanter onu A'nın onaylanmış kapsamı diye sayıyordu; bozuk
 //!   JSON sessizce "0 belge" okunuyordu. Gönderim yolu çapraz kimliği zaten
 //!   atlar (bayt çıkmaz) — kusur yetki **kaydındaydı**.
+//! * **kontrol listesi kanıt bağları** (v42) — `case_checklist_items`
+//!   (`case_id` + `linked_document_ids`): "bulundu" iddiasının tek kanıtı kendi
+//!   dosyasının **silinmemiş** belgeleri olmalı; `present` en az bir bağ ister,
+//!   `open`/`missing`/`not_applicable` bağ kabul etmez. Ölçüldü (v41): doğrudan
+//!   SQL ile A'nın öğesine B'nin belgesi yazılıyor ve ekran çıplak UUID
+//!   gösteriyordu; bozuk JSON **tüm listeyi** okunamaz kılıyordu.
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -97,9 +103,12 @@ use crate::{Database, StorageError};
 /// `export_items` (dosyayı `exports`tan okur). Son gelen **aktarım onayının
 /// belge listesi**dir (v39): `transfer_consents` kapsam sütununu `case_scope`
 /// adıyla taşır; `selected_document_ids` dizisinin her elemanı kendi
-/// dosyasında silinmemiş bir belge olmalı.
+/// dosyasında silinmemiş bir belge olmalı. Son gelen **kontrol listesi kanıt
+/// bağları**dır (v42): `case_checklist_items` kendi `case_id`'sini taşır;
+/// `linked_document_ids` dizisinin her elemanı kendi dosyasında silinmemiş bir
+/// belge olmalı, durum ile liste çelişemez.
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 23] = [
+pub(crate) const GUARDED_TABLES: [&str; 24] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -130,6 +139,8 @@ pub(crate) const GUARDED_TABLES: [&str; 23] = [
     "export_items",
     // aktarım onayının belge listesi (v39)
     "transfer_consents",
+    // kontrol listesi kanıt bağları (v42)
+    "case_checklist_items",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -170,6 +181,11 @@ pub struct ScopeViolationCounts {
     /// bulunan kimlik, boş liste, bozuk JSON. Sonradan silinmiş belge kimliği
     /// denetim izidir — aykırı sayılmaz (0038 ile aynı gevşeklik).
     pub transfer_consents: i64,
+    /// Kontrol listesi öğesi, kanıt olarak kendi dosyasında **bulunmayan**
+    /// bir belgeyi gösteren (ya da bağ listesi bozuk/sınırı aşan/`present` ile
+    /// boş/`present` dışında dolu) satır sayısı (v42). Sonradan silinmiş belge
+    /// kimliği denetim izidir — aykırı sayılmaz (v39 ile aynı gevşeklik).
+    pub case_checklist_items: i64,
 }
 
 impl ScopeViolationCounts {
@@ -199,6 +215,7 @@ impl ScopeViolationCounts {
             + self.citation_checks
             + self.export_items
             + self.transfer_consents
+            + self.case_checklist_items
     }
 }
 
@@ -486,6 +503,33 @@ impl Database {
                               OR EXISTS (SELECT 1 FROM documents d
                                           WHERE d.id = j.value
                                             AND d.case_id <> c.case_scope))",
+            )?,
+            // v42 — kontrol listesi kanıt bağları. Sayılan: bozuk/array
+            // olmayan JSON, 50'yi aşan liste, `present` + boş liste, `present`
+            // dışında dolu liste, ve **başka dosyada var olan** belge kimliği.
+            // Sonradan silinmiş belge kimliği denetim izidir — aykırı sayılmaz
+            // (v39 ile aynı gevşeklik).
+            case_checklist_items: count(
+                "SELECT count(*) FROM case_checklist_items c
+                  WHERE CASE WHEN json_valid(c.linked_document_ids)
+                             THEN json_type(c.linked_document_ids) ELSE 'invalid' END <> 'array'
+                     OR (CASE WHEN json_valid(c.linked_document_ids)
+                                   AND json_type(c.linked_document_ids) = 'array'
+                              THEN json_array_length(c.linked_document_ids) ELSE -1 END) > 50
+                     OR (c.state = 'present' AND (CASE WHEN json_valid(c.linked_document_ids)
+                                                            AND json_type(c.linked_document_ids) = 'array'
+                                                       THEN json_array_length(c.linked_document_ids) ELSE -1 END) < 1)
+                     OR (c.state <> 'present' AND (CASE WHEN json_valid(c.linked_document_ids)
+                                                            AND json_type(c.linked_document_ids) = 'array'
+                                                       THEN json_array_length(c.linked_document_ids) ELSE -1 END) <> 0)
+                     OR EXISTS (
+                          SELECT 1 FROM json_each(
+                                 CASE WHEN json_valid(c.linked_document_ids)
+                                      THEN c.linked_document_ids ELSE '[]' END) j
+                           WHERE j.type <> 'text'
+                              OR EXISTS (SELECT 1 FROM documents d
+                                          WHERE d.id = j.value
+                                            AND d.case_id <> c.case_id))",
             )?,
         })
     }
@@ -1782,6 +1826,164 @@ mod tests {
         assert_eq!(count(&db, "review_items"), 4, "satırlar silinmez");
     }
 
+    /// v42: **kontrol listesi kanıt bağı** kendi dosyasının silinmemiş
+    /// belgesini gösterir; durum ile liste çelişemez.
+    ///
+    /// Ölçülen kusur (v41): doğrudan SQL ile A'nın öğesine **B dosyasının**
+    /// belgesi yazılıyor, A'nın listesi onu gösteriyor (belge adı çözülemiyor —
+    /// ekranda çıplak UUID), "Bulundu" boş bağ listesiyle yazılabiliyor, bozuk
+    /// JSON **tüm listeyi** okunamaz kılıyordu. Kapı çekirdeğin
+    /// `set_case_checklist_state` kuralının aynısıdır.
+    #[test]
+    fn a_checklist_link_must_name_a_document_of_its_own_case() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute(
+                "INSERT INTO case_checklist_items
+                   (id,case_id,item_text,state,linked_document_ids,note,created_at,updated_at)
+                 VALUES ('ci1','c1','Kira sözleşmesi dosyada mı?','open','[]','',?,?)",
+                rusqlite::params!["2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
+            )
+            .expect("açık madde meşru");
+        let fifty_one = format!("[{}]", vec!["\"d1\""; 51].join(","));
+        let insert = |id: &str, state: &str, ids: &str| {
+            db.conn().execute(
+                "INSERT INTO case_checklist_items
+                   (id,case_id,item_text,state,linked_document_ids,note,created_at,updated_at)
+                 VALUES (?1,'c1','yeni madde',?2,?3,'',?4,?4)",
+                rusqlite::params![id, state, ids, "2026-01-01T00:00:00Z"],
+            )
+        };
+        // INSERT yolu da aynı kapıdan geçer.
+        scope_error(
+            insert("ci-x", "present", r#"["d9"]"#),
+            "case_checklist_items",
+        );
+        scope_error(insert("ci-empty", "present", "[]"), "case_checklist_items");
+        scope_error(
+            insert("ci-bad", "present", "bozuk-json"),
+            "case_checklist_items",
+        );
+        scope_error(
+            insert("ci-long", "present", &fifty_one),
+            "case_checklist_items",
+        );
+        insert("ci-ok", "present", r#"["d1"]"#).expect("kendi belgesi meşru (INSERT)");
+        let set = |state: &str, ids: &str, note: &str| {
+            db.conn().execute(
+                "UPDATE case_checklist_items SET state=?1, linked_document_ids=?2, note=?3 WHERE id='ci1'",
+                rusqlite::params![state, ids, note],
+            )
+        };
+        // Kendi dosyasının belgeleri meşru.
+        set("present", r#"["d1"]"#, "").expect("kendi belgesi meşru");
+        set("present", r#"["d1","d2"]"#, "").expect("iki belge meşru");
+        set("missing", "[]", "incelenen kapsamda yok").expect("bulunamadı + gerekçe meşru");
+        set("not_applicable", "[]", "bu dosyada uygulanamaz").expect("uygulanamaz meşru");
+        set("open", "[]", "").expect("açık meşru");
+        // B dosyasının belgesi A'nın maddesine yazılamaz (ters yön de kapalı).
+        scope_error(set("present", r#"["d9"]"#, ""), "case_checklist_items");
+        scope_error(set("present", r#"["d1","d9"]"#, ""), "case_checklist_items");
+        // Durum ile liste çelişemez.
+        scope_error(set("present", "[]", ""), "case_checklist_items");
+        scope_error(
+            set("missing", r#"["d1"]"#, "gerekçe"),
+            "case_checklist_items",
+        );
+        scope_error(set("open", r#"["d1"]"#, ""), "case_checklist_items");
+        // Bozuk / dizi olmayan / sınırı aşan / var olmayan kimlik yazılamaz.
+        scope_error(set("present", "bozuk-json", ""), "case_checklist_items");
+        scope_error(
+            set("present", r#"{"belge":"d1"}"#, ""),
+            "case_checklist_items",
+        );
+        scope_error(set("present", &fifty_one, ""), "case_checklist_items");
+        scope_error(
+            set("present", r#"["olmayan-belge"]"#, ""),
+            "case_checklist_items",
+        );
+        // Silinmiş belge yeni bağ olarak yazılamaz.
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at='2026-02-01T00:00:00Z' WHERE id='d2'",
+                [],
+            )
+            .expect("sil");
+        scope_error(set("present", r#"["d2"]"#, ""), "case_checklist_items");
+        // Dosya taşıma bağı yabancılaştırır.
+        set("present", r#"["d1"]"#, "").expect("kendi belgesi");
+        scope_error(
+            db.conn().execute(
+                "UPDATE case_checklist_items SET case_id='c2' WHERE id='ci1'",
+                [],
+            ),
+            "case_checklist_items",
+        );
+        // Bağ/sütun dışı güncelleme (not, row_version) kapıya takılmaz — v35 dersi.
+        db.conn()
+            .execute(
+                "UPDATE case_checklist_items SET note='not güncellendi', row_version=row_version+1 WHERE id='ci1'",
+                [],
+            )
+            .expect("not güncellemesi kapıya takılmamalı");
+        assert_eq!(count(&db, "case_checklist_items"), 2, "ci1 + meşru INSERT");
+    }
+
+    /// v42 taraması: kapıdan önce yazılmış çapraz/bozuk/çelişkili kontrol
+    /// listesi satırları **sayılır** (silinmez); sonradan silinmiş belgeyi
+    /// gösteren satır aykırı **değildir** (bağ kurulduktan sonra belge
+    /// silinebilir — denetim izi).
+    #[test]
+    fn the_scan_counts_checklist_links_written_before_the_guard_existed() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        assert_eq!(
+            db.scope_violations().expect("tarama").case_checklist_items,
+            0,
+            "temiz kasa"
+        );
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_case_checklist_items_bi;
+                 DROP TRIGGER scope_guard_case_checklist_items_bu;
+                 INSERT INTO case_checklist_items
+                   (id,case_id,item_text,state,linked_document_ids,note,created_at,updated_at)
+                 VALUES
+                   ('old-x','c1','çapraz','present','[\"d9\"]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-empty','c1','kanıtsız','present','[]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-open','c1','açık ama bağlı','open','[\"d1\"]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-miss','c1','bulunamadı ama bağlı','missing','[\"d1\"]','gerekçe','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-bad','c1','bozuk','present','[oops','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-num','c1','sayı eleman','present','[\"d1\",5]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-long','c1','uzun liste','present','[\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\",\"d1\"]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                   ('old-ok','c1','meşru','present','[\"d1\"]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+                   )
+                   .expect("eski satırlar");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(
+            counts.case_checklist_items, 7,
+            "çapraz + kanıtsız + iki çelişki + bozuk + sayı eleman + uzun liste"
+        );
+        assert_eq!(counts.total(), 7);
+        // Bağ kurulduktan sonra belge silinirse kimliği aykırı sayılmaz.
+        db.conn()
+            .execute(
+                "UPDATE documents SET deleted_at='2026-02-01T00:00:00Z' WHERE id='d1'",
+                [],
+            )
+            .expect("sil");
+        assert_eq!(
+            db.scope_violations().expect("tarama").case_checklist_items,
+            7,
+            "silinmiş belge aykırı değil"
+        );
+        // Satırlar silinmez, yalnız sayılır.
+        assert_eq!(count(&db, "case_checklist_items"), 8);
+    }
+
     /// v33 taraması: bu şema sürümünden önce yazılmış çapraz JSON dizileri
     /// **sayılır** (silinmez); bozuk JSON da "doğrulanamıyor" diye sayılır.
     #[test]
@@ -2038,10 +2240,18 @@ mod tests {
             "export_id",
             // aktarım onayının belge listesi (v39)
             "selected_document_ids",
+            // kontrol listesi kanıt bağları (v42)
+            "linked_document_ids",
         ];
         // JSON dizi referansı taşıyan tablolar: kapı `json_each` ile dizinin
         // **her** elemanını denetlemeli.
-        let json_anchor_tables = ["notes", "note_revisions", "review_items", "note_drafts"];
+        let json_anchor_tables = [
+            "notes",
+            "note_revisions",
+            "review_items",
+            "note_drafts",
+            "case_checklist_items",
+        ];
         let mut stmt = db
             .conn()
             .prepare(
@@ -2081,6 +2291,10 @@ mod tests {
                 // (v39): belge listesi (`selected_document_ids`) kendi
                 // dosyasının belgelerini göstermeli.
                 || (has("case_scope") && has("selected_document_ids"))
+                // Kendi `case_id`'sini taşıyan **kontrol listesi kanıt
+                // bağları** (v42): `linked_document_ids` kendi dosyasının
+                // silinmemiş belgelerini göstermeli.
+                || (has("case_id") && has("linked_document_ids"))
                 || columns.iter().any(|c| c.ends_with("_anchor_ids"))
             {
                 derived.push(table);

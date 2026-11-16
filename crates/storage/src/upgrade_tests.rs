@@ -966,6 +966,85 @@ fn upgrade_reports_cross_case_and_half_written_supersede_pointers() {
     );
 }
 
+/// v42 — kapıdan **önce** yazılmış çapraz/kanıtsız/bozuk kontrol listesi
+/// bağlarını güncellemede sayılır (silinmez), denetime düşer ve yeni yazma
+/// kapıda durur.
+#[test]
+fn upgrade_reports_cross_case_checklist_links() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 41);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','A sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d9','c2','B tutanagi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO case_checklist_items
+               (id,case_id,item_text,state,linked_document_ids,note,created_at,updated_at)
+             VALUES ('old-x','c1','capraz','present','[\"d9\"]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('old-empty','c1','kanitsiz','present','[]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('old-bad','c1','bozuk','present','[oops','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('old-ok','c1','mesru','present','[\"d1\"]','','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .expect("v41 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let counts = db.scope_violations().expect("tarama");
+    assert_eq!(
+        counts.case_checklist_items, 3,
+        "çapraz + kanıtsız + bozuk sayılır"
+    );
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["caseChecklistItems"], 3);
+    // Yeni çapraz bağ kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE case_checklist_items SET linked_document_ids='[\"d9\"]' WHERE id='old-ok'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => {
+            assert_eq!(table, "case_checklist_items")
+        }
+        other => panic!("v42 kapısı çapraz bağı reddetmeli: {other:?}"),
+    }
+    // Eski aykırı satırın **notu** güncellenebilir kalır: kapı yalnız kapsam
+    // sütunlarına dokunan yazmada koşar; eski satır silinmez, sayılır.
+    db.conn()
+        .execute(
+            "UPDATE case_checklist_items SET note='eski satır' WHERE id='old-x'",
+            [],
+        )
+        .expect("eski satırın notu güncellenebilmeli");
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT count(*) FROM case_checklist_items", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .expect("sayım"),
+        4,
+        "satırlar silinmez"
+    );
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
