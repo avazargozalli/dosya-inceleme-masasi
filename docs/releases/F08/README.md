@@ -29,6 +29,7 @@
 | F08-T04p | ✅ | **çalıştırmanın yasal dayanağı kendi dosyasında olmalı** (şema **v43**): `ai_runs` üzerinde **2 tetikleyici** — `consent_id` doluysa gösterdiği onayın `case_scope`u çalıştırmanın `case_id`si olmalı; çalıştırmanın `case_id`/`consent_id`si kurulduktan sonra **değişmez**; ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına **B'nin onayı** yazılıyor, çalıştırma başka dosyaya taşınıyor (mevcut gönderim sicili çaprazlaşıyor) ve `scope_violations()` `ai_runs`ı hiç saymıyordu (25. tablo); 9/9 mutasyon (2026-11-16) |
 | F08-T04q | ✅ | **emsal sürümünün çakışma işareti kanıtlanabilir olmalı** (şema **v44**): `precedent_versions` üzerinde **2 tetikleyici** — `identity_conflict` 0/1, rozet⇔işaret birlikte, hedef kendisi olamaz, var olan hedef aynı emsalde ve **farklı** `body_hash`te olmalı, ters yön dahil; `id`/`precedent_id`/`body_hash`/bayrak/işaret **değişmez**; ölçülen kusur: doğrudan SQL ile A emsalinin sürümü **B emsalinin sürümüyle** çakıştığını iddia ediyor, "aynı künye, farklı metin" rozeti **aynı** hash ile yazılıyor ve işaret UPDATE ile çevrilebiliyordu; tablo `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
 | F08-T04r | ✅ | **gönderim sicilinin ve onayın dönüşüm bağı kanıtlanabilir olmalı** (şema **v45**): `transfer_segments` + `transfer_consents` üzerinde **4 tetikleyici** — dolu `transform_manifest_id`/`outbound_transform_id` **var olan** ve `kind='mask_terms'` dönüşümü göstermeli; sicil satırının bağı çalıştırmanın onayıyla **aynı** olmalı (0 terimli onayda `NULL`); sicilin `id`/`ai_run_id`/`transform_manifest_id` ve onayın maske bağı **değişmez**; ölçülen kusur: doğrudan SQL ile onaylanan A maskesi yerine B yazılıyor, uydurma/`identity`/NULL bağ kabul ediliyor ve onayın bağının UPDATE ile çevrilmesi maske kapısını atlatıyordu; tablolar `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
+| F08-T04s | ✅ | **atıf kontrolü sicili kendi hükmünü kanıtlamalı** (şema **v46**): `citation_checks` üzerinde **3 tetikleyici** + 0037'nin kapsam tetikleyicisi **genişletildi** — alıntı boşluk olamaz, dolu emsal bağı **var olan** emsali gösterir, `reason_codes` metin dizisi, satır **incelenmemiş doğar**; `id`/alıntı/emsal/`identity_match`/`quote_match`/`reason_codes`/`created_at` **değişmez**; anlam hükmü kapalı küme + gerekçe + damga tutarlı (gerekçesiz `misleading`, damgasız `accurate` yazılamaz); `case_id` ve sürüm de dondu (aynı dosyada sürüm taşıması durur); ölçülen kusur: 22 kusur yazımının **21'i** kabul ediliyor, `quote_match` UPDATE ile çevriliyor, bağlam paneli başka emsalin metnini okuyordu; `scope_violations()` beş sınıfı **şimdi sayar** (`GUARDED_TABLES` 25 kalır); **22/22 mutasyon** (2026-11-16) |
 
 ## Doğrulama
 
@@ -2181,3 +2182,137 @@ dışında: UPDATE ile değiştirilebilir kalır (sıradaki aday). (e) Maskenin
 (SQLite'ta SHA-256 yok; çekirdek doğru yazar). (f) Tetikleyicileri anahtarı olan
 saldırgan düşürebilir (uygulama hatasına karşı). (g) Arayüz değişmedi; ekran zaten
 türü/terim sayısını gösteriyor — gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04s — atıf kontrolü sicili kendi hükmünü kanıtlamalı (şema v46, 2026-11-16)
+
+**Neden.** `citation_checks` bir avukatın «bu alıntı şu emsalle eşleşiyor» iddiasıdır ve
+üç olguyu birlikte taşır: **konu** (hangi belge sürümü, hangi alıntı metni, hangi aday
+emsal), **hüküm** (`identity_match`/`quote_match`) ve **anlam incelemesi**
+(`meaning_review`/`meaning_note`/`meaning_reviewed_at`; 0015: «boş bırakmak incelenmedi
+demektir»). Arayüz rozetleri (`Precedents.tsx`: `badgeIdentity`, `badgeQuote`,
+`badgeMeaning`) doğrudan bu sütunları basar; bağlam paneli (`citation_context`) alıntıyı
+**bağlı emsalin** tam metninde arar. 0037 yalnız **kapsamı** kapıladı (satır kendi
+dosyasının sürümünü gösterir); konu, hüküm ve anlam incelemesi hiçbir tetikleyici
+taşımıyordu. v45'in kapanış notunda bu sütun «emsal eşleştirme sicili» diye sıradaki
+aday olarak yazılmıştı.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v45; sonda
+`~/.hermes/cache/scratch/dim-v46-probe/measure_v46.py`, log `measure_before.log`):**
+22 kusur yazımının **21'i KABUL** edildi (tek RED: **var olan** çapraz sürüme taşıma —
+0037'nin kapsam kapısı):
+(1) **var olmayan** emsal kimliği yazıldı (bağlam paneli çözülemez hâle gelir);
+(2) yalnız boşluktan oluşan alıntı; (3) bozuk `reason_codes` JSON'u (okuyucu sessizce
+boş liste yapar); (4) `reason_codes` dizi değil (nesne); (5) yeni kontrol «incelendi»
+damgasıyla doğdu — `meaning_reviewed_at` yok; (6) anlam hükmü kapalı kümede değil
+(`'yanlis'`; rozet ham belirteci basar); (7) `identity_match` UPDATE ile
+`match`→`mismatch` çevrildi; (8) `quote_match` UPDATE ile çevrildi; (9) alıntı metni
+değiştirildi, hüküm sabit kaldı; (10) emsal bağı p1→p2 çevrildi — **hüküm p1'in ölçümü,
+bağlam p2'nin metni**; (11) emsal bağı `NULL`'a çekildi; (12) var olmayan emsal bağı
+yazıldı; (13) satır **aynı dosyada başka sürüme** taşındı — `list_citation_checks('c1','v2')`
+kontrolü **başka belgenin** listesinde gösterdi; (14) `reason_codes` değiştirildi;
+(15) `id` değiştirildi; (16) `created_at` değiştirildi; (17) `'misleading'` damgası
+**gerekçesiz** yazıldı (çekirdek istiyor, SQL yolu istemiyordu); (18) `'accurate'`
+damgası `meaning_reviewed_at` NULL iken yazıldı; (19) anlam hükmü kapalı küme dışına
+taşındı; (20) `'not_reviewed'` + gerekçe dolu (hükmü olmayan gerekçe); (21) sürümü
+**var olmayan** satırda `case_id` başka dosyaya taşındı (0037 kapısı yalnız «var olan
+çapraz sürüm»ü reddediyordu). v45 taraması bu 8 satırın **hiçbirini** saymıyordu
+(`citation_checks` = 0).
+
+**Yazılan (şema v46, `0046_citation_check_verdict_guard.sql`, 3 tetikleyici +
+0037'nin kapsam tetikleyicisinin genişletilmesi).**
+`citation_check_subject_guard_bi` — alıntı boşluk değil; dolu `candidate_precedent_id`
+**var olan** bir emsali gösterir (emsaller hiçbir yoldan silinmez → «var olmayan emsal»
+denetim izi değil **kanıtlanabilir yalan**, v45 ile aynı fail-closed karar);
+`reason_codes` **metin dizisi**; `meaning_review='not_reviewed'` + boş gerekçe + damgasız
+(yeni kontrol **doğuştan incelenmiş olamaz**; inceleme ayrı avukat eylemidir).
+`citation_check_subject_guard_bu` — `id`, `extracted_citation`, `candidate_precedent_id`,
+`identity_match`, `quote_match`, `reason_codes`, `created_at` **değişmez** (satır hangi
+alıntıyı hangi emsalle ölçtüyse öyle kalır; yeniden ölçüm **yeni satır** ister).
+`citation_check_meaning_guard_bu` — anlam incelemesi kendi içinde tutarlı: kapalı küme
+(`not_reviewed|accurate|misleading|off_context`), `not_reviewed` ⇒ boş gerekçe + damgasız,
+incelenmiş ⇒ **damgalı**, `misleading`/`off_context` ⇒ **gerekçeli** (çekirdeğin kuralı
+şemada). `scope_guard_citation_checks_bu` (0037) **DROP+CREATE** ile genişletildi:
+`case_id` ve `input_document_version_id` **değişmez** — aynı dosyada sürüm taşıması ve
+sürümü silinmiş satırın dosya taşıması da durur. Ret öneki **değişmedi**
+(`DIM_SCOPE:citation_checks`): aynı sütun kümesini iki tetikleyici paylaşırsa hangisinin
+koştuğu belirsiz kalırdı ve v37'nin mevcut kapı testleri kırılırdı. Yeni üç tetikleyici
+`DIM_INTEGRITY:citation_checks` → `StorageError::Integrity` → **`E_DB_INTEGRITY`**.
+
+**Çekirdek değişikliği (türetilmiş alan kaldırıldı).** `NewCitationCheck.meaning_review`
+alandan **çıkarıldı** (F09-T09c deseni): yeni kontrol `not_reviewed` doğar, çağıran
+«incelendi» damgası oluşturamaz — tip sistemi kararı atlamayı imkânsız kılar. Arayüzdeki
+kopya da silindi (`api.ts` tipi + `Precedents.tsx` çağrısı): ikinci kaynak drift üretirdi.
+INSERT `meaning_review`i sabit yazar. Tauri komutu `NewCitationCheck`i serde ile
+çözümlediği için eski istemcinin fazladan alanı **yok sayılır** (geriye uyumlu).
+
+**Tarama.** `scope_violations().citation_checks` alanı genişletildi: kapsam kuralının
+yanında **beş sınıf** sayılır — bağı çözülemeyen emsal kimliği, kapalı küme dışı anlam
+hükmü, gerekçesiz `misleading`/`off_context`, damgasız inceleme, incelenmemiş satırda
+gerekçe/damga. Yeni tablo yok → `GUARDED_TABLES` **25 kalır** (türetim testi değişmedi).
+**Dürüst sınır:** aynı dosya içinde **sürüm taşıması** taramadan görünmez (satırda
+«hangi sürüme yazıldığı» bilgisi tek sütundur).
+
+**Testler.** `precedents::tests` **+4**:
+
+- `a_citation_check_cannot_be_written_without_a_provable_subject` — meşru satır yazılır;
+  var olmayan emsal, boşluk alıntı, bozuk/nesne/sayı `reason_codes`, «doğuştan
+  incelenmiş» (damgalı **ve** damgasız), kapalı küme dışı hüküm, incelenmemiş satırda
+  gerekçe ve damga reddedilir; tabloda **yalnız** meşru satır kalır.
+- `a_citation_checks_subject_and_verdict_are_immutable` — sekiz sütunun her biri tek tek
+  UPDATE edilir (id, alıntı, emsal bağı + `NULL`, `identity_match`, `quote_match`,
+  `reason_codes`, `created_at`) → hepsi `E_DB_INTEGRITY`; **aynı değeri** yeniden yazmak
+  serbest; avukatın anlam incelemesi çalışır.
+- `a_citation_meaning_cannot_claim_what_the_row_does_not_support` — damgasız inceleme,
+  gerekçesiz/boşluk gerekçeli `misleading`/`off_context`, kapalı küme dışı değer,
+  incelenmemiş satırda gerekçe/damga reddedilir; gerekçeli `misleading` ve gerekçesiz
+  `accurate` meşru.
+- `the_scan_counts_citation_checks_whose_verdict_cannot_be_trusted` — beş sınıfın her
+  biri için bir satır (kapılar düşürülüp v46 öncesi biçimde yazılır, sonra geri kurulur)
+  → tarama **5** der, satırlar **silinmez** (6 kalır).
+
+`scope_guard::tests::a_citation_check_cannot_reference_another_cases_version` genişletildi:
+aynı dosyada ikinci sürüme taşıma ve sürümü silinmiş satırın dosya taşıması artık
+`E_DB_SCOPE`. **Dürüst (test düzeltmesi):** bu test eskiden
+`SET meaning_review='accurate'` ile **damgasız** «incelendi» yazıyordu — yeni kural onu
+reddettiği için damga eklendi; testin kusuru sabitlediği raporda yazılı. `upgrade_tests`
+**+1** (`upgrade_keeps_citation_checks_written_before_the_verdict_gate`): v45 kasasındaki
+iki tutarsız satır **silinmez**, tarama **2** der, yeni uydurma yazma kapıda durur, eski
+hüküm UPDATE ile **onarılamaz**, gerekçeli anlam incelemesi çalışır. Toplam:
+`dim-storage --lib` **682 → 687** (yerel **687/687 yeşil, 439,71 s**). Arayüz:
+`tsc --noEmit` temiz, `Precedents.test.tsx` **56/56** (payload beklentisinden
+`meaningReview` düştü).
+
+**Kapı kanıtı.** **22/22 KIRMIZI**, taban iki uçta yeşilken (`K0` 12/12, `K1` 12/12;
+`~/.hermes/cache/scratch/dim-v46-probe/gates_v46.py`, log `gates_v46.log`;
+`try/finally` + `os.utime` + sha256 geri yazım birebir —
+`0046…sql e7e93e15ccff89ec…`, `scope_guard.rs cff49d375a2e3628…`): M1 BI boşluk alıntı ·
+M2 BI var olmayan emsal · M3 BI `reason_codes` geçerlilik · M4 BI `reason_codes` dizi ·
+M5 BI «doğuştan incelenmiş» · M6 BI doğuşta gerekçe/damga · M7 BU alıntı metni ·
+M8 BU emsal bağı · M9 BU kimlik/hüküm sütunları · M10 BU satır kimliği ·
+M11 BU `reason_codes`/`created_at` · M12 BU kapalı küme · M13 BU gerekçesiz yanıltıcı ·
+M14 BU damgasız inceleme · M15 BU incelenmemiş satırda gerekçe/damga · M16 BU `case_id` ·
+M17 BU sürüm · M18–M22 tarama koşulları (emsal bağı, kapalı küme, incelenmemiş
+gerekçe/damga, damgasız inceleme, gerekçesiz yanıltıcı). **Dürüst (kendi hatam):**
+ilk koşuda **21/22** kaldı — **M5 YEŞİL** çünkü testteki `'accurate'` satırı **damgalı**
+yazılıyordu ve damga koşulu (M6) aynı satırı yakalıyordu; damgasız ikinci satır
+(`cc-early-bare`) eklendi, **22/22** yeniden ölçüldü, ilk koşunun 21 hükmü kanıt
+sayılmadı.
+
+**CI (ölçüldü).** Kod `658a2f6` (8 dosya, **+712/−26**) → run `43925089905` **10/10 YEŞİL**
+(`dim-storage` **687** iki OS'ta birebir: ubuntu-latest **378,63 s** / macos-15 **447,13 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` **694,50 kB** / gzip 185,32 kB —
+`meaningReview` alanının payload'dan kalkmasıyla paket **değişti**; `masaüstü kabuk` 51/0/5 +
+gerçek worker 5/0/0, `windows güvenli depo` 28, `workers`, `sözleşmeler`, `SBOM`,
+`kaynak arşivi`, `sürüm paketi manifesti`).
+
+**Dürüst sınırlar.** (a) `precedents` satırları hiçbir yoldan silinmez (silme komutu yok;
+`ON DELETE CASCADE` yalnız sürüm/not için) → «var olmayan emsal» fail-closed kapıya
+takıldı; **var olmayan sürüm** kimliği 0037'de olduğu gibi serbesttir (belge sonradan
+silinebilir; kapı onu ölçemez). (b) Hükmün **doğruluğu** yeniden hesaplanmaz: kapı «hüküm
+sonradan değişmedi» der, «hüküm doğru» demez (alıntı yeniden taranmaz). (c) SQLite
+`trim()` yalnız verilen ASCII karakterleri kırpar; yalnız U+00A0 gibi boşluklardan oluşan
+alıntı bu kapıdan geçer (çekirdek `str::trim` ile reddeder — asıl yol kapalı, doğrudan
+SQL artığı kalır). (d) v46 öncesi tutarsız satırlar **silinmez** ve immutability onarımı
+engeller; tarama onları **sayar** — temizlik ürün kararı. (e) Tetikleyicileri anahtarı
+olan saldırgan düşürebilir (uygulama hatasına karşı). (f) Arayüz **davranışı** değişmedi
+(rozetler aynı sütunları basar); gerçek pencere + görsel QA **insan bekliyor**.
