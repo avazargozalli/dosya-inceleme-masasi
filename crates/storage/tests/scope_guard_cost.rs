@@ -289,7 +289,7 @@ fn insert_transfer_segments(db: &Database, from: i64) -> f64 {
         let mut stmt = tx
             .prepare(
                 "INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES (?1,'run1',?1,'v1','itiraz','hash')",
+                 VALUES (?1,'run1',?1,'v1','itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
             )
             .expect("hazırlık");
         for index in from..from + REMAIN_ROWS {

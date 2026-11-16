@@ -5244,7 +5244,7 @@ mod tests {
                        (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
                         outbound_hash,transform_manifest_id,source_range_map,
                         document_version_id,source_char_count)
-                     VALUES (?1,?2,?3,?3,'[MASKED]','hash',?4,'[]',NULL,37)",
+                     VALUES (?1,?2,?3,?3,'[MASKED]','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',?4,'[]',NULL,37)",
                     rusqlite::params![id, run.id, format!("seg-{id}"), transform],
                 )
                 .map_err(StorageError::from)
@@ -5309,7 +5309,7 @@ mod tests {
                        (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
                         outbound_hash,transform_manifest_id,source_range_map,
                         document_version_id,source_char_count)
-                     VALUES (?1,'run-serbest',?2,?2,'metin','hash',?3,'[]',NULL,5)",
+                     VALUES (?1,'run-serbest',?2,?2,'metin','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',?3,'[]',NULL,5)",
                     rusqlite::params![id, format!("seg-{id}"), transform],
                 )
                 .map_err(StorageError::from)
@@ -5375,7 +5375,7 @@ mod tests {
                    (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
                     outbound_hash,transform_manifest_id,source_range_map,
                     document_version_id,source_char_count)
-                 VALUES ('sg-plain',?2,'s-plain','s-plain','metin','hash',?1,'[]',NULL,5)",
+                 VALUES ('sg-plain',?2,'s-plain','s-plain','metin','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',?1,'[]',NULL,5)",
                 rusqlite::params![legit_transform, plain_run.id],
             )
             .map_err(StorageError::from)
@@ -5402,6 +5402,202 @@ mod tests {
         assert_eq!(rows.len(), 1, "reddedilen satırlar iz bırakmamalı");
         assert_eq!(rows[0].transform_kind, "mask_terms");
         assert_eq!(rows[0].mask_term_count, 1);
+    }
+
+    /// v47: gönderim sicilinin **metni ve özeti** kanıtlanabilir olmalı. v45
+    /// yalnız dönüşüm bağını dondurmuştu; v46'da satırın metni/hash'i, özgün
+    /// aralık haritası ve özne sütunları UPDATE'e açıktı (ölçüm: 12 kusur
+    /// yazımı kabul). Doğrudan SQL «modelin gördüğü metin» iddiasını sonradan
+    /// değiştirebiliyordu: `sent_segments` alıntıyı sahte metinde arıyor,
+    /// `list_transfer_segments` sahte metni/hash'i ekrana basıyordu. Ayrıca
+    /// boş/yalnız-boşluk metin ve **hash olmayan** `outbound_hash` yazılabiliyordu.
+    #[test]
+    fn transfer_segment_content_is_frozen_and_well_formed() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz sözleşmeyi imzaladı"],
+        );
+        let consent = consent_with_mask(&db, &case_id, &document_id, &["Ahmet Yılmaz"]);
+        let run = db
+            .start_ai_run(&case_id, &run_with_mask(&consent.id, &["Ahmet Yılmaz"]))
+            .expect("çalıştır");
+        let scope = db
+            .consent_scope_segments(&case_id, &consent.id)
+            .expect("kapsam");
+        let first = &scope.segments[0];
+        let record = db
+            .record_outbound_segments(
+                &run.id,
+                &[OutboundSegmentRef {
+                    segment_id: first.segment_id.clone(),
+                    document_version_id: first.document_version_id.clone(),
+                }],
+                Some(&OutboundMask {
+                    terms: vec!["Ahmet Yılmaz".into()],
+                }),
+            )
+            .expect("meşru sicil");
+        let transform = record.transform_id.clone().expect("maske");
+        let row_id: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM transfer_segments WHERE ai_run_id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .expect("satır");
+        // İkinci çalıştırma (onaysız): `ai_run_id` taşıması ve uydurma dönüşüm
+        // kimliği bu satırda **yalnız** kendi kuralıyla karşılaşsın diye.
+        db.conn()
+            .execute(
+                "INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                    output_schema_version,consent_id,status,usage_report,created_at)
+                 VALUES ('run-bare',?1,'summarize','m','h','p1','o1',NULL,'running','{}',
+                         '2026-01-01T00:00:00Z')",
+                [&case_id],
+            )
+            .expect("onaysız çalıştırma");
+        // (1) İçerik sütunları UPDATE ile değişemez: sicil «ne gönderildi»nin
+        // kaydıdır; yeniden ölçüm **yeni satır** ister.
+        let frozen = [
+            "UPDATE transfer_segments SET id='baska-satir' WHERE id=?1",
+            "UPDATE transfer_segments SET ai_run_id='run-bare' WHERE id=?1",
+            "UPDATE transfer_segments SET transform_manifest_id=NULL WHERE id=?1",
+            "UPDATE transfer_segments SET outbound_text='Ödeme yapılmadı' WHERE id=?1",
+            "UPDATE transfer_segments SET outbound_hash='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' WHERE id=?1",
+            "UPDATE transfer_segments SET source_range_map='[]' WHERE id=?1",
+            "UPDATE transfer_segments SET source_char_count=1 WHERE id=?1",
+        ];
+        for sql in frozen {
+            match db
+                .conn()
+                .execute(sql, [&row_id])
+                .map_err(StorageError::from)
+            {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("transfer_segments"), "{message}")
+                }
+                other => panic!("v47 içerik dondurmalı: {other:?} ({sql})"),
+            }
+        }
+        // (2) Özne sütunları 0038'in kapsam tetikleyicisinde **donar**
+        // (aynı sütunu iki tetikleyiciye koymamak için aynı kapı genişletildi).
+        for sql in [
+            "UPDATE transfer_segments SET outbound_segment_id='baska-segment' WHERE id=?1",
+            "UPDATE transfer_segments SET source_segment_id='baska-segment' WHERE id=?1",
+        ] {
+            match db
+                .conn()
+                .execute(sql, [&row_id])
+                .map_err(StorageError::from)
+            {
+                Err(StorageError::ScopeViolation { table }) => {
+                    assert_eq!(table, "transfer_segments")
+                }
+                other => panic!("v47 özneyi dondurmalı: {other:?} ({sql})"),
+            }
+        }
+        // (3) Satır **doğarken** iyi-biçimli olmalı; hiçbir kusur yazılmaz.
+        // `Option` bilerek: NULL metin/hash NOT NULL kısıtından **önce**
+        // tetikleyiciye düşer (SQLite BEFORE INSERT sırası) — kapı onları da
+        // kendi sınıfında reddetmeli.
+        let insert = |id: &str,
+                      text: Option<&str>,
+                      hash: Option<&str>,
+                      claimed: Option<&str>,
+                      chars: i64| {
+            db.conn()
+                .execute(
+                    "INSERT INTO transfer_segments
+                       (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                        outbound_hash,transform_manifest_id,source_range_map,
+                        document_version_id,source_char_count)
+                     VALUES (?1,?2,?3,?3,?4,?5,?6,'[]',NULL,?7)",
+                    rusqlite::params![id, run.id, format!("seg-{id}"), text, hash, claimed, chars],
+                )
+                .map_err(StorageError::from)
+        };
+        let hex = "b".repeat(64);
+        let bad = [
+            ("ts-null-text", None, Some(hex.as_str()), 5i64),
+            ("ts-null-hash", Some("metin"), None, 5),
+            ("ts-empty", Some(""), Some(hex.as_str()), 5),
+            ("ts-blank", Some("   "), Some(hex.as_str()), 5),
+            ("ts-short", Some("metin"), Some("hash"), 5),
+            (
+                "ts-upper",
+                Some("metin"),
+                Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"),
+                5,
+            ),
+            ("ts-63", Some("metin"), Some(&"b".repeat(63)), 5),
+            ("ts-zero", Some("metin"), Some(hex.as_str()), 0),
+        ];
+        for (id, text, hash, chars) in bad {
+            match insert(id, text, hash, Some(&transform), chars) {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("transfer_segments"), "{message}")
+                }
+                other => panic!("v47 bozuk satırı reddetmeli ({id}): {other:?}"),
+            }
+        }
+        // (3b) v45'in dönüşüm kuralları birleşik tetikleyicide **aynen** durur:
+        // uydurma kimlik ve onaylanan maskeden farklı **var olan** maske.
+        let other = consent_with_mask(&db, &case_id, &document_id, &["Mehmet Demir"]);
+        let other_transform = other.outbound_transform_id.clone().expect("bağlı");
+        // Uydurma kimlik, onayı **olmayan** çalıştırmada: eşitlik kuralı boşta
+        // kalır, yalnız «var olan + mask_terms» kuralı yakalar.
+        match db
+            .conn()
+            .execute(
+                "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                outbound_hash,transform_manifest_id,source_range_map,
+                document_version_id,source_char_count)
+             VALUES ('ts-fake-free','run-bare','seg-fake','seg-fake','metin',?1,
+                     'uydurma-transform','[]',NULL,5)",
+                [&"b".repeat(64)],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v47 uydurma dönüşüm kimliğini reddetmeli: {other:?}"),
+        }
+        match insert(
+            "ts-other-mask",
+            Some("metin"),
+            Some(&"b".repeat(64)),
+            Some(&other_transform),
+            5,
+        ) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v47 onaylanan maskeden farklı maskeyi reddetmeli: {other:?}"),
+        }
+        insert(
+            "ts-ok",
+            Some("metin"),
+            Some(&"c".repeat(64)),
+            Some(&transform),
+            5,
+        )
+        .expect("meşru satır");
+        db.conn()
+            .execute(
+                "UPDATE transfer_segments SET outbound_text=outbound_text,
+                     outbound_hash=outbound_hash WHERE id=?1",
+                [&row_id],
+            )
+            .expect("değişiklik yok");
+        let rows = db.list_transfer_segments(&run.id).expect("sicil");
+        assert_eq!(rows.len(), 2, "yalnız meşru satırlar");
     }
 
     /// v45: onayın maske bağı **yasal kayıttır** — sonradan başka maskeye

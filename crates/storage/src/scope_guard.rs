@@ -1404,7 +1404,7 @@ mod tests {
         let segment = |id: &str, version: Option<&str>| {
             db.conn().execute(
                 "INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES (?1,'run1',?1,?2,'itiraz','hash')",
+                 VALUES (?1,'run1',?1,?2,'itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
                 rusqlite::params![id, version],
             )
         };
@@ -1444,7 +1444,7 @@ mod tests {
             db.conn().execute(
                 "INSERT INTO transfer_segments
                    (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES (?1,'run1',?2,?2,?3,'itiraz','hash')",
+                 VALUES (?1,'run1',?2,?2,?3,'itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
                 rusqlite::params![id, segment, version],
             )
         };
@@ -1462,7 +1462,7 @@ mod tests {
             db.conn().execute(
                 "INSERT INTO transfer_segments
                    (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES ('t-split','run1','s9','s1','v1','gizli','hash')",
+                 VALUES ('t-split','run1','s9','s1','v1','gizli','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
                 [],
             ),
             "transfer_segments",
@@ -1501,7 +1501,7 @@ mod tests {
                  DROP TRIGGER scope_guard_transfer_segments_bu;
                  INSERT INTO transfer_segments
                    (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES ('old-t','run1','s9','s9','v1','gizli','hash');",
+                 VALUES ('old-t','run1','s9','s9','v1','gizli','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');",
             )
             .expect("eski yanlış segmentli satır");
         let counts = db.scope_violations().expect("tarama");
@@ -1512,7 +1512,7 @@ mod tests {
             .execute(
                 "INSERT INTO transfer_segments
                    (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES ('old-gone','run1','silinmis-segment','v1','metin','hash')",
+                 VALUES ('old-gone','run1','silinmis-segment','v1','metin','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
                 [],
             )
             .expect("segmenti silinmiş satır");
@@ -2271,7 +2271,7 @@ mod tests {
                  VALUES ('old-c','run1','v9','a9','[]','onaylanan belge',7),
                         ('old-gone','run1','silinmis-surum',NULL,'[]','onaylanan belge',7);
                  INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-                 VALUES ('old-t','run1','s9','v9','gizli','hash');
+                 VALUES ('old-t','run1','s9','v9','gizli','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
                  INSERT INTO source_marks
                    (id,case_id,document_version_id,parse_run_id,anchor_id,page_id,mark_kind,start_offset,end_offset,
                     quoted_text,rects_json,label,created_at)

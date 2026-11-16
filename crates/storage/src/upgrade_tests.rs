@@ -459,7 +459,7 @@ fn upgrade_reports_cross_case_output_and_context_links_left_by_the_previous_sche
         ),
         (
             "INSERT INTO transfer_segments (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-             VALUES ('t-new','run1','s2','v2','gizli','hash')",
+             VALUES ('t-new','run1','s2','v2','gizli','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
             "transfer_segments",
         ),
     ] {
@@ -719,7 +719,7 @@ fn upgrade_reports_transfer_segments_claiming_another_versions_segment() {
         .execute(
             "INSERT INTO transfer_segments
                (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-             VALUES ('new-ts','run1','s9','v1','gizli','hash')",
+             VALUES ('new-ts','run1','s9','v1','gizli','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
             [],
         )
         .map_err(StorageError::from)
@@ -731,7 +731,7 @@ fn upgrade_reports_transfer_segments_claiming_another_versions_segment() {
         .execute(
             "INSERT INTO transfer_segments
                (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
-             VALUES ('new-ok','run1','s1','v1','itiraz','hash')",
+             VALUES ('new-ok','run1','s1','v1','itiraz','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
             [],
         )
         .expect("kendi sürümünün segmenti meşru");
@@ -1774,7 +1774,7 @@ fn upgrade_guards_transfer_transform_bindings_written_before_v45() {
                (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
                 outbound_hash,transform_manifest_id,source_range_map,document_version_id,
                 source_char_count)
-             VALUES ('new-x','old-bad','s-new','s-new','[MASKED]','hash',
+             VALUES ('new-x','old-bad','s-new','s-new','[MASKED]','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                      'uydurma-transform','[]',NULL,44)",
             [],
         )
@@ -1820,7 +1820,7 @@ fn upgrade_guards_transfer_transform_bindings_written_before_v45() {
                (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
                 outbound_hash,transform_manifest_id,source_range_map,document_version_id,
                 source_char_count)
-             VALUES ('new-ok','old-bad','s-ok','s-ok','[MASKED]','hash','tA','[]',NULL,44)",
+             VALUES ('new-ok','old-bad','s-ok','s-ok','[MASKED]','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','tA','[]',NULL,44)",
             [],
         )
         .expect("meşru sicil yazılabilir");
@@ -1912,4 +1912,98 @@ fn upgrade_keeps_citation_checks_written_before_the_verdict_gate() {
         .expect("gerekçeli anlam incelemesi");
     assert_eq!(reviewed.meaning_review, "misleading");
     assert!(reviewed.meaning_reviewed_at.is_some());
+}
+
+/// v47'de gönderim sicilinin **metni/özeti** kanıtlanabilir olmalı.
+///
+/// v46'da `transfer_segments.outbound_text`/`outbound_hash`,
+/// `source_range_map`, `source_char_count` ve özne sütunları UPDATE'e açıktı
+/// (ölçüm: 13 kusur yazımı kabul): yazılmış satırın metni sonradan
+/// değiştirilebiliyor, `sent_segments` alıntıyı sahte metinde arıyor,
+/// `list_transfer_segments` sahte metni/hash'i ekrana basıyordu. v47 göçü eski
+/// satırları **silmez** (bozuk hash'li satır olduğu gibi kalır) ve BU onların
+/// UPDATE ile onarılmasını engeller (temizlik ürün kararı).
+#[test]
+fn upgrade_keeps_transfer_segments_written_before_the_content_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 46);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','aa11',1,10,'ref','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Kira sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',10,
+                     'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded','2026-01-01T00:00:00Z');
+             INSERT INTO text_segments (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s1','r1',NULL,'c1','gizli','gizli','2026-01-01T00:00:00Z');
+             INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                                  output_schema_version,status,usage_report,created_at)
+             VALUES ('run1','c1','summarize','m','h','p1','o1','running','{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');
+             -- v46 öncesi yazılmış satır: 64 haneli olmayan hash (BUGÜN de geçersiz biçim).
+             INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,source_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('legacy-ts','run1','s1','s1','v1','gizli','hash');",
+        )
+        .expect("v46 satırı");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM transfer_segments", [], |row| {
+            row.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(preserved, 1, "eski satır silinmez");
+    // Eski satır onarılamaz: içerik ve özne dondu.
+    match db
+        .conn()
+        .execute(
+            "UPDATE transfer_segments SET outbound_text='baska metin' WHERE id='legacy-ts'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("transfer_segments"), "mesaj: {message}")
+        }
+        other => panic!("v47 eski satırı dondurmalı: {other:?}"),
+    }
+    // Yeni satır **doğarken** hash biçimi denetlenir.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('new-bad','run1','s2','v1','gizli','hash')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("transfer_segments"), "mesaj: {message}")
+        }
+        other => panic!("v47 hash olmayan özeti reddetmeli: {other:?}"),
+    }
+    // Meşru yazma (çekirdeğin biçimi) hâlâ çalışır.
+    db.conn()
+        .execute(
+            "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,document_version_id,outbound_text,outbound_hash)
+             VALUES ('new-ok','run1','s2','v1','gizli',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')",
+            [],
+        )
+        .expect("meşru satır yazılabilir");
 }
