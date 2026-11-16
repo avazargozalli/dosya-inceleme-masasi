@@ -24,8 +24,10 @@
 | F08-T04k | ✅ | **giden segment sicili kendi segmentine bağlıdır** (şema **v38**): 0034'ün iki `transfer_segments` tetikleyicisi genişletildi — satırın **iki segment kolonu** (`outbound_segment_id`, `source_segment_id`) **var olan** bir segment ise gösterilen sürümün segmenti olmalı (sürüm `NULL` ise çalıştırmanın dosyasında); ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına A'nın sürümü + **B'nin segmenti** yazılıyor, A'nın gönderim sicili B'nin parçasını gösteriyordu ve `scope_violations()` **0** diyordu (kör); `transfer_segments` sayımı genişledi (yeni tablo yok); 6/6 mutasyon (2026-11-15) |
 | F08-T04l | ✅ | **aktarım onayı kendi dosyasının belgelerini gösterir** (şema **v39**): `transfer_consents` üzerinde **2 tetikleyici** — `selected_document_ids` geçerli JSON dizi, elemanları metin, liste boş olamaz ve her eleman `case_scope` dosyasında **silinmemiş** bir belge olmalı; ölçülen kusur: doğrudan SQL ile A'nın onayına **B'nin belgesi** yazılıyor, `list_transfer_consents('c1')` onu A'nın onaylanmış kapsamı diye sayıyor, boş/bozuk liste sessizce “0 belge” okunuyor ve `scope_violations()` **0** diyordu (kör); `transfer_consents` sayımı **eklendi** (23. tablo, türetim kuralı `case_scope` çiftini kapsar); 8/8 mutasyon (2026-11-15) |
 | F08-T04m | ✅ | **karar hedefi kendi dosyasında olmalı** (şema **v40**): 0033'ün iki `review_items` tetikleyicisi genişletildi — `target_entity_id` doluysa kimlik `claims`/`notes`/`tasks`/`events`ten **birinde var** ise satırın `case_id`'si aynı olmalı, `UPDATE OF` listesine `target_entity_id` eklendi; ölçülen kusur: doğrudan SQL ile A'nın öğesine **B dosyasının** iddiası/notu yazılıyor, `list_review_items('c1')` onu A'nın öğesi diye döndürüyor (arayüzde hedef rozeti), öğe yanlış hedefle **karara kilitleniyor** ve `scope_violations()` **0** diyordu (kör); tarama `review_items` alanı genişledi (yeni tablo yok, 23 kalır); 8/8 mutasyon (2026-11-16) |
+| F08-T04n | ✅ | **yerine geçen kayıt kendi dosyasında olmalı** (şema **v41**): 0033/0040'ın iki `review_items` tetikleyicisi genişletildi — `superseded_by_item_id` doluysa `superseded_at` dolu olmalı, satır kendini gösteremez, kimlik `review_items`ta **başka dosyada** var ise yazılmaz; `UPDATE OF` listesine iki sütun eklendi; ölçülen kusur: A'nın öğesine B dosyasının öğesi yazılıyor, `list_review_items('c1','superseded')` çapraz kaydı A'nın öğesi diye döndürüyor ve çekirdeğin gerçek `supersede` UPDATE'i ilk işareti **sessizce eziyordu**; tarama 23 kalır; 10/10 mutasyon (2026-11-16) |
 | F08-T04o | ✅ | **kontrol listesi kanıt bağları kendi dosyasında olmalı** (şema **v42**): `case_checklist_items` üzerinde **2 tetikleyici** — `linked_document_ids` geçerli JSON dizi (≤50 eleman), her eleman `case_id` dosyasında **silinmemiş** belge olmalı; `present` en az bir bağ ister, `open`/`missing`/`not_applicable` bağ kabul etmez; ölçülen kusur: doğrudan SQL ile A'nın maddesine **B'nin belgesi** yazılıyor, ekran "Bulundu" rozetiyle çıplak UUID gösteriyordu; bozuk JSON **tüm listeyi** okunamaz kılıyordu; `scope_violations()` tabloyu hiç saymıyordu (24. tablo); 11/11 mutasyon (2026-11-16) |
 | F08-T04p | ✅ | **çalıştırmanın yasal dayanağı kendi dosyasında olmalı** (şema **v43**): `ai_runs` üzerinde **2 tetikleyici** — `consent_id` doluysa gösterdiği onayın `case_scope`u çalıştırmanın `case_id`si olmalı; çalıştırmanın `case_id`/`consent_id`si kurulduktan sonra **değişmez**; ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına **B'nin onayı** yazılıyor, çalıştırma başka dosyaya taşınıyor (mevcut gönderim sicili çaprazlaşıyor) ve `scope_violations()` `ai_runs`ı hiç saymıyordu (25. tablo); 9/9 mutasyon (2026-11-16) |
+| F08-T04q | ✅ | **emsal sürümünün çakışma işareti kanıtlanabilir olmalı** (şema **v44**): `precedent_versions` üzerinde **2 tetikleyici** — `identity_conflict` 0/1, rozet⇔işaret birlikte, hedef kendisi olamaz, var olan hedef aynı emsalde ve **farklı** `body_hash`te olmalı, ters yön dahil; `id`/`precedent_id`/`body_hash`/bayrak/işaret **değişmez**; ölçülen kusur: doğrudan SQL ile A emsalinin sürümü **B emsalinin sürümüyle** çakıştığını iddia ediyor, "aynı künye, farklı metin" rozeti **aynı** hash ile yazılıyor ve işaret UPDATE ile çevrilebiliyordu; tablo `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
 
 ## Doğrulama
 
@@ -1981,3 +1983,98 @@ engeller — silmek/temizlemek ayrı iştir. (c) Kapı onayın **içeriğini**
 karşı). (e) Arayüz değişmedi: çalıştırma listesi `consent_id`yi **göstermiyor**
 — yasal dayanağın ekranda görünmesi ürün kararı; kapı duruktaki sınırı korur.
 (f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F08-T04q — emsal sürümünün çakışma işareti kanıtlanabilir olmalı (şema v44, 2026-11-16)
+
+**Neden.** `identity_conflict`, Emsaller ekranında görünen tek çakışma iddiasıdır
+(`screens/Precedents.tsx` → `versionConflictText` rozeti: "aynı künye, farklı
+metin"). `conflict_with_version_id` iddianın karşı tarafını gösterir (F12-T06:
+"kullanıcı iki metni karşılaştırabilsin"). Çekirdek ikisini birlikte ve doğru
+yazar (`import_precedent_copy`: aynı künye + farklı SHA-256); ama **şemada
+hiçbir kapı yoktu** — tablo FK'siz ve tetikleyicisizdi (v43 taraması: 54 tablo,
+66 tetikleyici içinde `precedent_versions` yok). Doğrudan SQL yazan bir yol
+rozeti **yalana** çevirebiliyordu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v43; sonda
+`scratch/dim-v44-probe/measure_v44.py`, log `measure_before.log`):**
+
+1. A emsalinin sürümü **B emsalinin sürümüyle** çakıştığını iddia etti
+   (`conflict_with_version_id='vB1'`, bayrak=1 → **KABUL**);
+2. sürüm **kendini** çakıştığı sürüm gösterdi (`v-self → v-self`);
+3. "aynı künye, **farklı metin**" rozeti **aynı** `body_hash` ile yazıldı —
+   rozet ekranda yalan söylüyordu;
+4. `identity_conflict=3` yazılabildi (her sıfır-dışı değer rozeti açar);
+5. işaret dolu + bayrak 0 → okuyucu işareti taşır, rozet görünmez;
+6. bayrak 1 + işaret NULL → rozetin karşılığı yok;
+7. var olan sürümün işareti UPDATE ile B emsaline çevrildi;
+8. `body_hash` UPDATE ile değiştirildi (iddia sonradan "doğru/yanlış" oldu);
+9. sürüm **başka emsale taşındı** (`precedent_id` UPDATE): ona işaret eden
+   satırlar çapraz kaldı.
+
+**Yazılan (şema v44, `0044_precedent_conflict_guard.sql`).** İki tetikleyici:
+`precedent_versions_conflict_guard_bi` — `identity_conflict` 0/1; rozet ile
+işaret **birlikte** (`= 1` ⇔ `conflict_with_version_id IS NOT NULL`); işaret
+varsa hedef kendisi olamaz, **var olan** hedef aynı emsalin sürümü ve **farklı**
+`body_hash`te olmalı; **ters yön**: yeni satırın kimliğine işaret eden eski bir
+satır varsa yeni satır da o iddiayı tutmalı ("hedef sonradan yazıldı" boşluğu
+kapanır). `precedent_versions_conflict_guard_bu` — `UPDATE OF id, precedent_id,
+body_hash, identity_conflict, conflict_with_version_id`: beş sütun **değişmez**
+(mevcut kod sürümü yalnız INSERT eder; `verification_state` gibi diğer
+sütunların güncellemesi takılmaz — v35 dersi). Ret
+`RAISE(ABORT,'DIM_INTEGRITY:precedent_versions')` →
+`StorageError::Integrity` → **`E_DB_INTEGRITY`**; `DIM_SCOPE`'tan ayrı önek,
+ayrı kod (bu kural **dosya kapsamı** değil **emsal bütünlüğü**dür).
+**Bilinçli gevşeklik** (0033/0034/0038/0039/0043 ile aynı): **var olmayan** hedef
+kimliği ne kapıya takılır ne sayılır — kayıt denetim izidir. Bu tablo `case_id`
+taşımadığı için `scope_violations()` alanı **eklenmez**; `GUARDED_TABLES`
+**25 kalır** (türetim testi değişmedi).
+
+**Testler (güncel kodla).** `precedent_import::tests` **+2**
+(`a_precedent_conflict_marker_must_be_true`: kendi sürümü/çakışmasız/var olmayan
+hedef meşru · çapraz emsal, kendini gösterme, aynı hash, bayrak 3, sessiz işaret,
+karşılıksız rozet ve ters yön reddi; `a_precedent_version_conflict_marker_is_immutable`:
+beş sütun UPDATE reddi, `verification_state` güncellemesi ve değişmeyen yazma
+serbest), `upgrade_tests` **+1**
+(`upgrade_guards_precedent_conflict_markers_written_before_v44`: v43 kasasındaki
+yanlış rozetler **silinmez**, UPDATE ile onarılamaz, yeni yanlış yazma kapıda
+durur, meşru çakışma hâlâ yazılır, kapsam taraması 0) → `dim-storage --lib`
+**676 → 679** — **tam paket yerelde koşuldu: 679/679 yeşil, 442,88 s**. fmt (iki
+manifest) temiz; `clippy -p dim-storage --all-targets -- -D warnings` temiz;
+masaüstü `cargo check --all-targets` temiz.
+
+**Kapı kanıtı.** **13/13 KIRMIZI, taban iki uçta 4/4 yeşilken** (betik
+`scratch/dim-v44-probe/gates_v44.py`, log `gates_v44.log`; `try/finally` +
+`os.utime` + sha256 birebir — `0044…sql
+7d1735843239d3a8`, `error.rs 15b41e496cd324ab`): M1 BI bayrak 0/1 kuralı düşer ·
+M2 BI rozet⇔işaret eşitliği düşer · M3 BI kendini-gösterme koşulu düşer · M4 BI
+aynı-emsal koşulu düşer · M5 BI farklı-hash koşulu düşer · M6 BI ters yön
+aynı-emsal düşer · M7 BI ters yön farklı-hash düşer · M8 BU emsal taşıması
+serbest kalır · M9 BU metin özeti değişimi serbest kalır · M10 BU `UPDATE OF`
+listesinden işaret düşer · M11 listesinden bayrak düşer · M12 listesinden id
+düşer · M13 `DIM_INTEGRITY` öneki eşlenmez (E_DB_SQL'e düşer). **Dürüst (kendi
+hatam):** ilk koşuda **M1 YEŞİL** kaldı — testte `flag=3 + işaret NULL` durumu
+yoktu; eşitlik kuralı 3'ü "1 değil" sayıp NULL ile geçiriyordu (`0 = 0`). Test
+`vA9b` ile güçlendirildi, **13/13 yeniden ölçüldü**; ilk koşunun 12 hükmü kanıt
+sayılmadı.
+
+**CI (ölçüldü).** Kod `bd126c3` (5 dosya, **+316/−1**) → run `43860857265` **10/10 YEŞİL**
+(`dim-storage` **679** iki OS'ta birebir: macos-15 **401,80 s** / ubuntu-latest **759,41 s**);
+`arayüz` 66 dosya / **1434** test, paket `index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB —
+**değişmedi**; `masaüstü kabuk`, `windows güvenli depo`, `workers`, `sözleşmeler`, `SBOM`,
+`kaynak arşivi`, `sürüm paketi manifesti`.
+
+**Dürüst sınırlar.** (a) **Var olmayan** hedef kimliği serbesttir: rozet
+karşılıksız kalabilir (denetim izi; 0033/0038/0039/0043 ile aynı sınıf) — kapı
+*kanıtlanabilir* yalanı durdurur, "karşı taraf bilinmiyor" satırını durdurmaz.
+(b) v44 öncesi yanlış rozetler **silinmez, sayılmaz** (tablo kapsam taramasında
+yok) ve immutability onların UPDATE ile onarılmasını engeller — temizlik/onarım
+ürün kararı. (c) Kapı metnin **içeriğini** yeniden hesaplamaz; `body_hash`
+sütunlarının farkını denetler — yazıcı `full_text` ile tutarsız bir `body_hash`
+yazarsa iddia yine "tutarlı" görünür (hash'i yeniden üretmek SQLite'ta mümkün
+değil; çekirdek doğru yazar). (d) Emsal sürümü silme yolu yok; olsaydı işaret
+sahipsiz kalırdı (bugün yalnız emsal silinince `CASCADE` ile birlikte gider).
+(e) Tetikleyicileri anahtarı olan saldırgan düşürebilir (uygulama hatasına
+karşı). (f) Arayüz değişmedi; çakışan sürümlerin **yan yana karşılaştırma**
+ekranı hâlâ yok (F12-T06 yalnız işaretler) — gerçek pencere + görsel QA
+**insan bekliyor**.
+
