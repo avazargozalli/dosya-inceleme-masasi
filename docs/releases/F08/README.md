@@ -28,6 +28,7 @@
 | F08-T04o | ✅ | **kontrol listesi kanıt bağları kendi dosyasında olmalı** (şema **v42**): `case_checklist_items` üzerinde **2 tetikleyici** — `linked_document_ids` geçerli JSON dizi (≤50 eleman), her eleman `case_id` dosyasında **silinmemiş** belge olmalı; `present` en az bir bağ ister, `open`/`missing`/`not_applicable` bağ kabul etmez; ölçülen kusur: doğrudan SQL ile A'nın maddesine **B'nin belgesi** yazılıyor, ekran "Bulundu" rozetiyle çıplak UUID gösteriyordu; bozuk JSON **tüm listeyi** okunamaz kılıyordu; `scope_violations()` tabloyu hiç saymıyordu (24. tablo); 11/11 mutasyon (2026-11-16) |
 | F08-T04p | ✅ | **çalıştırmanın yasal dayanağı kendi dosyasında olmalı** (şema **v43**): `ai_runs` üzerinde **2 tetikleyici** — `consent_id` doluysa gösterdiği onayın `case_scope`u çalıştırmanın `case_id`si olmalı; çalıştırmanın `case_id`/`consent_id`si kurulduktan sonra **değişmez**; ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına **B'nin onayı** yazılıyor, çalıştırma başka dosyaya taşınıyor (mevcut gönderim sicili çaprazlaşıyor) ve `scope_violations()` `ai_runs`ı hiç saymıyordu (25. tablo); 9/9 mutasyon (2026-11-16) |
 | F08-T04q | ✅ | **emsal sürümünün çakışma işareti kanıtlanabilir olmalı** (şema **v44**): `precedent_versions` üzerinde **2 tetikleyici** — `identity_conflict` 0/1, rozet⇔işaret birlikte, hedef kendisi olamaz, var olan hedef aynı emsalde ve **farklı** `body_hash`te olmalı, ters yön dahil; `id`/`precedent_id`/`body_hash`/bayrak/işaret **değişmez**; ölçülen kusur: doğrudan SQL ile A emsalinin sürümü **B emsalinin sürümüyle** çakıştığını iddia ediyor, "aynı künye, farklı metin" rozeti **aynı** hash ile yazılıyor ve işaret UPDATE ile çevrilebiliyordu; tablo `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
+| F08-T04r | ✅ | **gönderim sicilinin ve onayın dönüşüm bağı kanıtlanabilir olmalı** (şema **v45**): `transfer_segments` + `transfer_consents` üzerinde **4 tetikleyici** — dolu `transform_manifest_id`/`outbound_transform_id` **var olan** ve `kind='mask_terms'` dönüşümü göstermeli; sicil satırının bağı çalıştırmanın onayıyla **aynı** olmalı (0 terimli onayda `NULL`); sicilin `id`/`ai_run_id`/`transform_manifest_id` ve onayın maske bağı **değişmez**; ölçülen kusur: doğrudan SQL ile onaylanan A maskesi yerine B yazılıyor, uydurma/`identity`/NULL bağ kabul ediliyor ve onayın bağının UPDATE ile çevrilmesi maske kapısını atlatıyordu; tablolar `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
 
 ## Doğrulama
 
@@ -2042,7 +2043,7 @@ durur, meşru çakışma hâlâ yazılır, kapsam taraması 0) → `dim-storage 
 manifest) temiz; `clippy -p dim-storage --all-targets -- -D warnings` temiz;
 masaüstü `cargo check --all-targets` temiz.
 
-**Kapı kanıtı.** **13/13 KIRMIZI, taban iki uçta 4/4 yeşilken** (betik
+**Kapı kanıtı.** **13/13 KIRMIZI, taban iki uçta 3/3 yeşilken** (betik
 `scratch/dim-v44-probe/gates_v44.py`, log `gates_v44.log`; `try/finally` +
 `os.utime` + sha256 birebir — `0044…sql
 7d1735843239d3a8`, `error.rs 15b41e496cd324ab`): M1 BI bayrak 0/1 kuralı düşer ·
@@ -2078,3 +2079,105 @@ karşı). (f) Arayüz değişmedi; çakışan sürümlerin **yan yana karşıla�
 ekranı hâlâ yok (F12-T06 yalnız işaretler) — gerçek pencere + görsel QA
 **insan bekliyor**.
 
+## F08-T04r — gönderim sicilinin dönüşüm bağı kanıtlanabilir olmalı (şema v45, 2026-11-16)
+
+**Neden.** `transfer_segments.transform_manifest_id`, satırın «hangi maske tanımıyla»
+gönderildiğini söyler. Okuyucu iki yerde gerçek: `list_transfer_segments` kimliği
+`outbound_transforms`la sol birleştirip ekranda **türü** (`identity` / `mask_terms`)
+ve terim sayısını gösterir (Ai.tsx gönderim sicili); `sent_segments` ise alıntı
+doğrulamasında dönüşüm kimliğine bakıp **kimlik mi aralık haritası mı** kullanılacağına
+karar verir — yani yanlış bağ, doğrulanan alıntının özgün konumunu değiştirir.
+`transfer_consents.outbound_transform_id` ise onayın **maske tanımıdır** (0030:
+«maske onayın parçasıdır»): `start_ai_run` maske eşitliğini bu satırın
+`settings_hash`i üzerinden kurar. 0027 tabloyu tanımladı, 0034/0038 sicilin
+**sürümünü ve segmentini** kapıladı — ama iki dönüşüm bağı **hiçbir tetikleyici
+taşımıyordu** (v44 taraması: gönderim/aktarım zincirinde FK'siz ve kapısız kalan
+tek okuyucu-yazıcı bağ çifti).
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v44; sonda
+`~/.hermes/cache/scratch/dim-v45-probe/measure_v45.py`, log `measure_before.log`):**
+(1) `run1` (onayı **A** maskesi) siciline **B** maskesinin dönüşümü yazıldı;
+(2) **var olmayan** dönüşüm kimliği yazıldı (ekran «unknown» der);
+(3) maskeli satır `transform_manifest_id=NULL` ile yazıldı — okuyucu onu **kimlik**
+sayar, alıntı doğrulaması maskeli metni özgün sanar; (4) `kind='identity'` dönüşüm
+satırı maskeli sicile bağlandı; (5) yazılmış satırın dönüşümü UPDATE ile B maskesine
+çevrildi; (6) bağ UPDATE ile **silindi** (NULL); (7) sicil satırı **başka
+çalıştırmaya** taşındı (onay bağlamı değişti); (8) onayın maske bağı UPDATE ile
+tA→tB çevrildi — maske kapısının karşılaştırdığı `settings_hash` `h-a`→`h-b` oldu,
+yani **onaylanan maske A iken B ile gönderim kapıyı geçer**; (9) onayın bağı
+NULL'a çekildi (yasal kayıt silindi); (10) onaya **var olmayan** dönüşüm kimliği
+yazıldı; (11) onaya `kind='identity'` dönüşüm bağlandı. v44 taramasında bu sınıfı
+sayan alan yok: 4 uydurma/çapraz sicil satırı ve 2 bozuk onay bağı hiçbir yerde
+görünmüyordu.
+
+**Yazılan (şema v45, `0045_transfer_transform_binding_guard.sql`, 4 tetikleyici).**
+`transfer_segments` BI — dolu `transform_manifest_id` **var olan** ve
+`kind='mask_terms'` dönüşümü göstermeli (kimlik `NULL` ile temsil edilir; çekirdek
+`identity` satırı yazmaz); çalıştırmanın onayı **çözülebiliyorsa** bağ onayla aynı
+olmalı: 1+ terimli onayda sicil satırı **aynı** kimliği göstermeli, 0 terimli onayda
+`NULL` olmalı ("onaylandı A, gönderildi B" yazılamaz). `transfer_segments` BU —
+`id`, `ai_run_id`, `transform_manifest_id` **değişmez** (satır hangi çalıştırmaya
+aitse ve hangi maskeyle gönderildiyse öyle kalır; diğer sütunlar takılmaz — v35
+dersi). `transfer_consents` BI — dolu bağ var olan ve `kind='mask_terms'` dönüşümü
+göstermeli; `NULL` (0030 öncesi onay) serbesttir, "bağ bilinmiyor" meşru durumdur.
+`transfer_consents` BU — `outbound_transform_id` **değişmez**: onaylanan maske
+tanımı sonradan ne genişletilebilir ne daraltılabilir ne silinebilir (yeni maske
+**yeni onay** ister). Ret `RAISE(ABORT,'DIM_INTEGRITY:<tablo>')` →
+`StorageError::Integrity` → **`E_DB_INTEGRITY`** (0044 ile aynı önek). Tablolar
+`case_id` taşımadığı için tarama alanı **eklenmedi**; `GUARDED_TABLES` **25 kalır**.
+
+**Testler.** `ai::tests` **+2** (`outbound_record_can_only_claim_the_mask_the_consent_approved`:
+onaylanandan farklı var olan maske, uydurma kimlik, NULL "kimlik" iddiası,
+`identity` türü, onaysız çalıştırmada uydurma/kimlik türü, UPDATE ile bağ çevirme /
+silme / çalıştırma taşıma reddi, aynı değeri yeniden yazma serbest;
+`consent_mask_binding_cannot_be_rewritten_or_invented`: bağ UPDATE ile
+çevrilemez/silinemez, uydurma/`identity` bağ reddi, iptal damgası serbest),
+`upgrade_tests` **+1**
+(`upgrade_guards_transfer_transform_bindings_written_before_v45`: v44 kasasındaki
+yanlış bağlar **silinmez**, UPDATE ile onarılamaz, yeni yanlış yazma kapıda durur,
+meşru yazma çalışır, kapsam taraması 0) → `dim-storage --lib` **679 → 682**.
+**Dürüst (fixture düzeltmesi).** v45'ten önce üç test, **maskesiz onayın**
+çalıştırmasına maskeli sicil yazıyordu (üretimde `start_ai_run` bunu reddeder);
+fixture'lar gerçek sözleşmeye çekildi — `preview_with_mask_matches_what_is_sent`
+ve `masked_outbound_records_transform_and_original_range_map` onayı maske
+terimleriyle açıyor, `ai_candidate` fixture'ı maskeli gönderim için **ayrı onay +
+ayrı çalıştırma** taşıyor; `pre_v30_consent_without_mask_binding_is_refused` NULL
+bağı artık **doğrudan INSERT** ile kuruyor (v45 bağı UPDATE'e kapatır).
+
+**Kapı kanıtı.** **13/13 KIRMIZI, taban iki uçta 3/3 yeşilken** (betik
+`~/.hermes/cache/scratch/dim-v45-probe/gates_v45.py`, log `gates_v45_final.log`;
+`os.utime` + sha256 birebir — `0045…sql
+f0e190b7675ab2172da9ef214ffad8e426a59a679ed1e10a43e258b86d5ddfd5`): M1 BI
+varlık+kind kapısı düşer · M2 BI `kind='mask_terms'` düşer · M3 BI onay-eşitliği
+dalı düşer · M4 BI 0-terim NULL zorunluluğu düşer · M5 BI 1+ terim eşitliği düşer ·
+M6 BU değişmezlik tetikleyicisi etkisiz · M7 BU `ai_run_id`yi korumaz · M8 BU
+`<>` ile karşılaştırır (NULL kaçar) · M9 onay BI varlık kapısı düşer · M10 onay BI
+kind düşer · M11 onay BU etkisiz · M12 onay BU `<>` (NULL'a çekme kaçar) · M13 ret
+öneki `DIM_SCOPE` olur (`E_DB_SCOPE`). **Dürüst (kendi hatam):** ilk koşuda
+**M1/M2 YEŞİL** kaldı — testte **onayı çözülemeyen** çalıştırma yoktu, varlık/kind
+dalını onay-eşitliği dalı maskeliyordu; **M6** mutasyonu BU `WHEN`ının yalnız ilk
+birleşimini düşürüyordu (etkisiz), **M13** deseni iki kez geçiyordu. Test
+(onaysız çalıştırma `run-serbest`) ve betik desenleri düzeltildi; ikinci koşuda
+**13/13**, yorum düzeltmesinden sonra son hâl üzerinde **yeniden 13/13** ölçüldü.
+İlk koşunun 9 hükmü kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `1572ae3` (5 dosya, **+629/−12**) → run `43878690384`
+**10/10 YEŞİL** (`dim-storage` **682** iki OS'ta birebir: macos-15 **354,34 s** /
+ubuntu-latest **563,94 s**); `arayüz` 66 dosya / **1434** test, paket
+`index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB — **değişmedi**; `masaüstü kabuk`
+51/0/5 + gerçek worker 5/0/0, `windows güvenli depo` 28, `workers`, `sözleşmeler`,
+`SBOM`, `kaynak arşivi`, `sürüm paketi manifesti`.
+
+**Dürüst sınırlar.** (a) `outbound_transforms` satırları içerik adreslidir ve
+hiçbir yol silmez; bu yüzden "var olmayan kimlik" burada denetim izi değil
+**kanıtlanabilir yalan** sayıldı ve fail-closed kapıya takıldı (0033/0038/0043'ün
+gevşekliğinden bilinçli ayrılık). (b) Onay zinciri **çözülemiyorsa** (0043'ün izin
+verdiği uydurma `consent_id`) eşitlik kuralı boşta kalır; varlık/kind kapısı yine
+çalışır. (c) Bu tablolar `case_id` taşımaz; v45 öncesi yanlış bağlar **silinmez ve
+sayılmaz**, immutability onların UPDATE ile onarılmasını da engeller — temizlik
+ürün kararı. (d) Sicil **metni** (`outbound_text`/`outbound_hash`) bu dilimin
+dışında: UPDATE ile değiştirilebilir kalır (sıradaki aday). (e) Maskenin
+**içeriği** yeniden hesaplanmaz; kapı `body_hash`i değil bağ **kimliğini** denetler
+(SQLite'ta SHA-256 yok; çekirdek doğru yazar). (f) Tetikleyicileri anahtarı olan
+saldırgan düşürebilir (uygulama hatasına karşı). (g) Arayüz değişmedi; ekran zaten
+türü/terim sayısını gösteriyor — gerçek pencere + görsel QA **insan bekliyor**.
