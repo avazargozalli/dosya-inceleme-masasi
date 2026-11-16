@@ -2611,7 +2611,6 @@ export const api = {
     candidatePrecedentId: string | null;
     identityMatch: "match" | "mismatch" | "unknown";
     quoteMatch: "match" | "mismatch" | "not_checked" | "unknown";
-    meaningReview: string;
     reasonCodes: string[];
   }) => invoke<CitationCheckRow>("citation_check_create", { input }),
 

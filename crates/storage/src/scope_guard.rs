@@ -178,7 +178,11 @@ pub struct ScopeViolationCounts {
     /// Güncel sürüm işaretçisi başka belgeyi gösteren belge sayısı (v35).
     pub documents: i64,
     /// Atıf kontrolü satırı kendi dosyasının sürümünü göstermeyen (ya da
-    /// dosyası yazılmamış, `case_id IS NULL`) satır sayısı (v37).
+    /// dosyası yazılmamış, `case_id IS NULL`) satır sayısı (v37) **ve** hükmü
+    /// kendi içinde tutarsız satırlar (v46): bağı çözülemeyen emsal kimliği,
+    /// kapalı küme dışı anlam hükmü, gerekçesiz `misleading`/`off_context`,
+    /// damgasız inceleme, incelenmemiş satırda gerekçe/damga. v46 öncesi
+    /// yazılmış satırlar **silinmez**, yalnız sayılır.
     pub citation_checks: i64,
     /// Dışa aktarma kalemi, üst kaydın dosyasından olmayan bir sürümü gösteren
     /// satır sayısı (v37).
@@ -476,13 +480,28 @@ impl Database {
             // olarak meşrudur (kapı yalnız "başka dosyada var olan"ı reddeder).
             // Dürüst sınır: v37 öncesi **çapraz** satır göçle başvurduğu
             // sürümün dosyasına atfedildiği için burada görünmez.
+            // v46 — hükmü kendi içinde tutarsız satırlar da sayılır: bağı
+            // çözülemeyen emsal kimliği (emsaller hiçbir yoldan silinmez), kapalı
+            // küme dışı anlam hükmü, gerekçesiz `misleading`/`off_context`,
+            // damgasız inceleme, incelenmemiş satırda gerekçe/damga. Aynı dosya
+            // içinde **sürüm taşıması** buradan görünmez (satırda "hangi sürüme
+            // yazıldığı" bilgisi tek sütundur) — dürüst sınır.
             citation_checks: count(
                 "SELECT count(*) FROM citation_checks c
                   WHERE c.case_id IS NULL OR EXISTS (
                           SELECT 1 FROM document_versions v
                             JOIN documents d ON d.id = v.document_id
                            WHERE v.id = c.input_document_version_id
-                             AND d.case_id <> c.case_id)",
+                             AND d.case_id <> c.case_id)
+                     OR (c.candidate_precedent_id IS NOT NULL AND NOT EXISTS (
+                          SELECT 1 FROM precedents p WHERE p.id = c.candidate_precedent_id))
+                     OR c.meaning_review NOT IN ('not_reviewed', 'accurate', 'misleading', 'off_context')
+                     OR (c.meaning_review = 'not_reviewed'
+                         AND (length(trim(c.meaning_note, ' ' || char(9) || char(10) || char(13))) > 0
+                              OR c.meaning_reviewed_at IS NOT NULL))
+                     OR (c.meaning_review <> 'not_reviewed' AND c.meaning_reviewed_at IS NULL)
+                     OR (c.meaning_review IN ('misleading', 'off_context')
+                         AND length(trim(c.meaning_note, ' ' || char(9) || char(10) || char(13))) = 0)",
             )?,
             // v37 — dışa aktarma kalemi, **üst kaydın** dosyasının sürümünü
             // gösterir (satırın kendi `case_id`'si yok; 0034 `ai_context_items`
@@ -2903,10 +2922,37 @@ mod tests {
             ),
             "citation_checks",
         );
-        // Anlam incelemesi (kapsam dışı sütun) kapıya takılmaz.
+        // v46: satır **bağlandığı** sürümde kalır. v37 kapısı aynı dosyadaki
+        // sürüm taşımasına susuyordu; kontrol başka belgenin listesinde
+        // görünüyordu (`list_citation_checks('c1','v2')` → 1).
+        db.conn()
+            .execute_batch(
+                "INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+                 VALUES ('v2','d2','c1',1,'b1','ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',10,'application/pdf','2026-01-01T00:00:00Z');",
+            )
+            .expect("ikinci sürüm");
+        scope_error(
+            db.conn().execute(
+                "UPDATE citation_checks SET input_document_version_id='v2' WHERE id='cc-ok'",
+                [],
+            ),
+            "citation_checks",
+        );
+        // Sürümü **var olmayan** satırın dosyası da değişmez (v46).
+        scope_error(
+            db.conn().execute(
+                "UPDATE citation_checks SET case_id='c9' WHERE id='cc-gone'",
+                [],
+            ),
+            "citation_checks",
+        );
+        // Anlam incelemesi (kapsam dışı sütun) kapıya takılmaz; v46 damgayı
+        // birlikte ister (damgasız «incelendi» yazılamaz).
         db.conn()
             .execute(
-                "UPDATE citation_checks SET meaning_review='accurate' WHERE id='cc-ok'",
+                "UPDATE citation_checks SET meaning_review='accurate',
+                        meaning_reviewed_at='2026-02-02T00:00:00Z' WHERE id='cc-ok'",
                 [],
             )
             .expect("anlam incelemesi serbest");

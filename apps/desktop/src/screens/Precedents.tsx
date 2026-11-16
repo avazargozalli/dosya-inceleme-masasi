@@ -849,7 +849,6 @@ export function Precedents() {
         candidatePrecedentId: candidate || null,
         identityMatch: identity,
         quoteMatch,
-        meaningReview: "not_reviewed",
         reasonCodes: quoteMatch === "not_checked" ? ["text_not_checked"] : [],
       });
       if (citationRef.current.trim() === sent) {

@@ -998,7 +998,6 @@ describe("emsal ekranı davranışı", () => {
       candidatePrecedentId: "p1",
       identityMatch: "mismatch",
       quoteMatch: "not_checked",
-      meaningReview: "not_reviewed",
       // Alıntı "kontrol edilmedi" ise nedeni kayda yazılır; sessizce "match" sayılmaz.
       reasonCodes: ["text_not_checked"],
     });

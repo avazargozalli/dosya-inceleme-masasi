@@ -216,17 +216,15 @@ pub struct NewCitationCheck {
     pub identity_match: String,
     #[serde(default = "match_unknown")]
     pub quote_match: String,
-    #[serde(default = "meaning_unreviewed")]
-    pub meaning_review: String,
-    #[serde(default)]
+    /// Anlam incelemesi **çağırandan alınmaz** (v46): yeni kontrol doğuştan
+    /// incelenmiş olamaz. İnceleme ayrı bir avukat eylemidir
+    /// (`review_citation_meaning`); satır `not_reviewed` + damgasız doğar.
+    /// Alan kaldırıldı ki çağıran «unuttuğu» için kapıyı düşüremesin.
     pub reason_codes: Vec<String>,
 }
 
 fn match_unknown() -> String {
     "unknown".to_string()
-}
-fn meaning_unreviewed() -> String {
-    "not_reviewed".to_string()
 }
 
 /// Kararın **tam metin** sürümü (F12-T05). Metnin kendisi UI'ya gönderilmez;
@@ -878,9 +876,12 @@ impl Database {
             }
         }
         let id = uuid::Uuid::now_v7().to_string();
+        // v46: satır **incelenmemiş** doğar. Anlam incelemesi ayrı avukat
+        // eylemidir (`review_citation_meaning`); çağıran «incelendi» damgası
+        // oluşturamaz (şemada da `citation_check_subject_guard_bi` kapısı var).
         self.conn().execute(
             "INSERT INTO citation_checks (id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,identity_match,quote_match,meaning_review,reason_codes,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'not_reviewed',?8,?9)",
             rusqlite::params![
                 id,
                 case_id,
@@ -889,7 +890,6 @@ impl Database {
                 new.candidate_precedent_id,
                 new.identity_match,
                 new.quote_match,
-                new.meaning_review,
                 serde_json::to_string(&new.reason_codes).unwrap_or_else(|_| "[]".into()),
                 now_iso()
             ],
@@ -1894,7 +1894,6 @@ mod tests {
                 candidate_precedent_id: Some(p.id.clone()),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec!["text_missing".into()],
             })
             .expect("kontrol");
@@ -1947,7 +1946,6 @@ mod tests {
             candidate_precedent_id: None,
             identity_match: "unknown".into(),
             quote_match: "not_checked".into(),
-            meaning_review: "not_reviewed".into(),
             reason_codes: vec![],
         };
         // Çapraz yazma reddedilir; satır **hiç** yazılmaz.
@@ -1997,7 +1995,6 @@ mod tests {
                 candidate_precedent_id: Some(p.id.clone()),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");
@@ -2052,7 +2049,6 @@ mod tests {
                 candidate_precedent_id: Some(p.id.clone()),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");
@@ -2079,7 +2075,6 @@ mod tests {
                 candidate_precedent_id: Some(p.id),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");
@@ -2095,13 +2090,412 @@ mod tests {
                 candidate_precedent_id: None,
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");
         let context = db.citation_context(&no_candidate.id, 10).expect("bağlam");
         assert!(!context.found);
         assert_eq!(context.reason.as_deref(), Some("no_candidate"));
+    }
+
+    /// Yetkisiz yazım (çekirdeği atlayan SQL) için kapı yardımcısı: satır
+    /// **kanıtlanabilir** olmalı, yoksa `E_DB_INTEGRITY`.
+    fn integrity_error(result: Result<usize, StorageError>, label: &str) {
+        match result {
+            Err(StorageError::Integrity(message)) => assert!(
+                message.contains("citation_checks"),
+                "{label}: mesaj tabloyu adlandırmıyor: {message}"
+            ),
+            other => panic!("{label}: beklenen E_DB_INTEGRITY, ölçülen: {other:?}"),
+        }
+    }
+
+    /// v46: atıf kontrolü satırı **kanıtlanabilir** olmalı. Ölçüldü (v45):
+    /// var olmayan emsal bağı, boşluktan alıntı, bozuk `reason_codes` ve
+    /// «doğuştan incelenmiş» satır düz SQL ile yazılabiliyordu; bağlam paneli
+    /// (`citation_context`) ve rozetler bu satırları gerçek sanıyordu.
+    #[test]
+    fn a_citation_check_cannot_be_written_without_a_provable_subject() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
+        let write = |id: &str,
+                     quote: &str,
+                     candidate: Option<&str>,
+                     reasons: &str,
+                     meaning: &str,
+                     note: &str,
+                     stamp: Option<&str>| {
+            db.conn()
+                .execute(
+                    "INSERT INTO citation_checks
+                       (id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,
+                        identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,
+                        reason_codes,created_at)
+                     VALUES (?1,'c1','v1',?2,?3,'unknown','not_checked',?4,?5,?6,?7,
+                             '2026-01-01T00:00:00Z')",
+                    rusqlite::params![id, quote, candidate, meaning, note, stamp, reasons],
+                )
+                .map_err(StorageError::from)
+        };
+        write(
+            "cc-ok",
+            "kiracı temerrüde düşmedikçe tahliye istenemez",
+            Some(&p.id),
+            "[\"quote_verified\"]",
+            "not_reviewed",
+            "",
+            None,
+        )
+        .expect("meşru satır yazılır");
+        integrity_error(
+            write(
+                "cc-missing",
+                "alıntı",
+                Some("p-yok"),
+                "[]",
+                "not_reviewed",
+                "",
+                None,
+            ),
+            "var olmayan emsal kimliği",
+        );
+        integrity_error(
+            write(
+                "cc-blank",
+                " \t\n ",
+                Some(&p.id),
+                "[]",
+                "not_reviewed",
+                "",
+                None,
+            ),
+            "boşluktan alıntı",
+        );
+        integrity_error(
+            write(
+                "cc-badjson",
+                "alıntı",
+                Some(&p.id),
+                "bozuk",
+                "not_reviewed",
+                "",
+                None,
+            ),
+            "bozuk reason_codes",
+        );
+        integrity_error(
+            write(
+                "cc-object",
+                "alıntı",
+                Some(&p.id),
+                "{\"a\":1}",
+                "not_reviewed",
+                "",
+                None,
+            ),
+            "reason_codes nesne",
+        );
+        integrity_error(
+            write(
+                "cc-number",
+                "alıntı",
+                Some(&p.id),
+                "[1,2]",
+                "not_reviewed",
+                "",
+                None,
+            ),
+            "reason_codes sayı dizisi",
+        );
+        integrity_error(
+            write(
+                "cc-early",
+                "alıntı",
+                Some(&p.id),
+                "[]",
+                "accurate",
+                "",
+                Some("2026-02-02T00:00:00Z"),
+            ),
+            "doğuştan incelenmiş",
+        );
+        // Aynı kusurun **damgasız** biçimi: yalnız `meaning_review` kuralı
+        // yakalar (damga koşulu bu satırda boşta kalır) — M5 mutasyonunun tek
+        // başına yük taşıdığını ölçmek için.
+        integrity_error(
+            write(
+                "cc-early-bare",
+                "alıntı",
+                Some(&p.id),
+                "[]",
+                "accurate",
+                "",
+                None,
+            ),
+            "doğuştan incelenmiş (damgasız)",
+        );
+        integrity_error(
+            write(
+                "cc-junk",
+                "alıntı",
+                Some(&p.id),
+                "[]",
+                "yanlis",
+                "",
+                Some("2026-02-02T00:00:00Z"),
+            ),
+            "kapalı küme dışı anlam hükmü",
+        );
+        integrity_error(
+            write(
+                "cc-note",
+                "alıntı",
+                Some(&p.id),
+                "[]",
+                "not_reviewed",
+                "gerekçe",
+                None,
+            ),
+            "incelenmemiş satırda gerekçe",
+        );
+        integrity_error(
+            write(
+                "cc-stamp",
+                "alıntı",
+                Some(&p.id),
+                "[]",
+                "not_reviewed",
+                "",
+                Some("2026-02-02T00:00:00Z"),
+            ),
+            "incelenmemiş satırda damga",
+        );
+        let written: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM citation_checks", [], |row| row.get(0))
+            .expect("sayım");
+        assert_eq!(written, 1, "yalnız meşru satır yazıldı");
+    }
+
+    /// v46: satır hangi alıntıyı hangi emsalle ölçtüyse öyle kalır. Ölçüldü
+    /// (v45): `quote_match` `match`→`mismatch` çevrilebiliyor, emsal bağı
+    /// p1→p2 taşınabiliyor, alıntı metni değiştirilebiliyordu — rozet p1'in
+    /// ölçümünü gösterirken bağlam paneli p2'nin metnini okuyordu.
+    #[test]
+    fn a_citation_checks_subject_and_verdict_are_immutable() {
+        let db = db();
+        let p1 = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
+        let p2 = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/3"), Some("2025/4")))
+            .expect("emsal");
+        let check = db
+            .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
+                input_document_version_id: "v1".into(),
+                extracted_citation: "kiracı temerrüde düşmedikçe tahliye istenemez".into(),
+                candidate_precedent_id: Some(p1.id.clone()),
+                identity_match: "match".into(),
+                quote_match: "match".into(),
+                reason_codes: vec!["quote_verified".into()],
+            })
+            .expect("kontrol");
+        let updates = [
+            (
+                "id",
+                "UPDATE citation_checks SET id='cc-baska' WHERE id=?1".to_string(),
+            ),
+            (
+                "extracted_citation",
+                "UPDATE citation_checks SET extracted_citation='başka alıntı' WHERE id=?1"
+                    .to_string(),
+            ),
+            (
+                "candidate_precedent_id",
+                format!(
+                    "UPDATE citation_checks SET candidate_precedent_id='{}' WHERE id=?1",
+                    p2.id
+                ),
+            ),
+            (
+                "candidate_precedent_id (silme)",
+                "UPDATE citation_checks SET candidate_precedent_id=NULL WHERE id=?1".to_string(),
+            ),
+            (
+                "identity_match",
+                "UPDATE citation_checks SET identity_match='mismatch' WHERE id=?1".to_string(),
+            ),
+            (
+                "quote_match",
+                "UPDATE citation_checks SET quote_match='mismatch' WHERE id=?1".to_string(),
+            ),
+            (
+                "reason_codes",
+                "UPDATE citation_checks SET reason_codes='[\"uydurma\"]' WHERE id=?1".to_string(),
+            ),
+            (
+                "created_at",
+                "UPDATE citation_checks SET created_at='2020-01-01T00:00:00Z' WHERE id=?1"
+                    .to_string(),
+            ),
+        ];
+        for (label, sql) in updates {
+            let result = db
+                .conn()
+                .execute(&sql, [check.id.as_str()])
+                .map_err(StorageError::from);
+            integrity_error(result, label);
+        }
+        // Aynı değeri yeniden yazmak değişiklik değildir; kapı takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE citation_checks SET quote_match=quote_match WHERE id=?1",
+                [check.id.as_str()],
+            )
+            .expect("değişmeyen yazma serbest");
+        // Avukatın anlam incelemesi tek meşru güncelleme yoludur.
+        let reviewed = db
+            .review_citation_meaning(&check.id, "accurate", "")
+            .expect("anlam incelemesi");
+        assert_eq!(reviewed.meaning_review, "accurate");
+        assert!(reviewed.meaning_reviewed_at.is_some());
+    }
+
+    /// v46: anlam hükmü kendi kanıtını taşır — kapalı küme, gerekçe ve damga.
+    /// Ölçüldü (v45): gerekçesiz `misleading`, damgasız `accurate` ve kapalı küme
+    /// dışı değer (`'yanlis'`) düz SQL ile yazılabiliyordu; rozet ham belirteci
+    /// basıyor, avukatın gerekçesi kayıtta hiç olmuyordu.
+    #[test]
+    fn a_citation_meaning_cannot_claim_what_the_row_does_not_support() {
+        let db = db();
+        let check = db
+            .record_citation_check(&NewCitationCheck {
+                case_id: "c1".into(),
+                input_document_version_id: "v1".into(),
+                extracted_citation: "kiracı temerrüde düşmedikçe tahliye istenemez".into(),
+                candidate_precedent_id: None,
+                identity_match: "unknown".into(),
+                quote_match: "not_checked".into(),
+                reason_codes: vec![],
+            })
+            .expect("kontrol");
+        let set = |sql: &str| {
+            db.conn()
+                .execute(sql, [check.id.as_str()])
+                .map_err(StorageError::from)
+        };
+        integrity_error(
+            set("UPDATE citation_checks SET meaning_review='accurate' WHERE id=?1"),
+            "damgasız inceleme",
+        );
+        integrity_error(
+            set("UPDATE citation_checks SET meaning_review='misleading',
+                        meaning_reviewed_at='2026-02-02T00:00:00Z' WHERE id=?1"),
+            "gerekçesiz yanıltıcı",
+        );
+        integrity_error(
+            set(
+                "UPDATE citation_checks SET meaning_review='off_context', meaning_note='   ',
+                        meaning_reviewed_at='2026-02-02T00:00:00Z' WHERE id=?1",
+            ),
+            "boşluk gerekçe",
+        );
+        integrity_error(
+            set("UPDATE citation_checks SET meaning_review='tamam',
+                        meaning_reviewed_at='2026-02-02T00:00:00Z' WHERE id=?1"),
+            "kapalı küme dışı",
+        );
+        integrity_error(
+            set("UPDATE citation_checks SET meaning_note='hükmü olmayan gerekçe' WHERE id=?1"),
+            "incelenmemiş satırda gerekçe",
+        );
+        integrity_error(
+            set(
+                "UPDATE citation_checks SET meaning_reviewed_at='2026-02-02T00:00:00Z' WHERE id=?1",
+            ),
+            "incelenmemiş satırda damga",
+        );
+        // Meşru yollar: gerekçeli 'misleading' ve gerekçeli 'accurate'.
+        let misleading = db
+            .review_citation_meaning(&check.id, "misleading", "kararın kapsamı farklı")
+            .expect("gerekçeli yanıltıcı");
+        assert_eq!(misleading.meaning_review, "misleading");
+        let accurate = db
+            .review_citation_meaning(&check.id, "accurate", "")
+            .expect("gerekçesiz 'accurate' serbest");
+        assert_eq!(accurate.meaning_review, "accurate");
+    }
+
+    /// v46: eski kasalarda kalmış **tutarsız** atıf satırları sayılır (silinmez).
+    /// Ölçüldü (v45): 8 bozuk satırın hiçbiri `scope_violations()` alanında
+    /// görünmüyordu — tarama yalnız kapsam sütununa bakıyordu.
+    #[test]
+    fn the_scan_counts_citation_checks_whose_verdict_cannot_be_trusted() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
+        db.record_citation_check(&NewCitationCheck {
+            case_id: "c1".into(),
+            input_document_version_id: "v1".into(),
+            extracted_citation: "kiracı temerrüde düşmedikçe tahliye istenemez".into(),
+            candidate_precedent_id: Some(p.id.clone()),
+            identity_match: "unknown".into(),
+            quote_match: "not_checked".into(),
+            reason_codes: vec![],
+        })
+        .expect("temiz satır");
+        // v46 öncesi biçimde bozuk satırlar: kapıları düşür, yaz, geri kur.
+        let names = db
+            .scope_trigger_names("citation_checks")
+            .expect("tetikleyiciler");
+        assert!(names.len() >= 5, "beklenen kapılar kurulu değil: {names:?}");
+        let mut bodies = Vec::new();
+        for name in &names {
+            if let Some(sql) = db.trigger_sql(name).expect("gövde") {
+                bodies.push(sql);
+            }
+            db.conn()
+                .execute_batch(&format!("DROP TRIGGER {name};"))
+                .expect("düşür");
+        }
+        db.conn()
+            .execute_batch(&format!(
+                "INSERT INTO citation_checks
+                   (id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,
+                    identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,
+                    reason_codes,created_at)
+                 VALUES
+                   ('cc-dangling','c1','v1','alıntı','p-yok','unknown','not_checked','not_reviewed',
+                    '',NULL,'[]','2026-01-01T00:00:00Z'),
+                   ('cc-noreason','c1','v1','alıntı','{p}','unknown','not_checked','misleading',
+                    '', '2026-02-02T00:00:00Z','[]','2026-01-01T00:00:00Z'),
+                   ('cc-nostamp','c1','v1','alıntı','{p}','unknown','not_checked','accurate',
+                    '',NULL,'[]','2026-01-01T00:00:00Z'),
+                   ('cc-jargon','c1','v1','alıntı','{p}','unknown','not_checked','yanlis',
+                    '','2026-02-02T00:00:00Z','[]','2026-01-01T00:00:00Z'),
+                   ('cc-ghost','c1','v1','alıntı','{p}','unknown','not_checked','not_reviewed',
+                    'hükmü olmayan gerekçe',NULL,'[]','2026-01-01T00:00:00Z')",
+                p = p.id
+            ))
+            .expect("bozuk satırlar");
+        db.conn()
+            .execute_batch(&format!("{};", bodies.join(";\n")))
+            .expect("geri kur");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(
+            counts.citation_checks, 5,
+            "beş sınıf sayılır: bağı çözülemeyen emsal, gerekçesiz hüküm, damgasız inceleme, \
+             kapalı küme dışı değer, incelenmemiş satırda gerekçe"
+        );
+        let total: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM citation_checks", [], |row| row.get(0))
+            .expect("sayım");
+        assert_eq!(total, 6, "satırlar silinmez");
     }
 
     #[test]
@@ -2114,7 +2508,6 @@ mod tests {
             candidate_precedent_id: None,
             identity_match: "sahte".into(),
             quote_match: "unknown".into(),
-            meaning_review: "not_reviewed".into(),
             reason_codes: vec![],
         };
         assert!(db.record_citation_check(&check).is_err());
@@ -2410,7 +2803,6 @@ mod tests {
                 candidate_precedent_id: Some(p.id.clone()),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");
@@ -2437,7 +2829,6 @@ mod tests {
                 candidate_precedent_id: Some(p2.id.clone()),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");
@@ -2642,7 +3033,6 @@ mod tests {
                 candidate_precedent_id: Some(p.id.clone()),
                 identity_match: "unknown".into(),
                 quote_match: "not_checked".into(),
-                meaning_review: "not_reviewed".into(),
                 reason_codes: vec![],
             })
             .expect("kontrol");

@@ -1825,3 +1825,91 @@ fn upgrade_guards_transfer_transform_bindings_written_before_v45() {
         )
         .expect("meşru sicil yazılabilir");
 }
+
+/// v45'te atıf kontrolü sicili **hükmünü kanıtlamıyordu**: düz SQL var olmayan
+/// emsale bağlanabiliyor, `quote_match` sonradan çevrilebiliyor, gerekçesiz
+/// «yanıltıcı» ve damgasız «incelendi» yazılabiliyordu (ölçüm: 22 kusur
+/// yazımının 21'i kabul; `scope_violations()` bozuk 8 satırın hiçbirini
+/// saymıyordu). v46 göçü eski satırları **silmez**; tarama onları **sayar**,
+/// immutability onarımı engeller (temizlik ürün kararı).
+#[test]
+fn upgrade_keeps_citation_checks_written_before_the_verdict_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 45);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO precedents (id,court,chamber,docket_no,decision_no,application_no,
+                                     decision_date,title,source_url,user_tags,legal_issue,
+                                     completeness,created_at)
+             VALUES ('p1','Yargitay','7. Hukuk','2024/7','2025/8',NULL,NULL,'Emsal A',NULL,'[]',
+                     NULL,'complete','2026-01-01T00:00:00Z');
+             -- v46 öncesi yazılmış iki tutarsız sicil satırı:
+             -- (a) var olmayan emsal bağı, (b) gerekçesiz «yanıltıcı» hüküm.
+             INSERT INTO citation_checks
+               (id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,
+                identity_match,quote_match,meaning_review,meaning_note,meaning_reviewed_at,
+                reason_codes,created_at)
+             VALUES ('cc-gone','c1','v1','alıntı','uydurma-emsal','unknown','not_checked',
+                     'not_reviewed','',NULL,'[]','2026-01-01T00:00:00Z'),
+                    ('cc-liar','c1','v1','başka alıntı','p1','match','match','misleading',
+                     '','2026-02-02T00:00:00Z','[]','2026-01-01T00:00:00Z');",
+        )
+        .expect("v45 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM citation_checks", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(preserved, 2, "satırlar silinmez");
+    assert_eq!(
+        db.scope_violations().expect("tarama").citation_checks,
+        2,
+        "bağı çözülemeyen emsal ve gerekçesiz hüküm sayılır"
+    );
+    // Yeni yazma kapıda durur: var olmayan emsal kimliği.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO citation_checks
+               (id,case_id,input_document_version_id,extracted_citation,candidate_precedent_id,
+                identity_match,quote_match,meaning_review,reason_codes,created_at)
+             VALUES ('cc-new','c1','v1','alıntı','uydurma-emsal','unknown','not_checked',
+                     'not_reviewed','[]','2026-01-03T00:00:00Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("citation_checks"), "mesaj: {message}")
+        }
+        other => panic!("v46 kapısı uydurma emsali reddetmeli: {other:?}"),
+    }
+    // Eski hüküm UPDATE ile onarılamaz: konu ve hüküm dondu.
+    match db
+        .conn()
+        .execute(
+            "UPDATE citation_checks SET quote_match='mismatch' WHERE id='cc-liar'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("citation_checks"), "mesaj: {message}")
+        }
+        other => panic!("v46 eski hükmü onarmayı durdurmalı: {other:?}"),
+    }
+    // Meşru avukat eylemi hâlâ çalışır: gerekçeli anlam incelemesi.
+    let reviewed = db
+        .review_citation_meaning("cc-liar", "misleading", "kararın kapsamı farklı")
+        .expect("gerekçeli anlam incelemesi");
+    assert_eq!(reviewed.meaning_review, "misleading");
+    assert!(reviewed.meaning_reviewed_at.is_some());
+}
