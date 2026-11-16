@@ -3465,12 +3465,14 @@ mod tests {
                 selected_document_ids: vec![document_id.clone()],
                 expires_at: None,
                 consent_text_version: "1".into(),
-                mask_terms: Vec::new(),
+                // Onay **gönderilecek maskeyi** taşır (0030 sözleşmesi): maske
+                // sonradan seçilmez. Çalıştırma da aynı terimlerle açılır.
+                mask_terms: terms.clone(),
                 mask_plan_id: None,
             })
             .expect("onay");
         let started = db
-            .start_ai_run(&case_id, &run(&case_id, &consent.id))
+            .start_ai_run(&case_id, &run_with_mask(&consent.id, &["Ahmet Yılmaz"]))
             .expect("çalıştır");
         let scope = db
             .consent_scope_segments(&case_id, &consent.id)
@@ -4692,13 +4694,13 @@ mod tests {
                 selected_document_ids: vec![document_id],
                 expires_at: None,
                 consent_text_version: "1".into(),
-                mask_terms: Vec::new(),
+                mask_terms: vec!["Ahmet Yılmaz".into()],
                 mask_plan_id: None,
             })
             .expect("onay");
         let scope = db.consent_scope_segments(&case_id, &c.id).expect("kapsam");
         let ai_run = db
-            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .start_ai_run(&case_id, &run_with_mask(&c.id, &["Ahmet Yılmaz"]))
             .expect("çalıştır");
         let record = db
             .record_outbound_segments(
@@ -5192,19 +5194,326 @@ mod tests {
         );
     }
 
+    /// v45: gönderim sicili yalnız **onaylanan** maskeyi gösterebilir. Doğrudan
+    /// SQL yolu (uygulama hatası / elle yazım) başka maskeyi, uydurma kimliği
+    /// ya da "kimlik" (NULL) iddiasını yazamaz; yazılmış satırın bağı da
+    /// UPDATE ile değiştirilemez veya başka çalıştırmaya taşınamaz.
+    #[test]
+    fn outbound_record_can_only_claim_the_mask_the_consent_approved() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz sözleşmeyi imzaladı"],
+        );
+        let consent = consent_with_mask(&db, &case_id, &document_id, &["Ahmet Yılmaz"]);
+        let run = db
+            .start_ai_run(&case_id, &run_with_mask(&consent.id, &["Ahmet Yılmaz"]))
+            .expect("çalıştır");
+        let scope = db
+            .consent_scope_segments(&case_id, &consent.id)
+            .expect("kapsam");
+        let first = &scope.segments[0];
+        let record = db
+            .record_outbound_segments(
+                &run.id,
+                &[OutboundSegmentRef {
+                    segment_id: first.segment_id.clone(),
+                    document_version_id: first.document_version_id.clone(),
+                }],
+                Some(&OutboundMask {
+                    terms: vec!["Ahmet Yılmaz".into()],
+                }),
+            )
+            .expect("meşru sicil");
+        let legit_transform = record.transform_id.clone().expect("onaylı maske");
+        // Başka bir maske tanımı üreten onay (aynı amaç: önceki onay kapanır,
+        // ama yazılmış çalıştırma ve sicil satırı yerinde kalır).
+        let other = consent_with_mask(&db, &case_id, &document_id, &["Mehmet Demir"]);
+        let other_transform = other.outbound_transform_id.clone().expect("bağlı");
+        assert_ne!(legit_transform, other_transform);
+        let other_run = db
+            .start_ai_run(&case_id, &run_with_mask(&other.id, &["Mehmet Demir"]))
+            .expect("ikinci çalıştırma");
+
+        let insert = |id: &str, transform: Option<&str>| {
+            db.conn()
+                .execute(
+                    "INSERT INTO transfer_segments
+                       (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                        outbound_hash,transform_manifest_id,source_range_map,
+                        document_version_id,source_char_count)
+                     VALUES (?1,?2,?3,?3,'[MASKED]','hash',?4,'[]',NULL,37)",
+                    rusqlite::params![id, run.id, format!("seg-{id}"), transform],
+                )
+                .map_err(StorageError::from)
+        };
+        // (1) onaylanan maskeden farklı **var olan** maske
+        match insert("sg-other", Some(&other_transform)) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 farklı maskeyi reddetmeli: {other:?}"),
+        }
+        // (2) var olmayan dönüşüm kimliği
+        match insert("sg-invented", Some("uydurma-transform")) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 uydurma kimliği reddetmeli: {other:?}"),
+        }
+        // (3) maskeli onayın çalıştırmasında "kimlik" iddiası (NULL)
+        match insert("sg-identity", None) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 kimlik iddiasını reddetmeli: {other:?}"),
+        }
+        // (3b) `identity` türü dönüşüm satırı sicile bağlanamaz: kimlik NULL'dır.
+        db.conn()
+            .execute(
+                "INSERT INTO outbound_transforms
+                   (id,kind,settings_hash,term_count,placeholder,created_at)
+                 VALUES ('t-ident','identity','h-id',0,'[MASKED]','2026-03-01T00:00:00Z')",
+                [],
+            )
+            .expect("dönüşüm satırı");
+        match insert("sg-ident-kind", Some("t-ident")) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 identity türünü reddetmeli: {other:?}"),
+        }
+        // (3c) onayı **çözülemeyen** çalıştırma (doğrudan SQL ile açılmış):
+        // onayla eşitlik dalı boşta kalır, ama bağ yine kanıtlanabilir olmalı —
+        // var olmayan kimlik ve `identity` türü sicile yazılamaz.
+        db.conn()
+            .execute(
+                "INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                    output_schema_version,consent_id,status,usage_report,created_at)
+                 VALUES ('run-serbest',?1,'summarize','m','h','p1','o1',NULL,'running','{}',
+                         '2026-03-01T00:00:00Z')",
+                [&case_id],
+            )
+            .expect("serbest çalıştırma");
+        for (id, transform) in [
+            ("sg-free-invented", "uydurma-transform"),
+            ("sg-free-ident", "t-ident"),
+        ] {
+            match db
+                .conn()
+                .execute(
+                    "INSERT INTO transfer_segments
+                       (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                        outbound_hash,transform_manifest_id,source_range_map,
+                        document_version_id,source_char_count)
+                     VALUES (?1,'run-serbest',?2,?2,'metin','hash',?3,'[]',NULL,5)",
+                    rusqlite::params![id, format!("seg-{id}"), transform],
+                )
+                .map_err(StorageError::from)
+            {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("transfer_segments"), "{message}")
+                }
+                other => panic!("v45 onaysız çalıştırmada da bağı denetlemeli: {other:?}"),
+            }
+        }
+        // (4) yazılmış satırın dönüşümü başka maskeye çevrilemez
+        match db
+            .conn()
+            .execute(
+                "UPDATE transfer_segments SET transform_manifest_id=?1 WHERE outbound_segment_id=?2",
+                rusqlite::params![other_transform, first.segment_id],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 sicil bağını dondurmalı: {other:?}"),
+        }
+        // (5) sicil satırı başka çalıştırmaya taşınamaz
+        match db
+            .conn()
+            .execute(
+                "UPDATE transfer_segments SET ai_run_id=?1 WHERE outbound_segment_id=?2",
+                rusqlite::params![other_run.id, first.segment_id],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 satırı çalıştırmadan koparmamalı: {other:?}"),
+        }
+        // (6) yazılmış satırın bağı **silinemez** (NULL = "kimlik" iddiası olurdu)
+        match db
+            .conn()
+            .execute(
+                "UPDATE transfer_segments SET transform_manifest_id=NULL WHERE outbound_segment_id=?1",
+                [&first.segment_id],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 sicil bağını silmeyi durdurmalı: {other:?}"),
+        }
+        // (7) maskesiz onayın çalıştırmasında maskeli sicil satırı yazılamaz:
+        // 0 terimli onay "kimlik"tir, sicil de NULL bağ taşımalı.
+        let plain = consent_with_mask(&db, &case_id, &document_id, &[]);
+        let plain_run = db
+            .start_ai_run(&case_id, &run_with_mask(&plain.id, &[]))
+            .expect("maskesiz çalıştırma");
+        match db
+            .conn()
+            .execute(
+                "INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                    outbound_hash,transform_manifest_id,source_range_map,
+                    document_version_id,source_char_count)
+                 VALUES ('sg-plain',?2,'s-plain','s-plain','metin','hash',?1,'[]',NULL,5)",
+                rusqlite::params![legit_transform, plain_run.id],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_segments"), "{message}")
+            }
+            other => panic!("v45 maskesiz onayda maske iddiasını reddetmeli: {other:?}"),
+        }
+        assert!(
+            db.list_transfer_segments(&plain_run.id)
+                .expect("sicil")
+                .is_empty(),
+            "reddedilen satır yazılmamalı"
+        );
+        // Aynı değeri yeniden yazmak kapıya takılmaz (değişiklik yok).
+        db.conn()
+            .execute(
+                "UPDATE transfer_segments SET transform_manifest_id=?1 WHERE outbound_segment_id=?2",
+                rusqlite::params![legit_transform, first.segment_id],
+            )
+            .expect("aynı bağ yazılabilir");
+        let rows = db.list_transfer_segments(&run.id).expect("sicil");
+        assert_eq!(rows.len(), 1, "reddedilen satırlar iz bırakmamalı");
+        assert_eq!(rows[0].transform_kind, "mask_terms");
+        assert_eq!(rows[0].mask_term_count, 1);
+    }
+
+    /// v45: onayın maske bağı **yasal kayıttır** — sonradan başka maskeye
+    /// çevrilemez, silinemez; uydurma/`identity` dönüşüm kimliğiyle onay
+    /// yazılamaz. İptal damgası gibi kapsam dışı sütunlar güncellenebilir.
+    #[test]
+    fn consent_mask_binding_cannot_be_rewritten_or_invented() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(&db, &case_id, "Belge", &["Metin"]);
+        let first = consent_with_mask(&db, &case_id, &document_id, &["Ahmet Yılmaz"]);
+        let second = consent_with_mask(&db, &case_id, &document_id, &["Mehmet Demir"]);
+        let second_transform = second.outbound_transform_id.clone().expect("bağlı");
+        assert_ne!(
+            first.outbound_transform_id.as_deref(),
+            Some(second_transform.as_str())
+        );
+        // Bağ başka maskeye çevrilemez.
+        match db
+            .conn()
+            .execute(
+                "UPDATE transfer_consents SET outbound_transform_id=?1 WHERE id=?2",
+                rusqlite::params![second_transform, first.id],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_consents"), "{message}")
+            }
+            other => panic!("v45 onay bağını dondurmalı: {other:?}"),
+        }
+        // Bağ silinemez.
+        match db
+            .conn()
+            .execute(
+                "UPDATE transfer_consents SET outbound_transform_id=NULL WHERE id=?1",
+                [&second.id],
+            )
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_consents"), "{message}")
+            }
+            other => panic!("v45 onay bağını silmeyi durdurmalı: {other:?}"),
+        }
+        let insert_consent = |id: &str, transform: &str| {
+            db.conn()
+                .execute(
+                    "INSERT INTO transfer_consents
+                       (id,provider_snapshot,case_scope,purpose,selected_document_ids,
+                        consent_text_version,approved_at,outbound_transform_id)
+                     VALUES (?1,'snap',?2,'ozet',?3,'1','2026-03-01T00:00:00Z',?4)",
+                    rusqlite::params![id, case_id, format!("[\"{document_id}\"]"), transform],
+                )
+                .map_err(StorageError::from)
+        };
+        // Uydurma dönüşüm kimliği.
+        match insert_consent("con-invented", "uydurma-transform") {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_consents"), "{message}")
+            }
+            other => panic!("v45 uydurma onay bağını reddetmeli: {other:?}"),
+        }
+        // `identity` türü dönüşüm: kimlik NULL ile temsil edilir, satırla değil.
+        db.conn()
+            .execute(
+                "INSERT INTO outbound_transforms
+                   (id,kind,settings_hash,term_count,placeholder,created_at)
+                 VALUES ('t-ident','identity','h-id',0,'[MASKED]','2026-03-01T00:00:00Z')",
+                [],
+            )
+            .expect("dönüşüm satırı");
+        match insert_consent("con-ident", "t-ident") {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_consents"), "{message}")
+            }
+            other => panic!("v45 identity bağını reddetmeli: {other:?}"),
+        }
+        // Kapsam dışı sütun (iptal damgası) güncellenebilir kalır.
+        db.conn()
+            .execute(
+                "UPDATE transfer_consents SET revoked_at='2026-03-02T00:00:00Z' WHERE id=?1",
+                [&second.id],
+            )
+            .expect("iptal damgası");
+        assert!(db
+            .get_transfer_consent(&second.id)
+            .expect("onay")
+            .expect("var")
+            .revoked_at
+            .is_some());
+    }
+
     #[test]
     fn pre_v30_consent_without_mask_binding_is_refused() {
         let (db, case_id, _) = setup();
         let consent = consent(&db, &case_id);
-        // v29 kasasından gelen onay: maske bağı yok (\u2192 NULL).
+        // v29 kasasından gelen onay: maske bağı **yok** (→ NULL). v45'ten sonra
+        // bağ UPDATE ile silinemez (kapı), ama eski kasa satırı böyle
+        // **yazılmıştır**: aynı alanlarla NULL bağlı satır doğrudan eklenir.
         db.conn()
             .execute(
-                "UPDATE transfer_consents SET outbound_transform_id=NULL WHERE id=?1",
+                "INSERT INTO transfer_consents
+                   (id,provider_snapshot,case_scope,purpose,selected_document_ids,
+                    expires_at,consent_text_version,approved_at,revoked_at,outbound_transform_id)
+                 SELECT 'eski-onay',provider_snapshot,case_scope,purpose,selected_document_ids,
+                        expires_at,consent_text_version,approved_at,revoked_at,NULL
+                   FROM transfer_consents WHERE id=?1",
                 [&consent.id],
             )
             .expect("eski onay");
         assert_eq!(
-            db.start_ai_run(&case_id, &run(&case_id, &consent.id))
+            db.start_ai_run(&case_id, &run(&case_id, "eski-onay"))
                 .unwrap_err()
                 .code(),
             "E_AI_CONSENT_UNBOUND",

@@ -1684,3 +1684,144 @@ fn upgrade_backfills_redaction_output_trace() {
     assert_eq!(rows[0].output_link_state, "removed");
     assert_eq!(rows[0].output_version_ref.as_deref(), Some("v-cikti"));
 }
+
+/// v45 — kapıdan **önce** yazılmış yanlış dönüşüm bağları silinmez (immutability
+/// onları UPDATE ile onarmayı da engeller), yeni yanlış bağ kapıda durur. Bu
+/// sınıf kapsam taramasında **sayılmaz** (tablolar `case_id` taşımaz) — dürüst
+/// sınır.
+#[test]
+fn upgrade_guards_transfer_transform_bindings_written_before_v45() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 44);
+        conn.execute(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','api_allowed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("dosya");
+        conn.execute(
+            "INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','storage-1',1,10,'k1','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("blob");
+        conn.execute(
+            "INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','Belge','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("belge");
+        conn.execute(
+            "INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',?1,10,'application/pdf','2026-01-01T00:00:00Z')",
+            [&"a".repeat(64)],
+        )
+        .expect("sürüm");
+        conn.execute_batch(
+            "INSERT INTO outbound_transforms (id,kind,settings_hash,term_count,placeholder,created_at)
+             VALUES ('tA','mask_terms','h-a',1,'[MASKED]','2026-01-01T00:00:00Z'),
+                    ('tI','identity','h-id',0,'[MASKED]','2026-01-01T00:00:00Z');
+             INSERT INTO transfer_consents
+               (id,provider_snapshot,case_scope,purpose,selected_document_ids,
+                consent_text_version,approved_at,outbound_transform_id)
+             VALUES ('con-old','snap','c1','ozet','[\"d1\"]','1','2026-01-01T00:00:00Z',NULL),
+                    ('con-x','snap','c1','ozet','[\"d1\"]','1','2026-01-02T00:00:00Z','tA');
+             INSERT INTO ai_runs
+               (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                output_schema_version,consent_id,status,usage_report,created_at)
+             VALUES ('old-bad','c1','summarize','m','h','p1','o1','con-x','running',
+                     '{\"billing\":\"unknown\"}','2026-01-03T00:00:00Z'),
+                    ('old-ident','c1','summarize','m','h','p1','o1','con-old','running',
+                     '{\"billing\":\"unknown\"}','2026-01-03T00:00:00Z');
+             -- v45 öncesi yazılmış yanlış bağlar: (a) uydurma dönüşüm kimliği,
+             -- (b) maskeli onayın çalıştırmasında 'identity' satırı.
+             INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                outbound_hash,transform_manifest_id,source_range_map,document_version_id,
+                source_char_count)
+             VALUES ('old-bad-row','old-bad','s-bad','s-bad','[MASKED]','hash',
+                     'uydurma-transform','[]',NULL,44),
+                    ('old-ident-row','old-ident','s-ident','s-ident','düz metin','hash',
+                     'tI','[]',NULL,9);",
+        )
+        .expect("v44 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM transfer_segments", [], |row| {
+            row.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(preserved, 2, "satırlar silinmez");
+    assert_eq!(
+        db.scope_violations().expect("tarama").transfer_segments,
+        0,
+        "dönüşüm bağı sınıfı kapsam taramasında sayılmaz (dürüst sınır)"
+    );
+    // Yeni yanlış bağ kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                outbound_hash,transform_manifest_id,source_range_map,document_version_id,
+                source_char_count)
+             VALUES ('new-x','old-bad','s-new','s-new','[MASKED]','hash',
+                     'uydurma-transform','[]',NULL,44)",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("transfer_segments"), "mesaj: {message}")
+        }
+        other => panic!("v45 kapısı uydurma dönüşümü reddetmeli: {other:?}"),
+    }
+    // Onayın maske bağı dondu: eski satır NULL'a çekilemez (onarım ürün kararı).
+    match db
+        .conn()
+        .execute(
+            "UPDATE transfer_consents SET outbound_transform_id=NULL WHERE id='con-x'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("transfer_consents"), "mesaj: {message}")
+        }
+        other => panic!("v45 onay bağını dondurmalı: {other:?}"),
+    }
+    // Eski yanlış sicil satırı da UPDATE ile onarılamaz (bağ değişmez).
+    match db
+        .conn()
+        .execute(
+            "UPDATE transfer_segments SET transform_manifest_id='tA' WHERE id='old-bad-row'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("transfer_segments"), "mesaj: {message}")
+        }
+        other => panic!("v45 eski yanlış bağı onarmayı durdurmalı: {other:?}"),
+    }
+    // Meşru yazma hâlâ çalışır: onaylanan maskeyle yeni sicil satırı.
+    db.conn()
+        .execute(
+            "INSERT INTO transfer_segments
+               (id,ai_run_id,outbound_segment_id,source_segment_id,outbound_text,
+                outbound_hash,transform_manifest_id,source_range_map,document_version_id,
+                source_char_count)
+             VALUES ('new-ok','old-bad','s-ok','s-ok','[MASKED]','hash','tA','[]',NULL,44)",
+            [],
+        )
+        .expect("meşru sicil yazılabilir");
+}

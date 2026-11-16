@@ -1430,6 +1430,10 @@ mod tests {
         case_id: String,
         version_id: String,
         run_id: String,
+        /// Maskeli gönderim sicilinin çalıştırması: maske **onayın parçasıdır**
+        /// (0030), bu yüzden aynı çalıştırmada hem kimlik hem maske sicili
+        /// yazılamaz (v45 kapısı).
+        masked_run: String,
         parse_run_id: String,
     }
 
@@ -1496,6 +1500,35 @@ mod tests {
                 },
             )
             .expect("run");
+        // Maskeli gönderim **kendi onayını** ister: maske onayın parçasıdır
+        // (0030) ve v45 kapısı sicil satırının onaydan farklı maskeyle
+        // yazılmasını durdurur. Aynı belge kümesi, ayrı çalıştırma.
+        let masked_consent = db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: case.id.clone(),
+                purpose: "ozet".into(),
+                selected_document_ids: vec![document.id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: vec!["Kiracı".into()],
+                mask_plan_id: None,
+            })
+            .expect("maskeli onay");
+        let masked_run = db
+            .start_ai_run(
+                &case.id,
+                &NewAiRun {
+                    provider_id: "p1".into(),
+                    model_snapshot: "unknown".into(),
+                    input_manifest_hash: "h".into(),
+                    prompt_version: "1".into(),
+                    output_schema_version: "1".into(),
+                    consent_id: masked_consent.id,
+                    mask_terms: vec!["Kiracı".into()],
+                },
+            )
+            .expect("maskeli run");
         let parse_run = db
             .start_parse_run(&version.id, &case.id, "plain", "2", "{}")
             .expect("parse");
@@ -1524,6 +1557,7 @@ mod tests {
             case_id: case.id,
             version_id: version.id,
             run_id: run.id,
+            masked_run: masked_run.id,
             parse_run_id: parse_run.id,
         }
     }
@@ -2270,7 +2304,7 @@ mod tests {
         fixture
             .db
             .record_outbound_segments(
-                &fixture.run_id,
+                &fixture.masked_run,
                 &refs,
                 Some(&crate::ai::OutboundMask {
                     terms: terms.iter().map(|term| (*term).to_string()).collect(),
@@ -2291,7 +2325,7 @@ mod tests {
         let report = fixture
             .db
             .validate_ai_candidate(
-                &fixture.run_id,
+                &fixture.masked_run,
                 "claim_candidate",
                 &candidate(&fixture.version_id, quote_text, Some(0)),
             )
@@ -2327,7 +2361,7 @@ mod tests {
         let report = fixture
             .db
             .validate_ai_candidate(
-                &fixture.run_id,
+                &fixture.masked_run,
                 "claim_candidate",
                 &candidate(
                     &fixture.version_id,
@@ -2361,7 +2395,7 @@ mod tests {
         let report = fixture
             .db
             .validate_ai_candidate(
-                &fixture.run_id,
+                &fixture.masked_run,
                 "claim_candidate",
                 &candidate(
                     &fixture.version_id,
