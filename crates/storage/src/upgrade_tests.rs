@@ -1176,14 +1176,17 @@ fn upgrade_guards_precedent_conflict_markers_written_before_v44() {
         }
         other => panic!("v44 değişmezlik kapısı onarım yazmasını durdurmalı: {other:?}"),
     }
-    // Yeni yanlış işaret kapıda durur.
+    // Yeni yanlış işaret kapıda durur (v48 notu: satır **biçimce geçerli**
+    // yazılır — reddi veren kural v44'tür, biçim kapısı maskelemez).
     match db
         .conn()
         .execute(
             "INSERT INTO precedent_versions
                (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
-                identity_conflict,conflict_with_version_id)
-             VALUES ('new-x','pA','2026-02-01T00:00:00Z','paste','hash-y','text_verified',1,'vB1')",
+                full_text,text_char_count,identity_conflict,conflict_with_version_id)
+             VALUES ('new-x','pA','2026-02-01T00:00:00Z','paste',
+                     '9999999999999999999999999999999999999999999999999999999999999999',
+                     'text_verified','Yeni metin',10,1,'vB1')",
             [],
         )
         .map_err(StorageError::from)
@@ -1198,11 +1201,98 @@ fn upgrade_guards_precedent_conflict_markers_written_before_v44() {
         .execute(
             "INSERT INTO precedent_versions
                (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
-                identity_conflict,conflict_with_version_id)
-             VALUES ('new-ok','pA','2026-02-02T00:00:00Z','paste','hash-new','text_verified',1,'old-ok')",
+                full_text,text_char_count,identity_conflict,conflict_with_version_id)
+             VALUES ('new-ok','pA','2026-02-02T00:00:00Z','paste',
+                     'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1',
+                     'text_verified','Yeni metin',10,1,'old-ok')",
             [],
         )
         .expect("meşru çakışma yazılabilmeli");
+    // Kapsam taraması bu tabloyu saymaz (kapsam sütunu yok).
+    assert_eq!(db.scope_violations().expect("tarama").total(), 0);
+}
+
+/// v48 — kapıdan **önce** yazılmış bozuk metin/özet satırları **silinmez**;
+/// metinleri UPDATE ile onarılamaz (içerik donmuştur), yeni bozuk yazım
+/// kapıda durur, çekirdeğin biçimi geçer. Onarım yolu **yeni sürüm** yazmaktır
+/// (nüsha tekrarı `body_hash` ile yakalanır).
+#[test]
+fn upgrade_keeps_precedent_versions_written_before_the_content_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 47);
+        conn.execute_batch(
+            "INSERT INTO precedents (id,court,created_at)
+             VALUES ('p1','Yargıtay','2026-01-01T00:00:00Z');
+             INSERT INTO precedent_versions
+               (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                full_text,text_char_count,identity_conflict)
+             VALUES ('old-bad-hash','p1','2026-01-01T00:00:00Z','paste','hash',
+                     'text_verified','Eski metin',10,0),
+                    ('old-no-text','p1','2026-01-02T00:00:00Z','paste',
+                     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                     'text_verified',NULL,0,0);",
+        )
+        .expect("v47 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM precedent_versions", [], |row| {
+            row.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(preserved, 2, "satırlar silinmez");
+    // Bozuk metin UPDATE ile onarılamaz: içerik donmuştur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE precedent_versions SET full_text='Onarılmış metin', text_char_count=15
+               WHERE id='old-no-text'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("precedent_versions"), "mesaj: {message}")
+        }
+        other => panic!("v48 değişmezlik kapısı onarım yazmasını durdurmalı: {other:?}"),
+    }
+    // Yeni bozuk yazım kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO precedent_versions
+               (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                full_text,text_char_count,identity_conflict)
+             VALUES ('new-bad','p1','2026-02-01T00:00:00Z','paste','hash',
+                     'text_verified','Metin',5,0)",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("precedent_versions"), "mesaj: {message}")
+        }
+        other => panic!("v48 biçim kapısı bozuk özeti durdurmalı: {other:?}"),
+    }
+    // Çekirdeğin biçimi (64 hex + dolu metin + uyumlu sayı) geçer.
+    db.conn()
+        .execute(
+            "INSERT INTO precedent_versions
+               (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                full_text,text_char_count,identity_conflict)
+             VALUES ('new-ok','p1','2026-02-02T00:00:00Z','paste',
+                     'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                     'text_verified','Yeni metin',10,0)",
+            [],
+        )
+        .expect("çekirdeğin biçimi yazılabilmeli");
     // Kapsam taraması bu tabloyu saymaz (kapsam sütunu yok).
     assert_eq!(db.scope_violations().expect("tarama").total(), 0);
 }

@@ -778,61 +778,74 @@ mod tests {
     /// gösterebiliyor ve **aynı** `body_hash` ile "farklı metin" rozeti
     /// yazılabiliyordu; bayrak 1 + işaret NULL da geçiyordu. Hedef sonradan
     /// yazılarak ters yönden de iddia bozulabiliyordu.
+    ///
+    /// v48 fikstür düzeltmesi (dürüst): satırlar artık **64 küçük harf hex**
+    /// özet, dolu `full_text` ve uyumlu `text_char_count` ile yazılır — yoksa
+    /// v48 biçim kapısı v44 kurallarını **maskelerdi** (v47'nin M5 dersi).
     #[test]
     fn a_precedent_conflict_marker_must_be_true() {
         let db = db();
+        let h = |c: &str| c.repeat(64);
         db.conn()
-            .execute_batch(
+            .execute_batch(&format!(
                 "INSERT INTO precedents (id,court,created_at)
                  VALUES ('pA','Yargıtay','2026-01-01T00:00:00Z'),
                         ('pB','Danıştay','2026-01-01T00:00:00Z');
                  INSERT INTO precedent_versions
-                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,identity_conflict)
-                 VALUES ('vA1','pA','2026-01-01T00:00:00Z','paste','hash-a','text_verified',0),
-                        ('vA2','pA','2026-01-01T00:00:00Z','paste','hash-b','text_verified',0),
-                        ('vB1','pB','2026-01-01T00:00:00Z','paste','hash-z','text_verified',0);",
-            )
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                    full_text,text_char_count,identity_conflict)
+                 VALUES ('vA1','pA','2026-01-01T00:00:00Z','paste','{}','text_verified','Metin A',7,0),
+                        ('vA2','pA','2026-01-01T00:00:00Z','paste','{}','text_verified','Metin B',7,0),
+                        ('vB1','pB','2026-01-01T00:00:00Z','paste','{}','text_verified','Metin Z',7,0);",
+                h("a"),
+                h("b"),
+                h("8")
+            ))
             .expect("emsaller");
         let insert = |id: &str, precedent: &str, hash: &str, flag: i64, pointer: Option<&str>| {
             db.conn().execute(
                 "INSERT INTO precedent_versions
                    (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
-                    identity_conflict,conflict_with_version_id)
-                 VALUES (?1,?2,'2026-02-01T00:00:00Z','paste',?3,'text_verified',?4,?5)",
+                    full_text,text_char_count,identity_conflict,conflict_with_version_id)
+                 VALUES (?1,?2,'2026-02-01T00:00:00Z','paste',?3,'text_verified','Sürüm metni',11,?4,?5)",
                 rusqlite::params![id, precedent, hash, flag, pointer],
             )
         };
         // Meşru: kendi emsalinin farklı metinli sürümü · çakışmasız sürüm ·
         // var olmayan hedef (denetim izi).
-        insert("vA3", "pA", "hash-c", 1, Some("vA1")).expect("kendi sürümü meşru");
-        insert("vA4", "pA", "hash-d", 0, None).expect("çakışmasız meşru");
-        insert("vA5", "pA", "hash-e", 1, Some("olmayan-sürüm")).expect("silinmiş hedef izi");
+        insert("vA3", "pA", &h("c"), 1, Some("vA1")).expect("kendi sürümü meşru");
+        insert("vA4", "pA", &h("d"), 0, None).expect("çakışmasız meşru");
+        insert("vA5", "pA", &h("e"), 1, Some("olmayan-sürüm")).expect("silinmiş hedef izi");
         // A emsalinin sürümü B emsalinin sürümünü gösteremez.
-        integrity_error(insert("vA6", "pA", "hash-f", 1, Some("vB1")));
+        integrity_error(insert("vA6", "pA", &h("f"), 1, Some("vB1")));
         // Sürüm kendini gösteremez.
-        integrity_error(insert("vA7", "pA", "hash-g", 1, Some("vA7")));
+        integrity_error(insert("vA7", "pA", &h("0"), 1, Some("vA7")));
         // "Farklı metin" iddiası aynı hash ile yazılamaz.
-        integrity_error(insert("vA8", "pA", "hash-a", 1, Some("vA1")));
+        integrity_error(insert("vA8", "pA", &h("a"), 1, Some("vA1")));
         // Bayrak yalnız 0/1; rozet ile işaret **birlikte** yazılır.
-        integrity_error(insert("vA9", "pA", "hash-h", 3, Some("vA1")));
+        integrity_error(insert("vA9", "pA", &h("1"), 3, Some("vA1")));
         // Eşitlik kuralı 3'ü "1 değil" sayar; 0/1 kuralı tek başına gerekli.
-        integrity_error(insert("vA9b", "pA", "hash-h2", 3, None));
-        integrity_error(insert("vA10", "pA", "hash-i", 0, Some("vA1")));
-        integrity_error(insert("vA11", "pA", "hash-j", 1, None));
+        integrity_error(insert("vA9b", "pA", &h("2"), 3, None));
+        integrity_error(insert("vA10", "pA", &h("3"), 0, Some("vA1")));
+        integrity_error(insert("vA11", "pA", &h("4"), 1, None));
         // Ters yön: hedef **sonradan** yazılsa da eski iddia tutmalı.
         db.conn()
-            .execute_batch(
+            .execute_batch(&format!(
                 "INSERT INTO precedent_versions
                    (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
-                    identity_conflict,conflict_with_version_id)
-                 VALUES ('vA12','pA','2026-02-02T00:00:00Z','paste','hash-k','text_verified',1,'vLater'),
-                        ('vA13','pA','2026-02-02T00:00:00Z','paste','hash-m','text_verified',1,'vLaterSame');",
-            )
+                    full_text,text_char_count,identity_conflict,conflict_with_version_id)
+                 VALUES ('vA12','pA','2026-02-02T00:00:00Z','paste','{}','text_verified',
+                         'Sürüm metni',11,1,'vLater'),
+                        ('vA13','pA','2026-02-02T00:00:00Z','paste','{}','text_verified',
+                         'Sürüm metni',11,1,'vLaterSame');",
+                h("5"),
+                h("7")
+            ))
             .expect("henüz yazılmamış hedefler");
         // Çapraz emsale yazılan hedef eski işareti çapraz bırakırdı.
-        integrity_error(insert("vLater", "pB", "hash-l", 0, None));
+        integrity_error(insert("vLater", "pB", &h("6"), 0, None));
         // Aynı hash'li hedef eski "farklı metin" iddiasını yalana çevirirdi.
-        integrity_error(insert("vLaterSame", "pA", "hash-m", 0, None));
+        integrity_error(insert("vLaterSame", "pA", &h("7"), 0, None));
         assert_eq!(version_count(&db), 8, "yalnız meşru satırlar");
     }
 
@@ -846,25 +859,33 @@ mod tests {
     #[test]
     fn a_precedent_version_conflict_marker_is_immutable() {
         let db = db();
+        let h = |c: &str| c.repeat(64);
         db.conn()
-            .execute_batch(
+            .execute_batch(&format!(
                 "INSERT INTO precedents (id,court,created_at)
                  VALUES ('pA','Yargıtay','2026-01-01T00:00:00Z'),
                         ('pB','Danıştay','2026-01-01T00:00:00Z');
                  INSERT INTO precedent_versions
-                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,identity_conflict)
-                 VALUES ('vA1','pA','2026-01-01T00:00:00Z','paste','hash-a','text_verified',0),
-                        ('vB1','pB','2026-01-03T00:00:00Z','paste','hash-z','text_verified',0);
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                    full_text,text_char_count,identity_conflict)
+                 VALUES ('vA1','pA','2026-01-01T00:00:00Z','paste','{}','text_verified','Metin A',7,0),
+                        ('vB1','pB','2026-01-03T00:00:00Z','paste','{}','text_verified','Metin Z',7,0);
                  INSERT INTO precedent_versions
                    (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
-                    identity_conflict,conflict_with_version_id)
-                 VALUES ('vA2','pA','2026-01-02T00:00:00Z','paste','hash-b','text_verified',1,'vA1');",
-            )
+                    full_text,text_char_count,identity_conflict,conflict_with_version_id)
+                 VALUES ('vA2','pA','2026-01-02T00:00:00Z','paste','{}','text_verified',
+                         'Metin B',7,1,'vA1');",
+                h("a"),
+                h("8"),
+                h("b")
+            ))
             .expect("sürümler");
+        // v48 notu: bu yazma **biçimce geçerli** bir özet kullanır, böylece
+        // reddi veren kural v44'ün değişmezlik kapısıdır (maskeleme yok).
         for sql in [
             "UPDATE precedent_versions SET conflict_with_version_id='vB1' WHERE id='vA2'",
             "UPDATE precedent_versions SET identity_conflict=0 WHERE id='vA2'",
-            "UPDATE precedent_versions SET body_hash='hash-a' WHERE id='vA2'",
+            "UPDATE precedent_versions SET body_hash='9999999999999999999999999999999999999999999999999999999999999999' WHERE id='vA2'",
             "UPDATE precedent_versions SET precedent_id='pB' WHERE id='vA2'",
             "UPDATE precedent_versions SET id='vA2-yeni' WHERE id='vA2'",
         ] {
@@ -892,7 +913,172 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .expect("vA2");
-        assert_eq!(row, ("pA".into(), 1, Some("vA1".into()), "hash-b".into()));
+        assert_eq!(row, ("pA".into(), 1, Some("vA1".into()), h("b")));
         assert_eq!(version_count(&db), 3);
+    }
+
+    /// v48: **emsal sürümünün metni ve özeti iyi-biçimli doğar ve donar** —
+    /// `body_hash` 64 küçük harf hex, `full_text` dolu ve kırpılmış,
+    /// `text_char_count` metnin karakter sayısı, `source_kind` kapalı küme,
+    /// `acquired_at` boş değil; yazıldıktan sonra metin/karakter sayısı/köken/
+    /// edinme zamanı değişmez, `document_version_id` yalnız **koparılabilir**.
+    ///
+    /// Ölçülen kusur (v47, gerçek SQLite): 14 yazımın **14'ü** kabul
+    /// ediliyordu — `'hash'` gibi 64 hane olmayan özet ekranda özet diye
+    /// basılıyor, `full_text` boş/NULL iken `text_verified` yazılabiliyor,
+    /// `text_char_count` metinle uyuşmuyor, yazılmış metin UPDATE ile
+    /// çevrilebiliyordu (alıntı doğrulaması başka metne bakardı).
+    #[test]
+    fn precedent_version_content_is_frozen_and_well_formed() {
+        let db = db();
+        let h = |c: &str| c.repeat(64);
+        db.conn()
+            .execute_batch(&format!(
+                "INSERT INTO precedents (id,court,created_at)
+                 VALUES ('p1','Yargıtay','2026-01-01T00:00:00Z');
+                 INSERT INTO precedent_versions
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                    full_text,text_char_count,identity_conflict)
+                 VALUES ('v-ok','p1','2026-01-01T00:00:00Z','paste','{}','text_verified',
+                         'Ödeme yapılmadı',15,0);",
+                h("b")
+            ))
+            .expect("meşru satır");
+        let insert =
+            |id: &str, hash: &str, text: Option<&str>, count: i64, kind: &str, at: &str| {
+                db.conn().execute(
+                    "INSERT INTO precedent_versions
+                       (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                        full_text,text_char_count,identity_conflict)
+                     VALUES (?1,'p1',?2,?3,?4,'text_verified',?5,?6,0)",
+                    rusqlite::params![id, at, kind, hash, text, count],
+                )
+            };
+        // Özet biçimi: 64 küçük harf hex (çekirdek SHA-256'yı hex kodlar).
+        integrity_error(insert(
+            "v-short",
+            "hash",
+            Some("Metin"),
+            5,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        integrity_error(insert(
+            "v-upper",
+            &h("B"),
+            Some("Metin"),
+            5,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        integrity_error(insert(
+            "v-63",
+            &"b".repeat(63),
+            Some("Metin"),
+            5,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        // Metin: NULL / boş / yalnız boşluk / kırpılmamış olamaz.
+        integrity_error(insert(
+            "v-empty",
+            &h("c"),
+            Some(""),
+            0,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        integrity_error(insert(
+            "v-blank",
+            &h("c"),
+            Some("   "),
+            3,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        integrity_error(insert(
+            "v-null",
+            &h("c"),
+            None,
+            0,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        integrity_error(insert(
+            "v-edge",
+            &h("c"),
+            Some(" metin "),
+            7,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        // Karakter sayısı metnin kendisiyle uyuşur (çekirdek `chars().count()`).
+        integrity_error(insert(
+            "v-count",
+            &h("c"),
+            Some("Ödeme yapılmadı"),
+            99,
+            "paste",
+            "2026-02-01T00:00:00Z",
+        ));
+        // Köken kapalı küme; edinme zamanı boş olamaz.
+        integrity_error(insert(
+            "v-kind",
+            &h("c"),
+            Some("Metin"),
+            5,
+            "uydurma",
+            "2026-02-01T00:00:00Z",
+        ));
+        integrity_error(insert("v-date", &h("c"), Some("Metin"), 5, "paste", ""));
+        // Yazıldıktan sonra metin/köken/zaman donar.
+        for sql in [
+            "UPDATE precedent_versions SET full_text='Başka karar metni' WHERE id='v-ok'",
+            "UPDATE precedent_versions SET text_char_count=1 WHERE id='v-ok'",
+            "UPDATE precedent_versions SET acquired_at='2020-01-01T00:00:00Z' WHERE id='v-ok'",
+            "UPDATE precedent_versions SET source_kind='document' WHERE id='v-ok'",
+        ] {
+            integrity_error(db.conn().execute(sql, []));
+        }
+        // `document_version_id` sonradan **takılamaz** (köken iddiası taşınmaz)…
+        db.conn()
+            .execute(
+                "INSERT INTO precedent_versions
+                   (id,precedent_id,document_version_id,acquired_at,source_kind,body_hash,
+                    verification_state,full_text,text_char_count,identity_conflict)
+                 VALUES ('v-dv','p1','dv1','2026-01-04T00:00:00Z','document',?1,
+                         'text_verified','Karar metni',11,0)",
+                [h("d")],
+            )
+            .expect("bağıyla doğan satır");
+        integrity_error(db.conn().execute(
+            "UPDATE precedent_versions SET document_version_id='dv2' WHERE id='v-dv'",
+            [],
+        ));
+        integrity_error(db.conn().execute(
+            "UPDATE precedent_versions SET document_version_id='dv1' WHERE id='v-ok'",
+            [],
+        ));
+        // … ama belge sürümü silinebildiği için **koparılabilir** (meşru onarım).
+        db.conn()
+            .execute(
+                "UPDATE precedent_versions SET document_version_id=NULL WHERE id='v-dv'",
+                [],
+            )
+            .expect("bağı koparma meşru onarım");
+        // Durum ilerler (v35 dersi) ve değişmeyen yazma takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE precedent_versions SET verification_state='metadata_verified' WHERE id='v-ok'",
+                [],
+            )
+            .expect("durum güncellenebilmeli");
+        db.conn()
+            .execute(
+                "UPDATE precedent_versions SET full_text='Ödeme yapılmadı' WHERE id='v-ok'",
+                [],
+            )
+            .expect("değişmeyen yazma");
+        assert_eq!(version_count(&db), 2, "yalnız meşru satırlar");
     }
 }

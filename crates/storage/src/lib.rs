@@ -421,9 +421,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0047_transfer_segment_content_guard",
         sql: include_str!("migrations/0047_transfer_segment_content_guard.sql"),
     },
+    Migration {
+        version: 48,
+        name: "0048_precedent_version_content_guard",
+        sql: include_str!("migrations/0048_precedent_version_content_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 47;
+pub const CURRENT_SCHEMA_VERSION: u32 = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
