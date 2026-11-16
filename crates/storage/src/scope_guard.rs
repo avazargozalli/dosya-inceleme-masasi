@@ -72,6 +72,12 @@
 //!   `open`/`missing`/`not_applicable` bağ kabul etmez. Ölçüldü (v41): doğrudan
 //!   SQL ile A'nın öğesine B'nin belgesi yazılıyor ve ekran çıplak UUID
 //!   gösteriyordu; bozuk JSON **tüm listeyi** okunamaz kılıyordu.
+//! * **çalıştırmanın yasal dayanağı** (v43) — `ai_runs` (`case_id` +
+//!   `consent_id`): "bu gönderim hangi onayla yapıldı" kaydı, **kendi**
+//!   dosyasının onayını göstermeli; çalıştırmanın dosyası ve onayı kurulduktan
+//!   sonra **değişmez**. Ölçüldü (v42): A'nın çalıştırmasına B'nin onayı
+//!   yazılıyor, çalıştırma başka dosyaya taşınıyor ve mevcut gönderim sicili
+//!   sessizce çaprazlaşıyordu; tarama `ai_runs`ı hiç saymıyordu.
 //!
 //! Bu modül iki şeyi taşır:
 //!
@@ -108,7 +114,7 @@ use crate::{Database, StorageError};
 /// `linked_document_ids` dizisinin her elemanı kendi dosyasında silinmemiş bir
 /// belge olmalı, durum ile liste çelişemez.
 #[cfg(test)]
-pub(crate) const GUARDED_TABLES: [&str; 24] = [
+pub(crate) const GUARDED_TABLES: [&str; 25] = [
     // zincir (v31)
     "document_versions",
     "parse_runs",
@@ -141,6 +147,8 @@ pub(crate) const GUARDED_TABLES: [&str; 24] = [
     "transfer_consents",
     // kontrol listesi kanıt bağları (v42)
     "case_checklist_items",
+    // çalıştırmanın yasal dayanağı (v43)
+    "ai_runs",
 ];
 
 /// Bir tablodaki aykırı satır sayısı. Alanlar tablo adıyla aynıdır ki rapor
@@ -186,6 +194,10 @@ pub struct ScopeViolationCounts {
     /// boş/`present` dışında dolu) satır sayısı (v42). Sonradan silinmiş belge
     /// kimliği denetim izidir — aykırı sayılmaz (v39 ile aynı gevşeklik).
     pub case_checklist_items: i64,
+    /// Çalıştırma, **başka dosyada var olan** bir aktarım onayını gösteren
+    /// satır sayısı (v43). Var olmayan onay kimliği denetim izidir — aykırı
+    /// sayılmaz (v39 ile aynı gevşeklik).
+    pub ai_runs: i64,
 }
 
 impl ScopeViolationCounts {
@@ -216,6 +228,7 @@ impl ScopeViolationCounts {
             + self.export_items
             + self.transfer_consents
             + self.case_checklist_items
+            + self.ai_runs
     }
 }
 
@@ -530,6 +543,17 @@ impl Database {
                               OR EXISTS (SELECT 1 FROM documents d
                                           WHERE d.id = j.value
                                             AND d.case_id <> c.case_id))",
+            )?,
+            // v43 — çalıştırmanın yasal dayanağı. Sayılan: `consent_id` dolu
+            // ve o kimlikte bir onay **var** ama onayın `case_scope`u
+            // çalıştırmanın dosyasından farklı. Var olmayan onay kimliği
+            // denetim izidir — aykırı sayılmaz (v39 ile aynı gevşeklik).
+            ai_runs: count(
+                "SELECT count(*) FROM ai_runs r
+                  WHERE r.consent_id IS NOT NULL
+                    AND EXISTS (SELECT 1 FROM transfer_consents c
+                                 WHERE c.id = r.consent_id
+                                   AND c.case_scope <> r.case_id)",
             )?,
         })
     }
@@ -1603,6 +1627,127 @@ mod tests {
         assert_eq!(count(&db, "transfer_consents"), 4);
     }
 
+    /// v43: **çalıştırmanın yasal dayanağı** kendi dosyasının onayıdır ve
+    /// kurulduktan sonra değişmez.
+    ///
+    /// Ölçülen kusur (v42, gerçek SQLite): A dosyasının çalıştırmasına doğrudan
+    /// SQL ile **B dosyasının onayı** yazılabiliyordu; var olan çalıştırmanın
+    /// onayı UPDATE ile değiştirilebiliyor, çalıştırma başka dosyaya
+    /// taşınabiliyordu — mevcut gönderim sicili sessizce çaprazlaşıyordu.
+    #[test]
+    fn an_ai_run_cannot_cite_another_cases_consent() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        db.conn()
+            .execute_batch(
+                "INSERT INTO transfer_consents
+                   (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+                 VALUES ('tc1','snap','c1','ozet','[\"d1\"]','1','2026-01-01T00:00:00Z'),
+                        ('tc9','snap','c2','ozet','[\"d9\"]','1','2026-01-01T00:00:00Z');",
+            )
+            .expect("onaylar");
+        let run = |id: &str, case: &str, consent: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                    output_schema_version,consent_id,status,usage_report,created_at)
+                 VALUES (?1,?2,'summarize','m','h','p1','o1',?3,'running',
+                         '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z')",
+                rusqlite::params![id, case, consent],
+            )
+        };
+        // Meşru: kendi onayı, onaysız (NULL) ve var olmayan kimlik (denetim izi).
+        run("run1", "c1", Some("tc1")).expect("kendi onayı meşru");
+        run("run-null", "c1", None).expect("onaysız kayıt meşru");
+        run("run-gone", "c1", Some("olmayan-onay")).expect("var olmayan kimlik denetim izi");
+        // A dosyasının çalıştırması B dosyasının onayını gösteremez.
+        scope_error(run("run-x", "c1", Some("tc9")), "ai_runs");
+        // Çalıştırmanın dosyası ve onayı kurulduktan sonra taşınmaz.
+        scope_error(
+            db.conn()
+                .execute("UPDATE ai_runs SET consent_id='tc9' WHERE id='run1'", []),
+            "ai_runs",
+        );
+        scope_error(
+            db.conn()
+                .execute("UPDATE ai_runs SET case_id='c2' WHERE id='run1'", []),
+            "ai_runs",
+        );
+        // Durum güncellemesi kapıya takılmaz (v35 dersi).
+        db.conn()
+            .execute("UPDATE ai_runs SET status='succeeded' WHERE id='run1'", [])
+            .expect("durum güncellenebilmeli");
+        // Reddedilen yazma satırı bozmaz.
+        let (case, consent): (String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT case_id,consent_id FROM ai_runs WHERE id='run1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("run1");
+        assert_eq!(case, "c1");
+        assert_eq!(consent.as_deref(), Some("tc1"));
+        assert_eq!(count(&db, "ai_runs"), 3, "yalnız meşru satırlar");
+    }
+
+    /// v43 taraması: kapıdan **önce** yazılmış çapraz onaylı çalıştırmalar
+    /// sayılır (silinmez); onaysız ve var olmayan kimlikli satır aykırı
+    /// **değildir** (denetim izi — kanıtlanabilir uyuşmazlık yok).
+    #[test]
+    fn the_scan_counts_ai_runs_citing_another_cases_consent() {
+        let db = db();
+        chain(&db);
+        foreign_chain(&db);
+        assert_eq!(
+            db.scope_violations().expect("tarama").ai_runs,
+            0,
+            "temiz kasa"
+        );
+        // B dosyasının onayı (kapı açıkken yazılır; meşru satır).
+        db.conn()
+            .execute_batch(
+                "INSERT INTO transfer_consents
+                   (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+                 VALUES ('old-tc','snap','c2','ozet','[\"d9\"]','1','2026-01-01T00:00:00Z');",
+            )
+            .expect("onay");
+        // Yeni çapraz yazma **kapıda** durur (kapı hâlâ etkin).
+        scope_error(
+            db.conn().execute(
+                "INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                    output_schema_version,consent_id,status,usage_report,created_at)
+                 VALUES ('new-x','c1','summarize','m','h','p1','o1','old-tc','running',
+                         '{\"billing\":\"unknown\"}','2026-02-01T00:00:00Z')",
+                [],
+            ),
+            "ai_runs",
+        );
+        // v43 öncesi kasa: kapı yokken yazılmış satırlar (sonda için kapı düşürülür).
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER scope_guard_ai_runs_bi;
+                 DROP TRIGGER scope_guard_ai_runs_bu;
+                 INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                    output_schema_version,consent_id,status,usage_report,created_at)
+                 VALUES ('old-run','c1','summarize','m','h','p1','o1','old-tc','running',
+                         '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z'),
+                        ('old-null','c1','summarize','m','h','p1','o1',NULL,'running',
+                         '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z'),
+                        ('old-gone','c1','summarize','m','h','p1','o1','olmayan-onay','running',
+                         '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+            )
+            .expect("eski satırlar");
+        let counts = db.scope_violations().expect("tarama");
+        assert_eq!(counts.ai_runs, 1, "çapraz onay sayılır");
+        assert_eq!(counts.total(), 1);
+        // Satırlar silinmez, yalnız sayılır.
+        assert_eq!(count(&db, "ai_runs"), 3);
+    }
+
     /// v40 — **karar hedefi** (`review_items.target_entity_id`) kendi dosyasında
     /// olmalı. Ölçülen kusur: doğrudan SQL ile A'nın öğesine B'nin iddiası/notu
     /// yazılıyor, `list_review_items` onu A'nın öğesi diye gösteriyor (arayüzde
@@ -2215,6 +2360,8 @@ mod tests {
             // sürüm izi sicilleri (v37) — sürümü **adıyla** gösteren sütunlar
             "input_document_version_id",
             "source_version_id",
+            // çalıştırmanın yasal dayanağı (v43)
+            "consent_id",
         ];
         // Referans sütunlarının **tam** listesi: bir kapsamlı tabloda bu
         // sütunlardan biri varsa, o tablonun tetikleyicilerinden biri sütunu
@@ -2242,6 +2389,8 @@ mod tests {
             "selected_document_ids",
             // kontrol listesi kanıt bağları (v42)
             "linked_document_ids",
+            // çalıştırmanın yasal dayanağı (v43)
+            "consent_id",
         ];
         // JSON dizi referansı taşıyan tablolar: kapı `json_each` ile dizinin
         // **her** elemanını denetlemeli.

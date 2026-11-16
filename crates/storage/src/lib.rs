@@ -396,9 +396,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0042_checklist_link_scope_guard",
         sql: include_str!("migrations/0042_checklist_link_scope_guard.sql"),
     },
+    Migration {
+        version: 43,
+        name: "0043_ai_run_consent_scope_guard",
+        sql: include_str!("migrations/0043_ai_run_consent_scope_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 42;
+pub const CURRENT_SCHEMA_VERSION: u32 = 43;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -584,6 +589,7 @@ impl Database {
                         "exportItems": counts.export_items,
                         "transferConsents": counts.transfer_consents,
                         "caseChecklistItems": counts.case_checklist_items,
+                        "aiRuns": counts.ai_runs,
                     }),
                 );
             }

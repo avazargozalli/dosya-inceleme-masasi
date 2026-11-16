@@ -1045,6 +1045,85 @@ fn upgrade_reports_cross_case_checklist_links() {
     );
 }
 
+/// v43 — kapıdan **önce** yazılmış çapraz onaylı çalıştırmalar güncellemede
+/// sayılır (silinmez), denetime düşer ve yeni çapraz yazma kapıda durur.
+#[test]
+fn upgrade_reports_ai_runs_citing_another_cases_consent() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 42);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Diger','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO documents (id,case_id,display_name,created_at,updated_at)
+             VALUES ('d1','c1','A sozlesmesi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('d9','c2','B tutanagi','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO transfer_consents
+               (id,provider_snapshot,case_scope,purpose,selected_document_ids,consent_text_version,approved_at)
+             VALUES ('tc1','snap','c1','ozet','[\"d1\"]','1','2026-01-01T00:00:00Z'),
+                    ('tc9','snap','c2','ozet','[\"d9\"]','1','2026-01-01T00:00:00Z');
+             INSERT INTO ai_runs
+               (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                output_schema_version,consent_id,status,usage_report,created_at)
+             VALUES ('old-ok','c1','summarize','m','h','p1','o1','tc1','running',
+                     '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z'),
+                    ('old-x','c1','summarize','m','h','p1','o1','tc9','running',
+                     '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z'),
+                    ('old-null','c1','summarize','m','h','p1','o1',NULL,'running',
+                     '{\"billing\":\"unknown\"}','2026-01-01T00:00:00Z');",
+        )
+        .expect("v42 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let counts = db.scope_violations().expect("tarama");
+    assert_eq!(counts.ai_runs, 1, "çapraz onaylı çalıştırma sayılır");
+    let metadata: String = db
+        .conn()
+        .query_row(
+            "SELECT metadata_allowlist FROM audit_events WHERE operation='scope_violations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("kapsam taraması denetime düşmeli");
+    let parsed: serde_json::Value = serde_json::from_str(&metadata).expect("metadata json");
+    assert_eq!(parsed["aiRuns"], 1);
+    // Yeni çapraz yazma kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO ai_runs
+               (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                output_schema_version,consent_id,status,usage_report,created_at)
+             VALUES ('new-x','c1','summarize','m','h','p1','o1','tc9','running',
+                     '{\"billing\":\"unknown\"}','2026-02-01T00:00:00Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "ai_runs"),
+        other => panic!("v43 kapısı çapraz onayı reddetmeli: {other:?}"),
+    }
+    // Eski aykırı satırın **durumu** güncellenebilir kalır: kapı yalnız kapsam
+    // sütunlarına dokunan yazmada koşar; eski satır silinmez, sayılır.
+    db.conn()
+        .execute("UPDATE ai_runs SET status='failed' WHERE id='old-x'", [])
+        .expect("eski satırın durumu güncellenebilmeli");
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT count(*) FROM ai_runs", [], |row| row
+                .get::<_, i64>(0))
+            .expect("sayım"),
+        3,
+        "satırlar silinmez"
+    );
+}
+
 #[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
