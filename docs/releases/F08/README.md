@@ -2418,3 +2418,91 @@ kararı. (d) `document_version_id` bilinçli olarak 0038'in kapsam kapısında b
 sürüm **tamamlama** meşru onarım yolu); kapsam taşıması orada durur. (e) Tetikleyicileri
 anahtarı olan saldırgan düşürebilir (uygulama hatasına karşı). (f) Arayüz **davranışı**
 değişmedi (ekran aynı sütunları basar); gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04u — emsal sürümünün metni ve özeti kanıtlanabilir olmalı (şema v48, 2026-11-17)
+
+**Neden.** `precedent_versions` satırı «metin elimizde ve **doğrulandı**» iddiasıdır
+(`verification_state='text_verified'`). Üç okuyucusu var: (1) `screens/Precedents.tsx`
+`body_hash`in ilk 12 hanesini ve `text_char_count`u ekrana basar; (2) **metin içi alıntı
+doğrulaması** (F12) alıntıyı `full_text` içinde arar — metin yoksa sonuç
+`reason: 'no_full_text'` yani «kontrol edilmedi» olur; (3) v44 çakışma rozeti «aynı künye,
+**farklı metin**» iddiasını `body_hash` farkıyla kanıtlar. v44 yalnız çakışma işaretini ve
+`body_hash`in UPDATE ile değişmezliğini kapıladı; `full_text`, `text_char_count`,
+`source_kind`, `acquired_at` ve `document_version_id` serbest kaldı (v44 kapanış notu bunu
+sınır olarak yazmıştı).
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v47; sonda
+`~/.hermes/cache/scratch/dim-v48-probe/measure_v48.py`, log `measure_before.log`):**
+14 kusur yazımının **14'ü KABUL** edildi: (1) `body_hash='hash'` (64 hane değil) — ekran
+onu özet diye bastı; (2) `body_hash` **büyük** harf hex — aynı metin iki farklı kimlik olur;
+(3) 63 haneli özet; (4) `full_text=''` + `text_verified`; (5) yalnız boşluktan oluşan metin
++ `text_verified`; (6) `full_text=NULL` + `text_verified` («doğrulandı» ama metin yok);
+(7) `text_char_count` metinle uyuşmuyor (15 karakterlik metne 99); (8) `source_kind='uydurma'`
+(kapalı küme dışı); (9) `acquired_at=''` — sürüm sıralaması bozulur; (10) yazılmış satırın
+`full_text`i UPDATE ile çevrildi — alıntı doğrulaması **başka metne** bakar, «doğrulandı»
+iddiası yerinde kalır; (11) `text_char_count` değiştirildi; (12) `acquired_at` geriye
+çekildi; (13) `source_kind` çevrildi (köken iddiası); (14) `document_version_id` başka
+sürüme taşındı (köken çaprazlandı).
+
+**Yazılan (şema v48, `0048_precedent_version_content_guard.sql`; v44'ün çakışma kapıları
+aynen durur — ayrı tetikleyici, farklı sütunlar, aynı önek).**
+`precedent_versions_content_guard_bi`: `body_hash` **64 küçük harf hex**; `full_text`
+`NULL` değil, boş/yalnız-boşluk değil ve **kırpılmış** (çekirdek `trim()` sonrası yazar);
+`text_char_count` = `length(full_text)` (SQLite metin için **karakter** sayar; çekirdek
+`chars().count()` yazar — aynı ölçü); `acquired_at` boş değil; `source_kind` kapalı küme
+(`paste`/`document`/`file` — `import_precedent_copy`in kabul ettiği üç değer).
+`precedent_versions_content_guard_bu`: `full_text`, `text_char_count`, `acquired_at`,
+`source_kind` **değişmez** (yeniden içe alma **yeni satır** ister; nüsha tekrarı `body_hash`
+ile yakalanır); `document_version_id` yalnız **NULL'a çekilebilir** — belge sürümü
+silinebildiği için bağın koparılması meşru onarımdır; başka sürüme **çevrilemez** (köken
+iddiası sonradan taşınamaz). `verification_state` serbest kalır (v35 dersi: durum ilerler).
+Ret `DIM_INTEGRITY:precedent_versions` → `StorageError::Integrity` → **`E_DB_INTEGRITY`**.
+Tablo `case_id` taşımadığı için kapsam taramasına sınıf **eklenmedi**; `GUARDED_TABLES`
+**25 kalır**.
+
+**Test düzeltmesi (dürüst).** v44'ün iki testi ve ilgili upgrade testi satırları `'hash-a'`
+gibi 64 hane olmayan özetlerle ve `full_text`/`text_char_count` olmadan yazıyordu; yeni BI
+bunları reddeder. Fikstürler **64 küçük harf hex** + dolu metin + uyumlu sayıya çevrildi —
+**kapı gevşetilmedi**; ayrıca reddedilmesi beklenen yazılar da biçimce geçerli kılındı ki
+v48 kapısı v44 kurallarını **maskelemesin** (v47'nin M5 dersi).
+
+**Testler.** `precedent_import` **+1** (`precedent_version_content_is_frozen_and_well_formed`):
+on biçim/künye kusuru `E_DB_INTEGRITY`; metin/karakter sayısı/köken/edinme zamanı UPDATE
+edilemez; `document_version_id` taşınamaz ama **koparılabilir**; `verification_state`
+güncellenebilir; değişmeyen yazma takılmaz. `upgrade_tests` **+1**
+(`upgrade_keeps_precedent_versions_written_before_the_content_gate`): v47 kasasındaki
+bozuk özetli/metinsiz satırlar **silinmez**, UPDATE ile **onarılamaz**, yeni bozuk yazım
+kapıda durur, çekirdeğin biçimi geçer. Toplam `dim-storage --lib` **689 → 691**
+(yerel **691/691 yeşil, 471,62 s**). Biçim (iki manifest) / clippy `-D warnings` /
+masaüstü `cargo check --all-targets` temiz.
+
+**Kapı kanıtı.** **15/15 KIRMIZI**, taban iki uçta **3/3 yeşilken**
+(`~/.hermes/cache/scratch/dim-v48-probe/gates_v48.py`, log `gates_v48_final.log`;
+`try/finally` + `os.utime` + sha256 geri yazım birebir —
+`0048…sql d392ac83468912cc…`): M1–M8 BI (64 hane · hex · NULL metin · boş/boşluk ·
+kırpılmamış · karakter sayısı · `acquired_at` · `source_kind` kümesi) · M9–M14 BU
+(metin · karakter sayısı · `acquired_at` · `source_kind` · `document_version_id`
+çevrilemez · OF listesi) · M15 OF listesinde `full_text` yok. **Dürüst (ilk koşu
+14/15):** M9 deseni `WHEN` satırının başına iki boşluk koyuyordu, dosyada girinti yok →
+**EŞLEŞMEDİ** (hüküm değil); desen düzeltildi, **15/15** yeniden ölçüldü, ilk koşunun
+14 hükmü kanıt sayılmadı.
+
+**Dürüst sınırlar.** (a) Kapı `body_hash`in **metnin** SHA-256'sı olduğunu doğrulamaz
+(SQLite'ta SHA-256 yok): metni ve özeti **birlikte** yazan yol tutarlı görünen sahtecilik
+üretebilir — çekirdek doğru hesaplar, doğrudan SQL artığı kalır. (b) SQLite `trim()` yalnız
+ASCII boşlukları kırpar; U+00A0'dan oluşan metin bu kapıdan geçer (çekirdek `str::trim`
+reddeder). (c) v48 öncesi bozuk satırlar **silinmez**, içerik donduğu için **onarılamaz** —
+onarım yolu aynı künyeye **yeni sürüm** yazmaktır (nüsha tekrarı `body_hash` ile yakalanır);
+temizlik ürün kararı. (d) `verification_state` geçişleri denetlenmez (`text_verified` →
+`metadata_verified` serbest); durum bir **iddia** olarak kalır, metin doğrulaması yeniden
+çalıştırılmaz. (e) `document_version_id`nin **varlığı** denetlenmez (yalnız taşınamaz);
+silinmiş sürüme işaret eden satır kalabilir. (f) Tetikleyicileri anahtarı olan saldırgan
+düşürebilir (uygulama hatasına karşı). (g) Arayüz **davranışı** değişmedi; gerçek pencere +
+görsel QA **insan bekliyor**.
+
+**CI (ölçüldü).** kod `99b4510` (4 dosya, **+405/−40**) → run `43962162199` **10/10 YEŞİL**
+(`dim-storage` **691** iki OS'ta birebir: macos-15 **371,76 s** / ubuntu-latest **670,48 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**,
+arayüz kodu değişmedi; `masaüstü kabuk` + worker + `windows güvenli depo` + SBOM + kaynak
+arşivi yeşil). Belge CI'ı `65577e8` (v47 bölümü) `43958581152` **10/10 yeşil** — önceki
+koşunun açık bıraktığı kanıt bu turda ölçüldü.
