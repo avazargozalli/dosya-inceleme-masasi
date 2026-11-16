@@ -24,6 +24,7 @@
 | F08-T04k | ✅ | **giden segment sicili kendi segmentine bağlıdır** (şema **v38**): 0034'ün iki `transfer_segments` tetikleyicisi genişletildi — satırın **iki segment kolonu** (`outbound_segment_id`, `source_segment_id`) **var olan** bir segment ise gösterilen sürümün segmenti olmalı (sürüm `NULL` ise çalıştırmanın dosyasında); ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına A'nın sürümü + **B'nin segmenti** yazılıyor, A'nın gönderim sicili B'nin parçasını gösteriyordu ve `scope_violations()` **0** diyordu (kör); `transfer_segments` sayımı genişledi (yeni tablo yok); 6/6 mutasyon (2026-11-15) |
 | F08-T04l | ✅ | **aktarım onayı kendi dosyasının belgelerini gösterir** (şema **v39**): `transfer_consents` üzerinde **2 tetikleyici** — `selected_document_ids` geçerli JSON dizi, elemanları metin, liste boş olamaz ve her eleman `case_scope` dosyasında **silinmemiş** bir belge olmalı; ölçülen kusur: doğrudan SQL ile A'nın onayına **B'nin belgesi** yazılıyor, `list_transfer_consents('c1')` onu A'nın onaylanmış kapsamı diye sayıyor, boş/bozuk liste sessizce “0 belge” okunuyor ve `scope_violations()` **0** diyordu (kör); `transfer_consents` sayımı **eklendi** (23. tablo, türetim kuralı `case_scope` çiftini kapsar); 8/8 mutasyon (2026-11-15) |
 | F08-T04m | ✅ | **karar hedefi kendi dosyasında olmalı** (şema **v40**): 0033'ün iki `review_items` tetikleyicisi genişletildi — `target_entity_id` doluysa kimlik `claims`/`notes`/`tasks`/`events`ten **birinde var** ise satırın `case_id`'si aynı olmalı, `UPDATE OF` listesine `target_entity_id` eklendi; ölçülen kusur: doğrudan SQL ile A'nın öğesine **B dosyasının** iddiası/notu yazılıyor, `list_review_items('c1')` onu A'nın öğesi diye döndürüyor (arayüzde hedef rozeti), öğe yanlış hedefle **karara kilitleniyor** ve `scope_violations()` **0** diyordu (kör); tarama `review_items` alanı genişledi (yeni tablo yok, 23 kalır); 8/8 mutasyon (2026-11-16) |
+| F08-T04o | ✅ | **kontrol listesi kanıt bağları kendi dosyasında olmalı** (şema **v42**): `case_checklist_items` üzerinde **2 tetikleyici** — `linked_document_ids` geçerli JSON dizi (≤50 eleman), her eleman `case_id` dosyasında **silinmemiş** belge olmalı; `present` en az bir bağ ister, `open`/`missing`/`not_applicable` bağ kabul etmez; ölçülen kusur: doğrudan SQL ile A'nın maddesine **B'nin belgesi** yazılıyor, ekran "Bulundu" rozetiyle çıplak UUID gösteriyordu; bozuk JSON **tüm listeyi** okunamaz kılıyordu; `scope_violations()` tabloyu hiç saymıyordu (24. tablo); 11/11 mutasyon (2026-11-16) |
 
 ## Doğrulama
 
@@ -1801,3 +1802,98 @@ yazıcı eklenirse önce damga yazmalı. (d) Yerine geçenin **türü** ile `ite
 karşılaştırılmaz (v40'ın aynı sınırı). (e) Tetikleyicileri anahtarı olan saldırgan
 düşürebilir (uygulama hatasına karşı). (f) Arayüz bu turda değişmedi; gerçek
 pencere + görsel QA **insan bekliyor**.
+
+## F08-T04o — kontrol listesi kanıt bağları kendi dosyasında olmalı (şema v42, 2026-11-16)
+
+**Neden.** `case_checklist_items.linked_document_ids`, "bu kontrol listesi
+maddesi **bulundu**" iddiasının tek kanıtıdır (şartname veri modeli satırı:
+`case_id, template_version_id, item_text, state, linked_document_ids, note`;
+AI-07 "incelenen kapsamda bulunan/bulunamayan belgeler"). Çekirdek
+`set_case_checklist_state` her kimliği **kendi dosyasında, silinmemiş** bir
+belge olarak doğruluyor; `present` en az bir bağ istiyor; `open` / `missing` /
+`not_applicable` bağ kabul etmiyor. Ama **şemada hiçbir kapı yoktu** — sütun
+serbest metindi ve `scope_violations()` bu tabloyu hiç saymıyordu. Doğrudan SQL
+yazan bir yol (göç, onarım betiği, ileride eklenecek ikinci yazıcı) bu kuralları
+atlıyordu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v41, `PRAGMA foreign_keys=ON`;
+`scratch/schema-probe/measure_v42.py`):**
+
+1. A dosyasının öğesine doğrudan SQL ile **B dosyasının** belgesi yazıldı
+   (`UPDATE … state='present', linked_document_ids='["d9"]'` → `rows=1`);
+2. A'nın listesi öğeyi `('c1','present','["d9"]')` diye döndürdü; belge adı
+   A dosyasında **çözülemiyor** (`NULL`) — ekran "Bulundu" rozetiyle **çıplak
+   UUID** gösterir (arayüz `checklists.staleLinks` uyarısı yalnız "belge
+   silinmiş veya arşivlenmiş olabilir" der);
+3. `present` durumu **boş bağ listesiyle** yazılabildi: kanıtsız iddia;
+4. **bozuk JSON** (`oops`) yazılabildi; okuma yolu (`map_case_item`) satırı
+   çözemiyor → `list_case_checklist` **tüm listeyi** hata ile düşürür; tek
+   bozuk satır kontrol listesi ekranını kapatır;
+5. `missing` ("bulunamadı") durumu **bağ listesiyle** yazılabildi (çelişki);
+6. v41 taramasında bu tablo için **alan yok** (`GUARDED_TABLES` 23) — sınıf kör;
+7. `open` durumunda bağ taşıyan satır da kabul edildi (durum yeniden açılırken
+   bağ temizlenmezse çelişki kalır).
+
+**Yazılan (şema v42, `0042_checklist_link_scope_guard.sql`).** İki tetikleyici
+(`scope_guard_case_checklist_items_bi/_bu`): `linked_document_ids` **geçerli
+JSON dizi** olmalı, elemanları metin, en çok **50** eleman (çekirdeğin
+`MAX_LINKS` sınırı); dizinin **her elemanı** `case_id` dosyasında **silinmemiş**
+bir `documents` satırı göstermeli (fail-closed); durum ile liste çelişemez:
+`present` **en az bir** bağ ister, `open`/`missing`/`not_applicable` bağ kabul
+etmez. `UPDATE OF case_id, state, linked_document_ids`: yalnız bu üç sütunu
+değiştiren yazma kapıdan geçer — **not** ve `row_version` güncellemesi takılmaz
+(v35 dersi). Tarama `case_checklist_items` alanı **eklendi** (`GUARDED_TABLES`
+**24**; türetim kuralı `case_id` + `linked_document_ids` çiftini kapsar). Ret
+`RAISE(ABORT,'DIM_SCOPE:case_checklist_items')` → `StorageError::ScopeViolation`
+→ **`E_DB_SCOPE`**. **Kasıtlı gevşeklik** (0033/0039 ile aynı): **sonradan**
+silinmiş belge kimliği kapıya takılmaz (kapı yalnız yeni yazmada koşar) ve
+taranmaz — bağ kurulduktan sonra belge silinebilir, bu tarihsel bir gerçektir.
+
+**Testler (güncel kodla).** `scope_guard::tests` **+2**
+(`a_checklist_link_must_name_a_document_of_its_own_case`: INSERT ve UPDATE
+yollarında çapraz/kanıtsız/bozuk/dizi-olmayan/51 eleman/silinmiş belge/var
+olmayan kimlik reddi · aynı dosyada bağ meşru · dosya taşıma bağı
+yabancılaştırır · not güncellemesi takılmaz,
+`the_scan_counts_checklist_links_written_before_the_guard_existed`: kapı
+düşürülüp eski satırlar yazılır → tarama **7**, sonradan silinen belge
+sayılmaz, satırlar silinmez), `upgrade_tests` **+1** (v41 kasa → güncelleme →
+denetimde `caseChecklistItems: 3`, yeni çapraz bağ reddi, eski satırın notu
+güncellenebilir) → `dim-storage --lib` **670 → 673** — **tam paket yerelde
+koşuldu: 673/673 yeşil, 521,62 s**. `cargo fmt` (iki manifest) temiz;
+`clippy -p dim-storage --all-targets -- -D warnings` temiz; masaüstü
+`cargo check --all-targets` temiz (1 dk 55 s).
+
+**Kapı kanıtı.** **11/11 KIRMIZI, taban iki uçta 14/14 yeşilken** (betik
+`scratch/dim-v42-gates.py`, loglar `scratch/dim-v42-gates.log` ve
+`dim-v42-gates-m9.log`; her mutasyon tek başına, `try/finally` + `os.utime` +
+sha256 birebir — `0042…sql fdb948af4a646412`, `scope_guard.rs
+d8cb089a2ea080df`): M1 BI çapraz-dosya kuralı düşer · M2 BU çapraz-dosya kuralı
+düşer · M3 BI "present" boş liste kuralı düşer · M4 BU "present" boş liste
+kuralı düşer · M5 BI 50 sınırı düşer · M6 BU `UPDATE OF` listesinden `case_id`
+düşer · M7 tarama çapraz eşitliği kapanır · M8 tarama "present" boş liste
+koşulu düşer · M9 tarama "present dışında dolu" koşulu ters · M10 tarama
+metin-dışı eleman koşulu düşer · M11 tarama 50 sınırı düşer. K0 **14/14**, K1
+**14/14**. **Dürüst (kendi hatam):** M9'un ilk biçimi (`<> 0` → `<> -2`)
+pozitif uzunluklarda davranışı **değiştirmiyordu** (`1 <> -2` doğru) — kapı
+boşluğu değil, **etkisiz mutasyon**; ilk koşunun M9 hükmü kanıt sayılmadı,
+`= 0` biçimiyle tek başına yeniden ölçüldü (K0 14/14 → KIRMIZI 12/14 → K1
+14/14).
+
+**CI (ölçüldü).** Kod `275da27` (4 dosya, **+410/−4**; `+107` yeni göç dosyası)
+→ run `43831663715` **10/10 YEŞİL** (`dim-storage` **673** iki OS'ta birebir:
+macos-15 **391,43 s** / ubuntu-latest **746,13 s**; `arayüz` 66 dosya /
+**1434** test, paket `index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB —
+**değişmedi**; `masaüstü kabuk`, `windows güvenli depo`, `workers`,
+`sözleşmeler`, `SBOM`, `kaynak arşivi`, `sürüm paketi manifesti`).
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v42
+öncesi çapraz/bozuk/çelişkili satırlar **silinmez**, sayılır (temizlik ürün
+kararı). (b) Arayüz bu turda **değişmedi**: ekran zaten "listede görünmeyen
+bağlar" uyarısını gösteriyordu; kapı bugünkü görünür davranışı değiştirmez,
+duruktaki dosya sınırını korur (çekirdek zaten reddediyordu). (c) Bağın
+**türü/içeriği** denetlenmez — yalnız kimliğin dosyası ve varlığı; "bu belge
+gerçekten o maddeyi kanıtlıyor" iddiası hukukî değerlendirmedir. (d) Aynı
+belgeye birden çok kez bağlanma (tekrar) şemada engellenmez; çekirdek
+`set_case_checklist_state` listeyi tekilleştirir. (e) Tetikleyicileri anahtarı
+olan saldırgan düşürebilir (uygulama hatasına karşı). (f) Gerçek Tauri
+penceresi + görsel QA **insan bekliyor**; bu turda arayüz dosyası değişmedi.
