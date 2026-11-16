@@ -25,6 +25,7 @@
 | F08-T04l | ✅ | **aktarım onayı kendi dosyasının belgelerini gösterir** (şema **v39**): `transfer_consents` üzerinde **2 tetikleyici** — `selected_document_ids` geçerli JSON dizi, elemanları metin, liste boş olamaz ve her eleman `case_scope` dosyasında **silinmemiş** bir belge olmalı; ölçülen kusur: doğrudan SQL ile A'nın onayına **B'nin belgesi** yazılıyor, `list_transfer_consents('c1')` onu A'nın onaylanmış kapsamı diye sayıyor, boş/bozuk liste sessizce “0 belge” okunuyor ve `scope_violations()` **0** diyordu (kör); `transfer_consents` sayımı **eklendi** (23. tablo, türetim kuralı `case_scope` çiftini kapsar); 8/8 mutasyon (2026-11-15) |
 | F08-T04m | ✅ | **karar hedefi kendi dosyasında olmalı** (şema **v40**): 0033'ün iki `review_items` tetikleyicisi genişletildi — `target_entity_id` doluysa kimlik `claims`/`notes`/`tasks`/`events`ten **birinde var** ise satırın `case_id`'si aynı olmalı, `UPDATE OF` listesine `target_entity_id` eklendi; ölçülen kusur: doğrudan SQL ile A'nın öğesine **B dosyasının** iddiası/notu yazılıyor, `list_review_items('c1')` onu A'nın öğesi diye döndürüyor (arayüzde hedef rozeti), öğe yanlış hedefle **karara kilitleniyor** ve `scope_violations()` **0** diyordu (kör); tarama `review_items` alanı genişledi (yeni tablo yok, 23 kalır); 8/8 mutasyon (2026-11-16) |
 | F08-T04o | ✅ | **kontrol listesi kanıt bağları kendi dosyasında olmalı** (şema **v42**): `case_checklist_items` üzerinde **2 tetikleyici** — `linked_document_ids` geçerli JSON dizi (≤50 eleman), her eleman `case_id` dosyasında **silinmemiş** belge olmalı; `present` en az bir bağ ister, `open`/`missing`/`not_applicable` bağ kabul etmez; ölçülen kusur: doğrudan SQL ile A'nın maddesine **B'nin belgesi** yazılıyor, ekran "Bulundu" rozetiyle çıplak UUID gösteriyordu; bozuk JSON **tüm listeyi** okunamaz kılıyordu; `scope_violations()` tabloyu hiç saymıyordu (24. tablo); 11/11 mutasyon (2026-11-16) |
+| F08-T04p | ✅ | **çalıştırmanın yasal dayanağı kendi dosyasında olmalı** (şema **v43**): `ai_runs` üzerinde **2 tetikleyici** — `consent_id` doluysa gösterdiği onayın `case_scope`u çalıştırmanın `case_id`si olmalı; çalıştırmanın `case_id`/`consent_id`si kurulduktan sonra **değişmez**; ölçülen kusur: doğrudan SQL ile A'nın çalıştırmasına **B'nin onayı** yazılıyor, çalıştırma başka dosyaya taşınıyor (mevcut gönderim sicili çaprazlaşıyor) ve `scope_violations()` `ai_runs`ı hiç saymıyordu (25. tablo); 9/9 mutasyon (2026-11-16) |
 
 ## Doğrulama
 
@@ -1897,3 +1898,86 @@ belgeye birden çok kez bağlanma (tekrar) şemada engellenmez; çekirdek
 `set_case_checklist_state` listeyi tekilleştirir. (e) Tetikleyicileri anahtarı
 olan saldırgan düşürebilir (uygulama hatasına karşı). (f) Gerçek Tauri
 penceresi + görsel QA **insan bekliyor**; bu turda arayüz dosyası değişmedi.
+
+## F08-T04p — çalıştırmanın yasal dayanağı kendi dosyasında olmalı (şema v43, 2026-11-16)
+
+**Neden.** `ai_runs.consent_id`, "bu gönderim hangi onayla yapıldı" sorusunun
+tek kaydıdır (şartname §13.5 aktarım onayı; `transfer_consents` yetki kaydı).
+Çekirdek `start_ai_run` onayın `case_scope`unu, belge listesini, sağlayıcı
+özetini ve maske bağını denetliyor; ama **şemada hiçbir kapı yoktu** — sütun
+serbest metindi ve `scope_violations()` bu tabloyu hiç saymıyordu. Doğrudan SQL
+yazan bir yol (göç, onarım betiği, ileride eklenecek ikinci yazıcı) bu kuralları
+atlıyordu. Ayrıca `ai_runs.case_id` **değiştirilebiliyordu**: çalıştırma başka
+dosyaya taşınınca mevcut gönderim sicili (`transfer_segments`,
+`ai_context_items`) sessizce çaprazlaşıyor — v34 taraması bunu sonradan **1
+aykırı** olarak görmeye başlıyordu, yani hasar tek UPDATE ile doğuyordu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v42, `PRAGMA foreign_keys=ON`;
+sonda `scratch/dim-v43-probe/measure_v43.py`, log `measure_before.log`):**
+
+1. A dosyasının çalıştırmasına doğrudan SQL ile **B dosyasının onayı** yazıldı
+   (`INSERT … consent_id='tc9'` → KABUL, `rows=1`);
+2. Var olan çalıştırmanın onayı UPDATE ile B'nin onayına çevrildi
+   (`UPDATE ai_runs SET consent_id='tc9'` → KABUL);
+3. Çalıştırma başka dosyaya taşındı (`UPDATE ai_runs SET case_id='c2'` →
+   KABUL); `list_ai_runs('c2')` satırı B'nin çalıştırması diye döndürdü;
+   satırın **A'nın sürümünü** gösteren gönderim sicili yerinde kaldı ve v34
+   taraması onu **1** aykırı saydı;
+4. v42 taramasında `ai_runs` için **alan yok** (`GUARDED_TABLES` 24) — sınıf kör;
+5. Var olmayan onay kimliği yazılabildi (bilinçli gevşeklik; aşağıda).
+
+**Yazılan (şema v43, `0043_ai_run_consent_scope_guard.sql`).** İki tetikleyici:
+`scope_guard_ai_runs_bi` — `consent_id` doluysa ve o kimlikte bir onay
+**varsa**, onayın `case_scope`u satırın `case_id`si olmalı (fail-closed);
+`scope_guard_ai_runs_bu` — `UPDATE OF case_id, consent_id`, iki sütun
+**değişmez** (`IS NOT`; mevcut kod yalnız `status`/`usage_report`/
+`completed_at` günceller). Durum güncellemesi takılmaz (v35 dersi). Tarama
+`ai_runs` alanı **eklendi** (`GUARDED_TABLES` **25**; türetim kuralı `case_id`
++ `consent_id`). Ret `RAISE(ABORT,'DIM_SCOPE:ai_runs')` →
+`StorageError::ScopeViolation` → **`E_DB_SCOPE`**; güncelleme taraması denetime
+`aiRuns` sayısıyla düşer. **Kasıtlı gevşeklik** (0033/0034/0038/0039 ile aynı):
+**var olmayan** onay kimliği ne kapıya takılır ne taranır — kayıt denetim
+izidir (onay satırları üründe silinmez; iptal `revoked_at` ile yazılır).
+
+**Testler (güncel kodla).** `scope_guard::tests` **+2**
+(`an_ai_run_cannot_cite_another_cases_consent`: kendi onayı/NULL/var olmayan
+kimlik meşru · çapraz onay reddi · `consent_id` ve `case_id` UPDATE reddi ·
+durum güncellemesi takılmaz; `the_scan_counts_ai_runs_citing_another_cases_consent`:
+kapı düşürülüp eski satır yazılır → tarama **1**, NULL/var olmayan kimlik
+sayılmaz, satırlar silinmez), `upgrade_tests` **+1**
+(`upgrade_reports_ai_runs_citing_another_cases_consent`: v42 kasa → güncelleme
+→ denetimde `aiRuns: 1`, yeni çapraz yazma reddi, eski satırın durumu
+güncellenebilir) → `dim-storage --lib` **673 → 676** — **tam paket yerelde
+koşuldu: 676/676 yeşil, 450,33 s**. `cargo fmt` (iki manifest) temiz;
+`clippy -p dim-storage --all-targets -- -D warnings` temiz; masaüstü
+`cargo check --all-targets` temiz.
+
+**Kapı kanıtı.** **9/9 KIRMIZI, taban iki uçta 4/4 yeşilken** (betik
+`scratch/dim-v43-probe/gates_v43.py`, log `gates_v43.log`; her mutasyon tek
+başına, `try/finally` + `os.utime` + sha256 birebir — `0043…sql
+758d7b100acefe24`, `scope_guard.rs ff92d7506eb89dc0`): M1 BI çapraz-dosya
+kuralı düşer · M2 BU kuralı düşer · M3 BI eşitliği ters · M4 BU `UPDATE OF`
+listesinden `consent_id` düşer · M5 tarama EXISTS koşulu düşer · M6 tarama
+eşitliği ters · M7 `GUARDED_TABLES`tan tablo düşer (türetim ayrışır) · M8
+türetim listesinden `consent_id` düşer (tablo kapsamsız kalır) · M9 BU
+`UPDATE OF` listesinden `case_id` düşer (dosya taşınır).
+
+**CI (ölçüldü).** Kod `667dd37` (4 dosya, **+296/−2**; `+60` yeni göç dosyası)
+→ run `43847057980` **10/10 YEŞİL** (`dim-storage` **676** iki OS'ta birebir:
+macos-15 **417,06 s** / ubuntu-latest **518,33 s**; `arayüz` 66 dosya /
+**1434** test, paket `index-DHBc7fVy.js` 694,53 kB / gzip 185,32 kB —
+**değişmedi**; `masaüstü kabuk`, `windows güvenli depo`, `workers`,
+`sözleşmeler`, `SBOM`, `kaynak arşivi`, `sürüm paketi manifesti`).
+
+**Dürüst sınırlar.** (a) `consent_id` **NULL** bırakılırsa kapı susar: sütun
+şemanın ilk sürümünden beri nullable ve **var olmayan** onay kimliği denetim
+izi sayılır (0033/0034/0038/0039 ile aynı sınıf) — kapı **yanlış dayanak**
+yazmayı durdurur, "dayanak yok" satırını durdurmaz; çekirdek her zaman onay
+yazar. (b) v42 öncesi çapraz onaylı satırlar **silinmez**, sayılır (temizlik
+ürün kararı); immutability kuralı bu satırların UPDATE ile onarılmasını da
+engeller — silmek/temizlemek ayrı iştir. (c) Kapı onayın **içeriğini**
+(amaç/maske/belge listesi) yeniden denetlemez; o kurallar 0039 ve çekirdekte.
+(d) Tetikleyicileri anahtarı olan saldırgan düşürebilir (uygulama hatasına
+karşı). (e) Arayüz değişmedi: çalıştırma listesi `consent_id`yi **göstermiyor**
+— yasal dayanağın ekranda görünmesi ürün kararı; kapı duruktaki sınırı korur.
+(f) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
