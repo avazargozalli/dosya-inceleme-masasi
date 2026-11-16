@@ -1705,3 +1705,99 @@ kimlikli satır geçer. (d) `review_items.superseded_by_item_id` (aynı tabloya
 referans) bu dilimin dışında. (e) Tetikleyicileri anahtarı olan saldırgan
 düşürebilir (uygulama hatasına karşı). (f) Arayüz bu turda değişmedi; Tauri
 komutları komut olarak koşulmadı — gerçek pencere + görsel QA **insan bekliyor**.
+
+
+## F08-T04n — yerine geçen kayıt kendi dosyasında olmalı (şema v41, 2026-11-16)
+
+**Neden.** `review_items.superseded_by_item_id`, "bu öğenin yerine hangi öğe geçti"
+bağını tutar; arayüzde gerçek bir eylem var (`review.supersedeAction` düğmesi →
+`review_supersede` → `supersede_review_item`) ve çekirdek aynı dosya, kendini
+göstermeme, durum kurallarını denetler — ama **şemada hiçbir kapı yoktu**. 0006
+sütunu `REFERENCES review_items(id) ON DELETE SET NULL` ile ekledi: yabancı anahtar
+satırın **varlığını** korur, **dosyasını** korumaz. Önceki turun (T04m) dürüst
+sınırlar listesinde (d) olarak yazılıydı.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v40, `PRAGMA foreign_keys=ON`;
+`scratch/schema-probe/measure_v41.py`, log `scratch/dim-v41-measure.log`, kasa
+`scratch/schema-probe/probe-40-supersede.db`):**
+
+1. A dosyasının öğesine **B dosyasının** `j9` öğesi "yerine geçen" yazıldı →
+   **KABUL** (`rows=1`; yabancı anahtar aynı tabloya baktığı için susuyor).
+2. Öğe **kendini** gösterdi (`i2 → i2`) → **KABUL**; çekirdek bunu reddediyor.
+3. **Damgasız** yazım (`superseded_by_item_id` dolu, `superseded_at` NULL) →
+   **KABUL**; `list_review_items('c1')` öğeyi **hâlâ kuyrukta, karara açık**
+   gösterdi (durum `superseded_at`ten türetilir) — satır "yerine geçildi" derken
+   ekran "bekliyor" diyor.
+4. Aynı satırda çekirdeğin gerçek `supersede_review_item` UPDATE'i
+   (`… WHERE id=? AND superseded_at IS NULL`) **çalıştı** (`changed=1`) ve ilk
+   işareti **sessizce ezdi**: denetim izi ile satır çelişir.
+5. `list_review_items('c1', 'superseded')` çapraz işaretli kaydı A dosyasının
+   öğesi diye döndürdü (`i1 → j9`, `j9` `c2`'de).
+6. v40 taraması **0** dedi (sınıf kör); önerilen koşul **3** buldu.
+7. Meşru biçim (`ON DELETE SET NULL`: damga var, işaret yok) önerilen koşula
+   **takılmadı** (0) — tek yönlü kural.
+
+**Yazılan (şema v41, `0041_review_supersede_scope_guard.sql`).** 0033/0040'ın iki
+tetikleyicisi (`scope_guard_review_items_bi/_bu`) `DROP` + `CREATE` ile
+**genişletildi** (tek tanım): `superseded_by_item_id` doluysa (a) `superseded_at`
+de dolu olmalı, (b) satır kendini gösteremez, (c) kimlik `review_items`ta **başka
+dosyada var** ise satır yazılmaz (fail-closed). `UPDATE OF case_id,
+source_anchor_ids, target_entity_id, superseded_by_item_id, superseded_at`: yalnız
+bu beş sütunu değiştiren yazma kapıdan geçer — durum/`row_version` güncellemesi
+takılmaz (v35 dersi). `scope_violations()` `review_items` alanı **genişledi** (yeni
+tablo yok → `GUARDED_TABLES` **23 kalır**, şemadan türetim testi değişmedi).
+Ret `RAISE(ABORT,'DIM_SCOPE:review_items')` → `StorageError::ScopeViolation` →
+**`E_DB_SCOPE`**. **Kasıtlı gevşeklik** (0033/0038/0039/0040 ile aynı): var
+olmayan/silinmiş yerine-geçen kimliği ne kapıya takılır ne taranır (0006'nın
+yabancı anahtarı zaten yazdırmaz; hedef silinirse `ON DELETE SET NULL` yalnız
+işareti çeker, damga kalır — bu yüzden kural tek yönlüdür). Yerine geçen öğenin
+**durumu** denetlenmez: bugün "pending" olan yerine-geçen sonradan reddedilebilir
+(tarihsel gerçek, kanıtlanabilir uyuşmazlık değil).
+
+**Testler (güncel kodla).** `scope_guard::tests` **+2**
+(`a_superseded_review_item_points_at_its_own_case`: damgasız/kendini gösteren/
+çapraz INSERT reddi · aynı dosyada damgalı bağ, damga-tek-başına ve bağsız öğe
+meşru · UPDATE ile çapraz/kendine/damgasız taşıma reddi · çekirdek yolu geçer ·
+durum güncellemesi takılmaz · dosya taşıma bağı yabancılaştırır),
+`the_scan_counts_cross_case_and_half_written_supersede_pointers`: kapı düşürülüp
+eski satırlar yazılır → tarama **3**, `ON DELETE SET NULL` biçimi sayılmaz,
+satırlar silinmez), `upgrade_tests` **+1** (v40 kasa → güncelleme → denetimde
+`reviewItems: 2`, yeni çapraz bağ reddi, eski satırın durumu güncellenebilir) →
+`dim-storage --lib` **667 → 670** — **tam paket yerelde koşuldu: 670/670 yeşil,
+504,39 s**. `cargo fmt` (iki manifest) temiz; `clippy -p dim-storage --all-targets
+-D warnings` temiz; masaüstü `cargo check --all-targets` temiz (2 dk 13 s).
+**Dürüst (kendi hatam):** yeni testin ilk hâli çapraz INSERT'i (`iz` → `j9`)
+yabancı öğe **henüz yokken** deniyordu; yabancı anahtar tetikleyiciden **önce**
+düştü ve `scope_error` FK hatasıyla panikledi — ölçüm "kapı çalıştı" sanılacaktı.
+`j9` önce yazıldı, test yeniden koşuldu (12/12).
+
+**Kapı kanıtı.** **10/10 KIRMIZI, taban iki uçta yeşilken** (betik
+`scratch/dim-v41-gates.py`, log `scratch/dim-v41-gates.log`; her mutasyon tek
+başına, `try/finally` + `os.utime` + sha256 birebir — `0041…sql
+f46effb3585127f5`, `scope_guard.rs a9c15e59a5f39d43`): M1 BI yerine-geçen kuralı
+düşer · M2 BU kuralı düşer · M3 BI damga koşulu düşer · M4 BU damga koşulu düşer ·
+M5 BI kendini-gösterme kuralı düşer · M6 BU kendini-gösterme kuralı düşer ·
+M7 BU `UPDATE OF` listesinden iki sütun düşer · M8 tarama yerine-geçen koşulu
+düşer · M9 tarama damgasızlık alt koşulu düşer · M10 tarama çapraz eşitliği ters.
+K0 **12/12**, K1 **12/12**.
+
+**CI (ölçüldü).** Kod `3639754` (4 dosya, **+335/−2**; `+129` yeni göç dosyası) →
+run `43777585572` **10/10 YEŞİL** (`dim-storage` **670** iki OS'ta birebir:
+macos-15 **424,03 s** / ubuntu-latest **380,63 s**; `dim-cli-adapters` 168;
+`arayüz` 66 dosya / **1434** test, paket `index-DHBc7fVy.js` 694,53 kB / gzip
+185,32 kB — **değişmedi**; `masaüstü kabuk` 51/0/5 + gerçek worker 5/0/0;
+`windows güvenli depo` 28; `workers`, `sözleşmeler`, `SBOM`, `kaynak arşivi`,
+`sürüm paketi manifesti`). `HEAD == origin/main` = `3639754`; ağaçta yalnız
+başka ajanın 9 dosyası (2026-11-07'den beri) — dokunulmadı.
+
+**Dürüst sınırlar.** (a) Tetikleyiciler yalnız **yeni** yazmayı engeller; v41
+öncesi çapraz/damgasız bağlar **silinmez**, sayılır (temizlik ürün kararı).
+(b) Bağ bugün **hiçbir ekranda çizilmiyor** — arayüz yalnız `superseded` durum
+etiketini yazar; kapı bugünkü görünür davranışı değiştirmez, duruktaki dosya
+sınırını korur ve ileride bağı gösteren/navigate eden bir ekranın başka dosyaya
+sızmamasını sağlar. (c) Damgasız bağ artık **iki adımda** yazılamaz (önce işaret
+sonra damga); çekirdek zaten tek UPDATE'te yazıyor, ama ileride iki adımlı bir
+yazıcı eklenirse önce damga yazmalı. (d) Yerine geçenin **türü** ile `item_kind`
+karşılaştırılmaz (v40'ın aynı sınırı). (e) Tetikleyicileri anahtarı olan saldırgan
+düşürebilir (uygulama hatasına karşı). (f) Arayüz bu turda değişmedi; gerçek
+pencere + görsel QA **insan bekliyor**.
