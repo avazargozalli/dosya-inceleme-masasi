@@ -2316,3 +2316,105 @@ SQL artığı kalır). (d) v46 öncesi tutarsız satırlar **silinmez** ve immut
 engeller; tarama onları **sayar** — temizlik ürün kararı. (e) Tetikleyicileri anahtarı
 olan saldırgan düşürebilir (uygulama hatasına karşı). (f) Arayüz **davranışı** değişmedi
 (rozetler aynı sütunları basar); gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04t — gönderim sicilinin metni ve özeti kanıtlanabilir olmalı (şema v47, 2026-11-16)
+
+**Neden.** `transfer_segments` satırı «modelin **gördüğü** metin» iddiasıdır ve üç yerde
+okunur: `list_transfer_segments` metnin ilk 120 karakterini ve `outbound_hash`in ilk
+12'sini ekrana basar (Ai.tsx gönderim sicili tablosu), `sent_segments` aday
+doğrulamasında alıntıyı **bu metinde** arar, `source_range_map` alıntının özgün karakter
+aralıklarına geri eşlenmesini sağlar (maske sonrası bağlama). v45 bu tabloda yalnız
+**dönüşüm bağını** kapıladı (`transform_manifest_id` onaylanan maskeyi gösterir,
+`id`/`ai_run_id` değişmez) ve kapanış notunda sınırını açıkça yazdı: «Sicil metni
+(`outbound_text`/`outbound_hash`) bu dilimin dışında: UPDATE ile değiştirilebilir kalır
+(sıradaki aday)».
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v46; sonda
+`~/.hermes/cache/scratch/dim-v47-probe/measure_v47.py`, log `measure_before.log`):**
+14 kusur yazımının **12'si KABUL** (2 RED yalnız 0038'in sürüm/segment taşıması kapısı):
+(1) yazılmış satırın `outbound_text`i UPDATE ile değiştirildi — okuyucu yeni metni
+gösterdi, `sent_segments` alıntıyı sahte metinde arayacaktı; (2) `outbound_hash` metinden
+bağımsız çevrildi (çift tutarsız, ekranda yeni özet); (3) metin + hash **birlikte**
+çevrildi (tutarlı görünen sahtecilik); (4) `source_range_map` başka aralıklara çevrildi
+(alıntı yanlış özgün aralığa bağlanır); (5) `source_char_count` değiştirildi (harita
+genişliği kayar); (6) `outbound_segment_id` **aynı sürümde** başka segmente çevrildi —
+satır «s1» der, metin s2'nindir (alıntı yanlış çapaya bağlanır); (7) `source_segment_id`
+çevrildi; (8) boş metinle satır yazıldı; (9) yalnız boşluktan oluşan metinle satır
+yazıldı; (10) `outbound_hash='hash'` (64 haneli değil) yazıldı — ekran onu özet diye
+basar; (11) `outbound_hash='Z'*64` (hex değil) yazıldı; (12) `source_char_count=0`
+yazıldı. `document_version_id` taşıması 0034/0038 kapsam kapısında zaten duruyordu
+(ölçümde 2 RED); bu göç onu **tekrar** kapılamaz (aynı sütunda iki değil, aynı **satırda**
+iki tetikleyici olurdu — v46 dersi).
+
+**Yazılan (şema v47, `0047_transfer_segment_content_guard.sql`; v45 adları korunur).**
+`transfer_segments_transform_guard_bi` **DROP+CREATE** ile genişletildi: v45'in dönüşüm
+koşulları **aynen** durur; ek olarak satır **doğarken** iyi-biçimli olmalı — metin
+`NULL`/boş/yalnız-boşluk değil (SQLite `trim()` ASCII boşlukları kırpar), `outbound_hash`
+**64 küçük-harf hex** hanesi, `source_char_count` doluysa **pozitif**. `NULL` metin/hash
+NOT NULL kısıtından **önce** tetikleyiciye düşer (SQLite BEFORE INSERT sırası) — kapı
+onları da kendi sınıfında reddeder. `transfer_segments_transform_guard_bu` **DROP+CREATE**:
+v45'in dondurduğu üç sütun (`id`, `ai_run_id`, `transform_manifest_id`) **aynen** donmaya
+devam eder; ek olarak satırın **içeriği** de donar — `outbound_text`, `outbound_hash`,
+`source_range_map`, `source_char_count` değişmez (yeniden ölçüm **yeni satır** ister).
+`scope_guard_transfer_segments_bu` (0038) **DROP+CREATE** ile genişletildi: özne sütunları
+(`outbound_segment_id`, `source_segment_id`) da **donar** — v46'da aynı sürüm içinde başka
+segmente takas kabul ediliyordu. Sütun zaten 0038'in kapsam tetikleyicisinde olduğu için
+**aynı** tetikleyici genişletildi (v46 dersi: aynı sütunda iki BEFORE tetikleyici hata
+kodunu belirsizleştirir); önek/numara korunur → `DIM_SCOPE:transfer_segments`.
+`document_version_id` 0038'de kalır (NULL → sürüm **tamamlamak** meşru onarım yoludur).
+Ret `DIM_INTEGRITY:transfer_segments` → `StorageError::Integrity` → **`E_DB_INTEGRITY`**.
+
+**Test düzeltmesi (dürüst).** Bu göçten önce yazılmış **13** test fikstürü gerçek olmayan
+`'hash'` değerini `outbound_hash`e yazıyordu (scope_guard 6, `ai` v45 testleri 3,
+`upgrade_tests` 4, `scope_guard_cost` 1); yeni BI biçim kapısı bunları reddeder. Fikstürler
+**64 hex**'e çevrildi — kapı gevşetilmedi, test verisi gerçek çekirdeğin yazdığı biçime
+uydu. **Dürüst (kendi hatam):** ilk tam paket koşusu **687/689** düştü çünkü yeni BU
+tetikleyicisini yazarken v45'in dondurduğu `id`/`ai_run_id`/`transform_manifest_id`
+sütunlarını listeden **düşürmüştüm** (aynı adlı tetikleyici DROP+CREATE edilince eski
+kapsam kayboluyor); iki test (`outbound_record_can_only_claim_the_mask_the_consent_approved`,
+`upgrade_guards_transfer_transform_bindings_written_before_v45`) bunu yakaladı, üç sütun
+geri eklendi.
+
+**Testler.** `ai::tests` **+1** (`transfer_segment_content_is_frozen_and_well_formed`):
+yedi sütunun her biri tek tek UPDATE edilir (id, `ai_run_id`, `transform_manifest_id`,
+metin, hash, harita, karakter sayısı) → `E_DB_INTEGRITY`; özne sütunları →
+`E_DB_SCOPE`; `NULL`/boş/boşluk metin, `NULL`/kısa (63)/hex olmayan hash,
+`source_char_count=0`, uydurma dönüşüm kimliği (onaylı **ve** onaysız çalıştırmada) ve
+onaylanan maskeden farklı **var olan** maske reddedilir; meşru yazma ve **aynı değerli**
+UPDATE serbest. `upgrade_tests` **+1**
+(`upgrade_keeps_transfer_segments_written_before_the_content_gate`): v46 kasasındaki
+`'hash'`li satır **silinmez**, UPDATE ile **onarılamaz**, yeni bozuk hash kapıda durur,
+çekirdeğin biçimi yazılabilir. Toplam: `dim-storage --lib` **687 → 689**
+(yerel **689/689 yeşil, 460,90 s**). Biçim (iki manifest) / clippy `-D warnings` temiz.
+
+**Kapı kanıtı.** **17/17 KIRMIZI**, taban iki uçta **8/8 yeşilken**
+(`~/.hermes/cache/scratch/dim-v47-probe/gates_v47.py`, log `gates_v47_final.log`;
+`try/finally` + `os.utime` + sha256 geri yazım birebir —
+`0047…sql adac3f567f920f9b…`): M1a BI NULL metin · M1b BI NULL hash · M1 BI boşluk metin ·
+M2 BI 64 hane · M3 BI hex karakter · M4 BI pozitif `source_char_count` · M5 BI dönüşüm
+varlığı/türü · M6 BI onaylanan maske eşitliği · M7–M10 BU metin/hash/harita/karakter
+sayısı · M11–M12 kapsam BU özne sütunları · M13 BU satır kimliği · M14 BU çalıştırma
+kimliği · M15 BU dönüşüm bağı. **Dürüst (ilk koşu 11/17):** (a) `'hash'` testi M2'yi
+değil M3'ü (hex olmayan karakter) ölçüyordu → 63 haneli hex satırı eklendi; (b) uydurma
+dönüşüm kimliği onaylı çalıştırmada **eşitlik** kuralına da takıldığı için M5'i
+maskeleyordu → onaysız çalıştırma (`run-bare`) satırı eklendi; (c) M7/M1 desenleri
+`cargo fmt` sonrası metne uymuyordu → desenler son hâlden alındı; (d) `ai_run_id` ve
+`transform_manifest_id` testleri filtreye (`transfer_segment`) girmiyordu → dondurma
+listesine eklendi; **17/17** yeniden ölçüldü, ilk koşunun 11 hükmü kanıt sayılmadı.
+
+**CI (ölçüldü).** kod `6bcec1f` (6 dosya, **+473/−16**) → run `43947104984` **10/10 YEŞİL**
+(`dim-storage` **689** iki OS'ta birebir: macos-15 **400,22 s** / ubuntu-latest **599,68 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**,
+arayüz kodu değişmedi; `masaüstü kabuk` + worker + `windows güvenli depo` yeşil).
+Taramaya yeni sınıf eklenmedi: `transfer_segments` zaten kapsam taramasında; biçim/immutability
+denetimi taramada **yok** (aşağıdaki sınır (a)/(b)).
+
+**Dürüst sınırlar.** (a) Kapı metnin kendi `outbound_hash`iyle **tutarlı** olduğunu doğrulamaz
+(SQLite'ta SHA-256 yok): metni ve hash'i **birlikte** yazan bir yol tutarlı görünen sahtecilik
+üretebilir — çekirdek yazıcı doğru hesaplar, doğrudan SQL artığı kalır. (b) `source_range_map`
+**içeriği** denetlenmez, yalnız donar: harita ile metin arasındaki uyum yeniden hesaplanmaz.
+(c) v47 öncesi bozuk satırlar **silinmez** ve immutability onarımı engeller — temizlik ürün
+kararı. (d) `document_version_id` bilinçli olarak 0038'in kapsam kapısında bırakıldı (NULL →
+sürüm **tamamlama** meşru onarım yolu); kapsam taşıması orada durur. (e) Tetikleyicileri
+anahtarı olan saldırgan düşürebilir (uygulama hatasına karşı). (f) Arayüz **davranışı**
+değişmedi (ekran aynı sütunları basar); gerçek pencere + görsel QA **insan bekliyor**.
