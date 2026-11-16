@@ -401,9 +401,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0043_ai_run_consent_scope_guard",
         sql: include_str!("migrations/0043_ai_run_consent_scope_guard.sql"),
     },
+    Migration {
+        version: 44,
+        name: "0044_precedent_conflict_guard",
+        sql: include_str!("migrations/0044_precedent_conflict_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 43;
+pub const CURRENT_SCHEMA_VERSION: u32 = 44;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

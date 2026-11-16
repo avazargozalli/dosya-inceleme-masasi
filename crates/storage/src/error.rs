@@ -226,6 +226,12 @@ impl From<rusqlite::Error> for StorageError {
                     table: table.to_string(),
                 };
             }
+            // Şema v44: tablo **dosya kapsamı** değil **kayıt bütünlüğü**
+            // kapısıdır (`precedent_versions` çakışma işareti). Ayrı önek,
+            // ayrı kod: kullanıcıya "dosya kapsamı ihlali" demek yanlış olurdu.
+            if let Some(table) = message.strip_prefix("DIM_INTEGRITY:") {
+                return Self::Integrity(format!("veri bütünlüğü kapısı: {table}"));
+            }
         }
         Self::Sql(value)
     }

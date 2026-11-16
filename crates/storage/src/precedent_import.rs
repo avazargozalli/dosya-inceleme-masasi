@@ -752,4 +752,147 @@ mod tests {
         assert!(payload.contains(&result.body_hash));
         assert!(!payload.contains("Müvekkilin"));
     }
+
+    fn version_count(db: &Database) -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM precedent_versions", [], |r| r.get(0))
+            .expect("sayım")
+    }
+
+    fn integrity_error(result: rusqlite::Result<usize>) {
+        match result.map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => assert!(
+                message.contains("precedent_versions"),
+                "mesaj tabloyu adlandırmalı: {message}"
+            ),
+            other => panic!("beklenen E_DB_INTEGRITY, ölçülen: {other:?}"),
+        }
+    }
+
+    /// v44: **"aynı künye, farklı metin" rozeti kanıtlanabilir olmalı** —
+    /// işaret kendi emsalinin sürümünü gösterir, kendini göstermez, metinler
+    /// gerçekten farklıdır ve rozet ile işaret birlikte yazılır.
+    ///
+    /// Ölçülen kusur (v43, gerçek SQLite): doğrudan SQL ile A emsalinin sürümü
+    /// **B emsalinin sürümüyle** çakıştığını iddia edebiliyor, sürüm kendini
+    /// gösterebiliyor ve **aynı** `body_hash` ile "farklı metin" rozeti
+    /// yazılabiliyordu; bayrak 1 + işaret NULL da geçiyordu. Hedef sonradan
+    /// yazılarak ters yönden de iddia bozulabiliyordu.
+    #[test]
+    fn a_precedent_conflict_marker_must_be_true() {
+        let db = db();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO precedents (id,court,created_at)
+                 VALUES ('pA','Yargıtay','2026-01-01T00:00:00Z'),
+                        ('pB','Danıştay','2026-01-01T00:00:00Z');
+                 INSERT INTO precedent_versions
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,identity_conflict)
+                 VALUES ('vA1','pA','2026-01-01T00:00:00Z','paste','hash-a','text_verified',0),
+                        ('vA2','pA','2026-01-01T00:00:00Z','paste','hash-b','text_verified',0),
+                        ('vB1','pB','2026-01-01T00:00:00Z','paste','hash-z','text_verified',0);",
+            )
+            .expect("emsaller");
+        let insert = |id: &str, precedent: &str, hash: &str, flag: i64, pointer: Option<&str>| {
+            db.conn().execute(
+                "INSERT INTO precedent_versions
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                    identity_conflict,conflict_with_version_id)
+                 VALUES (?1,?2,'2026-02-01T00:00:00Z','paste',?3,'text_verified',?4,?5)",
+                rusqlite::params![id, precedent, hash, flag, pointer],
+            )
+        };
+        // Meşru: kendi emsalinin farklı metinli sürümü · çakışmasız sürüm ·
+        // var olmayan hedef (denetim izi).
+        insert("vA3", "pA", "hash-c", 1, Some("vA1")).expect("kendi sürümü meşru");
+        insert("vA4", "pA", "hash-d", 0, None).expect("çakışmasız meşru");
+        insert("vA5", "pA", "hash-e", 1, Some("olmayan-sürüm")).expect("silinmiş hedef izi");
+        // A emsalinin sürümü B emsalinin sürümünü gösteremez.
+        integrity_error(insert("vA6", "pA", "hash-f", 1, Some("vB1")));
+        // Sürüm kendini gösteremez.
+        integrity_error(insert("vA7", "pA", "hash-g", 1, Some("vA7")));
+        // "Farklı metin" iddiası aynı hash ile yazılamaz.
+        integrity_error(insert("vA8", "pA", "hash-a", 1, Some("vA1")));
+        // Bayrak yalnız 0/1; rozet ile işaret **birlikte** yazılır.
+        integrity_error(insert("vA9", "pA", "hash-h", 3, Some("vA1")));
+        // Eşitlik kuralı 3'ü "1 değil" sayar; 0/1 kuralı tek başına gerekli.
+        integrity_error(insert("vA9b", "pA", "hash-h2", 3, None));
+        integrity_error(insert("vA10", "pA", "hash-i", 0, Some("vA1")));
+        integrity_error(insert("vA11", "pA", "hash-j", 1, None));
+        // Ters yön: hedef **sonradan** yazılsa da eski iddia tutmalı.
+        db.conn()
+            .execute_batch(
+                "INSERT INTO precedent_versions
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                    identity_conflict,conflict_with_version_id)
+                 VALUES ('vA12','pA','2026-02-02T00:00:00Z','paste','hash-k','text_verified',1,'vLater'),
+                        ('vA13','pA','2026-02-02T00:00:00Z','paste','hash-m','text_verified',1,'vLaterSame');",
+            )
+            .expect("henüz yazılmamış hedefler");
+        // Çapraz emsale yazılan hedef eski işareti çapraz bırakırdı.
+        integrity_error(insert("vLater", "pB", "hash-l", 0, None));
+        // Aynı hash'li hedef eski "farklı metin" iddiasını yalana çevirirdi.
+        integrity_error(insert("vLaterSame", "pA", "hash-m", 0, None));
+        assert_eq!(version_count(&db), 8, "yalnız meşru satırlar");
+    }
+
+    /// v44: sürüm satırı yazıldıktan sonra **kimliği, emsali, metin özeti ve
+    /// çakışma iddiası değişmez**; diğer sütunların güncellemesi takılmaz
+    /// (v35 dersi).
+    ///
+    /// Ölçülen kusur (v43): işaret UPDATE ile B emsaline çevriliyor,
+    /// `body_hash` değiştirilerek iddia sonradan "doğru/yanlış" hâle
+    /// getiriliyor, sürüm başka emsale taşınıyordu.
+    #[test]
+    fn a_precedent_version_conflict_marker_is_immutable() {
+        let db = db();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO precedents (id,court,created_at)
+                 VALUES ('pA','Yargıtay','2026-01-01T00:00:00Z'),
+                        ('pB','Danıştay','2026-01-01T00:00:00Z');
+                 INSERT INTO precedent_versions
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,identity_conflict)
+                 VALUES ('vA1','pA','2026-01-01T00:00:00Z','paste','hash-a','text_verified',0),
+                        ('vB1','pB','2026-01-03T00:00:00Z','paste','hash-z','text_verified',0);
+                 INSERT INTO precedent_versions
+                   (id,precedent_id,acquired_at,source_kind,body_hash,verification_state,
+                    identity_conflict,conflict_with_version_id)
+                 VALUES ('vA2','pA','2026-01-02T00:00:00Z','paste','hash-b','text_verified',1,'vA1');",
+            )
+            .expect("sürümler");
+        for sql in [
+            "UPDATE precedent_versions SET conflict_with_version_id='vB1' WHERE id='vA2'",
+            "UPDATE precedent_versions SET identity_conflict=0 WHERE id='vA2'",
+            "UPDATE precedent_versions SET body_hash='hash-a' WHERE id='vA2'",
+            "UPDATE precedent_versions SET precedent_id='pB' WHERE id='vA2'",
+            "UPDATE precedent_versions SET id='vA2-yeni' WHERE id='vA2'",
+        ] {
+            integrity_error(db.conn().execute(sql, []));
+        }
+        // Diğer sütunlar güncellenebilir; değişmeyen yazma da takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE precedent_versions SET verification_state='metadata_verified' WHERE id='vA2'",
+                [],
+            )
+            .expect("durum güncellenebilmeli");
+        db.conn()
+            .execute(
+                "UPDATE precedent_versions SET conflict_with_version_id='vA1' WHERE id='vA2'",
+                [],
+            )
+            .expect("değişmeyen yazma");
+        let row: (String, i64, Option<String>, String) = db
+            .conn()
+            .query_row(
+                "SELECT precedent_id,identity_conflict,conflict_with_version_id,body_hash
+                   FROM precedent_versions WHERE id='vA2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("vA2");
+        assert_eq!(row, ("pA".into(), 1, Some("vA1".into()), "hash-b".into()));
+        assert_eq!(version_count(&db), 3);
+    }
 }
