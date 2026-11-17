@@ -1298,6 +1298,86 @@ fn upgrade_keeps_precedent_versions_written_before_the_content_gate() {
 }
 
 #[test]
+fn upgrade_keeps_precedent_notes_written_before_the_content_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 48);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO precedents (id,court,created_at)
+             VALUES ('p1','Yargıtay','2026-01-01T00:00:00Z');
+             INSERT INTO precedent_notes
+               (id,precedent_id,case_id_optional,useful_passage_anchor,similarity_note,
+                distinguishing_note,user_conclusion,created_at)
+             VALUES ('old-untrimmed','p1','c1',NULL,' kırpılmamış ','','',
+                     '2026-01-02T00:00:00Z'),
+                    ('old-no-date','p1',NULL,NULL,'','','','');",
+        )
+        .expect("v48 notları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM precedent_notes", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(preserved, 2, "satırlar silinmez");
+    // Bozuk kapsam/metin UPDATE ile onarılamaz: not içeriği donmuştur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE precedent_notes SET similarity_note='kırpılmış'
+               WHERE id='old-untrimmed'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("precedent_notes"), "mesaj: {message}")
+        }
+        other => panic!("v49 değişmezlik kapısı onarım yazmasını durdurmalı: {other:?}"),
+    }
+    // Yeni bozuk yazım kapıda durur.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO precedent_notes
+               (id,precedent_id,case_id_optional,useful_passage_anchor,similarity_note,
+                distinguishing_note,user_conclusion,created_at)
+             VALUES ('new-bad','p1',NULL,NULL,' kırpılmamış ','','',
+                     '2026-02-01T00:00:00Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("precedent_notes"), "mesaj: {message}")
+        }
+        other => panic!("v49 metin kapısı kırpılmamış notu durdurmalı: {other:?}"),
+    }
+    // Çekirdeğin biçimi (kırpılmış metin, dolu zaman, yaşayan dosya) geçer.
+    db.conn()
+        .execute(
+            "INSERT INTO precedent_notes
+               (id,precedent_id,case_id_optional,useful_passage_anchor,similarity_note,
+                distinguishing_note,user_conclusion,created_at)
+             VALUES ('new-ok','p1','c1','Ek-3 s.14','benzer','','',
+                     '2026-02-02T00:00:00Z')",
+            [],
+        )
+        .expect("çekirdeğin biçimi yazılabilmeli");
+    // Not kapsamı dosya zinciri değildir; tarama alanı eklenmez.
+    assert_eq!(db.scope_violations().expect("tarama").total(), 0);
+}
+
+#[test]
 fn upgrade_does_not_start_when_backup_cannot_be_written() {
     let dir = tempfile::tempdir().expect("dizin");
     let path = dir.path().join("vault.db");

@@ -1880,6 +1880,239 @@ mod tests {
             .is_err());
     }
 
+    /// v49: **emsal notunun kapsamı, konusu ve metni kanıtlanabilir olmalı**.
+    ///
+    /// Ölçülen kusur (v48, gerçek SQLite; `scratch/dim-v49-probe/measure_before.log`):
+    /// 18 kusur yazımının **15'i** kabul ediliyordu — dosyaya özel not
+    /// `case_id_optional=NULL` ile kütüphaneye çevrilebiliyor (arayüzdeki
+    /// «dosyaya özel» rozeti sessizce «kütüphane» oluyor), not başka dosyaya ve
+    /// başka emsale taşınabiliyor (metin başka kararın altında okunuyor), üç
+    /// metin alanı ile `created_at` sonradan değiştirilebiliyor, silinmiş
+    /// dosyaya bağ kurulabiliyor, boş kimlik/zaman, kırpılmamış metin ve
+    /// yalnız boşluktan çapa yazılabiliyordu. Çekirdek yalnız INSERT eder
+    /// (`create_precedent_note`), şema ise hiçbir tetikleyici taşımıyordu.
+    #[test]
+    fn a_precedent_note_cannot_be_rewritten_or_detached_from_its_subject() {
+        let db = db();
+        let note_error = |result: Result<usize, StorageError>, label: &str| match result {
+            Err(StorageError::Integrity(message)) => assert!(
+                message.contains("precedent_notes"),
+                "{label}: mesaj tabloyu adlandırmıyor: {message}"
+            ),
+            other => panic!("{label}: beklenen E_DB_INTEGRITY, ölçülen: {other:?}"),
+        };
+        let make_case = |title: &str| {
+            db.create_case(&NewCase {
+                title: title.into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya")
+        };
+        let case = make_case("Dosya A");
+        let other = make_case("Dosya B");
+        let gone = make_case("Silinmiş dosya");
+        db.soft_delete_case(&gone.id).expect("sil");
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/1"), Some("2025/2")))
+            .expect("emsal");
+        let q = db
+            .create_precedent(&precedent("Danıştay", Some("2024/9"), Some("2025/8")))
+            .expect("emsal");
+        let note = db
+            .create_precedent_note(
+                &p.id,
+                &NewPrecedentNote {
+                    case_id_optional: Some(case.id.clone()),
+                    useful_passage_anchor: Some("Ek-3 s.14".into()),
+                    similarity_note: "benzer".into(),
+                    distinguishing_note: "farklı".into(),
+                    user_conclusion: "kullanılabilir".into(),
+                },
+            )
+            .expect("dosyaya özel not");
+        let library = db
+            .create_precedent_note(
+                &p.id,
+                &NewPrecedentNote {
+                    case_id_optional: None,
+                    useful_passage_anchor: None,
+                    similarity_note: "kütüphane notu".into(),
+                    distinguishing_note: String::new(),
+                    user_conclusion: String::new(),
+                },
+            )
+            .expect("kütüphane notu");
+
+        // Doğuş: konu ve kapsam kanıtlanabilir olmalı.
+        let write = |id: &str,
+                     precedent: &str,
+                     scoped: Option<&str>,
+                     anchor: Option<&str>,
+                     similarity: &str,
+                     at: &str| {
+            db.conn()
+                .execute(
+                    "INSERT INTO precedent_notes
+                       (id,precedent_id,case_id_optional,useful_passage_anchor,similarity_note,
+                        distinguishing_note,user_conclusion,created_at)
+                     VALUES (?1,?2,?3,?4,?5,'','',?6)",
+                    rusqlite::params![id, precedent, scoped, anchor, similarity, at],
+                )
+                .map_err(StorageError::from)
+        };
+        note_error(
+            write(
+                "n-ghost",
+                "olmayan",
+                None,
+                None,
+                "a",
+                "2026-03-02T00:00:00Z",
+            ),
+            "olmayan emsal",
+        );
+        note_error(
+            write(
+                "n-ghost-case",
+                &p.id,
+                Some("olmayan"),
+                None,
+                "a",
+                "2026-03-02T00:00:00Z",
+            ),
+            "olmayan dosya",
+        );
+        note_error(
+            write(
+                "n-gone",
+                &p.id,
+                Some(gone.id.as_str()),
+                None,
+                "a",
+                "2026-03-02T00:00:00Z",
+            ),
+            "silinmiş dosya",
+        );
+        note_error(
+            write("", &p.id, None, None, "a", "2026-03-02T00:00:00Z"),
+            "boş kimlik",
+        );
+        note_error(write("n-no-date", &p.id, None, None, "a", ""), "boş zaman");
+        note_error(
+            write("n-raw-date", &p.id, None, None, "a", "dün"),
+            "damga değil",
+        );
+        note_error(
+            write(
+                "n-untrimmed",
+                &p.id,
+                None,
+                None,
+                " boşluklu ",
+                "2026-03-02T00:00:00Z",
+            ),
+            "kırpılmamış metin",
+        );
+        note_error(
+            write(
+                "n-blank-anchor",
+                &p.id,
+                None,
+                Some("   "),
+                "a",
+                "2026-03-02T00:00:00Z",
+            ),
+            "boşluk çapa",
+        );
+
+        // Yazıldıktan sonra kapsam, konu, metin ve zaman donar.
+        for (label, sql) in [
+            (
+                "özel→kütüphane",
+                format!(
+                    "UPDATE precedent_notes SET case_id_optional=NULL WHERE id='{}'",
+                    note.id
+                ),
+            ),
+            (
+                "başka dosya",
+                format!(
+                    "UPDATE precedent_notes SET case_id_optional='{}' WHERE id='{}'",
+                    other.id, note.id
+                ),
+            ),
+            (
+                "başka emsal",
+                format!(
+                    "UPDATE precedent_notes SET precedent_id='{}' WHERE id='{}'",
+                    q.id, note.id
+                ),
+            ),
+            (
+                "kütüphane→dosya",
+                format!(
+                    "UPDATE precedent_notes SET case_id_optional='{}' WHERE id='{}'",
+                    case.id, library.id
+                ),
+            ),
+            (
+                "benzerlik metni",
+                format!(
+                    "UPDATE precedent_notes SET similarity_note='değişti' WHERE id='{}'",
+                    note.id
+                ),
+            ),
+            (
+                "ayırt edici metin",
+                format!(
+                    "UPDATE precedent_notes SET distinguishing_note='değişti' WHERE id='{}'",
+                    note.id
+                ),
+            ),
+            (
+                "sonuç metni",
+                format!(
+                    "UPDATE precedent_notes SET user_conclusion='değişti' WHERE id='{}'",
+                    note.id
+                ),
+            ),
+            (
+                "zaman geri",
+                format!(
+                    "UPDATE precedent_notes SET created_at='2020-01-01T00:00:00Z' WHERE id='{}'",
+                    note.id
+                ),
+            ),
+            (
+                "sonradan çapa",
+                format!(
+                    "UPDATE precedent_notes SET useful_passage_anchor='Başka yer' WHERE id='{}'",
+                    note.id
+                ),
+            ),
+        ] {
+            note_error(
+                db.conn().execute(&sql, []).map_err(StorageError::from),
+                label,
+            );
+        }
+        // Değişmeyen yazma takılmaz (v35 dersi).
+        db.conn()
+            .execute(
+                "UPDATE precedent_notes SET similarity_note='benzer' WHERE id=?1",
+                [&note.id],
+            )
+            .expect("değişmeyen yazma");
+        assert_eq!(db.list_precedent_notes(&p.id).expect("liste").len(), 2);
+        // Not kapsamı dosya zinciri değildir: tarama alanı eklenmez.
+        assert_eq!(db.scope_violations().expect("tarama").total(), 0);
+    }
+
     #[test]
     fn citation_check_keeps_dimensions_separate() {
         let db = db();
