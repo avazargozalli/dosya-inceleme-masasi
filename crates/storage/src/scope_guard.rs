@@ -821,7 +821,7 @@ mod tests {
             "INSERT INTO redaction_plans
                (id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,plan_version,state,
                 output_profile,created_at,updated_at)
-             VALUES ('rpx','c2','v1','r1','h','page',1,'draft','pdf','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+             VALUES ('rpx','c2','v1','r1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pdf_page_points',1,'draft','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
             [],
         );
         scope_error(result, "redaction_plans");
@@ -1242,15 +1242,20 @@ mod tests {
             db.conn().execute(
                 "INSERT INTO redaction_plans
                    (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,
-                    output_profile,created_at,updated_at,output_version_id)
+                    output_profile,created_at,updated_at,output_version_id,output_version_ref)
                  VALUES (?1,'c1','v1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                         'pdf_page_points',1,'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?2)",
+                         'pdf_page_points',1,'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',?2,?2)",
                 rusqlite::params![id, output],
             )
         };
         plan("p1", "vc").expect("aynı dosyanın çıktısı meşru");
         scope_error(plan("px", "v9"), "redaction_plans");
         // UPDATE ile taşıma da kapıda durur (INSERT kapısı tek başına yetmez).
+        // v51 kanıt kapısı çıktı bağını **her** değişiklikte dondurur; bu test
+        // kapsam sınırını ölçtüğü için o kapı bilinçli düşürülür.
+        db.conn()
+            .execute_batch("DROP TRIGGER redaction_plan_evidence_guard_bu;")
+            .expect("kanıt kapısı düşür");
         let moved = db.conn().execute(
             "UPDATE redaction_plans SET output_version_id='v9' WHERE id='p1'",
             [],

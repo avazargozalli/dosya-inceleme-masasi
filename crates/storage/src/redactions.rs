@@ -790,7 +790,7 @@ mod tests {
             &NewRedactionPlan {
                 document_version_id: source_version.clone(),
                 parse_run_id: None,
-                render_hash: "abc".into(),
+                render_hash: "a".repeat(64),
                 output_profile: "masked_pdf".into(),
                 output_version_id: Some(output.id.clone()),
             },
@@ -827,7 +827,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -865,7 +865,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -914,7 +914,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "c".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -925,9 +925,13 @@ mod tests {
         //
         // v31 kapsam kapısı bu durumu **artık üretmez** (plan, var olmayan bir
         // sürüme bağlanamaz). Test, eski/bozuk bir kasadan gelebilecek satırın
-        // görüntüsünü ölçtüğü için kapı burada bilinçli düşürülür.
+        // görüntüsünü ölçtüğü için kapılar burada bilinçli düşürülür (v51 kanıt
+        // kapısı da sürüm bağını dondurur).
         db.conn()
-            .execute_batch("DROP TRIGGER scope_guard_redaction_plans_bu;")
+            .execute_batch(
+                "DROP TRIGGER scope_guard_redaction_plans_bu;
+                 DROP TRIGGER redaction_plan_evidence_guard_bu;",
+            )
             .expect("kapı düşür");
         db.conn()
             .execute(
@@ -946,14 +950,14 @@ mod tests {
     fn plans_with_equal_timestamp_keep_insertion_order() {
         let (db, case_id, version_id) = setup();
         let mut ids = Vec::new();
-        for hash in ["d", "e"] {
+        for _ in 0..2 {
             ids.push(
                 db.create_redaction_plan(
                     &case_id,
                     &NewRedactionPlan {
                         document_version_id: version_id.clone(),
                         parse_run_id: None,
-                        render_hash: hash.repeat(64),
+                        render_hash: "a".repeat(64),
                         output_profile: "share".into(),
                         output_version_id: None,
                     },
@@ -963,6 +967,12 @@ mod tests {
             );
         }
         // Damga eşitlenince sıra tek başına `rowid`e düşer: sonra yazılan üstte.
+        //
+        // `created_at` üretimde **donar** (v51): eşitleme bir test kurgusudur,
+        // sıra okumasını sınamak için kapı bilinçli düşürülür.
+        db.conn()
+            .execute_batch("DROP TRIGGER redaction_plan_evidence_guard_bu;")
+            .expect("kapı düşür");
         db.conn()
             .execute(
                 "UPDATE redaction_plans SET created_at='2026-01-01T00:00:00.000000Z' \
@@ -985,7 +995,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "f".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -1064,7 +1074,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "c".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -1383,11 +1393,15 @@ mod tests {
         // Plan satırındaki dosya kapsamı bozulursa **sürüm** bağı hâlâ doğru
         // olsa bile plan yabancı sayılır: satır kendi başına yetki vermez.
         //
-        // v31 kapsam kapısı bu bozulmayı SQL üzerinden engeller; test, elle
-        // kurcalanmış/eski bir kasadan gelebilecek satırı ölçtüğü için kapı
-        // burada bilinçli düşürülür (okuma yolu hâlâ kendi doğrulamasını yapar).
+        // v31 kapsam kapısı ve v51 kanıt kapısı bu bozulmayı SQL üzerinden
+        // engeller; test, elle kurcalanmış/eski bir kasadan gelebilecek satırı
+        // ölçtüğü için kapılar burada bilinçli düşürülür (okuma yolu hâlâ
+        // kendi doğrulamasını yapar).
         db.conn()
-            .execute_batch("DROP TRIGGER scope_guard_redaction_plans_bu;")
+            .execute_batch(
+                "DROP TRIGGER scope_guard_redaction_plans_bu;
+                 DROP TRIGGER redaction_plan_evidence_guard_bu;",
+            )
             .expect("kapı düşür");
         let other = db
             .create_case(&NewCase {
@@ -1428,7 +1442,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id.clone(),
                     parse_run_id: None,
-                    render_hash: "f".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -1443,6 +1457,15 @@ mod tests {
             }],
         )
         .expect("regions");
+        // Plan doğuşta sürümün özetine bağlanır (v51); başka render'a bağlı
+        // plan ancak **sürüm özeti değişerek** oluşabilir. Maske yolu yine
+        // kapanmalı: geometri hangi dosyaya ait olduğunu kanıtlamıyor.
+        db.conn()
+            .execute(
+                "UPDATE document_versions SET original_sha256=?1 WHERE id=?2",
+                rusqlite::params!["f".repeat(64), version_id],
+            )
+            .expect("sürüm özeti değişti");
         let err = db.outbound_terms_from_plan(&case_id, &plan.id).unwrap_err();
         assert_eq!(err.code(), "E_MASK_PLAN");
         assert!(err.to_string().contains("render özeti"));
@@ -1493,7 +1516,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id.clone(),
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: Some(output.id.clone()),
                 },
@@ -1541,7 +1564,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -1584,7 +1607,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id.clone(),
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: Some(output.id.clone()),
                 },
@@ -1636,7 +1659,7 @@ mod tests {
             &NewRedactionPlan {
                 document_version_id: version_id,
                 parse_run_id: None,
-                render_hash: "b".repeat(64),
+                render_hash: "a".repeat(64),
                 output_profile: "share".into(),
                 output_version_id: Some(output.id.clone()),
             },
@@ -1687,7 +1710,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: Some(orphan.id),
                 },
@@ -1742,7 +1765,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id,
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: Some(output.id),
                 },
@@ -1762,7 +1785,7 @@ mod tests {
                 &NewRedactionPlan {
                     document_version_id: version_id.clone(),
                     parse_run_id: None,
-                    render_hash: "b".repeat(64),
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: Some(version_id),
                 },
@@ -1902,10 +1925,11 @@ mod tests {
             .create_redaction_plan(
                 &case_id,
                 &NewRedactionPlan {
-                    document_version_id: version_id,
+                    document_version_id: version_id.clone(),
                     parse_run_id: None,
-                    // Sürüm `"a"*64`; plan başka bir render'a bağlı.
-                    render_hash: "b".repeat(64),
+                    // Plan doğarken sürümün özetine (`"a"*64`) bağlanır; v51
+                    // doğuşta başka özete izin vermez (kapı).
+                    render_hash: "a".repeat(64),
                     output_profile: "share".into(),
                     output_version_id: None,
                 },
@@ -1920,6 +1944,14 @@ mod tests {
             }],
         )
         .expect("bölge");
+        // Uyuşmazlığın **tek** meşru kaynağı artık sürüm tarafıdır: sürümün
+        // özeti değişir (yeniden render/aktarım), planınki donmuştur.
+        db.conn()
+            .execute(
+                "UPDATE document_versions SET original_sha256=?1 WHERE id=?2",
+                rusqlite::params!["b".repeat(64), version_id],
+            )
+            .expect("sürüm özeti değişti");
 
         let rows = db.list_redaction_plans(&case_id).expect("liste");
         assert_eq!(rows[0].reinspect_reason.as_deref(), Some("render_changed"));
@@ -2366,5 +2398,438 @@ mod tests {
             Some(&[[10.0, 20.0, 30.0, 40.0]][..])
         );
         assert_eq!(rows[0].user_decision, "redact");
+    }
+
+    /// v51 — plan **künyesi** doğuşta tutarlı olmalı ve sonra donmalı:
+    /// `render_hash` kaynak sürümün özeti, çıktı izi bağın kimliği,
+    /// kapanmış (`applied`) plan kapalı.
+    ///
+    /// Her satır **tek** bir kusur taşır ve kendi satırına yazar: kimliği
+    /// değiştiren bir yazım sonrakileri 0 satırla eşleştirip sahte «geçti»
+    /// verdirirdi (v49'un ölçüm dersi).
+    #[test]
+    fn redaction_plan_evidence_is_bound_at_birth_and_frozen() {
+        let (db, case_id, version_id) = setup();
+        let output_same = add_output_document(
+            &db,
+            &case_id,
+            &version_id,
+            "Belge (maskeli)",
+            &"c".repeat(64),
+        );
+        let output_other = add_output_document(
+            &db,
+            &case_id,
+            &version_id,
+            "Belge (maskeli 2)",
+            &"d".repeat(64),
+        );
+        // Aynı dosyada **başka** belgenin sürümü + ayrıştırması: kapsam kapısı
+        // bunları serbest bırakır, kanıt kapısı dondurmalıdır.
+        let foreign_blob = db
+            .create_blob_record("st-other-doc", 10, "aad")
+            .expect("blob");
+        let other_doc = db
+            .create_document(&case_id, "Başka belge", "pdf", None, "unknown")
+            .expect("belge");
+        let other_version = db
+            .add_version(
+                &other_doc.id,
+                &case_id,
+                &foreign_blob,
+                &"e".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        db.conn()
+            .execute(
+                "INSERT INTO parse_runs
+                   (id,document_version_id,case_id,engine,engine_version,
+                    settings_hash,status,created_at)
+                 VALUES ('pr-other',?1,?2,'pdfium','1','s','succeeded',
+                         '2026-01-01T00:00:00Z')",
+                rusqlite::params![other_version.id, case_id],
+            )
+            .expect("ayrıştırma");
+
+        let plan_error = |result: Result<usize, StorageError>, label: &str| match result {
+            Err(StorageError::Integrity(message)) => assert!(
+                message.contains("redaction_plans"),
+                "{label}: mesaj tabloyu adlandırmıyor: {message}"
+            ),
+            other => panic!("{label}: beklenen E_DB_INTEGRITY, ölçülen: {other:?}"),
+        };
+        let now = "2026-06-01T00:00:00Z";
+        #[allow(clippy::too_many_arguments)]
+        let write = |id: &str,
+                     doc: &str,
+                     render: &str,
+                     space: &str,
+                     profile: &str,
+                     plan_version: i64,
+                     created: &str,
+                     updated: &str,
+                     out: Option<&str>,
+                     trace: Option<&str>| {
+            db.conn()
+                .execute(
+                    "INSERT INTO redaction_plans
+                       (id,case_id,document_version_id,parse_run_id,render_hash,
+                        coordinate_space,plan_version,state,output_profile,
+                        created_at,updated_at,output_version_id,output_version_ref)
+                     VALUES (?1,?2,?3,NULL,?4,?5,?6,'draft',?7,?8,?9,?10,?11)",
+                    rusqlite::params![
+                        id,
+                        case_id,
+                        doc,
+                        render,
+                        space,
+                        plan_version,
+                        profile,
+                        created,
+                        updated,
+                        out,
+                        trace
+                    ],
+                )
+                .map_err(StorageError::from)
+        };
+        let good_render = "a".repeat(64);
+        // --- doğuş kusurları ----------------------------------------------
+        plan_error(
+            write(
+                "",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "boş kimlik",
+        );
+        plan_error(
+            write(
+                "x-h",
+                &version_id,
+                "h",
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "render özeti başka ('h')",
+        );
+        plan_error(
+            write(
+                "x-hex",
+                &version_id,
+                &"b".repeat(64),
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "render özeti başka 64 hex",
+        );
+        plan_error(
+            write(
+                "x-space",
+                &version_id,
+                &good_render,
+                "page",
+                "share",
+                1,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "koordinat uzayı 'page'",
+        );
+        plan_error(
+            write(
+                "x-prof",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "",
+                1,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "boş çıktı profili",
+        );
+        plan_error(
+            write(
+                "x-prof2",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "   ",
+                1,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "boşluk çıktı profili",
+        );
+        plan_error(
+            write(
+                "x-ver",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                0,
+                now,
+                now,
+                None,
+                None,
+            ),
+            "plan sürümü 0",
+        );
+        plan_error(
+            write(
+                "x-created",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                "",
+                now,
+                None,
+                None,
+            ),
+            "boş created_at",
+        );
+        plan_error(
+            write(
+                "x-updated",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                "",
+                None,
+                None,
+            ),
+            "boş updated_at",
+        );
+        plan_error(
+            write(
+                "x-trace",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                Some(&output_same.id),
+                Some(&output_other.id),
+            ),
+            "çıktı izi başka kimlik",
+        );
+        plan_error(
+            write(
+                "x-trace2",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                Some(&output_same.id),
+                None,
+            ),
+            "çıktı izi NULL",
+        );
+        plan_error(
+            write(
+                "x-self",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                Some(&version_id),
+                Some(&version_id),
+            ),
+            "çıktı bağı kaynağın kendisi",
+        );
+        plan_error(
+            write(
+                "x-faketrace",
+                &version_id,
+                &good_render,
+                "pdf_page_points",
+                "share",
+                1,
+                now,
+                now,
+                None,
+                Some(&output_same.id),
+            ),
+            "bağsız uydurma iz",
+        );
+        // Meşru doğuş (çekirdeğin yolu) takılmaz.
+        write(
+            "ok-birth",
+            &version_id,
+            &good_render,
+            "pdf_page_points",
+            "share",
+            1,
+            now,
+            now,
+            Some(&output_same.id),
+            Some(&output_same.id),
+        )
+        .expect("meşru plan doğuşu");
+
+        // --- güncelleme: kanıt bağı donar --------------------------------
+        let new_plan = || {
+            db.create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: good_render.clone(),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan")
+        };
+        let update = |id: &str, sets: &str| {
+            db.conn()
+                .execute(
+                    &format!("UPDATE redaction_plans SET {sets} WHERE id='{id}'"),
+                    [],
+                )
+                .map_err(StorageError::from)
+        };
+        let p = new_plan();
+        plan_error(
+            update(&p.id, &format!("render_hash='{}'", "b".repeat(64))),
+            "render özetini çevir",
+        );
+        let p = new_plan();
+        plan_error(
+            update(&p.id, "coordinate_space='image_pixels'"),
+            "koordinat uzayını çevir",
+        );
+        let p = new_plan();
+        plan_error(
+            update(&p.id, "output_profile='other'"),
+            "çıktı profilini çevir",
+        );
+        let p = new_plan();
+        plan_error(update(&p.id, "plan_version=7"), "plan sürümünü çevir");
+        let p = new_plan();
+        plan_error(
+            update(&p.id, "created_at='2020-01-01T00:00:00Z'"),
+            "yazılma zamanını geriye al",
+        );
+        let p = new_plan();
+        plan_error(
+            update(
+                &p.id,
+                &format!("document_version_id='{}'", other_version.id),
+            ),
+            "aynı dosyada başka belgeye taşı",
+        );
+        let p = new_plan();
+        plan_error(
+            update(&p.id, "parse_run_id='pr-other'"),
+            "başka belgenin ayrıştırmasına bağla",
+        );
+        let p = new_plan();
+        plan_error(
+            update(
+                &p.id,
+                &format!(
+                    "output_version_id='{}',output_version_ref='{}'",
+                    output_same.id, output_same.id
+                ),
+            ),
+            "çıktı bağını sonradan doldur",
+        );
+        let linked = db
+            .create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: good_render.clone(),
+                    output_profile: "share".into(),
+                    output_version_id: Some(output_same.id.clone()),
+                },
+            )
+            .expect("bağlı plan");
+        plan_error(
+            update(
+                &linked.id,
+                &format!(
+                    "output_version_id='{}',output_version_ref='{}'",
+                    output_other.id, output_other.id
+                ),
+            ),
+            "çıktı bağını başka sürüme çevir",
+        );
+        let applied = new_plan();
+        db.add_redaction_regions(
+            &applied.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [1.0, 2.0, 3.0, 4.0],
+                term_hash: "h".into(),
+            }],
+        )
+        .expect("bölge");
+        plan_error(update(&applied.id, "state='draft'"), "kapanmış planı aç");
+        let applied2 = new_plan();
+        db.add_redaction_regions(
+            &applied2.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [1.0, 2.0, 3.0, 4.0],
+                term_hash: "h".into(),
+            }],
+        )
+        .expect("bölge");
+        plan_error(
+            update(&applied2.id, "state='approved'"),
+            "kapanmış planı approved'a çevir",
+        );
+        // Değişmeyen yazma ve serbest sütunlar takılmaz.
+        update(&applied.id, "state='applied',reviewer='av. A'").expect("değişmeyen yazma");
+        update(&applied.id, "updated_at='2026-07-01T00:00:00Z'").expect("updated_at serbest");
+        let rows = db.list_redaction_plans(&case_id).expect("liste");
+        assert_eq!(
+            rows.iter().filter(|r| r.id == applied.id).count(),
+            1,
+            "deneme satırı hâlâ tek"
+        );
     }
 }

@@ -445,9 +445,9 @@ fn upgrade_reports_cross_case_output_and_context_links_left_by_the_previous_sche
         ),
         (
             "INSERT INTO redaction_plans
-               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id)
-             VALUES ('p-new','c1','v1','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','pdf_page_points',1,
-                     'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','v2')",
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,state,output_profile,created_at,updated_at,output_version_id,output_version_ref)
+             VALUES ('p-new','c1','v1','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pdf_page_points',1,
+                     'applied','share','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','v2','v2')",
             "redaction_plans",
         ),
         (
@@ -2267,4 +2267,102 @@ fn upgrade_keeps_redaction_regions_written_before_the_evidence_gate() {
         }
         other => panic!("v50 kapanmış plana eklemeyi reddetmeli: {other:?}"),
     }
+}
+
+/// v51 — maskeleme planının **kanıt bağı**. v50 kasasında yazılmış tutarsız
+/// planlar (başka render'a bağlı, yanlış uzayda, çıktı izi uydurma) güncellemede
+/// **silinmez**; ama donar ve yeni tutarsız satır doğamaz.
+#[test]
+fn upgrade_keeps_redaction_plans_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 50);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','st-legacy',1,10,'k','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES ('d1','c1','Belge','pdf',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     10,'application/pdf','2026-01-01T00:00:00Z');
+             -- v51 öncesi: kapı yoktu — render özeti başka, uzay 'page',
+             -- profil boşluk, bağ yokken uydurma iz.
+             INSERT INTO redaction_plans
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,
+                state,output_profile,created_at,updated_at,output_version_id,output_version_ref)
+             VALUES ('p-legacy','c1','v1',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     'page',1,'applied','   ',
+                     '2026-03-01T00:00:00Z','2026-03-01T00:00:00Z',NULL,'v9'),
+                    ('p-legacy-ok','c1','v1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'pdf_page_points',1,'draft','share',
+                     '2026-03-01T00:00:00Z','2026-03-01T00:00:00Z',NULL,NULL);",
+        )
+        .expect("v50 planları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM redaction_plans", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(preserved, 2, "eski satırlar silinmez");
+    // Eski tutarsız plan **onarılamaz**: kanıt bağı donmuştur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE redaction_plans SET render_hash=?1 WHERE id='p-legacy'",
+            [&"a".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("redaction_plans"), "mesaj: {message}")
+        }
+        other => panic!("v51 eski planı dondurmalı: {other:?}"),
+    }
+    // Yeni tutarsız plan doğamaz (aynı render özeti kusuru).
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO redaction_plans
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,
+                state,output_profile,created_at,updated_at)
+             VALUES ('p-new','c1','v1',?1,'pdf_page_points',1,'draft','share',
+                     '2026-08-01T00:00:00Z','2026-08-01T00:00:00Z')",
+            [&"b".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("redaction_plans"), "mesaj: {message}")
+        }
+        other => panic!("v51 tutarsız plan doğuşunu reddetmeli: {other:?}"),
+    }
+    // Meşru doğuş (çekirdeğin yolu) takılmaz.
+    db.conn()
+        .execute(
+            "INSERT INTO redaction_plans
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,
+                state,output_profile,created_at,updated_at)
+             VALUES ('p-new-ok','c1','v1',?1,'pdf_page_points',1,'draft','share',
+                     '2026-08-01T00:00:00Z','2026-08-01T00:00:00Z')",
+            [&"a".repeat(64)],
+        )
+        .expect("meşru plan");
 }
