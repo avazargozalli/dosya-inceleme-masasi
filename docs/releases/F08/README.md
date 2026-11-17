@@ -2506,3 +2506,84 @@ görsel QA **insan bekliyor**.
 arayüz kodu değişmedi; `masaüstü kabuk` + worker + `windows güvenli depo` + SBOM + kaynak
 arşivi yeşil). Belge CI'ı `65577e8` (v47 bölümü) `43958581152` **10/10 yeşil** — önceki
 koşunun açık bıraktığı kanıt bu turda ölçüldü.
+
+## F08-T04v — emsal notunun kapsamı, konusu ve metni kanıtlanabilir olmalı (şema v49, 2026-11-17)
+
+**Neden.** `precedent_notes` hukukçunun **iş ürünüdür**. Arayüz her notun yanında kapsam
+rozetini basar: `caseIdOptional` doluysa «dosyaya özel», boşsa «kütüphane» notu
+(`screens/Precedents.tsx`); sözleşme `create_precedent_note` yorumunda yazılıdır —
+«verilirse o dosyaya özeldir; verilmezse kütüphane notudur; başka dosyanın özel notu bu
+yolla taşınmaz». Rozetin yanında `createdAt` gösterilir ve üç metin alanı (benzerlik /
+ayırt edici / sonuç) okunur. Çekirdek yalnız **INSERT** eder: not doğduktan sonra
+düzeltme/silme yolu yoktur. Şemada ise tablo 0001'den beri **hiçbir tetikleyici
+taşımıyordu** — kapsam, konu, metin ve zaman doğrudan SQL ile serbestçe çevrilebiliyordu
+(kapsam rozeti bir gizlilik iddiasıdır; serbest UPDATE onu sessizce genişletir).
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v48; sonda
+`~/.hermes/cache/scratch/dim-v49-probe/measure_v49.py`, log `measure_before.log`):**
+18 kusur yazımının **15'i KABUL** edildi (3 RED yalnız FK/NOT NULL'ın kendisiydi):
+(1) not **silinmiş** dosyaya bağlandı (çekirdek reddeder, şema kabul etti) — rozet
+«dosyaya özel» der, dosya yoktur; (2) `id=''`; (3) `created_at=''` — ekranda tarih boş
+basılır; (4) kırpılmamış metin (`'  boşluklu  '`; çekirdek `trim` eder); (5) yalnız
+boşluktan `useful_passage_anchor`; (6) **dosyaya özel not `case_id_optional=NULL`
+yapılarak kütüphaneye çevrildi**; (7) not **başka dosyaya** taşındı; (8) not **başka
+emsale** taşındı — metin artık başka kararın altında okunur; (9) benzerlik metni;
+(10) sonuç metni; (11) ayırt edici metin sonradan değiştirildi; (12) `created_at`
+geriye alındı (not sonradan «eski» gösterildi); (13) sonradan çapa eklendi;
+(14) **kütüphane notu dosyaya** çevrildi (kapsam daraltma da serbestti); (15) `id`
+değiştirildi. FK iki yazımı (olmayan emsal, olmayan dosya) ve NOT NULL bir yazımı zaten
+durduruyordu; kapı bunları **yedekler** (FK'siz bağlantıda da doğru hüküm verir).
+
+**Yazılan (şema v49, `0049_precedent_note_content_scope_guard.sql`, 2 tetikleyici).**
+`precedent_notes_content_guard_bi`: `id`/`precedent_id` dolu; `precedent_id` **var olan**
+emsali gösterir (emsal silme yolu yok → fail-closed, 0045/0046 kararı); `case_id_optional`
+NULL ya da **silinmemiş** bir dosya (çekirdeğin doğum denetimi); `created_at` ISO-8601
+damgası (`YYYY-MM-DDTHH:MM:SS…`; boş/boşluk bu kurala zaten takılır); üç metin alanı
+**kırpılmış** (çekirdek `trim` yazar); dolu çapa boşluktan ibaret olamaz.
+`precedent_notes_content_guard_bu`: sekiz sütunun **hepsi** donar — not append-only
+sicildir; düzeltme yolu **yeni not** yazmaktır (çekirdekte de tek yol budur). Ret
+`DIM_INTEGRITY:precedent_notes` → `StorageError::Integrity` → **`E_DB_INTEGRITY`**.
+Tablo `case_id` değil **`case_id_optional`** taşır; kural dosya zinciri değil **not
+bütünlüğüdür**, bu yüzden `scope_violations()` alanı **eklenmedi** — `GUARDED_TABLES`
+**25 kalır** (0044–0048 ile aynı sınıf).
+
+**Testler.** `precedents` **+1** (`a_precedent_note_cannot_be_rewritten_or_detached_from_its_subject`):
+sekiz doğum kusuru (olmayan emsal/dosya, silinmiş dosya, boş kimlik, boş/bozuk zaman,
+kırpılmamış metin, boşluk çapa) `E_DB_INTEGRITY`; dokuz UPDATE yolu (kapsam iki yön,
+emsal taşıma, üç metin, zaman, çapa) reddedilir; değişmeyen yazma takılmaz; tarama 0.
+`upgrade_tests` **+1** (`upgrade_keeps_precedent_notes_written_before_the_content_gate`):
+v48 kasasındaki kırpılmamış/tarihsiz notlar **silinmez**, UPDATE ile **onarılamaz**, yeni
+bozuk yazım kapıda durur, çekirdeğin biçimi geçer. Toplam `dim-storage --lib`
+**691 → 693** (yerel **693/693 yeşil, 460,97 s**). Biçim (iki manifest) / clippy
+`-D warnings` / masaüstü `cargo check --all-targets` (1 dk 14 s) temiz.
+
+**Kapı kanıtı.** **16/16 mutant KIRMIZI**, taban **20/20 RED** iken
+(`~/.hermes/cache/scratch/dim-v49-probe/gates_v49.py`, log `gates_v49.log`): BI'ın sekiz
+cümlesi (emsal varlığı · dosya varlığı+yaşamı · `id` dolu · damga biçimi · üç `trim`
+kuralı · çapa) ve BU'nun sekiz sütunu tek tek çıkarıldı; her mutantta **yalnız hedef
+saldırı** geçti. Saldırılar `PRAGMA foreign_keys=OFF` ile koştu: FK'nın zaten durdurduğu
+iki yazımı kapının **kendi başına** durdurduğu görülsün. **Dürüst (ilk koşu):** (a) ölçüm
+sondasının ilk sürümü sıralama hatası taşıyordu — `id` değiştiren yazım sonda değildi,
+kendisinden sonraki üç UPDATE **0 satır** eşleştirdi (üç «KABUL» hükmü sahteydi); sıra
+düzeltildi, taban yeniden ölçüldü, ilk koşunun hükümleri kanıt sayılmadı. (b) Kapıda
+`created_at` için **iki** cümle yazmıştım (`length(trim(...))=0` **ve** `NOT LIKE` damga);
+mutant denemesi birincisinin **etkisiz** olduğunu gösterdi (boş metin damga kuralına da
+takılır) — yüklü olmayan cümle kapıdan **çıkarıldı**, 16/16 yeniden ölçüldü.
+
+**Dürüst sınırlar.** (a) v49 öncesi kapsamı/metni bozuk notlar **silinmez** ve içerik
+donduğu için **onarılamaz** — onarım yolu aynı emsale **yeni not** yazmaktır; temizlik
+ürün kararı. (b) Kapı notun **doğruluğunu** değil **değişmezliğini** kanıtlar: yazan taraf
+yalan bir notu bir kez yazabilir. (c) `useful_passage_anchor`ın hedef metinde karşılığı
+**doğrulanmaz** (bugün arayüz daima `NULL` gönderir; dolu çapa yalnız biçimce denetlenir).
+(d) Dosyanın yaşamı yalnız **doğuşta** denetlenir: not bağlandıktan sonra dosya
+soft-delete edilebilir (tarihsel gerçek). (e) SQLite `trim()` yalnız ASCII boşlukları
+kırpar; U+00A0'dan oluşan metin bu kapıdan geçer (çekirdek `str::trim` reddeder).
+(f) Tetikleyicileri anahtarı olan saldırgan düşürebilir. (g) Arayüz **davranışı**
+değişmedi (rozetler aynı sütunlar); gerçek pencere + görsel QA **insan bekliyor**.
+
+**CI (ölçüldü).** kod `c55d80a` (4 dosya, **+417/−1**) → run `44047888298` **10/10 YEŞİL**
+(`dim-storage` **693** iki OS'ta birebir: macos-15 **400,08 s** / ubuntu-latest **622,18 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**,
+arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo` 28, SBOM, sözleşmeler,
+belge worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
+
