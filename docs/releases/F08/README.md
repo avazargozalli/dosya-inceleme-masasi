@@ -2587,3 +2587,82 @@ değişmedi (rozetler aynı sütunlar); gerçek pencere + görsel QA **insan bek
 arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo` 28, SBOM, sözleşmeler,
 belge worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
 
+## F08-T04w — maskeleme bölgesi kanıtı doğuşta tutarlı, sonrasında değişmez olmalı (şema v50, 2026-11-17)
+
+**Neden.** `redaction_regions` satırı **maskenin kendisidir**: hangi sayfada hangi
+dikdörtgenin karartıldığı. Arayüz planın altında bölge sayısını («N bölge»), açılınca
+sayfa kırılımını («Sayfa 3: 2 bölge») ve geometrisi okunamayan bölge sayısını kırmızı
+uyarıyla basar (`screens/Redaction.tsx`; `list_redaction_regions` → `rects: null`).
+Gönderim maskesi de terimlerini bu satırlardan üretir: `outbound_terms_from_plan` yalnız
+`user_decision='redact'` bölgelerin dikdörtgenleriyle kesişen bloklardan metin çıkarır.
+Çekirdek bölgeyi yalnız **INSERT** eder (`add_redaction_regions`, plan `draft`ken; sonra
+plan `applied` olur) — düzeltme, taşıma veya silme yolu yoktur. Şemada ise tablo 0001'den
+beri **hiçbir tetikleyici taşımıyordu**: sayfa, geometri ve karar doğrudan SQL ile
+serbestçe çevrilebiliyor, bölge başka plana (başka dosyaya) taşınabiliyordu.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v49; sonda
+`~/.hermes/cache/scratch/dim-v50-probe/measure_v50.py`, log `measure_before.log`):**
+26 kusur yazımının **24'ü KABUL** edildi (2 RED yalnız FK'nın kendisiydi): (1) bölge
+**başka plana** taşındı — başka dosyanın planı; (2) sayfa numarası değiştirildi (2 → 0);
+(3) dikdörtgen geometrisi değiştirildi (başka bölge taranır); (4) karar `redact`→`keep`
+çevrildi (maske yolu o bölgeyi sessizce atlar); (5) kategori boşaltıldı; (6) koordinat
+uzayı `image_pixels`e çevrildi; (7) terim özeti değiştirildi; (8) kimlik değiştirildi;
+(9) geometri bozuk JSON'a çevrildi (arayüz «okunamadı» der); (10) negatif sayfaya bölge
+yazıldı; (11) **kapanmış (`applied`) plana** yeni bölge eklendi — planın bölge sayısı
+sonradan büyüdü; (12) boş kimlik; (13) geçersiz JSON; (14) nesne; (15) boş dizi;
+(16) düz sayı elemanı (`[1,2,3,4]`); (17) üçlü dikdörtgen; (18) metinli koordinat;
+(19) yanlış koordinat uzayı; (20) boş kategori; (21) boşluk kategori; (22) boş terim
+özeti; (23) **doğuştan `keep`**; (24) **doğuştan `pending`**. FK iki yazımı (olmayan
+plan, boş plan kimliği) zaten reddediyordu; kapı bunları **yedekler** (FK'siz bağlantıda
+da doğru hüküm verir).
+
+**Yazılan (şema v50, `0050_redaction_region_evidence_guard.sql`, 2 tetikleyici).**
+`redaction_region_evidence_guard_bi`: `id` dolu; plan **var ve `draft`** (bölge seti plan
+`applied` olmadan önce tamamlanır; kapanmış plana sonradan kanıt eklenemez); `page_index`
+negatif değil; `quads` **geçerli JSON dizi**, boş değil, her elemanı **tam dört sayı**
+(integer/real) — arayüzün «geometri okunamadı» saydığı satır doğuşta yazılamaz; koordinat
+uzayı `pdf_page_points` (çekirdek sabit yazar); kategori kırpılmış ve boş değil;
+`detected_text_hash` NULL ya da kırpılmış-boş-değil; `user_decision='redact'`.
+`redaction_region_evidence_guard_bu`: sekiz sütunun **hepsi** değişmez — bölge doğduğu
+anda donar. Değişmeyen yazma (`SET quads=quads`) takılmaz; düzeltme yolu yeni plandır
+(çekirdekte de tek yol budur). Ret `DIM_INTEGRITY:redaction_regions` →
+`StorageError::Integrity` → **`E_DB_INTEGRITY`**. Tablo `case_id` taşımaz →
+`scope_violations()` alanı **eklenmedi**, `GUARDED_TABLES` **25 kalır** (0044–0049 ile
+aynı sınıf).
+
+**Testler.** `redactions` **+1** (`redaction_region_evidence_is_frozen_and_well_formed`):
+15 doğum kusuru (olmayan plan, kapanmış plan, boş kimlik, negatif sayfa, geçersiz/nesne/
+boş dizi/düz sayı/üçlü/metinli geometri, yanlış uzay, boş ve boşluk kategori, boş özet,
+doğuştan `keep`/`pending`) `E_DB_INTEGRITY`; sekiz UPDATE yolu (plan, sayfa, geometri,
+karar, kategori, uzay, özet, kimlik) reddedilir; değişmeyen yazma takılmaz; satır eski
+değerleriyle okunur. `upgrade_tests` **+1**
+(`upgrade_keeps_redaction_regions_written_before_the_evidence_gate`): v49 kasasındaki
+bozuk bölgeler **silinmez**, UPDATE ile **onarılamaz**, kapanmış plana sonradan bölge
+eklenemez. Toplam `dim-storage --lib` **693 → 695** (yerel **695/695 yeşil, 457,94 s**).
+Biçim (iki manifest) / clippy `-D warnings` temiz.
+
+**Kapı kanıtı.** **22/22 mutant KIRMIZI**, taban **24/24 saldırı RED + meşru yazma KABUL**
+iken (`~/.hermes/cache/scratch/dim-v50-probe/gates_v50.py`, log `gates_v50.log`): BI'ın on
+dört cümlesi ve BU'nun sekiz sütunu tek tek çıkarıldı; her mutantta **yalnız hedef
+saldırı** geçti. Ölçüm sonrası (v50): 26 saldırının **26'sı RED**, dört meşru yazımın
+dördü KABUL (`measure_after.log`).
+
+**Dürüst sınırlar.** (a) v50 öncesi tutarsız/bayat bölgeler **silinmez** ve içerik
+donduğu için **onarılamaz** — temizlik ürün kararı. (b) Kapı bölgenin **gerçekten
+maskelendiğini** doğrulamaz: plan `draft`ken sahte ama biçimce geçerli bir bölge
+eklenebilir; kapı sonraki değişikliği ve kapanmış plana eklemeyi durdurur. (c) `quads`
+koordinatlarının sayfa sınırları içinde olduğu doğrulanmaz. (d) `detected_text_hash`in
+**içeriği** doğrulanmaz (SQLite'ta SHA-256 yok). (e) `plan_id` boşsa zaten var olan
+plan FK'sine takılır; ayrı bir «boş olamaz» cümlesi yazılmadı. (f) Tetikleyicileri
+anahtarı olan saldırgan düşürebilir. (g) Arayüz **davranışı** değişmedi; gerçek pencere
++ görsel QA **insan bekliyor**.
+
+**CI (ölçüldü).** kod `45708a7` (4 dosya, **+595/−4**) → run `44094362533` **10/10 YEŞİL**
+(`dim-storage` **695** iki OS'ta birebir: macos-15 **454,57 s** / ubuntu-latest **620,74 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**,
+arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo` 28, SBOM, sözleşmeler,
+belge worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil). Yerel doğrulama da aynı
+sonucu verdi: `cargo test -p dim-storage --lib` **695/695, 457,94 s**; iki manifestte
+`cargo fmt --check` ve `clippy -D warnings` temiz; masaüstü `cargo check --all-targets`
+temiz (0,75 s, önbellekli).
+
