@@ -2666,3 +2666,113 @@ sonucu verdi: `cargo test -p dim-storage --lib` **695/695, 457,94 s**; iki manif
 `cargo fmt --check` ve `clippy -D warnings` temiz; masaüstü `cargo check --all-targets`
 temiz (0,75 s, önbellekli).
 
+## F08-T04x — maskeleme planının kanıt bağı doğuşta tutarlı, sonrasında değişmez olmalı (şema v51, 2026-11-17)
+
+**Bu turun özel durumu.** Önceki dört koşu (18:12, 19:58, 21:09, 22:02) API
+kesintisi/zaman aşımıyla düştü; iş **ağaçta kalmıştı** — `0051` göçü + dört crate dosyası
+yazılmış, ölçüm üretilmiş, ama **commit edilmemiş**, tam paket hiç yeşil ölçülmemiş
+(`libtest_v51_full.log` 18:12'de `EXIT=143` ile kesik) ve mutasyon kapısı hiç yazılmamıştı.
+Bu tur: işi denetledim, eksik kapıyı yazdım, tam paketi **kendim koştum** (697/697,
+474,08 s), fmt/clippy/masaüstü check temiz, commit + push + CI. Tur başında
+`HEAD == origin/main` = `c118be8`; disk **6,9 G**; ağaçta ayrıca **başka ajanın 9 arayüz
+dosyası** (2026-11-07'den beri) — dokunulmadı. `cargo fmt --all` yalnız benim Rust
+dosyalarıma değdi.
+
+**Neden bu dilim.** `redaction_plans` satırı maskelemenin **künyesidir**: hangi belge
+sürümünün hangi render'ına ait olduğu (`render_hash`), hangi çıktıyı ürettiği
+(`output_version_id` + silinme izi `output_version_ref`) ve kapanıp kapanmadığı (`state`).
+Üç okuma yolu bu sütunlara yaslanır: (i) `screens/Redaction.tsx` render özetinin ilk 16
+hanesini basar (`plan.renderHash`) — «bu geometri **bu** render'a ait» iddiası ekranda
+görünür; (ii) yeniden inceleme nedeni `render_changed` **yalnız** bu sütunla
+`document_versions.original_sha256` karşılaştırılarak hesaplanır — özet çevrilebilirse
+uyarı sessizce kaybolur; (iii) `output_link_state` (`linked`/`removed`) bağdan ve
+**izden** okunur; 0029 «çıktı vardı, sonra silindi» ile «hiç bağlanmadı»yı ayırmak için
+yazıldı — iz sahtelenebilirse ayrım anlamsızlaşır. Çekirdek planı **yalnız**
+`create_redaction_plan` ile doğurur ve `render_hash` olarak kaynak sürümün
+`original_sha256`sini yazar; `output_version_id` verilmişse çıktının kaynağın **alt
+sürümü** olduğunu doğrular. Sonrasında tek meşru yazma `add_redaction_regions`ın
+`draft`→`applied` geçişidir. Şemada ise plan tablosunun kapısı yalnız **kapsam**tı
+(0031/0034) — kanıt sütunları ve kapanış serbestti.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v50; sonda
+`~/.hermes/cache/scratch/dim-v51-probe/measure_v51.py`, log `measure_before.log`):**
+26 kusur yazımının **26'sı KABUL** (meşru 8 yazma da KABUL — taban 34/34):
+doğuşta `render_hash` kaynak sürümün özeti **değil** (`'h'`, hatta başka 64 hex) — renew
+«render değişti» uyarısı hiç doğmaz; koordinat uzayı `page`; çıktı profili boş; boşluk;
+`plan_version=0`; `created_at=''`; `updated_at=''`; çıktı izi **başka** kimlik; bağ dolu
+iken iz NULL (silinme izi yok); **çıktı = kaynağın kendisi**; boş plan kimliği; bağ yokken
+**uydurma** iz; `render_hash` UPDATE ile çevrildi (uyarı susturuldu); koordinat uzayı,
+çıktı profili ve plan sürümü çevrildi; `created_at` geriye alındı; plan **aynı dosyada
+başka belgeye** taşındı (kapsam kapısı aynı dosyayı serbest bırakır) — «hangi belgede
+maskeleme yapıldı» yanıtı değişti; plan başka belgenin **ayrıştırmasına** bağlandı; sicil
+satırı **başka dosyaya** taşındı (`case_id`+sürüm birlikte); çıktı bağı aynı dosyada
+**başka sürüme** çevrildi; çıktı bağı **sonradan dolduruldu**; çıktı **izi** başka kimliğe
+çevrildi; **kapanmış plan yeniden açıldı** (`applied`→`draft`) — v50'nin «kapanmış plana
+bölge eklenemez» cümlesi bu geçişle boşa düşüyordu; `applied`→`approved`.
+
+**Yazılan (şema v51, `0051_redaction_plan_evidence_guard.sql`, 2 tetikleyici).**
+`redaction_plan_evidence_guard_bi`: `id` kırpılmış-dolu; `render_hash` **kaynak sürümün
+`original_sha256`si** (kanıt bağı: geometri bu render'a aittir); koordinat uzayı
+`pdf_page_points` (çekirdek sabit yazar, v50 bölge kapısı da aynı uzayı ister); çıktı
+profili kırpılmış-dolu; `plan_version ≥ 1`; `created_at`/`updated_at` kırpılmış-dolu;
+`output_version_ref` **ya NULL ya da `output_version_id` ile aynı** (silinme izi bağın
+kimliğidir, başka kimlik değil); çıktı bağı kaynak sürümün **kendisi olamaz** (çekirdek
+de reddeder). `redaction_plan_evidence_guard_bu`: `id`, `case_id`,
+`document_version_id`, `parse_run_id`, `render_hash`, `coordinate_space`,
+`output_profile`, `plan_version`, `created_at`, `output_version_ref` **donar**;
+`output_version_id` yalnız **NULL'a çözülebilir** (0028'in `ON DELETE SET NULL`ı: çıktı
+silinince bağ çözülür, iz kalır) — başka sürüme çevrilemez, NULL'dan doldurulamaz.
+`state='applied'` **terminaldir**: uygulanmış maskeleme yeniden açılamaz (v50 kapanışı
+buna dayanır); diğer geçişler, `reviewer` ve `updated_at` serbest. Değişmeyen yazma
+takılmaz. Ret `DIM_INTEGRITY:redaction_plans` → `StorageError::Integrity` →
+**`E_DB_INTEGRITY`**. Tablo `case_id` taşıyor ve zaten taranıyor → `GUARDED_TABLES`
+**25 kalır**.
+
+**Testler.** `redactions` **+1** (`redaction_plan_evidence_is_bound_at_birth_and_frozen`):
+**13 doğum kusuru** (boş kimlik, `'h'` ve başka 64 hex render özeti, `page` uzayı, boş ve
+boşluk profil, `plan_version=0`, boş `created_at`/`updated_at`, iz başka kimlik, iz NULL,
+çıktı = kaynak, uydurma iz) `E_DB_INTEGRITY`; **11 UPDATE yolu** (render özeti, uzay,
+profil, plan sürümü, `created_at`, belge sürümü, ayrıştırma koşusu, çıktı bağını sonradan
+doldurma, çıktı bağını başka sürüme çevirme, `applied`→`draft`, `applied`→`approved`)
+reddedilir; değişmeyen yazma, `reviewer` ve `updated_at` takılmaz. Kimlik ve `case_id`
+donması testte ayrıca ölçülmez (kapı kanıtında iki mutantla ölçüldü). `upgrade_tests` **+1**
+(`upgrade_keeps_redaction_plans_written_before_the_evidence_gate`): v50 kasasındaki
+tutarsız planlar **silinmez**, UPDATE ile **onarılamaz**, yeni tutarsız plan doğamaz.
+Toplam `dim-storage --lib` **695 → 697** (yerel **697/697 yeşil, 474,08 s**). **Test
+düzeltmesi (dürüst):** mevcut fikstürler `render_hash: "abc"`/`"b".repeat(64)` gibi
+kaynağın özeti olmayan değerlerle ve izsiz çıktı bağıyla yazıyordu → kaynak sürümün
+özeti + `output_version_ref` eklendi; iki test v51 kapısını **bilinçli düşürür** (kapının
+kendi kuralını değil eski kasa görüntüsünü ölçtükleri yorumda yazılı). Biçim (iki
+manifest) / clippy `-D warnings` / masaüstü `cargo check --all-targets` temiz.
+
+**Kapı kanıtı.** **21/21 mutant KIRMIZI**, taban **23/23 saldırı RED + 8/8 meşru yol
+KABUL** iken (`~/.hermes/cache/scratch/dim-v51-probe/gates_v51.py`, log `gates_v51.log`):
+BI'ın dokuz cümlesi ve BU'nun on iki cümlesi tek tek nötrlendi; her mutantta **yalnız
+hedef saldırı** geçti. Ölçüm sonrası (v51): 26 saldırının **26'sı RED**, sekiz meşru
+yazımın sekizi KABUL (`measure_after.log`). **Dürüst (ilk koşu 19/21):** iki mutant YEŞİL
+kaldı çünkü hedef saldırı **başka bir cümleye** takılıyordu — (i) yalnız `case_id`
+taşıması `document_version_id` cümlesine ve 0031 kapsam kapısına, (ii) yalnız
+`output_version_id` değişimi `output_version_ref` cümlesine. Saldırılar izole edildi
+(yalnız `case_id`, kapsam kapısı bilinçli düşürülmüş; yalnız `output_version_id`, iz sabit)
+→ **21/21** yeniden ölçüldü; ilk koşunun 19 hükmü kanıt sayılmadı.
+
+**Dürüst sınırlar.** (a) v51 öncesi tutarsız planlar **silinmez** ve donduğu için
+**onarılamaz** — temizlik ürün kararı. (b) Kapı `render_hash`in gerçekten o render'ın
+özeti olduğunu **yeniden hesaplamaz** (SQLite'ta SHA-256 yok): doğuşta kaynak sürümün
+sütunuyla **eşitlik** ölçülür; sürümün özeti de yanlışsa plan onu devralır. (c)
+`document_versions.original_sha256` biçimi (64 hex) burada denetlenmez. (d)
+`output_version_id`nin kaynağın **alt sürümü** olduğu bu kapıda doğrulanmaz (çekirdek
+doğrular; kapsam kapısı yalnız aynı dosyayı ister) — bilinçli: geçmiş fikstürlerde alt
+sürüm bağı her yerde kurulu değil. (e) Doğuşta `state` serbesttir: bölgesiz `applied` bir
+plan «uygulandı» der — kapanış kapısı bunu **durdurmaz**, yalnız sonradan açılmasını
+durdurur; geçmiş kasaları taklit eden yükseltme fikstürleri bu yüzden serbest kalmalı.
+(f) `updated_at ≥ created_at` sırası denetlenmez (yalnız ikisi de dolu). (g)
+Tetikleyicileri anahtarı olan saldırgan düşürebilir. (h) Arayüz **davranışı** değişmedi;
+gerçek pencere + görsel QA **insan bekliyor**.
+
+**CI (ölçüldü).** kod `76c68ca` (5 dosya, **+732/−32**) → run `44174856142` **10/10
+YEŞİL** (`dim-storage` **697** iki OS'ta birebir: macos-15 **416,70 s** / ubuntu-latest
+**818,71 s**; `arayüz` **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**,
+arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge
+worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
+
