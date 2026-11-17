@@ -2177,3 +2177,94 @@ fn upgrade_keeps_transfer_segments_written_before_the_content_gate() {
         )
         .expect("meşru satır yazılabilir");
 }
+
+/// v50 — maskeleme bölgesi kanıtı. v49 kasasında yazılmış **bozuk** bölgeler
+/// (negatif sayfa, bozuk JSON, yanlış uzay, boş kategori, `keep` kararı)
+/// güncellemede **silinmez**; ama donar (onarım yolu yeni plandır) ve kapanmış
+/// plana sonradan bölge eklenemez.
+#[test]
+fn upgrade_keeps_redaction_regions_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 49);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','st-legacy',1,10,'k','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES ('d1','c1','Belge','pdf',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO redaction_plans
+               (id,case_id,document_version_id,render_hash,coordinate_space,plan_version,
+                state,output_profile,created_at,updated_at)
+             VALUES ('p-old','c1','v1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'pdf_page_points',1,'applied','share',
+                     '2026-03-01T00:00:00Z','2026-03-01T00:00:00Z');
+             -- v50 öncesi yazılmış bölgeler: biçim/kapsam kapısı yoktu.
+             INSERT INTO redaction_regions
+               (id,plan_id,page_index,quads,coordinate_space,category,
+                detected_text_hash,user_decision)
+             VALUES ('old-broken','p-old',-1,'bozuk','image_pixels','','','keep'),
+                    ('old-good','p-old',2,'[[10.0,20.0,30.0,40.0]]',
+                     'pdf_page_points','user_term',NULL,'redact');",
+        )
+        .expect("v49 bölgeleri");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM redaction_regions", [], |row| {
+            row.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(preserved, 2, "eski satırlar silinmez");
+    // Eski bozuk satır **onarılamaz**: bölge kanıtı donmuştur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE redaction_regions SET quads='[[1,2,3,4]]' WHERE id='old-broken'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("redaction_regions"), "mesaj: {message}")
+        }
+        other => panic!("v50 eski bölgeyi dondurmalı: {other:?}"),
+    }
+    // Kapanmış plana sonradan kanıt eklenemez.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO redaction_regions
+               (id,plan_id,page_index,quads,coordinate_space,category,
+                detected_text_hash,user_decision)
+             VALUES ('new-late','p-old',0,'[[1,2,3,4]]','pdf_page_points',
+                     'user_term',NULL,'redact')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("redaction_regions"), "mesaj: {message}")
+        }
+        other => panic!("v50 kapanmış plana eklemeyi reddetmeli: {other:?}"),
+    }
+}

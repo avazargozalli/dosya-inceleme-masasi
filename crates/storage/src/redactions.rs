@@ -1026,10 +1026,16 @@ mod tests {
         assert_eq!(rows[0].coordinate_space, "pdf_page_points");
 
         // Bozuk geometri gizlenmez: satır durur, `rects` `None` olur.
+        //
+        // v50 kapısı böyle bir satırı **doğuşta** reddeder ve sonradan
+        // değiştirmeyi dondurur. Buradaki amaç **okuma** davranışını ölçmek
+        // (v50 öncesi kasadan gelmiş bozuk satırın simülasyonu), o yüzden
+        // değişmezlik tetikleyicisi bilinçli olarak düşürülür; test kendi
+        // bellek içi kasasında koşar, başka testi etkilemez.
         db.conn()
-            .execute(
-                "UPDATE redaction_regions SET quads='bozuk' WHERE page_index=1",
-                [],
+            .execute_batch(
+                "DROP TRIGGER redaction_region_evidence_guard_bu;
+                 UPDATE redaction_regions SET quads='bozuk' WHERE page_index=1;",
             )
             .expect("boz");
         let rows = db.list_redaction_regions(&plan.id).expect("bölgeler");
@@ -1994,5 +2000,371 @@ mod tests {
         assert!(rows[0].document_title.is_none());
         assert!(rows[0].version_no.is_none());
         assert!(rows[0].current_version_no.is_none());
+    }
+    /// Maskeleme bölgesi **kanıttır**: hangi sayfada hangi dikdörtgenin
+    /// karartıldığı. Çekirdek bölgeyi yalnız plan `draft`ken INSERT eder
+    /// (`add_redaction_regions` sonra planı `applied` yapar); düzeltme, taşıma
+    /// veya silme yolu yoktur. v50 kapısı doğuşta biçimi, sonrasında **her
+    /// sütunu** denetler.
+    #[test]
+    fn redaction_region_evidence_is_frozen_and_well_formed() {
+        let (db, case_id, version_id) = setup();
+        let region_error = |result: Result<usize, StorageError>, label: &str| match result {
+            Err(StorageError::Integrity(message)) => assert!(
+                message.contains("redaction_regions"),
+                "{label}: mesaj tabloyu adlandırmıyor: {message}"
+            ),
+            other => panic!("{label}: beklenen E_DB_INTEGRITY, ölçülen: {other:?}"),
+        };
+        let new_plan = || {
+            db.create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: None,
+                    render_hash: "a".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan")
+        };
+        // Kapanmış plan + içindeki bölge (çekirdek sırası).
+        let closed = new_plan();
+        db.add_redaction_regions(
+            &closed.id,
+            &[RedactionRegionInput {
+                page_index: 2,
+                rect: [10.0, 20.0, 30.0, 40.0],
+                term_hash: "h".into(),
+            }],
+        )
+        .expect("bölge");
+        let region_id: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM redaction_regions WHERE plan_id=?1",
+                [&closed.id],
+                |row| row.get(0),
+            )
+            .expect("bölge kimliği");
+        // Açık (draft) plan: doğuş kusurları ona yazılır.
+        let open = new_plan();
+
+        // --- doğuş: her satır **tek** bir kusur taşır ----------------------
+        let write = |id: &str,
+                     plan: &str,
+                     page: i64,
+                     quads: &str,
+                     space: &str,
+                     category: &str,
+                     hash: Option<&str>,
+                     decision: &str| {
+            db.conn()
+                .execute(
+                    "INSERT INTO redaction_regions
+                       (id,plan_id,page_index,quads,coordinate_space,category,
+                        detected_text_hash,user_decision)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    rusqlite::params![id, plan, page, quads, space, category, hash, decision],
+                )
+                .map_err(StorageError::from)
+        };
+        let good = "[[1.0,2.0,3.0,4.0]]";
+        region_error(
+            write(
+                "",
+                &open.id,
+                0,
+                good,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "boş kimlik",
+        );
+        region_error(
+            write(
+                "x-ghost",
+                "yok",
+                0,
+                good,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "olmayan plan",
+        );
+        region_error(
+            write(
+                "x-closed",
+                &closed.id,
+                0,
+                good,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "kapanmış plan",
+        );
+        region_error(
+            write(
+                "x-page",
+                &open.id,
+                -1,
+                good,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "negatif sayfa",
+        );
+        region_error(
+            write(
+                "x-json",
+                &open.id,
+                0,
+                "bozuk",
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "geçersiz JSON",
+        );
+        region_error(
+            write(
+                "x-object",
+                &open.id,
+                0,
+                r#"{"a":1}"#,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "nesne",
+        );
+        region_error(
+            write(
+                "x-empty",
+                &open.id,
+                0,
+                "[]",
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "boş dizi",
+        );
+        region_error(
+            write(
+                "x-scalar",
+                &open.id,
+                0,
+                "[1,2,3,4]",
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "düz sayı elemanı",
+        );
+        region_error(
+            write(
+                "x-arity",
+                &open.id,
+                0,
+                "[[1,2,3]]",
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "üçlü dikdörtgen",
+        );
+        region_error(
+            write(
+                "x-text",
+                &open.id,
+                0,
+                r#"[[1,2,3,"a"]]"#,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "metinli koordinat",
+        );
+        region_error(
+            write(
+                "x-space",
+                &open.id,
+                0,
+                good,
+                "image_pixels",
+                "user_term",
+                None,
+                "redact",
+            ),
+            "yanlış koordinat uzayı",
+        );
+        region_error(
+            write(
+                "x-cat",
+                &open.id,
+                0,
+                good,
+                "pdf_page_points",
+                "",
+                None,
+                "redact",
+            ),
+            "boş kategori",
+        );
+        region_error(
+            write(
+                "x-cat2",
+                &open.id,
+                0,
+                good,
+                "pdf_page_points",
+                "   ",
+                None,
+                "redact",
+            ),
+            "boşluk kategori",
+        );
+        region_error(
+            write(
+                "x-hash",
+                &open.id,
+                0,
+                good,
+                "pdf_page_points",
+                "user_term",
+                Some(""),
+                "redact",
+            ),
+            "boş terim özeti",
+        );
+        region_error(
+            write(
+                "x-keep",
+                &open.id,
+                0,
+                good,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "keep",
+            ),
+            "doğuştan keep",
+        );
+        region_error(
+            write(
+                "x-pending",
+                &open.id,
+                0,
+                good,
+                "pdf_page_points",
+                "user_term",
+                None,
+                "pending",
+            ),
+            "doğuştan pending",
+        );
+        // Meşru doğum (çekirdeğin yazdığı biçim) takılmaz.
+        write(
+            "ok-multi",
+            &open.id,
+            1,
+            "[[1,2,3,4],[5,6,7,8]]",
+            "pdf_page_points",
+            "user_term",
+            None,
+            "redact",
+        )
+        .expect("çok kutulu bölge");
+        write(
+            "ok-null-hash",
+            &open.id,
+            1,
+            good,
+            "pdf_page_points",
+            "user_term",
+            None,
+            "redact",
+        )
+        .expect("NULL özet");
+
+        // --- sonrası: sekiz sütunun hepsi donar ----------------------------
+        let updates: Vec<(String, String)> = vec![
+            (
+                "başka plana taşı".into(),
+                format!("UPDATE redaction_regions SET plan_id='{}' WHERE id='{region_id}'", open.id),
+            ),
+            (
+                "sayfa".into(),
+                format!("UPDATE redaction_regions SET page_index=0 WHERE id='{region_id}'"),
+            ),
+            (
+                "geometri".into(),
+                format!(
+                    "UPDATE redaction_regions SET quads='[[9.0,9.0,9.0,9.0]]' WHERE id='{region_id}'"
+                ),
+            ),
+            (
+                "karar".into(),
+                format!("UPDATE redaction_regions SET user_decision='keep' WHERE id='{region_id}'"),
+            ),
+            (
+                "kategori".into(),
+                format!("UPDATE redaction_regions SET category='' WHERE id='{region_id}'"),
+            ),
+            (
+                "koordinat uzayı".into(),
+                format!(
+                    "UPDATE redaction_regions SET coordinate_space='image_pixels' WHERE id='{region_id}'"
+                ),
+            ),
+            (
+                "terim özeti".into(),
+                format!(
+                    "UPDATE redaction_regions SET detected_text_hash='zz' WHERE id='{region_id}'"
+                ),
+            ),
+            (
+                "kimlik".into(),
+                format!("UPDATE redaction_regions SET id='{region_id}-b' WHERE id='{region_id}'"),
+            ),
+        ];
+        for (label, sql) in updates {
+            region_error(
+                db.conn().execute(&sql, []).map_err(StorageError::from),
+                &label,
+            );
+        }
+        // Değişmeyen yazma takılmaz (kapı yalnız değişimi durdurur).
+        db.conn()
+            .execute(
+                "UPDATE redaction_regions SET quads=quads WHERE id=?1",
+                [&region_id],
+            )
+            .expect("değişmeyen yazma");
+        // Satır hâlâ okunur ve eski değerlerini taşır.
+        let rows = db.list_redaction_regions(&closed.id).expect("bölgeler");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].page_index, 2);
+        assert_eq!(
+            rows[0].rects.as_deref(),
+            Some(&[[10.0, 20.0, 30.0, 40.0]][..])
+        );
+        assert_eq!(rows[0].user_decision, "redact");
     }
 }
