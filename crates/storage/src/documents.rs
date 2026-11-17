@@ -133,7 +133,15 @@ impl Database {
         mime: &str,
         parent_version_id: Option<&str>,
     ) -> Result<DocumentVersion, StorageError> {
-        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // Özet **küçük harf** hex olmalı: şema kapısı da (0052) aynı ölçüyü
+        // kullanır ve `sha256_hex` zaten küçük harf üretir. Büyük harf kabul
+        // edilseydi aynı baytlar iki farklı özetle yazılır, `find_version_by_sha`
+        // eşleşmez ve yazma şema kapısında `E_DB_INTEGRITY` ile düşerdi.
+        if sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
             return Err(StorageError::InvalidSetting);
         }
         // Kapsam **çağıranın sözüne bırakılmaz** (INV-05): sürüm, ancak kendi
@@ -769,5 +777,209 @@ mod tests {
         // Limit kırpılır: sessizce sınırsız liste dönmez.
         assert_eq!(db.documents_pending_parse(&case_id, 0).unwrap().len(), 1);
         assert_eq!(db.documents_pending_parse(&case_id, 500).unwrap().len(), 1);
+    }
+
+    /// Sürüm satırının **kimlik künyesi** doğuşta tutarlı olmalı ve sonrasında
+    /// değişmemeli (v52). Çekirdek kapısı değil **şema** kapısı ölçülür: kusur
+    /// yazımları doğrudan SQL iledir (INV-05: doğrudan IPC/SQL yolu).
+    ///
+    /// Neden gerekli: `redaction_plans.render_hash` doğuşta bu özetle **eşit**
+    /// olmak zorunda (0051) ve `render_changed` uyarısı yalnız bu sütunla
+    /// hesaplanır; `find_version_by_sha` aynı baytı bu sütunla tanır. Özet,
+    /// blob ya da boyut sonradan çevrilebilirse bütün zincir «başka bir
+    /// dosya» hakkında konuşur.
+    #[test]
+    fn document_version_identity_is_frozen_and_well_formed() {
+        let (db, case_id) = db_with_case();
+        let doc = db
+            .create_document(&case_id, "Kira", "contract", None, "unknown")
+            .expect("belge");
+        let b1 = blob(&db, "v1");
+        let b2 = blob(&db, "v2");
+        let first = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b1,
+                &"a".repeat(64),
+                1024,
+                "application/pdf",
+            )
+            .expect("tohum sürüm");
+
+        let gate = |sql: &str| match db.conn().execute(sql, []) {
+            Ok(rows) => panic!("v52 kapısı reddetmeli ({rows} satır): {sql}"),
+            Err(err) => {
+                let text = err.to_string();
+                assert!(
+                    text.contains("DIM_INTEGRITY:document_versions"),
+                    "ret kimlik kapısından gelmeli: {text} ({sql})"
+                );
+            }
+        };
+        // Doğum: her deneme **kendi kusuruyla** reddedilmeli (UNIQUE/FK değil).
+        let ins = |id: &str, sha: &str, mime: &str, imported: &str| {
+            format!(
+                "INSERT INTO document_versions (id,document_id,case_id,version_no,blob_id,\
+                 original_sha256,byte_size,detected_mime,imported_at,is_original) \
+                 VALUES ('{id}','{doc}','{case}','7','{b1}','{sha}',10,'{mime}','{imported}',0)",
+                doc = doc.id,
+                case = case_id,
+                b1 = b1,
+            )
+        };
+        let hex = "a".repeat(64);
+        let born = [
+            (
+                "boş kimlik",
+                ins("", &hex, "application/pdf", "2026-01-01T00:00:00Z"),
+            ),
+            (
+                "özet 64 hex değil",
+                ins(
+                    "v-bad-1",
+                    &"Z".repeat(64),
+                    "application/pdf",
+                    "2026-01-01T00:00:00Z",
+                ),
+            ),
+            (
+                "özet büyük harf hex",
+                ins(
+                    "v-bad-2",
+                    &"A".repeat(64),
+                    "application/pdf",
+                    "2026-01-01T00:00:00Z",
+                ),
+            ),
+            ("mime boş", ins("v-bad-3", &hex, "", "2026-01-01T00:00:00Z")),
+            (
+                "mime yalnız boşluk",
+                ins("v-bad-4", &hex, "   ", "2026-01-01T00:00:00Z"),
+            ),
+            (
+                "mime kırpılmamış",
+                ins("v-bad-5", &hex, " application/pdf", "2026-01-01T00:00:00Z"),
+            ),
+            ("damga boş", ins("v-bad-6", &hex, "application/pdf", "")),
+            (
+                "damga ISO değil",
+                ins("v-bad-7", &hex, "application/pdf", "dün"),
+            ),
+        ];
+        for (why, sql) in born {
+            let written: i64 = db
+                .conn()
+                .query_row("SELECT count(*) FROM document_versions", [], |r| r.get(0))
+                .expect("sayım");
+            assert_eq!(written, 1, "{why}: satır yazılmamalı");
+            gate(&sql);
+        }
+
+        // Güncelleme: kimlik künyesinin dokuz sütunu donar.
+        db.conn()
+            .execute(
+                &ins("v-plain", &hex, "application/pdf", "2026-01-01T00:00:00Z"),
+                [],
+            )
+            .expect("meşru sürüm");
+        db.conn()
+            .execute(
+                &format!(
+                    "INSERT INTO document_versions (id,document_id,case_id,version_no,blob_id,\
+                     original_sha256,byte_size,detected_mime,imported_at,is_original,\
+                     parent_version_id) \
+                     VALUES ('v-child','{doc}','{case}','8','{b1}','{hex}',10,\
+                     'application/pdf','2026-01-01T00:00:00Z',0,'{parent}')",
+                    doc = doc.id,
+                    case = case_id,
+                    b1 = b1,
+                    parent = first.id,
+                    hex = hex,
+                ),
+                [],
+            )
+            .expect("türev sürüm");
+        let attacks = [
+            (
+                "özeti çevir",
+                format!("original_sha256='{}'", "f".repeat(64)),
+            ),
+            ("blob'u başka baytlara çevir", format!("blob_id='{b2}'")),
+            ("boyutu çevir", "byte_size=99".to_string()),
+            ("mime'ı çevir", "detected_mime='text/plain'".to_string()),
+            (
+                "damgayı çevir",
+                "imported_at='2026-06-01T00:00:00Z'".to_string(),
+            ),
+            ("'asıl sürüm' işaretini çevir", "is_original=1".to_string()),
+            ("sürüm numarasını çevir", "version_no=9".to_string()),
+            (
+                "asıl dosya adını sonradan ekle",
+                "original_filename_encrypted=X'00'".to_string(),
+            ),
+            ("sürüm kimliğini çevir", "id='v-swapped'".to_string()),
+        ];
+        for (why, sets) in attacks {
+            match db.conn().execute(
+                &format!("UPDATE document_versions SET {sets} WHERE id='v-plain'"),
+                [],
+            ) {
+                Ok(rows) => panic!("v52 {why} yazımını durdurmalı ({rows} satır)"),
+                Err(err) => assert!(
+                    err.to_string().contains("DIM_INTEGRITY:document_versions"),
+                    "ret kimlik kapısından gelmeli ({why}): {err}"
+                ),
+            }
+        }
+        // Değişmeyen yazma ve **meşru** ebeveyn çözülmesi takılmaz.
+        let same = db
+            .conn()
+            .execute(
+                "UPDATE document_versions SET original_sha256=original_sha256, \
+                 detected_mime=detected_mime WHERE id='v-plain'",
+                [],
+            )
+            .expect("no-op");
+        assert_eq!(same, 1);
+        let released = db
+            .conn()
+            .execute(
+                "UPDATE document_versions SET parent_version_id=NULL WHERE id='v-child'",
+                [],
+            )
+            .expect("ebeveyn çözüldü");
+        assert_eq!(released, 1);
+
+        // Saldırılardan sonra satır **hiç değişmemiş** olmalı.
+        let (sha, size, mime, no, child_parent): (String, i64, String, i64, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT original_sha256, byte_size, detected_mime, version_no, \
+                 (SELECT parent_version_id FROM document_versions WHERE id='v-child') \
+                 FROM document_versions WHERE id='v-plain'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("satır");
+        assert_eq!(sha, hex);
+        assert_eq!(size, 10);
+        assert_eq!(mime, "application/pdf");
+        assert_eq!(no, 7);
+        assert_eq!(child_parent, None);
+
+        // Çekirdek kapısı şemayla **aynı** ölçüyü kullanır: büyük harf özet
+        // `InvalidSetting` (şema hatası değil, yazma hiç denenmez).
+        let err = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &b2,
+                &"A".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect_err("büyük harf özet reddedilmeli");
+        assert_eq!(err.code(), "E_DB_SETTING");
     }
 }

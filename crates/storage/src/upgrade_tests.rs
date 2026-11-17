@@ -2366,3 +2366,97 @@ fn upgrade_keeps_redaction_plans_written_before_the_evidence_gate() {
         )
         .expect("meşru plan");
 }
+
+/// v52 öncesi yazılmış **tutarsız sürüm künyeleri** korunur (silinmez), ama
+/// güncelleme artık donmuştur ve yeni tutarsız satır doğamaz.
+#[test]
+fn upgrade_keeps_document_versions_written_before_the_identity_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 51);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','st-legacy',1,10,'k','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES ('d1','c1','Belge','pdf',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             -- v52 öncesi: özet büyük harf hex, mime yalnız boşluk, damga ISO değil.
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v-legacy','d1','c1',1,'b1',
+                     'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                     10,'   ','dün'),
+                    ('v-ok','d1','c1',2,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     10,'application/pdf','2026-01-01T00:00:00Z');",
+        )
+        .expect("v51 sürümleri");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM document_versions", [], |row| {
+            row.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(preserved, 2, "eski satırlar silinmez");
+    let kept: (String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT original_sha256, detected_mime, imported_at FROM document_versions \
+             WHERE id='v-legacy'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(kept.0, "A".repeat(64), "özet sessizce düzeltilmez");
+    assert_eq!(kept.1, "   ");
+    assert_eq!(kept.2, "dün");
+
+    // Eski tutarsız satır **onarılamaz** (kimlik künyesi donmuştur).
+    match db
+        .conn()
+        .execute(
+            "UPDATE document_versions SET original_sha256=?1 WHERE id='v-legacy'",
+            [&"a".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("document_versions"), "mesaj: {message}")
+        }
+        other => panic!("v52 eski sürümü dondurmalı: {other:?}"),
+    }
+    // Yeni tutarsız sürüm doğamaz.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v-new','d1','c1',3,'b1',?1,10,'application/pdf','dün')",
+            [&"Z".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("document_versions"), "mesaj: {message}")
+        }
+        other => panic!("v52 tutarsız sürüm doğuşunu reddetmeli: {other:?}"),
+    }
+    // Meşru doğuş (çekirdeğin yolu) takılmaz.
+    db.add_version("d1", "c1", "b1", &"c".repeat(64), 10, "application/pdf")
+        .expect("meşru sürüm");
+}

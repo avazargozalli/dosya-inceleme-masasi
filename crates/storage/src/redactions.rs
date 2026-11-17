@@ -1460,6 +1460,13 @@ mod tests {
         // Plan doğuşta sürümün özetine bağlanır (v51); başka render'a bağlı
         // plan ancak **sürüm özeti değişerek** oluşabilir. Maske yolu yine
         // kapanmalı: geometri hangi dosyaya ait olduğunu kanıtlamıyor.
+        //
+        // v52 sürümün özetini **dondurur**: bu geçiş üretimde artık yoktur
+        // (yalnız v52 öncesi/onarılmamış kasalarda görülebilir). Okuma
+        // davranışını ölçebilmek için kapı bilinçli düşürülür.
+        db.conn()
+            .execute_batch("DROP TRIGGER document_version_identity_guard_bu;")
+            .expect("kapı düşürüldü");
         db.conn()
             .execute(
                 "UPDATE document_versions SET original_sha256=?1 WHERE id=?2",
@@ -1944,8 +1951,13 @@ mod tests {
             }],
         )
         .expect("bölge");
-        // Uyuşmazlığın **tek** meşru kaynağı artık sürüm tarafıdır: sürümün
-        // özeti değişir (yeniden render/aktarım), planınki donmuştur.
+        // Uyuşmazlığın **tek** meşru kaynağı sürüm tarafıdır: sürümün özeti
+        // değişir (yeniden render/aktarım), planınki donmuştur. v52 sürüm
+        // özetini dondurur → uyuşmazlık yalnız **v52 öncesi** satırlarda
+        // doğabilir; okuma yolu ölçülsün diye kapı bilinçli düşürülür.
+        db.conn()
+            .execute_batch("DROP TRIGGER document_version_identity_guard_bu;")
+            .expect("kapı düşürüldü");
         db.conn()
             .execute(
                 "UPDATE document_versions SET original_sha256=?1 WHERE id=?2",
