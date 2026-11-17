@@ -2776,3 +2776,91 @@ YEŞİL** (`dim-storage` **697** iki OS'ta birebir: macos-15 **416,70 s** / ubun
 arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge
 worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
 
+
+## F08-T04y — belge sürümünün kimlik kanıtı doğuşta tutarlı, sonrasında değişmez olmalı (şema v52, 2026-11-18)
+
+**Neden bu dilim.** `document_versions` satırı **kanıt zincirinin köküdür**: hangi baytlar
+(`blob_id`), o baytların özeti (`original_sha256`), boyutu (`byte_size`), türü
+(`detected_mime`) ve ne zaman alındığı (`imported_at`). Üstündeki bütün kanıt kapıları bu
+sütuna yaslanır: (i) `redaction_plans.render_hash` doğuşta **bu özetle eşit** olmak zorunda
+(0051) — «geometri **bu** render'a aittir» iddiasının dayanağı budur; (ii) yeniden inceleme
+nedeni `render_changed` (`v.original_sha256 <> p.render_hash`) **yalnız** bu sütunla
+hesaplanır (`get_redaction_plan`/`list_redaction_plans`, `screens/Redaction.tsx`); (iii)
+`documents.find_version_by_sha` aynı baytın yeniden içe aktarılmasını bu sütunla tanır —
+özet çevrilebilirse aynı dosya iki kez içe alınır; (iv) `parsing` blob'u sürümün künyesiyle
+(`detected_mime`, `byte_size`) açar. v51'in kapanış sınırı (c) bunu **açıkça** bırakmıştı:
+«`document_versions.original_sha256` biçimi (64 hex) burada denetlenmez». Şemada bu tablonun
+kapısı yalnız **kapsam**tı (0031/0034/0035) ve `original_sha256` için yalnız
+`CHECK (length = 64)` vardı. Tur başında `HEAD == origin/main` = `b5e064c`; disk **5,9 G**;
+ağaçta yalnız **başka ajanın 9 arayüz dosyası** (2026-11-07'den beri) — dokunulmadı.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v51; sonda
+`~/.hermes/cache/scratch/dim-v52-probe/measure_v52.py`, log `measure_before.log`):**
+23 yazımın **17'si kusurdu ve 17'si KABUL** (1 yazım zaten RED — yalnız `length` CHECK'i — ve
+5 meşru yazma KABUL): doğuşta özet **64 hex değil** (`'Z'*64`), **büyük harf** hex
+(`'A'*64` — `find_version_by_sha` eşleşmez), algılanan mime boş / yalnız boşluk /
+**kırpılmamış** (`' application/pdf'`), içe aktarma damgası boş / **ISO değil** (`'dün'`),
+**boş sürüm kimliği**; özet UPDATE ile çevrildi (planın bağlandığı render sessizce
+başkalaştı), `blob_id` **başka baytlara** çevrildi (özet ile dosya ayrıştı), `byte_size`,
+`detected_mime` (`application/pdf` → `text/plain`), `imported_at`, `is_original` (1→0),
+`version_no`, `original_filename_encrypted` sonradan eklendi, `id` çevrildi.
+
+**Yazılan (şema v52, `0052_document_version_identity_guard.sql`, 2 tetikleyici).**
+INSERT — `id` kırpılmış-dolu; `original_sha256` **64 küçük harf hex** (`length` CHECK'i 64'ü
+zorlar, burada karakter kümesi denetlenir); `detected_mime` kırpılmış ve dolu; `imported_at`
+ISO-8601 damgası (`YYYY-MM-DDTHH:MM:SS…`, 0049 ile aynı biçim). UPDATE — `id`, `version_no`,
+`blob_id`, `original_sha256`, `byte_size`, `detected_mime`, `imported_at`, `is_original`,
+`original_filename_encrypted` **donar**; değişmeyen yazma takılmaz. Ret
+`DIM_INTEGRITY:document_versions` → `StorageError::Integrity` → **`E_DB_INTEGRITY`**.
+**Çekirdek hizası:** `add_version_with_parent` özeti `is_ascii_hexdigit()` ile kabul ediyordu
+(büyük harf geçerdi → aynı bayt iki farklı özetle yazılır, şema kapısında `E_DB_INTEGRITY`
+ile düşerdi); kapı **küçük harf hex**e çekildi, ret `InvalidSetting` (`E_DB_SETTING`) —
+yazma hiç denenmez, şema hatası görünmez. Tablo `case_id` taşıyor ve **zaten** taranıyor →
+`GUARDED_TABLES` **25 kalır**.
+
+**Testler.** `documents` **+1** (`document_version_identity_is_frozen_and_well_formed`:
+8 doğum kusuru + 9 UPDATE yolu reddedilir, no-op ve ebeveyn çözülmesi takılmaz, saldırılar
+sonrası satır **hiç değişmemiş**; üstüne çekirdeğin büyük harfi `E_DB_SETTING` ile
+reddettiği), `upgrade_tests` **+1**
+(`upgrade_keeps_document_versions_written_before_the_identity_gate`: v51'de yazılmış
+tutarsız sürüm **silinmez ve sessizce düzeltilmez**, donar; yeni tutarsız satır doğamaz)
+→ `dim-storage --lib` **697 → 699**; yerelde **699/699 yeşil, 527,92 s**; fmt (iki manifest)
+/ clippy `-D warnings` / masaüstü `cargo check --all-targets` (2 dk 11 s) temiz.
+**Test düzeltmesi (dürüst):** `redactions`'ın iki testi (`plan_bound_to_another_render_is_rejected`,
+`render_mismatch_requires_reinspection`) sürümün özetini **doğrudan UPDATE** ile çeviriyordu;
+v52 bunu dondurduğu için testlerde tetikleyici **bilinçli düşürüldü** (`DROP TRIGGER`, niyet
+yorumda) — okuma davranışı ölçülmeye devam ediyor, uyuşmazlık artık yalnız **v52 öncesi**
+satırlarda doğabilir.
+
+**Kapı kanıtı.** Taban **8/8 yeşil** (mutasyonsuz, filtre `identity`), ardından **15/15
+mutant KIRMIZI** (`~/.hermes/cache/scratch/dim-v52-probe/gates_v52.py`, log `gates_v52.log`):
+BI'ın beş ve BU'nun dokuz cümlesi tek tek nötrlendi, ayrıca çekirdeğin küçük-harf kapısı
+(`is_ascii_hexdigit`e geri alındı → test kırmızı). Her mutantta **yalnız hedef test** düştü
+(yalnız `original_sha256` donması iki testi birden düşürür: kimlik testi + yükseltme testi).
+Kaynak **byte-birebir** geri yazıldı (`sha256` önce = sonra). Ölçüm sonrası (v52): 18 yazımın
+**18'i RED** (17 hedef kusur + CHECK'in kendi reddi), 5 meşru yazımın beşi KABUL
+(`measure_after.log`). **Dürüst (ilk koşu 0/15):** betiğin "derleme hatası" kapısı
+`error: test failed` satırını da yakalıyordu → 15 mutantın hepsi **ÖLÇÜLEMEDİ** sayıldı ve
+hiçbiri kanıt olmadı; ayrıştırma `could not compile` / `error[E…]` ile sınırlandı, filtre
+`identity`ye genişletildi (yükseltme testi de seçilsin), **15/15** yeniden ölçüldü.
+
+**CI (ölçüldü).** kod `4c4a3e3` (5 dosya, **+424/−4**) → run `44193152146` **10/10 YEŞİL**
+(`dim-storage` **699** iki OS'ta birebir: macos-15 **438,17 s** / ubuntu-latest **818,63 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**,
+arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge
+worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) v52 öncesi tutarsız sürümler **silinmez** ve artık **onarılamaz**
+(donmuş) — temizlik ürün kararı. (b) Kapı özetin gerçekten **baytların** SHA-256'sı olduğunu
+doğrulamaz: `blobs` özet taşımaz ve SQLite'ta SHA-256 yok; ölçülen **biçim + değişmezlik**tir.
+(c) `document_id` ve `case_id` bu kapının dışında: sütunlar **kapsam** tetikleyicilerinin
+(0031/0035) ve sürümün **aynı dosyada başka belgeye taşınması** orada bilinçli serbest
+(`scope_guard.rs` testi bunu sabitler) — bu turda o sözleşme değiştirilmedi. (d)
+`parent_version_id` de kapsamın (0034) ve `ON DELETE SET NULL`ın sütunu: doldurma/çevirme
+burada durdurulmaz. (e) `byte_size`ın `blobs.encrypted_size` ile ilişkisi denetlenmez
+(şifreleme zarfı farkı ölçülmez). (f) SQLite `trim()` yalnız ASCII boşluk kırpar (U+00A0
+artığı geçer). (g) Doğuşta `imported_at` **gelecekte** olabilir (sıra/zaman denetimi yok).
+(h) `render_changed` uyarısı v52 sonrası **yeni** veride ulaşılamaz (özet dondu) — eski/
+onarılmamış satırlar ve kapının bilinçli düşürüldüğü okuma testleri için kalır. (i)
+Tetikleyicileri anahtarı olan saldırgan düşürebilir. (j) Arayüz **davranışı** değişmedi;
+gerçek pencere + görsel QA **insan bekliyor**.
