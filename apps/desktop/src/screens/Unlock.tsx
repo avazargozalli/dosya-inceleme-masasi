@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, toApiError, type ApiError } from "../lib/api";
+import { api, toApiError, type ApiError, type VaultInfo } from "../lib/api";
 import { t } from "../lib/i18n";
-import { checkPassword } from "../lib/vault-input";
+import { checkPassword, normalizeRecoveryInput } from "../lib/vault-input";
 
 type Mode = "open" | "create" | "recovery";
 
@@ -15,11 +15,9 @@ const MODE_LABELS = {
 const DEFAULT_DIR = "Dosyalar/DosyaIncelemeMasasi";
 
 export type UnlockProps = {
-  onUnlocked: () => Promise<void>;
+  onUnlocked: (confirmed?: VaultInfo) => Promise<void>;
   /**
-   * Bir kez gösterilecek kurtarma anahtarı. Sahibi `App`: kasa oluşturulduktan
-   * sonra başka ekrana gidip dönmek bileşeni yeniden bağlar; anahtar burada
-   * tutulsaydı ilk gezinmede yok olurdu (tek kopya, bir daha gösterilmez).
+   * Kurulum sırasında gezinip dönüldüğünde aynı anahtarı göstermek için App tutar.
    */
   pendingKey?: string | null;
   /** Zorunlu: anahtarın nereye yazılacağına çağıran karar verir (sessiz kayıp yok). */
@@ -42,36 +40,40 @@ export function Unlock({
   const [recovery, setRecovery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
-  const [keySaved, setKeySaved] = useState(false);
+  const [savedKey, setSavedKey] = useState("");
   const [confirmLeave, setConfirmLeave] = useState(false);
-
-  // Yeni bir anahtar ekranı eski onayı devralmaz: "kaydettim" işareti ve
-  // "kaydetmeden devam" onayı anahtar ekranıyla birlikte sıfırlanır.
-  useEffect(() => {
-    if (!pendingKey) {
-      setKeySaved(false);
-      setConfirmLeave(false);
-    }
-  }, [pendingKey]);
+  const keyMatches = !!pendingKey && normalizeRecoveryInput(savedKey) === normalizeRecoveryInput(pendingKey);
 
   const passwordCheck = checkPassword(password);
   const mismatch = mode === "create" && password !== confirm;
   const showMismatch = mismatch && confirm.length > 0;
-  const canSubmit =
-    !busy && !locking && path.trim().length > 0 && (mode === "recovery" ? recovery.trim().length > 0 : passwordCheck.ok && !mismatch);
+  const validCredentials = mode === "create" ? passwordCheck.ok && !mismatch
+    : mode === "open" ? password.length > 0 : recovery.trim().length > 0;
+  const canSubmit = !busy && !locking && path.trim().length > 0 && validCredentials;
 
   function changeMode(next: Mode) {
+    if (next === mode) return;
     setMode(next);
+    setPassword("");
+    setConfirm("");
+    setRecovery("");
     // Kip değişince önceki kipin hatası ekranda kalmaz (çelişkili ekran yok).
     setError(null);
   }
 
-  async function chooseDirectory() {
+  async function choosePath() {
     setBusy(true);
     setError(null);
     try {
-      const directory = await open({ directory: true, multiple: false, title: t("unlock.chooseDirectory") });
-      if (directory) setPath(directory);
+      const selected = mode === "create"
+        ? await open({ directory: true, multiple: false, title: t("unlock.chooseDirectory") })
+        : await open({
+            directory: false,
+            multiple: false,
+            title: t("unlock.chooseFile"),
+            filters: [{ name: t("unlock.vaultFile"), extensions: ["dimvault"] }],
+          });
+      if (selected) setPath(selected);
     } catch (e) {
       setError(toApiError(e));
     } finally {
@@ -85,10 +87,12 @@ export function Unlock({
     setBusy(true);
     try {
       if (mode === "create") {
-        const result = await api.createVault(path.trim(), password);
+        const key = await api.prepareVault(path.trim(), password);
         setPassword("");
         setConfirm("");
-        onKeyCreated(result.recoveryKey);
+        setSavedKey("");
+        setConfirmLeave(false);
+        onKeyCreated(key);
       } else if (mode === "open") {
         await api.openVault(path.trim(), password);
         setPassword("");
@@ -106,9 +110,14 @@ export function Unlock({
   }
 
   async function openCreated() {
+    if (!keyMatches || busy || locking) return;
     setBusy(true);
+    setError(null);
     try {
-      await onUnlocked();
+      const info = await api.confirmVault(savedKey);
+      await onUnlocked(info);
+    } catch (e) {
+      setError(toApiError(e));
     } finally {
       setBusy(false);
     }
@@ -127,32 +136,36 @@ export function Unlock({
           <p className="lead">{t("unlock.recoveryLead")}</p>
         </div>
 
-        <div className="card">
+        <form className="card" onSubmit={(event) => {
+          event.preventDefault();
+          void openCreated();
+        }}>
           <div className="recovery" aria-label={t("unlock.recoveryAria")}>{pendingKey}</div>
           <div className="hint">{t("unlock.recoveryHint")}</div>
-          <label className="row" style={{ alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={keySaved}
-              onChange={(e) => setKeySaved(e.target.checked)}
-              style={{ width: 16, height: 16 }}
-            />
-            <span>{t("unlock.savedCheck")}</span>
-          </label>
+          <div className="field">
+            <label htmlFor="saved-recovery">{t("unlock.confirmRecovery")}</label>
+            <input id="saved-recovery" className="input" type="password" autoComplete="off"
+              spellCheck={false} value={savedKey} disabled={busy || locking}
+              onChange={(event) => setSavedKey(event.target.value)} />
+          </div>
+          {error ? <div className="notice danger" role="alert">{error.message}</div> : null}
           {confirmLeave ? <div className="hint error">{t("unlock.leaveWarning")}</div> : null}
           <div className="row" style={{ justifyContent: "flex-end" }}>
             {confirmLeave ? (
               <>
-                <button className="btn ghost" disabled={locking || busy} onClick={() => setConfirmLeave(false)}>
+                <button type="button" className="btn ghost" disabled={locking || busy} onClick={() => setConfirmLeave(false)}>
                   {t("unlock.leaveCancel")}
                 </button>
                 <button
+                  type="button"
                   className="btn"
                   disabled={locking || busy}
                   onClick={async () => {
                     if (await onKeyDismissed()) {
                       setConfirmLeave(false);
-                      setMode("open");
+                      setSavedKey("");
+                      setPath(DEFAULT_DIR);
+                      setMode("create");
                     }
                   }}
                 >
@@ -160,15 +173,15 @@ export function Unlock({
                 </button>
               </>
             ) : (
-              <button className="btn ghost" onClick={() => setConfirmLeave(true)}>
+              <button type="button" className="btn ghost" onClick={() => setConfirmLeave(true)}>
                 {t("common.back")}
               </button>
             )}
-            <button className="btn primary" disabled={!keySaved || busy || locking} onClick={() => void openCreated()}>
+            <button type="submit" className="btn primary" disabled={!keyMatches || busy || locking}>
               {busy ? t("common.busy") : t("unlock.openVault")}
             </button>
           </div>
-        </div>
+        </form>
         <div className="notice">{t("unlock.recoveryNotice")}</div>
       </div>
     );
@@ -217,8 +230,8 @@ export function Unlock({
                 spellCheck={false}
                 disabled={busy}
               />
-              <button type="button" className="btn" onClick={() => void chooseDirectory()} disabled={busy}>
-                {t("unlock.chooseDirectory")}
+              <button type="button" className="btn" onClick={() => void choosePath()} disabled={busy}>
+                {t(mode === "create" ? "unlock.chooseDirectory" : "unlock.chooseFile")}
               </button>
             </div>
             <span id="path-hint" className="hint">{t(mode === "create" ? "unlock.pathHint" : "unlock.existingPathHint")}</span>
@@ -261,7 +274,7 @@ export function Unlock({
                 {mode === "create" && password.length > 0 && !passwordCheck.ok ? (
                   <span id="password-hint" className="hint error">{passwordCheck.reason}</span>
                 ) : (
-                  <span id="password-hint" className="hint">{t("unlock.passwordHint")}</span>
+                  <span id="password-hint" className="hint">{t(mode === "create" ? "unlock.passwordHint" : "unlock.existingPasswordHint")}</span>
                 )}
               </div>
               {mode === "create" ? (

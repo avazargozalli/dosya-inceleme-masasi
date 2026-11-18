@@ -400,6 +400,113 @@ describe("Maskeleme ekranı", () => {
     expect(docSelect().value).toBe("v1");
   });
 
+  it("bölge maskelemesinin liste yanıtı aynı dosyada yeni seçimi ve bölgelerini korur", async () => {
+    const refresh = deferred<DocumentRow[]>();
+    const output = redactionResult().document;
+    mocks.documentList.mockResolvedValueOnce([D1, D2]).mockReturnValueOnce(refresh.promise);
+    await renderScreen();
+    const source = await loadPreview();
+    drag(source.box, [10, 10], [110, 110]);
+    fireEvent.click(regionsRunButton(1));
+    await resultCard();
+
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+    const selected = await loadPreview(2);
+    drag(selected.box, [20, 20], [80, 80]);
+    await act(async () => { refresh.resolve([output, D2]); });
+
+    expect(screen.getByRole("option", { name: output.displayName })).toBeTruthy();
+    expect(docSelect().value).toBe("v2");
+    expect(screen.getByAltText(t("redaction.previewAlt", { page: 3 }))).toBe(selected.image);
+    expect(regionsRunButton(1).disabled).toBe(false);
+  });
+
+  it("liste tazelenirken kaldırılan belge seçimi boş kalır", async () => {
+    const refresh = deferred<DocumentRow[]>();
+    const output = redactionResult().document;
+    mocks.documentList.mockResolvedValueOnce([D1]).mockReturnValueOnce(refresh.promise);
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "sentetik" } });
+    fireEvent.click(runButton());
+    await resultCard();
+    fireEvent.change(docSelect(), { target: { value: "" } });
+    await act(async () => { refresh.resolve([output, D1]); });
+
+    expect(screen.getByRole("option", { name: output.displayName })).toBeTruthy();
+    expect(docSelect().value).toBe("");
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it("tazelemede seçili sürüm kalkarsa hedefi sıfırlar ve süren maskeleme bitince listeyi yine okur", async () => {
+    const refresh = deferred<DocumentRow[]>();
+    const secondRun = deferred<RedactionResult>();
+    const output = redactionResult().document;
+    mocks.documentList.mockResolvedValueOnce([D1, D2]).mockReturnValueOnce(refresh.promise)
+      .mockResolvedValueOnce([D1, output]);
+    mocks.documentRedactRegions.mockReturnValueOnce(secondRun.promise);
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "sentetik" } });
+    fireEvent.click(runButton());
+    await resultCard();
+
+    fireEvent.change(docSelect(), { target: { value: "v2" } });
+    const { box } = await loadPreview(2);
+    drag(box, [10, 10], [110, 110]);
+    fireEvent.click(regionsRunButton(1));
+    await act(async () => { refresh.resolve([D3, D1]); });
+
+    expect(docSelect().value).toBe("v1");
+    expect(screen.queryByRole("option", { name: D2.displayName })).toBeNull();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect((screen.getByLabelText(t("redaction.pageLabel")) as HTMLInputElement).value).toBe("0");
+    expect(screen.getByRole("button", { name: t("redaction.clearRegions", { count: 0 }) })).toBeTruthy();
+
+    await act(async () => { secondRun.resolve(redactionResult()); });
+    expect(screen.getByRole("option", { name: output.displayName })).toBeTruthy();
+    expect(docSelect().value).toBe("v1");
+    expect(screen.queryByText(t("redaction.resultTitle"))).toBeNull();
+  });
+
+  it("başarılı liste okuması önceki liste hatasını kaldırır, önizleme hatasını korur", async () => {
+    const refresh = deferred<DocumentRow[]>();
+    const output = redactionResult().document;
+    mocks.documentList.mockResolvedValueOnce([D1])
+      .mockRejectedValueOnce(apiError("E_IO", "Liste okunamadı"))
+      .mockReturnValueOnce(refresh.promise);
+    mocks.documentPagePreview.mockRejectedValueOnce(apiError("E_IO", "Önizleme okunamadı"));
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "sentetik" } });
+    fireEvent.click(runButton());
+    await screen.findByText(/Liste okunamadı/);
+    fireEvent.click(runButton());
+    await resultCard();
+
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.modeRegions") }));
+    fireEvent.click(screen.getByRole("button", { name: t("redaction.loadPage") }));
+    await screen.findByText(/Önizleme okunamadı/);
+    expect(screen.getByText(/Liste okunamadı/)).toBeTruthy();
+    await act(async () => { refresh.resolve([D1, output]); });
+
+    expect(screen.getByRole("option", { name: output.displayName })).toBeTruthy();
+    expect(screen.queryByText(/Liste okunamadı/)).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("Önizleme okunamadı");
+  });
+
+  it("önceki dosyanın gecikmiş tazeleme hatasını yeni dosyada göstermez", async () => {
+    const refresh = deferred<DocumentRow[]>();
+    mocks.documentList.mockResolvedValueOnce([D1]).mockReturnValueOnce(refresh.promise);
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "sentetik" } });
+    fireEvent.click(runButton());
+    await resultCard();
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await screen.findByRole("option", { name: D4.displayName });
+    await act(async () => { refresh.reject(apiError("E_IO", "Liste okunamadı")); });
+
+    expect(docSelect().value).toBe("v9");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("belge listesi tazelenemezse hata yazılır; maskeleme sonucu ekranda kalır", async () => {
     mocks.documentList
       .mockImplementationOnce(async () => [D1, D2])

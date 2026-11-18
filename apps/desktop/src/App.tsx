@@ -91,9 +91,12 @@ export function App() {
     preUpdateBackup: null,
   });
   const [error, setError] = useState<ApiError | null>(null);
-  // Kasa oluşturulduktan sonra bir kez gösterilen kurtarma anahtarı burada
+  // Kasa kurulumu sırasında bir kez gösterilen kurtarma anahtarı burada
   // tutulur: `Unlock` ekranı gezinmede yeniden bağlandığı için anahtar orada
   // tutulsaydı ilk ekran değişiminde yok olurdu.
+  const [lockGeneration, setLockGeneration] = useState(0);
+  const lockEpoch = useRef(0);
+  const statusRead = useRef(0);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
 
   // Hareketsizlik sayacı ve uçuştaki kilit isteği ref'te tutulur: zamanlayıcı
@@ -104,13 +107,17 @@ export function App() {
   const [locking, setLocking] = useState(false);
 
   const refresh = useCallback(async () => {
+    const read = ++statusRead.current;
     try {
-      setStatus(await api.status());
+      const next = await api.status();
+      if (read !== statusRead.current) return false;
+      setStatus(next);
       // Başarılı okuma önceki durum/kilit hatasını siler: kırmızı bant bayat
       // kalmaz (ör. bir kez düşen kilit denemesinden sonra başarılı kilit).
       setError(null);
       return true;
     } catch (e) {
+      if (read !== statusRead.current) return false;
       setError(toApiError(e));
       return false;
     }
@@ -123,7 +130,7 @@ export function App() {
   // Kasa açıldığında hareketsizlik sayacı sıfırlanır: kilitliyken geçen süre
   // "kasa açıkken hareketsizlik" sayılmaz. Aksi hâlde kasa açıldıktan hemen
   // sonra yeniden kilitlenebilir.
-  // vault_create çekirdekte kasayı açar; anahtar onayı beklerken de süre işler.
+  // Kurulum onayı beklerken de hareketsizlik sayacı işler.
   const vaultOpen = status.unlocked || pendingKey !== null;
   useEffect(() => {
     unlocked.current = vaultOpen;
@@ -186,6 +193,7 @@ export function App() {
     setLocking(true);
     try {
       await api.lockVault();
+      setLockGeneration(++lockEpoch.current);
       setStatus((s) => ({ ...s, unlocked: false }));
       setPendingKey(null);
       lastActivity.current = Date.now();
@@ -223,7 +231,16 @@ export function App() {
   }, [lockNow]);
 
   const contentRef = useRef<HTMLDivElement>(null);
-  function navigate(next: Screen) {
+  const focusContentAfterNavigation = useRef(false);
+  useEffect(() => {
+    if (focusContentAfterNavigation.current) {
+      focusContentAfterNavigation.current = false;
+      contentRef.current?.focus();
+    }
+  }, [screen]);
+
+  function navigate(next: Screen, focusTarget: "navigation" | "content" = "navigation") {
+    focusContentAfterNavigation.current = focusTarget === "content";
     setScreen(next);
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }
@@ -308,23 +325,31 @@ export function App() {
           ) : null}
 
           {!canShowScreen(screen, locked) ? (
-            <LockedNotice pendingRecovery={pendingKey !== null} onUnlock={() => navigate("vault")} />
+            <LockedNotice pendingRecovery={pendingKey !== null} onUnlock={() => navigate("vault", "content")} />
           ) : screen === "vault" ? (
             pendingKey || locked ? (
               <Unlock
+                key={lockGeneration}
                 pendingKey={pendingKey}
-                onKeyCreated={setPendingKey}
+                onKeyCreated={(key) => {
+                  if (lockGeneration === lockEpoch.current) setPendingKey(key);
+                }}
                 onKeyDismissed={lockNow}
                 locking={locking}
-                onUnlocked={async () => {
-                  setError(null);
-                  // Durum okunamazsa anahtar ekranı açık kalır: tek kopyadır,
-                  // başarısız bir tazeleme yüzünden düşürülmez.
-                  if (!lockingRef.current && await refresh()) setPendingKey(null);
+                onUnlocked={async (confirmed) => {
+                  if (lockingRef.current || lockGeneration !== lockEpoch.current) return;
+                  if (confirmed) {
+                    setPendingKey(null);
+                    setStatus({
+                      unlocked: !confirmed.locked, vaultId: confirmed.vaultId, vaultPath: confirmed.vaultPath,
+                      schemaVersion: confirmed.schemaVersion, preUpdateBackup: null,
+                    });
+                  }
+                  await refresh();
                 }}
               />
             ) : (
-              <Workspace status={status} onOpenFiles={() => navigate("files")} />
+              <Workspace status={status} onOpenFiles={() => navigate("files", "content")} />
             )
           ) : screen === "files" ? (
             <Cases />

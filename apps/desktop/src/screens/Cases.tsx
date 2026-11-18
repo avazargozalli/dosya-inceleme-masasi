@@ -70,12 +70,23 @@ export function Cases() {
   const noticeRef = useRef<HTMLDivElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
+  const readerOpener = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!reader) {
+      readerOpener.current?.focus();
+      readerOpener.current = null;
+    }
+  }, [reader]);
   const revealAfterRender = useRef<"notice" | "error" | "reader" | null>(null);
   useEffect(() => {
     const target = revealAfterRender.current;
     if (!target) return;
     const element = { notice: noticeRef, error: errorRef, reader: readerRef }[target].current;
     element?.scrollIntoView?.({ block: "start" });
+    if (target === "reader") {
+      const label = t("readerUi.documentPickerAria", { label: t("readerUi.leftDocument") });
+      element?.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)?.focus();
+    }
     revealAfterRender.current = null;
   }, [notice, error, reader, busy]);
   // §17.3 toplu ayrıştırma: bekleyen belgeler en fazla iki worker'la. Sonuç
@@ -247,6 +258,7 @@ export function Cases() {
   // bildirim yeni dosyanın verisi sanılmasın (INV-05). Temizlik istekten
   // **önce** yapılır; yeni dosyanın verisi gelene kadar boş durum gösterilir.
   useEffect(() => {
+    readerOpener.current = null;
     setReader(null);
     setDocs([]);
     setAnchors([]);
@@ -455,8 +467,10 @@ export function Cases() {
   }
 
   /** Belgeyi sol panelde açar; sağ paneldeki belge korunur (F07-T08). */
-  function openDocument(doc: DocumentRow) {
+  function openDocument(doc: DocumentRow, opener: HTMLButtonElement) {
     if (!doc.currentVersionId) return;
+    readerOpener.current = opener;
+    revealAfterRender.current = "reader";
     setReader((prev) => ({
       left: {
         versionId: doc.currentVersionId!,
@@ -474,13 +488,12 @@ export function Cases() {
       },
       right: prev?.right ?? null,
     }));
-    revealAfterRender.current = "reader";
   }
 
   /** Kaynağa geri dönüş: anchor'ın sayfasını ve alıntısını okuyucuda açar.
    *  Alıntı segmentten kopmuşsa okuyucu bunu "kopmuş kaynak" olarak gösterir.
    *  Sıra kapısı: iki kaynağa hızlı tıklanırsa **son** tıklanan kazanır. */
-  async function openAnchor(anchorId: string) {
+  async function openAnchor(anchorId: string, opener: HTMLButtonElement) {
     const gen = caseGen.current;
     const seq = ++anchorSeq.current;
     try {
@@ -495,6 +508,8 @@ export function Cases() {
         return;
       }
       setError(null);
+      readerOpener.current = opener;
+      revealAfterRender.current = "reader";
       setReader((prev) => ({ left: targetFromAnchor(location), right: prev?.right ?? null }));
     } catch (e) {
       if (gen === caseGen.current && seq === anchorSeq.current) setError(toApiError(e));
@@ -808,7 +823,7 @@ export function Cases() {
                     <button
                       className="btn ghost"
                       style={{ height: 26 }}
-                      onClick={() => void openAnchor(anchor.id)}
+                      onClick={(event) => void openAnchor(anchor.id, event.currentTarget)}
                       title={t("cases.openAnchorTitle")}
                     >
                       {t("cases.openInReader")}
@@ -905,7 +920,7 @@ export function Cases() {
                       <button
                         className="btn ghost"
                         disabled={!doc.currentVersionId || busy}
-                        onClick={() => openDocument(doc)}
+                        onClick={(event) => openDocument(doc, event.currentTarget)}
                         title={t("cases.openDocumentTitle")}
                       >
                         {t("cases.read")}

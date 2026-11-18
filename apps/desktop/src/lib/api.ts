@@ -2218,6 +2218,9 @@ export function toApiError(error: unknown): ApiError {
 }
 
 export const api = {
+  prepareVault: (path: string, password: string) =>
+    invoke<string>("vault_prepare_create", { path, password }),
+  confirmVault: (recoveryKey: string) => invoke<VaultInfo>("vault_confirm_create", { recoveryKey }),
   createVault: (path: string, password: string) =>
     invoke<CreateVaultResult>("vault_create", { path, password }),
   openVault: (path: string, password: string) => invoke<VaultInfo>("vault_open", { path, password }),

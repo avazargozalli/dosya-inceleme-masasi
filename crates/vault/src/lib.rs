@@ -182,6 +182,19 @@ impl VaultFile {
                 "kasa dosyası zaten var",
             )));
         }
+        let (unlocked, recovery) = Self::prepare(password)?;
+        Self::persist_new(path, unlocked.header())?;
+        Ok((
+            Self {
+                path: path.to_owned(),
+            },
+            recovery,
+            unlocked,
+        ))
+    }
+
+    /// Builds both wrapped key slots in memory. No file exists until confirmation.
+    pub fn prepare(password: &str) -> Result<(UnlockedVault, RecoveryKey), VaultError> {
         let mut master = Zeroizing::new([0u8; MASTER_LEN]);
         OsRng.fill_bytes(master.as_mut());
 
@@ -225,26 +238,26 @@ impl VaultFile {
         };
         header.header_mac = header.compute_mac(&master)?;
 
-        {
-            let mut f = OpenOptions::new().create_new(true).write(true).open(path)?;
-            f.write_all(&header.to_bytes())?;
-            f.flush()?;
-            f.sync_all()?;
-        }
-        if let Some(parent) = path.parent() {
-            sync_dir(parent)?;
-        }
-
         Ok((
-            Self {
-                path: path.to_path_buf(),
-            },
-            recovery,
             UnlockedVault {
                 master_key: master,
                 header,
             },
+            recovery,
         ))
+    }
+
+    /// Installs a complete header without replacing an existing vault.
+    pub fn persist_new(path: &Path, header: &VaultHeader) -> Result<(), VaultError> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        temp.write_all(&header.to_bytes())?;
+        temp.as_file().sync_all()?;
+        temp.persist_noclobber(path).map_err(|e| e.error)?;
+        sync_dir(parent)
     }
 
     /// Parola ile kasa açar. Yanlış parola ile bozuk başlık aynı hatayı verir;
@@ -270,6 +283,14 @@ impl VaultFile {
     /// Kurtarma anahtarı ile açma. Kurtarma anahtarı parola değişse de geçerlidir.
     pub fn open_with_recovery(path: &Path, recovery: &str) -> Result<UnlockedVault, VaultError> {
         let header = Self::read_header(path)?;
+        Self::unlock_header_with_recovery(header, recovery)
+    }
+
+    /// Verifies a saved recovery key against the encrypted slots before installation.
+    pub fn unlock_header_with_recovery(
+        header: VaultHeader,
+        recovery: &str,
+    ) -> Result<UnlockedVault, VaultError> {
         let normalized = normalize_recovery_key(recovery).ok_or(VaultError::BadRecoveryKey)?;
         // KDF girdisi **ham 32 bayt** olmalı: oluştururken `RecoveryKey::as_bytes()`
         // kullanılıyor. Base32 metnini doğrudan vermek kurtarma anahtarını

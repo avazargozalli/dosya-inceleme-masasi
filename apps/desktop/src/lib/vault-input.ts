@@ -37,7 +37,7 @@ export function checkPasswordConfirmation(password: string, confirmation: string
   return checkPassword(password);
 }
 
-/** Kurtarma anahtarı gösterimi: 8 grup × 4 karakter, tireli. */
+/** Kurtarma anahtarı gösterimi: 13 grup × 4 karakter, tireli. */
 export function normalizeRecoveryInput(input: string): string {
   return input.replace(/[\s-]/g, "").toUpperCase();
 }

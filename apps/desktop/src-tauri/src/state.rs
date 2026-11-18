@@ -2,17 +2,25 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use dim_storage::{Database, DatabaseKey};
-use dim_vault::UnlockedVault;
+use dim_vault::{UnlockedVault, VaultHeader};
 use sha2::{Digest, Sha256};
 
 /// Kilit açıkken tutulan kasa durumu. Kilitliyken yalnız yol ve kimlik kalır;
 /// anahtar ve veritabanı bağlantısı düşünce bellekten silinir.
 #[derive(Default)]
 pub struct VaultState {
+    pub pending_creation: Option<PendingVault>,
     pub unlocked: Option<UnlockedVault>,
     pub db: Option<Database>,
     pub path: Option<PathBuf>,
     pub vault_id: Option<String>,
+}
+
+/// Only wrapped key slots survive between the two setup commands.
+pub struct PendingVault {
+    pub path: PathBuf,
+    pub header: VaultHeader,
+    pub installed: bool,
 }
 
 /// Süren belge işi: hangi iş/sürüm ve **süreci durdurma** tutamağı
@@ -150,6 +158,7 @@ pub fn lock_vault(handle: &Mutex<VaultState>) -> MutexGuard<'_, VaultState> {
         Ok(guard) => guard,
         Err(poisoned) => {
             let mut guard = poisoned.into_inner();
+            guard.pending_creation = None;
             guard.unlocked = None;
             guard.db = None;
             guard

@@ -47,8 +47,8 @@ use zeroize::Zeroizing;
 
 use crate::error::ApiError;
 use crate::state::{
-    lock_vault, open_database, vault_id_from_master, AppState, RunningWorker, VaultState,
-    WorkerSlotGuard,
+    lock_vault, open_database, vault_id_from_master, AppState, PendingVault, RunningWorker,
+    VaultState, WorkerSlotGuard,
 };
 
 use sha2::{Digest, Sha256};
@@ -134,6 +134,7 @@ pub fn vault_create(
     let db = open_database(&file.path, &unlocked, &vault_id)?;
 
     let mut guard = state.lock();
+    guard.pending_creation = None;
     guard.unlocked = Some(unlocked);
     guard.db = Some(db);
     guard.path = Some(file.path.clone());
@@ -148,6 +149,85 @@ pub fn vault_create(
 }
 
 #[tauri::command]
+pub fn vault_prepare_create(
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+) -> Result<String, ApiError> {
+    let password = Zeroizing::new(password);
+    let path = resolve_vault_path(&path)?;
+    prepare_creation(&mut state.lock(), path, &password)
+}
+
+fn prepare_creation(
+    guard: &mut VaultState,
+    path: PathBuf,
+    password: &str,
+) -> Result<String, ApiError> {
+    if guard.unlocked.is_some() {
+        return Err(ApiError::new(
+            "E_VAULT_OPEN",
+            "Önce açık kasayı kilitleyin.",
+        ));
+    }
+    if path.try_exists()? || path.with_file_name("vault.db").try_exists()? {
+        return Err(ApiError::new(
+            "E_VAULT_EXISTS",
+            "Bu konumda zaten bir kasa var.",
+        ));
+    }
+    if password.chars().count() < 12 {
+        return Err(ApiError::new(
+            "E_PASSWORD_WEAK",
+            "En az 12 karakterli bir parola kullanın.",
+        ));
+    }
+    let (unlocked, recovery) = VaultFile::prepare(password)?;
+    guard.pending_creation = Some(PendingVault {
+        path,
+        header: unlocked.header().clone(),
+        installed: false,
+    });
+    Ok(recovery.to_display_string())
+}
+
+#[tauri::command]
+pub fn vault_confirm_create(
+    state: State<'_, AppState>,
+    recovery_key: String,
+) -> Result<VaultInfo, ApiError> {
+    confirm_creation(&mut state.lock(), &Zeroizing::new(recovery_key))
+}
+
+fn confirm_creation(guard: &mut VaultState, recovery_key: &str) -> Result<VaultInfo, ApiError> {
+    let draft = guard
+        .pending_creation
+        .as_mut()
+        .ok_or_else(|| ApiError::new("E_VAULT_SETUP", "Kasa kurulumunu yeniden başlatın."))?;
+    let unlocked = if draft.installed {
+        VaultFile::open_with_recovery(&draft.path, recovery_key)?
+    } else {
+        let unlocked = VaultFile::unlock_header_with_recovery(draft.header.clone(), recovery_key)?;
+        if draft.path.with_file_name("vault.db").try_exists()? {
+            return Err(ApiError::new(
+                "E_VAULT_EXISTS",
+                "Bu klasörde zaten bir kasa veritabanı var.",
+            ));
+        }
+        ensure_parent(&draft.path)?;
+        VaultFile::persist_new(&draft.path, &draft.header)?;
+        draft.installed = true;
+        unlocked
+    };
+    let path = draft.path.clone();
+    remember(guard, path, unlocked).map_err(|error| ApiError {
+        code: error.code,
+        message: format!("Kasa dosyası oluşturuldu. Veritabanı açılamadı. {} Kurtarma anahtarını saklayıp yeniden deneyin.", error.message),
+        retryable: error.retryable,
+    })
+}
+
+#[tauri::command]
 pub fn vault_open(
     state: State<'_, AppState>,
     path: String,
@@ -156,7 +236,7 @@ pub fn vault_open(
     let password = Zeroizing::new(password);
     let vault_path = resolve_vault_path(&path)?;
     let unlocked = VaultFile::open(&vault_path, &password)?;
-    remember(state, vault_path, unlocked)
+    remember(&mut state.lock(), vault_path, unlocked)
 }
 
 #[tauri::command]
@@ -168,7 +248,7 @@ pub fn vault_open_with_recovery(
     let recovery_key = Zeroizing::new(recovery_key);
     let vault_path = resolve_vault_path(&path)?;
     let unlocked = VaultFile::open_with_recovery(&vault_path, &recovery_key)?;
-    remember(state, vault_path, unlocked)
+    remember(&mut state.lock(), vault_path, unlocked)
 }
 
 /// **Kasa açılışında iş kurtarma** (F03-T08 / F15-T06).
@@ -203,7 +283,7 @@ fn recover_at_open(db: &Database) -> dim_storage::JobRecovery {
 }
 
 fn remember(
-    state: State<'_, AppState>,
+    guard: &mut VaultState,
     path: PathBuf,
     unlocked: UnlockedVault,
 ) -> Result<VaultInfo, ApiError> {
@@ -230,7 +310,7 @@ fn remember(
         locked: false,
         schema_version,
     };
-    let mut guard = state.lock();
+    guard.pending_creation = None;
     guard.unlocked = Some(unlocked);
     guard.db = Some(db);
     guard.path = Some(path);
@@ -245,6 +325,7 @@ pub fn vault_lock(state: State<'_, AppState>) -> Result<(), ApiError> {
     // (§17.3 ile ayrıştırma kilidi bırakarak çalıştığı için bu gerekli oldu.)
     let _stopped = state.cancel_all_workers();
     let mut guard = state.lock();
+    guard.pending_creation = None;
     guard.unlocked = None;
     guard.db = None;
     // K0: kilitte çözülmüş önizlemeler bellekten düşer. Diskteki kayıtlar
