@@ -3270,3 +3270,90 @@ denetlenmez, yalnız biçimi. (g) `completeness` yalnız **kanıtla tutarlılık
 denetlenir; künyenin gerçekten o karara ait olduğu (mahkeme/numaraların doğruluğu)
 doğrulanmaz. (h) Tetikleyicileri anahtarı olan saldırgan düşürebilir. (i) Arayüz davranışı
 değişmedi (rozet ve tarih aynı sütunlardan); gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04ad — kullanım koşulu iddiası «bu metni dağıtabilirim»in kanıtı olmalı (şema v57, 2026-11-18)
+
+**Neden bu dilim.** `precedents`in beş sütunu — `usage_basis`, `redistribution`,
+`terms_url`, `terms_note`, `terms_recorded_at` — birlikte **«bu kararın tam metnini
+yeniden dağıtabilirim»** iddiasıdır. İddianın okuyucusu onu **yeniden denetlemiyordu**:
+`build_precedent_corpus` yalnız `redistribution` sütununa bakıp `allowed` satırın metnini
+**dosyaya yazıyor** (`CorpusItem.text`), `precedent_corpus_coverage` izinli sayısını aynı
+sütundan sayıyor, `Precedents.tsx` liste rozeti (`termsBadge`) ve koşul paneli damgayı
+doğrudan basıyor. 0016 sütunları eklerken yalnız iki kapalı küme CHECK'i koymuştu; kuralın
+kendisi (izin ⇒ dağıtılabilir dayanak + yazılı dayanak + damga; url biçimi) **şemada
+yoktu** — 0056 bunu bilinçli olarak dışarıda bırakmıştı (kapanış sınırı (b)).
+
+**Ölçülen kusur (gerçek SQLite v56; `dim-v57-probe/measure_v57.py`, log
+`measure_before.log`).** 55 yazımın **55'i KABUL**: 37 kusur + 14 meşru + 4 eski satır yolu.
+Doğum (22): `allowed` + dayanak `unknown`/`internal_only`; `allowed` + yazılı dayanak yok;
+not yalnız boşluk; `allowed` + damga yok/`dün`/boş metin; url `ftp://`, şemasız, kırpılmamış
+(sondaki boşluk), boş metin, yalnız boşluk, 2001 karakter, satır sonu/satır başı/sekme
+taşıyan; not kırpılmamış, 4001 karakter; damga `dün`/boş/`01.06.2026`. UPDATE (15): dayanak
+`unknown`a/`internal_only`a çevrildi; url ve not birlikte silindi; damga NULL'a çekildi/`dün`
+yazıldı; url `ftp://` yapıldı; not yalnız boşluğa çevrildi; not kırpılmamış yazıldı/4001
+karaktere çıkarıldı; url kırpılmamış yazıldı/satır sonu/satır başı/sekme eklendi/2001
+karaktere çıkarıldı; **yazılı dayanak yokken izin sonradan açıldı** (yalnız
+`redistribution` değişti).
+
+**Yazılan (`0057_precedent_usage_terms_claim_guard.sql`, 2 tetikleyici).** BI — `allowed`
+**desteklenmiş** olmalı: dayanak dağıtılabilir üçlüden (`official_public|licence|permission`;
+`internal_only` ve `unknown` dağıtılamaz), yazılı dayanak var (url ya da not kırpılmış-boş
+değil), `terms_recorded_at` ISO-8601 damgası taşıyor; `terms_url` NULL ya da kırpılmış
+`http://`|`https://` (≤ 2000 karakter, CR/LF/TAB yok); `terms_note` kırpılmış (≤ 4000);
+damga NULL ya da ISO. `unknown`/`not_allowed` **serbest** — izin vermemek kanıt istemez.
+BU — beş sütundan **biri değişiyorsa** yeni satır aynı kurala uymalı; sütunlara dokunmayan
+yazma (künye no-op'u) takılmaz, yani eski satır kilitlenmez ve **onarım yolu açıktır**
+(dayanak + yazılı kanıt + damga yazılır; 0056'nın aksine). Ret `DIM_INTEGRITY:precedents` →
+`E_DB_INTEGRITY`. Tablo `case_id` taşımaz → `GUARDED_TABLES` **25 kalır**.
+
+**Çekirdek hizası — dışa aktarma artık sütuna güvenmiyor.** Şema kapısı yalnız **yeni**
+yazmayı durdurur; v57 öncesi ya da elle değiştirilmiş bir satır `allowed` diyorsa korpus
+metni yine dosyaya çıkabilirdi. Bu yüzden `CorpusRecord::permission_backed()` aynı kuralı
+**okuma anında** uyguluyor: kanıtsız `allowed` **izin sayılmaz**, metni dışa aktarılmaz ve
+`redistribution_unknown` («izin kaydı yok») olarak raporlanır. **Ölçüldü** (geçici sızıntı
+sondası, eski mantık geri konarak): eski yolda `coverage.allowed=1 exported=1 excluded=0
+secret_in_items=true` — yani metin gerçekten dosyaya yazılacaktı; yeni yolda aynı satır
+`exported=0`, `excluded=1`, `reason=redistribution_unknown`, `secret_in_items=false`. Sonda
+silindi, kaynak **byte-birebir** geri yazıldı (sha256 önce = sonra).
+
+**Testler.** `precedent_terms` +2: `usage_terms_claim_is_backed_and_well_formed` (22 doğum +
+15 UPDATE saldırısı reddedilir; meşru doğumlar, sıfırlama, izin geri alma ve çekirdek yolu
+geçer) ve `corpus_export_does_not_trust_an_unbacked_allowed_claim` (kapı yerindeyken kanıtsız
+izin `E_DB_INTEGRITY`; v57 öncesi satırda tetikleyiciler **bilinçli** düşürülüp dışa
+aktarımın metni sızdırmadığı ve `all` kipinin kapandığı ölçülür). `upgrade_tests` +1
+(`upgrade_keeps_precedents_written_before_the_usage_terms_gate`: dört eski satır silinmez,
+kanıtsız iddia kendiliğinden düzelmez, hâlâ kanıtsız kalan değişiklik reddedilir, onarım
+geçer) → **707 → 710**.
+
+**Kapı kanıtı.** Taban **yeşil**, **29/29 mutant KIRMIZI** (`gates_v57.py`, log
+`gates_v57.log`) ve her mutant için üç şey ayrıca ölçüldü: (a) SQL yükleniyor, (b) hedef
+kusur **KABUL** olmaya başlıyor (eşdeğer mutant değil), (c) 11 meşru yol KABUL kalıyor —
+**29/29 delik açıldı · meşru yollar korundu**. Kaynak **byte-birebir** geri yazıldı
+(sha256 `14b5d34451cb…`). **Dürüst (kendi hatam):** ilk koşuda 29/29 KIRMIZI ama 28/29
+«delik açıldı» çıktı — M14'ün tanığı (`izin sonradan açıldı`) **iki** cümleye birden
+takılıyordu (damga da NULL'dı), yani tanık yanlıştı; tanık `url ve not birlikte silindi` ile
+değiştirildi, **29/29 yeniden ölçüldü**, ilk koşunun hükümleri kanıt sayılmadı. Ayrıca ilk
+yazımda iki cümle **eşdeğer** çıktı (url `''`/boşluk denetimi şema kuralınca zaten
+kapsanıyordu) → cümleler kapıdan **çıkarıldı**; kapı gevşetilmedi. Ölçüm sonrası: **37/37
+kusur RED**, 17 meşru/eski-yol KABUL.
+
+**CI (ölçüldü).** Kod `b9cd768` (4 dosya, **+662/−11**) → run `44387888890` **10/10 YEŞİL**
+(`dim-storage` **710** iki OS'ta birebir: macos-15 **477,99 s** / ubuntu-latest **457,67 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) v57 öncesi kanıtsız `allowed` satırları **silinmez**; kapı yalnız
+yeni yazmayı durdurur — onarım elle (arayüz/Rust yolu) yapılır ve artık **mümkündür**.
+(b) Kapı iddianın **doğruluğunu** kanıtlamaz: yazılı dayanak metninin gerçekten o izni
+verdiği, url'nin yaşadığı ve kararın o kaynaktan alındığı doğrulanmaz — yalnız iddianın
+**iç tutarlılığı** ve biçimi. (c) SQLite `trim()` yalnız ASCII boşluk kırpar (U+00A0 artığı
+geçer). (d) Kontrol karakterlerinden yalnız CR/LF/TAB denetlenir (gömülü NUL ve diğer C0
+karakterleri SQL metninde temsil edilemez; Rust hepsini reddeder). (e) Damga **gelecekte**
+olabilir ve geriye alınabilir; yalnız biçimi ve `allowed` için **varlığı** denetlenir.
+(f) Notun **içeriği** ve url'nin **hedefi** denetlenmez. (g) `source_url` gibi `terms_url`
+de yalnız şema denetimiyle sınırlıdır — DNS/erişim doğrulanmaz. (h) Tetikleyicileri anahtarı
+olan saldırgan düşürebilir; çekirdek bu yüzden aynı kuralı **dışa aktarma anında** ayrıca
+uygular (tek savunma hattı şema değildir). (i) Arayüz davranışı değişmedi; `termsBadge` yalnız
+`redistribution` sütununa bakar — tahrif edilmiş/eski bir satırda rozet «izinli» diyebilir
+(dışa aktarma yine izin vermez); gerçek pencere + görsel QA **insan bekliyor**.
