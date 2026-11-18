@@ -53,8 +53,28 @@ describe("kaynak kullanım koşulu metinleri", () => {
   it("izin durumlarını ayrı etiketler ve tonlar", () => {
     expect(redistributionLabel("allowed")).toBe("yeniden dağıtım izinli");
     expect(redistributionLabel("not_allowed")).toBe("yeniden dağıtım izinsiz");
-    expect(termsBadge({ redistribution: "allowed" })).toEqual({ text: "izinli", tone: "ok" });
+    expect(termsBadge({ redistribution: "allowed", redistributionEffective: "allowed" })).toEqual({
+      text: "izinli",
+      tone: "ok",
+    });
     expect(termsBadge({ redistribution: "not_allowed" })).toEqual({
+      text: "izinsiz",
+      tone: "danger",
+    });
+  });
+
+  it("kanıtsız 'izinli' iddiasını izinli göstermez", () => {
+    // Sunucu kanıtsız iddiayı `unknown`a düşürür; rozet onu basar.
+    expect(termsBadge({ redistribution: "allowed", redistributionEffective: "unknown" })).toEqual({
+      text: "izin bilinmiyor",
+      tone: "warn",
+    });
+    // Eski yük: alan yok → izin varsayılmaz (fail-closed). `not_allowed` kanıt istemez.
+    expect(termsBadge({ redistribution: "allowed" })).toEqual({
+      text: "izin bilinmiyor",
+      tone: "warn",
+    });
+    expect(termsBadge({ redistribution: "not_allowed", redistributionEffective: "not_allowed" })).toEqual({
       text: "izinsiz",
       tone: "danger",
     });

@@ -41,6 +41,47 @@ pub const REDISTRIBUTION_VALUES: [&str; 3] = ["allowed", "not_allowed", "unknown
 /// burada yoktur: yalnız iç kullanım için alınmış karar dağıtılamaz.
 const DISTRIBUTABLE_BASES: [&str; 3] = ["official_public", "licence", "permission"];
 
+/// `allowed` iddiasının **kanıtı**: yeniden dağıtılabilir dayanak türü, yazılı
+/// dayanak (bağlantı ya da not) ve kayıt damgası.
+///
+/// 0057 şema kapısı yeni yazmayı buna zorlar; kural burada **okuma anında**
+/// yinelenir çünkü okuyucu sütuna güvenemez: v57 öncesi ya da elle değiştirilmiş
+/// satır kanıtsız `allowed` taşıyabilir. Tek uygulama noktasıdır — korpus kapısı,
+/// liste rozeti ve koşul paneli aynı işlevi kullanır (kural yerler arasında
+/// ayrışmaz).
+pub fn allowed_claim_is_backed(
+    usage_basis: &str,
+    terms_url: Option<&str>,
+    terms_note: &str,
+    terms_recorded_at: Option<&str>,
+) -> bool {
+    DISTRIBUTABLE_BASES.contains(&usage_basis)
+        && (terms_url.is_some_and(|url| !url.trim().is_empty()) || !terms_note.trim().is_empty())
+        && terms_recorded_at.is_some_and(|at| !at.trim().is_empty())
+}
+
+/// Okurun göreceği **yürürlükteki** izin. `allowed` yalnız kanıtıyla ayakta
+/// kalır; kanıtsız `allowed` `unknown`a düşer — izin vermemek kanıt istemez,
+/// izin istemek ister. Ham sütun `redistribution` yalnız kaydın kendisini
+/// gösteren yerde (koşul formu) kullanılır.
+pub fn effective_redistribution(
+    usage_basis: &str,
+    redistribution: &str,
+    terms_url: Option<&str>,
+    terms_note: &str,
+    terms_recorded_at: Option<&str>,
+) -> &'static str {
+    match redistribution {
+        "allowed"
+            if allowed_claim_is_backed(usage_basis, terms_url, terms_note, terms_recorded_at) =>
+        {
+            "allowed"
+        }
+        "not_allowed" => "not_allowed",
+        _ => "unknown",
+    }
+}
+
 const MAX_NOTE_CHARS: usize = 4000;
 const MAX_URL_CHARS: usize = 2000;
 /// Liste yanıtlarında gösterilecek en çok engelli kayıt; toplam ayrı sayılır.
@@ -57,6 +98,11 @@ pub struct PrecedentUsageTerms {
     /// Koşul kaydının **alındığı** zaman. `None` = hiç kaydedilmedi.
     /// Hukuki inceleme tarihi değildir.
     pub terms_recorded_at: Option<String>,
+    /// Sütundaki iddianın **yeniden denetlenmiş** hâli (bkz.
+    /// [`effective_redistribution`]): kanıtsız `allowed` burada `unknown` görünür.
+    /// Panel rozeti bunu basar; ham `redistribution` yalnız formun seçili
+    /// değerini gösterir.
+    pub redistribution_effective: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,16 +234,13 @@ impl CorpusRecord {
     /// yazmayı buna zorlar; burada aynı kural **okuma anında** uygulanır çünkü
     /// korpus metni dosyaya yazar — sütuna güvenmek yetmez.
     fn permission_backed(&self) -> bool {
-        DISTRIBUTABLE_BASES.contains(&self.usage_basis.as_str())
-            && (self
-                .terms_url
-                .as_deref()
-                .is_some_and(|url| !url.trim().is_empty())
-                || !self.terms_note.trim().is_empty())
-            && self
-                .terms_recorded_at
-                .as_deref()
-                .is_some_and(|at| !at.trim().is_empty())
+        effective_redistribution(
+            &self.usage_basis,
+            &self.redistribution,
+            self.terms_url.as_deref(),
+            &self.terms_note,
+            self.terms_recorded_at.as_deref(),
+        ) == "allowed"
     }
 
     fn exclusion_reason(&self) -> Option<&'static str> {
@@ -324,13 +367,26 @@ impl Database {
                  FROM precedents WHERE id=?1",
                 [precedent_id],
                 |row| {
+                    let usage_basis: String = row.get(1)?;
+                    let redistribution: String = row.get(2)?;
+                    let terms_url: Option<String> = row.get(3)?;
+                    let terms_note: String = row.get(4)?;
+                    let terms_recorded_at: Option<String> = row.get(5)?;
                     Ok(PrecedentUsageTerms {
                         precedent_id: row.get(0)?,
-                        usage_basis: row.get(1)?,
-                        redistribution: row.get(2)?,
-                        terms_url: row.get(3)?,
-                        terms_note: row.get(4)?,
-                        terms_recorded_at: row.get(5)?,
+                        redistribution_effective: effective_redistribution(
+                            &usage_basis,
+                            &redistribution,
+                            terms_url.as_deref(),
+                            &terms_note,
+                            terms_recorded_at.as_deref(),
+                        )
+                        .to_string(),
+                        usage_basis,
+                        redistribution,
+                        terms_url,
+                        terms_note,
+                        terms_recorded_at,
                     })
                 },
             )
@@ -1179,5 +1235,140 @@ mod tests {
             .build_precedent_corpus(CorpusMode::All)
             .expect_err("kanıtsız izin `all` kapısını kapatmalı");
         assert_eq!(error.code(), "E_CORPUS_NOT_PERMITTED");
+    }
+
+    /// Okurlar (liste, koşul paneli) **ham sütuna güvenmez**: kanıtsız `allowed`
+    /// onlara da `unknown` görünür. v57 şema kapısı yeni yazmayı durdurur; burada
+    /// v57 öncesi / elle değiştirilmiş satır (tetikleyiciler bilinçli düşürülerek)
+    /// yazılır ve üç okumanın — korpus kapısı, liste, panel — aynı hükmü verdiği
+    /// ölçülür. `not_allowed` kanıt istemez: olduğu gibi görünür.
+    #[test]
+    fn readers_do_not_show_an_unbacked_allowed_claim_as_permitted() {
+        let db = db();
+        // --- meşru yol: kanıtlı izin ---------------------------------------
+        let backed = precedent(&db, "Yargıtay", "2024/11");
+        db.set_precedent_usage_terms(
+            &backed,
+            &SetUsageTermsInput {
+                usage_basis: "licence".into(),
+                redistribution: "allowed".into(),
+                terms_url: None,
+                terms_note: "Creative Commons BY 4.0".into(),
+            },
+        )
+        .expect("meşru izin");
+        let row = db
+            .get_precedent(&backed)
+            .expect("okuma")
+            .expect("emsal var");
+        assert_eq!(row.redistribution, "allowed");
+        assert_eq!(
+            row.redistribution_effective, "allowed",
+            "kanıtlı izin okura da izinli görünür"
+        );
+        assert_eq!(
+            db.precedent_usage_terms(&backed)
+                .expect("koşul")
+                .redistribution_effective,
+            "allowed"
+        );
+
+        // --- v57 öncesi satırlar: tetikleyiciler bilinçli düşürülür --------
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER precedent_usage_terms_guard_bi;
+                 DROP TRIGGER precedent_usage_terms_guard_bu;",
+            )
+            .expect("tetikleyici düşürme");
+
+        let unknown_basis = precedent(&db, "Yargıtay", "2024/12");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET redistribution='allowed' WHERE id=?1",
+                [&unknown_basis],
+            )
+            .expect("eski satır: dayanak yok");
+
+        let internal_only = precedent(&db, "Yargıtay", "2024/13");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET usage_basis='internal_only',redistribution='allowed',
+                        terms_note='yalnız büro içi',terms_recorded_at='2026-01-02T03:04:05Z'
+                 WHERE id=?1",
+                [&internal_only],
+            )
+            .expect("eski satır: yalnız iç kullanım");
+
+        let no_written_basis = precedent(&db, "Yargıtay", "2024/14");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET usage_basis='official_public',redistribution='allowed',
+                        terms_url=NULL,terms_note='',terms_recorded_at='2026-01-02T03:04:05Z'
+                 WHERE id=?1",
+                [&no_written_basis],
+            )
+            .expect("eski satır: yazılı dayanak yok");
+
+        let no_stamp = precedent(&db, "Yargıtay", "2024/15");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET usage_basis='permission',redistribution='allowed',
+                        terms_url=NULL,terms_note='kurum izni',terms_recorded_at=NULL
+                 WHERE id=?1",
+                [&no_stamp],
+            )
+            .expect("eski satır: damga yok");
+
+        let denied = precedent(&db, "Danıştay", "2024/16");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET redistribution='not_allowed' WHERE id=?1",
+                [&denied],
+            )
+            .expect("eski satır: izinsiz");
+
+        let rows = db.list_precedents().expect("liste");
+        let by_id = |id: &str| {
+            rows.iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("satır yok: {id}"))
+        };
+        for (id, label) in [
+            (&unknown_basis, "dayanak yok"),
+            (&internal_only, "yalnız iç kullanım"),
+            (&no_written_basis, "yazılı dayanak yok"),
+            (&no_stamp, "damga yok"),
+        ] {
+            let row = by_id(id);
+            assert_eq!(
+                row.redistribution, "allowed",
+                "{label}: ham sütun iddiayı taşımaya devam eder"
+            );
+            assert_eq!(
+                row.redistribution_effective, "unknown",
+                "{label}: kanıtsız izin listede izinli görünmez"
+            );
+            let terms = db.precedent_usage_terms(id).expect("koşul");
+            assert_eq!(
+                terms.redistribution, "allowed",
+                "{label}: form ham kaydı gösterir"
+            );
+            assert_eq!(
+                terms.redistribution_effective, "unknown",
+                "{label}: panel de aynı hükmü verir"
+            );
+            // Alan adı arayüz sözleşmesidir (serde camelCase).
+            let json = serde_json::to_value(row).expect("json");
+            assert_eq!(
+                json["redistributionEffective"], "unknown",
+                "{label}: IPC alanı"
+            );
+        }
+        assert_eq!(
+            by_id(&denied).redistribution_effective,
+            "not_allowed",
+            "izin vermemek kanıt istemez"
+        );
+        assert_eq!(by_id(&backed).redistribution_effective, "allowed");
     }
 }

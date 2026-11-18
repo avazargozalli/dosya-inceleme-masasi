@@ -2539,6 +2539,7 @@ fn upgrade_keeps_precedents_written_before_the_usage_terms_gate() {
         )
         .expect("koşul yazımı");
     assert_eq!(terms.redistribution, "allowed");
+    assert_eq!(terms.redistribution_effective, "allowed");
     assert!(terms.terms_recorded_at.is_some());
 }
 

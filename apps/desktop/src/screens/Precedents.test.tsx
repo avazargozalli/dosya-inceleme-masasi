@@ -183,6 +183,7 @@ const PREC: PrecedentRow = {
   usageBasis: "licence",
   redistribution: "allowed",
   termsRecordedAt: ISO,
+  redistributionEffective: "allowed",
 };
 
 /** İzinsiz kayıt: listede kırmızı rozet, dağıtıma giremez. */
@@ -201,6 +202,7 @@ const PREC2: PrecedentRow = {
   usageBasis: "unknown",
   redistribution: "not_allowed",
   termsRecordedAt: null,
+  redistributionEffective: "not_allowed",
 };
 
 /** İzni bilinmeyen, başlıksız kayıt: hiçbir alan uydurulmaz. */
@@ -218,6 +220,7 @@ const PREC3: PrecedentRow = {
   usageBasis: "unknown",
   redistribution: "unknown",
   termsRecordedAt: null,
+  redistributionEffective: "unknown",
 };
 
 const CASE: CaseRow = {
@@ -590,6 +593,20 @@ describe("emsal ekranı davranışı", () => {
     setup({ precedents: [] });
     expect(await screen.findByText(t("precedents.libraryCount", { count: 0 }))).toBeTruthy();
     expect(screen.getByText(t("precedents.emptyLibrary"))).toBeTruthy();
+  });
+
+  it("kanıtsız 'izinli' iddiasını listede izinli göstermez", async () => {
+    // Sunucu kanıtsız iddiayı `unknown`a düşürür; ekran ham sütundan rozet basmaz.
+    const unbacked: PrecedentRow = {
+      ...PREC,
+      id: "p4",
+      redistribution: "allowed",
+      redistributionEffective: "unknown",
+    };
+    setup({ precedents: [unbacked] });
+    await screen.findByRole("button", { name: new RegExp(PREC.title!) });
+    expect(screen.getByText(t("terms.badgeUnknown"))).toBeTruthy();
+    expect(screen.queryByText(t("terms.badgeAllowed"))).toBeNull();
   });
 
   it("boş mahkeme gönderilmez; künye kırpılır, boş alanlar null, etiketler ayrılır", async () => {

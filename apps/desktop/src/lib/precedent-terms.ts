@@ -2,7 +2,6 @@ import { t } from "./i18n";
 import type {
   CorpusCoverage,
   CorpusExportResult,
-  PrecedentRow,
   PrecedentUsageTerms,
   Redistribution,
   UsageBasis,
@@ -49,25 +48,41 @@ export function redistributionTone(value: Redistribution | string): "ok" | "dang
   return "muted";
 }
 
-/** Liste rozeti: izin durumu tek kelimeyle; kayıt yoksa "izin bilinmiyor". */
-export function termsBadge(row: Pick<PrecedentRow, "redistribution">): {
+/** Liste/panel rozetinin gördüğü **yürürlükteki** izin.
+ *
+ * `allowed` iddiası ancak kanıtıyla ayakta kalır; sunucu kanıtsız iddiayı
+ * `unknown`a düşürür (`redistributionEffective`). Alan yoksa (eski yük) izin
+ * **varsayılmaz**: yalnız `not_allowed` kanıt istemediği için olduğu gibi kalır.
+ */
+function effectiveVerdict(row: {
+  redistribution: Redistribution | string;
+  redistributionEffective?: Redistribution | string;
+}): Redistribution {
+  const effective = row.redistributionEffective;
+  if (effective === "allowed" || effective === "not_allowed" || effective === "unknown") {
+    return effective;
+  }
+  return row.redistribution === "not_allowed" ? "not_allowed" : "unknown";
+}
+
+/** Liste rozeti: yürürlükteki izin tek kelimeyle; kanıtsız iddia "izin bilinmiyor". */
+export function termsBadge(row: {
+  redistribution: Redistribution | string;
+  redistributionEffective?: Redistribution | string;
+}): {
   text: string;
   tone: "ok" | "danger" | "warn";
 } {
+  const verdict = effectiveVerdict(row);
   return {
     text:
-      row.redistribution === "allowed"
+      verdict === "allowed"
         ? t("terms.badgeAllowed")
-        : row.redistribution === "not_allowed"
+        : verdict === "not_allowed"
           ? t("terms.badgeNotAllowed")
           : t("terms.badgeUnknown"),
-    // Kayıt yokluğu uyarıdır: sessizce "sorun yok" görünmez.
-    tone:
-      row.redistribution === "allowed"
-        ? "ok"
-        : row.redistribution === "not_allowed"
-          ? "danger"
-          : "warn",
+    // Kayıt yokluğu/kanıtsız iddia uyarıdır: sessizce "sorun yok" görünmez.
+    tone: verdict === "allowed" ? "ok" : verdict === "not_allowed" ? "danger" : "warn",
   };
 }
 

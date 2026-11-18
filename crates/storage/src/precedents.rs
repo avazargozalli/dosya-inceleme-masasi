@@ -35,6 +35,10 @@ pub struct PrecedentRow {
     pub redistribution: String,
     /// Koşul kaydının alındığı zaman; yoksa `None` (kayıt yok).
     pub terms_recorded_at: Option<String>,
+    /// Okurun göreceği **yeniden denetlenmiş** izin: kanıtsız `allowed` burada
+    /// `unknown` görünür (v57 kuralı okuma anında uygulanır). Liste rozeti bunu
+    /// basar; ham `redistribution` yalnız kaydı gösteren panelde kullanılır.
+    pub redistribution_effective: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -732,7 +736,7 @@ impl Database {
 
     pub fn get_precedent(&self, id: &str) -> Result<Option<PrecedentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at,usage_basis,redistribution,terms_recorded_at
+            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at,usage_basis,redistribution,terms_recorded_at,terms_url,terms_note
              FROM precedents WHERE id=?1",
         )?;
         Ok(stmt.query_row([id], map_precedent).optional()?)
@@ -740,7 +744,7 @@ impl Database {
 
     pub fn list_precedents(&self) -> Result<Vec<PrecedentRow>, StorageError> {
         let mut stmt = self.conn().prepare(
-            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at,usage_basis,redistribution,terms_recorded_at
+            "SELECT id,court,chamber,docket_no,decision_no,application_no,decision_date,title,source_url,user_tags,legal_issue,completeness,created_at,usage_basis,redistribution,terms_recorded_at,terms_url,terms_note
              FROM precedents ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], map_precedent)?;
@@ -1778,6 +1782,11 @@ fn iso_to_tr_date(raw: &str) -> Option<String> {
 
 fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
     let tags: String = row.get(9)?;
+    let usage_basis: String = row.get(13)?;
+    let redistribution: String = row.get(14)?;
+    let terms_recorded_at: Option<String> = row.get(15)?;
+    let terms_url: Option<String> = row.get(16)?;
+    let terms_note: String = row.get(17)?;
     Ok(PrecedentRow {
         id: row.get(0)?,
         court: row.get(1)?,
@@ -1792,9 +1801,18 @@ fn map_precedent(row: &Row<'_>) -> rusqlite::Result<PrecedentRow> {
         legal_issue: row.get(10)?,
         completeness: row.get(11)?,
         created_at: row.get(12)?,
-        usage_basis: row.get(13)?,
-        redistribution: row.get(14)?,
-        terms_recorded_at: row.get(15)?,
+        // Ham sütun **iddiadır**; okura giden değer yeniden denetlenmiş hâlidir.
+        redistribution_effective: crate::precedent_terms::effective_redistribution(
+            &usage_basis,
+            &redistribution,
+            terms_url.as_deref(),
+            &terms_note,
+            terms_recorded_at.as_deref(),
+        )
+        .to_string(),
+        usage_basis,
+        redistribution,
+        terms_recorded_at,
     })
 }
 
@@ -2104,6 +2122,7 @@ mod tests {
             )
             .expect("koşul yazımı");
         assert_eq!(terms.redistribution, "allowed");
+        assert_eq!(terms.redistribution_effective, "allowed");
         // Satır hiç değişmedi: künye alanları yerinde.
         let after = db.get_precedent(&target.id).expect("oku").expect("var");
         assert_eq!(after.court, "Yargıtay");

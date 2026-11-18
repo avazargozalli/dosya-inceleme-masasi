@@ -696,6 +696,12 @@ export type PrecedentRow = {
   redistribution: Redistribution;
   /** Koşul kaydının alındığı zaman; `null` = hiç kaydedilmedi. */
   termsRecordedAt: string | null;
+  /**
+   * Sunucunun **yeniden denetlenmiş** hükmü: kanıtsız `allowed` burada
+   * `unknown` görünür. Rozet bunu basar; ham `redistribution` yalnız kaydı
+   * gösteren formda kullanılır. Alan yoksa (eski yük) izin varsayılmaz.
+   */
+  redistributionEffective?: Redistribution;
 };
 
 export type UsageBasis =
@@ -715,6 +721,8 @@ export type PrecedentUsageTerms = {
   termsUrl: string | null;
   termsNote: string;
   termsRecordedAt: string | null;
+  /** Sunucunun yeniden denetlenmiş hükmü (bkz. `PrecedentRow`). */
+  redistributionEffective?: Redistribution;
 };
 
 export type CorpusExcluded = {
