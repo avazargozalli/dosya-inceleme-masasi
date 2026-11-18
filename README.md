@@ -6,7 +6,7 @@ Dosya İnceleme Masası, avukatların dava belgelerini kendi bilgisayarlarında 
 
 ## Uygulamayı nereden edinebilirim?
 
-Proje **erken geliştirme aşamasında**. Kurulabilir deneme paketleri GitHub Actions üzerinden dağıtılıyor. [Kararlı sürüm duyuruları](https://github.com/avazargozalli/dosya-inceleme-masasi/releases) için ayrı bir alan bulunuyor.
+Proje **erken geliştirme aşamasında** ve henüz kararlı bir sürüm yayımlanmadı. macOS ve Windows için deneme paketlerini GitHub Actions üzerinden indirebilirsiniz. [Sürüm duyuruları](https://github.com/avazargozalli/dosya-inceleme-masasi/releases)
 
 1. GitHub hesabınızla oturum açıp başarılı bir **desktop-build** çalıştırmasının özetini açın. [Paket üreten çalıştırma](https://github.com/avazargozalli/dosya-inceleme-masasi/actions/runs/42194554840) · [Tüm paketleme çalıştırmaları](https://github.com/avazargozalli/dosya-inceleme-masasi/actions/workflows/desktop-build.yml)
 2. **Artifacts** bölümünde cihazınızın paketini seçin. Apple Silicon Mac için `dim-paket-dmg-aarch64-apple-darwin`, Intel Mac için `dim-paket-dmg-x86_64-apple-darwin`, Windows x64 için `dim-paket-msi-x64` kullanılır.
@@ -16,17 +16,26 @@ Proje **erken geliştirme aşamasında**. Kurulabilir deneme paketleri GitHub Ac
 
 **Kasa**, bilgisayarınızdaki şifreli çalışma alanıdır. **İnceleme dosyası**, bir davanın belgelerini ve notlarını bir arada tutar. **Belge** ise bu dosyaya eklediğiniz PDF, dilekçe veya taramadır.
 
-1. **Kasa** ekranında yeni bir kasa oluşturun. Kurtarma anahtarını kasadan ayrı bir yerde saklayıp ekrandaki onayı tamamlayın.
-2. **Dosyalar → Yeni dosya** ile bir inceleme dosyası açın. İlk deneme için başlık olarak “Örnek karar incelemesi” yeterlidir.
-3. [Üç sayfalık örnek karar PDF’sini](fixtures/synthetic/intext-layout.pdf) indirin. **Belge ekle** ile seçin veya belge listesine sürükleyin. **Ayrıştır** düğmesi belgeyi okunabilir metne dönüştürür.
-4. **Oku** ile belgeyi açın. İkinci sayfada “20.04.2026” tarihinin geçtiği cümleyi seçip **Seçimi kaynağa bağla** düğmesine basın. Dosyanın **Kaynak alıntılar** bölümündeki **Okuyucuda aç** düğmesi sizi aynı alıntıya geri götürür.
+<details>
+<summary>Kasa giriş ekranını görüntüle</summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/gorseller/kasa-koyu-tema.png">
   <img src="docs/gorseller/kasa-acik-tema.png" alt="Kasa giriş ekranı. Solda gezinme menüsü, ortada kasa konumu ve parola alanları, sağda kurtarma anahtarının kullanımını anlatan rehber var.">
 </picture>
 
-*Geliştirme sürümünden kasa giriş ekranı. Yeni kasa oluşturma, mevcut kasayı açma ve kurtarma aynı ekrandan başlar.*
+*Geliştirme sürümündeki kasa girişi. Yeni kasa, parola ile açma ve kurtarma seçenekleri aynı formda. GitHub temanıza göre açık veya koyu görünüm gösterilir.*
+
+</details>
+
+1. **Kasa** ekranında yeni bir kasa oluşturun. Kurtarma anahtarını kasadan ayrı bir yerde saklayıp ekrandaki onayı tamamlayın.
+2. **Dosyalar → Yeni dosya** ile bir inceleme dosyası açın. İlk deneme için başlık olarak “Örnek karar incelemesi” yeterlidir.
+3. [Üç sayfalık örnek karar PDF’sini](fixtures/synthetic/intext-layout.pdf) indirin. **Belge ekle** ile seçin veya belge listesine sürükleyin. **Ayrıştır** düğmesi belgeyi okunabilir metne dönüştürür.
+4. **Oku** ile belgeyi açın. İkinci sayfada “20.04.2026” tarihinin geçtiği cümleyi seçip **Seçimi kaynağa bağla** düğmesine basın. Dosyanın **Kaynak alıntılar** bölümündeki **Okuyucuda aç** düğmesi sizi aynı alıntıya geri götürür.
+
+![Yan yana okuyucuda solda örnek kararın ikinci sayfasında 20.04.2026 vurgulanmış. Sağda aynı kararın ilk sayfasındaki gerekçe açık.](docs/gorseller/belge-okuyucu.png)
+
+*Solda tebliğ tarihinin geçtiği sayfa, sağda gerekçenin başlangıcı açık. İki paneli bağımsız çevirebilirsiniz. Görseldeki metni uygulamanın belge işleyicisi yukarıdaki örnek PDF’den çıkardı.*
 
 ## Hangi ekranı kullanmalıyım?
 
