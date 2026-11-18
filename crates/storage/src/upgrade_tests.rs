@@ -2460,3 +2460,125 @@ fn upgrade_keeps_document_versions_written_before_the_identity_gate() {
     db.add_version("d1", "c1", "b1", &"c".repeat(64), 10, "application/pdf")
         .expect("meşru sürüm");
 }
+
+/// v53: **kaynak bağı kanıt kapısı** (source_anchors) yükseltmede eski
+/// satırları silmez/düzeltmez; alıntı kimliği donar ve yeni tutarsız çapa
+/// doğamaz.
+#[test]
+fn upgrade_keeps_source_anchors_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 52);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','st-legacy',1,10,'k','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES ('d1','c1','Belge','pdf',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs
+               (id,document_version_id,case_id,engine,engine_version,settings_hash,
+                status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded',
+                     '2026-01-01T00:00:00Z');
+             INSERT INTO pages (id,parse_run_id,page_index,text_origin)
+             VALUES ('p1','r1',0,'native');
+             INSERT INTO text_segments
+               (id,parse_run_id,page_id,case_id,raw_text,normalized_text,created_at)
+             VALUES ('s1','r1','p1','c1','Mahkeme itirazın reddine karar verdi.',
+                     'Mahkeme itirazın reddine karar verdi.','2026-01-01T00:00:00Z');
+             -- v53 öncesi: özet büyük harf hex, çevre metni uydurma.
+             INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,
+                start_offset,end_offset,exact_quote,prefix,suffix,quote_hash,
+                anchor_status,created_at,updated_at)
+             VALUES ('a-legacy','c1','v1','r1','p1','s1',8,24,'itirazın reddine',
+                     'ZZZ','ZZZ',
+                     'ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ',
+                     'active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('a-ok','c1','v1','r1','p1','s1',8,24,'itirazın reddine',
+                     'Mahkeme ',' karar verdi.',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     'active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .expect("v52 çapaları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let preserved: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM source_anchors", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(preserved, 2, "eski satırlar silinmez");
+    let kept: (String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT exact_quote, prefix, quote_hash FROM source_anchors WHERE id='a-legacy'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(kept.0, "itirazın reddine", "alıntı sessizce değiştirilmez");
+    assert_eq!(kept.1, "ZZZ");
+    assert_eq!(kept.2, "Z".repeat(64));
+
+    // Eski tutarsız satırın **alıntı kimliği** donmuştur.
+    match db
+        .conn()
+        .execute(
+            "UPDATE source_anchors SET quote_hash=?1 WHERE id='a-legacy'",
+            [&"b".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("source_anchors"), "mesaj: {message}")
+        }
+        other => panic!("v53 eski çapayı dondurmalı: {other:?}"),
+    }
+    // Yeni tutarsız çapa doğamaz (alıntı iddia edilen ofsette değil).
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO source_anchors
+               (id,case_id,document_version_id,parse_run_id,page_id,segment_id,
+                start_offset,end_offset,exact_quote,prefix,suffix,quote_hash,
+                anchor_status,created_at,updated_at)
+             VALUES ('a-new','c1','v1','r1','p1','s1',0,16,'itirazın reddine','','',
+                     ?1,'active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            [&"b".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("source_anchors"), "mesaj: {message}")
+        }
+        other => panic!("v53 tutarsız çapa doğuşunu reddetmeli: {other:?}"),
+    }
+    // Meşru doğuş (çekirdeğin yolu) takılmaz.
+    db.create_anchor(&NewAnchor {
+        case_id: "c1".into(),
+        document_version_id: "v1".into(),
+        parse_run_id: "r1".into(),
+        segment_id: "s1".into(),
+        start_offset: 8,
+        end_offset: 24,
+        exact_quote: "itirazın reddine".into(),
+    })
+    .expect("meşru çapa");
+}

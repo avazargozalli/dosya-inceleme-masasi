@@ -233,6 +233,14 @@ impl Database {
             }
             QuoteMatch::HashMismatch => return Err(StorageError::QuoteHashMismatch),
         }
+        // `verify_quote` ipucu tutmazsa **tüm segmenti** tarar ve tek eşleşmede
+        // `Exact` döner; yani yukarıdaki kapı yanlış `start_offset`i geçirirdi
+        // (ölçüldü: alıntı 8..24'teyken 0..16 yazılabiliyordu). Kaynak bağı
+        // alıntının **iddia edilen konumda** durduğunu kanıtlamalı (şema v53
+        // aynı kuralı `substr` ile bağlar).
+        if !quote_starts_at(&raw, quote, start) {
+            return Err(StorageError::QuoteNotFound);
+        }
 
         // Kanıt konumu kimliği: aynı segment + aralık + alıntı tek satırdır.
         // Doğrulamadan **sonra** bakılır: geçersiz istek var olan kayda dönemez.
@@ -531,12 +539,7 @@ impl Database {
         // `verify_quote` başlangıç ipucunu **öneri** olarak kullanır ve alıntıyı
         // segmentin başka yerinde bulursa yine `Exact` döner. Yeniden bağlamada
         // konum birebir doğrulanır: yanlış offset "bağlandı" görüntüsü almaz.
-        let scalars: Vec<char> = raw.chars().collect();
-        let quote_chars: Vec<char> = anchor.exact_quote.chars().collect();
-        if quote_chars.is_empty()
-            || start + quote_chars.len() > scalars.len()
-            || scalars[start..start + quote_chars.len()] != quote_chars[..]
-        {
+        if !quote_starts_at(&raw, &anchor.exact_quote, start) {
             return Err(StorageError::QuoteNotFound);
         }
         match verify_quote(
@@ -557,7 +560,8 @@ impl Database {
         // Bağlam **yeni konumdan** yeniden üretilir: not/kanıt görünümü
         // `prefix`/`suffix`i kanıtın çevresi olarak gösterir; eski konumun
         // bağlamı yeni kanıtın yanında yanlış metin gösterirdi.
-        let (prefix, suffix) = context_around(&raw, start, start + quote_chars.len(), 24);
+        let (prefix, suffix) =
+            context_around(&raw, start, start + anchor.exact_quote.chars().count(), 24);
         // Durum değişikliği ve denetim kaydı tek işlemde: denetim yazılamazsa
         // bağ da değişmez (yarım kalan "rebound" görüntüsü olmaz).
         self.write_atomically(|| {
@@ -610,6 +614,19 @@ fn map_anchor(row: &Row<'_>) -> rusqlite::Result<AnchorRow> {
         anchor_status: row.get(12)?,
         created_at: row.get(13)?,
     })
+}
+
+/// Alıntı **tam olarak `start`** Unicode scalar konumunda mı?
+///
+/// `verify_quote` ipucu tutmazsa tüm metni tarar; bu yardımcı "başka yerde
+/// bulundu" hükmünü konum kanıtı saymaz. `create_anchor` ve `rebind_anchor`
+/// aynı tanımı kullanır (şema v53 `substr` kuralının çekirdek ikizi).
+fn quote_starts_at(raw: &str, quote: &str, start: usize) -> bool {
+    let scalars: Vec<char> = raw.chars().collect();
+    let quote_chars: Vec<char> = quote.chars().collect();
+    !quote_chars.is_empty()
+        && start + quote_chars.len() <= scalars.len()
+        && scalars[start..start + quote_chars.len()] == quote_chars[..]
 }
 
 #[cfg(test)]
@@ -1157,6 +1174,559 @@ mod tests {
             })
             .expect("doğru koşu");
         assert_eq!(ok.parse_run_id, run2.id);
+    }
+
+    /// v53: kaynak bağının **alıntısı, çevresi ve konumu** doğuşta tutarlı
+    /// olmalı; alıntı kimliği sonradan değişmemeli; doğrulanmamış çapa konumu
+    /// değişmeden 'kullanılabilir'e terfi etmemeli.
+    #[test]
+    fn source_anchor_evidence_is_coherent_at_birth_and_identity_is_frozen() {
+        let (db, case_id, version_id, run_id, segment_id) = setup();
+        let page_id: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT page_id FROM text_segments WHERE id=?1",
+                [&segment_id],
+                |r| r.get(0),
+            )
+            .expect("segment sayfası");
+        let page_id = page_id.expect("kurulumda sayfa var");
+        // Aynı koşuda ikinci sayfa: `page_id` kapısının "aynı koşuda ama
+        // segmentin sayfası değil" dalını ölçmek için.
+        db.conn()
+            .execute(
+                &format!(
+                    "INSERT INTO pages (id,parse_run_id,page_index,text_origin) \
+                     VALUES ('p-other','{run_id}',1,'native')"
+                ),
+                [],
+            )
+            .expect("ikinci sayfa");
+        // Aynı dosyada ikinci sürüm + kendi koşusu/segmenti (metin aynı):
+        // "sürüm koşunun sürümü olmalı" ve meşru yeniden bağlama için.
+        let doc_id: String = db
+            .conn()
+            .query_row(
+                "SELECT document_id FROM document_versions WHERE id=?1",
+                [&version_id],
+                |r| r.get(0),
+            )
+            .expect("belge");
+        let blob2 = db
+            .create_blob_record("st-anchor-b", 10, "aad")
+            .expect("blob2");
+        let v2 = db
+            .add_version(
+                &doc_id,
+                &case_id,
+                &blob2,
+                &"b".repeat(64),
+                10,
+                "application/pdf",
+            )
+            .expect("v2");
+        let run2 = db
+            .start_parse_run(&v2.id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("run2");
+        db.store_pages(
+            &run2.id,
+            &case_id,
+            &[NewPage {
+                index: 0,
+                text: "Mahkeme itirazın reddine karar verdi.".into(),
+                origin: "native".into(),
+                warnings: vec![],
+                ..Default::default()
+            }],
+        )
+        .expect("pages2");
+        let segment2: String = db
+            .conn()
+            .query_row(
+                "SELECT id FROM text_segments WHERE parse_run_id=?1",
+                [&run2.id],
+                |r| r.get(0),
+            )
+            .expect("segment2");
+
+        let quote = "itirazın reddine";
+        let hex = "b".repeat(64);
+        let anchor = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: version_id.clone(),
+                parse_run_id: run_id.clone(),
+                segment_id: segment_id.clone(),
+                start_offset: 8,
+                end_offset: 24,
+                exact_quote: quote.into(),
+            })
+            .expect("meşru çapa");
+
+        let gate = |sql: &str| match db.conn().execute(sql, []) {
+            Ok(rows) => panic!("v53 kapısı reddetmeli ({rows} satır): {sql}"),
+            Err(err) => {
+                let text = err.to_string();
+                assert!(
+                    text.contains("DIM_INTEGRITY:source_anchors"),
+                    "ret kanıt kapısından gelmeli: {text} ({sql})"
+                );
+            }
+        };
+        let ins = |id: &str,
+                   version: &str,
+                   run: &str,
+                   page: Option<&str>,
+                   segment: &str,
+                   start: i64,
+                   end: i64,
+                   quote: &str,
+                   prefix: &str,
+                   suffix: &str,
+                   hash: &str,
+                   status: &str,
+                   created: &str,
+                   updated: &str| {
+            let page_sql = page.map_or_else(|| "NULL".to_string(), |p| format!("'{p}'"));
+            format!(
+                "INSERT INTO source_anchors (id,case_id,document_version_id,parse_run_id,\
+                 page_id,segment_id,start_offset,end_offset,exact_quote,prefix,suffix,\
+                 quote_hash,anchor_status,created_at,updated_at) \
+                 VALUES ('{id}','{case}','{version}','{run}',{page_sql},'{segment}',\
+                 {start},{end},'{quote}','{prefix}','{suffix}','{hash}','{status}',\
+                 '{created}','{updated}')",
+                case = case_id
+            )
+        };
+        let ordinary = |id: &str| {
+            ins(
+                id,
+                &version_id,
+                &run_id,
+                Some(&page_id),
+                &segment_id,
+                8,
+                24,
+                quote,
+                "Mahkeme ",
+                " karar verdi.",
+                &hex,
+                "active",
+                "2026-05-01T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+            )
+        };
+
+        // Doğum: her deneme **kendi kusuruyla** reddedilmeli; satır yazılmamalı.
+        let born = [
+            ("boş kimlik", ordinary("")),
+            (
+                "özet 64 hex değil",
+                ins(
+                    "a-bad-1",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &"Z".repeat(64),
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "özet büyük harf hex",
+                ins(
+                    "a-bad-2",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &"A".repeat(64),
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "alıntı boş",
+                ins(
+                    "a-bad-3",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    8,
+                    "",
+                    "Mahkeme ",
+                    "itirazın reddine karar v",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "alıntı yalnız boşluk",
+                ins(
+                    "a-bad-4",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    11,
+                    "   ",
+                    "Mahkeme",
+                    " reddine karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "uzunluk uyuşmuyor (alıntı yerinde, 15 ↔ 16)",
+                ins(
+                    "a-bad-5",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    "itirazın reddin",
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "alıntı iddia edilen ofsette değil",
+                ins(
+                    "a-bad-6",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    0,
+                    16,
+                    quote,
+                    "",
+                    " reddine karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "sayfa segmentin sayfası değil",
+                ins(
+                    "a-bad-7",
+                    &version_id,
+                    &run_id,
+                    Some("p-other"),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "sürüm koşunun sürümü değil",
+                ins(
+                    "a-bad-8",
+                    &v2.id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "oluşturma damgası boş",
+                ins(
+                    "a-bad-9",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "güncelleme damgası ISO değil",
+                ins(
+                    "a-bad-10",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "dün",
+                ),
+            ),
+            (
+                "doğuştan rebound",
+                ins(
+                    "a-bad-11",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "rebound",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "çevre öneki uydurma",
+                ins(
+                    "a-bad-12",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "uydurma",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "çevre soneki uydurma",
+                ins(
+                    "a-bad-13",
+                    &version_id,
+                    &run_id,
+                    Some(&page_id),
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    "uydurma",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+            (
+                "sayfa NULL ama segmentin sayfası var",
+                ins(
+                    "a-bad-14",
+                    &version_id,
+                    &run_id,
+                    None,
+                    &segment_id,
+                    8,
+                    24,
+                    quote,
+                    "Mahkeme ",
+                    " karar verdi.",
+                    &hex,
+                    "active",
+                    "2026-05-01T00:00:00Z",
+                    "2026-05-01T00:00:00Z",
+                ),
+            ),
+        ];
+        for (why, sql) in born {
+            let before: i64 = db
+                .conn()
+                .query_row("SELECT count(*) FROM source_anchors", [], |r| r.get(0))
+                .expect("sayım");
+            assert_eq!(before, 1, "{why}: taban tek çapa");
+            gate(&sql);
+            let after: i64 = db
+                .conn()
+                .query_row("SELECT count(*) FROM source_anchors", [], |r| r.get(0))
+                .expect("sayım");
+            assert_eq!(after, 1, "{why}: satır yazılmamalı");
+        }
+
+        // Güncelleme: alıntı kimliği donar; konum/çevre tutarlı kalmalı.
+        db.conn()
+            .execute(&ordinary("a-plain"), [])
+            .expect("düz çapa");
+        let attacks = [
+            (
+                "alıntı metnini çevir",
+                "exact_quote='başka alıntı'".to_string(),
+            ),
+            (
+                "özeti çevir",
+                "quote_hash='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'"
+                    .to_string(),
+            ),
+            ("başlangıç ofsetini çevir", "start_offset=9".to_string()),
+            ("bitiş ofsetini çevir", "end_offset=25".to_string()),
+            ("sayfayı çevir", "page_id='p-other'".to_string()),
+            ("sürümü çevir", format!("document_version_id='{}'", v2.id)),
+            ("çapa kimliğini çevir", "id='a-swapped'".to_string()),
+            (
+                "oluşturma damgasını çevir",
+                "created_at='2026-02-01T00:00:00Z'".to_string(),
+            ),
+            ("öneki uydur", "prefix='uydurma'".to_string()),
+            ("soneki uydur", "suffix='uydurma'".to_string()),
+            (
+                "ofseti kaydır (uzunluk aynı, çevre yeni konuma göre)",
+                "start_offset=9, end_offset=25, prefix='Mahkeme i', \
+                 suffix='karar verdi.'"
+                    .to_string(),
+            ),
+            ("sayfayı NULL'a çek", "page_id=NULL".to_string()),
+            (
+                "güncelleme damgasını ISO olmayana çevir",
+                "updated_at='dün'".to_string(),
+            ),
+            (
+                "bitişi kısalt (uzunluk bozulur, alıntı yerinde)",
+                "end_offset=23, suffix='e karar verdi.'".to_string(),
+            ),
+        ];
+        for (why, sets) in attacks {
+            match db.conn().execute(
+                &format!("UPDATE source_anchors SET {sets} WHERE id='a-plain'"),
+                [],
+            ) {
+                Ok(rows) => panic!("v53 {why} yazımını durdurmalı ({rows} satır)"),
+                Err(err) => assert!(
+                    err.to_string().contains("DIM_INTEGRITY:source_anchors"),
+                    "ret kanıt kapısından gelmeli ({why}): {err}"
+                ),
+            }
+        }
+        // Dürüst düşürme serbest; konum değişmeden terfi yasak.
+        db.conn()
+            .execute(
+                "UPDATE source_anchors SET anchor_status='unresolved' WHERE id='a-plain'",
+                [],
+            )
+            .expect("düşürme serbest");
+        gate("UPDATE source_anchors SET anchor_status='active' WHERE id='a-plain'");
+        // Değişmeyen yazma ve yalnız updated_at tazeleme takılmaz.
+        assert_eq!(
+            db.conn()
+                .execute(
+                    "UPDATE source_anchors SET anchor_status=anchor_status, \
+                     exact_quote=exact_quote WHERE id='a-plain'",
+                    [],
+                )
+                .expect("no-op"),
+            1
+        );
+        assert_eq!(
+            db.conn()
+                .execute(
+                    "UPDATE source_anchors SET updated_at='2026-06-01T00:00:00Z' \
+                     WHERE id='a-plain'",
+                    [],
+                )
+                .expect("damga tazeleme"),
+            1
+        );
+        // Meşru yeniden bağlama (çekirdek yolu) kapıdan geçer: aynı alıntı
+        // gerçekten yeni segmentte duruyor.
+        let rebound = db
+            .rebind_anchor(&anchor.id, &segment2, 8)
+            .expect("meşru yeniden bağlama");
+        assert_eq!(rebound.anchor_status, "rebound");
+        assert_eq!(rebound.document_version_id, v2.id);
+
+        // Saldırılardan sonra satır hiç değişmemiş olmalı.
+        let (kept_quote, kept_hash, kept_page, kept_version, kept_prefix): (
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        ) = db
+            .conn()
+            .query_row(
+                "SELECT exact_quote, quote_hash, page_id, document_version_id, prefix \
+                 FROM source_anchors WHERE id='a-plain'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("satır");
+        assert_eq!(kept_quote, quote);
+        assert_eq!(kept_hash, hex);
+        assert_eq!(kept_page.as_deref(), Some(page_id.as_str()));
+        assert_eq!(kept_version, version_id);
+        assert_eq!(kept_prefix, "Mahkeme ");
+
+        // Çekirdek kapısı şemayla aynı ölçüyü kullanır: alıntı doğru
+        // konumdaysa yazılır, iddia edilen yanlış ofsette `E_QUOTE_NOT_FOUND`.
+        let wrong = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: version_id.clone(),
+                parse_run_id: run_id.clone(),
+                segment_id: segment_id.clone(),
+                start_offset: 0,
+                end_offset: 16,
+                exact_quote: quote.into(),
+            })
+            .unwrap_err();
+        assert_eq!(wrong.code(), "E_QUOTE_NOT_FOUND");
     }
 
     #[test]
