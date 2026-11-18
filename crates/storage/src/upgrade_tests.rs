@@ -2295,6 +2295,119 @@ fn upgrade_keeps_transfer_receipts_written_before_the_evidence_gate() {
     assert_eq!(status_of("legacy-bad"), "sent");
 }
 
+/// v56 — emsal künyesi. v55 kasasında yazılmış **tutarsız** künye
+/// (`complete` rozeti ama iki numara da yok, tarih `dün`, etiket bozuk JSON,
+/// boş `created_at`) güncellemede **silinmez ve düzeltilmez**; donar (onarım
+/// yolu yeni kayıttır) ve yeni tutarsız künye doğamaz. Kullanım koşulu yazımı
+/// (`set_precedent_usage_terms`) bu kapının dışında — meşru yol çalışmaya
+/// devam eder.
+#[test]
+fn upgrade_keeps_precedents_written_before_the_identity_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 55);
+        conn.execute_batch(
+            "INSERT INTO precedents
+               (id,court,chamber,docket_no,decision_no,application_no,
+                decision_date,title,source_url,user_tags,legal_issue,
+                completeness,created_at)
+             VALUES ('legacy-bad','Yargitay','7. Hukuk',NULL,NULL,NULL,
+                     'dün','Emsal A',NULL,'bozuk',NULL,'complete',''),
+                    ('legacy-ok','Danistay',NULL,'2024/7','2025/8',NULL,
+                     '2025-05-02','Emsal B','https://example.invalid/karar','[]',
+                     NULL,'complete','2026-01-01T00:00:00Z');",
+        )
+        .expect("v55 künyeleri");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM precedents", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(count, 2, "satırlar silinmez");
+    // Eski tutarsız satır **düzeltilmez**: rozet yalanı ve tarih olduğu gibi kalır.
+    let (completeness, date, tags): (String, Option<String>, String) = db
+        .conn()
+        .query_row(
+            "SELECT completeness, decision_date, user_tags FROM precedents
+              WHERE id='legacy-bad'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (completeness.as_str(), date.as_deref(), tags.as_str()),
+        ("complete", Some("dün"), "bozuk"),
+        "v56 eski künyeyi onarmaz"
+    );
+    // Donar: kimlik sütunu çevrilemez, rozet sonradan gerçeğe de çekilemez.
+    for sql in [
+        "UPDATE precedents SET court='Danistay' WHERE id='legacy-bad'",
+        "UPDATE precedents SET completeness='incomplete' WHERE id='legacy-bad'",
+        "UPDATE precedents SET user_tags='[]' WHERE id='legacy-bad'",
+        "UPDATE precedents SET decision_date='2025-01-01' WHERE id='legacy-bad'",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("precedents"), "mesaj: {message}")
+            }
+            other => panic!("v56 eski künyeyi dondurmalı: {other:?} ({sql})"),
+        }
+    }
+    // Yeni tutarsız künye doğamaz: rozet `complete` ama numara yok.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO precedents
+               (id,court,chamber,docket_no,decision_no,application_no,decision_date,
+                title,source_url,user_tags,legal_issue,completeness,created_at)
+             VALUES ('new-bad','Yargitay',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'[]',
+                     NULL,'complete','2026-01-01T00:00:00Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("precedents"), "mesaj: {message}")
+        }
+        other => panic!("v56 rozet yalanını reddetmeli: {other:?}"),
+    }
+    // Meşru künye (Türkçe tarih ISO'ya çevrilir) ve kullanım koşulu yazımı çalışır.
+    let p = db
+        .create_precedent(&NewPrecedent {
+            court: "Yargıtay".into(),
+            chamber: None,
+            docket_no: Some("2024/1".into()),
+            decision_no: Some("2025/2".into()),
+            application_no: None,
+            decision_date: Some("03.05.2025".into()),
+            title: None,
+            source_url: None,
+            user_tags: vec![],
+            legal_issue: None,
+        })
+        .expect("meşru künye");
+    assert_eq!(p.completeness, "complete");
+    assert_eq!(p.decision_date.as_deref(), Some("2025-05-03"));
+    let terms = db
+        .set_precedent_usage_terms(
+            &p.id,
+            &SetUsageTermsInput {
+                usage_basis: "licence".into(),
+                redistribution: "allowed".into(),
+                terms_url: Some("https://example.invalid/terms".into()),
+                terms_note: String::new(),
+            },
+        )
+        .expect("koşul yazımı");
+    assert_eq!(terms.usage_basis, "licence");
+}
+
 /// v50 — maskeleme bölgesi kanıtı. v49 kasasında yazılmış **bozuk** bölgeler
 /// (negatif sayfa, bozuk JSON, yanlış uzay, boş kategori, `keep` kararı)
 /// güncellemede **silinmez**; ama donar (onarım yolu yeni plandır) ve kapanmış

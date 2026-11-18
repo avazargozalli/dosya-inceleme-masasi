@@ -707,7 +707,11 @@ impl Database {
                 new.docket_no.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                 new.decision_no.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                 new.application_no.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                new.decision_date.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                new.decision_date
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(normalize_decision_date),
                 new.title.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                 new.source_url.as_deref().map(str::trim).filter(|s| !s.is_empty()),
                 serde_json::to_string(&new.user_tags).unwrap_or_else(|_| "[]".into()),
@@ -1728,6 +1732,34 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|v| !v.is_empty())
 }
 
+/// Karar tarihi **ISO gün** olarak saklanır: v56 kapısı gerçek takvim günü
+/// ister (`YYYY-AA-GG`) ve hukuki tarih gün taşır. Türkçe yazım burada
+/// çevrilir — `GG.AA.YYYY`, `GG/AA/YYYY`, `YYYY/AA/GG` → `YYYY-AA-GG`.
+/// **Sıra tahmin edilmez**: çözülemeyen değer olduğu gibi bırakılır ve şema
+/// kapısı reddeder (fail-closed; toplu içe alma tarihi ham geçiriyor).
+fn normalize_decision_date(raw: &str) -> String {
+    let value = raw.trim();
+    let parts: Vec<&str> = value.split(['.', '/']).collect();
+    if parts.len() != 3 {
+        return value.to_string();
+    }
+    let (day, month, year) = if parts[0].len() == 4 {
+        (parts[2], parts[1], parts[0])
+    } else if parts[2].len() == 4 {
+        (parts[0], parts[1], parts[2])
+    } else {
+        return value.to_string();
+    };
+    let (Ok(day), Ok(month), Ok(year)) = (
+        day.parse::<u32>(),
+        month.parse::<u32>(),
+        year.parse::<u32>(),
+    ) else {
+        return value.to_string();
+    };
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// `YYYY-AA-GG` → `GG.AA.YYYY`. Biçim tutmuyorsa `None` — tarih uydurulmaz.
 fn iso_to_tr_date(raw: &str) -> Option<String> {
     let date = raw.trim().get(0..10)?;
@@ -1844,6 +1876,238 @@ mod tests {
     fn court_is_required() {
         let db = db();
         assert!(db.create_precedent(&precedent("   ", None, None)).is_err());
+    }
+
+    /// v56: künye doğuşta **kanıtla tutarlı**, sonrasında **donmuş** olmalı.
+    ///
+    /// Ölçülen kusur (gerçek SQLite v55): 36 kusur yazımının **36'sı** kabul
+    /// ediliyordu — `complete` rozeti numarasız doğabiliyor (aynı ekranda
+    /// `missing` listesiyle çelişiyor), karar tarihi `dün` / `02.05.2025`
+    /// olabiliyor (bibliyografi tarihi **olduğu gibi** yazıyor), etiketler
+    /// bozuk JSON olabiliyor (okuyucu sessizce boşaltıyor) ve satır sonradan
+    /// **başka karara** çevrilebiliyordu (nüsha yanlış künyeye bağlanır).
+    /// Kullanım koşulu sütunları (`set_precedent_usage_terms`) bu kapının
+    /// **dışında**: meşru yazma takılmamalı.
+    #[test]
+    fn precedent_identity_is_coherent_at_birth_and_frozen_afterwards() {
+        let db = db();
+        const AT: &str = "2026-01-01T00:00:00Z";
+        const SQL: &str = "INSERT INTO precedents
+               (id,court,chamber,docket_no,decision_no,application_no,decision_date,
+                title,source_url,user_tags,legal_issue,completeness,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)";
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            String,
+            String,
+        );
+        let base = |id: &str| -> Row {
+            (
+                id.into(),
+                "Yargıtay".into(),
+                Some("7. Hukuk Dairesi".into()),
+                Some("2024/7".into()),
+                Some("2025/8".into()),
+                None,
+                Some("2025-05-02".into()),
+                Some("Emsal A".into()),
+                Some("https://example.invalid/karar".into()),
+                "[]".into(),
+                Some("Kira".into()),
+                "complete".into(),
+                AT.into(),
+            )
+        };
+        let write = |row: &Row| {
+            db.conn()
+                .execute(
+                    SQL,
+                    rusqlite::params![
+                        row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9,
+                        row.10, row.11, row.12
+                    ],
+                )
+                .map_err(StorageError::from)
+        };
+
+        // --- doğum kusurları: her biri **tek** cümleyi taşırır -----------------
+        let mut attacks: Vec<(&str, _)> = Vec::new();
+        let mut row = base("p-id");
+        row.0 = String::new();
+        attacks.push(("boş kimlik", row));
+        let mut row = base("p-court");
+        row.1 = String::new();
+        attacks.push(("boş mahkeme", row));
+        let mut row = base("p-court-space");
+        row.1 = "   ".into();
+        attacks.push(("yalnız boşluk mahkeme", row));
+        let mut row = base("p-court-pad");
+        row.1 = " Yargıtay ".into();
+        attacks.push(("kırpılmamış mahkeme", row));
+        let mut row = base("p-comp-1");
+        row.3 = None;
+        row.4 = None;
+        attacks.push(("rozet yalanı: complete + iki numara NULL", row));
+        let mut row = base("p-comp-2");
+        row.4 = None;
+        attacks.push(("rozet yalanı: complete + karar no yok", row));
+        let mut row = base("p-comp-3");
+        row.11 = "incomplete".into();
+        attacks.push(("rozet eksik-beyanı: incomplete + iki numara dolu", row));
+        for (index, raw) in [
+            "dün",
+            "02.05.2025",
+            "2026-02-30",
+            "2023-02-29",
+            "2026-1-5",
+            "2026-05-02T12:00:00Z",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut row = base(&format!("p-date-{index}"));
+            row.6 = Some(raw.into());
+            attacks.push(("karar tarihi takvim günü değil", row));
+        }
+        let mut row = base("p-chamber-space");
+        row.2 = Some("   ".into());
+        attacks.push(("daire yalnız boşluk", row));
+        let mut row = base("p-chamber-empty");
+        row.2 = Some(String::new());
+        attacks.push(("daire boş metin", row));
+        let mut row = base("p-chamber-pad");
+        row.2 = Some(" 7. Hukuk ".into());
+        attacks.push(("daire kırpılmamış", row));
+        let mut row = base("p-decision-pad");
+        row.4 = Some(" 2025/8 ".into());
+        attacks.push(("karar no kırpılmamış", row));
+        let mut row = base("p-tags-bad");
+        row.9 = "bozuk".into();
+        attacks.push(("etiket bozuk JSON", row));
+        let mut row = base("p-tags-obj");
+        row.9 = "{\"a\":1}".into();
+        attacks.push(("etiket nesne", row));
+        let mut row = base("p-tags-num");
+        row.9 = "[1,2]".into();
+        attacks.push(("etiket sayı dizisi", row));
+        let mut row = base("p-created-empty");
+        row.12 = String::new();
+        attacks.push(("boş created_at", row));
+        let mut row = base("p-created-word");
+        row.12 = "dün".into();
+        attacks.push(("created_at 'dün'", row));
+        let mut row = base("p-issue-space");
+        row.10 = Some("   ".into());
+        attacks.push(("konu yalnız boşluk", row));
+        let mut row = base("p-title-pad");
+        row.7 = Some(" Emsal A ".into());
+        attacks.push(("başlık kırpılmamış", row));
+        let mut row = base("p-url-pad");
+        row.8 = Some(" https://example.invalid ".into());
+        attacks.push(("kaynak url kırpılmamış", row));
+
+        for (index, (name, row)) in attacks.iter().enumerate() {
+            match write(row) {
+                Err(err) => assert_eq!(
+                    err.code(),
+                    "E_DB_INTEGRITY",
+                    "{index} {name}: beklenen kapı, gelen {err}"
+                ),
+                Ok(_) => panic!("{index} {name}: kapı yok — yazma kabul edildi"),
+            }
+        }
+
+        // --- meşru doğumlar kapıdan geçer ------------------------------------
+        let full = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/7"), Some("2025/8")))
+            .expect("tam künye");
+        assert_eq!(full.completeness, "complete");
+        assert_eq!(full.user_tags.len(), 2);
+        let mut minimal_input = precedent("Danıştay", None, None);
+        minimal_input.decision_date = None;
+        let minimal = db.create_precedent(&minimal_input).expect("eksik künye");
+        assert_eq!(minimal.completeness, "incomplete");
+        assert_eq!(minimal.decision_date, None);
+        // Türkçe tarih yazımı ISO güne çevrilir (sıra tahmini yok).
+        let mut turkish = precedent("Yargıtay", Some("2024/9"), Some("2025/9"));
+        turkish.decision_date = Some("02.05.2025".into());
+        let normalized = db.create_precedent(&turkish).expect("TR tarih");
+        assert_eq!(normalized.decision_date.as_deref(), Some("2025-05-02"));
+        assert!(db
+            .precedent_bibliography(&normalized.id)
+            .expect("künye")
+            .text
+            .contains("02.05.2025"));
+        // Artık yıl gerçek gündür.
+        let mut leap = precedent("Yargıtay", Some("2024/10"), Some("2025/10"));
+        leap.decision_date = Some("2024-02-29".into());
+        assert!(db.create_precedent(&leap).is_ok());
+        // Çözülemeyen tarih **uydurulmaz**: yazma kapıda durur.
+        let mut broken = precedent("Yargıtay", Some("2024/11"), Some("2025/11"));
+        broken.decision_date = Some("dün".into());
+        let rejected = db.create_precedent(&broken).expect_err("tarih kapısı");
+        assert_eq!(rejected.code(), "E_DB_INTEGRITY");
+
+        // --- UPDATE saldırıları ----------------------------------------------
+        let target = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/12"), Some("2025/12")))
+            .expect("hedef");
+        let updates = [
+            ("mahkeme", "court='Danıştay'"),
+            ("daire NULL", "chamber=NULL"),
+            ("esas no", "docket_no='2024/99'"),
+            ("karar no", "decision_no='2025/99'"),
+            ("başvuru no", "application_no='2024/1'"),
+            ("karar tarihi", "decision_date='2020-01-01'"),
+            ("başlık", "title='Başka'"),
+            ("kaynak url", "source_url='https://example.invalid/baska'"),
+            ("etiketler", "user_tags='[\"x\"]'"),
+            ("konu", "legal_issue='Başka'"),
+            ("rozet", "completeness='incomplete'"),
+            ("created_at", "created_at='2020-01-01T00:00:00Z'"),
+            ("kimlik", "id='p-takas'"),
+        ];
+        for (name, set) in updates {
+            let sql = format!("UPDATE precedents SET {set} WHERE id='{}'", target.id);
+            match db.conn().execute(&sql, []).map_err(StorageError::from) {
+                Err(err) => assert_eq!(err.code(), "E_DB_INTEGRITY", "{name}: {err}"),
+                Ok(_) => panic!("{name}: kimlik sütunu çevrilebildi"),
+            }
+        }
+        // Değişmeyen yazma takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE precedents SET court='Yargıtay',completeness='complete' WHERE id=?1",
+                [&target.id],
+            )
+            .expect("no-op");
+        // Kullanım koşulu sütunları bu kapının dışında — meşru yol çalışır.
+        let terms = db
+            .set_precedent_usage_terms(
+                &target.id,
+                &crate::SetUsageTermsInput {
+                    usage_basis: "official_public".into(),
+                    redistribution: "allowed".into(),
+                    terms_url: Some("https://example.invalid/terms".into()),
+                    terms_note: "Resmî Gazete".into(),
+                },
+            )
+            .expect("koşul yazımı");
+        assert_eq!(terms.redistribution, "allowed");
+        // Satır hiç değişmedi: künye alanları yerinde.
+        let after = db.get_precedent(&target.id).expect("oku").expect("var");
+        assert_eq!(after.court, "Yargıtay");
+        assert_eq!(after.docket_no.as_deref(), Some("2024/12"));
     }
 
     #[test]
@@ -3423,17 +3687,41 @@ mod tests {
     }
 
     #[test]
-    fn bibliography_keeps_non_iso_date_verbatim_and_warns() {
+    fn bibliography_keeps_legacy_non_iso_date_verbatim_and_warns() {
+        // v56'dan **sonra** bu durum yalnız eski kasalarda doğabilir: çekirdek
+        // Türkçe tarihi ISO'ya çevirir ve şema kapısı ISO olmayanı reddeder.
+        // Okuyucu sözleşmesi değişmedi — tarih uydurulmaz, olduğu gibi yazılır
+        // ve uyarı düşer. Eski satırı üretmek için kapı **bilinçli** düşürülür
+        // (v52'nin aynı deseni: okuma davranışı ölçülmeye devam eder).
         let db = db();
-        let mut input = precedent("Yargıtay", Some("2024/9"), Some("2025/9"));
-        input.decision_date = Some("01.06.2025".into());
-        let p = db.create_precedent(&input).expect("emsal");
+        db.conn()
+            .execute_batch("DROP TRIGGER precedent_identity_guard_bi;")
+            .expect("kapı düşürüldü");
+        db.conn()
+            .execute(
+                "INSERT INTO precedents
+                   (id,court,chamber,docket_no,decision_no,application_no,decision_date,
+                    title,source_url,user_tags,legal_issue,completeness,created_at)
+                 VALUES ('p-legacy','Yargıtay','1. Hukuk Dairesi','2024/9','2025/9',NULL,
+                         '01.06.2025','Kira alacağı','https://example.invalid/karar','[]',
+                         'Temerrüt','complete','2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("eski satır yazıldı");
 
-        let bib = db.precedent_bibliography(&p.id).expect("künye");
+        let bib = db.precedent_bibliography("p-legacy").expect("künye");
         assert!(bib
             .text
             .starts_with("Yargıtay 1. Hukuk Dairesi, 01.06.2025, E. 2024/9"));
         assert!(bib.warnings.iter().any(|w| w.contains("ISO (YYYY-AA-GG)")));
+
+        // Çekirdek yol artık **sessiz ve doğru**: aynı girdi ISO'ya çevrilir,
+        // uyarı düşmez (davranış değişikliği v56'da belgelendi).
+        let normalized = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/10"), Some("2025/10")))
+            .expect("emsal");
+        let bib = db.precedent_bibliography(&normalized.id).expect("künye");
+        assert!(!bib.warnings.iter().any(|w| w.contains("ISO (YYYY-AA-GG)")));
     }
 
     #[test]
