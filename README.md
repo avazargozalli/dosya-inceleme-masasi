@@ -1,117 +1,72 @@
 # Dosya İnceleme Masası
 
-Türkiye'deki avukatlar için **yerel, şifreli ve kaynak izlenebilir** dosya inceleme masası.
-Belgeler cihazdan çıkmadan okunur; her otomatik bulgu bir belge sürümüne ve kaynak konumuna
-bağlanır; yapay zekâ öneri üretir, hukuki kaydı yalnız avukat onayıyla oluşturur.
+Dosya İnceleme Masası, avukatların dava belgelerini kendi bilgisayarlarında incelemesi için geliştirilen bir masaüstü uygulamasıdır. Örneğin bir kararın tebliğ tarihini bulabilir, ilgili cümleyi notunuza bağlayabilir ve daha sonra o nottan belgenin aynı sayfasına dönebilirsiniz.
 
-> **Durum: pre-alpha (F02–F10 arası, kısmi).** Bu depo çalışan bir ürün değildir.
-> Fazlar `docs/roadmap.md` içinde izlenir; bir faz ancak kabul kanıtı ve yeşil CI
-> ile tamamlanmış sayılır.
+![Örnek kararda vurgulanan tebliğ tarihi, ikinci sayfaya bağlı bir inceleme notunda görünüyor.](docs/gorseller/paylasim-karti.png)
 
-## Şu an gerçekten ne çalışıyor?
+## Uygulamayı nereden edinebilirim?
 
-| Yetenek | Durum | Nerede |
-|---|---|---|
-| Şifreli kasa oluşturma/açma (Argon2id + AES-256-GCM) | ✅ gerçek | `crates/vault` |
-| Kurtarma anahtarı (32 bayt, base32, tek gösterim) | ✅ gerçek — KDF hatası düzeltildi | `crates/vault` |
-| Parola değiştirme (ana anahtar korunur) | ✅ gerçek | `VaultFile::change_password` |
-| SQLCipher veritabanı, şema v56, migrasyon checksum | ✅ gerçek | `crates/storage` |
-| Dosya, belge, sürüm, arşiv, geri dönüşümlü silme | ✅ gerçek | Dosyalar ekranı |
-| İçe aktarma: SHA-256, şifreli blob, sürükle-bırak | ✅ gerçek | `crates/ingest` |
-| PDF/DOCX/UDF/görüntü ayrıştırma | ✅ gerçek — gerçek belgelerle ölçüldü | `workers/document` |
-| OCR (`tur+eng`, güven skoru, 300 dpi) | ✅ gerçek | `docs/releases/F06/REAL-DOCS.md` |
-| Arama: FTS5, Türkçe kipler, filtreler, keyset sayfalama | ✅ gerçek | Arama ekranı |
-| Okuyucu: yan yana, zoom, `/PageLabels`, anchor | ✅ gerçek | Okuyucu |
-| Kronoloji: tarih türü/kesinliği, bilinmeyen tarih | ✅ gerçek | Kronoloji ekranı |
-| Görev, not, hatırlatıcı | ✅ gerçek | Görevler |
-| İddia–delil matrisi, iddia–iddia ilişkisi | ✅ gerçek | İnceleme |
-| Kontrol listeleri (lisanslı, kaynaklı) | ✅ gerçek | Kontrol listesi ekranı |
-| Emsal: künye, tam metin, birebir alıntı, **anlam incelemesi** | ✅ gerçek | Emsal |
-| Maskeleme: terimle + **elle bölge**, bağımsız doğrulama | ✅ gerçek | Maskeleme |
-| Çıktılar: JSON/CSV/DOCX/PDF + şifreli `.dimpak` | ✅ gerçek | Çıktılar |
-| Yedek: `.dimbak` + geri yükleme + blob GC | ✅ gerçek | Ayarlar |
-| Otomatik kilit (10 dk) | ✅ gerçek | `src/lib/autolock.ts` |
-| Otomatik yedek (7 gün, klasör seçmeli) | ✅ gerçek | `src/lib/backup-schedule.ts` |
-| API sağlayıcı profili (anahtar saklanmaz) | ✅ gerçek | Providers ekranı |
-| AI sağlayıcı hattı (onay + sicil + aday + gönderim önizlemesi) | 🚧 altyapı gerçek; **AI varsayılan kapalı** | `crates/providers`, AI ekranı |
-| CLI yürütme | ✅ Codex / Claude / Antigravity gerçek çağrıyla doğrulandı; Kimi API anahtarı bekliyor | `crates/cli-adapters` |
-| İmzalı dağıtım | ➖ kapsam dışı (ADR-0012); paketler imzasız | `docs/releases/F16` |
-| Pilot (5–8 avukat) | ❌ insan bekliyor | `docs/pilot/` |
+Proje **erken geliştirme aşamasında**. Kurulabilir deneme paketleri GitHub Actions üzerinden dağıtılıyor. [Kararlı sürüm duyuruları](https://github.com/avazargozalli/dosya-inceleme-masasi/releases) için ayrı bir alan bulunuyor.
 
-“Buton var, iş yok” durumu bilinçli olarak engellenir: hazır olmayan ekranlar
-`Fxx` etiketiyle “hazır değil” der, sahte veri göstermez.
+1. GitHub hesabınızla oturum açıp başarılı bir **desktop-build** çalıştırmasının özetini açın. [Paket üreten çalıştırma](https://github.com/avazargozalli/dosya-inceleme-masasi/actions/runs/42194554840) · [Tüm paketleme çalıştırmaları](https://github.com/avazargozalli/dosya-inceleme-masasi/actions/workflows/desktop-build.yml)
+2. **Artifacts** bölümünde cihazınızın paketini seçin. Apple Silicon Mac için `dim-paket-dmg-aarch64-apple-darwin`, Intel Mac için `dim-paket-dmg-x86_64-apple-darwin`, Windows x64 için `dim-paket-msi-x64` kullanılır.
+3. İndirdiğiniz ZIP dosyasını açın. Mac paketinde `.dmg`, Windows paketinde `.msi` bulunur. Deneme paketleri imzasızdır. İşletim sistemi yayıncı doğrulama uyarısı gösterebilir. Her paket, üretildiği tarihteki arayüzü içerir. [Dağıtım kararı](docs/adr/0012-dagitim-imzasi-kullaniciya-birakildi.md)
 
-## Neden
+## İlk belgenizi inceleyin
 
-Dosya incelemesi (belge okuma, kronoloji, iddia–delil eşleştirme, duruşma hazırlığı)
-avukatın en çok zaman harcadığı ve en kolay gözden kaçırdığı iştir. Mevcut araçlar ya
-bulut tabandır (meslek sırrı riski) ya da kaynaksız özet üretir (denetlenemez çıktı).
-Bu proje üç şeyi bir arada tutar:
+**Kasa**, bilgisayarınızdaki şifreli çalışma alanıdır. **İnceleme dosyası**, bir davanın belgelerini ve notlarını bir arada tutar. **Belge** ise bu dosyaya eklediğiniz PDF, dilekçe veya taramadır.
 
-1. **Yerel kasa** — SQLCipher + şifreli blob'lar; arama indeksi ve yedek dahil şifreli.
-2. **Kaynak zinciri** — her alıntı `belge sürümü + sayfa/paragraf + karakter aralığı + alıntı hash'i` taşır.
-3. **İnsan onayı** — AI çıktısı kalıcı kayda doğrudan yazmaz; inceleme kuyruğundan geçer.
+1. **Kasa** ekranında yeni bir kasa oluşturun. Kurtarma anahtarını kasadan ayrı bir yerde saklayıp ekrandaki onayı tamamlayın.
+2. **Dosyalar → Yeni dosya** ile bir inceleme dosyası açın. İlk deneme için başlık olarak “Örnek karar incelemesi” yeterlidir.
+3. [Üç sayfalık örnek karar PDF’sini](fixtures/synthetic/intext-layout.pdf) indirin. **Belge ekle** ile seçin veya belge listesine sürükleyin. **Ayrıştır** düğmesi belgeyi okunabilir metne dönüştürür.
+4. **Oku** ile belgeyi açın. İkinci sayfada “20.04.2026” tarihinin geçtiği cümleyi seçip **Seçimi kaynağa bağla** düğmesine basın. Dosyanın **Kaynak alıntılar** bölümündeki **Okuyucuda aç** düğmesi sizi aynı alıntıya geri götürür.
 
-## Mimari (kısa)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/gorseller/kasa-koyu-tema.png">
+  <img src="docs/gorseller/kasa-acik-tema.png" alt="Kasa giriş ekranı. Solda gezinme menüsü, ortada kasa konumu ve parola alanları, sağda kurtarma anahtarının kullanımını anlatan rehber var.">
+</picture>
 
-```
-React (Vite)  ──IPC──▶  Rust çekirdeği (Tauri 2)
-                          ├─ vault      : Argon2id + AES-256-GCM (chunked AEAD)
-                          ├─ storage    : SQLCipher/SQLite + FTS5
-                          ├─ jobs       : tek yazıcı kuyruk, lease, idempotency
-                          ├─ evidence   : alıntı doğrulama, anchor durumları
-                          ├─ policy     : dosya kapsamı, aktarım izni
-                          └─ providers  : yerel model · CLI adaptörleri · API
-                                 │
-                          worker (Python): PyMuPDF · OCR · DOCX · redaksiyon
-```
+*Geliştirme sürümünden kasa giriş ekranı. Yeni kasa oluşturma, mevcut kasayı açma ve kurtarma aynı ekrandan başlar.*
 
-Ayrıntı: `docs/adr/` (mimari kararlar), `docs/security/threat-model.md`,
-`docs/spec/DOSYA_INCELEME_MASASI_TAM_PROJE_PLANI.md` (bağlayıcı şartname).
+## Hangi ekranı kullanmalıyım?
 
-## Geliştirme
+| Yapmak istediğim iş | Ekran | Ne yapabilirim? |
+| --- | --- | --- |
+| Belge bulmak ve okumak | Dosyalar · Arama | Dosyaya belge ekleyin, metinde arayın, iki belgeyi yan yana okuyun. Taranmış sayfalarda OCR ile metin çıkarabilirsiniz. |
+| Olayları ve işleri takip etmek | Kronoloji · Görevler · Kontrol listesi | Olayları tarihe göre sıralayın, hatırlatıcı ekleyin ve tamamlanan işleri işaretleyin. |
+| Bir iddianın dayanağını görmek | İnceleme · Emsal | İddiaya delil bağlayın, emsal kararın künyesini ve atıfta bulunduğunuz alıntıyı kontrol edin. |
+| Paylaşılacak kopyayı hazırlamak | Maskeleme · Çıktılar | Hassas ifadeleri veya sayfadaki bölgeleri maskeleyin. Çalışma kayıtlarını dışa aktarın ya da şifreli devir paketi oluşturun. |
+| Yapay zekâ önerilerini değerlendirmek | AI bağlantıları · AI inceleme | Sağlayıcıyı seçin, gönderilecek içeriği gözden geçirin ve önerileri inceleyin. |
+| Kasayı yedeklemek | Ayarlar | Şifreli yedek alın, yedekleme konumunu belirleyin ve geri yükleme seçeneklerine erişin. |
 
-Gereksinimler: Node 22+, pnpm 10+, Rust stable, Python 3.11+.
+Belge okuma ve arama cihazda çalışır. AI varsayılan olarak kapalıdır. Harici sağlayıcıya aktarım için kapsam ve kullanıcı onayı gerekir. Hangi işlevlerin doğrulandığını ve hangi fazların sürdüğünü yol haritasında görebilirsiniz. [Yol haritası](docs/roadmap.md) · [Veri güvenliği modeli](docs/security/threat-model.md) · [Pilot çalışma protokolü](docs/legal/pilot-protocol.md)
+
+## Kaynaktan çalıştırma
+
+Geliştirme ortamı Node.js 22.11–25.x, pnpm 10.15, Rust ve Python 3.11 veya üzerini kullanır. İşletim sisteminiz için Tauri 2 derleme araçlarını kurun. [Tauri önkoşulları](https://v2.tauri.app/start/prerequisites/)
+
+Depo kökünde, macOS veya Linux için:
 
 ```bash
-pnpm install
-pnpm typecheck
-pnpm test
-
-# masaüstü (Rust gerekir)
-pnpm --filter @dim/desktop tauri dev
+pnpm install --frozen-lockfile
+python3 -m venv workers/document/.venv
+workers/document/.venv/bin/python -m pip install -e 'workers/document[all,dev]'
+pnpm --filter @dim/desktop exec tauri dev
 ```
 
-Bu depo **lokal ağır derleme tutmaz**: Rust/Tauri derlemeleri ve paketleme GitHub Actions
-üzerinde yapılır (`docs/roadmap.md` → "Neden CI-first"). Lokal ortamda yalnız kaynak kod
-ve tip/lint kontrolleri çalıştırılır.
+Windows PowerShell’de aynı işlemler:
 
-## Katkı
-
-`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` ve `SECURITY.md` okunmalıdır.
-Gerçek müvekkil belgesi, kişisel veri veya meslek sırrı içeren dosya **asla** issue,
-PR veya test fixture'ı olarak eklenemez. Yalnız `fixtures/synthetic/` altındaki kurgu
-veriler kullanılır.
-
-## Geliştirme
-
-```bash
-pnpm install
-bash scripts/install-hooks.sh   # commit sonrası disk koruması (core.hooksPath)
+```powershell
+pnpm install --frozen-lockfile
+py -3 -m venv workers/document/.venv
+workers/document/.venv/Scripts/python.exe -m pip install -e 'workers/document[all,dev]'
+pnpm --filter @dim/desktop exec tauri dev
 ```
 
-`scripts/disk-guard.sh` her commit sonrası arka planda çalışır: repo 2 GB'ı veya
-boş disk 5 GB'ı geçerse **yalnız yeniden üretilebilir** çıktıları (cargo target,
-PyInstaller build/dist, `.worker-venv`, paketlenmiş worker) siler. Kaynak, `docs/`
-ve `.git` korunur.
+Taranmış belgelerde Türkçe ve İngilizce OCR için Tesseract ile `tur` ve `eng` dil verileri gerekir. Arayüz React ve Vite ile çalışır. Tauri komutları Rust çekirdeğine gider. Kasa ve SQLCipher veritabanı bu katmanda yönetilir. PDF, DOCX ve OCR işlemlerini ayrı Python süreci yürütür. [Mimari kararlar](docs/adr/) · [Teknik şartname](docs/spec/DOSYA_INCELEME_MASASI_TAM_PROJE_PLANI.md) · [Test ve katkı rehberi](CONTRIBUTING.md)
 
-## Dağıtım ve imza
+## Katkı ve lisans
 
-Paketler **imzasız** dağıtılır (ADR-0012). macOS Gatekeeper / Windows Defender
-uyarısı normaldir. Kaynak açık olduğu için isteyen kendi sertifikasıyla imzalar;
-güncelleme akışı varsayılan kapalıdır.
+Hata bildirimi veya örnek belge paylaşırken yalnızca sentetik veri kullanın. Güvenlik bildirimleri için depodaki özel bildirim yolunu izleyin. [Güvenlik politikası](SECURITY.md) · [Davranış kuralları](CODE_OF_CONDUCT.md)
 
-## Lisans
-
-AGPL-3.0-or-later. Ayrıntı: `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`.
-Ticari/ kapalı kaynak kullanım için ayrı lisans görüşmesi gerekir.
+Proje AGPL-3.0-or-later lisanslıdır. [Lisans](LICENSE) · [Telif bildirimleri](NOTICE) · [Üçüncü taraf lisansları](THIRD_PARTY_NOTICES.md)
