@@ -471,9 +471,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0057_precedent_usage_terms_claim_guard",
         sql: include_str!("migrations/0057_precedent_usage_terms_claim_guard.sql"),
     },
+    Migration {
+        version: 58,
+        name: "0058_backup_run_receipt_guard",
+        sql: include_str!("migrations/0058_backup_run_receipt_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 57;
+pub const CURRENT_SCHEMA_VERSION: u32 = 58;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

@@ -3069,3 +3069,120 @@ fn upgrade_keeps_redaction_regions_written_before_the_page_bound_gate() {
         )
         .expect("meşru bölge yazılabilir");
 }
+
+#[test]
+fn upgrade_keeps_backup_runs_written_before_the_receipt_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 57);
+        conn.execute_batch(
+            "INSERT INTO backup_runs
+               (id,snapshot_id,schema_version,manifest_hash,status,
+                verification_result,destination_label,created_at,completed_at)
+             VALUES ('legacy-bad','../kacis',-3,'hash','verified',
+                     NULL,'  ','dün',NULL);
+             -- Sonucu yazılmamış eski deneme: uzlaştırma hâlâ kapatabilmeli.
+             INSERT INTO backup_runs
+               (id,snapshot_id,schema_version,manifest_hash,status,
+                verification_result,destination_label,created_at,completed_at)
+             VALUES ('legacy-running','DimYedek-1',57,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'running','integrity_check','/Volumes/Yedek',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z');",
+        )
+        .expect("v57 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    // Eski satır silinmez, değerleri **düzeltilmez** (v58 onarmaz).
+    let (snapshot, schema, hash, dest, created): (String, i64, String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT snapshot_id, schema_version, manifest_hash, destination_label, created_at
+             FROM backup_runs WHERE id='legacy-bad'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (
+            snapshot.as_str(),
+            schema,
+            hash.as_str(),
+            dest.as_str(),
+            created.as_str()
+        ),
+        ("../kacis", -3, "hash", "  ", "dün"),
+        "v58 eski satırı onarmaz"
+    );
+    // Bozuk eski satır donar: kanıt sütunu ve damga çevrilemez.
+    for sql in [
+        "UPDATE backup_runs SET manifest_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' WHERE id='legacy-bad'",
+        "UPDATE backup_runs SET created_at='2030-01-01T00:00:00.000000Z' WHERE id='legacy-bad'",
+        "UPDATE backup_runs SET status='succeeded', completed_at='2026-11-19T00:00:00.000000Z' WHERE id='legacy-bad'",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("backup_runs"), "mesaj: {message}")
+            }
+            other => panic!("v58 eski makbuzu dondurmalı: {other:?} ({sql})"),
+        }
+    }
+    // Yeni biçimsiz makbuz doğamaz (kanıtsız «doğrulandı», damga 'dün').
+    for sql in [
+        "INSERT INTO backup_runs
+           (id,snapshot_id,schema_version,manifest_hash,status,
+            verification_result,destination_label,created_at,completed_at)
+         VALUES ('new-bad','DimYedek-1',57,
+                 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 'verified',NULL,'/Volumes/Yedek',
+                 '2026-11-19T00:00:00.000000Z','2026-11-19T00:00:00.000000Z')",
+        "INSERT INTO backup_runs
+           (id,snapshot_id,schema_version,manifest_hash,status,
+            verification_result,destination_label,created_at,completed_at)
+         VALUES ('new-bad-2','DimYedek-1',57,
+                 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 'verified','integrity_check','/Volumes/Yedek',
+                 'dün','2026-11-19T00:00:00.000000Z')",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("backup_runs"), "mesaj: {message}")
+            }
+            other => panic!("v58 biçimsiz makbuzu reddetmeli: {other:?}"),
+        }
+    }
+    // Meşru yeni makbuz ve eski `running` satırın tamamlanması takılmaz.
+    db.conn()
+        .execute(
+            "INSERT INTO backup_runs
+               (id,snapshot_id,schema_version,manifest_hash,status,
+                verification_result,destination_label,created_at,completed_at)
+             VALUES ('new-ok','DimYedek-20261119-0200',58,
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     'verified','integrity_check','/Volumes/Yedek',
+                     '2026-11-19T02:00:00.000000Z','2026-11-19T02:00:00.000000Z')",
+            [],
+        )
+        .expect("meşru makbuz yazılabilir");
+    db.conn()
+        .execute(
+            "UPDATE backup_runs SET status='succeeded',
+                    completed_at='2026-11-19T03:00:00.000000Z'
+             WHERE id='legacy-running'",
+            [],
+        )
+        .expect("eski running satır tamamlanabilir");
+}
