@@ -3065,3 +3065,103 @@ onarılamaz — onarım yolu yeni plandır, temizlik ürün kararı; (f) `parse_
 metinse (`''`) bildirilmemiş sayılır ve en yeni sayfalı koşuya düşülür; (g) tetikleyicileri
 anahtarı olan saldırgan düşürebilir; (h) arayüz davranışı değişmedi; gerçek pencere +
 görsel QA **insan bekliyor**.
+
+## F08-T04ab — aktarım makbuzu dışarıya ne çıktığının kanıtıdır: doğuşta `attempted`, sonuç terminal (şema v55, 2026-11-18)
+
+**Neden bu dilim.** `transfer_receipts` satırı **dışarıya ne çıktığının makbuzudur** —
+«nereye, kaç öğe, kaç bayt, hangi içerik özetiyle, ne zaman». Aktarım zincirinin son
+halkasıdır: `begin_transfer_receipt` makbuzu **deneme anında** açar (`attempted`;
+gönderim zaman aşımına düşse de içerik çıkmış olabilir), `finish_transfer_receipt` tek
+koşullu UPDATE ile `attempted`ı `dispatched`/`failed`a bağlar, açılış uzlaştırması
+(`reconcile_attempted_receipts`) sonucu yazılmamış denemeleri `interrupted` yapar.
+Ekran (`Ai.tsx`) son gönderimleri bu satırdan basar; `list_transfer_receipts` dosya
+kapsamını `ai_runs.case_id` üzerinden kurar. Zincirin komşuları kapılıydı
+(`transfer_segments` v45/v47, onay v43/v45, `ai_runs` v43) ama **makbuzun kendisi
+değildi**: `status` için CHECK bile yok, `item_count`/`byte_count` negatif doğabilir,
+`dispatched_at` serbest metin, `outbound_hash` biçimi denetlenmez ve satır sonradan
+**her** sütunuyla değiştirilebilir; makbuz başka dosyanın çalıştırmasına taşınabilir.
+Tur başında `HEAD == origin/main` = `a76e3ee`; disk **7,6 G**; ağaçta yalnız **başka
+ajanın 9 arayüz dosyası** (2026-11-07'den beri) — dokunulmadı.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v54; sonda
+`~/.hermes/cache/scratch/dim-v55-probe/measure_v55.py`, log `measure_before.log`):**
+16 doğum kusurunun **14'ü KABUL** (2'si zaten RED — yalnız FK), 12 UPDATE saldırısının
+**12'si KABUL**, 7 meşru yazma KABUL. Doğum: `dispatched` (hiç denenmemiş gönderim
+"gönderildi" der), bilinmeyen durum (`sent`), boş / yalnız boşluk hedef etiketi,
+63 haneli / büyük harf / hex olmayan özet, `item_count` 0 ve −1, `byte_count` 0 ve −5,
+damga `dün` ve boş, boş makbuz kimliği, var olmayan / boş çalıştırma kimliği. UPDATE:
+hedef etiketi çevirme, içerik özeti çevirme, öğe/bayt sayısı değiştirme, damgayı geriye
+yazma, makbuzu **başka dosyanın** çalıştırmasına taşıma, kimlik takası, bilinmeyen
+durum yazma, `dispatched`→`attempted` (sonuç geri alındı), `failed`→`dispatched`
+(başarı uyduruldu), `interrupted`→`dispatched`, sonuçlanmış satırın hedefini çevirme.
+
+**Yazılan (şema v55, `0055_transfer_receipt_evidence_guard.sql`, 2 tetikleyici).**
+BI — `id` kırpılmış-dolu; `ai_run_id` **var olan** çalıştırmayı gösterir (fail-closed;
+FK zaten bağlar, kapı FK kapalıyken de doğru hüküm verir; NULL/boş kimlik `NOT EXISTS`
+ile aynı cümleye düşer, ayrı cümle yazılmadı); `destination_label` boşluktan ibaret
+değil; `outbound_hash` **64 küçük harf hex** (v47/v53 ile aynı); `item_count ≥ 1` ve
+`byte_count ≥ 1` (çekirdek boş kapsamı makbuz açılmadan reddeder — `ai_run_execute`;
+sıfır öğeli "gönderim" makbuz değildir); doğuşta `status='attempted'`; `dispatched_at`
+ISO-8601 damgası. BU — `id`, `ai_run_id`, `destination_label`, `outbound_hash`,
+`item_count`, `byte_count`, `dispatched_at` **donar** (yeniden ölçüm yeni satır ister);
+`status` yalnız `attempted` → `dispatched` | `failed` | `interrupted` **ilerler**,
+sonuçlanmış satırın durumu **terminal**dir (geri alma ve sonuç uydurma kapalı);
+değişiklik yoksa takılmaz. Ret `DIM_INTEGRITY:transfer_receipts` →
+`StorageError::Integrity` → **`E_DB_INTEGRITY`**. Tablo `case_id` taşımaz; dosya
+kapsamı `ai_runs` üzerindendir ve `ai_run_id` bu kapıda donduğu için makbuz başka
+çalıştırmaya taşınamaz → kapsam taramasına sınıf eklenmedi, `GUARDED_TABLES` **25
+kalır**.
+
+**Çekirdek hizası.** Ek kapı gerekmedi: üç yazma yolu (`begin_transfer_receipt`,
+`finish_transfer_receipt`, `reconcile_attempted_receipts`) zaten tam bu biçimi üretir;
+`ai_run_execute` boş kapsamı makbuz açılmadan reddeder (`scope.segments.is_empty()`),
+öğe/bayt sayıları `i64::try_from(...)` ile pozitiftir. **Tek test düzeltmesi (dürüst):**
+`receipts_are_listed_newest_first` sıra sözleşmesini satırın `dispatched_at`ini
+**sonradan UPDATE ile** yazarak sabitliyordu — v55 damgayı dondurduğu için bu yol
+kapandı; test artık iki satırı sabit ISO damgalarla **doğuşta** yazıyor (BI onları
+kabul eder) ve çekirdek yolu ayrı testte ölçülüyor.
+
+**Testler.** `ai` +1 (`transfer_receipt_is_born_attempted_and_frozen_after_its_verdict`:
+16 doğum kusuru; 8 dondurma yolu; `attempted` satırda ve sonuçlanmış satırda bilinmeyen
+durum; başarı uydurma; no-op yazma geçer; çekirdeğin üç geçişi ve açılış uzlaştırması
+geçer; saldırılardan sonra kanıt sütunları doğduğu gibi), `upgrade_tests` +1
+(`upgrade_keeps_transfer_receipts_written_before_the_evidence_gate`: v54'te yazılmış
+bozuk makbuz silinmez/düzeltilmez, donar; yeni bozuk makbuz doğamaz; eski `attempted`
+satır kapıya rağmen uzlaştırmayla kapanır — kapı çekirdeğin temizliğini durdurmaz) →
+`dim-storage --lib` **703 → 705**; yerelde **705/705 yeşil, 557,77 s**; fmt (iki
+manifest) / clippy `-D warnings --all-targets` / masaüstü `cargo check --all-targets`
+(2 dk 24 s) temiz.
+
+**Kapı kanıtı.** Taban **yeşil** (mutasyonsuz), ardından **19/19 mutant KIRMIZI**
+(`~/.hermes/cache/scratch/dim-v55-probe/gates_v55.py`, log `gates_v55.log`): kimlik boş
+denetimi, çalıştırma varlığı, hedef etiketi, özet uzunluğu, özet hex kümesi,
+`item_count` ve `byte_count` pozitifliği, doğuşta `attempted`, damga biçimi, yedi
+dondurma sütunu tek tek, durum geçiş kuralının tamamı, durum kümesinin açılması ve
+yalnız `dispatched`a izin (narrowing). Kaynak **byte-birebir** geri yazıldı (`sha256`
+önce = sonra `0055…sql d3ec078ac8dc49fd…`). Ölçüm sonrası: **16/16 doğum kusuru RED**,
+**12/12 saldırı RED**, 7 meşru KABUL (`measure_after.log`). **Dürüst (ilk koşu
+18/20):** (a) «boş çalıştırma kimliği» cümlesi **eşdeğer mutant** çıktı — `NOT EXISTS`
+zaten NULL/boşu kapsıyordu; cümle kapıdan **çıkarıldı** (test zayıflatılmadı, gereksiz
+cümle silindi); (b) kapalı durum kümesi mutantı YEŞİL kaldı çünkü bilinmeyen durum
+saldırısı yalnız **sonuçlanmış** satırda ölçülüyordu (`dispatched` satırda geçiş kuralı
+tek başına yakalıyor); `attempted` satıra `status='sent'` saldırısı eklendi ve **19/19**
+yeniden ölçüldü — ilk koşunun 18 hükmü kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `11fa866` (4 dosya, **+585/−17**) → run `44308711465` **10/10
+YEŞİL** (`dim-storage` **705** iki OS'ta birebir: macos-15 **456,18 s** / ubuntu-latest
+**1077,68 s**; `arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB —
+**değişmedi**, arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo`, SBOM,
+sözleşmeler, belge worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) v55 öncesi bozuk makbuzlar **silinmez, düzeltilmez**; donmuş
+oldukları için onarılamaz — onarım yolu **yeni gönderim**dir, temizlik ürün kararı;
+(b) `outbound_hash`in gerçekten gönderilen baytların SHA-256'sı olduğu **yeniden
+hesaplanmaz** (SQLite'ta SHA-256 yok; özeti çekirdek üretir) — biçim ve değişmezlik
+ölçülür; (c) `item_count`/`byte_count`in `transfer_segments` ile tutarlılığı
+doğrulanmaz (deneme kapsamı yeniden gönderimde farklı olabilir; makbuz başına ikinci
+bir kapsam kaynağı yok); (d) `dispatched_at` **gelecekte** olabilir — damga biçimi
+denetlenir, mantığı değil; (e) bilinmeyen durumlu **eski** satır donar (ilerletilemez);
+(f) aynı çalıştırma için **birden çok** makbuz meşrudur (her deneme ayrı satır) — kapı
+bunu engellemez; (g) tetikleyicileri anahtarı olan saldırgan düşürebilir; (h) arayüz
+davranışı değişmedi (rozetler aynı sütunlar); gerçek pencere + görsel QA **insan
+bekliyor**.
