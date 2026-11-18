@@ -2582,3 +2582,125 @@ fn upgrade_keeps_source_anchors_written_before_the_evidence_gate() {
     })
     .expect("meşru çapa");
 }
+
+/// v54 — maskeleme bölgesinin **sayfa sınırı**. v53 kasasında yazılmış sayfa
+/// dışı bölge (page_index 9; koşuda yalnız sayfa 0 var) güncellemede
+/// **silinmez**; bölge kanıtı donmuştur (onarım yolu yeni plandır) ve yeni
+/// sayfa dışı bölge doğamaz.
+#[test]
+fn upgrade_keeps_redaction_regions_written_before_the_page_bound_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 53);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','st-legacy',1,10,'k','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES ('d1','c1','Belge','pdf',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs
+               (id,document_version_id,case_id,engine,engine_version,settings_hash,
+                status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded',
+                     '2026-01-01T00:00:00Z');
+             INSERT INTO pages
+               (id,parse_run_id,page_index,width,height,text_origin,coordinate_space)
+             VALUES ('p0','r1',0,595.0,842.0,'native','unrotated_cropbox_points');
+             INSERT INTO redaction_plans
+               (id,case_id,document_version_id,parse_run_id,render_hash,coordinate_space,
+                plan_version,state,output_profile,created_at,updated_at)
+             VALUES ('p-old','c1','v1','r1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'pdf_page_points',1,'draft','share',
+                     '2026-03-01T00:00:00Z','2026-03-01T00:00:00Z'),
+                    ('p-draft','c1','v1','r1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'pdf_page_points',1,'draft','share',
+                     '2026-03-01T00:00:00Z','2026-03-01T00:00:00Z');
+             -- v54 öncesi yazılmış bölge: sayfa 9 koşuda yok.
+             INSERT INTO redaction_regions
+               (id,plan_id,page_index,quads,coordinate_space,category,
+                detected_text_hash,user_decision)
+             VALUES ('old-out','p-old',9,'[[10,10,50,50]]','pdf_page_points',
+                     'user_term',NULL,'redact');",
+        )
+        .expect("v53 bölgesi");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let kept: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM redaction_regions", [], |row| {
+            row.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(kept, 1, "eski satır silinmez");
+    let page: i64 = db
+        .conn()
+        .query_row(
+            "SELECT page_index FROM redaction_regions WHERE id='old-out'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("eski bölge");
+    assert_eq!(page, 9, "eski satır sessizce değiştirilmez");
+    // Eski bölge donmuştur: geometri onarılamaz.
+    match db
+        .conn()
+        .execute(
+            "UPDATE redaction_regions SET quads='[[20,20,60,60]]' WHERE id='old-out'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("redaction_regions"), "mesaj: {message}")
+        }
+        other => panic!("v50 eski bölgeyi dondurmalı: {other:?}"),
+    }
+    // Yeni sayfa dışı bölge doğamaz (draft plan, kutu biçimce geçerli).
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO redaction_regions
+               (id,plan_id,page_index,quads,coordinate_space,category,
+                detected_text_hash,user_decision)
+             VALUES ('new-out','p-draft',9,'[[10,10,50,50]]','pdf_page_points',
+                     'user_term',NULL,'redact')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("redaction_regions"), "mesaj: {message}")
+        }
+        other => panic!("v54 sayfa dışı bölgeyi reddetmeli: {other:?}"),
+    }
+    // Meşru bölge (koşudaki sayfa 0, kutu sayfa içinde) takılmaz.
+    db.conn()
+        .execute(
+            "INSERT INTO redaction_regions
+               (id,plan_id,page_index,quads,coordinate_space,category,
+                detected_text_hash,user_decision)
+             VALUES ('new-ok','p-draft',0,'[[10,10,50,50]]','pdf_page_points',
+                     'user_term',NULL,'redact')",
+            [],
+        )
+        .expect("meşru bölge yazılabilir");
+}

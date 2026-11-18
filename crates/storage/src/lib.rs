@@ -451,9 +451,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0053_source_anchor_evidence_guard",
         sql: include_str!("migrations/0053_source_anchor_evidence_guard.sql"),
     },
+    Migration {
+        version: 54,
+        name: "0054_redaction_region_page_bound_guard",
+        sql: include_str!("migrations/0054_redaction_region_page_bound_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 53;
+pub const CURRENT_SCHEMA_VERSION: u32 = 54;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

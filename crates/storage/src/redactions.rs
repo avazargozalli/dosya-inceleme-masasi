@@ -2412,6 +2412,197 @@ mod tests {
         assert_eq!(rows[0].user_decision, "redact");
     }
 
+    /// v54 — bölge **sayfanın kanıtıdır**: planın maskede kullanılacak
+    /// ayrıştırma koşusunda **var olan** bir sayfayı göstermeli ve dikdörtgeni
+    /// o sayfanın kırpma kutusunda kalmalı. 0050 biçimi ve değişmezliği
+    /// kapıladı; sayfa sınırını bilinçli olarak açık bıraktı (kapanış sınırı c).
+    /// Kusur sessiz sızıntı değil **kanıt yalanıydı**: plan «sayfa 5'i
+    /// maskeledim» diyordu, belge 2 sayfa; ya da kutu sayfa dışındaydı ve
+    /// maskeleme «kesişen metin bloğu yok» ile düşüyordu.
+    #[test]
+    fn redaction_region_must_lie_on_a_parsed_page_inside_its_box() {
+        let (db, case_id, version_id) = setup();
+        let seed_page =
+            |index: i64, width: Option<f64>, height: Option<f64>| crate::parsing::NewPage {
+                index,
+                text: format!("sayfa {index}"),
+                width,
+                height,
+                origin: "native".into(),
+                warnings: Vec::new(),
+                rotation: 0,
+                coordinate_space: Some("unrotated_cropbox_points".into()),
+                page_label: None,
+                blocks: Vec::new(),
+            };
+        let run1 = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu 1");
+        db.store_pages(
+            &run1.id,
+            &case_id,
+            &[
+                seed_page(0, Some(595.0), Some(842.0)),
+                seed_page(1, None, None),
+            ],
+        )
+        .expect("sayfalar");
+        db.finish_parse_run(&run1.id, "succeeded", &[])
+            .expect("koşu 1 bitti");
+        // Daha yeni koşu: fazladan sayfa 2 taşır. Plan run1'i **bildirirse**
+        // maskede run1 kullanılır; sayfa 2 orada yoktur.
+        let run2 = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu 2");
+        db.store_pages(
+            &run2.id,
+            &case_id,
+            &[
+                seed_page(0, Some(595.0), Some(842.0)),
+                seed_page(1, None, None),
+                seed_page(2, Some(595.0), Some(842.0)),
+            ],
+        )
+        .expect("sayfa 2");
+        db.finish_parse_run(&run2.id, "succeeded", &[])
+            .expect("koşu 2 bitti");
+        let new_plan = |run: Option<&str>| {
+            db.create_redaction_plan(
+                &case_id,
+                &NewRedactionPlan {
+                    document_version_id: version_id.clone(),
+                    parse_run_id: run.map(str::to_string),
+                    render_hash: "a".repeat(64),
+                    output_profile: "share".into(),
+                    output_version_id: None,
+                },
+            )
+            .expect("plan")
+        };
+        let declared = new_plan(Some(&run1.id));
+        let latest = new_plan(None);
+        let write = |plan: &str, id: &str, page: i64, quads: &str| {
+            db.conn()
+                .execute(
+                    "INSERT INTO redaction_regions
+                       (id,plan_id,page_index,quads,coordinate_space,category,
+                        detected_text_hash,user_decision)
+                     VALUES (?1,?2,?3,?4,'pdf_page_points','user_term',NULL,'redact')",
+                    rusqlite::params![id, plan, page, quads],
+                )
+                .map_err(StorageError::from)
+        };
+        let region_error = |result: Result<usize, StorageError>, label: &str| match result {
+            Err(StorageError::Integrity(message)) => assert!(
+                message.contains("redaction_regions"),
+                "{label}: mesaj tabloyu adlandırmıyor: {message}"
+            ),
+            other => panic!("{label}: beklenen E_DB_INTEGRITY, ölçülen: {other:?}"),
+        };
+
+        // --- sayfa varlığı: bildirilen koşu esastır -------------------------
+        region_error(
+            write(&declared.id, "g-page", 2, "[[10,10,50,50]]"),
+            "bildirilen koşuda olmayan sayfa (yalnız en yeni koşuda var)",
+        );
+        region_error(
+            write(&declared.id, "g-page-hi", 9, "[[10,10,50,50]]"),
+            "koşuda hiç olmayan sayfa",
+        );
+        write(&latest.id, "ok-latest", 2, "[[10,10,50,50]]").expect("en yeni koşuda sayfa 2 meşru");
+
+        // --- biçim: pozitif alanlı dikdörtgen ------------------------------
+        for (id, quads, label) in [
+            ("g-inv", "[[100,100,50,50]]", "ters dikdörtgen"),
+            ("g-zero-w", "[[10,10,10,50]]", "sıfır genişlik"),
+            ("g-zero-h", "[[10,10,50,10]]", "sıfır yükseklik"),
+        ] {
+            region_error(write(&declared.id, id, 0, quads), label);
+        }
+
+        // --- sınır: kutu sayfanın kırpma kutusunda -------------------------
+        for (id, quads, label) in [
+            ("g-wide", "[[10,10,900,50]]", "genişliği aşan kutu"),
+            ("g-neg", "[[-50,10,100,50]]", "negatif x kutusu"),
+            ("g-neg-y", "[[10,-50,50,100]]", "negatif y kutusu"),
+            ("g-tall", "[[10,10,100,900]]", "yüksekliği aşan kutu"),
+            (
+                "g-second",
+                "[[10,10,50,50],[600,10,700,50]]",
+                "ikinci dörtlü taşıyor",
+            ),
+            ("g-over", "[[0,0,597,842]]", "2 punto taşma (pay 1)"),
+            (
+                "g-neg-over",
+                "[[-1.5,0,100,100]]",
+                "1,5 punto negatif taşma (pay 1)",
+            ),
+        ] {
+            region_error(write(&declared.id, id, 0, quads), label);
+        }
+        // Meşru: kenara dayanan kutu yuvarlama payı içinde kalır.
+        write(&latest.id, "ok-edge", 0, "[[0,0,595.5,842.5]]").expect("kenara dayanan kutu meşru");
+        // Geometrisi NULL sayfada kutu biçimi denetlenir, sınır denetlenmez.
+        region_error(
+            write(&latest.id, "g-null-shape", 1, "[[10,10,10,50]]"),
+            "geometrisi NULL sayfada da ters kutu reddedilir",
+        );
+        write(&latest.id, "ok-null-bound", 1, "[[0,0,99999,99999]]")
+            .expect("geometrisi bilinmeyen sayfada sınır boşta kalır");
+
+        // --- çekirdeğin yolu aynı kapıdan geçer ----------------------------
+        match db.add_redaction_regions(
+            &declared.id,
+            &[RedactionRegionInput {
+                page_index: 9,
+                rect: [10.0, 10.0, 50.0, 50.0],
+                term_hash: "h".into(),
+            }],
+        ) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("redaction_regions"), "çekirdek: {message}")
+            }
+            other => panic!("çekirdek sayfa dışı bölgeyi reddetmeli: {other:?}"),
+        }
+        db.add_redaction_regions(
+            &declared.id,
+            &[RedactionRegionInput {
+                page_index: 0,
+                rect: [0.0, 0.0, 595.5, 842.5],
+                term_hash: "h".into(),
+            }],
+        )
+        .expect("çekirdeğin meşru bölgesi");
+
+        // Yarım kalmış (`partial`) koşuda sayfa kümesi **belgelenmiş** sayılmaz:
+        // eksik sayfa «yalan» değildir, yazım durmaz (maske PDF'i maskeler).
+        let run3 = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu 3");
+        db.store_pages(
+            &run3.id,
+            &case_id,
+            &[seed_page(0, Some(595.0), Some(842.0))],
+        )
+        .expect("sayfa 3");
+        db.finish_parse_run(&run3.id, "partial", &[])
+            .expect("koşu 3 bitti");
+        let partial = new_plan(None);
+        write(&partial.id, "ok-partial", 5, "[[10,10,50,50]]")
+            .expect("yarım koşuda eksik sayfa yalan sayılmaz");
+
+        // Tamamlanmış ama **hiç sayfası olmayan** koşu: sayfa kümesi yoktur,
+        // varlık cümlesi boşta kalır (maske zaten «metin yok» diye reddeder).
+        let empty_run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("boş koşu");
+        db.finish_parse_run(&empty_run.id, "succeeded", &[])
+            .expect("boş koşu bitti");
+        let empty_plan = new_plan(Some(&empty_run.id));
+        write(&empty_plan.id, "ok-empty-run", 0, "[[10,10,50,50]]")
+            .expect("sayfasız tamamlanmış koşuda varlık cümlesi boşta");
+    }
+
     /// v51 — plan **künyesi** doğuşta tutarlı olmalı ve sonra donmalı:
     /// `render_hash` kaynak sürümün özeti, çıktı izi bağın kimliği,
     /// kapanmış (`applied`) plan kapalı.
