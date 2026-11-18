@@ -2864,3 +2864,108 @@ artığı geçer). (g) Doğuşta `imported_at` **gelecekte** olabilir (sıra/zam
 onarılmamış satırlar ve kapının bilinçli düşürüldüğü okuma testleri için kalır. (i)
 Tetikleyicileri anahtarı olan saldırgan düşürebilir. (j) Arayüz **davranışı** değişmedi;
 gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04z — kaynak bağının kanıtı doğuşta tutarlı, sonrasında değişmez olmalı (şema v53, 2026-11-18)
+
+**Neden bu dilim.** `source_anchors` satırı **kalıcı kaynak bağıdır** (F06-T09): bir alıntının
+hangi belge sürümünde, hangi ayrıştırma koşusunda, hangi segmentte ve hangi Unicode scalar
+aralığında durduğunu söyler. Kasadaki bütün kanıt yolları bu satıra yaslanır: `locate_anchor`
+alıntıyı **segment metninde** bu kayıttaki ofsetle arar ve `quote_intact` yalnız bu satırın
+alanlarıyla hesaplanır; okuyucunun «kaynağa git» bağı fiziksel sayfayı `page_id`den çözer;
+`rebind_suggestion` alıntıyı güncel sürümde `exact_quote` ile arar — yanlış alıntı metni
+«bulunamadı» hükmünü yanıltır; metin seçimi (`mark_from_selection`, `note_from_selection`) ve
+AI aday terfisi (`ensure_anchor`) aynı `create_anchor` yolundan geçer; `claims`/`evidence_links`/
+`event_sources`/`tasks` bu kimliğe bağlanır (0032) ve not/inceleme JSON listeleri bu kimlikleri
+taşır (0033). Şemada bu tablonun kapısı yalnız **kapsam**tı (0031: sürüm/koşu/segment aynı
+dosyada, sayfa aynı koşuda) ve `quote_hash` için yalnız `CHECK (length = 64)` vardı. Tur
+başında `HEAD == origin/main` = `3246b07`; disk **6,1 G**; ağaçta yalnız **başka ajanın 9
+arayüz dosyası** (2026-11-07'den beri) — dokunulmadı.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v52; sonda
+`~/.hermes/cache/scratch/dim-v53-probe/measure_v53.py`, log `measure_before.log`):**
+40 yazımın **27 kusuru 27/27 KABUL** (3'ü zaten RED — biri 0031 kapsam, biri `length = 64`
+CHECK'i, biri 0031 segment kapsamı — ve 10 meşru yazma KABUL): doğuşta özet **64 hex değil**
+(`'Z'*64`), **büyük harf** hex (`'A'*64`), alıntı **boş**, alıntı **yalnız boşluk**, alıntı
+uzunluğu ofset aralığıyla **uyuşmuyor** (15 ↔ 16), alıntı **iddia edilen ofsette değil**
+(0..16 yazıldı, alıntı gerçekte 8..24'te — okuyucu yanlış aralığı vurgular, `locate_anchor`
+«kopmuş» der ama kayıt bunu **yanlış konumla** söyler), `page_id` aynı koşuda ama **segmentin
+sayfası değil** (p3 ≠ p1), `document_version_id` **koşunun sürümü değil** (v2 ↔ r1/v1 — bağ
+başka sürümün ekranında görünür), **boş çapa kimliği**, oluşturma damgası **boş**, güncelleme
+damgası **ISO değil** (`'dün'`), çapa **doğuştan `rebound`** («yeniden doğrulanmış» iddiası),
+çevre **öneki uydurma**, çevre **soneki uydurma**, alıntı **başka segmentin metninden** (s3);
+UPDATE ile alıntı metni, özet, başlangıç/bitiş ofseti, sayfa, sürüm, çapa kimliği, oluşturma
+damgası, önek ve sonek çevrildi; **doğrulanmamış çapa terfi ettirildi**: `active`→`unresolved`
+(dürüst düşürme) sonra **konum değişmeden** `active` — «yeniden doğrulandı» iddiası hiçbir
+doğrulama olmadan geri gelir.
+
+**Yazılan (şema v53, `0053_source_anchor_evidence_guard.sql`, 2 tetikleyici).** BI — `id`
+kırpılmış-dolu; `anchor_status` **`active`** (doğuşta yeniden doğrulanmış/çözülememiş doğamaz —
+`create_anchor` daima `'active'` yazar); `exact_quote` boşluktan ibaret değil ve
+`length(exact_quote) = end_offset - start_offset` (SQLite `length()` metinde **karakter**
+sayar = çekirdeğin `chars().count()`u); `quote_hash` **64 küçük harf hex** (CHECK 64'ü zorlar,
+karakter kümesi burada — 0052'nin `original_sha256` deseni); iki damga ISO-8601 (0049 ile aynı
+biçim); `document_version_id` **koşunun sürümü**; `page_id` **segmentin sayfası** (NULL'lar `IS`
+ile eşleşir); `exact_quote` **segment metninde tam o ofsette**; `prefix`/`suffix` **segment
+metninden** üretilmiş çevre (yarıçap 24 — `context_around(..., 24)` sözleşmesi; start=0 → önek
+boş, metin sonu → sonek boş). BU — `id`, `exact_quote`, `quote_hash`, `created_at` **donar**
+(yeniden bağlama aynı alıntıyı taşır; farklı alıntı yeni satırdır); `updated_at` değişiyorsa
+ISO-8601 olmalı. **Terfi kapısı:** doğrulanmamış (`active`/`rebound` dışı) bir çapa **konumu
+değişmeden** yeniden `active`/`rebound` olamaz (dürüst düşürme serbest; gerçek yeniden bağlama
+konumu değiştirir ve tutarlılık kapısından geçer). **Tutarlılık kapısı:** konum/çevre
+sütunlarından biri değişiyorsa `document_version_id` koşunun sürümü, `page_id` segmentin
+sayfası, uzunluk = ofset farkı ve `exact_quote`/`prefix`/`suffix` **yeni segment metniyle**
+birebir olmalı — yeniden bağlama ancak alıntının gerçekten yeni konumda durduğu yazımı geçer;
+değişmeyen yazma takılmaz. Ret `DIM_INTEGRITY:source_anchors` → `StorageError::Integrity` →
+**`E_DB_INTEGRITY`**. Tablo `case_id` taşıyor ve **zaten** taranıyor → `GUARDED_TABLES` **25
+kalır**; saf **kapsam** ihlalleri bilinçli olarak 0031'in sınıfında bırakıldı (iki kapı da aynı
+yazımı reddederdi, ret sınıfı tetikleyici sırasına bağlı kalırdı).
+
+**Çekirdek hizası.** `create_anchor` alıntıyı `verify_quote` ile doğruluyordu; bu işlev **ipucu
+tutmazsa tüm segmenti tarar** ve tek eşleşmede `Exact` döner — yani çağıran yanlış `start_offset`
+verse de satır yazılıyordu (ölçülen kusur: 0..16 aralığına 8..24'teki alıntı yazılabiliyordu).
+`quote_starts_at` yardımcısı **iddia edilen konumda birebir eşleşme** ister; `rebind_anchor`ın
+zaten yaptığı kontrol aynı tanıma alındı. Yeni ret **`E_QUOTE_NOT_FOUND`** (yazma hiç
+denenmez), şema kapısı `E_DB_INTEGRITY` (doğrudan SQL yolu).
+
+**Testler.** `anchors` +1 (`source_anchor_evidence_is_coherent_at_birth_and_identity_is_frozen`:
+15 doğum kusuru + 14 UPDATE yolu reddedilir, no-op/tutarlı yeniden bağlama/meşru doğuş geçer),
+`upgrade_tests` +1 (`upgrade_keeps_source_anchors_written_before_the_evidence_gate`: v52
+tutarsız çapa silinmez/düzeltilmez, alıntı kimliği donar, yeni tutarsız doğamaz) →
+`dim-storage --lib` **699 → 701**; yerelde **701/701 yeşil, 500,94 s**; fmt (iki manifest) /
+clippy `-D warnings` / masaüstü `cargo check --all-targets` (1 dk 26 s) temiz. **Test düzeltmesi gerekmedi:** doğrudan SQL ile çapa yazan mevcut fikstürler (scope_guard
+zincirleri, ai yabancı zinciri, maliyet testi) v53 kapısıyla çakışmadı — tam paket
+**701/701** yeşil; çakışan olsaydı kapı gevşetilmeyecek, fikstür düzeltilecekti.
+
+**Kapı kanıtı.** Taban **2/2 yeşil** (mutasyonsuz, filtre `source_anchor`), ardından **25/25
+mutant KIRMIZI** (`~/.hermes/cache/scratch/dim-v53-probe/gates_v53.py`, log `gates_v53.log`):
+BI'ın 12 cümlesi ve BU'nun 12 cümlesi tek tek nötrlendi, ayrıca çekirdeğin `quote_starts_at`
+kapısı. Kaynak **byte-birebir** geri yazıldı (`sha256` önce = sonra:
+`0053…sql 7433a130cd1ba1c0…`, `anchors.rs 0aa342d347a870d1…`). Ölçüm sonrası (v53): 40 yazımın
+**30'u RED** (27 hedef kusur + zaten RED olan 3), 10 meşru yazımın onu KABUL
+(`measure_after.log`) — dürüst düşürme (`'active' → 'ambiguous'`), tutarlı yeniden bağlama
+(v2/r2/s2, `'rebound'`), yalnız `updated_at` tazeleme ve başta/sonda boşluklu alıntılar dahil.
+
+**CI (ölçüldü).** Kod `e7e6180` (4 dosya, **+915/−8**) → run `44269861491` **10/10 YEŞİL**
+(`dim-storage` **701** iki OS'ta birebir: macos-15 **414,43 s** / ubuntu-latest **806,39 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**, arayüz
+kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı,
+sürüm paketi manifesti ve kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) v53 öncesi tutarsız çapalar **silinmez**; alıntı kimliği donduğu için
+eski satırlarda değiştirilemez, onarım yolu **yeni çapa** yazmaktır — temizlik ürün kararı.
+(b) Kapı `quote_hash`in **alıntının** SHA-256'sı olduğunu doğrulamaz (SQLite'ta SHA-256 yok) —
+biçim + alıntı/konum tutarlılığı ölçülür; özet ile metni birlikte yazan yol tutarlı görünen
+sahtecilik üretir. (c) Tutarlı bir «sessiz yeniden bağlama» (segment + ofset + çevre hep
+birlikte, alıntı yeni segmentte gerçekten duruyorsa) şemadan ayırt edilemez; `rebind_anchor`ın
+denetim kaydı (`audit_events`) zorunluluğu şemada değil çekirdektedir. (d) SQLite `trim()`
+yalnız ASCII boşluk kırpar; yalnız U+00A0'dan oluşan alıntı bu kapıdan geçer (çekirdek
+`str::trim` reddeder). (e) SQLite `length()`/`substr()` NUL'da durur; PDF metninde NUL
+beklenmez, bu sınır ölçülmedi. (f) Çevre yarıçapı **24** şemada sözleşme olarak durur; çekirdek
+yarıçapı değiştirirse göç de değişmelidir (tek kaynak `context_around` çağrısı). (g)
+`text_segments` metni doğrudan UPDATE ile değiştirilirse eski çapalar «kopmuş» görünür
+(`locate_anchor` bunu dürüstçe bildirir); bu kapı satırı silmez. (h) Korunan sütunlar
+`anchor_status`/`updated_at` dışında tümüyledir; durum geçişleri yalnız **terfi** yönünde
+kapılıdır. (i) Tetikleyicileri anahtarı olan saldırgan düşürebilir. (j) Arayüz **davranışı**
+değişmedi; gerçek pencere + görsel QA **insan bekliyor**. (k) Saf **kapsam** ihlalleri
+(segment/sayfa başka koşuda, koşu başka dosyada) bilinçli olarak **0031'in sınıfında** kalır:
+bu kapı yalnız aynı koşudaki satırın kanıtını ölçer.
