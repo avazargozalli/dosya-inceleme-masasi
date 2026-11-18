@@ -2178,6 +2178,123 @@ fn upgrade_keeps_transfer_segments_written_before_the_content_gate() {
         .expect("meşru satır yazılabilir");
 }
 
+/// v55 — aktarım makbuzu. v54 kasasında yazılmış **bozuk** makbuz (boş hedef,
+/// hex olmayan özet, negatif öğe/bayt, bilinmeyen durum) güncellemede
+/// **silinmez**; ama donar (onarım yolu **yeni gönderim**dir) ve yeni bozuk
+/// makbuz doğamaz. Sonucu yazılmamış eski `attempted` satır, kapıya rağmen
+/// açılış uzlaştırmasıyla kapanabilir — kapı çekirdeğin temizliğini durdurmaz.
+#[test]
+fn upgrade_keeps_transfer_receipts_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 54);
+        conn.execute_batch(
+            "INSERT INTO cases (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Kira','review','active','normal','off','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO ai_runs (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                                  output_schema_version,consent_id,status,usage_report,created_at)
+             VALUES ('run1','c1','summarize','m','h','p1','o1',NULL,'running','{}','2026-01-01T00:00:00Z');
+             -- v54 öncesi yazılmış satır: boş hedef, hash biçimi yok, negatif hacim.
+             INSERT INTO transfer_receipts
+               (id,ai_run_id,destination_label,outbound_hash,item_count,byte_count,status,dispatched_at)
+             VALUES ('legacy-bad','run1','','hash',-5,-1,'sent','dün');
+             -- Sonucu yazılmamış eski deneme: uzlaştırma hâlâ kapatabilmeli.
+             INSERT INTO transfer_receipts
+               (id,ai_run_id,destination_label,outbound_hash,item_count,byte_count,status,dispatched_at)
+             VALUES ('legacy-open','run1','api.ornek.com · m',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     1,10,'attempted','2026-01-01T00:00:00.000000Z');",
+        )
+        .expect("v54 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    // Eski satırlar silinmez, değerleri **düzeltilmez**.
+    let (dest, hash, items, bytes, status): (String, String, i64, i64, String) = db
+        .conn()
+        .query_row(
+            "SELECT destination_label, outbound_hash, item_count, byte_count, status
+             FROM transfer_receipts WHERE id='legacy-bad'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (dest.as_str(), hash.as_str(), items, bytes, status.as_str()),
+        ("", "hash", -5, -1, "sent"),
+        "v55 eski satırı onarmaz"
+    );
+    // Bozuk eski satır donar: kanıt sütunu çevrilemez, durumu ilerletilemez.
+    for sql in [
+        "UPDATE transfer_receipts SET destination_label='baska.example · m' WHERE id='legacy-bad'",
+        "UPDATE transfer_receipts SET byte_count=10 WHERE id='legacy-bad'",
+        "UPDATE transfer_receipts SET status='dispatched' WHERE id='legacy-bad'",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("transfer_receipts"), "mesaj: {message}")
+            }
+            other => panic!("v55 eski satırı dondurmalı: {other:?} ({sql})"),
+        }
+    }
+    // Yeni bozuk makbuz doğamaz (hedef boş, hash biçimsiz).
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO transfer_receipts
+               (id,ai_run_id,destination_label,outbound_hash,item_count,byte_count,status,dispatched_at)
+             VALUES ('new-bad','run1','','hash',1,10,'attempted','2026-01-01T00:00:00.000000Z')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("transfer_receipts"), "mesaj: {message}")
+        }
+        other => panic!("v55 boş hedefli makbuzu reddetmeli: {other:?}"),
+    }
+    // Meşru yazma (çekirdeğin biçimi) hâlâ çalışır ve sonuçlanabilir.
+    db.conn()
+        .execute(
+            "INSERT INTO transfer_receipts
+               (id,ai_run_id,destination_label,outbound_hash,item_count,byte_count,status,dispatched_at)
+             VALUES ('new-ok','run1','api.ornek.com · m',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     1,10,'attempted','2026-01-01T00:00:00.000000Z')",
+            [],
+        )
+        .expect("meşru makbuz yazılabilir");
+    // Açılış uzlaştırması eski **attempted** satırı kapatır; kapanmışa dokunmaz.
+    assert_eq!(
+        db.reconcile_attempted_receipts().expect("uzlaştırma"),
+        2,
+        "legacy-open + new-ok kapanır, 'sent' satırına dokunulmaz"
+    );
+    let status_of = |id: &str| -> String {
+        db.conn()
+            .query_row(
+                "SELECT status FROM transfer_receipts WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("satır")
+    };
+    assert_eq!(status_of("legacy-open"), "interrupted");
+    assert_eq!(status_of("legacy-bad"), "sent");
+}
+
 /// v50 — maskeleme bölgesi kanıtı. v49 kasasında yazılmış **bozuk** bölgeler
 /// (negatif sayfa, bozuk JSON, yanlış uzay, boş kategori, `keep` kararı)
 /// güncellemede **silinmez**; ama donar (onarım yolu yeni plandır) ve kapanmış

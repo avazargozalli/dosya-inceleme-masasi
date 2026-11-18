@@ -3814,6 +3814,11 @@ mod tests {
     }
 
     /// En yeni makbuz önce gelir (ekran "son gönderim"i üstte yazar).
+    ///
+    /// Yaşlar **doğuşta** yazılır: v55 `dispatched_at`i dondurduğu için test
+    /// satırın damgasını sonradan değiştiremez — o değişiklik gerçek makbuzda
+    /// zaman yalanı olurdu. Sıra sözleşmesi bu yüzden doğrudan INSERT ile
+    /// kurulur; çekirdek yolu (`begin_transfer_receipt`) ayrı testlerde ölçülür.
     #[test]
     fn receipts_are_listed_newest_first() {
         let (db, case_id, _) = setup();
@@ -3821,29 +3826,368 @@ mod tests {
         let r = db
             .start_ai_run(&case_id, &run(&case_id, &c.id))
             .expect("çalıştır");
-        let older = db
-            .begin_transfer_receipt(&r.id, "a.example · m", &"1".repeat(64), 1, 1)
-            .expect("eski");
-        let newer = db
-            .begin_transfer_receipt(&r.id, "a.example · m", &"2".repeat(64), 1, 2)
-            .expect("yeni");
-        // Zaman damgası aynı milisaniyeye düşebilir; sıra sözleşmesini
-        // sabitlemek için yaşlar açıkça yazılır.
-        db.conn()
-            .execute(
-                "UPDATE transfer_receipts SET dispatched_at='2026-01-01T00:00:00Z' WHERE id=?1",
-                [&older],
-            )
-            .expect("eski zaman");
-        db.conn()
-            .execute(
-                "UPDATE transfer_receipts SET dispatched_at='2026-01-02T00:00:00Z' WHERE id=?1",
-                [&newer],
-            )
-            .expect("yeni zaman");
+        let insert = |id: &str, hash: &str, at: &str| {
+            db.conn()
+                .execute(
+                    "INSERT INTO transfer_receipts
+                       (id,ai_run_id,destination_label,outbound_hash,item_count,
+                        byte_count,status,dispatched_at)
+                     VALUES (?1,?2,'a.example · m',?3,1,1,'attempted',?4)",
+                    rusqlite::params![id, r.id, hash, at],
+                )
+                .expect("makbuz");
+        };
+        insert("older", &"1".repeat(64), "2026-01-01T00:00:00.000000Z");
+        insert("newer", &"2".repeat(64), "2026-01-02T00:00:00.000000Z");
         let rows = db.list_transfer_receipts(&case_id).expect("liste");
-        assert_eq!(rows[0].id, newer, "en yeni önce");
-        assert_eq!(rows[1].id, older);
+        assert_eq!(rows[0].id, "newer", "en yeni önce");
+        assert_eq!(rows[1].id, "older");
+    }
+
+    /// v55: aktarım makbuzu **dışarıya ne çıktığının** kaydıdır. Doğarken
+    /// iyi-biçimli ve `attempted` olmalı; sonuçlandıktan sonra hiçbir sütunu
+    /// değişmemeli, durumu yalnız denemeden sonuca **ilerlemeli**.
+    ///
+    /// Neden: ekran son gönderimleri bu satırdan basar; "nereye, kaç öğe, kaç
+    /// bayt, hangi içerik özetiyle, ne zaman" sorusunun tek kaydı budur.
+    /// Doğuştan `dispatched` yazan satır hiç denenmemiş gönderimi "gönderildi"
+    /// diye gösterir; sonradan çevrilen özet/hedef ise **denetim kanıtını**
+    /// yalancı yapar. Çekirdek yolu (`begin_transfer_receipt` →
+    /// `finish_transfer_receipt`) kapıdan geçer.
+    #[test]
+    fn transfer_receipt_is_born_attempted_and_frozen_after_its_verdict() {
+        let (db, case_id, _) = setup();
+        let c = consent(&db, &case_id);
+        let run = db
+            .start_ai_run(&case_id, &run(&case_id, &c.id))
+            .expect("çalıştır");
+        // Makbuzun dosya kapsamı `ai_runs.case_id` üzerinden kurulur; taşıma
+        // denemesi **başka dosyanın** çalıştırmasına yapılır (çaprazlaşma).
+        let other_case = case_titled(&db, "Başka dosya");
+        db.conn()
+            .execute(
+                "INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,prompt_version,
+                    output_schema_version,consent_id,status,usage_report,created_at)
+                 VALUES ('run-bare',?1,'summarize','m','h','p1','o1',NULL,'running','{}',
+                         '2026-01-01T00:00:00Z')",
+                [&other_case],
+            )
+            .expect("öteki çalıştırma");
+
+        let hex = "a".repeat(64);
+        let insert = |id: &str,
+                      run_id: &str,
+                      dest: &str,
+                      hash: &str,
+                      items: i64,
+                      bytes: i64,
+                      status: &str,
+                      at: &str| {
+            db.conn()
+                .execute(
+                    "INSERT INTO transfer_receipts
+                       (id,ai_run_id,destination_label,outbound_hash,item_count,
+                        byte_count,status,dispatched_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    rusqlite::params![id, run_id, dest, hash, items, bytes, status, at],
+                )
+                .map_err(StorageError::from)
+        };
+        const AT: &str = "2026-01-01T00:00:00.000000Z";
+        let h63 = "a".repeat(63);
+        let h_up = "A".repeat(64);
+        let h_nonhex = "Z".repeat(64);
+        let run_id = run.id.as_str();
+        // (1) Doğum kusurları: hiçbiri yazılmaz. (Yerel takma ad: sekiz alanlı
+        // demet clippy'nin `type_complexity` uyarısını haklı olarak tetikliyor.)
+        type BadRow<'a> = (
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a str,
+            i64,
+            i64,
+            &'a str,
+            &'a str,
+        );
+        let bad: Vec<BadRow<'_>> = vec![
+            // Denenmemiş gönderim "gönderildi" diyemez.
+            (
+                "tr-born-dispatched",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "dispatched",
+                AT,
+            ),
+            (
+                "tr-born-unknown",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "sent",
+                AT,
+            ),
+            // "Nereye" cevapsız olamaz.
+            ("tr-empty-dest", run_id, "", &hex, 2, 4096, "attempted", AT),
+            (
+                "tr-blank-dest",
+                run_id,
+                "   ",
+                &hex,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+            // İçerik özeti biçimi (v47/v53 ile aynı: 64 küçük harf hex).
+            (
+                "tr-hash-63",
+                run_id,
+                "api.ornek.com · m",
+                &h63,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+            (
+                "tr-hash-upper",
+                run_id,
+                "api.ornek.com · m",
+                &h_up,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+            (
+                "tr-hash-nonhex",
+                run_id,
+                "api.ornek.com · m",
+                &h_nonhex,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+            // Sıfır/negatif hacim "gönderim" değildir.
+            (
+                "tr-items-zero",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                0,
+                4096,
+                "attempted",
+                AT,
+            ),
+            (
+                "tr-items-negative",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                -1,
+                4096,
+                "attempted",
+                AT,
+            ),
+            (
+                "tr-bytes-zero",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                0,
+                "attempted",
+                AT,
+            ),
+            (
+                "tr-bytes-negative",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                -5,
+                "attempted",
+                AT,
+            ),
+            // Damga ISO-8601 olmalı.
+            (
+                "tr-at-text",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "attempted",
+                "dün",
+            ),
+            (
+                "tr-at-empty",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "attempted",
+                "",
+            ),
+            (
+                "tr-empty-id",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+            (
+                "tr-id-blank",
+                run_id,
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+            // Var olmayan çalıştırmanın makbuzu olamaz (fail-closed).
+            (
+                "tr-ghost-run",
+                "yok-run",
+                "api.ornek.com · m",
+                &hex,
+                2,
+                4096,
+                "attempted",
+                AT,
+            ),
+        ];
+        for (id, run_id, dest, hash, items, bytes, status, at) in bad {
+            // Boş kimlikler: `id` parametresi boş/boşluk olsun diye ikinci bir
+            // tablo yerine burada üretilir.
+            let id = match id {
+                "tr-empty-id" => "",
+                "tr-id-blank" => "   ",
+                other => other,
+            };
+            match insert(id, run_id, dest, hash, items, bytes, status, at) {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("transfer_receipts"), "{message}")
+                }
+                other => panic!("v55 bozuk makbuzu reddetmeli ({id}): {other:?}"),
+            }
+        }
+
+        // (2) Meşru doğum ve meşru sonuçlanma çekirdek yolundan geçer.
+        let receipt = db
+            .begin_transfer_receipt(&run.id, "api.ornek.com · m", &hex, 2, 4096)
+            .expect("meşru makbuz");
+        db.finish_transfer_receipt(&receipt, "dispatched")
+            .expect("gönderildi");
+
+        // (3) Sonuçlanmış makbuzun hiçbir kanıt sütunu değişmez.
+        let frozen = [
+            "UPDATE transfer_receipts SET destination_label='baska.example · m' WHERE id=?1",
+            "UPDATE transfer_receipts SET outbound_hash='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' WHERE id=?1",
+            "UPDATE transfer_receipts SET item_count=999 WHERE id=?1",
+            "UPDATE transfer_receipts SET byte_count=1 WHERE id=?1",
+            "UPDATE transfer_receipts SET dispatched_at='2026-02-01T00:00:00.000000Z' WHERE id=?1",
+            "UPDATE transfer_receipts SET ai_run_id='run-bare' WHERE id=?1",
+            // Sonuç geri alınamaz: satır yeniden "uçuşta" görünemez.
+            "UPDATE transfer_receipts SET status='attempted' WHERE id=?1",
+            // Kimlik takası en sonda: kabul edilseydi sonraki hükümler boşa düşerdi.
+            "UPDATE transfer_receipts SET id='baska-satir' WHERE id=?1",
+        ];
+        for sql in frozen {
+            match db
+                .conn()
+                .execute(sql, [&receipt])
+                .map_err(StorageError::from)
+            {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("transfer_receipts"), "{message}")
+                }
+                other => panic!("v55 makbuzu dondurmalı: {other:?} ({sql})"),
+            }
+        }
+        // Değişiklik yok yazımı takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE transfer_receipts SET status=status, byte_count=byte_count WHERE id=?1",
+                [&receipt],
+            )
+            .expect("değişiklik yok");
+
+        // (4) Bilinmeyen durum ne doğar ne yazılır; sonuçlanmış satır terminal.
+        let failed = db
+            .begin_transfer_receipt(&run.id, "api.ornek.com · m", &"b".repeat(64), 1, 10)
+            .expect("deneme");
+        db.finish_transfer_receipt(&failed, "failed")
+            .expect("başarısız");
+        // Henüz sonuçlanmamış satıra da kapalı küme dışı durum yazılamaz:
+        // kapı «her yeni durum serbest» değildir, yalnız üç sonucu tanır.
+        let orphan = db
+            .begin_transfer_receipt(&run.id, "api.ornek.com · m", &"c".repeat(64), 1, 12)
+            .expect("deneme");
+        for (sql, id, label) in [
+            (
+                "UPDATE transfer_receipts SET status='sent' WHERE id=?1",
+                orphan.as_str(),
+                "attempted satırda bilinmeyen durum",
+            ),
+            (
+                "UPDATE transfer_receipts SET status='sent' WHERE id=?1",
+                receipt.as_str(),
+                "sonuçlanmış satırda bilinmeyen durum",
+            ),
+            (
+                "UPDATE transfer_receipts SET status='dispatched' WHERE id=?1",
+                failed.as_str(),
+                "başarı uydurma",
+            ),
+        ] {
+            match db.conn().execute(sql, [id]).map_err(StorageError::from) {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("transfer_receipts"), "{message}")
+                }
+                other => panic!("v55 {label} reddetmeli: {other:?}"),
+            }
+        }
+
+        // (5) Kesilen deneme `interrupted` yazar (açılış uzlaştırması); reddedilen
+        // «sent» yazımı satırı `attempted` bıraktığı için uzlaştırma onu kapatır.
+        assert_eq!(db.reconcile_attempted_receipts().expect("uzlaştırma"), 1);
+        let rows = db.list_transfer_receipts(&case_id).expect("liste");
+        let status = |id: &str| {
+            rows.iter()
+                .find(|row| row.id == id)
+                .map(|row| row.status.clone())
+                .expect("satır")
+        };
+        assert_eq!(status(&receipt), "dispatched");
+        assert_eq!(status(&failed), "failed");
+        assert_eq!(status(&orphan), "interrupted");
+        // Saldırılar satırı **hiç** değiştirmedi: kanıt sütunları doğduğu gibi.
+        let (dest, hash, items, bytes): (String, String, i64, i64) = db
+            .conn()
+            .query_row(
+                "SELECT destination_label, outbound_hash, item_count, byte_count
+                 FROM transfer_receipts WHERE id=?1",
+                [&receipt],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("satır");
+        assert_eq!(dest, "api.ornek.com · m");
+        assert_eq!(hash, hex);
+        assert_eq!((items, bytes), (2, 4096));
     }
 
     /// Açılış uzlaştırması: sonucu yazılmadan kapanmış denemeler **interrupted**
