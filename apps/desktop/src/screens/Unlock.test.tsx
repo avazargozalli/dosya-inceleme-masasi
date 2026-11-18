@@ -23,8 +23,7 @@
 // 6. Kip değişince önceki kipin hatası ekranda kalmaz.
 // 7. Kurtarma kipi: yalnız anahtar alanı; anahtar kırpılarak gider (tire/boşluk
 //    normalizasyonu çekirdeğin işi), başarıda alan temizlenir.
-// 8. Faz kartı **çalışan** belge içe aktarmayı "henüz yok" diye yazmaz; dört
-//    satır da "gerçek" rozetini taşır (F05 tamamlandı, `document_import` var).
+// 8. Kasa rehberi, belge içe aktarmanın nereden yapılacağını açıklar.
 // 9. Anahtar ekranı App'in tuttuğu anahtardan çizilir: bileşen yeniden
 //    bağlansa da anahtar kaybolmaz (gezinme kaybı App düzeyinde çözüldü).
 
@@ -40,7 +39,10 @@ const mocks = vi.hoisted(() => ({
   createVault: vi.fn(),
   openVault: vi.fn(),
   openWithRecovery: vi.fn(),
+  directory: vi.fn(),
 }));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.directory }));
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -148,7 +150,10 @@ describe("kasa kapısı", () => {
     expect(screen.getByText(t("vaultInput.tooShort", { min: MIN_PASSWORD_LENGTH }))).toBeTruthy();
     expect(submitButton(t("unlock.submitCreate")).disabled).toBe(true);
 
+    fireEvent.change(confirm, { target: { value: "" } });
     fireEvent.change(password, { target: { value: PASSWORD } });
+    expect(screen.queryByText(t("vaultInput.mismatch"))).toBeNull();
+    fireEvent.change(confirm, { target: { value: "different" } });
     expect(screen.getByText(t("vaultInput.mismatch"))).toBeTruthy();
     expect(submitButton(t("unlock.submitCreate")).disabled).toBe(true);
 
@@ -316,6 +321,37 @@ describe("kasa kapısı", () => {
     expect((screen.getByLabelText(t("unlock.recoveryKeyLabel")) as HTMLInputElement).value).toBe("");
   });
 
+  it("kurtarma formunu boş konumla göndermez, geçerli konumla tek istek üretir", async () => {
+    mocks.openWithRecovery.mockResolvedValue(vaultInfo());
+    const { onUnlocked } = renderUnlock();
+    fireEvent.click(submitButton(t("unlock.modeRecovery")));
+    const key = screen.getByLabelText<HTMLInputElement>(t("unlock.recoveryKeyLabel"));
+    const path = screen.getByLabelText(t("unlock.pathLabel"));
+    fireEvent.change(key, { target: { value: RECOVERY_KEY } });
+    fireEvent.change(path, { target: { value: "   " } });
+    expect(submitButton(t("unlock.submitRecovery")).disabled).toBe(true);
+    fireEvent.submit(key.form!);
+    expect(mocks.openWithRecovery).not.toHaveBeenCalled();
+    fireEvent.change(path, { target: { value: DEFAULT_PATH } });
+    fireEvent.submit(key.form!);
+    await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1));
+    expect(mocks.openWithRecovery).toHaveBeenCalledWith(DEFAULT_PATH, RECOVERY_KEY);
+  });
+
+  it("klasör seçimini konuma yazar, iptalde korur ve kasayı kendiliğinden açmaz", async () => {
+    mocks.directory.mockResolvedValueOnce("/sentetik/kasa").mockResolvedValueOnce(null);
+    renderUnlock();
+    const picker = submitButton(t("unlock.chooseDirectory"));
+    const path = screen.getByLabelText<HTMLInputElement>(t("unlock.pathLabel"));
+    fireEvent.click(picker);
+    await waitFor(() => expect(path.value).toBe("/sentetik/kasa"));
+    expect(mocks.directory).toHaveBeenCalledWith({ directory: true, multiple: false, title: t("unlock.chooseDirectory") });
+    fireEvent.click(picker);
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    expect(path.value).toBe("/sentetik/kasa");
+    expect(mocks.createVault).not.toHaveBeenCalled();
+  });
+
   it("kurtarma düşerse hata yazılır, girilen anahtar korunur", async () => {
     mocks.openWithRecovery.mockRejectedValueOnce({ code: "E_RECOVERY", message: "Anahtar geçersiz." });
     renderUnlock();
@@ -349,7 +385,6 @@ describe("kasa kapısı", () => {
     const row = screen.getByText(t("unlock.phaseImport")).nextElementSibling;
     expect(row).toBeTruthy();
     expect(row!.textContent).toContain(t("unlock.phaseImportValue"));
-    expect(row!.querySelector(".badge")?.textContent).toBe(t("unlock.badgeReal"));
     // İçe aktarma F05'te tamamlandı (`document_import` + sürükle-bırak);
     // "henüz yok" demek kullanıcıya yanlış bilgi olurdu.
     expect(t("unlock.phaseImportValue")).not.toContain("henüz yok");

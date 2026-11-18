@@ -24,13 +24,13 @@ describe("sözlük", () => {
 
   it("parametre isteyen anahtar parametresiz çağrılırsa hata atar", () => {
     expect(() => t("shell.version")).toThrow(/parametre/);
-    expect(() => t("shell.comingLead")).toThrow(/parametre/);
+    expect(() => t("vaultInput.tooShort")).toThrow(/parametre/);
   });
 
   it("parametreleri doldurur", () => {
     expect(t("shell.version", { version: "0.1.0" })).toBe("v0.1.0");
-    expect(t("shell.comingLead", { phase: "F09" })).toContain("F09");
-    expect(t("shell.comingLead", { phase: "F09" })).not.toContain("{");
+    expect(t("vaultInput.tooShort", { min: 12 })).toContain("12");
+    expect(t("vaultInput.tooShort", { min: 12 })).not.toContain("{");
   });
 
   it("eksik parametrede yarım cümle göstermez, hata atar", () => {

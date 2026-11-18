@@ -181,6 +181,17 @@ afterEach(() => {
   localStorage.clear();
 });
 
+it("dar pencere gezinmesinde kilit denetimini ve etkin ekranı korur", async () => {
+  mocks.status.mockResolvedValue(LOCKED);
+  await mount();
+  const menu = screen.getByRole("combobox", { name: "Ana gezinme" });
+  fireEvent.change(menu, { target: { value: "files" } });
+  expect(screen.getByRole("heading", { name: "Kasa kilitli" })).toBeTruthy();
+  expect(mocks.caseList).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Kasa ekranına git" }));
+  expect((menu as HTMLSelectElement).value).toBe("vault");
+});
+
 /* ------------------------------------------------------- otomatik kilit */
 
 describe("kabuk: otomatik kilit", () => {

@@ -47,21 +47,39 @@ type Screen =
 // eski sürüm/faz etiketi yazıyordu; uygulama F04'teyken etiket bayat kalmıştı.
 const APP_VERSION: string = appVersion;
 
-const NAV: Array<{ id: Screen; labelKey: MessageKey; phase?: string }> = [
-  { id: "vault", labelKey: "nav.vault" },
-  { id: "files", labelKey: "nav.files", phase: "F04" },
-  { id: "search", labelKey: "nav.search", phase: "F07" },
-  { id: "timeline", labelKey: "nav.timeline", phase: "F08" },
-  { id: "tasks", labelKey: "nav.tasks", phase: "F08" },
-  { id: "checklists", labelKey: "nav.checklists", phase: "F08" },
-  { id: "review", labelKey: "nav.review", phase: "F08" },
-  { id: "precedents", labelKey: "nav.precedents" },
-  { id: "redaction", labelKey: "nav.redaction" },
-  { id: "exports", labelKey: "nav.exports" },
-  { id: "ai", labelKey: "nav.ai" },
-  { id: "ai-review", labelKey: "nav.aiReview" },
-  { id: "settings", labelKey: "nav.settings" },
+type NavItem = { id: Screen; labelKey: MessageKey; icon: string };
+
+const NAV_GROUPS: Array<{ label: MessageKey; items: NavItem[] }> = [
+  {
+    label: "nav.group",
+    items: [
+      { id: "vault", labelKey: "nav.vault", icon: "M4 7h16v14H4z M3 3h18v4H3z M9 11h6" },
+      { id: "files", labelKey: "nav.files", icon: "M3 6h7l2 3h9v11H3z" },
+      { id: "search", labelKey: "nav.search", icon: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z M15 15l6 6" },
+      { id: "timeline", labelKey: "nav.timeline", icon: "M6 3v18 M6 6h12 M6 12h8 M6 18h14" },
+      { id: "tasks", labelKey: "nav.tasks", icon: "M3 12l6 6L21 5" },
+      { id: "checklists", labelKey: "nav.checklists", icon: "M3 6l2 2 3-4 M11 6h10 M3 15l2 2 3-4 M11 15h10" },
+    ],
+  },
+  {
+    label: "nav.analysisGroup",
+    items: [
+      { id: "review", labelKey: "nav.review", icon: "M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h4" },
+      { id: "precedents", labelKey: "nav.precedents", icon: "M3 4h4v16H3z M10 4h4v16h-4z M16 6l3-1 3 14-3 1z" },
+      { id: "redaction", labelKey: "nav.redaction", icon: "M4 5h16 M4 9h16v5H4z M4 18h10" },
+      { id: "exports", labelKey: "nav.exports", icon: "M12 15V3 M7 8l5-5 5 5 M4 14v6h16v-6" },
+    ],
+  },
+  {
+    label: "nav.toolsGroup",
+    items: [
+      { id: "ai", labelKey: "nav.ai", icon: "M8 3v5 M16 3v5 M6 8h12v3a6 6 0 0 1-12 0z M12 17v4" },
+      { id: "ai-review", labelKey: "nav.aiReview", icon: "M3 4h18v12H9l-6 5z M7 8h10 M7 12h6" },
+      { id: "settings", labelKey: "nav.settings", icon: "M3 7h8m4 0h6 M3 17h3m4 0h11 M11 4h4v6h-4z M6 14h4v6H6z" },
+    ],
+  },
 ];
+const NAV = NAV_GROUPS.flatMap((group) => group.items);
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("vault");
@@ -201,10 +219,17 @@ export function App() {
     };
   }, [lockNow]);
 
+  const contentRef = useRef<HTMLDivElement>(null);
+  function navigate(next: Screen) {
+    setScreen(next);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }
+
   const locked = !status.unlocked;
 
   return (
     <div className="app">
+      <a className="skip-link" href="#workspace-content">{t("shell.skip")}</a>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">{t("shell.mark")}</div>
@@ -215,25 +240,40 @@ export function App() {
         </div>
 
         <nav className="nav" aria-label={t("nav.aria")}>
-          <div className="nav-label">{t("nav.group")}</div>
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              className="nav-item"
-              aria-current={screen === item.id ? "page" : undefined}
-              onClick={() => setScreen(item.id)}
-            >
-              <span>{t(item.labelKey)}</span>
-              {item.phase ? <span className="nav-tag">{item.phase}</span> : null}
-            </button>
+          <select
+            className="nav-select input"
+            aria-label={t("nav.aria")}
+            value={screen}
+            onChange={(event) => {
+              const item = NAV.find(({ id }) => id === event.target.value);
+              if (item) navigate(item.id);
+            }}
+          >
+            {NAV_GROUPS.map((group) => (
+              <optgroup key={group.label} label={t(group.label)}>
+                {group.items.map((item) => <option key={item.id} value={item.id}>{t(item.labelKey)}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <div className="nav-label">{t(group.label)}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  className="nav-item"
+                  aria-current={screen === item.id ? "page" : undefined}
+                  onClick={() => navigate(item.id)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d={item.icon} /></svg>
+                  {t(item.labelKey)}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
         <div className="sidebar-foot">
-          <div className="lock-state">
-            <span className={status.unlocked ? "dot ok" : "dot locked"} aria-hidden="true" />
-            {status.unlocked ? t("shell.unlocked") : t("shell.locked")}
-          </div>
           <div className="muted small">{t("shell.version", { version: APP_VERSION })}</div>
         </div>
       </aside>
@@ -244,14 +284,20 @@ export function App() {
             {t("shell.crumbRoot")} <span aria-hidden="true">/</span>{" "}
             <strong>{t(NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot")}</strong>
           </div>
-          {status.unlocked ? (
-            <button className="btn" disabled={locking} onClick={() => void lockNow()}>
-              {t("shell.lock")}
-            </button>
-          ) : null}
+          <div className="topbar-actions">
+            <div className="lock-state">
+              <span className={status.unlocked ? "dot ok" : "dot locked"} aria-hidden="true" />
+              {status.unlocked ? t("shell.unlocked") : t("shell.locked")}
+            </div>
+            {status.unlocked ? (
+              <button className="btn" disabled={locking} onClick={() => void lockNow()}>
+                {t("shell.lock")}
+              </button>
+            ) : null}
+          </div>
         </header>
 
-        <div className="content">
+        <div id="workspace-content" className="content" ref={contentRef} tabIndex={-1}>
           {error ? (
             <div className="notice danger" role="alert">
               <strong>{error.code}</strong> — {error.message}
@@ -259,7 +305,7 @@ export function App() {
           ) : null}
 
           {!canShowScreen(screen, locked) ? (
-            <LockedNotice onUnlock={() => setScreen("vault")} />
+            <LockedNotice onUnlock={() => navigate("vault")} />
           ) : screen === "vault" ? (
             pendingKey || locked ? (
               <Unlock
@@ -274,7 +320,7 @@ export function App() {
                 }}
               />
             ) : (
-              <Workspace status={status} />
+              <Workspace status={status} onOpenFiles={() => navigate("files")} />
             )
           ) : screen === "files" ? (
             <Cases />
@@ -298,13 +344,8 @@ export function App() {
             <Tasks />
           ) : screen === "checklists" ? (
             <Checklists />
-          ) : screen === "settings" ? (
-            <Settings />
           ) : (
-            <ComingPhase
-              labelKey={NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot"}
-              phase={NAV.find((n) => n.id === screen)?.phase ?? ""}
-            />
+            <Settings />
           )}
         </div>
       </main>
@@ -326,20 +367,6 @@ function LockedNotice({ onUnlock }: { onUnlock: () => void }) {
         <button className="btn primary" onClick={onUnlock}>
           {t("shell.goVault")}
         </button>
-      </div>
-    </div>
-  );
-}
-
-function ComingPhase({ labelKey, phase }: { labelKey: MessageKey; phase: string }) {
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h1>{t(labelKey)}</h1>
-        <p className="lead">{t("shell.comingLead", { phase })}</p>
-      </div>
-      <div className="empty">
-        <p style={{ margin: 0 }}>{t("shell.comingEmpty")}</p>
       </div>
     </div>
   );

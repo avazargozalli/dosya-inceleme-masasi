@@ -15,8 +15,8 @@
 // Dürüst sınır: bu bir **görünüm** testidir — ekran Tauri penceresinde
 // açılmadı, CSS/yerleşim ölçülmedi.
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { t } from "../lib/i18n";
 import type { VaultStatus } from "../lib/api";
@@ -35,7 +35,7 @@ afterEach(cleanup);
 
 describe("çalışma alanı ekranı", () => {
   it("kurulum adımlarını ve kasa rozetini yazar", () => {
-    render(<Workspace status={STATUS} />);
+    render(<Workspace onOpenFiles={vi.fn()} status={STATUS} />);
 
     const steps = screen.getByLabelText(t("steps.aria"));
     expect(steps.textContent).toContain(t("steps.vault"));
@@ -52,7 +52,7 @@ describe("çalışma alanı ekranı", () => {
   });
 
   it("kasa kimliğini ve konumunu sunucudan yazar", () => {
-    render(<Workspace status={STATUS} />);
+    render(<Workspace onOpenFiles={vi.fn()} status={STATUS} />);
 
     const idTerm = screen.getByText(t("workspace.idLabel"));
     expect(idTerm.nextElementSibling?.textContent).toBe("vault-9f2c");
@@ -65,7 +65,7 @@ describe("çalışma alanı ekranı", () => {
   });
 
   it("eksik kimlik/konumda boş hücre değil '—' yazar", () => {
-    render(<Workspace status={{ ...STATUS, vaultId: null, vaultPath: null }} />);
+    render(<Workspace onOpenFiles={vi.fn()} status={{ ...STATUS, vaultId: null, vaultPath: null }} />);
 
     const idTerm = screen.getByText(t("workspace.idLabel"));
     expect(idTerm.nextElementSibling?.textContent).toBe(t("common.unknown"));
@@ -73,12 +73,15 @@ describe("çalışma alanı ekranı", () => {
     expect(pathTerm.nextElementSibling?.textContent).toBe(t("common.unknown"));
   });
 
-  it("'Sıradaki' kartını sözlükten yazar", () => {
-    render(<Workspace status={STATUS} />);
+  it("inceleme dosyalarına geçiş sunar", () => {
+    const onOpenFiles = vi.fn();
+    render(<Workspace onOpenFiles={onOpenFiles} status={STATUS} />);
 
     expect(screen.getByRole("heading", { level: 2, name: t("workspace.cardTitle") })).toBeTruthy();
     expect(screen.getByText(t("workspace.cardSub"))).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: t("workspace.nextTitle") })).toBeTruthy();
     expect(screen.getByText(t("workspace.nextBody"))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t("workspace.openFiles") }));
+    expect(onOpenFiles).toHaveBeenCalledTimes(1);
   });
 });

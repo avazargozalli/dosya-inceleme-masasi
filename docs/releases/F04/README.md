@@ -4247,3 +4247,11 @@ clippy `-p dim-ingest --all-targets -D warnings` temiz, tauri clippy
 
 - Erişilebilirlik (klavye/ekran okuyucu) tam denetimi F15'te.
 - Çoklu pencere yok; tek yazıcı kuralı korunur.
+
+## Kasa girişi ve uyarlanabilir gezinme (18 Kasım 2026)
+
+F04-T01, F04-T09 ve F04-T10 kapsamında REQ-001 ve REQ-031 için kasa giriş formu ve ortak gezinme güncellendi. Dar pencerede ekran seçicisi tüm bölümlere erişim sağlıyor. Form Enter ile gönderilebiliyor. Klasör seçimi mevcut Tauri diyaloğunu kullanıyor. Kurtarma işleminde boş konum gönderimi engelleniyor. Açık kasa ekranından inceleme dosyalarına geçilebiliyor.
+
+macOS üzerinde 66 Vitest dosyasında 1437 test ve dört sözleşme testi geçti. Beş üretilmiş sözleşme günceldi. TypeScript denetimi ve üretim derlemesi tamamlandı. Vite, ana JavaScript parçasının 500 kB uyarı eşiğini aştığını bildirdi.
+
+Chrome'da üretim çıktısı 1280×840 (açık ve koyu), 960×620 (açık), 640×420 (koyu) ve 320×568 (açık) boyutlarında kontrol edildi. Kasa giriş ekranında yatay taşma ölçülmedi. Sentetik IPC yanıtlarıyla Enter üzerinden tek açma isteği, dosya listesine geçiş ve yeniden kilitleme doğrulandı. Yüksek kontrast benzetiminde seçili düğmenin kenarlığı ve klavyeyle içeriğe geçiş kontrol edildi. Yerel işletim sistemi klasör diyaloğu, paketli Tauri uygulaması, VoiceOver ve NVDA elle sınanmadı.
