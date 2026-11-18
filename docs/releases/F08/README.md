@@ -2969,3 +2969,99 @@ kapılıdır. (i) Tetikleyicileri anahtarı olan saldırgan düşürebilir. (j) 
 değişmedi; gerçek pencere + görsel QA **insan bekliyor**. (k) Saf **kapsam** ihlalleri
 (segment/sayfa başka koşuda, koşu başka dosyada) bilinçli olarak **0031'in sınıfında** kalır:
 bu kapı yalnız aynı koşudaki satırın kanıtını ölçer.
+
+## F08-T04aa — maskeleme bölgesi sayfanın kanıtıdır: var olan sayfa, pozitif alan, kırpma kutusu (şema v54, 2026-11-18)
+
+**Neden bu dilim.** `redaction_regions` satırı **maskenin kendisidir**: hangi sayfada
+hangi dikdörtgenin karartıldığı. 0050 bu satırın biçimini ve değişmezliğini kapıladı, ama
+kapanış sınırı (c) açıkça şunu bıraktı: «`quads` koordinatlarının sayfa sınırları içinde
+olduğu veya sayfa sayısıyla tutarlılığı doğrulanmaz». Oysa ekran plan kartında «N bölge»
+ve sayfa kırılımını («Sayfa 5: 2 bölge») doğrudan bu satırlardan basar;
+`outbound_terms_from_plan` bölgenin `page_index`ini planın maskede kullanacağı ayrıştırma
+koşusunda arar — sayfa yoksa maskeleme **komple** reddedilir; `block_terms` yalnız
+bölgeyle kesişen bloklardan terim üretir — sayfa dışına taşan kutu hiçbir metinle
+kesişmez («kesişen metin bloğu yok» hatası), sayfayı aşan kutu ise gereğinden fazla
+maskeler. Kusur sessiz sızıntı değil **kanıt yalanıdır**: plan «sayfa 5'i maskeledim»
+der, oysa belge 2 sayfadır. Tur başında `HEAD == origin/main` = `5349c9a`; disk **4,7 G**;
+ağaçta yalnız **başka ajanın 9 arayüz dosyası** (2026-11-07'den beri) — dokunulmadı.
+**Önceki koşunun artığı:** v53 işi ağaçta commit'lenmiş ama durum dosyası yazılamadan
+koşu düşmüştü; bu tur v53'ün **iki CI'sını** (`44269861491`, `44272796359`) **10/10 yeşil**
+ölçtü ve durum dosyasını tamamladı.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v53; sonda
+`~/.hermes/cache/scratch/dim-v54-probe/measure_v54.py`, log `measure_before.log`):**
+25 yazımın **12 kusuru 12/12 KABUL** (11 meşru yazma KABUL; 2 yazım zaten RED — kapanmış
+plan ve 0050'nin UPDATE dondurması): koşuda olmayan sayfa (3 ve 9); planın **bildirdiği**
+koşuda olmayan ama en yeni koşuda olan sayfa (2); ters dikdörtgen (`x0 > x1`); sıfır
+genişlik; sıfır yükseklik; genişliği aşan kutu (900 > 595); negatif x (−50); negatif y
+(−50); yüksekliği aşan kutu (900 > 842); iki dörtlüden yalnız biri taşan; 2 punto taşma;
+−1,5 punto negatif taşma.
+
+**Yazılan (şema v54, `0054_redaction_region_page_bound_guard.sql`, tek tetikleyici —
+0050'nin INSERT kapısı `DROP TRIGGER` + `CREATE TRIGGER` ile genişletildi; aynı sütun
+kümesinde ikinci bir BEFORE INSERT tetikleyicisi sıra belirsizliği ve farklı hata sınıfı
+üretirdi).** 0050'nin bütün cümleleri aynen durur, üstüne üç cümle eklenir:
+1. **Sayfa var olmalı:** bölge, planın maskede kullanılacak koşusunda var olan bir
+   `page_index` göstermeli — plan `parse_run_id` **bildirdiyse o**, bildirmediyse
+   çekirdeğin seçtiği **en yeni sayfalı koşu** esastır; sayfa kümesi yalnız
+   **tamamlanmış** (`status='succeeded'`) koşuda belgelenmiş sayılır (yarım kalmış
+   koşuda eksik sayfa «yalan» değildir).
+2. **Dikdörtgen pozitif alanlı olmalı:** her dörtlüde `x0 < x1` ve `y0 < y1` —
+   ters/çakışık kutu bugüne dek `rects_overlap`ın min/max normalleştirmesi yüzünden
+   sessizce kabul ediliyordu.
+3. **Kutu sayfanın içinde kalmalı:** sayfanın `width`/`height` bilinen ekseninde her
+   dörtlü `[−1, width+1] × [−1, height+1]` aralığında. **1 punto yuvarlama payı
+   bilinçli:** önizleme ölçeği `72/dpi` ve piksel yuvarlaması, görüntü kenarına dayanan
+   seçimde kutuyu bir puana kadar taşırabilir; pay gerçek taşmayı (≥2 punto) yakalar.
+   Boyut NULL olan eksen karşılaştırmada NULL'a düşer ve **denetlenmez** — ayrı bir
+   `IS NOT NULL` cümlesi etkisiz olurdu, yazılmadı.
+Değişmeyen yazma takılmaz; UPDATE kapısı 0050'deki gibi sekiz sütunu dondurmaya devam
+eder (bu göç ona dokunmadı). Ret `DIM_INTEGRITY:redaction_regions` →
+`StorageError::Integrity` → **`E_DB_INTEGRITY`**. Tablo `case_id` taşımaz →
+`GUARDED_TABLES` **25 kalır**.
+
+**Çekirdek hizası.** Ek kapı gerekmedi: `add_redaction_regions` bölgeleri ya worker'ın
+**gerçek isabetlerinden** (terim maskesi; sayfa/rect PDF'ten gelir) ya kullanıcının
+önizlemede çizdiği dikdörtgenlerden (bölge maskesi; UI min/max normalleştirir ve ≥2 punto
+ister) yazar. Şema kapısı doğrudan SQL yolunu da kapsayan **yedek**tir.
+
+**Testler.** `redactions` +1 (`redaction_region_must_lie_on_a_parsed_page_inside_its_box`:
+12 doğum kusuru reddedilir; kenara dayanan kutu (+0,5 punto), negatif yuvarlama payı
+(−0,5), iki geçerli dörtlü, geometrisi NULL sayfa, yarım (`partial`) koşu ve tamamlanmış
+ama **sayfasız** koşu kabul edilir; çekirdeğin yolu da aynı kapıdan geçer), `upgrade_tests`
++1 (`upgrade_keeps_redaction_regions_written_before_the_page_bound_gate`: v53'te yazılmış
+sayfa dışı bölge silinmez/düzeltilmez, donar; yeni sayfa dışı bölge doğamaz, meşru
+doğar) → `dim-storage --lib` **701 → 703**; yerelde **703/703 yeşil, 572,96 s**; fmt (iki
+manifest) / clippy `-D warnings` `--all-targets` (1 dk 35 s) / masaüstü
+`cargo check --all-targets` (2 dk 20 s) temiz. **Mevcut test düzeltmesi gerekmedi**
+(fikstürlerde sayfa dışı meşru bölge yoktu).
+
+**Kapı kanıtı.** Taban **4/4 yeşil** (mutasyonsuz, filtre `redaction_region`), ardından
+**10/10 mutant KIRMIZI** (`~/.hermes/cache/scratch/dim-v54-probe/gates_v54.py`, log
+`gates_v54.log`): sayfa eşleşmesi, bildirilen koşunun yok sayılması, `status='succeeded'`
+koşulu, «koşuda sayfa var mı» ön koşulu, pozitif alanın x ve y ekseni, sınırın dört
+karşılaştırması (negatif x, negatif y, genişlik, yükseklik) tek tek nötrlendi. Kaynak
+**byte-birebir** geri yazıldı (`sha256` önce = sonra
+`0054…sql e0b90c8e2e715836…`). Ölçüm sonrası: 25 yazımın **14'ü RED** (12 hedef + 2 zaten
+RED), 11 meşru KABUL (`measure_after.log`). **Dürüst (ilk koşu 8/9):** M6 (negatif y
+sınırı) YEŞİL kaldı çünkü testte yalnız **x** negatifti; `[[10,−50,50,100]]` satırı
+eklendi, ölçüm ve kapı yeniden koşuldu (10/10) — ilk 8 hükmün M6'sı kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `2d161da` (4 dosya, **+514/−1**) → run `44291069814` **10/10
+YEŞİL** (`dim-storage` **703** iki OS'ta birebir: macos-15 **371,26 s** / ubuntu-latest
+**834,60 s**; `arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB —
+**değişmedi**, arayüz kodu değişmedi; `masaüstü kabuk`, `windows güvenli depo`, SBOM,
+sözleşmeler, belge worker'ı, sürüm paketi manifesti ve kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) Ayrıştırılmış **hiç sayfası olmayan** ya da ayrıştırması
+**tamamlanmamış** (`running`/`partial`/`failed`/`cancelled`) sürümde sayfa varlığı
+denetlenmez — maske PDF'i zaten maskeler, yarım koşuda eksik sayfa yalan sayılmaz;
+(b) `width`/`height` NULL olan eksende sınır denetlenmez; kutu biçimi yine denetlenir;
+(c) kutu sayfadaki metni **gerçekten** kapsıyor mu doğrulanmaz (kesişim
+`outbound_terms_from_plan` ve maskeleme doğrulamasının işidir); (d) rotasyon
+denetlenmez — döndürülmüş sayfa maskede zaten reddedilir, bu kapı yalnız kırpma kutusu
+uzayını ölçer; (e) v54 öncesi sayfa dışı bölgeler **silinmez** ve donmuş oldukları için
+onarılamaz — onarım yolu yeni plandır, temizlik ürün kararı; (f) `parse_run_id` boş
+metinse (`''`) bildirilmemiş sayılır ve en yeni sayfalı koşuya düşülür; (g) tetikleyicileri
+anahtarı olan saldırgan düşürebilir; (h) arayüz davranışı değişmedi; gerçek pencere +
+görsel QA **insan bekliyor**.
