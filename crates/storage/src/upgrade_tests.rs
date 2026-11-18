@@ -2408,6 +2408,140 @@ fn upgrade_keeps_precedents_written_before_the_identity_gate() {
     assert_eq!(terms.usage_basis, "licence");
 }
 
+/// v57 — kullanım koşulu iddiası. v56 kasasında yazılmış **kanıtsız**
+/// `allowed` satırları (dayanak `unknown`/`internal_only`, yazılı dayanak ve
+/// damga yok) güncellemede **silinmez, kendiliğinden düzelmez**; kapı yalnız
+/// yeni tutarsızlığı durdurur. 0056'nın aksine burada **onarım yolu açıktır**:
+/// aynı satır dayanak + yazılı kanıt + damga ile tutarlı hâle getirilebilir.
+#[test]
+fn upgrade_keeps_precedents_written_before_the_usage_terms_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 56);
+        conn.execute_batch(
+            "INSERT INTO precedents
+               (id,court,completeness,created_at,usage_basis,redistribution,
+                terms_url,terms_note,terms_recorded_at)
+             VALUES ('legacy-unbacked','Yargitay','incomplete','2026-01-01T00:00:00Z',
+                     'unknown','allowed',NULL,'',NULL),
+                    ('legacy-internal','Danistay','incomplete','2026-01-01T00:00:00Z',
+                     'internal_only','allowed','https://example.invalid/karar','',NULL),
+                    ('legacy-half','Yargitay','incomplete','2026-01-01T00:00:00Z',
+                     'official_public','allowed','https://example.invalid/karar','',NULL),
+                    ('legacy-ok','Yargitay','incomplete','2026-01-01T00:00:00Z',
+                     'licence','allowed','https://example.invalid/karar','CC-BY',
+                     '2026-01-01T00:00:00Z');",
+        )
+        .expect("v56 koşul satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM precedents", [], |row| row.get(0))
+        .expect("sayım");
+    assert_eq!(count, 4, "satırlar silinmez");
+    // Eski kanıtsız izin **düzeltilmez**: sütun «izinli» demeye devam eder.
+    let (basis, redistribution, stamp): (String, String, Option<String>) = db
+        .conn()
+        .query_row(
+            "SELECT usage_basis, redistribution, terms_recorded_at FROM precedents
+              WHERE id='legacy-unbacked'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (basis.as_str(), redistribution.as_str(), stamp.as_deref()),
+        ("unknown", "allowed", None),
+        "v57 eski iddiayı onarmaz"
+    );
+
+    // Koşul sütunlarına dokunmayan yazma takılmaz (no-op).
+    db.conn()
+        .execute(
+            "UPDATE precedents SET terms_note='' WHERE id='legacy-unbacked'",
+            [],
+        )
+        .expect("no-op yazma takılmamalı");
+    // Hâlâ kanıtsız kalan değişiklik reddedilir.
+    for sql in [
+        "UPDATE precedents SET terms_note='başka' WHERE id='legacy-unbacked'",
+        "UPDATE precedents SET terms_note='kurum izni' WHERE id='legacy-internal'",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("precedents"), "mesaj: {message}")
+            }
+            other => panic!("v57 kanıtsız iddiayı dondurmalı: {other:?} ({sql})"),
+        }
+    }
+    // Onarım yolu **açık**: dayanak + yazılı kanıt + damga birlikte yazılır.
+    for (id, basis) in [
+        ("legacy-unbacked", "licence"),
+        ("legacy-internal", "permission"),
+    ] {
+        db.conn()
+            .execute(
+                "UPDATE precedents SET usage_basis=?1, terms_note='yazılı izin',
+                        terms_recorded_at='2026-02-01T00:00:00Z'
+                  WHERE id=?2",
+                rusqlite::params![basis, id],
+            )
+            .unwrap_or_else(|error| panic!("v57 onarımı engellememeli ({id}): {error}"));
+    }
+    // Yeni kanıtsız izin doğamaz.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO precedents
+               (id,court,completeness,created_at,usage_basis,redistribution,
+                terms_url,terms_note,terms_recorded_at)
+             VALUES ('new-bad','Yargitay','incomplete','2026-01-01T00:00:00Z',
+                     'unknown','allowed',NULL,'',NULL)",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("precedents"), "mesaj: {message}")
+        }
+        other => panic!("v57 kanıtsız izni reddetmeli: {other:?}"),
+    }
+    // Çekirdek yolu (izin + yazılı dayanak) çalışmaya devam eder.
+    let p = db
+        .create_precedent(&NewPrecedent {
+            court: "Yargıtay".into(),
+            chamber: None,
+            docket_no: Some("2024/1".into()),
+            decision_no: Some("2025/2".into()),
+            application_no: None,
+            decision_date: None,
+            title: None,
+            source_url: None,
+            user_tags: vec![],
+            legal_issue: None,
+        })
+        .expect("meşru künye");
+    let terms = db
+        .set_precedent_usage_terms(
+            &p.id,
+            &SetUsageTermsInput {
+                usage_basis: "permission".into(),
+                redistribution: "allowed".into(),
+                terms_url: None,
+                terms_note: "kurumdan yazılı izin 03.06.2026".into(),
+            },
+        )
+        .expect("koşul yazımı");
+    assert_eq!(terms.redistribution, "allowed");
+    assert!(terms.terms_recorded_at.is_some());
+}
+
 /// v50 — maskeleme bölgesi kanıtı. v49 kasasında yazılmış **bozuk** bölgeler
 /// (negatif sayfa, bozuk JSON, yanlış uzay, boş kategori, `keep` kararı)
 /// güncellemede **silinmez**; ama donar (onarım yolu yeni plandır) ve kapanmış

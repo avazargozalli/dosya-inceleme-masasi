@@ -9,6 +9,13 @@
 //! bir izinsiz kayıt varsa **hiçbir metin** dosyaya yazılmaz; sessizce eksik
 //! korpus üretilmez.
 //!
+//! v57: `allowed` iddiası **dışa aktarma anında yeniden denetlenir** — dayanak
+//! türü dağıtılabilir olmalı, yazılı dayanak (bağlantı ya da not) bulunmalı ve
+//! kayıt damgası taşınmalı. Şema kapısı (0057) yeni yazmayı buna zorlar; bu
+//! denetim v57 öncesi ya da elle değiştirilmiş satırlar içindir: kanıtsız
+//! `allowed` **izin sayılmaz**, metni dosyaya yazılmaz ve `redistribution_unknown`
+//! («izin kaydı yok») olarak raporlanır.
+//!
 //! Bu katman ağ isteği yapmaz, dosya yazmaz; dosya yazımı ve denetim kaydı
 //! Tauri komutundadır (`precedent_corpus_export`).
 
@@ -113,7 +120,10 @@ pub struct CorpusExcluded {
     pub precedent_id: String,
     pub court: String,
     pub docket_no: Option<String>,
-    /// `redistribution_not_allowed` | `redistribution_unknown`
+    /// `redistribution_not_allowed` | `redistribution_unknown`.
+    /// Kanıtsız `allowed` iddiası (dayanak türü dağıtılabilir değil, yazılı
+    /// dayanak ya da damga yok) **izin sayılmaz** ve `redistribution_unknown`
+    /// olarak raporlanır — sütun «izinli» dese de geçerli izin kaydı yoktur.
     pub reason: String,
 }
 
@@ -164,15 +174,35 @@ struct CorpusRecord {
     usage_basis: String,
     redistribution: String,
     terms_url: Option<String>,
+    terms_note: String,
+    terms_recorded_at: Option<String>,
     text: Option<String>,
     acquired_at: Option<String>,
     char_count: i64,
 }
 
 impl CorpusRecord {
+    /// `allowed` iddiası **desteklenmiş** mi: dayanak türü dağıtılabilir
+    /// (yalnız iç kullanım/bilinmeyen dağıtılamaz), yazılı dayanak var
+    /// (bağlantı ya da not) ve kayıt damgası taşınıyor. 0057 şema kapısı yeni
+    /// yazmayı buna zorlar; burada aynı kural **okuma anında** uygulanır çünkü
+    /// korpus metni dosyaya yazar — sütuna güvenmek yetmez.
+    fn permission_backed(&self) -> bool {
+        DISTRIBUTABLE_BASES.contains(&self.usage_basis.as_str())
+            && (self
+                .terms_url
+                .as_deref()
+                .is_some_and(|url| !url.trim().is_empty())
+                || !self.terms_note.trim().is_empty())
+            && self
+                .terms_recorded_at
+                .as_deref()
+                .is_some_and(|at| !at.trim().is_empty())
+    }
+
     fn exclusion_reason(&self) -> Option<&'static str> {
         match self.redistribution.as_str() {
-            "allowed" => None,
+            "allowed" if self.permission_backed() => None,
             "not_allowed" => Some("redistribution_not_allowed"),
             _ => Some("redistribution_unknown"),
         }
@@ -397,7 +427,7 @@ impl Database {
     fn load_corpus_records(&self) -> Result<Vec<CorpusRecord>, StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT p.id,p.court,p.chamber,p.docket_no,p.decision_no,p.decision_date,p.title,p.source_url,
-                    p.usage_basis,p.redistribution,p.terms_url,
+                    p.usage_basis,p.redistribution,p.terms_url,p.terms_note,p.terms_recorded_at,
                     v.full_text,v.acquired_at,coalesce(v.text_char_count,0)
              FROM precedents p
              LEFT JOIN precedent_versions v ON v.id = (
@@ -423,9 +453,11 @@ impl Database {
                 usage_basis: row.get(8)?,
                 redistribution: row.get(9)?,
                 terms_url: row.get(10)?,
-                text: row.get(11)?,
-                acquired_at: row.get(12)?,
-                char_count: row.get(13)?,
+                terms_note: row.get(11)?,
+                terms_recorded_at: row.get(12)?,
+                text: row.get(13)?,
+                acquired_at: row.get(14)?,
+                char_count: row.get(15)?,
             })
         })?;
         let mut out = Vec::new();
@@ -451,16 +483,16 @@ fn coverage_of(records: &[CorpusRecord]) -> CorpusCoverage {
             continue;
         }
         coverage.with_text += 1;
-        match record.redistribution.as_str() {
-            "allowed" => coverage.allowed += 1,
-            "not_allowed" => {
+        match record.exclusion_reason() {
+            None => coverage.allowed += 1,
+            Some("redistribution_not_allowed") => {
                 coverage.not_allowed += 1;
                 coverage.blocked_total += 1;
                 if coverage.blocked.len() < MAX_BLOCKED_LIST {
                     coverage.blocked.push(record.excluded());
                 }
             }
-            _ => {
+            Some(_) => {
                 coverage.unknown += 1;
                 coverage.blocked_total += 1;
                 if coverage.blocked.len() < MAX_BLOCKED_LIST {
@@ -789,5 +821,363 @@ mod tests {
             CorpusMode::parse("hepsi").expect_err("bilinmeyen").code(),
             "E_TERMS"
         );
+    }
+
+    /// v57: **kullanım koşulu iddiası** doğuşta ve her yazımda tutarlı olmalı.
+    ///
+    /// Ölçülen kusur (gerçek SQLite v56, `measure_before.log`): 37 kusur
+    /// yazımının **37'si** kabul ediliyordu — `allowed` dayanaksız doğabiliyordu
+    /// (dağıtım kapısı yalnız `redistribution` sütununa baktığı için metin
+    /// **dosyaya** yazılıyordu), url `ftp://`/şemasız/kırpılmamış olabiliyor,
+    /// not ve damga biçimsiz doğabiliyordu. `unknown`/`not_allowed` serbest
+    /// kalır: izin **vermeyen** iddia kanıt istemez.
+    #[test]
+    fn usage_terms_claim_is_backed_and_well_formed() {
+        let db = db();
+        const AT: &str = "2026-01-01T00:00:00Z";
+        const SQL: &str = "INSERT INTO precedents
+               (id,court,completeness,created_at,usage_basis,redistribution,
+                terms_url,terms_note,terms_recorded_at)
+             VALUES (?1,'Yargıtay','incomplete',?2,?3,?4,?5,?6,?7)";
+        type Terms = (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        );
+        let base = |id: &str| -> Terms {
+            (
+                id.into(),
+                "unknown".into(),
+                "unknown".into(),
+                None,
+                String::new(),
+                None,
+            )
+        };
+        let allowed_row = |id: &str| -> Terms {
+            (
+                id.into(),
+                "official_public".into(),
+                "allowed".into(),
+                Some("https://example.invalid/terms".into()),
+                String::new(),
+                Some(AT.into()),
+            )
+        };
+        let note_row = |id: &str| -> Terms {
+            (
+                id.into(),
+                "official_public".into(),
+                "allowed".into(),
+                None,
+                "kurum izni".into(),
+                Some(AT.into()),
+            )
+        };
+        let write = |row: &Terms| {
+            db.conn()
+                .execute(
+                    SQL,
+                    rusqlite::params![&row.0, AT, &row.1, &row.2, &row.3, &row.4, &row.5],
+                )
+                .map_err(StorageError::from)
+        };
+        let rejects = |result: Result<usize, StorageError>, name: &str| match result {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("precedents"), "{name}: {message}")
+            }
+            other => panic!("v57 kusuru reddetmeli ({name}): {other:?}"),
+        };
+
+        // --- doğum kusurları: her biri **tek** cümleyi taşırır -----------------
+        let mut attacks: Vec<(&str, Terms)> = Vec::new();
+        let mut row = base("t-basis-unknown");
+        row.1 = "unknown".into();
+        row.2 = "allowed".into();
+        row.3 = Some("https://example.invalid/terms".into());
+        row.5 = Some(AT.into());
+        attacks.push(("allowed + dayanak 'unknown'", row));
+        let mut row = base("t-basis-internal");
+        row.1 = "internal_only".into();
+        row.2 = "allowed".into();
+        row.3 = Some("https://example.invalid/terms".into());
+        row.5 = Some(AT.into());
+        attacks.push(("allowed + dayanak 'internal_only'", row));
+        let mut row = base("t-no-evidence");
+        row.1 = "official_public".into();
+        row.2 = "allowed".into();
+        row.5 = Some(AT.into());
+        attacks.push(("allowed + yazılı dayanak yok", row));
+        let mut row = base("t-note-space");
+        row.1 = "official_public".into();
+        row.2 = "allowed".into();
+        row.4 = "   ".into();
+        row.5 = Some(AT.into());
+        attacks.push(("allowed + not yalnız boşluk", row));
+        let mut row = base("t-no-stamp");
+        row.1 = "licence".into();
+        row.2 = "allowed".into();
+        row.3 = Some("https://example.invalid/terms".into());
+        attacks.push(("allowed + damga yok", row));
+        for (index, stamp) in ["dün", "", "01.06.2026"].into_iter().enumerate() {
+            let mut row = base(&format!("t-stamp-{index}"));
+            row.5 = Some(stamp.into());
+            attacks.push(("damga ISO değil", row));
+        }
+        for (index, url) in [
+            "ftp://example.invalid/terms",
+            "example.invalid/terms",
+            "https://example.invalid/terms ",
+            "",
+            "   ",
+            "https://example.invalid/a\nb",
+            "https://example.invalid/a\rb",
+            "https://example.invalid/a\tb",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut row = base(&format!("t-url-{index}"));
+            row.3 = Some(url.into());
+            attacks.push(("url biçimi", row));
+        }
+        let mut row = base("t-url-long");
+        row.3 = Some(format!("https://example.invalid/{}", "n".repeat(1983)));
+        attacks.push(("url 2001 karakter", row));
+        let mut row = base("t-note-pad");
+        row.4 = " kurum izni ".into();
+        attacks.push(("not kırpılmamış", row));
+        let mut row = base("t-note-long");
+        row.4 = "n".repeat(4001);
+        attacks.push(("not 4001 karakter", row));
+        for (name, row) in &attacks {
+            rejects(write(row), name);
+        }
+
+        // --- meşru doğumlar ----------------------------------------------------
+        let mut legit: Vec<(&str, Terms)> = Vec::new();
+        legit.push(("kayıt yok", base("t-l-defaults")));
+        let mut row = base("t-l-url");
+        row.1 = "official_public".into();
+        row.2 = "allowed".into();
+        row.3 = Some("https://example.invalid/terms".into());
+        row.5 = Some(AT.into());
+        legit.push(("allowed + resmî yayın + bağlantı", row));
+        legit.push(("allowed + lisans + not", note_row("t-l-note")));
+        let mut row = base("t-l-http");
+        row.1 = "permission".into();
+        row.2 = "allowed".into();
+        row.3 = Some("http://example.invalid/terms".into());
+        row.4 = "yazılı izin".into();
+        row.5 = Some("2026-01-02T03:04:05.123456Z".into());
+        legit.push(("allowed + düz http + mikrosaniyeli damga", row));
+        let mut row = base("t-l-denied");
+        row.1 = "internal_only".into();
+        row.2 = "not_allowed".into();
+        row.4 = "yalnız büro içi".into();
+        legit.push(("not_allowed + internal_only", row));
+        let mut row = base("t-l-pending");
+        row.1 = "official_public".into();
+        row.4 = "resmî yayın".into();
+        legit.push(("dayanak var, karar yok (unknown)", row));
+        for (name, row) in &legit {
+            write(row)
+                .unwrap_or_else(|error| panic!("v57 meşru yazmayı reddetti ({name}): {error}"));
+        }
+
+        // --- UPDATE: iddia değişiyorsa yeni satır yine tutarlı olmalı ----------
+        let updates: Vec<(&str, Terms, &str)> = vec![
+            (
+                "dayanak 'unknown'a çevrildi",
+                allowed_row("t-u-basis"),
+                "UPDATE precedents SET usage_basis='unknown' WHERE id='t-u-basis'",
+            ),
+            (
+                "dayanak 'internal_only'a çevrildi",
+                allowed_row("t-u-internal"),
+                "UPDATE precedents SET usage_basis='internal_only' WHERE id='t-u-internal'",
+            ),
+            (
+                "url ve not birlikte silindi",
+                allowed_row("t-u-evidence"),
+                "UPDATE precedents SET terms_url=NULL, terms_note='' WHERE id='t-u-evidence'",
+            ),
+            (
+                "damga NULL'a çekildi",
+                allowed_row("t-u-stamp"),
+                "UPDATE precedents SET terms_recorded_at=NULL WHERE id='t-u-stamp'",
+            ),
+            (
+                "damga 'dün' yazıldı",
+                allowed_row("t-u-stamp2"),
+                "UPDATE precedents SET terms_recorded_at='dün' WHERE id='t-u-stamp2'",
+            ),
+            (
+                "url 'ftp://' yapıldı",
+                allowed_row("t-u-ftp"),
+                "UPDATE precedents SET terms_url='ftp://example.invalid/terms' WHERE id='t-u-ftp'",
+            ),
+            (
+                "not yalnız boşluğa çevrildi",
+                note_row("t-u-blank"),
+                "UPDATE precedents SET terms_note='   ' WHERE id='t-u-blank'",
+            ),
+            (
+                "not kırpılmamış yazıldı",
+                note_row("t-u-pad"),
+                "UPDATE precedents SET terms_note=' kurum izni ' WHERE id='t-u-pad'",
+            ),
+            (
+                "not 4001 karaktere çıkarıldı",
+                note_row("t-u-long"),
+                "UPDATE precedents SET terms_note=printf('%.4001c','n') WHERE id='t-u-long'",
+            ),
+            (
+                "url kırpılmamış yazıldı",
+                allowed_row("t-u-urlpad"),
+                "UPDATE precedents SET terms_url='https://example.invalid/terms ' WHERE id='t-u-urlpad'",
+            ),
+            (
+                "url içine satır sonu eklendi",
+                allowed_row("t-u-newline"),
+                "UPDATE precedents SET terms_url='https://example.invalid/a' || char(10) || 'b' WHERE id='t-u-newline'",
+            ),
+            (
+                "izin, yazılı dayanak yokken sonradan açıldı",
+                (
+                "t-u-claim".into(),
+                "official_public".into(),
+                "unknown".into(),
+                None,
+                String::new(),
+                None,
+                ),
+                "UPDATE precedents SET redistribution='allowed' WHERE id='t-u-claim'",
+            ),
+            (
+                "url içine satır başı eklendi",
+                allowed_row("t-u-cr"),
+                "UPDATE precedents SET terms_url='https://example.invalid/a' || char(13) || 'b' WHERE id='t-u-cr'",
+            ),
+            (
+                "url içine sekme eklendi",
+                allowed_row("t-u-tab"),
+                "UPDATE precedents SET terms_url='https://example.invalid/a' || char(9) || 'b' WHERE id='t-u-tab'",
+            ),
+            (
+                "url 2001 karaktere çıkarıldı",
+                allowed_row("t-u-urllong"),
+                "UPDATE precedents SET terms_url='https://example.invalid/' || printf('%.1983c','n') WHERE id='t-u-urllong'",
+            ),
+        ];
+
+        for (name, seed, sql) in &updates {
+            write(seed).unwrap_or_else(|error| panic!("tohum yazılamadı ({name}): {error}"));
+            rejects(db.conn().execute(sql, []).map_err(StorageError::from), name);
+        }
+
+        // --- meşru UPDATE'ler --------------------------------------------------
+        let mut row = allowed_row("t-o-note");
+        row.4 = String::new();
+        write(&row).expect("tohum");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET terms_note='kurum izni 03.06.2026' WHERE id='t-o-note'",
+                [],
+            )
+            .expect("not güncellenebilmeli");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET usage_basis='unknown', redistribution='unknown',
+                        terms_url=NULL, terms_note='', terms_recorded_at=NULL
+                  WHERE id='t-o-note'",
+                [],
+            )
+            .expect("koşul sıfırlanabilmeli");
+        let mut row = note_row("t-o-deny");
+        row.4 = String::new();
+        row.3 = Some("https://example.invalid/terms".into());
+        write(&row).expect("tohum");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET redistribution='not_allowed', usage_basis='internal_only',
+                        terms_url=NULL, terms_note='yalnız büro içi'
+                  WHERE id='t-o-deny'",
+                [],
+            )
+            .expect("izin geri alınabilmeli");
+
+        // Çekirdek meşru yol kapıdan geçer.
+        let core_id = precedent(&db, "Danıştay", "2024/777");
+        let terms = db
+            .set_precedent_usage_terms(
+                &core_id,
+                &allowed("official_public", Some("https://example.invalid/karar"), ""),
+            )
+            .expect("çekirdek koşul yazımı");
+        assert_eq!(terms.redistribution, "allowed");
+        assert!(terms.terms_recorded_at.is_some());
+    }
+
+    /// v57: kanıtsız `allowed` iddiası **izin sayılmaz** — korpus metni
+    /// dosyaya yazılmaz. v57 öncesi (ya da elle değiştirilmiş) satırı taklit
+    /// etmek için iki tetikleyici **bilinçli** düşürülür; kapı yerindeyken aynı
+    /// yazmanın reddedildiği ayrıca ölçülür.
+    #[test]
+    fn corpus_export_does_not_trust_an_unbacked_allowed_claim() {
+        let db = db();
+        let id = precedent(&db, "Yargıtay", "2024/123");
+        with_text(&db, &id, SECRET);
+
+        // Kapı yerindeyken kanıtsız izin yazılamaz.
+        let error = db
+            .conn()
+            .execute(
+                "UPDATE precedents SET redistribution='allowed' WHERE id=?1",
+                [&id],
+            )
+            .map_err(StorageError::from)
+            .expect_err("kanıtsız izin kapıda reddedilmeli");
+        assert_eq!(error.code(), "E_DB_INTEGRITY");
+
+        // v57 öncesi satır: tetikleyiciler bilinçli düşürülür (onarım/legacy yolu).
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER precedent_usage_terms_guard_bi;
+                 DROP TRIGGER precedent_usage_terms_guard_bu;",
+            )
+            .expect("tetikleyici düşürme");
+        db.conn()
+            .execute(
+                "UPDATE precedents SET redistribution='allowed' WHERE id=?1",
+                [&id],
+            )
+            .expect("eski satır");
+
+        let coverage = db.precedent_corpus_coverage().expect("kapsam");
+        assert_eq!(coverage.with_text, 1);
+        assert_eq!(coverage.allowed, 0, "kanıtsız izin sayılmaz");
+        assert_eq!(coverage.unknown, 1);
+        assert_eq!(coverage.blocked_total, 1);
+
+        let export = db
+            .build_precedent_corpus(CorpusMode::PermittedOnly)
+            .expect("korpus");
+        assert_eq!(export.exported, 0);
+        assert_eq!(export.excluded, 1);
+        assert_eq!(
+            export.excluded_items.first().map(|e| e.reason.as_str()),
+            Some("redistribution_unknown")
+        );
+        let items_json = serde_json::to_string(&export.items).expect("json");
+        assert!(!items_json.contains("ÖZEL-KORPUS-BELİRTEÇ-7741"));
+
+        let error = db
+            .build_precedent_corpus(CorpusMode::All)
+            .expect_err("kanıtsız izin `all` kapısını kapatmalı");
+        assert_eq!(error.code(), "E_CORPUS_NOT_PERMITTED");
     }
 }
