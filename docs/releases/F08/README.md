@@ -3357,3 +3357,61 @@ olan saldırgan düşürebilir; çekirdek bu yüzden aynı kuralı **dışa akta
 uygular (tek savunma hattı şema değildir). (i) Arayüz davranışı değişmedi; `termsBadge` yalnız
 `redistribution` sütununa bakar — tahrif edilmiş/eski bir satırda rozet «izinli» diyebilir
 (dışa aktarma yine izin vermez); gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04ae — «izinli» iddiası okurun gördüğü yerde de kanıt ister: liste rozeti ve koşul paneli ham sütuna güvenmez (şema v57 — değişmedi; okuma yolu, 2026-11-19)
+
+v57 şema kapısı **yeni** `allowed` yazmasını kanıtla zorunlu kıldı; ama okurlar hâlâ ham
+`redistribution` sütununa bakıyordu: liste satırındaki rozet (`termsBadge`) ve koşul
+paneli `allowed` yazan **her** satırı «izinli» basıyordu. Dışa aktarma ise v57'den beri
+kanıtsız iddiayı izin saymıyor. Yani **aynı satır** için iki hüküm vardı: dosyaya metin
+yazılmıyor («izin kaydı yok» diye raporlanıyor), ekran ise «izinli» diyordu. v57'nin
+kapanış sınırı (i) tam olarak bunu işaret ediyordu.
+
+**Yazılan (şema değişmedi; tek kural, üç okuyucu).** `precedent_terms.rs`:
+`allowed_claim_is_backed(...)` (yeniden dağıtılabilir dayanak + yazılı dayanak + kayıt
+damgası) ve `effective_redistribution(...)` — `allowed` yalnız kanıtıyla ayakta kalır,
+kanıtsız `allowed` **`unknown`**a düşer; `not_allowed` kanıt istemez (izin vermemek kanıt
+gerektirmez). `CorpusRecord::permission_backed` bu tek işleve bağlandı: davranış aynı,
+kural artık **tek yerde** (üç okuyucu ayrışmaz). `PrecedentRow` ve `PrecedentUsageTerms`
+sunucuda **`redistributionEffective`** alanı taşır; `map_precedent` ham sütunları
+(`terms_url`, `terms_note`) okuyup hükmü **okuma anında** yeniden hesaplar — alan, satırın
+kendi verisinden türetilir, sütuna yazılmış bir iddia değildir. Arayüzde `termsBadge` ham
+`redistribution`a değil bu alana bakar; alan yoksa (eski yük) izin **varsayılmaz**, yalnız
+`not_allowed` olduğu gibi görünür (fail-closed). `Precedents.tsx` değişmedi; koşul formu
+ham kaydı göstermeye devam eder (kullanıcı neyin kayıtlı olduğunu görür), kaydetme yolu
+zaten `E_TERMS` ile kanıt ister — yani **onarım yolu açık**.
+
+**Testler.** `precedent_terms` +1
+(`readers_do_not_show_an_unbacked_allowed_claim_as_permitted`): kanıtlı izin (lisans + not)
+üç okumada da `allowed`; v57 öncesi satır yolu (tetikleyiciler bilinçli düşürülüp) dört
+kusur — dayanak yok, yalnız iç kullanım, yazılı dayanak yok, damga yok — hem listede hem
+panelde **`unknown`** görünür, ham sütun iddiayı taşımaya devam eder; `not_allowed` olduğu
+gibi kalır; IPC alan adı (`redistributionEffective`) serde ile ölçülür. Mevcut iki teste
+birer assert eklendi (`redistribution_effective == "allowed"`) → `dim-storage --lib`
+**710 → 711**; yerelde **711/711 yeşil, 593,67 s** (biçim düzeltmesinden sonraki son hâl
+üzerinde; ilk koşu 548,58 s ve o koşu kanıt sayılmadı — üzerine iki assert eklendi).
+fmt (iki manifest) / clippy `-D warnings --all-targets` / masaüstü `check --all-targets`
+(2 dk 13 s) temiz. Arayüz: `precedent-terms` +1 (`kanıtsız 'izinli' iddiasını izinli
+göstermez`) ve `Precedents` +1 (kanıtsız iddia satırında rozet «izin bilinmiyor», «izinli»
+**yok**); fikstürler (PREC/PREC2/PREC3) `redistributionEffective` taşır — `PREC2`/`PREC3`
+bunu **açıkça** ezer, aksi hâlde yayılan alan «izinsiz» satırı «izinli» gösterirdi.
+
+**CI (ölçüldü).** Kod `6111a18` (7 dosya, **+304/−33**) → run `44406721617` **10/10 YEŞİL**
+(`dim-storage` **711** iki OS'ta birebir: macos-15 **438,18 s** / ubuntu-latest **547,84 s**;
+`arayüz` 66 dosya / **1436** test, paket `index-BTXhYWbb.js` **694,61 kB** — gzip 185,36 kB;
+önceki `694,50 kB`, fark `termsBadge` alanı; `masaüstü kabuk`, `windows güvenli depo`, SBOM,
+sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil). Yerel arayüz
+koşusu 66 dosya / **1439** test gösterir; fazladan 3 test **başka ajanın ağaçtaki** (commit
+edilmemiş) dosyalarından gelir, bu commit'e girmedi.
+
+**Dürüst sınırlar.** (a) `redistributionEffective` **yeniden hesaplanır**, ama girdisi yine
+satırın kendi sütunlarıdır: not metninin gerçekten izin verdiği ve url'nin yaşadığı
+doğrulanmaz (v57 sınırı (b) aynen geçerli). (b) `unknown` iki durumu birleştirir — «kayıt
+yok» ve «kanıtsız izin iddiası»; rozet ikisini ayırmaz, ayrımı koşul formu (ham kayıt) ve
+dışa aktarma raporu (`redistribution_unknown`) gösterir. (c) Alan **isteğe bağlı** okunur
+(eski yük): yoksa `allowed` izin sayılmaz; bu fail-closed'dır ama gerçekten kanıtlı bir
+satırı da «bilinmiyor» gösterirdi — aynı uygulama sürümünde alan daima gönderilir. (d)
+Tetikleyicileri düşürebilen saldırgan sahte **yazılı dayanak** da yazabilir; kapı iç
+tutarlılığı ölçer, doğruluğu değil. (e) v57 öncesi kanıtsız satırlar silinmez; rozet artık
+onları «izin bilinmiyor» gösterir, onarım kullanıcının dayanak yazmasıyla olur. (f) Gerçek
+pencere + görsel QA **insan bekliyor**.
