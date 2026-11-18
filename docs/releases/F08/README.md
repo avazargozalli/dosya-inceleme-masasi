@@ -3165,3 +3165,108 @@ denetlenir, mantığı değil; (e) bilinmeyen durumlu **eski** satır donar (ile
 bunu engellemez; (g) tetikleyicileri anahtarı olan saldırgan düşürebilir; (h) arayüz
 davranışı değişmedi (rozetler aynı sütunlar); gerçek pencere + görsel QA **insan
 bekliyor**.
+
+## F08-T04ac — emsal künyesi «hangi karar bu» iddiasıdır: rozet kanıtla tutarlı, künye donmuş (şema v56, 2026-11-18)
+
+**Neden bu dilim.** `precedents` satırı **hangi karar olduğunun iddiasıdır** — mahkeme,
+daire, esas/karar/başvuru numarası, karar tarihi, başlık, kaynak bağlantısı ve
+`completeness` rozeti. Dört okuyucu bu satıra yaslanır: (1) `screens/Precedents.tsx` her
+satırda rozeti (`ok`/`warn`) ve `decisionDate`i **ham** basar; (2) `precedent_bibliography`
+kopyalanabilir hukuki künye metnini bu sütunlardan kurar — **tarih ISO değilse «olduğu
+gibi» yazılır**, eksik alan `missing` listesine girer, yani rozet ile `missing` **aynı
+ekranda** çelişebilir; (3) `find_precedent_by_identity` aynı kararın nüshalarını mahkeme
++ daire + numaralarla eşler, künye çevrilebilirse yazılmış nüsha (`precedent_versions`)
+sessizce **başka karara** bağlanır; (4) `search_precedents` künye numaralarında arar.
+Zincirin komşuları kapılıydı (`precedent_versions` v44/v48, `precedent_notes` v49,
+`citation_checks` v37/v46) ama **künyenin kendisi değildi**: tablonun 0001'den beri
+**hiçbir** tetikleyicisi yoktu; yalnız `completeness` ve 0016'nın iki kapalı kümesi
+CHECK'ti.
+
+**Ölçülen kusur (gerçek SQLite v55; `~/.hermes/cache/scratch/dim-v56-probe/measure_v56.py`,
+log `measure_before.log`).** 47 yazımın **47'si KABUL** — 37 kusur + 10 meşru yol.
+Doğum (24): boş kimlik; boş / yalnız boşluk / kırpılmamış mahkeme; **rozet yalanı**
+(`complete` + iki numara da NULL; `complete` + karar no yok); **rozet eksik-beyanı**
+(`incomplete` + iki numara dolu); tarih `dün`, `02.05.2025`, `2026-02-30`, `2023-02-29`,
+`2026-1-5`, ISO + saat; daire boş / yalnız boşluk / kırpılmamış; esas no, karar no,
+başlık, başvuru no ve kaynak url kırpılmamış; konu yalnız boşluk; etiket bozuk JSON /
+nesne / sayı dizisi (okuyucu `unwrap_or_default` ile **sessizce boşaltır**); boş
+`created_at`, `created_at='dün'`. UPDATE (13): mahkeme, esas no, karar no, karar tarihi,
+başlık, kaynak url, etiketler, konu ve `created_at` çevrildi; daire NULL'a çekildi;
+başvuru no eklendi; rozet sonradan çevrildi; **kimlik takası** (`id`).
+
+**Yazılan (`0056_precedent_identity_guard.sql`, 2 tetikleyici).** BI — `id` kırpılmış-dolu;
+`court` kırpılmış ve dolu; `completeness` **kanıtla tutarlı** (`complete` ⇔ kırpılmış esas
+**ve** karar no dolu; çekirdek zaten böyle hesaplıyor); `decision_date` NULL ya da
+**gerçek takvim günü** `YYYY-AA-GG` (`date()` eşitliği: `2026-02-30`, `2023-02-29`,
+`2026-1-5`, `02.05.2025`, `dün` ve saat taşıyan damga reddedilir — hukuki tarih **gün**
+taşır); isteğe bağlı yedi metin sütunu NULL ya da **kırpılmış ve boşluk değil**;
+`user_tags` **metin dizisi** (`json_valid` + `json_type='array'` + her elemanın
+`typeof='text'`); `created_at` ISO-8601 damgası (0052 ile aynı desen). BU — on üç
+**kimlik** sütunu (`id`, `court`, `chamber`, `docket_no`, `decision_no`, `application_no`,
+`decision_date`, `title`, `source_url`, `user_tags`, `legal_issue`, `completeness`,
+`created_at`) **donar**; değişmeyen yazma takılmaz. **Kullanım koşulu** sütunları
+(`usage_basis`, `redistribution`, `terms_url`, `terms_note`, `terms_recorded_at`) bilinçli
+olarak kapının **dışında** — `set_precedent_usage_terms` onları meşru olarak günceller
+(test bunu ölçer). Ret `DIM_INTEGRITY:precedents` → `StorageError::Integrity` →
+**`E_DB_INTEGRITY`**. Tablo `case_id` taşımaz → kapsam taramasına sınıf eklenmedi,
+`GUARDED_TABLES` **25 kalır**.
+
+**Çekirdek hizası (davranış değişikliği).** `create_precedent` karar tarihini artık **ISO
+güne** çevirir (`GG.AA.YYYY`, `GG/AA/YYYY`, `YYYY/AA/GG` → `YYYY-AA-GG`; sıra **tahmin
+edilmez**). Gerekçe somut: toplu künye içe alma (`parse_manifest`) tarih hücresini **ham**
+geçiriyordu — `tarih` sütununa `02.05.2025` yazan bir CSV, bibliyografiye **olduğu gibi**
+giren bir tarih üretiyordu. Çözülemeyen değer olduğu gibi bırakılır ve **kapı reddeder**
+(fail-closed); böylece ne sessiz bozuk künye ne de sessiz kayıp olur.
+
+**Testler.** `precedents` +1 (`precedent_identity_is_coherent_at_birth_and_frozen_afterwards`:
+24 doğum kusuru — her biri kendi satırında, rozet yalanı/eksik-beyanı dahil; 13 UPDATE
+saldırısı; meşru doğumlar (tam/eksik künye, artık yıl, TR tarih → ISO, eski tarih, Türkçe
+etiketler, başvuru no) ve meşru UPDATE'ler — no-op ve **kullanım koşulu yazımı** — geçer),
+`upgrade_tests` +1 (`upgrade_keeps_precedents_written_before_the_identity_gate`: v55'te
+yazılmış tutarsız künye silinmez/düzeltilmez, donar; yeni rozet yalanı doğamaz; meşru
+künye ve koşul yazımı çalışır) → `dim-storage --lib` **705 → 707**; yerelde **707/707
+yeşil, 481,35 s**; fmt (iki manifest) / clippy `-D warnings --all-targets` / masaüstü
+`cargo check --all-targets` temiz. **Tek test düzeltmesi (dürüst, ilk tam koşu 706/707):**
+`bibliography_keeps_non_iso_date_verbatim_and_warns` **eski yazma yolunu** sabitliyordu —
+`create_precedent`e `01.06.2025` verip «tarih olduğu gibi saklanır + uyarı düşer»i
+bekliyordu; v56 çekirdeği tarihi ISO'ya çevirdiği için uyarı artık **düşmüyor** (istenen
+davranış). Okuyucu sözleşmesi kaybolmasın diye test ikiye ayrıldı: eski satır artık
+tetikleyici **bilinçli düşürülerek** yazılıyor (v52'nin deseni) ve «olduğu gibi + uyarı»
+yine ölçülüyor; ayrıca çekirdek yolun **sessiz ve doğru** olduğu (ISO'ya çevrilir, ISO
+uyarısı düşmez) ayrı assert ediliyor. Kapı gevşetilmedi; kusuru pinleyen beklenti
+düzeltildi ve nedeni burada yazılı.
+
+**Kapı kanıtı.** Taban **yeşil**, **25/25 mutant KIRMIZI**
+(`~/.hermes/cache/scratch/dim-v56-probe/gates_v56.py`, log `gates_v56.log`): kimlik boş,
+mahkeme boş/kırpma, rozet tutarlılığı, tarih takvimi, tarih NULL guard'ının **yönü**,
+daire kırpma/boşluk ve boş-metin, etiket JSON/dizi türü/eleman türü, damga biçimi, on üç
+dondurma sütunu tek tek. Kaynak **byte-birebir** geri yazıldı (`sha256` önce = sonra
+`0056…sql 3a95fe382b5594d2…`). **Dürüst (ilk koşu KANIT SAYILMADI):** ilk 25/25 koşusundan
+sonra her mutantın **geçerli SQL** ürettiğini ayrıca ölçtüm
+(`verify_mutants_v56.py`, log `verify_mutants_v56.log`): M6 ilk yazımı **parantez dengesi
+bozuk** SQL üretiyordu — göç hiç yüklenmiyor, **her** yazma düşüyordu, yani KIRMIZI
+sahteydi. Mutant tek belirteçlik **yön çevirmeye** (`IS NOT NULL` → `IS NULL`) dönüştürüldü;
+doğrulama her mutant için üç şeyi ölçer: (a) SQL yükleniyor, (b) hedef kusur(lar) açılıyor,
+(c) meşru yazmalar KABUL kalıyor. M6 meşru **NULL tarihli** künyeyi düşürür — testi kırmızı
+yapan tam olarak budur; guard'ın yönü böyle kanıtlandı. İlk koşunun 25 hükmü kanıt
+sayılmadı, 25/25 yeniden ölçüldü. Ölçüm sonrası: **37/37 kusur RED**, 10 meşru KABUL
+(`measure_after.log`).
+
+**CI (ölçüldü).** Kod `397aa11` (5 dosya, **+555/−8**) → run `44363634559` **10/10 YEŞİL**
+(`dim-storage` **707** iki OS'ta birebir: macos-15 **457,17 s** / ubuntu-latest **440,92 s**;
+`arayüz` 66 dosya / **1434** test, paket `index-BJpSJSmX.js` 694,50 kB — **değişmedi**;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) v56 öncesi tutarsız künyeler **silinmez, düzeltilmez**; kimlik
+donduğu için onarılamaz — onarım yolu **yeni kayıt**, temizlik ürün kararı. (b) **Kullanım
+koşulu iddiası** (`allowed` ⇒ dağıtılabilir dayanak + yazılı dayanak + damga) bu turda
+**kapsam dışı**; Rust doğrular (`set_precedent_usage_terms`), şema doğrulamaz — sıradaki
+aday. (c) `source_url` yalnız kırpılmış-dolu denetlenir; **URL biçimi** (şema, kontrol
+karakteri) doğrulanmaz. (d) Tarih **takvimde var mı** denetlenir, **gelecekte** mi diye
+bakılmaz. (e) SQLite `trim()` yalnız ASCII boşluk kırpar — sekmeyle (`\t`) doldurulmuş bir
+alan bu kapıdan geçer. (f) Etiketlerin **içeriği** (boş metin, yinelenen, uzunluk)
+denetlenmez, yalnız biçimi. (g) `completeness` yalnız **kanıtla tutarlılık** yönünden
+denetlenir; künyenin gerçekten o karara ait olduğu (mahkeme/numaraların doğruluğu)
+doğrulanmaz. (h) Tetikleyicileri anahtarı olan saldırgan düşürebilir. (i) Arayüz davranışı
+değişmedi (rozet ve tarih aynı sütunlardan); gerçek pencere + görsel QA **insan bekliyor**.
