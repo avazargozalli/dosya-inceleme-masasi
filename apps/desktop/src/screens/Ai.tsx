@@ -1541,8 +1541,8 @@ export function Ai() {
                   </tr>
                 </thead>
                 <tbody>
-                  {report.quotes.map((quote) => (
-                    <tr key={`${quote.documentVersionId}-${quote.index}`}>
+                  {report.quotes.map((quote, rowIndex) => (
+                    <tr key={rowIndex}>
                       <td>{quote.index + 1}</td>
                       <td style={{ maxWidth: 320 }}>“{quote.quote.slice(0, 120)}”</td>
                       <td>
@@ -1651,8 +1651,8 @@ export function Ai() {
                             {t("ai.quotesToggle", { count: candidate.quoteReport.length })}
                           </summary>
                           <ul className="hint" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
-                            {candidate.quoteReport.map((quote) => (
-                              <li key={`${quote.documentVersionId}-${quote.index}`}>
+                            {candidate.quoteReport.map((quote, rowIndex) => (
+                              <li key={rowIndex}>
                                 <span className={`badge ${quoteLineTone(quote.state)}`}>
                                   {quoteLineStateLabel(quote)}
                                 </span>{" "}

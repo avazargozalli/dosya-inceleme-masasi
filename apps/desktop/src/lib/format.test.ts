@@ -11,6 +11,7 @@ import {
   formatSize,
   formatTimestamp,
   formatUnixSeconds,
+  parseStatusLabel,
 } from "./format";
 
 /** Takvim tarihi referansı: aynı günü **yerel** olarak kurar (saat dilimi kaymaz). */
@@ -163,5 +164,17 @@ describe("etiketler", () => {
     expect(CASE_KIND_LABEL.review).toBe("İnceleme dosyası");
     expect(SENSITIVITY_LABEL.high).toBe("Yüksek");
     expect(AI_POLICY_LABEL.api_allowed).toBe("API izinli");
+  });
+});
+
+describe("parseStatusLabel — ayrıştırma durumu Türkçeleşir", () => {
+  it("ham durum kodu arayüze sızmaz", () => {
+    expect(parseStatusLabel("succeeded")).toBe("başarılı");
+    expect(parseStatusLabel("parsed")).toBe("başarılı");
+    expect(parseStatusLabel("partial")).toBe("kısmi");
+    expect(parseStatusLabel("failed")).toBe("başarısız");
+    expect(parseStatusLabel("running")).toBe("yürüyor");
+    expect(parseStatusLabel("cancelled")).toBe("iptal edildi");
+    expect(parseStatusLabel("future-state")).toBe("—");
   });
 });

@@ -14,7 +14,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .skip-link { position: fixed; inset: 8px auto auto 8px; z-index: 2; padding: 8px 16px; background: var(--bg); color: var(--accent); }
 .skip-link:not(:focus) { clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; padding: 0; }
 
-.app { display: grid; grid-template-columns: 15.5rem minmax(0, 1fr); height: 100%; }
+.app { display: grid; grid-template-columns: 15.5rem minmax(0, 1fr); height: 100%; overflow: hidden; }
 .sidebar {
   min-height: 0; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; gap: 24px; padding: 24px 14px 16px;

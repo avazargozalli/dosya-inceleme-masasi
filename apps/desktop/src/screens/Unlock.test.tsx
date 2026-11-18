@@ -97,7 +97,7 @@ function Harness({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
     <Unlock
       pendingKey={key}
       onKeyCreated={setKey}
-      onKeyDismissed={() => setKey(null)}
+      onKeyDismissed={async () => { setKey(null); return true; }}
       onUnlocked={onUnlocked}
     />
   );
@@ -242,7 +242,7 @@ describe("kasa kapısı", () => {
     expect(screen.queryByText(RECOVERY_KEY)).toBeNull();
     // Anahtar ekranı kapandı, "mevcut kasayı aç" formuna dönüldü; parola ve
     // eşleşme alanları oluşturma sonrası temizlenmişti.
-    expect(submitButton(t("unlock.submitOpen"))).toBeTruthy();
+    expect(await screen.findByRole("button", { name: t("unlock.submitOpen") })).toBeTruthy();
     expect((screen.getByLabelText(t("unlock.password")) as HTMLInputElement).value).toBe("");
     expect(screen.queryByLabelText(t("unlock.passwordConfirm"))).toBeNull();
     expect(onUnlocked).not.toHaveBeenCalled();
@@ -395,13 +395,13 @@ describe("kasa kapısı", () => {
     const onUnlocked = vi.fn(async () => {});
     const noop = () => {};
     const first = render(
-      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={noop} />,
+      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={async () => true} />,
     );
     expect(screen.getByText(RECOVERY_KEY)).toBeTruthy();
     first.unmount();
 
     render(
-      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={noop} />,
+      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={async () => true} />,
     );
     expect(screen.getByText(RECOVERY_KEY)).toBeTruthy();
     expect(mocks.createVault).not.toHaveBeenCalled();

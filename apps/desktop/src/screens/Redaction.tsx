@@ -131,6 +131,7 @@ export function Redaction() {
   // İki ayrı kuşak: plan listesi (dosya + tazeleme) ve bölge detayı (plan
   // seçimi). Tek sayaç olsaydı ilgisiz bir bölge okuması liste tazelemesinin
   // yanıtını düşürürdü.
+  const docsSeq = useRef(0);
   const plansSeq = useRef(0);
   const regionsSeq = useRef(0);
 
@@ -251,13 +252,28 @@ export function Redaction() {
     void loadRegions(planId);
   }
 
+  const refreshDocuments = useCallback(async (id: string, selectedVersion: string) => {
+    const gen = genRef.current;
+    const seq = ++docsSeq.current;
+    try {
+      const list = await api.documentList(id);
+      if (gen !== genRef.current || seq !== docsSeq.current) return;
+      setDocs(list);
+      if (!list.some((doc) => doc.currentVersionId === selectedVersion)) {
+        if (selectedVersion) resetTargetState();
+        setVersionId(list.find((doc) => doc.currentVersionId)?.currentVersionId ?? "");
+      }
+    } catch (e) {
+      if (gen === genRef.current && seq === docsSeq.current) setError(toApiError(e));
+    }
+  }, [resetTargetState]);
+
   useEffect(() => {
     if (!caseId) return;
     // INV-05: yeni dosyanın isteği askıdayken **önceki dosyanın** belgeleri,
     // sürümü, sonucu, önizlemesi ve bölgeleri ekranda kalmasın. Temizlik
     // istekten önce koşar; `gen` geç gelen yanıtı geçersiz kılar.
     resetTargetState();
-    const gen = genRef.current;
     setDocs([]);
     setVersionId("");
     // Maskeleme sicili de dosyaya kapsanır: önceki dosyanın planları ve açık
@@ -270,20 +286,8 @@ export function Redaction() {
     setPlanRegionsBusy(false);
     regionsSeq.current += 1;
     void loadPlans(caseId);
-    void api
-      .documentList(caseId)
-      .then((list) => {
-        if (gen !== genRef.current) return;
-        setDocs(list);
-        setVersionId(list.find((d) => d.currentVersionId)?.currentVersionId ?? "");
-      })
-      .catch((e) => {
-        if (gen !== genRef.current) return;
-        setDocs([]);
-        setVersionId("");
-        setError(toApiError(e));
-      });
-  }, [caseId, loadPlans, resetTargetState]);
+    void refreshDocuments(caseId, "");
+  }, [caseId, loadPlans, refreshDocuments, resetTargetState]);
 
   async function loadPage() {
     if (!versionId) return;
@@ -331,6 +335,9 @@ export function Redaction() {
       // Sicil **gönderimden hemen sonra** tazelenir: yeni plan satırı ekranda
       // (satır `result.plan.id` ile işaretlenir); avukat sormak zorunda kalmaz.
       void loadPlans(caseId);
+      // Yeni çıktı belge listesinde **hemen** görünür (ekrandan çıkıp dönmek
+      // gerekmez); seçili sürüm korunur.
+      void refreshDocuments(caseId, version);
       // Yalnız **gönderilen** bölgeler düşer: maskeleme sürerken çizilen yeni
       // bölge sessizce silinmez (gönderim yükü tıklama anındaki listedir).
       setRegions((prev) => prev.filter((region) => !submitted.includes(region)));
@@ -405,6 +412,9 @@ export function Redaction() {
       setResult(result);
       // Yeni plan satırı sicilde **hemen** görünür (gönderim sonrası tazeleme).
       void loadPlans(caseId);
+      // Yeni çıktı belge listesinde **hemen** görünür (ekrandan çıkıp dönmek
+      // gerekmez); seçili sürüm korunur.
+      void refreshDocuments(caseId, version);
     } catch (e) {
       if (gen !== genRef.current) return;
       setError(toApiError(e));

@@ -80,6 +80,7 @@ export const tr = {
     tagline: "Yerel çalışma alanı",
     skip: "İçeriğe geç",
     unlocked: "Kasa açık",
+    setupPending: "Kurtarma anahtarı onay bekliyor",
     locked: "Kasa kilitli",
     lockedHint:
       "Kasa kilitli. Bu ekrandaki içerik gösterilmez ve bellekte tutulmaz.",
@@ -1582,6 +1583,9 @@ export const tr = {
     delete: "Sil (geri dönüşümlü)",
     parseProgressAria: "Ayrıştırma ilerlemesi",
     parseSummary: "Ayrıştırma {status}: {pages} sayfa, {segments} metin bloğu",
+    parseStatusSucceeded: "başarılı",
+    parseStatusPartial: "kısmi",
+    parseStatusFailed: "başarısız",
     parseWarnings: "{count} uyarı",
     fileFilterDocuments: "Belgeler",
     anchorSaved: "Kaynak kaydedildi: “{quote}”",

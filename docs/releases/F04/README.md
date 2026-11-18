@@ -4255,3 +4255,14 @@ F04-T01, F04-T09 ve F04-T10 kapsamında REQ-001 ve REQ-031 için kasa giriş for
 macOS üzerinde 66 Vitest dosyasında 1437 test ve dört sözleşme testi geçti. Beş üretilmiş sözleşme günceldi. TypeScript denetimi ve üretim derlemesi tamamlandı. Vite, ana JavaScript parçasının 500 kB uyarı eşiğini aştığını bildirdi.
 
 Chrome'da üretim çıktısı 1280×840 (açık ve koyu), 960×620 (açık), 640×420 (koyu) ve 320×568 (açık) boyutlarında kontrol edildi. Kasa giriş ekranında yatay taşma ölçülmedi. Sentetik IPC yanıtlarıyla Enter üzerinden tek açma isteği, dosya listesine geçiş ve yeniden kilitleme doğrulandı. Yüksek kontrast benzetiminde seçili düğmenin kenarlığı ve klavyeyle içeriğe geçiş kontrol edildi. Yerel işletim sistemi klasör diyaloğu, paketli Tauri uygulaması, VoiceOver ve NVDA elle sınanmadı.
+
+### Paketli uygulamada kasa ve okuyucu doğrulaması (18 Kasım 2026)
+
+Kurtarma anahtarı onay beklerken çekirdek kasayı açık tutuyor. F04-T01 kapsamında hareketsizlik kilidi artık bu sürede de çalışıyor. Kaydetmeden çıkış gerçek kilit komutunu bekliyor. Komut hata verirse anahtar ekranda kalıyor ve işlem yeniden denenebiliyor.
+
+Ayrıştırma sonucunda okuyucu ve bildirim görünür alana geliyor. Sonuç satırı çekirdeğin durumunu Türkçe gösteriyor. Maskeleme sonrası belge listesi tazeleniyor. Yeni okuma önce biterse gecikmiş bir yanıt son çıktıyı listeden kaldıramıyor. AI raporunda aynı sürüm ve alıntı numarasını taşıyan iki satır birlikte gösterilebiliyor.
+
+- Apple Silicon macOS üzerinde üretim Tauri paketi ve belge işleyicisi derlendi. Yerel klasör seçicisinden geçici bir dizin seçildi. Enter ile kasa ve ardından bir inceleme dosyası oluşturuldu. Depodaki sentetik PDF içe aktarıldı. Ayrıştırma üç sayfa ve üç metin bloğu döndürdü. Okuyucuda beklenen başlık görüldü.
+- Okuyucu açıkken kilitleme dosya adını ve belge metnini erişilebilirlik ağacından kaldırdı. Aynı kasa kurtarma anahtarıyla ve ikinci bir kilitlemeden sonra parolayla açıldı. Dosya kaydı tekrar görüldü. Test kasası kilitli bırakıldı.
+- 66 dosyada 1443 arayüz testi, dört sözleşme testi ve şifreli depolama için altı düz metin sızıntısı testi geçti. İşleyicide 157 test geçti. Tesseract kurulu olduğu için eksik bağımlılık senaryosu atlandı. Paket içindeki işleyici PDF metni ve DOCX envanteri üretti. TypeScript kontrolleri ve üretim derlemesi geçti.
+- macOS yerel kontrollerine erişilebilirlik ağacından ve klavyeden erişildi. VoiceOver ses çıktısı, Windows klasör diyaloğu ve NVDA bu oturumda etkileşimli olarak sınanmadı.

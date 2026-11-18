@@ -32,6 +32,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { budgetSummary } from "../lib/budget";
+import { parseStatusLabel } from "../lib/format";
 import { t } from "../lib/i18n";
 import { DEFAULT_OCR_LANG } from "../lib/ocr";
 import type {
@@ -519,7 +520,7 @@ describe("dosyalar ekranı davranışı", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
 
     const expected = [
-      t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 }),
+      t("cases.parseSummary", { status: parseStatusLabel("parsed"), pages: 3, segments: 12 }),
       t("cases.parseWarnings", { count: 2 }),
       "kodlama: windows-1254 kullanıldı",
       budgetSummary(BUDGET),
@@ -537,7 +538,7 @@ describe("dosyalar ekranı davranışı", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
 
     const expected = [
-      t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 }),
+      t("cases.parseSummary", { status: parseStatusLabel("parsed"), pages: 3, segments: 12 }),
       t("cases.parseWarnings", { count: 1 }),
     ].join(" · ");
     await waitFor(() => expect(noticeText()).toBe(expected));
@@ -892,7 +893,7 @@ describe("dosyalar ekranı — uçuştaki yazmalar ve bayat hata", () => {
 
     expect(noticeText()).toBeNull();
     expect(
-      screen.queryByText(t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 })),
+      screen.queryByText(t("cases.parseSummary", { status: parseStatusLabel("parsed"), pages: 3, segments: 12 })),
     ).toBeNull();
   });
 

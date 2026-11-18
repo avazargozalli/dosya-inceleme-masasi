@@ -24,12 +24,14 @@ export type UnlockProps = {
   pendingKey?: string | null;
   /** Zorunlu: anahtarın nereye yazılacağına çağıran karar verir (sessiz kayıp yok). */
   onKeyCreated: (recoveryKey: string) => void;
-  onKeyDismissed: () => void;
+  onKeyDismissed: () => Promise<boolean>;
+  locking?: boolean;
 };
 
 export function Unlock({
   onUnlocked,
   pendingKey = null,
+  locking = false,
   onKeyCreated,
   onKeyDismissed,
 }: UnlockProps) {
@@ -56,7 +58,7 @@ export function Unlock({
   const mismatch = mode === "create" && password !== confirm;
   const showMismatch = mismatch && confirm.length > 0;
   const canSubmit =
-    !busy && path.trim().length > 0 && (mode === "recovery" ? recovery.trim().length > 0 : passwordCheck.ok && !mismatch);
+    !busy && !locking && path.trim().length > 0 && (mode === "recovery" ? recovery.trim().length > 0 : passwordCheck.ok && !mismatch);
 
   function changeMode(next: Mode) {
     setMode(next);
@@ -141,15 +143,17 @@ export function Unlock({
           <div className="row" style={{ justifyContent: "flex-end" }}>
             {confirmLeave ? (
               <>
-                <button className="btn ghost" onClick={() => setConfirmLeave(false)}>
+                <button className="btn ghost" disabled={locking || busy} onClick={() => setConfirmLeave(false)}>
                   {t("unlock.leaveCancel")}
                 </button>
                 <button
                   className="btn"
-                  onClick={() => {
-                    setConfirmLeave(false);
-                    setMode("open");
-                    onKeyDismissed();
+                  disabled={locking || busy}
+                  onClick={async () => {
+                    if (await onKeyDismissed()) {
+                      setConfirmLeave(false);
+                      setMode("open");
+                    }
                   }}
                 >
                   {t("unlock.leaveConfirm")}
@@ -160,7 +164,7 @@ export function Unlock({
                 {t("common.back")}
               </button>
             )}
-            <button className="btn primary" disabled={!keySaved || busy} onClick={() => void openCreated()}>
+            <button className="btn primary" disabled={!keySaved || busy || locking} onClick={() => void openCreated()}>
               {busy ? t("common.busy") : t("unlock.openVault")}
             </button>
           </div>

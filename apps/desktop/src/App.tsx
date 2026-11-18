@@ -123,10 +123,12 @@ export function App() {
   // Kasa açıldığında hareketsizlik sayacı sıfırlanır: kilitliyken geçen süre
   // "kasa açıkken hareketsizlik" sayılmaz. Aksi hâlde kasa açıldıktan hemen
   // sonra yeniden kilitlenebilir.
+  // vault_create çekirdekte kasayı açar; anahtar onayı beklerken de süre işler.
+  const vaultOpen = status.unlocked || pendingKey !== null;
   useEffect(() => {
-    unlocked.current = status.unlocked;
-    if (status.unlocked) lastActivity.current = Date.now();
-  }, [status.unlocked]);
+    unlocked.current = vaultOpen;
+    if (vaultOpen) lastActivity.current = Date.now();
+  }, [vaultOpen]);
 
   // Otomatik yedek: plan **kasada** (`settings`, kapsam `vault`) durur; kasa
   // açıkken süresi dolunca yedek alınır. **Tazelik kanıtı da kasadır**
@@ -185,6 +187,7 @@ export function App() {
     try {
       await api.lockVault();
       setStatus((s) => ({ ...s, unlocked: false }));
+      setPendingKey(null);
       lastActivity.current = Date.now();
       await refresh();
       return true;
@@ -225,7 +228,7 @@ export function App() {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }
 
-  const locked = !status.unlocked;
+  const locked = !status.unlocked || pendingKey !== null;
 
   return (
     <div className="app">
@@ -286,10 +289,10 @@ export function App() {
           </div>
           <div className="topbar-actions">
             <div className="lock-state">
-              <span className={status.unlocked ? "dot ok" : "dot locked"} aria-hidden="true" />
-              {status.unlocked ? t("shell.unlocked") : t("shell.locked")}
+              <span className={vaultOpen ? "dot ok" : "dot locked"} aria-hidden="true" />
+              {pendingKey ? t("shell.setupPending") : vaultOpen ? t("shell.unlocked") : t("shell.locked")}
             </div>
-            {status.unlocked ? (
+            {!locked ? (
               <button className="btn" disabled={locking} onClick={() => void lockNow()}>
                 {t("shell.lock")}
               </button>
@@ -305,18 +308,19 @@ export function App() {
           ) : null}
 
           {!canShowScreen(screen, locked) ? (
-            <LockedNotice onUnlock={() => navigate("vault")} />
+            <LockedNotice pendingRecovery={pendingKey !== null} onUnlock={() => navigate("vault")} />
           ) : screen === "vault" ? (
             pendingKey || locked ? (
               <Unlock
                 pendingKey={pendingKey}
                 onKeyCreated={setPendingKey}
-                onKeyDismissed={() => setPendingKey(null)}
+                onKeyDismissed={lockNow}
+                locking={locking}
                 onUnlocked={async () => {
                   setError(null);
                   // Durum okunamazsa anahtar ekranı açık kalır: tek kopyadır,
                   // başarısız bir tazeleme yüzünden düşürülmez.
-                  if (await refresh()) setPendingKey(null);
+                  if (!lockingRef.current && await refresh()) setPendingKey(null);
                 }}
               />
             ) : (
@@ -356,13 +360,13 @@ export function App() {
 /// Kilitliyken `vault` dışındaki ekranlar **render edilmez**: bileşen
 /// ağacı sökülür, yüklenmiş belge/segment state'i bellekte kalmaz. Yalnız bu
 /// ekran gösterilir; "Kasa"ya dönüp parola girilir.
-function LockedNotice({ onUnlock }: { onUnlock: () => void }) {
+function LockedNotice({ pendingRecovery, onUnlock }: { pendingRecovery: boolean; onUnlock: () => void }) {
   return (
     <div className="card" role="status" aria-live="polite">
       <div className="card-head">
         <div>
-          <h2>{t("shell.locked")}</h2>
-          <p className="card-sub">{t("shell.lockedHint")}</p>
+          <h2>{t(pendingRecovery ? "shell.setupPending" : "shell.locked")}</h2>
+          <p className="card-sub">{t(pendingRecovery ? "unlock.recoveryNotice" : "shell.lockedHint")}</p>
         </div>
         <button className="btn primary" onClick={onUnlock}>
           {t("shell.goVault")}

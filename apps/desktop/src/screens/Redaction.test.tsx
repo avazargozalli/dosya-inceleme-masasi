@@ -365,6 +365,58 @@ describe("Maskeleme ekranı", () => {
     );
   });
 
+  it("başarılı maskelemeden sonra belge listesi tazelenir; çıktı seçicide görünür, seçim korunur", async () => {
+    // Çıktı listede **başta** gelir: "ilk sürümü seç" davranışı seçimi
+    // kendiliğinden değiştirirse bu test kırmızı olur.
+    const masked = docRow("d9", "Kira sözleşmesi (maskeli).pdf", "v9");
+    mocks.documentList
+      .mockImplementationOnce(async () => [D1, D2])
+      .mockImplementationOnce(async () => [masked, D1, D2]);
+    await renderScreen();
+
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+
+    expect(await screen.findByRole("option", { name: masked.displayName })).toBeTruthy();
+    // Kullanıcının seçimi kendiliğinden değişmez: kaynak sürüm seçili kalır.
+    expect(docSelect().value).toBe("v1");
+    expect(mocks.documentList).toHaveBeenCalledTimes(2);
+  });
+
+  it("aynı sürümde geç biten eski liste okuması son çıktıyı kaldırmaz", async () => {
+    const stale = deferred<DocumentRow[]>();
+    const masked = docRow("d3", "Sentetik çıktı.pdf", "v3");
+    mocks.documentList.mockResolvedValueOnce([D1])
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce([D1, masked]);
+    await renderScreen();
+    fireEvent.change(termsArea(), { target: { value: "sentetik" } });
+    fireEvent.click(runButton());
+    await resultCard();
+    fireEvent.click(runButton());
+    await screen.findByRole("option", { name: masked.displayName });
+    await act(async () => { stale.resolve([D1]); });
+    expect(screen.getByRole("option", { name: masked.displayName })).toBeTruthy();
+    expect(docSelect().value).toBe("v1");
+  });
+
+  it("belge listesi tazelenemezse hata yazılır; maskeleme sonucu ekranda kalır", async () => {
+    mocks.documentList
+      .mockImplementationOnce(async () => [D1, D2])
+      .mockImplementationOnce(async () => {
+        throw apiError("E_DB_IO", "belge listesi okunamadı");
+      });
+    await renderScreen();
+
+    fireEvent.change(termsArea(), { target: { value: "Ahmet Yılmaz" } });
+    fireEvent.click(runButton());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("E_DB_IO");
+    // Maskeleme **gerçekten** yapıldı: sonuç paneli korunur (hata liste okumasına ait).
+    expect(screen.getByText(t("redaction.resultTitle"))).toBeTruthy();
+  });
+
   it("sonuç künyesini yanıttan yazar; kalan terim ve akış ayrıntıları uydurulmaz", async () => {
     mocks.documentRedact.mockResolvedValue(
       redactionResult({

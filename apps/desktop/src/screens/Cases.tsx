@@ -13,7 +13,7 @@ import {
   type NewCaseInput,
   type ParseProgressEvent,
 } from "../lib/api";
-import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, SENSITIVITY_LABEL } from "../lib/format";
+import { AI_POLICY_LABEL, CASE_KIND_LABEL, formatTimestamp, parseStatusLabel, SENSITIVITY_LABEL } from "../lib/format";
 import { t } from "../lib/i18n";
 import { DEFAULT_OCR_LANG, defaultOcrLanguageLabel } from "../lib/ocr";
 import { parseProgressLine, parseProgressWidth } from "../lib/parseProgress";
@@ -67,6 +67,17 @@ export function Cases() {
   const [parseProgress, setParseProgress] = useState<ParseProgressEvent | null>(null);
   const activeParse = useRef<{ versionId: string; runId: string } | null>(null);
   const parseSeq = useRef(0);
+  const noticeRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const readerRef = useRef<HTMLDivElement>(null);
+  const revealAfterRender = useRef<"notice" | "error" | "reader" | null>(null);
+  useEffect(() => {
+    const target = revealAfterRender.current;
+    if (!target) return;
+    const element = { notice: noticeRef, error: errorRef, reader: readerRef }[target].current;
+    element?.scrollIntoView?.({ block: "start" });
+    revealAfterRender.current = null;
+  }, [notice, error, reader, busy]);
   // §17.3 toplu ayrıştırma: bekleyen belgeler en fazla iki worker'la. Sonuç
   // belge başına gerçektir; kaç belgenin gerçekten ayrıştığı yazılır.
   const [batchBusy, setBatchBusy] = useState(false);
@@ -395,7 +406,7 @@ export function Cases() {
       const budgetAlert = result.budget ? budgetWarning(result.budget) : null;
       const parts = [
         t("cases.parseSummary", {
-          status: result.parseRun.status,
+          status: parseStatusLabel(result.parseRun.status),
           pages: result.pages,
           segments: result.storedSegments,
         }),
@@ -407,8 +418,12 @@ export function Cases() {
       if (budgetLine) parts.push(budgetLine);
       if (budgetAlert) parts.push(budgetAlert);
       setNotice(parts.join(" · "));
+      revealAfterRender.current = "notice";
     } catch (e) {
-      if (gen === caseGen.current) setError(toApiError(e));
+      if (gen === caseGen.current) {
+        setError(toApiError(e));
+        revealAfterRender.current = "error";
+      }
     } finally {
       // Kapanış yalnız kendi çalıştırmamızın kimliğinde temizler: eşzamanlı
       // ikinci ayrıştırma varsa onun kapısı kapanmaz.
@@ -459,6 +474,7 @@ export function Cases() {
       },
       right: prev?.right ?? null,
     }));
+    revealAfterRender.current = "reader";
   }
 
   /** Kaynağa geri dönüş: anchor'ın sayfasını ve alıntısını okuyucuda açar.
@@ -544,7 +560,7 @@ export function Cases() {
       </div>
 
       {error ? (
-        <div className="notice danger" role="alert">
+        <div ref={errorRef} className="notice danger" role="alert">
           <strong>{error.code}</strong> — {error.message}
         </div>
       ) : null}
@@ -702,7 +718,7 @@ export function Cases() {
             )}
             <button className="btn" disabled={busy} onClick={() => void mutate("delete")}>{t("cases.delete")}</button>
           </div>
-          {notice ? <div className="notice ok">{notice}</div> : null}
+          {notice ? <div ref={noticeRef} className="notice ok" role="status">{notice}</div> : null}
           {/* F04-T07: canlı aşama/sayım — yalnız ayrıştırma sürerken görünür. */}
           {busy && parseProgress ? (
             <div className="field" style={{ marginTop: 8 }} aria-live="polite">
@@ -736,30 +752,32 @@ export function Cases() {
           ) : null}
 
           {reader ? (
-            <DualReader
-              caseId={selected.id}
-              documents={docs}
-              left={reader.left}
-              right={reader.right}
-              onClose={() => setReader(null)}
-              onAnchor={(anchor) => {
-                setAnchors((prev) => [anchor, ...prev]);
-                setNotice(t("cases.anchorSaved", { quote: anchor.exactQuote.slice(0, 60) }));
-              }}
-              onAnchorRebound={() => {
-                // Anchor güncel sürüme taşındı: liste çekirdekten tazelenir.
-                void api
-                  .anchorList(selected.id)
-                  .then(setAnchors)
-                  .catch(() => undefined);
-                setNotice(t("cases.anchorRebound"));
-              }}
-              onNote={(note) => {
-                setNotice(
-                  t("cases.noteCreated", { title: note.title || note.body.slice(0, 40) }),
-                );
-              }}
-            />
+            <div ref={readerRef}>
+              <DualReader
+                caseId={selected.id}
+                documents={docs}
+                left={reader.left}
+                right={reader.right}
+                onClose={() => setReader(null)}
+                onAnchor={(anchor) => {
+                  setAnchors((prev) => [anchor, ...prev]);
+                  setNotice(t("cases.anchorSaved", { quote: anchor.exactQuote.slice(0, 60) }));
+                }}
+                onAnchorRebound={() => {
+                  // Anchor güncel sürüme taşındı: liste çekirdekten tazelenir.
+                  void api
+                    .anchorList(selected.id)
+                    .then(setAnchors)
+                    .catch(() => undefined);
+                  setNotice(t("cases.anchorRebound"));
+                }}
+                onNote={(note) => {
+                  setNotice(
+                    t("cases.noteCreated", { title: note.title || note.body.slice(0, 40) }),
+                  );
+                }}
+              />
+            </div>
           ) : null}
 
           <div className="card tight" style={{ background: "var(--surface)" }}>

@@ -105,7 +105,7 @@ describe("kilit ekran davranışı", () => {
 
     // Başka ekrana gidip dönmek anahtarı düşürmemeli.
     fireEvent.click(screen.getByRole("button", { name: /Dosyalar/ }));
-    expect(await screen.findByRole("heading", { name: "Kasa kilitli" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Kurtarma anahtarı onay bekliyor" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Kasa" }));
     expect(await screen.findByText(KEY)).toBeTruthy();
 
