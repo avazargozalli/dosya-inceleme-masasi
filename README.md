@@ -72,7 +72,7 @@ workers/document/.venv/Scripts/python.exe -m pip install -e 'workers/document[al
 pnpm --filter @dim/desktop exec tauri dev
 ```
 
-Taranmış belgelerde Türkçe ve İngilizce OCR için Tesseract ile `tur` ve `eng` dil verileri gerekir. Arayüz React ve Vite ile çalışır. Tauri komutlarını alan Rust çekirdeği, kasayı ve SQLCipher veritabanını (şema v58) yönetir. Her şema geçişinin sağlama toplamını denetler. PDF, DOCX ve OCR işlemlerini ayrı Python süreci yürütür. [Mimari kararlar](docs/adr/) · [Teknik şartname](docs/spec/DOSYA_INCELEME_MASASI_TAM_PROJE_PLANI.md) · [Test ve katkı rehberi](CONTRIBUTING.md)
+Taranmış belgelerde Türkçe ve İngilizce OCR için Tesseract ile `tur` ve `eng` dil verileri gerekir. Arayüz React ve Vite ile çalışır. Tauri komutlarını alan Rust çekirdeği, kasayı ve SQLCipher veritabanını (şema v59) yönetir. Her şema geçişinin sağlama toplamını denetler. PDF, DOCX ve OCR işlemlerini ayrı Python süreci yürütür. [Mimari kararlar](docs/adr/) · [Teknik şartname](docs/spec/DOSYA_INCELEME_MASASI_TAM_PROJE_PLANI.md) · [Test ve katkı rehberi](CONTRIBUTING.md)
 
 ## Katkı ve lisans
 

@@ -3511,3 +3511,98 @@ gerçekten geri yüklenebilir mi sorusu **geri dönüş tatbikatının** (F16-T0
 Tetikleyicileri anahtarı olan saldırgan düşürebilir — çekirdek doğrulaması ayrıca durur.
 (g) Arayüz davranışı **değişmedi** (aynı sütunlar); gerçek pencere + görsel QA **insan
 bekliyor**.
+
+## F08-T04ag — atıf kontrolü hükmü «bu alıntı bu karardan» iddiasıdır: hüküm ölçümden doğar, alıntı metni kayıtta (şema v59, 2026-11-19)
+
+**Neden bu dilim.** `citation_checks` satırı hukukçunun dosyasındaki atıf tablosunun
+hükmüdür: `identity_match` («künye tuttu») ve `quote_match` («alıntı metinde bulundu»)
+rozetleri `Precedents.tsx` listesinde **doğrudan** basılır; `citation_context` aynı satırın
+çevresini `verify_precedent_quote` ile **yeniden** doğrular. v46 satırın öznesini ve
+hükmünü dondurdu (`identity_match`/`quote_match`/`extracted_citation`/
+`candidate_precedent_id` yazıldıktan sonra değişmez) ama **doğuşta kanıt istemedi**;
+dahası satırda **hangi pasajın** ölçüldüğü yoktu — `extracted_citation` atıf künyesidir
+(`Yargıtay 1. HD 2024/123`), alıntı değil. Çekirdek `NewCitationCheck.quote_match`
+alanını **çağırandan alıyordu**; arayüzdeki serbest açılır liste doğrulama düğmesinden
+bağımsızdı: doğrulama yapılmadan «Eşleşti» seçilip kaydedilebiliyordu.
+
+**Ölçülen kusur (gerçek SQLite v58; `dim-v59-probe/measure_v59.py`, log
+`measure_before.log`).** 11 kusur yazımından **4'ü KABUL** — (b01/b02) aday yokken künye
+hükmü, (b03) numarasız (eksik künyeli) emsale `match`, (b08) alıntı metni yokken alıntı
+hükmü; kalan 7'si **temsil bile edilemiyordu** (`quote_text` sütunu yok → «hangi pasaj
+ölçüldü» yazılamaz, kırpma/boşluk/4000 sınırı denetlenemez). 8 meşru yazma KABUL.
+
+**Yazılan (`0059_citation_check_verdict_evidence_guard.sql`; yeni sütun + 1 BI + BU
+genişletmesi).**
+* `citation_checks.quote_text` — doğrulanan **pasajın kendisi**. NULL olabilir (yalnız
+  künye kontrolü, v59 öncesi satırlar); doluysa kırpılmış, 1..4000 karakter.
+* BI (`citation_check_quote_evidence_guard_bi`, 5 cümle): `quote_text` doluysa
+  kırpılmış-dolu ve ≤ 4000; alıntı hükmü (`match`/`mismatch`) **alıntı metni** ister
+  (hangi pasajın ölçüldüğü kayıtta yoksa hüküm kanıtsızdır); alıntı hükmü adayın **en az
+  bir tam metinli sürümü** olmasını ister (ölçümün dayanağı); künye hükmü
+  (`match`/`mismatch`) **aday** ister; künye `match` ayrıca adayın en az bir numarası
+  (esas/karar) dolu olmasını ister. `not_checked`/`unknown` serbest — ölçmeyi reddetmek
+  kanıt istemez.
+* BU (`citation_check_subject_guard_bu` DROP+CREATE): `quote_text` de **donar** — hüküm
+  sabitken pasaj değişirse rozet başka bir alıntının ölçümünü gösterirdi.
+* Ret `DIM_INTEGRITY:citation_checks` → `E_DB_INTEGRITY`; tablo `case_id` taşır ve zaten
+  taranıyor → `GUARDED_TABLES` **25 kalır**.
+
+**Çekirdek hizası (davranış değişikliği).** `record_citation_check` hükmü **türetir**:
+aday yoksa `not_checked`+`no_candidate`, `quote_text` yoksa `not_checked`+`no_quote`,
+metin yoksa/kısa alıntıysa `not_checked` (doğrulamanın gerekçesi `no_full_text` /
+`quote_too_short`), bulunduysa `match`, metin varken bulunamazsa `mismatch`+`not_found`.
+`NewCitationCheck.quote_match` **kaldırıldı** (serde fazladan alanı yok sayar → geriye
+uyumlu). `citation_context` pasajı `quote_text`ten okur; v59 öncesi satırlarda eski
+davranışla `extracted_citation`a düşer. Alıntı metni 4000 karakterle sınırlı
+(`MAX_QUOTE_TEXT_CHARS`; şema da aynı sınırı uygular). Tarama (`scope_violations`)
+**üç** yeni sınıf sayar: adaysız künye hükmü, numarasız emsale `match`,
+alıntısız/metinsiz emsale alıntı hükmü.
+
+**Arayüz.** Serbest `Alıntı` açılır listesi (`c-quote`) ve «Atıf alanına taşı» düğmesi
+**kaldırıldı**: hüküm artık seçilmez, kayıt anında ölçülür. Yerine «Atıf metni» yanında
+**doğrulanacak pasaj** alanı (`c-quote-text`) geldi; pasaj kayda geçer, hükmü çekirdek
+yazar. Liste rozeti aynı sütunu basmaya devam eder.
+
+**Testler.** `quote_verdict_is_measured_from_the_text_not_claimed` (7 türetme yolu —
+match/mismatch/no_full_text/no_candidate/no_quote/quote_too_short/4000 sınırı — ve 6
+doğrudan SQL saldırısı; rozet ile bağlam panelinin **aynı** hükmü verdiği ölçülür),
+`upgrade_tests` +1 (`upgrade_keeps_citation_verdicts_written_before_the_evidence_gate`:
+v58'de kanıtsız yazılmış üç satır silinmez/düzeltilmez, taramada görünür; yeni kanıtsız
+hüküm doğamaz) → **713 → 715**. Yerelde **715/715 yeşil, 542,80 s**. fmt (iki manifest) /
+clippy `-D warnings --all-targets` / `tsc --noEmit` temiz; `Precedents.test.tsx` **57/57**.
+
+**Kapı kanıtı.** Taban: kusur KABUL **0/11**, meşru satır KABUL, dondurma kapalı.
+**8/8 mutant KIRMIZI** (`gates_v59.py`, log `gates_v59.log`): her mutantta (a) göç
+yükleniyor, (b) hedef kusur KABUL olmaya başlıyor, (c) meşru satır KABUL kalıyor —
+**8/8 delik açıldı · meşru yol korundu**. Kaynak **byte-birebir** (sha256
+`1615eb406b6c415d…`; kapı betiği dosyayı yalnız okur). **Dürüst:** ilk koşu **7/8** —
+M2'nin tanığı yalnız boşluktu ve o zaten `trim` cümlesine takılıyordu; `length(...) = 0`
+cümlesi **boş metni** yakalar. Tanık `''` ile değiştirildi, **8/8 yeniden ölçüldü**; ilk
+koşunun 7 hükmü kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `80d0bca` (8 dosya, **+633/−87**) → run `44481594997` **9/10** —
+rust işleri (macos-15 / ubuntu-latest / windows) **715** ile yeşilken **`arayüz`
+KIRMIZI** düştü: yerelleştirme kapısı («sözlükte kullanılmayan anahtar kalmaz») elle
+hüküm seçimi kaldırılınca sözlükte kalan `precedents.quoteToCitation` ve
+`precedents.quoteNotChecked` anahtarlarını yakaladı (1 failed | 1435 passed). Düzeltme
+`68b3dc4` (2 dosya, **+1/−14**): iki anahtar sözlükten düşürüldü, `Precedents.test.tsx`
+kalan beklentileri temizlendi → run `44490584585` **10/10 YEŞİL** (`dim-storage` **715**
+iki OS'ta: macos-15 **439,00 s** / ubuntu-latest **613,57 s**; `arayüz` 66 dosya /
+**1436** test, paket `index-wBKnjNHs.js` 693,95 kB / gzip 185,22 kB; `masaüstü kabuk`,
+`windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi manifesti,
+kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) Hükmün **doğruluğu** SQL'de hesaplanmaz: katmanlı normalizasyon
+(küçük harf, boşluk katlama, tire birleştirme) çekirdektedir; şema **kanıt tabanını**
+(alıntı metni + aday + tam metin) doğrular, hükmü çekirdek türetir. Doğrudan SQL yazan
+yol yine «metinde olmayan pasaja match» diyebilir (sondada `x01` — bilinçli kapı dışı).
+(b) v59 öncesi satırlarda `quote_text` NULL'dur; bağlam paneli eski davranışla künye
+metnine düşer — hangi pasajın ölçüldüğü **bilinmiyor**, düzeltilmez (donmuş satır).
+(c) `quote_text`in **içeriği** denetlenmez (elle yazılmış/başka metinden kopyalanmış
+olabilir); yalnız ölçümün girdisidir. (d) `identity_match` hâlâ **avukat hükmüdür**;
+şema yalnız aday + numara ister — «gerçekten o karar mı» doğrulanmaz. (e) Emsal tam
+metni sonradan silinirse eski `match` hükmü donmuş kalır (yeniden doğrulama
+`citation_context`te «no_full_text» der; dürüst çelişki sınırda görünür). (f)
+Tetikleyicileri anahtarı olan saldırgan düşürebilir — çekirdek türetmesi ayrıca durur.
+(g) Arayüz değişikliği (pasaj alanı, kaldırılan liste/düğme) **gerçek pencerede** görsel
+QA ile sınanmadı; **insan bekliyor**.
