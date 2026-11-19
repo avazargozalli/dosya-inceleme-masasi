@@ -60,7 +60,6 @@ import {
   bulkReportSummary,
   quoteScanNote,
   quoteStateText,
-  quoteToCitationMatch,
   versionSourceLabel,
   versionStateText,
 } from "../lib/precedents";
@@ -867,13 +866,8 @@ describe("emsal ekranı davranışı", () => {
     expect(screen.getByText(t("precedents.quoteHint"))).toBeTruthy();
 
     // v59: doğrulama hükmü **kayda taşınmaz** — hüküm kayıt anında ölçülür.
-    // «Atıf alanına taşı» düğmesi kaldırıldı; serbest seçim de yok.
+    // «Atıf alanına taşı» düğmesi ve serbest seçim kaldırıldı.
     expect(document.querySelector("#c-quote")).toBeNull();
-    expect(
-      screen.queryByRole("button", {
-        name: t("precedents.quoteToCitation", { state: quoteToCitationMatch(VERIFY_OLD) }),
-      }),
-    ).toBeNull();
   });
 
   it("kasadan aktarım: engel nedeni yazılır, seçilen sürümle gider, kısmi/OCR uyarıları gizlenmez", async () => {
@@ -1247,12 +1241,8 @@ describe("emsal ekranı davranışı", () => {
     await waitFor(() =>
       expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(true),
     );
-    const toCitation = t("precedents.quoteToCitation", {
-      state: quoteToCitationMatch(VERIFY_MATCH),
-    });
     // v59: doğrulama hükmü **kayda taşınmaz** — «Atıf alanına taşı» düğmesi ve
     // serbest seçim kaldırıldı; hüküm kayıt anında çekirdekte ölçülür.
-    expect(screen.queryByRole("button", { name: toCitation })).toBeNull();
     expect(document.querySelector("#c-quote")).toBeNull();
 
     // Kullanıcı metni değiştirdi: hüküm artık bu alıntıya ait değil.
@@ -1260,7 +1250,6 @@ describe("emsal ekranı davranışı", () => {
       target: { value: "kira bedeli ödenmedi mi" },
     });
     expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
-    expect(screen.queryByRole("button", { name: toCitation })).toBeNull();
     // Düzenleme kendiliğinden yeni istek üretmez: kullanıcı açıkça "Doğrula" demeli.
     expect(mocks.precedentQuoteVerify).toHaveBeenCalledTimes(1);
 
