@@ -3415,3 +3415,99 @@ Tetikleyicileri düşürebilen saldırgan sahte **yazılı dayanak** da yazabili
 tutarlılığı ölçer, doğruluğu değil. (e) v57 öncesi kanıtsız satırlar silinmez; rozet artık
 onları «izin bilinmiyor» gösterir, onarım kullanıcının dayanak yazmasıyla olur. (f) Gerçek
 pencere + görsel QA **insan bekliyor**.
+
+## F08-T04af — yedek makbuzu «geri dönülebilir yedek var» iddiasıdır: kanıtı doğuşta taşır, sonuçlandıktan sonra donar (şema v58, 2026-11-19)
+
+`backup_runs` satırı **kasa yedeğinin makbuzudur** — «hangi snapshot, hangi şema
+sürümünden, hangi manifest özetiyle, doğrulandı mı, ne zaman». Üç okuma yolu bu satıra
+yaslanır: `loadBackupFreshness` → `latestBackupSuccess` (`verified`/`succeeded`
+satırların `completed_at ?? created_at`i = **«son başarılı yedek»**; `Settings.tsx`
+bunu basar ve `nextBackupAt` **sonraki otomatik yedeğin tarihini** bu değerden öteler),
+yedek geçmişi rozetleri (`backupRunStatusLabel`/`backupRunStatusTone`: «doğrulandı» ⇔
+`verified`) ve `backup_run_list` IPC. Çekirdek kaydı `vault_backup` **yedeği aldıktan ve
+`integrity_check` ile doğruladıktan sonra** yazar; yani satır bir **makbuzdur**, niyet
+değil. Şemada bu tablonun tek kapısı `status` CHECK'iydi: manifest özeti biçimsiz, şema
+sürümü negatif, damga serbest metin, `verified` kanıtsız doğabiliyor; satır sonradan
+**her** sütunuyla değiştirilebiliyordu (kanıt silinebilir, `created_at` 2030'a alınabilir,
+`failed`→`verified` çevrilebilir).
+
+**Ölçülen kusur (gerçek SQLite v57; sonda `scratch/dim-v58-probe/measure_v58.py`, log
+`measure_before.log`):** 47 yazımın **45'i KABUL** (2'si zaten RED — yalnız `status`
+CHECK'i), 8 meşru yazma KABUL. Doğum (21): boş kimlik; snapshot boşluk / boş /
+kırpılmamış / **yol ayırıcı** (`../kacis`) / sekme; şema sürümü 0 ve negatif; manifest
+63 hex / **büyük harf** / hex değil / `'hash'`; hedef boşluk / boş / kırpılmamış;
+`created_at`/`completed_at` `'dün'`; `running` + tamamlanma damgası; `running` + kanıt;
+`verified` + tamamlanma yok; `verified` + **kanıtsız**; kanıt yalnız boşluk; bilinmeyen
+durum. UPDATE (16): manifest / snapshot / şema sürümü / hedef çevrildi; `created_at`
+**2030**'a alındı (tazelik ve otomatik yedek tarihi kaydı); kimlik takası;
+`completed_at` geçmişe çekildi; `verified` satırın kanıtı silindi; `succeeded`→`verified`
+kanıtsız; `failed`→`verified` (başarı uydurma); `running`→`succeeded` tamamlanma anı
+olmadan / `'dün'` damgasıyla; bilinmeyen durum; `failed` satırın gerekçesi değiştirildi;
+`running`→`verified` kanıtsız; `running`→`succeeded` kanıt yalnız boşluk.
+
+**Yazılan (`0058_backup_run_receipt_guard.sql`, 2 tetikleyici):** INSERT — `id`
+kırpılmış-dolu; `snapshot_id` **kırpılmış** ve dolu, `/` `\` CR/LF/TAB taşımaz (klasör
+adıdır, yol değil); `schema_version ≥ 1`; `manifest_hash` **64 küçük harf hex**
+(`manifest.json` baytlarının sha256'sı — çekirdek `hex` ile üretir); `status` kapalı
+küme; `destination_label` kırpılmış-dolu; iki damga ISO-8601 (`YYYY-MM-DDTHH:MM:SS…`);
+`verification_result` NULL ya da kırpılmış-dolu; `running` **ne** tamamlanma anı **ne**
+kanıt taşır; terminal durumlar tamamlanma anı taşır; `verified` **kanıtlı** doğar.
+UPDATE — `id`, `snapshot_id`, `schema_version`, `manifest_hash`, `destination_label`,
+`created_at` **donar**; `status` yalnız `running → succeeded|failed|verified` ilerler,
+`succeeded → verified` **yalnız o anda kanıt yazılıyorsa** meşrudur (sonradan doğrulama
+gerçek bir ürün yoludur; kanıtsız «doğrulandı» değildir), sonuçlanmış satır başka yöne
+**çevrilemez**; tamamlanma anı yalnız `running`den çıkarken ve ISO olarak yazılır; kanıt
+`failed`/`verified`da donar ve her durumda kırpılmış-doludur. Değişmeyen yazma takılmaz —
+v58 öncesi tutarsız satır **no-op** ile kilitlenmez. Ret `DIM_INTEGRITY:backup_runs` →
+`StorageError::Integrity` → **`E_DB_INTEGRITY`**. Tablo `case_id` taşımaz (kasa düzeyi
+geçmiş) → `GUARDED_TABLES` **25 kalır**.
+
+**Çekirdek hizası (davranış sıkılaşması, `record_backup_run`):** manifest özeti artık
+**64 küçük harf hex** olmalı (`E_BACKUP_INVALID`), snapshot klasör adı yol ayırıcı ve
+kontrol karakteri taşıyamaz, `schema_version ≥ 1`, **kanıtsız `verified`** ve **`running`
++ kanıt** reddedilir — kurallar şema kapısıyla **aynı**; kapı düşürülse bile çekirdek
+reddeder. `vault_backup` zaten `verified` + `integrity_check` yazdığı için ürün yolu
+değişmedi.
+
+**Testler:** `backup_runs` +1 (`backup_receipt_is_backed_at_birth_and_frozen`: 23 doğum
+kusuru + 16 UPDATE saldırısı kapıdan RED; kanıtlı `verified`, `running`, gerekçeli
+`failed`, kanıtsız `succeeded`, `running→succeeded` tamamlanma anıyla, `succeeded→verified`
+kanıtla ve no-op **KABUL**; çekirdek aynı kuralları `E_BACKUP_INVALID` ile uygular),
+`upgrade_tests` +1 (`upgrade_keeps_backup_runs_written_before_the_receipt_gate`: v57
+tutarsız satırı **silinmez/düzeltilmez**, donar; yeni biçimsiz makbuz doğamaz; meşru
+makbuz ve eski `running` satırın tamamlanması geçer) → `dim-storage --lib` **711 → 713**.
+Mevcut sıra testi (`list_is_newest_first_and_survives_equal_timestamps`) `created_at`i
+**UPDATE ile eşitliyordu** — v58 damgayı dondurduğu için sıra sözleşmesi artık eşit
+damgayla **doğuşta** yazılarak ölçülüyor (kapı gevşetilmedi). fmt (iki manifest) / clippy
+`-D warnings --all-targets` / masaüstü `check --all-targets` temiz.
+
+**Kapı kanıtı:** taban iki uçta YEŞİL, **28/28 mutant KIRMIZI** (`gates_v58.py`, log
+`gates_v58.log`): her mutant için (a) odak testi kırmızı, (b) hedef kusur **KABUL**
+olmaya başlıyor, (c) 8 meşru yol KABUL kalıyor → **28/28 delik açıldı · meşru yollar
+korundu**. Kaynak **byte-birebir** geri yazıldı (sha256 `b1cd5b118761b6a1…`). **Dürüst:**
+ilk iki koşunun hükümleri kanıt **sayılmadı** — (i) kapı betiğinin sonda ayrıştırması
+satır başındaki hükmü tanımıyordu (28/28 «HEDEF YOK»), (ii) düzeltmeden sonra üç mutant
+YEŞİL kaldı: hedef testlerde eksik saldırı (`hedef boş`, `snapshot boş`,
+`running→verified kanıtsız`, `running→succeeded` kanıt yalnız boşluk) ve M26'nın hedefi
+yanlış satırdı (`u09`, oysa ayırt edici yol `u16`); testler ve hedef düzeltildi,
+**28/28 yeniden ölçüldü**. `status` kapalı küme cümleleri (BI/BU) `CHECK` ile **eşdeğer**
+olduğu için mutantlanmadı (CHECK varken aynı satırı o da reddeder) — kapı notunda yazılı.
+
+**CI (ölçüldü).** Kod `412efd5` (4 dosya, **+923/−21**) → run `44425159253` **10/10 YEŞİL**
+(`dim-storage` **713** iki OS'ta: macos-15 **472,84 s** / ubuntu-latest **443,67 s**;
+`arayüz` 66 dosya / **1436** test, paket `index-BTXhYWbb.js` 694,61 kB — **değişmedi**;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil). Yerelde **713/713 yeşil, 603,81 s** (son hâl; önceki koşu
+592,77 s).
+
+**Dürüst sınırlar.** (a) v58 öncesi tutarsız makbuzlar **silinmez ve düzeltilmez**
+(donar); onarım yolu **yeni yedek almaktır**. (b) `manifest_hash`in gerçekten o
+klasördeki `manifest.json`un SHA-256'sı olduğu **yeniden hesaplanmaz** (SQLite'ta
+SHA-256 yok; çekirdek üretir) — biçim ve değişmezlik ölçülür. (c) Snapshot klasörünün
+diskte **var olduğu** doğrulanmaz; satır hedefi göstermez, `destination_label` yalnız
+etikettir. (d) Damga **gelecekte** olabilir (yalnız biçim ve dondurma). (e)
+`verification_result`in içeriği denetlenmez (yalnız varlığı ve dondurulması); yedek
+gerçekten geri yüklenebilir mi sorusu **geri dönüş tatbikatının** (F16-T03) işidir. (f)
+Tetikleyicileri anahtarı olan saldırgan düşürebilir — çekirdek doğrulaması ayrıca durur.
+(g) Arayüz davranışı **değişmedi** (aynı sütunlar); gerçek pencere + görsel QA **insan
+bekliyor**.
