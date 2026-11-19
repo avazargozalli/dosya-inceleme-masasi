@@ -486,6 +486,10 @@ impl Database {
             // damgasız inceleme, incelenmemiş satırda gerekçe/damga. Aynı dosya
             // içinde **sürüm taşıması** buradan görünmez (satırda "hangi sürüme
             // yazıldığı" bilgisi tek sütundur) — dürüst sınır.
+            // v59 — kanıtsız **hüküm** satırları da sayılır: adaysız künye
+            // hükmü, numarasız emsale `match`, tam metni olmayan emsale alıntı
+            // hükmü. Kapı yalnız yeni yazmayı durdurur; v59 öncesi satırlar
+            // silinmez, burada **görünür**.
             citation_checks: count(
                 "SELECT count(*) FROM citation_checks c
                   WHERE c.case_id IS NULL OR EXISTS (
@@ -501,7 +505,25 @@ impl Database {
                               OR c.meaning_reviewed_at IS NOT NULL))
                      OR (c.meaning_review <> 'not_reviewed' AND c.meaning_reviewed_at IS NULL)
                      OR (c.meaning_review IN ('misleading', 'off_context')
-                         AND length(trim(c.meaning_note, ' ' || char(9) || char(10) || char(13))) = 0)",
+                         AND length(trim(c.meaning_note, ' ' || char(9) || char(10) || char(13))) = 0)
+                     OR (c.identity_match IN ('match', 'mismatch')
+                         AND (c.candidate_precedent_id IS NULL
+                              OR length(trim(c.candidate_precedent_id)) = 0))
+                     OR (c.identity_match = 'match' AND NOT EXISTS (
+                          SELECT 1 FROM precedents p
+                           WHERE p.id = c.candidate_precedent_id
+                             AND ((p.docket_no IS NOT NULL
+                                   AND length(trim(p.docket_no)) > 0)
+                                  OR (p.decision_no IS NOT NULL
+                                      AND length(trim(p.decision_no)) > 0))))
+                     OR (c.quote_match IN ('match', 'mismatch') AND NOT EXISTS (
+                          SELECT 1 FROM precedent_versions v
+                           WHERE v.precedent_id = c.candidate_precedent_id
+                             AND v.full_text IS NOT NULL
+                             AND length(trim(v.full_text)) > 0))
+                     OR (c.quote_match IN ('match', 'mismatch')
+                         AND (c.quote_text IS NULL
+                              OR length(trim(c.quote_text)) = 0))",
             )?,
             // v37 — dışa aktarma kalemi, **üst kaydın** dosyasının sürümünü
             // gösterir (satırın kendi `case_id`'si yok; 0034 `ai_context_items`

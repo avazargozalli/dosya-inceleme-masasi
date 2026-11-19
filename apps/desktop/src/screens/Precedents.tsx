@@ -34,7 +34,6 @@ import {
   quoteScanNote,
   quoteStateText,
   quoteStateTone,
-  quoteToCitationMatch,
   summarizeVersions,
   versionConflictText,
   versionSourceLabel,
@@ -138,7 +137,9 @@ export function Precedents() {
   const [citation, setCitation] = useState("");
   const [candidate, setCandidate] = useState("");
   const [identity, setIdentity] = useState<"match" | "mismatch" | "unknown">("unknown");
-  const [quoteMatch, setQuoteMatch] = useState<"match" | "mismatch" | "not_checked" | "unknown">("not_checked");
+  // v59: alıntı hükmü artık seçilmez; doğrulanacak **pasaj** yazılır ve hüküm
+  // kayıt anında çekirdekte `verify_precedent_quote` ile ölçülür.
+  const [quoteText, setQuoteText] = useState("");
   const [checks, setChecks] = useState<CitationCheckRow[]>([]);
   // Kontrol listesinin **okuma durumu**: düşen okuma "0 kontrol" gibi
   // gösterilmez; sürüm değişiminde önceki sürümün satırları anında kalkar.
@@ -848,12 +849,16 @@ export function Precedents() {
         extractedCitation: sent,
         candidatePrecedentId: candidate || null,
         identityMatch: identity,
-        quoteMatch,
-        reasonCodes: quoteMatch === "not_checked" ? ["text_not_checked"] : [],
+        // Alıntı hükmü gönderilmez (v59): çekirdek, bu pasajı adayın tam
+        // metninde **kendisi** arar ve hükmü yazar. «Eşleşti» diyen bir alan
+        // olsaydı ölçülmemiş iddia kayda girerdi.
+        quoteText: quoteText.trim() === "" ? null : quoteText.trim(),
+        reasonCodes: [],
       });
       if (citationRef.current.trim() === sent) {
         citationRef.current = "";
         setCitation("");
+        setQuoteText("");
       }
       // Tazeleme **okuma durumunu** da taşır: düşen tazeleme "kontrol yok" demez.
       if (versionRef.current === vid && caseRef.current === cid)
@@ -1534,19 +1539,6 @@ export function Precedents() {
               {quoteScanNote(verification) ? (
                 <div className="hint" style={{ marginTop: 6 }}>{quoteScanNote(verification)}</div>
               ) : null}
-              {verification.state !== "not_checked" ? (
-                <div style={{ marginTop: 8 }}>
-                  <button
-                    className="btn ghost"
-                    style={{ height: 26 }}
-                    onClick={() => setQuoteMatch(quoteToCitationMatch(verification))}
-                  >
-                    {t("precedents.quoteToCitation", {
-                      state: quoteToCitationMatch(verification),
-                    })}
-                  </button>
-                </div>
-              ) : null}
             </div>
           ) : null}
           <p className="hint" style={{ margin: 0 }}>
@@ -1608,14 +1600,15 @@ export function Precedents() {
               <option value="mismatch">{t("precedents.identityMismatch")}</option>
             </select>
           </div>
-          <div className="field">
-            <label htmlFor="c-quote">{t("precedents.fieldQuote")}</label>
-            <select id="c-quote" className="input" value={quoteMatch} onChange={(e) => setQuoteMatch(e.target.value as typeof quoteMatch)}>
-              <option value="not_checked">{t("precedents.quoteNotChecked")}</option>
-              <option value="unknown">{t("precedents.identityUnknown")}</option>
-              <option value="match">{t("precedents.identityMatch")}</option>
-              <option value="mismatch">{t("precedents.identityMismatch")}</option>
-            </select>
+          <div className="field" style={{ flex: "2 1 240px" }}>
+            <label htmlFor="c-quote-text">{t("precedents.fieldQuote")}</label>
+            <input
+              id="c-quote-text"
+              className="input"
+              value={quoteText}
+              onChange={(e) => setQuoteText(e.target.value)}
+              placeholder={t("precedents.phQuote")}
+            />
           </div>
           <button className="btn" disabled={busy} onClick={() => void addCheck()}>{t("precedents.checkSave")}</button>
         </div>

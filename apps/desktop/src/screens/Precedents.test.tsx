@@ -385,6 +385,7 @@ const CHECK: CitationCheckRow = {
   candidatePrecedentId: null,
   identityMatch: "mismatch",
   quoteMatch: "not_checked",
+  quoteText: null,
   meaningReview: "not_reviewed",
   meaningNote: "",
   meaningReviewedAt: null,
@@ -865,12 +866,14 @@ describe("emsal ekranı davranışı", () => {
     // "Bulunamadı" hükmü tek başına "uydurulmuş" değildir; ekran da bunu yazar.
     expect(screen.getByText(t("precedents.quoteHint"))).toBeTruthy();
 
-    fireEvent.click(
-      screen.getByRole("button", {
+    // v59: doğrulama hükmü **kayda taşınmaz** — hüküm kayıt anında ölçülür.
+    // «Atıf alanına taşı» düğmesi kaldırıldı; serbest seçim de yok.
+    expect(document.querySelector("#c-quote")).toBeNull();
+    expect(
+      screen.queryByRole("button", {
         name: t("precedents.quoteToCitation", { state: quoteToCitationMatch(VERIFY_OLD) }),
       }),
-    );
-    expect(byId<HTMLSelectElement>("c-quote").value).toBe("match");
+    ).toBeNull();
   });
 
   it("kasadan aktarım: engel nedeni yazılır, seçilen sürümle gider, kısmi/OCR uyarıları gizlenmez", async () => {
@@ -1003,7 +1006,6 @@ describe("emsal ekranı davranışı", () => {
       target: { value: "  Yargıtay 1. HD 2024/123  " },
     });
     fireEvent.change(byId<HTMLSelectElement>("c-id"), { target: { value: "mismatch" } });
-    fireEvent.change(byId<HTMLSelectElement>("c-quote"), { target: { value: "not_checked" } });
     fireEvent.change(byId<HTMLSelectElement>("c-cand"), { target: { value: "p1" } });
     fireEvent.click(screen.getByRole("button", { name: t("precedents.checkSave") }));
 
@@ -1014,25 +1016,28 @@ describe("emsal ekranı davranışı", () => {
       extractedCitation: "Yargıtay 1. HD 2024/123",
       candidatePrecedentId: "p1",
       identityMatch: "mismatch",
-      quoteMatch: "not_checked",
-      // Alıntı "kontrol edilmedi" ise nedeni kayda yazılır; sessizce "match" sayılmaz.
-      reasonCodes: ["text_not_checked"],
+      // v59: alıntı hükmü **gönderilmez** — çekirdek ölçüp kendisi yazar.
+      quoteText: null,
+      reasonCodes: [],
     });
     expect(byId<HTMLInputElement>("c-text").value).toBe("");
     expect(mocks.citationCheckList).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(screen.queryByText("E_CITATION")).toBeNull());
 
-    // Alıntı boyutu "match" ise neden kodu yazılmaz.
+    // Alıntı pasajı yazılırsa **kayda geçer**; hükmü çekirdek ölçer.
     fireEvent.change(byId<HTMLInputElement>("c-text"), {
       target: { value: "Yargıtay 1. HD 2024/124" },
     });
-    fireEvent.change(byId<HTMLSelectElement>("c-quote"), { target: { value: "match" } });
+    fireEvent.change(byId<HTMLInputElement>("c-quote-text"), {
+      target: { value: "  Gerekçede ödeme yapılmadığı belirtildi  " },
+    });
     fireEvent.click(screen.getByRole("button", { name: t("precedents.checkSave") }));
     await waitFor(() => expect(mocks.citationCheckCreate).toHaveBeenCalledTimes(2));
     expect(mocks.citationCheckCreate.mock.calls[1]![0]).toMatchObject({
-      quoteMatch: "match",
+      quoteText: "Gerekçede ödeme yapılmadığı belirtildi",
       reasonCodes: [],
     });
+    expect(byId<HTMLInputElement>("c-quote-text").value).toBe("");
   });
 
   it("anlam incelemesi bağlamı gerçek metinden gösterir ve hükmü gerekçesiyle kaydeder", async () => {
@@ -1245,11 +1250,12 @@ describe("emsal ekranı davranışı", () => {
     const toCitation = t("precedents.quoteToCitation", {
       state: quoteToCitationMatch(VERIFY_MATCH),
     });
-    expect(screen.getByRole("button", { name: toCitation })).toBeTruthy();
+    // v59: doğrulama hükmü **kayda taşınmaz** — «Atıf alanına taşı» düğmesi ve
+    // serbest seçim kaldırıldı; hüküm kayıt anında çekirdekte ölçülür.
+    expect(screen.queryByRole("button", { name: toCitation })).toBeNull();
+    expect(document.querySelector("#c-quote")).toBeNull();
 
-    // Kullanıcı metni değiştirdi: hüküm artık bu alıntıya ait değil. "Atıf alanına
-    // taşı" düğmesi kalsaydı **doğrulanmamış** yeni metnin hükmünü atıf kontrolüne
-    // yazacaktı.
+    // Kullanıcı metni değiştirdi: hüküm artık bu alıntıya ait değil.
     fireEvent.change(byId<HTMLInputElement>("p-quote"), {
       target: { value: "kira bedeli ödenmedi mi" },
     });

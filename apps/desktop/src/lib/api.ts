@@ -773,6 +773,8 @@ export type CitationCheckRow = {
   candidatePrecedentId: string | null;
   identityMatch: "match" | "mismatch" | "unknown";
   quoteMatch: "match" | "mismatch" | "not_checked" | "unknown";
+  /** Doğrulanan alıntı pasajı (v59); NULL = yalnız künye kontrolü. */
+  quoteText: string | null;
   meaningReview: string;
   meaningNote: string;
   meaningReviewedAt: string | null;
@@ -2618,7 +2620,7 @@ export const api = {
     extractedCitation: string;
     candidatePrecedentId: string | null;
     identityMatch: "match" | "mismatch" | "unknown";
-    quoteMatch: "match" | "mismatch" | "not_checked" | "unknown";
+    quoteText: string | null;
     reasonCodes: string[];
   }) => invoke<CitationCheckRow>("citation_check_create", { input }),
 

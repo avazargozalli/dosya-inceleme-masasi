@@ -3186,3 +3186,117 @@ fn upgrade_keeps_backup_runs_written_before_the_receipt_gate() {
         )
         .expect("eski running satır tamamlanabilir");
 }
+
+/// v59: v58 öncesi **kanıtsız hüküm** satırları silinmez, düzeltilmez; olduğu
+/// gibi okunur ve taramada **görünür**. Kapı yalnız **yeni** yazmayı durdurur.
+#[test]
+fn upgrade_keeps_citation_verdicts_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 58);
+        conn.execute_batch(
+            "INSERT INTO precedents
+               (id,court,chamber,docket_no,decision_no,application_no,
+                decision_date,title,source_url,user_tags,legal_issue,
+                completeness,created_at)
+             VALUES ('p-num','Yargıtay','1. HD','2024/1','2025/2',NULL,NULL,NULL,
+                     NULL,'[]',NULL,'complete','2026-01-01T00:00:00Z'),
+                    ('p-nonum','Yargıtay','1. HD',NULL,NULL,NULL,NULL,NULL,NULL,
+                     '[]',NULL,'incomplete','2026-01-01T00:00:00Z');
+             -- v58: hükümler kanıtsız yazılabiliyordu (kapı yok).
+             INSERT INTO citation_checks
+               (id,case_id,input_document_version_id,extracted_citation,
+                candidate_precedent_id,identity_match,quote_match,meaning_review,
+                meaning_note,meaning_reviewed_at,reason_codes,created_at)
+             VALUES ('legacy-nocand','c1','v1','alıntı',NULL,'match',
+                     'not_checked','not_reviewed','',NULL,'[]',
+                     '2026-01-01T00:00:00Z'),
+                    ('legacy-noquote','c1','v1','alıntı','p-num','unknown',
+                     'match','not_reviewed','',NULL,'[]',
+                     '2026-01-01T00:00:00Z'),
+                    ('legacy-nonum','c1','v1','alıntı','p-nonum','match',
+                     'not_checked','not_reviewed','',NULL,'[]',
+                     '2026-01-01T00:00:00Z');",
+        )
+        .expect("v58 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    // Eski satırlar **olduğu gibi** kalır (v59 onarmaz).
+    let total: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM citation_checks WHERE id LIKE 'legacy-%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("sayım");
+    assert_eq!(total, 3, "v59 eski satırı silmez");
+    let (ident, quote): (String, String) = db
+        .conn()
+        .query_row(
+            "SELECT identity_match, quote_match FROM citation_checks
+              WHERE id='legacy-nocand'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (ident.as_str(), quote.as_str()),
+        ("match", "not_checked"),
+        "v59 eski hükmü düzeltmez"
+    );
+    // Tarama eski hükümleri **görünür** kılar (üç sınıf da sayılır).
+    assert_eq!(
+        db.scope_violations().expect("tarama").citation_checks,
+        3,
+        "kanıtsız üç eski hüküm sayılır"
+    );
+    // Yeni kanıtsız hüküm doğamaz.
+    for sql in [
+        "INSERT INTO citation_checks
+           (id,case_id,input_document_version_id,extracted_citation,
+            candidate_precedent_id,identity_match,quote_match,meaning_review,
+            meaning_note,meaning_reviewed_at,reason_codes,created_at)
+         VALUES ('new-nocand','c1','v1','alıntı',NULL,'mismatch',
+                 'not_checked','not_reviewed','',NULL,'[]',
+                 '2026-11-19T00:00:00Z')",
+        "INSERT INTO citation_checks
+           (id,case_id,input_document_version_id,extracted_citation,
+            candidate_precedent_id,identity_match,quote_match,meaning_review,
+            meaning_note,meaning_reviewed_at,reason_codes,created_at)
+         VALUES ('new-noquote','c1','v1','alıntı','p-num','unknown','match',
+                 'not_reviewed','',NULL,'[]','2026-11-19T00:00:00Z')",
+        "INSERT INTO citation_checks
+           (id,case_id,input_document_version_id,extracted_citation,
+            candidate_precedent_id,identity_match,quote_match,meaning_review,
+            meaning_note,meaning_reviewed_at,reason_codes,created_at)
+         VALUES ('new-nonum','c1','v1','alıntı','p-nonum','match',
+                 'not_checked','not_reviewed','',NULL,'[]',
+                 '2026-11-19T00:00:00Z')",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("citation_checks"), "mesaj: {message}")
+            }
+            other => panic!("v59 kanıtsız hükmü reddetmeli: {other:?}"),
+        }
+    }
+    // Meşru yeni satır takılmaz (hüküm yok, kanıt var).
+    db.conn()
+        .execute(
+            "INSERT INTO citation_checks
+               (id,case_id,input_document_version_id,extracted_citation,
+                candidate_precedent_id,identity_match,quote_match,meaning_review,
+                meaning_note,meaning_reviewed_at,reason_codes,created_at)
+             VALUES ('new-ok','c1','v1','alıntı','p-num','unknown','not_checked',
+                     'not_reviewed','',NULL,'[\"text_not_checked\"]',
+                     '2026-11-19T00:00:00Z')",
+            [],
+        )
+        .expect("meşru satır yazılabilir");
+}
