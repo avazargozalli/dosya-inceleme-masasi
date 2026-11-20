@@ -30,6 +30,7 @@
 | F08-T04q | ✅ | **emsal sürümünün çakışma işareti kanıtlanabilir olmalı** (şema **v44**): `precedent_versions` üzerinde **2 tetikleyici** — `identity_conflict` 0/1, rozet⇔işaret birlikte, hedef kendisi olamaz, var olan hedef aynı emsalde ve **farklı** `body_hash`te olmalı, ters yön dahil; `id`/`precedent_id`/`body_hash`/bayrak/işaret **değişmez**; ölçülen kusur: doğrudan SQL ile A emsalinin sürümü **B emsalinin sürümüyle** çakıştığını iddia ediyor, "aynı künye, farklı metin" rozeti **aynı** hash ile yazılıyor ve işaret UPDATE ile çevrilebiliyordu; tablo `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
 | F08-T04r | ✅ | **gönderim sicilinin ve onayın dönüşüm bağı kanıtlanabilir olmalı** (şema **v45**): `transfer_segments` + `transfer_consents` üzerinde **4 tetikleyici** — dolu `transform_manifest_id`/`outbound_transform_id` **var olan** ve `kind='mask_terms'` dönüşümü göstermeli; sicil satırının bağı çalıştırmanın onayıyla **aynı** olmalı (0 terimli onayda `NULL`); sicilin `id`/`ai_run_id`/`transform_manifest_id` ve onayın maske bağı **değişmez**; ölçülen kusur: doğrudan SQL ile onaylanan A maskesi yerine B yazılıyor, uydurma/`identity`/NULL bağ kabul ediliyor ve onayın bağının UPDATE ile çevrilmesi maske kapısını atlatıyordu; tablolar `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
 | F08-T04s | ✅ | **atıf kontrolü sicili kendi hükmünü kanıtlamalı** (şema **v46**): `citation_checks` üzerinde **3 tetikleyici** + 0037'nin kapsam tetikleyicisi **genişletildi** — alıntı boşluk olamaz, dolu emsal bağı **var olan** emsali gösterir, `reason_codes` metin dizisi, satır **incelenmemiş doğar**; `id`/alıntı/emsal/`identity_match`/`quote_match`/`reason_codes`/`created_at` **değişmez**; anlam hükmü kapalı küme + gerekçe + damga tutarlı (gerekçesiz `misleading`, damgasız `accurate` yazılamaz); `case_id` ve sürüm de dondu (aynı dosyada sürüm taşıması durur); ölçülen kusur: 22 kusur yazımının **21'i** kabul ediliyor, `quote_match` UPDATE ile çevriliyor, bağlam paneli başka emsalin metnini okuyordu; `scope_violations()` beş sınıfı **şimdi sayar** (`GUARDED_TABLES` 25 kalır); **22/22 mutasyon** (2026-11-16) |
+| F08-T04ai | ✅ | **kronoloji olayı «bu olay şu tarihte oldu» iddiasıdır** (şema **v61**): `events` üzerinde **2 tetikleyici** — tarih/kesinlik/sıralama üçlüsü tutarlı (`date()` eşitliği: olmayan gün, dolgusuz gün, ay `13`/`00` düşer; aralıkta ayırıcı ve başlangıç ≤ bitiş), `sortable_date` tarihten türetilir (tarih yoksa NULL), doğuşta yalnız `draft`, damgalar ISO ve sıralı; `id`/`case_id`/`created_at`/`assertion_kind` **donar**, durum yalnız `draft`→`confirmed`, `deleted_at` tek yönlü, `row_version` azalamaz ve içerik değişiyorsa artmalı; ölçülen kusur: 66 kusur yazımının **66'sı** kabul ediliyordu (sıralama değeri çevrilerek olay yanlış sırada görünüyor, köken «belge»ye çevriliyor, satır başka dosyaya taşınıyordu); **44/44 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
 
 ## Doğrulama
 
@@ -3723,4 +3724,130 @@ doğrulanmaz (bugün hiçbir yol yazmıyor; sütun donar). (f) `cases` silme
 (`deleted_at`) kullanır. (g) Tetikleyicileri anahtarı olan saldırgan düşürebilir
 (çekirdek doğrulaması ayrıca durur). (h) v60 öncesi tutarsız makbuzlar
 **silinmez/düzeltilmez** (donar); onarım yolu yeni dışa aktarmadır. (i) Arayüz
+davranışı değişmedi; gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04ai — kronoloji olayı «bu olay şu tarihte oldu» iddiasıdır: doğuşta tutarlı, kökeni ve dosyası donmuş (şema v61, 2026-11-20)
+
+`events` satırı **kronolojinin hükmüdür**: «bu olay **şu tarihte** oldu, tarihin
+kesinliği **şu**, rolü **şu**, kaynağı **şu**». Dört okuma yolu ona yaslanır:
+`Timeline.tsx` tarih metnini (`eventDateText`), kesinlik rozetini
+(`PRECISION_LABEL`), tarih rolü rozetini, durum rozetini («Onaylandı» ⇔
+`status='confirmed'`, **değilse «Taslak»**) ve ham tarih notunu **doğrudan** bu
+sütunlardan basar; `list_events` kronolojiyi **`sortable_date`** ile sıralar;
+`csv_export` aynı üçlüden üretir; `review_commit::review_target_exists` inceleme
+öğesinin hedefini bu tablodan çözer. Komşuları kapılıydı (`event_sources` 0032,
+`claims` v32, `review_items` v40/v41) ama **olayın kendisi 0001'den beri
+tetikleyicisizdi**; şemadaki tek kapı dört `CHECK` (kesinlik/rol/köken/durum
+kapalı kümeleri) ve `unknown ⇒ sortable_date IS NULL` idi.
+
+**Ölçülen kusur (gerçek SQLite v60; `scratch/dim-v61-probe/measure_v61.py`, log
+`measure_before.log`):** 66 kusur yazımının **66'sı KABUL**, 16 meşru yazma
+KABUL. Doğum (41): boş/boşluk/kırpılmamış/65 haneli kimlik; boşluk/boş/65 haneli
+tür; boş/boşluk başlık; kırpılmamış açıklama; **gün** kesinliğinde ay biçimi /
+dolgusuz gün / takvimde olmayan gün (`2025-02-30`); **ay** kesinliğinde tam gün
+taşıyan değer, ay `13` ve ay `00`; **yıl** kesinliğinde ay taşıyan değer;
+**aralık**ta tek tarih / ters aralık / yarım aralık / **ayırıcısız** değer
+(`2025-03-01X2025-03-02`) / takvim dışı başlangıç ve bitiş; **yaklaşık**ta
+`dün`; `sortable_date` tarihten **başka** (olay **yanlış sırada** görünür),
+sıralama değeri yokken tarih var / tarih yokken sıralama değeri var (ekran tarih
+uydurur), `unknown` + tarih taşır; `created_at` `dün` / kırpılmamış / serbest
+metin (`'1'`), `updated_at` boş / kırpılmamış / `created_at`ten önce; doğuşta
+`confirmed` (onay kullanıcı eylemidir), doğuşta silinmiş, **silinmiş dosyaya**
+doğar; `date_raw` yalnız boşluk ve boş metin; `row_version` 0 (iyimser kilit ilk
+yazmada çakışmayı göremez). UPDATE (25): satır **başka dosyaya** taşındı
+(kaynak bağları eski dosyada kalır — INV-05), köken çevrildi (kullanıcı beyanı
+«belge» oldu), kimlik yeniden adlandırıldı, `created_at` 2030'a çekildi, onay
+geri alındı (`confirmed`→`draft`), onay arşive çevrildi, **taslak arşive
+çevrildi**, sıralama değeri 1999'a çekildi, tarih çevrilip sıralama değeri
+bırakıldı, silinmiş satır **geri getirildi**, silinmiş satırın içeriği değişti,
+silme anında içerik değişti (sürüm artarak da), `row_version` sıfırlandı,
+bilinmeyen tarihe gün eklendi, ay kesinliğine tam gün yazıldı, aralık ters
+çevrildi / ayırıcısız yazıldı, başlık boşaltıldı, tür kırpılmamış yazıldı,
+`updated_at` `dün`, tarih silinip sıralama değeri bırakıldı, içerik **sürüm
+artmadan** değişti, yaklaşık kesinliğe `dün` yazıldı.
+
+**Yazılan (`0061_timeline_event_evidence_guard.sql`, 2 tetikleyici):**
+
+- `events` BI — `id` kırpılmış-dolu ≤64; `case_id` **var ve silinmemiş** dosyayı
+  gösterir (fail-closed); `event_kind` kırpılmış-dolu ≤64; `title`
+  kırpılmış-dolu; `description` kırpılmış; `date_raw` NULL ya da
+  kırpılmış-dolu; doğuşta durum **yalnız `draft`**; `created_at`/`updated_at`
+  ISO-8601 ve `updated_at ≥ created_at`; `row_version ≥ 1`; doğuşta
+  **silinmemiş**; **tarih üçlüsü** tutarlı: `day` ⇒ `date(value) = value`
+  (kanonik biçim **ve** takvim günü birlikte — `2025-02-30`, `2025-1-5`,
+  `2025-03` düşer), `month` ⇒ `date(value || '-01') = value || '-01'`,
+  `year` ⇒ dört hane, `approximate` ⇒ üç biçimden biri (gün/ay takvim
+  doğrulamalı), `range` ⇒ `YYYY-AA-GG/YYYY-AA-GG` **ayırıcı dahil** ve
+  başlangıç ≤ bitiş, `unknown` ⇒ tarih **yok**; `date_value` NULL ise
+  `sortable_date` de NULL, değilse **sıralama değeri tarihin kendisi**
+  (aralıkta başlangıç). Gün/ay için ayrıca `GLOB` yazılmadı: `date()` eşitliği
+  kanonik biçimi zaten zorunlu kılar — **mutasyon kapısı** bu iki cümlenin
+  etkisiz olduğunu gösterdi, cümleler çıkarıldı (kapı gevşetilmedi).
+- `events` BU — `id`, `case_id`, `created_at` ve **`assertion_kind`** (kaydın
+  kökeni) **donar**; durum yalnız `draft`→`confirmed` ilerler, `confirmed`
+  terminal (`disputed`/`archived` eski satırlarda donmuş kalır — arayüz ikisini
+  de «Taslak» bastığı için yeni geçiş **açılmadı**); `deleted_at` yalnız
+  NULL→damga (**geri getirme yok**) ve silme anında içerik/durum değişmez;
+  silinmiş satırda **hiçbir** alan değişmez; `row_version` **azalamaz** ve
+  içerik değişiyorsa **artmalıdır** (eşit sürümle içerik yazan yol iyimser
+  kilidi sessizce atlardı); içerik yazıldığında biçim ve tarih kuralları
+  **yine** geçerli; yalnız durum/damga yazan geçişler eski satırı yeniden
+  yargılamaz (onarım yolu: kullanıcı düzenlemesi).
+- Ret `DIM_INTEGRITY:events` → `StorageError::Integrity` → **`E_DB_INTEGRITY`**.
+  `events` kapsam **referansı** taşımadığı için `GUARDED_TABLES` **25 kalır**
+  (`case_id` burada donar).
+
+**Çekirdek hizası (küçük sıkılaşma):** `create_event`/`update_event` artık
+`date_raw`ı **kırpar**, yalnız boşluksa `NULL` yazar (`normalized_raw_date`) —
+arayüz zaten kırpıyor, doğrudan IPC yolu da aynı sözleşmeye uysun. Diğer alanlar
+zaten kırpılıyor; `normalize_event_date`/`sortable_event_date` kapının
+kurallarıyla aynı sözleşmede. Ürün davranışı değişmedi.
+
+**Testler:** `timeline` +1 (41 doğum kusuru + 25 UPDATE saldırısı RED; 9 meşru
+doğum, 3 meşru düzenleme ve onay/silme geçişleri KABUL; çekirdek `date_raw` kırpması assert edilir),
+`upgrade_tests` +1 (`upgrade_keeps_events_written_before_the_evidence_gate`: v60
+tutarsız satırı **silinmez/düzeltilmez**, içeriği donar, silinebilir; yeni
+biçimsiz olay doğamaz; kullanıcı düzenlemesi onarır) → **717 → 719**; yerelde
+**719/719 yeşil** (süre aşağıda). fmt (iki manifest) / clippy `-D warnings
+--all-targets` / masaüstü `check --all-targets` temiz.
+
+**Kapı:** taban **YEŞİL**, **44/44 mutant KIRMIZI**, YEŞİL 0, ÖLÇÜLEMEDİ 0
+(`gates_v61.py`, log `gates_v61_final.log`); kaynak geri yazıldı sha256
+**birebir** (`d6e56662408f3eba…`). **Dürüst (üç koşu):** ilk koşu **34/44** —
+10 mutant yaşadı; kök nedenler ölçüldü: (i) üç cümle **etkisiz** çıktı
+(gün/ay `GLOB`ları `date()` eşitliğinin kapsadığı kanonik biçimi tekrar
+ediyordu; `unknown THEN 1` çift kuralıyla aynı satırı yakalıyordu) → cümleler
+**koddan çıkarıldı**, kapı gevşetilmedi; (ii) yedi mutantın senaryosu eksikti
+(kırpılmamış kimlik, kırpılmamış/serbest `created_at`, kırpılmamış `updated_at`,
+ayırıcısız ve takvim dışı **sıralı** aralık, sürüm artmadan içerik, silme
+anında içerik+sürüm, taslak→arşiv, yaklaşık kesinliğe `dün`) → saldırılar
+**eklendi**. İkinci koşu **43/44** (yalnız `aralık biçimi (BU)` yaşadı: aralık
+saldırıları doğum yolundaydı) → güncelleme yoluna ayırıcısız aralık saldırısı
+eklendi, **44/44** yeniden ölçüldü. İlk iki koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü).** Kod `4e95aa3` (4 dosya, **+892/−3**) → run `44736733863`
+**10/10 YEŞİL** (`dim-storage` **719** iki OS'ta: macos-15 **467,30 s** /
+ubuntu-latest **782,73 s**; `arayüz` 66 dosya / **1436** test, paket
+`index-wBKnjNHs.js` **693,95 kB** / gzip 185,22 kB — değişmedi; `masaüstü kabuk`,
+`windows güvenli depo`, SBOM, `sözleşmeler`, belge worker'ı, kaynak arşivi,
+sürüm paketi manifesti yeşil).
+
+**Dürüst sınırlar.** (a) Takvim doğrulaması `date()` eşitliğidir; 1582 öncesi
+(Gregoryen proleptik) tarihlerde tarihçi beklentisi farklı olabilir — ölçülen
+**biçim + takvimde varlık**tır. (b) Damga **gelecekte** olabilir; yalnız biçim
+ve `updated_at ≥ created_at` denetlenir. (c) `date_raw`ın **içeriği**
+doğrulanmaz (yalnız kırpılmış-dolu); ham ifadenin tarihle uyumu ürün kararıdır.
+(d) `title`/`description` **içeriği** ve başlık uzunluğu denetlenmez. (e)
+`event_kind` serbest metindir (kapalı küme değil) — yalnız kırpılmış, dolu,
+≤64. (f) `assertion_kind` **doğruluğu** kanıtlanmaz: kullanıcı «belge» der,
+kapı inanır; ölçülen **değişmezlik**tir. (g) `event_sources` bağının olayı
+gerçekten desteklediği doğrulanmaz (v32 yalnız kapsamı ölçer). (h) Yanlış
+silme **geri alınamaz** (silinmiş satır donar); onarım yolu yeni olaydır.
+(i) v61 öncesi tutarsız satırlar **silinmez**; içerik yazılırsa kapıya takılır
+(donar), kullanıcı düzenlemesi normalize ettiği için **onarır**. (j)
+`row_version` monotonluğu eşzamanlı iki yazarı sıraya **sokmaz**; çakışmayı
+çekirdek `expected_row_version` ile bildirir, şema yalnız geriye sarmayı
+durdurur. (k) `cases` hard-delete CASCADE'i olayları da götürür (ürün yolu
+soft-delete; 0060'ta ölçülen sınıf). (l) Tetikleyicileri anahtarı olan
+saldırgan düşürebilir (çekirdek doğrulaması ayrıca durur). (m) Arayüz
 davranışı değişmedi; gerçek pencere + görsel QA **insan bekliyor**.
