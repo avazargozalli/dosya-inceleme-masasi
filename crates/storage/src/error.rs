@@ -89,6 +89,12 @@ pub enum StorageError {
     /// taşır; yanlış iz sicile yazılmaz (hiç yazmamak yanlış yazmaktan iyidir).
     #[error("dışa aktarma kaynağı geçersiz: {reason}")]
     ExportSourceInvalid { reason: String },
+    /// Dışa aktarma **makbuzu** sözleşmesi (0060): tür, hedef türü, hedef yol,
+    /// çıktı özeti ya da damga biçimi geçersiz. `ExportSourceInvalid`ten
+    /// ayrıdır: orası **kalem/kaynak** izinin, burası makbuzun kendi
+    /// alanlarının kuralıdır; ikisi ayrı hata koduyla raporlanır.
+    #[error("dışa aktarma makbuzu geçersiz: {reason}")]
+    ExportReceiptInvalid { reason: String },
     /// Kasa ayarı sözleşmesi: kapsam/anahtar/değer biçimi. `InvalidSetting`ten
     /// ayrıdır çünkü **neden** taşır (hangi anahtar, hangi kural).
     #[error("geçersiz kasa ayarı: {reason}")]
@@ -265,6 +271,7 @@ impl StorageError {
             Self::AnchorNotUsable => "E_ANCHOR_NOT_USABLE",
             Self::EventDateInvalid(_) => "E_EVENT_DATE",
             Self::ExportSourceInvalid { .. } => "E_EXPORT_SOURCE",
+            Self::ExportReceiptInvalid { .. } => "E_EXPORT_RECEIPT",
             Self::SettingInvalid { .. } => "E_DB_SETTING",
             Self::InvalidTag => "E_TAG_INVALID",
             Self::ActorInvalid { .. } => "E_DB_ACTOR",

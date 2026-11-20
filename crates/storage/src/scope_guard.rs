@@ -3001,8 +3001,8 @@ mod tests {
                 Some("case-report@1"),
                 &[],
                 "folder",
-                "",
-                "hash",
+                "/tmp/rapor.json",
+                &"a".repeat(64),
             )
             .expect("dışa aktarma");
         let item = |id: &str, version: &str| {
@@ -3043,8 +3043,8 @@ mod tests {
                 Some("case-report@1"),
                 &[],
                 "folder",
-                "",
-                "hash",
+                "/tmp/rapor.json",
+                &"a".repeat(64),
             )
             .expect("dışa aktarma");
         let names = [

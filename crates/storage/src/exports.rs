@@ -14,6 +14,10 @@ use crate::{now_iso, Database, StorageError};
 
 /// Şablon sürümü alanının üst sınırı (kısa etiket: `case-report@1`).
 pub const MAX_TEMPLATE_VERSION_CHARS: usize = 64;
+/// Dışa aktarma türü / hedef türü etiketinin üst sınırı.
+pub const MAX_RECEIPT_LABEL_CHARS: usize = 64;
+/// Hedef yolun üst sınırı (gerçek dosya sistemi yolu).
+pub const MAX_DESTINATION_PATH_CHARS: usize = 4096;
 /// Sayfa aralığı alanının üst sınırı (`12-14` gibi kısa aralık).
 pub const MAX_PAGE_RANGE_CHARS: usize = 32;
 /// Atıf etiketi alanının üst sınırı.
@@ -105,6 +109,36 @@ fn normalize_meta(
     Ok(Some(trimmed.to_string()))
 }
 
+/// Makbuz metin alanı: kırpılmış, dolu, sınır içinde ve kontrol karakteri yok.
+///
+/// Kırpma burada **bilinçli** sessiz düzeltmedir (kullanıcı seçicisinden gelen
+/// yolun baş/son boşluğu taşınmaz; 0060 kapısı da kırpılmamış değeri reddeder,
+/// yani kayda giren değer her iki yolda aynıdır). Sınır aşımı ve kontrol
+/// karakteri **reddedilir** — sessiz kesme yok.
+fn receipt_text<'a>(
+    value: &'a str,
+    max_chars: usize,
+    label: &'static str,
+) -> Result<&'a str, StorageError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(StorageError::ExportReceiptInvalid {
+            reason: format!("{label} boş"),
+        });
+    }
+    if trimmed.chars().count() > max_chars {
+        return Err(StorageError::ExportReceiptInvalid {
+            reason: format!("{label} {max_chars} karakteri aşıyor"),
+        });
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(StorageError::ExportReceiptInvalid {
+            reason: format!("{label} kontrol karakteri taşıyor"),
+        });
+    }
+    Ok(trimmed)
+}
+
 impl Database {
     /// Dışa aktarmayı **kaynak iziyle** kaydeder.
     ///
@@ -136,6 +170,28 @@ impl Database {
             MAX_TEMPLATE_VERSION_CHARS,
             "şablon sürümü",
         )?;
+
+        // Makbuz alanları **doğuşta** kanıtlı olmalı (0060 kapısı aynı kuralları
+        // şemada da uygular). Ürün yolunun beş çağrısı da geçerli değer üretir;
+        // bu doğrulama çekirdeğin kendi sözleşmesini tutar ve doğrudan SQL
+        // yazan yolu `E_DB_INTEGRITY` yerine **adlandırılmış** kodla reddeder.
+        let export_type = receipt_text(export_type, MAX_RECEIPT_LABEL_CHARS, "dışa aktarma türü")?;
+        let destination_kind =
+            receipt_text(destination_kind, MAX_RECEIPT_LABEL_CHARS, "hedef türü")?;
+        // Boş hedef yol artık `NULL`'a çevrilmez: dosya yazıldıysa **nereye**
+        // yazıldığı bilinmelidir (`NULL` yalnız 24. şema öncesi eski kayıtlarda).
+        let destination_path =
+            receipt_text(destination_path, MAX_DESTINATION_PATH_CHARS, "hedef yol")?;
+        if output_hash.trim() != output_hash
+            || output_hash.len() != 64
+            || !output_hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(StorageError::ExportReceiptInvalid {
+                reason: "çıktı özeti 64 küçük harf hex değil".into(),
+            });
+        }
 
         // Kalemler **yazmadan önce** doğrulanır: yanlış iz sicile düşmez.
         let mut source_ids: Vec<String> = Vec::with_capacity(items.len());
@@ -198,14 +254,8 @@ impl Database {
 
         let id = uuid::Uuid::now_v7().to_string();
         let now = now_iso();
-        // Boş hedef yol kayda `NULL` olarak girer: "" bir konum değildir ve
-        // arayüzde boş bir "hedef" satırı uydurulmuş olurdu.
-        let destination = destination_path.trim();
-        let destination_path = if destination.is_empty() {
-            None
-        } else {
-            Some(destination)
-        };
+        // `destination_path` yukarıda doğrulandı: kırpılmış ve dolu. Eski
+        // `""`→`NULL` çevrimi kaldırıldı (0060: makbuz hedefi adsız doğamaz).
         // `included_ids` **kalemlerden** türetilir: iki liste ayrışamaz. Eski
         // sürüm boş `[]` yazıyordu ve sicil "hangi sürümler" sorusunu
         // yanıtlayamıyordu (ölçülen kusur, 2026-11-10).
@@ -649,10 +699,12 @@ mod tests {
     }
 
     /// Denetim defteri **nereye** yazıldığını taşımalı: tür + hedef türü + zaman
-    /// avukatın "hangi klasöre çıktı" sorusunu yanıtlamaz. Boş yol `null`'dır —
-    /// uydurulmuş bir konum yazılmaz.
+    /// avukatın "hangi klasöre çıktı" sorusunu yanıtlamaz. 0060'tan beri hedef
+    /// yol **zorunludur**: boş yol `E_EXPORT_RECEIPT` ile reddedilir (dosya
+    /// yazıldıysa nereye yazıldığı bilinmelidir). `NULL` yalnız 24. şema öncesi
+    /// eski kayıtlarda okunur.
     #[test]
-    fn export_destination_path_is_stored_and_blank_is_null() {
+    fn export_destination_path_is_stored_and_blank_is_rejected() {
         let (db, case_id) = db_with_case();
         let with_path = db
             .record_export(
@@ -681,19 +733,32 @@ mod tests {
                 "   ",
                 &"e".repeat(64),
             )
-            .expect("kayıt");
-        assert_eq!(blank.destination_path, None, "boş yol konum değildir");
-        // Okuma yolu da aynı değeri döndürmeli (INSERT ile SELECT ayrışmasın).
-        let reread = db.get_export(&blank.id).expect("oku").expect("var");
-        assert_eq!(reread.destination_path, None);
+            .expect_err("boş yol makbuzu doğamaz");
+        assert_eq!(blank.code(), "E_EXPORT_RECEIPT");
         assert_eq!(
-            db.get_export(&with_path.id)
-                .expect("oku")
-                .expect("var")
-                .destination_path
-                .as_deref(),
-            Some("/Users/avukat/Masaüstü/kira.pdf")
+            db.list_exports(&case_id).expect("liste").len(),
+            1,
+            "düşen yazma sicile satır bırakmaz"
         );
+
+        // Eski (24. şema öncesi) kayıt `NULL` yolu **okur**: kapı yalnız yeni
+        // yazmayı durdurur. Eski satırı üretmek için tetikleyici bilinçli
+        // düşürülür (v52 deseni; niyet burada yazılı).
+        db.conn()
+            .execute_batch("DROP TRIGGER export_receipt_evidence_guard_bi;")
+            .expect("kapı düşür");
+        db.conn()
+            .execute(
+                "INSERT INTO exports
+                   (id,case_id,type,status,destination_kind,created_at)
+                 VALUES ('legacy',?1,'json','ready','teleport','dün')",
+                rusqlite::params![case_id],
+            )
+            .expect("eski satır");
+        let legacy = db.get_export("legacy").expect("oku").expect("var");
+        assert_eq!(legacy.destination_path, None);
+        assert_eq!(legacy.output_hash, None);
+        assert_eq!(legacy.created_at, "dün");
     }
 
     /// Liste **en yeni önce** gelir; aynı milisaniyede yazılan iki kayıt
@@ -745,43 +810,30 @@ mod tests {
 
     /// Aynı zaman damgasına düşen iki kayıt `created_at` ile ayrılmaz; ekranda
     /// sıra **kararlı** olmalı. İkinci anahtar `rowid`dir: sonra yazılan üstte.
-    /// `now_iso` mikrosaniye yazdığı için gerçek koşuda eşitlik nadirdir — bu
-    /// yüzden senaryo damga **eşitlenerek** zorlanır (yedekten geri yükleme /
-    /// içe aktarma da eski damgaları korur).
+    /// v60 `created_at`i dondurduğu için damga artık **doğuşta** sabit yazılır
+    /// (eski sürümde UPDATE ile eşitleniyordu; sıra sözleşmesi aynı).
     #[test]
     fn exports_with_equal_timestamp_keep_insertion_order() {
         let (db, case_id) = db_with_case();
-        let first = db
-            .record_export(
-                &case_id,
-                "json",
-                None,
-                &[],
-                "user_selected_path",
-                "/tmp/a.json",
-                &"3".repeat(64),
-            )
-            .expect("ilk");
-        let second = db
-            .record_export(
-                &case_id,
-                "csv",
-                None,
-                &[],
-                "user_selected_path",
-                "/tmp/b.csv",
-                &"4".repeat(64),
-            )
-            .expect("ikinci");
-        db.conn()
-            .execute(
-                "UPDATE exports SET created_at=?1 WHERE case_id=?2",
-                rusqlite::params![first.created_at.clone(), case_id],
-            )
-            .expect("damga eşitle");
+        const AT: &str = "2026-11-19T00:00:00.000000Z";
+        for (id, path, hash) in [
+            ("e-first", "/tmp/a.json", "3".repeat(64)),
+            ("e-second", "/tmp/b.csv", "4".repeat(64)),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO exports
+                       (id,case_id,type,included_ids,status,destination_kind,
+                        destination_path,output_hash,created_at,completed_at)
+                     VALUES (?1,?2,'json','[]','ready','user_selected_path',
+                             ?3,?4,?5,?5)",
+                    rusqlite::params![id, case_id, path, hash, AT],
+                )
+                .expect("satır");
+        }
         let listed = db.list_exports(&case_id).expect("liste");
-        assert_eq!(listed[0].id, second.id, "aynı damgada sonra yazılan üstte");
-        assert_eq!(listed[1].id, first.id);
+        assert_eq!(listed[0].id, "e-second", "aynı damgada sonra yazılan üstte");
+        assert_eq!(listed[1].id, "e-first");
     }
 
     #[test]
@@ -827,5 +879,424 @@ mod tests {
             db.get_export(&row.id).expect("oku").expect("var").status,
             "failed"
         );
+    }
+
+    /// **0060 — dışa aktarma makbuzu doğuşta kanıtlı, sonuçlandıktan sonra
+    /// donmuş.** Satır «bu dosyadan ne çıktı, nereye, hangi özetle, ne zaman,
+    /// başarılı mı» iddiasıdır; `Exports.tsx` defteri bu sütunları **doğrudan**
+    /// basar ve `list_export_items` kaynak sürümleri bu tablodan okur.
+    ///
+    /// Ölçülen taban (gerçek SQLite v59): 70 kusur yazımının **68'i KABUL**
+    /// (2'si zaten RED — yalnız FK), 19 meşru yazma KABUL. Kapı sonrası
+    /// 0/70 KABUL, 19/19 meşru KABUL.
+    #[test]
+    fn export_receipt_is_born_evidenced_and_frozen() {
+        use rusqlite::params;
+
+        const AT: &str = "2026-11-19T00:00:00.000000Z";
+        const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        #[derive(Clone)]
+        struct Receipt {
+            id: String,
+            case_id: String,
+            typ: String,
+            included: String,
+            template: Option<String>,
+            status: String,
+            kind: String,
+            path: Option<String>,
+            out_hash: Option<String>,
+            consent: Option<String>,
+            created: String,
+            completed: Option<String>,
+        }
+
+        impl Receipt {
+            fn ins(&self, db: &Database) -> rusqlite::Result<usize> {
+                db.conn().execute(
+                    "INSERT INTO exports (id,case_id,type,included_ids,template_version,\
+                     status,destination_kind,destination_path,output_hash,\
+                     externalization_consent_id,created_at,completed_at) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    params![
+                        self.id,
+                        self.case_id,
+                        self.typ,
+                        self.included,
+                        self.template,
+                        self.status,
+                        self.kind,
+                        self.path,
+                        self.out_hash,
+                        self.consent,
+                        self.created,
+                        self.completed
+                    ],
+                )
+            }
+        }
+
+        let (db, case_id) = db_with_case();
+        let v1 = seed_version(&db, &case_id, "Belge 1");
+        let v2 = seed_version(&db, &case_id, "Belge 2");
+        let v3 = seed_version(&db, &case_id, "Belge 3");
+        let other = db
+            .create_case(&NewCase {
+                title: "Başka".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya");
+        let vo = seed_version(&db, &other.id, "Yabancı belge");
+
+        let good = Receipt {
+            id: "e-base".into(),
+            case_id: case_id.clone(),
+            typ: "json".into(),
+            included: format!("[\"{v1}\",\"{v2}\"]"),
+            template: Some("dim-case-export@1".into()),
+            status: "ready".into(),
+            kind: "user_selected_path".into(),
+            path: Some("/tmp/out.json".into()),
+            out_hash: Some(HASH.into()),
+            consent: None,
+            created: AT.into(),
+            completed: Some(AT.into()),
+        };
+        good.ins(&db).expect("taban makbuz");
+        let atk = |f: &dyn Fn(&mut Receipt)| {
+            let mut r = good.clone();
+            f(&mut r);
+            r
+        };
+
+        // Doğum kusurları: makbuz **kanıtsız doğamaz**.
+        let attacks = vec![
+            ("b01 boş kimlik", atk(&|r| r.id.clear())),
+            ("b02 boşluk kimlik", atk(&|r| r.id = "   ".into())),
+            ("b03 boş tür", atk(&|r| r.typ.clear())),
+            ("b04 kırpılmamış tür", atk(&|r| r.typ = "  json".into())),
+            ("b05 türde satır sonu", atk(&|r| r.typ = "json\n".into())),
+            (
+                "b06 doğuşta building",
+                atk(&|r| r.status = "building".into()),
+            ),
+            ("b07 doğuşta draft", atk(&|r| r.status = "draft".into())),
+            ("b08 doğuşta blocked", atk(&|r| r.status = "blocked".into())),
+            ("b09 boş hedef türü", atk(&|r| r.kind.clear())),
+            (
+                "b10 kırpılmamış hedef türü",
+                atk(&|r| r.kind = "  user_selected_path".into()),
+            ),
+            (
+                "b11 hedef türünde satır sonu",
+                atk(&|r| r.kind = "teleport\n".into()),
+            ),
+            ("b12 yolsuz ready", atk(&|r| r.path = None)),
+            ("b13 boş yol", atk(&|r| r.path = Some(String::new()))),
+            ("b14 boşluk yol", atk(&|r| r.path = Some("   ".into()))),
+            (
+                "b15 kırpılmamış yol",
+                atk(&|r| r.path = Some("  /tmp/a.json".into())),
+            ),
+            (
+                "b16 yolda satır sonu",
+                atk(&|r| r.path = Some("/tmp/a\nb.json".into())),
+            ),
+            ("b17 özetsiz ready", atk(&|r| r.out_hash = None)),
+            ("b18 özet hash", atk(&|r| r.out_hash = Some("hash".into()))),
+            ("b19 özet Z*64", atk(&|r| r.out_hash = Some("Z".repeat(64)))),
+            (
+                "b20 özet büyük harf",
+                atk(&|r| r.out_hash = Some("A".repeat(64))),
+            ),
+            (
+                "b21 özet 63 hane",
+                atk(&|r| r.out_hash = Some("a".repeat(63))),
+            ),
+            ("b22 boş created_at", atk(&|r| r.created.clear())),
+            ("b23 created_at dün", atk(&|r| r.created = "dün".into())),
+            ("b24 completed_at NULL", atk(&|r| r.completed = None)),
+            (
+                "b25 completed_at dün",
+                atk(&|r| r.completed = Some("dün".into())),
+            ),
+            (
+                "b26 completed_at önce",
+                atk(&|r| r.completed = Some("2020-01-01T00:00:00.000000Z".into())),
+            ),
+            (
+                "b27 included JSON değil",
+                atk(&|r| r.included = "not json".into()),
+            ),
+            (
+                "b28 included nesne",
+                atk(&|r| r.included = "{\"a\":1}".into()),
+            ),
+            (
+                "b29 included sayı dizisi",
+                atk(&|r| r.included = "[1,2]".into()),
+            ),
+            (
+                "b30 included boş kimlik",
+                atk(&|r| r.included = "[\"\"]".into()),
+            ),
+            (
+                "b31 included mükerrer",
+                atk(&|r| r.included = format!("[\"{v1}\",\"{v1}\"]")),
+            ),
+            (
+                "b32 included yabancı sürüm",
+                atk(&|r| r.included = format!("[\"{vo}\"]")),
+            ),
+            (
+                "b33 şablon boşluk",
+                atk(&|r| r.template = Some("   ".into())),
+            ),
+            (
+                "b34 şablon 65 karakter",
+                atk(&|r| r.template = Some("t".repeat(65))),
+            ),
+            (
+                "b35 şablon kırpılmamış",
+                atk(&|r| r.template = Some("  dim-case-export@1".into())),
+            ),
+            (
+                "b36 onay kırpılmamış",
+                atk(&|r| r.consent = Some("  c-1".into())),
+            ),
+            (
+                "b37 included null eleman",
+                atk(&|r| r.included = format!("[\"{v1}\",null]")),
+            ),
+            (
+                "b38 included kırpılmamış eleman",
+                atk(&|r| r.included = format!("[\" {v1} \"]")),
+            ),
+            (
+                "b39 şablon boş metin",
+                atk(&|r| r.template = Some(String::new())),
+            ),
+            ("b40 kimlik kırpılmamış", atk(&|r| r.id = " e-base ".into())),
+            ("b41 included boş nesne", atk(&|r| r.included = "{}".into())),
+        ];
+        for (label, row) in &attacks {
+            let err = row.ins(&db).expect_err(label);
+            assert!(
+                err.to_string().contains("DIM_INTEGRITY:exports"),
+                "{label}: {err}"
+            );
+        }
+
+        // Makbuz ve kalem: sonuçlandıktan sonra **donar**.
+        db.conn()
+            .execute(
+                "INSERT INTO export_items
+                   (id,export_id,source_version_id,redaction_state)
+                 VALUES ('i-base','e-base',?1,'none')",
+                params![v1],
+            )
+            .expect("taban kalem");
+        let failed = atk(&|r| r.id = "e-failed".into());
+        failed.ins(&db).expect("geçiş hedefi");
+        // Kalemsiz makbuz: **doğrudan** silme kapısını yalıtmak için (kalemli
+        // satırda CASCADE de kalem BD kapısına çarpar — ölçüldü).
+        atk(&|r| r.id = "e-noitems".into())
+            .ins(&db)
+            .expect("kalemsiz makbuz");
+        db.conn()
+            .execute("UPDATE exports SET status='failed' WHERE id='e-failed'", [])
+            .expect("meşru geçiş");
+
+        let updates = [
+            "UPDATE exports SET output_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' WHERE id='e-base'",
+            "UPDATE exports SET destination_path='/tmp/baska.json' WHERE id='e-base'",
+            "UPDATE exports SET status='draft' WHERE id='e-base'",
+            "UPDATE exports SET status='building' WHERE id='e-base'",
+            "UPDATE exports SET status='ready' WHERE id='e-failed'",
+            "UPDATE exports SET created_at='2030-01-01T00:00:00.000000Z' WHERE id='e-base'",
+            "UPDATE exports SET completed_at='2030-01-01T00:00:00.000000Z' WHERE id='e-base'",
+            "UPDATE exports SET type='pdf' WHERE id='e-base'",
+            "UPDATE exports SET included_ids='[]' WHERE id='e-base'",
+            "UPDATE exports SET template_version='x@9' WHERE id='e-base'",
+            "UPDATE exports SET destination_kind='network' WHERE id='e-base'",
+            "UPDATE exports SET externalization_consent_id='c-1' WHERE id='e-base'",
+            "UPDATE exports SET status='blocked' WHERE id='e-failed'",
+        ];
+        for sql in updates {
+            let err = db.conn().execute(sql, []).expect_err(sql);
+            assert!(
+                err.to_string().contains("DIM_INTEGRITY:exports"),
+                "{sql}: {err}"
+            );
+        }
+        // Kalem satırı ve makbuz **silinemez** (denetim defteri iddiası).
+        for sql in [
+            "DELETE FROM export_items WHERE export_id='e-base'",
+            "DELETE FROM exports WHERE id='e-base'",
+            "DELETE FROM exports WHERE id='e-noitems'",
+            "UPDATE exports SET case_id='yok' WHERE id='e-base'",
+            "UPDATE exports SET id='e-x' WHERE id='e-failed'",
+        ] {
+            assert!(
+                db.conn().execute(sql, []).is_err(),
+                "kabul edilmemeli: {sql}"
+            );
+        }
+        // Taşıma saldırısı ayrıca: başka dosyaya çevirme.
+        let err = db
+            .conn()
+            .execute(
+                "UPDATE exports SET case_id=?1 WHERE id='e-base'",
+                params![other.id],
+            )
+            .expect_err("dosya taşıma");
+        assert!(err.to_string().contains("DIM_INTEGRITY:exports"));
+
+        // Kalem doğumu: üst makbuz `ready` olmalı ve kaynak sürüm **bildirilmiş**
+        // olmalı; aynı sürüm iki kez yazılamaz.
+        let page33 = "9".repeat(33);
+        let label65 = "l".repeat(65);
+        let items = vec![
+            ("i01", "", "e-base", v2.as_str(), None, None, "none"),
+            ("i02", "i02", "e-base", "", None, None, "none"),
+            ("i03", "i03", "e-base", " v1 ", None, None, "none"),
+            ("i04", "i04", "e-base", v2.as_str(), None, None, "unknown"),
+            ("i05", "i05", "e-base", v2.as_str(), None, None, ""),
+            (
+                "i06",
+                "i06",
+                "e-base",
+                v2.as_str(),
+                Some(page33.as_str()),
+                None,
+                "none",
+            ),
+            (
+                "i07",
+                "i07",
+                "e-base",
+                v2.as_str(),
+                Some("12-14\n"),
+                None,
+                "none",
+            ),
+            (
+                "i08",
+                "i08",
+                "e-base",
+                v2.as_str(),
+                None,
+                Some(label65.as_str()),
+                "none",
+            ),
+            ("i09", "i09", "e-yok", v2.as_str(), None, None, "none"),
+            ("i10", "i10", "e-failed", v2.as_str(), None, None, "none"),
+            ("i12", "i12", "e-base", v1.as_str(), None, None, "none"),
+        ];
+        for (label, id, export, version, page, attn, redaction) in items {
+            let err = db
+                .conn()
+                .execute(
+                    "INSERT INTO export_items
+                       (id,export_id,source_version_id,output_page_range,
+                        citation_label,redaction_state)
+                     VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![id, export, version, page, attn, redaction],
+                )
+                .expect_err(label);
+            assert!(
+                err.to_string().contains("DIM_INTEGRITY:export_items"),
+                "{label}: {err}"
+            );
+        }
+        // Dürüst sınır (0060 (c)): `included_ids` ile kalemler **çapraz
+        // denetlenmez**; makbuzun bildirmediği aynı dosya sürümü yazılabilir.
+        db.conn()
+            .execute(
+                "INSERT INTO export_items
+                   (id,export_id,source_version_id,redaction_state)
+                 VALUES ('i-unclaimed','e-base',?1,'none')",
+                params![v3],
+            )
+            .expect("sınır: çapraz denetim yok");
+        for sql in [
+            "UPDATE export_items SET source_version_id='v2' WHERE id='i-base'",
+            "UPDATE export_items SET redaction_state='masked' WHERE id='i-base'",
+            "UPDATE export_items SET output_page_range='12-14' WHERE id='i-base'",
+            "UPDATE export_items SET export_id='e-failed' WHERE id='i-base'",
+            "UPDATE export_items SET id='i-x' WHERE id='i-base'",
+            "DELETE FROM export_items WHERE id='i-base'",
+        ] {
+            assert!(
+                db.conn().execute(sql, []).is_err(),
+                "kabul edilmemeli: {sql}"
+            );
+        }
+
+        // Meşru yollar takılmaz: çekirdek kaydı, kaynaksız makbuz, no-op,
+        // sıralı iki kalem ve `failed` işareti.
+        let row = db
+            .record_export(
+                &case_id,
+                "csv",
+                Some("case-csv@1"),
+                &[item(&v1, "none"), item(&v2, "masked")],
+                "user_selected_path",
+                "/tmp/rapor.csv",
+                &"9".repeat(64),
+            )
+            .expect("çekirdek kaydı");
+        assert_eq!(row.item_count, 2);
+        db.record_export(
+            &case_id,
+            "json",
+            None,
+            &[],
+            "user_selected_path",
+            "/tmp/kaynak.json",
+            &"8".repeat(64),
+        )
+        .expect("kaynaksız makbuz");
+        db.conn()
+            .execute("UPDATE exports SET type='json' WHERE id='e-base'", [])
+            .expect("değişmeyen yazma");
+        db.conn()
+            .execute(
+                "INSERT INTO export_items
+                   (id,export_id,source_version_id,output_page_range,
+                    citation_label,redaction_state)
+                 VALUES ('i-ok','e-base',?1,'12-14','s.12','masked')",
+                params![v2],
+            )
+            .expect("sıralı kalem");
+        assert_eq!(
+            db.list_export_items("e-base").expect("kalemler").len(),
+            3,
+            "okuma yolu kalemleri görür"
+        );
+        db.fail_export("e-base", "E_PACKAGE_SEAL")
+            .expect("failed işareti");
+
+        // Çekirdek sözleşmesi: boş yol ve biçimsiz özet **kendi** koduyla döner.
+        for (path, hash) in [("   ", "7".repeat(64)), ("/tmp/ok.json", "hash".into())] {
+            let err = db
+                .record_export(
+                    &case_id,
+                    "json",
+                    None,
+                    &[],
+                    "user_selected_path",
+                    path,
+                    &hash,
+                )
+                .expect_err("makbuz alanları doğrulanır");
+            assert_eq!(err.code(), "E_EXPORT_RECEIPT", "{path}/{hash}");
+        }
     }
 }

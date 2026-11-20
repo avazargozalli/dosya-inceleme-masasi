@@ -645,6 +645,19 @@ fn upgrade_reports_version_traces_left_by_the_previous_schema() {
         Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "citation_checks"),
         other => panic!("v37 kapısı çapraz atfı reddetmeli: {other:?}"),
     }
+    // v60: kanıt kapısı **kapsam dışına daraltıldığı için** eski çapraz
+    // satırın hükmü 0037'de kalır — redaksiyon durumu çevrilemez (DIM_SCOPE).
+    match db
+        .conn()
+        .execute(
+            "UPDATE export_items SET redaction_state='masked' WHERE id='xi1'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::ScopeViolation { table }) => assert_eq!(table, "export_items"),
+        other => panic!("v60 eski çapraz kalemi dondurmalı: {other:?}"),
+    }
     // Meşru yazma serbest: aynı dosyanın sürümü.
     db.conn()
         .execute(
@@ -3299,4 +3312,134 @@ fn upgrade_keeps_citation_verdicts_written_before_the_evidence_gate() {
             [],
         )
         .expect("meşru satır yazılabilir");
+}
+
+/// v60 — **dışa aktarma makbuzu** kapısından önce yazılmış satırlar silinmez
+/// ve değerleri **düzeltilmez** (donar); yeni biçimsiz makbuz doğamaz; meşru
+/// makbuz ve eski `ready` satırın `failed` işareti takılmaz.
+#[test]
+fn upgrade_keeps_exports_written_before_the_receipt_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 59);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,
+                created_at,updated_at)
+             VALUES ('c-eski','Eski dosya','review','active','normal','off',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z');
+             INSERT INTO exports
+               (id,case_id,type,included_ids,template_version,status,
+                destination_kind,destination_path,output_hash,created_at,completed_at)
+             VALUES ('legacy-bad','c-eski','','[\"yok\"]','  ',
+                     'ready','teleport',NULL,'hash','dün',NULL);
+             INSERT INTO export_items
+               (id,export_id,source_version_id,output_page_range,
+                citation_label,redaction_state)
+             VALUES ('legacy-item','legacy-bad','silinmis-surum',
+                     '12-14' || char(10), '', 'bilinmez');",
+        )
+        .expect("v59 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    // Eski satır silinmez ve **onarılmaz**: v60 yalnız yeni yazmayı durdurur.
+    let (typ, dest, hash, created): (String, Option<String>, Option<String>, String) = db
+        .conn()
+        .query_row(
+            "SELECT type, destination_path, output_hash, created_at
+             FROM exports WHERE id='legacy-bad'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (
+            typ.as_str(),
+            dest.as_deref(),
+            hash.as_deref(),
+            created.as_str()
+        ),
+        ("", None, Some("hash"), "dün"),
+        "v60 eski makbuzu onarmaz"
+    );
+    // Bozuk eski satır donar: kanıt sütunu ve damga çevrilemez.
+    for sql in [
+        "UPDATE exports SET output_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' WHERE id='legacy-bad'",
+        "UPDATE exports SET destination_path='/tmp/x' WHERE id='legacy-bad'",
+        "UPDATE exports SET created_at='2030-01-01T00:00:00.000000Z' WHERE id='legacy-bad'",
+        "UPDATE export_items SET redaction_state='none' WHERE id='legacy-item'",
+        "DELETE FROM export_items WHERE id='legacy-item'",
+        "DELETE FROM exports WHERE id='legacy-bad'",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(
+                    message.contains("export"),
+                    "mesaj: {message} ({sql})"
+                )
+            }
+            other => panic!("v60 eski makbuzu dondurmalı: {other:?} ({sql})"),
+        }
+    }
+    // Yeni biçimsiz makbuz doğamaz: kanıtsız `ready`, `building` doğuşu,
+    // çözülemeyen `included_ids` kimliği, kırpılmamış şablon.
+    for sql in [
+        "INSERT INTO exports
+           (id,case_id,type,included_ids,status,destination_kind,created_at,completed_at)
+         VALUES ('new-bad','c-eski','json','[]','ready','user_selected_path',
+                 '2026-11-19T00:00:00.000000Z','2026-11-19T00:00:00.000000Z')",
+        "INSERT INTO exports
+           (id,case_id,type,included_ids,status,destination_kind,
+            destination_path,output_hash,created_at,completed_at)
+         VALUES ('new-bad-2','c-eski','json','[]','building','user_selected_path',
+                 '/tmp/a.json','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 '2026-11-19T00:00:00.000000Z','2026-11-19T00:00:00.000000Z')",
+        "INSERT INTO exports
+           (id,case_id,type,included_ids,status,destination_kind,
+            destination_path,output_hash,created_at,completed_at)
+         VALUES ('new-bad-3','c-eski','json','[\" \"]','ready','user_selected_path',
+                 '/tmp/a.json','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 '2026-11-19T00:00:00.000000Z','2026-11-19T00:00:00.000000Z')",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("exports"), "mesaj: {message}")
+            }
+            other => panic!("v60 biçimsiz makbuzu reddetmeli: {other:?} ({sql})"),
+        }
+    }
+    // Meşru yeni makbuz ve eski `ready` satırın `failed` işareti takılmaz.
+    db.conn()
+        .execute(
+            "INSERT INTO exports
+               (id,case_id,type,included_ids,template_version,status,
+                destination_kind,destination_path,output_hash,created_at,completed_at)
+             VALUES ('new-ok','c-eski','json','[]','dim-case-export@1','ready',
+                     'user_selected_path','/tmp/yeni.json',
+                     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                     '2026-11-19T00:00:00.000000Z','2026-11-19T00:00:00.000000Z')",
+            [],
+        )
+        .expect("meşru makbuz yazılabilir");
+    db.fail_export("legacy-bad", "E_PACKAGE_SEAL")
+        .expect("eski ready satır failed'a düşebilir");
+    assert_eq!(
+        db.get_export("legacy-bad")
+            .expect("oku")
+            .expect("var")
+            .status,
+        "failed"
+    );
+    let listed = db.list_exports("c-eski").expect("liste");
+    assert_eq!(listed.len(), 2);
+    assert_eq!(
+        db.list_export_items("legacy-bad").expect("kalem").len(),
+        1,
+        "eski kalem silinmez"
+    );
 }
