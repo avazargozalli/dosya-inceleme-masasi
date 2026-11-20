@@ -18,6 +18,7 @@
 | F12-T12 | ✅ | bibliyografik künye: künye + kaynak bağlantısı + erişim tarihi (eksik alan tahmin edilmez) |
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
 | F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır; **satır/sayfa sonunda tire ile bölünmüş kelime** birleştirilerek aranır (en zayıf katman, bağlanmaz); **font ligatürü** (`ﬂ`) açılarak aranır (kendi katmanı, bağlanmaz). Gerçek PDF + gerçek worker ile uçtan uca (2026-10-30) |
+| F12-T14j | ✅ | metindeki tüm tırnaklı alıntılar **seçili kararın** tam metninde tek turda doğrulanır — tek alıntı doğrulamasıyla **aynı** katman sırası ve sürüm kuralı (tek yol); alıntı başına yöntem/konum/kaynak, belirsizde adaylar, eski sürümde bulunan işaretlenir; tam metin yoksa düğme kapalı ve nedeni yazılı (2026-11-20) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1466,3 +1467,88 @@ okunabildiyse hüküm `not_found` kalır — bilinçli: okunabilen metinde yok).
 bir yol yok (tek tüketici `in_text_quote_check`). (e) Tauri komutu ve gerçek
 pencere **insan bekliyor**; davranış storage düzeyinde gerçek SQLite ile
 ölçüldü, arayüz jsdom'da.
+
+## F12-T14j — metindeki alıntılar seçili kararın tam metninde doğrulanır (2026-11-20)
+
+**Tur başında (dürüst):** iş önceki koşuda (21 Kas 00:15–00:47) yazılmış ve
+yerelde tam doğrulanmış, ama araç tur sınırında **commit edilememişti**;
+dosyalar `git add` ile sahnelenmiş hâlde duruyordu. Bu turda sahne içeriği
+denetlendi (11 dosya, **+1293/−72**; `i18n.ts`te yalnız benim 26 satırlık
+`intext` hunk'ım — `git show HEAD:…i18n.ts | grep -c parseStatus` → **0**;
+başka ajanın 3 satırı çalışma ağacında unstaged kaldı), çalışma ağacının
+sahneyle aynı olduğu doğrulandı, commit `b0461f1` atıldı ve CI ölçüldü.
+
+**Neden bu dilim:** `check_in_text_quotes` yalnız **dosya belgelerini** tarar;
+bir dilekçenin **emsalden** yaptığı alıntı bu yolda `not_found` görünür —
+F12'nin amiral gemisi olguda **yanlış negatif**. Tek alıntı doğrulaması
+(`verify_precedent_quote`) vardı ama alıntıları **tek tek** kopyalamak
+gerekiyordu; dilekçede onlarca alıntı olur. Bu tur, aynı çıkarımı ve aynı
+katman sırasını **seçili kararın** tam metnine uygulayan toplu okuma yolunu
+ekler.
+
+**Yazılan (çekirdek, `intext_quotes.rs`):**
+`Database::check_in_text_quotes_in_precedent(precedent_id, { text })` — aynı
+çıkarım (`extract_quoted_spans`: çift tırnak ailesi `“…”` · `„…“` · `«…»` ·
+`"…"`, 8–1.000 karakter), aynı katman sırası (`exact → whitespace → ligature
+→ turkish_fold → dehyphenated`), güncel metin + en çok
+`MAX_HISTORICAL_VERSIONS_PER_PRECEDENT` (**5**) eski sürüm. Hükümler: `exact` /
+`normalized` (+ yöntem) / `ambiguous` (konum sayısı + en çok 8 aday) /
+`not_found` / `unverifiable` (`no_full_text`); alıntı başına **kaynak metnin
+ham aralığı** (`sourceText`), `foundInOldVersion`, tarama kapsamı
+(`versionsTotal`, `versionsScanned`, `historicalTruncated`) ve notlar (tire
+birleştirme / ligatür / eski sürüm / sınır ayrı ayrı yazılır). **Tek yol:**
+tek alıntı doğrulaması ile metin içi yol aynı `find_quote_in_scopes` +
+`find_all_in_scope` işlevlerini kullanır; katman/sürüm kuralı iki yerde
+yazılmaz (parite testi). **Kalıcı yazma yok:** rapor her denetimde yeniden
+türetilir; `citation_checks` siciline satır yazmaz (kayıt yolu ayrı:
+`record_citation_check`) — şema değişmedi.
+
+**Yazılan (Tauri + arayüz):** `precedent_in_text_check` komutu,
+`api.precedentInTextCheck`, `lib/precedents.ts` saf etiketler (yöntem, hüküm,
+ton, konum, özet, atlananlar), `Precedents.tsx` kartı — özet satırı, alıntı
+başına rozet/konum/`kaynak`, belirsizde adaylar; **tam metin yoksa düğme kapalı
+ve nedeni yazılı**; metin ya da emsal değişince bayat rapor düşer; uçuştaki
+yanıt yalnız hâlâ aynı metne/emsale aitse yazılır (nesil sayacı).
+
+**Testler:** `dim-storage --lib` **729/729 yeşil, 692,73 s** (yerel;
+`intext_quotes` 40 → **47**, +7). Arayüz **66 dosya / 1449 test yeşil**
+(yerel; +5 `lib/precedents.test.ts`, +5 `screens/Precedents.test.tsx`),
+`tsc --noEmit` temiz. İki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings`, masaüstü
+`cargo check --all-targets` temiz.
+
+**Kapı kanıtı (13/13 KIRMIZI · YEŞİL 0):** çekirdek 7 mutant (belirsizlik
+yutulur; eski sürüm «güncel» sayılır; tam metinsiz karar `not_found` alır;
+alıntı sayısı sınırı kalkar; normalize «birebir» raporlanır; taranan sürüm
+sayısı sıfırlanır), arayüz 6 mutant (bayat rapor kalır; uçuştaki yanıt yeni
+metne yazılır; emsal/metin nesli artmaz; tam metinsiz kararda düğme açık
+kalır; emsal değişince metin temizlenmez). Her mutasyondan sonra dosya sha256
+**birebir** geri yazıldı (`precedents.rs 16525cdc…`, `intext_quotes.rs
+c7a6c5e9…`, `Precedents.tsx f8f537d0…`). **Dürüst (iki koşu):** ilk koşu
+**12/13** — U5 YEŞİL kaldı çünkü test düğmeyi **boş girdiyle** ölçüyordu
+(kilit zaten boş metinden geliyordu); test metin doluyken ölçecek şekilde
+düzeltildi, **ikinci koşu 13/13**; ilk koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `b0461f1` (11 dosya, **+1293/−72**) → run
+`44830125392` **10/10 YEŞİL** (`dim-storage` **729** iki OS'ta birebir:
+`macos-15` **516,53 s** / `ubuntu-latest` **1012,54 s**; `arayüz` 66 dosya /
+**1446** test — yerel 1449 farkı ağaçtaki başka ajanın commit'siz testleri —,
+paket `index-DRbbRLgI.js` **699,54 kB** / gzip **186,53 kB**; `masaüstü kabuk`
+51 koştu · 0 düştü · 5 yoksayıldı + yoksayılan koşu 5 passed; `windows güvenli
+depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak
+arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Kapsam **tek emsal**dir: kütüphane geneli arama
+değildir (F12-T10 kapsam ayrımı); başka kararda geçen alıntı burada
+`not_found` görünür. (b) Sonuç **metin eşleşmesi**dir; alıntının anlamı ve
+bağlamı incelenmez (anlam incelemesi `citation_checks` yolunun işi). (c)
+`not_found` **uydurma hükmü değildir**; yalnız taranan metinde bulunmadığını
+söyler. (d) Eski sürümde bulunan eşleşme **güncel metni doğrulamaz** (rozet
+«eski sürüm» der, uyarı tonundadır). (e) Tarama en çok **5 eski sürümle**
+sınırlıdır; sınır aşılırsa rapor bunu yazar ve `not_found` kesin sayılmaz.
+(f) Yalnız **çift tırnak ailesi** alıntı sayılır; tek tırnak/apostrof alıntı
+sayılmaz; 8 karakterden kısa, 1.000'den uzun ve kapanmamış tırnaklar
+**denetlenmez** ve sayısı yazılır (sessizce yutulmaz). (g) Rapor **kalıcı
+değildir**: atıf siciline yazılmaz, her denetim yeniden okur — «doğrulandı»
+damgası üretmez. (h) Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel
+QA **insan bekliyor**.
