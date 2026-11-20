@@ -886,9 +886,9 @@ mod tests {
     /// başarılı mı» iddiasıdır; `Exports.tsx` defteri bu sütunları **doğrudan**
     /// basar ve `list_export_items` kaynak sürümleri bu tablodan okur.
     ///
-    /// Ölçülen taban (gerçek SQLite v59): 70 kusur yazımının **68'i KABUL**
+    /// Ölçülen taban (gerçek SQLite v59): 75 kusur yazımının **73'ü KABUL**
     /// (2'si zaten RED — yalnız FK), 19 meşru yazma KABUL. Kapı sonrası
-    /// 0/70 KABUL, 19/19 meşru KABUL.
+    /// 0/75 KABUL, 19/19 meşru KABUL.
     #[test]
     fn export_receipt_is_born_evidenced_and_frozen() {
         use rusqlite::params;

@@ -19,8 +19,8 @@
 --
 -- Ölçüldü (düzeltme öncesi, gerçek SQLite v59; sonda
 -- `scratch/dim-v60-probe/measure_v60.py`, log `measure_before.log`):
--- 70 kusur yazımının **68'i KABUL** (2'si zaten RED — yalnız FK), 19 meşru
--- yazma KABUL. Doğum (36): boş/boşluk kimlik; boş, kırpılmamış, satır sonlu
+-- 75 kusur yazımının **73'ü KABUL** (2'si zaten RED — yalnız FK), 19 meşru
+-- yazma KABUL, 2 kapı dışı (bilinçli sınır) KABUL. Doğum (41): boş/boşluk kimlik; boş, kırpılmamış, satır sonlu
 -- tür; doğuşta `building`/`draft`/`blocked` (hiçbir yol tamamlamaz → sonsuza
 -- dek «sürüyor» görünür); boş/kırpılmamış/satır sonlu hedef türü; `ready` +
 -- yol NULL/boş/boşluk/kırpılmamış/satır sonlu; `ready` + özet NULL, `hash`,
