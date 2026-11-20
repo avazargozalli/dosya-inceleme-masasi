@@ -32,13 +32,14 @@ use dim_storage::{
     NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
     NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
     NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    ParticipantRow, PrecedentBibliography, PrecedentDocumentText, PrecedentNoteRow, PrecedentRow,
-    PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow,
-    ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
-    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
-    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
-    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
-    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
+    ParticipantRow, PrecedentBibliography, PrecedentDocumentText, PrecedentInTextCheck,
+    PrecedentInTextInput, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
+    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
+    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
+    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
+    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
+    SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow, TaskRow, TransferConsentListRow,
+    TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -5562,6 +5563,20 @@ pub fn precedent_quote_verify(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.verify_precedent_quote(&precedent_id, &quote)?)
+}
+
+/// Serbest metindeki tırnaklı alıntıları **seçili kararın** tam metninde
+/// doğrular (F12-T14j). Kapsam bilinçli olarak tek emsaldir; kütüphane geneli
+/// arama değildir. Tam metin yoksa alıntılar `unverifiable` döner.
+#[tauri::command]
+pub fn precedent_in_text_check(
+    state: State<'_, AppState>,
+    precedent_id: String,
+    input: PrecedentInTextInput,
+) -> Result<PrecedentInTextCheck, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.check_in_text_quotes_in_precedent(&precedent_id, &input)?)
 }
 
 /// Bibliyografik künye (F12-T12): künye, kaynak bağlantısı ve erişim tarihi.

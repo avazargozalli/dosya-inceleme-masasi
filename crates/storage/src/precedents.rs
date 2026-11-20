@@ -344,14 +344,36 @@ pub(crate) const MAX_QUOTE_TEXT_CHARS: usize = 4000;
 /// Güncel (en yeni metinli) sürüm her zaman taranır; sınırın ötesindeki daha
 /// eski sürümler taranmaz ve sonuç `historical_truncated` ile işaretlenir —
 /// sessiz kesme yok.
-const MAX_HISTORICAL_VERSIONS_PER_PRECEDENT: usize = 5;
+pub(crate) const MAX_HISTORICAL_VERSIONS_PER_PRECEDENT: usize = 5;
 
 /// Doğrulamada taranan tek tam metin sürümü.
-struct TextScope {
-    version_id: String,
+///
+/// `intext_quotes` de aynı kapsamları kullanır: metin içi alıntı denetimi ile
+/// tek alıntı doğrulaması **aynı sürüm seçimini** ve aynı katman sırasını
+/// paylaşır (iki yol ayrışırsa aynı alıntı iki ekranda farklı hüküm alırdı).
+pub(crate) struct TextScope {
+    pub(crate) version_id: String,
     /// En yeni metinli sürüm: katman içinde bu sürüm eski sürümlerden önce gelir.
-    is_current: bool,
-    text: String,
+    pub(crate) is_current: bool,
+    pub(crate) text: String,
+}
+
+/// Metin içi alıntı denetiminin tek alıntı için bulduğu eşleşme.
+pub(crate) struct QuoteScopeHit {
+    /// Kaynak metindeki konumlar (başlangıç, uzunluk), en çok istenen sayıda.
+    pub(crate) positions: Vec<(i64, i64)>,
+    /// Eşleşen sürümün **içindeki** toplam konum sayısı (konum kapağından
+    /// bağımsız; `ambiguous` hükmü bu sayıya dayanır).
+    pub(crate) occurrences: i64,
+    pub(crate) method: &'static str,
+    pub(crate) version_id: String,
+    pub(crate) is_current: bool,
+    /// Eşleşen sürümün `scopes` içindeki indeksi (kaynak metni okumak için).
+    pub(crate) scope_index: usize,
+    /// Eşleşmeye kadar bakılan **farklı** sürüm sayısı (güncel dâhil).
+    pub(crate) versions_scanned: usize,
+    /// Bunlardan **eski** sürüm sayısı.
+    pub(crate) historical_versions_scanned: usize,
 }
 
 /// Eşleşme katmanı; sıra güçten zayıfa doğrudur (belge tarafıyla aynı).
@@ -396,30 +418,88 @@ fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
     }
 }
 
-/// Tek bir sürümde, tek katmanda eşleşme arar. Konum ve uzunluk **kaynak
-/// metnin** karakter cinsindendir; `occurrences` aynı katmanın metninde sayılır.
-fn find_in_scope(
+/// Tek bir sürümde, tek katmanda **bütün** eşleşmeleri arar. Konum ve uzunluk
+/// **kaynak metnin** karakter cinsindendir; dönüş ikinci değeri toplam sayıdır
+/// (konum listesi `limit` ile sınırlıdır, sayı değil — `ambiguous` hükmü tam
+/// sayıya dayanır).
+fn find_all_in_scope(
     scope: &TextScope,
     quote: &str,
     quote_chars: usize,
     tier: QuoteTier,
-) -> Option<(i64, i64, i64)> {
+    limit: usize,
+) -> (Vec<(i64, i64)>, i64) {
+    if quote.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let mut positions: Vec<(i64, i64)> = Vec::new();
+    let mut count = 0i64;
     if tier == QuoteTier::Exact {
-        let byte = scope.text.find(quote)?;
-        return Some((
-            char_offset(&scope.text, byte),
-            i64::try_from(quote_chars).unwrap_or(i64::MAX),
-            count_occurrences(&scope.text, quote),
-        ));
+        for (byte, _) in scope.text.match_indices(quote) {
+            count += 1;
+            if positions.len() < limit {
+                positions.push((
+                    char_offset(&scope.text, byte),
+                    i64::try_from(quote_chars).unwrap_or(i64::MAX),
+                ));
+            }
+        }
+        return (positions, count);
     }
     let haystack = tier_mapped(&scope.text, tier);
     let needle = tier_mapped(quote, tier);
     if needle.text.is_empty() {
-        return None;
+        return (Vec::new(), 0);
     }
-    let at = haystack.text.find(&needle.text)?;
-    let (start, span) = mapped_span(&haystack, at, needle.text.len())?;
-    Some((start, span, count_occurrences(&haystack.text, &needle.text)))
+    let mut from = 0usize;
+    while let Some(offset) = haystack.text[from..].find(&needle.text) {
+        let at = from + offset;
+        count += 1;
+        if positions.len() < limit {
+            if let Some(span) = mapped_span(&haystack, at, needle.text.len()) {
+                positions.push(span);
+            }
+        }
+        from = at + needle.text.len().max(1);
+        if from >= haystack.text.len() {
+            break;
+        }
+    }
+    (positions, count)
+}
+
+/// Emsal tam metin kapsamlarında alıntıyı katman-major arar: her katmanda önce
+/// güncel sürüm, sonra eski sürümler yeniden eskiye. Böylece eski sürümdeki
+/// **birebir** eşleşme, günceldeki zayıf (boşluk/harf/tire) eşleşmeyi yener.
+///
+/// `verify_precedent_quote` (tek alıntı) ve `check_in_text_quotes_in_precedent`
+/// (metin içi) **aynı** yolu kullanır; kural iki yerde yazılmaz.
+pub(crate) fn find_quote_in_scopes(
+    scopes: &[TextScope],
+    quote: &str,
+    quote_chars: usize,
+    position_limit: usize,
+) -> Option<QuoteScopeHit> {
+    for tier in QuoteTier::ORDER {
+        for (index, scope) in scopes.iter().enumerate() {
+            let (positions, occurrences) =
+                find_all_in_scope(scope, quote, quote_chars, tier, position_limit);
+            if occurrences == 0 {
+                continue;
+            }
+            return Some(QuoteScopeHit {
+                positions,
+                occurrences,
+                method: tier.method(),
+                version_id: scope.version_id.clone(),
+                is_current: scope.is_current,
+                scope_index: index,
+                versions_scanned: index + 1,
+                historical_versions_scanned: index,
+            });
+        }
+    }
+    None
 }
 
 pub(crate) struct MappedText {
@@ -629,22 +709,6 @@ pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
 
 pub(crate) fn char_offset(text: &str, byte: usize) -> i64 {
     i64::try_from(text[..byte].chars().count()).unwrap_or(i64::MAX)
-}
-
-fn count_occurrences(haystack: &str, needle: &str) -> i64 {
-    if needle.is_empty() {
-        return 0;
-    }
-    let mut count = 0i64;
-    let mut start = 0usize;
-    while let Some(pos) = haystack[start..].find(needle) {
-        count += 1;
-        start += pos + needle.len();
-        if start >= haystack.len() {
-            break;
-        }
-    }
-    count
 }
 
 pub(crate) fn mapped_start(mapped: &MappedText, at_byte: usize) -> Option<i64> {
@@ -1379,40 +1443,41 @@ impl Database {
         result.historical_truncated = truncated;
         // Bulunamazsa "hangi metne baktık" sorusunun cevabı güncel sürüm olur.
         result.version_id = Some(scopes[0].version_id.clone());
-        for tier in QuoteTier::ORDER {
-            for (index, scope) in scopes.iter().enumerate() {
-                let Some((start, span, occurrences)) =
-                    find_in_scope(scope, quote, quote_chars, tier)
-                else {
-                    continue;
-                };
+        match find_quote_in_scopes(&scopes, quote, quote_chars, 1) {
+            Some(hit) => {
                 result.state = "match".into();
-                result.method = Some(tier.method().into());
-                result.matched_start = Some(start);
-                result.matched_length = Some(span);
-                result.occurrences = occurrences;
-                result.version_id = Some(scope.version_id.clone());
-                result.found_in_old_version = !scope.is_current;
-                // Bakılan **farklı** sürüm sayısı: güncel + eşleşmeden önceki
-                // eski sürümler. Katman tekrarı aynı sürümü yeniden saymaz.
-                result.versions_scanned = i64::try_from(index + 1).unwrap_or(i64::MAX);
-                result.historical_versions_scanned = i64::try_from(index).unwrap_or(i64::MAX);
-                return Ok(result);
+                result.method = Some(hit.method.into());
+                result.matched_start = hit.positions.first().map(|(start, _)| *start);
+                result.matched_length = hit.positions.first().map(|(_, span)| *span);
+                result.occurrences = hit.occurrences;
+                result.version_id = Some(hit.version_id);
+                result.found_in_old_version = !hit.is_current;
+                result.versions_scanned = i64::try_from(hit.versions_scanned).unwrap_or(i64::MAX);
+                result.historical_versions_scanned =
+                    i64::try_from(hit.historical_versions_scanned).unwrap_or(i64::MAX);
+                Ok(result)
+            }
+            None => {
+                result.state = "mismatch".into();
+                result.reason = Some("not_found".into());
+                result.versions_scanned = i64::try_from(scopes.len()).unwrap_or(i64::MAX);
+                result.historical_versions_scanned =
+                    i64::try_from(scopes.len().saturating_sub(1)).unwrap_or(i64::MAX);
+                Ok(result)
             }
         }
-        result.state = "mismatch".into();
-        result.reason = Some("not_found".into());
-        result.versions_scanned = i64::try_from(scopes.len()).unwrap_or(i64::MAX);
-        result.historical_versions_scanned =
-            i64::try_from(scopes.len().saturating_sub(1)).unwrap_or(i64::MAX);
-        Ok(result)
     }
 
     /// Doğrulamada taranacak tam metin kapsamları: en yeni metinli sürüm
     /// `is_current=true`, ardından eski sürümler yeniden eskiye
     /// `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT` ile sınırlı. İkinci dönüş
     /// değeri, sınır yüzünden taranmayan sürüm olup olmadığını söyler.
-    fn quote_scopes(&self, precedent_id: &str) -> Result<(Vec<TextScope>, bool), StorageError> {
+    ///
+    /// `intext_quotes::check_in_text_quotes_in_precedent` de bu seçimi kullanır.
+    pub(crate) fn quote_scopes(
+        &self,
+        precedent_id: &str,
+    ) -> Result<(Vec<TextScope>, bool), StorageError> {
         let mut stmt = self.conn().prepare(
             "SELECT id, full_text FROM precedent_versions
               WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0

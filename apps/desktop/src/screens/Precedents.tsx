@@ -15,6 +15,7 @@ import {
   type DocumentVersionRow,
   type PrecedentBibliography,
   type PrecedentDocumentText,
+  type PrecedentInTextCheck,
   type PrecedentNoteRow,
   type PrecedentRow,
   type PrecedentUsageTerms,
@@ -31,6 +32,11 @@ import {
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
+  precedentInTextSkipped,
+  precedentInTextSummary,
+  precedentPositionText,
+  precedentQuoteFindingText,
+  precedentQuoteFindingTone,
   quoteScanNote,
   quoteStateText,
   quoteStateTone,
@@ -159,6 +165,14 @@ export function Precedents() {
   // aitse yazılır. `quoteReq` eşzamanlı iki doğrulamanın kilidini ayırır.
   const quoteEdit = useRef(0);
   const quoteReq = useRef(0);
+  // F12-T14j: metindeki alıntılar **seçili kararın** tam metninde denetlenir.
+  // Girdi her değiştiğinde eski rapor düşer; uçuştaki yanıt yalnız hâlâ aynı
+  // metne/emsale aitse yazılır (bayat hüküm yeni metnin altında görünmez).
+  const [inTextText, setInTextText] = useState("");
+  const [inTextCheck, setInTextCheck] = useState<PrecedentInTextCheck | null>(null);
+  const [inTextBusy, setInTextBusy] = useState(false);
+  const inTextEdit = useRef(0);
+  const inTextReq = useRef(0);
   /** Künye kopyasının nesli: geç yanıt yeni künyeye etiket yazmaz. */
   const copySeq = useRef(0);
   // Türetilmiş okumalar **hangi emsale/dosyaya/sürüme** aitse ona bağlıdır:
@@ -301,6 +315,9 @@ export function Precedents() {
     setQuoteInput("");
     // Emsal değişti: uçuştaki doğrulama yanıtı yeni emsalin alıntısına yazılmaz.
     quoteEdit.current += 1;
+    setInTextText("");
+    setInTextCheck(null);
+    inTextEdit.current += 1;
     setSrcResult(null);
   }, [selected]);
 
@@ -667,6 +684,28 @@ export function Precedents() {
       // Yalnız en son istek kilidi açar: eski yanıt yeni doğrulamanın düğmesini
       // erken açmaz.
       if (req === quoteReq.current) setBusy(false);
+    }
+  }
+
+  /** Metindeki tüm alıntıları seçili kararın tam metninde denetler (F12-T14j). */
+  async function runInTextCheck() {
+    if (!selected) return;
+    // Yeni denetim: önceki rapor bu metne ait değildir, ekranda kalmaz.
+    setError(null);
+    setInTextCheck(null);
+    if (inTextText.trim().length === 0) return;
+    // Yanıt, istek atıldığı andaki metne ve emsale bağlanır.
+    const req = ++inTextReq.current;
+    const edit = inTextEdit.current;
+    const precedentId = selected.id;
+    setInTextBusy(true);
+    try {
+      const result = await api.precedentInTextCheck(precedentId, inTextText);
+      if (req === inTextReq.current && edit === inTextEdit.current) setInTextCheck(result);
+    } catch (e) {
+      if (req === inTextReq.current && edit === inTextEdit.current) setError(toApiError(e));
+    } finally {
+      if (req === inTextReq.current) setInTextBusy(false);
     }
   }
 
@@ -1544,6 +1583,99 @@ export function Precedents() {
           <p className="hint" style={{ margin: 0 }}>
             {t("precedents.quoteHint")}
           </p>
+
+          <hr style={{ border: 0, borderTop: "1px solid var(--line)", margin: "4px 0" }} />
+          <h3 style={{ margin: 0, fontSize: 14 }}>{t("precedentLib.intextTitle")}</h3>
+          <div className="field">
+            <label htmlFor="p-intext">{t("precedentLib.intextLabel")}</label>
+            <textarea
+              id="p-intext"
+              className="input"
+              rows={4}
+              style={{ height: "auto", minHeight: 88, padding: "8px 10px", resize: "vertical" }}
+              value={inTextText}
+              onChange={(e) => {
+                // Metin değişti: önceki rapor artık bu metne ait değil.
+                inTextEdit.current += 1;
+                setInTextText(e.target.value);
+                setInTextCheck(null);
+              }}
+              placeholder={t("precedentLib.intextPlaceholder")}
+            />
+          </div>
+          <div className="row">
+            <button
+              className="btn"
+              disabled={
+                inTextBusy || versionSummary.withText === 0 || inTextText.trim().length === 0
+              }
+              onClick={() => void runInTextCheck()}
+            >
+              {inTextBusy ? t("precedentLib.intextBusy") : t("precedentLib.intextRun")}
+            </button>
+            <span className="hint" style={{ flex: "1 1 260px", margin: 0 }}>
+              {versionSummary.withText === 0
+                ? t("precedentLib.intextNoText")
+                : t("precedentLib.intextVersions", {
+                    total: versionSummary.withText,
+                    scanned: inTextCheck?.versionsScanned ?? versionSummary.withText,
+                  })}
+            </span>
+          </div>
+          <p className="hint" style={{ margin: 0 }}>
+            {t("precedentLib.intextHint")}
+          </p>
+          {inTextCheck ? (
+            <div className="notice" role="status">
+              <div>
+                {inTextCheck.spansFound === 0
+                  ? t("precedentLib.intextEmpty")
+                  : precedentInTextSummary(inTextCheck)}
+              </div>
+              {precedentInTextSkipped(inTextCheck) ? (
+                <div className="hint" style={{ marginTop: 6 }}>
+                  {precedentInTextSkipped(inTextCheck)}
+                </div>
+              ) : null}
+              {inTextCheck.historicalTruncated ? (
+                <div className="hint" style={{ marginTop: 6 }}>
+                  {t("precedentLib.intextTruncated")}
+                </div>
+              ) : null}
+              {inTextCheck.quotes.length > 0 ? (
+                <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                  {inTextCheck.quotes.map((finding) => {
+                    const tone = precedentQuoteFindingTone(finding);
+                    return (
+                      <li key={finding.index} style={{ marginTop: 6 }}>
+                        <span
+                          className={
+                            tone === "ok" ? "badge ok" : tone === "warn" ? "badge warn" : "badge"
+                          }
+                        >
+                          {precedentQuoteFindingText(finding)}
+                        </span>{" "}
+                        <span>“{finding.quote}”</span>
+                        {finding.position ? (
+                          <div className="hint" style={{ marginTop: 2 }}>
+                            {precedentPositionText(finding.position)} ·{" "}
+                            {t("precedentLib.intextSource")}: “{finding.position.sourceText}”
+                          </div>
+                        ) : null}
+                        {finding.candidates.length > 0 ? (
+                          <div className="hint" style={{ marginTop: 2 }}>
+                            {finding.candidates.map((candidate, index) => (
+                              <div key={index}>{precedentPositionText(candidate)}</div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         </>
       ) : null}

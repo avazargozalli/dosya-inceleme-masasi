@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { PrecedentVersionRow, QuoteVerificationRow } from "./api";
+import type { PrecedentInTextCheck, PrecedentVersionRow, QuoteVerificationRow } from "./api";
 import {
   accessBasisLabel,
   bibliographyMissingText,
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
+  precedentInTextSkipped,
+  precedentInTextSummary,
+  precedentMethodLabel,
+  precedentPositionText,
+  precedentQuoteFindingText,
+  precedentQuoteFindingTone,
   quoteScanNote,
   quoteStateText,
   quoteStateTone,
@@ -266,3 +272,113 @@ describe("toplu içe alma etiketleri (F12-T06)", () => {
     expect(accessBasisLabel("record")).toContain("tam metin edinimi yok");
   });
 });
+
+describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
+  function report(overrides: Partial<PrecedentInTextCheck> = {}): PrecedentInTextCheck {
+    return {
+      precedentId: "p1",
+      textChars: 40,
+      spansFound: 1,
+      skippedShort: 0,
+      skippedLong: 0,
+      unclosed: 0,
+      quotes: [],
+      exact: 1,
+      normalized: 0,
+      ambiguous: 0,
+      notFound: 0,
+      unverifiable: 0,
+      dehyphenated: 0,
+      ligature: 0,
+      foundInOldVersion: 0,
+      versionsTotal: 1,
+      versionsScanned: 1,
+      historicalVersionsScanned: 0,
+      historicalTruncated: false,
+      notes: [],
+      checkedAt: "2026-11-21T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  it("eşleşme katmanını Türkçe etiketler", () => {
+    expect(precedentMethodLabel("exact")).toBe("birebir");
+    expect(precedentMethodLabel("whitespace")).toBe("boşluk farkı");
+    expect(precedentMethodLabel("ligature")).toBe("ligatür");
+    expect(precedentMethodLabel("turkish_fold")).toBe("harf farkı");
+    expect(precedentMethodLabel("dehyphenated")).toBe("tire birleştirme");
+    expect(precedentMethodLabel(null)).toBe("");
+  });
+
+  it("her hükmü dürüst metne çevirir; 'bulunamadı' uydurma demek değildir", () => {
+    expect(precedentQuoteFindingText({ ...finding(), state: "exact" })).toBe("birebir");
+    expect(
+      precedentQuoteFindingText({ ...finding(), state: "normalized", method: "turkish_fold" }),
+    ).toBe("normalize · harf farkı");
+    expect(
+      precedentQuoteFindingText({ ...finding(), state: "ambiguous", occurrences: 3 }),
+    ).toBe("belirsiz · 3 konum");
+    expect(precedentQuoteFindingText({ ...finding(), state: "not_found" })).toBe("bulunamadı");
+    expect(precedentQuoteFindingText({ ...finding(), state: "unverifiable" })).toBe(
+      "doğrulanamadı",
+    );
+  });
+
+  it("ton: birebir yeşil, eski sürüm ve normalize uyarı, doğrulanamadı sessiz", () => {
+    expect(precedentQuoteFindingTone({ ...finding(), state: "exact" })).toBe("ok");
+    expect(
+      precedentQuoteFindingTone({ ...finding(), state: "exact", foundInOldVersion: true }),
+    ).toBe("warn");
+    expect(precedentQuoteFindingTone({ ...finding(), state: "normalized" })).toBe("warn");
+    expect(precedentQuoteFindingTone({ ...finding(), state: "not_found" })).toBe("warn");
+    expect(precedentQuoteFindingTone({ ...finding(), state: "unverifiable" })).toBe("muted");
+  });
+
+  it("konumu 1 tabanlı yazar ve güncel/eski sürümü söyler", () => {
+    expect(
+      precedentPositionText({
+        versionId: "pv1",
+        isCurrentVersion: true,
+        charStart: 118,
+        charEnd: 136,
+        sourceText: "kira bedeli ödenmedi",
+      }),
+    ).toBe("konum 119–136 · güncel sürüm");
+    expect(
+      precedentPositionText({
+        versionId: "pv0",
+        isCurrentVersion: false,
+        charStart: 0,
+        charEnd: 10,
+        sourceText: "eski metin",
+      }),
+    ).toBe("konum 1–10 · eski sürüm");
+  });
+
+  it("özet sayıları çekirdekten taşır; atlanan varsa açıkça yazar", () => {
+    expect(
+      precedentInTextSummary(
+        report({ exact: 1, normalized: 1, ambiguous: 0, notFound: 2, unverifiable: 0 }),
+      ),
+    ).toBe("1 alıntı · 1 birebir · 1 normalize · 0 belirsiz · 2 bulunamadı · 0 doğrulanamadı");
+    expect(precedentInTextSkipped(report())).toBeNull();
+    expect(
+      precedentInTextSkipped(report({ skippedShort: 2, skippedLong: 1, unclosed: 1 })),
+    ).toContain("2 alıntı 8 karakterden kısa");
+  });
+});
+
+function finding(overrides: Partial<PrecedentInTextCheck["quotes"][number]> = {}) {
+  return {
+    index: 0,
+    quote: "kira bedeli ödenmedi",
+    state: "exact" as const,
+    reason: null,
+    method: "exact" as const,
+    occurrences: 1,
+    position: null,
+    candidates: [],
+    foundInOldVersion: false,
+    ...overrides,
+  };
+}

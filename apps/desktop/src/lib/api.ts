@@ -940,6 +940,53 @@ export type QuoteVerificationRow = {
   checkedAt: string;
 };
 
+/** Karar tam metninde bulunan tek konum (F12-T14j). */
+export type PrecedentQuotePosition = {
+  versionId: string;
+  isCurrentVersion: boolean;
+  charStart: number;
+  charEnd: number;
+  /** Kaynak metnin o aralıktaki **ham** hâli. */
+  sourceText: string;
+};
+
+export type PrecedentInTextFinding = {
+  index: number;
+  quote: string;
+  state: "exact" | "normalized" | "ambiguous" | "not_found" | "unverifiable";
+  reason: "not_found" | "no_full_text" | null;
+  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | null;
+  occurrences: number;
+  position: PrecedentQuotePosition | null;
+  candidates: PrecedentQuotePosition[];
+  foundInOldVersion: boolean;
+};
+
+/** Serbest metindeki alıntıların **seçili kararın** tam metninde denetimi. */
+export type PrecedentInTextCheck = {
+  precedentId: string;
+  textChars: number;
+  spansFound: number;
+  skippedShort: number;
+  skippedLong: number;
+  unclosed: number;
+  quotes: PrecedentInTextFinding[];
+  exact: number;
+  normalized: number;
+  ambiguous: number;
+  notFound: number;
+  unverifiable: number;
+  dehyphenated: number;
+  ligature: number;
+  foundInOldVersion: number;
+  versionsTotal: number;
+  versionsScanned: number;
+  historicalVersionsScanned: number;
+  historicalTruncated: boolean;
+  notes: string[];
+  checkedAt: string;
+};
+
 export type AdapterArch = {
   format: string;
   formatLabel: string;
@@ -2570,6 +2617,12 @@ export const api = {
     invoke<DocumentVersionRow[]>("document_version_list", { documentId }),
   precedentQuoteVerify: (precedentId: string, quote: string) =>
     invoke<QuoteVerificationRow>("precedent_quote_verify", { precedentId, quote }),
+  /** Metindeki tüm tırnaklı alıntıları **seçili kararın** tam metninde denetler. */
+  precedentInTextCheck: (precedentId: string, text: string) =>
+    invoke<PrecedentInTextCheck>("precedent_in_text_check", {
+      precedentId,
+      input: { text },
+    }),
   /** Bibliyografik künye (F12-T12): künye, kaynak bağlantısı, erişim tarihi. */
   precedentBibliography: (precedentId: string) =>
     invoke<PrecedentBibliography>("precedent_bibliography", { precedentId }),

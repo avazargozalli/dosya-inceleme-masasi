@@ -176,6 +176,7 @@ pub fn run() {
             commands::precedent_text_from_document,
             commands::precedent_version_list,
             commands::precedent_quote_verify,
+            commands::precedent_in_text_check,
             commands::precedent_bibliography,
             commands::precedent_search,
             commands::precedent_terms_get,

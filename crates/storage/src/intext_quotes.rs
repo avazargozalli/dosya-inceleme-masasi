@@ -30,8 +30,9 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
-    char_offset, collapse_ws_with_map, dehyphenate_with_map, ligature_with_map, normalize_with_map,
-    MappedText, MIN_QUOTE_CHARS,
+    char_offset, collapse_ws_with_map, dehyphenate_with_map, find_quote_in_scopes,
+    ligature_with_map, normalize_with_map, MappedText, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT,
+    MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -464,6 +465,80 @@ impl QuoteAccum {
             dropped_versions: self.versions.len().saturating_sub(winners.len()),
         }
     }
+}
+
+/// Karar **tam metninde** metin içi alıntı denetimi girdisi (F12-T14j).
+/// Serbest metindeki tırnaklı pasajlar çıkarılır; her biri seçili kararın
+/// metinli sürümlerinde aranır.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentInTextInput {
+    pub text: String,
+}
+
+/// Karar metninde bulunan tek konum. `source_text`, kaynak metnin o aralıktaki
+/// **ham** hâlidir; normalize eşleşmede yazılan alıntıdan farklı olabilir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentQuotePosition {
+    pub version_id: String,
+    /// Konum kararın **güncel** (en yeni metinli) sürümünde mi?
+    pub is_current_version: bool,
+    pub char_start: i64,
+    pub char_end: i64,
+    pub source_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentQuoteFinding {
+    pub index: usize,
+    pub quote: String,
+    /// `exact` | `normalized` | `ambiguous` | `not_found` | `unverifiable`
+    pub state: String,
+    /// `not_found` | `no_full_text`
+    pub reason: Option<String>,
+    /// `exact` | `whitespace` | `ligature` | `turkish_fold` | `dehyphenated`
+    pub method: Option<String>,
+    /// Eşleşen sürümün **içindeki** konum sayısı.
+    pub occurrences: i64,
+    /// Yalnız tek konum varsa dolu.
+    pub position: Option<PrecedentQuotePosition>,
+    /// Birden fazla konum varsa ilk adaylar (en çok 8).
+    pub candidates: Vec<PrecedentQuotePosition>,
+    /// Alıntı yalnız eski bir sürümde bulundu; güncel tam metinde geçmiyor.
+    pub found_in_old_version: bool,
+}
+
+/// Karar tam metninde metin içi alıntı denetiminin raporu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecedentInTextCheck {
+    pub precedent_id: String,
+    pub text_chars: i64,
+    pub spans_found: usize,
+    pub skipped_short: usize,
+    pub skipped_long: usize,
+    pub unclosed: usize,
+    pub quotes: Vec<PrecedentQuoteFinding>,
+    pub exact: usize,
+    pub normalized: usize,
+    pub ambiguous: usize,
+    pub not_found: usize,
+    pub unverifiable: usize,
+    pub dehyphenated: usize,
+    pub ligature: usize,
+    pub found_in_old_version: usize,
+    /// Kararın metinli sürüm sayısı (güncel + sınır içindeki eski sürümler).
+    pub versions_total: usize,
+    /// En çok kaç sürüm tarandı (alıntı başına tepe).
+    pub versions_scanned: usize,
+    /// Bunlardan eski sürüm sayısı (tepe).
+    pub historical_versions_scanned: usize,
+    /// Daha eski sürümler sınır yüzünden taranmadı.
+    pub historical_truncated: bool,
+    pub notes: Vec<String>,
+    pub checked_at: String,
 }
 
 impl Database {
@@ -1354,6 +1429,205 @@ impl Database {
         }
         Ok(())
     }
+
+    /// Serbest metindeki tırnaklı alıntıları **seçili kararın** tam metninde
+    /// doğrular (F12-T14j).
+    ///
+    /// Belge tarafındaki [`Database::check_in_text_quotes`] dosya belgelerini
+    /// tarar; bu yol aynı çıkarımı ve **aynı katman sırasını** (`exact` →
+    /// `whitespace` → `ligature` → `turkish_fold` → `dehyphenated`) emsal
+    /// tam metnine uygular: dilekçedeki birden çok alıntı tek turda, tek tek
+    /// kopyalamadan denetlenir. Kapsam bilinçli olarak **tek emsaldir**;
+    /// kütüphane geneli arama değildir (F12-T10 kapsam ayrımı).
+    ///
+    /// Güncel sürümde bulunamayan alıntı için kararın **eski tam metin
+    /// sürümleri** taranır (en çok `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT`).
+    /// `not_found` hükmü “uydurma” demek değildir; tam metin yoksa sonuç
+    /// `unverifiable` / `no_full_text` olur.
+    pub fn check_in_text_quotes_in_precedent(
+        &self,
+        precedent_id: &str,
+        input: &PrecedentInTextInput,
+    ) -> Result<PrecedentInTextCheck, StorageError> {
+        if self.get_precedent(precedent_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let text_chars = input.text.chars().count();
+        if text_chars > MAX_IN_TEXT_CHECK_CHARS {
+            return Err(StorageError::QuoteTextTooLong);
+        }
+        let extracted = extract_quoted_spans(&input.text);
+        if extracted.quotes.len() > MAX_IN_TEXT_QUOTES {
+            return Err(StorageError::QuoteTooMany);
+        }
+        let (scopes, historical_truncated) = self.quote_scopes(precedent_id)?;
+        let mut notes = vec![
+            "Alıntı çıkarımı yalnız çift tırnak ailesini tanır (“…” · „…“ · «…» · \"…\"); \
+             tek tırnak ve apostrof alıntı sayılmaz."
+                .to_string(),
+            "Bulunamadı sonucu “uydurma” hükmü değildir: yalnız kararın taranan tam \
+             metninde bulunmadığını söyler."
+                .to_string(),
+        ];
+        if scopes.is_empty() {
+            notes.push(
+                "Kararın tam metni yok; alıntılar doğrulanamadı. Önce karar tam \
+                 metnini ekleyin."
+                    .to_string(),
+            );
+        } else {
+            notes.push(format!(
+                "Kararın {} metinli sürümü tarandı (güncel + en çok \
+                 {MAX_HISTORICAL_VERSIONS_PER_PRECEDENT} eski sürüm); katman sırası \
+                 birebir → boşluk → ligatür → harf → tire birleştirmedir.",
+                scopes.len()
+            ));
+        }
+        if extracted.quotes.is_empty() {
+            notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
+        }
+        let mut quotes = Vec::with_capacity(extracted.quotes.len());
+        let mut counts = [0usize; 5];
+        let mut dehyphenated = 0usize;
+        let mut ligature = 0usize;
+        let mut found_in_old_version = 0usize;
+        let mut versions_scanned = 0usize;
+        let mut historical_versions_scanned = 0usize;
+        for (index, span) in extracted.quotes.iter().enumerate() {
+            let mut finding = PrecedentQuoteFinding {
+                index,
+                quote: span.text.clone(),
+                state: "not_found".into(),
+                reason: None,
+                method: None,
+                occurrences: 0,
+                position: None,
+                candidates: Vec::new(),
+                found_in_old_version: false,
+            };
+            if scopes.is_empty() {
+                finding.state = "unverifiable".into();
+                finding.reason = Some("no_full_text".into());
+                counts[4] += 1;
+                quotes.push(finding);
+                continue;
+            }
+            let quote_chars = span.text.chars().count();
+            match find_quote_in_scopes(&scopes, &span.text, quote_chars, MAX_CANDIDATES) {
+                None => {
+                    finding.state = "not_found".into();
+                    finding.reason = Some("not_found".into());
+                    counts[3] += 1;
+                    versions_scanned = versions_scanned.max(scopes.len());
+                    historical_versions_scanned =
+                        historical_versions_scanned.max(scopes.len().saturating_sub(1));
+                }
+                Some(hit) => {
+                    let scope = &scopes[hit.scope_index];
+                    let positions: Vec<PrecedentQuotePosition> = hit
+                        .positions
+                        .iter()
+                        .map(|(start, length)| PrecedentQuotePosition {
+                            version_id: hit.version_id.clone(),
+                            is_current_version: hit.is_current,
+                            char_start: *start,
+                            char_end: start.saturating_add(*length),
+                            source_text: source_slice(&scope.text, *start, *length),
+                        })
+                        .collect();
+                    finding.method = Some(hit.method.into());
+                    finding.occurrences = hit.occurrences;
+                    finding.found_in_old_version = !hit.is_current;
+                    if hit.occurrences == 1 {
+                        finding.state = if hit.method == "exact" {
+                            "exact".into()
+                        } else {
+                            "normalized".into()
+                        };
+                        finding.position = positions.first().cloned();
+                    } else {
+                        finding.state = "ambiguous".into();
+                        finding.candidates = positions;
+                    }
+                    versions_scanned = versions_scanned.max(hit.versions_scanned);
+                    historical_versions_scanned =
+                        historical_versions_scanned.max(hit.historical_versions_scanned);
+                    if finding.found_in_old_version {
+                        found_in_old_version += 1;
+                    }
+                    if hit.method == "dehyphenated" {
+                        dehyphenated += 1;
+                    }
+                    if hit.method == "ligature" {
+                        ligature += 1;
+                    }
+                    match finding.state.as_str() {
+                        "exact" => counts[0] += 1,
+                        "normalized" => counts[1] += 1,
+                        _ => counts[2] += 1,
+                    }
+                }
+            }
+            quotes.push(finding);
+        }
+        if dehyphenated > 0 {
+            notes.push(format!(
+                "{dehyphenated} alıntı yalnız **tire ile bölünmüş kelime** \
+                 birleştirilerek bulundu (kaynakta `kelime-\\nsatır` gibi); birebir \
+                 sayılmaz, kaynak metin gösterilir."
+            ));
+        }
+        if ligature > 0 {
+            notes.push(format!(
+                "{ligature} alıntı yalnız **bitişik yazı (ligatür)** açılarak bulundu \
+                 (kaynakta `taraﬂar` gibi tek glif, alıntıda `taraflar`); birebir \
+                 sayılmaz, kaynak metin gösterilir."
+            ));
+        }
+        if found_in_old_version > 0 {
+            notes.push(format!(
+                "{found_in_old_version} alıntı yalnız **eski bir sürümde** bulundu: \
+                 güncel tam metinde geçmiyor, karar metni güncellenmiş olabilir."
+            ));
+        }
+        if historical_truncated {
+            notes.push(format!(
+                "En çok {MAX_HISTORICAL_VERSIONS_PER_PRECEDENT} eski sürüm tarandı; \
+                 daha eski sürümler taranmadı — `bulunamadı` sonucu bu durumda \
+                 kesin değildir."
+            ));
+        }
+        Ok(PrecedentInTextCheck {
+            precedent_id: precedent_id.to_string(),
+            text_chars: i64::try_from(text_chars).unwrap_or(i64::MAX),
+            spans_found: extracted.quotes.len(),
+            skipped_short: extracted.skipped_short,
+            skipped_long: extracted.skipped_long,
+            unclosed: extracted.unclosed,
+            quotes,
+            exact: counts[0],
+            normalized: counts[1],
+            ambiguous: counts[2],
+            not_found: counts[3],
+            unverifiable: counts[4],
+            dehyphenated,
+            ligature,
+            found_in_old_version,
+            versions_total: scopes.len(),
+            versions_scanned,
+            historical_versions_scanned,
+            historical_truncated,
+            notes,
+            checked_at: now_iso(),
+        })
+    }
+}
+
+/// Kaynak metnin karakter aralığını **ham** hâliyle döndürür (`source_text`).
+fn source_slice(text: &str, start: i64, length: i64) -> String {
+    let start = usize::try_from(start).unwrap_or(usize::MAX);
+    let length = usize::try_from(length).unwrap_or(0);
+    text.chars().skip(start).take(length).collect()
 }
 
 /// Pencerede taşınan tek karakter: hangi sayfanın kaçıncı karakteri olduğu.
@@ -1457,6 +1731,7 @@ fn source_span(mapped: &MappedText, at_byte: usize, needle_chars: usize) -> Opti
 mod tests {
     use super::*;
     use crate::cases::{CaseKind, NewCase};
+    use crate::precedents::{NewPrecedent, NewPrecedentText};
     use crate::{DatabaseKey, NewAnchor, NewPage};
 
     fn db() -> Database {
@@ -2713,5 +2988,279 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.contains("1 sayfanın metin katmanı yok")));
+    }
+
+    // ---- F12-T14j: metin içi alıntılar seçili **kararın** tam metninde ----
+
+    fn new_precedent(db: &Database, docket: &str) -> crate::precedents::PrecedentRow {
+        db.create_precedent(&NewPrecedent {
+            court: "Yargıtay".into(),
+            chamber: Some("1. Hukuk Dairesi".into()),
+            docket_no: Some(docket.into()),
+            decision_no: Some("2025/77".into()),
+            application_no: None,
+            decision_date: Some("2025-06-01".into()),
+            title: Some("Kira alacağı".into()),
+            source_url: Some("https://example.invalid/karar".into()),
+            user_tags: vec![],
+            legal_issue: None,
+        })
+        .expect("emsal")
+    }
+
+    fn add_precedent_text(db: &Database, precedent_id: &str, text: &str) -> String {
+        db.add_precedent_text(
+            precedent_id,
+            &NewPrecedentText {
+                source_kind: "paste".into(),
+                text: text.into(),
+                document_version_id: None,
+            },
+        )
+        .expect("tam metin")
+        .id
+    }
+
+    const KARAR_METNI: &str =
+        "Yargıtay 1. Hukuk Dairesi\n\nMahkeme, itirazın reddine karar verdi.\nGerekçede ödeme yapılmadığı belirtildi.";
+
+    #[test]
+    fn in_text_quotes_are_checked_against_the_selected_precedent_only() {
+        let db = db();
+        let p = new_precedent(&db, "2024/300");
+        let version = add_precedent_text(&db, &p.id, KARAR_METNI);
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "Dilekçede “itirazın reddine karar verdi” ve “uydurma bir pasaj burada yok” yazıyor."
+                        .into(),
+                },
+            )
+            .expect("denetim");
+        assert_eq!(report.spans_found, 2);
+        assert_eq!(report.quotes[0].state, "exact");
+        assert_eq!(report.quotes[0].method.as_deref(), Some("exact"));
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.source_text, "itirazın reddine karar verdi");
+        assert_eq!(position.version_id, version);
+        assert!(position.is_current_version);
+        assert_eq!(report.quotes[1].state, "not_found");
+        assert_eq!(report.quotes[1].reason.as_deref(), Some("not_found"));
+        assert!(report.quotes[1].position.is_none());
+        assert_eq!(report.exact, 1);
+        assert_eq!(report.not_found, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("“uydurma” hükmü değildir")));
+    }
+
+    #[test]
+    fn precedent_in_text_check_reports_each_normalized_tier() {
+        let cases = [
+            ("ödeme   yapılmadığı", "whitespace"),
+            ("taraﬂar arasında sözleşme", "ligature"),
+            ("kelime-\nsatır", "dehyphenated"),
+        ];
+        for (source, method) in cases {
+            let db = db();
+            let p = new_precedent(&db, "2024/301");
+            add_precedent_text(&db, &p.id, source);
+            let quote = match method {
+                "whitespace" => "ödeme yapılmadığı",
+                "ligature" => "taraflar arasında sözleşme",
+                _ => "kelimesatır",
+            };
+            let report = db
+                .check_in_text_quotes_in_precedent(
+                    &p.id,
+                    &PrecedentInTextInput {
+                        text: format!("Metinde “{quote}” geçiyor."),
+                    },
+                )
+                .expect("denetim");
+            assert_eq!(
+                report.quotes[0].method.as_deref(),
+                Some(method),
+                "kaynak {source:?} için katman"
+            );
+            assert_eq!(report.quotes[0].state, "normalized");
+        }
+        let db = db();
+        let p = new_precedent(&db, "2024/302");
+        add_precedent_text(&db, &p.id, "ÖDEME YAPILMADIĞI sabittir.");
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "Metinde “ödeme yapılmadığı” geçiyor.".into(),
+                },
+            )
+            .expect("denetim");
+        assert_eq!(report.quotes[0].method.as_deref(), Some("turkish_fold"));
+        assert_eq!(report.quotes[0].state, "normalized");
+        assert_eq!(report.normalized, 1);
+    }
+
+    #[test]
+    fn repeated_passage_inside_one_decision_is_ambiguous_with_candidates() {
+        let db = db();
+        let p = new_precedent(&db, "2024/303");
+        add_precedent_text(
+            &db,
+            &p.id,
+            "itirazın reddine karar verdi. itirazın reddine karar verdi. itirazın reddine karar verdi.",
+        );
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "“itirazın reddine karar verdi” cümlesi üç kez geçiyor.".into(),
+                },
+            )
+            .expect("denetim");
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "ambiguous");
+        assert_eq!(finding.occurrences, 3);
+        assert!(finding.position.is_none());
+        assert_eq!(finding.candidates.len(), 3);
+        assert!(!finding.found_in_old_version);
+        assert_eq!(report.ambiguous, 1);
+    }
+
+    #[test]
+    fn quote_only_in_an_old_version_is_reported_with_that_version() {
+        let db = db();
+        let p = new_precedent(&db, "2024/304");
+        let old = add_precedent_text(
+            &db,
+            &p.id,
+            "Eski nüsha: kira bedellini ödemeyen kiracı hakkında tahliye kararı.",
+        );
+        add_precedent_text(&db, &p.id, "Yeni nüsha: itirazın reddine karar verildi.");
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "“kira bedellini ödemeyen kiracı” pasajına dayanılmıştır.".into(),
+                },
+            )
+            .expect("denetim");
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "exact");
+        assert!(finding.found_in_old_version);
+        let position = finding.position.as_ref().expect("konum");
+        assert_eq!(position.version_id, old);
+        assert!(!position.is_current_version);
+        assert_eq!(report.found_in_old_version, 1);
+        assert_eq!(report.versions_scanned, 2);
+        assert_eq!(report.historical_versions_scanned, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("yalnız **eski bir sürümde** bulundu")));
+    }
+
+    #[test]
+    fn in_text_and_single_quote_paths_agree_on_tier_order() {
+        let db = db();
+        let p = new_precedent(&db, "2024/305");
+        let old = add_precedent_text(&db, &p.id, "Karar: itirazın reddine karar verdi.");
+        add_precedent_text(&db, &p.id, "Karar: itirazın  reddine karar verdi.");
+        let quote = "itirazın reddine karar verdi";
+        let single = db.verify_precedent_quote(&p.id, quote).expect("tek");
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: format!("“{quote}” deniyor."),
+                },
+            )
+            .expect("metin içi");
+        let finding = &report.quotes[0];
+        // Eski sürümdeki **birebir** eşleşme, günceldeki boşluk farkını yener.
+        assert_eq!(single.method.as_deref(), Some("exact"));
+        assert_eq!(finding.method.as_deref(), Some("exact"));
+        assert_eq!(single.version_id.as_deref(), Some(old.as_str()));
+        assert_eq!(
+            finding.position.as_ref().map(|p| p.version_id.as_str()),
+            Some(old.as_str())
+        );
+        assert_eq!(single.occurrences, finding.occurrences);
+        assert_eq!(
+            single.versions_scanned,
+            i64::try_from(report.versions_scanned).unwrap()
+        );
+    }
+
+    #[test]
+    fn precedent_without_full_text_cannot_verify_in_text_quotes() {
+        let db = db();
+        let p = new_precedent(&db, "2024/306");
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "“itirazın reddine karar verdi” deniyor.".into(),
+                },
+            )
+            .expect("denetim");
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "unverifiable");
+        assert_eq!(finding.reason.as_deref(), Some("no_full_text"));
+        assert_ne!(finding.state, "not_found");
+        assert_eq!(report.unverifiable, 1);
+        assert_eq!(report.versions_total, 0);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("Kararın tam metni yok")));
+    }
+
+    #[test]
+    fn precedent_in_text_check_enforces_its_limits_and_scope() {
+        let db = db();
+        let p = new_precedent(&db, "2024/307");
+        add_precedent_text(&db, &p.id, KARAR_METNI);
+        let missing = db
+            .check_in_text_quotes_in_precedent(
+                "olmayan-emsal",
+                &PrecedentInTextInput {
+                    text: "“itirazın reddine karar verdi”".into(),
+                },
+            )
+            .expect_err("olmayan emsal");
+        assert_eq!(missing.code(), "E_NOT_FOUND");
+
+        let mut many = String::new();
+        for index in 0..31 {
+            many.push_str(&format!("“alıntı numarası {index} burada” "));
+        }
+        let error = db
+            .check_in_text_quotes_in_precedent(&p.id, &PrecedentInTextInput { text: many })
+            .expect_err("31 alıntı");
+        assert_eq!(error.code(), "E_QUOTE_TOO_MANY");
+
+        let long = "a".repeat(MAX_IN_TEXT_CHECK_CHARS + 1);
+        let error = db
+            .check_in_text_quotes_in_precedent(&p.id, &PrecedentInTextInput { text: long })
+            .expect_err("uzun metin");
+        assert_eq!(error.code(), "E_QUOTE_TEXT");
+
+        let short = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "“kısa” alıntı.".into(),
+                },
+            )
+            .expect("kısa");
+        assert_eq!(short.spans_found, 0);
+        assert_eq!(short.skipped_short, 1);
+        assert!(short
+            .notes
+            .iter()
+            .any(|n| n.contains("çift tırnaklı alıntı bulunamadı")));
     }
 }

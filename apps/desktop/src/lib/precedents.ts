@@ -1,4 +1,10 @@
-import type { PrecedentVersionRow, QuoteVerificationRow } from "./api";
+import type {
+  PrecedentInTextCheck,
+  PrecedentInTextFinding,
+  PrecedentQuotePosition,
+  PrecedentVersionRow,
+  QuoteVerificationRow,
+} from "./api";
 import { formatNumber } from "./format";
 import { t } from "./i18n";
 
@@ -187,4 +193,84 @@ export function accessBasisLabel(basis: string): string {
   return basis === "version"
     ? t("precedentLib.accessBasisVersion")
     : t("precedentLib.accessBasisRecord");
+}
+
+/** Metin içi alıntı denetiminde eşleşme katmanının etiketi. */
+export function precedentMethodLabel(method: string | null): string {
+  switch (method) {
+    case "exact":
+      return t("precedentLib.intextMethodExact");
+    case "whitespace":
+      return t("precedentLib.intextMethodWhitespace");
+    case "ligature":
+      return t("precedentLib.intextMethodLigature");
+    case "turkish_fold":
+      return t("precedentLib.intextMethodFold");
+    case "dehyphenated":
+      return t("precedentLib.intextMethodDehyphenated");
+    default:
+      return method ?? "";
+  }
+}
+
+/** Tek alıntının dürüst hükmü: “bulunamadı” asla “uydurma” diye yazılmaz. */
+export function precedentQuoteFindingText(finding: PrecedentInTextFinding): string {
+  switch (finding.state) {
+    case "exact":
+      return t("precedentLib.intextStateExact");
+    case "normalized":
+      return t("precedentLib.intextStateNormalized", {
+        method: precedentMethodLabel(finding.method),
+      });
+    case "ambiguous":
+      return t("precedentLib.intextStateAmbiguous", { count: finding.occurrences });
+    case "unverifiable":
+      return t("precedentLib.intextStateUnverifiable");
+    default:
+      return t("precedentLib.intextStateNotFound");
+  }
+}
+
+export function precedentQuoteFindingTone(
+  finding: PrecedentInTextFinding,
+): "ok" | "warn" | "muted" {
+  if (finding.state === "exact") {
+    // Eski sürümdeki birebir eşleşme bugünkü metni doğrulamaz → uyarı tonu.
+    return finding.foundInOldVersion ? "warn" : "ok";
+  }
+  if (finding.state === "unverifiable") return "muted";
+  return "warn";
+}
+
+/** Karar metnindeki konum: güncel/eski sürüm ayrımı gizlenmez. */
+export function precedentPositionText(position: PrecedentQuotePosition): string {
+  return t("precedentLib.intextPosition", {
+    start: formatNumber(position.charStart + 1),
+    end: formatNumber(position.charEnd),
+    where: position.isCurrentVersion
+      ? t("precedentLib.intextCurrentVersion")
+      : t("precedentLib.intextOldVersion"),
+  });
+}
+
+/** Denetim özetinin tek satırı; sayılar çekirdekten gelir. */
+export function precedentInTextSummary(check: PrecedentInTextCheck): string {
+  return t("precedentLib.intextSummary", {
+    found: check.spansFound,
+    exact: check.exact,
+    normalized: check.normalized,
+    ambiguous: check.ambiguous,
+    notFound: check.notFound,
+    unverifiable: check.unverifiable,
+  });
+}
+
+/** Kısa/uzun/kapanmamış tırnaklar denetlenmedi — sessizce yutulmaz. */
+export function precedentInTextSkipped(check: PrecedentInTextCheck): string | null {
+  if (check.skippedShort + check.skippedLong + check.unclosed === 0) return null;
+  return t("precedentLib.intextSkipped", {
+    short: check.skippedShort,
+    long: check.skippedLong,
+    unclosed: check.unclosed,
+  });
 }

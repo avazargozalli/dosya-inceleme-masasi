@@ -58,6 +58,9 @@ import {
   bibliographyMissingText,
   bulkOutcomeLabel,
   bulkReportSummary,
+  precedentInTextSummary,
+  precedentPositionText,
+  precedentQuoteFindingText,
   quoteScanNote,
   quoteStateText,
   versionSourceLabel,
@@ -89,6 +92,7 @@ import type {
   DocumentVersionRow,
   PrecedentBibliography,
   PrecedentDocumentText,
+  PrecedentInTextCheck,
   PrecedentNoteRow,
   PrecedentRow,
   PrecedentUsageTerms,
@@ -105,6 +109,7 @@ const mocks = vi.hoisted(() => ({
   precedentVersionList: vi.fn(),
   precedentTextFromDocument: vi.fn(),
   precedentQuoteVerify: vi.fn(),
+  precedentInTextCheck: vi.fn(),
   precedentBibliography: vi.fn(),
   precedentTermsGet: vi.fn(),
   precedentTermsSet: vi.fn(),
@@ -137,6 +142,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       precedentVersionList: mocks.precedentVersionList,
       precedentTextFromDocument: mocks.precedentTextFromDocument,
       precedentQuoteVerify: mocks.precedentQuoteVerify,
+      precedentInTextCheck: mocks.precedentInTextCheck,
       precedentBibliography: mocks.precedentBibliography,
       precedentTermsGet: mocks.precedentTermsGet,
       precedentTermsSet: mocks.precedentTermsSet,
@@ -428,6 +434,59 @@ const VERIFY_OLD: QuoteVerificationRow = {
   versionsScanned: 3,
   historicalVersionsScanned: 2,
   foundInOldVersion: true,
+};
+
+const IN_TEXT_REPORT: PrecedentInTextCheck = {
+  precedentId: "p1",
+  textChars: 96,
+  spansFound: 2,
+  skippedShort: 0,
+  skippedLong: 0,
+  unclosed: 0,
+  quotes: [
+    {
+      index: 0,
+      quote: "kira bedeli ödenmedi",
+      state: "exact",
+      reason: null,
+      method: "exact",
+      occurrences: 1,
+      position: {
+        versionId: "pv1",
+        isCurrentVersion: true,
+        charStart: 119,
+        charEnd: 137,
+        sourceText: "kira bedeli ödenmedi",
+      },
+      candidates: [],
+      foundInOldVersion: false,
+    },
+    {
+      index: 1,
+      quote: "tamamen uydurma pasaj",
+      state: "not_found",
+      reason: "not_found",
+      method: null,
+      occurrences: 0,
+      position: null,
+      candidates: [],
+      foundInOldVersion: false,
+    },
+  ],
+  exact: 1,
+  normalized: 0,
+  ambiguous: 0,
+  notFound: 1,
+  unverifiable: 0,
+  dehyphenated: 0,
+  ligature: 0,
+  foundInOldVersion: 0,
+  versionsTotal: 1,
+  versionsScanned: 1,
+  historicalVersionsScanned: 0,
+  historicalTruncated: false,
+  notes: ["Bulunamadı sonucu “uydurma” hükmü değildir."],
+  checkedAt: ISO,
 };
 
 const EXPORT_RESULT = {
@@ -1335,6 +1394,124 @@ describe("emsal ekranı davranışı", () => {
     // Eski emsalin hükmü yeni emsalin (henüz boş) alıntı alanının altında
     // "güncel" gibi durmaz.
     expect(statusTexts().some((text) => text.includes(quoteStateText(VERIFY_MATCH)))).toBe(false);
+  });
+});
+
+describe("emsal ekranı: metindeki alıntılar karar metninde denetlenir (F12-T14j)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("alıntı başına hüküm, konum ve kaynak metin yazılır", async () => {
+    mocks.precedentInTextCheck.mockResolvedValue(IN_TEXT_REPORT);
+    setup({ precedentVersions: async () => [PV_TEXT] });
+    await selectPrecedent(PREC.title!);
+
+    const text = "“kira bedeli ödenmedi” ve “tamamen uydurma pasaj”";
+    fireEvent.change(byId<HTMLTextAreaElement>("p-intext"), { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.intextRun") }));
+    await waitFor(() => expect(mocks.precedentInTextCheck).toHaveBeenCalledWith("p1", text));
+    await waitFor(() =>
+      expect(
+        statusTexts().some((value) => value.includes(precedentInTextSummary(IN_TEXT_REPORT))),
+      ).toBe(true),
+    );
+    const status = statusTexts().join(" ");
+    expect(status).toContain(precedentQuoteFindingText(IN_TEXT_REPORT.quotes[0]!));
+    expect(status).toContain(precedentPositionText(IN_TEXT_REPORT.quotes[0]!.position!));
+    expect(status).toContain("kira bedeli ödenmedi");
+    expect(status).toContain("tamamen uydurma pasaj");
+  });
+
+  it("uçuşta metin değişirse geç yanıt yeni metnin altına yazılmaz", async () => {
+    const pending = deferred<PrecedentInTextCheck>();
+    mocks.precedentInTextCheck.mockReturnValue(pending.promise);
+    setup({ precedentVersions: async () => [PV_TEXT] });
+    await selectPrecedent(PREC.title!);
+
+    const box = byId<HTMLTextAreaElement>("p-intext");
+    fireEvent.change(box, { target: { value: "“kira bedeli ödenmedi”" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.intextRun") }));
+    // İstek askıdayken metin değişti: dönen rapor artık bu metne ait değil.
+    fireEvent.change(box, { target: { value: "“başka bir alıntı metni”" } });
+    pending.resolve(IN_TEXT_REPORT);
+    await act(async () => {
+      await pending.promise;
+    });
+    expect(
+      statusTexts().some((value) => value.includes(precedentInTextSummary(IN_TEXT_REPORT))),
+    ).toBe(false);
+    // Kilit açılır: yeni metin kendi isteğiyle denetlenir.
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.intextRun") }));
+    await waitFor(() =>
+      expect(mocks.precedentInTextCheck).toHaveBeenLastCalledWith(
+        "p1",
+        "“başka bir alıntı metni”",
+      ),
+    );
+  });
+
+  it("emsal değişirse rapor ve uçuştaki yanıt yeni emsale taşınmaz", async () => {
+    const pending = deferred<PrecedentInTextCheck>();
+    mocks.precedentInTextCheck.mockReturnValue(pending.promise);
+    setup({ precedents: [PREC, PREC2], precedentVersions: async () => [PV_TEXT] });
+    await selectPrecedent(PREC.title!);
+
+    fireEvent.change(byId<HTMLTextAreaElement>("p-intext"), {
+      target: { value: "“kira bedeli ödenmedi”" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.intextRun") }));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(PREC2.title!) }));
+    await waitFor(() => expect(mocks.precedentVersionList).toHaveBeenCalledWith("p2"));
+
+    pending.resolve(IN_TEXT_REPORT);
+    await act(async () => {
+      await pending.promise;
+    });
+    expect(
+      statusTexts().some((value) => value.includes(precedentInTextSummary(IN_TEXT_REPORT))),
+    ).toBe(false);
+    // Metin alanı da yeni emsalde boş başlar.
+    expect(byId<HTMLTextAreaElement>("p-intext").value).toBe("");
+  });
+
+  it("metin değişince önceki rapor ekrandan kalkar", async () => {
+    mocks.precedentInTextCheck.mockResolvedValue(IN_TEXT_REPORT);
+    setup({ precedentVersions: async () => [PV_TEXT] });
+    await selectPrecedent(PREC.title!);
+    const box = byId<HTMLTextAreaElement>("p-intext");
+    fireEvent.change(box, { target: { value: "“kira bedeli ödenmedi”" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.intextRun") }));
+    await waitFor(() =>
+      expect(
+        statusTexts().some((value) => value.includes(precedentInTextSummary(IN_TEXT_REPORT))),
+      ).toBe(true),
+    );
+    // Metin değişti: önceki rapor artık bu metne ait değil.
+    fireEvent.change(box, { target: { value: "“yeni bir alıntı metni”" } });
+    expect(
+      statusTexts().some((value) => value.includes(precedentInTextSummary(IN_TEXT_REPORT))),
+    ).toBe(false);
+  });
+
+  it("tam metni olmayan kararda denetim kapalıdır ve nedeni yazılır", async () => {
+    setup({ precedentVersions: async () => [PV_CONFLICT] });
+    await selectPrecedent(PREC.title!);
+    await waitFor(() =>
+      expect(screen.getAllByText(versionStateText(PV_CONFLICT)).length).toBeGreaterThan(0),
+    );
+    const box = byId<HTMLTextAreaElement>("p-intext");
+    // Girdi dolu olsa da düğme kapalı: kilit tam metnin yokluğundan gelir.
+    fireEvent.change(box, { target: { value: "“kira bedeli ödenmedi”" } });
+    const button = screen.getByRole("button", {
+      name: t("precedentLib.intextRun"),
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText(t("precedentLib.intextNoText"))).toBeTruthy();
   });
 });
 

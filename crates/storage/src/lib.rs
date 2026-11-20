@@ -91,7 +91,8 @@ pub use exports::{ExportItemRow, ExportRow, NewExportItem};
 pub use gc::{GcBlobRow, GcReport};
 pub use intext_quotes::{
     extract_quoted_spans, ExtractedQuotes, InTextQuoteCheck, InTextQuoteFinding, InTextQuoteInput,
-    InTextQuotePosition, SpannedQuote, MAX_IN_TEXT_CHECK_CHARS, MAX_IN_TEXT_QUOTES,
+    InTextQuotePosition, PrecedentInTextCheck, PrecedentInTextInput, PrecedentQuoteFinding,
+    PrecedentQuotePosition, SpannedQuote, MAX_IN_TEXT_CHECK_CHARS, MAX_IN_TEXT_QUOTES,
 };
 pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};
