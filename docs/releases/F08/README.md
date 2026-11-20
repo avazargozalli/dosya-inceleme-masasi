@@ -31,6 +31,7 @@
 | F08-T04r | ✅ | **gönderim sicilinin ve onayın dönüşüm bağı kanıtlanabilir olmalı** (şema **v45**): `transfer_segments` + `transfer_consents` üzerinde **4 tetikleyici** — dolu `transform_manifest_id`/`outbound_transform_id` **var olan** ve `kind='mask_terms'` dönüşümü göstermeli; sicil satırının bağı çalıştırmanın onayıyla **aynı** olmalı (0 terimli onayda `NULL`); sicilin `id`/`ai_run_id`/`transform_manifest_id` ve onayın maske bağı **değişmez**; ölçülen kusur: doğrudan SQL ile onaylanan A maskesi yerine B yazılıyor, uydurma/`identity`/NULL bağ kabul ediliyor ve onayın bağının UPDATE ile çevrilmesi maske kapısını atlatıyordu; tablolar `case_id` taşımaz → kapsam taraması değişmedi (25 kalır); 13/13 mutasyon (2026-11-16) |
 | F08-T04s | ✅ | **atıf kontrolü sicili kendi hükmünü kanıtlamalı** (şema **v46**): `citation_checks` üzerinde **3 tetikleyici** + 0037'nin kapsam tetikleyicisi **genişletildi** — alıntı boşluk olamaz, dolu emsal bağı **var olan** emsali gösterir, `reason_codes` metin dizisi, satır **incelenmemiş doğar**; `id`/alıntı/emsal/`identity_match`/`quote_match`/`reason_codes`/`created_at` **değişmez**; anlam hükmü kapalı küme + gerekçe + damga tutarlı (gerekçesiz `misleading`, damgasız `accurate` yazılamaz); `case_id` ve sürüm de dondu (aynı dosyada sürüm taşıması durur); ölçülen kusur: 22 kusur yazımının **21'i** kabul ediliyor, `quote_match` UPDATE ile çevriliyor, bağlam paneli başka emsalin metnini okuyordu; `scope_violations()` beş sınıfı **şimdi sayar** (`GUARDED_TABLES` 25 kalır); **22/22 mutasyon** (2026-11-16) |
 | F08-T04ai | ✅ | **kronoloji olayı «bu olay şu tarihte oldu» iddiasıdır** (şema **v61**): `events` üzerinde **2 tetikleyici** — tarih/kesinlik/sıralama üçlüsü tutarlı (`date()` eşitliği: olmayan gün, dolgusuz gün, ay `13`/`00` düşer; aralıkta ayırıcı ve başlangıç ≤ bitiş), `sortable_date` tarihten türetilir (tarih yoksa NULL), doğuşta yalnız `draft`, damgalar ISO ve sıralı; `id`/`case_id`/`created_at`/`assertion_kind` **donar**, durum yalnız `draft`→`confirmed`, `deleted_at` tek yönlü, `row_version` azalamaz ve içerik değişiyorsa artmalı; ölçülen kusur: 66 kusur yazımının **66'sı** kabul ediliyordu (sıralama değeri çevrilerek olay yanlış sırada görünüyor, köken «belge»ye çevriliyor, satır başka dosyaya taşınıyordu); **44/44 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
+| F08-T04aj | ✅ | **inceleme hükmü (karar + çelişki değerlendirmesi) doğuşta kanıtlı, sonra değişmez** (şema **v62**): `review_decisions` + `contradiction_assessments` üzerinde **6 tetikleyici** — karar yalnız **açık** öğe için (yerine geçmemiş, hedefi yazılmamış, dosyası silinmemiş), `edit` yükü zorunlu, damga ISO + gerçek gün/saat, yük geçerli JSON; değerlendirme **kendi dosyasının çelişki adayı** için (INV-05); iki sicil de **hiçbir sütunuyla** değişmez ve silinemez (CASCADE dahil); ölçülen kusur: 61 kusur yazımının **57'si** kabul ediliyordu (karar `accept`→`reject` çevriliyor, kapanmış öğeye yeni karar yazılıyor, başka dosyanın değerlendirmesi kabul ediliyor, `dün` damga ve bozuk yük geçiyordu); **40/40 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
 
 ## Doğrulama
 
@@ -3851,3 +3852,114 @@ durdurur. (k) `cases` hard-delete CASCADE'i olayları da götürür (ürün yolu
 soft-delete; 0060'ta ölçülen sınıf). (l) Tetikleyicileri anahtarı olan
 saldırgan düşürebilir (çekirdek doğrulaması ayrıca durur). (m) Arayüz
 davranışı değişmedi; gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04aj — inceleme hükmü (karar + çelişki değerlendirmesi) doğuşta kanıtlı, sonra değişmez (şema v62, 2026-11-20)
+
+`review_decisions` satırı «bu öğe için **şu karar** verildi, gerekçesi **şu**,
+veren **şu**, zaman **şu**» iddiasıdır; `contradiction_assessments` satırı «iki
+kaynak **şu yönde** değerlendirildi» iddiasıdır. Üç okuma yolu bu satırlara
+yaslanır: `review_history` → `Review.tsx` karar geçmişi paneli (karar, gerekçe,
+inceleyen, `decided_at`, düzenlenen yük ve «okunamadı» uyarısı), 
+`list_contradiction_assessments` → ekranın «son değerlendirme» satırı (en
+yenisi gösterilir), `commit_review_decision` → hedef çözümü ve karar sayımı.
+0007 göçünün kendi yorumu kayıtların **eklemeli** olduğunu söyler: düzeltme
+yolu yeni satırdır. Komşuları kapılıydı (`review_items` 0033/0034/0040/0041
+kapsam) ama **hükmün kendisi** 0001/0007'den beri tetikleyicisizdi; tek kapı
+`decision` / `verdict` CHECK'leriydi.
+
+**Ölçülen kusur (gerçek SQLite v61; `scratch/dim-v62-probe/measure_v62.py`, log
+`measure_before.log`):** 61 kusur yazımının **57'si KABUL** (4'ü zaten RED —
+iki CHECK, iki FK), 12 meşru yazma KABUL. Doğum (37 KABUL): boş / boşluk /
+kırpılmamış / 65 haneli kimlik; boş / boşluk / kırpılmamış inceleyen;
+kırpılmamış gerekçe; damga boş / `dün` / kırpılmamış / takvim dışı gün
+(`2026-02-30`) / olmayan saat (`99:00:00`); düzenlenen yük **bozuk JSON**;
+`edit` kararı **yüksüz**; **kapanmış öğeye** karar, **yerine geçmiş** öğeye
+karar, **hedefi yazılmış** öğeye ikinci karar, **silinmiş dosyanın** öğesine
+karar; değerlendirmede **başka dosya** kimliği, silinmiş dosya, **çelişki
+adayı olmayan** öğe (ekran o paneli hiç çizmez — sessiz yetim satır),
+boş/boşluk/kırpılmamış inceleyen ve gerekçe, boş/`dün`/kırpılmamış /
+takvim dışı gün / olmayan saat / boşluk ayırıcılı damga.
+UPDATE (15 KABUL): kararın `edit`→`reject` çevrilmesi, inceleyenin / gerekçenin
+/ damganın değiştirilmesi, düzenlenen yükün değiştirilmesi/silinmesi, kimliğin
+yeniden adlandırılması, satırın **başka öğeye** taşınması; değerlendirmede
+hükmün çevrilmesi (`conflict`→`explained`), gerekçe / inceleyen / damga,
+satırın **başka dosyaya** ve **başka öğeye** taşınması, kimlik. DELETE (5
+KABUL): karar satırı, değerlendirme satırı, kararı olan öğe (CASCADE),
+değerlendirmesi olan öğe (CASCADE), kararı olan dosya (CASCADE).
+
+**Yazılan (`0062_review_verdict_evidence_guard.sql`, 3 + 3 tetikleyici):**
+
+- `review_decisions` BI — `id` kırpılmış-dolu ≤64; `review_item_id` **var
+  olan**, **açık** (`state IN ('pending','needs_more_evidence')`), yerine
+  geçmemiş, hedefi yazılmamış ve **dosyası silinmemiş** öğeyi gösterir
+  (çekirdeğin iki karar yolunun da ön koşulu; tek `EXISTS` cümlesinde);
+  `reviewer_label` kırpılmış-dolu; `rationale` kırpılmış; `decided_at`
+  kırpılmış ISO-8601 ve **gerçek gün + gerçek saat** (`date(substr(...))` /
+  `time(substr(...))` eşitliği); `edited_payload` NULL ya da **geçerli JSON**;
+  `decision='edit'` ise yük **dolu**.
+- `review_decisions` BU — **yedi sütunun hepsi donar** (sicil eklemelidir).
+- `review_decisions` BD — satır **silinemez** (silinen karar, öğe durumunu
+  gerekçesiz bırakır; ekranın gösterdiği sicil bu tablodur).
+- `contradiction_assessments` BI — `id` kırpılmış-dolu ≤64; satır **aynı
+  dosyanın**, **çelişki adayı** ve **dosyası silinmemiş** öğesini gösterir
+  (`case_id` öğenin dosyasıyla eşit — INV-05); `reviewer_label` kırpılmış-dolu;
+  `rationale` kırpılmış; `assessed_at` kırpılmış ISO-8601 + gerçek gün/saat.
+- `contradiction_assessments` BU — **yedi sütunun hepsi donar**.
+- `contradiction_assessments` BD — satır **silinemez**.
+- Ret `DIM_INTEGRITY:review_decisions` / `DIM_INTEGRITY:contradiction_assessments`
+  → `StorageError::Integrity` → **`E_DB_INTEGRITY`**. İki tablo kapsam
+  **referansı** taşımadığı için `GUARDED_TABLES` **25 kalır**
+  (`contradiction_assessments.case_id` burada **öğenin dosyasına eşitlik**
+  olarak donar).
+
+**Çekirdek hizası (küçük sıkılaşma):** `decide_review_item` artık `edit`
+kararını **düzenlenen yük olmadan** kabul etmez (`InvalidSetting` →
+`E_DB_SETTING`). Arayüz düzenleme yolunda yükü her zaman gönderir;
+`commit_review_decision` yükü kendisi üretir. Diğer yazma yolları zaten
+kırpıyor ve `now_iso()` damgası kurallarla aynı sözleşmede — ürün davranışı
+değişmedi.
+
+**Testler:** `claims` +2 (`review_decision_is_born_on_an_open_item_and_frozen_after_verdict`:
+21 doğum + 8 UPDATE + 3 silme saldırısı RED; 4 meşru doğum ve no-op KABUL;
+çekirdeğin `edit` yüksüz reddi assert edilir — `contradiction_assessment_is_born_on_its_own_candidate_and_frozen`:
+18 doğum + 7 UPDATE + 3 silme saldırısı RED; dört hüküm, aynı öğeye çok satır
+ve başka dosyanın kendi adayı KABUL), `upgrade_tests` +1
+(`upgrade_keeps_review_verdicts_written_before_the_evidence_gate`: v61 tutarsız
+kararı ve değerlendirmesi **silinmez/düzeltilmez**, donar; yeni biçimsiz hüküm
+doğamaz; meşru yeni karar ve değerlendirme yazılabilir) → **719 → 722**;
+yerelde **722/722 yeşil, 669,33 s** (`libtest_v62.log`); fmt (iki manifest) /
+clippy `-D warnings --all-targets` / masaüstü `check --all-targets` temiz.
+**İki mevcut test uyarlandı (dürüst):** `review_history_marks_unreadable_edited_payload`
+v62 öncesi bozuk satırı taklit ettiği için kapıyı **bilinçli** düşürür (okuyucu
+hâlâ «okunamadı» demeli); `assessment_history_orders_by_instant_not_by_text`
+değişken kesir genişliğini sabitliyordu — v62 damgayı dondurduğu için sonda
+satırları kapı düşürülerek yazar; sınanan şey `list_…` sıralamasıdır.
+
+**Kapı (`gates_v62.py`, log `gates_v62_final.log`):** taban YEŞİL, **40/40
+mutant KANIT** (her mutantta: SQL yükleniyor, hedef delik **açılıyor**, meşru
+yollar **korunuyor** ve Rust testi KIRMIZI); kaynak geri yazıldı sha256
+**birebir** (`cccf9242faf01377…`). **Dürüst (iki koşu):** ilk koşu **36/40** —
+dört mutant (karar damgasının `LIKE` biçimi; değerlendirme damgasının biçim /
+takvim / saat cümleleri) YEŞİL kaldı çünkü saldırı listesi **ayırıcısı boşluk**
+olan damgayı ve değerlendirmede **takvim dışı gün / olmayan saat**i hiç
+denemiyordu; dört saldırı **hem sondoya hem Rust testlerine** eklendi, **40/40**
+yeniden ölçüldü. İlk koşunun hükümleri kanıt sayılmadı; kapı gevşetilmedi.
+
+**CI (ölçüldü).** Kod `40224d5` (4 dosya, **+949/−2**) → run `44758314186`
+**10/10 YEŞİL** (`dim-storage` **722** iki OS'ta: macos-15 **491,98 s** /
+ubuntu-latest **1294,48 s**; `arayüz` 66 dosya / **1436** test, paket
+`index-wBKnjNHs.js` 693,95 kB / gzip 185,22 kB — **değişmedi**; `masaüstü kabuk`,
+`windows güvenli depo`, SBOM, `sözleşmeler`, belge worker'ı, kaynak arşivi, sürüm
+paketi manifesti yeşil).
+
+**Dürüst sınırlar.** (a) Damga **gelecekte** olabilir; yalnız biçim + gerçek
+gün/saat denetlenir. (b) `edited_payload`ın **içeriği** denetlenmez (yalnız
+JSON geçerliliği); `reviewer_label` serbest metindir, kimlik doğrulanmaz.
+(c) Hükmün **doğruluğu** değil, kaydın ön koşulları ve değişmezliği ölçülür.
+(d) v62 öncesi tutarsız satırlar **silinmez/düzeltilmez** (BU dondurur);
+onarım yolu yeni satırdır, ancak öğe kapalıysa yeni karar doğamaz. (e) BD,
+CASCADE ile gelen silmeleri de durdurur: kararı/değerlendirmesi olan öğe ya da
+dosya **hard-delete** edilemez (ürün yolu soft-delete; 0060/v61 ile aynı
+sınıf). (f) Tetikleyicileri anahtarı olan saldırgan düşürebilir (çekirdek
+doğrulaması ayrıca durur). (g) Arayüz davranışı değişmedi; gerçek pencere +
+görsel QA **insan bekliyor**.
