@@ -3443,3 +3443,147 @@ fn upgrade_keeps_exports_written_before_the_receipt_gate() {
         "eski kalem silinmez"
     );
 }
+
+/// v61 — kapı öncesi yazılmış **tutarsız** kronoloji satırı silinmez ve
+/// düzeltilmez; içeriği yazıldığında yeni kurallara takılır, ama kullanıcı
+/// düzenlemesi (çekirdek normalizasyonu) onarım yoludur.
+#[test]
+fn upgrade_keeps_events_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 60);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,
+                created_at,updated_at)
+             VALUES ('c-eski','Eski dosya','review','active','normal','off',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z');
+             -- v61 öncesi: ay kesinliği tam gün taşıyor, köken 'document',
+             -- durum onaylı; sıralama değeri günü izliyor.
+             INSERT INTO events
+               (id,case_id,event_kind,date_value,date_precision,date_role,
+                sortable_date,title,description,assertion_kind,status,
+                created_at,updated_at,row_version)
+             VALUES ('legacy-bad','c-eski','payment','2025-03-14','month',
+                     'event','2025-03-14','Eski olay','','document','confirmed',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z',1);",
+        )
+        .expect("v60 satırı");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+    // Eski satır silinmez ve **onarılmaz**: v61 yalnız yeni yazmayı durdurur.
+    let (date_value, precision, assertion, status): (Option<String>, String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT date_value, date_precision, assertion_kind, status
+             FROM events WHERE id='legacy-bad'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("eski satır");
+    assert_eq!(
+        (
+            date_value.as_deref(),
+            precision.as_str(),
+            assertion.as_str(),
+            status.as_str()
+        ),
+        (Some("2025-03-14"), "month", "document", "confirmed"),
+        "v61 eski olayı onarmaz"
+    );
+    // Tutarsız içerik yazılamaz: tarih üçlüsü ve köken donmuş.
+    for sql in [
+        "UPDATE events SET sortable_date='2025-03-01' WHERE id='legacy-bad'",
+        "UPDATE events SET title='Yeni başlık' WHERE id='legacy-bad'",
+        "UPDATE events SET assertion_kind='user' WHERE id='legacy-bad'",
+        "UPDATE events SET status='draft' WHERE id='legacy-bad'",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("events"), "mesaj: {message} ({sql})")
+            }
+            other => panic!("v61 eski olayı dondurmalı: {other:?} ({sql})"),
+        }
+    }
+    // Yeni biçimsiz olay doğamaz.
+    for sql in [
+        "INSERT INTO events
+           (id,case_id,event_kind,date_value,date_precision,date_role,
+            sortable_date,title,created_at,updated_at,row_version)
+         VALUES ('new-bad','c-eski','payment','2025-02-30','day','event',
+                 '2025-02-30','Olmayan gün',
+                 '2026-11-20T00:00:00.000000Z','2026-11-20T00:00:00.000000Z',1)",
+        "INSERT INTO events
+           (id,case_id,event_kind,date_value,date_precision,date_role,
+            sortable_date,title,status,created_at,updated_at,row_version)
+         VALUES ('new-bad-2','c-eski','payment','2025-03-14','day','event',
+                 '2025-03-14','Doğuşta onaylı','confirmed',
+                 '2026-11-20T00:00:00.000000Z','2026-11-20T00:00:00.000000Z',1)",
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("events"), "mesaj: {message}")
+            }
+            other => panic!("v61 biçimsiz olayı reddetmeli: {other:?}"),
+        }
+    }
+    // Onarım yolu açık: kullanıcı düzenlemesi çekirdekte normalize edilir ve
+    // tutarlı değer yazdığı için kapıdan geçer.
+    let legacy = db.get_event("legacy-bad").expect("oku").expect("var");
+    let repaired = db
+        .update_event(
+            "legacy-bad",
+            legacy.row_version,
+            &crate::timeline::EventPatch {
+                event_kind: "payment".into(),
+                date_value: Some("2025-03-14".into()),
+                date_precision: "day".into(),
+                date_role: "event".into(),
+                date_raw: None,
+                title: "Eski olay".into(),
+                description: String::new(),
+            },
+        )
+        .expect("kullanıcı düzenlemesi onarır");
+    assert_eq!(repaired.date_precision, "day");
+    assert_eq!(repaired.date_value.as_deref(), Some("2025-03-14"));
+    assert_eq!(repaired.sortable_date.as_deref(), Some("2025-03-14"));
+    // Meşru yeni olay ve meşru düzenleme takılmaz.
+    let fresh = db
+        .create_event(
+            "c-eski",
+            &crate::timeline::NewEvent {
+                event_kind: "hearing".into(),
+                date_value: Some("2026-02-10".into()),
+                date_precision: "day".into(),
+                date_role: "hearing".into(),
+                date_raw: None,
+                title: "Duruşma".into(),
+                description: String::new(),
+                assertion_kind: "user".into(),
+            },
+        )
+        .expect("meşru olay yazılabilir");
+    db.confirm_event(&fresh.id).expect("onay geçer");
+    db.soft_delete_event(&fresh.id).expect("silme geçer");
+    // Silme tek yönlü ve içeriksizdir: tutarsız eski satır silinebilir (kaydı
+    // gizlemek içerik iddiası yazmaz), sonra donar.
+    db.soft_delete_event("legacy-bad")
+        .expect("eski satır silinebilir");
+    match db
+        .conn()
+        .execute(
+            "UPDATE events SET title='Sonradan' WHERE id='legacy-bad'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("events")),
+        other => panic!("silinmiş satır donmalı: {other:?}"),
+    }
+}

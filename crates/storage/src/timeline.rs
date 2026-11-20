@@ -248,6 +248,17 @@ fn sortable_event_date(precision: &str, normalized: Option<&str>) -> Option<Stri
     Some(value.to_string())
 }
 
+/// Ham tarih ifadesi (`date_raw`): kırpılır, yalnız boşluksa `None` yazılır.
+/// Şema v61 kapısı kırpılmamış ya da yalnız boşluktan oluşan değeri reddeder;
+/// arayüz zaten kırpıyor — doğrudan IPC yolu da aynı sözleşmeye uysun.
+fn normalized_raw_date(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 /// Kullanıcıya ve çıktılara yazılan tarih metni: **kesinlik gün söylemiyorsa
 /// gün yazılmaz**. Eski kayıtlarda (0029/0030 öncesi) ay kesinliğiyle tam gün
 /// saklanmış olabilir; görüntü ve CSV bu günü göstermez.
@@ -303,7 +314,7 @@ impl Database {
                 normalized,
                 new.date_precision,
                 new.date_role,
-                new.date_raw,
+                normalized_raw_date(&new.date_raw),
                 sortable,
                 new.title.trim(),
                 new.description.trim(),
@@ -429,7 +440,7 @@ impl Database {
                 normalized,
                 patch.date_precision,
                 patch.date_role,
-                patch.date_raw,
+                normalized_raw_date(&patch.date_raw),
                 sortable,
                 patch.title.trim(),
                 patch.description.trim(),
@@ -934,6 +945,482 @@ mod tests {
             .code(),
             "E_NOT_FOUND"
         );
+    }
+
+    /// v61 — kronoloji satırı **doğuşta** tarih/kesinlik/sıralama üçlüsüyle
+    /// tutarlı doğar; kimliği, dosyası, `created_at`i ve **kökeni**
+    /// (`assertion_kind`) donar; durum yalnız `draft`→`confirmed` ilerler,
+    /// silinen satır geri getirilemez.
+    #[test]
+    fn event_row_is_born_consistent_and_its_provenance_is_frozen() {
+        struct RawEvent {
+            id: String,
+            case_id: String,
+            kind: String,
+            date_value: Option<String>,
+            precision: String,
+            role: String,
+            raw: Option<String>,
+            sortable: Option<String>,
+            title: String,
+            description: String,
+            assertion: String,
+            status: String,
+            created: String,
+            updated: String,
+            row_version: i64,
+            deleted: Option<String>,
+        }
+
+        impl RawEvent {
+            fn new(id: &str, case_id: &str) -> Self {
+                let at = "2026-11-19T00:00:00.000000Z".to_string();
+                Self {
+                    id: id.to_string(),
+                    case_id: case_id.to_string(),
+                    kind: "payment".into(),
+                    date_value: None,
+                    precision: "day".into(),
+                    role: "event".into(),
+                    raw: None,
+                    sortable: None,
+                    title: "Kira ödendi".into(),
+                    description: String::new(),
+                    assertion: "user".into(),
+                    status: "draft".into(),
+                    created: at.clone(),
+                    updated: at,
+                    row_version: 1,
+                    deleted: None,
+                }
+            }
+
+            fn day(id: &str, case_id: &str, date: &str) -> Self {
+                let mut row = Self::new(id, case_id);
+                row.date_value = Some(date.to_string());
+                row.sortable = Some(date.to_string());
+                row
+            }
+
+            fn insert(&self, db: &Database) -> Result<usize, StorageError> {
+                db.conn()
+                    .execute(
+                        "INSERT INTO events
+                           (id,case_id,event_kind,date_value,date_precision,date_role,
+                            date_raw,sortable_date,title,description,assertion_kind,
+                            status,created_at,updated_at,row_version,deleted_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                        rusqlite::params![
+                            self.id,
+                            self.case_id,
+                            self.kind,
+                            self.date_value,
+                            self.precision,
+                            self.role,
+                            self.raw,
+                            self.sortable,
+                            self.title,
+                            self.description,
+                            self.assertion,
+                            self.status,
+                            self.created,
+                            self.updated,
+                            self.row_version,
+                            self.deleted,
+                        ],
+                    )
+                    .map_err(StorageError::from)
+            }
+        }
+
+        let (db, case_id) = setup();
+        let new_case = |title: &str| {
+            db.create_case(&NewCase {
+                title: title.into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya")
+            .id
+        };
+        let other_case = new_case("Başka dosya");
+        let gone_case = new_case("Silinmiş dosya");
+        db.conn()
+            .execute(
+                "UPDATE cases SET deleted_at='2026-11-19T00:00:00.000000Z' WHERE id=?1",
+                [&gone_case],
+            )
+            .expect("dosya silinir");
+
+        let faded = gone_case.clone();
+        type Attack = (&'static str, Box<dyn Fn(&mut RawEvent)>);
+        let attacks: Vec<Attack> = vec![
+            ("boş kimlik", Box::new(|r| r.id = String::new())),
+            ("boşluk kimlik", Box::new(|r| r.id = "   ".into())),
+            (
+                "kimlik 64 karakteri aşar",
+                Box::new(|r| r.id = "x".repeat(65)),
+            ),
+            ("kimlik kırpılmamış", Box::new(|r| r.id = " e1 ".into())),
+            ("boşluk tür", Box::new(|r| r.kind = "   ".into())),
+            ("boş tür", Box::new(|r| r.kind = String::new())),
+            (
+                "tür 64 karakteri aşar",
+                Box::new(|r| r.kind = "x".repeat(65)),
+            ),
+            ("boş başlık", Box::new(|r| r.title = String::new())),
+            ("boşluk başlık", Box::new(|r| r.title = "   ".into())),
+            (
+                "açıklama kırpılmamış",
+                Box::new(|r| r.description = "  açıklama".into()),
+            ),
+            (
+                "gün kesinliğinde ay biçimi",
+                Box::new(|r| {
+                    r.date_value = Some("2025-03".into());
+                    r.sortable = Some("2025-03".into());
+                }),
+            ),
+            (
+                "gün kesinliğinde dolgusuz gün",
+                Box::new(|r| {
+                    r.date_value = Some("2025-1-5".into());
+                    r.sortable = Some("2025-1-5".into());
+                }),
+            ),
+            (
+                "gün kesinliğinde olmayan gün",
+                Box::new(|r| {
+                    r.date_value = Some("2025-02-30".into());
+                    r.sortable = Some("2025-02-30".into());
+                }),
+            ),
+            (
+                "ay kesinliği tam gün taşır",
+                Box::new(|r| {
+                    r.precision = "month".into();
+                    r.date_value = Some("2025-03-14".into());
+                    r.sortable = Some("2025-03-14".into());
+                }),
+            ),
+            (
+                "ay kesinliğinde ay 13",
+                Box::new(|r| {
+                    r.precision = "month".into();
+                    r.date_value = Some("2025-13".into());
+                    r.sortable = Some("2025-13".into());
+                }),
+            ),
+            (
+                "ay kesinliğinde ay 00",
+                Box::new(|r| {
+                    r.precision = "month".into();
+                    r.date_value = Some("2025-00".into());
+                    r.sortable = Some("2025-00".into());
+                }),
+            ),
+            (
+                "yıl kesinliği ay taşır",
+                Box::new(|r| {
+                    r.precision = "year".into();
+                    r.date_value = Some("2025-03".into());
+                    r.sortable = Some("2025-03".into());
+                }),
+            ),
+            (
+                "aralıkta tek tarih",
+                Box::new(|r| r.precision = "range".into()),
+            ),
+            (
+                "aralık ters",
+                Box::new(|r| {
+                    r.precision = "range".into();
+                    r.date_value = Some("2025-05-01/2025-03-01".into());
+                    r.sortable = Some("2025-05-01".into());
+                }),
+            ),
+            (
+                "aralık yarım",
+                Box::new(|r| {
+                    r.precision = "range".into();
+                    r.date_value = Some("2025-03-01/2025-03".into());
+                    r.sortable = Some("2025-03-01".into());
+                }),
+            ),
+            (
+                "aralık başlangıcı olmayan gün",
+                Box::new(|r| {
+                    r.precision = "range".into();
+                    r.date_value = Some("2025-02-30/2025-03-01".into());
+                    r.sortable = Some("2025-02-30".into());
+                }),
+            ),
+            (
+                "aralık bitişi olmayan gün",
+                Box::new(|r| {
+                    r.precision = "range".into();
+                    r.date_value = Some("2025-03-01/2025-02-30".into());
+                    r.sortable = Some("2025-03-01".into());
+                }),
+            ),
+            (
+                "aralık ayırıcısız",
+                Box::new(|r| {
+                    r.precision = "range".into();
+                    r.date_value = Some("2025-03-01X2025-03-02".into());
+                    r.sortable = Some("2025-03-01".into());
+                }),
+            ),
+            (
+                "aralık bitişi takvim dışı, sıralı",
+                Box::new(|r| {
+                    r.precision = "range".into();
+                    r.date_value = Some("2025-05-01/2025-05-40".into());
+                    r.sortable = Some("2025-05-01".into());
+                }),
+            ),
+            (
+                "yaklaşıkta 'dün'",
+                Box::new(|r| {
+                    r.precision = "approximate".into();
+                    r.date_value = Some("dün".into());
+                    r.sortable = Some("dün".into());
+                }),
+            ),
+            (
+                "sıralama değeri tarihten başka",
+                Box::new(|r| r.sortable = Some("2030-01-01".into())),
+            ),
+            ("sıralama değeri yok", Box::new(|r| r.sortable = None)),
+            (
+                "tarih yok, sıralama değeri var",
+                Box::new(|r| {
+                    r.date_value = None;
+                    r.sortable = Some("2025-01-01".into());
+                }),
+            ),
+            (
+                "bilinmeyen tarih gün taşır",
+                Box::new(|r| {
+                    r.precision = "unknown".into();
+                    r.sortable = None;
+                }),
+            ),
+            ("created_at 'dün'", Box::new(|r| r.created = "dün".into())),
+            (
+                "created_at kırpılmamış",
+                Box::new(|r| {
+                    r.created = "2026-11-20T00:00:00.000000Z ".into();
+                    r.updated = "2026-11-21T00:00:00.000000Z".into();
+                }),
+            ),
+            (
+                "created_at serbest metin",
+                Box::new(|r| r.created = "1".into()),
+            ),
+            (
+                "updated_at kırpılmamış",
+                Box::new(|r| r.updated = "2026-11-21T00:00:00.000000Z ".into()),
+            ),
+            ("updated_at boş", Box::new(|r| r.updated = String::new())),
+            (
+                "updated_at created_at'ten önce",
+                Box::new(|r| r.updated = "2026-11-18T00:00:00.000000Z".into()),
+            ),
+            (
+                "doğuşta onaylı",
+                Box::new(|r| r.status = "confirmed".into()),
+            ),
+            (
+                "doğuşta silinmiş",
+                Box::new(|r| r.deleted = Some("2026-11-19T00:00:00.000000Z".into())),
+            ),
+            (
+                "silinmiş dosyaya doğar",
+                Box::new(move |r| r.case_id = faded.clone()),
+            ),
+            (
+                "ham tarih yalnız boşluk",
+                Box::new(|r| r.raw = Some("   ".into())),
+            ),
+            (
+                "ham tarih boş metin",
+                Box::new(|r| r.raw = Some(String::new())),
+            ),
+            ("row_version 0", Box::new(|r| r.row_version = 0)),
+        ];
+
+        let mut index = 0;
+        for (label, edit) in &attacks {
+            index += 1;
+            let mut row = RawEvent::day(&format!("bad-{index}"), &case_id, "2025-03-14");
+            edit(&mut row);
+            match row.insert(&db) {
+                Err(StorageError::Integrity(message)) => assert!(
+                    message.contains("events"),
+                    "{label}: mesaj tabloyu adlandırmalı: {message}"
+                ),
+                other => panic!("{label}: v61 doğumu reddetmeli: {other:?}"),
+            }
+        }
+
+        // Meşru doğumlar ve eski (kapı öncesi) biçimler takılmaz.
+        let mut accepted = 0;
+        let mut ok = |row: RawEvent, label: &str| {
+            match row.insert(&db) {
+                Ok(_) => accepted += 1,
+                Err(error) => panic!("{label}: kabul edilmeli: {error:?}"),
+            };
+        };
+        ok(RawEvent::day("ok-day", &case_id, "2025-03-14"), "gün");
+        let mut month = RawEvent::new("ok-month", &case_id);
+        month.precision = "month".into();
+        month.date_value = Some("2025-03".into());
+        month.sortable = Some("2025-03".into());
+        ok(month, "ay");
+        let mut year = RawEvent::new("ok-year", &case_id);
+        year.precision = "year".into();
+        year.date_value = Some("2025".into());
+        year.sortable = Some("2025".into());
+        ok(year, "yıl");
+        let mut approx = RawEvent::new("ok-approx", &case_id);
+        approx.precision = "approximate".into();
+        approx.date_value = Some("2025".into());
+        approx.sortable = Some("2025".into());
+        ok(approx, "yaklaşık");
+        let mut range = RawEvent::new("ok-range", &case_id);
+        range.precision = "range".into();
+        range.date_value = Some("2025-03-01/2025-05-01".into());
+        range.sortable = Some("2025-03-01".into());
+        ok(range, "aralık");
+        let mut unknown = RawEvent::new("ok-unknown", &case_id);
+        unknown.precision = "unknown".into();
+        ok(unknown, "bilinmeyen");
+        ok(RawEvent::new("ok-nodate", &case_id), "tarih girilmemiş");
+        let mut raw = RawEvent::day("ok-raw", &case_id, "2025-03-14");
+        raw.raw = Some("14 Mart 2025 duruşma".into());
+        ok(raw, "ham tarih metni");
+        let mut described = RawEvent::day("ok-desc", &case_id, "2025-03-14");
+        described.description = "Kira bedeli elden ödendi.".into();
+        ok(described, "açıklama");
+        assert_eq!(accepted, 9, "dokuz meşru doğum kabul edilmeli");
+
+        let seed = |id: &str| {
+            RawEvent::day(id, &case_id, "2025-03-14")
+                .insert(&db)
+                .expect("kurulum satırı");
+        };
+        let reject =
+            |sql: &str, label: &str| match db.conn().execute(sql, []).map_err(StorageError::from) {
+                Err(StorageError::Integrity(message)) => assert!(
+                    message.contains("events"),
+                    "{label}: mesaj tabloyu adlandırmalı: {message}"
+                ),
+                other => panic!("{label}: v61 yazmayı reddetmeli: {other:?}"),
+            };
+
+        let mut e_unknown = RawEvent::new("e-unknown", &case_id);
+        e_unknown.precision = "unknown".into();
+        let mut e_month = RawEvent::new("e-month", &case_id);
+        e_month.precision = "month".into();
+        e_month.date_value = Some("2025-03".into());
+        e_month.sortable = Some("2025-03".into());
+        let mut e_range2 = RawEvent::new("e-range2", &case_id);
+        e_range2.precision = "range".into();
+        e_range2.date_value = Some("2025-03-01/2025-05-01".into());
+        e_range2.sortable = Some("2025-03-01".into());
+        let mut e_range = RawEvent::new("e-range", &case_id);
+        e_range.precision = "range".into();
+        e_range.date_value = Some("2025-03-01/2025-05-01".into());
+        e_range.sortable = Some("2025-03-01".into());
+        let updates: Vec<(&'static str, RawEvent, &'static str)> = vec![
+            ("satır başka dosyaya taşındı", RawEvent::day("e-move", &case_id, "2025-03-14"), "UPDATE events SET case_id='CASE2' WHERE id='e-move'"),
+            ("köken çevrildi", RawEvent::day("e-assert", &case_id, "2025-03-14"), "UPDATE events SET assertion_kind='document' WHERE id='e-assert'"),
+            ("kimlik yeniden adlandırıldı", RawEvent::day("e-rename", &case_id, "2025-03-14"), "UPDATE events SET id='e-renamed' WHERE id='e-rename'"),
+            ("created_at 2030", RawEvent::day("e-created", &case_id, "2025-03-14"), "UPDATE events SET created_at='2030-01-01T00:00:00.000000Z' WHERE id='e-created'"),
+            ("sıralama değeri 1999", RawEvent::day("e-sort", &case_id, "2025-03-14"), "UPDATE events SET sortable_date='1999-01-01' WHERE id='e-sort'"),
+            ("tarih çevrildi, sıralama kaldı", RawEvent::day("e-date", &case_id, "2025-03-14"), "UPDATE events SET date_value='2024-01-01' WHERE id='e-date'"),
+            ("row_version sıfırlandı", RawEvent::day("e-version", &case_id, "2025-03-14"), "UPDATE events SET row_version=0 WHERE id='e-version'"),
+            ("bilinmeyen tarihe gün eklendi", e_unknown, "UPDATE events SET date_value='2025-03-14' WHERE id='e-unknown'"),
+            ("ay kesinliğine gün yazıldı", e_month, "UPDATE events SET date_value='2025-03-14', sortable_date='2025-03-14' WHERE id='e-month'"),
+            ("başlık boşaltıldı", RawEvent::day("e-title", &case_id, "2025-03-14"), "UPDATE events SET title='' WHERE id='e-title'"),
+            ("updated_at 'dün'", RawEvent::day("e-updated", &case_id, "2025-03-14"), "UPDATE events SET updated_at='dün' WHERE id='e-updated'"),
+            ("aralık ters çevrildi", e_range, "UPDATE events SET date_value='2025-05-01/2025-03-01', sortable_date='2025-05-01' WHERE id='e-range'"),
+            ("aralık ayırıcısız sürümle", e_range2, "UPDATE events SET date_value='2025-03-01X2025-03-02', sortable_date='2025-03-01', row_version=row_version+1 WHERE id='e-range2'"),
+            ("tarih silindi, sıralama kaldı", RawEvent::day("e-null", &case_id, "2025-03-14"), "UPDATE events SET date_value=NULL WHERE id='e-null'"),
+            ("içerik sürüm artmadan değişti", RawEvent::day("e-noversion", &case_id, "2025-03-14"), "UPDATE events SET title='Başka başlık' WHERE id='e-noversion'"),
+            ("silme anında içerik değişti", RawEvent::day("e-delcontent", &case_id, "2025-03-14"), "UPDATE events SET deleted_at='2026-11-19T01:00:00.000000Z', title='Sonradan' WHERE id='e-delcontent'"),
+            ("biçimsiz içerik sürümle yazıldı", RawEvent::day("e-format", &case_id, "2025-03-14"), "UPDATE events SET title='', row_version=row_version+1 WHERE id='e-format'"),
+            ("yaklaşık biçimsiz tarih sürümle", RawEvent::day("e-approx", &case_id, "2025-03-14"), "UPDATE events SET date_precision='approximate', date_value='dün', sortable_date='dün', row_version=row_version+1 WHERE id='e-approx'"),
+            ("taslak arşive çevrildi", RawEvent::day("e-draft", &case_id, "2025-03-14"), "UPDATE events SET status='archived' WHERE id='e-draft'"),
+            ("silme anında içerik sürümle değişti", RawEvent::day("e-delv", &case_id, "2025-03-14"), "UPDATE events SET deleted_at='2026-11-19T01:00:00.000000Z', title='Sonradan', row_version=row_version+1 WHERE id='e-delv'"),
+            ("tür kırpılmamış sürümle yazıldı", RawEvent::day("e-kind", &case_id, "2025-03-14"), "UPDATE events SET event_kind='  payment  ', row_version=row_version+1 WHERE id='e-kind'"),
+        ];
+        for (label, row, sql) in updates {
+            row.insert(&db).expect("kurulum satırı");
+            reject(&sql.replace("CASE2", &other_case), label);
+        }
+
+        // Durum: onay ileri akar, geri/yanına çevrilemez.
+        seed("e-status");
+        db.conn()
+            .execute(
+                "UPDATE events SET status='confirmed', updated_at='2026-11-19T01:00:00.000000Z' WHERE id='e-status'",
+                [],
+            )
+            .expect("onay geçer");
+        reject(
+            "UPDATE events SET status='draft' WHERE id='e-status'",
+            "onay geri alındı",
+        );
+        reject(
+            "UPDATE events SET status='archived' WHERE id='e-status'",
+            "onay arşive çevrildi",
+        );
+
+        // Silme tek yönlüdür; silinmiş satırın içeriği değişmez.
+        seed("e-deleted");
+        db.conn()
+            .execute(
+                "UPDATE events SET deleted_at='2026-11-19T01:00:00.000000Z', updated_at='2026-11-19T01:00:00.000000Z' WHERE id='e-deleted'",
+                [],
+            )
+            .expect("silme geçer");
+        reject(
+            "UPDATE events SET deleted_at=NULL WHERE id='e-deleted'",
+            "silinmiş satır geri getirildi",
+        );
+        reject(
+            "UPDATE events SET title='Sonradan' WHERE id='e-deleted'",
+            "silinmiş satırın içeriği değişti",
+        );
+
+        // Meşru düzenlemeler kapıdan geçer.
+        seed("e-edit");
+        for sql in [
+            "UPDATE events SET title='Yeni başlık', description='Yeni açıklama', updated_at='2026-11-19T01:00:00.000000Z', row_version=row_version+1 WHERE id='e-edit'",
+            "UPDATE events SET title='Yeni başlık' WHERE id='e-edit'",
+            "UPDATE events SET date_precision='month', date_value='2025-03', sortable_date='2025-03', updated_at='2026-11-19T02:00:00.000000Z', row_version=row_version+1 WHERE id='e-edit'",
+        ] {
+            db.conn().execute(sql, []).expect("meşru düzenleme geçer");
+        }
+
+        // Çekirdek yol: `date_raw` kırpılır, yalnız boşluksa `NULL` yazılır;
+        // ay/yıl kesinliği gün taşımaz (kapı ile aynı sözleşme).
+        let mut created = event("Kira", Some("2025-03-14"), "day");
+        created.date_raw = Some("   14 Mart 2025   ".into());
+        let created = db.create_event(&case_id, &created).expect("olay");
+        assert_eq!(created.date_raw.as_deref(), Some("14 Mart 2025"));
+        let mut blank = event("Ödeme", None, "unknown");
+        blank.date_raw = Some("   ".into());
+        let blank = db.create_event(&case_id, &blank).expect("olay");
+        assert_eq!(blank.date_raw, None);
+        db.confirm_event(&blank.id).expect("onay");
+        db.soft_delete_event(&blank.id).expect("sil");
     }
 }
 
