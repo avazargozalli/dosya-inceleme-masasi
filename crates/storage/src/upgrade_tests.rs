@@ -3587,3 +3587,152 @@ fn upgrade_keeps_events_written_before_the_evidence_gate() {
         other => panic!("silinmiş satır donmalı: {other:?}"),
     }
 }
+
+/// v62 — kapı öncesi yazılmış **tutarsız** inceleme hükümleri (karar ve
+/// çelişki değerlendirmesi) silinmez ve düzeltilmez; satırlar donar. Yeni
+/// biçimsiz hüküm doğamaz, meşru yeni hüküm (eklemeli) yazılabilir.
+#[test]
+fn upgrade_keeps_review_verdicts_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 61);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,
+                created_at,updated_at)
+             VALUES ('c-eski','Eski dosya','review','active','normal','off',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z');
+             INSERT INTO review_items
+               (id,case_id,item_kind,payload,source_anchor_ids,state,
+                created_at,updated_at,row_version)
+             VALUES ('i-eski','c-eski','note_candidate','{}','[]','accepted',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z',1);
+             INSERT INTO review_items
+               (id,case_id,item_kind,payload,source_anchor_ids,state,
+                created_at,updated_at,row_version)
+             VALUES ('i-acik','c-eski','note_candidate','{}','[]','pending',
+                     '2026-11-01T00:00:00.000000Z','2026-11-01T00:00:00.000000Z',1);
+             -- v62 öncesi: kapanmış öğeye karar, damga serbest metin.
+             INSERT INTO review_decisions
+               (id,review_item_id,decision,reviewer_label,rationale,decided_at)
+             VALUES ('d-eski','i-eski','accept','avukat','','dün');
+             -- v62 öncesi: çelişki adayı olmayan öğeye değerlendirme.
+             INSERT INTO contradiction_assessments
+               (id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at)
+             VALUES ('a-eski','c-eski','i-eski','conflict','','avukat','dün');",
+        )
+        .expect("v61 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satır **silinmez ve onarılmaz**: v62 yalnız yeni yazmayı durdurur.
+    let (rationale, decided_at): (String, String) = db
+        .conn()
+        .query_row(
+            "SELECT rationale, decided_at FROM review_decisions WHERE id='d-eski'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("eski karar");
+    assert_eq!(
+        (rationale.as_str(), decided_at.as_str()),
+        ("", "dün"),
+        "v62 eski kararı onarmaz"
+    );
+    let (verdict, assessed_at): (String, String) = db
+        .conn()
+        .query_row(
+            "SELECT verdict, assessed_at FROM contradiction_assessments WHERE id='a-eski'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("eski değerlendirme");
+    assert_eq!(
+        (verdict.as_str(), assessed_at.as_str()),
+        ("conflict", "dün")
+    );
+
+    // Donar: UPDATE ve DELETE reddedilir.
+    for (sql, table) in [
+        (
+            "UPDATE review_decisions SET rationale='x' WHERE id='d-eski'",
+            "review_decisions",
+        ),
+        (
+            "DELETE FROM review_decisions WHERE id='d-eski'",
+            "review_decisions",
+        ),
+        (
+            "UPDATE contradiction_assessments SET verdict='explained' WHERE id='a-eski'",
+            "contradiction_assessments",
+        ),
+        (
+            "DELETE FROM contradiction_assessments WHERE id='a-eski'",
+            "contradiction_assessments",
+        ),
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains(table), "mesaj: {message} ({sql})")
+            }
+            other => panic!("v62 eski hükmü dondurmalı: {other:?} ({sql})"),
+        }
+    }
+
+    // Yeni biçimsiz hüküm doğamaz: kapalı öğeye karar, aday olmayan öğeye
+    // değerlendirme.
+    for (sql, table) in [
+        (
+            "INSERT INTO review_decisions
+               (id,review_item_id,decision,reviewer_label,rationale,decided_at)
+             VALUES ('d-yeni','i-eski','accept','avukat','',
+                     '2026-11-20T00:00:00.000000Z')",
+            "review_decisions",
+        ),
+        (
+            "INSERT INTO contradiction_assessments
+               (id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at)
+             VALUES ('a-yeni','c-eski','i-eski','conflict','','avukat',
+                     '2026-11-20T00:00:00.000000Z')",
+            "contradiction_assessments",
+        ),
+    ] {
+        match db.conn().execute(sql, []).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains(table), "mesaj: {message} ({sql})")
+            }
+            other => panic!("v62 biçimsiz hükmü reddetmeli: {other:?} ({sql})"),
+        }
+    }
+
+    // Meşru yollar açık: açık öğeye yeni karar (eklemeli) ve kendi adayına
+    // yeni değerlendirme takılmaz.
+    let decided = db
+        .decide_review_item("i-acik", "accept", None, "avukat", "")
+        .expect("meşru karar");
+    assert_eq!(decided.state, "accepted");
+    db.conn()
+        .execute(
+            "INSERT INTO review_items
+               (id,case_id,item_kind,payload,source_anchor_ids,state,
+                created_at,updated_at,row_version)
+             VALUES ('i-celiski','c-eski','contradiction_candidate','{}','[]','pending',
+                     '2026-11-20T00:00:00.000000Z','2026-11-20T00:00:00.000000Z',1)",
+            [],
+        )
+        .expect("çelişki adayı");
+    db.conn()
+        .execute(
+            "INSERT INTO contradiction_assessments
+               (id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at)
+             VALUES ('a-yeni-ok','c-eski','i-celiski','explained','farklı tarih',
+                     'avukat','2026-11-20T00:00:00.000000Z')",
+            [],
+        )
+        .expect("meşru değerlendirme");
+}

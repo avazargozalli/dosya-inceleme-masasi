@@ -558,6 +558,13 @@ impl Database {
             "request_evidence" => "needs_more_evidence",
             _ => return Err(StorageError::InvalidSetting),
         };
+        // v62: düzenleme hükmü **içeriksiz olamaz** — `edit` satırı neyin
+        // düzenlendiğini taşımıyorsa geçmiş paneli «düzenlendi» der, içeriği
+        // gösteremez. Arayüz yükü her zaman gönderir; şema kapısı da aynı
+        // kuralı doğrudan yazımlarda uygular.
+        if decision == "edit" && edited_payload.is_none() {
+            return Err(StorageError::InvalidSetting);
+        }
         let item = self
             .get_review_item(item_id)?
             .ok_or(StorageError::NotFound)?;
@@ -1086,6 +1093,12 @@ mod tests {
         )
         .expect("düzenleme");
         // Kasa dışı yazımı taklit eder: sütuna çözülemeyen JSON düşmüş.
+        // v62 bu satırı hem kapanmış öğe hem bozuk yük olduğu için reddeder;
+        // **v62 öncesi** satırların okunabilirliği sınandığından kapı bilinçli
+        // düşürülür (okuyucu hâlâ «okunamadı» demeli — sessiz yutma yok).
+        s.db.conn()
+            .execute_batch("DROP TRIGGER review_decision_evidence_guard_bi;")
+            .expect("kapı düşürülür");
         s.db.conn()
             .execute(
                 "INSERT INTO review_decisions
@@ -1613,7 +1626,16 @@ mod tests {
         let second =
             s.db.assess_contradiction(&s.case_id, &item.id, "conflict", "", "avukat")
                 .expect("ikinci");
-        // Aynı saniye, farklı kesir genişliği: metin sırası ters, an sırası doğru.
+        // Aynı saniye, farklı kesir genişliği: metin sırası ters, an sırası
+        // doğru. Böyle satırlar **v62 öncesi** kasalarda doğmuş olabilir;
+        // v62 BU damgayı dondurduğu için sonda satırları doğrudan yazar
+        // (kapı düşürülür — sınanan şey `list_…`in sıralamasıdır).
+        s.db.conn()
+            .execute_batch(
+                "DROP TRIGGER contradiction_assessment_evidence_guard_bi;
+                 DROP TRIGGER contradiction_assessment_evidence_guard_bu;",
+            )
+            .expect("kapı düşürülür");
         s.db.conn()
             .execute(
                 "UPDATE contradiction_assessments SET assessed_at='2026-01-01T00:00:00.5Z' WHERE id=?1",
@@ -1631,6 +1653,587 @@ mod tests {
                 .expect("liste");
         assert_eq!(list[0].id, first.id, "önce erken an gelmeli");
         assert_eq!(list[1].id, second.id, "sonra geç an gelmeli");
+    }
+
+    /// v62 — inceleme kararı **açık** öğe için doğar ve sicil eklemelidir:
+    /// doğuşta biçimli/kanıtlı, sonrasında **hiçbir** sütunu değişmez ve satır
+    /// silinemez. Kapı öncesi (v61) ölçüm: 57 kusur yazımının **53'ü** kabul.
+    #[test]
+    fn review_decision_is_born_on_an_open_item_and_frozen_after_verdict() {
+        struct RawDecision {
+            id: String,
+            item: String,
+            decision: String,
+            payload: Option<String>,
+            reviewer: String,
+            rationale: String,
+            at: String,
+        }
+
+        impl RawDecision {
+            fn new(id: &str, item: &str) -> Self {
+                Self {
+                    id: id.to_string(),
+                    item: item.to_string(),
+                    decision: "accept".into(),
+                    payload: None,
+                    reviewer: "avukat".into(),
+                    rationale: String::new(),
+                    at: "2026-11-20T00:00:00.000000Z".into(),
+                }
+            }
+
+            fn insert(&self, db: &Database) -> Result<usize, StorageError> {
+                db.conn()
+                    .execute(
+                        "INSERT INTO review_decisions
+                           (id,review_item_id,decision,edited_payload,reviewer_label,rationale,decided_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        rusqlite::params![
+                            self.id,
+                            self.item,
+                            self.decision,
+                            self.payload,
+                            self.reviewer,
+                            self.rationale,
+                            self.at
+                        ],
+                    )
+                    .map_err(StorageError::from)
+            }
+        }
+
+        let s = setup();
+        let make = |kind: &str| {
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: kind.into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("öğe")
+            .id
+        };
+        let at = "2026-11-20T00:00:00.000000Z";
+        let open = make("claim_candidate");
+        let closed = make("claim_candidate");
+        s.db.decide_review_item(&closed, "accept", None, "avukat", "")
+            .expect("öğe kapanır");
+        let superseded = make("claim_candidate");
+        s.db.conn()
+            .execute(
+                "UPDATE review_items SET superseded_by_item_id=?1, superseded_at=?2 WHERE id=?3",
+                rusqlite::params![open, at, superseded],
+            )
+            .expect("yerine geçen işareti");
+        let targeted = make("claim_candidate");
+        s.db.conn()
+            .execute(
+                "UPDATE review_items SET state='accepted', target_entity_id='t-yok' WHERE id=?1",
+                [&targeted],
+            )
+            .expect("hedef yazılır");
+        let gone_case =
+            s.db.create_case(&NewCase {
+                title: "Silinmiş dosya".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya")
+            .id;
+        s.db.conn()
+            .execute(
+                "INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,state,created_at,updated_at,row_version)
+                 VALUES ('i-gone',?1,'note_candidate','{}','[]','pending',?2,?2,1)",
+                rusqlite::params![gone_case, at],
+            )
+            .expect("öğe");
+        s.db.soft_delete_case(&gone_case).expect("dosya silinir");
+
+        type Attack = (&'static str, Box<dyn Fn(&mut RawDecision)>);
+        let to_closed = closed.clone();
+        let to_superseded = superseded.clone();
+        let to_targeted = targeted.clone();
+        let to_gone = "i-gone".to_string();
+        let attacks: Vec<Attack> = vec![
+            ("boş kimlik", Box::new(|r| r.id = String::new())),
+            ("boşluk kimlik", Box::new(|r| r.id = "   ".into())),
+            ("kırpılmamış kimlik", Box::new(|r| r.id = " d1 ".into())),
+            (
+                "kimlik 64 karakteri aşar",
+                Box::new(|r| r.id = "x".repeat(65)),
+            ),
+            ("boş inceleyen", Box::new(|r| r.reviewer = String::new())),
+            ("boşluk inceleyen", Box::new(|r| r.reviewer = "   ".into())),
+            (
+                "inceleyen kırpılmamış",
+                Box::new(|r| r.reviewer = " avukat ".into()),
+            ),
+            (
+                "gerekçe kırpılmamış",
+                Box::new(|r| r.rationale = "  kaynak yeterli".into()),
+            ),
+            ("karar zamanı boş", Box::new(|r| r.at = String::new())),
+            ("karar zamanı 'dün'", Box::new(|r| r.at = "dün".into())),
+            (
+                "karar zamanı kırpılmamış",
+                Box::new(|r| r.at = "2026-11-20T00:00:00.000000Z ".into()),
+            ),
+            (
+                "karar zamanı takvim dışı gün",
+                Box::new(|r| r.at = "2026-02-30T00:00:00Z".into()),
+            ),
+            (
+                "karar zamanı olmayan saat",
+                Box::new(|r| r.at = "2026-11-20T99:00:00Z".into()),
+            ),
+            (
+                "karar zamanı ayırıcısı boşluk",
+                Box::new(|r| r.at = "2026-11-20 00:00:00Z".into()),
+            ),
+            (
+                "düzenlenen yük bozuk JSON",
+                Box::new(|r| {
+                    r.decision = "edit".into();
+                    r.payload = Some("{bozuk".into());
+                }),
+            ),
+            (
+                "'edit' kararı yüksüz",
+                Box::new(|r| r.decision = "edit".into()),
+            ),
+            (
+                "kapanmış öğeye karar",
+                Box::new(move |r| r.item = to_closed.clone()),
+            ),
+            (
+                "yerine geçmiş öğeye karar",
+                Box::new(move |r| r.item = to_superseded.clone()),
+            ),
+            (
+                "hedefi yazılmış öğeye ikinci karar",
+                Box::new(move |r| r.item = to_targeted.clone()),
+            ),
+            (
+                "silinmiş dosyanın öğesine karar",
+                Box::new(move |r| r.item = to_gone.clone()),
+            ),
+            (
+                "var olmayan öğeye karar",
+                Box::new(|r| r.item = "i-yok".into()),
+            ),
+        ];
+        for (index, (label, attack)) in attacks.iter().enumerate() {
+            let mut raw = RawDecision::new(&format!("d-attack-{index}"), &open);
+            attack(&mut raw);
+            match raw.insert(&s.db) {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains("review_decisions"), "{label}: {message}")
+                }
+                other => panic!("v62 {label} reddetmeli: {other:?}"),
+            }
+        }
+
+        // Meşru yollar takılmaz: kabul, gerekçesiz delil isteği, yüklü
+        // düzenleme, aynı açık öğeye ikinci karar.
+        RawDecision::new("d-ok", &open)
+            .insert(&s.db)
+            .expect("meşru kabul");
+        let mut delil = RawDecision::new("d-delil", &open);
+        delil.decision = "request_evidence".into();
+        delil.insert(&s.db).expect("meşru delil isteği");
+        let mut edit = RawDecision::new("d-edit", &open);
+        edit.decision = "edit".into();
+        edit.payload = Some("{\"text\":\"Düzeltildi\"}".into());
+        edit.rationale = "ifade düzeltildi".into();
+        edit.insert(&s.db).expect("meşru düzenleme");
+        RawDecision::new("d-ok-2", &open)
+            .insert(&s.db)
+            .expect("ikinci karar eklemelidir");
+
+        // Sicil eklemelidir: hiçbir sütun sonradan yazılamaz.
+        for sql in [
+            "UPDATE review_decisions SET decision='reject' WHERE id='d-ok'".to_string(),
+            "UPDATE review_decisions SET reviewer_label='başka' WHERE id='d-ok'".to_string(),
+            "UPDATE review_decisions SET rationale='başka' WHERE id='d-ok'".to_string(),
+            "UPDATE review_decisions SET decided_at='2020-01-01T00:00:00Z' WHERE id='d-ok'"
+                .to_string(),
+            "UPDATE review_decisions SET edited_payload='{\"text\":\"y\"}' WHERE id='d-edit'"
+                .to_string(),
+            "UPDATE review_decisions SET edited_payload=NULL WHERE id='d-edit'".to_string(),
+            "UPDATE review_decisions SET id='d-yeni' WHERE id='d-ok'".to_string(),
+            format!("UPDATE review_decisions SET review_item_id='{closed}' WHERE id='d-ok'"),
+        ] {
+            match s.db.conn().execute(&sql, []).map_err(StorageError::from) {
+                Err(StorageError::Integrity(message)) => assert!(
+                    message.contains("review_decisions"),
+                    "mesaj: {message} ({sql})"
+                ),
+                other => panic!("v62 kararı dondurmalı: {other:?} ({sql})"),
+            }
+        }
+        s.db.conn()
+            .execute(
+                "UPDATE review_decisions SET rationale=rationale WHERE id='d-ok'",
+                [],
+            )
+            .expect("değişmeyen yazma takılmaz");
+
+        // Silme de yeniden yazımdır: satır, öğesi ve dosyası silinemez.
+        let deletes: Vec<(String, &'static str)> = vec![
+            (
+                "DELETE FROM review_decisions WHERE id='d-ok'".to_string(),
+                "review_decisions",
+            ),
+            (
+                format!("DELETE FROM review_items WHERE id='{open}'"),
+                "review_decisions",
+            ),
+        ];
+        for (sql, table) in deletes {
+            match s.db.conn().execute(&sql, []).map_err(StorageError::from) {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains(table), "mesaj: {message} ({sql})")
+                }
+                other => panic!("v62 kararı silmemeli: {other:?} ({sql})"),
+            }
+        }
+        s.db.conn()
+            .execute(
+                "INSERT INTO cases
+                   (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+                 VALUES ('c-cascade','Kaskad','review','active','normal','off',?1,?1)",
+                [at],
+            )
+            .expect("dosya");
+        s.db.conn()
+            .execute(
+                "INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,state,created_at,updated_at,row_version)
+                 VALUES ('i-cascade','c-cascade','note_candidate','{}','[]','pending',?1,?1,1)",
+                [at],
+            )
+            .expect("öğe");
+        s.db.conn()
+            .execute(
+                "INSERT INTO review_decisions
+                   (id,review_item_id,decision,reviewer_label,rationale,decided_at)
+                 VALUES ('d-cascade','i-cascade','accept','avukat','',?1)",
+                [at],
+            )
+            .expect("karar");
+        match s
+            .db
+            .conn()
+            .execute("DELETE FROM cases WHERE id='c-cascade'", [])
+            .map_err(StorageError::from)
+        {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains("review_decisions"), "mesaj: {message}")
+            }
+            other => panic!("v62 kararlı dosyayı silmemeli: {other:?}"),
+        }
+
+        // Çekirdek hizası: düzenleme yüksüz kabul edilmez.
+        assert_eq!(
+            s.db.decide_review_item(&open, "edit", None, "avukat", "")
+                .unwrap_err()
+                .code(),
+            "E_DB_SETTING"
+        );
+        s.db.decide_review_item(
+            &open,
+            "edit",
+            Some(&serde_json::json!({"text": "Düzeltildi"})),
+            "avukat",
+            "düzeltme",
+        )
+        .expect("yüklü düzenleme geçer");
+    }
+
+    /// v62 — çelişki değerlendirmesi **kendi dosyasının** çelişki adayı için
+    /// doğar; hüküm, gerekçe, inceleyen ve damga sonradan değişmez; satır
+    /// silinemez. Kapı öncesi (v61) 16 doğum kusurunun 13'ü, 8 UPDATE'in 8'i
+    /// kabul ediliyordu.
+    #[test]
+    fn contradiction_assessment_is_born_on_its_own_candidate_and_frozen() {
+        struct RawAssessment {
+            id: String,
+            case_id: String,
+            item: String,
+            verdict: String,
+            rationale: String,
+            reviewer: String,
+            at: String,
+        }
+
+        impl RawAssessment {
+            fn new(id: &str, case_id: &str, item: &str) -> Self {
+                Self {
+                    id: id.to_string(),
+                    case_id: case_id.to_string(),
+                    item: item.to_string(),
+                    verdict: "conflict".into(),
+                    rationale: String::new(),
+                    reviewer: "avukat".into(),
+                    at: "2026-11-20T00:00:00.000000Z".into(),
+                }
+            }
+
+            fn insert(&self, db: &Database) -> Result<usize, StorageError> {
+                db.conn()
+                    .execute(
+                        "INSERT INTO contradiction_assessments
+                           (id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        rusqlite::params![
+                            self.id,
+                            self.case_id,
+                            self.item,
+                            self.verdict,
+                            self.rationale,
+                            self.reviewer,
+                            self.at
+                        ],
+                    )
+                    .map_err(StorageError::from)
+            }
+        }
+
+        let s = setup();
+        let other = second_anchor(&s);
+        let at = "2026-11-20T00:00:00.000000Z";
+        let candidate =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "contradiction_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone(), other.id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("çelişki adayı")
+            .id;
+        let plain =
+            s.db.create_review_item(
+                &s.case_id,
+                &NewReviewItem {
+                    item_kind: "claim_candidate".into(),
+                    payload: serde_json::json!({}),
+                    source_anchor_ids: vec![s.anchor_id.clone()],
+                    ai_run_id: None,
+                },
+            )
+            .expect("düz öğe")
+            .id;
+        let gone_case =
+            s.db.create_case(&NewCase {
+                title: "Silinmiş".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya")
+            .id;
+        let other_case =
+            s.db.create_case(&NewCase {
+                title: "Başka dosya".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("dosya")
+            .id;
+        for (iid, case) in [("i-gone", &gone_case), ("i-other", &other_case)] {
+            s.db.conn()
+                .execute(
+                    "INSERT INTO review_items
+                       (id,case_id,item_kind,payload,source_anchor_ids,state,created_at,updated_at,row_version)
+                     VALUES (?1,?2,'contradiction_candidate','{}','[]','pending',?3,?3,1)",
+                    rusqlite::params![iid, case, at],
+                )
+                .expect("öğe");
+        }
+        s.db.soft_delete_case(&gone_case).expect("dosya silinir");
+
+        type Attack = (&'static str, Box<dyn Fn(&mut RawAssessment)>);
+        let to_other_case = other_case.clone();
+        let to_plain = plain.clone();
+        let attacks: Vec<Attack> = vec![
+            ("boş kimlik", Box::new(|r| r.id = String::new())),
+            ("boşluk kimlik", Box::new(|r| r.id = "   ".into())),
+            ("kırpılmamış kimlik", Box::new(|r| r.id = " a1 ".into())),
+            (
+                "kimlik 64 karakteri aşar",
+                Box::new(|r| r.id = "x".repeat(65)),
+            ),
+            (
+                "satır başka dosyanın kimliğini taşır",
+                Box::new(move |r| r.case_id = to_other_case.clone()),
+            ),
+            ("silinmiş dosya", Box::new(|r| r.case_id = "c-yok".into())),
+            ("var olmayan öğe", Box::new(|r| r.item = "i-yok".into())),
+            (
+                "çelişki adayı olmayan öğe",
+                Box::new(move |r| r.item = to_plain.clone()),
+            ),
+            ("boş inceleyen", Box::new(|r| r.reviewer = String::new())),
+            ("boşluk inceleyen", Box::new(|r| r.reviewer = "   ".into())),
+            (
+                "inceleyen kırpılmamış",
+                Box::new(|r| r.reviewer = " avukat ".into()),
+            ),
+            (
+                "gerekçe kırpılmamış",
+                Box::new(|r| r.rationale = "  açıklandı".into()),
+            ),
+            ("damga boş", Box::new(|r| r.at = String::new())),
+            ("damga 'dün'", Box::new(|r| r.at = "dün".into())),
+            (
+                "damga takvim dışı gün",
+                Box::new(|r| r.at = "2026-02-30T00:00:00Z".into()),
+            ),
+            (
+                "damga olmayan saat",
+                Box::new(|r| r.at = "2026-11-20T99:00:00Z".into()),
+            ),
+            (
+                "damga ayırıcısı boşluk",
+                Box::new(|r| r.at = "2026-11-20 00:00:00Z".into()),
+            ),
+            (
+                "damga kırpılmamış",
+                Box::new(|r| r.at = "2026-11-20T00:00:00.000000Z ".into()),
+            ),
+        ];
+        for (index, (label, attack)) in attacks.iter().enumerate() {
+            let mut raw = RawAssessment::new(&format!("a-attack-{index}"), &s.case_id, &candidate);
+            attack(&mut raw);
+            match raw.insert(&s.db) {
+                Err(StorageError::Integrity(message)) => assert!(
+                    message.contains("contradiction_assessments"),
+                    "{label}: {message}"
+                ),
+                other => panic!("v62 {label} reddetmeli: {other:?}"),
+            }
+        }
+
+        // Meşru yollar: dört hüküm de kendi adayında doğar; aynı öğeye çok
+        // satır **eklemelidir** (0007 sözü) ve başka dosyanın kendi adayı
+        // kendi dosyasıyla değerlendirilir.
+        for (index, verdict) in [
+            "conflict",
+            "explained",
+            "not_conflict",
+            "needs_more_evidence",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut raw = RawAssessment::new(&format!("a-ok-{index}"), &s.case_id, &candidate);
+            raw.verdict = (*verdict).into();
+            raw.rationale = if index % 2 == 0 {
+                "gerekçe".into()
+            } else {
+                String::new()
+            };
+            raw.insert(&s.db).expect("meşru değerlendirme");
+        }
+        let mut own = RawAssessment::new("a-own", &other_case, "i-other");
+        own.verdict = "explained".into();
+        own.insert(&s.db).expect("kendi dosyasının adayı");
+
+        for sql in [
+            "UPDATE contradiction_assessments SET verdict='explained' WHERE id='a-ok-0'"
+                .to_string(),
+            "UPDATE contradiction_assessments SET rationale='başka' WHERE id='a-ok-0'".to_string(),
+            "UPDATE contradiction_assessments SET reviewer_label='başka' WHERE id='a-ok-0'"
+                .to_string(),
+            "UPDATE contradiction_assessments SET assessed_at='2020-01-01T00:00:00Z' WHERE id='a-ok-0'"
+                .to_string(),
+            format!(
+                "UPDATE contradiction_assessments SET case_id='{other_case}' WHERE id='a-ok-0'"
+            ),
+            "UPDATE contradiction_assessments SET review_item_id='i-other' WHERE id='a-ok-0'"
+                .to_string(),
+            "UPDATE contradiction_assessments SET id='a-yeni' WHERE id='a-ok-0'".to_string(),
+        ] {
+            match s.db.conn().execute(&sql, []).map_err(StorageError::from) {
+                Err(StorageError::Integrity(message)) => assert!(
+                    message.contains("contradiction_assessments"),
+                    "mesaj: {message} ({sql})"
+                ),
+                other => panic!("v62 değerlendirmeyi dondurmalı: {other:?} ({sql})"),
+            }
+        }
+        s.db.conn()
+            .execute(
+                "UPDATE contradiction_assessments SET rationale=rationale WHERE id='a-ok-0'",
+                [],
+            )
+            .expect("değişmeyen yazma takılmaz");
+
+        s.db.conn()
+            .execute(
+                "INSERT INTO cases
+                   (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+                 VALUES ('c-cascade2','Kaskad 2','review','active','normal','off',?1,?1)",
+                [at],
+            )
+            .expect("dosya");
+        s.db.conn()
+            .execute(
+                "INSERT INTO review_items
+                   (id,case_id,item_kind,payload,source_anchor_ids,state,created_at,updated_at,row_version)
+                 VALUES ('i-cascade2','c-cascade2','contradiction_candidate','{}','[]','pending',?1,?1,1)",
+                [at],
+            )
+            .expect("öğe");
+        s.db.conn()
+            .execute(
+                "INSERT INTO contradiction_assessments
+                   (id,case_id,review_item_id,verdict,rationale,reviewer_label,assessed_at)
+                 VALUES ('a-cascade2','c-cascade2','i-cascade2','conflict','','avukat',?1)",
+                [at],
+            )
+            .expect("değerlendirme");
+
+        for (sql, table) in [
+            (
+                "DELETE FROM contradiction_assessments WHERE id='a-ok-0'".to_string(),
+                "contradiction_assessments",
+            ),
+            (
+                "DELETE FROM review_items WHERE id='i-other'".to_string(),
+                "contradiction_assessments",
+            ),
+            (
+                "DELETE FROM cases WHERE id='c-cascade2'".to_string(),
+                "contradiction_assessments",
+            ),
+        ] {
+            match s.db.conn().execute(&sql, []).map_err(StorageError::from) {
+                Err(StorageError::Integrity(message)) => {
+                    assert!(message.contains(table), "mesaj: {message} ({sql})")
+                }
+                other => panic!("v62 değerlendirmeyi silmemeli: {other:?} ({sql})"),
+            }
+        }
     }
 }
 
