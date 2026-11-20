@@ -3606,3 +3606,121 @@ metni sonradan silinirse eski `match` hükmü donmuş kalır (yeniden doğrulama
 Tetikleyicileri anahtarı olan saldırgan düşürebilir — çekirdek türetmesi ayrıca durur.
 (g) Arayüz değişikliği (pasaj alanı, kaldırılan liste/düğme) **gerçek pencerede** görsel
 QA ile sınanmadı; **insan bekliyor**.
+
+## F08-T04ah — dışa aktarma makbuzu «bu dosyadan ne çıktı, nereye» iddiasıdır: doğuşta kanıtlı, sonuçlandıktan sonra donar (şema v60, 2026-11-20)
+
+**Neden bu dilim.** `exports` satırı «bu dosyadan **ne** çıktı, **nereye**, hangi
+**özetle**, **ne zaman**, **başarılı mı**» iddiasıdır; `export_items` satırları da
+«hangi **belge sürümlerinden** üretildi, o sürüm **maskeli** miydi» iddiasını taşır
+(şartname §16.3, §433). Üç okuma yolu bu satıra yaslanır: `Exports.tsx` denetim
+defteri (durum rozeti, hedef yol, özet öneki ve zaman **doğrudan** bu sütunlardan
+basılır), `list_export_items` («kaynakları göster») ve `record_export`/`fail_export`
+(«kayıt **önce** yazılır; denetlenemeyen aktarım yapılmaz»). Şemada bu iki tablonun
+kapısı yalnız **kapsam**tı (`export_items`, 0037) ve `exports.status` için bir
+`CHECK` vardı; `exports` üzerinde 0001'den beri **hiçbir tetikleyici yoktu**.
+Komşuları kapılıydı (v55 aktarım makbuzu, v58 yedek makbuzu) ama dışa aktarma
+makbuzu değildi.
+
+**Ölçülen kusur (gerçek SQLite v59; `dim-v60-probe/measure_v60.py`, log
+`measure_before.log`).** 75 kusur yazımının **73'ü KABUL** (2'si zaten RED —
+yalnız `FOREIGN KEY`), 19 meşru yazma KABUL, 2 kapı dışı (bilinçli sınır) KABUL.
+Doğum (41): boş/boşluk kimlik; boş, kırpılmamış, satır sonlu tür; doğuşta
+`building`/`draft`/`blocked` (hiçbir yol tamamlamaz → sonsuza dek «sürüyor»
+görünür); boş/kırpılmamış/satır sonlu hedef türü; `ready` + yol NULL/boş/boşluk/
+kırpılmamış/satır sonlu; `ready` + özet NULL, `hash`, `'Z'*64`, **büyük harf**,
+63 hane; boş/`'dün'` `created_at`; `ready` + `completed_at` NULL/`'dün'`/
+`created_at`ten **önce**; `included_ids` JSON değil / nesne / sayı dizisi / boş
+kimlik / **mükerrer** / **başka dosyanın sürümü** / `null` eleman / kırpılmamış
+eleman; şablon boşluk / 65 karakter / kırpılmamış / boş metin; onay kimliği
+kırpılmamış. UPDATE + silme (18): özet, hedef yol, `created_at`, `completed_at`,
+tür, `included_ids`, şablon, hedef türü çevrildi; `ready`→`draft`/`building`
+(geri alma); `failed`→`ready` (**sahte başarı**); `failed`→`blocked`; onay
+sonradan eklendi; satır **başka dosyaya** taşındı; kimlik takası; makbuz ve kalem
+satırı **silindi** (defter «silinemez» diyordu ama SQL siliyordu). Kalem (16):
+boş kimlik; boş/kırpılmamış kaynak sürüm; bilinmeyen/boş maskeleme durumu; sayfa
+aralığı 33 karakter / satır sonlu; atıf etiketi 65 karakter; **sonuçlanmış
+(`failed`) makbuza kalem ekleme**; aynı sürüm **iki kez**; kaynak sürüm/
+maskeleme/sayfa aralığı UPDATE ile çevrildi; kalem başka makbuza taşındı.
+
+**Yazılan (`0060_export_receipt_evidence_guard.sql`, 5 tetikleyici + 0037
+genişletmesi).** `exports` BI — `id` kırpılmış-dolu; `type` kırpılmış, dolu, ≤64
+ve CR/LF/TAB taşımaz; doğuşta durum **yalnız `ready`**; `destination_kind`
+kırpılmış-dolu ≤64; `destination_path` **dolu** (boşluk değil), kırpılmış, ≤4096,
+kontrol karakteri yok; `output_hash` **64 küçük harf hex**; iki damga ISO-8601 ve
+`completed_at ≥ created_at`; `included_ids` **metin dizisi** (json_valid + array +
+her eleman kırpılmış metin), **mükerrer yok**, çözülebilen her kimlik **aynı
+dosyanın** sürümü; `template_version` ve `externalization_consent_id` NULL ya da
+kırpılmış-dolu ≤64. `exports` BU — on iki kanıt sütunu **donar**; durum yalnız
+`ready`→`failed` ilerler; `failed` **terminal**; no-op takılmaz. `exports` BD —
+makbuz **silinemez**. `export_items` BI — kimlik/sürüm kırpılmış-dolu, sürüm ≤128
+ve kontrol karakteri yok, `redaction_state` **kapalı küme** (`none|masked`), sayfa
+aralığı ≤32, atıf etiketi ≤64, üst makbuz **var ve `ready`**, aynı sürüm aynı
+makbuza **iki kez** yazılamaz. `export_items` BU + BD — sayaç/etiket/maskeleme
+**donar**, kalem **silinemez**; `export_id`/`source_version_id` 0037'nin kapsam
+kapısında donar (`DROP`+`CREATE`, önek `DIM_SCOPE` korunur — v46 dersi).
+**Kapsam dışına daraltma:** iki kalem tetikleyicisi `NOT EXISTS` (çapraz sürüm)
+kapısıyla yalnız **kendi dosyasının** satırlarında çalışır; çapraz satırın hükmü
+0037'nindir, iki kapı aynı satırda yarışmaz (v46 dersi). Ret
+`DIM_INTEGRITY:exports` / `DIM_INTEGRITY:export_items` → `E_DB_INTEGRITY`.
+Kapsam taraması: `exports` zaten taranıyor, `export_items` kapsamı 0037'de üst
+kayıttan okunuyor → yeni sınıf yok, `GUARDED_TABLES` **25 kalır**.
+
+**Çekirdek hizası (davranış sıkılaşması).** `record_export` tür, hedef türü,
+hedef yol ve özeti **kendisi** doğrular (`receipt_text` + 64 küçük harf hex);
+boş hedef yol artık `NULL`'a çevrilmez, `E_EXPORT_RECEIPT` ile reddedilir (dosya
+yazıldıysa nereye yazıldığı bilinmelidir; `NULL` yalnız 24. şema öncesi eski
+kayıtlarda okunur). Ürün yolunun beş çağrısı da geçerli değer geçiriyor —
+arayüz davranışı değişmedi.
+
+**Testler.** `exports` +1 (`export_receipt_is_born_evidenced_and_frozen`: 41
+doğum + 13 dondurma/silme saldırısı + kalem saldırıları; 15 meşru/eski yol ve
+no-op KABUL; eski `NULL` satırı kapı bilinçli düşürülerek okunur), `upgrade_tests`
++1 (`upgrade_keeps_exports_written_before_the_receipt_gate`), `scope_guard` ve iki
+mevcut `exports` testi v60 kurallarına uyarlandı (hedef yol + 64 hex; sıra
+sözleşmesi damga **doğuşta** sabitlenerek ölçülüyor — kapı gevşetilmedi) → **715
+→ 717**. Yerelde **717/717 yeşil, 590,27 s**. fmt (iki manifest) / clippy
+`-D warnings --all-targets` / masaüstü `check --all-targets` (1 dk 35 s) temiz.
+
+**Dürüst olay (devralınan iş).** Bu dilim önceki koşuda (2026-11-19 15:20–16:30)
+yazılmış ama **commit edilememişti**: o koşunun tam paketi 15:36'da **716/717**
+düştü — `upgrade_reports_version_traces_left_by_the_previous_schema` çapraz kalemde
+`DIM_SCOPE` yerine `DIM_INTEGRITY:export_items` aldı (yeni BI, çapraz daraltma
+eklenmeden önce). 16:30'da yazılan `NOT EXISTS` daraltması bu testi düzeltiyor
+ama **hiç yeşil ölçülmemişti**; bu tur ölçtü: 2/2 yeşil. Ayrıca mutasyon kapısı
+16:30'da **EXIT=143** ile kesilmiş ve dosyayı **M20 mutantı** hâlinde bırakmıştı
+(`included_ids` dizi kuralının yerinde `OR 0`). Bu tur sha256 farkından yakaladı
+(`9fa5bd23…` ≠ kapının ölçtüğü `34cc9d65…`), hedeflenen metni **byte-birebir**
+geri yazdı (46 desenin hepsi tam bir kez eşleşiyor, sha256 `34cc9d651f6bd310…`) ve
+kapı betiğine **SIGTERM'de geri yazma** koruması ekledi (aynı hata tekrarlanmasın;
+kaynak kopyası `0060_original.sql`).
+
+**Kapı kanıtı.** Taban **YEŞİL — 31 test** (kusur KABUL 0/75, meşru 19/19, kapı
+dışı 2/2; `measure_after.log`). **46/46 mutant KIRMIZI**, YEŞİL=0, ÖLÇÜLEMEDİ=0 (`gates_v60_final.log`); her
+mutant tek cümleyi nötrler ve **hedef test** kırmızıya döner; kaynak her koşudan
+sonra geri yazılır (sonda sha256 **birebir**, SIGTERM korumalı). Kapıdan **sonra**
+yalnız **yorum** düzeltmesi yapıldı — ölçüm sayıları kaynak yorumunda ve test
+başlığında 70/68 yazıyordu, gerçek log **75/73**; kurala dokunulmadı (kapının
+ölçtüğü sürüm `34cc9d651f6bd310…`, yorum düzeltmesinden sonra
+`a409be5258dc1d81…`). Düzeltmeden sonra ölçüm **tekrar** koşuldu: **0/75** kusur,
+19/19 meşru, 2/2 kapı dışı; `export` testleri **31/31** yeşil.
+
+**CI (ölçüldü).** Kod `ea93d44` (6 dosya, **+989/−60**) → run `44718606699`
+**10/10 YEŞİL** (`dim-storage` **717** iki OS'ta: macos-15 **490,04 s** / ubuntu-latest **953,65 s**; `arayüz` 66 dosya / **1436** test, paket `index-wBKnjNHs.js` **693,95 kB** / gzip 185,22 kB; `masaüstü kabuk` `51 koştu · 0 düştü · 5 yoksayıldı` + yoksayılan koşu `5 passed`, `windows güvenli depo` 28, SBOM, sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar.** (a) `output_hash`in gerçekten yazılan dosyanın SHA-256'sı
+olduğu **yeniden hesaplanmaz** (SQLite'ta dosya sistemi/SHA-256 yok); ölçülen
+**biçim + değişmezlik**tir. (b) `destination_path`in diskte **var olduğu** ve
+dosyanın oraya yazıldığı doğrulanmaz — yol bir **etiket**tir; yazma kanıtı
+`write_atomic_verified`in geri okumasıdır. (c) `included_ids` ile kalem satırları
+**çapraz denetlenmez** (makbuzun bildirmediği sürüm kalem olarak yazılabilir,
+bildirdiği her sürüm için kalem doğmak zorunda değil; kalemsiz eski kayıtlar
+meşru) — ürün yolu ikisini birlikte üretir. (d) `included_ids`teki bir kimlik
+**hiç çözülemiyorsa** kapsam denetimi atlanır (sürüm silinmiş olabilir).
+(e) `externalization_consent_id`nin var olan bir onaya işaret ettiği
+doğrulanmaz (bugün hiçbir yol yazmıyor; sütun donar). (f) `cases` silme
+`ON DELETE CASCADE`i **ölçüldü**: CASCADE eylemleri tetikleyicileri **çalıştırır**
+— makbuzu olan dosya hard-delete edilemez; ürün yolu yalnız soft-delete
+(`deleted_at`) kullanır. (g) Tetikleyicileri anahtarı olan saldırgan düşürebilir
+(çekirdek doğrulaması ayrıca durur). (h) v60 öncesi tutarsız makbuzlar
+**silinmez/düzeltilmez** (donar); onarım yolu yeni dışa aktarmadır. (i) Arayüz
+davranışı değişmedi; gerçek pencere + görsel QA **insan bekliyor**.

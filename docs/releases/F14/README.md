@@ -617,6 +617,14 @@ düzeyinde gerçek SQLite; (f) jsdom tarayıcı değil → gerçek Tauri pencere
 `masaüstü kabuk` `40 koştu · 0 düştü · 5 yoksayıldı` + yoksayılan koşu
 `5 passed · 40 filtered`; diğer altı iş yeşil.
 
+**v60 — makbuzun kendisi de kanıt ister (2026-11-20).** Yukarıdaki dilim izi
+*yazan* yolu kapılıyordu; makbuzun kendi sütunları serbestti (tür/hedef/özet/damga
+biçimi, `included_ids`in metin dizisi ve aynı dosya olduğu, kalemde kapalı
+maskeleme kümesi, makbuz ve kalemin **silinemez** olması). Ölçülen 75 kusur
+yazımının 73'ü kabul ediliyordu; kapı sonrası **0/75**, meşru 19/19. Çekirdek boş
+hedef yolu artık `E_EXPORT_RECEIPT` ile reddeder (eskiden `NULL` yazıyordu).
+Ayrıntı ve dürüst sınırlar: `docs/releases/F08/README.md` §F08-T04ah.
+
 ## Yedek saklama — son N günlük + M haftalık, yalnız kendi yedeklerimiz (2026-11-11)
 
 **Ölçülen kusur:** her otomatik yedek hedef klasörde `DimYedek-…` klasörü **ve**
