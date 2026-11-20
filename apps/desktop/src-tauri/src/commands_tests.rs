@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn vault_setup_can_restart_after_cancellation_and_requires_the_saved_key() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("nested/vault.dimvault");
+    let password = "synthetic password for setup";
+    let mut guard = VaultState::default();
+    let abandoned = prepare_creation(&mut guard, path.clone(), password).unwrap();
+    assert!(guard.db.is_none());
+    assert!(!path.parent().unwrap().exists());
+    guard.pending_creation = None;
+    assert!(confirm_creation(&mut guard, &abandoned).is_err());
+    let saved = prepare_creation(&mut guard, path.clone(), password).unwrap();
+    assert!(confirm_creation(&mut guard, &abandoned).is_err());
+    assert!(!path.exists());
+    let info = confirm_creation(&mut guard, &saved).unwrap();
+    assert!(!info.locked);
+    assert!(guard.db.is_some());
+    assert!(guard.pending_creation.is_none());
+    assert!(confirm_creation(&mut guard, &saved).is_err());
+    assert!(VaultFile::open(&path, password).is_ok());
+    assert!(VaultFile::open_with_recovery(&path, &saved).is_ok());
+}
+
+#[test]
+fn vault_setup_preserves_files_created_before_confirmation() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("named.dimvault");
+    let mut guard = VaultState::default();
+    let saved = prepare_creation(&mut guard, path.clone(), "synthetic passphrase").unwrap();
+    std::fs::write(&path, b"existing header").unwrap();
+    assert!(confirm_creation(&mut guard, &saved).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"existing header");
+    assert!(!root.path().join("vault.db").exists());
+}
+
 /// Makbuz hedefi **yalnız** ana makine + model taşır: yol, sorgu ve anahtar
 /// makbuza sızmaz.
 #[test]

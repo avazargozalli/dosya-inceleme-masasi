@@ -47,21 +47,39 @@ type Screen =
 // eski sürüm/faz etiketi yazıyordu; uygulama F04'teyken etiket bayat kalmıştı.
 const APP_VERSION: string = appVersion;
 
-const NAV: Array<{ id: Screen; labelKey: MessageKey; phase?: string }> = [
-  { id: "vault", labelKey: "nav.vault" },
-  { id: "files", labelKey: "nav.files", phase: "F04" },
-  { id: "search", labelKey: "nav.search", phase: "F07" },
-  { id: "timeline", labelKey: "nav.timeline", phase: "F08" },
-  { id: "tasks", labelKey: "nav.tasks", phase: "F08" },
-  { id: "checklists", labelKey: "nav.checklists", phase: "F08" },
-  { id: "review", labelKey: "nav.review", phase: "F08" },
-  { id: "precedents", labelKey: "nav.precedents" },
-  { id: "redaction", labelKey: "nav.redaction" },
-  { id: "exports", labelKey: "nav.exports" },
-  { id: "ai", labelKey: "nav.ai" },
-  { id: "ai-review", labelKey: "nav.aiReview" },
-  { id: "settings", labelKey: "nav.settings" },
+type NavItem = { id: Screen; labelKey: MessageKey; icon: string };
+
+const NAV_GROUPS: Array<{ label: MessageKey; items: NavItem[] }> = [
+  {
+    label: "nav.group",
+    items: [
+      { id: "vault", labelKey: "nav.vault", icon: "M4 7h16v14H4z M3 3h18v4H3z M9 11h6" },
+      { id: "files", labelKey: "nav.files", icon: "M3 6h7l2 3h9v11H3z" },
+      { id: "search", labelKey: "nav.search", icon: "M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z M15 15l6 6" },
+      { id: "timeline", labelKey: "nav.timeline", icon: "M6 3v18 M6 6h12 M6 12h8 M6 18h14" },
+      { id: "tasks", labelKey: "nav.tasks", icon: "M3 12l6 6L21 5" },
+      { id: "checklists", labelKey: "nav.checklists", icon: "M3 6l2 2 3-4 M11 6h10 M3 15l2 2 3-4 M11 15h10" },
+    ],
+  },
+  {
+    label: "nav.analysisGroup",
+    items: [
+      { id: "review", labelKey: "nav.review", icon: "M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h4" },
+      { id: "precedents", labelKey: "nav.precedents", icon: "M3 4h4v16H3z M10 4h4v16h-4z M16 6l3-1 3 14-3 1z" },
+      { id: "redaction", labelKey: "nav.redaction", icon: "M4 5h16 M4 9h16v5H4z M4 18h10" },
+      { id: "exports", labelKey: "nav.exports", icon: "M12 15V3 M7 8l5-5 5 5 M4 14v6h16v-6" },
+    ],
+  },
+  {
+    label: "nav.toolsGroup",
+    items: [
+      { id: "ai", labelKey: "nav.ai", icon: "M8 3v5 M16 3v5 M6 8h12v3a6 6 0 0 1-12 0z M12 17v4" },
+      { id: "ai-review", labelKey: "nav.aiReview", icon: "M3 4h18v12H9l-6 5z M7 8h10 M7 12h6" },
+      { id: "settings", labelKey: "nav.settings", icon: "M3 7h8m4 0h6 M3 17h3m4 0h11 M11 4h4v6h-4z M6 14h4v6H6z" },
+    ],
+  },
 ];
+const NAV = NAV_GROUPS.flatMap((group) => group.items);
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("vault");
@@ -73,9 +91,12 @@ export function App() {
     preUpdateBackup: null,
   });
   const [error, setError] = useState<ApiError | null>(null);
-  // Kasa oluşturulduktan sonra bir kez gösterilen kurtarma anahtarı burada
+  // Kasa kurulumu sırasında bir kez gösterilen kurtarma anahtarı burada
   // tutulur: `Unlock` ekranı gezinmede yeniden bağlandığı için anahtar orada
   // tutulsaydı ilk ekran değişiminde yok olurdu.
+  const [lockGeneration, setLockGeneration] = useState(0);
+  const lockEpoch = useRef(0);
+  const statusRead = useRef(0);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
 
   // Hareketsizlik sayacı ve uçuştaki kilit isteği ref'te tutulur: zamanlayıcı
@@ -86,13 +107,17 @@ export function App() {
   const [locking, setLocking] = useState(false);
 
   const refresh = useCallback(async () => {
+    const read = ++statusRead.current;
     try {
-      setStatus(await api.status());
+      const next = await api.status();
+      if (read !== statusRead.current) return false;
+      setStatus(next);
       // Başarılı okuma önceki durum/kilit hatasını siler: kırmızı bant bayat
       // kalmaz (ör. bir kez düşen kilit denemesinden sonra başarılı kilit).
       setError(null);
       return true;
     } catch (e) {
+      if (read !== statusRead.current) return false;
       setError(toApiError(e));
       return false;
     }
@@ -105,10 +130,12 @@ export function App() {
   // Kasa açıldığında hareketsizlik sayacı sıfırlanır: kilitliyken geçen süre
   // "kasa açıkken hareketsizlik" sayılmaz. Aksi hâlde kasa açıldıktan hemen
   // sonra yeniden kilitlenebilir.
+  // Kurulum onayı beklerken de hareketsizlik sayacı işler.
+  const vaultOpen = status.unlocked || pendingKey !== null;
   useEffect(() => {
-    unlocked.current = status.unlocked;
-    if (status.unlocked) lastActivity.current = Date.now();
-  }, [status.unlocked]);
+    unlocked.current = vaultOpen;
+    if (vaultOpen) lastActivity.current = Date.now();
+  }, [vaultOpen]);
 
   // Otomatik yedek: plan **kasada** (`settings`, kapsam `vault`) durur; kasa
   // açıkken süresi dolunca yedek alınır. **Tazelik kanıtı da kasadır**
@@ -166,7 +193,9 @@ export function App() {
     setLocking(true);
     try {
       await api.lockVault();
+      setLockGeneration(++lockEpoch.current);
       setStatus((s) => ({ ...s, unlocked: false }));
+      setPendingKey(null);
       lastActivity.current = Date.now();
       await refresh();
       return true;
@@ -201,10 +230,26 @@ export function App() {
     };
   }, [lockNow]);
 
-  const locked = !status.unlocked;
+  const contentRef = useRef<HTMLDivElement>(null);
+  const focusContentAfterNavigation = useRef(false);
+  useEffect(() => {
+    if (focusContentAfterNavigation.current) {
+      focusContentAfterNavigation.current = false;
+      contentRef.current?.focus();
+    }
+  }, [screen]);
+
+  function navigate(next: Screen, focusTarget: "navigation" | "content" = "navigation") {
+    focusContentAfterNavigation.current = focusTarget === "content";
+    setScreen(next);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }
+
+  const locked = !status.unlocked || pendingKey !== null;
 
   return (
     <div className="app">
+      <a className="skip-link" href="#workspace-content">{t("shell.skip")}</a>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">{t("shell.mark")}</div>
@@ -215,25 +260,40 @@ export function App() {
         </div>
 
         <nav className="nav" aria-label={t("nav.aria")}>
-          <div className="nav-label">{t("nav.group")}</div>
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              className="nav-item"
-              aria-current={screen === item.id ? "page" : undefined}
-              onClick={() => setScreen(item.id)}
-            >
-              <span>{t(item.labelKey)}</span>
-              {item.phase ? <span className="nav-tag">{item.phase}</span> : null}
-            </button>
+          <select
+            className="nav-select input"
+            aria-label={t("nav.aria")}
+            value={screen}
+            onChange={(event) => {
+              const item = NAV.find(({ id }) => id === event.target.value);
+              if (item) navigate(item.id);
+            }}
+          >
+            {NAV_GROUPS.map((group) => (
+              <optgroup key={group.label} label={t(group.label)}>
+                {group.items.map((item) => <option key={item.id} value={item.id}>{t(item.labelKey)}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <div className="nav-label">{t(group.label)}</div>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  className="nav-item"
+                  aria-current={screen === item.id ? "page" : undefined}
+                  onClick={() => navigate(item.id)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d={item.icon} /></svg>
+                  {t(item.labelKey)}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
         <div className="sidebar-foot">
-          <div className="lock-state">
-            <span className={status.unlocked ? "dot ok" : "dot locked"} aria-hidden="true" />
-            {status.unlocked ? t("shell.unlocked") : t("shell.locked")}
-          </div>
           <div className="muted small">{t("shell.version", { version: APP_VERSION })}</div>
         </div>
       </aside>
@@ -244,14 +304,20 @@ export function App() {
             {t("shell.crumbRoot")} <span aria-hidden="true">/</span>{" "}
             <strong>{t(NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot")}</strong>
           </div>
-          {status.unlocked ? (
-            <button className="btn" disabled={locking} onClick={() => void lockNow()}>
-              {t("shell.lock")}
-            </button>
-          ) : null}
+          <div className="topbar-actions">
+            <div className="lock-state">
+              <span className={vaultOpen ? "dot ok" : "dot locked"} aria-hidden="true" />
+              {pendingKey ? t("shell.setupPending") : vaultOpen ? t("shell.unlocked") : t("shell.locked")}
+            </div>
+            {!locked ? (
+              <button className="btn" disabled={locking} onClick={() => void lockNow()}>
+                {t("shell.lock")}
+              </button>
+            ) : null}
+          </div>
         </header>
 
-        <div className="content">
+        <div id="workspace-content" className="content" ref={contentRef} tabIndex={-1}>
           {error ? (
             <div className="notice danger" role="alert">
               <strong>{error.code}</strong> — {error.message}
@@ -259,22 +325,31 @@ export function App() {
           ) : null}
 
           {!canShowScreen(screen, locked) ? (
-            <LockedNotice onUnlock={() => setScreen("vault")} />
+            <LockedNotice pendingRecovery={pendingKey !== null} onUnlock={() => navigate("vault", "content")} />
           ) : screen === "vault" ? (
             pendingKey || locked ? (
               <Unlock
+                key={lockGeneration}
                 pendingKey={pendingKey}
-                onKeyCreated={setPendingKey}
-                onKeyDismissed={() => setPendingKey(null)}
-                onUnlocked={async () => {
-                  setError(null);
-                  // Durum okunamazsa anahtar ekranı açık kalır: tek kopyadır,
-                  // başarısız bir tazeleme yüzünden düşürülmez.
-                  if (await refresh()) setPendingKey(null);
+                onKeyCreated={(key) => {
+                  if (lockGeneration === lockEpoch.current) setPendingKey(key);
+                }}
+                onKeyDismissed={lockNow}
+                locking={locking}
+                onUnlocked={async (confirmed) => {
+                  if (lockingRef.current || lockGeneration !== lockEpoch.current) return;
+                  if (confirmed) {
+                    setPendingKey(null);
+                    setStatus({
+                      unlocked: !confirmed.locked, vaultId: confirmed.vaultId, vaultPath: confirmed.vaultPath,
+                      schemaVersion: confirmed.schemaVersion, preUpdateBackup: null,
+                    });
+                  }
+                  await refresh();
                 }}
               />
             ) : (
-              <Workspace status={status} />
+              <Workspace status={status} onOpenFiles={() => navigate("files", "content")} />
             )
           ) : screen === "files" ? (
             <Cases />
@@ -298,13 +373,8 @@ export function App() {
             <Tasks />
           ) : screen === "checklists" ? (
             <Checklists />
-          ) : screen === "settings" ? (
-            <Settings />
           ) : (
-            <ComingPhase
-              labelKey={NAV.find((n) => n.id === screen)?.labelKey ?? "shell.crumbRoot"}
-              phase={NAV.find((n) => n.id === screen)?.phase ?? ""}
-            />
+            <Settings />
           )}
         </div>
       </main>
@@ -315,31 +385,17 @@ export function App() {
 /// Kilitliyken `vault` dışındaki ekranlar **render edilmez**: bileşen
 /// ağacı sökülür, yüklenmiş belge/segment state'i bellekte kalmaz. Yalnız bu
 /// ekran gösterilir; "Kasa"ya dönüp parola girilir.
-function LockedNotice({ onUnlock }: { onUnlock: () => void }) {
+function LockedNotice({ pendingRecovery, onUnlock }: { pendingRecovery: boolean; onUnlock: () => void }) {
   return (
     <div className="card" role="status" aria-live="polite">
       <div className="card-head">
         <div>
-          <h2>{t("shell.locked")}</h2>
-          <p className="card-sub">{t("shell.lockedHint")}</p>
+          <h2>{t(pendingRecovery ? "shell.setupPending" : "shell.locked")}</h2>
+          <p className="card-sub">{t(pendingRecovery ? "unlock.recoveryNotice" : "shell.lockedHint")}</p>
         </div>
         <button className="btn primary" onClick={onUnlock}>
           {t("shell.goVault")}
         </button>
-      </div>
-    </div>
-  );
-}
-
-function ComingPhase({ labelKey, phase }: { labelKey: MessageKey; phase: string }) {
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h1>{t(labelKey)}</h1>
-        <p className="lead">{t("shell.comingLead", { phase })}</p>
-      </div>
-      <div className="empty">
-        <p style={{ margin: 0 }}>{t("shell.comingEmpty")}</p>
       </div>
     </div>
   );

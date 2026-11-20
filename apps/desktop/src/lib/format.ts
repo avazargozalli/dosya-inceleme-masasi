@@ -162,9 +162,22 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${DECIMAL.format(seconds < 10 ? seconds : Math.round(seconds))} ${t("units.second")}`;
 }
 
+/**
+ * Ayrıştırma koşusu durumu → Türkçe etiket. Durum **ham** yazılmaz:
+ * canlı üründe "Ayrıştırma succeeded" yarım çevirisi görüldü (2026-11-07).
+ */
+export function parseStatusLabel(status: string): string {
+  // "parsed" belge sürümü durumu, "succeeded" koşu durumu; ikisi de başarıdır.
+  if (status === "succeeded" || status === "parsed") return t("cases.parseStatusSucceeded");
+  if (status === "partial") return t("cases.parseStatusPartial");
+  if (status === "failed") return t("cases.parseStatusFailed");
+  if (status === "running") return t("jobs.stateLower.running");
+  if (status === "cancelled") return t("jobs.stateLower.canceled");
+  return t("common.unknown");
+}
+
 /** Dosya türü etiketi — sözlükten; bilinmeyen tür kendi kodunu gösterir. */
 export const CASE_KIND_LABEL: Record<string, string> = { ...tr.labels.caseKind };
-
 /** Hassasiyet etiketi — sözlükten. */
 export const SENSITIVITY_LABEL: Record<string, string> = { ...tr.labels.sensitivity };
 

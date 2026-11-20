@@ -1,27 +1,28 @@
-/* Açık Minimal — Notion/Intercom çizgisi: beyaz zemin, hairline çizgi,
-   düşük kontrastlı yüzeyler, tek vurgu rengi. Tüm renkler tek yerden gelir. */
 :root {
-  --bg: #ffffff;
-  --surface: #fbfbfa;
-  --surface-2: #f4f4f2;
-  --ink: #191918;
-  --ink-2: #5c5c57;
-  --ink-3: #8a8a83;
-  --line: #e6e6e2;
-  --line-strong: #d3d3cd;
-  --accent: #1f6f5c;
+  color-scheme: light;
+  --bg: #fffefa;
+  --canvas: #f6f5ef;
+  --surface: #f1f2ea;
+  --surface-2: #e5e8dd;
+  --ink: #202c26;
+  --ink-2: #435248;
+  --ink-3: #5f6b61;
+  --line: #d8dcd1;
+  --line-strong: #9aa597;
+  --accent: #235941;
+  --accent-hover: #19432f;
   --accent-ink: #ffffff;
-  --accent-soft: #eaf3f0;
-  --danger: #a63b2a;
-  --danger-soft: #fbeeea;
-  --warn: #8a5a12;
-  --warn-soft: #fdf4e5;
-  --ok: #2f6b3a;
-  --ok-soft: #edf6ee;
+  --accent-soft: #dceadd;
+  --danger: #993e32;
+  --danger-soft: #fbedeb;
+  --warn: #80531c;
+  --warn-soft: #faf0df;
+  --ok: #316346;
+  --ok-soft: #e9f2e8;
 
   --radius-sm: 4px;
   --radius: 6px;
-  --radius-lg: 10px;
+  --radius-lg: 12px;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -32,8 +33,33 @@
   --space-7: 48px;
 
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --display: "Baskerville", "Palatino Linotype", Georgia, serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  --shadow-pop: 0 2px 4px rgba(34, 50, 39, 0.05), 0 8px 24px rgba(34, 50, 39, 0.08);
+  --focus: 0 0 0 3px var(--accent-soft);
+}
 
-  --shadow-pop: 0 1px 2px rgba(25, 25, 24, 0.06), 0 8px 24px rgba(25, 25, 24, 0.08);
-  --focus: 0 0 0 3px rgba(31, 111, 92, 0.22);
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #222c26;
+    --canvas: #19211c;
+    --surface: #263229;
+    --surface-2: #354239;
+    --ink: #edf2e9;
+    --ink-2: #d0dbd0;
+    --ink-3: #adbcae;
+    --line: #425046;
+    --line-strong: #77897c;
+    --accent: #a4d6af;
+    --accent-hover: #bce8c6;
+    --accent-ink: #142b1e;
+    --accent-soft: #334e3c;
+    --danger: #ffb6a9;
+    --danger-soft: #452b27;
+    --warn: #f4ce90;
+    --warn-soft: #403626;
+    --ok: #add8b5;
+    --ok-soft: #2e4333;
+  }
 }

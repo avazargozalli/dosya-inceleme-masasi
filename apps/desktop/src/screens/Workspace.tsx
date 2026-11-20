@@ -1,7 +1,7 @@
 import type { VaultStatus } from "../lib/api";
 import { t } from "../lib/i18n";
 
-export function Workspace({ status }: { status: VaultStatus }) {
+export function Workspace({ status, onOpenFiles }: { status: VaultStatus; onOpenFiles: () => void }) {
   return (
     <div className="page">
       <div className="page-head">
@@ -12,6 +12,14 @@ export function Workspace({ status }: { status: VaultStatus }) {
         </div>
         <h1>{t("workspace.title")}</h1>
         <p className="lead">{t("workspace.lead")}</p>
+      </div>
+
+      <div className="card workspace-start">
+        <h2>{t("workspace.nextTitle")}</h2>
+        <p className="muted small" style={{ margin: 0 }}>
+          {t("workspace.nextBody")}
+        </p>
+        <button className="btn primary" onClick={onOpenFiles}>{t("workspace.openFiles")}</button>
       </div>
 
       <div className="card">
@@ -36,13 +44,6 @@ export function Workspace({ status }: { status: VaultStatus }) {
           <dt>{t("workspace.recoveryLabel")}</dt>
           <dd>{t("workspace.recoveryValue")}</dd>
         </dl>
-      </div>
-
-      <div className="card tight">
-        <h2>{t("workspace.nextTitle")}</h2>
-        <p className="muted small" style={{ margin: 0 }}>
-          {t("workspace.nextBody")}
-        </p>
       </div>
     </div>
   );

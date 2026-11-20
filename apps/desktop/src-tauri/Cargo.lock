@@ -898,6 +898,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
+ "tempfile",
  "time",
  "zeroize",
 ]
@@ -975,6 +976,7 @@ dependencies = [
  "rand 0.8.8",
  "sha2",
  "subtle",
+ "tempfile",
  "thiserror 2.0.21",
  "zeroize",
  "zip",

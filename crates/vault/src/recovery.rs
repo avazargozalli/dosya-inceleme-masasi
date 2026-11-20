@@ -29,7 +29,7 @@ impl RecoveryKey {
         &self.0
     }
 
-    /// Kullanıcıya bir kez gösterilecek biçim: `XXXX-XXXX-...` (8 grup).
+    /// Kullanıcıya bir kez gösterilecek biçim: `XXXX-XXXX-...` (13 grup).
     #[must_use]
     pub fn to_display_string(&self) -> String {
         format_recovery_key(&self.0[..])

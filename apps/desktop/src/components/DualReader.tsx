@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { PageMap } from "./PageMap";
 import { t } from "../lib/i18n";
+import { parseStatusLabel } from "../lib/format";
 import {
   api,
   toApiError,
@@ -1312,7 +1313,7 @@ function ReaderPane({
               ) : null}
               {data.parseRun.status === "succeeded" ? null : (
                 <span className="badge warn">
-                  {t("readerUi.partialParse", { status: data.parseRun.status })}
+                  {t("readerUi.partialParse", { status: parseStatusLabel(data.parseRun.status) })}
                 </span>
               )}
               {current && current.textOrigin !== "native" ? (

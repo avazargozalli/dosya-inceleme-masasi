@@ -49,6 +49,8 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   lockVault: vi.fn(),
   openVault: vi.fn(),
+  prepareVault: vi.fn(),
+  confirmVault: vi.fn(),
   vaultBackup: vi.fn(),
   vaultSettingGet: vi.fn(),
   vaultSettingSet: vi.fn(),
@@ -67,6 +69,8 @@ vi.mock("./lib/api", async (importOriginal) => {
       status: mocks.status,
       lockVault: mocks.lockVault,
       openVault: mocks.openVault,
+      prepareVault: mocks.prepareVault,
+      confirmVault: mocks.confirmVault,
       vaultBackup: mocks.vaultBackup,
       vaultSettingGet: mocks.vaultSettingGet,
       vaultSettingSet: mocks.vaultSettingSet,
@@ -179,6 +183,55 @@ afterEach(() => {
   vi.resetAllMocks();
   vi.useRealTimers();
   localStorage.clear();
+});
+
+it("dar pencere gezinmesinde kilit denetimini ve etkin ekranı korur", async () => {
+  mocks.status.mockResolvedValue(LOCKED);
+  await mount();
+  const menu = screen.getByRole("combobox", { name: "Ana gezinme" });
+  fireEvent.change(menu, { target: { value: "files" } });
+  expect(screen.getByRole("heading", { name: "Kasa kilitli" })).toBeTruthy();
+  expect(mocks.caseList).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Kasa ekranına git" }));
+  expect((menu as HTMLSelectElement).value).toBe("vault");
+});
+
+async function showRecoveryKey() {
+  mocks.status.mockResolvedValue(LOCKED);
+  mocks.prepareVault.mockResolvedValue("synthetic-key");
+  await mount();
+  fireEvent.change(screen.getByLabelText("Kasa konumu"), { target: { value: "/synthetic/private-case" } });
+  for (const label of ["Parola oluştur", "Parola (tekrar)"]) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value: "sentetik-parola-29" } });
+  }
+  fireEvent.click(screen.getByRole("button", { name: "Kasayı oluştur" }));
+  await flush();
+  expect(screen.getByText("synthetic-key")).toBeTruthy();
+}
+
+it("anahtar onayı beklerken hareketsizlik kasayı kilitler ve anahtarı ekrandan kaldırır", async () => {
+  await showRecoveryKey();
+  await tick(AUTO_LOCK_CHECK_MS * IDLE_LIMIT_TICKS);
+  expect(mocks.lockVault).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText("synthetic-key")).toBeNull();
+  expect(screen.getByLabelText<HTMLInputElement>("Kasa konumu").value).toBe("Dosyalar/DosyaIncelemeMasasi");
+  expect(mocks.confirmVault).not.toHaveBeenCalled();
+  expect(screen.getByText("Kasa kilitli")).toBeTruthy();
+});
+
+it("anahtarı kaydetmeden çıkarken çekirdek kilidi düşerse anahtarı korur ve yeniden dener", async () => {
+  await showRecoveryKey();
+  mocks.lockVault.mockRejectedValueOnce({ code: "E_LOCK", message: "Kilitlenemedi" });
+  fireEvent.click(screen.getByRole("button", { name: "Geri" }));
+  fireEvent.click(screen.getByRole("button", { name: "Kurulumu iptal et" }));
+  await flush();
+  expect(screen.getByRole("alert").textContent).toContain("E_LOCK");
+  expect(screen.getByText("synthetic-key")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Kurulumu iptal et" }));
+  await flush();
+  expect(mocks.lockVault).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText("synthetic-key")).toBeNull();
+  expect(screen.getByRole("button", { name: "Kasayı oluştur" })).toBeTruthy();
 });
 
 /* ------------------------------------------------------- otomatik kilit */

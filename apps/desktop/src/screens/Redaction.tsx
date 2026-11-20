@@ -90,7 +90,14 @@ export function Redaction() {
   const [cases, setCases] = useState<CaseRow[]>([]);
   const [caseId, setCaseId] = useState("");
   const [docs, setDocs] = useState<DocumentRow[]>([]);
+  const [docsError, setDocsError] = useState<ApiError | null>(null);
   const [versionId, setVersionId] = useState("");
+  // İlk okumada (null) otomatik seçim yapılır. Sonraki okumalar boş seçimi de korur.
+  const selectedVersion = useRef<string | null>(null);
+  const selectVersion = useCallback((version: string | null) => {
+    selectedVersion.current = version;
+    setVersionId(version ?? "");
+  }, []);
   const [terms, setTerms] = useState("");
   const [result, setResult] = useState<RedactionResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -128,6 +135,8 @@ export function Redaction() {
   const [planRegions, setPlanRegions] = useState<RedactionRegionRow[]>([]);
   const [planRegionsBusy, setPlanRegionsBusy] = useState(false);
   const [planRegionsError, setPlanRegionsError] = useState<ApiError | null>(null);
+  const caseGen = useRef(0);
+  const docsSeq = useRef(0);
   // İki ayrı kuşak: plan listesi (dosya + tazeleme) ve bölge detayı (plan
   // seçimi). Tek sayaç olsaydı ilgisiz bir bölge okuması liste tazelemesinin
   // yanıtını düşürürdü.
@@ -138,7 +147,7 @@ export function Redaction() {
   // geçersizleşir, sayfa kilidi **devredilir** (yeni hedef kendi sayfasını
   // isteyebilir) ve yarım kalan sürükleme yeni önizlemeye taşınmaz.
   const resetTargetState = useCallback(() => {
-    // Nesil artışı bütün uçuştaki yanıtları geçersiz kılar. `pageSeq` burada
+    // Nesil artışı belgeye bağlı yanıtları geçersiz kılar. `pageSeq` burada
     // artırılmaz: sayfa isteğinin sırası `loadPage` içinde kendi `++`'ıyla
     // ilerler, hedef değişiminde kapı zaten `gen`dir (ölçüldü: bu satır
     // tek başına hiçbir testi düşürmüyordu → yedekli kapı bırakılmadı).
@@ -251,15 +260,34 @@ export function Redaction() {
     void loadRegions(planId);
   }
 
+  const refreshDocuments = useCallback(async (id: string, gen: number) => {
+    if (gen !== caseGen.current) return;
+    const seq = ++docsSeq.current;
+    const isCurrent = () => gen === caseGen.current && seq === docsSeq.current;
+    try {
+      const list = await api.documentList(id);
+      if (!isCurrent()) return;
+      setDocs(list);
+      setDocsError(null);
+      const selected = selectedVersion.current;
+      if (selected === null || (selected && !list.some((doc) => doc.currentVersionId === selected))) {
+        if (selected) resetTargetState();
+        selectVersion(list.find((doc) => doc.currentVersionId)?.currentVersionId ?? "");
+      }
+    } catch (e) {
+      if (isCurrent()) setDocsError(toApiError(e));
+    }
+  }, [resetTargetState, selectVersion]);
+
   useEffect(() => {
     if (!caseId) return;
     // INV-05: yeni dosyanın isteği askıdayken **önceki dosyanın** belgeleri,
     // sürümü, sonucu, önizlemesi ve bölgeleri ekranda kalmasın. Temizlik
     // istekten önce koşar; `gen` geç gelen yanıtı geçersiz kılar.
     resetTargetState();
-    const gen = genRef.current;
     setDocs([]);
-    setVersionId("");
+    setDocsError(null);
+    selectVersion(null);
     // Maskeleme sicili de dosyaya kapsanır: önceki dosyanın planları ve açık
     // bölge detayı **istekten önce** temizlenir (geç yanıt yeni dosyaya yazılmaz).
     setPlans([]);
@@ -270,20 +298,8 @@ export function Redaction() {
     setPlanRegionsBusy(false);
     regionsSeq.current += 1;
     void loadPlans(caseId);
-    void api
-      .documentList(caseId)
-      .then((list) => {
-        if (gen !== genRef.current) return;
-        setDocs(list);
-        setVersionId(list.find((d) => d.currentVersionId)?.currentVersionId ?? "");
-      })
-      .catch((e) => {
-        if (gen !== genRef.current) return;
-        setDocs([]);
-        setVersionId("");
-        setError(toApiError(e));
-      });
-  }, [caseId, loadPlans, resetTargetState]);
+    void refreshDocuments(caseId, caseGen.current);
+  }, [caseId, loadPlans, refreshDocuments, resetTargetState, selectVersion]);
 
   async function loadPage() {
     if (!versionId) return;
@@ -316,6 +332,7 @@ export function Redaction() {
       return;
     }
     const gen = genRef.current;
+    const submittedCaseGen = caseGen.current;
     const version = versionId;
     const submitted = regions;
     const runId = `redact-${++runSeq.current}`;
@@ -326,6 +343,7 @@ export function Redaction() {
     setProgress(null);
     try {
       const result = await api.documentRedactRegions(version, regions, runId);
+      void refreshDocuments(caseId, submittedCaseGen);
       if (gen !== genRef.current) return;
       setResult(result);
       // Sicil **gönderimden hemen sonra** tazelenir: yeni plan satırı ekranda
@@ -392,6 +410,7 @@ export function Redaction() {
       return;
     }
     const gen = genRef.current;
+    const submittedCaseGen = caseGen.current;
     const version = versionId;
     const runId = `redact-${++runSeq.current}`;
     setBusy(true);
@@ -401,6 +420,7 @@ export function Redaction() {
     setProgress(null);
     try {
       const result = await api.documentRedact(version, list, runId);
+      void refreshDocuments(caseId, submittedCaseGen);
       if (gen !== genRef.current) return;
       setResult(result);
       // Yeni plan satırı sicilde **hemen** görünür (gönderim sonrası tazeleme).
@@ -452,6 +472,7 @@ export function Redaction() {
               onChange={(e) => {
                 // Hedef hemen geçersizleşir: uçuştaki belge/sayfa/maskeleme
                 // yanıtı yeni dosyanın altına yazılmaz (INV-05).
+                caseGen.current += 1;
                 genRef.current += 1;
                 pageSeq.current += 1;
                 setCaseId(e.target.value);
@@ -467,13 +488,18 @@ export function Redaction() {
                 // kendiliğinden uygulanmaz. Seçim değişince eski bölgeler/
                 // önizleme/sonuç taşınmaz; uçuştaki sayfa isteği devredilir.
                 resetTargetState();
-                setVersionId(e.target.value);
+                selectVersion(e.target.value);
               }}>
               <option value="">{t("common.select")}</option>
               {docs.filter((d) => d.currentVersionId).map((d) => (
                 <option key={d.id} value={d.currentVersionId!}>{d.displayName}</option>
               ))}
             </select>
+            {docsError && (
+              <div className="notice danger" role="alert">
+                <strong>{docsError.code}</strong> — {docsError.message}
+              </div>
+            )}
           </div>
         </div>
         {mode === "terms" ? (

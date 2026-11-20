@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
   caseList: vi.fn(),
   documentList: vi.fn(),
   lockVault: vi.fn(),
-  createVault: vi.fn(),
+  prepareVault: vi.fn(),
+  confirmVault: vi.fn(),
 }));
 
 vi.mock("./lib/api", async (importOriginal) => {
@@ -26,7 +27,8 @@ vi.mock("./lib/api", async (importOriginal) => {
       caseList: mocks.caseList,
       documentList: mocks.documentList,
       lockVault: mocks.lockVault,
-      createVault: mocks.createVault,
+      prepareVault: mocks.prepareVault,
+      confirmVault: mocks.confirmVault,
     },
   };
 });
@@ -87,11 +89,9 @@ describe("kilit ekran davranışı", () => {
     // anahtarı yok ediyordu. Anahtar artık `App`te tutulur.
     const KEY = "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567";
     mocks.vaultStatus.mockResolvedValue(LOCKED);
-    mocks.createVault.mockResolvedValue({
-      vaultPath: "/Users/avukat/Dosyalar/DosyaIncelemeMasasi/vault.dimvault",
-      recoveryKey: KEY,
-      vaultId: "vault-1",
-    });
+    mocks.prepareVault.mockResolvedValue(KEY);
+    mocks.confirmVault.mockResolvedValue({ ...UNLOCKED, locked: false });
+
 
     render(<App />);
 
@@ -105,13 +105,13 @@ describe("kilit ekran davranışı", () => {
 
     // Başka ekrana gidip dönmek anahtarı düşürmemeli.
     fireEvent.click(screen.getByRole("button", { name: /Dosyalar/ }));
-    expect(await screen.findByRole("heading", { name: "Kasa kilitli" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Kurtarma anahtarı onay bekliyor" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Kasa" }));
     expect(await screen.findByText(KEY)).toBeTruthy();
 
-    // Onay kutusu işaretlenmeden kasayı açmak kapalı.
+    // Kaydedilen anahtar tekrar girilene kadar kasa açılmaz.
     expect((screen.getByRole("button", { name: "Kasayı aç" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText("Anahtarı güvenli bir yere kaydettim."));
+    fireEvent.change(screen.getByLabelText("Kaydettiğin kurtarma anahtarını tekrar gir"), { target: { value: KEY } });
 
     mocks.vaultStatus.mockResolvedValue(UNLOCKED);
     fireEvent.click(screen.getByRole("button", { name: "Kasayı aç" }));

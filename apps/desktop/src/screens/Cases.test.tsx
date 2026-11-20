@@ -29,9 +29,10 @@
 // 11. Başarısız ayrıştırmadan sonra başarılı ayrıştırma eski hata bildirimini
 //     bırakmaz (çelişkili ekran: kırmızı hata + yeşil başarı).
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { budgetSummary } from "../lib/budget";
+import { parseStatusLabel } from "../lib/format";
 import { t } from "../lib/i18n";
 import { DEFAULT_OCR_LANG } from "../lib/ocr";
 import type {
@@ -356,6 +357,11 @@ function leftPicker(): HTMLSelectElement {
   ) as HTMLSelectElement;
 }
 
+function readerCloseButton(): HTMLElement {
+  const heading = screen.getByRole("heading", { name: t("readerUi.heading") });
+  return within(heading.closest<HTMLElement>(".card")!).getByRole("button", { name: t("readerUi.close") });
+}
+
 describe("dosyalar ekranı davranışı", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -467,6 +473,27 @@ describe("dosyalar ekranı davranışı", () => {
     expect([ocr[0]!.disabled, ocr[1]!.disabled]).toEqual([false, true]);
   });
 
+  it("Oku odağı sol belge seçicisine taşır; okuyucu kapanınca son çağıran düğmeye döner", async () => {
+    const second = { ...DOC, id: "d2", displayName: "İhtar.pdf", currentVersionId: "v2" };
+    setup({ documents: async () => [DOC, second] });
+    await selectCase(CASE.title);
+    const readButtons = await screen.findAllByRole("button", { name: t("cases.read") });
+    expect(readButtons).toHaveLength(2);
+
+    for (const button of readButtons) {
+      button.focus();
+      fireEvent.click(button);
+      expect(document.activeElement).toBe(leftPicker());
+    }
+    expect(leftPicker().value).toBe(second.currentVersionId);
+
+    const close = readerCloseButton();
+    close.focus();
+    fireEvent.click(close);
+    expect(screen.queryByLabelText(t("readerUi.leftDocument"))).toBeNull();
+    expect(document.activeElement).toBe(readButtons[1]);
+  });
+
   it("ayrıştırma isteği tam sözleşmeyle gider: OCR bayrağı, kodlama ve yalnız dolu parola", async () => {
     mocks.documentParse.mockResolvedValue(parseResult());
     setup();
@@ -519,7 +546,7 @@ describe("dosyalar ekranı davranışı", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
 
     const expected = [
-      t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 }),
+      t("cases.parseSummary", { status: parseStatusLabel("parsed"), pages: 3, segments: 12 }),
       t("cases.parseWarnings", { count: 2 }),
       "kodlama: windows-1254 kullanıldı",
       budgetSummary(BUDGET),
@@ -537,7 +564,7 @@ describe("dosyalar ekranı davranışı", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("cases.parse") }));
 
     const expected = [
-      t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 }),
+      t("cases.parseSummary", { status: parseStatusLabel("parsed"), pages: 3, segments: 12 }),
       t("cases.parseWarnings", { count: 1 }),
     ].join(" · ");
     await waitFor(() => expect(noticeText()).toBe(expected));
@@ -605,11 +632,14 @@ describe("dosyalar ekranı davranışı", () => {
     expect((await screen.findAllByText(/kira bedeli ödenmedi/)).length).toBeGreaterThan(0);
     expect(screen.getByText(/karakter 120–139/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: t("cases.openInReader") }));
+    const openAnchor = screen.getByRole("button", { name: t("cases.openInReader") });
+    fireEvent.click(openAnchor);
     await waitFor(() => expect(mocks.anchorLocate).toHaveBeenCalledWith("a1"));
     // Okuyucu anchor'ın sürümüyle açılır: sol panel görünür.
     expect(await screen.findByLabelText(t("readerUi.leftDocument"))).toBeTruthy();
     expect(mocks.documentPages).toHaveBeenCalledWith("12345678-abcd");
+    fireEvent.click(readerCloseButton());
+    expect(document.activeElement).toBe(openAnchor);
 
     // Konum bulunamazsa okuyucu açılmaz; gerçek hata kodu yazılır.
     cleanup();
@@ -892,7 +922,7 @@ describe("dosyalar ekranı — uçuştaki yazmalar ve bayat hata", () => {
 
     expect(noticeText()).toBeNull();
     expect(
-      screen.queryByText(t("cases.parseSummary", { status: "parsed", pages: 3, segments: 12 })),
+      screen.queryByText(t("cases.parseSummary", { status: parseStatusLabel("parsed"), pages: 3, segments: 12 })),
     ).toBeNull();
   });
 

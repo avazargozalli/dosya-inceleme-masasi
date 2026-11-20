@@ -14,8 +14,8 @@
 //    düğmeyi açar. Kasa konumu boş/yalnız boşluksa istek üretilmez (kırpılır).
 // 3. Oluşturma: kırpılmış yol + parola ile **tek** istek; istek sürerken kip
 //    düğmeleri ve alanlar kilitlidir (yanıt başka kipe yazılmaz).
-// 4. Kurtarma anahtarı ekranı: anahtar **yanıttan** yazılır; onay kutusu
-//    işaretlenmeden "Kasayı aç" kapalıdır; "Geri" anahtarı tek tıkla düşürmez
+// 4. Kurtarma anahtarı ekranı: kaydedilen anahtar tekrar girilmeden
+//    "Kasayı aç" kapalıdır; "Geri" anahtarı tek tıkla düşürmez
 //    (iki adımlı uyarı).
 // 5. Açma: kırpılmış parolayla tek istek, başarıda parola temizlenir ve
 //    `onUnlocked` çağrılır; düşerse hata kodu/ileti/`yeniden denenebilir`
@@ -23,8 +23,7 @@
 // 6. Kip değişince önceki kipin hatası ekranda kalmaz.
 // 7. Kurtarma kipi: yalnız anahtar alanı; anahtar kırpılarak gider (tire/boşluk
 //    normalizasyonu çekirdeğin işi), başarıda alan temizlenir.
-// 8. Faz kartı **çalışan** belge içe aktarmayı "henüz yok" diye yazmaz; dört
-//    satır da "gerçek" rozetini taşır (F05 tamamlandı, `document_import` var).
+// 8. Kasa rehberi, belge içe aktarmanın nereden yapılacağını açıklar.
 // 9. Anahtar ekranı App'in tuttuğu anahtardan çizilir: bileşen yeniden
 //    bağlansa da anahtar kaybolmaz (gezinme kaybı App düzeyinde çözüldü).
 
@@ -34,13 +33,17 @@ import { useState } from "react";
 
 import { t } from "../lib/i18n";
 import { MIN_PASSWORD_LENGTH } from "../lib/vault-input";
-import type { CreateVaultResult, VaultInfo } from "../lib/api";
+import type { VaultInfo } from "../lib/api";
 
 const mocks = vi.hoisted(() => ({
-  createVault: vi.fn(),
+  prepareVault: vi.fn(),
+  confirmVault: vi.fn(),
   openVault: vi.fn(),
   openWithRecovery: vi.fn(),
+  directory: vi.fn(),
 }));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.directory }));
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -48,7 +51,8 @@ vi.mock("../lib/api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      createVault: mocks.createVault,
+      prepareVault: mocks.prepareVault,
+      confirmVault: mocks.confirmVault,
       openVault: mocks.openVault,
       openWithRecovery: mocks.openWithRecovery,
     },
@@ -84,10 +88,6 @@ function vaultInfo(): VaultInfo {
   };
 }
 
-function created(): CreateVaultResult {
-  return { vaultPath: `${DEFAULT_PATH}/vault.dimvault`, recoveryKey: RECOVERY_KEY, vaultId: "vault-1" };
-}
-
 // `App`in sözleşmesinin aynısı: anahtarın sahibi üst bileşen.
 function Harness({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
   const [key, setKey] = useState<string | null>(null);
@@ -95,7 +95,7 @@ function Harness({ onUnlocked }: { onUnlocked: () => Promise<void> }) {
     <Unlock
       pendingKey={key}
       onKeyCreated={setKey}
-      onKeyDismissed={() => setKey(null)}
+      onKeyDismissed={async () => { setKey(null); return true; }}
       onUnlocked={onUnlocked}
     />
   );
@@ -133,7 +133,7 @@ describe("kasa kapısı", () => {
     expect(screen.getByRole("button", { name: t("unlock.modeOpen") }).getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: t("unlock.modeRecovery") }).getAttribute("aria-pressed")).toBe("false");
 
-    expect(mocks.createVault).not.toHaveBeenCalled();
+    expect(mocks.prepareVault).not.toHaveBeenCalled();
     expect(mocks.openVault).not.toHaveBeenCalled();
     expect(mocks.openWithRecovery).not.toHaveBeenCalled();
   });
@@ -148,7 +148,10 @@ describe("kasa kapısı", () => {
     expect(screen.getByText(t("vaultInput.tooShort", { min: MIN_PASSWORD_LENGTH }))).toBeTruthy();
     expect(submitButton(t("unlock.submitCreate")).disabled).toBe(true);
 
+    fireEvent.change(confirm, { target: { value: "" } });
     fireEvent.change(password, { target: { value: PASSWORD } });
+    expect(screen.queryByText(t("vaultInput.mismatch"))).toBeNull();
+    fireEvent.change(confirm, { target: { value: "different" } });
     expect(screen.getByText(t("vaultInput.mismatch"))).toBeTruthy();
     expect(submitButton(t("unlock.submitCreate")).disabled).toBe(true);
 
@@ -171,15 +174,15 @@ describe("kasa kapısı", () => {
   });
 
   it("oluşturma: kırpılmış yol ve parolayla tek istek; istek sürerken kip ve alanlar kilitli", async () => {
-    const pending = deferred<CreateVaultResult>();
-    mocks.createVault.mockReturnValue(pending.promise);
+    const pending = deferred<string>();
+    mocks.prepareVault.mockReturnValue(pending.promise);
     renderUnlock();
     fillCreate();
 
     fireEvent.click(submitButton(t("unlock.submitCreate")));
 
-    expect(mocks.createVault).toHaveBeenCalledTimes(1);
-    expect(mocks.createVault).toHaveBeenCalledWith(DEFAULT_PATH, PASSWORD);
+    expect(mocks.prepareVault).toHaveBeenCalledTimes(1);
+    expect(mocks.prepareVault).toHaveBeenCalledWith(DEFAULT_PATH, PASSWORD);
     expect(submitButton(t("common.busy")).disabled).toBe(true);
 
     // İstek sürerken kip değiştirilemez ve alanlar yazılamaz: yanıt, ekranda
@@ -191,14 +194,14 @@ describe("kasa kapısı", () => {
     expect((screen.getByLabelText(t("unlock.passwordCreate")) as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText(t("unlock.passwordConfirm")) as HTMLInputElement).disabled).toBe(true);
 
-    pending.resolve(created());
+    pending.resolve(RECOVERY_KEY);
 
     expect(await screen.findByText(RECOVERY_KEY)).toBeTruthy();
     expect(screen.getByLabelText(t("unlock.recoveryAria")).textContent).toBe(RECOVERY_KEY);
   });
 
-  it("kurtarma anahtarı ekranı: onay kutusu olmadan 'Kasayı aç' kapalı, işaretlenince açılır", async () => {
-    mocks.createVault.mockResolvedValue(created());
+  it("kurtarma anahtarı ekranı: doğru anahtarla çekirdeğe gider, yazma hatasında yeniden denenebilir", async () => {
+    mocks.prepareVault.mockResolvedValue(RECOVERY_KEY);
     const { onUnlocked } = renderUnlock();
     fillCreate();
     fireEvent.click(submitButton(t("unlock.submitCreate")));
@@ -208,7 +211,15 @@ describe("kasa kapısı", () => {
     fireEvent.click(submitButton(t("unlock.openVault")));
     expect(onUnlocked).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByLabelText(t("unlock.savedCheck")));
+    mocks.confirmVault.mockRejectedValueOnce({ code: "E_IO", message: "Yazılamadı." }).mockResolvedValueOnce(vaultInfo());
+    const proof = screen.getByLabelText(t("unlock.confirmRecovery"));
+    fireEvent.change(proof, { target: { value: "wrong-key" } });
+    expect(submitButton(t("unlock.openVault")).disabled).toBe(true);
+    fireEvent.change(proof, { target: { value: RECOVERY_KEY.toLowerCase() } });
+    fireEvent.click(submitButton(t("unlock.openVault")));
+    expect((await screen.findByRole("alert")).textContent).toContain("Yazılamadı.");
+    expect(onUnlocked).not.toHaveBeenCalled();
+    expect(mocks.confirmVault).toHaveBeenCalledWith(RECOVERY_KEY.toLowerCase());
     expect(submitButton(t("unlock.openVault")).disabled).toBe(false);
     fireEvent.click(submitButton(t("unlock.openVault")));
 
@@ -216,7 +227,7 @@ describe("kasa kapısı", () => {
   });
 
   it("'Geri' tek tıkla kurtarma anahtarını düşürmez; iki adımlı uyarıdan sonra forma döner", async () => {
-    mocks.createVault.mockResolvedValue(created());
+    mocks.prepareVault.mockResolvedValue(RECOVERY_KEY);
     const { onUnlocked } = renderUnlock();
     fillCreate();
     fireEvent.click(submitButton(t("unlock.submitCreate")));
@@ -235,11 +246,8 @@ describe("kasa kapısı", () => {
     fireEvent.click(submitButton(t("unlock.leaveConfirm")));
 
     expect(screen.queryByText(RECOVERY_KEY)).toBeNull();
-    // Anahtar ekranı kapandı, "mevcut kasayı aç" formuna dönüldü; parola ve
-    // eşleşme alanları oluşturma sonrası temizlenmişti.
-    expect(submitButton(t("unlock.submitOpen"))).toBeTruthy();
-    expect((screen.getByLabelText(t("unlock.password")) as HTMLInputElement).value).toBe("");
-    expect(screen.queryByLabelText(t("unlock.passwordConfirm"))).toBeNull();
+    expect(await screen.findByRole("button", { name: t("unlock.submitCreate") })).toBeTruthy();
+    expect((screen.getByLabelText(t("unlock.passwordCreate")) as HTMLInputElement).value).toBe("");
     expect(onUnlocked).not.toHaveBeenCalled();
   });
 
@@ -249,14 +257,14 @@ describe("kasa kapısı", () => {
 
     fireEvent.click(submitButton(t("unlock.modeOpen")));
     fireEvent.change(screen.getByLabelText(t("unlock.pathLabel")), { target: { value: "  Kasa/profil.dimvault  " } });
-    fireEvent.change(screen.getByLabelText(t("unlock.password")), { target: { value: PASSWORD } });
+    fireEvent.change(screen.getByLabelText(t("unlock.password")), { target: { value: "old-pass" } });
     fireEvent.click(submitButton(t("unlock.submitOpen")));
 
     expect(mocks.openVault).toHaveBeenCalledTimes(1);
-    expect(mocks.openVault).toHaveBeenCalledWith("Kasa/profil.dimvault", PASSWORD);
+    expect(mocks.openVault).toHaveBeenCalledWith("Kasa/profil.dimvault", "old-pass");
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1));
     expect((screen.getByLabelText(t("unlock.password")) as HTMLInputElement).value).toBe("");
-    expect(mocks.createVault).not.toHaveBeenCalled();
+    expect(mocks.prepareVault).not.toHaveBeenCalled();
   });
 
   it("açma düşerse hata kodu, ileti ve yeniden denenebilir soneki yazılır; parola korunur", async () => {
@@ -316,6 +324,54 @@ describe("kasa kapısı", () => {
     expect((screen.getByLabelText(t("unlock.recoveryKeyLabel")) as HTMLInputElement).value).toBe("");
   });
 
+  it("kurtarma formunu boş konumla göndermez, geçerli konumla tek istek üretir", async () => {
+    mocks.openWithRecovery.mockResolvedValue(vaultInfo());
+    const { onUnlocked } = renderUnlock();
+    fireEvent.click(submitButton(t("unlock.modeRecovery")));
+    const key = screen.getByLabelText<HTMLInputElement>(t("unlock.recoveryKeyLabel"));
+    const path = screen.getByLabelText(t("unlock.pathLabel"));
+    fireEvent.change(key, { target: { value: RECOVERY_KEY } });
+    fireEvent.change(path, { target: { value: "   " } });
+    expect(submitButton(t("unlock.submitRecovery")).disabled).toBe(true);
+    fireEvent.submit(key.form!);
+    expect(mocks.openWithRecovery).not.toHaveBeenCalled();
+    fireEvent.change(path, { target: { value: DEFAULT_PATH } });
+    fireEvent.submit(key.form!);
+    await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1));
+    expect(mocks.openWithRecovery).toHaveBeenCalledWith(DEFAULT_PATH, RECOVERY_KEY);
+  });
+
+  it("klasör seçimini konuma yazar, iptalde korur ve kasayı kendiliğinden açmaz", async () => {
+    mocks.directory.mockResolvedValueOnce("/sentetik/kasa").mockResolvedValueOnce(null);
+    renderUnlock();
+    const picker = submitButton(t("unlock.chooseDirectory"));
+    const path = screen.getByLabelText<HTMLInputElement>(t("unlock.pathLabel"));
+    fireEvent.click(picker);
+    await waitFor(() => expect(path.value).toBe("/sentetik/kasa"));
+    expect(mocks.directory).toHaveBeenCalledWith({ directory: true, multiple: false, title: t("unlock.chooseDirectory") });
+    fireEvent.click(picker);
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    expect(path.value).toBe("/sentetik/kasa");
+    expect(mocks.prepareVault).not.toHaveBeenCalled();
+  });
+
+  it.each(["unlock.modeOpen", "unlock.modeRecovery"] as const)("mevcut kasa için %s tek bir .dimvault dosyası seçer", async (mode) => {
+    mocks.directory.mockResolvedValueOnce("/sentetik/arsiv.dimvault").mockResolvedValueOnce(null);
+    renderUnlock();
+    fireEvent.click(submitButton(t(mode)));
+    const picker = submitButton(t("unlock.chooseFile"));
+    const path = screen.getByLabelText<HTMLInputElement>(t("unlock.pathLabel"));
+    fireEvent.click(picker);
+    await waitFor(() => expect(path.value).toBe("/sentetik/arsiv.dimvault"));
+    expect(mocks.directory).toHaveBeenCalledWith({
+      directory: false, multiple: false, title: t("unlock.chooseFile"),
+      filters: [{ name: t("unlock.vaultFile"), extensions: ["dimvault"] }],
+    });
+    fireEvent.click(picker);
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    expect(path.value).toBe("/sentetik/arsiv.dimvault");
+  });
+
   it("kurtarma düşerse hata yazılır, girilen anahtar korunur", async () => {
     mocks.openWithRecovery.mockRejectedValueOnce({ code: "E_RECOVERY", message: "Anahtar geçersiz." });
     renderUnlock();
@@ -330,7 +386,7 @@ describe("kasa kapısı", () => {
   });
 
   it("oluşturma düşerse anahtar ekranı açılmaz, parola korunur", async () => {
-    mocks.createVault.mockRejectedValueOnce({ code: "E_VAULT_EXISTS", message: "Kasa zaten var." });
+    mocks.prepareVault.mockRejectedValueOnce({ code: "E_VAULT_EXISTS", message: "Kasa zaten var." });
     renderUnlock();
     fillCreate();
 
@@ -349,7 +405,6 @@ describe("kasa kapısı", () => {
     const row = screen.getByText(t("unlock.phaseImport")).nextElementSibling;
     expect(row).toBeTruthy();
     expect(row!.textContent).toContain(t("unlock.phaseImportValue"));
-    expect(row!.querySelector(".badge")?.textContent).toBe(t("unlock.badgeReal"));
     // İçe aktarma F05'te tamamlandı (`document_import` + sürükle-bırak);
     // "henüz yok" demek kullanıcıya yanlış bilgi olurdu.
     expect(t("unlock.phaseImportValue")).not.toContain("henüz yok");
@@ -360,15 +415,15 @@ describe("kasa kapısı", () => {
     const onUnlocked = vi.fn(async () => {});
     const noop = () => {};
     const first = render(
-      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={noop} />,
+      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={async () => true} />,
     );
     expect(screen.getByText(RECOVERY_KEY)).toBeTruthy();
     first.unmount();
 
     render(
-      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={noop} />,
+      <Unlock pendingKey={RECOVERY_KEY} onUnlocked={onUnlocked} onKeyCreated={noop} onKeyDismissed={async () => true} />,
     );
     expect(screen.getByText(RECOVERY_KEY)).toBeTruthy();
-    expect(mocks.createVault).not.toHaveBeenCalled();
+    expect(mocks.prepareVault).not.toHaveBeenCalled();
   });
 });
