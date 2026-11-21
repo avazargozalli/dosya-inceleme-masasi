@@ -10,6 +10,7 @@
 | F11-T02 aday → inceleme kuyruğu | ✅ | `promote_candidate`, `review_items` `pending`, doğrulanmış alıntı → `source_anchors` |
 | F11-T03 kapsamlılık raporu | ✅ | belge/sayfa/OCR/boş sayfa/ayrıştırılmamış sayıları; **sayımlar gönderim kapsamıyla tek kuraldan** (güncel sürüm + en yeni sayfa üreten koşu) ve "metinsiz belge" ayrı sayılır — 2026-11-13, aşağıdaki bölüm |
 | F11-T04 gerçek model çağrısı | ✅ | `ApiProvider`/`LocalProvider` + `ai_run_execute`: onay + profil + kapsam sicili, hata run'ı `failed` kapatır; onay **varış yerine** bağlı (`provider_id` → türetilmiş `adapter@politika#parmak izi`) |
+| F11-T04b gerçek yanıtın aday türü ve şeması | ✅ | `task_candidate_kind` + `candidate_output_instructions`; `ai_run_execute` artık `record_ai_run_candidate` — her gerçek aday `invalid` doğmuyor, istem somut şemayı ve alıntı sözleşmesini taşıyor (2026-11-21, aşağıdaki bölüm) |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, `ai_candidate_validate`; alıntı **önce gönderilen metinde** aranır (şema v26, `transfer_segments` + `record_transfer_segments`) |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
 | Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
@@ -860,3 +861,76 @@ başka ajanın commit'siz testleri), paket `index-WZ8frWYD.js` 692,02 kB / gzip 
 `masaüstü kabuk` 51/0/5 + yoksayılan 5 passed; diğer altı iş yeşil.
 **i18n hunk ayrımı:** 5 hunk'tan yalnız benim `noText` hunk'larım `git apply --cached
 --recount` ile sahneye alındı (`git show :…i18n.ts | grep -c parseStatus` → **0**).
+
+## F11-T04b — gerçek model yanıtı doğru aday türü ve somut şemayla kaydedilir (2026-11-21)
+
+**Ölçülen kusur.** AI ekranındaki «Çalıştır» düğmesinin arkasındaki gerçek yol
+(`ai_run_execute`) model yanıtını `record_ai_candidate(&run.id, &run.task_type, …)` ile
+kaydediyordu. `run.task_type` bir **sağlayıcı görevi**dir (`summarize` / `extract_events` /
+`extract_claims`), aday türü değil; doğrulayıcı bu adları tanımadığı için **her gerçek model
+adayı `invalid` (`unknown_candidate_type`) doğuyordu** — çıktı üretilse de incelenemiyor,
+terfi edilemiyordu (kusur `git log -S` ile F09-T09c öncesine kadar izlendi). Aynı istem
+yalnız `Şema: candidate.v1` etiketi taşıyordu: model `schemaVersion`ı, zorunlu alanları ve
+`quotes[].documentVersionId` sözleşmesini bilmiyordu; segment satırlarında belge sürümü
+kimliği de yoktu — alıntı hiçbir zaman bağlanamazdı.
+
+**Yazılan.**
+
+- `task_candidate_kind` (tek kaynak): `summarize→summary_candidate`,
+  `extract_events→event_candidate`, `extract_claims→claim_candidate`; `task_type` zaten bir
+  aday türü adı taşıyorsa (`event`, `claim_candidate`, …) **aynen** kullanılır, tanınmayan →
+  `None` (**tahmin yok** — çağıran bilinmeyen türü olduğu gibi kaydeder).
+- `candidate_output_instructions`: doğrulayıcının **aynı** `field_specs` tablosundan üretilen
+  somut şema — her alan için ad, zorunluluk, metin uzunluğu / enum değerleri / liste sınırı /
+  `YYYY-AA-GG` gerçek gün — ve alıntı sözleşmesi (`quotes[]` en çok 20; her öğe
+  `{"documentVersionId": "…", "quote": "…"}`, `documentVersionId` segment satırındaki `|`
+  sonrası değer, `quote` segment metninden **birebir**, 8–1000 karakter; özet adayı en az bir
+  alıntı taşır). Metin doğrulayıcının tablosundan doğduğu için iki kopya ayrışamaz.
+- `AiRequest.instructions` ve `ContextSegment.document_version_id`; sağlayıcı istemi tek
+  `AiRequest::user_prompt()` işlevinden kurulur (`Görev / Şema / Kurallar / Segmentler`),
+  segment satırı `[segmentId | documentVersionId] metin`. **İki sağlayıcı da** (API + yerel)
+  aynı işlevi kullanır.
+- `Database::record_ai_run_candidate`: aday türünü çalıştırmanın görev türünden türetir ve
+  **aynı** `record_ai_candidate` doğrulamasını koşar; `ai_run_execute` artık bunu çağırıyor.
+  Tanınmayan görev türünde yanıt **kanıtıyla** (`validation_errors`) bilinmeyen türde
+  kaydedilir; depo katmanı tür tahmin etmez.
+
+**Testler (güncel kodla).** `ai_candidate` +6: eşleme tablosu (üç görev + eski adlar +
+tanınmayan), şema üretimi (olay/özet kuralları), **eski hatanın kanıtı** (`summarize` →
+`invalid` + `unknown_candidate_type`), gerçek yol → `summary_candidate` + `valid` +
+`verified` + terfi + anchor, `extract_events` → `event_candidate` + `valid`, tanınmayan tür
+aynen + `invalid`. `dim-providers` +1: istem somut şemayı ve `[seg-1 | dv-1]` kaynak
+kimliğini taşır. Yerel: `dim-storage --lib` **735/735 yeşil, 590,90 s** (log
+`scratch/dim-libtest-t04b.log`); `dim-providers` **28/28**; iki manifest `cargo fmt`;
+`clippy -p dim-storage -p dim-providers --all-targets -D warnings`; masaüstü
+`check --all-targets` temiz.
+
+**Kapı kanıtı (`scratch/dim-t04b-gates.py`, log `dim-t04b-gates.log`; her mutasyon tek
+başına, kaynak sha256 **birebir** geri yazıldı).** **4/4 KIRMIZI**, taban yeşilken —
+M1 eşleme bozuldu (`summarize→claim_candidate`) · M2 eski hata geri geldi
+(`record_ai_run_candidate` doğrudan `run.task_type` geçirir) · M3 «özet en az bir alıntı»
+kuralı istemden düşürüldü · M4 istemdeki kaynak kimliği bozuldu (`dim-providers` testi
+düştü). **Dürüst:** M2'nin ilk mutant deseni kaynakta **eşleşmedi** («EŞLEŞMEDİ», 0 test
+düştü) → desen düzeltildi ve M2 yeniden ölçüldü; ilk denemenin hükmü kanıt sayılmadı.
+
+**Dürüst sınırlar.**
+
+- **Gerçek API çağrısı yapılmadı** (anahtar yok): modelin istemdeki şemaya **uyacağı**
+  ölçülmedi. Uymazsa aday yine kanıtıyla `invalid` kalır — bu dilim adayın
+  **doğrulanabilir** doğmasını ve incelenebilmesini sağlar; modelin uyumunu garanti etmez.
+- `document_version_id` **opak** kimliktir; modele içerik değil, alıntının bağlanacağı
+  anahtar verilir. Belge adı/metni istemde ayrıca taşınmaz.
+- Görev türü tanınmıyorsa istem kuralları **boş** kalır (tahmin yok) ve aday aynen
+  kaydedilir; ürün bugünkü üç görev türünü kullanır.
+- İstem metni doğrulayıcının alan tablosundan üretilir; tabloda olmayan bir kural (ör.
+  alanlar arası çapraz tutarlılık) isteme de yazılmaz.
+- Yerel ölçümler hata ayıklama derlemesinde; CI iki OS'ta koşar. Arayüz değişmedi — gerçek
+  Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `4000166` (7 dosya, **+365/−28**) → run `44939941625`
+**10/10 YEŞİL**: `dim-storage` **735** iki OS'ta (macos-15 **554,58 s** / ubuntu-latest
+**504,78 s**), `arayüz` 66 dosya / **1449** test, paket `index-BP_FWRRw.js` **699,98 kB** /
+gzip **186,63 kB**, `masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda), `windows
+güvenli depo`, sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve kaynak arşivi
+yeşil. İlk `git push` bu turda yapıldı (`272bd48..4000166`); önceki koşuda commit atılmış
+ama **push edilmemişti** — CI kanıtı bu turun ölçümüdür.
