@@ -355,6 +355,12 @@ fn run_cli_inner(
     // İstem biçimi kapısı: `--print`e komşu bir bayrak, sağlayıcıda **istem**
     // olur (ölçüldü, `agy`); sertleştirme bayrağı sessizce isteme dönüşmesin.
     ensure_prompt_shape(&req.adapter_id, &args)?;
+    // **Son argv kapısı (F10-T08i):** süreç başlamadan önce komut satırının
+    // *bütünü* denetlenir. `build_args` yalnız çağıranın argümanlarını görür;
+    // sertleştirme grupları ve istem biçimi ondan **sonra** eklenir. Bu kapı
+    // sicil dışı bir bayrağın, konumsal bir sızıntının ya da yinelenen bir
+    // bayrağın (son değer öncekini ezer) yürütmeye ulaşmasını engeller.
+    crate::argv::verify_executed_argv(&req.adapter_id, &args, prompt)?;
     if !req.executable.is_absolute() {
         return Err(RunError::RelativeExecutable);
     }
@@ -780,6 +786,13 @@ pub struct PromptShape {
     /// Ölçüm kurulu sürümü kapsamıyor: kapı yine temkinli tarafta kapalı kalır
     /// ama arayüz bunu **bu sürümün** ölçümü gibi yazamaz.
     pub evidence_stale: bool,
+    /// İstem argv'sinin doğrulandığı CLI sürümü (fixture'ın sürüm anahtarı);
+    /// fixture yoksa `None`.
+    pub argv_fixture_version: Option<String>,
+    /// İstem argv'si **kurulu sürümde** doğrulandı mı (F10-T08i). Kapı bu
+    /// yanıtı ister: fixture farklı ya da bilinmeyen bir sürüme aitse istem
+    /// gönderimi kapalıdır.
+    pub argv_verified: bool,
 }
 
 #[must_use]
@@ -837,8 +850,20 @@ pub fn prompt_shape_with_measurement(
         None => ("missing", false),
     };
     let evidence = measurement.map(|m| m.access);
-    let (printable, reason) =
-        prompt_gate(spec.batch_forbidden, has_path, tool_free_verified, evidence);
+    // **F10-T08i:** istem argv'si kurulu sürümde doğrulanmış mı? Fixture'ın
+    // sürümü kurulu sürümle eşleşmiyorsa (ya da sürüm bilinmiyorsa) kapı
+    // temkinli tarafta kapanır: "fixture var" tek başına "bu sürümde geçerli"
+    // demek değildir.
+    let fixture = crate::argv::prompt_fixture_check(spec.id, installed_version);
+    let argv_verified = fixture.as_ref().is_some_and(|check| check.verified);
+    let argv_fixture_version = fixture.as_ref().and_then(|check| check.fixture_key.clone());
+    let (printable, reason) = prompt_gate(
+        spec.batch_forbidden,
+        has_path,
+        tool_free_verified,
+        argv_verified,
+        evidence,
+    );
     Some(PromptShape {
         adapter_id: spec.id,
         argv,
@@ -848,17 +873,22 @@ pub fn prompt_shape_with_measurement(
         evidence: evidence.map(crate::MeasuredAccess::id),
         evidence_version: measurement.and_then(|m| m.version.clone()),
         evidence_stale: measurement.is_some_and(|m| m.is_stale(installed_version)),
+        argv_fixture_version,
+        argv_verified,
     })
 }
 
 /// İstem kapısının **kararı** — saf fonksiyon, yan etkisiz. Sıra bilinçlidir:
 /// yapısal engeller (toplu yürütme kapalı, istem yolu yok) **ölçümden önce**
 /// gelir, çünkü istem hiç gönderilemiyorsa "araç erişimi" sorusu anlamsızdır;
-/// ölçüm beyanı yalnız **kapatır** (`blocked` kapıyı açmaz).
+/// ölçüm beyanı yalnız **kapatır** (`blocked` kapıyı açmaz). Son olarak
+/// **argv fixture'ı** kurulu sürümü kapsamalıdır (F10-T08i): doğrulanmamış bir
+/// komut satırı "gönderim açık" sayılmaz.
 fn prompt_gate(
     batch_forbidden: bool,
     has_path: bool,
     tool_free_verified: bool,
+    argv_verified: bool,
     evidence: Option<crate::MeasuredAccess>,
 ) -> (bool, Option<&'static str>) {
     if batch_forbidden {
@@ -872,6 +902,9 @@ fn prompt_gate(
         (false, Some("evidence_unreadable"))
     } else if !tool_free_verified {
         (false, Some("tool_free_unverified"))
+    } else if !argv_verified {
+        // Doğrulanmış komut satırı yok: hangi sürümde geçerli olduğu bilinmiyor.
+        (false, Some("argv_unverified"))
     } else {
         (true, None)
     }
@@ -1008,6 +1041,34 @@ mod tests {
         )
         .expect_err("reddedilmeli");
         assert_eq!(err.code(), "E_CLI_ARGUMENT");
+    }
+
+    /// **F10-T08i:** son argv kapısı `run_cli`ın **içinde** çalışır. Sicilde
+    /// tek tek izinli görünen ama **yinelenen** bir bayrak süreç başlamadan
+    /// reddedilir; `build_args` bunu yakalamıyordu (her belirteç ayrı ayrı
+    /// izinliydi). Kanıt: süreç hiç başlamadı — işaret dosyası yok.
+    #[test]
+    fn run_cli_refuses_a_repeated_flag_before_spawn() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let exe = script(tmp.path(), "ok.sh", "touch ran.txt; echo calisti");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let err = run_cli(
+            &request(
+                exe,
+                tmp.path(),
+                &["--print", "--print"],
+                "",
+                Duration::from_secs(5),
+            ),
+            &cancel,
+        )
+        .expect_err("yinelenen bayrak reddedilmeli");
+        assert_eq!(err.code(), "E_CLI_ARGUMENT");
+        assert!(err.to_string().contains("yineleniyor"), "{err}");
+        assert!(
+            !isolated(tmp.path()).join("ran.txt").exists(),
+            "süreç başlamamalı: işaret dosyası yazılmış"
+        );
     }
 
     #[test]
@@ -1747,38 +1808,58 @@ mod hardening_tests {
     #[test]
     fn prompt_gate_covers_every_branch() {
         use MeasuredAccess::{Blocked, Granted, Inconclusive, Unreadable};
-        // (batch_forbidden, has_path, tool_free_verified, evidence) → (printable, reason)
+        // (batch_forbidden, has_path, tool_free_verified, argv_verified, evidence)
+        //   → (printable, reason)
         for (case, expected) in [
-            ((true, true, true, None), (false, Some("batch_forbidden"))),
-            ((true, false, false, None), (false, Some("batch_forbidden"))),
-            ((false, false, true, None), (false, Some("no_prompt_path"))),
             (
-                (false, false, false, Some(Granted)),
+                (true, true, true, true, None),
+                (false, Some("batch_forbidden")),
+            ),
+            (
+                (true, false, false, false, None),
+                (false, Some("batch_forbidden")),
+            ),
+            (
+                (false, false, true, true, None),
                 (false, Some("no_prompt_path")),
             ),
             (
-                (false, true, true, Some(Granted)),
+                (false, false, false, false, Some(Granted)),
+                (false, Some("no_prompt_path")),
+            ),
+            (
+                (false, true, true, true, Some(Granted)),
                 (false, Some("tool_access_granted")),
             ),
             (
-                (false, true, true, Some(Unreadable)),
+                (false, true, true, true, Some(Unreadable)),
                 (false, Some("evidence_unreadable")),
             ),
             (
-                (false, true, false, Some(Blocked)),
+                (false, true, false, false, Some(Blocked)),
                 (false, Some("tool_free_unverified")),
             ),
             (
-                (false, true, false, Some(Inconclusive)),
+                (false, true, false, true, Some(Inconclusive)),
                 (false, Some("tool_free_unverified")),
             ),
-            ((false, true, true, Some(Blocked)), (true, None)),
-            ((false, true, true, Some(Inconclusive)), (true, None)),
-            ((false, true, true, None), (true, None)),
+            // F10-T08i: araçsız kip doğrulanmış ama argv fixture'ı kurulu
+            // sürümü kapsamıyor → kapı kapalı, neden ayrı yazılır.
+            (
+                (false, true, true, false, None),
+                (false, Some("argv_unverified")),
+            ),
+            (
+                (false, true, true, false, Some(Blocked)),
+                (false, Some("argv_unverified")),
+            ),
+            ((false, true, true, true, Some(Blocked)), (true, None)),
+            ((false, true, true, true, Some(Inconclusive)), (true, None)),
+            ((false, true, true, true, None), (true, None)),
         ] {
-            let (batch_forbidden, has_path, verified, evidence) = case;
+            let (batch_forbidden, has_path, verified, argv_verified, evidence) = case;
             assert_eq!(
-                prompt_gate(batch_forbidden, has_path, verified, evidence),
+                prompt_gate(batch_forbidden, has_path, verified, argv_verified, evidence),
                 expected,
                 "{case:?}"
             );
@@ -1787,7 +1868,8 @@ mod hardening_tests {
 
     /// Araçsız kipi doğrulanmamış adaptörde istem gönderimi **kapalı**:
     /// "sandbox var" varsayımı yapılmaz (ölçüldü: agy `--sandbox` dosya
-    /// okumayı engellemiyor).
+    /// okumayı engellemiyor). Claude'da araçsız kip **ve** argv fixture'ı
+    /// kurulu sürümde doğrulanmışsa kapı açıktır (F10-T08i).
     #[test]
     fn prompt_gate_requires_a_verified_tool_free_path() {
         let anti = prompt_shape("antigravity-cli").expect("agy");
@@ -1795,9 +1877,45 @@ mod hardening_tests {
         assert_eq!(anti.reason, Some("tool_free_unverified"));
         assert_eq!(anti.tool_free, "no_path");
         assert_eq!(anti.evidence, None);
-        let claude = prompt_shape("claude-code").expect("claude");
+        let claude =
+            prompt_shape_with_measurement("claude-code", Some("2.1.303 (Claude Code)"), None)
+                .expect("claude");
         assert!(claude.printable, "{claude:?}");
         assert_eq!(claude.tool_free, "verified");
+        assert!(claude.argv_verified);
+        assert_eq!(claude.argv_fixture_version.as_deref(), Some("2.1.303"));
+        // Sürüm bilinmiyorsa fixture doğrulanamaz: kapı açılmaz.
+        let unknown = prompt_shape("claude-code").expect("claude");
+        assert!(!unknown.printable);
+        assert_eq!(unknown.reason, Some("argv_unverified"));
+        assert!(!unknown.argv_verified);
+    }
+
+    /// **F10-T08i:** argv fixture'ı kurulu sürümü kapsamıyorsa istem gönderimi
+    /// kapalıdır; kapı yalnız `granted` ölçümüyle değil, sürümle de kapanır.
+    /// Farklı sürümde alınmış **blocked** ölçüm kapıyı açmaz.
+    #[test]
+    fn prompt_shape_closes_when_the_argv_fixture_is_stale() {
+        let newer =
+            prompt_shape_with_measurement("claude-code", Some("2.1.400 (Claude Code)"), None)
+                .expect("claude");
+        assert!(!newer.printable);
+        assert_eq!(newer.reason, Some("argv_unverified"));
+        assert!(!newer.argv_verified);
+        assert_eq!(newer.argv_fixture_version.as_deref(), Some("2.1.303"));
+
+        let blocked = crate::MeasuredEvidence {
+            access: MeasuredAccess::Blocked,
+            version: Some("2.1.400 (Claude Code)".into()),
+        };
+        let stale = prompt_shape_with_measurement(
+            "claude-code",
+            Some("2.1.400 (Claude Code)"),
+            Some(&blocked),
+        )
+        .expect("claude");
+        assert!(!stale.printable, "blocked beyan doğrulamaz");
+        assert_eq!(stale.reason, Some("argv_unverified"));
     }
 
     /// Ölçüm **yalnız kapatır**: sınama kanıt dosyasını okuduysa beyan ne derse
@@ -1805,8 +1923,16 @@ mod hardening_tests {
     /// **açmaz** — "araçsız kip var" kanıtı değildir.
     #[test]
     fn measured_evidence_can_only_close_the_prompt_gate() {
-        let granted = prompt_shape_with_evidence("claude-code", Some(MeasuredAccess::Granted))
-            .expect("claude");
+        let granted_evidence = crate::MeasuredEvidence {
+            access: MeasuredAccess::Granted,
+            version: Some("2.1.303 (Claude Code)".into()),
+        };
+        let granted = prompt_shape_with_measurement(
+            "claude-code",
+            Some("2.1.303 (Claude Code)"),
+            Some(&granted_evidence),
+        )
+        .expect("claude");
         assert!(!granted.printable, "{granted:?}");
         assert_eq!(granted.reason, Some("tool_access_granted"));
         assert_eq!(granted.evidence, Some("granted"));
@@ -1820,18 +1946,31 @@ mod hardening_tests {
         assert_eq!(blocked.reason, Some("tool_free_unverified"));
         assert_eq!(blocked.evidence, Some("blocked"));
 
-        // Claude'da `blocked` kapıyı açık bırakır (beyan zaten doğrulanmış),
-        // ama ölçüm satırda görünür.
-        let claude_blocked =
-            prompt_shape_with_evidence("claude-code", Some(MeasuredAccess::Blocked))
-                .expect("claude");
+        // Claude'da `blocked` kapıyı açık bırakır (beyan zaten doğrulanmış ve
+        // argv fixture'ı kurulu sürümde), ama ölçüm satırda görünür.
+        let blocked_evidence = crate::MeasuredEvidence {
+            access: MeasuredAccess::Blocked,
+            version: Some("2.1.303 (Claude Code)".into()),
+        };
+        let claude_blocked = prompt_shape_with_measurement(
+            "claude-code",
+            Some("2.1.303 (Claude Code)"),
+            Some(&blocked_evidence),
+        )
+        .expect("claude");
         assert!(claude_blocked.printable);
         assert_eq!(claude_blocked.evidence, Some("blocked"));
 
         // Okunamayan kayıt temkinli tarafta: kapı kapalı.
-        let unreadable =
-            prompt_shape_with_evidence("claude-code", Some(MeasuredAccess::Unreadable))
-                .expect("claude");
+        let unreadable = prompt_shape_with_measurement(
+            "claude-code",
+            Some("2.1.303 (Claude Code)"),
+            Some(&crate::MeasuredEvidence {
+                access: MeasuredAccess::Unreadable,
+                version: Some("2.1.303 (Claude Code)".into()),
+            }),
+        )
+        .expect("claude");
         assert!(!unreadable.printable);
         assert_eq!(unreadable.reason, Some("evidence_unreadable"));
     }

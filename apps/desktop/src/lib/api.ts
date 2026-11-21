@@ -1200,6 +1200,7 @@ export type CliPromptShape = {
     | "tool_access_granted"
     | "evidence_unreadable"
     | "tool_free_unverified"
+    | "argv_unverified"
     | null;
   toolFree: "verified" | "no_path" | "missing";
   /** Saklanan davranış ölçümü; kayıt yoksa `null`. */
@@ -1208,6 +1209,13 @@ export type CliPromptShape = {
   evidenceVersion: string | null;
   /** Ölçüm kurulu sürümü kapsamıyor: "bu sürüm ölçüldü" denemez (F10-T08g). */
   evidenceStale: boolean;
+  /**
+   * İstem argv'sinin doğrulandığı sürüm anahtarı (F10-T08i); fixture yoksa
+   * `null`. Eski yüklerde alan olmayabilir → "doğrulanmadı" sayılır.
+   */
+  argvFixtureVersion?: string | null;
+  /** İstem argv'si kurulu sürümde doğrulandı mı (F10-T08i). */
+  argvVerified?: boolean;
 };
 
 export type CliCapabilityAdapter = {

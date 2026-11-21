@@ -2136,6 +2136,9 @@ export const tr = {
     promptReasonToolAccessStale:
       "araç erişimi eski bir sürümde ölçüldü — kurulu sürüm ölçülmedi, kapı temkinli tarafta kapalı",
     promptReasonEvidenceUnreadable: "sınama kaydı okunamadı (temkinli taraf)",
+    promptReasonArgv:
+      "komut satırı bu kurulu sürümde doğrulanmadı — istem gönderimi kapalı",
+    promptArgvFixture: "komut satırı {version} sürümünde doğrulandı",
     promptReasonUnknown: "kapının nedeni tanımsız",
     evidenceGranted: "ölçüldü · araç erişimi var",
     evidenceBlocked: "ölçüldü · araç çağrısı görülmedi",

@@ -433,9 +433,26 @@ function promptCloseReason(reason: CliPromptShape["reason"]): string {
       return t("probe.promptReasonEvidenceUnreadable");
     case "tool_free_unverified":
       return t("probe.promptReasonToolFree");
+    case "argv_unverified":
+      return t("probe.promptReasonArgv");
     default:
       return t("probe.promptReasonUnknown");
   }
+}
+
+/**
+ * İstem argv'sinin **hangi sürümde doğrulandığı** (F10-T08i). Fixture yoksa
+ * satır yoktur (`null`): sürüm uydurulmaz. Satır yalnız bilgi değildir —
+ * `argvVerified=false` ise kapı zaten kapalıdır ve neden ayrı yazılır.
+ */
+export function promptFixtureText(
+  view: Pick<CliCapabilityAdapter, "prompt">,
+): string | null {
+  const version = view.prompt.argvFixtureVersion;
+  if (!version) {
+    return null;
+  }
+  return t("probe.promptArgvFixture", { version });
 }
 
 /** Ölçülmüş araç erişiminin etiketi; bilinmeyen değer ham yazılır. */

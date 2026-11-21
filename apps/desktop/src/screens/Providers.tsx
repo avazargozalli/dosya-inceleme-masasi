@@ -80,6 +80,7 @@ import {
   matrixWorstLink,
   measuredAccessLabel,
   measuredEvidenceLine,
+  promptFixtureText,
   promptShapeText,
   residueAge,
   residueCleanupSummary,
@@ -587,6 +588,7 @@ export function Providers() {
               {matrix.adapters.map((adapter) => {
                 const warnings = capabilityWarnings(adapter);
                 const prompt = promptShapeText(adapter);
+                const promptFixture = promptFixtureText(adapter);
                 const measured = hardening[adapter.adapterId];
                 const measuredText = measured ? hardeningProbeText(measured) : null;
                 const measuredGate = measured ? evidenceGateText(measured) : null;
@@ -670,6 +672,14 @@ export function Providers() {
                     >
                       {prompt.text}
                     </div>
+                    {promptFixture ? (
+                      <div
+                        className="muted small"
+                        style={{ marginTop: "var(--space-1)" }}
+                      >
+                        {promptFixture}
+                      </div>
+                    ) : null}
                     {adapter.prompt.argv.length > 0 ? (
                       <div style={{ marginTop: "var(--space-2)", display: "grid", gap: 6 }}>
                         <div

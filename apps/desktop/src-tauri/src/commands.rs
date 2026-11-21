@@ -4437,7 +4437,8 @@ pub struct CliPromptShapeView {
     /// doğrulanmış bir bayrakla bildirilmişse `true`.
     pub printable: bool,
     /// `printable=false` ise neden kodu (`batch_forbidden` /
-    /// `tool_access_granted` / `evidence_unreadable` / `tool_free_unverified`).
+    /// `tool_access_granted` / `evidence_unreadable` / `tool_free_unverified` /
+    /// `argv_unverified`).
     pub reason: Option<&'static str>,
     /// Araçsız kip durumu: `verified` / `no_path` / `missing`.
     pub tool_free: &'static str,
@@ -4448,6 +4449,12 @@ pub struct CliPromptShapeView {
     pub evidence_version: Option<String>,
     /// Ölçüm kurulu sürümü kapsamıyor (farklı sürüm ya da sürüm yazılmamış).
     pub evidence_stale: bool,
+    /// İstem argv'sinin **doğrulandığı** CLI sürümü (fixture sürüm anahtarı);
+    /// fixture yoksa `null`.
+    pub argv_fixture_version: Option<String>,
+    /// İstem argv'si kurulu sürümde doğrulandı mı (F10-T08i). `false` ise
+    /// istem gönderimi kapalıdır: hangi sürümde geçerli olduğu bilinmiyor.
+    pub argv_verified: bool,
 }
 
 fn prompt_shape_view(
@@ -4465,6 +4472,8 @@ fn prompt_shape_view(
         evidence: shape.as_ref().and_then(|s| s.evidence),
         evidence_version: shape.as_ref().and_then(|s| s.evidence_version.clone()),
         evidence_stale: shape.as_ref().is_some_and(|s| s.evidence_stale),
+        argv_fixture_version: shape.as_ref().and_then(|s| s.argv_fixture_version.clone()),
+        argv_verified: shape.as_ref().is_some_and(|s| s.argv_verified),
     }
 }
 

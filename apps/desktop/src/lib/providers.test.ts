@@ -25,6 +25,7 @@ import {
   probeSummary,
   probeWarnings,
   promptShapeText,
+  promptFixtureText,
   residueAge,
   residueCleanupSummary,
   residueCleanupTargets,
@@ -354,6 +355,8 @@ describe("promptShapeText", () => {
         evidence: null,
         evidenceVersion: null,
         evidenceStale: false,
+        argvVerified: true,
+        argvFixtureVersion: "2.1.303",
       },
     });
     expect(line.tone).toBe("ok");
@@ -411,6 +414,62 @@ describe("promptShapeText", () => {
     expect(line.tone).toBe("warn");
     expect(line.text).toContain("istem yolu tanımlı değil");
     expect(line.text).not.toContain("tanımsız");
+  });
+
+  // F10-T08i: komut satırı kurulu sürümde doğrulanmadıysa kapı bunu **kendi
+  // nedeniyle** yazar; "tanımsız"a düşmez.
+  it("argv fixture'ı kurulu sürümü kapsamıyorsa neden ayrı yazılır", () => {
+    const line = promptShapeText({
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: false,
+        reason: "argv_unverified",
+        toolFree: "verified",
+        evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
+        argvVerified: false,
+        argvFixtureVersion: "2.1.303",
+      },
+    });
+    expect(line.tone).toBe("warn");
+    expect(line.text).toContain("komut satırı bu kurulu sürümde doğrulanmadı");
+    expect(line.text).not.toContain("tanımsız");
+  });
+});
+
+describe("promptFixtureText (F10-T08i)", () => {
+  it("doğrulanmış sürümü sözlükten yazar", () => {
+    const line = promptFixtureText({
+      prompt: {
+        argv: ["--print", "<istem>"],
+        printable: true,
+        reason: null,
+        toolFree: "verified",
+        evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
+        argvVerified: true,
+        argvFixtureVersion: "2.1.303",
+      },
+    });
+    expect(line).toContain("2.1.303");
+    expect(line).toContain("doğrulandı");
+  });
+
+  it("fixture yoksa satır uydurmaz", () => {
+    const line = promptFixtureText({
+      prompt: {
+        argv: [],
+        printable: false,
+        reason: "no_prompt_path",
+        toolFree: "verified",
+        evidence: null,
+        evidenceVersion: null,
+        evidenceStale: false,
+      },
+    });
+    expect(line).toBeNull();
   });
 });
 

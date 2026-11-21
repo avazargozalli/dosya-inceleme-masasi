@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub mod arch;
+pub mod argv;
 pub mod attack;
 pub mod capability;
 mod events;
@@ -23,6 +24,10 @@ pub mod sandbox;
 pub use arch::{
     app_arch_label, inspect_path, ArchComparison, ArchReport, BinaryArch, BinaryFormat,
     ScriptInterpreter, HEADER_READ_BYTES, MAX_FAT_SLICES, MAX_PE_OFFSET,
+};
+pub use argv::{
+    fixture, fixtures_for, prompt_fixture_check, verify_executed_argv, version_key, ArgvFixture,
+    FixtureCheck, FIXTURES, SCENARIO_HELP, SCENARIO_PROMPT, SCENARIO_VERSION,
 };
 pub use attack::{
     guard_state, hardening_argv, outcomes, plant_attacks, run_real_attack, AttackError,
@@ -570,7 +575,10 @@ pub fn build_args(adapter_id: &str, extra: &[String]) -> Result<Vec<String>, Ada
 ///   reddedilir, yoksa kapı ürünün kapatma yolunu sessizce etkisiz kılardı.
 /// - `-` ile başlayan değer bayrak sanılır.
 /// - Kapalı küme bildiren bayrakta değer kümede olmalıdır.
-fn check_arg_value(
+///
+/// Son argv kapısı ([`argv::verify_executed_argv`]) **aynı** değer kuralını
+/// kullanır: iki ayrı değer tablosu olamaz.
+pub(crate) fn check_arg_value(
     flag: &str,
     rule: ArgValue,
     value: &str,

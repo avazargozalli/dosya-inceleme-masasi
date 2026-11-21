@@ -2025,6 +2025,34 @@ fn prompt_view_closes_when_the_measurement_showed_tool_access() {
     assert_eq!(declared_only.reason, None);
     assert_eq!(declared_only.evidence, None);
     assert!(!declared_only.evidence_stale);
+    // F10-T08i: kapı yalnız beyana değil, doğrulanmış komut satırına dayanır.
+    assert!(declared_only.argv_verified);
+    assert_eq!(
+        declared_only.argv_fixture_version.as_deref(),
+        Some("2.1.303")
+    );
+}
+
+/// **F10-T08i:** arayüzün gördüğü istem kapısı, argv fixture'ı kurulu sürümü
+/// kapsamıyorsa **kapanır** ve neden `argv_unverified` olarak yazılır.
+#[test]
+fn prompt_view_closes_when_the_argv_fixture_is_stale_for_the_installed_version() {
+    let newer = prompt_shape_view("claude-code", Some("2.1.400 (Claude Code)"), None);
+    assert!(!newer.printable);
+    assert_eq!(newer.reason, Some("argv_unverified"));
+    assert!(!newer.argv_verified);
+    assert_eq!(newer.argv_fixture_version.as_deref(), Some("2.1.303"));
+
+    // Kurulu sürüm okunamadıysa fixture doğrulanamaz: kapı kapalı.
+    let unknown = prompt_shape_view("claude-code", None, None);
+    assert!(!unknown.printable);
+    assert_eq!(unknown.reason, Some("argv_unverified"));
+    assert!(!unknown.argv_verified);
+
+    // Kurulu sürüm fixture'la aynı: kapı açık.
+    let same = prompt_shape_view("claude-code", Some("2.1.303 (Claude Code)"), None);
+    assert!(same.printable);
+    assert!(same.argv_verified);
 }
 
 /// **F10-T08g:** ölçüm başka bir sürümde alındıysa kapı yine temkinli tarafta
