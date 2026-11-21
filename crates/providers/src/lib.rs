@@ -75,6 +75,9 @@ pub struct AiRequest {
     /// alıntı sözleşmesi). Sağlayıcı bunu isteme ekler; modelin hangi alanları
     /// üretmesi gerektiğini tahmin etmesi beklenmez.
     pub instructions: String,
+    /// Soru-cevap görevinde **kullanıcının sorusu** (kırpılmış, doğrulanmış).
+    /// Diğer görevlerde `None`; istem satırı yalnız bu alan doluyken yazılır.
+    pub question: Option<String>,
     pub segments: Vec<ContextSegment>,
 }
 
@@ -105,8 +108,15 @@ impl AiRequest {
                 None => lines.push_str(&format!("[{}] {}\n", segment.segment_id, segment.text)),
             }
         }
+        // Soru **yalnız** görev soru-cevapsa ve çekirdek doğruladıysa yazılır;
+        // başka görevde isteme soru satırı sızmaz.
+        let question = self
+            .question
+            .as_deref()
+            .map(|text| format!("Soru: {text}\n"))
+            .unwrap_or_default();
         format!(
-            "Görev: {}\nŞema: {}\nKurallar:\n{}\nSegmentler:\n{}",
+            "Görev: {}\n{question}Şema: {}\nKurallar:\n{}\nSegmentler:\n{}",
             self.task_type, self.output_schema_version, self.instructions, lines
         )
     }
@@ -258,6 +268,7 @@ mod tests {
             prompt_version: "p1".into(),
             output_schema_version: "1".into(),
             instructions: "schemaVersion = 1".into(),
+            question: None,
             segments: vec![ContextSegment {
                 segment_id: "s1".into(),
                 text: "kira".into(),
@@ -271,6 +282,21 @@ mod tests {
         let mut p = OffProvider::new();
         assert_eq!(p.propose(&request()).unwrap_err(), ProviderError::Disabled);
         assert_eq!(p.profile().provider_type, ProviderType::Off);
+    }
+
+    /// F11-T08 — soru satırı **yalnız** alan doluyken isteme girer; boş alan
+    /// isteme "Soru:" satırı sızdırmaz.
+    #[test]
+    fn question_line_is_rendered_only_when_present() {
+        let mut request = request();
+        let prompt = request.user_prompt();
+        assert!(!prompt.contains("Soru:"), "{prompt}");
+        request.question = Some("Kira borcu ödendi mi?".into());
+        let prompt = request.user_prompt();
+        assert!(
+            prompt.contains("Görev: summarize\nSoru: Kira borcu ödendi mi?\nŞema:"),
+            "{prompt}"
+        );
     }
 
     #[test]

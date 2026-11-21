@@ -112,8 +112,63 @@ pub fn purpose_task_type(purpose: &str) -> Option<&'static str> {
         "ozet" => Some("summarize"),
         "olay_cikarimi" => Some("extract_events"),
         "iddia_cikarimi" => Some("extract_claims"),
+        // F11-T08 — dosya üzerinde soru-cevap. Ayrı amaç: soru metni ister ve
+        // yanıt "incelenen kapsam + dayanak" ile birlikte değerlendirilir.
+        "soru" => Some("answer"),
         _ => None,
     }
+}
+
+/// Soru-cevap amacının görev türü. Tek kaynak: `purpose_task_type` ile aynı
+/// eşleme; burada yalnız okunur.
+pub const AI_ANSWER_TASK: &str = "answer";
+/// Soru metninin sınırları (kırpılmış, kod noktası sayısı).
+pub const AI_QUESTION_MIN_CHARS: usize = 3;
+pub const AI_QUESTION_MAX_CHARS: usize = 500;
+
+/// Görev türüne göre **soru metnini** doğrular ve normalleştirir.
+///
+/// - `answer` görevi soru **ister**: kırpılmış 3–500 karakter, kontrol
+///   karakteri (satır sonu/sekme dışında) yok. Eksik soru sessizce "boş soru"
+///   olarak gönderilmez.
+/// - Diğer görevler soru **kabul etmez**: yanlış amaçla gelen metin yok
+///   sayılmaz, açıkça reddedilir (arayüz ile çekirdek ayrışamaz).
+pub fn normalize_ai_question(
+    task_type: &str,
+    question: Option<&str>,
+) -> Result<Option<String>, StorageError> {
+    let trimmed = question
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if task_type.trim() != AI_ANSWER_TASK {
+        return match trimmed {
+            Some(_) => Err(StorageError::AiQuestion(
+                "soru metni yalnız «soru» amacındaki çalıştırmaya verilir".into(),
+            )),
+            None => Ok(None),
+        };
+    }
+    let Some(text) = trimmed else {
+        return Err(StorageError::AiQuestion(
+            "soru amacı için soru metni zorunlu".into(),
+        ));
+    };
+    let length = text.chars().count();
+    if !(AI_QUESTION_MIN_CHARS..=AI_QUESTION_MAX_CHARS).contains(&length) {
+        return Err(StorageError::AiQuestion(format!(
+            "soru {AI_QUESTION_MIN_CHARS}–{AI_QUESTION_MAX_CHARS} karakter olmalı (şu an {length})"
+        )));
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(StorageError::AiQuestion(
+            "soru kontrol karakteri taşıyor".into(),
+        ));
+    }
+    Ok(Some(text))
 }
 
 /// Sağlayıcı **görev türünden** adayın `ai_candidates.type` değerini türetir.
@@ -1740,6 +1795,21 @@ impl Database {
             return Err(StorageError::AiSchema(
                 "Aday şeması geçersiz; incelemeye gönderilmez.".into(),
             ));
+        }
+        // F11-T08 — **sınırlı yanıt** inceleme kuyruğuna gönderilmez: yanıtın
+        // hiçbir alıntısı belge metninde bulunmadıysa (ya da çalıştırma hiç
+        // metin görmediyse) bu satır "kaynaklı bulgu" gibi okunurdu. Kapı
+        // arayüzde değil burada: doğrudan IPC çağıran da geçemez.
+        if crate::ai_candidate::CandidateKind::parse(&kind)
+            == Some(crate::ai_candidate::CandidateKind::Answer)
+        {
+            let basis = self.answer_basis(&run_id)?;
+            if basis.state != "sufficient" {
+                return Err(StorageError::AiAnswerLimited(format!(
+                    "dayanak yok ({})",
+                    basis.reasons.join(", ")
+                )));
+            }
         }
 
         let quotes: Vec<crate::ai_candidate::QuoteMatchReport> =
@@ -6235,6 +6305,49 @@ mod tests {
             0,
             "reddedilen onay satır yazmamalı"
         );
+    }
+
+    /// F11-T08 — «soru» amacı kendi görevini taşır ve **soru metni zorunludur**;
+    /// başka amaçta gelen soru sessizce yutulmaz, açıkça reddedilir.
+    #[test]
+    fn question_is_required_for_the_answer_purpose_and_refused_elsewhere() {
+        assert_eq!(purpose_task_type("soru"), Some(AI_ANSWER_TASK));
+        assert_eq!(
+            normalize_ai_question("answer", Some("  Kira borcu ödendi mi?  ")).expect("geçerli"),
+            Some("Kira borcu ödendi mi?".to_string())
+        );
+        assert_eq!(
+            normalize_ai_question("answer", Some("ilk satır\nikinci satır")).expect("çok satırlı"),
+            Some("ilk satır\nikinci satır".to_string())
+        );
+        // Eksik / boş / kısa / uzun / kontrol karakterli soru reddedilir.
+        for invalid in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("ab"),
+            Some("soru\u{0}metni"),
+        ] {
+            let error = normalize_ai_question("answer", invalid).unwrap_err();
+            assert_eq!(error.code(), "E_AI_QUESTION", "girdi: {invalid:?}");
+        }
+        let too_long = "s".repeat(AI_QUESTION_MAX_CHARS + 1);
+        assert_eq!(
+            normalize_ai_question("answer", Some(&too_long))
+                .unwrap_err()
+                .code(),
+            "E_AI_QUESTION"
+        );
+        // Başka görevde soru kabul edilmez; sorusuz görev de sorunsuzdur.
+        assert_eq!(
+            normalize_ai_question("summarize", Some("Kira borcu ödendi mi?"))
+                .unwrap_err()
+                .code(),
+            "E_AI_QUESTION"
+        );
+        assert!(normalize_ai_question("summarize", None)
+            .expect("sorusuz")
+            .is_none());
     }
 
     /// Reddedilen amaç **var olan yetkiyi kapatmaz**: doğrulama, önceki onayı

@@ -264,6 +264,7 @@ export function draftJsonError(text: string): string | null {
  */
 export function promoteBlockedReason(
   row: Pick<AiCandidateRow, "validationState" | "quoteState" | "schemaState">,
+  answerLimited = false,
 ): string | null {
   if (row.schemaState === "legacy" || row.quoteState === "legacy") {
     return t("candidate.blocked.legacy");
@@ -274,5 +275,46 @@ export function promoteBlockedReason(
   if (row.validationState === "invalid") {
     return t("candidate.blocked.invalidSchema");
   }
+  // F11-T08 — dayanağı doğrulanmamış yanıt inceleme kuyruğuna gönderilmez;
+  // kapı çekirdekte (`E_AI_ANSWER_LIMITED`), burada yalnız nedeni yazılır.
+  if (answerLimited) {
+    return t("candidate.blocked.answerLimited");
+  }
   return null;
+}
+
+/** Soru-cevap dayanak durumu: `sufficient` · `limited`. */
+export function answerBasisTone(state: string): "ok" | "warn" | "plain" {
+  if (state === "sufficient") return "ok";
+  if (state === "limited") return "warn";
+  return "plain";
+}
+
+export function answerBasisStateLabel(state: string): string {
+  switch (state) {
+    case "sufficient":
+      return t("candidate.answerBasis.sufficient");
+    case "limited":
+      return t("candidate.answerBasis.limited");
+    default:
+      return state;
+  }
+}
+
+/** Sınır nedenleri kararlı kod taşır; ekran bilinenleri Türkçeleştirir. */
+export function answerBasisReasonLabel(code: string): string {
+  switch (code) {
+    case "no_scope":
+      return t("candidate.answerReason.noScope");
+    case "no_answer":
+      return t("candidate.answerReason.noAnswer");
+    case "answer_invalid":
+      return t("candidate.answerReason.answerInvalid");
+    case "no_quotes":
+      return t("candidate.answerReason.noQuotes");
+    case "quotes_not_found":
+      return t("candidate.answerReason.quotesNotFound");
+    default:
+      return code;
+  }
 }

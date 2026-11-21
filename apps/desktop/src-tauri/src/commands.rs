@@ -7393,6 +7393,19 @@ pub fn ai_candidates_list(
     Ok(db.list_ai_candidates(&run_id)?)
 }
 
+/// F11-T08 — çalıştırmanın **incelenen kapsamı** ve yanıtın **dayanak**
+/// durumu. Hesap çekirdekte, okuma anında yapılır: arayüz "sınırlı" işaretini
+/// kendi tahminiyle değil, gönderilen segmentlerden ve alıntı raporundan okur.
+#[tauri::command]
+pub fn ai_answer_basis(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<dim_storage::AnswerBasis, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.answer_basis(&run_id)?)
+}
+
 #[tauri::command]
 pub fn ai_candidate_promote(
     state: State<'_, AppState>,
@@ -7754,11 +7767,37 @@ pub fn ai_run_execute(
     consent_id: String,
     mask_terms: Option<Vec<String>>,
     mask_plan_id: Option<String>,
+    // F11-T08 — soru-cevap: soru metni. Yalnız `soru` amacındaki onayla
+    // kullanılır; başka görevde verilirse açıkça reddedilir (`E_AI_QUESTION`),
+    // sessizce yok sayılmaz.
+    question: Option<String>,
 ) -> Result<AiCandidateRow, ApiError> {
     use sha2::{Digest, Sha256};
 
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    // Görev türü **onaydan** türetilir; soru doğrulaması görev türüne bağlı
+    // olduğu için onay burada okunur (çalıştırma `start_ai_run`da yeniden
+    // doğrulanır — bu okuma yalnız soru kapısı içindir).
+    let consent = db
+        .get_transfer_consent(&consent_id)?
+        .ok_or_else(|| ApiError::new("E_AI_CONSENT", "Aktarım onayı bulunamadı."))?;
+    if consent.case_scope != case_id {
+        return Err(ApiError::new(
+            "E_AI_CONSENT",
+            "Aktarım onayı bu dosyaya ait değil.",
+        ));
+    }
+    let task_type = dim_storage::purpose_task_type(consent.purpose.trim()).ok_or_else(|| {
+        ApiError::new(
+            "E_AI_PURPOSE",
+            &format!(
+                "Aktarım onayı tanınmayan amaç taşıyor: «{}»",
+                consent.purpose
+            ),
+        )
+    })?;
+    let question = dim_storage::normalize_ai_question(task_type, question.as_deref())?;
     // Varış yeri **seçili** profilden okunur: eski davranış "ilk api profili"ni
     // kullanıyordu, yani onay başka bir sağlayıcıya ait olsa da içerik o profile
     // gidebiliyordu. Bu yürütme yolu yalnız API profilini taşır; başka tür
@@ -7858,8 +7897,22 @@ pub fn ai_run_execute(
         },
     )?;
 
+    // F11-T08 — soru, çalıştırmanın **user** mesajı olarak sicile yazılır
+    // (şema v1 `ai_messages.role` zaten `user` taşır). Yazılamazsa hiçbir
+    // bayt çıkmaz: "neyi sorduk" kaydı olmayan bir soru-cevap denetlenemez.
+    if let Some(text) = question.as_deref() {
+        if let Err(error) = db.record_ai_message(&run.id, "user", text, &[], "visible") {
+            let report = serde_json::json!({"error": "question_record_failed"}).to_string();
+            let _ = db.finish_ai_run(&run.id, "failed", &report);
+            return Err(error.into());
+        }
+    }
+
     // Gönderimden **önce** sicil: hangi sürümün kaç baytı çıkıyor. Yazılamazsa
     // hiçbir şey gönderilmez (denetlenemeyen aktarım yapılmaz).
+    // Soru, koşunun **user** mesajıdır (F11-T08): yanıt kartı "neyi sordum"
+    // sorusunu uydurmadan yanıtlar. Yazılamazsa çalıştırma başarısız kapanır —
+    // sorusuz bir "soru-cevap" sicile geçmez.
     // Segment düzeyinde gönderim sicili + maske (şartname §737: «Her gönderim
     // segmenti, gönderilen metin/hash, maskeleme dönüşüm sürümü ve özgün
     // Unicode aralıklarına eşleme taşır»). Metin çağırandan **alınmaz**:
@@ -7955,6 +8008,7 @@ pub fn ai_run_execute(
         prompt_version: "1".to_string(),
         output_schema_version: "candidate.v1".to_string(),
         instructions: candidate_instructions,
+        question: question.clone(),
         segments: outbound_record
             .segments
             .iter()

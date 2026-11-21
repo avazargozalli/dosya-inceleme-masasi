@@ -494,6 +494,34 @@ export type AiMessageRow = {
   state: string;
 };
 
+/** Soru-cevapta **incelenen kapsamın** bir belgesi (fiilen gönderilen). */
+export type AnswerScopeDocument = {
+  documentVersionId: string;
+  segments: number;
+  bytes: number;
+};
+
+/**
+ * F11-T08 — «bu yanıt hangi kapsamda incelendi, dayanağı yeterli mi?».
+ *
+ * `state`: `sufficient` · `limited`. `limited` ise `reasons` kararlı kodlarla
+ * nedenini yazar (`no_scope`, `no_answer`, `answer_invalid`, `no_quotes`,
+ * `quotes_not_found`); sınırlı yanıt inceleme kuyruğuna gönderilemez.
+ */
+export type AiAnswerBasisRow = {
+  question: string | null;
+  answers: number;
+  scopeDocuments: AnswerScopeDocument[];
+  scopeSegments: number;
+  scopeBytes: number;
+  quotesTotal: number;
+  quotesFound: number;
+  quotesVerified: number;
+  quotesNotFound: number;
+  state: string;
+  reasons: string[];
+};
+
 export type PackageResult = {
   /** Açık metin klasörün yolu; şifreli pakette `null` (klasör silindi).
    *  Silme başarısız olduysa dolu kalır — arayüz ayrı uyarı yazar. */
@@ -2548,6 +2576,9 @@ export const api = {
    *
    * **Görev türü gönderilmez**: çekirdek onu onayın amacından türetir
    * (şartname §13.5) — onaylanan amaç dışında bir görev koşturulamaz.
+   *
+   * `question` yalnız `soru` amacında verilir (3–500 karakter); başka görevde
+   * gönderilirse çekirdek `E_AI_QUESTION` ile reddeder.
    */
   aiRunExecute: (
     caseId: string,
@@ -2555,6 +2586,7 @@ export const api = {
     consentId: string,
     maskTerms: string[] | null = null,
     maskPlanId: string | null = null,
+    question: string | null = null,
   ) =>
     invoke<AiCandidateRow>("ai_run_execute", {
       caseId,
@@ -2562,6 +2594,7 @@ export const api = {
       consentId,
       maskTerms,
       maskPlanId,
+      question,
     }),
   aiCandidatesList: (runId: string) => invoke<AiCandidateRow[]>("ai_candidates_list", { runId }),
   /** Çalıştırmada cihazdan **çıkan** belge sürümleri (gönderim sicili). */
@@ -2570,6 +2603,11 @@ export const api = {
     invoke<TransferSegmentRow[]>("ai_transfer_segments", { runId }),
   /** Çalıştırmanın **görünen** model yanıtı (şema hatasında da saklanır). */
   aiMessages: (runId: string) => invoke<AiMessageRow[]>("ai_messages_list", { runId }),
+  /**
+   * F11-T08 — çalıştırmanın incelenen kapsamı ve yanıtın dayanak durumu.
+   * Çekirdekte, okuma anında hesaplanır; "sınırlı" işareti tahmin değildir.
+   */
+  aiAnswerBasis: (runId: string) => invoke<AiAnswerBasisRow>("ai_answer_basis", { runId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
   aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>

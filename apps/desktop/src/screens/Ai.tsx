@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   api,
   toApiError,
+  type AiAnswerBasisRow,
   type AiCandidateRow,
   type AiContextItemRow,
   type AiMessageRow,
@@ -22,6 +23,9 @@ import { t } from "../lib/i18n";
 import { consentScopeLine, skippedSummary } from "../lib/transferScope";
 import {
   CANDIDATE_KINDS,
+  answerBasisReasonLabel,
+  answerBasisStateLabel,
+  answerBasisTone,
   candidateKindLabel,
   candidateStateLabel,
   candidateStateTone,
@@ -50,6 +54,8 @@ function purposeLabel(purpose: string): string {
       return t("ai.purposeEvents");
     case "iddia_cikarimi":
       return t("ai.purposeClaims");
+    case "soru":
+      return t("ai.purposeAnswer");
     default:
       return purpose;
   }
@@ -222,6 +228,12 @@ export function Ai() {
   const [messages, setMessages] = useState<AiMessageRow[]>([]);
   const [messagesBusy, setMessagesBusy] = useState(false);
   const [messagesError, setMessagesError] = useState<ApiError | null>(null);
+  // F11-T08 — soru metni + yanıtın **kapsam/dayanak** ölçümü. Ölçüm çekirdekten
+  // okunur (`ai_answer_basis`); arayüz "sınırlı" işaretini tahmin etmez.
+  const [question, setQuestion] = useState("");
+  const [answerBasis, setAnswerBasis] = useState<AiAnswerBasisRow | null>(null);
+  const [answerBasisBusy, setAnswerBasisBusy] = useState(false);
+  const [answerBasisError, setAnswerBasisError] = useState<ApiError | null>(null);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   // Onay **reddedildi**: çekirdek “bu onay isteği kapsamıyor” dedi. Onay
@@ -276,6 +288,8 @@ export function Ai() {
   const segmentsSeq = useRef(0);
   // Model yanıtı da bağımsız bir **okuma**dır: kendi nesli vardır.
   const messagesSeq = useRef(0);
+  // Kapsam/dayanak ölçümü de bağımsız bir **okuma**dır.
+  const answerBasisSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -446,6 +460,13 @@ export function Ai() {
     setReport(null);
     setNotice(null);
     setError(null);
+    // Soru metni dosyaya bağlıdır: önceki dosyaya yazılmış soru yeni dosyada
+    // sessizce gönderilmez (INV-05).
+    setQuestion("");
+    setAnswerBasis(null);
+    setAnswerBasisBusy(false);
+    setAnswerBasisError(null);
+    answerBasisSeq.current += 1;
     // Plan seçimi dosyaya bağlıdır: önceki dosyanın planıyla yeni dosyanın
     // metni maskelenemez (INV-05).
     setMaskPlanId("");
@@ -465,6 +486,23 @@ export function Ai() {
     void loadMaskPlans(caseId);
   }, [caseId]);
 
+  // F11-T08 — kapsam/dayanak ölçümü **soru-cevap** çalıştırmalarına aittir ve
+  // seçili çalıştırmayla birlikte okunur. Başka görevde istek atılmaz; seçim
+  // düşünce ölçüm de temizlenir (bayat "dayanak doğrulandı" kalmaz).
+  useEffect(() => {
+    const selected = overview?.runs.find((run) => run.id === runId) ?? null;
+    if (!runId || selected?.taskType !== "answer") {
+      answerBasisSeq.current += 1;
+      setAnswerBasis(null);
+      setAnswerBasisBusy(false);
+      setAnswerBasisError(null);
+      return;
+    }
+    void loadAnswerBasis(runId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- okuma yardımcısı
+    // render'lar arasında kararlıdır; nesil sayacı geç yanıtı zaten keser.
+  }, [runId, overview]);
+
   const provider = overview?.providers.find((p) => p.providerType !== "off") ?? null;
   const offOnly = overview !== null && overview.providers.every((p) => p.providerType === "off");
   // Onay **kendi** sağlayıcısıyla koşar. Eski davranış ilk off-dışı profili
@@ -478,6 +516,10 @@ export function Ai() {
   // Künye yüklüyse ve eşleşen profil yoksa onay **yürütülemez**: düğme kapanır
   // ve nedeni yazılır (sessiz `E_AI_CONSENT` yok).
   const consentStale = consent !== null && overview !== null && consentProvider === null;
+  // F11-T08 — seçili çalıştırmanın görev türü: kapsam/dayanak ölçümü yalnız
+  // soru-cevap çalıştırmalarında çizilir (özet/çıkarımda "yanıt" yoktur).
+  const selectedRun = overview?.runs.find((run) => run.id === runId) ?? null;
+  const selectedIsAnswer = selectedRun?.taskType === "answer";
   // İptali **uygulanmakta** olan onayla yeni gönderim başlamaz (F09-T09):
   // aksi hâlde içerik, iptal çekirdeğe ulaşmadan dışarı çıkabilir. Bu sırada
   // alınmış **yeni** onay (başka kimlik) engellenmez.
@@ -494,6 +536,16 @@ export function Ai() {
   const maskInvalid =
     maskTerms.length > 500 ||
     maskTerms.some((term) => [...term].length < 2 || [...term].length > 200);
+  // Soru **çekirdekle aynı** ölçüyle denetlenir: kırpılmış kod noktası sayısı
+  // 3–500. Geçersizse istek hiç gitmez (çekirdek de `E_AI_QUESTION` verir).
+  const questionText = question.trim();
+  const questionLength = [...questionText].length;
+  const questionInvalid =
+    purpose === "soru" && (questionLength < 3 || questionLength > 500);
+  // "Model yanıtı" kartı **modelin** satırlarını çizer; kullanıcının sorusu
+  // `answerQuestionLine` ile ayrı yazılır (soru satırına «şemaya çözüldü»
+  // durumu basılmaz).
+  const modelMessages = messages.filter((message) => message.role !== "user");
   // Maske imzası: önizleme/onay **hangi maske** üzerinden alındı. Gönderim
   // aynı maskeyi kullanmıyorsa "Çalıştır" kapanır — onaylanan metin ile çıkan
   // metin ayrışmaz (şartname §11.7: maskeleme durumu önizlemenin parçasıdır).
@@ -568,6 +620,9 @@ export function Ai() {
         consent.id,
         maskTerms.length > 0 ? maskTerms : null,
         maskPlanId || null,
+        // F11-T08 — soru yalnız `soru` amacında gönderilir; çekirdek başka
+        // görevde soru görürse isteği reddeder (`E_AI_QUESTION`).
+        purpose === "soru" ? questionText : null,
       );
       const next = await api.aiOverview(caseId);
       if (caseGen.current !== gen) return;
@@ -696,6 +751,31 @@ export function Ai() {
       setMessagesError(toApiError(e));
     } finally {
       if (messagesSeq.current === seq) setMessagesBusy(false);
+    }
+  }
+
+  /**
+   * F11-T08 — incelenen kapsam ve dayanak da bir **okuma**dır: geç yanıt yeni
+   * seçimin altına yazılmaz; düşen okumada "dayanak yok" denmez, hata kendi
+   * satırında yazılır. Ölçüm **çekirdekte** yapılır (gönderilen segmentler +
+   * alıntı raporu); arayüz tahmin etmez.
+   */
+  async function loadAnswerBasis(forRun: string): Promise<void> {
+    if (!forRun) return;
+    answerBasisSeq.current += 1;
+    const seq = answerBasisSeq.current;
+    setAnswerBasisBusy(true);
+    setAnswerBasisError(null);
+    try {
+      const basis = await api.aiAnswerBasis(forRun);
+      if (answerBasisSeq.current !== seq) return;
+      setAnswerBasis(basis);
+    } catch (e) {
+      if (answerBasisSeq.current !== seq) return;
+      setAnswerBasis(null);
+      setAnswerBasisError(toApiError(e));
+    } finally {
+      if (answerBasisSeq.current === seq) setAnswerBasisBusy(false);
     }
   }
 
@@ -927,8 +1007,32 @@ export function Ai() {
               <option value="ozet">{t("ai.purposeSummary")}</option>
               <option value="olay_cikarimi">{t("ai.purposeEvents")}</option>
               <option value="iddia_cikarimi">{t("ai.purposeClaims")}</option>
+              <option value="soru">{t("ai.purposeAnswer")}</option>
             </select>
           </div>
+          {purpose === "soru" ? (
+            <div className="field" style={{ maxWidth: 420 }}>
+              <label htmlFor="ai-question">{t("ai.questionLabel")}</label>
+              <textarea
+                id="ai-question"
+                className="input"
+                rows={2}
+                value={question}
+                placeholder={t("ai.questionPlaceholder")}
+                onChange={(e) => {
+                  // Soru değişikliği onayı kapsam dışı bırakmaz (onay amaca
+                  // bağlıdır) ama **soruyu** değiştirir: geçersiz soruyla
+                  // istek gitmez.
+                  setQuestion(e.target.value);
+                }}
+              />
+              <p className="hint" style={{ margin: 0 }}>
+                {questionInvalid
+                  ? t("ai.questionInvalid")
+                  : t("ai.questionHint", { count: questionLength })}
+              </p>
+            </div>
+          ) : null}
           <div className="field" style={{ maxWidth: 320 }}>
             <label htmlFor="ai-mask">{t("ai.maskLabel")}</label>
             <textarea
@@ -978,7 +1082,11 @@ export function Ai() {
             </p>
           </div>
           <div className="row" style={{ alignItems: "flex-end", gap: "var(--space-2)" }}>
-            <button className="btn" disabled={!provider || busy} onClick={() => void approve()}>
+            <button
+              className="btn"
+              disabled={!provider || busy || questionInvalid}
+              onClick={() => void approve()}
+            >
               {t("ai.approve")}
             </button>
             <button className="btn ghost" onClick={() => void showContent()}>
@@ -993,6 +1101,7 @@ export function Ai() {
                 revokingConsent ||
                 consentStale ||
                 maskInvalid ||
+                questionInvalid ||
                 maskChangedSincePreview
               }
               onClick={() => void start()}
@@ -1316,6 +1425,57 @@ export function Ai() {
             <p className="card-sub">{t("ai.answerSub")}</p>
           </div>
         </div>
+        {runId && selectedIsAnswer ? (
+          // F11-T08 — **incelenen kapsam** ve **dayanak** çekirdekten okunur.
+          // Sınırlı yanıt rozeti tahmin değildir: kapsam fiilen gönderilen
+          // segmentlerden, dayanak alıntı raporundan gelir.
+          <div style={{ marginBottom: "var(--space-2)" }}>
+            {answerBasisError ? (
+              <div className="notice danger" role="alert">
+                <strong>{t("ai.answerBasisError")}</strong> {answerBasisError.code} —{" "}
+                {answerBasisError.message}
+              </div>
+            ) : answerBasis ? (
+              <>
+                <p className="hint" style={{ margin: 0 }}>
+                  {answerBasis.question
+                    ? t("ai.answerQuestionLine", { question: answerBasis.question })
+                    : t("ai.answerQuestionMissing")}
+                </p>
+                <p style={{ margin: "4px 0" }}>
+                  <span className={`badge ${answerBasisTone(answerBasis.state)}`}>
+                    {answerBasisStateLabel(answerBasis.state)}
+                  </span>{" "}
+                  <span className="hint">
+                    {answerBasis.scopeSegments === 0
+                      ? t("ai.answerScopeEmpty")
+                      : t("ai.answerScopeLine", {
+                          documents: answerBasis.scopeDocuments.length,
+                          segments: answerBasis.scopeSegments,
+                          bytes: formatSize(answerBasis.scopeBytes),
+                        })}
+                  </span>
+                </p>
+                {answerBasis.reasons.length > 0 ? (
+                  <p className="hint" style={{ margin: 0 }}>
+                    {t("ai.answerBasisReasons", {
+                      reasons: answerBasis.reasons.map(answerBasisReasonLabel).join(" · "),
+                    })}
+                  </p>
+                ) : null}
+                <p className="hint" style={{ margin: 0 }}>
+                  {t("ai.answerBasisCounts", {
+                    found: answerBasis.quotesFound,
+                    total: answerBasis.quotesTotal,
+                    verified: answerBasis.quotesVerified,
+                  })}
+                </p>
+              </>
+            ) : answerBasisBusy ? (
+              <p className="hint" style={{ margin: 0 }}>{t("ai.answerBasisLoading")}</p>
+            ) : null}
+          </div>
+        ) : null}
         {!runId ? (
           <p className="hint" style={{ margin: 0 }}>{t("ai.answerNoRun")}</p>
         ) : messagesError ? (
@@ -1323,13 +1483,13 @@ export function Ai() {
           <div className="notice danger" role="alert">
             <strong>{t("ai.answerError")}</strong> {messagesError.code} — {messagesError.message}
           </div>
-        ) : messages.length === 0 ? (
+        ) : modelMessages.length === 0 ? (
           <p className="hint" style={{ margin: 0 }}>
             {messagesBusy ? t("ai.answerLoading") : t("ai.answerEmpty")}
           </p>
         ) : (
           <>
-            {messages.map((message) => (
+            {modelMessages.map((message) => (
               <div key={message.id} style={{ marginBottom: "var(--space-2)" }}>
                 <p className="hint" style={{ margin: 0 }}>
                   {t("ai.answerMeta", {
@@ -1619,7 +1779,12 @@ export function Ai() {
             </thead>
             <tbody>
               {candidates.map((candidate) => {
-                const blocked = promoteBlockedReason(candidate);
+                const answerLimited =
+                  selectedIsAnswer === true &&
+                  candidate.candidateType === "answer_candidate" &&
+                  answerBasis !== null &&
+                  answerBasis.state !== "sufficient";
+                const blocked = promoteBlockedReason(candidate, answerLimited);
                 const issues = parseIssues(candidate.validationErrors);
                 return (
                   <tr key={candidate.id}>

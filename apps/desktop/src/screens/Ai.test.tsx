@@ -31,6 +31,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AiAnswerBasisRow,
   AiCandidateRow,
   AiContextItemRow,
   AiMessageRow,
@@ -76,6 +77,7 @@ const mocks = vi.hoisted(() => ({
   aiContextItems: vi.fn(),
   aiTransferSegments: vi.fn(),
   aiMessages: vi.fn(),
+  aiAnswerBasis: vi.fn(),
   aiCandidateValidate: vi.fn(),
   aiCandidateRecord: vi.fn(),
   aiCandidateRevalidate: vi.fn(),
@@ -354,6 +356,25 @@ const REPORT_INVALID: CandidateReport = {
   outboundState: "not_recorded",
 };
 
+/**
+ * F11-T08 — soru-cevap çalıştırmasının kapsam/dayanak ölçümü. `state` çekirdekte
+ * hesaplanır: kapsam **fiilen gönderilen** segmentlerden, dayanak alıntı
+ * raporundan gelir; arayüz yalnız gösterir.
+ */
+const ANSWER_BASIS_SUFFICIENT: AiAnswerBasisRow = {
+  question: "Kira borcu ödendi mi?",
+  answers: 1,
+  scopeDocuments: [{ documentVersionId: "d1-v1", segments: 3, bytes: 2048 }],
+  scopeSegments: 3,
+  scopeBytes: 2048,
+  quotesTotal: 1,
+  quotesFound: 1,
+  quotesVerified: 1,
+  quotesNotFound: 0,
+  state: "sufficient",
+  reasons: [],
+};
+
 function candidateRow(overrides: Partial<AiCandidateRow> = {}): AiCandidateRow {
   return {
     id: "cand-1",
@@ -401,6 +422,7 @@ type SetupOptions = {
   contextItems?: (runId: string) => Promise<AiContextItemRow[]>;
   transferSegments?: (runId: string) => Promise<TransferSegmentRow[]>;
   messages?: (runId: string) => Promise<AiMessageRow[]>;
+  answerBasis?: (runId: string) => Promise<AiAnswerBasisRow>;
   validate?: () => Promise<CandidateReport>;
   record?: () => Promise<unknown>;
   revalidate?: (candidateId: string) => Promise<AiCandidateRow>;
@@ -441,6 +463,9 @@ function setup(options: SetupOptions = {}) {
   mocks.aiContextItems.mockImplementation(options.contextItems ?? (async () => []));
   mocks.aiTransferSegments.mockImplementation(options.transferSegments ?? (async () => []));
   mocks.aiMessages.mockImplementation(options.messages ?? (async () => []));
+  mocks.aiAnswerBasis.mockImplementation(
+    options.answerBasis ?? (async () => ANSWER_BASIS_SUFFICIENT),
+  );
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
   mocks.aiCandidateRecord.mockImplementation(options.record ?? (async () => ({ id: "cand-1" })));
   mocks.aiCandidateRevalidate.mockImplementation(
@@ -649,7 +674,7 @@ describe("AI ekranı — sağlayıcı, kapsam ve aktarım onayı", () => {
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
     // Gönderim kapsamı onaydan çözülür: belge listesi burada verilmez.
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null);
     expect(mocks.documentList).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(overviewCalls).toBe(2));
   });
@@ -1041,7 +1066,7 @@ describe("AI ekranı — uçuştaki yanıtlar (dosya ve çalıştırma bağlamı
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() =>
-      expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null),
+      expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null),
     );
 
     switchCase("p2");
@@ -1829,7 +1854,7 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT_NEW.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT_NEW.id, null, null, null);
 
     revokeGate.resolve();
     // Eski onayın geç iptali yeni onayı silmez.
@@ -1857,7 +1882,7 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
     // Görev türü IPC'de taşınmaz: onay kimliği gider, çekirdek amacı okur.
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null);
   });
 
   it("olay çıkarımı onayı da görev türünü arayüzde hesaplamaz", async () => {
@@ -1870,7 +1895,7 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
 
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null);
   });
 
   it("onaydan sonra amaç değişirse onay düşer ve yeni gönderim yeniden onay ister", async () => {
@@ -1892,7 +1917,7 @@ describe("AI ekranı — onay amacı ve iptal uçuşu", () => {
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null);
   });
 
   it("onay satırı onaylanan amacı yazar", async () => {
@@ -2266,7 +2291,7 @@ describe("AI ekranı — sağlayıcı değişimi ve onayın yürütülebilirliğ
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null);
   });
 
   it("E_AI_PROVIDER_CHANGED ekranı tazeler: varış yeri yazılır, çalıştır kapanır", async () => {
@@ -3028,6 +3053,7 @@ describe("AI ekranı — gönderim maskesi", () => {
       CONSENT.id,
       ["Ahmet Yılmaz", "Acme Ltd."],
       null,
+      null,
     );
   });
 
@@ -3038,7 +3064,7 @@ describe("AI ekranı — gönderim maskesi", () => {
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p1", "prov-a", CONSENT.id, null, null, null);
   });
 
   it("geçersiz terim (tek karakter) çalıştırmayı kapatır ve nedenini yazar", async () => {
@@ -3238,6 +3264,7 @@ describe("AI ekranı — gönderim maskesi", () => {
       CONSENT.id,
       null,
       "plan-1",
+      null,
     );
     expect(screen.getByText(t("ai.maskPlanHint"))).toBeTruthy();
   });
@@ -3272,7 +3299,7 @@ describe("AI ekranı — gönderim maskesi", () => {
     await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
     fireEvent.click(button(t("ai.run")));
     await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
-    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p2", "prov-local", CONSENT.id, null, null);
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith("p2", "prov-local", CONSENT.id, null, null, null);
   });
 });
 
@@ -3468,5 +3495,188 @@ describe("AI ekranı — çalıştırma durumu", () => {
     const badge = runRows()[0]!.querySelector(".badge");
     expect(badge?.textContent).toBe(t("ai.runFailed"));
     expect(badge?.className).toContain("danger");
+  });
+});
+
+describe("AI ekranı — soru-cevap kapsamı ve sınırlı yanıt (F11-T08)", () => {
+  function answerRunRow(overrides: Partial<AiRunRow> = {}): AiRunRow {
+    return {
+      id: "ans-1",
+      caseId: "p1",
+      taskType: "answer",
+      providerId: "prov-a",
+      modelSnapshot: "claude-sonnet-4-5",
+      status: "succeeded",
+      usageReport: "{}",
+      createdAt: "2026-10-22T09:00:00.000Z",
+      completedAt: "2026-10-22T09:01:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function answerOverview(run: AiRunRow = answerRunRow()): AiOverview {
+    return { ...OVERVIEW_A, runs: [run, ...OVERVIEW_A.runs] };
+  }
+
+  function basis(overrides: Partial<AiAnswerBasisRow> = {}): AiAnswerBasisRow {
+    return { ...ANSWER_BASIS_SUFFICIENT, ...overrides };
+  }
+
+  /** Bu dosyada `başka ajan` yok: test yalnız kendi fikstürlerini kurar. */
+  it("soru amacı seçilmeden soru alanı yoktur; geçersiz soru düğmeleri kapatır", async () => {
+    setup();
+    await screen.findByText("api:claude (api)");
+    expect(screen.queryByLabelText(t("ai.questionLabel"))).toBeNull();
+    // Özet çalıştırmasında kapsam/dayanak ölçümü istenmez.
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiMessages).toHaveBeenCalledWith("r1"));
+    expect(mocks.aiAnswerBasis).not.toHaveBeenCalled();
+
+    fireEvent.change(purposeSelect(), { target: { value: "soru" } });
+    const field = (await screen.findByLabelText(t("ai.questionLabel"))) as HTMLTextAreaElement;
+    // Boş/kısa soru: onay ve çalıştır kapalı — istek hiç gitmez.
+    expect(button(t("ai.approve")).disabled).toBe(true);
+    fireEvent.change(field, { target: { value: "ab" } });
+    expect(button(t("ai.approve")).disabled).toBe(true);
+    expect(screen.getByText(t("ai.questionInvalid"))).toBeTruthy();
+
+    fireEvent.change(field, { target: { value: "Kira borcu ödendi mi?" } });
+    await waitFor(() => expect(button(t("ai.approve")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.approve")));
+    await waitFor(() => expect(mocks.aiConsentCreate).toHaveBeenCalledTimes(1));
+    // Amaç **soru** onaya yazılır; görev türünü çekirdek türetir.
+    expect(mocks.aiConsentCreate).toHaveBeenCalledWith(
+      "p1",
+      "prov-a",
+      "soru",
+      ["d1", "d2"],
+      null,
+      null,
+    );
+    await waitFor(() => expect(button(t("ai.run")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.run")));
+    await waitFor(() => expect(mocks.aiRunExecute).toHaveBeenCalledTimes(1));
+    expect(mocks.aiRunExecute).toHaveBeenCalledWith(
+      "p1",
+      "prov-a",
+      CONSENT.id,
+      null,
+      null,
+      "Kira borcu ödendi mi?",
+    );
+  });
+
+  it("soru-cevap yanıtı incelenen kapsamı ve doğrulanan dayanağı yazar", async () => {
+    setup({
+      cases: [P1],
+      overview: async () => answerOverview(),
+      answerBasis: async () => basis(),
+      messages: async () => [
+        {
+          id: "m-user",
+          aiRunId: "ans-1",
+          role: "user",
+          visibleContent: "Kira borcu ödendi mi?",
+          sourceRefs: [],
+          state: "visible",
+        },
+        {
+          id: "m-answer",
+          aiRunId: "ans-1",
+          role: "assistant",
+          visibleContent: "Ödemenin yapılmadığı belirtilmiştir.",
+          sourceRefs: ["seg-1"],
+          state: "visible",
+        },
+      ],
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiAnswerBasis).toHaveBeenCalledWith("ans-1"));
+
+    const card = cardByHeading(t("ai.answerTitle"));
+    await within(card).findByText(
+      t("ai.answerQuestionLine", { question: "Kira borcu ödendi mi?" }),
+    );
+    const text = card.textContent ?? "";
+    expect(text).toContain(
+      t("ai.answerScopeLine", {
+        documents: 1,
+        segments: 3,
+        bytes: formatSize(2048),
+      }),
+    );
+    expect(text).toContain(t("candidate.answerBasis.sufficient"));
+    expect(text).toContain(
+      t("ai.answerBasisCounts", { found: 1, total: 1, verified: 1 }),
+    );
+    // Soru **bir kez** yazılır: kullanıcı mesajı "model yanıtı" gibi listelenmez
+    // (soru satırına «şemaya çözüldü» durumu basılmaz).
+    expect(text.split("Kira borcu ödendi mi?").length - 1).toBe(1);
+  });
+
+  it("dayanak bulunamazsa yanıt sınırlı işaretlenir ve incelemeye gönderim kapalıdır", async () => {
+    setup({
+      cases: [P1],
+      overview: async () => answerOverview(),
+      answerBasis: async () =>
+        basis({
+          state: "limited",
+          quotesFound: 0,
+          quotesVerified: 0,
+          quotesNotFound: 1,
+          reasons: ["quotes_not_found"],
+        }),
+      candidates: async () => [
+        candidateRow({
+          id: "cand-answer",
+          aiRunId: "ans-1",
+          candidateType: "answer_candidate",
+          structuredPayload: '{"schemaVersion":1,"text":"Ödeme yapıldı."}',
+          validationState: "partial",
+          quoteState: "no_quotes",
+          quoteReport: [],
+        }),
+      ],
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiAnswerBasis).toHaveBeenCalledWith("ans-1"));
+
+    const card = cardByHeading(t("ai.answerTitle"));
+    await within(card).findByText(t("candidate.answerBasis.limited"));
+    const text = card.textContent ?? "";
+    expect(text).toContain(
+      t("ai.answerBasisReasons", {
+        reasons: t("candidate.answerReason.quotesNotFound"),
+      }),
+    );
+    expect(text).not.toContain(t("candidate.answerBasis.sufficient"));
+
+    // Kapı çekirdekte: arayüz düğmeyi kapatır ve nedenini yazar.
+    const promote = await screen.findByRole("button", { name: t("ai.promote") });
+    expect((promote as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(t("candidate.blocked.answerLimited"))).toBeTruthy();
+    fireEvent.click(promote);
+    expect(mocks.aiCandidatePromote).not.toHaveBeenCalled();
+  });
+
+  it("düşen kapsam okuması «dayanak yok» demez; hata kendi satırında yazılır", async () => {
+    setup({
+      cases: [P1],
+      overview: async () => answerOverview(),
+      answerBasis: async () => {
+        throw { code: "E_AI_BASIS", message: "ölçüm okunamadı" };
+      },
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(within(runRows()[0]!).getByRole("button"));
+    await waitFor(() => expect(mocks.aiAnswerBasis).toHaveBeenCalledWith("ans-1"));
+
+    const card = cardByHeading(t("ai.answerTitle"));
+    const alert = await within(card).findByRole("alert");
+    expect(alert.textContent).toContain("E_AI_BASIS");
+    expect(card.textContent ?? "").not.toContain(t("candidate.answerBasis.limited"));
+    expect(card.textContent ?? "").not.toContain(t("candidate.answerBasis.sufficient"));
   });
 });

@@ -247,6 +247,15 @@ pub fn candidate_output_instructions(kind_raw: &str) -> Option<String> {
     if kind == CandidateKind::Summary {
         lines.push("Özet adayı en az bir alıntı taşımalı.".to_string());
     }
+    if kind == CandidateKind::Answer {
+        lines.push(
+            "Soruyu yalnız gönderilen segmentlerdeki bilgiyle yanıtla. Yanıtı destekleyen \
+             pasajı quotes içinde birebir ver; birden çok pasaj gerekiyorsa hepsini ekle. \
+             Gönderilen segmentlerde dayanak yoksa text alanında «Gönderilen belgelerde bu \
+             sorunun yanıtına dayanak bulunamadı» yaz ve quotes boş bırak."
+                .to_string(),
+        );
+    }
     lines.push(
         "Vermeyen bilgiyi uydurma; şemada tanımlı olmayan alan ekleme, bilinmeyeni null bırak."
             .to_string(),
@@ -301,6 +310,45 @@ pub struct CandidateSchema {
     /// Yalnız yapısal olarak geçerli alıntılar; geçersizler eşleştirilmez.
     pub quote_refs: Vec<QuoteRef>,
     pub field_count: usize,
+}
+
+/// Soru-cevapta **incelenen kapsamın** bir belgesi: fiilen gönderilen segment
+/// sayısı ve bayt. Kimlik opaktır (belge sürümü UUID'si), içerik taşımaz.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerScopeDocument {
+    pub document_version_id: String,
+    pub segments: i64,
+    pub bytes: i64,
+}
+
+/// F11-T08 — «bu yanıt hangi kapsamda incelendi, dayanağı yeterli mi?».
+///
+/// `state`:
+/// - `sufficient` — kapsam boş değil **ve** yanıt adayının en az bir alıntısı
+///   belge metninde bulundu.
+/// - `limited` — yukarıdaki koşullardan biri yok; `reasons` kararlı kodlarla
+///   nedenini yazar (`no_scope`, `no_answer`, `answer_invalid`, `no_quotes`,
+///   `quotes_not_found`). Sınırlı yanıt inceleme kuyruğuna gönderilmez.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerBasis {
+    /// Koşunun `user` mesajı olarak yazılmış sorusu; yoksa `None` (uydurulmaz).
+    pub question: Option<String>,
+    /// Koşudaki yanıt adayı sayısı.
+    pub answers: i64,
+    pub scope_documents: Vec<AnswerScopeDocument>,
+    pub scope_segments: i64,
+    pub scope_bytes: i64,
+    pub quotes_total: i64,
+    /// Belge metninde **bulundu** (birebir/normalize/belirsiz/sayfa uyuşmazlığı).
+    pub quotes_found: i64,
+    /// Bunların konumu tek ve doğrulanmış olanları (`exact`/`normalized`).
+    pub quotes_verified: i64,
+    pub quotes_not_found: i64,
+    /// `sufficient` | `limited`
+    pub state: String,
+    pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1011,6 +1059,147 @@ impl Database {
             }),
         )?;
         self.get_ai_candidate(&id)?.ok_or(StorageError::NotFound)
+    }
+
+    /// F11-T08 — soru-cevapta **incelenen kapsam** ve **dayanak yeterliliği**.
+    ///
+    /// İki olgu ayrı ölçülür:
+    /// 1. **Kapsam** — bu çalıştırmada **fiilen gönderilen** segmentler
+    ///    (`transfer_segments`): hangi belge sürümünden kaç segment, kaç bayt.
+    ///    Modelin görmediği belge "incelendi" sayılmaz; kapsam boşsa yanıt
+    ///    yalnız modelin ön bilgisidir.
+    /// 2. **Dayanak** — yanıt adayının alıntıları belge metninde bulundu mu?
+    ///    Hiç bulunmuş alıntı yoksa yanıt **sınırlı**dır (`limited`): hukuki
+    ///    olgu olarak sunulmaz ve inceleme kuyruğuna gönderilmez
+    ///    (`E_AI_ANSWER_LIMITED`).
+    ///
+    /// Hesap **okuma anında** yapılır, sütuna yazılmaz: yeniden doğrulama
+    /// bayat bir "dayanaklı" işareti bırakamaz.
+    pub fn answer_basis(&self, run_id: &str) -> Result<AnswerBasis, StorageError> {
+        if self.get_ai_run(run_id)?.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let mut scope_documents = Vec::new();
+        {
+            let mut stmt = self.conn().prepare(
+                "SELECT document_version_id, COUNT(*),
+                        COALESCE(SUM(LENGTH(CAST(outbound_text AS BLOB))), 0)
+                 FROM transfer_segments WHERE ai_run_id=?1
+                 GROUP BY document_version_id ORDER BY document_version_id",
+            )?;
+            let rows = stmt.query_map([run_id], |row| {
+                Ok(AnswerScopeDocument {
+                    document_version_id: row.get(0)?,
+                    segments: row.get(1)?,
+                    bytes: row.get(2)?,
+                })
+            })?;
+            for row in rows {
+                scope_documents.push(row?);
+            }
+        }
+        let scope_segments: i64 = scope_documents.iter().map(|doc| doc.segments).sum();
+        let scope_bytes: i64 = scope_documents.iter().map(|doc| doc.bytes).sum();
+        // Soru, koşunun **user** mesajıdır (çekirdek yalnız doğrulanmış soruyu
+        // yazar). Birden fazla varsa ilki; metin uydurulmaz.
+        let question: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT visible_content FROM ai_messages
+                 WHERE ai_run_id=?1 AND role='user' ORDER BY rowid LIMIT 1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut answers: i64 = 0;
+        let mut all_invalid = true;
+        let mut any_usable = false;
+        let mut quotes_total: i64 = 0;
+        let mut quotes_found: i64 = 0;
+        let mut quotes_verified: i64 = 0;
+        let mut quotes_not_found: i64 = 0;
+        {
+            let mut stmt = self.conn().prepare(
+                "SELECT validation_state, quote_report FROM ai_candidates
+                 WHERE ai_run_id=?1 AND type IN ('answer','answer_candidate')
+                 ORDER BY rowid",
+            )?;
+            let rows = stmt.query_map([run_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (validation_state, quote_report) = row?;
+                answers += 1;
+                if validation_state != "invalid" {
+                    all_invalid = false;
+                }
+                let quotes: Vec<QuoteMatchReport> =
+                    serde_json::from_str(&quote_report).unwrap_or_default();
+                let mut found_here = 0i64;
+                for quote in &quotes {
+                    quotes_total += 1;
+                    match quote.state.as_str() {
+                        "exact" | "normalized" => {
+                            quotes_found += 1;
+                            quotes_verified += 1;
+                            found_here += 1;
+                        }
+                        // Metinde **var** ama konum tek değil / modelin dediği
+                        // sayfada değil: dayanak olarak sayılır, "birebir
+                        // doğrulandı" sayılmaz.
+                        "ambiguous" | "page_mismatch" => {
+                            quotes_found += 1;
+                            found_here += 1;
+                        }
+                        // `not_found`, `unverifiable` ve bilinmeyen durum:
+                        // dayanak **değildir** (fail-closed).
+                        _ => quotes_not_found += 1,
+                    }
+                }
+                if found_here > 0 {
+                    any_usable = true;
+                }
+            }
+        }
+        let mut reasons: Vec<String> = Vec::new();
+        if scope_segments == 0 {
+            reasons.push("no_scope".to_string());
+        }
+        if answers == 0 {
+            reasons.push("no_answer".to_string());
+        } else if !any_usable {
+            if quotes_found > 0 {
+                // Dayanak metinde var ama aday şeması geçersiz: yanıt olarak
+                // kullanılamaz — "alıntı bulunamadı" demek yanlış olurdu.
+                reasons.push("answer_invalid".to_string());
+            } else if quotes_total == 0 {
+                if all_invalid {
+                    reasons.push("answer_invalid".to_string());
+                } else {
+                    reasons.push("no_quotes".to_string());
+                }
+            } else {
+                reasons.push("quotes_not_found".to_string());
+            }
+        }
+        let state = if reasons.is_empty() {
+            "sufficient"
+        } else {
+            "limited"
+        };
+        Ok(AnswerBasis {
+            question,
+            answers,
+            scope_documents,
+            scope_segments,
+            scope_bytes,
+            quotes_total,
+            quotes_found,
+            quotes_verified,
+            quotes_not_found,
+            state: state.to_string(),
+            reasons,
+        })
     }
 
     /// Metin değişmiş olabilir (yeni ayrıştırma): adayı yeniden doğrular.
@@ -2669,5 +2858,195 @@ mod tests {
             .issues
             .iter()
             .any(|item| item.code == "quote_unmapped"));
+    }
+
+    /// F11-T08 — `soru` amacıyla ayrı çalıştırma açar (kendi onayı + run).
+    fn answer_run(fixture: &Fixture) -> String {
+        let consent = fixture
+            .db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: fixture.case_id.clone(),
+                purpose: "soru".into(),
+                selected_document_ids: vec![fixture.document_id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
+            })
+            .expect("soru onayı");
+        fixture
+            .db
+            .start_ai_run(
+                &fixture.case_id,
+                &NewAiRun {
+                    provider_id: "p1".into(),
+                    model_snapshot: "unknown".into(),
+                    input_manifest_hash: "h".into(),
+                    prompt_version: "1".into(),
+                    output_schema_version: "candidate.v1".into(),
+                    consent_id: consent.id,
+                    mask_terms: Vec::new(),
+                },
+            )
+            .expect("soru run")
+            .id
+    }
+
+    /// Çalıştırmanın **fiilen gönderdiği** segmentleri sicile yazar.
+    fn send_scope(fixture: &Fixture, run_id: &str) {
+        let segments = version_segments(fixture);
+        let refs: Vec<crate::ai::OutboundSegmentRef> = segments
+            .iter()
+            .map(|(id, _)| crate::ai::OutboundSegmentRef {
+                segment_id: id.clone(),
+                document_version_id: fixture.version_id.clone(),
+            })
+            .collect();
+        fixture
+            .db
+            .record_outbound_segments(run_id, &refs, None)
+            .expect("gönderim sicili");
+    }
+
+    fn answer_payload(text: &str, quotes: serde_json::Value) -> String {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "text": text,
+            "question": "Kira borcu ödendi mi?",
+            "quotes": quotes,
+        })
+        .to_string()
+    }
+
+    /// F11-T08 — «incelenen kapsam» **fiilen gönderilen** segmentlerden ölçülür;
+    /// dayanak yoksa yanıt `limited` işaretlenir ve inceleme kuyruğuna
+    /// gönderilmez (`E_AI_ANSWER_LIMITED`). Sınırlı/yanlış durumlar tek tek:
+    /// kapsam yok, yanıt yok, alıntı yok, alıntı bulunamadı.
+    #[test]
+    fn answer_basis_reports_sent_scope_and_limits_unbacked_answers() {
+        let fixture = setup(&[PAGE_ZERO]);
+
+        // (a) Ne gönderim ne yanıt: kapsam boş, dayanak yok.
+        let empty = answer_run(&fixture);
+        let basis = fixture.db.answer_basis(&empty).expect("ölçüm");
+        assert_eq!(basis.state, "limited");
+        assert_eq!(basis.scope_segments, 0);
+        assert_eq!(basis.scope_bytes, 0);
+        assert_eq!(basis.answers, 0);
+        assert_eq!(basis.question, None);
+        assert!(basis.reasons.contains(&"no_scope".to_string()));
+        assert!(basis.reasons.contains(&"no_answer".to_string()));
+
+        // (b) Gönderim var, yanıt yok: yalnız `no_answer`.
+        let unanswered = answer_run(&fixture);
+        send_scope(&fixture, &unanswered);
+        let basis = fixture.db.answer_basis(&unanswered).expect("ölçüm");
+        assert_eq!(basis.state, "limited");
+        assert_eq!(basis.reasons, vec!["no_answer".to_string()]);
+        assert_eq!(basis.scope_segments, 1);
+        assert_eq!(
+            basis.scope_bytes,
+            i64::try_from(PAGE_ZERO.len()).expect("bayt")
+        );
+        assert_eq!(basis.scope_documents.len(), 1);
+        assert_eq!(basis.scope_documents[0].segments, 1);
+
+        // (c) Soru + kapsam + **bulunan** alıntı: yeterli; terfi serbest.
+        let backed = answer_run(&fixture);
+        fixture
+            .db
+            .record_ai_message(&backed, "user", "Kira borcu ödendi mi?", &[], "visible")
+            .expect("soru");
+        send_scope(&fixture, &backed);
+        let backed_candidate = fixture
+            .db
+            .record_ai_run_candidate(
+                &backed,
+                &answer_payload(
+                    "Kiracı ödeme yapılmadığını belirtmiştir.",
+                    serde_json::json!([{
+                        "documentVersionId": fixture.version_id,
+                        "quote": "ödeme yapılmadığını belirtmiştir",
+                    }]),
+                ),
+            )
+            .expect("aday");
+        assert_eq!(backed_candidate.candidate_type, "answer_candidate");
+        let basis = fixture.db.answer_basis(&backed).expect("ölçüm");
+        assert_eq!(basis.state, "sufficient", "sebepler: {:?}", basis.reasons);
+        assert_eq!(basis.question.as_deref(), Some("Kira borcu ödendi mi?"));
+        assert_eq!(basis.quotes_total, 1);
+        assert_eq!(basis.quotes_found, 1);
+        assert_eq!(basis.quotes_verified, 1);
+        assert_eq!(basis.quotes_not_found, 0);
+        let review_item = fixture
+            .db
+            .promote_candidate(&backed_candidate.id, &fixture.case_id)
+            .expect("dayanaklı yanıt terfi eder");
+        assert!(!review_item.is_empty());
+
+        // (d) Alıntısız yanıt: `no_quotes`; terfi **reddedilir**.
+        let unbacked = answer_run(&fixture);
+        send_scope(&fixture, &unbacked);
+        let unbacked_candidate = fixture
+            .db
+            .record_ai_run_candidate(
+                &unbacked,
+                &answer_payload(
+                    "Gönderilen belgelerde bu sorunun yanıtına dayanak bulunamadı.",
+                    serde_json::json!([]),
+                ),
+            )
+            .expect("aday");
+        let basis = fixture.db.answer_basis(&unbacked).expect("ölçüm");
+        assert_eq!(basis.state, "limited");
+        assert_eq!(basis.reasons, vec!["no_quotes".to_string()]);
+        let error = fixture
+            .db
+            .promote_candidate(&unbacked_candidate.id, &fixture.case_id)
+            .unwrap_err();
+        assert_eq!(error.code(), "E_AI_ANSWER_LIMITED");
+        assert!(
+            error.to_string().contains("no_quotes"),
+            "ret nedeni taşınmalı: {error}"
+        );
+
+        // (e) Metinde **bulunamayan** alıntı: `quotes_not_found`.
+        let wrong = answer_run(&fixture);
+        send_scope(&fixture, &wrong);
+        fixture
+            .db
+            .record_ai_run_candidate(
+                &wrong,
+                &answer_payload(
+                    "Ödeme yapıldı.",
+                    serde_json::json!([{
+                        "documentVersionId": fixture.version_id,
+                        "quote": "tamamen uydurma bir pasaj",
+                    }]),
+                ),
+            )
+            .expect("aday");
+        let basis = fixture.db.answer_basis(&wrong).expect("ölçüm");
+        assert_eq!(basis.state, "limited");
+        assert_eq!(basis.reasons, vec!["quotes_not_found".to_string()]);
+        assert_eq!(basis.quotes_total, 1);
+        assert_eq!(basis.quotes_found, 0);
+        assert_eq!(basis.quotes_not_found, 1);
+
+        // (f) Şeması geçersiz yanıt: `answer_invalid`.
+        let broken = answer_run(&fixture);
+        send_scope(&fixture, &broken);
+        fixture
+            .db
+            .record_ai_run_candidate(
+                &broken,
+                &serde_json::json!({"schemaVersion": 1, "text": ""}).to_string(),
+            )
+            .expect("aday");
+        let basis = fixture.db.answer_basis(&broken).expect("ölçüm");
+        assert_eq!(basis.state, "limited");
+        assert_eq!(basis.reasons, vec!["answer_invalid".to_string()]);
     }
 }

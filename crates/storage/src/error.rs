@@ -173,6 +173,10 @@ pub enum StorageError {
     PrecedentSource(String),
     #[error("aday şeması geçersiz: {0}")]
     AiSchema(String),
+    #[error("soru metni geçersiz: {0}")]
+    AiQuestion(String),
+    #[error("yanıtın dayanağı doğrulanmadı; sınırlı yanıt inceleme kuyruğuna gönderilmez: {0}")]
+    AiAnswerLimited(String),
     #[error("adaydaki alıntı kaynak olarak kullanılamaz: {0}")]
     AiQuote(String),
     #[error("alıntı denetimi için metin çok uzun (en çok 50.000 karakter)")]
@@ -300,6 +304,8 @@ impl StorageError {
             Self::CorpusNotPermitted(_) => "E_CORPUS_NOT_PERMITTED",
             Self::PrecedentSource(_) => "E_PRECEDENT_SOURCE",
             Self::AiSchema(_) => "E_AI_SCHEMA",
+            Self::AiQuestion(_) => "E_AI_QUESTION",
+            Self::AiAnswerLimited(_) => "E_AI_ANSWER_LIMITED",
             Self::AiQuote(_) => "E_AI_QUOTE",
             Self::QuoteTextTooLong => "E_QUOTE_TEXT",
             Self::QuoteTooMany => "E_QUOTE_TOO_MANY",

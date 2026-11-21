@@ -134,6 +134,7 @@ mod tests {
             instructions:
                 "schemaVersion = 1; quotes[].documentVersionId segment satırındaki ikinci değerdir."
                     .into(),
+            question: None,
             segments: vec![ContextSegment {
                 segment_id: "seg-1".into(),
                 text: "Kira ödenmedi.".into(),
