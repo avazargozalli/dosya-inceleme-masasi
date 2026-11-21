@@ -58,8 +58,11 @@ pub struct ProviderProfile {
 pub struct ContextSegment {
     pub segment_id: String,
     pub text: String,
-    /// Kaynak referansı JSON'u sağlayıcıya gönderilmez; yalnız yerel eşleme için.
-    pub source_ref_json: Option<String>,
+    /// Belge sürümü kimliği (opak UUID). Modele segment satırının parçası
+    /// olarak verilir: modelin alıntıyı **hangi belge sürümüne** bağladığını
+    /// söyleyebilmesi için gereklidir; belge adı/içeriği değildir. `None` ise
+    /// satır yalnız segment kimliğiyle yazılır (elle kurulan istekler).
+    pub document_version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +71,10 @@ pub struct AiRequest {
     pub task_type: String,
     pub prompt_version: String,
     pub output_schema_version: String,
+    /// Görev türüne karşılık gelen **somut çıktı şeması** (alanlar, zorunluluk,
+    /// alıntı sözleşmesi). Sağlayıcı bunu isteme ekler; modelin hangi alanları
+    /// üretmesi gerektiğini tahmin etmesi beklenmez.
+    pub instructions: String,
     pub segments: Vec<ContextSegment>,
 }
 
@@ -76,6 +83,32 @@ impl AiRequest {
     #[must_use]
     pub fn outbound_bytes(&self) -> usize {
         self.segments.iter().map(|s| s.text.len()).sum()
+    }
+
+    /// Sağlayıcıya giden **kullanıcı istemi**: görev, şema sürümü, somut
+    /// çıktı kuralları ve segment satırları. İki sağlayıcı (API + yerel) bu
+    /// metni **aynı** işlevden kurar; kopya biçim ayrışırsa modelin gördüğü
+    /// şema ile çekirdeğin doğruladığı şema sessizce çakışırdı.
+    ///
+    /// Segment satırı `[segmentId | documentVersionId] metin` biçimindedir;
+    /// alıntıdaki `documentVersionId` bu ikinci değerdir. Belge sürümü yoksa
+    /// yalnız segment kimliği yazılır.
+    #[must_use]
+    pub fn user_prompt(&self) -> String {
+        let mut lines = String::new();
+        for segment in &self.segments {
+            match &segment.document_version_id {
+                Some(version) => lines.push_str(&format!(
+                    "[{} | {}] {}\n",
+                    segment.segment_id, version, segment.text
+                )),
+                None => lines.push_str(&format!("[{}] {}\n", segment.segment_id, segment.text)),
+            }
+        }
+        format!(
+            "Görev: {}\nŞema: {}\nKurallar:\n{}\nSegmentler:\n{}",
+            self.task_type, self.output_schema_version, self.instructions, lines
+        )
     }
 }
 
@@ -224,10 +257,11 @@ mod tests {
             task_type: "summarize".into(),
             prompt_version: "p1".into(),
             output_schema_version: "1".into(),
+            instructions: "schemaVersion = 1".into(),
             segments: vec![ContextSegment {
                 segment_id: "s1".into(),
                 text: "kira".into(),
-                source_ref_json: None,
+                document_version_id: None,
             }],
         }
     }

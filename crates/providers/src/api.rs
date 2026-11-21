@@ -77,20 +77,13 @@ impl ApiProvider {
 
     #[must_use]
     pub fn outbound_body(&self, request: &AiRequest) -> Value {
-        let mut lines = String::new();
-        for segment in &request.segments {
-            lines.push_str(&format!("[{}] {}\n", segment.segment_id, segment.text));
-        }
         json!({
             "model": self.model,
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": format!(
-                    "Görev: {}\nŞema: {}\nSegmentler:\n{}",
-                    request.task_type, request.output_schema_version, lines
-                )},
+                {"role": "user", "content": request.user_prompt()},
             ],
         })
     }
@@ -166,10 +159,13 @@ mod tests {
             task_type: "summarize".into(),
             prompt_version: "1".into(),
             output_schema_version: "candidate.v1".into(),
+            instructions:
+                "schemaVersion = 1; quotes[].documentVersionId segment satırındaki ikinci değerdir."
+                    .into(),
             segments: vec![ContextSegment {
                 segment_id: "seg-1".into(),
                 text: "Kira ödenmedi.".into(),
-                source_ref_json: None,
+                document_version_id: Some("dv-1".into()),
             }],
         }
     }
@@ -190,6 +186,23 @@ mod tests {
         let user = body["messages"][1]["content"].as_str().unwrap_or_default();
         assert!(user.contains("seg-1"), "{user}");
         assert!(user.contains("candidate.v1"), "{user}");
+    }
+
+    /// Modelin alıntıyı bağlayabilmesi için **somut** şema ve kaynak kimliği
+    /// istemde olmalı: yalnız `candidate.v1` etiketi modelin hangi alanları
+    /// üreteceğini söylemiyordu.
+    #[test]
+    #[serial]
+    fn outbound_body_carries_concrete_schema_and_source_ids() {
+        let provider = ApiProvider::new("https://ornek.com/v1", "m").expect("provider");
+        let body = provider.outbound_body(&request());
+        let user = body["messages"][1]["content"].as_str().unwrap_or_default();
+        assert!(user.contains("Kurallar:"), "{user}");
+        assert!(
+            user.contains("segment satırındaki ikinci değerdir"),
+            "{user}"
+        );
+        assert!(user.contains("[seg-1 | dv-1]"), "{user}");
     }
 
     #[test]

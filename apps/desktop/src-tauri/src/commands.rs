@@ -7941,6 +7941,12 @@ pub fn ai_run_execute(
         return Err(error.into());
     }
 
+    // Model **hangi alanları** üreteceğini bilmeli: somut şema, doğrulayıcının
+    // kendi alan tablosundan üretilir (tek kaynak). Görev türü tanınmıyorsa
+    // boş kalır; aday yine kanıtıyla kaydedilir (tahmin yok).
+    let candidate_instructions = dim_storage::task_candidate_kind(&run.task_type)
+        .and_then(dim_storage::candidate_output_instructions)
+        .unwrap_or_default();
     let request = AiRequest {
         case_id,
         // Görev türü **satırdan** okunur: `start_ai_run` onu onayın amacından
@@ -7948,13 +7954,16 @@ pub fn ai_run_execute(
         task_type: run.task_type.clone(),
         prompt_version: "1".to_string(),
         output_schema_version: "candidate.v1".to_string(),
+        instructions: candidate_instructions,
         segments: outbound_record
             .segments
             .iter()
             .map(|segment| ContextSegment {
                 segment_id: segment.segment_id.clone(),
                 text: segment.text.clone(),
-                source_ref_json: None,
+                // Alıntının bağlanacağı **opak** belge sürümü kimliği; içerik
+                // değil. Model bunu quotes[].documentVersionId olarak yazar.
+                document_version_id: Some(segment.document_version_id.clone()),
             })
             .collect(),
     };
@@ -8063,7 +8072,7 @@ pub fn ai_run_execute(
     // `partial` yazılır — "gönderildi ama sicili yok" sessizce başarı sayılmaz.
     let receipt = db.finish_transfer_receipt(&attempt, "dispatched");
     let payload = serde_json::to_string(&candidate.payload).unwrap_or_else(|_| "{}".to_string());
-    let row = db.record_ai_candidate(&run.id, &run.task_type, &payload)?;
+    let row = db.record_ai_run_candidate(&run.id, &payload)?;
     let report = serde_json::json!({
         "segments": scope.segments.len(),
         "documents": scope.documents.len(),

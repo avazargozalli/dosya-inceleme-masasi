@@ -116,6 +116,34 @@ pub fn purpose_task_type(purpose: &str) -> Option<&'static str> {
     }
 }
 
+/// Sağlayıcı **görev türünden** adayın `ai_candidates.type` değerini türetir.
+///
+/// Neden: `ai_run_execute` gerçek model yanıtını yıllarca `run.task_type`
+/// (`summarize`/`extract_events`/`extract_claims`) ile kaydetti; doğrulayıcı
+/// bu adları aday türü tanımadığı için **her gerçek aday `invalid`**
+/// (`unknown_candidate_type`) doğuyordu — akışın çıktısı incelenemiyordu.
+/// Eşleme tek yerde durur; arayüz kendi kopyasını taşımaz.
+///
+/// Eski satırlarla uyum: `task_type` zaten bir aday türü adıysa (`event`,
+/// `claim_candidate`, …) o ad **aynen** kullanılır. Tanınmayan değer `None`
+/// döner; çağıran tahmin etmez (aday bilinmeyen türle, kanıtıyla kaydedilir).
+pub fn task_candidate_kind(task_type: &str) -> Option<&'static str> {
+    match task_type.trim() {
+        "summarize" => Some("summary_candidate"),
+        "extract_events" => Some("event_candidate"),
+        "extract_claims" => Some("claim_candidate"),
+        other => match crate::ai_candidate::CandidateKind::parse(other) {
+            Some(crate::ai_candidate::CandidateKind::Event) => Some("event_candidate"),
+            Some(crate::ai_candidate::CandidateKind::Person) => Some("person_candidate"),
+            Some(crate::ai_candidate::CandidateKind::Date) => Some("date_candidate"),
+            Some(crate::ai_candidate::CandidateKind::Claim) => Some("claim_candidate"),
+            Some(crate::ai_candidate::CandidateKind::Summary) => Some("summary_candidate"),
+            Some(crate::ai_candidate::CandidateKind::Answer) => Some("answer_candidate"),
+            None => None,
+        },
+    }
+}
+
 /// Onay envanteri satırı: kayıt + **çekirdeğin** hesapladığı etkinlik.
 ///
 /// `active` arayüzdeki saatten değil, `consent_is_active` ile **aynı** kuraldan

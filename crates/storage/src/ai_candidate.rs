@@ -211,6 +211,49 @@ fn field_specs(kind: CandidateKind) -> &'static [FieldSpec] {
     }
 }
 
+/// Görev türüne karşılık gelen **somut çıktı şeması** (modele verilen kurallar).
+///
+/// Neden: sağlayıcı istemi yalnız `Şema: candidate.v1` etiketini taşıyordu;
+/// model `schemaVersion`, zorunlu alanlar ve alıntı sözleşmesini bilmiyordu →
+/// gerçek yanıt yapısal olarak geçersiz doğuyordu. Metin, doğrulayıcının
+/// **aynı** `field_specs` tablosundan üretilir; iki kopya ayrışamaz.
+///
+/// `kind_raw` aday türüdür (`summary_candidate` vb.); tanınmayan değer `None`.
+pub fn candidate_output_instructions(kind_raw: &str) -> Option<String> {
+    let kind = CandidateKind::parse(kind_raw)?;
+    let mut lines = vec![
+        "Yanıtı TEK bir JSON nesnesi olarak ver; JSON dışında metin yazma.".to_string(),
+        "Zorunlu alan: schemaVersion = 1.".to_string(),
+    ];
+    for spec in field_specs(kind) {
+        let rule = match &spec.kind {
+            FieldKind::Text { min, max } => format!("metin, {min}–{max} karakter"),
+            FieldKind::Enum(values) => format!("şu değerlerden biri: {}", values.join(", ")),
+            FieldKind::TextList {
+                max_items,
+                max_chars,
+            } => format!("metin listesi, en çok {max_items} öğe, öğe başına {max_chars} karakter"),
+            FieldKind::IsoDate => "YYYY-AA-GG biçiminde gerçek bir gün".to_string(),
+        };
+        let required = if spec.required { " (zorunlu)" } else { "" };
+        lines.push(format!("- {}{required}: {rule}", spec.name));
+    }
+    lines.push(format!(
+        "- quotes: en çok {MAX_CANDIDATE_QUOTES} alıntı; her öğe {{\"documentVersionId\": \"…\", \
+         \"quote\": \"…\"}}. documentVersionId, segment satırındaki `|` işaretinden sonraki değerdir; \
+         quote, segment metninden **birebir** kopyalanır (en az {MIN_QUOTE_CHARS}, en çok 1000 \
+         karakter)."
+    ));
+    if kind == CandidateKind::Summary {
+        lines.push("Özet adayı en az bir alıntı taşımalı.".to_string());
+    }
+    lines.push(
+        "Vermeyen bilgiyi uydurma; şemada tanımlı olmayan alan ekleme, bilinmeyeni null bırak."
+            .to_string(),
+    );
+    Some(lines.join("\n"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationIssue {
@@ -908,6 +951,24 @@ impl Database {
         })
     }
 
+    /// `ai_run_execute`nün **gerçek model yanıtı** yolunu tek adımda kaydeder:
+    /// aday türü çalıştırmanın görev türünden türetilir (`task_candidate_kind`)
+    /// ve `record_ai_candidate` aynı doğrulamayı çalıştırır.
+    ///
+    /// Neden ayrı giriş noktası: çağıran `run.task_type`ı doğrudan aday türü
+    /// sanıyordu (`summarize`), doğrulayıcı bu adı tanımıyordu ve **her gerçek
+    /// aday `invalid`** doğuyordu. Eşleme tek yerde; tanınmayan görev türü
+    /// tahmin edilmez — yanıt **kanıtıyla** bilinmeyen türde kaydedilir.
+    pub fn record_ai_run_candidate(
+        &self,
+        run_id: &str,
+        payload: &str,
+    ) -> Result<AiCandidateRow, StorageError> {
+        let run = self.get_ai_run(run_id)?.ok_or(StorageError::NotFound)?;
+        let kind = crate::ai::task_candidate_kind(&run.task_type).unwrap_or(run.task_type.as_str());
+        self.record_ai_candidate(run_id, kind, payload)
+    }
+
     /// Adayı doğrular ve **hesaplanan** durumla kaydeder. Çağıran doğrulama
     /// durumunu seçemez; `valid` yalnız şema geçip her alıntı birebir
     /// bulunduğunda yazılır.
@@ -1428,6 +1489,7 @@ mod tests {
     struct Fixture {
         db: Database,
         case_id: String,
+        document_id: String,
         version_id: String,
         run_id: String,
         /// Maskeli gönderim sicilinin çalıştırması: maske **onayın parçasıdır**
@@ -1555,6 +1617,7 @@ mod tests {
         Fixture {
             db,
             case_id: case.id,
+            document_id: document.id,
             version_id: version.id,
             run_id: run.id,
             masked_run: masked_run.id,
@@ -1576,6 +1639,199 @@ mod tests {
             "quotes": [quote_ref],
         })
         .to_string()
+    }
+
+    /// Görev türü → aday türü eşlemesi **tek kaynak** ve tahminsiz olmalı.
+    #[test]
+    fn task_candidate_kind_maps_every_provider_task_and_refuses_unknown() {
+        use crate::ai::task_candidate_kind;
+        assert_eq!(task_candidate_kind("summarize"), Some("summary_candidate"));
+        assert_eq!(
+            task_candidate_kind("extract_events"),
+            Some("event_candidate")
+        );
+        assert_eq!(
+            task_candidate_kind("extract_claims"),
+            Some("claim_candidate")
+        );
+        // Eski satırlar: `task_type` zaten aday türü adı taşıyorsa aynen kullanılır.
+        assert_eq!(
+            task_candidate_kind(" claim_candidate "),
+            Some("claim_candidate")
+        );
+        // `note_candidate` bir aday türü değil; tanınmayan değer tahmin edilmez.
+        assert_eq!(task_candidate_kind("note_candidate"), None);
+        assert_eq!(task_candidate_kind(""), None);
+    }
+
+    /// Modele verilen şema, doğrulayıcının **aynı** alan tablosundan üretilir:
+    /// model `schemaVersion`, zorunlu alanlar ve alıntı sözleşmesini görür.
+    #[test]
+    fn output_instructions_are_generated_from_the_validator_field_table() {
+        let event = candidate_output_instructions("event_candidate").expect("olay");
+        assert!(event.contains("schemaVersion = 1"), "{event}");
+        assert!(
+            event.contains("title") && event.contains("(zorunlu)"),
+            "{event}"
+        );
+        assert!(
+            event.contains("quotes") && event.contains("documentVersionId"),
+            "{event}"
+        );
+        let summary = candidate_output_instructions("summary_candidate").expect("özet");
+        assert!(summary.contains("en az bir alıntı taşımalı"), "{summary}");
+        assert!(candidate_output_instructions("bilinmeyen").is_none());
+    }
+
+    /// **Ölçülen kusur (düzeltme öncesi):** gerçek model yanıtı `run.task_type`
+    /// (`summarize`) ile kaydediliyordu; doğrulayıcı bu adı aday türü tanımaz →
+    /// her gerçek aday `invalid`. Depo katmanı hâlâ **tahmin etmez**: çağıran
+    /// yanlış tür verirse aday kanıtıyla (unknown_candidate_type) geçersizdir.
+    #[test]
+    fn a_provider_task_type_is_not_a_candidate_kind() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let payload = candidate(
+            &fixture.version_id,
+            "ödeme yapılmadığını belirtmiştir",
+            None,
+        );
+        let row = fixture
+            .db
+            .record_ai_candidate(&fixture.run_id, "summarize", &payload)
+            .expect("kayıt");
+        assert_eq!(row.validation_state, "invalid");
+        assert_eq!(row.schema_state, "invalid");
+        assert!(
+            row.validation_errors.contains("unknown_candidate_type"),
+            "{}",
+            row.validation_errors
+        );
+    }
+
+    /// Gerçek yol: görev türünden **doğru** aday türü türetilir; alıntı belge
+    /// metninde birebir bulunur → aday `valid` doğar ve incelenebilir.
+    #[test]
+    fn a_real_model_answer_is_recorded_with_its_task_candidate_kind() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let payload = candidate(
+            &fixture.version_id,
+            "ödeme yapılmadığını belirtmiştir",
+            Some(0),
+        );
+        let row = fixture
+            .db
+            .record_ai_run_candidate(&fixture.run_id, &payload)
+            .expect("kayıt");
+        assert_eq!(row.candidate_type, "summary_candidate");
+        assert_eq!(row.schema_state, "valid");
+        assert_eq!(row.quote_state, "verified");
+        assert_eq!(row.validation_state, "valid");
+        let review_id = fixture
+            .db
+            .promote_candidate(&row.id, &fixture.case_id)
+            .expect("terfi");
+        let item = fixture
+            .db
+            .get_review_item(&review_id)
+            .expect("öğe")
+            .expect("var");
+        assert_eq!(item.item_kind, "summary_candidate");
+        // Doğrulanmış alıntı **kaynak bağlantısına** dönüşür.
+        assert_eq!(item.source_anchor_ids.len(), 1);
+    }
+
+    /// Olay çıkarımı ayrı onayla koşar; aday `event_candidate` doğar.
+    #[test]
+    fn extract_events_run_records_event_candidates() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let consent = fixture
+            .db
+            .create_transfer_consent(&NewTransferConsent {
+                provider_id: "p1".into(),
+                case_scope: fixture.case_id.clone(),
+                purpose: "olay_cikarimi".into(),
+                selected_document_ids: vec![fixture.document_id.clone()],
+                expires_at: None,
+                consent_text_version: "1".into(),
+                mask_terms: Vec::new(),
+                mask_plan_id: None,
+            })
+            .expect("onay");
+        let run = fixture
+            .db
+            .start_ai_run(
+                &fixture.case_id,
+                &NewAiRun {
+                    provider_id: "p1".into(),
+                    model_snapshot: "unknown".into(),
+                    input_manifest_hash: "h".into(),
+                    prompt_version: "1".into(),
+                    output_schema_version: "1".into(),
+                    consent_id: consent.id,
+                    mask_terms: Vec::new(),
+                },
+            )
+            .expect("çalıştırma");
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "title": "Ödeme yapılmadı",
+            "quotes": [{
+                "documentVersionId": fixture.version_id,
+                "quote": "ödeme yapılmadığını belirtmiştir",
+                "pageIndex": 0,
+            }],
+        })
+        .to_string();
+        let row = fixture
+            .db
+            .record_ai_run_candidate(&run.id, &payload)
+            .expect("kayıt");
+        assert_eq!(row.candidate_type, "event_candidate");
+        assert_eq!(row.validation_state, "valid");
+        let review_id = fixture
+            .db
+            .promote_candidate(&row.id, &fixture.case_id)
+            .expect("terfi");
+        let item = fixture
+            .db
+            .get_review_item(&review_id)
+            .expect("öğe")
+            .expect("var");
+        assert_eq!(item.item_kind, "event_candidate");
+        assert_eq!(item.source_anchor_ids.len(), 1);
+    }
+
+    /// Tanınmayan görev türü **tahmin edilmez**: yanıt kaybolmaz, bilinmeyen
+    /// tür ve doğrulama kanıtıyla saklanır (fail-closed, sessiz varsayım yok).
+    #[test]
+    fn an_unknown_task_type_is_recorded_verbatim_and_stays_invalid() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let run_id = uuid::Uuid::now_v7().to_string();
+        fixture
+            .db
+            .conn()
+            .execute(
+                "INSERT INTO ai_runs (id,case_id,task_type,provider_id,model_snapshot,input_manifest_hash,prompt_version,output_schema_version,status,usage_report,created_at)
+                 VALUES (?1,?2,'bilinmeyen','p1','m','h','1','1','succeeded','{\"billing\":\"unknown\"}','2026-11-21T00:00:00.000000Z')",
+                rusqlite::params![run_id, fixture.case_id],
+            )
+            .expect("çalıştırma");
+        let payload = candidate(
+            &fixture.version_id,
+            "ödeme yapılmadığını belirtmiştir",
+            None,
+        );
+        let row = fixture
+            .db
+            .record_ai_run_candidate(&run_id, &payload)
+            .expect("kayıt");
+        assert_eq!(row.candidate_type, "bilinmeyen");
+        assert_eq!(row.validation_state, "invalid");
+        assert!(
+            row.validation_errors.contains("unknown_candidate_type"),
+            "{}",
+            row.validation_errors
+        );
     }
 
     #[test]

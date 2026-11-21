@@ -63,20 +63,13 @@ impl LocalProvider {
 
     #[must_use]
     pub fn outbound_body(&self, request: &AiRequest) -> Value {
-        let mut lines = String::new();
-        for segment in &request.segments {
-            lines.push_str(&format!("[{}] {}\n", segment.segment_id, segment.text));
-        }
         json!({
             "model": self.model,
             "stream": false,
             "format": "json",
             "messages": [
                 {"role": "system", "content": "Yalnız JSON döndür; uydurma, bilinmeyeni null bırak."},
-                {"role": "user", "content": format!(
-                    "Görev: {}\nŞema: {}\nSegmentler:\n{}",
-                    request.task_type, request.output_schema_version, lines
-                )},
+                {"role": "user", "content": request.user_prompt()},
             ],
         })
     }
@@ -138,10 +131,13 @@ mod tests {
             task_type: "summarize".into(),
             prompt_version: "1".into(),
             output_schema_version: "candidate.v1".into(),
+            instructions:
+                "schemaVersion = 1; quotes[].documentVersionId segment satırındaki ikinci değerdir."
+                    .into(),
             segments: vec![ContextSegment {
                 segment_id: "seg-1".into(),
                 text: "Kira ödenmedi.".into(),
-                source_ref_json: None,
+                document_version_id: Some("dv-1".into()),
             }],
         }
     }
