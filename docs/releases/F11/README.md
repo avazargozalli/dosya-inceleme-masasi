@@ -13,6 +13,7 @@
 | F11-T04b gerçek yanıtın aday türü ve şeması | ✅ | `task_candidate_kind` + `candidate_output_instructions`; `ai_run_execute` artık `record_ai_run_candidate` — her gerçek aday `invalid` doğmuyor, istem somut şemayı ve alıntı sözleşmesini taşıyor (2026-11-21, aşağıdaki bölüm) |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, `ai_candidate_validate`; alıntı **önce gönderilen metinde** aranır (şema v26, `transfer_segments` + `record_transfer_segments`) |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
+| F11-T08 soru-cevap: incelenen kapsam + sınırlı yanıt | ✅ | `answer_basis` — kapsam **fiilen gönderilen** segmentlerden, dayanak alıntı raporundan; `sufficient`/`limited` + kararlı neden kodları, `E_AI_ANSWER_LIMITED` terfi kapısı; amaç «soru», 3–500 karakter soru metni `ai_messages` **user** satırı + istemde `Soru:`; arayüzde kapsam satırı ve «sınırlı yanıt» rozeti (2026-11-21, aşağıdaki bölüm) |
 | Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
 
 ## Dürüst durum
@@ -934,3 +935,104 @@ gzip **186,63 kB**, `masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda
 güvenli depo`, sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve kaynak arşivi
 yeşil. İlk `git push` bu turda yapıldı (`272bd48..4000166`); önceki koşuda commit atılmış
 ama **push edilmemişti** — CI kanıtı bu turun ölçümüdür.
+
+## F11-T08 — soru-cevapta incelenen kapsam ve «sınırlı yanıt» işareti (2026-11-22)
+
+**Ölçülen kusur (düzeltme öncesi).** Üründe **soru amacı yoktu**: `purpose_task_type`
+yalnız `ozet`/`olay_cikarimi`/`iddia_cikarimi` tanıyordu, `ai_run_execute` soru metni
+almıyordu. `answer_candidate` şeması (`text` + isteğe bağlı `question`) vardı ama yanıtın
+**hangi belgeleri görerek** verildiği ve **dayanağı** ölçülmüyordu: `record_ai_candidate`
+alıntı bulunamazsa `partial/failed` diyor, "bu yanıt güvenilir mi" sorusunu hiçbir katman
+yanıtlamıyordu; avukat yanıtı inceleme kuyruğuna gönderdiğinde satır "kaynaklı bulgu" gibi
+okunuyordu.
+
+**Yazılan.**
+
+- **Amaç ve soru metni:** `purpose_task_type("soru") = "answer"`; `AI_ANSWER_TASK`,
+  `AI_QUESTION_MIN/MAX_CHARS` (3–500), `normalize_ai_question(task_type, question)` —
+  `answer` görevi soru **ister** (kırpılmış; kontrol karakteri yasak, satır sonu/sekme
+  serbest), başka görev soru **kabul etmez** (`E_AI_QUESTION`). `ai_run_execute` yeni
+  `question` parametresi alır; görev türü yine **onayın amacından** türetilir. Soru,
+  çalıştırmanın `ai_messages` **user** satırı olarak yazılır (yazılamazsa çalıştırma
+  `failed` kapanır ve hiçbir bayt çıkmaz).
+- **İstem:** `AiRequest.question` + tek `user_prompt()`: `Görev / Soru / Şema / Kurallar /
+  Segmentler`; soru satırı yalnız alan doluyken yazılır (iki sağlayıcı aynı işlevi kullanır).
+  `answer` çıktı kuralları da somutlaştı: «yanıtı destekleyen pasajı `quotes` içinde birebir
+  ver; dayanak yoksa text alanında bunu yaz ve `quotes` boş bırak».
+- **`Database::answer_basis(run_id) → AnswerBasis`** — **okuma anında** hesaplanır, sütuna
+  yazılmaz:
+  - **kapsam** `transfer_segments`ten (fiilen gönderilen): belge sürümü başına segment +
+    **bayt**, toplam segment/bayt;
+  - **soru** koşunun `user` mesajından (yoksa `null`, uydurulmaz);
+  - **dayanak** yanıt adaylarının alıntı raporundan: `quotesTotal/quotesFound/
+    quotesVerified/quotesNotFound` — `exact|normalized` doğrulanmış, `ambiguous|page_mismatch`
+    metinde **bulunmuş**, `not_found|unverifiable` ve bilinmeyen durum **bulunamadı**
+    (fail-closed);
+  - `state = sufficient` yalnız kapsam boş değil **ve** en az bir alıntı metinde bulunmuşsa;
+    değilse `limited` + kararlı neden kodları: `no_scope`, `no_answer`, `answer_invalid`,
+    `no_quotes`, `quotes_not_found`.
+- **Kapı:** `promote_candidate`, `limited` yanıt adayını `E_AI_ANSWER_LIMITED` ile reddeder
+  (neden kodları mesajda). Kapı **çekirdekte**: doğrudan IPC çağıran da geçemez; arayüz
+  yalnız düğmeyi kapatır ve nedenini yazar.
+- **Okuma yolu:** Tauri `ai_answer_basis`; `api.ts` `AiAnswerBasisRow` +
+  `aiRunExecute(..., question)`.
+- **Arayüz:** amaç listesinde «Soruyu yanıtla» + soru alanı (geçersiz soruda onay/çalıştır
+  kapalı; ölçü çekirdekle aynı: kırpılmış kod noktası 3–500). Yanıt kartında soru satırı,
+  `İncelenen kapsam: N belge · M segment · X` (kapsam boşsa ayrı cümle), dayanak rozeti
+  (`dayanak doğrulandı` / `sınırlı yanıt — dayanak doğrulanmadı`), sınır nedenleri ve alıntı
+  sayıları. Kullanıcının sorusu «model yanıtı» listesinde tekrarlanmaz. Dosya değişiminde
+  soru ve ölçüm taşınmaz (INV-05); geç okuma nesil sayacıyla kesilir; düşen ölçüm «dayanak
+  yok» demez, hata kendi satırında yazılır.
+
+**Testler (güncel kodla).** `ai` +1 (`soru`→`answer`; soru zorunluluğu, 3–500 sınırı, kontrol
+karakteri, başka görevde ret), `ai_candidate` +1 (altı senaryo: kapsam yok, yanıt yok, bulunan
+alıntı + terfi, alıntısız + `E_AI_ANSWER_LIMITED`, bulunamayan alıntı, şeması geçersiz yanıt;
+kapsam baytı **gönderilen** metinden), `dim-providers` +1 (soru satırı yalnız doluyken),
+arayüz +4 (Ai ekranı: soru alanı/kapılar, kapsam + dayanak gösterimi, sınırlı yanıtta terfi
+kapalı, düşen ölçüm). Yerel: `dim-storage --lib` **737/737 yeşil, 681,89 s** (log
+`scratch/dim-libtest-t08-run2.log`); `dim-providers` **29 passed + 1 yoksayılan**; arayüz 66 dosya / **1453**
+test (yerelde ağaçtaki başka ajanın 3 testiyle 1456); `tsc --noEmit`; iki manifest
+`cargo fmt`; `clippy -p dim-storage -p dim-providers --all-targets -D warnings`; masaüstü
+`clippy --all-targets -D warnings` temiz.
+
+**Kapı kanıtı (`scratch/dim-t08-gates.py`, `dim-t08-ui-gates.py`; her mutasyon tek başına,
+kaynak sha256 birebir geri yazıldı: `ai.rs 793fd7c3…`, `ai_candidate.rs 4aff90ca…`,
+`providers/lib.rs 0db3ff58…`, `Ai.tsx 9399db68…`).** Taban yeşil (storage 6 test, providers 1,
+arayüz 124); **13/13 çekirdek KIRMIZI** — amaç eşlemesi, soru kapısı, uzunluk/kontrol
+karakteri, terfi kapıları (2), kapsam sorgusu, `sufficient` kararı, `no_answer`/`no_quotes`
+nedenleri, kullanılabilirlik, soru rolü, istem satırı — ve **5/5 arayüz KIRMIZI** — soru
+kapıları, sorunun isteğe girmesi, soru alanı, kapsam kartı, sınırlı yanıtta terfi düğmesi.
+**Dürüst (kapı aracı):** ilk arayüz koşusu özet ayrıştırıcısı «Failed Tests N» satırını
+yakaladığı için 5/5 **ÖLÇÜLEMEDİ** verdi → ayrıştırma düzeltildi, 5/5 yeniden ölçüldü. Ayrıca
+ilk çekirdek kapısı, geri yazımda `copy2`'nin **eski mtime**'ını bırakıyordu; cargo son mutant
+derlemesini «güncel» sanıp yeniden kullandı ve ardından koşulan tam pakette
+`answer_basis…` testi **yanlış kırmızı** verdi. Kaynak sha256 doğruydu (ürün kusuru değil);
+kapı betiği **şimdi+2** damgasıyla düzeltildi, taban + 13/13 + 5/5 yeniden ölçüldü, tam paket
+temiz kaynaktan yeniden koşuldu. İlk (bozuk araçlı) koşuların hükümleri kanıt sayılmadı.
+
+**Dürüst sınırlar.**
+
+- **Gerçek API çağrısı yapılmadı** (anahtar yok): modelin soru + şemaya uyacağı ve yanıt
+  kalitesi ölçülmedi; uymazsa aday kanıtıyla `invalid`/`partial` kalır.
+- «Dayanak» ölçüsü **alıntı eşleşmesidir** (pasaj belge metninde bulundu mu). Yanıtın hukuken
+  doğru olduğu, alıntının yorumu desteklediği veya yanıtın soruya tam yanıt verdiği
+  doğrulanmaz — yorum ayrı incelenir (F11-T04 kuralı).
+- Kapsam, **gönderilen** segmentlerdir; modelin bu metni gerçekten "okuduğu" ayrıca
+  kanıtlanamaz. `scope_bytes` maskeli gönderimde **çıkan** baytı sayar.
+- **Sınırlı yanıt terfi edilemez**: «gönderilen belgelerde dayanak yok» sonucunu inceleme
+  kuyruğuna taşımanın yolu bugün yok; avukat bunu not olarak elle yazar. Bu bilinçli bir
+  ürün sınırıdır (INV-02: kaynaksız iddia kaynaklı bulgu gibi görünmez).
+- `limited`/`sufficient` **kalıcı damga değildir**; her okumada yeniden hesaplanır — belge
+  yeniden ayrıştırılırsa ölçüm değişebilir (bayat «dayanak doğrulandı» yazılmaz).
+- `question` yalnız yeni çalıştırmalarda yazılır; eski koşularda `null` («soru kaydı yok»
+  denir, uydurulmaz). Soru metni `ai_messages`ta **görünür içerik** olarak durur; denetim
+  kaydına (audit) yazılmaz.
+- Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `46d986d` (14 dosya, **+1086/−22**) → run `44954882906`
+**10/10 YEŞİL**: `dim-storage` **737** iki OS'ta (macos-15 **469,54 s** / ubuntu-latest
+**911,03 s**), `arayüz` 66 dosya / **1453** test (yerel 1456 farkı ağaçtaki başka ajanın
+commit'siz 3 testi), paket `index-D1rV_NXL.js` **704,49 kB** / gzip **187,85 kB**,
+`masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda 5), `windows güvenli depo` 30,
+sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve kaynak arşivi yeşil. Bu
+commit önceki koşuda atılmış ama **push edilmemişti**; push ve CI ölçümü bu turun işidir.
