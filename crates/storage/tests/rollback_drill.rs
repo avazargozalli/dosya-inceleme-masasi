@@ -9,6 +9,11 @@
 //! 2. `rollback_on_full_disk_fails_cleanly_and_vault_stays` (elle, `#[ignore]`)
 //!    — gerçek 8 MB APFS imajı doldurulur, geri dönüş `E_DISK_FULL` vermeli,
 //!    kasa bozulmamalı, artık kalmamalı; yer açılınca aynı çağrı başarılı olmalı.
+//! 3. `rollback_copies_the_safety_copy_on_a_volume_without_hard_links` —
+//!    gerçek **exFAT** imajı bağlanır (sabit bağlantı yok). Güvenlik kopyası
+//!    `hard_link_or_copy`in **kopya** dalından gelmeli, doğrulanmalı ve
+//!    kasanın baytlarını birebir korumalı; geri dönüş yine atomik olmalı.
+//!    Bu, ürün kodundaki `linked = false` yolunun tek gerçek ortam kanıtıdır.
 //!
 //! Tatbikat kancası `atomic::drill_pause` yalnız **hata ayıklama**
 //! derlemesinde çalışır; ürün derlemesinde hiçbir şey yapmaz.
@@ -224,11 +229,24 @@ impl Drop for MountedVolume {
 }
 
 /// Küçük bir APFS imajı oluşturup bağlar; ortam desteklemiyorsa `None`.
+fn mount_tiny_volume(tag: &str) -> Option<MountedVolume> {
+    mount_volume(tag, "APFS", "8m")
+}
+
+/// İstenen dosya sistemi ve boyutta imaj oluşturup bağlar (`-type SPARSE`).
 ///
 /// Birim adı test başına **tekil** olmalı; aynı ada iki imaj bağlanırsa test
 /// yanlış birime bakar (`DIMENOSPC 1`). Bu dosyayı `--test-threads=1` ile koşun.
-fn mount_tiny_volume(tag: &str) -> Option<MountedVolume> {
+/// Ad en fazla 11 karakter olabilir (exFAT/FAT birim etiketi sınırı).
+fn mount_volume(tag: &str, filesystem: &str, size: &str) -> Option<MountedVolume> {
     let volume_name = format!("DIMDRILL{}", tag.to_uppercase());
+    // Yalnız FAT ailesinde etiket 11 karakterle sınırlı; APFS'te sınır yok.
+    if matches!(filesystem, "ExFAT" | "MSDOS" | "FAT32" | "MS-DOS") {
+        assert!(
+            volume_name.len() <= 11,
+            "birim etiketi ≤ 11 karakter olmalı: {volume_name}"
+        );
+    }
     let image = std::env::temp_dir().join(format!(
         "dim-drill-{tag}-{}.sparseimage",
         std::process::id()
@@ -238,9 +256,9 @@ fn mount_tiny_volume(tag: &str) -> Option<MountedVolume> {
         .args([
             "create",
             "-size",
-            "8m",
+            size,
             "-fs",
-            "APFS",
+            filesystem,
             "-volname",
             &volume_name,
             "-type",
@@ -250,7 +268,7 @@ fn mount_tiny_volume(tag: &str) -> Option<MountedVolume> {
         .arg(&image)
         .status();
     if !matches!(created, Ok(status) if status.success()) {
-        eprintln!("ATLANDI: hdiutil imaj oluşturamadı");
+        eprintln!("ATLANDI: hdiutil imaj oluşturamadı ({filesystem})");
         return None;
     }
     let attached = Command::new("hdiutil")
@@ -395,4 +413,100 @@ fn rollback_on_full_disk_fails_cleanly_and_vault_stays() {
         outcome.safety_copy.display(),
         fs::metadata(&outcome.safety_copy).expect("meta").len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Sabit bağlantı desteklemeyen birim (elle koşulur)
+// ---------------------------------------------------------------------------
+
+/// `linked = false` — güvenlik kopyası **doğrulanmış tam kopya** olur.
+///
+/// Ürün kodu (`rollback_vault`) sabit bağlantı kuramadığı dosya sisteminde tam
+/// kopya alır ve kopyayı açar. Bugüne dek bu dal hiç gerçek ortamda koşmadı:
+/// APFS'te `hard_link` başarılı oluyor. Tatbikat gerçek bir **exFAT** imajı
+/// bağlar (orada `link(2)` `ENOTSUP` verir), önce bunu ölçer, sonra geri
+/// dönüşü aynı dosyalarla çalıştırır.
+#[test]
+#[ignore = "gerçek exFAT imajı bağlar; elle koşulur"]
+fn rollback_copies_the_safety_copy_on_a_volume_without_hard_links() {
+    let Some(volume) = mount_volume("cp", "ExFAT", "32m") else {
+        return;
+    };
+    let mount = volume.mount_point.clone();
+
+    // Kasa APFS'te kurulur: bu tatbikatın konusu WAL değil, bağlantı/kopya dalı.
+    // Temiz kapanıştan sonra tek dosya kopyalanır; `-wal` kalmaz.
+    let source = tempfile::tempdir().expect("dizin");
+    let (source_path, source_backup) = seed_vault(source.path());
+    assert!(
+        !source.path().join("vault.db-wal").exists()
+            && !source.path().join("yedek.db-wal").exists(),
+        "temiz kapanışta -wal kalmaz; kopyalanan tek dosya tutarlı olmalı"
+    );
+
+    let path = mount.join("vault.db");
+    let backup = mount.join("yedek.db");
+    fs::copy(&source_path, &path).expect("kasa kopyalanır");
+    fs::copy(&source_backup, &backup).expect("yedek kopyalanır");
+
+    // **Ön koşul:** bu birimde sabit bağlantı kurulamaz. Kurulsaydı tatbikat
+    // kopya dalını değil bağlantı dalını ölçerdi — sessiz yanlış kanıt.
+    let probe_src = mount.join("probe.bin");
+    let probe_dst = mount.join("probe-link.bin");
+    fs::write(&probe_src, b"probe").expect("sonda yazılır");
+    let linked =
+        dim_storage::atomic::hard_link_or_copy(&probe_src, &probe_dst).expect("bağ ya da kopya");
+    assert!(
+        !linked,
+        "bu birimde sabit bağlantı desteklenmemeli; ölçülen dal kopya dalıdır"
+    );
+    assert_eq!(
+        fs::read(&probe_dst).expect("kopya okunur"),
+        b"probe",
+        "kopya dalı hedefi birebir yazar"
+    );
+    fs::remove_file(&probe_src).expect("sonda silinir");
+    fs::remove_file(&probe_dst).expect("kopya silinir");
+
+    let before = fs::read(&path).expect("kasa baytları");
+    let backup_bytes = fs::metadata(&backup).expect("meta").len();
+
+    let outcome = rollback_vault(&path, &backup, &key()).expect("kopya dalıyla geri dönüş");
+    assert_eq!(
+        outcome.restored_version,
+        dim_storage::CURRENT_SCHEMA_VERSION
+    );
+    assert!(outcome.safety_copy.is_file(), "güvenlik kopyası yazılır");
+    let safety = fs::read(&outcome.safety_copy).expect("güvenlik kopyası okunur");
+    assert_eq!(
+        safety, before,
+        "güvenlik kopyası kasanın baytlarını birebir korur (kopya dalı)"
+    );
+    assert!(backup.is_file(), "yedek dosyası tüketilmez");
+    assert!(
+        tagged_temps(&mount).is_empty(),
+        "geçici artık kalmamalı: {:?}",
+        tagged_temps(&mount)
+    );
+
+    // Geri konan kasa exFAT'te açılabilir olmalı; veriyi APFS'te doğrularız
+    // (WAL davranışı bu tatbikatın konusu değil, dosya içeriği konusu).
+    let restored_dir = tempfile::tempdir().expect("dizin");
+    let restored = restored_dir.path().join("vault.db");
+    fs::copy(&path, &restored).expect("geri konan kasa kopyalanır");
+    let db = Database::open(&restored, &key()).expect("geri konan kasa açılır");
+    assert_eq!(
+        titles(&db),
+        vec!["Eski dosya".to_string()],
+        "kopya dalında da yedeğin verisi döner"
+    );
+    assert_eq!(db.schema_version(), dim_storage::CURRENT_SCHEMA_VERSION);
+
+    eprintln!(
+        "exFAT: kasa {} bayt · yedek {} bayt · güvenlik kopyası {} bayt · linked={linked}",
+        before.len(),
+        backup_bytes,
+        safety.len()
+    );
+    eprintln!("birim son hâli: {:?}", entries(&mount));
 }

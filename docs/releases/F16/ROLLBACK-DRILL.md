@@ -262,7 +262,45 @@ yer açıldıktan sonra aynı çağrı başarılı ve `vault.db.rollback-…safe
   aynı çağrı başarılı oldu, **300** kayda döndü ve güvenlik kopyası
   **925.696 bayt** yazıldı; `1 passed · 0 failed` (2,70 s).
 
-**Dürüst sınır (değişmedi):** öldürme ayağı yalnız macOS/APFS + hata ayıklama
-derlemesinde ölçülür; `hard_link` desteklemeyen dosya sistemindeki kopya yolu,
-ağ birimi `rename` semantiği, uyku/uyanma ve harici disk kopması hâlâ
+**Dürüst sınır (2026-11-21):** öldürme ayağı yalnız macOS/APFS + hata ayıklama
+derlemesinde ölçülür. `hard_link` desteklemeyen birimde **kopya dalı artık
+ölçüldü** (exFAT, 32 MB, `linked=false`), ama ağ birimi `rename`/bağlantı
+semantiği, uyku/uyanma, harici disk kopması ve bulut eşleme klasörleri hâlâ
 denenmedi. Arayüz görsel QA'sı insan bekliyor.
+
+### 2026-11-21 yeniden koşum (şema v62) + `hard_link` desteklemeyen birim
+
+Şema v62'de üç ayak yeniden koşuldu; **üçüncü ayak yeni**: ürün kodundaki
+`hard_link_or_copy`in **kopya** dalı (`linked = false`) bugüne dek hiç gerçek
+ortamda koşmamıştı (APFS'te bağlantı kuruluyor). Gerçek **exFAT** imajında
+`link(2)` desteklenmiyor.
+
+- **Süreç öldürme** (hata ayıklama derlemesi, `drill_pause` kancası):
+  `cargo test -p dim-storage --test rollback_drill -- --test-threads=1` →
+  `2 passed · 0 failed · 2 ignored` (0,63 s). Öldürmeden sonra kasa **yerinde**
+  ve açılabilir; yedeği yerine koyma adımı çalışmamış (güncelleme sonrası veri
+  duruyor); çökme geçici dosya + güvenlik kopyası bırakmış; **tekrar deneme**
+  artıkları süpürüp yedekteki veriye dönmüş.
+- **Gerçek disk dolması** (release,
+  `cargo test --release -p dim-storage --test rollback_drill -- --ignored
+  --test-threads=1`): kasa **1.044.480 bayt**, yedek **1.032.192 bayt** (v30'daki
+  925.696'dan büyük — arada 32 migrasyon var), imaj 48 KiB boşlukla dolduruldu
+  (**4.849.664 bayt**) → `rollback_vault` **`E_DISK_FULL`**; kasa dosyası
+  **bayt bayt değişmedi**; bizim geçici/güvenlik artığımız kalmadı; dolu diskte
+  `Database::open` **`E_DB_IO`**; yer açılınca kasa **301** kayıtla açıldı, aynı
+  çağrı **300** kayda döndü, güvenlik kopyası **1.044.480 bayt**; ayaklar
+  birlikte `2 passed · 0 failed` (4,89 s).
+- **Yeni ayak — `linked = false` (exFAT, 32 MB):** önce **ön koşul** ölçüldü:
+  aynı birimde `hard_link_or_copy` **`false`** döndü (sabit bağlantı yok;
+  kurulsaydı tatbikat yanlış dalı ölçerdi). Sonra gerçek geri dönüş: kasa
+  **839.680 bayt**, yedek **827.392 bayt**, güvenlik kopyası **839.680 bayt** ve
+  kasanın **baytları birebir aynı** — kopya dalında güvenlik kopyası doğrulanmış
+  tam kopyadır; yedek dosyası tüketilmedi; ürünün `.rollback-` artığı kalmadı;
+  geri konan kasa exFAT'ten kopyalanıp açıldığında **yalnız `Eski dosya`** var ve
+  şema **güncel (v62)**.
+  Dürüst not: exFAT'te macOS her dosya için `._*` AppleDouble yan dosyası bırakır
+  (`._vault.db.rollback-…safety` dâhil) — bu **dosya sistemi üst verisi**, ürünün
+  geçici dosyası değil; testin `.rollback-` filtresi bunları saymaz (adları `._`
+  ile başlar). Disk dolması ayağında dolu diskteki başarısız açma denemesi
+  SQLite'ın kendi `vault.db-wal`/`-shm` dosyalarını bırakır; bunlar da ürünün
+  geçici artığı değildir.
