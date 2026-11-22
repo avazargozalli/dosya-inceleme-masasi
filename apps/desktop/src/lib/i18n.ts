@@ -896,6 +896,42 @@ export const tr = {
     attackSchemaLine: "Şema taşması: {overflow} aday sınırı aştı ({codes}).",
     attackSchemaClean: "Şema sınırı aşan aday yok ({candidates} aday).",
     attackNoCandidates: "Bu çalıştırmada henüz aday yok.",
+    // F11-T12 — model/prompt sürümü bazında kalite ölçümü.
+    qualityTitle: "Model kalite ölçümü",
+    qualitySub:
+      "Model ve istem sürümü başına kaynak doğruluğu, öneri isabeti ve düzeltme " +
+      "emeği. Sayımlar kayıtlı kanıtlardan **okuma anında** türetilir; kalıcı damga yazılmaz.",
+    qualityLoading: "Kalite ölçümü okunuyor…",
+    qualityError: "Kalite ölçümü okunamadı:",
+    qualityEmpty:
+      "Bu dosyada henüz ölçülecek kayıt yok. Ölçüm, kaydedilmiş adayların alıntı " +
+      "hükümlerinden ve inceleme kararlarından üretilir; boş tablo «kusursuz» demek değildir.",
+    qualityColModel: "Model · istem",
+    qualityColRuns: "Çalıştırma",
+    qualityColCandidates: "Aday",
+    qualityColQuotes: "Kaynak doğruluğu",
+    qualityColReview: "İnceleme",
+    qualityPrompt: "istem {version}",
+    qualityRunsCell: "{runs} · {succeeded} başarılı, {failed} başarısız",
+    qualityRunsUnfinished: "{count} sonuçsuz",
+    qualityCandidatesCell: "{total} · {valid} geçerli, {partial} kısmi, {invalid} geçersiz",
+    qualityCandidatesOther: "{count} adayda bilinmeyen doğrulama durumu",
+    qualityCandidatesNoQuotes: "{count} adayda alıntı yok",
+    qualityCandidatesUnmeasured: "{count} aday ölçülemedi (eski kayıt)",
+    qualityQuotesGrounded: "doğrulanan {checked} · birebir {exact}, normalize {normalized}",
+    qualityQuotesWeak: "zayıf {count} · bulunamadı {notFound}",
+    qualityQuotesUnverifiable: "{count} doğrulanamayan (sürüm/maske; paydaya girmez)",
+    qualityAccuracy: "kaynak doğruluğu {percent}",
+    qualityAccuracyUnmeasured: "kaynak doğruluğu ölçülemedi (alıntı hükmü yok)",
+    qualityReviewCell:
+      "kuyruğa {promoted} · kabul {accept}, düzeltme {edit}, ret {reject}, ek kanıt {needsEvidence}",
+    qualityReviewPending: "{count} karar bekliyor · {superseded} yerine geçmiş",
+    qualityDirectAccept: "doğrudan kabul {percent}",
+    qualityUsable: "düzeltmeyle kullanılabilir {percent}",
+    qualityNote:
+      "Sınır: kaynak doğruluğu **alıntının metinde bulunmasıdır** — hukuki doğruluk " +
+      "değil. Düzeltme emeği yalnız düzenleme oranıdır; süre ölçülmez. Yerine geçmiş " +
+      "öğeler isabet oranına girmez. Model çağrısı yapılmadıysa tablo boş kalır.",
     maskChangedSincePreview:
       "Maske önizlemeden/onaydan sonra değişti. Gönderim, önizlenen metinle aynı " +
       "olmaz — “Onayla”ya basıp önizlemeyi yenileyin.",

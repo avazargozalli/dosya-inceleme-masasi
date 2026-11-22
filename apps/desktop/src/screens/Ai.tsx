@@ -7,6 +7,7 @@ import {
   type AiContextItemRow,
   type AiMessageRow,
   type AiOverview,
+  type AiQualityReport,
   type AiRunRow,
   type ApiError,
   type AttackAssessment,
@@ -22,7 +23,15 @@ import {
   type TransferReceiptRow,
   type TransferSegmentRow,
 } from "../lib/api";
-import { formatDateTime, formatSize } from "../lib/format";
+import {
+  candidateSummary,
+  directAcceptShare,
+  quoteAccuracy,
+  quoteSummary as qualityQuoteSummary,
+  reviewSummary,
+  usableShare,
+} from "../lib/ai-quality";
+import { formatDateTime, formatPercent, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
 import { consentScopeLine, skippedSummary } from "../lib/transferScope";
 import {
@@ -362,6 +371,194 @@ function ContradictionBasisView({
           })}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// F11-T12 — model/prompt sürümü bazında kalite ölçümü. Sayımlar çekirdekten
+// **okuma anında** gelir; oranlar `lib/ai-quality`te kurulur, paydası olmayan
+// hüküm «%0» diye yazılmaz. Kart yalnız bu dosyanın ölçümüdür; kasadaki başka
+// dosyaların çalıştırmaları karışmaz.
+function AiQualityCard({ caseId }: { caseId: string }) {
+  const [report, setReport] = useState<AiQualityReport | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Nesil sayacı: dosya hızlı değişirse eski yanıt yeni dosyanın tablosuna
+  // yazılmaz (geç yanıt kapısı).
+  const gen = useRef(0);
+
+  useEffect(() => {
+    const seq = ++gen.current;
+    setReport(null);
+    setError(null);
+    setBusy(true);
+    api
+      .aiQualityReport(caseId)
+      .then((next) => {
+        if (gen.current !== seq) return;
+        setReport(next);
+      })
+      .catch((e) => {
+        if (gen.current !== seq) return;
+        setError(toApiError(e));
+      })
+      .finally(() => {
+        if (gen.current === seq) setBusy(false);
+      });
+    return () => {
+      gen.current += 1;
+    };
+  }, [caseId]);
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <h2>{t("ai.qualityTitle")}</h2>
+          <p className="card-sub">{t("ai.qualitySub")}</p>
+        </div>
+      </div>
+      {error ? (
+        // Düşen okuma «kayıt yok» sayılmaz: kendi satırında yazılır.
+        <div className="notice danger" role="alert">
+          <strong>{t("ai.qualityError")}</strong> {error.code} — {error.message}
+        </div>
+      ) : report === null ? (
+        <p className="hint" style={{ margin: 0 }}>
+          {busy ? t("ai.qualityLoading") : t("ai.qualityEmpty")}
+        </p>
+      ) : report.groups.length === 0 ? (
+        <p className="hint" style={{ margin: 0 }}>{t("ai.qualityEmpty")}</p>
+      ) : (
+        <>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("ai.qualityColModel")}</th>
+                <th>{t("ai.qualityColRuns")}</th>
+                <th>{t("ai.qualityColCandidates")}</th>
+                <th>{t("ai.qualityColQuotes")}</th>
+                <th>{t("ai.qualityColReview")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.groups.map((group) => {
+                const quotes = qualityQuoteSummary(group);
+                const review = reviewSummary(group);
+                const accuracy = quoteAccuracy(group);
+                const candidates = candidateSummary(group);
+                return (
+                  <tr key={`${group.modelSnapshot}\u0000${group.promptVersion}`}>
+                    <td>
+                      <code>{group.modelSnapshot}</code>
+                      <div className="hint">
+                        {t("ai.qualityPrompt", { version: group.promptVersion })}
+                      </div>
+                    </td>
+                    <td>
+                      {t("ai.qualityRunsCell", {
+                        runs: group.runs,
+                        succeeded: group.runsSucceeded,
+                        failed: group.runsFailed,
+                      })}
+                      {group.runsUnfinished > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityRunsUnfinished", { count: group.runsUnfinished })}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {t("ai.qualityCandidatesCell", {
+                        total: candidates.total,
+                        valid: candidates.valid,
+                        partial: candidates.partial,
+                        invalid: candidates.invalid,
+                      })}
+                      {candidates.other > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityCandidatesOther", { count: candidates.other })}
+                        </div>
+                      ) : null}
+                      {quotes.noQuotes > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityCandidatesNoQuotes", { count: quotes.noQuotes })}
+                        </div>
+                      ) : null}
+                      {quotes.unmeasuredCandidates > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityCandidatesUnmeasured", {
+                            count: quotes.unmeasuredCandidates,
+                          })}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {quotes.checked > 0 ? (
+                        <>
+                          <div>
+                            {t("ai.qualityQuotesGrounded", {
+                              checked: quotes.checked,
+                              exact: group.quotesExact,
+                              normalized: group.quotesNormalized,
+                            })}
+                          </div>
+                          <div className="hint">
+                            {t("ai.qualityQuotesWeak", {
+                              count: quotes.weak,
+                              notFound: quotes.notFound,
+                            })}
+                          </div>
+                          <div className="hint">
+                            {t("ai.qualityAccuracy", {
+                              percent: formatPercent(accuracy),
+                            })}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="hint">{t("ai.qualityAccuracyUnmeasured")}</span>
+                      )}
+                      {quotes.unverifiable > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityQuotesUnverifiable", { count: quotes.unverifiable })}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {t("ai.qualityReviewCell", {
+                        promoted: review.promoted,
+                        accept: review.accept,
+                        edit: review.edit,
+                        reject: review.reject,
+                        needsEvidence: review.needsEvidence,
+                      })}
+                      {review.pending > 0 || review.superseded > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityReviewPending", {
+                            count: review.pending,
+                            superseded: review.superseded,
+                          })}
+                        </div>
+                      ) : null}
+                      {review.verdicts > 0 ? (
+                        <div className="hint">
+                          {t("ai.qualityDirectAccept", {
+                            percent: formatPercent(directAcceptShare(group)),
+                          })}
+                          {" · "}
+                          {t("ai.qualityUsable", {
+                            percent: formatPercent(usableShare(group)),
+                          })}
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="hint" style={{ margin: 0 }}>{t("ai.qualityNote")}</p>
+        </>
+      )}
     </div>
   );
 }
@@ -1540,6 +1737,8 @@ export function Ai() {
           <p className="hint" style={{ margin: 0 }}>{t("ai.runsEmpty")}</p>
         )}
       </div>
+
+      <AiQualityCard caseId={caseId} />
 
       <div className="card">
         <div className="card-head">

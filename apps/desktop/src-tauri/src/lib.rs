@@ -163,6 +163,7 @@ pub fn run() {
             commands::ai_candidates_list,
             commands::ai_answer_basis,
             commands::ai_attack_assessment,
+            commands::ai_quality_report,
             commands::ai_context_items,
             commands::ai_transfer_segments,
             commands::ai_messages_list,

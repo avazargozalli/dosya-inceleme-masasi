@@ -7420,6 +7420,20 @@ pub fn ai_attack_assessment(
     Ok(db.attack_assessment(&run_id)?)
 }
 
+/// F11-T12 — dosya kapsamında **model/prompt sürümü bazında kalite ölçümü**:
+/// alıntı hükümlerinden kaynak doğruluğu, son inceleme kararlarından öneri
+/// isabeti ve düzeltme emeği. Kayıtlı kanıtlardan okuma anında türetilir;
+/// hiçbir satıra damga yazılmaz.
+#[tauri::command]
+pub fn ai_quality_report(
+    state: State<'_, AppState>,
+    case_id: String,
+) -> Result<dim_storage::AiQualityReport, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.ai_quality_report(&case_id)?)
+}
+
 #[tauri::command]
 pub fn ai_candidate_promote(
     state: State<'_, AppState>,

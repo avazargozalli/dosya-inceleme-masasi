@@ -469,6 +469,46 @@ export type AttackAssessment = {
   schemaOverflow: SchemaOverflowScan;
 };
 
+/**
+ * F11-T12 — model/prompt sürümü bazında kalite ölçümü. Çekirdek **sayım**
+ * döndürür; oran `lib/ai-quality.ts`te kurulur (payda 0 → «ölçülemedi»).
+ */
+export type AiQualityGroup = {
+  modelSnapshot: string;
+  promptVersion: string;
+  runs: number;
+  runsSucceeded: number;
+  runsFailed: number;
+  runsUnfinished: number;
+  candidates: number;
+  candidatesValid: number;
+  candidatesPartial: number;
+  candidatesInvalid: number;
+  candidatesOther: number;
+  candidatesNoQuotes: number;
+  candidatesUnmeasured: number;
+  quotesChecked: number;
+  quotesExact: number;
+  quotesNormalized: number;
+  quotesAmbiguous: number;
+  quotesPageMismatch: number;
+  quotesNotFound: number;
+  quotesUnverifiable: number;
+  quotesOther: number;
+  itemsPromoted: number;
+  itemsSuperseded: number;
+  decidedAccept: number;
+  decidedEdit: number;
+  decidedReject: number;
+  decidedRequestEvidence: number;
+  decidedOther: number;
+};
+
+export type AiQualityReport = {
+  groups: AiQualityGroup[];
+  unattributedItems: number;
+};
+
 export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
 
 export type ValidationIssue = {
@@ -2737,6 +2777,9 @@ export const api = {
   /** F11-T11 — talimat saldırısı, sahte kaynak ve şema taşması değerlendirmesi. */
   aiAttackAssessment: (runId: string) =>
     invoke<AttackAssessment>("ai_attack_assessment", { runId }),
+  /** F11-T12 — model/prompt sürümü bazında kalite ölçümü (okuma anında türetilir). */
+  aiQualityReport: (caseId: string) =>
+    invoke<AiQualityReport>("ai_quality_report", { caseId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
   aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>

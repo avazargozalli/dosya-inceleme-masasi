@@ -7,6 +7,7 @@
 mod actors;
 mod ai;
 mod ai_candidate;
+mod ai_quality;
 mod anchors;
 pub mod atomic;
 pub mod audit;
@@ -64,6 +65,10 @@ pub use ai_candidate::{
     CandidateReport, CandidateSchema, ContradictionBasis, ContradictionSide,
     ContradictionSideReport, QuoteMatchReport, QuotePosition, QuoteRef, SentenceAttribution,
     SummarySentence, ValidationIssue,
+};
+pub use ai_quality::{
+    build_ai_quality_report, AiQualityCandidate, AiQualityGroup, AiQualityItem, AiQualityReport,
+    AiQualityRun,
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};
 pub use audit::{AuditChainStatus, AuditEventRow, DEFAULT_AUDIT_EVENTS, MAX_AUDIT_EVENTS};

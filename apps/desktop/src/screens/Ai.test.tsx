@@ -36,6 +36,7 @@ import type {
   AiContextItemRow,
   AiMessageRow,
   AiOverview,
+  AiQualityReport,
   AiRunRow,
   AttackAssessment,
   CandidateReport,
@@ -51,7 +52,7 @@ import type {
   TransferConsentRow,
   TransferReceiptRow,
 } from "../lib/api";
-import { formatDateTime, formatSize } from "../lib/format";
+import { formatDateTime, formatPercent, formatSize } from "../lib/format";
 import { t } from "../lib/i18n";
 import { consentScopeLine, skippedSummary } from "../lib/transferScope";
 import {
@@ -82,6 +83,7 @@ const mocks = vi.hoisted(() => ({
   aiMessages: vi.fn(),
   aiAnswerBasis: vi.fn(),
   aiAttackAssessment: vi.fn(),
+  aiQualityReport: vi.fn(),
   aiCandidateValidate: vi.fn(),
   aiCandidateRecord: vi.fn(),
   aiCandidateRevalidate: vi.fn(),
@@ -497,6 +499,7 @@ type SetupOptions = {
   messages?: (runId: string) => Promise<AiMessageRow[]>;
   answerBasis?: (runId: string) => Promise<AiAnswerBasisRow>;
   attack?: (runId: string) => Promise<AttackAssessment>;
+  quality?: (caseId: string) => Promise<AiQualityReport>;
   validate?: () => Promise<CandidateReport>;
   record?: () => Promise<unknown>;
   revalidate?: (candidateId: string) => Promise<AiCandidateRow>;
@@ -542,6 +545,9 @@ function setup(options: SetupOptions = {}) {
   );
   mocks.aiAttackAssessment.mockImplementation(
     options.attack ?? (async () => ATTACK_CLEAN),
+  );
+  mocks.aiQualityReport.mockImplementation(
+    options.quality ?? (async () => ({ groups: [], unattributedItems: 0 })),
   );
   mocks.aiCandidateValidate.mockImplementation(options.validate ?? (async () => REPORT_VALID));
   mocks.aiCandidateRecord.mockImplementation(options.record ?? (async () => ({ id: "cand-1" })));
@@ -3759,6 +3765,174 @@ describe("AI ekranı — soru-cevap kapsamı ve sınırlı yanıt (F11-T08)", ()
     expect(text).toContain(t("ai.attackFakeSourceClean", { quotes: 1 }));
     expect(text).toContain(t("ai.attackSchemaClean", { candidates: 1 }));
     expect(text).not.toContain(t("ai.instructionCodeIgnore"));
+  });
+
+  it("model kalite ölçümü sayımları ve oranları çekirdekten yazar", async () => {
+    setup({
+      quality: async () => ({
+        groups: [
+          {
+            modelSnapshot: "claude-sonnet",
+            promptVersion: "p2",
+            runs: 3,
+            runsSucceeded: 2,
+            runsFailed: 1,
+            runsUnfinished: 0,
+            candidates: 4,
+            candidatesValid: 3,
+            candidatesPartial: 1,
+            candidatesInvalid: 0,
+            candidatesOther: 0,
+            candidatesNoQuotes: 0,
+            candidatesUnmeasured: 1,
+            quotesChecked: 4,
+            quotesExact: 2,
+            quotesNormalized: 1,
+            quotesAmbiguous: 1,
+            quotesPageMismatch: 0,
+            quotesNotFound: 0,
+            quotesUnverifiable: 1,
+            quotesOther: 0,
+            itemsPromoted: 4,
+            itemsSuperseded: 1,
+            decidedAccept: 2,
+            decidedEdit: 0,
+            decidedReject: 1,
+            decidedRequestEvidence: 0,
+            decidedOther: 0,
+          },
+        ],
+        unattributedItems: 0,
+      }),
+    });
+    await screen.findByText("api:claude (api)");
+    await waitFor(() => expect(mocks.aiQualityReport).toHaveBeenCalledWith("p1"));
+
+    const card = cardByHeading(t("ai.qualityTitle"));
+    await within(card).findByText(t("ai.qualityPrompt", { version: "p2" }));
+    const text = card.textContent ?? "";
+    expect(text).toContain("claude-sonnet");
+    expect(text).toContain(
+      t("ai.qualityRunsCell", { runs: 3, succeeded: 2, failed: 1 }),
+    );
+    expect(text).toContain(
+      t("ai.qualityCandidatesCell", { total: 4, valid: 3, partial: 1, invalid: 0 }),
+    );
+    expect(text).toContain(t("ai.qualityCandidatesUnmeasured", { count: 1 }));
+    expect(text).toContain(
+      t("ai.qualityQuotesGrounded", { checked: 4, exact: 2, normalized: 1 }),
+    );
+    expect(text).toContain(t("ai.qualityQuotesWeak", { count: 1, notFound: 0 }));
+    // Kaynak doğruluğu = (birebir + normalize) / ölçülen = 3/4.
+    expect(text).toContain(t("ai.qualityAccuracy", { percent: formatPercent(0.75) }));
+    // Doğrulanamayan alıntı paydaya girmez; ayrı yazılır.
+    expect(text).toContain(t("ai.qualityQuotesUnverifiable", { count: 1 }));
+    // Yerine geçmiş öğe isabet oranına girmez ama görünür.
+    expect(text).toContain(t("ai.qualityReviewPending", { count: 0, superseded: 1 }));
+    expect(text).toContain(
+      t("ai.qualityDirectAccept", { percent: formatPercent(2 / 3) }),
+    );
+    expect(text).toContain(t("ai.qualityNote"));
+  });
+
+  it("kalite ölçümü okunamazsa «kayıt yok» demez; hatayı kendi satırında yazar", async () => {
+    setup({
+      quality: async () => {
+        throw { code: "E_DB_IO", message: "disk okunamadı" };
+      },
+    });
+    await screen.findByText("api:claude (api)");
+    const card = cardByHeading(t("ai.qualityTitle"));
+    await within(card).findByText(/E_DB_IO/);
+    expect(card.textContent).not.toContain(t("ai.qualityEmpty"));
+  });
+
+  it("dosya değişince eski dosyanın kalite yanıtı yeni dosyanın kartına yazılmaz", async () => {
+    const first = deferred<AiQualityReport>();
+    setup({
+      quality: (caseId) =>
+        caseId === "p1"
+          ? first.promise
+          : Promise.resolve({
+              groups: [
+                {
+                  modelSnapshot: "p2-model",
+                  promptVersion: "p9",
+                  runs: 1,
+                  runsSucceeded: 1,
+                  runsFailed: 0,
+                  runsUnfinished: 0,
+                  candidates: 0,
+                  candidatesValid: 0,
+                  candidatesPartial: 0,
+                  candidatesInvalid: 0,
+                  candidatesOther: 0,
+                  candidatesNoQuotes: 0,
+                  candidatesUnmeasured: 0,
+                  quotesChecked: 0,
+                  quotesExact: 0,
+                  quotesNormalized: 0,
+                  quotesAmbiguous: 0,
+                  quotesPageMismatch: 0,
+                  quotesNotFound: 0,
+                  quotesUnverifiable: 0,
+                  quotesOther: 0,
+                  itemsPromoted: 0,
+                  itemsSuperseded: 0,
+                  decidedAccept: 0,
+                  decidedEdit: 0,
+                  decidedReject: 0,
+                  decidedRequestEvidence: 0,
+                  decidedOther: 0,
+                },
+              ],
+              unattributedItems: 0,
+            }),
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.change(caseSelect(), { target: { value: "p2" } });
+    await waitFor(() => expect(mocks.aiQualityReport).toHaveBeenCalledWith("p2"));
+    const card = cardByHeading(t("ai.qualityTitle"));
+    await within(card).findByText(t("ai.qualityPrompt", { version: "p9" }));
+
+    first.resolve({
+      groups: [
+        {
+          modelSnapshot: "p1-model",
+          promptVersion: "p1",
+          runs: 1,
+          runsSucceeded: 1,
+          runsFailed: 0,
+          runsUnfinished: 0,
+          candidates: 0,
+          candidatesValid: 0,
+          candidatesPartial: 0,
+          candidatesInvalid: 0,
+          candidatesOther: 0,
+          candidatesNoQuotes: 0,
+          candidatesUnmeasured: 0,
+          quotesChecked: 0,
+          quotesExact: 0,
+          quotesNormalized: 0,
+          quotesAmbiguous: 0,
+          quotesPageMismatch: 0,
+          quotesNotFound: 0,
+          quotesUnverifiable: 0,
+          quotesOther: 0,
+          itemsPromoted: 0,
+          itemsSuperseded: 0,
+          decidedAccept: 0,
+          decidedEdit: 0,
+          decidedReject: 0,
+          decidedRequestEvidence: 0,
+          decidedOther: 0,
+        },
+      ],
+      unattributedItems: 0,
+    });
+    await act(async () => {});
+    expect(card.textContent).not.toContain("p1-model");
+    expect(card.textContent).toContain(t("ai.qualityPrompt", { version: "p9" }));
   });
 
   it("dayanak bulunamazsa yanıt sınırlı işaretlenir ve incelemeye gönderim kapalıdır", async () => {

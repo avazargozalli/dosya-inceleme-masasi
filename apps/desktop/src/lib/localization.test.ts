@@ -89,6 +89,7 @@ const MIGRATED = [
   "lib/precedent-document.ts",
   "lib/checklist.ts",
   "lib/candidate.ts",
+  "lib/ai-quality.ts",
   "lib/transferScope.ts",
   "lib/jobs.ts",
   "lib/parseProgress.ts",
