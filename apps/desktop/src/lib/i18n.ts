@@ -529,6 +529,7 @@ export const tr = {
       claim: "İddia",
       summary: "Özet",
       answer: "Yanıt",
+      contradiction: "Çelişki",
     },
     kindHint: {
       event: "title zorunlu; date, participants, description isteğe bağlı.",
@@ -537,6 +538,8 @@ export const tr = {
       claim: "text zorunlu; assertedBy, amountText isteğe bağlı.",
       summary: "text zorunlu; en az bir alıntı ve her alıntıda `sentences` (desteklediği cümleler).",
       answer: "text zorunlu; question isteğe bağlı.",
+      contradiction:
+        "text zorunlu; `sides` tam iki taraf (her biri ayrı bir alıntı) ve isteğe bağlı tarih rolü.",
     },
     sample: {
       eventTitle: "Ödeme yapılmadı",
@@ -547,6 +550,9 @@ export const tr = {
       claimText: "Kira bedeli ödenmedi.",
       summaryText: "Dosyada ödeme yapılmadığı ileri sürülüyor.",
       answerText: "Ödeme yapıldığına dair belge yok.",
+      contradictionText: "Ödemenin yapıldığı ile yapılmadığı çelişiyor.",
+      contradictionDateA: "12 Mart 2024",
+      contradictionDateB: "15 Mart 2024",
     },
     state: {
       valid: "geçerli",
@@ -596,10 +602,47 @@ export const tr = {
       invalidSchema: "Aday şeması geçersiz; yükü düzeltin.",
       answerLimited:
         "Yanıt sınırlı: dayanağı doğrulanmadı. Sınırlı yanıt inceleme kuyruğuna gönderilmez.",
+      contradictionRoleDifference:
+        "Tarih rolleri farklı (belge/tebliğ): bu fark otomatik çelişki sayılmaz; kuyruğa gönderilmez.",
+      contradictionSourcesUnverified:
+        "İki kaynaktan en az biri birebir doğrulanmadı; çelişki kuyruğa gönderilmez.",
+      contradictionUnlinked: "İki taraf bildirilmemiş; çelişki iki kaynakla sunulur.",
     },
     answerBasis: {
       sufficient: "dayanak doğrulandı",
       limited: "sınırlı yanıt — dayanak doğrulanmadı",
+    },
+    contradiction: {
+      title: "Çelişki dayanağı",
+      presentable: "iki kaynak doğrulandı",
+      roleDifference: "tarih rolü farkı — otomatik çelişki değil",
+      sourcesUnverified: "kaynaklardan biri doğrulanmadı",
+      unlinked: "iki taraf bildirilmedi",
+      sideLabel: "Taraf {side}",
+      quoteMissing: "alıntı yok",
+      dateRole: "Tarih rolü: {role} · {text}",
+      dateRoleMissing: "rol bildirilmemiş",
+      documentCount: "{count} ayrı belge",
+      reasons: "Nedenler: {list}",
+      roleDifferenceHint:
+        "Tarafların tarih rolleri farklı; belge tarihi ile tebliğ tarihi farkı çelişki " +
+        "değildir. Bu aday çelişki olarak kuyruğa gönderilmez.",
+      unlinkedHint:
+        "Hangi iki kaynağın karşılaştırıldığı bildirilmemiş; çelişki iki kaynakla sunulur.",
+    },
+    contradictionReason: {
+      dateRolesDiffer: "tarih rolleri farklı",
+      sideMissing: "tarafın alıntısı yok",
+      sideNotExact: "taraf birebir doğrulanmadı",
+      sidesMissing: "iki taraf bildirilmemiş",
+      sidesNotTwo: "tam iki taraf değil",
+    },
+    dateRole: {
+      document: "belge tarihi",
+      event: "olay tarihi",
+      notification: "tebliğ tarihi",
+      hearing: "duruşma tarihi",
+      unknown: "rol bilinmiyor",
     },
     answerReason: {
       noScope: "hiçbir segment gönderilmedi",
@@ -647,6 +690,7 @@ export const tr = {
     purposeEvents: "Olay çıkarımı",
     purposeClaims: "İddia çıkarımı",
     purposeAnswer: "Soruyu yanıtla",
+    purposeContradictions: "Çelişki çıkarımı",
     questionLabel: "Soru",
     questionPlaceholder: "Dosyadaki belgelere sorulacak soru (3–500 karakter)",
     questionHint: "{count}/500 karakter · yalnız gönderilen segmentler incelenir",

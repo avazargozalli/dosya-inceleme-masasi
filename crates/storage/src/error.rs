@@ -177,6 +177,8 @@ pub enum StorageError {
     AiQuestion(String),
     #[error("yanıtın dayanağı doğrulanmadı; sınırlı yanıt inceleme kuyruğuna gönderilmez: {0}")]
     AiAnswerLimited(String),
+    #[error("çelişki iki doğrulanmış kaynakla sunulmalı: {0}")]
+    AiContradiction(String),
     #[error("adaydaki alıntı kaynak olarak kullanılamaz: {0}")]
     AiQuote(String),
     #[error("alıntı denetimi için metin çok uzun (en çok 50.000 karakter)")]
@@ -306,6 +308,7 @@ impl StorageError {
             Self::AiSchema(_) => "E_AI_SCHEMA",
             Self::AiQuestion(_) => "E_AI_QUESTION",
             Self::AiAnswerLimited(_) => "E_AI_ANSWER_LIMITED",
+            Self::AiContradiction(_) => "E_AI_CONTRADICTION",
             Self::AiQuote(_) => "E_AI_QUOTE",
             Self::QuoteTextTooLong => "E_QUOTE_TEXT",
             Self::QuoteTooMany => "E_QUOTE_TOO_MANY",

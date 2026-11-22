@@ -465,6 +465,8 @@ export type CandidateReport = {
   outboundState: string;
   /** F11-T07 — yalnız özet adayında cümle → alıntı bağı. */
   sentenceAttribution?: SentenceAttribution | null;
+  /** F11-T09 — yalnız çelişki adayında iki taraf + tarih rolü ölçümü. */
+  contradictionBasis?: ContradictionBasis | null;
 };
 
 /**
@@ -497,6 +499,38 @@ export type SentenceAttribution = {
   unmatched: number;
 };
 
+/**
+ * F11-T09 — çelişki adayının bir tarafı. `quoteIndex` yükün `quotes`
+ * dizisindeki sıradır; `verified` yalnız konumu tek ve birebir doğrulanmış
+ * (`exact`) alıntıda true olur. `dateKind` tarafın bildirdiği tarihin
+ * **rolüdür** — belge tarihi ile tebliğ tarihi farklı olgulardır.
+ */
+export type ContradictionSideReport = {
+  side: string;
+  quoteIndex: number;
+  documentVersionId: string;
+  quoteState: string;
+  verified: boolean;
+  pageIndex: number | null;
+  label: string | null;
+  dateKind: string | null;
+  dateText: string | null;
+};
+
+/**
+ * F11-T09 — çelişki dayanağı: `presentable` (iki kaynak doğrulandı) ·
+ * `role_difference` (fark yalnız tarih rollerinden — otomatik çelişki
+ * sayılmaz) · `sources_unverified` (en az bir taraf birebir doğrulanmadı) ·
+ * `unlinked` (iki taraf bildirilmemiş). Her okumada yeniden hesaplanır.
+ */
+export type ContradictionBasis = {
+  state: string;
+  sides: ContradictionSideReport[];
+  distinctDocuments: number;
+  dateRolesDiffer: boolean;
+  reasons: string[];
+};
+
 export type AiCandidateRow = {
   id: string;
   aiRunId: string;
@@ -509,6 +543,8 @@ export type AiCandidateRow = {
   quoteReport: QuoteMatchReport[];
   /** F11-T07 — özet adayında cümle → alıntı bağı (her okumada yeniden hesaplanır). */
   sentenceAttribution?: SentenceAttribution | null;
+  /** F11-T09 — çelişki adayında iki taraf + tarih rolü ölçümü. */
+  contradictionBasis?: ContradictionBasis | null;
   checkedAt: string | null;
 };
 

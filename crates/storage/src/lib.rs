@@ -58,8 +58,9 @@ pub use ai::{
     AI_QUESTION_MAX_CHARS, AI_QUESTION_MIN_CHARS, PREVIEW_MASK_CHAR_BUDGET,
 };
 pub use ai_candidate::{
-    candidate_output_instructions, AnswerBasis, AnswerScopeDocument, CandidateReport,
-    CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, SentenceAttribution,
+    candidate_output_instructions, contradiction_basis, AnswerBasis, AnswerScopeDocument,
+    CandidateReport, CandidateSchema, ContradictionBasis, ContradictionSide,
+    ContradictionSideReport, QuoteMatchReport, QuotePosition, QuoteRef, SentenceAttribution,
     SummarySentence, ValidationIssue,
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};

@@ -40,6 +40,7 @@ import type {
   CandidateReport,
   CaseRow,
   ConsentPreview,
+  ContradictionBasis,
   DocumentRow,
   QuoteMatchReport,
   RedactionPlanRow,
@@ -3810,5 +3811,196 @@ describe("F11-T07 — özet cümle dayanakları", () => {
     );
     expect(summaryLine).toBeTruthy();
     expect(screen.getByText(t("candidate.attribution.unsourcedTitle"))).toBeTruthy();
+  });
+});
+
+/**
+ * F11-T09 — çelişki **iki kaynakla** sunulur. Ekran iki tarafı alıntısı,
+ * konumu ve tarih rolüyle birlikte çizer; tarih rolü farkı otomatik çelişki
+ * sayılmaz ve terfi düğmesi kapalı kalır. `presentable` «çelişki var» demek
+ * değildir — iki kaynağın birebir doğrulandığını söyler.
+ */
+describe("F11-T09 — çelişki iki kaynakla", () => {
+  const CONTRADICTION_QUOTES: QuoteMatchReport[] = [
+    quote({ index: 0, quote: "ödeme yapılmadığını belirtmiştir", pageIndex: 0 }),
+    quote({
+      index: 1,
+      documentVersionId: "v2",
+      quote: "ödemenin yapıldığını kabul etmiştir",
+      pageIndex: 1,
+    }),
+  ];
+
+  function contradictionBasis(overrides: Partial<ContradictionBasis> = {}): ContradictionBasis {
+    return {
+      state: "presentable",
+      sides: [
+        {
+          side: "A",
+          quoteIndex: 0,
+          documentVersionId: "v1",
+          quoteState: "exact",
+          verified: true,
+          pageIndex: 0,
+          label: null,
+          dateKind: "event",
+          dateText: "12 Mart 2024",
+        },
+        {
+          side: "B",
+          quoteIndex: 1,
+          documentVersionId: "v2",
+          quoteState: "exact",
+          verified: true,
+          pageIndex: 1,
+          label: null,
+          dateKind: "event",
+          dateText: "15 Mart 2024",
+        },
+      ],
+      distinctDocuments: 2,
+      dateRolesDiffer: false,
+      reasons: [],
+      ...overrides,
+    };
+  }
+
+  async function candidateRows(rows: AiCandidateRow[]): Promise<HTMLElement[]> {
+    setup({ candidates: async () => rows });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(
+      within(cardByHeading(t("ai.runsTitle"))).getAllByRole("button", {
+        name: RUN_LABEL_SELECT,
+      })[0]!,
+    );
+    const table = await screen.findByRole("heading", {
+      level: 2,
+      name: t("ai.candidatesTitle"),
+    });
+    return within(table.closest(".card") as HTMLElement).getAllByRole("row").slice(1);
+  }
+
+  it("iki tarafın alıntısını, konumunu ve tarih rolünü birlikte gösterir", async () => {
+    const rows = await candidateRows([
+      candidateRow({
+        id: "cand-c",
+        candidateType: "contradiction_candidate",
+        contradictionBasis: contradictionBasis(),
+        quoteReport: CONTRADICTION_QUOTES,
+      }),
+    ]);
+    const row = rows[0]!;
+    expect(within(row).getByText(t("candidate.contradiction.sideLabel", { side: "A" }))).toBeTruthy();
+    expect(within(row).getByText(t("candidate.contradiction.sideLabel", { side: "B" }))).toBeTruthy();
+    expect(
+      within(row).getByText(
+        t("candidate.contradiction.dateRole", {
+          role: t("candidate.dateRole.event"),
+          text: "12 Mart 2024",
+        }),
+      ),
+    ).toBeTruthy();
+    expect(
+      within(row).getByText(
+        t("candidate.contradiction.dateRole", {
+          role: t("candidate.dateRole.event"),
+          text: "15 Mart 2024",
+        }),
+      ),
+    ).toBeTruthy();
+    expect(
+      within(row).getByText(`${t("candidate.contradiction.title")} · ${t("candidate.contradiction.presentable")}`),
+    ).toBeTruthy();
+    // İki kaynak doğrulandı: terfi düğmesi **açık**, gerekçe yazılmaz.
+    expect(
+      (within(row).getByRole("button", { name: t("ai.promote") }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("tarih rolü farkını otomatik çelişki saymaz: gerekçe yazılır, düğme kapalı", async () => {
+    const roleDifference = contradictionBasis({
+      state: "role_difference",
+      dateRolesDiffer: true,
+      reasons: ["date_roles_differ"],
+      sides: [
+        {
+          side: "A",
+          quoteIndex: 0,
+          documentVersionId: "v1",
+          quoteState: "exact",
+          verified: true,
+          pageIndex: 0,
+          label: null,
+          dateKind: "document",
+          dateText: "1 Mart 2024",
+        },
+        {
+          side: "B",
+          quoteIndex: 1,
+          documentVersionId: "v2",
+          quoteState: "exact",
+          verified: true,
+          pageIndex: 1,
+          label: null,
+          dateKind: "notification",
+          dateText: "12 Mart 2024",
+        },
+      ],
+    });
+    const rows = await candidateRows([
+      candidateRow({
+        id: "cand-r",
+        candidateType: "contradiction_candidate",
+        validationState: "partial",
+        contradictionBasis: roleDifference,
+        quoteReport: CONTRADICTION_QUOTES,
+      }),
+    ]);
+    const row = rows[0]!;
+    const promote = within(row).getByRole("button", {
+      name: t("ai.promote"),
+    }) as HTMLButtonElement;
+    expect(promote.disabled).toBe(true);
+    expect(within(row).getByText(t("candidate.blocked.contradictionRoleDifference"))).toBeTruthy();
+    expect(within(row).getByText(t("candidate.contradiction.roleDifferenceHint"))).toBeTruthy();
+    fireEvent.click(promote);
+    expect(mocks.aiCandidatePromote).not.toHaveBeenCalled();
+  });
+
+  it("doğrulanmamış ve iki tarafı bildirilmemiş adayı kuyruğa göndertmez", async () => {
+    const rows = await candidateRows([
+      candidateRow({
+        id: "cand-w",
+        candidateType: "contradiction_candidate",
+        validationState: "partial",
+        contradictionBasis: contradictionBasis({
+          state: "sources_unverified",
+          reasons: ["side_not_exact"],
+        }),
+        quoteReport: CONTRADICTION_QUOTES,
+      }),
+      candidateRow({
+        id: "cand-u",
+        candidateType: "contradiction_candidate",
+        validationState: "partial",
+        contradictionBasis: contradictionBasis({
+          state: "unlinked",
+          sides: [],
+          distinctDocuments: 0,
+          reasons: ["sides_missing"],
+        }),
+        quoteReport: [],
+      }),
+    ]);
+    expect(
+      within(rows[0]!).getByText(t("candidate.blocked.contradictionSourcesUnverified")),
+    ).toBeTruthy();
+    expect(within(rows[1]!).getByText(t("candidate.blocked.contradictionUnlinked"))).toBeTruthy();
+    expect(within(rows[1]!).getByText(t("candidate.contradiction.unlinkedHint"))).toBeTruthy();
+    for (const row of rows) {
+      expect(
+        (within(row).getByRole("button", { name: t("ai.promote") }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    }
   });
 });

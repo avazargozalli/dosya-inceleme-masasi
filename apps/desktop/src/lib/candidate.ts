@@ -1,6 +1,7 @@
 import type {
   AiCandidateRow,
   CandidateReport,
+  ContradictionBasis,
   QuoteMatchReport,
   SentenceAttribution,
   ValidationIssue,
@@ -80,6 +81,19 @@ export const CANDIDATE_KINDS: CandidateKindOption[] = [
     label: t("candidate.kind.answer"),
     hint: t("candidate.kindHint.answer"),
     template: template({ text: t("candidate.sample.answerText"), quotes: [] }),
+  },
+  {
+    value: "contradiction_candidate",
+    label: t("candidate.kind.contradiction"),
+    hint: t("candidate.kindHint.contradiction"),
+    template: template({
+      text: t("candidate.sample.contradictionText"),
+      quotes: [],
+      sides: [
+        { quoteIndex: 0, dateKind: "event", dateText: t("candidate.sample.contradictionDateA") },
+        { quoteIndex: 1, dateKind: "event", dateText: t("candidate.sample.contradictionDateB") },
+      ],
+    }),
   },
 ];
 
@@ -269,7 +283,10 @@ export function draftJsonError(text: string): string | null {
  * burada yalnız düğmeyi kapalı tutmak için kullanılır.
  */
 export function promoteBlockedReason(
-  row: Pick<AiCandidateRow, "validationState" | "quoteState" | "schemaState">,
+  row: Pick<AiCandidateRow, "validationState" | "quoteState" | "schemaState"> & {
+    candidateType?: string;
+    contradictionBasis?: ContradictionBasis | null;
+  },
   answerLimited = false,
 ): string | null {
   if (row.schemaState === "legacy" || row.quoteState === "legacy") {
@@ -286,7 +303,110 @@ export function promoteBlockedReason(
   if (answerLimited) {
     return t("candidate.blocked.answerLimited");
   }
+  // F11-T09 — çelişki **iki doğrulanmış kaynakla** kuyruğa girer; tarih rolü
+  // farkı otomatik çelişki sayılmaz. Kapı çekirdekte (`E_AI_CONTRADICTION`).
+  if (isContradictionType(row.candidateType) && row.contradictionBasis) {
+    switch (row.contradictionBasis.state) {
+      case "role_difference":
+        return t("candidate.blocked.contradictionRoleDifference");
+      case "sources_unverified":
+        return t("candidate.blocked.contradictionSourcesUnverified");
+      case "unlinked":
+        return t("candidate.blocked.contradictionUnlinked");
+      default:
+        break;
+    }
+  }
   return null;
+}
+
+/** Çelişki adayı türü (`contradiction` ya da `contradiction_candidate`). */
+export function isContradictionType(value: string | undefined): boolean {
+  return value === "contradiction" || value === "contradiction_candidate";
+}
+
+/**
+ * F11-T09 — çelişki dayanağı rozeti. `presentable` **çelişki hükmü değildir**:
+ * iki kaynağın birebir doğrulandığını söyler; hüküm avukatındır. Tanınmayan
+ * durum ham yazılır — ekran bilmediği değeri "çelişki var" saymaz.
+ */
+export function contradictionStateTone(state: string): "ok" | "warn" | "danger" | "plain" {
+  if (state === "presentable") return "ok";
+  if (state === "role_difference" || state === "sources_unverified") return "warn";
+  if (state === "unlinked") return "danger";
+  return "plain";
+}
+
+export function contradictionStateLabel(state: string): string {
+  switch (state) {
+    case "presentable":
+      return t("candidate.contradiction.presentable");
+    case "role_difference":
+      return t("candidate.contradiction.roleDifference");
+    case "sources_unverified":
+      return t("candidate.contradiction.sourcesUnverified");
+    case "unlinked":
+      return t("candidate.contradiction.unlinked");
+    default:
+      return state;
+  }
+}
+
+export function contradictionReasonLabel(code: string): string {
+  switch (code) {
+    case "date_roles_differ":
+      return t("candidate.contradictionReason.dateRolesDiffer");
+    case "side_missing":
+      return t("candidate.contradictionReason.sideMissing");
+    case "side_not_exact":
+      return t("candidate.contradictionReason.sideNotExact");
+    case "sides_missing":
+      return t("candidate.contradictionReason.sidesMissing");
+    case "sides_not_two":
+      return t("candidate.contradictionReason.sidesNotTwo");
+    default:
+      return code;
+  }
+}
+
+/** Tarafların bildirdiği tarihin **rolü**; rol yoksa null (uydurulmaz). */
+export function contradictionDateRoleLabel(kind: string | null): string | null {
+  switch (kind) {
+    case "document":
+      return t("candidate.dateRole.document");
+    case "event":
+      return t("candidate.dateRole.event");
+    case "notification":
+      return t("candidate.dateRole.notification");
+    case "hearing":
+      return t("candidate.dateRole.hearing");
+    case "unknown":
+      return t("candidate.dateRole.unknown");
+    default:
+      return kind;
+  }
+}
+
+/** Bir tarafın alıntı durumu; `missing` tarafın alıntısı hiç ölçülmedi. */
+export function contradictionSideStateLabel(state: string): string {
+  switch (state) {
+    case "exact":
+      return t("candidate.line.exact");
+    case "normalized":
+      return t("candidate.line.normalized");
+    case "ambiguous":
+      return t("candidate.line.ambiguous");
+    case "page_mismatch":
+      return t("candidate.line.pageMismatch");
+    case "not_found":
+      return t("candidate.line.notFound");
+    case "unverifiable":
+      return t("candidate.line.unverifiable");
+    case "missing":
+      return t("candidate.contradiction.quoteMissing");
+    default:
+      return state;
+  }
 }
 
 /** Soru-cevap dayanak durumu: `sufficient` · `limited`. */

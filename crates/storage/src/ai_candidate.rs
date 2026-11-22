@@ -40,10 +40,9 @@ const MAX_QUOTE_SENTENCES: usize = 20;
 /// Cümle bildiriminde kabul edilen en uzun metin.
 const MAX_SENTENCE_CHARS: usize = 1000;
 
-/// Aday türleri (F11-T01: olay, kişi, tarih, iddia, özet, yanıt).
-///
-/// Eski kayıtlarla uyum için `*_candidate` adları da kabul edilir; kuyrukta
-/// `review_items.item_kind` olarak yine `*_candidate` yazılır.
+/// Aday türleri (F11-T01: olay, kişi, tarih, iddia, özet, yanıt; F11-T09:
+/// çelişki). Eski kayıtlarla uyum için `*_candidate` adları da kabul edilir;
+/// kuyrukta `review_items.item_kind` olarak yine `*_candidate` yazılır.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateKind {
     Event,
@@ -52,6 +51,9 @@ pub enum CandidateKind {
     Claim,
     Summary,
     Answer,
+    /// F11-T09 — **iki kaynaklı** çelişki adayı. Tek kaynakla doğamaz;
+    /// `sides` tam iki taraf bildirir.
+    Contradiction,
 }
 
 impl CandidateKind {
@@ -64,6 +66,7 @@ impl CandidateKind {
             "claim" | "claim_candidate" => Some(Self::Claim),
             "summary" | "summary_candidate" => Some(Self::Summary),
             "answer" | "answer_candidate" => Some(Self::Answer),
+            "contradiction" | "contradiction_candidate" => Some(Self::Contradiction),
             _ => None,
         }
     }
@@ -78,6 +81,7 @@ impl CandidateKind {
             Self::Claim => "claim",
             Self::Summary => "summary",
             Self::Answer => "answer",
+            Self::Contradiction => "contradiction",
         }
     }
 }
@@ -212,6 +216,14 @@ fn field_specs(kind: CandidateKind) -> &'static [FieldSpec] {
                 kind: FieldKind::Text { min: 0, max: 500 },
             },
         ],
+        // F11-T09 — çelişki bir **iddia**tır: iki taraf neyi farklı söylüyor?
+        // `sides` alanı burada değil `parse_sides`ta denetlenir (iki nesne,
+        // alıntı indeksleri, tarih rolü); `text` zorunlu tek serbest alandır.
+        CandidateKind::Contradiction => &[FieldSpec {
+            name: "text",
+            required: true,
+            kind: FieldKind::Text { min: 1, max: 2000 },
+        }],
     }
 }
 
@@ -266,6 +278,22 @@ pub fn candidate_output_instructions(kind_raw: &str) -> Option<String> {
                 .to_string(),
         );
     }
+    if kind == CandidateKind::Contradiction {
+        lines.push(
+            "Çelişki adayı **iki tarafın** alıntısını birlikte taşır: `sides` alanı **tam iki** \
+             nesne içerir; her nesne `quoteIndex` (quotes dizisindeki sıra), isteğe bağlı \
+             `dateKind` (şu değerlerden biri: document, event, notification, hearing, unknown) \
+             ve isteğe bağlı `dateText` (tarafların bildirdiği tarih metni) taşır. İki taraf \
+             **ayrı alıntıları** göstermek zorundadır; aynı alıntı iki taraf olamaz."
+                .to_string(),
+        );
+        lines.push(
+            "Tarafların tarihleri yalnız **farklı tarih rollerinde** ise (ör. biri belge tarihi, \
+             diğeri tebliğ tarihi) bu bir çelişki değildir: `dateKind` alanlarını doğru yaz; \
+             aynı roldeki iki farklı tarih ya da aynı konuda iki farklı beyan çelişki adayıdır."
+                .to_string(),
+        );
+    }
     lines.push(
         "Vermeyen bilgiyi uydurma; şemada tanımlı olmayan alan ekleme, bilinmeyeni null bırak."
             .to_string(),
@@ -313,6 +341,23 @@ pub struct QuoteRef {
     pub sentences: Vec<String>,
 }
 
+/// F11-T09 — çelişki adayının bir tarafı: hangi alıntı, hangi tarih rolü.
+///
+/// `quote_index`, yükün `quotes` dizisindeki sıradır (`source_index`); iki
+/// taraf **ayrı** alıntıları göstermek zorundadır — aynı alıntı iki kaynak
+/// sayılmaz. `date_kind` tarafın bildirdiği tarihin **rolüdür**: belge tarihi
+/// ile tebliğ tarihi farklı olgulardır, farkları çelişki değildir.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContradictionSide {
+    pub quote_index: usize,
+    #[serde(default)]
+    pub date_kind: Option<String>,
+    /// Tarafın bildirdiği tarih metni (serbest, ≤120); yorumlanmaz.
+    #[serde(default)]
+    pub date_text: Option<String>,
+}
+
 /// Şema doğrulamasının sonucu (alıntı eşleştirmesinden bağımsız).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +368,9 @@ pub struct CandidateSchema {
     pub issues: Vec<ValidationIssue>,
     /// Yalnız yapısal olarak geçerli alıntılar; geçersizler eşleştirilmez.
     pub quote_refs: Vec<QuoteRef>,
+    /// F11-T09 — çelişki adayının iki tarafı; diğer türlerde boştur.
+    #[serde(default)]
+    pub sides: Vec<ContradictionSide>,
     pub field_count: usize,
     /// Özet metni (F11-T07 cümle dayanağı için); yoksa `None`.
     #[serde(default)]
@@ -454,6 +502,9 @@ pub struct CandidateReport {
     /// bildirilmemişse `state = "unlinked"` (uydurulmaz).
     #[serde(default)]
     pub sentence_attribution: Option<SentenceAttribution>,
+    /// F11-T09 — yalnız çelişki adayında: iki taraf ve tarih rolü ölçümü.
+    #[serde(default)]
+    pub contradiction_basis: Option<ContradictionBasis>,
 }
 
 /// F11-T07 — özetin bir cümlesi ve onu desteklediği **bildirilen** alıntılar.
@@ -500,6 +551,168 @@ pub struct SentenceAttribution {
     pub unmatched: usize,
 }
 
+/// F11-T09 — çelişki adayının bir tarafının okuma anındaki durumu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContradictionSideReport {
+    /// `A` | `B` — yük sırası (kaynak sırası, üstünlük değil).
+    pub side: String,
+    pub quote_index: usize,
+    pub document_version_id: String,
+    /// Alıntı raporundaki durum; alıntı hiç ölçülmediyse `missing`.
+    pub quote_state: String,
+    /// Konumu tek ve birebir doğrulanmış mı (`exact`)? Kuyruğa kaynak
+    /// (anchor) yalnız bundan üretilir; iki kaynak iddiası iki `exact` ister.
+    pub verified: bool,
+    pub page_index: Option<i64>,
+    pub label: Option<String>,
+    pub date_kind: Option<String>,
+    pub date_text: Option<String>,
+}
+
+/// F11-T09 — «çelişki iki kaynakla mı sunuluyor, yoksa fark yalnız **tarih
+/// rollerinden** mi doğuyor?». **Kalıcı damga değildir**: yükten ve alıntı
+/// raporundan her okumada yeniden hesaplanır (yeniden doğrulama tazeler).
+///
+/// `state`:
+/// - `presentable` — iki tarafın alıntısı da `exact` ve tarih rolleri aynı ya
+///   da bildirilmemiş: aday **iki kaynaklı** olarak incelenebilir. Bu bir
+///   çelişki hükmü **değildir**; hüküm avukatındır.
+/// - `role_difference` — iki taraf da tarih bildirdi ve **rolleri farklı**
+///   (belge/olay/tebliğ/duruşma): bu fark otomatik çelişki sayılmaz.
+/// - `sources_unverified` — en az bir taraf `exact` değil: iki kaynak
+///   doğrulanmadı, aday çelişki olarak sunulamaz.
+/// - `unlinked` — `sides` yok ya da iki taraf değil (eski kayıt): hangi iki
+///   kaynağın karşılaştırıldığı bildirilmemiş.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContradictionBasis {
+    pub state: String,
+    pub sides: Vec<ContradictionSideReport>,
+    /// İki tarafın geldiği **ayrı belge sürümü** sayısı (aynı belgede iki
+    /// pasaj da iki kaynaktır; bu sayı yalnız görünürlük içindir).
+    pub distinct_documents: usize,
+    pub date_roles_differ: bool,
+    /// Kararlı neden kodları: `sides_missing`, `sides_not_two`,
+    /// `side_missing`, `side_not_exact`, `date_roles_differ`.
+    pub reasons: Vec<String>,
+}
+
+/// F11-T09 — çelişki dayanağını **hesaplar** (saf fonksiyon).
+#[must_use]
+pub fn contradiction_basis(
+    payload: &str,
+    quotes: &[QuoteMatchReport],
+) -> Option<ContradictionBasis> {
+    let parsed: Value = serde_json::from_str(payload).ok()?;
+    let obj = parsed.as_object()?;
+    let mut reasons: Vec<String> = Vec::new();
+    let mut sides: Vec<ContradictionSideReport> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
+    let mut sides_complete = true;
+    match obj.get("sides").and_then(Value::as_array) {
+        Some(items) => {
+            if items.len() != 2 {
+                reasons.push("sides_not_two".to_string());
+                sides_complete = false;
+            }
+            for item in items.iter().take(2) {
+                let Some(map) = item.as_object() else {
+                    continue;
+                };
+                let Some(index) = map
+                    .get("quoteIndex")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                else {
+                    continue;
+                };
+                if seen.contains(&index) {
+                    continue;
+                }
+                seen.push(index);
+                let quote = quotes.iter().find(|quote| quote.index == index);
+                sides.push(ContradictionSideReport {
+                    side: if sides.is_empty() { "A" } else { "B" }.to_string(),
+                    quote_index: index,
+                    document_version_id: quote
+                        .map(|quote| quote.document_version_id.clone())
+                        .unwrap_or_default(),
+                    quote_state: quote
+                        .map(|quote| quote.state.clone())
+                        .unwrap_or_else(|| "missing".to_string()),
+                    verified: quote.is_some_and(|quote| quote.state == "exact"),
+                    page_index: quote.and_then(|quote| quote.page_index),
+                    label: quote.and_then(|quote| quote.label.clone()),
+                    date_kind: map
+                        .get("dateKind")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    date_text: map
+                        .get("dateText")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                });
+            }
+        }
+        None => {
+            reasons.push("sides_missing".to_string());
+            sides_complete = false;
+        }
+    }
+    let distinct_documents = {
+        let mut documents: Vec<&str> = sides
+            .iter()
+            .map(|side| side.document_version_id.as_str())
+            .filter(|id| !id.is_empty())
+            .collect();
+        documents.sort_unstable();
+        documents.dedup();
+        documents.len()
+    };
+    let date_roles_differ = match (
+        sides.first().and_then(|side| side.date_kind.as_deref()),
+        sides.get(1).and_then(|side| side.date_kind.as_deref()),
+    ) {
+        (Some(left), Some(right)) => left != "unknown" && right != "unknown" && left != right,
+        _ => false,
+    };
+    let state = if !sides_complete || sides.len() != 2 {
+        "unlinked"
+    } else if !sides.iter().all(|side| side.verified) {
+        "sources_unverified"
+    } else if date_roles_differ {
+        "role_difference"
+    } else {
+        "presentable"
+    };
+    if state == "sources_unverified" {
+        for side in &sides {
+            if side.verified {
+                continue;
+            }
+            let code = if side.quote_state == "missing" {
+                "side_missing"
+            } else {
+                "side_not_exact"
+            };
+            if !reasons.iter().any(|reason| reason == code) {
+                reasons.push(code.to_string());
+            }
+        }
+    }
+    if date_roles_differ {
+        reasons.push("date_roles_differ".to_string());
+    }
+    Some(ContradictionBasis {
+        state: state.to_string(),
+        sides,
+        distinct_documents,
+        date_roles_differ,
+        reasons,
+    })
+}
+
 /// Aday yükünü türüne göre doğrular. **Saf fonksiyon**: veritabanına bakmaz,
 /// yalnız JSON yapısını ve alan sınırlarını denetler.
 #[must_use]
@@ -515,6 +728,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
                 "Bilinmeyen aday türü; şema tanımlı değil.",
             )],
             quote_refs: Vec::new(),
+            sides: Vec::new(),
             field_count: 0,
             text: None,
         };
@@ -537,6 +751,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
                     ),
                 )],
                 quote_refs: Vec::new(),
+                sides: Vec::new(),
                 field_count: 0,
                 text: None,
             }
@@ -554,6 +769,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
                 "Aday yükü bir JSON nesnesi olmalı.",
             )],
             quote_refs: Vec::new(),
+            sides: Vec::new(),
             field_count: 0,
             text: None,
         };
@@ -590,7 +806,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
         }
     }
     for (key, value) in &obj {
-        if key == "schemaVersion" || key == "quotes" {
+        if key == "schemaVersion" || key == "quotes" || key == "sides" {
             continue;
         }
         match specs.iter().find(|spec| spec.name == key.as_str()) {
@@ -607,6 +823,33 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
     let quote_refs = match obj.get("quotes") {
         Some(value) => parse_quotes(value, &mut issues),
         None => Vec::new(),
+    };
+    // F11-T09 — çelişki **iki kaynakla** doğar: `sides` tam iki taraf bildirir
+    // ve her taraf ayrı bir alıntıyı gösterir. Tek kaynaklı çelişki adayı
+    // şema düzeyinde geçersizdir (kuyruğa iki anchor kuralı da bunu ister).
+    let sides = if kind == CandidateKind::Contradiction {
+        match obj.get("sides") {
+            Some(value) => parse_sides(value, &quote_refs, &mut issues),
+            None => {
+                issues.push(issue(
+                    "missing_field",
+                    "error",
+                    "sides",
+                    "Çelişki adayı iki tarafı birlikte taşımalı (`sides` tam iki nesne).",
+                ));
+                Vec::new()
+            }
+        }
+    } else {
+        if obj.contains_key("sides") {
+            issues.push(issue(
+                "sides_unsupported",
+                "warning",
+                "sides",
+                "`sides` yalnız çelişki adayında kullanılır; bu adayda yok sayıldı.",
+            ));
+        }
+        Vec::new()
     };
     // Özet cümlesi dayanağına bağlı olmak zorunda (F11-T07).
     if kind == CandidateKind::Summary && quote_refs.is_empty() && !obj.contains_key("quotes") {
@@ -676,6 +919,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
         state: state.into(),
         issues,
         quote_refs,
+        sides,
         field_count,
         text,
     }
@@ -1250,6 +1494,156 @@ fn parse_quotes(value: &Value, issues: &mut Vec<ValidationIssue>) -> Vec<QuoteRe
     accepted.into_iter().map(|(_, quote)| quote).collect()
 }
 
+/// F11-T09 — çelişki adayının iki tarafını okur.
+///
+/// Kurallar:
+/// - `sides` **tam iki** nesne olmalı: tek taraf çelişkiyi tek kaynağa
+///   indirger, fazlası "hangi iki kaynak" sorusunu belirsizleştirir.
+/// - Her taraf `quoteIndex` ile **kabul edilmiş** bir alıntıyı gösterir; aynı
+///   alıntı iki taraf olamaz (iki kaynak iki ayrı pasajdır).
+/// - `dateKind` kapalı küme (tarih adayının `kind` alanıyla aynı); `dateText`
+///   serbest metindir, kırpılır, yorumlanmaz.
+///
+/// Burada yalnız **yapı** denetlenir; tarafların gerçekten çelişip
+/// çelişmediği bir hüküm değildir (o avukatın işidir).
+fn parse_sides(
+    value: &Value,
+    quotes: &[QuoteRef],
+    issues: &mut Vec<ValidationIssue>,
+) -> Vec<ContradictionSide> {
+    let Value::Array(items) = value else {
+        issues.push(issue(
+            "wrong_type",
+            "error",
+            "sides",
+            "İki taraflı liste bekleniyordu.",
+        ));
+        return Vec::new();
+    };
+    if items.len() != 2 {
+        issues.push(issue(
+            "sides_not_two",
+            "error",
+            "sides",
+            format!(
+                "Çelişki iki kaynakla sunulur: tam iki taraf gerekir ({} bildirildi).",
+                items.len()
+            ),
+        ));
+    }
+    let known: Vec<usize> = quotes.iter().map(|quote| quote.source_index).collect();
+    let mut sides = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let field = format!("sides[{index}]");
+        let Value::Object(map) = item else {
+            issues.push(issue(
+                "wrong_type",
+                "error",
+                &field,
+                "Taraf bir nesne olmalı.",
+            ));
+            continue;
+        };
+        for key in map.keys() {
+            if !matches!(key.as_str(), "quoteIndex" | "dateKind" | "dateText") {
+                issues.push(issue(
+                    "unknown_field",
+                    "warning",
+                    &format!("{field}.{key}"),
+                    "Şemada tanımlı olmayan alan kullanılmaz.",
+                ));
+            }
+        }
+        let quote_index = map
+            .get("quoteIndex")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
+        let Some(quote_index) = quote_index else {
+            issues.push(issue(
+                "wrong_type",
+                "error",
+                &format!("{field}.quoteIndex"),
+                "Alıntı sırası sıfır veya pozitif tam sayı olmalı.",
+            ));
+            continue;
+        };
+        if !known.contains(&quote_index) {
+            issues.push(issue(
+                "side_quote_unknown",
+                "error",
+                &format!("{field}.quoteIndex"),
+                "Taraf, kabul edilmiş bir alıntıyı göstermiyor.",
+            ));
+            continue;
+        }
+        if sides
+            .iter()
+            .any(|side: &ContradictionSide| side.quote_index == quote_index)
+        {
+            issues.push(issue(
+                "side_quote_duplicate",
+                "error",
+                &format!("{field}.quoteIndex"),
+                "Aynı alıntı iki taraf olamaz; iki kaynak iki ayrı pasajdır.",
+            ));
+            continue;
+        }
+        let date_kind = match map.get("dateKind") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) if DATE_KINDS.contains(&text.as_str()) => Some(text.clone()),
+            Some(Value::String(text)) => {
+                issues.push(issue(
+                    "bad_enum",
+                    "error",
+                    &format!("{field}.dateKind"),
+                    format!("Bilinmeyen tarih rolü: {text}."),
+                ));
+                None
+            }
+            Some(_) => {
+                issues.push(issue(
+                    "wrong_type",
+                    "error",
+                    &format!("{field}.dateKind"),
+                    "Tarih rolü metin olmalı.",
+                ));
+                None
+            }
+        };
+        let date_text = match map.get("dateText") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) if text.trim().is_empty() => None,
+            Some(Value::String(text)) if text.trim().chars().count() <= 120 => {
+                Some(text.trim().to_string())
+            }
+            Some(Value::String(_)) => {
+                issues.push(issue(
+                    "too_long",
+                    "error",
+                    &format!("{field}.dateText"),
+                    "Tarih metni en çok 120 karakter olabilir.",
+                ));
+                None
+            }
+            Some(_) => {
+                issues.push(issue(
+                    "wrong_type",
+                    "error",
+                    &format!("{field}.dateText"),
+                    "Tarih metni metin olmalı.",
+                ));
+                None
+            }
+        };
+        sides.push(ContradictionSide {
+            quote_index,
+            date_kind,
+            date_text,
+        });
+    }
+    sides
+}
+
 /// `YYYY-AA-GG` biçiminde **gerçek** bir gün mü? Ay/gün aralığı ve artık yıl
 /// denetlenir; yaklaşık tarih bu alana yazılmaz (ham metin `rawText`te durur).
 #[must_use]
@@ -1402,8 +1796,74 @@ impl Database {
             }
         }
 
+        // F11-T09 — çelişki **iki kaynakla** sunulur. Ölçüm okuma anında
+        // yapılır; sonuç `validation_state`e **uyarı** olarak yansır (şema ve
+        // alıntı geçse bile aday "çelişki" olarak sunulamaz). Tarih rolü farkı
+        // ayrı nedenle işaretlenir: bu bir hüküm değil, ön koşuldur.
+        let contradiction_basis = if schema.state != "invalid"
+            && CandidateKind::parse(candidate_type) == Some(CandidateKind::Contradiction)
+        {
+            contradiction_basis(payload, &quotes)
+        } else {
+            None
+        };
+        let mut contradiction_issues: Vec<ValidationIssue> = Vec::new();
+        if let Some(basis) = &contradiction_basis {
+            match basis.state.as_str() {
+                "role_difference" => {
+                    notes.push(
+                        "Tarafların tarih rolleri farklı; bu fark otomatik çelişki sayılmaz."
+                            .to_string(),
+                    );
+                    contradiction_issues.push(issue(
+                        "date_roles_differ",
+                        "warning",
+                        "sides",
+                        "Tarafların tarih rolleri farklı; tarih farkı tek başına çelişki değildir.",
+                    ));
+                }
+                "sources_unverified" => {
+                    notes.push(
+                        "İki kaynaktan en az biri birebir doğrulanmadı; çelişki adayı bu \
+                         hâliyle incelenemez."
+                            .to_string(),
+                    );
+                    contradiction_issues.push(issue(
+                        "contradiction_sources_unverified",
+                        "warning",
+                        "sides",
+                        "İki tarafın alıntısı da birebir (tek konumda) doğrulanmadı.",
+                    ));
+                }
+                "unlinked" => {
+                    notes.push(
+                        "Hangi iki kaynağın karşılaştırıldığı bildirilmemiş; çelişki iki \
+                         kaynakla sunulmalı."
+                            .to_string(),
+                    );
+                    contradiction_issues.push(issue(
+                        "contradiction_sides_missing",
+                        "warning",
+                        "sides",
+                        "İki taraf bildirilmemiş; çelişki tek kaynakla sunulamaz.",
+                    ));
+                }
+                _ => notes.push(format!(
+                    "Çelişki iki kaynakla sunuluyor ({} ayrı belge); hüküm avukatındır.",
+                    basis.distinct_documents
+                )),
+            }
+        }
+
         let mut issues = schema.issues.clone();
         issues.extend(quote_issues(&quotes));
+        // Çelişki uyarısı `schema.issues`ta değil burada doğduğu için
+        // `validation_state`i ayrıca aşağı çeker: iki kaynak ön koşulu
+        // tutmayan aday "geçerli" görünemez.
+        let contradiction_warned = contradiction_issues
+            .iter()
+            .any(|item| item.severity == "warning");
+        issues.extend(contradiction_issues);
         if quote_state == "no_quotes" {
             issues.push(issue(
                 "no_quotes",
@@ -1417,7 +1877,7 @@ impl Database {
 
         let state = if schema.state == "invalid" || quote_state == "failed" {
             "invalid"
-        } else if schema.state == "partial" || quote_state != "verified" {
+        } else if schema.state == "partial" || quote_state != "verified" || contradiction_warned {
             "partial"
         } else {
             "valid"
@@ -1434,6 +1894,7 @@ impl Database {
             checked_at: now_iso(),
             outbound_state: outbound_state.to_string(),
             sentence_attribution,
+            contradiction_basis,
         })
     }
 
@@ -3789,5 +4250,294 @@ mod tests {
         let basis = fixture.db.answer_basis(&broken).expect("ölçüm");
         assert_eq!(basis.state, "limited");
         assert_eq!(basis.reasons, vec!["answer_invalid".to_string()]);
+    }
+
+    /// F11-T09 — çelişki adayı şeması: **tam iki taraf**, her taraf **ayrı** bir
+    /// alıntı. Tek taraf, üç taraf, aynı alıntının iki kez gösterilmesi ve
+    /// kabul edilmemiş alıntı indeksi reddedilir; `sides` başka türde yok sayılır.
+    #[test]
+    fn contradiction_candidate_schema_requires_two_distinct_sides() {
+        let base = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödemenin yapıldığı ile yapılmadığı çelişiyor.",
+            "quotes": [
+                {"documentVersionId": "v1", "quote": "ödeme yapılmadığını belirtmiştir"},
+                {"documentVersionId": "v2", "quote": "ödemenin yapıldığını kabul etmiştir"}
+            ]
+        });
+
+        // (a) `sides` yok: iki kaynak kuralı şemada zorunlu.
+        let missing = validate_candidate_payload("contradiction_candidate", &base.to_string());
+        assert_eq!(missing.state, "invalid");
+        assert!(missing
+            .issues
+            .iter()
+            .any(|item| item.code == "missing_field" && item.field == "sides"));
+
+        // (b) bir ve üç taraf.
+        for sides in [
+            serde_json::json!([{"quoteIndex": 0}]),
+            serde_json::json!([
+                {"quoteIndex": 0},
+                {"quoteIndex": 1},
+                {"quoteIndex": 0}
+            ]),
+        ] {
+            let mut payload = base.clone();
+            payload["sides"] = sides;
+            let report =
+                validate_candidate_payload("contradiction_candidate", &payload.to_string());
+            assert_eq!(report.state, "invalid");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|item| item.code == "sides_not_two"),
+                "{:?}",
+                report.issues
+            );
+        }
+
+        // (c) aynı alıntı iki taraf olamaz.
+        let mut duplicate = base.clone();
+        duplicate["sides"] = serde_json::json!([{"quoteIndex": 0}, {"quoteIndex": 0}]);
+        let report = validate_candidate_payload("contradiction_candidate", &duplicate.to_string());
+        assert!(report
+            .issues
+            .iter()
+            .any(|item| item.code == "side_quote_duplicate"));
+
+        // (d) kabul edilmemiş alıntı indeksi.
+        let mut unknown = base.clone();
+        unknown["sides"] = serde_json::json!([{"quoteIndex": 0}, {"quoteIndex": 7}]);
+        let report = validate_candidate_payload("contradiction_candidate", &unknown.to_string());
+        assert!(report
+            .issues
+            .iter()
+            .any(|item| item.code == "side_quote_unknown"));
+
+        // (e) geçerli: tam iki taraf, tarih rolleri kapalı kümeden.
+        let mut valid = base.clone();
+        valid["sides"] = serde_json::json!([
+            {"quoteIndex": 0, "dateKind": "event", "dateText": "12 Mart 2024"},
+            {"quoteIndex": 1, "dateKind": "event"}
+        ]);
+        let report = validate_candidate_payload("contradiction_candidate", &valid.to_string());
+        assert_eq!(report.state, "valid", "{:?}", report.issues);
+        assert_eq!(report.sides.len(), 2);
+        assert_eq!(report.sides[0].date_kind.as_deref(), Some("event"));
+        assert_eq!(report.sides[0].date_text.as_deref(), Some("12 Mart 2024"));
+
+        // (f) tarih rolü kapalı küme dışında: şema reddeder.
+        let mut bad_role = base.clone();
+        bad_role["sides"] = serde_json::json!([
+            {"quoteIndex": 0, "dateKind": "belge"},
+            {"quoteIndex": 1, "dateKind": "event"}
+        ]);
+        let report = validate_candidate_payload("contradiction_candidate", &bad_role.to_string());
+        assert_eq!(report.state, "invalid");
+        assert!(report.issues.iter().any(|item| item.code == "bad_enum"));
+
+        // (g) çelişki olmayan türde `sides` yok sayılır (uyarı), şema geçerli kalır.
+        let claim = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Kira bedeli ödenmedi.",
+            "quotes": [],
+            "sides": [{"quoteIndex": 0}, {"quoteIndex": 1}]
+        });
+        let report = validate_candidate_payload("claim_candidate", &claim.to_string());
+        assert_eq!(report.state, "partial");
+        assert!(report
+            .issues
+            .iter()
+            .any(|item| item.code == "sides_unsupported"));
+    }
+
+    /// F11-T09 — çelişki **iki doğrulanmış kaynakla** kuyruğa girer; farklı
+    /// tarih **rolleri** (belge ↔ tebliğ) otomatik çelişki sayılmaz ve
+    /// terfi kapısı bunu `E_AI_CONTRADICTION` ile durdurur.
+    #[test]
+    fn contradiction_needs_two_verified_sources_and_ignores_date_roles() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let receipt = add_document(
+            &fixture,
+            "Makbuz.pdf",
+            &["Kiracı, 15 Mart 2024 tarihinde ödemenin yapıldığını kabul etmiştir."],
+        );
+        let twice = add_document(
+            &fixture,
+            "Tekrar.pdf",
+            &["Ödeme yapıldığı kabul edilmiştir. Ödeme yapıldığı kabul edilmiştir."],
+        );
+
+        fn contradiction(
+            version_a: &str,
+            quote_a: &str,
+            kind_a: Option<&str>,
+            version_b: &str,
+            quote_b: &str,
+            kind_b: Option<&str>,
+        ) -> String {
+            let mut side_a = serde_json::json!({"quoteIndex": 0});
+            if let Some(kind) = kind_a {
+                side_a["dateKind"] = serde_json::json!(kind);
+            }
+            let mut side_b = serde_json::json!({"quoteIndex": 1});
+            if let Some(kind) = kind_b {
+                side_b["dateKind"] = serde_json::json!(kind);
+            }
+            serde_json::json!({
+                "schemaVersion": 1,
+                "text": "İki kaynak aynı konuda farklı beyanda bulunuyor.",
+                "quotes": [
+                    {"documentVersionId": version_a, "quote": quote_a},
+                    {"documentVersionId": version_b, "quote": quote_b}
+                ],
+                "sides": [side_a, side_b]
+            })
+            .to_string()
+        }
+
+        // (a) İki taraf da birebir bulundu, roller aynı: iki kaynaklı aday.
+        let row = fixture
+            .db
+            .record_ai_candidate(
+                &fixture.run_id,
+                "contradiction_candidate",
+                &contradiction(
+                    &fixture.version_id,
+                    "ödeme yapılmadığını belirtmiştir",
+                    Some("event"),
+                    &receipt,
+                    "ödemenin yapıldığını kabul etmiştir",
+                    Some("event"),
+                ),
+            )
+            .expect("kayıt");
+        assert_eq!(row.validation_state, "valid", "{}", row.validation_errors);
+        let basis = row.contradiction_basis.as_ref().expect("dayanak");
+        assert_eq!(basis.state, "presentable", "{:?}", basis.reasons);
+        assert_eq!(basis.sides.len(), 2);
+        assert!(basis.sides.iter().all(|side| side.verified));
+        assert_eq!(basis.distinct_documents, 2);
+        assert!(!basis.date_roles_differ);
+        let review_id = fixture
+            .db
+            .promote_candidate(&row.id, &fixture.case_id)
+            .expect("terfi");
+        let item = fixture
+            .db
+            .get_review_item(&review_id)
+            .expect("get")
+            .expect("var");
+        assert_eq!(
+            item.item_kind, "contradiction_candidate",
+            "kuyruk türü çelişki değerlendirmesinin tanıdığı ad olmalı"
+        );
+        assert_eq!(item.source_anchor_ids.len(), 2, "iki kaynak iki anchor");
+
+        // (b) Aynı iki alıntı ama tarih **rolleri** farklı: bu bir çelişki
+        // değildir; aday kısmi kalır ve kuyruğa gönderilemez.
+        let roles = fixture
+            .db
+            .record_ai_candidate(
+                &fixture.run_id,
+                "contradiction_candidate",
+                &contradiction(
+                    &fixture.version_id,
+                    "ödeme yapılmadığını belirtmiştir",
+                    Some("document"),
+                    &receipt,
+                    "ödemenin yapıldığını kabul etmiştir",
+                    Some("notification"),
+                ),
+            )
+            .expect("kayıt");
+        assert_eq!(roles.validation_state, "partial");
+        let basis = roles.contradiction_basis.as_ref().expect("dayanak");
+        assert_eq!(basis.state, "role_difference");
+        assert!(basis.date_roles_differ);
+        assert!(basis.reasons.contains(&"date_roles_differ".to_string()));
+        assert!(
+            roles.validation_errors.contains("date_roles_differ"),
+            "uyarı kayda yansır: {}",
+            roles.validation_errors
+        );
+        let err = fixture
+            .db
+            .promote_candidate(&roles.id, &fixture.case_id)
+            .unwrap_err();
+        assert_eq!(err.code(), "E_AI_CONTRADICTION");
+        assert!(err.to_string().contains("tarih rolleri"));
+
+        // (c) Bir taraf yalnız **belirsiz** konumda bulundu (`ambiguous`):
+        // iki kaynak doğrulanmadı; terfi kapısı yine kapanır.
+        let weak = fixture
+            .db
+            .record_ai_candidate(
+                &fixture.run_id,
+                "contradiction_candidate",
+                &contradiction(
+                    &fixture.version_id,
+                    "ödeme yapılmadığını belirtmiştir",
+                    Some("event"),
+                    &twice,
+                    "Ödeme yapıldığı kabul edilmiştir",
+                    Some("event"),
+                ),
+            )
+            .expect("kayıt");
+        let basis = weak.contradiction_basis.as_ref().expect("dayanak");
+        assert_eq!(basis.state, "sources_unverified");
+        assert!(basis.reasons.contains(&"side_not_exact".to_string()));
+        assert_eq!(weak.quote_state, "partial", "konum tek değil");
+        let err = fixture
+            .db
+            .promote_candidate(&weak.id, &fixture.case_id)
+            .unwrap_err();
+        assert_eq!(err.code(), "E_AI_CONTRADICTION");
+
+        // (d) `sides`sız eski satır: iki taraf bildirilmemiş; okuma bunu
+        // uydurmaz. Terfi **şema kapısında** durur (`E_AI_SCHEMA`): eski kayıt
+        // önce yeniden doğrulanmalı, yeniden doğrulama da `sides` olmadığı için
+        // şemayı geçemez — çelişki tek kaynakla kuyruğa giremez.
+        let legacy_id = uuid::Uuid::now_v7().to_string();
+        fixture
+            .db
+            .conn()
+            .execute(
+                "INSERT INTO ai_candidates (id,ai_run_id,type,structured_payload,validation_state,validation_errors)
+                 VALUES (?1,?2,'contradiction_candidate',?3,'partial','[]')",
+                rusqlite::params![
+                    legacy_id,
+                    fixture.run_id,
+                    serde_json::json!({"schemaVersion": 1, "text": "Eski çelişki kaydı."})
+                        .to_string()
+                ],
+            )
+            .expect("eski kayıt");
+        let row = fixture
+            .db
+            .get_ai_candidate(&legacy_id)
+            .expect("get")
+            .expect("var");
+        let basis = row.contradiction_basis.as_ref().expect("dayanak");
+        assert_eq!(basis.state, "unlinked");
+        assert!(basis.reasons.contains(&"sides_missing".to_string()));
+        let err = fixture
+            .db
+            .promote_candidate(&legacy_id, &fixture.case_id)
+            .unwrap_err();
+        assert_eq!(err.code(), "E_AI_SCHEMA");
+        let refreshed = fixture
+            .db
+            .revalidate_ai_candidate(&legacy_id)
+            .expect("yeniden doğrula");
+        assert_eq!(refreshed.validation_state, "invalid");
+        assert!(
+            refreshed.validation_errors.contains("sides"),
+            "iki kaynak kuralı yeniden doğrulamada da uygulanır: {}",
+            refreshed.validation_errors
+        );
     }
 }

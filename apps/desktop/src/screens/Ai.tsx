@@ -12,6 +12,8 @@ import {
   type CandidateReport,
   type CaseRow,
   type ConsentPreview,
+  type ContradictionBasis,
+  type QuoteMatchReport,
   type RedactionPlanRow,
   type SentenceAttribution,
   type TransferConsentListRow,
@@ -33,6 +35,11 @@ import {
   candidateKindLabel,
   candidateStateLabel,
   candidateStateTone,
+  contradictionDateRoleLabel,
+  contradictionReasonLabel,
+  contradictionSideStateLabel,
+  contradictionStateLabel,
+  contradictionStateTone,
   draftJsonError,
   errorCount,
   parseIssues,
@@ -63,6 +70,8 @@ function purposeLabel(purpose: string): string {
       return t("ai.purposeClaims");
     case "soru":
       return t("ai.purposeAnswer");
+    case "celiski":
+      return t("ai.purposeContradictions");
     default:
       return purpose;
   }
@@ -264,6 +273,93 @@ function SentenceAttributionView({
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * F11-T09 — «çelişki iki kaynakla mı sunuluyor?».
+ *
+ * İki taraf **yan yana** gösterilir: her tarafın alıntısı, konumu ve tarih
+ * rolü. `presentable` «çelişki var» demek **değildir**; iki kaynağın birebir
+ * doğrulandığını söyler — hüküm avukatındır. Tarih rolleri farklıysa ekran
+ * bunu açıkça yazar: belge tarihi ile tebliğ tarihi farkı çelişki değildir.
+ */
+function ContradictionBasisView({
+  basis,
+  quotes,
+  compact = false,
+}: {
+  basis: ContradictionBasis;
+  quotes: QuoteMatchReport[];
+  compact?: boolean;
+}) {
+  const roleDifference = basis.state === "role_difference";
+  return (
+    <div style={{ marginTop: compact ? 0 : "var(--space-2)" }}>
+      {compact ? null : (
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <strong>{t("candidate.contradiction.title")}</strong>
+          <span className={`badge ${contradictionStateTone(basis.state)}`}>
+            {contradictionStateLabel(basis.state)}
+          </span>
+          <span className="badge plain">
+            {t("candidate.contradiction.documentCount", { count: basis.distinctDocuments })}
+          </span>
+        </div>
+      )}
+      {basis.sides.length === 0 ? (
+        <p className="hint" style={{ marginBottom: 0 }}>
+          {t("candidate.contradiction.unlinkedHint")}
+        </p>
+      ) : (
+        <div style={{ display: "grid", gap: "var(--space-2)", marginTop: "var(--space-1)" }}>
+          {basis.sides.map((side) => {
+            const quote = quotes.find((item) => item.index === side.quoteIndex);
+            const role = contradictionDateRoleLabel(side.dateKind);
+            return (
+              <div
+                key={side.quoteIndex}
+                style={{ paddingLeft: "var(--space-2)", borderLeft: "3px solid var(--line)" }}
+              >
+                <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                  <strong>{t("candidate.contradiction.sideLabel", { side: side.side })}</strong>
+                  <span className={`badge ${quoteLineTone(side.quoteState)}`}>
+                    {contradictionSideStateLabel(side.quoteState)}
+                  </span>
+                  <span className="hint">
+                    {side.pageIndex === null
+                      ? t("candidate.position.missing")
+                      : t("candidate.position.page", { page: side.pageIndex + 1 })}
+                  </span>
+                  {side.label ? <span className="hint">· {side.label}</span> : null}
+                </div>
+                <p style={{ margin: "4px 0" }}>
+                  “{quote ? quote.quote : t("candidate.contradiction.quoteMissing")}”
+                </p>
+                <p className="hint" style={{ margin: 0 }}>
+                  {t("candidate.contradiction.dateRole", {
+                    role: role ?? t("candidate.contradiction.dateRoleMissing"),
+                    text: side.dateText ?? "—",
+                  })}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {roleDifference ? (
+        <p className="hint" style={{ marginBottom: 0 }}>
+          {t("candidate.contradiction.roleDifferenceHint")}
+        </p>
+      ) : null}
+      {basis.reasons.length > 0 ? (
+        <p className="hint" style={{ marginBottom: 0 }}>
+          {t("candidate.contradiction.reasons", {
+            list: basis.reasons.map(contradictionReasonLabel).join(", "),
+          })}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1092,6 +1188,7 @@ export function Ai() {
               <option value="ozet">{t("ai.purposeSummary")}</option>
               <option value="olay_cikarimi">{t("ai.purposeEvents")}</option>
               <option value="iddia_cikarimi">{t("ai.purposeClaims")}</option>
+              <option value="celiski">{t("ai.purposeContradictions")}</option>
               <option value="soru">{t("ai.purposeAnswer")}</option>
             </select>
           </div>
@@ -1942,6 +2039,21 @@ export function Ai() {
                           </summary>
                           <SentenceAttributionView
                             attribution={candidate.sentenceAttribution}
+                            compact
+                          />
+                        </details>
+                      ) : null}
+                      {candidate.contradictionBasis ? (
+                        <details
+                          style={{ marginTop: 4 }}
+                          open={candidate.contradictionBasis.state !== "presentable"}
+                        >
+                          <summary className="hint">
+                            {`${t("candidate.contradiction.title")} · ${contradictionStateLabel(candidate.contradictionBasis.state)}`}
+                          </summary>
+                          <ContradictionBasisView
+                            basis={candidate.contradictionBasis}
+                            quotes={candidate.quoteReport}
                             compact
                           />
                         </details>

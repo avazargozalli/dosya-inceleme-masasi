@@ -115,6 +115,9 @@ pub fn purpose_task_type(purpose: &str) -> Option<&'static str> {
         // F11-T08 — dosya üzerinde soru-cevap. Ayrı amaç: soru metni ister ve
         // yanıt "incelenen kapsam + dayanak" ile birlikte değerlendirilir.
         "soru" => Some("answer"),
+        // F11-T09 — çelişki çıkarımı: aday **iki tarafın** alıntısıyla doğar,
+        // farklı tarih rolleri otomatik çelişki sayılmaz.
+        "celiski" => Some("extract_contradictions"),
         _ => None,
     }
 }
@@ -187,6 +190,8 @@ pub fn task_candidate_kind(task_type: &str) -> Option<&'static str> {
         "summarize" => Some("summary_candidate"),
         "extract_events" => Some("event_candidate"),
         "extract_claims" => Some("claim_candidate"),
+        // F11-T09 — iki kaynaklı çelişki çıkarımı.
+        "extract_contradictions" => Some("contradiction_candidate"),
         other => match crate::ai_candidate::CandidateKind::parse(other) {
             Some(crate::ai_candidate::CandidateKind::Event) => Some("event_candidate"),
             Some(crate::ai_candidate::CandidateKind::Person) => Some("person_candidate"),
@@ -194,6 +199,9 @@ pub fn task_candidate_kind(task_type: &str) -> Option<&'static str> {
             Some(crate::ai_candidate::CandidateKind::Claim) => Some("claim_candidate"),
             Some(crate::ai_candidate::CandidateKind::Summary) => Some("summary_candidate"),
             Some(crate::ai_candidate::CandidateKind::Answer) => Some("answer_candidate"),
+            Some(crate::ai_candidate::CandidateKind::Contradiction) => {
+                Some("contradiction_candidate")
+            }
             None => None,
         },
     }
@@ -1689,6 +1697,10 @@ pub struct AiCandidateRow {
     /// raporundan **her okumada** yeniden hesaplanır (kalıcı damga değil).
     #[serde(default)]
     pub sentence_attribution: Option<crate::ai_candidate::SentenceAttribution>,
+    /// F11-T09 — çelişki adayında iki taraf + tarih rolü ölçümü; her okumada
+    /// yeniden hesaplanır (kalıcı damga değil).
+    #[serde(default)]
+    pub contradiction_basis: Option<crate::ai_candidate::ContradictionBasis>,
     pub checked_at: Option<String>,
 }
 
@@ -1815,6 +1827,40 @@ impl Database {
                 )));
             }
         }
+        // F11-T09 — çelişki kuyruğa **iki doğrulanmış kaynakla** girer. Kapı
+        // burada: arayüzde düğme kapalı olsa da doğrudan IPC çağıran geçemez.
+        // `create_review_item`ın «contradiction_candidate ⇒ tam iki anchor»
+        // kuralı bu yolda atlanıyordu (doğrudan INSERT); kuyruk türü ve iki
+        // anchor sayısı bu yüzden burada da doğrulanır.
+        let contradiction = crate::ai_candidate::CandidateKind::parse(&kind)
+            == Some(crate::ai_candidate::CandidateKind::Contradiction);
+        let mut item_kind = kind;
+        if contradiction {
+            let known: Vec<crate::ai_candidate::QuoteMatchReport> =
+                serde_json::from_str(&quote_report).unwrap_or_default();
+            let basis = crate::ai_candidate::contradiction_basis(&payload, &known);
+            match basis.as_ref().map(|basis| basis.state.as_str()) {
+                Some("presentable") => {}
+                Some("role_difference") => {
+                    return Err(StorageError::AiContradiction(
+                        "tarafların tarih rolleri farklı; tarih farkı tek başına çelişki değildir"
+                            .into(),
+                    ))
+                }
+                _ => {
+                    return Err(StorageError::AiContradiction(format!(
+                        "iki kaynak doğrulanmadı ({})",
+                        basis
+                            .map(|basis| basis.reasons.join(", "))
+                            .unwrap_or_else(|| "sides yok".into())
+                    )))
+                }
+            }
+            // Kuyruk türü tekildir: çelişki değerlendirmesi (`assess_contradiction`)
+            // `contradiction_candidate` adını arar; `contradiction` yazılsaydı
+            // kayıt kuyrukta açılamazdı.
+            item_kind = "contradiction_candidate".to_string();
+        }
 
         let quotes: Vec<crate::ai_candidate::QuoteMatchReport> =
             serde_json::from_str(&quote_report).unwrap_or_default();
@@ -1828,10 +1874,15 @@ impl Database {
                 }
             }
             let anchors = serde_json::to_string(&anchor_ids).unwrap_or_else(|_| "[]".into());
+            if contradiction && anchor_ids.len() != 2 {
+                return Err(StorageError::AiContradiction(
+                    "iki tarafın alıntısı da kaynak (anchor) olarak bağlanamadı".into(),
+                ));
+            }
             self.conn().execute(
                 "INSERT INTO review_items (id,case_id,item_kind,payload_schema_version,payload,source_anchor_ids,ai_run_id,state,created_at,updated_at,row_version)
                  VALUES (?1,?2,?3,1,?4,?5,?6,'pending',?7,?7,1)",
-                rusqlite::params![id, case_id, kind, payload, anchors, run_id, now],
+                rusqlite::params![id, case_id, item_kind, payload, anchors, run_id, now],
             )?;
             Ok(())
         })?;
@@ -2498,6 +2549,15 @@ pub(crate) fn map_candidate(row: &Row<'_>) -> rusqlite::Result<AiCandidateRow> {
     } else {
         None
     };
+    // F11-T09 — çelişki dayanağı da kalıcı sütun değildir: yükten ve **o anki**
+    // alıntı raporundan hesaplanır, böylece yeniden doğrulama tazeler.
+    let contradiction_basis = if crate::ai_candidate::CandidateKind::parse(&candidate_type)
+        == Some(crate::ai_candidate::CandidateKind::Contradiction)
+    {
+        crate::ai_candidate::contradiction_basis(&structured_payload, &quote_report)
+    } else {
+        None
+    };
     Ok(AiCandidateRow {
         id: row.get(0)?,
         ai_run_id: row.get(1)?,
@@ -2509,6 +2569,7 @@ pub(crate) fn map_candidate(row: &Row<'_>) -> rusqlite::Result<AiCandidateRow> {
         quote_state: row.get(7)?,
         quote_report,
         sentence_attribution,
+        contradiction_basis,
         checked_at: row.get(9)?,
     })
 }

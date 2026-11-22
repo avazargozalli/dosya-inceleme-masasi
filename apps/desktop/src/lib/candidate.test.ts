@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { CandidateReport, QuoteMatchReport } from "./api";
+import type { CandidateReport, ContradictionBasis, QuoteMatchReport } from "./api";
 import { tr } from "./i18n";
 import {
   CANDIDATE_KINDS,
   candidateKindLabel,
   candidateStateLabel,
   candidateStateTone,
+  contradictionDateRoleLabel,
+  contradictionReasonLabel,
+  contradictionSideStateLabel,
+  contradictionStateLabel,
+  contradictionStateTone,
   draftJsonError,
   errorCount,
   parseIssues,
@@ -56,7 +61,7 @@ function report(overrides: Partial<CandidateReport>): CandidateReport {
 }
 
 describe("aday türü ve durum metinleri", () => {
-  it("altı aday türünün hepsini listeler", () => {
+  it("yedi aday türünün hepsini listeler", () => {
     expect(CANDIDATE_KINDS.map((kind) => kind.value)).toEqual([
       "event_candidate",
       "person_candidate",
@@ -64,6 +69,7 @@ describe("aday türü ve durum metinleri", () => {
       "claim_candidate",
       "summary_candidate",
       "answer_candidate",
+      "contradiction_candidate",
     ]);
   });
 
@@ -225,5 +231,104 @@ describe("sözlük bağı (F04-T08)", () => {
     expect(quotePositionLabel(quote({ pageIndex: 4, charStart: null }))).not.toContain("{");
     expect(quoteSummary(report({}))).not.toContain("{");
     expect(quoteSummary(report({ quotes: [] }))).toBe(tr.candidate.summary.none);
+  });
+});
+
+/**
+ * F11-T09 — çelişki iki kaynakla sunulur; farklı tarih **rolleri** otomatik
+ * çelişki sayılmaz. Ekran bilmediği durumu «çelişki var» saymaz, ham yazar.
+ */
+describe("çelişki dayanağı (F11-T09)", () => {
+  function basis(overrides: Partial<ContradictionBasis> = {}): ContradictionBasis {
+    return {
+      state: "presentable",
+      sides: [
+        {
+          side: "A",
+          quoteIndex: 0,
+          documentVersionId: "v1",
+          quoteState: "exact",
+          verified: true,
+          pageIndex: 0,
+          label: null,
+          dateKind: "event",
+          dateText: "12 Mart 2024",
+        },
+        {
+          side: "B",
+          quoteIndex: 1,
+          documentVersionId: "v2",
+          quoteState: "exact",
+          verified: true,
+          pageIndex: 1,
+          label: null,
+          dateKind: "event",
+          dateText: "15 Mart 2024",
+        },
+      ],
+      distinctDocuments: 2,
+      dateRolesDiffer: false,
+      reasons: [],
+      ...overrides,
+    };
+  }
+
+  it("durum etiketleri sözlükten gelir, bilinmeyen durum ham yazılır", () => {
+    expect(contradictionStateLabel("presentable")).toBe(tr.candidate.contradiction.presentable);
+    expect(contradictionStateLabel("role_difference")).toBe(
+      tr.candidate.contradiction.roleDifference,
+    );
+    expect(contradictionStateTone("presentable")).toBe("ok");
+    expect(contradictionStateTone("role_difference")).toBe("warn");
+    expect(contradictionStateTone("sources_unverified")).toBe("warn");
+    expect(contradictionStateTone("unlinked")).toBe("danger");
+    expect(contradictionStateLabel("gizemli")).toBe("gizemli");
+    expect(contradictionStateTone("gizemli")).toBe("plain");
+  });
+
+  it("tarih rolü yoksa uydurmaz, rol etiketini sözlükten verir", () => {
+    expect(contradictionDateRoleLabel("notification")).toBe(tr.candidate.dateRole.notification);
+    expect(contradictionDateRoleLabel("document")).toBe(tr.candidate.dateRole.document);
+    expect(contradictionDateRoleLabel(null)).toBeNull();
+    expect(contradictionDateRoleLabel("belge")).toBe("belge");
+  });
+
+  it("taraf alıntı durumunu ve nedeni sözlükten yazar", () => {
+    expect(contradictionSideStateLabel("ambiguous")).toBe(tr.candidate.line.ambiguous);
+    expect(contradictionSideStateLabel("missing")).toBe(
+      tr.candidate.contradiction.quoteMissing,
+    );
+    expect(contradictionReasonLabel("date_roles_differ")).toBe(
+      tr.candidate.contradictionReason.dateRolesDiffer,
+    );
+    expect(contradictionReasonLabel("side_not_exact")).toBe(
+      tr.candidate.contradictionReason.sideNotExact,
+    );
+    expect(contradictionReasonLabel("gizemli")).toBe("gizemli");
+  });
+
+  it("iki kaynak doğrulanmadan ve iki taraf bildirilmeden terfiyi kapatır", () => {
+    const row = (state: string, sides = basis().sides) => ({
+      validationState: "partial",
+      quoteState: "verified",
+      schemaState: "valid",
+      candidateType: "contradiction_candidate",
+      contradictionBasis: basis({ state, sides }),
+    });
+    expect(promoteBlockedReason(row("role_difference"))).toBe(
+      tr.candidate.blocked.contradictionRoleDifference,
+    );
+    expect(promoteBlockedReason(row("sources_unverified"))).toBe(
+      tr.candidate.blocked.contradictionSourcesUnverified,
+    );
+    expect(promoteBlockedReason(row("unlinked", []))).toBe(
+      tr.candidate.blocked.contradictionUnlinked,
+    );
+    // İki kaynak doğrulandı: engel yok.
+    expect(promoteBlockedReason(row("presentable"))).toBeNull();
+    // Çelişki olmayan türde dayanak alanı kapıyı etkilemez.
+    expect(
+      promoteBlockedReason({ ...row("role_difference"), candidateType: "claim_candidate" }),
+    ).toBeNull();
   });
 });
