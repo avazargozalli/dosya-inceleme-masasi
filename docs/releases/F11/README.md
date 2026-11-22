@@ -15,6 +15,7 @@
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
 | F11-T07 özet cümlesi → dayanak bağı | ✅ | `quotes[].sentences` (birebir cümle kopyası) + `SentenceAttribution` — cümle başına `backed`/`weak`/`unsourced`; kaynaksız yorum ayrı blokta, bağ yoksa «cümle bağı yok» (uydurma damga yok); kayıtlı satırda her okumada yeniden hesaplanır (2026-11-22, aşağıdaki bölüm) |
 | F11-T08 soru-cevap: incelenen kapsam + sınırlı yanıt | ✅ | `answer_basis` — kapsam **fiilen gönderilen** segmentlerden, dayanak alıntı raporundan; `sufficient`/`limited` + kararlı neden kodları, `E_AI_ANSWER_LIMITED` terfi kapısı; amaç «soru», 3–500 karakter soru metni `ai_messages` **user** satırı + istemde `Soru:`; arayüzde kapsam satırı ve «sınırlı yanıt» rozeti (2026-11-21, aşağıdaki bölüm) |
+| F11-T09 çelişki adayı iki kaynakla | ✅ | `CandidateKind::Contradiction` — `sides` **tam iki ayrı alıntı**, `dateKind` kapalı küme; okuma anında `contradiction_basis` (`presentable`/`role_difference`/`sources_unverified`/`unlinked`), uyarı `validation_state`i `partial`a çeker; `E_AI_CONTRADICTION` terfi kapısı + kuyruk türü normalizasyonu + **tam iki anchor**; arayüzde iki taraf yan yana + rol farkı uyarısı (2026-11-22, aşağıdaki bölüm) |
 | Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
 
 ## Dürüst durum
@@ -936,6 +937,97 @@ gzip **186,63 kB**, `masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda
 güvenli depo`, sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve kaynak arşivi
 yeşil. İlk `git push` bu turda yapıldı (`272bd48..4000166`); önceki koşuda commit atılmış
 ama **push edilmemişti** — CI kanıtı bu turun ölçümüdür.
+
+## F11-T09 — çelişki adayı **iki kaynağın** alıntısıyla sunulur (2026-11-22)
+
+**Ölçülen kusur (düzeltme öncesi).** İnceleme kuyruğu `contradiction_candidate` türünü
+tanıyor, `create_review_item` bu tür için **tam iki** anchor istiyor ve `Review.tsx` elle
+ekleme yolunda iki ayrı anchor'ı zorunlu tutuyordu. Ama AI tarafında **çelişki adayı türü
+yoktu**: `CandidateKind` altı tür tanıyordu, amaç listesinde «çelişki» yoktu. Dahası
+`promote_candidate` kuyruğa **doğrudan INSERT** ettiği için iki-anchor kuralı bu yolda
+atlanıyordu; iki taraf **aynı alıntıyı** gösterebiliyor, tarafların tarihleri **farklı
+rollerde** olsa bile (belge tarihi ↔ tebliğ tarihi) bu ayırt edilemiyordu — ekran ve kuyruk
+için ikisi de «çelişki» görünürdü.
+
+**Yazılan.**
+
+- **Çekirdek tür:** `CandidateKind::Contradiction` (`contradiction` | `contradiction_candidate`);
+  `field_specs`: `text` 1–2000 zorunlu, `sides` ayrı doğrulanır. `parse_sides`: **tam iki**
+  nesne (`sides_not_two`), her nesne `quoteIndex` (kabul edilmiş alıntı; **aynı indeks iki
+  taraf olamaz** → `side_quote_duplicate`; kabul edilmemiş indeks → `side_quote_unknown`),
+  isteğe bağlı `dateKind` kapalı küme (`document|event|notification|hearing|unknown`) ve
+  isteğe bağlı `dateText`; tanımsız alan `unknown_field` uyarısı.
+- **`contradiction_basis(payload, quotes)`** — **okuma anında** hesaplanan hüküm (kalıcı
+  sütun değil): `presentable` (iki taraf var, ikisi de `exact`), `role_difference` (iki taraf
+  da rol bildirdi ve **roller farklı** → otomatik çelişki değil), `sources_unverified` (en az
+  bir taraf `exact` değil; neden `side_missing`/`side_not_exact`), `unlinked` (`sides` yok ya
+  da iki taraf değil — eski kayıt). `distinct_documents` ayrıca sayılır.
+- **Doğrulama hükmü:** `unlinked`/`sources_unverified`/`role_difference` uyarı üretir ve
+  `validation_state`i **`partial`a** çeker — iki kaynak ön koşulu tutmayan aday «geçerli»
+  görünmez.
+- **Kapı:** `promote_candidate` çelişki adayını `presentable` değilse `E_AI_CONTRADICTION`
+  ile reddeder; terfi anında kuyruk türü **`contradiction_candidate`** olarak normalize edilir
+  (çelişki değerlendirmesi bu adı arar) ve bağlanan **anchor sayısı tam iki** olmalıdır.
+  Kapı çekirdekte: arayüz düğmeyi kapatsa da doğrudan IPC çağıran geçemez.
+- **Görev/amaç:** `extract_contradictions` ↔ `contradiction_candidate`;
+  `purpose_task_type("celiski") = "extract_contradictions"`. `candidate_output_instructions`
+  modele iki taraf kuralını ve tarih rolü uyarısını yazar («farklı tarih rollerindeki iki tarih
+  çelişki değildir»).
+- **Okuma yolu:** Tauri aday yüküne `contradictionBasis` (`#[serde(default)]`); `api.ts`
+  `ContradictionBasis` / `ContradictionSideReport` tipleri.
+- **Arayüz:** amaç seçicide «Çelişki çıkarımı»; aday kartında iki taraf **yan yana** (A/B,
+  alıntı durumu rozeti, sayfa, etiket, alıntı metni, tarih rolü + metni), `role_difference`
+  uyarısı ve engel gerekçeleri. `presentable` rozeti «çelişki var» demek **değildir**: iki
+  kaynağın birebir doğrulandığını söyler, hüküm avukatındır.
+
+**Testler (güncel kodla).** `ai_candidate` +2:
+`contradiction_candidate_schema_requires_two_distinct_sides` (şema saldırıları: iki taraftan
+az/çok, aynı alıntı iki taraf, bilinmeyen alıntı indeksi, kapalı küme dışı `dateKind`, tanımsız
+alan) ve `contradiction_needs_two_verified_sources_and_ignores_date_roles` (iki doğrulanmış
+kaynak → `presentable`; rol farkı → `role_difference` + `validation_state` `partial`; biri
+doğrulanmamış → `sources_unverified`; `sides`sız eski satır → `unlinked`). Arayüz +8
+(`candidate` +5: yedi tür listesi, durum etiketleri, tarih rolü, taraf durumu, terfi kapısı;
+`Ai` +3: iki taraf + konum + rol gösterimi, rol farkında düğme kapalı + gerekçe, doğrulanmamış/
+iki-tarafsız adayın gönderilmemesi). Yerel: `dim-storage --lib` **744/744 yeşil, 600,08 s**
+(log `scratch/dim-t09/libtest_t09.log`); arayüz 66 dosya / **1466** test yeşil (ağaçtaki başka
+ajanın 3 testi dahil), `tsc --noEmit` temiz; iki manifest `cargo fmt`; `clippy -p dim-storage
+--all-targets -D warnings`; masaüstü `clippy --all-targets -D warnings` temiz.
+
+**Kapı kanıtı (`scratch/dim-t09/t09_gates.py`, log `t09_gates_run2.log`).** Her mutasyon tek
+başına uygulandı, hedefli test koşuldu, kaynak sha256 **birebir** geri yazıldı
+(`ai_candidate.rs 228e5a6af9752860…`, `ai.rs f5429371b5d63278…`, `candidate.ts
+dc23b14c8c9417be…`, `Ai.tsx 3691501c16fface3…`). **11/11 KIRMIZI · YEŞİL 0 · ÖLÇÜLEMEDİ 0**
+(82,2 s): tam iki taraf, aynı alıntının iki taraf olması, tarih rolü farkı, `exact` doğrulama,
+uyarının `partial`a çekmesi, terfi kapısı, kuyruk türü normalizasyonu (çekirdek); rol farkı
+engeli, `presentable` tonu, tarih rolü etiketi, çelişki başlığı (arayüz). **Dürüst (önceki
+koşu):** ilk kapı koşusu araç tur sınırında kesildi (M1–M5 okunmuş, M6–U4 okunamamıştı); o
+koşunun eksik hükümleri kanıt sayılmadı, kapı bu turda **baştan** koşuldu.
+
+**Dürüst sınırlar.**
+
+- **Gerçek API çağrısı yapılmadı** (anahtar yok): modelin `sides` şemasına uyacağı ve çelişki
+  önerisinin niteliği ölçülmedi; uymazsa aday kanıtıyla `invalid`/`partial` kalır.
+- «İki doğrulanmış kaynak» ölçüsü **alıntı eşleşmesidir** (iki pasaj da metinde tek konumda
+  birebir bulundu). Tarafların **gerçekten çeliştiği** hukuken doğrulanmaz; `presentable`
+  «çelişki var» demek değildir — yorum avukatındır.
+- İki taraf **aynı belgeden** olabilir (iki ayrı pasaj); `distinct_documents` yalnız bilgi
+  olarak sayılır, kapı değildir (aynı belgedeki iki beyan da çelişebilir).
+- `dateKind` modelin **beyanıdır**; metinden doğrulanmaz. Yanlış rol yazılırsa rol farkı yanlış
+  hesaplanır (kapı bunu bilemez).
+- `contradiction_basis` **kalıcı damga değildir**; her okumada yeniden hesaplanır. Yeniden
+  doğrulama alıntı raporunu değiştirirse hüküm de değişir; `sides` taşımayan eski satırlar
+  `unlinked` görünür (uydurma damga yok).
+- Kapı çekirdekte; yine de `ai_candidates` satırını doğrudan SQL ile yazan saldırgan
+  `quote_report`/`validation_state`i tahrif edebilir (bu tabloda tetikleyici yok — bilinçli
+  sınır).
+- Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `d061fc3` (10 dosya, **+1436/−12**) → run `44977775851`
+**10/10 YEŞİL**: `dim-storage` **744** iki OS'ta (macos-15 **497,63 s** / ubuntu-latest
+**1.055,59 s**), `arayüz` 66 dosya / **1463** test (yerel 1466 farkı ağaçtaki başka ajanın
+commit'siz 3 testi), paket `index-ThMfSHF8.js` **714,35 kB** / gzip **189,91 kB**,
+`masaüstü kabuk` (clippy + test), `windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı,
+sürüm paketi manifesti ve kaynak arşivi yeşil.
 
 ## F11-T08 — soru-cevapta incelenen kapsam ve «sınırlı yanıt» işareti (2026-11-22)
 
