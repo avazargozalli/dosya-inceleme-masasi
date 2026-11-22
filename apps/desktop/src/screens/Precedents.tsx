@@ -13,6 +13,7 @@ import {
   type CorpusExportResult,
   type DocumentRow,
   type DocumentVersionRow,
+  type LibraryInTextCheck,
   type PrecedentBibliography,
   type PrecedentDocumentText,
   type PrecedentInTextCheck,
@@ -32,6 +33,11 @@ import {
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
+  libraryCheckSkipped,
+  libraryCheckSummary,
+  libraryMatchCitation,
+  libraryQuoteFindingText,
+  libraryQuoteFindingTone,
   precedentInTextSkipped,
   precedentInTextSummary,
   precedentPositionText,
@@ -173,6 +179,13 @@ export function Precedents() {
   const [inTextBusy, setInTextBusy] = useState(false);
   const inTextEdit = useRef(0);
   const inTextReq = useRef(0);
+  // F12-T14k: aynı metin **bütün kütüphanede** aranır (güncel tam metinler).
+  // Kapsam seçili emsale bağlı değildir; metin değişince eski sonuç düşer.
+  const [libraryText, setLibraryText] = useState("");
+  const [libraryCheck, setLibraryCheck] = useState<LibraryInTextCheck | null>(null);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const libraryEdit = useRef(0);
+  const libraryReq = useRef(0);
   /** Künye kopyasının nesli: geç yanıt yeni künyeye etiket yazmaz. */
   const copySeq = useRef(0);
   // Türetilmiş okumalar **hangi emsale/dosyaya/sürüme** aitse ona bağlıdır:
@@ -709,6 +722,24 @@ export function Precedents() {
     }
   }
 
+  /** Metindeki alıntıları bütün kütüphanenin güncel tam metinlerinde arar (F12-T14k). */
+  async function runLibraryCheck() {
+    setError(null);
+    setLibraryCheck(null);
+    if (libraryText.trim().length === 0) return;
+    const req = ++libraryReq.current;
+    const edit = libraryEdit.current;
+    setLibraryBusy(true);
+    try {
+      const result = await api.precedentLibraryInTextCheck(libraryText);
+      if (req === libraryReq.current && edit === libraryEdit.current) setLibraryCheck(result);
+    } catch (e) {
+      if (req === libraryReq.current && edit === libraryEdit.current) setError(toApiError(e));
+    } finally {
+      if (req === libraryReq.current) setLibraryBusy(false);
+    }
+  }
+
   async function copyBibliography() {
     if (!bibliography) return;
     // Kopya etiketi istek anındaki künyeye bağlıdır: uçuşta emsal değişirse
@@ -990,6 +1021,100 @@ export function Precedents() {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-head">
+          <div>
+            <h2>{t("precedentLib.libraryTitle")}</h2>
+            <p className="card-sub">{t("precedentLib.librarySub")}</p>
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="p-library-text">{t("precedentLib.libraryLabel")}</label>
+          <textarea
+            id="p-library-text"
+            className="input"
+            rows={4}
+            style={{ height: "auto", minHeight: 88, padding: "8px 10px", resize: "vertical" }}
+            value={libraryText}
+            onChange={(e) => {
+              // Metin değişti: önceki sonuç artık bu metne ait değil.
+              libraryEdit.current += 1;
+              setLibraryText(e.target.value);
+              setLibraryCheck(null);
+            }}
+            placeholder={t("precedentLib.libraryPlaceholder")}
+          />
+        </div>
+        <div className="row">
+          <button
+            className="btn"
+            disabled={libraryBusy || libraryText.trim().length === 0}
+            onClick={() => void runLibraryCheck()}
+          >
+            {libraryBusy ? t("precedentLib.libraryBusy") : t("precedentLib.libraryRun")}
+          </button>
+          <span className="hint" style={{ flex: "1 1 260px", margin: 0 }}>
+            {t("precedentLib.libraryHint")}
+          </span>
+        </div>
+        {libraryCheck ? (
+          <div className="notice" role="status">
+            <div>
+              {libraryCheck.spansFound === 0
+                ? t("precedentLib.libraryEmpty")
+                : libraryCheck.libraryTotal === 0
+                  ? t("precedentLib.libraryNoText")
+                  : libraryCheckSummary(libraryCheck)}
+            </div>
+            {libraryCheckSkipped(libraryCheck) ? (
+              <div className="hint" style={{ marginTop: 6 }}>
+                {libraryCheckSkipped(libraryCheck)}
+              </div>
+            ) : null}
+            {libraryCheck.truncated ? (
+              <div className="hint" style={{ marginTop: 6 }}>
+                {t("precedentLib.libraryTruncated", { scanned: libraryCheck.scanned })}
+              </div>
+            ) : null}
+            {libraryCheck.quotes.length > 0 ? (
+              <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                {libraryCheck.quotes.map((finding) => {
+                  const tone = libraryQuoteFindingTone(finding);
+                  return (
+                    <li key={finding.index} style={{ marginTop: 6 }}>
+                      <span
+                        className={
+                          tone === "ok" ? "badge ok" : tone === "warn" ? "badge warn" : "badge"
+                        }
+                      >
+                        {libraryQuoteFindingText(finding)}
+                      </span>{" "}
+                      <span>“{finding.quote}”</span>
+                      {finding.hiddenMatches > 0 ? (
+                        <div className="hint" style={{ marginTop: 2 }}>
+                          {t("precedentLib.libraryHidden", { count: finding.hiddenMatches })}
+                        </div>
+                      ) : null}
+                      {finding.matches.map((match) => (
+                        <div key={match.precedentId} className="hint" style={{ marginTop: 2 }}>
+                          {libraryMatchCitation(match)} ·{" "}
+                          {t("precedentLib.librarySource")}: “{match.sourceText}”
+                        </div>
+                      ))}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+            {libraryCheck.notes.map((note) => (
+              <p key={note} className="hint" style={{ margin: "6px 0 0" }}>
+                {note}
+              </p>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="card">

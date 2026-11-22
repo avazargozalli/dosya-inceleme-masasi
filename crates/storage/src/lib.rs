@@ -106,8 +106,10 @@ pub use instruction_risk::{
 };
 pub use intext_quotes::{
     extract_quoted_spans, ExtractedQuotes, InTextQuoteCheck, InTextQuoteFinding, InTextQuoteInput,
-    InTextQuotePosition, PrecedentInTextCheck, PrecedentInTextInput, PrecedentQuoteFinding,
-    PrecedentQuotePosition, SpannedQuote, MAX_IN_TEXT_CHECK_CHARS, MAX_IN_TEXT_QUOTES,
+    InTextQuotePosition, LibraryInTextCheck, LibraryQuoteFinding, LibraryQuoteMatch,
+    PrecedentInTextCheck, PrecedentInTextInput, PrecedentQuoteFinding, PrecedentQuotePosition,
+    SpannedQuote, MAX_IN_TEXT_CHECK_CHARS, MAX_IN_TEXT_QUOTES, MAX_LIBRARY_MATCHES_PER_QUOTE,
+    MAX_LIBRARY_PRECEDENTS,
 };
 pub use marks::{MarkRow, NewRegionMark, NewTextMark};
 pub use notes::{NewNote, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow};

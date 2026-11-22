@@ -27,19 +27,19 @@ use dim_storage::{
     ClaimRow, ConsentPreview, ContradictionAssessmentRow, CorpusCoverage, CorpusMode,
     CoverageReport, Database, DatabaseKey, Document, DocumentTagRow, DocumentVersion, EventPatch,
     EventRow, EventSourceRow, EvidenceLinkRow, ExportCoverage, ExportRow, InTextQuoteCheck,
-    InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, MarkRow, NewAiContextItem, NewAiRun,
-    NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck, NewClaim, NewClaimRelation,
-    NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent, NewPrecedentNote, NewPrecedentText,
-    NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask, NewTransferConsent, NoteDraftInput,
-    NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow, OutboxEventRow, PageRow, ParseRun,
-    ParticipantRow, PrecedentBibliography, PrecedentDocumentText, PrecedentInTextCheck,
-    PrecedentInTextInput, PrecedentNoteRow, PrecedentRow, PrecedentSearchPage,
-    PrecedentSearchQuery, PrecedentUsageTerms, PrecedentVersionRow, ProviderProfileRow,
-    QuoteVerification, RebindSuggestion, RedactionPlanRow, RedactionRegionInput,
-    RedactionRegionRow, ReminderEnqueueResult, ReminderRow, ReviewCommitResult, ReviewDecisionRow,
-    ReviewItemRow, ReviewTarget, SearchFilters, SearchHit, SearchMode, SearchPage, SearchQuery,
-    SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow, TaskRow, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
+    InTextQuoteInput, JobQueueSummary, JobRecovery, JobRow, LibraryInTextCheck, MarkRow,
+    NewAiContextItem, NewAiRun, NewAnchor, NewBackupRun, NewCase, NewCaseParty, NewCitationCheck,
+    NewClaim, NewClaimRelation, NewEvent, NewEvidenceLink, NewNote, NewPage, NewPrecedent,
+    NewPrecedentNote, NewPrecedentText, NewRedactionPlan, NewRegionMark, NewReviewItem, NewTask,
+    NewTransferConsent, NoteDraftInput, NoteDraftRow, NoteEdit, NoteRevisionRow, NoteRow,
+    OutboxEventRow, PageRow, ParseRun, ParticipantRow, PrecedentBibliography,
+    PrecedentDocumentText, PrecedentInTextCheck, PrecedentInTextInput, PrecedentNoteRow,
+    PrecedentRow, PrecedentSearchPage, PrecedentSearchQuery, PrecedentUsageTerms,
+    PrecedentVersionRow, ProviderProfileRow, QuoteVerification, RebindSuggestion, RedactionPlanRow,
+    RedactionRegionInput, RedactionRegionRow, ReminderEnqueueResult, ReminderRow,
+    ReviewCommitResult, ReviewDecisionRow, ReviewItemRow, ReviewTarget, SearchFilters, SearchHit,
+    SearchMode, SearchPage, SearchQuery, SearchTotal, SegmentBlock, SetUsageTermsInput, SettingRow,
+    TaskRow, TransferConsentListRow, TransferConsentRow, TransferReceiptRow, TransferSegmentRow,
 };
 use dim_vault::{UnlockedVault, VaultFile};
 use serde::{Deserialize, Serialize};
@@ -5586,6 +5586,19 @@ pub fn precedent_in_text_check(
     let guard = state.lock();
     let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
     Ok(db.check_in_text_quotes_in_precedent(&precedent_id, &input)?)
+}
+
+/// Serbest metindeki tırnaklı alıntıları **bütün kütüphanenin** güncel tam
+/// metinlerinde arar (F12-T14k). Kütüphane sınırı aşılırsa rapor `truncated`
+/// yazar; eşleşmeyen alıntı `partial_scan` olur ("bulunamadı" kesin değil).
+#[tauri::command]
+pub fn precedent_library_in_text_check(
+    state: State<'_, AppState>,
+    input: PrecedentInTextInput,
+) -> Result<LibraryInTextCheck, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.check_in_text_quotes_across_library(&input)?)
 }
 
 /// Bibliyografik künye (F12-T12): künye, kaynak bağlantısı ve erişim tarihi.

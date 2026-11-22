@@ -1,11 +1,23 @@
 import { describe, expect, it } from "vitest";
-import type { PrecedentInTextCheck, PrecedentVersionRow, QuoteVerificationRow } from "./api";
+import type {
+  LibraryInTextCheck,
+  LibraryQuoteFinding,
+  LibraryQuoteMatch,
+  PrecedentInTextCheck,
+  PrecedentVersionRow,
+  QuoteVerificationRow,
+} from "./api";
 import {
   accessBasisLabel,
   bibliographyMissingText,
   bulkOutcomeLabel,
   bulkOutcomeTone,
   bulkReportSummary,
+  libraryCheckSkipped,
+  libraryCheckSummary,
+  libraryMatchCitation,
+  libraryQuoteFindingText,
+  libraryQuoteFindingTone,
   precedentInTextSkipped,
   precedentInTextSummary,
   precedentMethodLabel,
@@ -382,3 +394,99 @@ function finding(overrides: Partial<PrecedentInTextCheck["quotes"][number]> = {}
     ...overrides,
   };
 }
+
+// ---- F12-T14k: kütüphane geneli arama etiketleri ----
+
+function libraryMatch(overrides: Partial<LibraryQuoteMatch> = {}): LibraryQuoteMatch {
+  return {
+    precedentId: "p1",
+    court: "Yargıtay",
+    chamber: "1. Hukuk Dairesi",
+    docketNo: "2024/100",
+    decisionNo: "2025/77",
+    decisionDate: "2025-06-01",
+    title: "Kira alacağı",
+    versionId: "pv1",
+    method: "exact",
+    occurrences: 1,
+    charStart: 10,
+    charEnd: 28,
+    sourceText: "kira bedeli ödenmedi",
+    ...overrides,
+  };
+}
+
+function libraryFinding(overrides: Partial<LibraryQuoteFinding> = {}): LibraryQuoteFinding {
+  return {
+    index: 0,
+    quote: "kira bedeli ödenmedi",
+    state: "found",
+    matches: [libraryMatch()],
+    matchedPrecedents: 1,
+    hiddenMatches: 0,
+    ...overrides,
+  };
+}
+
+function libraryCheck(overrides: Partial<LibraryInTextCheck> = {}): LibraryInTextCheck {
+  return {
+    textChars: 42,
+    spansFound: 2,
+    skippedShort: 0,
+    skippedLong: 0,
+    unclosed: 0,
+    quotes: [libraryFinding()],
+    found: 1,
+    notFound: 1,
+    partialScan: 0,
+    noLibraryText: 0,
+    libraryTotal: 3,
+    scanned: 3,
+    truncated: false,
+    dehyphenated: 0,
+    ligature: 0,
+    notes: [],
+    checkedAt: "2026-05-01T10:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("kütüphane geneli alıntı araması (F12-T14k)", () => {
+  it("özet kütüphane, tarama ve sonuç sayılarını taşır", () => {
+    expect(libraryCheckSummary(libraryCheck())).toBe(
+      "3 emsalin tam metni var · 3 tarandı · 1 alıntı bulundu · 1 bulunamadı · 0 kesin değil · 0 kütüphane metni yok",
+    );
+    expect(libraryCheckSkipped(libraryCheck())).toBeNull();
+    expect(
+      libraryCheckSkipped(libraryCheck({ skippedShort: 2, skippedLong: 1, unclosed: 1 })),
+    ).toContain("2 alıntı 8 karakterden kısa");
+  });
+
+  it("bulundu / bulunamadı / kesin değil / kütüphane metni yok ayrılır", () => {
+    const found = libraryFinding({ matchedPrecedents: 3 });
+    expect(libraryQuoteFindingText(found)).toBe("bulundu · 3 emsal");
+    expect(libraryQuoteFindingTone(found)).toBe("ok");
+    const missing = libraryFinding({ state: "not_found", matches: [], matchedPrecedents: 0 });
+    expect(libraryQuoteFindingText(missing)).toBe("bulunamadı");
+    expect(libraryQuoteFindingTone(missing)).toBe("warn");
+    const partial = libraryFinding({ state: "partial_scan", matches: [], matchedPrecedents: 0 });
+    expect(libraryQuoteFindingText(partial)).toBe("kesin değil · tarama sınırlı");
+    expect(libraryQuoteFindingTone(partial)).toBe("warn");
+    const noText = libraryFinding({ state: "no_library_text", matches: [], matchedPrecedents: 0 });
+    expect(libraryQuoteFindingText(noText)).toBe("kütüphane metni yok");
+    expect(libraryQuoteFindingTone(noText)).toBe("muted");
+    // `partial_scan` asla "bulunamadı" diye yazılmaz.
+    expect(libraryQuoteFindingText(partial)).not.toBe("bulunamadı");
+  });
+
+  it("eşleşen emsalin künyesi boş alanları atlar", () => {
+    expect(libraryMatchCitation(libraryMatch())).toBe(
+      "Yargıtay 1. Hukuk Dairesi · 2025/77 · 2025-06-01",
+    );
+    expect(
+      libraryMatchCitation(
+        libraryMatch({ chamber: null, decisionNo: null, decisionDate: null }),
+      ),
+    ).toBe("Yargıtay · 2024/100");
+  });
+});

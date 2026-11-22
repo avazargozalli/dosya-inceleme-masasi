@@ -1,4 +1,7 @@
 import type {
+  LibraryInTextCheck,
+  LibraryQuoteFinding,
+  LibraryQuoteMatch,
   PrecedentInTextCheck,
   PrecedentInTextFinding,
   PrecedentQuotePosition,
@@ -273,4 +276,58 @@ export function precedentInTextSkipped(check: PrecedentInTextCheck): string | nu
     long: check.skippedLong,
     unclosed: check.unclosed,
   });
+}
+
+// ---- F12-T14k: kütüphane geneli arama etiketleri (saf) ----
+
+/** Kütüphane geneli aramanın tek satırlık özeti; sayılar çekirdekten gelir. */
+export function libraryCheckSummary(check: LibraryInTextCheck): string {
+  return t("precedentLib.librarySummary", {
+    libraryTotal: check.libraryTotal,
+    scanned: check.scanned,
+    found: check.found,
+    notFound: check.notFound,
+    partialScan: check.partialScan,
+    noLibraryText: check.noLibraryText,
+  });
+}
+
+/** Kısa/uzun/kapanmamış tırnaklar kütüphane aramasında da denetlenmez. */
+export function libraryCheckSkipped(check: LibraryInTextCheck): string | null {
+  if (check.skippedShort + check.skippedLong + check.unclosed === 0) return null;
+  return t("precedentLib.intextSkipped", {
+    short: check.skippedShort,
+    long: check.skippedLong,
+    unclosed: check.unclosed,
+  });
+}
+
+/** Tek alıntının kütüphane sonucu: `bulunamadı` ile `kesin değil` ayrılır. */
+export function libraryQuoteFindingText(finding: LibraryQuoteFinding): string {
+  switch (finding.state) {
+    case "found":
+      return t("precedentLib.libraryFound", { count: finding.matchedPrecedents });
+    case "partial_scan":
+      return t("precedentLib.libraryPartial");
+    case "no_library_text":
+      return t("precedentLib.libraryNoLibraryText");
+    default:
+      return t("precedentLib.libraryNotFound");
+  }
+}
+
+export function libraryQuoteFindingTone(
+  finding: LibraryQuoteFinding,
+): "ok" | "warn" | "muted" {
+  if (finding.state === "found") return "ok";
+  if (finding.state === "no_library_text") return "muted";
+  return "warn";
+}
+
+/** Eşleşen emsalin künyesi: mahkeme · daire · karar no · tarih (boş alan atlanır). */
+export function libraryMatchCitation(match: LibraryQuoteMatch): string {
+  const head = [match.court, match.chamber ?? ""].filter(Boolean).join(" ");
+  return [head, match.decisionNo ?? match.docketNo ?? "", match.decisionDate ?? ""]
+    .filter(Boolean)
+    .join(" · ");
 }

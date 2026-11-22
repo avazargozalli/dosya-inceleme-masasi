@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
     char_offset, collapse_ws_with_map, dehyphenate_with_map, find_quote_in_scopes,
-    ligature_with_map, normalize_with_map, MappedText, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT,
-    MIN_QUOTE_CHARS,
+    ligature_with_map, normalize_with_map, MappedText, TextScope,
+    MAX_HISTORICAL_VERSIONS_PER_PRECEDENT, MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -40,6 +40,12 @@ use crate::{now_iso, Database, StorageError};
 pub const MAX_IN_TEXT_CHECK_CHARS: usize = 50_000;
 /// Tek metinde denetlenecek alıntı sayısı üst sınırı.
 pub const MAX_IN_TEXT_QUOTES: usize = 30;
+/// Kütüphane geneli aramada taranacak emsal sayısı üst sınırı (F12-T14k).
+/// Aşılırsa rapor `truncated` yazar; `bulunamadı` kesin sayılmaz.
+pub const MAX_LIBRARY_PRECEDENTS: usize = 200;
+/// Alıntı başına listelenecek eşleşen emsal sayısı üst sınırı; kalanı
+/// `hiddenMatches` olarak sayılır (sessiz kesme yok).
+pub const MAX_LIBRARY_MATCHES_PER_QUOTE: usize = 20;
 /// Tek alıntının üst sınırı: daha uzunu büyük olasılıkla tırnak hatasıdır.
 const MAX_SPAN_CHARS: usize = 1_000;
 /// Bulunulan konumdan rapora taşınacak en çok aday sayısı.
@@ -537,6 +543,76 @@ pub struct PrecedentInTextCheck {
     pub historical_versions_scanned: usize,
     /// Daha eski sürümler sınır yüzünden taranmadı.
     pub historical_truncated: bool,
+    pub notes: Vec<String>,
+    pub checked_at: String,
+}
+
+/// Kütüphane geneli alıntı aramasında eşleşen tek emsal (F12-T14k).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryQuoteMatch {
+    pub precedent_id: String,
+    pub court: String,
+    pub chamber: Option<String>,
+    pub docket_no: Option<String>,
+    pub decision_no: Option<String>,
+    pub decision_date: Option<String>,
+    pub title: Option<String>,
+    /// Eşleşmenin bulunduğu **güncel** tam metin sürümü.
+    pub version_id: String,
+    /// `exact` | `whitespace` | `ligature` | `turkish_fold` | `dehyphenated`
+    pub method: String,
+    /// Eşleşmenin o sürüm içindeki konum sayısı (1'den fazlaysa `ambiguous`).
+    pub occurrences: i64,
+    pub char_start: i64,
+    pub char_end: i64,
+    /// Kaynak metnin o aralıktaki **ham** hâli.
+    pub source_text: String,
+}
+
+/// Tek alıntının kütüphane geneli sonucu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryQuoteFinding {
+    pub index: usize,
+    pub quote: String,
+    /// `found` — en az bir emsalde bulundu; `not_found` — taranan bütün
+    /// emsallerde yok; `partial_scan` — kütüphane sınırı yüzünden tamamı
+    /// taranmadı, `bulunamadı` kesin değil; `no_library_text` — kütüphanede
+    /// tam metni olan emsal yok.
+    pub state: String,
+    /// Eşleşen emsaller (deterministik sırada, en çok
+    /// `MAX_LIBRARY_MATCHES_PER_QUOTE`).
+    pub matches: Vec<LibraryQuoteMatch>,
+    /// Eşleşen emsal sayısı — liste sınırından bağımsız.
+    pub matched_precedents: i64,
+    /// Liste sınırı yüzünden gösterilmeyen eşleşme sayısı.
+    pub hidden_matches: i64,
+}
+
+/// Kütüphane geneli metin içi alıntı aramasının raporu. Kalıcı yazma yoktur;
+/// her arama kayıtlı tam metinlerden yeniden üretilir.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryInTextCheck {
+    pub text_chars: i64,
+    pub spans_found: usize,
+    pub skipped_short: usize,
+    pub skipped_long: usize,
+    pub unclosed: usize,
+    pub quotes: Vec<LibraryQuoteFinding>,
+    pub found: usize,
+    pub not_found: usize,
+    pub partial_scan: usize,
+    pub no_library_text: usize,
+    /// Kütüphanede tam metni olan emsal sayısı (sınır öncesi).
+    pub library_total: usize,
+    /// Gerçekten taranan emsal sayısı.
+    pub scanned: usize,
+    /// Kütüphane sınırı aşıldı: `bulunamadı` kesin değil.
+    pub truncated: bool,
+    pub dehyphenated: usize,
+    pub ligature: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
 }
@@ -1621,6 +1697,229 @@ impl Database {
             checked_at: now_iso(),
         })
     }
+
+    /// Serbest metindeki tırnaklı alıntıları **bütün kütüphanenin** güncel tam
+    /// metinlerinde arar (F12-T14k).
+    ///
+    /// Tek emsal yolundan ([`Database::check_in_text_quotes_in_precedent`])
+    /// farkı kapsamdır: “bu pasaj hangi kararlarımda geçiyor?” sorusunu
+    /// yanıtlar; katman sırası **aynıdır** (`exact` → `whitespace` → `ligature`
+    /// → `turkish_fold` → `dehyphenated`) ve aynı `find_quote_in_scopes`
+    /// işlevini kullanır. Tarama yalnız **güncel** metin sürümlerinedir; eski
+    /// sürümler tek emsal denetiminin işidir (burada taranmaz, not yazılır).
+    ///
+    /// Kütüphane `MAX_LIBRARY_PRECEDENTS` ile sınırlıdır; sınır aşılırsa rapor
+    /// `truncated` yazar ve eşleşmeyen alıntı `partial_scan` olur —
+    /// «bulunamadı» kesin sayılmaz. Kalıcı yazma yoktur.
+    pub fn check_in_text_quotes_across_library(
+        &self,
+        input: &PrecedentInTextInput,
+    ) -> Result<LibraryInTextCheck, StorageError> {
+        let text_chars = input.text.chars().count();
+        if text_chars > MAX_IN_TEXT_CHECK_CHARS {
+            return Err(StorageError::QuoteTextTooLong);
+        }
+        let extracted = extract_quoted_spans(&input.text);
+        if extracted.quotes.len() > MAX_IN_TEXT_QUOTES {
+            return Err(StorageError::QuoteTooMany);
+        }
+
+        // Tam metni olan emsaller deterministik sırada: mahkeme, daire, kimlik.
+        let mut meta_stmt = self.conn().prepare(
+            "SELECT p.id,p.court,p.chamber,p.docket_no,p.decision_no,p.decision_date,p.title
+             FROM precedents p
+             WHERE EXISTS (SELECT 1 FROM precedent_versions v
+                           WHERE v.precedent_id=p.id AND v.full_text IS NOT NULL
+                             AND length(trim(v.full_text))>0)
+             ORDER BY p.court, p.id",
+        )?;
+        let meta_rows = meta_stmt.query_map([], |row| {
+            Ok(LibraryPrecedentMeta {
+                id: row.get(0)?,
+                court: row.get(1)?,
+                chamber: row.get(2)?,
+                docket_no: row.get(3)?,
+                decision_no: row.get(4)?,
+                decision_date: row.get(5)?,
+                title: row.get(6)?,
+            })
+        })?;
+        let mut metas: Vec<LibraryPrecedentMeta> = Vec::new();
+        for row in meta_rows {
+            metas.push(row?);
+        }
+        let library_total = metas.len();
+        let truncated = library_total > MAX_LIBRARY_PRECEDENTS;
+        metas.truncate(MAX_LIBRARY_PRECEDENTS);
+
+        let mut version_stmt = self.conn().prepare(
+            "SELECT id,full_text FROM precedent_versions
+              WHERE precedent_id=?1 AND full_text IS NOT NULL AND length(trim(full_text))>0
+              ORDER BY acquired_at DESC, id DESC LIMIT 1",
+        )?;
+        let mut scanned_metas: Vec<LibraryPrecedentMeta> = Vec::with_capacity(metas.len());
+        let mut scopes: Vec<TextScope> = Vec::with_capacity(metas.len());
+        for meta in metas {
+            let current: Option<(String, String)> = version_stmt
+                .query_row([&meta.id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .optional()?;
+            if let Some((version_id, text)) = current {
+                scanned_metas.push(meta);
+                scopes.push(TextScope {
+                    version_id,
+                    is_current: true,
+                    text,
+                });
+            }
+        }
+        let scanned = scopes.len();
+
+        let mut notes = vec![
+            "Alıntı çıkarımı yalnız çift tırnak ailesini tanır (“…” · „…“ · «…» · \
+             \"…\"); tek tırnak ve apostrof alıntı sayılmaz."
+                .to_string(),
+            "Kütüphane araması **güncel** tam metin sürümlerini tarar; eski sürümler \
+             yalnız tek emsal denetiminde aranır."
+                .to_string(),
+            "Sonuç metin eşleşmesidir: alıntının anlamı ve kaynağı ayrıca incelenir; \
+             `bulunamadı` “uydurma” hükmü değildir."
+                .to_string(),
+        ];
+        if scopes.is_empty() {
+            notes.push("Kütüphanede tam metni olan emsal yok; alıntılar aranamadı.".to_string());
+        }
+        if truncated {
+            notes.push(format!(
+                "Kütüphanede {library_total} emsalin tam metni var; yalnız ilk \
+                 {MAX_LIBRARY_PRECEDENTS} tanesi tarandı — `bulunamadı` sonucu bu \
+                 durumda kesin değildir."
+            ));
+        }
+        if extracted.quotes.is_empty() {
+            notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
+        }
+
+        let mut findings = Vec::with_capacity(extracted.quotes.len());
+        let mut counts = [0usize; 4]; // found · not_found · partial_scan · no_library_text
+        let mut dehyphenated = 0usize;
+        let mut ligature = 0usize;
+        for (index, span) in extracted.quotes.iter().enumerate() {
+            let quote_chars = span.text.chars().count();
+            let mut matches = Vec::with_capacity(2);
+            let mut matched_precedents = 0i64;
+            let mut hidden_matches = 0i64;
+            let mut quote_is_dehyphenated = false;
+            let mut quote_is_ligature = false;
+            for (scope_index, scope) in scopes.iter().enumerate() {
+                let hit =
+                    find_quote_in_scopes(std::slice::from_ref(scope), &span.text, quote_chars, 1);
+                let Some(hit) = hit else {
+                    continue;
+                };
+                matched_precedents += 1;
+                if hit.method == "dehyphenated" {
+                    quote_is_dehyphenated = true;
+                }
+                if hit.method == "ligature" {
+                    quote_is_ligature = true;
+                }
+                if matches.len() >= MAX_LIBRARY_MATCHES_PER_QUOTE {
+                    hidden_matches += 1;
+                    continue;
+                }
+                let (start, length) = hit.positions.first().copied().unwrap_or((0, 0));
+                let meta = &scanned_metas[scope_index];
+                matches.push(LibraryQuoteMatch {
+                    precedent_id: meta.id.clone(),
+                    court: meta.court.clone(),
+                    chamber: meta.chamber.clone(),
+                    docket_no: meta.docket_no.clone(),
+                    decision_no: meta.decision_no.clone(),
+                    decision_date: meta.decision_date.clone(),
+                    title: meta.title.clone(),
+                    version_id: hit.version_id,
+                    method: hit.method.into(),
+                    occurrences: hit.occurrences,
+                    char_start: start,
+                    char_end: start.saturating_add(length),
+                    source_text: source_slice(&scope.text, start, length),
+                });
+            }
+            let state = if scopes.is_empty() {
+                "no_library_text"
+            } else if matched_precedents > 0 {
+                "found"
+            } else if truncated {
+                "partial_scan"
+            } else {
+                "not_found"
+            };
+            match state {
+                "found" => counts[0] += 1,
+                "not_found" => counts[1] += 1,
+                "partial_scan" => counts[2] += 1,
+                _ => counts[3] += 1,
+            }
+            if quote_is_dehyphenated {
+                dehyphenated += 1;
+            }
+            if quote_is_ligature {
+                ligature += 1;
+            }
+            findings.push(LibraryQuoteFinding {
+                index,
+                quote: span.text.clone(),
+                state: state.into(),
+                matches,
+                matched_precedents,
+                hidden_matches,
+            });
+        }
+        if dehyphenated > 0 {
+            notes.push(format!(
+                "{dehyphenated} alıntı yalnız **tire ile bölünmüş kelime** birleştirilerek \
+                 bulundu; birebir sayılmaz, kaynak metin gösterilir."
+            ));
+        }
+        if ligature > 0 {
+            notes.push(format!(
+                "{ligature} alıntı yalnız **bitişik yazı (ligatür)** açılarak bulundu; \
+                 birebir sayılmaz, kaynak metin gösterilir."
+            ));
+        }
+        Ok(LibraryInTextCheck {
+            text_chars: i64::try_from(text_chars).unwrap_or(i64::MAX),
+            spans_found: extracted.quotes.len(),
+            skipped_short: extracted.skipped_short,
+            skipped_long: extracted.skipped_long,
+            unclosed: extracted.unclosed,
+            quotes: findings,
+            found: counts[0],
+            not_found: counts[1],
+            partial_scan: counts[2],
+            no_library_text: counts[3],
+            library_total,
+            scanned,
+            truncated,
+            dehyphenated,
+            ligature,
+            notes,
+            checked_at: now_iso(),
+        })
+    }
+}
+
+/// Kütüphane geneli aramada taranan tek emsalin künyesi (iç kullanım).
+struct LibraryPrecedentMeta {
+    id: String,
+    court: String,
+    chamber: Option<String>,
+    docket_no: Option<String>,
+    decision_no: Option<String>,
+    decision_date: Option<String>,
+    title: Option<String>,
 }
 
 /// Kaynak metnin karakter aralığını **ham** hâliyle döndürür (`source_text`).
@@ -3262,5 +3561,190 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.contains("çift tırnaklı alıntı bulunamadı")));
+    }
+
+    // ---- F12-T14k: metin içi alıntılar **kütüphane genelinde** ----
+
+    #[test]
+    fn library_search_reports_every_matching_precedent_and_keeps_scope_honest() {
+        let db = db();
+        let p1 = new_precedent(&db, "2024/400");
+        add_precedent_text(&db, &p1.id, KARAR_METNI);
+        let p2 = new_precedent(&db, "2024/401");
+        add_precedent_text(
+            &db,
+            &p2.id,
+            "Başka karar: itirazın  reddine karar verdi (boşluk farkı).",
+        );
+        // Tam metni olmayan emsal taranmaz ve «yok» sayılmaz.
+        let p3 = new_precedent(&db, "2024/402");
+
+        let report = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: "Dilekçede “itirazın reddine karar verdi” ve “kütüphanede olmayan pasaj” geçiyor."
+                    .into(),
+            })
+            .expect("kütüphane araması");
+
+        assert_eq!(report.spans_found, 2);
+        assert_eq!(report.library_total, 2, "yalnız tam metinli emsaller");
+        assert_eq!(report.scanned, 2);
+        assert!(!report.truncated);
+
+        let found = &report.quotes[0];
+        assert_eq!(found.state, "found");
+        assert_eq!(found.matched_precedents, 2);
+        assert_eq!(found.matches.len(), 2);
+        assert_eq!(found.hidden_matches, 0);
+        let ids: Vec<&str> = found
+            .matches
+            .iter()
+            .map(|m| m.precedent_id.as_str())
+            .collect();
+        assert!(ids.contains(&p1.id.as_str()) && ids.contains(&p2.id.as_str()));
+        assert!(!ids.contains(&p3.id.as_str()));
+        let exact = found
+            .matches
+            .iter()
+            .find(|m| m.precedent_id == p1.id)
+            .expect("p1 eşleşmesi");
+        assert_eq!(exact.method, "exact");
+        assert_eq!(exact.source_text, "itirazın reddine karar verdi");
+        assert_eq!(exact.decision_date.as_deref(), Some("2025-06-01"));
+        let normalized = found
+            .matches
+            .iter()
+            .find(|m| m.precedent_id == p2.id)
+            .expect("p2 eşleşmesi");
+        assert_eq!(
+            normalized.method, "whitespace",
+            "boşluk farkı ayrı katman olarak raporlanır"
+        );
+        // Sıra deterministik: aynı sorgu aynı sırayı verir.
+        let again = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: "“itirazın reddine karar verdi”".into(),
+            })
+            .expect("tekrar");
+        assert_eq!(
+            again.quotes[0]
+                .matches
+                .iter()
+                .map(|m| m.precedent_id.as_str())
+                .collect::<Vec<_>>(),
+            ids
+        );
+
+        let missing = &report.quotes[1];
+        assert_eq!(missing.state, "not_found");
+        assert_eq!(missing.matched_precedents, 0);
+        assert!(missing.matches.is_empty());
+        assert_eq!(report.found, 1);
+        assert_eq!(report.not_found, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("güncel") && n.contains("eski sürümler")));
+    }
+
+    #[test]
+    fn library_search_scans_current_versions_only_whereas_single_check_finds_old_text() {
+        let db = db();
+        let p = new_precedent(&db, "2024/410");
+        add_precedent_text(&db, &p.id, "Eski nüsha: kira bedellini ödemeyen kiracı.");
+        add_precedent_text(&db, &p.id, "Yeni nüsha: itirazın reddine karar verildi.");
+        let input = PrecedentInTextInput {
+            text: "“kira bedellini ödemeyen kiracı” pasajına dayanılmıştır.".into(),
+        };
+
+        let library = db
+            .check_in_text_quotes_across_library(&input)
+            .expect("kütüphane");
+        assert_eq!(library.quotes[0].state, "not_found");
+        assert_eq!(library.scanned, 1, "emsal başına tek güncel metin");
+        let single = db
+            .check_in_text_quotes_in_precedent(&p.id, &input)
+            .expect("tek emsal");
+        assert_eq!(single.quotes[0].state, "exact");
+        assert!(single.quotes[0].found_in_old_version);
+    }
+
+    #[test]
+    fn library_search_without_any_full_text_is_unverifiable_not_not_found() {
+        let db = db();
+        let p = new_precedent(&db, "2024/420");
+        let report = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: "“itirazın reddine karar verdi” deniyor.".into(),
+            })
+            .expect("kütüphane");
+        assert_eq!(report.library_total, 0);
+        assert_eq!(report.scanned, 0);
+        assert_eq!(report.no_library_text, 1);
+        assert_eq!(report.quotes[0].state, "no_library_text");
+        assert_ne!(report.quotes[0].state, "not_found");
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("tam metni olan emsal yok")));
+        // Emsal var ama tam metni yok: yine «kütüphane metni yok».
+        assert!(db.get_precedent(&p.id).expect("emsal").is_some());
+    }
+
+    #[test]
+    fn library_search_marks_a_capped_scan_as_partial_and_counts_hidden_matches() {
+        let db = db();
+        // Sınır + 1 emsal: biri taranmaz. Alıntı A hepsinde var → bulunur;
+        // alıntı B hiçbirinde yok → sınır yüzünden «kesin yok» denemez.
+        for index in 0..=MAX_LIBRARY_PRECEDENTS {
+            let p = new_precedent(&db, &format!("2024/5{index:03}"));
+            add_precedent_text(
+                &db,
+                &p.id,
+                "Karar metni: itirazın reddine karar verildi ve sonuçlandı.",
+            );
+        }
+        let report = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: "“itirazın reddine karar verildi” · “hiçbir kararda olmayan pasaj bu”".into(),
+            })
+            .expect("kütüphane");
+        assert_eq!(report.library_total, MAX_LIBRARY_PRECEDENTS + 1);
+        assert_eq!(report.scanned, MAX_LIBRARY_PRECEDENTS);
+        assert!(report.truncated);
+        assert_eq!(report.quotes[0].state, "found");
+        assert_eq!(
+            report.quotes[0].matched_precedents,
+            i64::try_from(MAX_LIBRARY_PRECEDENTS).unwrap()
+        );
+        assert_eq!(
+            report.quotes[0].matches.len(),
+            MAX_LIBRARY_MATCHES_PER_QUOTE
+        );
+        assert_eq!(
+            report.quotes[0].hidden_matches,
+            i64::try_from(MAX_LIBRARY_PRECEDENTS - MAX_LIBRARY_MATCHES_PER_QUOTE).unwrap()
+        );
+        assert_eq!(report.quotes[1].state, "partial_scan");
+        assert_ne!(report.quotes[1].state, "not_found");
+        assert!(report.notes.iter().any(|n| n.contains("kesin değildir")));
+    }
+
+    #[test]
+    fn library_search_enforces_the_same_text_and_quote_limits() {
+        let db = db();
+        let mut many = String::new();
+        for index in 0..31 {
+            many.push_str(&format!("“alıntı numarası {index} burada” "));
+        }
+        let error = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput { text: many })
+            .expect_err("31 alıntı");
+        assert_eq!(error.code(), "E_QUOTE_TOO_MANY");
+        let long = "a".repeat(MAX_IN_TEXT_CHECK_CHARS + 1);
+        let error = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput { text: long })
+            .expect_err("uzun metin");
+        assert_eq!(error.code(), "E_QUOTE_TEXT");
     }
 }

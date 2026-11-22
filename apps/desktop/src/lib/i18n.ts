@@ -2063,6 +2063,30 @@ export const tr = {
     intextCurrentVersion: "güncel sürüm",
     intextVersions: "{total} metinli sürüm · en çok {scanned} sürüm tarandı",
     intextTruncated: "Daha eski sürümler taranmadı; “bulunamadı” bu durumda kesin değildir.",
+    libraryTitle: "Alıntıları kütüphanede ara",
+    librarySub:
+      "Metindeki tırnaklı pasajlar bütün emsallerin **güncel** tam metinlerinde aranır; " +
+      "sonuç metin eşleşmesidir, anlam incelemesi ayrıdır.",
+    libraryLabel: "Alıntıları içeren metin",
+    libraryPlaceholder: "Örn. “itirazın reddine karar verdi” pasajı hangi kararlarda geçiyor?",
+    libraryRun: "Kütüphanede ara",
+    libraryBusy: "Aranıyor…",
+    libraryHint:
+      "Eski sürümler bu aramada taranmaz; tek emsal denetimi onları da tarar. " +
+      "“Bulunamadı” uydurma hükmü değildir.",
+    libraryEmpty: "Metinde çift tırnaklı alıntı bulunamadı.",
+    librarySummary:
+      "{libraryTotal} emsalin tam metni var · {scanned} tarandı · {found} alıntı bulundu · " +
+      "{notFound} bulunamadı · {partialScan} kesin değil · {noLibraryText} kütüphane metni yok",
+    libraryNoText: "Kütüphanede tam metni olan emsal yok; alıntılar aranamaz. Önce tam metin ekleyin.",
+    libraryTruncated:
+      "Kütüphane sınırı aşıldı: yalnız ilk {scanned} emsal tarandı, “bulunamadı” kesin değildir.",
+    libraryFound: "bulundu · {count} emsal",
+    libraryNotFound: "bulunamadı",
+    libraryPartial: "kesin değil · tarama sınırlı",
+    libraryNoLibraryText: "kütüphane metni yok",
+    libraryHidden: "{count} eşleşme daha var (liste sınırı)",
+    librarySource: "kaynak",
     scanVersions: "{count} sürüm tarandı",
     scanHistorical: "{count} eski sürüm",
     scanTruncated: "daha eski sürümler taranmadı",

@@ -58,6 +58,9 @@ import {
   bibliographyMissingText,
   bulkOutcomeLabel,
   bulkReportSummary,
+  libraryCheckSummary,
+  libraryMatchCitation,
+  libraryQuoteFindingText,
   precedentInTextSummary,
   precedentPositionText,
   precedentQuoteFindingText,
@@ -90,6 +93,7 @@ import type {
   CorpusCoverage,
   DocumentRow,
   DocumentVersionRow,
+  LibraryInTextCheck,
   PrecedentBibliography,
   PrecedentDocumentText,
   PrecedentInTextCheck,
@@ -110,6 +114,7 @@ const mocks = vi.hoisted(() => ({
   precedentTextFromDocument: vi.fn(),
   precedentQuoteVerify: vi.fn(),
   precedentInTextCheck: vi.fn(),
+  precedentLibraryInTextCheck: vi.fn(),
   precedentBibliography: vi.fn(),
   precedentTermsGet: vi.fn(),
   precedentTermsSet: vi.fn(),
@@ -143,6 +148,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       precedentTextFromDocument: mocks.precedentTextFromDocument,
       precedentQuoteVerify: mocks.precedentQuoteVerify,
       precedentInTextCheck: mocks.precedentInTextCheck,
+      precedentLibraryInTextCheck: mocks.precedentLibraryInTextCheck,
       precedentBibliography: mocks.precedentBibliography,
       precedentTermsGet: mocks.precedentTermsGet,
       precedentTermsSet: mocks.precedentTermsSet,
@@ -486,6 +492,59 @@ const IN_TEXT_REPORT: PrecedentInTextCheck = {
   historicalVersionsScanned: 0,
   historicalTruncated: false,
   notes: ["Bulunamadı sonucu “uydurma” hükmü değildir."],
+  checkedAt: ISO,
+};
+
+const LIBRARY_REPORT: LibraryInTextCheck = {
+  textChars: 96,
+  spansFound: 2,
+  skippedShort: 0,
+  skippedLong: 0,
+  unclosed: 0,
+  quotes: [
+    {
+      index: 0,
+      quote: "kira bedeli ödenmedi",
+      state: "found",
+      matches: [
+        {
+          precedentId: "p1",
+          court: "Yargıtay",
+          chamber: "1. Hukuk Dairesi",
+          docketNo: "2024/100",
+          decisionNo: "2025/77",
+          decisionDate: "2025-06-01",
+          title: "Kira alacağı",
+          versionId: "pv1",
+          method: "exact",
+          occurrences: 1,
+          charStart: 119,
+          charEnd: 137,
+          sourceText: "kira bedeli ödenmedi",
+        },
+      ],
+      matchedPrecedents: 1,
+      hiddenMatches: 0,
+    },
+    {
+      index: 1,
+      quote: "tamamen uydurma pasaj",
+      state: "not_found",
+      matches: [],
+      matchedPrecedents: 0,
+      hiddenMatches: 0,
+    },
+  ],
+  found: 1,
+  notFound: 1,
+  partialScan: 0,
+  noLibraryText: 0,
+  libraryTotal: 3,
+  scanned: 3,
+  truncated: false,
+  dehyphenated: 0,
+  ligature: 0,
+  notes: ["Kütüphane araması güncel tam metin sürümlerini tarar."],
   checkedAt: ISO,
 };
 
@@ -2707,5 +2766,70 @@ describe("emsal ekranı: atıf kontrolü dosya kimliğiyle yazılır", () => {
     );
     // Çekirdeğin reddettiği yazma mevcut listeyi silmez.
     expect(screen.getByText(CHECK.extractedCitation)).toBeTruthy();
+  });
+});
+
+describe("emsal ekranı: alıntılar kütüphane genelinde aranır (F12-T14k)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("boş metinde düğme kapalı; sonuç eşleşen emsaller ve dürüst hükümlerle yazılır", async () => {
+    mocks.precedentLibraryInTextCheck.mockResolvedValue(LIBRARY_REPORT);
+    setup();
+
+    const run = screen.getByRole("button", { name: t("precedentLib.libraryRun") }) as HTMLButtonElement;
+    expect(run.disabled).toBe(true);
+    const box = byId<HTMLTextAreaElement>("p-library-text");
+    const text = "“kira bedeli ödenmedi” ve “tamamen uydurma pasaj”";
+    fireEvent.change(box, { target: { value: text } });
+    expect(run.disabled).toBe(false);
+    fireEvent.click(run);
+
+    await waitFor(() => expect(mocks.precedentLibraryInTextCheck).toHaveBeenCalledWith(text));
+    await waitFor(() =>
+      expect(
+        statusTexts().some((value) => value.includes(libraryCheckSummary(LIBRARY_REPORT))),
+      ).toBe(true),
+    );
+    const status = statusTexts().join(" ");
+    expect(status).toContain(libraryQuoteFindingText(LIBRARY_REPORT.quotes[0]!));
+    expect(status).toContain(
+      libraryMatchCitation(LIBRARY_REPORT.quotes[0]!.matches[0]!),
+    );
+    expect(status).toContain("kira bedeli ödenmedi");
+    // İkinci alıntı hiçbir kararda yok: «bulunamadı», «uydurma» değil.
+    expect(status).toContain(libraryQuoteFindingText(LIBRARY_REPORT.quotes[1]!));
+    expect(status).toContain(LIBRARY_REPORT.notes[0]!);
+  });
+
+  it("uçuşta metin değişirse geç yanıt yeni metnin altına yazılmaz", async () => {
+    const pending = deferred<LibraryInTextCheck>();
+    mocks.precedentLibraryInTextCheck.mockReturnValue(pending.promise);
+    setup();
+
+    const box = byId<HTMLTextAreaElement>("p-library-text");
+    fireEvent.change(box, { target: { value: "“kira bedeli ödenmedi”" } });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.libraryRun") }));
+    // İstek askıdayken metin değişti: dönen rapor artık bu metne ait değil.
+    fireEvent.change(box, { target: { value: "“başka bir alıntı metni”" } });
+    pending.resolve(LIBRARY_REPORT);
+    await act(async () => {
+      await pending.promise;
+    });
+    expect(
+      statusTexts().some((value) => value.includes(libraryCheckSummary(LIBRARY_REPORT))),
+    ).toBe(false);
+    // Kilit açılır: yeni metin kendi isteğiyle aranır.
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.libraryRun") }));
+    await waitFor(() =>
+      expect(mocks.precedentLibraryInTextCheck).toHaveBeenLastCalledWith(
+        "“başka bir alıntı metni”",
+      ),
+    );
   });
 });

@@ -1181,6 +1181,53 @@ export type PrecedentInTextCheck = {
   checkedAt: string;
 };
 
+/** Aynı alıntının **başka** emsallerde bulunan eşleşmesi (F12-T14k). */
+export type LibraryQuoteMatch = {
+  precedentId: string;
+  court: string;
+  chamber: string | null;
+  docketNo: string | null;
+  decisionNo: string | null;
+  decisionDate: string | null;
+  title: string | null;
+  versionId: string;
+  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated";
+  occurrences: number;
+  charStart: number;
+  charEnd: number;
+  sourceText: string;
+};
+
+export type LibraryQuoteFinding = {
+  index: number;
+  quote: string;
+  state: "found" | "not_found" | "partial_scan" | "no_library_text";
+  matches: LibraryQuoteMatch[];
+  matchedPrecedents: number;
+  hiddenMatches: number;
+};
+
+/** Serbest metindeki alıntıların **bütün kütüphanede** aranması. */
+export type LibraryInTextCheck = {
+  textChars: number;
+  spansFound: number;
+  skippedShort: number;
+  skippedLong: number;
+  unclosed: number;
+  quotes: LibraryQuoteFinding[];
+  found: number;
+  notFound: number;
+  partialScan: number;
+  noLibraryText: number;
+  libraryTotal: number;
+  scanned: number;
+  truncated: boolean;
+  dehyphenated: number;
+  ligature: number;
+  notes: string[];
+  checkedAt: string;
+};
+
 export type AdapterArch = {
   format: string;
   formatLabel: string;
@@ -2839,6 +2886,11 @@ export const api = {
   precedentInTextCheck: (precedentId: string, text: string) =>
     invoke<PrecedentInTextCheck>("precedent_in_text_check", {
       precedentId,
+      input: { text },
+    }),
+  /** Metindeki tüm tırnaklı alıntıları **bütün kütüphanenin** güncel tam metinlerinde arar. */
+  precedentLibraryInTextCheck: (text: string) =>
+    invoke<LibraryInTextCheck>("precedent_library_in_text_check", {
       input: { text },
     }),
   /** Bibliyografik künye (F12-T12): künye, kaynak bağlantısı, erişim tarihi. */
