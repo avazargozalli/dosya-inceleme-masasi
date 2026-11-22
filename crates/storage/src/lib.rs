@@ -519,9 +519,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0063_page_evidence_guard",
         sql: include_str!("migrations/0063_page_evidence_guard.sql"),
     },
+    Migration {
+        version: 64,
+        name: "0064_audit_ledger_evidence_guard",
+        sql: include_str!("migrations/0064_audit_ledger_evidence_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 63;
+pub const CURRENT_SCHEMA_VERSION: u32 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
@@ -1509,6 +1514,11 @@ mod tests {
         .expect("kayıt");
         assert_eq!(db.verify_audit_chain().expect("zincir"), 2);
 
+        // v64 şema kapısı **bilinçli** düşürülür: burada sınanan şey zincir
+        // doğrulayıcısının kurcalamayı görmesi, şema kapısı değil.
+        db.conn()
+            .execute_batch("DROP TRIGGER audit_events_evidence_frozen;")
+            .expect("kapı bilinçli düşürüldü");
         db.conn()
             .execute(
                 "UPDATE audit_events SET operation='silindi' WHERE sequence=2",

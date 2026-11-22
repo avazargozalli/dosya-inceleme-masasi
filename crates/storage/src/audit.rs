@@ -273,6 +273,12 @@ mod tests {
     #[test]
     fn broken_metadata_does_not_drop_the_row() {
         let db = Database::open_in_memory(&key()).expect("açılır");
+        // v64: bozuk metadata artık **doğamaz** (kapı bunu reddeder). Burada
+        // sınanan şey **okuyucu**: v64 öncesi satırı taklit etmek için doğum
+        // kapısı bilinçli düşürülür.
+        db.conn()
+            .execute_batch("DROP TRIGGER audit_events_evidence_birth;")
+            .expect("kapı bilinçli düşürüldü");
         db.conn()
             .execute(
                 "INSERT INTO audit_events (id, category, entity_id, operation, actor_label, metadata_allowlist, prior_hash, event_hash, timestamp)
@@ -316,6 +322,7 @@ mod tests {
             .map(|r| r.id)
             .collect();
         let tampered = ids[1].clone(); // son kayıt değil: önceki bağ da kırılır
+        drop_ledger_gates(&db);
 
         db.conn()
             .execute(
@@ -348,6 +355,7 @@ mod tests {
             .collect();
         // Ortadaki kaydı sil: üçüncü kaydın `prior_hash`i artık birinciye bağlı
         // değil → bağ kopukluğu (özet bozulması değil).
+        drop_ledger_gates(&db);
         db.conn()
             .execute(
                 "DELETE FROM audit_events WHERE id=?1",
@@ -362,6 +370,19 @@ mod tests {
         assert_eq!(status.checked, 1);
     }
 
+    /// v64 şema kapısını **bilinçli** düşürür: bu testlerde sınanan şey zincir
+    /// **doğrulayıcısıdır** (kurcalamayı görüyor mu), şema kapısı değil.
+    /// Kapının kendisi `audit_ledger_is_chained_at_birth_and_never_rewritten_or_erased`
+    /// testinde ölçülür.
+    fn drop_ledger_gates(db: &Database) {
+        db.conn()
+            .execute_batch(
+                "DROP TRIGGER audit_events_evidence_frozen;
+                 DROP TRIGGER audit_events_evidence_no_delete;",
+            )
+            .expect("kapı bilinçli düşürüldü");
+    }
+
     #[test]
     fn empty_chain_is_intact_with_zero_events() {
         let db = Database::open_in_memory(&key()).expect("açılır");
@@ -369,5 +390,343 @@ mod tests {
         assert!(status.intact);
         assert_eq!(status.checked, 0);
         assert!(db.list_audit_events(10, None).expect("liste").is_empty());
+    }
+
+    /// Ham `audit_events` yazımı (ürün yolu `append_audit`; saldırı yolu bu).
+    struct LedgerInsert<'a> {
+        id: &'a str,
+        category: &'a str,
+        entity: Option<&'a str>,
+        operation: &'a str,
+        actor: &'a str,
+        metadata: &'a str,
+        prior: Option<&'a str>,
+        event_hash: &'a str,
+        stamp: &'a str,
+    }
+
+    impl<'a> LedgerInsert<'a> {
+        fn new(id: &'a str, prior: &'a str, stamp: &'a str) -> Self {
+            LedgerInsert {
+                id,
+                category: "case",
+                entity: None,
+                operation: "create",
+                actor: "local-user",
+                metadata: "{}",
+                prior: Some(prior),
+                event_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                stamp,
+            }
+        }
+
+        fn with(mut self, change: impl FnOnce(&mut Self)) -> Self {
+            change(&mut self);
+            self
+        }
+
+        fn run(&self, db: &Database) -> Result<usize, rusqlite::Error> {
+            db.conn().execute(
+                "INSERT INTO audit_events (id,category,entity_id,operation,actor_label,
+                 metadata_allowlist,prior_hash,event_hash,timestamp)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                rusqlite::params![
+                    self.id,
+                    self.category,
+                    self.entity,
+                    self.operation,
+                    self.actor,
+                    self.metadata,
+                    self.prior,
+                    self.event_hash,
+                    self.stamp
+                ],
+            )
+        }
+    }
+
+    fn assert_gate(result: Result<usize, rusqlite::Error>, label: &str) {
+        match result {
+            Ok(_) => panic!("{label}: kapı yazmayı kabul etti"),
+            Err(err) => assert!(
+                err.to_string().contains("DIM_INTEGRITY:audit_events"),
+                "{label}: beklenen kapı reddi değil: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn audit_ledger_is_chained_at_birth_and_never_rewritten_or_erased() {
+        let db = Database::open_in_memory(&key()).expect("açılır");
+        append(&db, "case", "create");
+        append(&db, "document", "import");
+        let head = append(&db, "note", "update");
+        let newest = db.list_audit_events(1, None).expect("liste")[0].id.clone();
+        assert_eq!(
+            db.verify_audit_chain().expect("zincir"),
+            3,
+            "meşru yol kapıdan geçer"
+        );
+
+        let ts = "2026-11-22T10:00:00.000000Z";
+        let bad = "c".repeat(64);
+        let hash = "d".repeat(64);
+        let long_id = "e".repeat(65);
+
+        // --- Doğum: biçim ve sınırlar (28 saldırı) ------------------------
+        assert_gate(
+            LedgerInsert::new("ev-01", &head, ts)
+                .with(|r| r.id = "")
+                .run(&db),
+            "boş kimlik",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-02", &head, ts)
+                .with(|r| r.id = " ev-02 ")
+                .run(&db),
+            "kırpılmamış kimlik",
+        );
+        assert_gate(
+            LedgerInsert::new(long_id.as_str(), &head, ts).run(&db),
+            "65 haneli kimlik",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-04", &head, ts)
+                .with(|r| r.category = "")
+                .run(&db),
+            "boş kategori",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-05", &head, ts)
+                .with(|r| r.category = "   ")
+                .run(&db),
+            "yalnız boşluk kategori",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-06", &head, ts)
+                .with(|r| r.category = " case")
+                .run(&db),
+            "kırpılmamış kategori",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-07", &head, ts)
+                .with(|r| r.operation = "")
+                .run(&db),
+            "boş işlem",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-08", &head, ts)
+                .with(|r| r.operation = "create ")
+                .run(&db),
+            "kırpılmamış işlem",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-09", &head, ts)
+                .with(|r| r.actor = "")
+                .run(&db),
+            "boş aktör",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-10", &head, ts)
+                .with(|r| r.actor = " local-user")
+                .run(&db),
+            "kırpılmamış aktör",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-11", &head, ts)
+                .with(|r| r.entity = Some(""))
+                .run(&db),
+            "boş metin entity",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-12", &head, ts)
+                .with(|r| r.entity = Some(" case-1"))
+                .run(&db),
+            "kırpılmamış entity",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-13", &head, ts)
+                .with(|r| r.metadata = "{")
+                .run(&db),
+            "bozuk JSON metadata",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-14", &head, ts)
+                .with(|r| r.metadata = "[]")
+                .run(&db),
+            "metadata dizi",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-15", &head, ts)
+                .with(|r| r.metadata = "null")
+                .run(&db),
+            "metadata null",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-16", &head, ts)
+                .with(|r| r.metadata = "\"x\"")
+                .run(&db),
+            "metadata metin",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-17", &head, ts)
+                .with(|r| {
+                    r.event_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                })
+                .run(&db),
+            "özet 63 hane",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-18", &head, ts)
+                .with(|r| {
+                    r.event_hash =
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                })
+                .run(&db),
+            "özet büyük harf",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-19", &head, ts)
+                .with(|r| {
+                    r.event_hash =
+                        "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+                })
+                .run(&db),
+            "özet hex değil",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-20", &head, ts)
+                .with(|r| r.stamp = "dün")
+                .run(&db),
+            "damga 'dün'",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-21", &head, ts)
+                .with(|r| r.stamp = "2026-11-22")
+                .run(&db),
+            "damga yalnız gün",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-22", &head, ts)
+                .with(|r| r.stamp = "2026-02-30T10:00:00.000000Z")
+                .run(&db),
+            "damga olmayan gün",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-23", &head, ts)
+                .with(|r| r.stamp = "2026-11-22T99:00:00.000000Z")
+                .run(&db),
+            "damga olmayan saat",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-24", &head, ts)
+                .with(|r| r.stamp = "2026-11-22T10:00Z")
+                .run(&db),
+            "damga saniyesiz",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-24b", &head, ts)
+                .with(|r| r.stamp = "2026-11-22 10:00:00.000000Z")
+                .run(&db),
+            "damga ayırıcısı boşluk",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-24c", &head, ts)
+                .with(|r| r.stamp = "2026-11-22T10:00:60.000000Z")
+                .run(&db),
+            "damga artık saniye",
+        );
+        // --- Doğum: zincir bağı ------------------------------------------
+        assert_gate(
+            LedgerInsert::new("ev-25", &bad, ts).run(&db),
+            "zincir kopuk prior",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-26", &head, ts)
+                .with(|r| r.prior = None)
+                .run(&db),
+            "prior NULL (zincirde satır var)",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-27", &head, ts)
+                .with(|r| {
+                    r.prior =
+                        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                })
+                .run(&db),
+            "prior 63 hane",
+        );
+        assert_gate(
+            LedgerInsert::new("ev-28", &head, ts)
+                .with(|r| {
+                    r.prior =
+                        Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+                })
+                .run(&db),
+            "prior büyük harf",
+        );
+        // Sıra: açıkça verilen düşük `sequence` satırı defterin önüne düşürür.
+        let low_sequence = db.conn().execute(
+            "INSERT INTO audit_events (sequence,id,category,entity_id,operation,
+             actor_label,metadata_allowlist,prior_hash,event_hash,timestamp)
+             VALUES (0,'ev-29','case',NULL,'create','local-user','{}',?1,?2,?3)",
+            rusqlite::params![head, hash, ts],
+        );
+        assert_gate(low_sequence, "açık düşük sequence");
+        // Boş defterde ilk satırın `prior_hash`i NULL olmalı.
+        let fresh = Database::open_in_memory(&key()).expect("açılır");
+        assert_gate(
+            LedgerInsert::new("ev-30", "a", ts)
+                .with(|r| r.prior = Some(hash.as_str()))
+                .run(&fresh),
+            "ilk satırda prior dolu",
+        );
+        assert_eq!(
+            fresh.list_audit_events(10, None).expect("liste").len(),
+            0,
+            "reddedilen satır defterde kalmamalı"
+        );
+
+        // --- Doğmuş satır değişmez ---------------------------------------
+        for (label, sql) in [
+            ("işlem çevrildi", "operation='silindi'"),
+            ("kategori çevrildi", "category='silinmis'"),
+            ("aktör çevrildi", "actor_label='baska'"),
+            ("metadata çevrildi", "metadata_allowlist='{\"x\":1}'"),
+            (
+                "özet çevrildi",
+                "event_hash='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'",
+            ),
+            ("damga çevrildi", "timestamp='2030-01-01T00:00:00.000000Z'"),
+            ("kimlik çevrildi", "id='ev-yeni'"),
+            ("entity çevrildi", "entity_id='case-2'"),
+        ] {
+            let result = db.conn().execute(
+                &format!("UPDATE audit_events SET {sql} WHERE id=?1"),
+                [&newest],
+            );
+            assert_gate(result, label);
+        }
+        // No-op yazma takılmaz.
+        db.conn()
+            .execute(
+                "UPDATE audit_events SET operation='update' WHERE id=?1",
+                [&newest],
+            )
+            .expect("no-op güncelleme kabul edilmeli");
+        // Defter silinemez.
+        let before = db.list_audit_events(100, None).expect("liste").len();
+        assert_gate(
+            db.conn()
+                .execute("DELETE FROM audit_events WHERE id=?1", [&newest]),
+            "kayıt silindi",
+        );
+        assert_eq!(
+            db.list_audit_events(100, None).expect("liste").len(),
+            before,
+            "silme denemesi defteri küçültmemeli"
+        );
+        // Reddedilen her saldırıdan sonra zincir hâlâ sağlam.
+        assert_eq!(db.verify_audit_chain().expect("zincir"), 3);
     }
 }

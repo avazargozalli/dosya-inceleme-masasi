@@ -3839,3 +3839,99 @@ fn upgrade_keeps_pages_written_before_the_evidence_gate() {
         )
         .expect("meşru sayfa");
 }
+
+/// v64 — **denetim defteri**: v63'te yazılmış satır silinmez/onarılmaz, yeni
+/// satırlar defterin sonuna zincirlenir, biçimsiz yazma reddedilir.
+#[test]
+fn upgrade_keeps_audit_ledger_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 63);
+        // Gerçek v63 satırı: `append_audit`in o gün yazdığı **geçerli** zincir
+        // (kanonik JSON + SHA-256 aynı kuralla hesaplanır).
+        let stamp = "2026-01-01T00:00:00.000000Z";
+        let canonical = serde_json::json!({
+            "id": "ev-eski",
+            "category": "case",
+            "entityId": serde_json::Value::Null,
+            "operation": "create",
+            "actor": "local-user",
+            "metadata": serde_json::json!({"n": 1}),
+            "priorHash": serde_json::Value::Null,
+            "timestamp": stamp,
+        });
+        let hash = hex::encode(Sha256::digest(canonical.to_string().as_bytes()));
+        conn.execute(
+            "INSERT INTO audit_events (id,category,entity_id,operation,actor_label,
+             metadata_allowlist,prior_hash,event_hash,timestamp)
+             VALUES ('ev-eski','case',NULL,'create','local-user','{\"n\":1}',NULL,?1,?2)",
+            rusqlite::params![hash, stamp],
+        )
+        .expect("v63 eski satır");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satır **silinmez ve onarım gerektirmez**: geçerli zincir korunur.
+    // (Güncelleme kendi kaydını da deftere ekler: eski satır + güncelleme.)
+    let old = db.list_audit_events(10, None).expect("liste");
+    assert_eq!(old.len(), 2, "güncelleme kaydı deftere eklenir");
+    let legacy = old
+        .iter()
+        .find(|r| r.id == "ev-eski")
+        .expect("eski satır korunur");
+    assert!(legacy.metadata.is_some(), "çözülen metadata korunur");
+    let status = db.audit_chain_status().expect("durum");
+    assert!(
+        status.intact,
+        "v63'te geçerli zincir güncellemeden sonra da geçerli"
+    );
+    assert_eq!(status.checked, 2);
+
+    // Yeni kayıt defterin **sonuna** zincirlenir: meşru yol çalışır.
+    let hash = db
+        .append_audit(
+            "case",
+            None,
+            "update",
+            "local-user",
+            &serde_json::json!({"n": 1}),
+        )
+        .expect("ekle");
+    let rows = db.list_audit_events(10, None).expect("liste");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].event_hash, hash);
+    assert_eq!(
+        rows[0].prior_hash.as_deref(),
+        Some(old[0].event_hash.as_str()),
+        "yeni satır defterin son satırına bağlanır"
+    );
+    assert_eq!(db.verify_audit_chain().expect("zincir"), 3);
+
+    // Kapı yeni biçimsiz yazmayı reddeder.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO audit_events (id,category,operation,actor_label,
+             metadata_allowlist,prior_hash,event_hash,timestamp)
+             VALUES ('ev-yeni','case','create','local-user','{}',?1,'ZZ',?2)",
+            rusqlite::params![hash, "2026-11-22T10:00:00.000000Z"],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("audit_events")),
+        other => panic!("v64 biçimsiz satırı reddetmeli: {other:?}"),
+    }
+
+    // Defter satırı silinemez — v64 öncesi yazılmış satır da.
+    match db
+        .conn()
+        .execute("DELETE FROM audit_events WHERE id='ev-eski'", [])
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("audit_events")),
+        other => panic!("v64 defteri silmemeli: {other:?}"),
+    }
+}
