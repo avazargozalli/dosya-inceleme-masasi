@@ -33,6 +33,7 @@
 | F08-T04ai | ✅ | **kronoloji olayı «bu olay şu tarihte oldu» iddiasıdır** (şema **v61**): `events` üzerinde **2 tetikleyici** — tarih/kesinlik/sıralama üçlüsü tutarlı (`date()` eşitliği: olmayan gün, dolgusuz gün, ay `13`/`00` düşer; aralıkta ayırıcı ve başlangıç ≤ bitiş), `sortable_date` tarihten türetilir (tarih yoksa NULL), doğuşta yalnız `draft`, damgalar ISO ve sıralı; `id`/`case_id`/`created_at`/`assertion_kind` **donar**, durum yalnız `draft`→`confirmed`, `deleted_at` tek yönlü, `row_version` azalamaz ve içerik değişiyorsa artmalı; ölçülen kusur: 66 kusur yazımının **66'sı** kabul ediliyordu (sıralama değeri çevrilerek olay yanlış sırada görünüyor, köken «belge»ye çevriliyor, satır başka dosyaya taşınıyordu); **44/44 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
 | F08-T04aj | ✅ | **inceleme hükmü (karar + çelişki değerlendirmesi) doğuşta kanıtlı, sonra değişmez** (şema **v62**): `review_decisions` + `contradiction_assessments` üzerinde **6 tetikleyici** — karar yalnız **açık** öğe için (yerine geçmemiş, hedefi yazılmamış, dosyası silinmemiş), `edit` yükü zorunlu, damga ISO + gerçek gün/saat, yük geçerli JSON; değerlendirme **kendi dosyasının çelişki adayı** için (INV-05); iki sicil de **hiçbir sütunuyla** değişmez ve silinemez (CASCADE dahil); ölçülen kusur: 61 kusur yazımının **57'si** kabul ediliyordu (karar `accept`→`reject` çevriliyor, kapanmış öğeye yeni karar yazılıyor, başka dosyanın değerlendirmesi kabul ediliyor, `dün` damga ve bozuk yük geçiyordu); **40/40 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
 | F08-T04ak | ✅ | **sayfa kanıtı (geometri, OCR kökeni, etiket) doğuşta iyi biçimli, sonra değişmez** (şema **v63**): `pages` üzerinde **2 tetikleyici** — kimlik kırpılmış-dolu ≤64, `page_index ≥ 0`, döndürme 0..359, etiket/koordinat uzayı kırpılmış-dolu, `width`/`height` NULL ya da **pozitif**, `quality_flags` **metin dizisi**; on bir kanıt sütunu **donar** (no-op takılmaz); ölçülen kusur: 47 yazımın **42'si** kabul ediliyordu (NULL/boş/boşluk kimlik, sıfır/negatif/metin geometri, `ocr`→`native` çevirisi, sayfanın **başka koşuya** taşınması, bozuk uyarı listesi) ve v54'ün sayfa sınırı hükmü **geriye dönük** bozulabiliyordu (maske sayfa dışına taşar); `GUARDED_TABLES` 25 kalır (2026-11-22) |
+| F08-T04al | ✅ | **denetim defteri eklemelidir** (şema **v64**): `audit_events` üzerinde **4 tetikleyici** — doğuşta kimlik/kategori/işlem/aktör/`entity_id` kırpılmış-dolu ≤64, `metadata_allowlist` **JSON nesnesi**, damga `YYYY-MM-DDTHH:MM:SS.uuuuuuZ` **gerçek** gün/saat, `event_hash` 64 küçük harf hex, `prior_hash` **defterin son satırının özeti** (boş defterde NULL), satır defterin **sonuna** eklenir; dokuz sütun **donar** (no-op takılmaz); satır **silinemez**. Ölçülen: 39 kusur yazımının **39'u** kabul ediliyordu (2026-11-23) |
 
 ## Doğrulama
 
@@ -4043,3 +4044,96 @@ içeriği (uyarı metinleri) denetlenmez, yalnız metin dizisi olması. (e)
 tutarsız sayfalar **silinmez/onarılmaz** (BU dondurur); onarım yolu **yeni
 ayrıştırma koşusu**. (g) Tetikleyicileri anahtarı olan saldırgan düşürebilir.
 (h) Arayüz değişmedi; gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04al — denetim defteri eklemelidir: doğuşta zincire bağlı, sonra değişmez (şema v64, 2026-11-23)
+
+**Neden bu dilim:** `audit_events` ürünün **«bu işlem yapıldı»** defteridir ve üç
+okuyucu ona yaslanır: (1) `audit::walk_chain` / `verify_audit_chain` /
+`audit_chain_status` zinciri yürür — `prior_hash`in **önceki satırın**
+`event_hash`ine eşitliğini ve özetin yeniden hesapla tuttuğunu ölçer; Settings
+ekranı «zincir doğrulandı / kırıldı» satırını buradan basar; (2) `ai.rs`
+`supersede` sayımını ve sağlayıcı yanıtının kayda geçtiğini
+(`metadata_allowlist`) **doğrudan** bu satırlardan okur; (3) `blob_disk.rs`
+temizlik kayıtlarını buraya yazar. Tablo 0001'den beri **tetikleyicisizdi**:
+tek kapı `id` UNIQUE'iydi. `append_audit` zinciri kendisi kurar, ama doğrudan
+SQL yazan yol bunu atlayabiliyor; doğmuş satır sonradan **her** sütunuyla
+değiştirilebiliyor, silinebiliyordu — yani defterin «eklemeli» olduğu iddiası
+şemada yazmıyordu.
+
+**Ölçülen (düzeltme öncesi, gerçek SQLite v63; sonda
+`scratch/dim-v64-probe/measure_v64.py`, log `measure_before.log`):** 41 yazımın
+**41'i KABUL** (39 kusur + 1 meşru ekleme + 1 no-op güncelleme).
+29 doğum kusuru: boş / kırpılmamış / 65 haneli kimlik; boş, yalnız boşluk ve
+kırpılmamış kategori / işlem / aktör; boş ve kırpılmamış `entity_id`; bozuk
+JSON, dizi, `null` ve metin `metadata_allowlist`; 63 haneli / büyük harf / hex
+olmayan `event_hash`; `dün`, yalnız gün, olmayan gün (`2026-02-30`), olmayan
+saat (`99:00:00`) ve saniyesiz damga; **zincir kopuk** `prior_hash`, zincirde
+satır varken `prior_hash NULL`, 63 haneli ve büyük harf prior; açıkça **düşük
+`sequence`** (satır defterin başına düşer). 9 UPDATE kusuru: işlem, kategori,
+aktör, metadata, özet, prior, damga, kimlik ve `entity_id` çevrildi.
+1 silme kusuru: kayıt silindi.
+
+**Yazılan (`0064_audit_ledger_evidence_guard.sql`, 4 tetikleyici):**
+`audit_events_evidence_birth` (BI) — `id`/`category`/`operation`/`actor_label`
+kırpılmış-dolu ≤64, `entity_id` NULL ya da kırpılmış-dolu ≤64,
+`metadata_allowlist` **geçerli JSON nesnesi** (dizi/`null`/metin/bozuk reddedilir),
+damga **sabit genişlik** `YYYY-MM-DDTHH:MM:SS.uuuuuuZ` ve **gerçek** takvim
+günü/saati (`date()`/`time()` eşitliği; `2026-02-30` normalleşir), `event_hash`
+**64 küçük harf hex**, `prior_hash` NULL ya da 64 küçük harf hex ve
+**defterin son satırının `event_hash`i** (boş defterde NULL) — zincir bağı
+**doğuşta** kurulur. `audit_events_evidence_appended` (AFTER INSERT) — satır
+defterin **sonuna** eklenir: açıkça verilen düşük `sequence` reddedilir
+(AUTOINCREMENT değeri BEFORE tetikleyicide tanımsız olduğu için kural AFTER'da
+ölçülür). `audit_events_evidence_frozen` (BU) — dokuz kanıt sütunu **donar**;
+no-op yazma takılmaz. `audit_events_evidence_no_delete` (BD) — kayıt
+**silinemez** (tabloda CASCADE bağı yok; dosya silme ürün yolu bu defteri
+etkilemez). Ret `DIM_INTEGRITY:audit_events` → `E_DB_INTEGRITY`. Tablo
+`case_id` taşımaz → `GUARDED_TABLES` **25 kalır**. **Çekirdek değişmedi**:
+`append_audit` zaten aynı kuralları uyguluyordu; bu dilim şemayı ona hizaladı.
+
+**Testler:** `audit` +1
+(`audit_ledger_is_chained_at_birth_and_never_rewritten_or_erased`: 3 meşru
+kayıt kapıdan geçer; **32 doğum saldırısı** (26 biçim + 4 zincir bağı +
+1 düşük `sequence` + boş defterde dolu prior), 8 UPDATE saldırısı, 1 DELETE
+saldırısı reddedilir; no-op güncelleme kabul; reddedilen satır defterde
+kalmaz; her saldırıdan sonra zincir sağlam), `upgrade_tests` +1
+(`upgrade_keeps_audit_ledger_written_before_the_evidence_gate`: v63'te
+`append_audit`in yazdığı **geçerli** satır güncellemeden sonra da geçerli,
+güncelleme kendi kaydını sona ekler, yeni satır eski satıra bağlanır,
+biçimsiz yazma ve silme reddedilir). İki okuma testi (`broken_metadata_…`,
+`tampered_…`, `removed_middle_…`) v64 kapısını **bilinçli** düşürür — sınadıkları
+şey okuyucu/doğrulayıcı. `dim-storage --lib` **766 → 768**.
+
+**Kapı kanıtı (`scratch/v64-gates.py`, log `v64_gates_run1.log`):**
+**16/16 KIRMIZI · YEŞİL 0 · ÖLÇÜLEMEDİ 0** — her mutant tek cümleyi nötrler ve
+hedef saldırı **kabul** olur (kimlik/kategori/işlem/aktör/entity kuralları,
+metadata `json_valid`+nesne birlikte, metadata nesne, damga GLOB, damga gerçek
+gün, özet biçimi, zincir bağı, AFTER sıra kuralı, tüm sütun donması, yalnız
+işlem donması, silme yasağı). Her mutanttan sonra kaynak sha256 **birebir**
+geri yazıldı. **Dürüst (iki koşu):** ilk koşu **15/17** — M9 (damga GLOB) ve
+M11 (`time()`) YEŞİL kaldı: testte **boşluk ayırıcılı** damga ve **artık
+saniye** (`10:00:60`) saldırıları yoktu; ikisi testlere eklendi, ayrıca
+`time()` cümlesinin `date()` eşitliğine **eşdeğer** olduğu ölçüldü
+(`date()` geçersiz saatte de NULL döner) → cümle koddan **çıkarıldı**; ikinci
+koşu **16/16**. İlk koşunun hükümleri kanıt sayılmadı, kapı gevşetilmedi.
+
+**CI (ölçüldü):** kod `ececa36` (4 dosya, **+605/−1**) → run `45079690771`
+**10/10 YEŞİL** (`dim-storage` **768** iki OS'ta: `macos-15` **495,45 s** /
+`ubuntu-latest` **529,88 s**; `arayüz` **67 dosya / 1482 test** — paket
+`index-Ce2oEuEs.js` **731,38 kB** / gzip **194,04 kB**; `masaüstü kabuk`,
+`windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) `event_hash`in **içeriği** SQLite'ta yeniden
+hesaplanamaz (SHA-256 yok): kapı biçimi ve **zincir bağını** doğrular; özetin
+doğruluğunu `walk_chain` çalışma anında ölçer. (b) Zincir kuralı **kuyruğa**
+bağlar: geçmişte kopmuş bir defter onarılmaz, yeni satırlar son satıra
+bağlanmaya devam eder (v64 öncesi tutarsız satırlar silinmez/donar). (c) Bir
+saldırgan tetikleyicileri düşürüp sahte **tutarlı** zincir yazabilir; kapı iç
+tutarlılığı ölçer, kimliği (actor_label) doğrulamaz. (d) `metadata_allowlist`
+içeriği anahtar beyaz listesine göre denetlenmez (yalnız nesne + geçerli JSON).
+(e) Eşzamanlı iki yazar aynı `prior_hash`i seçemez: SQLite tek yazar olduğu
+için `append_audit` sıralıdır; çok süreçli yazma bu dilimde ölçülmedi.
+(f) Tetikleyiciler `DROP TRIGGER` ile düşürülebilir — ürün yolu bunu yapmaz,
+anahtarı olan saldırgan yapabilir. (g) Arayüz değişmedi; gerçek pencere +
+görsel QA **insan bekliyor**.
