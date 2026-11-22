@@ -411,6 +411,62 @@ export type ConsentPreview = {
   skipped: ScopeSkip[];
   /** Önizlemede uygulanacak maske özeti; maske verilmediyse null. */
   mask: ConsentMaskPreview | null;
+  /**
+   * F11-T11 — gönderilecek metinde talimat benzeri ifade taraması. Onaydan
+   * **önce** görünür; hiçbir şeyi engellemez.
+   */
+  instruction?: InstructionScan;
+};
+
+/** F11-T11 — tek segmentte bulunan tek bir talimat sinyali. */
+export type InstructionSignal = {
+  /** Kararlı kod: ignore_instructions | role_marker | data_exfiltration | schema_override | credential_request */
+  code: string;
+  segmentId: string;
+  occurrences: number;
+  preview: string;
+};
+
+/** F11-T11 — bir metin kümesinin talimat taraması. */
+export type InstructionScan = {
+  segments: number;
+  chars: number;
+  signals: InstructionSignal[];
+  total: number;
+  /** Karakter bütçesi aşıldı; kalan segmentler taranmadı. */
+  truncated: boolean;
+  /** `sent` = gönderilen (maskeli olabilir) metin; `pre_mask` = maske bütçesi yetmedi, maskesiz tarandı. */
+  basis: string;
+};
+
+/** F11-T11 — aday alıntı raporlarından sayılan sahte kaynak değerlendirmesi. */
+export type FakeSourceScan = {
+  candidates: number;
+  quotes: number;
+  verified: number;
+  notFound: number;
+  ambiguous: number;
+  unverifiable: number;
+  other: number;
+  candidatesWithoutVerifiedQuote: number;
+};
+
+export type IssueCount = { code: string; count: number };
+
+/** F11-T11 — şema taşması (too_long/too_many_items) ihlalleri. */
+export type SchemaOverflowScan = {
+  candidates: number;
+  invalid: number;
+  overflow: number;
+  codes: IssueCount[];
+};
+
+/** F11-T11 — bir çalıştırmanın saldırı değerlendirmesi (okuma anında yeniden sayılır). */
+export type AttackAssessment = {
+  runId: string;
+  instruction: InstructionScan;
+  fakeSource: FakeSourceScan;
+  schemaOverflow: SchemaOverflowScan;
 };
 
 export type AiOverview = { providers: ProviderProfileRow[]; runs: AiRunRow[]; coverage: CoverageReport };
@@ -2678,6 +2734,9 @@ export const api = {
    * Çekirdekte, okuma anında hesaplanır; "sınırlı" işareti tahmin değildir.
    */
   aiAnswerBasis: (runId: string) => invoke<AiAnswerBasisRow>("ai_answer_basis", { runId }),
+  /** F11-T11 — talimat saldırısı, sahte kaynak ve şema taşması değerlendirmesi. */
+  aiAttackAssessment: (runId: string) =>
+    invoke<AttackAssessment>("ai_attack_assessment", { runId }),
   aiCandidatePromote: (candidateId: string, caseId: string) =>
     invoke<string>("ai_candidate_promote", { candidateId, caseId }),
   aiCandidateValidate: (runId: string, candidateType: string, payload: string) =>

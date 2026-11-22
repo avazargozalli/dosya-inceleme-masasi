@@ -446,6 +446,27 @@ export function answerBasisReasonLabel(code: string): string {
 }
 
 /**
+ * F11-T11 — talimat taraması sinyal kodları. Kod sabittir; ekran yalnız
+ * bilinenleri Türkçeleştirir, bilinmeyeni olduğu gibi gösterir.
+ */
+export function instructionCodeLabel(code: string): string {
+  switch (code) {
+    case "ignore_instructions":
+      return t("ai.instructionCodeIgnore");
+    case "role_marker":
+      return t("ai.instructionCodeRole");
+    case "data_exfiltration":
+      return t("ai.instructionCodeExfiltration");
+    case "schema_override":
+      return t("ai.instructionCodeSchema");
+    case "credential_request":
+      return t("ai.instructionCodeCredential");
+    default:
+      return code;
+  }
+}
+
+/**
  * F11-T07 — özet cümlesi rozeti. `backed` birebir/normalize bulunmuş alıntıya
  * dayanır; `weak` yalnız belirsiz/başka sayfa eşleşmesidir (varlık doğrulandı,
  * konum tek değil); `unsourced` **kaynaksız yorum**dur. Bilinmeyen durum ham

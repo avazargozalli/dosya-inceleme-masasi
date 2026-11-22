@@ -7406,6 +7406,20 @@ pub fn ai_answer_basis(
     Ok(db.answer_basis(&run_id)?)
 }
 
+/// F11-T11 — bir çalıştırmanın **saldırı değerlendirmesi**: gönderilen metinde
+/// talimat benzeri ifadeler, alıntı raporlarından sahte kaynak sayıları ve
+/// şema taşması ihlalleri. Üçü de okuma anında kanıtlarından yeniden sayılır;
+/// hiçbiri engel değildir.
+#[tauri::command]
+pub fn ai_attack_assessment(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<dim_storage::AttackAssessment, ApiError> {
+    let guard = state.lock();
+    let db = guard.db.as_ref().ok_or_else(ApiError::vault_locked)?;
+    Ok(db.attack_assessment(&run_id)?)
+}
+
 #[tauri::command]
 pub fn ai_candidate_promote(
     state: State<'_, AppState>,

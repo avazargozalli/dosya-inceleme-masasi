@@ -866,6 +866,36 @@ export const tr = {
       "Kapsam büyük: bayt sayısı maskesiz üst sınırdır ({raw}); örnek yine maskeli.",
     previewMaskPlan: "karartma planı uygulanıyor.",
     previewNoMask: "Maske yok: metin olduğu gibi gider.",
+    // F11-T11 — belge içi talimat saldırısı değerlendirmesi.
+    instructionClean:
+      "Gönderilecek metinde talimat benzeri ifade bulunmadı ({segments} parça tarandı).",
+    instructionFound:
+      "{total} talimat benzeri ifade · {segments} parça tarandı. Sezgisel işarettir; " +
+      "belge bu ifadeyi alıntılıyor olabilir — saldırı kanıtı değildir.",
+    instructionTruncated: "Tarama sınırı aşıldı: kalan parçalar taranmadı; “temiz” denemez.",
+    instructionPreMask:
+      "Tarama maske uygulanmadan yapıldı (maske bütçesi yalnız örneğe yetmişti); maskeli gönderimde metin değişebilir.",
+    instructionCodeIgnore: "talimatı ezme",
+    instructionCodeRole: "sohbet rolü işaretçisi",
+    instructionCodeExfiltration: "dışarı çıkarma talebi",
+    instructionCodeSchema: "şema ezme",
+    instructionCodeCredential: "anahtar/sır talebi",
+    instructionSegment: "{segment} · {count} kez · “{preview}”",
+    attackTitle: "Saldırı değerlendirmesi",
+    attackSub:
+      "Gönderilen metinden ve aday kanıtlarından **okuma anında** sayılır; hiçbiri engel değildir.",
+    attackLoading: "Değerlendirme okunuyor…",
+    attackError: "Değerlendirme okunamadı:",
+    attackInstructionLine: "Talimat benzeri ifade: {total} · {segments} parça tarandı",
+    attackInstructionClean: "Talimat benzeri ifade yok ({segments} parça tarandı).",
+    attackInstructionTruncated: "Tarama sınırı aşıldı; kalan parçalar taranmadı.",
+    attackFakeSourceLine:
+      "Sahte kaynak: {notFound} alıntı gönderilen metinde **bulunamadı** · {verified}/{quotes} doğrulandı",
+    attackFakeSourceClean: "Alıntıların tamamı gönderilen metinde doğrulandı ({quotes}/{quotes}).",
+    attackFakeUnverifiable: "{count} alıntı doğrulanamadı (sürüm/maske/harita).",
+    attackSchemaLine: "Şema taşması: {overflow} aday sınırı aştı ({codes}).",
+    attackSchemaClean: "Şema sınırı aşan aday yok ({candidates} aday).",
+    attackNoCandidates: "Bu çalıştırmada henüz aday yok.",
     maskChangedSincePreview:
       "Maske önizlemeden/onaydan sonra değişti. Gönderim, önizlenen metinle aynı " +
       "olmaz — “Onayla”ya basıp önizlemeyi yenileyin.",

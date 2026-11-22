@@ -9,6 +9,7 @@ import {
   type AiOverview,
   type AiRunRow,
   type ApiError,
+  type AttackAssessment,
   type CandidateReport,
   type CaseRow,
   type ConsentPreview,
@@ -42,6 +43,7 @@ import {
   contradictionStateTone,
   draftJsonError,
   errorCount,
+  instructionCodeLabel,
   parseIssues,
   promoteBlockedReason,
   quoteLineStateLabel,
@@ -415,6 +417,11 @@ export function Ai() {
   const [answerBasis, setAnswerBasis] = useState<AiAnswerBasisRow | null>(null);
   const [answerBasisBusy, setAnswerBasisBusy] = useState(false);
   const [answerBasisError, setAnswerBasisError] = useState<ApiError | null>(null);
+  // F11-T11 — saldırı değerlendirmesi (talimat taraması, sahte kaynak, şema
+  // taşması) çalıştırma seçilince çekirdekten okunur.
+  const [attack, setAttack] = useState<AttackAssessment | null>(null);
+  const [attackBusy, setAttackBusy] = useState(false);
+  const [attackError, setAttackError] = useState<ApiError | null>(null);
   const [purpose, setPurpose] = useState("ozet");
   const [error, setError] = useState<ApiError | null>(null);
   // Onay **reddedildi**: çekirdek “bu onay isteği kapsamıyor” dedi. Onay
@@ -471,6 +478,8 @@ export function Ai() {
   const messagesSeq = useRef(0);
   // Kapsam/dayanak ölçümü de bağımsız bir **okuma**dır.
   const answerBasisSeq = useRef(0);
+  // Saldırı değerlendirmesi de bağımsız bir **okuma**dır.
+  const attackSeq = useRef(0);
   // Doğrulama raporu **gönderilen** aday türüne aittir; tür değişince geç
   // gelen rapor yeni türün altına yazılmaz.
   const kindRef = useRef(kind);
@@ -648,6 +657,11 @@ export function Ai() {
     setAnswerBasisBusy(false);
     setAnswerBasisError(null);
     answerBasisSeq.current += 1;
+    // Saldırı değerlendirmesi de çalıştırmaya bağlıdır.
+    setAttack(null);
+    setAttackBusy(false);
+    setAttackError(null);
+    attackSeq.current += 1;
     // Plan seçimi dosyaya bağlıdır: önceki dosyanın planıyla yeni dosyanın
     // metni maskelenemez (INV-05).
     setMaskPlanId("");
@@ -961,6 +975,30 @@ export function Ai() {
   }
 
   /**
+   * F11-T11 — **saldırı değerlendirmesi**: talimat taraması gönderilen
+   * metinden, sahte kaynak ve şema taşması aday kanıtlarından okunur.
+   * Üçü de okuma anında yeniden sayılır; hiçbiri gönderimi engellemez.
+   */
+  async function loadAttackAssessment(forRun: string): Promise<void> {
+    if (!forRun) return;
+    attackSeq.current += 1;
+    const seq = attackSeq.current;
+    setAttackBusy(true);
+    setAttackError(null);
+    try {
+      const report = await api.aiAttackAssessment(forRun);
+      if (attackSeq.current !== seq) return;
+      setAttack(report);
+    } catch (e) {
+      if (attackSeq.current !== seq) return;
+      setAttack(null);
+      setAttackError(toApiError(e));
+    } finally {
+      if (attackSeq.current === seq) setAttackBusy(false);
+    }
+  }
+
+  /**
    * Bir çalıştırmayı **ekranın odağına** alır: adaylar ve gönderim sicili o
    * çalıştırmaya aittir. Gönderimden sonra da çağrılır — avukat "ne gitti"
    * sorusunun yanıtını hemen görür.
@@ -976,6 +1014,9 @@ export function Ai() {
     setContextError(null);
     setSegments([]);
     setSegmentsError(null);
+    // Önceki çalıştırmanın değerlendirmesi yeni seçimin altında okunmasın.
+    setAttack(null);
+    setAttackError(null);
     await loadCandidates(id);
     if (runSeq.current !== seq) return;
     await loadContextItems(id);
@@ -983,6 +1024,8 @@ export function Ai() {
     await loadSegments(id);
     if (runSeq.current !== seq) return;
     await loadMessages(id);
+    if (runSeq.current !== seq) return;
+    await loadAttackAssessment(id);
   }
 
   async function selectRun(id: string) {
@@ -1342,6 +1385,26 @@ export function Ai() {
             ) : (
               <p className="hint" style={{ margin: 0 }}>{t("ai.previewNoMask")}</p>
             )}
+            {preview.instruction ? (
+              // F11-T11 — onaydan **önce** görünür: belgeye gömülü talimat
+              // benzeri ifadeler. Hiçbir şeyi engellemez.
+              <p className={`hint`} style={{ margin: 0 }}>
+                {preview.instruction.total > 0
+                  ? t("ai.instructionFound", {
+                      total: preview.instruction.total,
+                      segments: preview.instruction.segments,
+                    })
+                  : t("ai.instructionClean", { segments: preview.instruction.segments })}
+                {preview.instruction.truncated ? ` · ${t("ai.instructionTruncated")}` : ""}
+                {preview.instruction.basis === "pre_mask" ? ` · ${t("ai.instructionPreMask")}` : ""}
+                {preview.instruction.signals.length > 0
+                  ? ` · ${preview.instruction.signals
+                      .slice(0, 3)
+                      .map((signal) => instructionCodeLabel(signal.code))
+                      .join(" · ")}`
+                  : ""}
+              </p>
+            ) : null}
             <pre style={{ maxHeight: 140, overflow: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
               {preview.sample || t("ai.previewEmpty")}
             </pre>
@@ -1599,6 +1662,99 @@ export function Ai() {
         )}
         <p className="hint" style={{ margin: 0 }}>{t("ai.transferNote")}</p>
       </div>
+
+      {/* F11-T11 — saldırı değerlendirmesi: üç bölüm de okuma anında
+          kanıtlarından sayılır; hiçbiri engel değildir. */}
+      {runId ? (
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>{t("ai.attackTitle")}</h2>
+              <p className="card-sub">{t("ai.attackSub")}</p>
+            </div>
+          </div>
+          {attackError ? (
+            <div className="notice danger" role="alert">
+              <strong>{t("ai.attackError")}</strong> {attackError.code} — {attackError.message}
+            </div>
+          ) : attack ? (
+            <>
+              <p style={{ margin: "4px 0" }}>
+                <span className={`badge ${attack.instruction.total > 0 ? "warn" : "ok"}`}>
+                  {attack.instruction.total > 0
+                    ? t("ai.attackInstructionLine", {
+                        total: attack.instruction.total,
+                        segments: attack.instruction.segments,
+                      })
+                    : t("ai.attackInstructionClean", {
+                        segments: attack.instruction.segments,
+                      })}
+                </span>
+                {attack.instruction.truncated ? (
+                  <span className="hint"> · {t("ai.attackInstructionTruncated")}</span>
+                ) : null}
+              </p>
+              {attack.instruction.signals.length > 0 ? (
+                <ul className="hint" style={{ margin: "0 0 6px 16px", padding: 0 }}>
+                  {attack.instruction.signals.slice(0, 6).map((signal) => (
+                    <li key={`${signal.segmentId}-${signal.code}`}>
+                      {instructionCodeLabel(signal.code)} ·{" "}
+                      {t("ai.instructionSegment", {
+                        segment: signal.segmentId,
+                        count: signal.occurrences,
+                        preview: signal.preview,
+                      })}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <p style={{ margin: "4px 0" }}>
+                <span
+                  className={`badge ${
+                    attack.fakeSource.notFound > 0
+                      ? "danger"
+                      : attack.fakeSource.quotes > 0 &&
+                          attack.fakeSource.verified === attack.fakeSource.quotes
+                        ? "ok"
+                        : "plain"
+                  }`}
+                >
+                  {attack.fakeSource.notFound > 0
+                    ? t("ai.attackFakeSourceLine", {
+                        notFound: attack.fakeSource.notFound,
+                        verified: attack.fakeSource.verified,
+                        quotes: attack.fakeSource.quotes,
+                      })
+                    : attack.fakeSource.quotes > 0 &&
+                        attack.fakeSource.verified === attack.fakeSource.quotes
+                      ? t("ai.attackFakeSourceClean", { quotes: attack.fakeSource.quotes })
+                      : t("ai.attackNoCandidates")}
+                </span>
+                {attack.fakeSource.unverifiable > 0 ? (
+                  <span className="hint">
+                    {" "}
+                    · {t("ai.attackFakeUnverifiable", { count: attack.fakeSource.unverifiable })}
+                  </span>
+                ) : null}
+              </p>
+              <p style={{ margin: "4px 0" }}>
+                <span className={`badge ${attack.schemaOverflow.overflow > 0 ? "warn" : "plain"}`}>
+                  {attack.schemaOverflow.overflow > 0
+                    ? t("ai.attackSchemaLine", {
+                        overflow: attack.schemaOverflow.overflow,
+                        codes: attack.schemaOverflow.codes
+                          .map((entry) => `${entry.code} ×${entry.count}`)
+                          .join(", "),
+                      })
+                    : t("ai.attackSchemaClean", { candidates: attack.schemaOverflow.candidates })}
+                </span>
+              </p>
+            </>
+          ) : attackBusy ? (
+            <p className="hint" style={{ margin: 0 }}>{t("ai.attackLoading")}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="card">
         <div className="card-head">

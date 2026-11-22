@@ -24,6 +24,7 @@ mod error;
 mod export_coverage;
 mod exports;
 mod gc;
+mod instruction_risk;
 mod intext_quotes;
 pub mod job_state;
 mod marks;
@@ -50,12 +51,13 @@ pub use actors::{
 };
 pub use ai::{
     normalize_ai_question, purpose_task_type, task_candidate_kind, AiCandidateRow,
-    AiContextItemRow, AiMessageRow, AiRunRow, ConsentMaskPreview, ConsentPreview, ConsentScope,
-    CoverageReport, NewAiContextItem, NewAiRun, NewTransferConsent, NewTransferSegment,
-    OutboundMask, OutboundRecord, OutboundSegment, OutboundSegmentRef, ProviderProfileRow,
-    ScopeDocument, ScopeSegment, ScopeSkip, SentSegment, TransferConsentListRow,
-    TransferConsentRow, TransferReceiptRow, TransferSegmentRow, AI_ANSWER_TASK,
-    AI_QUESTION_MAX_CHARS, AI_QUESTION_MIN_CHARS, PREVIEW_MASK_CHAR_BUDGET,
+    AiContextItemRow, AiMessageRow, AiRunRow, AttackAssessment, ConsentMaskPreview, ConsentPreview,
+    ConsentScope, CoverageReport, FakeSourceScan, IssueCount, NewAiContextItem, NewAiRun,
+    NewTransferConsent, NewTransferSegment, OutboundMask, OutboundRecord, OutboundSegment,
+    OutboundSegmentRef, ProviderProfileRow, SchemaOverflowScan, ScopeDocument, ScopeSegment,
+    ScopeSkip, SentSegment, TransferConsentListRow, TransferConsentRow, TransferReceiptRow,
+    TransferSegmentRow, AI_ANSWER_TASK, AI_QUESTION_MAX_CHARS, AI_QUESTION_MIN_CHARS,
+    PREVIEW_MASK_CHAR_BUDGET,
 };
 pub use ai_candidate::{
     candidate_output_instructions, contradiction_basis, AnswerBasis, AnswerScopeDocument,
@@ -93,6 +95,10 @@ pub use error::StorageError;
 pub use export_coverage::{ExportCoverage, COVERAGE_COUNTING_NOTE, COVERAGE_STATEMENT};
 pub use exports::{ExportItemRow, ExportRow, NewExportItem};
 pub use gc::{GcBlobRow, GcReport};
+pub use instruction_risk::{
+    scan_segments, InstructionCode, InstructionScan, InstructionSignal,
+    INSTRUCTION_SCAN_CHAR_BUDGET,
+};
 pub use intext_quotes::{
     extract_quoted_spans, ExtractedQuotes, InTextQuoteCheck, InTextQuoteFinding, InTextQuoteInput,
     InTextQuotePosition, PrecedentInTextCheck, PrecedentInTextInput, PrecedentQuoteFinding,
