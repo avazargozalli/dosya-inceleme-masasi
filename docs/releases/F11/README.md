@@ -16,6 +16,7 @@
 | F11-T07 özet cümlesi → dayanak bağı | ✅ | `quotes[].sentences` (birebir cümle kopyası) + `SentenceAttribution` — cümle başına `backed`/`weak`/`unsourced`; kaynaksız yorum ayrı blokta, bağ yoksa «cümle bağı yok» (uydurma damga yok); kayıtlı satırda her okumada yeniden hesaplanır (2026-11-22, aşağıdaki bölüm) |
 | F11-T08 soru-cevap: incelenen kapsam + sınırlı yanıt | ✅ | `answer_basis` — kapsam **fiilen gönderilen** segmentlerden, dayanak alıntı raporundan; `sufficient`/`limited` + kararlı neden kodları, `E_AI_ANSWER_LIMITED` terfi kapısı; amaç «soru», 3–500 karakter soru metni `ai_messages` **user** satırı + istemde `Soru:`; arayüzde kapsam satırı ve «sınırlı yanıt» rozeti (2026-11-21, aşağıdaki bölüm) |
 | F11-T09 çelişki adayı iki kaynakla | ✅ | `CandidateKind::Contradiction` — `sides` **tam iki ayrı alıntı**, `dateKind` kapalı küme; okuma anında `contradiction_basis` (`presentable`/`role_difference`/`sources_unverified`/`unlinked`), uyarı `validation_state`i `partial`a çeker; `E_AI_CONTRADICTION` terfi kapısı + kuyruk türü normalizasyonu + **tam iki anchor**; arayüzde iki taraf yan yana + rol farkı uyarısı (2026-11-22, aşağıdaki bölüm) |
+| F11-T11 talimat saldırısı, sahte kaynak, şema taşması | ✅ | `instruction_risk` — 29 iğneli, 5 kararlı kodlu deterministik tarama (Türkçe 1:1 katlama, satır başı rol işaretçisi, segment/kod başına tek satır, 2.000.000 karakter bütçesi → `truncated`); **onaydan önce** `ConsentPreview.instruction` (maske tam uygulandıysa `basis="sent"`, yetmediyse dürüst `pre_mask`); `ai_attack_assessment(run_id)` üç değerlendirmeyi **okuma anında** kanıtlarından sayar (gönderilen `transfer_segments`, `quote_report`, `too_long`/`too_many_items`); sahte kaynak hükmü yalnız `not_found`; hiçbiri engel değil (2026-11-22, aşağıdaki bölüm) |
 | Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
 
 ## Dürüst durum
@@ -1234,3 +1235,103 @@ testi), paket `index-CrMnywpN.js` **707,86 kB** / gzip **188,62 kB**,
 `masaüstü kabuk` 52 + yoksayılan 5 passed (gerçek-worker adımında 5), `windows
 güvenli depo` 30, sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve
 kaynak arşivi yeşil.
+
+## F11-T11 — belge içi talimat saldırısı, sahte kaynak ve şema taşması değerlendirmesi (2026-11-22)
+
+**Ölçülen kusur (düzeltme öncesi).** Şartname üç değerlendirme istiyordu; üründe
+üçünün durumu farklıydı:
+
+- **Belge içi talimat saldırısı hiç yoktu**: gönderilen belge metni yalnız maskeleme
+  ve kapsam için işleniyordu; «önceki talimatları yoksay», satır başında `system:`
+  ya da «tüm dosyaları gönder» gibi ifadeler ne onaydan önce ne çalıştırma kaydında
+  görünüyordu.
+- **Sahte kaynak** yalnız aday doğrulamasında **dağınık** sayılıyordu: `quote_report`
+  her adayın satırında duruyor ama «bu çalıştırmada kaç alıntı gönderilen metinde
+  bulunamadı» sorusu tek yerden yanıtlanamıyordu; `not_found` (bulunamadı) ile
+  `unverifiable` (doğrulanamadı) ve `ambiguous` (belirsiz) ayrımı ekranda yoktu.
+- **Şema taşması ihlalleri** (`too_long`/`too_many_items`) adayı `invalid` yapıyor
+  ama hangi sınırın kaç kez aşıldığı raporlanmıyordu.
+
+**Yazılan.**
+
+- **Çekirdek tarama (`instruction_risk.rs`, yeni modül):** 29 iğneli, **5 kararlı
+  kodlu** (`ignore_instructions`, `role_marker`, `data_exfiltration`,
+  `schema_override`, `credential_request`) deterministik tarama. İğneler **katlanmış**
+  metinde aranır: `outbound_mask::fold_char` üzerine **1:1 Türkçe→ASCII** indirme
+  (ı→i, ş→s, ğ→g, ü→u, ö→o, ç→c); katlama karakter sayısını değiştirmediği için
+  önizleme **özgün metinden** kesilir (ekrana katlanmış metin basılmaz). Satır başı
+  rol işaretçileri yalnız **satır başında** eşleşir (`system:`, `assistant:`,
+  `### instruction`…). Sonuç segment başına kod başına **tek satır**: tekrar sayısı +
+  tek satırlık önizleme (belgenin tamamı taşınmaz). Toplam **2.000.000 karakter**
+  bütçesi; aşılırsa `truncated=true` ve kalan segmentler **taranmadı** — sessiz
+  «temiz» yok.
+- **Onaydan önce görünürlük:** `ConsentPreview.instruction` — gönderim onayı ekranı,
+  **gönderilecek** metni onaydan önce tarar. Maske bütün kapsama uygulandıysa
+  **maskeli** metin taranır (`basis="sent"`); maske bütçesi yalnız örneğe yettiyse
+  tarama **maskesiz** metinde yapılır ve dürüstçe `basis="pre_mask"` işaretlenir
+  (gönderimde maske terimleri bu ifadeleri değiştirebilir).
+- **Çalıştırma raporu:** `ai_attack_assessment(run_id)` → `AttackAssessment`; üç bölüm
+  de **okuma anında** kanıtlarından yeniden sayılır, kalıcı damga yoktur:
+  - `instruction` — **gönderilen** `transfer_segments` metninden (v47 kapısı satırları
+    dondurur; modelin gördüğü metnin kaydı budur),
+  - `fakeSource` — adayların `quote_report`undan: `verified` (`exact|normalized`),
+    `notFound`, `ambiguous`, `unverifiable`, `other` **ayrı kovalarda**; **«sahte»
+    hükmü yalnız `not_found`** için verilir; alıntısı olup hiçbiri doğrulanmamış aday
+    sayısı ayrıca sayılır,
+  - `schemaOverflow` — aday `validation_errors`undan `too_long`/`too_many_items`
+    ihlalleri: en az bir ihlalli aday sayısı + kod başına adet.
+  - **Hiçbiri engel değildir**: rapor avukatın görmesi içindir; gönderimi/terfiyi
+    durdurmaz (INV-02 ruhu — hüküm avukatındır).
+- **Arayüz (`Ai.tsx`):** onay önizlemesinde talimat satırı — toplam + taranan segment,
+  kod etiketleri, önizleme; «sezgisel işarettir; saldırı kanıtı değildir» uyarısı;
+  `truncated` ve `pre_mask` ayrıca yazılır. Çalıştırma seçilince «Saldırı
+  değerlendirmesi» kartı: talimat sinyalleri (segment + tekrar + alıntı önizlemesi),
+  sahte kaynak rozeti (bulunamadı / doğrulandı / doğrulanamadı), şema taşması rozeti
+  (ihlal kodları). Nesil sayaçlarıyla bayat yanıt koruması; dosya/çalıştırma
+  değişiminde kart temizlenir.
+- **Tauri okuma yolu:** `ai_attack_assessment` komutu; `api.ts` `AttackAssessment` /
+  `InstructionScan` / `FakeSourceScan` / `SchemaOverflowScan` tipleri; `candidate.ts`
+  `instructionCodeLabel` (kararlı kod → Türkçe etiket).
+
+**Testler (güncel kodla).** `dim-storage --lib` **754/754 yeşil, 618,41 s**
+(744 → **+10**: `instruction_risk` 6 birim [beş kod, satır başı kuralı, Türkçe
+katlama, segment başına tekrar, bütçe/`truncated`, masum hukuki metin] + `ai` 4
+[onay öncesi `sent`, maske bütçesi `pre_mask`, üç bölümlü değerlendirme, kanıtsız
+çalıştırma]). Arayüz 66 dosya / **1469** test yeşil (node **22.23.1**; node 25'te
+jsdom `localStorage` kırılıyor — ortam farkı, kod değil), `tsc --noEmit` temiz. İki
+manifest `cargo fmt`; `clippy -p dim-storage --all-targets -D warnings` temiz (bir
+`cloned_ref_to_slice_refs` düzeltildi); masaüstü `cargo check --all-targets` temiz
+(2 dk 21 s).
+
+**Kapı kanıtı (`scratch/dim-t11-gates.py`, log `t11_gates_run2.log`).** 8/8 mutant
+**KIRMIZI** · YEŞİL 0; kaynak sha256 **birebir** geri yazıldı (`instruction_risk.rs
+3daaeb215f3050b8…`, `ai.rs e1a9f62179aa698b…`): rol işaretçisi satır başı koşulu,
+kod başına sayım, bütçe sınırı, Türkçe noktasız ı katlaması, maske bütçesi `sent`
+damgası, bulunamayan alıntının doğrulanmış sayılması, şema taşması sayımı,
+doğrulanmamış alıntılı aday sayımı. **Dürüst (önceki koşu):** ilk koşuda M1 **HEDEF
+YOK** çıktı (fmt sonrası desen kaydı kaymıştı); desen düzeltildi, kapı **baştan**
+koşuldu; ilk koşunun hükümleri kanıt sayılmadı.
+
+**Dürüst sınırlar.**
+
+- Tarama **sezgiseldir**: sabit ifade listesi; eşanlamlı, başka dilde yazılmış ya da
+  bölünmüş (`önceki ta-limatları`) saldırıları kaçırabilir.
+- Bir eşleşme **saldırı kanıtı değildir** — belge o ifadeyi alıntılıyor olabilir;
+  ekran «talimat benzeri ifade» der, «saldırı» demez.
+- Yalnız **gönderilen metin** taranır; istem, sağlayıcı şablonu ve modelin gördüğü
+  tam bağlam bu modülün dışındadır. Modelin talimata **uyduğu/uymadığı** ölçülmez.
+- `pre_mask` taraması maske **öncesidir**: gönderimde maske terimleri ifadeyi
+  bozabilir; işaret bunu söyler.
+- Sahte kaynak hükmü **alıntı eşleşmesidir**, kaynağın gerçekten uydurma olduğunun
+  kanıtı değil; `not_found` «gönderilen metinde bulunamadı» demektir.
+- Rapor **kalıcı değildir**: aday silinirse sayı düşer; değerlendirme her okumada
+  yeniden hesaplanır.
+- Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `83ef5d8` (10 dosya, **+1260/−6**) → run `45021213972`
+**10/10 YEŞİL**: `dim-storage` **754** iki OS'ta (macos-15 **554,80 s** / ubuntu-latest
+**1.316,79 s**), `arayüz` 66 dosya / **1466** test (yerel 1469 farkı ağaçtaki başka
+ajanın commit'siz 3 testi), paket `index-Dx7W7QXY.js` **719,82 kB** / gzip
+**191,32 kB**, `masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda 5), `windows
+güvenli depo` 30, SBOM, sözleşmeler, belge worker'ı, sürüm paketi manifesti ve kaynak
+arşivi yeşil.
