@@ -19,6 +19,7 @@
 | F12-T13 | ✅ | kasadaki belge sürümünden tam metin aktarma (ayrıştırılmış sayfa metni; sürümü kullanıcı seçer) |
 | F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır; **satır/sayfa sonunda tire ile bölünmüş kelime** birleştirilerek aranır (en zayıf katman, bağlanmaz); **font ligatürü** (`ﬂ`) açılarak aranır (kendi katmanı, bağlanmaz). Gerçek PDF + gerçek worker ile uçtan uca (2026-10-30) |
 | F12-T14j | ✅ | metindeki tüm tırnaklı alıntılar **seçili kararın** tam metninde tek turda doğrulanır — tek alıntı doğrulamasıyla **aynı** katman sırası ve sürüm kuralı (tek yol); alıntı başına yöntem/konum/kaynak, belirsizde adaylar, eski sürümde bulunan işaretlenir; tam metin yoksa düğme kapalı ve nedeni yazılı (2026-11-20) |
+| F12-T14k | ✅ | metindeki tırnaklı alıntılar **bütün kütüphanenin** güncel tam metinlerinde aranır — aynı çıkarım ve **aynı** katman sırası (tek yol); alıntı başına `found` / `not_found` / `partial_scan` / `no_library_text`, eşleşen emsalde künye + yöntem + konum + ham kaynak + kaç geçiş; 200 emsal sınırı → `truncated` («bulunamadı» kesin sayılmaz), 20 eşleşme sınırı → `hidden_matches`; kalıcı yazma yok (2026-11-22) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1552,3 +1553,92 @@ sayılmaz; 8 karakterden kısa, 1.000'den uzun ve kapanmamış tırnaklar
 değildir**: atıf siciline yazılmaz, her denetim yeniden okur — «doğrulandı»
 damgası üretmez. (h) Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel
 QA **insan bekliyor**.
+
+## F12-T14k — metindeki alıntılar bütün kütüphanede aranır (2026-11-22)
+
+**Neden bu dilim:** T14j'nin kapsamı **tek emsal**di; dilekçedeki bir alıntının
+“hangi kararlarımda geçiyor?” sorusu, her emsalin tek tek seçilip denenmesini
+gerektiriyordu. T14j'nin kapanış sınırı (a) tam bunu işaret ediyordu. Bu dilim
+soruyu tersine çevirir: **pasaj → kütüphane**, yön; kapsam **bütün kütüphane**.
+
+**Yazılan (çekirdek, `intext_quotes.rs`):**
+`Database::check_in_text_quotes_across_library(&PrecedentInTextInput)` →
+`LibraryInTextCheck`. Tarama kümesi: `precedent_versions.full_text` dolu
+(kırpılmış boşluk değil) emsaller — her emsalde **güncel** sürüm
+(`acquired_at DESC, id DESC` ilk satır); sıra deterministik (mahkeme, kimlik).
+Çıkarım (`extract_quoted_spans`: çift tırnak ailesi, 8–1.000 karakter), katman
+sırası (`exact → whitespace → ligature → turkish_fold → dehyphenated`) ve
+arama işlevi (`find_quote_in_scopes`) **tek emsal yoluyla aynıdır** — kural iki
+yerde yazılmaz, parite testi ölçer. Alıntı başına hüküm: `found` (≥1 emsalde
+bulundu) / `not_found` (hiçbirinde yok) / `partial_scan` (kütüphane sınırı
+yüzünden tamamı taranmadı — «bulunamadı» **kesin değil**) / `no_library_text`
+(kütüphanede tam metinli emsal yok; hüküm değil). Eşleşme başına **künye**
+(mahkeme, daire, esas/karar no, karar tarihi, başlık), `versionId`, **yöntem**,
+`occurrences` (aynı kararın metninde kaç geçiş), `charStart`/`charEnd` ve **ham
+kaynak aralığı** (`sourceText`). Sınırlar: `MAX_LIBRARY_PRECEDENTS` **200**
+(aşılırsa `truncated` + not; eşleşmeyen alıntı `partial_scan`), alıntı başına
+`MAX_LIBRARY_MATCHES_PER_QUOTE` **20** (fazlası `hidden_matches` olarak sayılır,
+sessizce yutulmaz), giriş sınırları (`MAX_IN_TEXT_QUOTES`,
+`MAX_IN_TEXT_CHECK_CHARS`) T14j ile aynı. **Eski sürümler bu yolda taranmaz**
+(not yazılır; onlar tek emsal denetiminin işi). **Kalıcı yazma yok** — rapor her
+aramada yeniden türetilir, `citation_checks` siciline satır yazmaz (şema
+değişmedi).
+
+**Yazılan (Tauri + arayüz):** `precedent_library_in_text_check` komutu,
+`api.precedentLibraryInTextCheck`, `lib/precedents.ts`te saf etiketler
+(`libraryCheckSummary`, `libraryCheckSkipped`, `libraryQuoteFindingText`,
+`libraryQuoteFindingTone`, `libraryMatchCitation`), `Precedents.tsx`te
+«Alıntıları kütüphanede ara» kartı: metin alanı, özet (kaç emsalde tam metin ·
+kaç tarandı · dört sayaç), sınır uyarısı, alıntı başına rozet + künye + konum +
+`kaynak` + gizlenen eşleşme sayısı; metin değişince **eski rapor düşer**,
+uçuştaki yanıt yalnız hâlâ aynı metne aitse yazılır (düzenleme sayacı + istek
+sırası; geç yanıt kapısı).
+
+**Cila (aynı gün, ayrı commit `0a7f772`, 3 dosya +7/−1):** aynı kararda birden
+çok geçiş artık **«N konum»** olarak yazılır. `occurrences` alanı çekirdekte
+zaten vardı; arayüz tek geçişi gizliyordu — sessiz bilgi kaybı kapatıldı.
+Cila CI run `45074278530` → **10/10 YEŞİL** (ölçüldü; `arayüz` 67 dosya /
+**1482** test, `dim-storage` **766** iki OS'ta).
+
+**Testler:** `dim-storage --lib` **766/766 yeşil, 692,12 s** (yerel,
+`dim-libtest-t14k.log`; T14j sonrası 761 → **766**, +5 yeni test:
+`library_search_reports_every_matching_precedent_and_keeps_scope_honest`,
+`…scans_current_versions_only_whereas_single_check_finds_old_text`,
+`…without_any_full_text_is_unverifiable_not_not_found`,
+`…marks_a_capped_scan_as_partial_and_counts_hidden_matches`,
+`…enforces_the_same_text_and_quote_limits`). Arayüz **67 dosya / 1485 test
+yeşil** (yerel), `tsc --noEmit` temiz; iki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings`, masaüstü
+`cargo check --all-targets` temiz.
+
+**Kapı kanıtı (`scratch/dim-t14k-gates.py`, log `t14k_gates_run1.log`):**
+**12/12 KIRMIZI · YEŞİL 0 · ÖLÇÜLEMEDİ 0** — çekirdek 6 mutant (güncel olmayan
+sürüm taranır; `truncated` yutulur ve «bulunamadı» kesin sayılır; gizlenen
+eşleşme sayılmaz; hüküm `no_library_text` yerine `not_found`; yöntem/katman
+etiketi düşer; ham kaynak aralığı kayar), `lib` 3 mutant (özet sayaçları
+birleşir; ton `not_found`u «bulundu» gösterir; künye satırı karar no yokken
+uydurur), ekran 3 mutant (bayat rapor kalır; geç yanıt yeni metne yazılır; boş
+metinde düğme açılır). Her mutasyondan sonra dosyalar sha256 **birebir** geri
+yazıldı (`intext_quotes.rs 0cb39616…`, `precedents.ts 02344fe5…`,
+`Precedents.tsx d5ebbc88…`); yeşil kalan mutant yok.
+
+**CI (ölçüldü):** kod `80496c0` (10 dosya, **+1008/−18**) → run
+`45068895979` **10/10 YEŞİL** (`dim-storage` **766** iki OS'ta: `macos-15`
+**511,43 s** / `ubuntu-latest` **1.042,31 s**; `arayüz` **67 dosya / 1482
+test** — yerel 1485 farkı ağaçtaki başka ajanın commit'siz testleri —, paket
+`index-DQRWaWqM.js` **731,23 kB** / gzip **194,01 kB**; `masaüstü kabuk`,
+`windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Yalnız **güncel** tam metinler taranır; eski sürümde
+kalan bir alıntı bu yolda `not_found` görünür (tek emsal denetimi onları da
+tarar). (b) Sonuç **metin eşleşmesi**dir; alıntının anlamı, kaynağın doğruluğu
+ve atıf niteliği ayrıca incelenir — `not_found` **uydurma hükmü değildir**.
+(c) Sınırlar sabittir: **200** emsal ve alıntı başına **20** eşleşme; aşılırsa
+rapor `truncated`/`hidden_matches` yazar, kesinlik iddia edilmez. (d) Kütüphane
+büyüklüğü kadar metin **belleğe** alınır (tek tek sürüm metni okunur); çok
+büyük kütüphanede bellek/süre ölçülmedi. (e) `occurrences` sürüm metnindeki
+geçiş sayısıdır; birleştirilmiş kopya sürümler tek metin sayılır. (f) Rapor
+**kalıcı değildir**: atıf siciline yazmaz, «doğrulandı» damgası üretmez.
+(g) Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan
+bekliyor**.
