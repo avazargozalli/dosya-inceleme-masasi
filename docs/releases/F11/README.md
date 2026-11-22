@@ -13,6 +13,7 @@
 | F11-T04b gerçek yanıtın aday türü ve şeması | ✅ | `task_candidate_kind` + `candidate_output_instructions`; `ai_run_execute` artık `record_ai_run_candidate` — her gerçek aday `invalid` doğmuyor, istem somut şemayı ve alıntı sözleşmesini taşıyor (2026-11-21, aşağıdaki bölüm) |
 | F11-T05 şema doğrulama + alıntı eşleştirme | ✅ | `crates/storage/src/ai_candidate.rs`, `ai_candidate_validate`; alıntı **önce gönderilen metinde** aranır (şema v26, `transfer_segments` + `record_transfer_segments`) |
 | F11-T06 kapsamlılık raporunun rapora gömülmesi | ✅ | JSON `coverage`, DOCX/PDF bölümü, CSV `#` bloğu, `KAPSAM.md` + `manifest.coverage` |
+| F11-T07 özet cümlesi → dayanak bağı | ✅ | `quotes[].sentences` (birebir cümle kopyası) + `SentenceAttribution` — cümle başına `backed`/`weak`/`unsourced`; kaynaksız yorum ayrı blokta, bağ yoksa «cümle bağı yok» (uydurma damga yok); kayıtlı satırda her okumada yeniden hesaplanır (2026-11-22, aşağıdaki bölüm) |
 | F11-T08 soru-cevap: incelenen kapsam + sınırlı yanıt | ✅ | `answer_basis` — kapsam **fiilen gönderilen** segmentlerden, dayanak alıntı raporundan; `sufficient`/`limited` + kararlı neden kodları, `E_AI_ANSWER_LIMITED` terfi kapısı; amaç «soru», 3–500 karakter soru metni `ai_messages` **user** satırı + istemde `Soru:`; arayüzde kapsam satırı ve «sınırlı yanıt» rozeti (2026-11-21, aşağıdaki bölüm) |
 | Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
 
@@ -1036,3 +1037,108 @@ commit'siz 3 testi), paket `index-D1rV_NXL.js` **704,49 kB** / gzip **187,85 kB*
 `masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda 5), `windows güvenli depo` 30,
 sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve kaynak arşivi yeşil. Bu
 commit önceki koşuda atılmış ama **push edilmemişti**; push ve CI ölçümü bu turun işidir.
+
+## F11-T07 — özet cümlesi dayanak bağı ve kaynaksız yorum ayrımı (2026-11-22)
+
+**Ölçülen kusur (düzeltme öncesi).** `summary` adayı `text` + en az bir alıntı
+istiyordu (F11-T05), ama **hangi cümlenin hangi alıntıya dayandığı** hiçbir katmanda
+yoktu: `quote_report` yalnız alıntı başına «belge metninde bulundu mu» diyor, `text`
+tek parça saklanıyordu. Alıntısı doğrulanmış bir özet, alıntıyla desteklenmeyen
+**yorum cümleleri** taşısa bile bütünüyle «alıntılar birebir doğrulandı» rozetiyle
+görünüyordu; şartnamenin kabul testi («alıntı doğru olsa bile yorum ayrı incelenir»)
+karşılanmıyordu.
+
+**Yazılan.**
+
+- **Bağ modelin bildirimidir, çekirdeğin çıkarımı değil:** `quotes[].sentences` —
+  alıntının desteklediği cümlelerin **metinden birebir kopyaları** (alıntı başına en
+  çok 20, cümle ≤1.000 karakter). Çekirdek cümleye anlam atfetmez; model bildirmezse
+  bağ **kurulmaz**.
+- **Deterministik cümle bölme** (`split_sentences`): `. ! ? …` + kapanış tırnağı /
+  parantezi; kısaltma listesi (`Av.`, `Dr.`, `TBK`, `m.`…), tek harf (`T.C.`, `A.`),
+  iç noktalı baş harf grubu ve salt sayı (`5.`, `12.`) bölmez; sonraki harf küçükse
+  bölünmez; `...` tek sonlandırıcıdır.
+- **Şema kapıları:** özet alıntısı cümle bildirmezse `sentence_links_missing`
+  (uyarı → `partial`); bildirilen cümle metinde birebir yoksa `sentence_not_found`
+  (uyarı; bağ kurulmaz); özet dışı adayda `sentences` → `sentences_unsupported`
+  (uyarı; yok sayılır). `candidate_output_instructions` özet için cümle bağını ve
+  kaynaksız yorum kuralını modele yazar.
+- **`SentenceAttribution`** — yükten ve alıntı raporundan **her okumada** yeniden
+  hesaplanır (sütun/damga yok): cümle başına `quoteIndexes` + `backed`
+  (birebir/normalize), `weak` (belirsiz/başka sayfa: varlık doğrulandı, konum tek
+  değil), `unsourced` (gösteren alıntıların hiçbiri bulunamadı ya da hiçbir alıntı
+  göstermedi = **kaynaksız yorum**); toplam `backed/weak/unsourced/linkedQuotes/
+  unlinkedQuotes/unmatched`, durum `linked`/`partial`/`unlinked`. Hiçbir alıntı
+  cümle bildirmediyse `unlinked` + **boş** cümle listesi — «kaynaksız» damgası
+  uydurulmaz.
+- **İki okuma, tek hesap:** `validate_ai_candidate` raporu `sentenceAttribution`
+  taşır; kayıtlı aday satırı (`AiCandidateRow`) aynı işlevi `map_candidate`te çağırır
+  — doğrulama ekranı ile aday listesi ayrışamaz.
+- **Arayüz:** doğrulama kartında «Cümle dayanakları» — durum rozeti + sayım;
+  **kaynaksız cümleler ayrı blokta** (kırmızı sol çizgi, «Kaynaksız yorum»),
+  dayanaklı/zayıf cümleler alıntı numarasıyla; aday tablosunda özet satırında sayım
+  + açılır ayrıntı. Bağ yoksa «Cümle bağı yok» ve ayrımın yapılamadığı yazılır
+  (alıntılar doğrulanmış olsa da).
+
+**Testler (güncel kodla).** `ai_candidate` +5 (bölme: kısaltma / baş harf / sıra
+sayısı / `...` / küçük harf; ayrım: kaynaksız, zayıf, `unlinked`, metinde olmayan
+bildirim, şema uyarıları) + DB satır testi (`record` + `validate` + `list` aynı bağı
+taşır; özet dışı aday `null`) → `dim-storage --lib` **737 → 742**; yerel
+**742/742 yeşil, 682,62 s** (log `scratch/t07_libtest.log`). Arayüz +3 (Ai:
+kaynaksız blok/sayım, `unlinked` uyarısı, kayıtlı aday satırı) → 66 dosya /
+**1459** test (yerel; ağaçtaki başka ajanın commit'siz 3 testi dahil),
+`tsc --noEmit`; iki manifest `cargo fmt`; `clippy -p dim-storage --all-targets
+-D warnings`; masaüstü `cargo check --all-targets` (2 dk 02 s) temiz.
+
+**Kapı kanıtı (`scratch/t07_gates.py`, log `t07_gates_run2.log`; her mutasyon tek
+başına, kaynak sha256 birebir geri yazıldı: `ai_candidate.rs cd4f2b5d…`,
+`ai.rs 6fba82fe…`, `Ai.tsx 7a9da554…`, `candidate.ts 0e653071…`).** Taban yeşil
+(çekirdek 32 test, arayüz 3); **15/15 çekirdek KIRMIZI** — kısaltma listesi, tek
+harf, sayı sırası, küçük harf kuralı, üç nokta, belirsiz→zayıf, `linked` eşiği,
+`unmatched` sayımı, `unlinked` dalı, bağ-zorunlu uyarısı, cümle-bulunamadı uyarısı,
+özet-dışı uyarısı, rapor bağı, satır bağı (`ai.rs`), istem cümlesi — ve **5/5
+arayüz KIRMIZI** — `unlinked` kapısı, kaynaksız blok, cümle etiketi, aday satırı,
+sayım. **Dürüst (ilk koşu 16/20):** dört mutant YEŞİL kaldı; ikisi yedekli
+kurallardı (tek harf kuralı `m.` için kısaltma listesiyle, salt-sayı kuralı tek
+hanede tek-harf kuralıyla örtüşüyordu), biri koşu filtresine takılmayan istem
+testiydi (`output_instructions…` adında `summary` yok), biri de sayımı **aynı
+yardımcıyla** bekleyen arayüz testiydi (mutasyon iki tarafı birlikte kaydırdı).
+Testlere baş harf (`A. Yılmaz`), çok haneli sıra (`12. Asliye`) ve bağımsız sayım
+beklentisi eklendi; çekirdek filtresi `ai_candidate::tests` yapıldı; **20/20**
+yeniden ölçüldü. `Ai.tsx`'e sonradan eklenen `compact` başlık düzenlemesinden sonra
+arayüz kapısı **5/5** ile yeniden koşuldu (`t07_gates_ui_final.log`). İlk koşunun
+hükümleri kanıt sayılmadı.
+
+**Dürüst sınırlar.**
+
+- **Bağ modelin bildirimidir:** cümlenin gerçekten o alıntıyla desteklendiği
+  **doğrulanmaz**; yalnız alıntının belge metninde bulunduğu (ve konumu) ölçülür.
+  Model yanlış cümleyi gösterirse rapor yanlış bağ gösterir — hüküm avukatındır.
+- Cümle bölme **dilbilimsel değil**: yıl/sayı ile biten cümle (`Ödeme 2024.`) ve
+  küçük harfle başlayan cümle bölünmez; bildirim bölünen cümleyle eşleşmezse bağ
+  kurulmaz (`unmatched` yazılır), uydurulmaz. Kısaltma listesi kapalı kümedir;
+  listede olmayan kısaltma cümleyi bölebilir (ör. `Yrd. Doç.` → `Yrd.` böler).
+- Model `sentences` bildirmezse özet `partial` doğar ve `unlinked` gösterilir; eski
+  kayıtlar **silinmez/düzeltilmez**, yeniden doğrulanınca aynı kurala tabidir.
+- **Kaynaksız cümle terfi engeli değildir**: şartname «görünür ayır» der, engelleme
+  istemez. İnceleme kuyruğuna giden aday yine avukat onayı ister (INV-02).
+- `quoteIndexes` yük sırasıdır; geçersiz (çok kısa) alıntının cümlesi bağ sayılmaz,
+  o cümlenin durumu `unsourced` kalır.
+- Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `c609d07` (8 dosya, **+1131/−12**). İlk koşu
+`44965619174` **9/10** (o sırada `arayüz` KIRMIZI; rust işleri sürerken düzeltme
+push edilince koşu **cancelled** oldu): paylaşılan `i18n.ts` **bütün dosya**
+sahnelendiği için başka ajanın commit'siz `cases.parseStatusSucceeded` /
+`cases.parseStatusPartial` / `cases.parseStatusFailed` anahtarları commit'e
+girmişti; tüketicileri (`format.ts`/`Cases.tsx`)
+commit'siz olduğundan yerelleştirme kapısı haklı olarak düştü (**1 failed |
+1455 passed**, 66 dosya). Düzeltme `33691c6` yalnız o üç satırı HEAD'den çıkardı;
+anahtarlar çalışma ağacında sahibine **aynen geri bırakıldı** (commit'siz hunk
+olarak duruyor). Düzeltme CI'ı run `44966154972` **10/10 YEŞİL**: `dim-storage`
+**742** iki OS'ta (macos-15 **476,27 s** / ubuntu-latest **751,43 s**), `arayüz`
+66 dosya / **1456** test (yerel 1459 farkı ağaçtaki başka ajanın commit'siz 3
+testi), paket `index-CrMnywpN.js` **707,86 kB** / gzip **188,62 kB**,
+`masaüstü kabuk` 52 + yoksayılan 5 passed (gerçek-worker adımında 5), `windows
+güvenli depo` 30, sözleşmeler, belge worker'ı, SBOM, sürüm paketi manifesti ve
+kaynak arşivi yeşil.
