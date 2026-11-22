@@ -17,6 +17,7 @@
 | F11-T08 soru-cevap: incelenen kapsam + sınırlı yanıt | ✅ | `answer_basis` — kapsam **fiilen gönderilen** segmentlerden, dayanak alıntı raporundan; `sufficient`/`limited` + kararlı neden kodları, `E_AI_ANSWER_LIMITED` terfi kapısı; amaç «soru», 3–500 karakter soru metni `ai_messages` **user** satırı + istemde `Soru:`; arayüzde kapsam satırı ve «sınırlı yanıt» rozeti (2026-11-21, aşağıdaki bölüm) |
 | F11-T09 çelişki adayı iki kaynakla | ✅ | `CandidateKind::Contradiction` — `sides` **tam iki ayrı alıntı**, `dateKind` kapalı küme; okuma anında `contradiction_basis` (`presentable`/`role_difference`/`sources_unverified`/`unlinked`), uyarı `validation_state`i `partial`a çeker; `E_AI_CONTRADICTION` terfi kapısı + kuyruk türü normalizasyonu + **tam iki anchor**; arayüzde iki taraf yan yana + rol farkı uyarısı (2026-11-22, aşağıdaki bölüm) |
 | F11-T11 talimat saldırısı, sahte kaynak, şema taşması | ✅ | `instruction_risk` — 29 iğneli, 5 kararlı kodlu deterministik tarama (Türkçe 1:1 katlama, satır başı rol işaretçisi, segment/kod başına tek satır, 2.000.000 karakter bütçesi → `truncated`); **onaydan önce** `ConsentPreview.instruction` (maske tam uygulandıysa `basis="sent"`, yetmediyse dürüst `pre_mask`); `ai_attack_assessment(run_id)` üç değerlendirmeyi **okuma anında** kanıtlarından sayar (gönderilen `transfer_segments`, `quote_report`, `too_long`/`too_many_items`); sahte kaynak hükmü yalnız `not_found`; hiçbiri engel değil (2026-11-22, aşağıdaki bölüm) |
+| F11-T12 model/istem sürümü kalite ölçümü | ✅ | `ai_quality_report(case_id)` — model · istem sürümü başına çalıştırma/aday/kaynak doğruluğu/inceleme; üç kanıt ailesi **okuma anında** sayılır, kalıcı damga yok; `unverifiable` payda dışı, payda 0 → «ölçülemedi» (`%0` değil); yerine geçmiş öğe isabet dışı, son karar kazanır; düzeltme emeği vekil gösterge (2026-11-22, aşağıdaki bölüm) |
 | Şartname F11-T03 eki — gönderim önizlemesi maskeyi taşır | ✅ | `consent_preview_masked`: maskeli örnek + **maskeli bayt** (`bytesExact` bütçe bayrağı), plan kapsam kapısı `E_MASK_PLAN_SCOPE`, onaydan sonra maske değişince çalıştır kapısı; **11/11 mutasyon** (2026-11-09, aşağıdaki bölüm) |
 
 ## Dürüst durum
@@ -1335,3 +1336,86 @@ ajanın commit'siz 3 testi), paket `index-Dx7W7QXY.js` **719,82 kB** / gzip
 **191,32 kB**, `masaüstü kabuk` 52 + yoksayılan 5 passed (ikinci adımda 5), `windows
 güvenli depo` 30, SBOM, sözleşmeler, belge worker'ı, sürüm paketi manifesti ve kaynak
 arşivi yeşil.
+
+## F11-T12 — model ve istem sürümü başına kalite ölçümü (2026-11-22)
+
+**Neden.** Aday, alıntı ve karar sicilleri bugüne dek **tek tek** okunuyordu;
+«bu model bu istem sürümüyle ne kadar güvenilir öneri üretti» sorusunun tek
+dürüst cevabı kayıtlı kanıtlardan **okuma anında** türetilebilir. Kalıcı bir
+«kalite puanı» sütunu yazmak, kanıt değişince yalan olurdu.
+
+**Yazılan (`ai_quality.rs`, okuma yolu — şema değişmedi):** `ai_quality_report(case_id)`
+üç kanıt ailesini dosya kapsamında birleştirir:
+
+- `ai_runs` → model snapshot + istem sürümü + durum (başarılı/başarısız/sonuçsuz),
+- `ai_candidates` → doğrulama durumu (valid/partial/invalid) ve `quote_report`taki
+  **alıntı başına** hüküm (exact/normalized/ambiguous/page_mismatch/not_found/
+  unverifiable); rapor çözülemezse aday «alıntı yok» değil **ölçülemedi** sayılır,
+- `review_items` + `review_decisions` → son karar (eskiden yeniye sıralanır, son
+  kazanır); yerine geçmiş öğe isabet oranına girmez, ayrı sayılır.
+
+**Oranlar arayüzde kurulur (`lib/ai-quality.ts`, saf):** kaynak doğruluğu =
+(birebir + normalize) / **ölçülen** alıntı; `unverifiable` (sürüm silinmiş,
+maske çözülememiş) paydaya girmez — modelin uydurduğunun kanıtı değildir.
+Payda 0 ise oran `null` → «ölçülemedi», «%0» yazılmaz. Öneri isabeti yalnız
+hüküm verilmiş (kabul+düzeltme+ret) öğeler üzerinden; `ek kanıt` hüküm değil,
+öğeyi yeniden karara açar, orana girmez. Düzeltme emeği = düzenleme / hüküm
+(süre değil, vekil gösterge). Aday dağılımı paydası toplam aday; bilinmeyen
+doğrulama durumu ayrı kovada.
+
+**Arayüz.** AI ekranında «Model kalite ölçümü» kartı: model · istem sürümü
+başına çalıştırma/aday/kaynak doğruluğu/inceleme sütunları, satır altında
+zayıf/bulunamadı/doğrulanamayan ayrımı ve sınır notu (alıntı eşleşmesi ≠
+hukuki doğruluk; düzeltme emeği süre ölçmez). Nesil sayaçlı bayat yanıt
+koruması; dosya değişince tablo temizlenir, düşen okuma «kayıt yok» sayılmaz
+(kendi hata satırı).
+
+**Testler.** `ai_quality` +5 (alıntı başına sayım ve `unverifiable` payda dışı;
+ölçülemedi ≠ alıntı yok; yerine geçmiş öğe isabet dışı + son karar kazanır;
+model/istem grupları deterministik; uçtan uca kasa okuması — başka dosya
+sızmaz). `lib/ai-quality.test.ts` +8 (oranlar, payda 0 → null, pending
+hesabı), `Ai.test.tsx` +3 (kart sayımları, dosya değişiminde bayat yanıt
+kapısı). Yerel: `dim-storage --lib` **761/761 yeşil, 581,89 s** (v63 dilimiyle
+birlikte; T12 tek başına 5 test ekler), arayüz 67 dosya / **1480** test,
+`tsc --noEmit` temiz; iki manifest fmt, `clippy -p dim-storage --all-targets
+-- -D warnings`, masaüstü `check --all-targets` temiz.
+
+**Kapı kanıtı (`scratch/dim-t12-gates.py`, log `t12_gates_run1.log`).** Sekiz
+çekirdek + altı saf aritmetik + bir ekran mutantı = **15/15 KIRMIZI**, YEŞİL 0,
+ÖLÇÜLEMEDİ 0; kaynak sha256 **birebir** geri yazıldı (`ai_quality.rs
+e3def7ba6bca50dd…`, `ai-quality.ts deca5b1db44ee088…`, `Ai.tsx
+86713833fe362919…`): doğrulanamayanın paydaya girmesi, okunamayan raporun
+ölçülemedi sayılmaması, ilk kararın kazanması, yerine geçmişin isabete sızması,
+alıntısızın çift sayılması, birebir hükmün paydadan düşmesi, başarısızın
+sonuçsuz kovaya düşmesi, karar bekleyenin kabul sayılması; oran paydasına
+`unverifiable` eklenmesi, 0/0 → NaN, «başka sayfa»nın zayıf sayılmaması,
+ek-kanıtın pending'den düşülmemesi, düzenlemenin kullanılabilir orana
+girmemesi, ek-kanıtın düzeltme paydasına girmesi; kalite kartının hiç
+çizilmemesi.
+
+**Dürüst sınırlar.**
+
+- **Model çağrısı yapılmadı** — kalite ölçümü kayıtlı kanıtların sayımıdır;
+  modelin gerçek çıkarım kalitesini ölçmez.
+- «Kaynak doğruluğu» **alıntının metinde bulunmasıdır**, hukuki doğruluk değil.
+- `unverifiable` dışlanır; payda bu yüzden küçülebilir ve oran iyimser görünebilir
+  — sayı ayrıca yazılır.
+- Eski (`legacy`) adaylarda alıntı hükmü yok → ölçülemedi; geriye dönük hesaplanmaz.
+- Düzeltme emeği **süre ölçmez**; kaç önerinin düzeltme istediğini sayar.
+- Yerine geçmiş öğenin kararı isabete girmez; kararın **doğruluğu** değil
+  **son karar** sayılır.
+- Rapor **kalıcı değildir** — aday/karar silinirse sayı düşer; her okumada
+  yeniden türetilir.
+- `unattributed_items` (çalıştırması çözülemeyen kuyruk öğesi) **savunma
+  yoludur** ve test edilmedi; normal yolda kapsam kapıları satırı bağlı tutar.
+- Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+**Commit / CI (ölçüldü).** Kod `455da12` (11 dosya, **+1439/−2**) → run
+`45059098496` **10/10 YEŞİL**: `dim-storage` **761** iki OS'ta (macos-15
+**498,93 s** / ubuntu-latest **1.032,67 s**), `arayüz` 67 dosya / **1477** test
+(yerel 1480 farkı ağaçtaki başka ajanın commit'siz 3 testi), paket
+`index-Do2JXiZK.js` **726,53 kB** / gzip **193,19 kB**, `masaüstü kabuk` 52 +
+yoksayılan 5, `windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm
+paketi manifesti ve kaynak arşivi yeşil. Dürüst not: bu koşu `8623e09`
+F08-T04ak'ı da kapsar — iki commit **tek push** olduğu için tek CI koşusu ikisini
+birlikte ölçtü.
