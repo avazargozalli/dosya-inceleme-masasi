@@ -3736,3 +3736,106 @@ fn upgrade_keeps_review_verdicts_written_before_the_evidence_gate() {
         )
         .expect("meşru değerlendirme");
 }
+
+/// v63 — kapı öncesi yazılmış **tutarsız** sayfa satırı (sıfır/negatif
+/// geometri, boşluk etiket, bozuk uyarı) silinmez ve düzeltilmez; satır donar.
+/// Yeni biçimsiz sayfa doğamaz, meşru yeni sayfa yazılabilir.
+#[test]
+fn upgrade_keeps_pages_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 62);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,created_at)
+             VALUES ('b1','st-legacy',1,10,'k','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,created_at,updated_at)
+             VALUES ('d1','c1','Belge','pdf',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     10,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs
+               (id,document_version_id,case_id,engine,engine_version,settings_hash,
+                status,created_at)
+             VALUES ('r1','v1','c1','pymupdf','1.24','h','succeeded',
+                     '2026-01-01T00:00:00Z');
+             -- v63 öncesi: sıfır genişlik, negatif yükseklik, negatif döndürme,
+             -- boşluk etiket/uzay, bozuk uyarı listesi.
+             INSERT INTO pages
+               (id,parse_run_id,page_index,page_label,width,height,rotation,
+                coordinate_space,text_origin,quality_flags)
+             VALUES ('pg-eski','r1',0,'   ',0.0,-1.0,-90,'  ','ocr','bozuk');",
+        )
+        .expect("v62 sayfası");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satır **silinmez ve onarılmaz**: v63 yalnız yeni yazmayı durdurur.
+    let kept: (f64, f64, i64, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT width, height, rotation, text_origin, quality_flags
+               FROM pages WHERE id='pg-eski'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("eski sayfa");
+    assert_eq!(
+        kept,
+        (0.0, -1.0, -90, "ocr".into(), "bozuk".into()),
+        "v63 eski sayfayı onarmaz"
+    );
+
+    // Donar: düzeltme yolu bile UPDATE ile kapalı (onarım yeni ayrıştırma).
+    match db
+        .conn()
+        .execute("UPDATE pages SET width=595.0 WHERE id='pg-eski'", [])
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("pages")),
+        other => panic!("v63 eski sayfayı dondurmalı: {other:?}"),
+    }
+
+    // Yeni biçimsiz sayfa doğamaz; meşru sayfa yazılabilir.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO pages (id,parse_run_id,page_index,width,height,text_origin)
+             VALUES ('pg-yeni','r1',1,0.0,842.0,'native')",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("pages")),
+        other => panic!("v63 biçimsiz sayfayı reddetmeli: {other:?}"),
+    }
+    db.conn()
+        .execute(
+            "INSERT INTO pages (id,parse_run_id,page_index,width,height,text_origin)
+             VALUES ('pg-temiz','r1',2,595.0,842.0,'native')",
+            [],
+        )
+        .expect("meşru sayfa");
+}

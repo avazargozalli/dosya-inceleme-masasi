@@ -32,6 +32,7 @@
 | F08-T04s | ✅ | **atıf kontrolü sicili kendi hükmünü kanıtlamalı** (şema **v46**): `citation_checks` üzerinde **3 tetikleyici** + 0037'nin kapsam tetikleyicisi **genişletildi** — alıntı boşluk olamaz, dolu emsal bağı **var olan** emsali gösterir, `reason_codes` metin dizisi, satır **incelenmemiş doğar**; `id`/alıntı/emsal/`identity_match`/`quote_match`/`reason_codes`/`created_at` **değişmez**; anlam hükmü kapalı küme + gerekçe + damga tutarlı (gerekçesiz `misleading`, damgasız `accurate` yazılamaz); `case_id` ve sürüm de dondu (aynı dosyada sürüm taşıması durur); ölçülen kusur: 22 kusur yazımının **21'i** kabul ediliyor, `quote_match` UPDATE ile çevriliyor, bağlam paneli başka emsalin metnini okuyordu; `scope_violations()` beş sınıfı **şimdi sayar** (`GUARDED_TABLES` 25 kalır); **22/22 mutasyon** (2026-11-16) |
 | F08-T04ai | ✅ | **kronoloji olayı «bu olay şu tarihte oldu» iddiasıdır** (şema **v61**): `events` üzerinde **2 tetikleyici** — tarih/kesinlik/sıralama üçlüsü tutarlı (`date()` eşitliği: olmayan gün, dolgusuz gün, ay `13`/`00` düşer; aralıkta ayırıcı ve başlangıç ≤ bitiş), `sortable_date` tarihten türetilir (tarih yoksa NULL), doğuşta yalnız `draft`, damgalar ISO ve sıralı; `id`/`case_id`/`created_at`/`assertion_kind` **donar**, durum yalnız `draft`→`confirmed`, `deleted_at` tek yönlü, `row_version` azalamaz ve içerik değişiyorsa artmalı; ölçülen kusur: 66 kusur yazımının **66'sı** kabul ediliyordu (sıralama değeri çevrilerek olay yanlış sırada görünüyor, köken «belge»ye çevriliyor, satır başka dosyaya taşınıyordu); **44/44 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
 | F08-T04aj | ✅ | **inceleme hükmü (karar + çelişki değerlendirmesi) doğuşta kanıtlı, sonra değişmez** (şema **v62**): `review_decisions` + `contradiction_assessments` üzerinde **6 tetikleyici** — karar yalnız **açık** öğe için (yerine geçmemiş, hedefi yazılmamış, dosyası silinmemiş), `edit` yükü zorunlu, damga ISO + gerçek gün/saat, yük geçerli JSON; değerlendirme **kendi dosyasının çelişki adayı** için (INV-05); iki sicil de **hiçbir sütunuyla** değişmez ve silinemez (CASCADE dahil); ölçülen kusur: 61 kusur yazımının **57'si** kabul ediliyordu (karar `accept`→`reject` çevriliyor, kapanmış öğeye yeni karar yazılıyor, başka dosyanın değerlendirmesi kabul ediliyor, `dün` damga ve bozuk yük geçiyordu); **40/40 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
+| F08-T04ak | ✅ | **sayfa kanıtı (geometri, OCR kökeni, etiket) doğuşta iyi biçimli, sonra değişmez** (şema **v63**): `pages` üzerinde **2 tetikleyici** — kimlik kırpılmış-dolu ≤64, `page_index ≥ 0`, döndürme 0..359, etiket/koordinat uzayı kırpılmış-dolu, `width`/`height` NULL ya da **pozitif**, `quality_flags` **metin dizisi**; on bir kanıt sütunu **donar** (no-op takılmaz); ölçülen kusur: 47 yazımın **42'si** kabul ediliyordu (NULL/boş/boşluk kimlik, sıfır/negatif/metin geometri, `ocr`→`native` çevirisi, sayfanın **başka koşuya** taşınması, bozuk uyarı listesi) ve v54'ün sayfa sınırı hükmü **geriye dönük** bozulabiliyordu (maske sayfa dışına taşar); `GUARDED_TABLES` 25 kalır (2026-11-22) |
 
 ## Doğrulama
 
@@ -3963,3 +3964,82 @@ dosya **hard-delete** edilemez (ürün yolu soft-delete; 0060/v61 ile aynı
 sınıf). (f) Tetikleyicileri anahtarı olan saldırgan düşürebilir (çekirdek
 doğrulaması ayrıca durur). (g) Arayüz davranışı değişmedi; gerçek pencere +
 görsel QA **insan bekliyor**.
+
+## F08-T04ak — sayfanın geometrisi, kökeni ve etiketi kanıtlanabilir olmalı (şema v63, 2026-11-22)
+
+**Neden.** `pages` satırı «bu sayfa **şu** geometride, **şu** kökenle okundu»
+iddiasıdır ve dört yerde kanıt olarak okunur:
+
+- `text_origin` — arama `ocr`/`mixed` filtresi (`search_page_windowed`
+  `p.text_origin IN ('ocr','mixed')`), dual reader rozeti ve kapsam raporunun
+  «OCR kullanılan sayfa» sayımı (`sum(CASE WHEN p.text_origin IN ('ocr','mixed')
+  …)`) **doğrudan** bu sütundan gelir. `ocr`→`native` çeviren satır, OCR'sız
+  görünen bir belge üretir.
+- `width`/`height`/`rotation`/`coordinate_space` — maskeleme bölgesi sayfa
+  sınırı kapısı (v54) bölgeyi **bu** kutuya göre doğrular; ekran kutuları bu
+  geometriyle çizer. Doğrulandıktan sonra kutu küçültülürse «sayfa içinde»
+  hükmü **geriye dönük** bozulur: maske sayfa dışına taşar (hiçbir şey
+  maskelenmez) ya da fazla maskeler.
+- `quality_flags` — okuma uyarıları ekranda bu listeden basılır.
+- `page_label` — basılı etiket; fiziksel numaradan türetilmez (v4 kuralı).
+
+Sayfa metni `text_segments`tedir ve orada kapsam kapılıdır; bu tablo metin
+taşımaz, **hangi sayfanın hangi koşuda hangi geometriyle okunduğunu** taşır.
+Tablo 0001'den beri tetikleyicisizdi: tek kapı `page_index >= 0` CHECK'i ve
+(`parse_run_id`,`page_index`) UNIQUE'iydi.
+
+**Ölçülen kusur (düzeltme öncesi, gerçek SQLite v62; sonda
+`~/.hermes/cache/scratch/dim-v63-probe/measure_v63.py`, log
+`measure_before.log`):** 47 yazımın **42'si KABUL**, 5'i zaten RED (negatif
+indeks CHECK, bilinmeyen köken CHECK, var olmayan blob/koşu FK, mükerrer sayfa
+UNIQUE); 7 meşru/zararsız yol da KABUL. Yani **35 kusur** yazılabiliyordu.
+23 doğum kusuru: **NULL** (SQLite'ta `TEXT PRIMARY KEY` NULL'a izin verir) /
+boş / boşluk / kırpılmamış / 65 haneli kimlik; sayfa indeksi / genişlik /
+yükseklik sütunlarına **metin** (SQLite karşılaştırmasında `TEXT` her zaman
+sayıdan büyüktür → aralık cümleleri tek başına yetmez); boş ve boşluk etiket;
+**sıfır ve negatif** genişlik/yükseklik; negatif ve 360 döndürme;
+boş/boşluk/kırpılmamış koordinat uzayı; bozuk JSON, nesne ve metin olmayan
+öğe taşıyan uyarı listesi. 12 UPDATE kusuru: sayfanın başka indekse ve
+**başka koşuya** taşınması, `ocr`→`native` çevrilmesi, geometrinin
+küçültülmesi/sıfırlanması, döndürme/uzay/uyarı/etiket değişimi, kimliğin
+yeniden adlandırılması, türev blob bağlanması. Düzeltmeden sonra aynı sonda
+**7 KABUL** (4 meşru doğum, no-op, 2 silme) / **40 RED** ölçtü.
+
+**Yazılan (`0063_page_evidence_guard.sql`, 2 tetikleyici):**
+
+- BI — `id` kırpılmış-dolu ≤64; `page_index` **tam sayı** ve ≥ 0; `rotation`
+  0..359; `page_label` NULL ya da kırpılmış-dolu; `width`/`height` NULL ya da
+  **sayısal ve pozitif** (sıfır/negatif/metin alanlı sayfa kutu olamaz);
+  `coordinate_space` NULL ya da kırpılmış-dolu; `quality_flags` **metin
+  dizisi** (v60'ın `included_ids` deseni: `json_valid` yoksa da reddet).
+- BU — on bir kanıt sütunu **donar**; no-op takılmaz. Bugün
+  `derivative_blob_id`i yazan ürün yolu yok (yalnız `ON DELETE SET NULL`);
+  yine de donar, çünkü sayfanın gösterim görüntüsü bağlanırsa hangi görüntünün
+  kanıt olduğu sonradan değişmemelidir.
+
+Ret `DIM_INTEGRITY:pages` → `E_DB_INTEGRITY`; tablo `case_id` taşımaz →
+`GUARDED_TABLES` **25 kalır**. Çekirdek davranışı değişmedi: sayfaları yazan
+tek ürün yolu (`store_pages`) zaten kırpılmış etiket, pozitif geometri ve
+`Vec<String>` uyarı yazıyor.
+
+**Testler.** `parsing` +1 (`page_evidence_is_born_well_formed_and_frozen`:
+23 doğum kusuru (NULL kimlik, metin sayfa indeksi/genişlik/yükseklik ve boş
+etiket/uzay dahil) ve 12 UPDATE saldırısı RED; NULL geometri, döndürme 90,
+uyarı listesi ve no-op KABUL; saldırılardan sonra satır aynı kanıtı taşır),
+`upgrade_tests` +1 (`upgrade_keeps_pages_written_before_the_evidence_gate`:
+v62 tutarsız satır silinmez/onarılmaz, donar; yeni biçimsiz doğamaz, meşru
+sayfa yazılabilir).
+
+**Dürüst sınırlar.** (a) Silme bu dilimin dışında: sayfa satırı **silinemez
+değildir** — dosya/sürüm silme ürün yoludur ve `plaintext` kaskad testi
+içeriğin temizlendiğini bu yolla ölçer; BD eklenirse o güvenlik testi düşerdi.
+Sayfa silmenin izi `parse_runs.pages_processed` ile sayfa sayısı arasındaki
+farkta kalır; bunu **sayfan** bir okuyucu yok (dürüst sınır). (b) Geometrinin
+**doğru** olduğu (PDF kutusuyla birebir) doğrulanmaz; yalnız yazıldıktan sonra
+değişmediği ölçülür. (c) `coordinate_space` kapalı küme değildir: işçi yeni bir
+uzay adı üretebilir; boş/kırpılmamış değer reddedilir. (d) `quality_flags`
+içeriği (uyarı metinleri) denetlenmez, yalnız metin dizisi olması. (e)
+`page_label`in belgedeki gerçek etikete denkliği doğrulanmaz. (f) v63 öncesi
+tutarsız sayfalar **silinmez/onarılmaz** (BU dondurur); onarım yolu **yeni
+ayrıştırma koşusu**. (g) Tetikleyicileri anahtarı olan saldırgan düşürebilir.
+(h) Arayüz değişmedi; gerçek pencere + görsel QA **insan bekliyor**.

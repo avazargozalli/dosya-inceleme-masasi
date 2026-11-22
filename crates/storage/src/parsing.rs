@@ -2436,6 +2436,426 @@ mod tests {
         assert!(hits[0].document_id.is_some());
     }
 
+    /// **F08-T04ak (şema v63):** `pages` satırı «bu sayfa şu geometride, şu
+    /// kökenle okundu» iddiasıdır; doğuşta iyi biçimli olmalı, sonrasında
+    /// **değişmemeli**. Ölçülen kusur (v62): 17 doğum kusuru ve 11 UPDATE yolu
+    /// kabul ediliyordu — `ocr`→`native` çevirisi arama filtresini ve kapsam
+    /// sayımını, geometri küçültmesi v54'ün sayfa sınırı hükmünü **geriye
+    /// dönük** bozuyordu (maske sayfa dışına taşar).
+    #[test]
+    fn page_evidence_is_born_well_formed_and_frozen() {
+        #[derive(Clone, Copy)]
+        struct Row<'a> {
+            id: &'a str,
+            run: &'a str,
+            index: i64,
+            label: Option<&'a str>,
+            width: Option<f64>,
+            height: Option<f64>,
+            rotation: i64,
+            space: Option<&'a str>,
+            origin: &'a str,
+            flags: &'a str,
+            blob: Option<&'a str>,
+        }
+
+        fn row<'a>(id: &'a str, run: &'a str, index: i64) -> Row<'a> {
+            Row {
+                id,
+                run,
+                index,
+                label: None,
+                width: Some(595.0),
+                height: Some(842.0),
+                rotation: 0,
+                space: Some("unrotated_cropbox_points"),
+                origin: "native",
+                flags: "[]",
+                blob: None,
+            }
+        }
+
+        let (db, case_id, version_id) = setup();
+        let run = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("koşu");
+        let other = db
+            .start_parse_run(&version_id, &case_id, "pymupdf", "1.24", "{}")
+            .expect("ikinci koşu");
+
+        const INSERT: &str = "INSERT INTO pages
+             (id,parse_run_id,page_index,page_label,width,height,rotation,
+              coordinate_space,text_origin,quality_flags,derivative_blob_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)";
+        let try_insert = |item: Row<'_>| -> Result<usize, StorageError> {
+            db.conn()
+                .execute(
+                    INSERT,
+                    rusqlite::params![
+                        item.id,
+                        item.run,
+                        item.index,
+                        item.label,
+                        item.width,
+                        item.height,
+                        item.rotation,
+                        item.space,
+                        item.origin,
+                        item.flags,
+                        item.blob,
+                    ],
+                )
+                .map_err(StorageError::from)
+        };
+
+        let long_id = "x".repeat(65);
+        let bad_births: Vec<(&str, Row<'_>)> = vec![
+            (
+                "boş kimlik",
+                Row {
+                    id: "",
+                    ..row("x", &run.id, 10)
+                },
+            ),
+            (
+                "boşluk kimlik",
+                Row {
+                    id: " ",
+                    ..row("x", &run.id, 11)
+                },
+            ),
+            (
+                "kırpılmamış kimlik",
+                Row {
+                    id: " pg-x ",
+                    ..row("x", &run.id, 12)
+                },
+            ),
+            (
+                "65 haneli kimlik",
+                Row {
+                    id: &long_id,
+                    ..row("x", &run.id, 13)
+                },
+            ),
+            (
+                "boşluk etiket",
+                Row {
+                    label: Some("   "),
+                    ..row("pg-lbl1", &run.id, 14)
+                },
+            ),
+            (
+                "boş etiket",
+                Row {
+                    label: Some(""),
+                    ..row("pg-lbl0", &run.id, 32)
+                },
+            ),
+            (
+                "kırpılmamış etiket",
+                Row {
+                    label: Some("  iv "),
+                    ..row("pg-lbl2", &run.id, 15)
+                },
+            ),
+            (
+                "sıfır genişlik",
+                Row {
+                    width: Some(0.0),
+                    ..row("pg-w0", &run.id, 16)
+                },
+            ),
+            (
+                "negatif genişlik",
+                Row {
+                    width: Some(-5.0),
+                    ..row("pg-wn", &run.id, 17)
+                },
+            ),
+            (
+                "sıfır yükseklik",
+                Row {
+                    height: Some(0.0),
+                    ..row("pg-h0", &run.id, 18)
+                },
+            ),
+            (
+                "negatif yükseklik",
+                Row {
+                    height: Some(-2.0),
+                    ..row("pg-hn", &run.id, 19)
+                },
+            ),
+            (
+                "negatif döndürme",
+                Row {
+                    rotation: -90,
+                    ..row("pg-rn", &run.id, 20)
+                },
+            ),
+            (
+                "360 döndürme",
+                Row {
+                    rotation: 360,
+                    ..row("pg-r360", &run.id, 21)
+                },
+            ),
+            (
+                "boşluk koordinat uzayı",
+                Row {
+                    space: Some("  "),
+                    ..row("pg-sp1", &run.id, 22)
+                },
+            ),
+            (
+                "boş koordinat uzayı",
+                Row {
+                    space: Some(""),
+                    ..row("pg-sp0", &run.id, 33)
+                },
+            ),
+            (
+                "kırpılmamış koordinat uzayı",
+                Row {
+                    space: Some(" pdf_page_points "),
+                    ..row("pg-sp2", &run.id, 23)
+                },
+            ),
+            (
+                "bozuk JSON uyarı",
+                Row {
+                    flags: "not json",
+                    ..row("pg-j1", &run.id, 24)
+                },
+            ),
+            (
+                "nesne uyarı",
+                Row {
+                    flags: "{}",
+                    ..row("pg-j2", &run.id, 25)
+                },
+            ),
+            (
+                "metin olmayan uyarı",
+                Row {
+                    flags: "[1,2]",
+                    ..row("pg-j3", &run.id, 26)
+                },
+            ),
+        ];
+        for (label, item) in bad_births {
+            let err = try_insert(item).expect_err(label);
+            assert_eq!(err.code(), "E_DB_INTEGRITY", "{label}: {err:?}");
+            let count: i64 = db
+                .conn()
+                .query_row("SELECT count(*) FROM pages", [], |r| r.get(0))
+                .expect("sayım");
+            assert_eq!(count, 0, "{label} satır bırakmamalı");
+        }
+        // SQLite'ta `TEXT PRIMARY KEY` NULL'a izin verir; ayrı cümle olmadan
+        // NULL kimlik yukarıdaki `trim()` koşullarının hiçbirine takılmazdı.
+        let err = db
+            .conn()
+            .execute(
+                INSERT,
+                rusqlite::params![
+                    Option::<String>::None,
+                    &run.id,
+                    27,
+                    Option::<String>::None,
+                    595.0,
+                    842.0,
+                    0,
+                    "unrotated_cropbox_points",
+                    "native",
+                    "[]",
+                    Option::<String>::None,
+                ],
+            )
+            .map_err(StorageError::from)
+            .expect_err("NULL kimlik");
+        assert_eq!(err.code(), "E_DB_INTEGRITY", "NULL kimlik: {err:?}");
+
+        // Sayısal sütunlara metin: SQLite'ta `TEXT`, sayılarla
+        // karşılaştırmada **her zaman büyüktür** (`'abc' < 0` yanlış), bu
+        // yüzden aralık cümleleri tek başına yetmez — tip de denetlenir.
+        let text_index = db.conn().execute(
+            INSERT,
+            rusqlite::params![
+                "pg-idx",
+                &run.id,
+                "abc",
+                Option::<String>::None,
+                595.0,
+                842.0,
+                0,
+                "unrotated_cropbox_points",
+                "native",
+                "[]",
+                Option::<String>::None,
+            ],
+        );
+        match text_index.map_err(StorageError::from) {
+            Err(StorageError::Integrity(_)) => {}
+            other => panic!("metin sayfa indeksi reddedilmeli: {other:?}"),
+        }
+        let text_width = db.conn().execute(
+            INSERT,
+            rusqlite::params![
+                "pg-wt",
+                &run.id,
+                30,
+                Option::<String>::None,
+                "kalın",
+                842.0,
+                0,
+                "unrotated_cropbox_points",
+                "native",
+                "[]",
+                Option::<String>::None,
+            ],
+        );
+        match text_width.map_err(StorageError::from) {
+            Err(StorageError::Integrity(_)) => {}
+            other => panic!("metin genişlik reddedilmeli: {other:?}"),
+        }
+        let text_height = db.conn().execute(
+            INSERT,
+            rusqlite::params![
+                "pg-ht",
+                &run.id,
+                31,
+                Option::<String>::None,
+                595.0,
+                "yüksek",
+                0,
+                "unrotated_cropbox_points",
+                "native",
+                "[]",
+                Option::<String>::None,
+            ],
+        );
+        match text_height.map_err(StorageError::from) {
+            Err(StorageError::Integrity(_)) => {}
+            other => panic!("metin yükseklik reddedilmeli: {other:?}"),
+        }
+
+        // Meşru yollar kabul: NULL geometri/etiket/uzay (bilinmeyen kutu),
+        // döndürme 90, uyarı listesi.
+        for item in [
+            row("pg-ok", &run.id, 0),
+            Row {
+                width: None,
+                height: None,
+                space: None,
+                ..row("pg-null", &run.id, 1)
+            },
+            Row {
+                rotation: 90,
+                ..row("pg-rot", &run.id, 2)
+            },
+            Row {
+                origin: "ocr",
+                flags: "[\"low_confidence\"]",
+                ..row("pg-ocr", &run.id, 3)
+            },
+        ] {
+            try_insert(item).expect("meşru sayfa");
+        }
+
+        let try_sql = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<usize, StorageError> {
+            db.conn().execute(sql, params).map_err(StorageError::from)
+        };
+        let attack = |label: &str, sql: &str, params: &[&dyn rusqlite::ToSql]| {
+            let err = try_sql(sql, params).expect_err(label);
+            assert_eq!(err.code(), "E_DB_INTEGRITY", "{label}: {err:?}");
+        };
+        attack(
+            "sayfa indeksi taşındı",
+            "UPDATE pages SET page_index=5 WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "başka koşuya taşındı",
+            "UPDATE pages SET parse_run_id=?1 WHERE id='pg-ok'",
+            &[&other.id as &dyn rusqlite::ToSql],
+        );
+        attack(
+            "metin kökeni ocr→native",
+            "UPDATE pages SET text_origin='native' WHERE id='pg-ocr'",
+            &[],
+        );
+        attack(
+            "genişlik küçültüldü",
+            "UPDATE pages SET width=100 WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "yükseklik küçültüldü",
+            "UPDATE pages SET height=100 WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "döndürme değişti",
+            "UPDATE pages SET rotation=90 WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "koordinat uzayı değişti",
+            "UPDATE pages SET coordinate_space='image_pixels' WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "uyarılar değişti",
+            "UPDATE pages SET quality_flags='[]' WHERE id='pg-ocr'",
+            &[],
+        );
+        attack(
+            "etiket değişti",
+            "UPDATE pages SET page_label='xii' WHERE id='pg-null'",
+            &[],
+        );
+        attack(
+            "kimlik yeniden adlandırıldı",
+            "UPDATE pages SET id='pg-yeni' WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "türev blob bağlandı",
+            "UPDATE pages SET derivative_blob_id=(SELECT id FROM blobs LIMIT 1) WHERE id='pg-ok'",
+            &[],
+        );
+        attack(
+            "geometri sıfırlandı",
+            "UPDATE pages SET width=0 WHERE id='pg-ok'",
+            &[],
+        );
+        try_sql(
+            "UPDATE pages SET width=595.0, height=842.0 WHERE id='pg-ok'",
+            &[],
+        )
+        .expect("no-op takılmaz");
+
+        // Satır saldırılardan sonra da aynı kanıtı taşır.
+        let kept: (f64, String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT width, text_origin, page_label FROM pages WHERE id='pg-ok'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("satır");
+        assert_eq!(kept, (595.0, "native".into(), None));
+        let ocr: String = db
+            .conn()
+            .query_row("SELECT text_origin FROM pages WHERE id='pg-ocr'", [], |r| {
+                r.get(0)
+            })
+            .expect("ocr satırı");
+        assert_eq!(ocr, "ocr", "OCR kökeni korunmalı");
+    }
+
     /// İki aşamalı tarama (F15): üst veri ikinci aşamada, ayrı sorguyla gelir.
     /// Sonucun bütün alanları **dolu** olmalı ve filtreli aramada da eksilmemeli;
     /// eksik satır uydurma değerle doldurulmaz.
