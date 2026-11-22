@@ -13,6 +13,7 @@ import {
   type CaseRow,
   type ConsentPreview,
   type RedactionPlanRow,
+  type SentenceAttribution,
   type TransferConsentListRow,
   type TransferConsentRow,
   type TransferReceiptRow,
@@ -26,6 +27,9 @@ import {
   answerBasisReasonLabel,
   answerBasisStateLabel,
   answerBasisTone,
+  attributionStateLabel,
+  attributionStateTone,
+  attributionSummary,
   candidateKindLabel,
   candidateStateLabel,
   candidateStateTone,
@@ -39,6 +43,9 @@ import {
   quoteStateLabel,
   quoteStateTone,
   quoteSummary,
+  sentenceQuoteRefs,
+  sentenceStateLabel,
+  sentenceStateTone,
   warningCount,
 } from "../lib/candidate";
 
@@ -181,6 +188,84 @@ const CONSENT_RENEWAL_CODES: readonly string[] = [
 
 function consentNeedsRenewal(code: string): boolean {
   return CONSENT_RENEWAL_CODES.includes(code);
+}
+
+/**
+ * F11-T07 — «hangi cümle hangi alıntıya dayanıyor?».
+ *
+ * Cümleler **çekirdekten** gelir (deterministik bölme); bağ yalnız modelin
+ * `sentences` bildiriminden kurulur. Kaynaksız cümleler ayrı blokta gösterilir
+ * — yorum, kaynaklı cümleyle aynı görünmemeli. Bağ hiç bildirilmediyse ekran
+ * "kaynaksız" **demez**: ayrımın yapılamadığını yazar (uydurma damga yok).
+ */
+function SentenceAttributionView({
+  attribution,
+  compact = false,
+}: {
+  attribution: SentenceAttribution;
+  compact?: boolean;
+}) {
+  const sourced = attribution.sentences.filter((sentence) => sentence.state !== "unsourced");
+  const unsourced = attribution.sentences.filter((sentence) => sentence.state === "unsourced");
+  return (
+    <div style={{ marginTop: compact ? 0 : "var(--space-2)" }}>
+      {compact ? null : (
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <strong>{t("candidate.attribution.title")}</strong>
+          <span className={`badge ${attributionStateTone(attribution.state)}`}>
+            {attributionStateLabel(attribution.state)}
+          </span>
+          {attribution.state !== "unlinked" ? (
+            <span className="badge plain">{attributionSummary(attribution)}</span>
+          ) : null}
+        </div>
+      )}
+      {attribution.state === "unlinked" ? (
+        <p className="hint" style={{ marginBottom: 0 }}>
+          {t("candidate.attribution.unlinkedHint")}
+        </p>
+      ) : (
+        <>
+          {sourced.length > 0 ? (
+            <ol style={{ margin: "var(--space-1) 0 0", paddingLeft: 18 }}>
+              {sourced.map((sentence) => (
+                <li key={sentence.index} style={{ marginBottom: 4 }}>
+                  <span className={`badge ${sentenceStateTone(sentence.state)}`}>
+                    {sentenceStateLabel(sentence.state)}
+                  </span>{" "}
+                  {sentence.text}
+                  {sentence.quoteIndexes.length > 0 ? (
+                    <span className="hint"> ({sentenceQuoteRefs(sentence.quoteIndexes)})</span>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          ) : null}
+          {attribution.unmatched > 0 ? (
+            <p className="hint">
+              {t("candidate.attribution.unmatched", { count: attribution.unmatched })}
+            </p>
+          ) : null}
+          {unsourced.length > 0 ? (
+            <div
+              style={{
+                marginTop: "var(--space-1)",
+                paddingLeft: "var(--space-2)",
+                borderLeft: "3px solid var(--danger)",
+              }}
+            >
+              <strong className="hint">{t("candidate.attribution.unsourcedTitle")}</strong>
+              <ul className="hint" style={{ margin: "4px 0 0", paddingLeft: 16 }}>
+                {unsourced.map((sentence) => (
+                  <li key={sentence.index}>{sentence.text}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
 }
 
 export function Ai() {
@@ -1735,6 +1820,10 @@ export function Ai() {
               </table>
             ) : null}
 
+            {report.sentenceAttribution ? (
+              <SentenceAttributionView attribution={report.sentenceAttribution} />
+            ) : null}
+
             {report.issues.length > 0 ? (
               <details style={{ marginTop: "var(--space-2)" }} open>
                 <summary>{t("ai.issuesSummary", { count: report.issues.length })}</summary>
@@ -1842,6 +1931,19 @@ export function Ai() {
                               </li>
                             ))}
                           </ul>
+                        </details>
+                      ) : null}
+                      {candidate.sentenceAttribution ? (
+                        <details style={{ marginTop: 4 }}>
+                          <summary className="hint">
+                            {candidate.sentenceAttribution.state === "unlinked"
+                              ? `${t("candidate.attribution.title")} · ${attributionStateLabel("unlinked")}`
+                              : `${t("candidate.attribution.title")} · ${attributionSummary(candidate.sentenceAttribution)}`}
+                          </summary>
+                          <SentenceAttributionView
+                            attribution={candidate.sentenceAttribution}
+                            compact
+                          />
                         </details>
                       ) : null}
                     </td>

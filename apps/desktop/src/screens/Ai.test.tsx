@@ -43,6 +43,7 @@ import type {
   DocumentRow,
   QuoteMatchReport,
   RedactionPlanRow,
+  SentenceAttribution,
   TransferConsentListRow,
   TransferSegmentRow,
   TransferConsentRow,
@@ -3678,5 +3679,136 @@ describe("AI ekranı — soru-cevap kapsamı ve sınırlı yanıt (F11-T08)", ()
     expect(alert.textContent).toContain("E_AI_BASIS");
     expect(card.textContent ?? "").not.toContain(t("candidate.answerBasis.limited"));
     expect(card.textContent ?? "").not.toContain(t("candidate.answerBasis.sufficient"));
+  });
+});
+
+/**
+ * F11-T07 — özet cümle dayanakları. Ekran **çekirdeğin** ürettiği bağı çizer:
+ * kaynaksız cümle ayrı blokta, bağ hiç bildirilmediyse "kaynaksız" denmez —
+ * ayrımın yapılamadığı yazılır.
+ */
+describe("F11-T07 — özet cümle dayanakları", () => {
+  const ATTRIBUTION_PARTIAL: SentenceAttribution = {
+    state: "partial",
+    sentences: [
+      {
+        index: 0,
+        text: "Ödeme yapılmadığı ileri sürülmüştür.",
+        quoteIndexes: [0],
+        state: "backed",
+      },
+      {
+        index: 1,
+        text: "Bu durum kiracıyı güç durumda bırakmıştır.",
+        quoteIndexes: [1],
+        state: "unsourced",
+      },
+      {
+        index: 2,
+        text: "Mahkeme ayrıca vekâlet ücretine hükmetti.",
+        quoteIndexes: [],
+        state: "unsourced",
+      },
+    ],
+    backed: 1,
+    weak: 0,
+    unsourced: 2,
+    linkedQuotes: 2,
+    unlinkedQuotes: 0,
+    unmatched: 0,
+  };
+
+  const ATTRIBUTION_UNLINKED: SentenceAttribution = {
+    state: "unlinked",
+    sentences: [],
+    backed: 0,
+    weak: 0,
+    unsourced: 0,
+    linkedQuotes: 0,
+    unlinkedQuotes: 1,
+    unmatched: 0,
+  };
+
+  async function validateReport(report: CandidateReport): Promise<HTMLElement> {
+    setup({ validate: async () => report });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(
+      within(cardByHeading(t("ai.runsTitle"))).getAllByRole("button", {
+        name: RUN_LABEL_SELECT,
+      })[0]!,
+    );
+    await waitFor(() => expect(button(t("ai.validate")).disabled).toBe(false));
+    fireEvent.click(button(t("ai.validate")));
+    return cardByHeading(t("ai.validateTitle"));
+  }
+
+  it("kaynaksız cümleleri ayrı blokta gösterir, dayanaklıyı rozetle yazar", async () => {
+    const card = await validateReport({
+      ...REPORT_VALID,
+      kind: "summary_candidate",
+      sentenceAttribution: ATTRIBUTION_PARTIAL,
+    });
+    expect(
+      await within(card).findByText(t("candidate.sentence.backed")),
+    ).toBeTruthy();
+    expect(within(card).getByText(t("candidate.attribution.unsourcedTitle"))).toBeTruthy();
+    // Kaynaksız cümle ayrı blokta **görünür**; sayım rozeti de çekirdekten.
+    expect(
+      within(card).getByText("Bu durum kiracıyı güç durumda bırakmıştır."),
+    ).toBeTruthy();
+    // Sayım **bağımsız** beklenen değerle ölçülür (yardımcı fonksiyonun kendisi
+    // mutasyona uğrarsa iki taraf birlikte kayar ve kapı sahte yeşil kalırdı).
+    expect(
+      within(card).getByText(
+        t("candidate.attribution.counts", {
+          sentences: 3,
+          backed: 1,
+          weak: 0,
+          unsourced: 2,
+        }),
+      ),
+    ).toBeTruthy();
+    // Dayanaklı cümle alıntı numarasını taşır (1 tabanlı).
+    expect(within(card).getByText(/alıntı 1/)).toBeTruthy();
+  });
+
+  it("bağ bildirilmediyse «kaynaksız» demez; ayrımın yapılamadığını yazar", async () => {
+    const card = await validateReport({
+      ...REPORT_VALID,
+      kind: "summary_candidate",
+      sentenceAttribution: ATTRIBUTION_UNLINKED,
+    });
+    expect(
+      await within(card).findByText(t("candidate.attribution.unlinkedHint")),
+    ).toBeTruthy();
+    expect(within(card).queryByText(t("candidate.attribution.unsourcedTitle"))).toBeNull();
+    expect(within(card).queryByText(t("candidate.sentence.unsourced"))).toBeNull();
+  });
+
+  it("kayıtlı özet satırında cümle bağını özetler ve açar", async () => {
+    setup({
+      candidates: async () => [
+        candidateRow({
+          candidateType: "summary_candidate",
+          sentenceAttribution: ATTRIBUTION_PARTIAL,
+        }),
+      ],
+    });
+    await screen.findByText("api:claude (api)");
+    fireEvent.click(
+      within(cardByHeading(t("ai.runsTitle"))).getAllByRole("button", {
+        name: RUN_LABEL_SELECT,
+      })[0]!,
+    );
+    const summaryLine = await screen.findByText(
+      `${t("candidate.attribution.title")} · ${t("candidate.attribution.counts", {
+        sentences: 3,
+        backed: 1,
+        weak: 0,
+        unsourced: 2,
+      })}`,
+    );
+    expect(summaryLine).toBeTruthy();
+    expect(screen.getByText(t("candidate.attribution.unsourcedTitle"))).toBeTruthy();
   });
 });

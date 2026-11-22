@@ -59,7 +59,8 @@ pub use ai::{
 };
 pub use ai_candidate::{
     candidate_output_instructions, AnswerBasis, AnswerScopeDocument, CandidateReport,
-    CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, ValidationIssue,
+    CandidateSchema, QuoteMatchReport, QuotePosition, QuoteRef, SentenceAttribution,
+    SummarySentence, ValidationIssue,
 };
 pub use anchors::{AnchorLocation, AnchorRow, NewAnchor, RebindCandidate, RebindSuggestion};
 pub use audit::{AuditChainStatus, AuditEventRow, DEFAULT_AUDIT_EVENTS, MAX_AUDIT_EVENTS};

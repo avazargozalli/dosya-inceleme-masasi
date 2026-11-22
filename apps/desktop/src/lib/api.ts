@@ -463,6 +463,38 @@ export type CandidateReport = {
   checkedAt: string;
   /** `recorded` (gönderim sicili var) · `not_recorded` (elle kaydedilen aday) */
   outboundState: string;
+  /** F11-T07 — yalnız özet adayında cümle → alıntı bağı. */
+  sentenceAttribution?: SentenceAttribution | null;
+};
+
+/**
+ * F11-T07 — özetin bir cümlesi. `state`: `backed` (birebir/normalize alıntı) ·
+ * `weak` (belirsiz/başka sayfa) · `unsourced` (kaynaksız yorum).
+ */
+export type SummarySentence = {
+  /** 0 tabanlı; arayüz 1 tabanlı yazar. */
+  index: number;
+  text: string;
+  /** Bu cümleyi dayanak gösteren alıntıların yük sırası. */
+  quoteIndexes: number[];
+  state: string;
+};
+
+/**
+ * F11-T07 — «hangi cümle hangi alıntıya dayanıyor?». `state`: `linked` ·
+ * `partial` · `unlinked` (hiçbir alıntı cümle bildirmedi → ayrım yapılamaz,
+ * `sentences` boştur).
+ */
+export type SentenceAttribution = {
+  state: string;
+  sentences: SummarySentence[];
+  backed: number;
+  weak: number;
+  unsourced: number;
+  linkedQuotes: number;
+  unlinkedQuotes: number;
+  /** `text`te karşılığı bulunmayan bildirim sayısı. */
+  unmatched: number;
 };
 
 export type AiCandidateRow = {
@@ -475,6 +507,8 @@ export type AiCandidateRow = {
   schemaState: string;
   quoteState: string;
   quoteReport: QuoteMatchReport[];
+  /** F11-T07 — özet adayında cümle → alıntı bağı (her okumada yeniden hesaplanır). */
+  sentenceAttribution?: SentenceAttribution | null;
   checkedAt: string | null;
 };
 

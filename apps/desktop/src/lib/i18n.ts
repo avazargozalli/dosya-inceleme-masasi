@@ -535,7 +535,7 @@ export const tr = {
       person: "name zorunlu; role, organization isteğe bağlı.",
       date: "rawText + kind zorunlu; isoDate yalnız gün kesinse (YYYY-AA-GG).",
       claim: "text zorunlu; assertedBy, amountText isteğe bağlı.",
-      summary: "text zorunlu; en az bir alıntı taşımalı.",
+      summary: "text zorunlu; en az bir alıntı ve her alıntıda `sentences` (desteklediği cümleler).",
       answer: "text zorunlu; question isteğe bağlı.",
     },
     sample: {
@@ -607,6 +607,24 @@ export const tr = {
       answerInvalid: "yanıt adayı şeması geçersiz",
       noQuotes: "yanıt alıntı taşımıyor",
       quotesNotFound: "alıntı belge metninde bulunamadı",
+    },
+    sentence: {
+      backed: "dayanaklı",
+      weak: "zayıf dayanak",
+      unsourced: "kaynaksız",
+    },
+    attribution: {
+      linked: "her cümle dayanaklı",
+      partial: "kısmi dayanak",
+      unlinked: "cümle bağı yok",
+      title: "Cümle dayanakları",
+      counts: "{sentences} cümle · {backed} dayanaklı · {weak} zayıf · {unsourced} kaynaksız",
+      quoteRefs: "alıntı {list}",
+      unmatched: "{count} cümle bildirimi metinde bulunmadı; bağ kurulmadı.",
+      unsourcedTitle: "Kaynaksız yorum",
+      unlinkedHint:
+        "Hiçbir alıntı hangi cümleyi desteklediğini bildirmedi; kaynaksız yorum ayrımı " +
+        "yapılamıyor. Alıntılar doğrulanmış olsa da cümle bağı bildirilmemiş.",
     },
   },
   ai: {
@@ -1614,6 +1632,9 @@ export const tr = {
     delete: "Sil (geri dönüşümlü)",
     parseProgressAria: "Ayrıştırma ilerlemesi",
     parseSummary: "Ayrıştırma {status}: {pages} sayfa, {segments} metin bloğu",
+    parseStatusSucceeded: "başarılı",
+    parseStatusPartial: "kısmi",
+    parseStatusFailed: "başarısız",
     parseWarnings: "{count} uyarı",
     fileFilterDocuments: "Belgeler",
     anchorSaved: "Kaynak kaydedildi: “{quote}”",

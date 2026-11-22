@@ -1685,6 +1685,10 @@ pub struct AiCandidateRow {
     /// `no_quotes` | `not_checked` | `legacy`.
     pub quote_state: String,
     pub quote_report: Vec<crate::ai_candidate::QuoteMatchReport>,
+    /// F11-T07 — özet adayında cümle → alıntı bağı; yükten ve alıntı
+    /// raporundan **her okumada** yeniden hesaplanır (kalıcı damga değil).
+    #[serde(default)]
+    pub sentence_attribution: Option<crate::ai_candidate::SentenceAttribution>,
     pub checked_at: Option<String>,
 }
 
@@ -2481,16 +2485,30 @@ fn map_run(row: &Row<'_>) -> rusqlite::Result<AiRunRow> {
 
 pub(crate) fn map_candidate(row: &Row<'_>) -> rusqlite::Result<AiCandidateRow> {
     let raw_quotes: String = row.get(8)?;
+    let candidate_type: String = row.get(2)?;
+    let structured_payload: String = row.get(3)?;
+    let quote_report: Vec<crate::ai_candidate::QuoteMatchReport> =
+        serde_json::from_str(&raw_quotes).unwrap_or_default();
+    // F11-T07 — cümle bağı kalıcı sütun değildir: yükten ve **o anki** alıntı
+    // raporundan hesaplanır, böylece yeniden doğrulama bağı da tazeler.
+    let sentence_attribution = if crate::ai_candidate::CandidateKind::parse(&candidate_type)
+        == Some(crate::ai_candidate::CandidateKind::Summary)
+    {
+        crate::ai_candidate::summary_sentence_attribution(&structured_payload, &quote_report)
+    } else {
+        None
+    };
     Ok(AiCandidateRow {
         id: row.get(0)?,
         ai_run_id: row.get(1)?,
-        candidate_type: row.get(2)?,
-        structured_payload: row.get(3)?,
+        candidate_type,
+        structured_payload,
         validation_state: row.get(4)?,
         validation_errors: row.get(5)?,
         schema_state: row.get(6)?,
         quote_state: row.get(7)?,
-        quote_report: serde_json::from_str(&raw_quotes).unwrap_or_default(),
+        quote_report,
+        sentence_attribution,
         checked_at: row.get(9)?,
     })
 }

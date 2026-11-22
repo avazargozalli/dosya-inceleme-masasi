@@ -1,4 +1,10 @@
-import type { AiCandidateRow, CandidateReport, QuoteMatchReport, ValidationIssue } from "./api";
+import type {
+  AiCandidateRow,
+  CandidateReport,
+  QuoteMatchReport,
+  SentenceAttribution,
+  ValidationIssue,
+} from "./api";
 import { t } from "./i18n";
 
 /**
@@ -317,4 +323,68 @@ export function answerBasisReasonLabel(code: string): string {
     default:
       return code;
   }
+}
+
+/**
+ * F11-T07 — özet cümlesi rozeti. `backed` birebir/normalize bulunmuş alıntıya
+ * dayanır; `weak` yalnız belirsiz/başka sayfa eşleşmesidir (varlık doğrulandı,
+ * konum tek değil); `unsourced` **kaynaksız yorum**dur. Bilinmeyen durum ham
+ * yazılır — ekran tanımadığı değeri "dayanaklı" saymaz.
+ */
+export function sentenceStateTone(state: string): "ok" | "warn" | "danger" | "plain" {
+  if (state === "backed") return "ok";
+  if (state === "weak") return "warn";
+  if (state === "unsourced") return "danger";
+  return "plain";
+}
+
+export function sentenceStateLabel(state: string): string {
+  switch (state) {
+    case "backed":
+      return t("candidate.sentence.backed");
+    case "weak":
+      return t("candidate.sentence.weak");
+    case "unsourced":
+      return t("candidate.sentence.unsourced");
+    default:
+      return state;
+  }
+}
+
+/** Cümle bağının bütünü: `linked` · `partial` · `unlinked`. */
+export function attributionStateTone(state: string): "ok" | "warn" | "plain" {
+  if (state === "linked") return "ok";
+  if (state === "partial") return "warn";
+  return "plain";
+}
+
+export function attributionStateLabel(state: string): string {
+  switch (state) {
+    case "linked":
+      return t("candidate.attribution.linked");
+    case "partial":
+      return t("candidate.attribution.partial");
+    case "unlinked":
+      return t("candidate.attribution.unlinked");
+    default:
+      return state;
+  }
+}
+
+/** «3 cümle · 2 dayanaklı · 0 zayıf · 1 kaynaksız» */
+export function attributionSummary(attribution: SentenceAttribution): string {
+  return t("candidate.attribution.counts", {
+    sentences: attribution.sentences.length,
+    backed: attribution.backed,
+    weak: attribution.weak,
+    unsourced: attribution.unsourced,
+  });
+}
+
+/** Cümleyi dayanak gösteren alıntıların **1 tabanlı** listesi. */
+export function sentenceQuoteRefs(quoteIndexes: number[]): string {
+  if (quoteIndexes.length === 0) return "";
+  return t("candidate.attribution.quoteRefs", {
+    list: quoteIndexes.map((index) => index + 1).join(", "),
+  });
 }

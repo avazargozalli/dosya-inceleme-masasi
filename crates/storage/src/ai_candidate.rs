@@ -35,6 +35,10 @@ pub const MAX_CANDIDATE_QUOTES: usize = 20;
 pub const MIN_QUOTE_CHARS: usize = 8;
 /// Raporlanan en çok aday konum.
 const MAX_REPORTED_POSITIONS: usize = 5;
+/// Bir alıntının dayanak olarak gösterebileceği en çok cümle (F11-T07).
+const MAX_QUOTE_SENTENCES: usize = 20;
+/// Cümle bildiriminde kabul edilen en uzun metin.
+const MAX_SENTENCE_CHARS: usize = 1000;
 
 /// Aday türleri (F11-T01: olay, kişi, tarih, iddia, özet, yanıt).
 ///
@@ -246,6 +250,12 @@ pub fn candidate_output_instructions(kind_raw: &str) -> Option<String> {
     ));
     if kind == CandidateKind::Summary {
         lines.push("Özet adayı en az bir alıntı taşımalı.".to_string());
+        lines.push(
+            "Her alıntı, hangi cümleleri desteklediğini `sentences` dizisinde o cümleleri \
+             **birebir kopyalayarak** bildirir (en çok 20 cümle). Hiçbir alıntıyla \
+             desteklenmeyen cümle kaynaksız yorumdur; arayüzde ayrı işaretlenir."
+                .to_string(),
+        );
     }
     if kind == CandidateKind::Answer {
         lines.push(
@@ -297,6 +307,10 @@ pub struct QuoteRef {
     pub page_index: Option<i64>,
     #[serde(default)]
     pub label: Option<String>,
+    /// F11-T07 — alıntının dayanak gösterdiği **özet cümleleri** (metnin
+    /// kendisinden birebir kopya). Boşsa bağ bildirilmemiştir; uydurulmaz.
+    #[serde(default)]
+    pub sentences: Vec<String>,
 }
 
 /// Şema doğrulamasının sonucu (alıntı eşleştirmesinden bağımsız).
@@ -310,6 +324,9 @@ pub struct CandidateSchema {
     /// Yalnız yapısal olarak geçerli alıntılar; geçersizler eşleştirilmez.
     pub quote_refs: Vec<QuoteRef>,
     pub field_count: usize,
+    /// Özet metni (F11-T07 cümle dayanağı için); yoksa `None`.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Soru-cevapta **incelenen kapsamın** bir belgesi: fiilen gönderilen segment
@@ -433,6 +450,54 @@ pub struct CandidateReport {
     /// arandı); `not_recorded` — sicil yok (elle kaydedilen aday).
     #[serde(default)]
     pub outbound_state: String,
+    /// F11-T07 — yalnız özet adayında: cümle → alıntı bağı. Bağ
+    /// bildirilmemişse `state = "unlinked"` (uydurulmaz).
+    #[serde(default)]
+    pub sentence_attribution: Option<SentenceAttribution>,
+}
+
+/// F11-T07 — özetin bir cümlesi ve onu desteklediği **bildirilen** alıntılar.
+///
+/// `state`:
+/// - `backed` — en az bir bildirilen alıntı belge metninde birebir/normalize
+///   bulundu (konum doğrulandı).
+/// - `weak` — yalnız belirsiz (`ambiguous`) ya da başka sayfada
+///   (`page_mismatch`) bulunan alıntı bildirildi; varlık doğrulandı, konum
+///   tek değil.
+/// - `unsourced` — hiçbir alıntı bu cümleyi göstermedi ya da gösterenlerin
+///   hiçbiri metinde bulunamadı: **kaynaksız yorum**.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummarySentence {
+    /// Metindeki 0 tabanlı sıra (arayüz 1 tabanlı yazar).
+    pub index: usize,
+    pub text: String,
+    /// Bu cümleyi dayanak gösteren alıntıların **yük** sırası.
+    pub quote_indexes: Vec<usize>,
+    pub state: String,
+}
+
+/// F11-T07 — «özetin hangi cümlesi hangi alıntıya dayanıyor, hangisi
+/// kaynaksız yorum?». Cümleler metinden **deterministik** bölünür; bağ
+/// yalnız modelin `quotes[].sentences` bildiriminden gelir — çekirdek
+/// cümleye anlam atfetmez.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentenceAttribution {
+    /// `linked` — her cümle en az bir doğrulanmış alıntıya bağlı ·
+    /// `partial` — en az bir cümle kaynaksız/zayıf ya da bildirilen cümle
+    /// metinde bulunamadı · `unlinked` — hiçbir alıntı cümle bildirmedi,
+    /// kaynaksız yorum ayrımı **yapılamaz** (bu durumda `sentences` boştur).
+    pub state: String,
+    pub sentences: Vec<SummarySentence>,
+    pub backed: usize,
+    pub weak: usize,
+    pub unsourced: usize,
+    /// Cümle bildiren alıntı sayısı / bildirmeyen.
+    pub linked_quotes: usize,
+    pub unlinked_quotes: usize,
+    /// `text`te karşılığı bulunmayan bildirim sayısı (bağ kurulmaz).
+    pub unmatched: usize,
 }
 
 /// Aday yükünü türüne göre doğrular. **Saf fonksiyon**: veritabanına bakmaz,
@@ -451,6 +516,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
             )],
             quote_refs: Vec::new(),
             field_count: 0,
+            text: None,
         };
     };
 
@@ -472,6 +538,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
                 )],
                 quote_refs: Vec::new(),
                 field_count: 0,
+                text: None,
             }
         }
     };
@@ -488,6 +555,7 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
             )],
             quote_refs: Vec::new(),
             field_count: 0,
+            text: None,
         };
     };
 
@@ -549,6 +617,47 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
             "Özet adayı en az bir alıntı taşımalı.",
         ));
     }
+    let text = obj.get("text").and_then(Value::as_str).map(str::to_string);
+    if kind == CandidateKind::Summary {
+        if !quote_refs.is_empty() && quote_refs.iter().all(|quote| quote.sentences.is_empty()) {
+            issues.push(issue(
+                "sentence_links_missing",
+                "warning",
+                "quotes",
+                "Hiçbir alıntı hangi cümleyi desteklediğini `sentences` ile bildirmedi; \
+                 kaynaksız yorum ayrımı yapılamaz.",
+            ));
+        }
+        if let Some(text) = text.as_deref() {
+            let sentences = split_sentences(text);
+            for quote in &quote_refs {
+                for (index, declared) in quote.sentences.iter().enumerate() {
+                    if !sentences
+                        .iter()
+                        .any(|sentence| same_sentence(sentence, declared))
+                    {
+                        issues.push(issue(
+                            "sentence_not_found",
+                            "warning",
+                            &format!("quotes[{}].sentences[{index}]", quote.source_index),
+                            "Bildirilen cümle metinde birebir bulunmadı; bu bağ kurulmaz.",
+                        ));
+                    }
+                }
+            }
+        }
+    } else {
+        for quote in &quote_refs {
+            if !quote.sentences.is_empty() {
+                issues.push(issue(
+                    "sentences_unsupported",
+                    "warning",
+                    &format!("quotes[{}].sentences", quote.source_index),
+                    "`sentences` yalnız özet adayında kullanılır; bu alıntıda yok sayıldı.",
+                ));
+            }
+        }
+    }
 
     issues.sort_by(|a, b| (&a.field, &a.code).cmp(&(&b.field, &b.code)));
     issues.dedup();
@@ -568,7 +677,248 @@ pub fn validate_candidate_payload(kind_raw: &str, payload: &str) -> CandidateSch
         issues,
         quote_refs,
         field_count,
+        text,
     }
+}
+
+/// Cümle sonu sayılan kısaltmalar (küçük harf). Tek harfli kısaltmalar
+/// (`T.C.`, `A.Ş.`, `m.`) ve sayı sıraları ayrıca kuraldır.
+const SENTENCE_ABBREVIATIONS: &[&str] = &[
+    "av", "dr", "doç", "prof", "no", "mad", "md", "m", "s", "sf", "say", "vb", "vs", "bkz", "örn",
+    "ör", "vd", "mah", "huk", "dav", "kar", "es", "tbk", "tck", "hmk", "csk", "iik", "ltd", "şti",
+    "sn", "yy", "par", "fık", "bent",
+];
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn same_sentence(left: &str, right: &str) -> bool {
+    collapse_whitespace(left) == collapse_whitespace(right)
+}
+
+/// F11-T07 — özet metnini **deterministik** cümlelere böler.
+///
+/// Kurallar (belgelenmiş sınırlarla):
+/// - Cümle `.`, `!`, `?` ya da `…` ile biter; ardından kapanış tırnağı /
+///   parantezi gelebilir ve sonra boşluk ya da metin sonu gelmelidir.
+/// - `.` kısaltma/sıra sayısıysa (tek harf, salt sayı, bilinen kısaltma, iç
+///   nokta taşıyan baş harf grubu) ya da sonraki harf küçükse bölünmez.
+/// - Cümle metni sonlandırıcıyı ve kapanış işaretlerini **içerir**; baştaki ve
+///   sondaki boşluk atılır.
+///
+/// Bu bölme anlam çözümlemesi değildir: modelin `sentences` bildirimi bölünen
+/// bir cümleyle birebir eşleşmezse bağ **kurulmaz** (rapor `unmatched` sayar);
+/// uydurma bağ üretilmez.
+fn split_sentences(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut sentences = Vec::new();
+    let mut start = 0usize;
+    let mut index = 0usize;
+    while index < chars.len() {
+        if !matches!(chars[index], '.' | '!' | '?' | '…') {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < chars.len()
+            && matches!(
+                chars[end],
+                '"' | '\u{201d}' | '\u{2019}' | '\'' | ')' | ']' | '}'
+            )
+        {
+            end += 1;
+        }
+        let at_end = end >= chars.len();
+        if !at_end && !chars[end].is_whitespace() {
+            index += 1;
+            continue;
+        }
+        if chars[index] == '.' && !period_ends_sentence(&chars, index, end) {
+            index += 1;
+            continue;
+        }
+        let piece: String = chars[start..end].iter().collect();
+        let trimmed = piece.trim();
+        if !trimmed.is_empty() {
+            sentences.push(trimmed.to_string());
+        }
+        start = end;
+        while start < chars.len() && chars[start].is_whitespace() {
+            start += 1;
+        }
+        index = start;
+    }
+    let tail: String = chars[start..].iter().collect();
+    let trimmed = tail.trim();
+    if !trimmed.is_empty() {
+        sentences.push(trimmed.to_string());
+    }
+    sentences
+}
+
+/// `.` gerçekten cümle sonu mu? `end`, kapanış işaretlerinden sonraki konum.
+fn period_ends_sentence(chars: &[char], index: usize, end: usize) -> bool {
+    // Sondaki noktaları atla (`...` tek sonlandırıcıdır) ve sözcüğü al.
+    let mut word_end = index;
+    while word_end > 0 && chars[word_end - 1] == '.' {
+        word_end -= 1;
+    }
+    let mut word_start = word_end;
+    while word_start > 0
+        && (chars[word_start - 1].is_alphanumeric() || chars[word_start - 1] == '.')
+    {
+        word_start -= 1;
+    }
+    if word_start == word_end {
+        return true; // yalnız noktalama
+    }
+    let word: String = chars[word_start..word_end].iter().collect();
+    if word.contains('.') {
+        return false; // T.C, A.Ş gibi baş harf grubu
+    }
+    if word.chars().count() <= 1 {
+        return false; // baş harf ya da `m.`
+    }
+    if word.chars().all(|ch| ch.is_ascii_digit()) {
+        return false; // sıra sayısı
+    }
+    if SENTENCE_ABBREVIATIONS.contains(&word.to_lowercase().as_str()) {
+        return false;
+    }
+    // Sonraki harf küçükse yeni cümle başlamıyor demektir (`örn. bu`).
+    let mut next = end;
+    while next < chars.len() && chars[next].is_whitespace() {
+        next += 1;
+    }
+    match chars.get(next) {
+        Some(ch) => !ch.is_lowercase(),
+        None => true,
+    }
+}
+
+/// F11-T07 — kayıtlı yük + alıntı raporundan **cümle dayanağını** üretir.
+///
+/// **Kalıcı damga değildir**: yükten ve alıntı raporundan her okumada yeniden
+/// hesaplanır (alıntı yeniden doğrulanınca bağ da tazelenir). Bağ yalnız
+/// modelin `quotes[].sentences` bildiriminden gelir; çekirdek cümleye kaynak
+/// atfetmez. Hiçbir alıntı cümle bildirmediyse `state = "unlinked"` döner ve
+/// `sentences` **boştur** — "kaynaksız" damgası uydurulmaz.
+#[must_use]
+pub fn summary_sentence_attribution(
+    payload: &str,
+    quotes: &[QuoteMatchReport],
+) -> Option<SentenceAttribution> {
+    let parsed: Value = serde_json::from_str(payload).ok()?;
+    let obj = parsed.as_object()?;
+    let text = obj.get("text")?.as_str()?;
+    let sentences = split_sentences(text);
+    let declared: Vec<Vec<String>> = obj
+        .get("quotes")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    item.get("sentences")
+                        .and_then(Value::as_array)
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(Value::as_str)
+                                .map(collapse_whitespace)
+                                .filter(|sentence| !sentence.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let states: HashMap<usize, &str> = quotes
+        .iter()
+        .map(|quote| (quote.index, quote.state.as_str()))
+        .collect();
+
+    let mut bindings: Vec<Vec<usize>> = vec![Vec::new(); sentences.len()];
+    let mut linked_quotes = 0usize;
+    let mut unmatched = 0usize;
+    for (quote_index, declared_sentences) in declared.iter().enumerate() {
+        if declared_sentences.is_empty() {
+            continue;
+        }
+        linked_quotes += 1;
+        for declared_sentence in declared_sentences {
+            let mut matched = false;
+            for (sentence_index, sentence) in sentences.iter().enumerate() {
+                if same_sentence(sentence, declared_sentence) {
+                    if !bindings[sentence_index].contains(&quote_index) {
+                        bindings[sentence_index].push(quote_index);
+                    }
+                    matched = true;
+                }
+            }
+            if !matched {
+                unmatched += 1;
+            }
+        }
+    }
+    let unlinked_quotes = declared.len().saturating_sub(linked_quotes);
+    if linked_quotes == 0 {
+        return Some(SentenceAttribution {
+            state: "unlinked".into(),
+            sentences: Vec::new(),
+            backed: 0,
+            weak: 0,
+            unsourced: 0,
+            linked_quotes: 0,
+            unlinked_quotes,
+            unmatched: 0,
+        });
+    }
+
+    let mut backed = 0usize;
+    let mut weak = 0usize;
+    let mut unsourced = 0usize;
+    let mut rows = Vec::with_capacity(sentences.len());
+    for (index, sentence) in sentences.iter().enumerate() {
+        let mut state = "unsourced";
+        for quote_index in &bindings[index] {
+            match states.get(quote_index).copied() {
+                Some("exact" | "normalized") => {
+                    state = "backed";
+                    break;
+                }
+                Some("ambiguous" | "page_mismatch") => state = "weak",
+                _ => {}
+            }
+        }
+        match state {
+            "backed" => backed += 1,
+            "weak" => weak += 1,
+            _ => unsourced += 1,
+        }
+        rows.push(SummarySentence {
+            index,
+            text: sentence.clone(),
+            quote_indexes: bindings[index].clone(),
+            state: state.into(),
+        });
+    }
+    let state = if weak == 0 && unsourced == 0 && unmatched == 0 {
+        "linked"
+    } else {
+        "partial"
+    };
+    Some(SentenceAttribution {
+        state: state.into(),
+        sentences: rows,
+        backed,
+        weak,
+        unsourced,
+        linked_quotes,
+        unlinked_quotes,
+        unmatched,
+    })
 }
 
 fn check_field(name: &str, value: &Value, kind: &FieldKind, issues: &mut Vec<ValidationIssue>) {
@@ -689,7 +1039,7 @@ fn parse_quotes(value: &Value, issues: &mut Vec<ValidationIssue>) -> Vec<QuoteRe
         for key in map.keys() {
             if !matches!(
                 key.as_str(),
-                "documentVersionId" | "quote" | "pageIndex" | "startHint" | "label"
+                "documentVersionId" | "quote" | "pageIndex" | "startHint" | "label" | "sentences"
             ) {
                 issues.push(issue(
                     "unknown_field",
@@ -789,6 +1139,67 @@ fn parse_quotes(value: &Value, issues: &mut Vec<ValidationIssue>) -> Vec<QuoteRe
             }
         };
 
+        // F11-T07 — alıntının dayanak gösterdiği cümleler. Metin **birebir
+        // kopya** olmalı; eşleşme `validate` sonunda özet metniyle denetlenir.
+        let mut sentences: Vec<String> = Vec::new();
+        match map.get("sentences") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(items)) => {
+                if items.len() > MAX_QUOTE_SENTENCES {
+                    issues.push(issue(
+                        "too_many_items",
+                        "error",
+                        &format!("{field}.sentences"),
+                        format!("En çok {MAX_QUOTE_SENTENCES} cümle bildirilebilir."),
+                    ));
+                }
+                for (sentence_index, item) in items.iter().enumerate() {
+                    let sentence_field = format!("{field}.sentences[{sentence_index}]");
+                    match item {
+                        Value::String(text) if text.trim().is_empty() => issues.push(issue(
+                            "empty_text",
+                            "error",
+                            &sentence_field,
+                            "Cümle metni boş olamaz.",
+                        )),
+                        Value::String(text) if text.trim().chars().count() > MAX_SENTENCE_CHARS => {
+                            issues.push(issue(
+                                "too_long",
+                                "error",
+                                &sentence_field,
+                                format!("Cümle en çok {MAX_SENTENCE_CHARS} karakter olabilir."),
+                            ))
+                        }
+                        Value::String(text) => {
+                            let trimmed = text.trim().to_string();
+                            if sentences.contains(&trimmed) {
+                                issues.push(issue(
+                                    "duplicate_sentence",
+                                    "warning",
+                                    &sentence_field,
+                                    "Aynı cümle bu alıntıda tekrar ediyor.",
+                                ));
+                            } else {
+                                sentences.push(trimmed);
+                            }
+                        }
+                        _ => issues.push(issue(
+                            "wrong_type",
+                            "error",
+                            &sentence_field,
+                            "Cümle metni bekleniyordu.",
+                        )),
+                    }
+                }
+            }
+            Some(_) => issues.push(issue(
+                "wrong_type",
+                "error",
+                &format!("{field}.sentences"),
+                "Cümle listesi bekleniyordu.",
+            )),
+        }
+
         if let (Some(version), Some(quote)) = (version, quote) {
             let len = quote.chars().count();
             if len < MIN_QUOTE_CHARS {
@@ -814,6 +1225,7 @@ fn parse_quotes(value: &Value, issues: &mut Vec<ValidationIssue>) -> Vec<QuoteRe
                         quote: quote.to_string(),
                         page_index,
                         label,
+                        sentences,
                     },
                 ));
             }
@@ -965,6 +1377,31 @@ impl Database {
             state
         };
 
+        let sentence_attribution = if schema.state != "invalid"
+            && CandidateKind::parse(candidate_type) == Some(CandidateKind::Summary)
+        {
+            summary_sentence_attribution(payload, &quotes)
+        } else {
+            None
+        };
+        if let Some(attribution) = &sentence_attribution {
+            if attribution.state == "unlinked" {
+                notes.push(
+                    "Hiçbir alıntı hangi cümleyi desteklediğini bildirmedi; kaynaksız yorum \
+                     ayrımı yapılamıyor."
+                        .to_string(),
+                );
+            } else {
+                notes.push(format!(
+                    "Özet {} cümle: {} alıntıyla dayanaklı, {} zayıf, {} kaynaksız.",
+                    attribution.backed + attribution.weak + attribution.unsourced,
+                    attribution.backed,
+                    attribution.weak,
+                    attribution.unsourced
+                ));
+            }
+        }
+
         let mut issues = schema.issues.clone();
         issues.extend(quote_issues(&quotes));
         if quote_state == "no_quotes" {
@@ -996,6 +1433,7 @@ impl Database {
             notes,
             checked_at: now_iso(),
             outbound_state: outbound_state.to_string(),
+            sentence_attribution,
         })
     }
 
@@ -1830,6 +2268,17 @@ mod tests {
         .to_string()
     }
 
+    /// F11-T07 — özet alıntısı, metnin tek cümlesini **birebir** dayanak
+    /// gösterir. Bağ bildirimi olmayan özet `sentence_links_missing` uyarısıyla
+    /// `partial` doğar; bu yardımcı "bağlı" yolu kurar.
+    fn linked_summary(version_id: &str, quote: &str) -> String {
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&candidate(version_id, quote, Some(0))).expect("json");
+        payload["quotes"][0]["sentences"] =
+            serde_json::json!(["Kiracı ödeme yapılmadığını belirtmiştir."]);
+        payload.to_string()
+    }
+
     /// Görev türü → aday türü eşlemesi **tek kaynak** ve tahminsiz olmalı.
     #[test]
     fn task_candidate_kind_maps_every_provider_task_and_refuses_unknown() {
@@ -1869,6 +2318,10 @@ mod tests {
         );
         let summary = candidate_output_instructions("summary_candidate").expect("özet");
         assert!(summary.contains("en az bir alıntı taşımalı"), "{summary}");
+        assert!(
+            summary.contains("`sentences`") && summary.contains("kaynaksız yorum"),
+            "özet istemi cümle bağını ve kaynaksız yorumu yazmalı: {summary}"
+        );
         assert!(candidate_output_instructions("bilinmeyen").is_none());
     }
 
@@ -1902,11 +2355,7 @@ mod tests {
     #[test]
     fn a_real_model_answer_is_recorded_with_its_task_candidate_kind() {
         let fixture = setup(&[PAGE_ZERO]);
-        let payload = candidate(
-            &fixture.version_id,
-            "ödeme yapılmadığını belirtmiştir",
-            Some(0),
-        );
+        let payload = linked_summary(&fixture.version_id, "ödeme yapılmadığını belirtmiştir");
         let row = fixture
             .db
             .record_ai_run_candidate(&fixture.run_id, &payload)
@@ -1927,6 +2376,87 @@ mod tests {
         assert_eq!(item.item_kind, "summary_candidate");
         // Doğrulanmış alıntı **kaynak bağlantısına** dönüşür.
         assert_eq!(item.source_anchor_ids.len(), 1);
+    }
+
+    /// F11-T07 — kayıtlı özet satırı cümle bağını **her okumada** yükten ve
+    /// alıntı raporundan taşır; kalıcı damga yoktur, uydurma bağ yoktur.
+    #[test]
+    fn summary_rows_carry_recomputed_sentence_attribution() {
+        let fixture = setup(&[PAGE_ZERO]);
+        let linked = linked_summary(&fixture.version_id, "ödeme yapılmadığını belirtmiştir");
+        let row = fixture
+            .db
+            .record_ai_candidate(&fixture.run_id, "summary", &linked)
+            .expect("kayıt");
+        let attribution = row.sentence_attribution.expect("cümle bağı");
+        assert_eq!(attribution.state, "linked");
+        assert_eq!(attribution.backed, 1);
+        assert_eq!(attribution.sentences.len(), 1);
+        assert_eq!(
+            attribution.sentences[0].text,
+            "Kiracı ödeme yapılmadığını belirtmiştir."
+        );
+        // Doğrulama raporu da aynı bağı taşır (kaydetmeden önce görünür).
+        let report = fixture
+            .db
+            .validate_ai_candidate(&fixture.run_id, "summary", &linked)
+            .expect("doğrula");
+        assert_eq!(
+            report
+                .sentence_attribution
+                .as_ref()
+                .map(|attribution| attribution.state.as_str()),
+            Some("linked")
+        );
+
+        let missing = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Kiracı ödeme yapılmadığını belirtmiştir.",
+            "quotes": [{
+                "documentVersionId": fixture.version_id,
+                "quote": "metinde bulunmayan bir pasaj",
+                "sentences": ["Kiracı ödeme yapılmadığını belirtmiştir."],
+            }],
+        })
+        .to_string();
+        let row = fixture
+            .db
+            .record_ai_candidate(&fixture.run_id, "summary", &missing)
+            .expect("kayıt");
+        let attribution = row.sentence_attribution.expect("cümle bağı");
+        assert_eq!(attribution.state, "partial");
+        assert_eq!(attribution.unsourced, 1);
+        assert_eq!(attribution.sentences[0].state, "unsourced");
+
+        // Özet dışı aday cümle bağı taşımaz (bağ kavramı özete özgü).
+        let claim = candidate(
+            &fixture.version_id,
+            "ödeme yapılmadığını belirtmiştir",
+            Some(0),
+        );
+        let row = fixture
+            .db
+            .record_ai_candidate(&fixture.run_id, "claim", &claim)
+            .expect("kayıt");
+        assert!(row.sentence_attribution.is_none());
+
+        // Liste yolu da aynı bağı taşır (TEK hesap, iki okuma).
+        let listed = fixture
+            .db
+            .list_ai_candidates(&fixture.run_id)
+            .expect("liste");
+        assert_eq!(
+            listed[0]
+                .sentence_attribution
+                .as_ref()
+                .map(|a| a.state.as_str()),
+            Some("linked")
+        );
+        assert_eq!(
+            listed[1].sentence_attribution.as_ref().map(|a| a.unsourced),
+            Some(1)
+        );
+        assert!(listed[2].sentence_attribution.is_none());
     }
 
     /// Olay çıkarımı ayrı onayla koşar; aday `event_candidate` doğar.
@@ -2066,6 +2596,217 @@ mod tests {
             .issues
             .iter()
             .any(|i| i.code == "wrong_type" && i.field == "title"));
+    }
+
+    /// F11-T07 — cümle bölme deterministik ve kısaltma güvenli olmalı.
+    #[test]
+    fn summary_sentences_split_legal_text_without_breaking_abbreviations() {
+        let text = "Av. Ahmet Yılmaz 12.03.2024 tarihli dilekçede ödeme yapılmadığını belirtti. \
+                    T.C. Ankara 5. Asliye Hukuk Mahkemesi'nde dava açıldı. TBK m. 49 uyarınca \
+                    temerrüt oluştu!";
+        let sentences = split_sentences(text);
+        assert_eq!(sentences.len(), 3, "{sentences:?}");
+        assert!(sentences[0].starts_with("Av. Ahmet"), "{:?}", sentences[0]);
+        assert!(
+            sentences[1].starts_with("T.C. Ankara"),
+            "{:?}",
+            sentences[1]
+        );
+        assert_eq!(sentences[2], "TBK m. 49 uyarınca temerrüt oluştu!");
+
+        // `...` tek sonlandırıcıdır; tire ve iki nokta bölmez.
+        let ellipsis = split_sentences("Ödeme yapılmadı... Kiracı itiraz etti: haklı buldu.");
+        assert_eq!(ellipsis.len(), 2, "{ellipsis:?}");
+        assert_eq!(ellipsis[0], "Ödeme yapılmadı...");
+        assert_eq!(ellipsis[1], "Kiracı itiraz etti: haklı buldu.");
+
+        // Yıl/sayı ile biten cümle bilinçli olarak bölünmez (dürüst sınır).
+        assert_eq!(split_sentences("Ödeme 2024."), vec!["Ödeme 2024."]);
+
+        // Sonraki harf küçükse yeni cümle sayılmaz (muhafazakâr kural).
+        assert_eq!(split_sentences("Ödeme yapıldı. ancak makbuz yok.").len(), 1);
+
+        // Baş harf ve çok haneli sıra sayısı da cümle sonu değildir.
+        assert_eq!(
+            split_sentences("A. Yılmaz davayı açtı. Karar verildi.").len(),
+            2
+        );
+        assert_eq!(
+            split_sentences("Dava 12. Asliye Hukuk Mahkemesi'nde açıldı. Karar verildi.").len(),
+            2
+        );
+    }
+
+    fn match_report(index: usize, state: &str) -> QuoteMatchReport {
+        QuoteMatchReport {
+            index,
+            document_version_id: "v1".into(),
+            quote: "alıntı metni yeterince uzun".into(),
+            label: None,
+            state: state.into(),
+            reason: None,
+            claimed_page_index: None,
+            page_index: None,
+            char_start: None,
+            occurrences: 0,
+            candidates: Vec::new(),
+            text_origin: None,
+            parse_run_id: None,
+            segment_id: None,
+            outbound_state: "not_recorded".into(),
+            transform_kind: None,
+            source_char_start: None,
+            source_char_end: None,
+            masked: false,
+        }
+    }
+
+    /// F11-T07 — kaynaksız cümle **görünür** ayrılır; uydurma bağ kurulmaz.
+    #[test]
+    fn summary_sentence_attribution_separates_unsourced_commentary() {
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödeme yapılmadığı ileri sürülmüştür. Bu durum kiracıyı güç durumda bırakmıştır.",
+            "quotes": [
+                {
+                    "documentVersionId": "v1",
+                    "quote": "ödeme yapılmadığı ileri sürülmüştür",
+                    "sentences": ["Ödeme yapılmadığı ileri sürülmüştür."],
+                },
+                {
+                    "documentVersionId": "v1",
+                    "quote": "kiracıyı güç durumda bırakmıştır",
+                    "sentences": ["Bu durum kiracıyı güç durumda bırakmıştır."],
+                },
+            ],
+        })
+        .to_string();
+
+        let attribution = summary_sentence_attribution(
+            &payload,
+            &[match_report(0, "exact"), match_report(1, "not_found")],
+        )
+        .expect("bağ");
+        assert_eq!(attribution.state, "partial");
+        assert_eq!(attribution.sentences.len(), 2);
+        assert_eq!(attribution.backed, 1);
+        assert_eq!(attribution.unsourced, 1);
+        assert_eq!(attribution.weak, 0);
+        assert_eq!(attribution.linked_quotes, 2);
+        assert_eq!(attribution.unlinked_quotes, 0);
+        assert_eq!(attribution.sentences[0].state, "backed");
+        assert_eq!(attribution.sentences[0].quote_indexes, vec![0]);
+        assert_eq!(attribution.sentences[1].state, "unsourced");
+        assert_eq!(attribution.sentences[1].quote_indexes, vec![1]);
+
+        // Belirsiz/başka sayfa: varlık doğrulandı, konum tek değil → zayıf.
+        let weak =
+            summary_sentence_attribution(&payload, &[match_report(0, "ambiguous")]).expect("bağ");
+        assert_eq!(weak.sentences[0].state, "weak");
+        assert_eq!(weak.weak, 1);
+        assert_eq!(weak.backed, 0);
+        assert_eq!(weak.state, "partial");
+
+        // Metinde karşılığı olmayan cümle bildirimi bağ kurmaz; sayılır ve
+        // tek cümle dayanaklı olsa bile bütün "linked" sayılmaz.
+        let unmatched_payload = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödeme yapılmadığı ileri sürülmüştür.",
+            "quotes": [
+                {
+                    "documentVersionId": "v1",
+                    "quote": "ödeme yapılmadığı ileri sürülmüştür",
+                    "sentences": ["Ödeme yapılmadığı ileri sürülmüştür."],
+                },
+                {
+                    "documentVersionId": "v1",
+                    "quote": "uydurma bir cümle metni",
+                    "sentences": ["Metinde olmayan cümle."],
+                },
+            ],
+        })
+        .to_string();
+        let unmatched = summary_sentence_attribution(
+            &unmatched_payload,
+            &[match_report(0, "exact"), match_report(1, "exact")],
+        )
+        .expect("bağ");
+        assert_eq!(unmatched.state, "partial");
+        assert_eq!(unmatched.unmatched, 1);
+        assert_eq!(unmatched.backed, 1);
+        assert_eq!(unmatched.unsourced, 0);
+    }
+
+    /// F11-T07 — model bağ bildirmediyse "kaynaksız" **denmez**; ayrım yapılamaz.
+    #[test]
+    fn summary_sentence_attribution_without_links_is_unlinked() {
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödeme yapılmadığı ileri sürülmüştür.",
+            "quotes": [{
+                "documentVersionId": "v1",
+                "quote": "ödeme yapılmadığı ileri sürülmüştür",
+            }],
+        })
+        .to_string();
+        let attribution =
+            summary_sentence_attribution(&payload, &[match_report(0, "exact")]).expect("bağ");
+        assert_eq!(attribution.state, "unlinked");
+        assert!(attribution.sentences.is_empty());
+        assert_eq!(attribution.linked_quotes, 0);
+        assert_eq!(attribution.unlinked_quotes, 1);
+        assert_eq!(attribution.unsourced, 0);
+    }
+
+    /// F11-T07 — bağ zorunlu; bildirilen cümle metinde yoksa bağ kurulmaz.
+    #[test]
+    fn summary_requires_sentence_links_that_exist_in_the_text() {
+        let unlinked = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödeme yapılmadığı ileri sürülmüştür.",
+            "quotes": [{"documentVersionId": "v1", "quote": "ödeme yapılmadığı ileri sürülmüştür"}],
+        })
+        .to_string();
+        let schema = validate_candidate_payload("summary", &unlinked);
+        assert_eq!(schema.state, "partial");
+        assert!(schema
+            .issues
+            .iter()
+            .any(|i| i.code == "sentence_links_missing" && i.severity == "warning"));
+
+        let missing = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödeme yapılmadığı ileri sürülmüştür.",
+            "quotes": [{
+                "documentVersionId": "v1",
+                "quote": "ödeme yapılmadığı ileri sürülmüştür",
+                "sentences": ["Metinde olmayan bir cümle."],
+            }],
+        })
+        .to_string();
+        let schema = validate_candidate_payload("summary", &missing);
+        assert_eq!(schema.state, "partial");
+        assert!(schema
+            .issues
+            .iter()
+            .any(|i| i.code == "sentence_not_found" && i.field == "quotes[0].sentences[0]"));
+
+        let claim = serde_json::json!({
+            "schemaVersion": 1,
+            "text": "Ödeme yapılmadığı ileri sürülmüştür.",
+            "quotes": [{
+                "documentVersionId": "v1",
+                "quote": "ödeme yapılmadığı ileri sürülmüştür",
+                "sentences": ["Ödeme yapılmadığı ileri sürülmüştür."],
+            }],
+        })
+        .to_string();
+        let schema = validate_candidate_payload("claim", &claim);
+        assert_eq!(schema.state, "partial");
+        assert!(schema
+            .issues
+            .iter()
+            .any(|i| i.code == "sentences_unsupported" && i.severity == "warning"));
     }
 
     #[test]
