@@ -517,7 +517,7 @@ const LIBRARY_REPORT: LibraryInTextCheck = {
           title: "Kira alacağı",
           versionId: "pv1",
           method: "exact",
-          occurrences: 1,
+          occurrences: 2,
           charStart: 119,
           charEnd: 137,
           sourceText: "kira bedeli ödenmedi",
@@ -2802,6 +2802,8 @@ describe("emsal ekranı: alıntılar kütüphane genelinde aranır (F12-T14k)", 
       libraryMatchCitation(LIBRARY_REPORT.quotes[0]!.matches[0]!),
     );
     expect(status).toContain("kira bedeli ödenmedi");
+    // Aynı kararda birden çok geçiş gizlenmez.
+    expect(status).toContain("2 konum");
     // İkinci alıntı hiçbir kararda yok: «bulunamadı», «uydurma» değil.
     expect(status).toContain(libraryQuoteFindingText(LIBRARY_REPORT.quotes[1]!));
     expect(status).toContain(LIBRARY_REPORT.notes[0]!);

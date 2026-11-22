@@ -2086,6 +2086,7 @@ export const tr = {
     libraryPartial: "kesin değil · tarama sınırlı",
     libraryNoLibraryText: "kütüphane metni yok",
     libraryHidden: "{count} eşleşme daha var (liste sınırı)",
+    libraryOccurrences: "{count} konum",
     librarySource: "kaynak",
     scanVersions: "{count} sürüm tarandı",
     scanHistorical: "{count} eski sürüm",

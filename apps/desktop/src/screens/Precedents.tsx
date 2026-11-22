@@ -1101,6 +1101,9 @@ export function Precedents() {
                         <div key={match.precedentId} className="hint" style={{ marginTop: 2 }}>
                           {libraryMatchCitation(match)} ·{" "}
                           {t("precedentLib.librarySource")}: “{match.sourceText}”
+                          {match.occurrences > 1 ? (
+                            <> · {t("precedentLib.libraryOccurrences", { count: match.occurrences })}</>
+                          ) : null}
                         </div>
                       ))}
                     </li>
