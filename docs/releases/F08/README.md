@@ -34,6 +34,7 @@
 | F08-T04aj | ✅ | **inceleme hükmü (karar + çelişki değerlendirmesi) doğuşta kanıtlı, sonra değişmez** (şema **v62**): `review_decisions` + `contradiction_assessments` üzerinde **6 tetikleyici** — karar yalnız **açık** öğe için (yerine geçmemiş, hedefi yazılmamış, dosyası silinmemiş), `edit` yükü zorunlu, damga ISO + gerçek gün/saat, yük geçerli JSON; değerlendirme **kendi dosyasının çelişki adayı** için (INV-05); iki sicil de **hiçbir sütunuyla** değişmez ve silinemez (CASCADE dahil); ölçülen kusur: 61 kusur yazımının **57'si** kabul ediliyordu (karar `accept`→`reject` çevriliyor, kapanmış öğeye yeni karar yazılıyor, başka dosyanın değerlendirmesi kabul ediliyor, `dün` damga ve bozuk yük geçiyordu); **40/40 mutasyon**; `GUARDED_TABLES` 25 kalır (2026-11-20) |
 | F08-T04ak | ✅ | **sayfa kanıtı (geometri, OCR kökeni, etiket) doğuşta iyi biçimli, sonra değişmez** (şema **v63**): `pages` üzerinde **2 tetikleyici** — kimlik kırpılmış-dolu ≤64, `page_index ≥ 0`, döndürme 0..359, etiket/koordinat uzayı kırpılmış-dolu, `width`/`height` NULL ya da **pozitif**, `quality_flags` **metin dizisi**; on bir kanıt sütunu **donar** (no-op takılmaz); ölçülen kusur: 47 yazımın **42'si** kabul ediliyordu (NULL/boş/boşluk kimlik, sıfır/negatif/metin geometri, `ocr`→`native` çevirisi, sayfanın **başka koşuya** taşınması, bozuk uyarı listesi) ve v54'ün sayfa sınırı hükmü **geriye dönük** bozulabiliyordu (maske sayfa dışına taşar); `GUARDED_TABLES` 25 kalır (2026-11-22) |
 | F08-T04al | ✅ | **denetim defteri eklemelidir** (şema **v64**): `audit_events` üzerinde **4 tetikleyici** — doğuşta kimlik/kategori/işlem/aktör/`entity_id` kırpılmış-dolu ≤64, `metadata_allowlist` **JSON nesnesi**, damga `YYYY-MM-DDTHH:MM:SS.uuuuuuZ` **gerçek** gün/saat, `event_hash` 64 küçük harf hex, `prior_hash` **defterin son satırının özeti** (boş defterde NULL), satır defterin **sonuna** eklenir; dokuz sütun **donar** (no-op takılmaz); satır **silinemez**. Ölçülen: 39 kusur yazımının **39'u** kabul ediliyordu (2026-11-23) |
+| F08-T04am | ✅ | **dosya tarafı ve rolü kanıtlı doğar, sonra değişmez; birleştirme makbuzu silinemez** (şema **v65**): `actors` + `case_participants` + `actor_merges` üzerinde **9 tetikleyici** — ad/kimlik/`normalized_names` iyi biçimli doğar ve kimlik sütunları **donar**; `review_state` yalnız **makbuzlu** birleştirme geçişleriyle değişir; katılımcı `case_id`/rol/not/aralık donar, `actor_id` yalnız makbuzun taşıdığı satırda ve yalnız hedef/kaynak yönünde değişir; silinmiş satır geri getirilemez; üç tabloda da satır **silinemez**. Ölçülen: 92 yazımın **92'si** kabul ediliyordu (2026-11-23) |
 
 ## Doğrulama
 
@@ -4137,3 +4138,127 @@ için `append_audit` sıralıdır; çok süreçli yazma bu dilimde ölçülmedi.
 (f) Tetikleyiciler `DROP TRIGGER` ile düşürülebilir — ürün yolu bunu yapmaz,
 anahtarı olan saldırgan yapabilir. (g) Arayüz değişmedi; gerçek pencere +
 görsel QA **insan bekliyor**.
+
+## F08-T04am — dosya tarafı ve rolü kanıtlı doğar, sonra değişmez; birleştirme makbuzu silinemez (şema v65, 2026-11-23)
+
+**Neden bu dilim:** `actors` + `case_participants` + `actor_merges` üçlüsü
+birlikte **«bu kişi bu dosyada şu rolde taraf»** iddiasını taşır.
+`Parties.tsx` listeyi `display_name` + `kind` + `role` + `role_note`
+sütunlarından **doğrudan** basar; birleştirme geçmişini
+`actor_merges.moved_participants`ten çözer (`case_ids` ile dosya süzülür).
+`add_case_party` birleştirilmiş (`merged`) tarafa yeni rol yazmaz;
+`merge_actors` kaynağın rollerini hedefe taşır ve makbuz bırakır;
+`undo_actor_merge` rolleri kaynağa döndürür ve kaynağın **önceki inceleme
+durumunu** birebir yazar. Üç tablonun da 0001/0025'ten beri **hiçbir
+tetikleyicisi yoktu**: ad kırpılmadan, rol boş, `normalized_names` bozuk
+JSON, `review_state` keyfî çevrilebilir, katılımcı **başka dosyaya**
+taşınabilir, silinmiş satır geri getirilebilir, birleştirme makbuzu
+silinebilirdi. Şemadaki tek kapılar `kind`/`review_state` CHECK'leri, iki FK
+ve `UNIQUE (case_id, actor_id, role)` idi.
+
+**Ölçülen (düzeltme öncesi, gerçek SQLite v64; sonda
+`scratch/dim-v65-probe/measure_v65.py`, log `measure_before.log`):**
+**92 yazımın 92'si KABUL** — 83 kusur (29 `actors` + 33 katılımcı +
+21 makbuz) + 9 meşru yol. Doğum (57): kimlik boş/boşluk/kırpılmamış/65 hane;
+ad boş/boşluk/kırpılmamış/201 hane/CR-LF-TAB; `normalized_names` bozuk
+JSON/nesne/sayı dizisi; doğuşta `merged`, doğuşta `merged_into`, doğuşta
+silinmiş; damga `dün`/geri; `row_version` 0; katılımcıda **silinmiş dosya**,
+**silinmiş aktör**, **birleştirilmiş aktöre rol**, boş/kırpılmamış/81 hane
+rol, rolde TAB, boş/kırpılmamış/501 hane not, `valid_from` `dün`/takvim dışı
+gün, `valid_to` `dün`, **ters aralık**; makbuzda **aynı kaynak/hedef**,
+silinmiş kaynak, `merged` kaynak, `source_previous_state='merged'`,
+bozuk/nesne/metin `moved` listesi, eksik `id`, boş/kırpılmamış/201 hane
+inceleyen, damga `dün`, doğuşta `undone_at`. UPDATE/DELETE (26): aktörde
+ad/`kind`/`normalized_names`/`created_at` çevirme, `accepted→rejected`,
+merged olmadan `merged_into`, merged hedefi çevirme, `row_version` 0, damga
+`dün`, **silme**; katılımcıda **başka dosyaya taşıma**, rol/not/`valid_from`
+çevirme, **keyfî `actor_id`**, silinmişi **geri getirme**, silinmiş satırda
+içerik, `row_version` 0, damga `dün`, **silme**; makbuzda
+hedef/taşınanlar/inceleyen/damga çevirme, geri alınmışı geri alma, **silme**.
+Meşru yollar (9): aktör ve katılımcı doğumu (boş ve geçerli aralıkla),
+aktör/katılımcı no-op, geri dönüşümlü silme, **birleştirme**, **geri alma**,
+hazır birleştirmenin geri alınması.
+
+**Yazılan (`0065_case_party_evidence_guard.sql`, 3 + 3 + 3 tetikleyici):**
+`actor_identity_evidence_guard_bi` — `id` kırpılmış-dolu ≤64;
+`display_name` kırpılmış-dolu ≤200 ve CR/LF/TAB taşımaz; `normalized_names`
+**metin dizisi** (bozuk JSON/nesne/sayı dizisi reddedilir); doğuşta `merged`
+değil ve `merged_into_actor_id` **NULL**; iki damga ISO-8601 + **gerçek
+gün/saat** ve `updated_at ≥ created_at`; `row_version ≥ 1`; doğuşta
+silinmemiş. `actor_identity_evidence_guard_bu` — kimlik sütunları **donar**
+(`id`, `display_name`, `kind`, `normalized_names`, `created_at`,
+`created_by_local_actor_id`); `deleted_at` yalnız NULL→damga, silinmiş satır
+**hiç** değişmez; `review_state` yalnız **iki geçiş**: `merged`a giriş
+(hedef var, açık, kendisi değil, hedef merged değil) ve `merged`dan çıkış
+(yalnız kendisini kaynak gösteren bir **makbuz** varken, `merged_into`
+NULL'a); başka durum çevrimi yok; `row_version` azalamaz, bu iki sütun
+değişiyorsa **artmalı**. `actor_identity_evidence_guard_bd` — satır
+**silinemez**. `case_participant_evidence_guard_bi` — `id` kırpılmış-dolu
+≤64; `case_id` **var ve silinmemiş** dosya; `actor_id` **var, silinmemiş ve
+`merged` değil**; `role` kırpılmış-dolu ≤80 ve CR/LF/TAB taşımaz;
+`role_note` NULL ya da kırpılmış-dolu ≤500; `valid_from`/`valid_to` NULL ya
+da gerçek günle başlayan ISO damga ve aralık **ters değil**; damga kuralları;
+`row_version ≥ 1`; doğuşta silinmemiş.
+`case_participant_evidence_guard_bu` — `id`, `case_id`, `role`, `role_note`,
+`valid_from`, `valid_to`, `created_at`, `created_by_local_actor_id`
+**donar**; `actor_id` yalnız bir **makbuzun** taşıdığı satır için ve yalnız
+makbuzun hedefi (ileri) ya da kaynağı (geri alma, kaynak hâlâ `merged`)
+yönünde değişir; `deleted_at` yalnız NULL→damga, silinmiş satır değişmez;
+`row_version` azalamaz, `actor_id`/`deleted_at` değişiyorsa **artmalı**.
+`case_participant_evidence_guard_bd` — satır **silinemez** (ürün yolu
+`deleted_at`). `actor_merge_receipt_guard_bi` — `id` kırpılmış-dolu ≤64;
+kaynak/hedef **var, silinmemiş, farklı** ve ikisi de `merged` değil;
+`source_previous_state` kapalı küme (`merged` olamaz); `moved_participants`
+**nesne dizisi** (`id` + `caseId` metin — sözleşme serde `camelCase`tir;
+eski bozuk satır `json_valid` ile ayrılır); inceleyen kırpılmış-dolu ≤200;
+damga ISO + gerçek gün/saat; doğuşta `undone_at` NULL.
+`actor_merge_receipt_guard_bu` — makbuz sütunları **donar**; `undone_at`
+yalnız NULL→damga, sonra **terminal**. `actor_merge_receipt_guard_bd` —
+makbuz **silinemez**. Ret `DIM_INTEGRITY:actors` /
+`DIM_INTEGRITY:case_participants` / `DIM_INTEGRITY:actor_merges` →
+**`E_DB_INTEGRITY`**. Kapsam sütunu taşınmadığı için `GUARDED_TABLES`
+**25 kalır**. **Çekirdek hizası:** yazma yolları zaten kırpıyor, boşu
+reddediyor ve `now_iso()` kullanıyor — ürün davranışı değişmedi; kapı iki
+çekirdek kuralını (birleştirilmiş tarafa rol eklenmez, birleştirme çakışmayı
+önceden reddeder) şemada da tutar.
+
+**Kapı (`scratch/v65-gates.py`, log `v65_gates_run3.log`):** taban YEŞİL,
+**31/31 mutant KIRMIZI · YEŞİL 0 · ÖLÇÜLEMEDİ 0**, her mutantta hedef delik
+açıldı; kaynak sha256 **birebir** geri yazıldı (`77c6c3cb20e253ce…`).
+**Dürüst (üç koşu):** ilk koşu **21/31** — on mutant YEŞİL kaldı: testte
+boş/kırpılmamış kimlik, takvim dışı `created_at`, boş rol, keyfî `actor_id`
+için yalıtılmış saldırı yoktu ve güncelleme damgası doğumdan **önce**
+alındığı için `updated_at < created_at` cümlesi hedef cümleyi maskeliyordu.
+İkinci koşu **28/31** — kalan üç: geri getirme saldırısı `row_version`ı
+artırmıyordu, makbuz saldırıları birleştirmeden **sonra** yazıldığı için
+`merged` kaynak cümlesine takılıyordu. Saldırılar yalıtıldı (damga
+güncellemeden sonra; `row_version` artırıldı; makbuz saldırıları
+birleştirmeden önce) → **31/31**. İlk iki koşunun hükümleri kanıt sayılmadı,
+kapı gevşetilmedi. Eşdeğer çıkan «merged değilken `merged_into` dolu
+olamaz» cümlesi koddan **çıkarıldı** (durum değişmiyorsa kimlik cümlesi,
+değişiyorsa geçiş cümlesi yakalar).
+
+**CI (ölçüldü):** kod `8507a4d` (4 dosya, **+902/−1**: `0065`, `lib.rs`,
+`actors.rs`, `upgrade_tests.rs`) → run `45137798693` **10/10 YEŞİL**
+(`dim-storage` **770** iki OS'ta: macos-15 **589,67 s** / ubuntu-latest
+**1.083,02 s**; `arayüz` 67 dosya / **1.482** test, paket
+`index-Ce2oEuEs.js` **731,38 kB** / gzip 194,04 kB; `masaüstü kabuk`,
+`windows güvenli depo`, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) damga **gelecekte** olabilir; (b) SQLite `trim()`
+yalnız ASCII boşluk kırpar (U+00A0 artığı geçer); kontrol karakterlerinden
+yalnız CR/LF/TAB denetlenir (gömülü NUL SQL metninde temsil edilemez, Rust
+hepsini reddeder); (c) `display_name`/`role` **içeriği** (gerçek kişi mi) ve
+rolün hukuki doğruluğu denetlenmez; (d) `normalized_names` eşleştirme
+iddiası taşımaz; (e) birleştirme makbuzu **kendi içinde** tutarlıdır ama
+kaynağın gerçekten o hedefe ait olduğu ve `reviewer_label` kimliği
+doğrulanmaz; (f) v65 öncesi tutarsız satırlar silinmez/düzeltilmez (BU
+dondurur, BD silmeyi durdurur) — onarım yolu **yeni taraf/rol** kaydıdır;
+(g) BD CASCADE'i de durdurur: tarafı olan dosya **hard-delete** edilemez
+(ürün yolu soft-delete); (h) `merged`dan çıkış, makbuz varken doğrudan SQL
+ile de yazılabilir (makbuz `undone_at`ı ayrıca işaretlenmez) — çekirdek
+`undo_actor_merge` her ikisini birlikte yapar; (i) `row_version` monotonluğu
+eşzamanlı yazarları sıraya sokmaz; (j) tetikleyicileri anahtarı olan
+saldırgan düşürebilir; (k) arayüz değişmedi; gerçek pencere + görsel QA
+**insan bekliyor**.
