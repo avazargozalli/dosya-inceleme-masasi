@@ -3935,3 +3935,116 @@ fn upgrade_keeps_audit_ledger_written_before_the_evidence_gate() {
         other => panic!("v64 defteri silmemeli: {other:?}"),
     }
 }
+
+#[test]
+fn upgrade_keeps_parties_written_before_the_evidence_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 64);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             -- v65 öncesi: ad kırpılmamış, normalize liste bozuk, damga serbest,
+             -- satır sürümü 0.
+             INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-eski','  Boşluklu Ad  ','person','bozuk','accepted','dün','dün',0);
+             INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-hedef','Hedef','person','[]','accepted',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1);
+             -- v65 öncesi rol: kırpılmamış, ters aralık, damga 'dün'.
+             INSERT INTO case_participants
+               (id,case_id,actor_id,role,valid_from,valid_to,created_at,updated_at,row_version)
+             VALUES ('p-eski','c1','a-eski',' davalı ','2026-06-01','2026-05-01',
+                     'dün','dün',0);
+             -- v65 öncesi makbuz: bozuk taşınan liste, kapalı küme dışı önceki durum.
+             INSERT INTO actor_merges
+               (id,source_actor_id,target_actor_id,source_previous_state,moved_participants,
+                reviewer_label,created_at)
+             VALUES ('m-eski','a-eski','a-hedef','merged','bozuk','  ', 'dün');",
+        )
+        .expect("v64 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satırlar **silinmez ve onarılmaz**: v65 yalnız yeni yazmayı durdurur.
+    let (name, names, part_role, moved): (String, String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT a.display_name, a.normalized_names, p.role, m.moved_participants
+               FROM actors a, case_participants p, actor_merges m
+              WHERE a.id='a-eski' AND p.id='p-eski' AND m.id='m-eski'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("eski satırlar okunur");
+    assert_eq!(name, "  Boşluklu Ad  ");
+    assert_eq!(names, "bozuk");
+    assert_eq!(part_role, " davalı ");
+    assert_eq!(moved, "bozuk");
+
+    // Kimlik sütunu eski satırda da donar.
+    match db
+        .conn()
+        .execute(
+            "UPDATE actors SET display_name='Başka' WHERE id='a-eski'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("actors")),
+        other => panic!("v65 eski aktör kimliğini dondurmalı: {other:?}"),
+    }
+
+    // Kapı yeni biçimsiz yazmayı reddeder.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-yeni','  Boşluk  ','person','[]','accepted',?1,?1,1)",
+            rusqlite::params![now_iso()],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("actors")),
+        other => panic!("v65 biçimsiz aktörü reddetmeli: {other:?}"),
+    }
+
+    // Meşru ürün yolu güncellemeden sonra da çalışır: yeni taraf + birleştirme +
+    // geri alma (eski kırpılmamış rol satırı taşınır, içeriği değişmez).
+    let added = db
+        .add_case_party(
+            "c1",
+            &NewCaseParty {
+                display_name: "Yeni Taraf",
+                kind: "person",
+                role: "vekil",
+                role_note: None,
+                actor_id: None,
+            },
+        )
+        .expect("yeni taraf");
+    let merge = db
+        .merge_actors("a-eski", "a-hedef", "local-user")
+        .expect("birleştir");
+    assert!(merge.moved_participant_ids.iter().any(|id| id == "p-eski"));
+    let undone = db.undo_actor_merge(&merge.id).expect("geri al");
+    assert!(undone.undone_at.is_some());
+    assert_eq!(
+        db.list_case_parties("c1")
+            .expect("liste")
+            .participants
+            .len(),
+        2
+    );
+    drop(added);
+}

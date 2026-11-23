@@ -859,4 +859,315 @@ mod tests {
         assert_eq!(db.list_case_parties(&first).expect("1").merges.len(), 1);
         assert!(db.list_case_parties(&second).expect("2").merges.is_empty());
     }
+
+    fn denied<P: rusqlite::Params>(db: &Database, table: &str, sql: &str, params: P) {
+        match db.conn().execute(sql, params).map_err(StorageError::from) {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains(table), "mesaj: {message} ({sql})")
+            }
+            other => panic!("{table} kapısı yazmayı kabul etti: {other:?} ({sql})"),
+        }
+    }
+
+    #[test]
+    fn party_identity_roles_and_merge_receipts_are_evidenced_and_frozen() {
+        let db = db();
+        let case_id = case(&db, "Taraf kapısı");
+        let other_case = case(&db, "Başka dosya");
+        let at = now_iso();
+
+        let source = db
+            .add_case_party(&case_id, &party("A. Yılmaz", "person", "davacı", None))
+            .expect("kaynak");
+        let target = db
+            .add_case_party(&case_id, &party("Ayşe Yılmaz", "person", "tanık", None))
+            .expect("hedef");
+        let third = db
+            .add_case_party(&case_id, &party("Üçüncü", "person", "tanık2", None))
+            .expect("üçüncü");
+        // Güncelleme damgaları doğumdan **sonra** olmalı; aksi hâlde
+        // `updated_at < created_at` cümlesi hedef cümleyi maskeler.
+        let later = now_iso();
+
+        // --- actors: doğum kapısı ---
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-bosluk','  Boşluk  ','person','[]','accepted',?1,?1,1)",
+            [&at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-json','Ad','person','bozuk','accepted',?1,?1,1)",
+            [&at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-nesne','Ad','person','{}','accepted',?1,?1,1)",
+            [&at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('','Ad','person','[]','accepted',?1,?1,1)",
+            [&at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES (' a-trim ','Ad','person','[]','accepted',?1,?1,1)",
+            [&at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-takvim','Ad','person','[]','accepted',
+                     '2026-13-45T00:00:00.000000Z','2027-01-01T00:00:00.000000Z',1)",
+            [],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES (?1,'Ad','person','[]','accepted',?2,?2,1)",
+            [&"x".repeat(65), &at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-uzun',?1,'person','[]','accepted',?2,?2,1)",
+            [&"A".repeat(201), &at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-lf',?1,'person','[]','accepted',?2,?2,1)",
+            [&"Ali\nVeli".to_string(), &at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-tarih','Ad','person','[]','accepted','dün','dün',1)",
+            [],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,row_version)
+             VALUES ('a-merged','Ad','person','[]','merged',?1,?1,1)",
+            [&at],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,
+                row_version,merged_into_actor_id)
+             VALUES ('a-hedef','Ad','person','[]','accepted',?1,?1,1,?2)",
+            [&at, &source.actor_id],
+        );
+        denied(
+            &db,
+            "actors",
+            "INSERT INTO actors
+               (id,display_name,kind,normalized_names,review_state,created_at,updated_at,
+                row_version,deleted_at)
+             VALUES ('a-silinmis','Ad','person','[]','accepted',?1,?1,1,?1)",
+            [&at],
+        );
+
+        // --- actors: kimlik donar, durum yalnız birleştirmeyle değişir ---
+        denied(
+            &db,
+            "actors",
+            "UPDATE actors SET display_name='Başka' WHERE id=?1",
+            [&source.actor_id],
+        );
+        denied(
+            &db,
+            "actors",
+            "UPDATE actors SET review_state='rejected', updated_at=?1, row_version=2 WHERE id=?2",
+            [&later, &source.actor_id],
+        );
+        denied(
+            &db,
+            "actors",
+            "UPDATE actors SET merged_into_actor_id=?1, updated_at=?2, row_version=2 WHERE id=?3",
+            [&target.actor_id, &later, &source.actor_id],
+        );
+        denied(
+            &db,
+            "actors",
+            "DELETE FROM actors WHERE id=?1",
+            [&source.actor_id],
+        );
+
+        // --- case_participants: doğum kapısı ---
+        db.conn()
+            .execute(
+                "UPDATE cases SET deleted_at=?1 WHERE id=?2",
+                [&at, &other_case],
+            )
+            .expect("dosya silindi");
+        denied(
+            &db,
+            "case_participants",
+            "INSERT INTO case_participants
+               (id,case_id,actor_id,role,created_at,updated_at,row_version)
+             VALUES ('p-silinmis-dosya',?1,?2,'vekil',?3,?3,1)",
+            [&other_case, &source.actor_id, &at],
+        );
+        db.conn()
+            .execute(
+                "UPDATE actors SET deleted_at=?1 WHERE id=?2",
+                [&at, &third.actor_id],
+            )
+            .expect("aktör silindi");
+        denied(
+            &db,
+            "case_participants",
+            "INSERT INTO case_participants
+               (id,case_id,actor_id,role,created_at,updated_at,row_version)
+             VALUES ('p-silinmis-aktor',?1,?2,'vekil',?3,?3,1)",
+            [&case_id, &third.actor_id, &at],
+        );
+        denied(
+            &db,
+            "case_participants",
+            "INSERT INTO case_participants
+               (id,case_id,actor_id,role,created_at,updated_at,row_version)
+             VALUES ('p-bosluk-rol',?1,?2,' vekil ',?3,?3,1)",
+            [&case_id, &source.actor_id, &at],
+        );
+        denied(
+            &db,
+            "case_participants",
+            "INSERT INTO case_participants
+               (id,case_id,actor_id,role,valid_from,valid_to,created_at,updated_at,row_version)
+             VALUES ('p-ters',?1,?2,'vekiller','2026-06-01','2026-05-01',?3,?3,1)",
+            [&case_id, &source.actor_id, &at],
+        );
+        denied(
+            &db,
+            "case_participants",
+            "INSERT INTO case_participants
+               (id,case_id,actor_id,role,created_at,updated_at,row_version)
+             VALUES ('p-bos-rol',?1,?2,'',?3,?3,1)",
+            [&case_id, &source.actor_id, &at],
+        );
+
+        // --- case_participants: taşıma/çevirme/geri getirme yok ---
+        denied(
+            &db,
+            "case_participants",
+            "UPDATE case_participants SET case_id=?1 WHERE id=?2",
+            [&other_case, &source.id],
+        );
+        denied(
+            &db,
+            "case_participants",
+            "UPDATE case_participants SET role='davalı' WHERE id=?1",
+            [&source.id],
+        );
+        denied(
+            &db,
+            "case_participants",
+            "UPDATE case_participants SET actor_id=?1, updated_at=?2, row_version=2 WHERE id=?3",
+            [&target.actor_id, &later, &source.id],
+        );
+        db.remove_case_participant(&third.id).expect("kaldır");
+        denied(
+            &db,
+            "case_participants",
+            "UPDATE case_participants SET deleted_at=NULL, updated_at=?1, row_version=3 WHERE id=?2",
+            [&later, &third.id],
+        );
+        denied(
+            &db,
+            "case_participants",
+            "DELETE FROM case_participants WHERE id=?1",
+            [&source.id],
+        );
+
+        denied(
+            &db,
+            "actor_merges",
+            "INSERT INTO actor_merges
+               (id,source_actor_id,target_actor_id,source_previous_state,moved_participants,
+                reviewer_label,created_at)
+             VALUES ('m-moved',?1,?2,'accepted','bozuk','local-user',?3)",
+            [&source.actor_id, &target.actor_id, &later],
+        );
+        denied(
+            &db,
+            "actor_merges",
+            "INSERT INTO actor_merges
+               (id,source_actor_id,target_actor_id,source_previous_state,moved_participants,
+                reviewer_label,created_at)
+             VALUES ('m-rev',?1,?2,'accepted','[]','  x  ',?3)",
+            [&source.actor_id, &target.actor_id, &later],
+        );
+        // --- meşru yol: birleştirme + makbuz + geri alma hâlâ çalışır ---
+        let merge = db
+            .merge_actors(&source.actor_id, &target.actor_id, "local-user")
+            .expect("birleştir");
+        assert_eq!(merge.moved_participant_ids, vec![source.id.clone()]);
+        denied(
+            &db,
+            "case_participants",
+            "INSERT INTO case_participants
+               (id,case_id,actor_id,role,created_at,updated_at,row_version)
+             VALUES ('p-merged',?1,?2,'vekil',?3,?3,1)",
+            [&case_id, &source.actor_id, &at],
+        );
+        denied(
+            &db,
+            "actor_merges",
+            "UPDATE actor_merges SET target_actor_id=?1 WHERE id=?2",
+            [&source.actor_id, &merge.id],
+        );
+        denied(
+            &db,
+            "actor_merges",
+            "DELETE FROM actor_merges WHERE id=?1",
+            [&merge.id],
+        );
+        denied(
+            &db,
+            "actor_merges",
+            "INSERT INTO actor_merges
+               (id,source_actor_id,target_actor_id,source_previous_state,moved_participants,
+                reviewer_label,created_at)
+             VALUES ('m-ayni',?1,?1,'accepted','[]','local-user',?2)",
+            [&target.actor_id, &at],
+        );
+        let undone = db.undo_actor_merge(&merge.id).expect("geri al");
+        assert!(undone.undone_at.is_some());
+        let rows = db.list_case_parties(&case_id).expect("liste").participants;
+        assert!(rows
+            .iter()
+            .any(|row| row.actor_id == source.actor_id && row.role == "davacı"));
+    }
 }

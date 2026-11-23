@@ -524,9 +524,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0064_audit_ledger_evidence_guard",
         sql: include_str!("migrations/0064_audit_ledger_evidence_guard.sql"),
     },
+    Migration {
+        version: 65,
+        name: "0065_case_party_evidence_guard",
+        sql: include_str!("migrations/0065_case_party_evidence_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 64;
+pub const CURRENT_SCHEMA_VERSION: u32 = 65;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {
