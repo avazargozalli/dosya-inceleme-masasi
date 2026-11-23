@@ -4276,3 +4276,199 @@ fn upgrade_keeps_outbound_transforms_written_before_the_definition_gate() {
         )
         .expect("meşru tanım güncellemeden sonra da doğar");
 }
+
+/// **v68:** `render_derivatives` ve `ai_cache_entries` üzerindeki makbuz
+/// kapıları güncelleme sırasında **var olan satırları silmez/düzeltmez**;
+/// eski tutarsız satırlar okunur, kimlik sütunları donar (onarılamaz), yeni
+/// biçimsiz satır doğamaz, meşru yollar açık kalır.
+#[test]
+fn upgrade_keeps_derivative_and_cache_rows_written_before_the_receipt_gate() {
+    const TS: &str = "2026-11-24T09:00:00.000000Z";
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 67);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('c2','Öteki','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,
+                reference_count,integrity_status,integrity_checked_at,created_at)
+             VALUES ('b1','blob-0001',1,1024,'aad-ref-1',0,'unverified',NULL,
+                     '2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,declared_date_precision,
+                source_origin,status,created_at,updated_at,row_version)
+             VALUES ('d1','c1','Belge','pdf','unknown','import','active',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1);
+             INSERT INTO document_versions
+               (id,document_id,case_id,version_no,blob_id,original_sha256,byte_size,
+                detected_mime,imported_at)
+             VALUES ('v1','d1','c1',1,'b1',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     1024,'application/pdf','2026-01-01T00:00:00Z');
+             INSERT INTO parse_runs
+               (id,document_version_id,case_id,engine,engine_version,settings_hash,
+                status,created_at)
+             VALUES ('pr1','v1','c1','pymupdf','1.24',
+                     'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                     'succeeded','2026-01-01T00:00:00Z');
+             -- v68 öncesi türev: özetler biçimsiz, sürüm/koşu/blob bağı kanıtsız.
+             INSERT INTO render_derivatives
+               (id,document_version_id,parse_run_id,blob_id,renderer_version,
+                settings_hash,page_manifest,content_hash,created_at)
+             VALUES ('rd-eski','v1',NULL,'b1','r1','h-eski','[]','c-eski',
+                     '2026-01-01T00:00:00Z');
+             INSERT INTO ai_runs
+               (id,case_id,task_type,model_snapshot,input_manifest_hash,
+                prompt_version,output_schema_version,consent_id,status,created_at)
+             VALUES ('r2','c2','summarize','m',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'p1','o1',NULL,'running','2026-01-01T00:00:00Z');
+             -- v68 öncesi önbellek: çalıştırma **başka dosyanın**, damga biçimsiz.
+             INSERT INTO ai_cache_entries
+               (id,case_id,cache_key,ai_run_id,output_blob_id,validation_version,
+                expires_at,created_at)
+             VALUES ('ac-eski','c1','k1','r2','b1','v1',
+                     '2026-01-01T00:00:00.000000Z','2026-01-01T00:00:00Z'),
+                    ('ac-bozuk','c1','k2',NULL,NULL,'v1','dün',
+                     '2026-01-01T00:00:00Z');",
+        )
+        .expect("v67 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satırlar **olduğu gibi** durur: silinmez, sessizce düzeltilmez.
+    let (settings, content): (String, String) = db
+        .conn()
+        .query_row(
+            "SELECT settings_hash, content_hash FROM render_derivatives WHERE id='rd-eski'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("eski türev okunur");
+    assert_eq!((settings.as_str(), content.as_str()), ("h-eski", "c-eski"));
+    let (run, expires): (Option<String>, Option<String>) = db
+        .conn()
+        .query_row(
+            "SELECT ai_run_id, expires_at FROM ai_cache_entries WHERE id='ac-eski'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("eski önbellek okunur");
+    assert_eq!(run.as_deref(), Some("r2"), "çapraz bağ olduğu gibi kalır");
+    assert_eq!(expires.as_deref(), Some("2026-01-01T00:00:00.000000Z"));
+
+    fn expect_integrity<T>(result: Result<T, StorageError>, table: &str, name: &str) {
+        match result {
+            Err(StorageError::Integrity(message)) => {
+                assert!(message.contains(table), "{name}: {message}")
+            }
+            Err(other) => panic!("{name}: beklenen kapı hatası, gelen {other:?}"),
+            Ok(_) => panic!("{name}: kabul edilmemeli"),
+        }
+    }
+
+    // Kimlik sütunları eski satırda da donar (biçimsiz özet onarılamaz).
+    expect_integrity(
+        db.conn()
+            .execute(
+                "UPDATE render_derivatives SET settings_hash=?1 WHERE id='rd-eski'",
+                rusqlite::params!["b".repeat(64)],
+            )
+            .map_err(StorageError::from),
+        "render_derivatives",
+        "eski türev özeti onarılamaz",
+    );
+    expect_integrity(
+        db.conn()
+            .execute(
+                "UPDATE ai_cache_entries SET case_id='c2' WHERE id='ac-eski'",
+                [],
+            )
+            .map_err(StorageError::from),
+        "ai_cache_entries",
+        "eski önbellek dosyası çevrilemez",
+    );
+
+    // Yeni biçimsiz satır doğamaz; meşru satır doğar.
+    expect_integrity(
+        db.conn()
+            .execute(
+                "INSERT INTO render_derivatives
+                   (id,document_version_id,blob_id,renderer_version,settings_hash,
+                    page_manifest,content_hash,created_at)
+                 VALUES ('rd-yeni','v-yok','b1','r1',?1,'[]',?2,?3)",
+                rusqlite::params!["b".repeat(64), "c".repeat(64), now_iso()],
+            )
+            .map_err(StorageError::from),
+        "render_derivatives",
+        "var olmayan sürüme yeni türev",
+    );
+    db.conn()
+        .execute(
+            "INSERT INTO render_derivatives
+               (id,document_version_id,parse_run_id,blob_id,renderer_version,
+                settings_hash,page_manifest,content_hash,created_at)
+             VALUES ('rd-yeni','v1','pr1','b1','r1',?1,'[]',?2,?3)",
+            rusqlite::params!["b".repeat(64), "c".repeat(64), now_iso()],
+        )
+        .expect("meşru türev güncellemeden sonra da doğar");
+    expect_integrity(
+        db.conn()
+            .execute(
+                "INSERT INTO ai_cache_entries
+                   (id,case_id,cache_key,ai_run_id,validation_version,created_at)
+                 VALUES ('ac-yeni','c1','k3','r2','v1',?1)",
+                rusqlite::params![now_iso()],
+            )
+            .map_err(StorageError::from),
+        "ai_cache_entries",
+        "başka dosyanın çalıştırmasına yeni önbellek",
+    );
+    db.conn()
+        .execute(
+            "INSERT INTO ai_cache_entries
+               (id,case_id,cache_key,ai_run_id,validation_version,created_at)
+             VALUES ('ac-yeni','c1','k3',NULL,'v1',?1)",
+            rusqlite::params![now_iso()],
+        )
+        .expect("meşru önbellek güncellemeden sonra da doğar");
+
+    // Eski geçerli damga ileri gidebilir; biçimsiz 'dün' donar (dürüst sınır).
+    db.conn()
+        .execute(
+            "UPDATE ai_cache_entries SET expires_at='2027-01-01T00:00:00.000000Z'
+              WHERE id='ac-eski'",
+            [],
+        )
+        .expect("eski geçerli damga ileri gider");
+    expect_integrity(
+        db.conn()
+            .execute(
+                "UPDATE ai_cache_entries SET expires_at='2027-01-01T00:00:00.000000Z'
+                  WHERE id='ac-bozuk'",
+                [],
+            )
+            .map_err(StorageError::from),
+        "ai_cache_entries",
+        "biçimsiz damga onarılamaz",
+    );
+
+    // Silme: plan göstermiyorsa türev silinebilir; önbellek her zaman.
+    db.conn()
+        .execute("DELETE FROM render_derivatives WHERE id='rd-eski'", [])
+        .expect("plan göstermeyen türev silinebilir");
+    db.conn()
+        .execute("DELETE FROM ai_cache_entries WHERE id='ac-bozuk'", [])
+        .expect("önbellek silinebilir");
+    let _ = TS;
+}

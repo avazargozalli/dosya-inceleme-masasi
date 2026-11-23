@@ -539,9 +539,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0067_outbound_transform_definition_guard",
         sql: include_str!("migrations/0067_outbound_transform_definition_guard.sql"),
     },
+    Migration {
+        version: 68,
+        name: "0068_render_derivative_and_cache_receipt_guard",
+        sql: include_str!("migrations/0068_render_derivative_and_cache_receipt_guard.sql"),
+    },
 ];
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 67;
+pub const CURRENT_SCHEMA_VERSION: u32 = 68;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationOutcome {

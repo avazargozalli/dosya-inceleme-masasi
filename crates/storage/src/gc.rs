@@ -405,14 +405,29 @@ mod tests {
     fn render_derivative_blob_is_not_collected() {
         // `render_derivatives.blob_id` **FK taşımaz**: koşulda sayılmazsa GC onu
         // referanssız sanıp kaydı ve dosyayı silerdi.
-        let (db, _case) = setup();
+        let (db, case_id) = setup();
         let blob = db.create_blob_record(&hex("3"), 64, "aad-r").expect("blob");
+        // v68 kapısı türev satırını **gerçek** sürüme bağlar: fikstür gerçek
+        // belge/sürüm kurar (kapı gevşetilmedi).
+        let doc = db
+            .create_document(&case_id, "Belge", "pdf", None, "unknown")
+            .expect("doc");
+        let version = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &blob,
+                &"a".repeat(64),
+                64,
+                "application/pdf",
+            )
+            .expect("sürüm");
         db.conn()
             .execute(
                 "INSERT INTO render_derivatives (id,document_version_id,parse_run_id,blob_id,
                    renderer_version,settings_hash,page_manifest,content_hash,created_at)
-                 VALUES ('rd-1','v1',NULL,?1,'1.0','h','[]','c','2026-01-01T00:00:00Z')",
-                [&blob],
+                 VALUES ('rd-1',?2,NULL,?1,'1.0',?3,'[]',?4,'2026-01-01T00:00:00Z')",
+                rusqlite::params![&blob, version.id, "b".repeat(64), "c".repeat(64)],
             )
             .expect("türev");
         assert!(db.blob_is_referenced(&blob).expect("referans"));

@@ -7295,4 +7295,259 @@ mod tests {
             "E_NOT_FOUND"
         );
     }
+
+    /// **F08-T04ap (2026-11-24, şema v68):** `ai_cache_entries` satırı «şu
+    /// dosyada şu önbellek anahtarının çıktısı **şu çalıştırmadan** doğdu, şu
+    /// blob'da duruyor, şu ana kadar geçerli» iddiasıdır. Ölçülen kusur (v67):
+    /// `ai_run_id` **başka dosyanın** çalıştırmasına bağlanabiliyordu (dosya
+    /// kapsamı sızıntısı), `output_blob_id` var olmayan blob'u gösterebiliyor,
+    /// `expires_at`/`validation_version` serbest metindi; satır her sütunuyla
+    /// çevrilebiliyordu.
+    #[test]
+    fn ai_cache_entry_is_bound_to_its_case_and_frozen() {
+        const TS: &str = "2026-11-24T09:00:00.000000Z";
+        let h = |c: char| -> String { std::iter::repeat_n(c, 64).collect() };
+        let (db, case_id, _provider) = setup();
+        let other = db
+            .create_case(&NewCase {
+                title: "İkinci".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("ikinci dosya");
+        let deleted = db
+            .create_case(&NewCase {
+                title: "Silinen".into(),
+                case_kind: CaseKind::Review,
+                reference_code: None,
+                jurisdiction_label: None,
+                practice_area: None,
+                sensitivity: crate::Sensitivity::Normal,
+                default_ai_policy: crate::AiPolicy::Off,
+            })
+            .expect("üçüncü dosya");
+        db.conn()
+            .execute(
+                "UPDATE cases SET status='deleted', deleted_at=?1 WHERE id=?2",
+                rusqlite::params![TS, deleted.id],
+            )
+            .expect("sil");
+        for (id, cid) in [("r-own", case_id.as_str()), ("r-other", &other.id)] {
+            db.conn()
+                .execute(
+                    "INSERT INTO ai_runs
+                       (id,case_id,task_type,model_snapshot,input_manifest_hash,
+                        prompt_version,output_schema_version,consent_id,status,created_at)
+                     VALUES (?1,?2,'summarize','m',?3,'p1','o1',NULL,'running',?4)",
+                    rusqlite::params![id, cid, h('a'), TS],
+                )
+                .expect("koşu");
+        }
+        let blob = db
+            .create_blob_record("fedcba9876543210fedcba9876543210", 256, "aad")
+            .expect("blob");
+
+        struct Ac {
+            id: String,
+            case: String,
+            key: String,
+            run: Option<String>,
+            blob: Option<String>,
+            validation: String,
+            expires: Option<String>,
+            at: String,
+        }
+        impl Ac {
+            fn ok(case: &str, id: &str) -> Self {
+                Ac {
+                    id: id.into(),
+                    case: case.into(),
+                    key: format!("k-{id}"),
+                    run: Some("r-own".into()),
+                    blob: None,
+                    validation: "v1".into(),
+                    expires: Some("2026-12-01T00:00:00.000000Z".into()),
+                    at: TS.into(),
+                }
+            }
+        }
+        let ins = |r: &Ac| -> Result<usize, rusqlite::Error> {
+            db.conn().execute(
+                "INSERT INTO ai_cache_entries
+                   (id,case_id,cache_key,ai_run_id,output_blob_id,validation_version,
+                    expires_at,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                rusqlite::params![
+                    r.id,
+                    r.case,
+                    r.key,
+                    r.run,
+                    r.blob,
+                    r.validation,
+                    r.expires,
+                    r.at
+                ],
+            )
+        };
+        let expect_integrity = |result: Result<usize, rusqlite::Error>, name: &str| match result {
+            Err(err) => assert!(
+                err.to_string().contains("DIM_INTEGRITY:ai_cache_entries"),
+                "{name}: beklenen kapı hatası, gelen {err}"
+            ),
+            Ok(_) => panic!("{name}: kabul edilmemeli"),
+        };
+
+        // Meşru yollar: çalıştırma + blob bağlı satır; süresiz satır.
+        let mut ok = Ac::ok(&case_id, "ac-ok");
+        ok.blob = Some(blob.clone());
+        ins(&ok).expect("meşru önbellek");
+        let mut open = Ac::ok(&case_id, "ac-open");
+        open.run = None;
+        open.expires = None;
+        ins(&open).expect("süresiz meşru önbellek");
+
+        // --- doğum: kimlik ---
+        let mut r = Ac::ok(&case_id, "ac-1");
+        r.id = String::new();
+        expect_integrity(ins(&r), "id boş");
+        let mut r = Ac::ok(&case_id, "ac-1");
+        r.id = "   ".into();
+        expect_integrity(ins(&r), "id yalnız boşluk");
+        let mut r = Ac::ok(&case_id, "ac-1");
+        r.id = " ac ".into();
+        expect_integrity(ins(&r), "id kırpılmamış");
+        let mut r = Ac::ok(&case_id, "ac-1");
+        r.id = "x".repeat(65);
+        expect_integrity(ins(&r), "id 65 hane");
+
+        // --- doğum: dosya bağı ---
+        let r = Ac::ok("c-yok", "ac-2");
+        expect_integrity(ins(&r), "dosya var olmayan");
+        // Tek kusur: dosya **silinmiş**. Çalıştırma aynı dosyadan seçilmezse
+        // kusur cross-case kuralına maskelenir (o kural ayrı saldırıda ölçülür).
+        let mut r = Ac::ok(&deleted.id, "ac-3");
+        r.run = None;
+        expect_integrity(ins(&r), "silinmiş dosyaya doğum");
+
+        // --- doğum: anahtar + çalıştırma + blob ---
+        let mut r = Ac::ok(&case_id, "ac-4");
+        r.key = String::new();
+        expect_integrity(ins(&r), "anahtar boş");
+        let mut r = Ac::ok(&case_id, "ac-4");
+        r.key = " k ".into();
+        expect_integrity(ins(&r), "anahtar kırpılmamış");
+        let mut r = Ac::ok(&case_id, "ac-4");
+        r.key = "a\nb".into();
+        expect_integrity(ins(&r), "anahtar LF");
+        let mut r = Ac::ok(&case_id, "ac-4");
+        r.key = "k".repeat(513);
+        expect_integrity(ins(&r), "anahtar 513 hane");
+        let mut r = Ac::ok(&case_id, "ac-5");
+        r.run = Some("r-yok".into());
+        expect_integrity(ins(&r), "çalıştırma var olmayan");
+        let mut r = Ac::ok(&case_id, "ac-6");
+        r.run = Some("r-other".into());
+        expect_integrity(ins(&r), "başka dosyanın çalıştırması");
+        let mut r = Ac::ok(&case_id, "ac-7");
+        r.run = Some(String::new());
+        expect_integrity(ins(&r), "çalıştırma boş metin");
+        let mut r = Ac::ok(&case_id, "ac-8");
+        r.blob = Some("b-yok".into());
+        expect_integrity(ins(&r), "blob var olmayan");
+
+        // --- doğum: sürüm + damgalar ---
+        let mut r = Ac::ok(&case_id, "ac-9");
+        r.validation = String::new();
+        expect_integrity(ins(&r), "doğrulama sürümü boş");
+        let mut r = Ac::ok(&case_id, "ac-9");
+        r.validation = " v1 ".into();
+        expect_integrity(ins(&r), "doğrulama sürümü kırpılmamış");
+        for (name, expires) in [
+            ("son kullanma dün", Some("dün")),
+            (
+                "son kullanma olmayan gün",
+                Some("2026-02-30T00:00:00.000000Z"),
+            ),
+            ("son kullanma boşluk ayırıcı", Some("2026-12-01 00:00:00Z")),
+            (
+                "son kullanma kırpılmamış",
+                Some("2026-12-01T00:00:00.000000Z "),
+            ),
+            ("son kullanma TR biçimi", Some("01.12.2026")),
+        ] {
+            let mut r = Ac::ok(&case_id, "ac-10");
+            r.expires = expires.map(str::to_string);
+            expect_integrity(ins(&r), name);
+        }
+        for (name, at) in [
+            ("damga dün", "dün"),
+            ("damga boş", ""),
+            ("damga olmayan saat", "2026-01-01T99:00:00.000000Z"),
+            ("damga boşluk ayırıcı", "2026-11-24 09:00:00Z"),
+        ] {
+            let mut r = Ac::ok(&case_id, "ac-11");
+            r.at = at.into();
+            expect_integrity(ins(&r), name);
+        }
+
+        // --- güncelleme: künye donar, süre yalnız ileri gider ---
+        let update = |sql: &str| -> Result<usize, rusqlite::Error> { db.conn().execute(sql, []) };
+        for (name, sql) in [
+            (
+                "kimlik çevrildi",
+                "UPDATE ai_cache_entries SET id='ac-yeni' WHERE id='ac-ok'",
+            ),
+            (
+                "dosya çevrildi",
+                "UPDATE ai_cache_entries SET case_id='c-baska' WHERE id='ac-ok'",
+            ),
+            (
+                "anahtar çevrildi",
+                "UPDATE ai_cache_entries SET cache_key='k-baska' WHERE id='ac-ok'",
+            ),
+            (
+                "çalıştırma çevrildi",
+                "UPDATE ai_cache_entries SET ai_run_id='r-other' WHERE id='ac-ok'",
+            ),
+            (
+                "blob çevrildi",
+                "UPDATE ai_cache_entries SET output_blob_id='b-baska' WHERE id='ac-ok'",
+            ),
+            (
+                "doğrulama sürümü çevrildi",
+                "UPDATE ai_cache_entries SET validation_version='v2' WHERE id='ac-ok'",
+            ),
+            (
+                "damga 2030",
+                "UPDATE ai_cache_entries SET created_at='2030-01-01T00:00:00.000000Z' WHERE id='ac-ok'",
+            ),
+            (
+                "son kullanma geri alındı",
+                "UPDATE ai_cache_entries SET expires_at='2026-11-30T00:00:00.000000Z' WHERE id='ac-ok'",
+            ),
+            (
+                "son kullanma temizlendi",
+                "UPDATE ai_cache_entries SET expires_at=NULL WHERE id='ac-ok'",
+            ),
+        ] {
+            expect_integrity(update(sql), name);
+        }
+        update("UPDATE ai_cache_entries SET expires_at=expires_at WHERE id='ac-ok'")
+            .expect("no-op takılmaz");
+        update(
+            "UPDATE ai_cache_entries SET expires_at='2026-12-02T00:00:00.000000Z' WHERE id='ac-ok'",
+        )
+        .expect("süre ileri gidebilir");
+        update("UPDATE ai_cache_entries SET expires_at='2026-12-05T00:00:00.000000Z' WHERE id='ac-open'")
+            .expect("süresiz satıra süre konabilir");
+
+        // Önbellek satırı **silinebilir** (süre dolumu/temizlik meşru).
+        db.conn()
+            .execute("DELETE FROM ai_cache_entries WHERE id='ac-open'", [])
+            .expect("önbellek silinebilir");
+    }
 }

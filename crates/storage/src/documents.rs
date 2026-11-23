@@ -1468,8 +1468,14 @@ mod tests {
             .execute(
                 "INSERT INTO render_derivatives
                    (id,document_version_id,blob_id,renderer_version,settings_hash,content_hash,created_at)
-                 VALUES ('rd-1',?1,?2,'r1','s1','c1',?3)",
-                rusqlite::params![version.id, render_blob, TS],
+                 VALUES ('rd-1',?1,?2,'r1',?3,?4,?5)",
+                rusqlite::params![
+                    version.id,
+                    render_blob,
+                    "b".repeat(64),
+                    "c".repeat(64),
+                    TS
+                ],
             )
             .expect("türev");
         expect_integrity(delete(&render_blob), "render türevi gösterirken silme");
@@ -1506,5 +1512,321 @@ mod tests {
                 .expect_err("çekirdek kapısı reddetmeli");
             assert_eq!(err.code(), "E_DB_SETTING", "{storage}/{size}/{key}");
         }
+    }
+
+    /// **F08-T04ap (2026-11-24, şema v68):** `render_derivatives` satırı
+    /// «şu sürümün şu ayrıştırma koşusundan, şu blob'daki baytlarla, şu
+    /// işleyici sürümüyle üretilmiş **sayfa kümesi**; içerik özeti şu»
+    /// iddiasıdır. Ölçülen kusur (v67): sürüm/koşu/blob bağları FK'sız ve
+    /// doğuşta **kanıtsız** — var olmayan sürüm, **başka** sürümün koşusu,
+    /// var olmayan blob, serbest metin özetler, bozuk `page_manifest` ve
+    /// `dün` damgası kabul ediliyordu; satır her sütunuyla çevrilebiliyor,
+    /// maske planının gösterdiği türev silinebiliyordu.
+    #[test]
+    fn render_derivative_receipt_is_evidence_backed_and_frozen() {
+        const TS: &str = "2026-11-24T09:00:00.000000Z";
+        let h = |c: char| -> String { std::iter::repeat_n(c, 64).collect() };
+        let (db, case_id) = db_with_case();
+        let doc = db
+            .create_document(&case_id, "Belge", "pdf", None, "unknown")
+            .expect("belge");
+        let blob = db
+            .create_blob_record("0123456789abcdef0123456789abcdef", 1024, "aad")
+            .expect("blob");
+        let version = db
+            .add_version(&doc.id, &case_id, &blob, &h('a'), 1024, "application/pdf")
+            .expect("sürüm");
+        db.conn()
+            .execute(
+                "INSERT INTO parse_runs
+                   (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+                 VALUES ('pr-1',?1,?2,'pymupdf','1.24',?3,'succeeded',?4)",
+                rusqlite::params![version.id, case_id, h('d'), TS],
+            )
+            .expect("koşu");
+        // Başka sürümün koşusu: türev ona bağlanamamalı.
+        let doc2 = db
+            .create_document(&case_id, "İkinci", "pdf", None, "unknown")
+            .expect("belge");
+        let version2 = db
+            .add_version(&doc2.id, &case_id, &blob, &h('e'), 1024, "application/pdf")
+            .expect("sürüm");
+        db.conn()
+            .execute(
+                "INSERT INTO parse_runs
+                   (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+                 VALUES ('pr-2',?1,?2,'pymupdf','1.24',?3,'succeeded',?4)",
+                rusqlite::params![version2.id, case_id, h('f'), TS],
+            )
+            .expect("koşu");
+        // Silinmiş dosyanın sürümü: doğum kabul edilmemeli.
+        let doc3 = db
+            .create_document(&case_id, "Silinen", "pdf", None, "unknown")
+            .expect("belge");
+        let version3 = db
+            .add_version(&doc3.id, &case_id, &blob, &h('1'), 1024, "application/pdf")
+            .expect("sürüm");
+        db.conn()
+            .execute(
+                "UPDATE documents SET status='deleted', deleted_at=?1 WHERE id=?2",
+                rusqlite::params![TS, doc3.id],
+            )
+            .expect("sil");
+        // 65 haneli kimlikler **gerçekten** doğabiliyor (0052 uzunluk sınırı
+        // koymaz): türev kapısının uzunluk cümleleri bunlarla kanıtlanır.
+        db.conn()
+            .execute(
+                "INSERT INTO document_versions
+                   (id,document_id,case_id,version_no,blob_id,original_sha256,
+                    byte_size,detected_mime,imported_at)
+                 VALUES (?1,?2,?3,2,?4,?5,1024,'application/pdf',?6)",
+                rusqlite::params!["L".repeat(65), doc.id, case_id, blob, h('a'), TS],
+            )
+            .expect("uzun kimlikli sürüm");
+        db.conn()
+            .execute(
+                "INSERT INTO parse_runs
+                   (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+                 VALUES (?1,?2,?3,'pymupdf','1.24',?4,'succeeded',?5)",
+                rusqlite::params!["P".repeat(65), version.id, case_id, h('d'), TS],
+            )
+            .expect("uzun kimlikli koşu");
+
+        struct Rd {
+            id: String,
+            version: String,
+            parse_run: Option<String>,
+            blob: String,
+            renderer: String,
+            settings: String,
+            font: Option<String>,
+            pages: String,
+            content: String,
+            at: String,
+        }
+        impl Rd {
+            fn ok(version: &str, blob: &str) -> Self {
+                Rd {
+                    id: "rd-ok".into(),
+                    version: version.into(),
+                    parse_run: None,
+                    blob: blob.into(),
+                    renderer: "pdfium-1".into(),
+                    settings: std::iter::repeat_n('b', 64).collect(),
+                    font: None,
+                    pages: "[]".into(),
+                    content: std::iter::repeat_n('c', 64).collect(),
+                    at: TS.into(),
+                }
+            }
+        }
+        let ins = |r: &Rd| -> Result<usize, rusqlite::Error> {
+            db.conn().execute(
+                "INSERT INTO render_derivatives
+                   (id,document_version_id,parse_run_id,blob_id,renderer_version,
+                    settings_hash,font_manifest_hash,page_manifest,content_hash,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                rusqlite::params![
+                    r.id,
+                    r.version,
+                    r.parse_run,
+                    r.blob,
+                    r.renderer,
+                    r.settings,
+                    r.font,
+                    r.pages,
+                    r.content,
+                    r.at
+                ],
+            )
+        };
+        let expect_integrity = |result: Result<usize, rusqlite::Error>, name: &str| match result {
+            Err(err) => assert!(
+                err.to_string().contains("DIM_INTEGRITY:render_derivatives"),
+                "{name}: beklenen kapı hatası, gelen {err}"
+            ),
+            Ok(_) => panic!("{name}: kabul edilmemeli"),
+        };
+
+        // Meşru yollar: koşusuz türev; koşulu + font özetli türev.
+        ins(&Rd::ok(&version.id, &blob)).expect("meşru türev");
+        let mut with_run = Rd::ok(&version.id, &blob);
+        with_run.id = "rd-run".into();
+        with_run.parse_run = Some("pr-1".into());
+        with_run.font = Some(h('9'));
+        ins(&with_run).expect("koşulu meşru türev");
+
+        // --- doğum: kimlik ---
+        let mut r = Rd::ok(&version.id, &blob);
+        r.id = String::new();
+        expect_integrity(ins(&r), "id boş");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.id = "   ".into();
+        expect_integrity(ins(&r), "id yalnız boşluk");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.id = " rd ".into();
+        expect_integrity(ins(&r), "id kırpılmamış");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.id = "x".repeat(65);
+        expect_integrity(ins(&r), "id 65 hane");
+
+        // --- doğum: sürüm bağı ---
+        let mut r = Rd::ok(&version.id, &blob);
+        r.version = String::new();
+        expect_integrity(ins(&r), "sürüm boş");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.version = "v-yok".into();
+        expect_integrity(ins(&r), "sürüm var olmayan");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.version = version3.id.clone();
+        expect_integrity(ins(&r), "silinmiş dosyanın sürümü");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.version = "L".repeat(65);
+        expect_integrity(ins(&r), "sürüm 65 hane");
+
+        // --- doğum: koşu bağı ---
+        let mut r = Rd::ok(&version.id, &blob);
+        r.parse_run = Some("pr-yok".into());
+        expect_integrity(ins(&r), "koşu var olmayan");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.parse_run = Some("pr-2".into());
+        expect_integrity(ins(&r), "başka sürümün koşusu");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.parse_run = Some(String::new());
+        expect_integrity(ins(&r), "koşu boş metin");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.parse_run = Some("P".repeat(65));
+        expect_integrity(ins(&r), "koşu 65 hane");
+
+        // --- doğum: blob bağı ---
+        let mut r = Rd::ok(&version.id, &blob);
+        r.blob = "b-yok".into();
+        expect_integrity(ins(&r), "blob var olmayan");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.blob = " ".into();
+        expect_integrity(ins(&r), "blob boşluk");
+
+        // --- doğum: işleyici + özetler + sayfa kümesi ---
+        let mut r = Rd::ok(&version.id, &blob);
+        r.renderer = String::new();
+        expect_integrity(ins(&r), "işleyici boş");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.renderer = " pdfium ".into();
+        expect_integrity(ins(&r), "işleyici kırpılmamış");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.renderer = "r".repeat(65);
+        expect_integrity(ins(&r), "işleyici 65 hane");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.settings = h('b')[..63].to_string();
+        expect_integrity(ins(&r), "ayar özeti 63 hane");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.settings = "AB".repeat(32);
+        expect_integrity(ins(&r), "ayar özeti büyük harf");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.settings = "z".repeat(64);
+        expect_integrity(ins(&r), "ayar özeti hex değil");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.font = Some(h('9')[..63].to_string());
+        expect_integrity(ins(&r), "font özeti 63 hane");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.font = Some("AB".repeat(32));
+        expect_integrity(ins(&r), "font özeti büyük harf");
+        for (name, pages) in [
+            ("sayfa kümesi bozuk JSON", "["),
+            ("sayfa kümesi nesne", "{}"),
+            ("sayfa kümesi sayı", "5"),
+            ("sayfa kümesi metin", "\"x\""),
+        ] {
+            let mut r = Rd::ok(&version.id, &blob);
+            r.pages = pages.into();
+            expect_integrity(ins(&r), name);
+        }
+        let mut r = Rd::ok(&version.id, &blob);
+        r.content = h('c')[..63].to_string();
+        expect_integrity(ins(&r), "içerik özeti 63 hane");
+        let mut r = Rd::ok(&version.id, &blob);
+        r.content = "G".repeat(64);
+        expect_integrity(ins(&r), "içerik özeti hex değil");
+
+        // --- doğum: damga ---
+        for (name, at) in [
+            ("damga dün", "dün"),
+            ("damga boş", ""),
+            ("damga sondaki boşluk", "2026-11-24T09:00:00.000000Z "),
+            ("damga olmayan gün", "2026-02-30T00:00:00.000000Z"),
+            ("damga olmayan saat", "2026-01-01T99:00:00.000000Z"),
+            ("damga boşluk ayırıcı", "2026-11-24 09:00:00Z"),
+            ("damga TR biçimi", "24.11.2026"),
+        ] {
+            let mut r = Rd::ok(&version.id, &blob);
+            r.at = at.into();
+            expect_integrity(ins(&r), name);
+        }
+
+        // --- güncelleme: on sütun da donar ---
+        let update = |sql: &str| -> Result<usize, rusqlite::Error> { db.conn().execute(sql, []) };
+        for (name, sql) in [
+            (
+                "kimlik çevrildi",
+                "UPDATE render_derivatives SET id='rd-yeni' WHERE id='rd-ok'",
+            ),
+            (
+                "sürüm çevrildi",
+                "UPDATE render_derivatives SET document_version_id='v-baska' WHERE id='rd-ok'",
+            ),
+            (
+                "koşu eklendi",
+                "UPDATE render_derivatives SET parse_run_id='pr-2' WHERE id='rd-ok'",
+            ),
+            (
+                "blob çevrildi",
+                "UPDATE render_derivatives SET blob_id='b-baska' WHERE id='rd-ok'",
+            ),
+            (
+                "işleyici çevrildi",
+                "UPDATE render_derivatives SET renderer_version='pdfium-2' WHERE id='rd-ok'",
+            ),
+            (
+                "ayar özeti çevrildi",
+                "UPDATE render_derivatives SET settings_hash='2222222222222222222222222222222222222222222222222222222222222222' WHERE id='rd-ok'",
+            ),
+            (
+                "font özeti eklendi",
+                "UPDATE render_derivatives SET font_manifest_hash='3333333333333333333333333333333333333333333333333333333333333333' WHERE id='rd-ok'",
+            ),
+            (
+                "sayfa kümesi çevrildi",
+                "UPDATE render_derivatives SET page_manifest='[{\"p\":1}]' WHERE id='rd-ok'",
+            ),
+            (
+                "içerik özeti çevrildi",
+                "UPDATE render_derivatives SET content_hash='4444444444444444444444444444444444444444444444444444444444444444' WHERE id='rd-ok'",
+            ),
+            (
+                "damga 2030",
+                "UPDATE render_derivatives SET created_at='2030-01-01T00:00:00.000000Z' WHERE id='rd-ok'",
+            ),
+        ] {
+            expect_integrity(update(sql), name);
+        }
+        update("UPDATE render_derivatives SET renderer_version=renderer_version WHERE id='rd-ok'")
+            .expect("no-op takılmaz");
+
+        // --- silme: maske planının gösterdiği türev canlıdır ---
+        db.conn()
+            .execute(
+                "INSERT INTO redaction_plans
+                   (id,case_id,document_version_id,render_derivative_id,render_hash,
+                    coordinate_space,state,output_profile,created_at,updated_at)
+                 VALUES ('rp-1',?1,?2,'rd-ok',?3,'pdf_page_points','draft','profile-a',?4,?4)",
+                rusqlite::params![case_id, version.id, h('a'), TS],
+            )
+            .expect("plan");
+        let delete = |id: &str| -> Result<usize, rusqlite::Error> {
+            db.conn()
+                .execute("DELETE FROM render_derivatives WHERE id=?1", [id])
+        };
+        expect_integrity(delete("rd-ok"), "plan gösterirken türev silindi");
+        delete("rd-run").expect("referanssız türev silinebilir");
     }
 }
