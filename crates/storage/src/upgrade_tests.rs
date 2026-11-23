@@ -4167,3 +4167,112 @@ fn upgrade_keeps_blobs_written_before_the_bytes_identity_gate() {
         .expect("sayım");
     assert_eq!(remaining, 0);
 }
+
+/// v67 — maske tanımı kapısı **geriye dönük satırı silmez/düzeltmez**, ama
+/// tanım sütunlarını dondurur; yeni biçimsiz tanım doğamaz. Onay/sicil bağı
+/// olmayan eski satır silinebilir (kapı silmeyi tümden kapatmadı).
+#[test]
+fn upgrade_keeps_outbound_transforms_written_before_the_definition_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 66);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             INSERT INTO documents
+               (id,case_id,display_name,document_type,declared_date_precision,
+                source_origin,status,created_at,updated_at,row_version)
+             VALUES ('d1','c1','Belge','pdf','unknown','import','active',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1);
+             -- v67 öncesi: içerik adresi biçimsiz ('h-a'), içerik adresli
+             -- olmayan damga serbest; ikinci satır hiçbir bağa sahip değil.
+             INSERT INTO outbound_transforms
+               (id,kind,settings_hash,term_count,placeholder,created_at)
+             VALUES ('t-eski','mask_terms','h-a',1,'[MASKED]','2026-01-01T00:00:00Z'),
+                    ('t-serbest','mask_terms','h-b',0,'[MASKED]','2026-01-01T00:00:00Z');
+             INSERT INTO transfer_consents
+               (id,provider_snapshot,case_scope,purpose,selected_document_ids,
+                consent_text_version,approved_at,outbound_transform_id)
+             VALUES ('con-eski','snap','c1','ozet','[\"d1\"]','1',
+                     '2026-01-01T00:00:00Z','t-eski');",
+        )
+        .expect("v66 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satır **olduğu gibi** durur: silinmez, sessizce düzeltilmez.
+    let (hash, count, placeholder): (String, i64, String) = db
+        .conn()
+        .query_row(
+            "SELECT settings_hash, term_count, placeholder \
+               FROM outbound_transforms WHERE id='t-eski'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("eski tanım okunur");
+    assert_eq!(hash, "h-a");
+    assert_eq!(count, 1);
+    assert_eq!(placeholder, "[MASKED]");
+
+    // Tanım eski satırda da donar (biçimsiz özet onarılamaz — dürüst sınır).
+    match db
+        .conn()
+        .execute(
+            "UPDATE outbound_transforms SET settings_hash=?1 WHERE id='t-eski'",
+            rusqlite::params!["a".repeat(64)],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("outbound_transforms"), "{message}")
+        }
+        other => panic!("v67 eski tanımı dondurmalı: {other:?}"),
+    }
+
+    // Onaya bağlı eski tanım silinemez; bağsız olan silinebilir.
+    match db
+        .conn()
+        .execute("DELETE FROM outbound_transforms WHERE id='t-eski'", [])
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("outbound_transforms"), "{message}")
+        }
+        other => panic!("v67 canlı tanımı silmeyi durdurmalı: {other:?}"),
+    }
+    db.conn()
+        .execute("DELETE FROM outbound_transforms WHERE id='t-serbest'", [])
+        .expect("bağsız eski tanım silinebilir");
+
+    // Kapı yeni biçimsiz tanımı reddeder; meşru tanım hâlâ doğar.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO outbound_transforms
+               (id,kind,settings_hash,term_count,placeholder,created_at)
+             VALUES ('t-yeni','mask_terms','h-c',0,'[MASKED]',?1)",
+            rusqlite::params![now_iso()],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => {
+            assert!(message.contains("outbound_transforms"), "{message}")
+        }
+        other => panic!("v67 biçimsiz tanımı reddetmeli: {other:?}"),
+    }
+    db.conn()
+        .execute(
+            "INSERT INTO outbound_transforms
+               (id,kind,settings_hash,term_count,placeholder,created_at)
+             VALUES ('t-yeni','mask_terms',?1,0,'[MASKED]',?2)",
+            rusqlite::params!["c".repeat(64), now_iso()],
+        )
+        .expect("meşru tanım güncellemeden sonra da doğar");
+}

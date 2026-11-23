@@ -820,11 +820,19 @@ impl Database {
         let Some(approved_transform) = consent.outbound_transform_id.as_deref() else {
             return Err(StorageError::AiConsentUnbound);
         };
-        let approved_hash: String = self.conn().query_row(
-            "SELECT settings_hash FROM outbound_transforms WHERE id=?1",
-            [approved_transform],
-            |row| row.get(0),
-        )?;
+        let approved_hash: String = self
+            .conn()
+            .query_row(
+                "SELECT settings_hash FROM outbound_transforms WHERE id=?1",
+                [approved_transform],
+                |row| row.get(0),
+            )
+            .optional()?
+            // v67: onayın maske tanımı **çözülemiyorsa** ham veritabanı hatası
+            // değil, anlamlı fail-closed kodu döner (`outbound_transforms` BD
+            // kapısı satırı canlıyken silmeyi zaten durdurur; bu dal v67 öncesi
+            // yazılmış/bozulmuş kasalar için).
+            .ok_or(StorageError::AiConsentUnbound)?;
         let wanted_hash = outbound_settings_hash(&canonical_mask_terms(&new.mask_terms)?);
         if approved_hash != wanted_hash {
             return Err(StorageError::AiMaskChanged);
@@ -5476,6 +5484,382 @@ mod tests {
         }
     }
 
+    /// v67 — maske tanımı **içerik adreslidir**: `settings_hash` 64 küçük hex
+    /// doğar, `identity` satırı «terim maskeledim» diyemez, altı sütun
+    /// **donar**, canlı tanım **silinemez**.
+    ///
+    /// Ölçüldü (düzeltme öncesi, gerçek SQLite v66; 47 yazımın **44'ü kabul**):
+    /// 27 doğum kusuru, 6 güncelleme ve 3 silme yazılabiliyordu. 0045 bu
+    /// satırların «içerik adresli ve hiçbir yol silmez» olduğunu **varsaymıştı**
+    /// — tablonun 0027'den beri tek kapısı `kind` CHECK'i ve UNIQUE indeksidir.
+    #[test]
+    fn outbound_transform_definition_is_content_addressed_and_frozen() {
+        let (db, case_id, _) = setup();
+        let (document_id, _) = document_with_text(
+            &db,
+            &case_id,
+            "Belge",
+            &["Ahmet Yılmaz sözleşmeyi imzaladı"],
+        );
+        let ts = crate::now_iso();
+        let unique_hash = |i: usize| format!("{i:064x}");
+        let insert = |id: &str,
+                      kind: &str,
+                      hash: &str,
+                      count: i64,
+                      placeholder: &str,
+                      created: &str|
+         -> Result<usize, rusqlite::Error> {
+            db.conn().execute(
+                "INSERT INTO outbound_transforms
+                   (id,kind,settings_hash,term_count,placeholder,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                rusqlite::params![id, kind, hash, count, placeholder, created],
+            )
+        };
+        let expect_gate = |result: Result<usize, rusqlite::Error>, name: &str| match result {
+            Err(err) => assert!(
+                err.to_string()
+                    .contains("DIM_INTEGRITY:outbound_transforms"),
+                "{name}: beklenen kapı hatası, gelen {err}"
+            ),
+            Ok(_) => panic!("{name}: kabul edilmemeli"),
+        };
+
+        // --- doğum kusurları (28 saldırı; biri `kind` CHECK'inde zaten RED) ---
+        let long_id = "x".repeat(65);
+        let mut attacks: Vec<(String, &'static str, String, i64, String, String)> = Vec::new();
+        let mut idx = 0usize;
+        let mut push = |kind: &'static str,
+                        hash: Option<String>,
+                        count: i64,
+                        placeholder: &str,
+                        created: &str,
+                        id: Option<&str>| {
+            idx += 1;
+            let id = id.map_or_else(|| format!("bx-{idx}"), str::to_string);
+            attacks.push((
+                id,
+                kind,
+                hash.unwrap_or_else(|| unique_hash(idx)),
+                count,
+                placeholder.to_string(),
+                created.to_string(),
+            ));
+        };
+        // kimlik
+        push("mask_terms", None, 1, "[MASKED]", &ts, Some(""));
+        push("mask_terms", None, 1, "[MASKED]", &ts, Some("   "));
+        push("mask_terms", None, 1, "[MASKED]", &ts, Some(" bx "));
+        push(
+            "mask_terms",
+            None,
+            1,
+            "[MASKED]",
+            &ts,
+            Some(long_id.as_str()),
+        );
+        // içerik adresi (settings_hash)
+        push("mask_terms", Some(String::new()), 1, "[MASKED]", &ts, None);
+        push("mask_terms", Some("   ".into()), 1, "[MASKED]", &ts, None);
+        let h = unique_hash(90);
+        push(
+            "mask_terms",
+            Some(format!(" {h} ")),
+            1,
+            "[MASKED]",
+            &ts,
+            None,
+        );
+        push(
+            "mask_terms",
+            Some(h[..63].to_string()),
+            1,
+            "[MASKED]",
+            &ts,
+            None,
+        );
+        push(
+            "mask_terms",
+            Some("AB".repeat(32)),
+            1,
+            "[MASKED]",
+            &ts,
+            None,
+        );
+        push("mask_terms", Some("z".repeat(64)), 1, "[MASKED]", &ts, None);
+        let h = unique_hash(91);
+        push(
+            "mask_terms",
+            Some(format!("{}\r\n{}", &h[..32], &h[32..62])),
+            1,
+            "[MASKED]",
+            &ts,
+            None,
+        );
+        let h = unique_hash(92);
+        push(
+            "mask_terms",
+            Some(format!("{}\t", &h[..63])),
+            1,
+            "[MASKED]",
+            &ts,
+            None,
+        );
+        // tanım künyesi
+        push("mask_terms", None, -1, "[MASKED]", &ts, None);
+        push("identity", None, 3, "[MASKED]", &ts, None);
+        push("mask_terms", None, 1, "", &ts, None);
+        push("mask_terms", None, 1, "   ", &ts, None);
+        push("mask_terms", None, 1, "  [MASKED] ", &ts, None);
+        push("mask_terms", None, 1, "[MASKED\n]", &ts, None);
+        push("mask_terms", None, 1, "[MAS\rKED]", &ts, None);
+        push("mask_terms", None, 1, &"m".repeat(65), &ts, None);
+        push("mask_terms", None, 1, "[MASKED\t]", &ts, None);
+        // damga
+        push("mask_terms", None, 1, "[MASKED]", "dün", None);
+        push("mask_terms", None, 1, "[MASKED]", "", None);
+        push("mask_terms", None, 1, "[MASKED]", &format!("{ts} "), None);
+        push(
+            "mask_terms",
+            None,
+            1,
+            "[MASKED]",
+            "2026-02-30T00:00:00Z",
+            None,
+        );
+        push(
+            "mask_terms",
+            None,
+            1,
+            "[MASKED]",
+            "2026-01-01T99:00:00Z",
+            None,
+        );
+        push("mask_terms", None, 1, "[MASKED]", "01.01.2026", None);
+        push(
+            "mask_terms",
+            None,
+            1,
+            "[MASKED]",
+            "2026-01-01 00:00:00Z",
+            None,
+        );
+        assert_eq!(attacks.len(), 28, "doğum saldırısı sayısı");
+        for (id, kind, hash, count, placeholder, created) in &attacks {
+            expect_gate(
+                insert(id, kind, hash, *count, placeholder, created),
+                &format!("doğum {id}"),
+            );
+        }
+
+        // --- güncelleme: tanım donar (6) — her saldırı kendi satırında ---
+        let mut fresh_n = 400usize;
+        let mut fresh = |tag: &str| -> String {
+            fresh_n += 1;
+            let id = format!("tu-{tag}");
+            insert(&id, "mask_terms", &unique_hash(fresh_n), 1, "[MASKED]", &ts)
+                .expect("taze tanım");
+            id
+        };
+        let update = |sql: &str,
+                      params: &[&dyn rusqlite::ToSql]|
+         -> Result<usize, rusqlite::Error> { db.conn().execute(sql, params) };
+        let id = fresh("hash");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET settings_hash=?1 WHERE id=?2",
+                &[&unique_hash(200), &id],
+            ),
+            "U hash",
+        );
+        let id = fresh("kind");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET kind='identity' WHERE id=?1",
+                &[&id],
+            ),
+            "U kind",
+        );
+        let id = fresh("count0");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET term_count=0 WHERE id=?1",
+                &[&id],
+            ),
+            "U terim 1→0",
+        );
+        let id = fresh("count9");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET term_count=9 WHERE id=?1",
+                &[&id],
+            ),
+            "U terim 1→9",
+        );
+        let id = fresh("ph");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET placeholder='[X]' WHERE id=?1",
+                &[&id],
+            ),
+            "U yer tutucu",
+        );
+        let id = fresh("stamp");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET created_at='2030-01-01T00:00:00.000000Z' WHERE id=?1",
+                &[&id],
+            ),
+            "U damga",
+        );
+        let id = fresh("ident");
+        expect_gate(
+            update(
+                "UPDATE outbound_transforms SET id='tu-renamed' WHERE id=?1",
+                &[&id],
+            ),
+            "U kimlik",
+        );
+        // No-op takılmaz (tanım aynı).
+        let id = fresh("noop");
+        update(
+            "UPDATE outbound_transforms SET placeholder='[MASKED]', term_count=1 WHERE id=?1",
+            &[&id],
+        )
+        .expect("no-op yazma geçmeli");
+
+        // --- silme: canlı tanım silinemez, referanssız silinebilir ---
+        let consent = consent_with_mask(&db, &case_id, &document_id, &["Ahmet Yılmaz"]);
+        let transform = consent
+            .outbound_transform_id
+            .clone()
+            .expect("onay maskeye bağlanır");
+        expect_gate(
+            db.conn()
+                .execute("DELETE FROM outbound_transforms WHERE id=?1", [&transform]),
+            "D onaya bağlı",
+        );
+        let run = db
+            .start_ai_run(&case_id, &run_with_mask(&consent.id, &["Ahmet Yılmaz"]))
+            .expect("çalıştır");
+        let scope = db
+            .consent_scope_segments(&case_id, &consent.id)
+            .expect("kapsam");
+        db.record_outbound_segments(
+            &run.id,
+            &[OutboundSegmentRef {
+                segment_id: scope.segments[0].segment_id.clone(),
+                document_version_id: scope.segments[0].document_version_id.clone(),
+            }],
+            Some(&OutboundMask {
+                terms: vec!["Ahmet Yılmaz".into()],
+            }),
+        )
+        .expect("sicil");
+        expect_gate(
+            db.conn()
+                .execute("DELETE FROM outbound_transforms WHERE id=?1", [&transform]),
+            "D sicile bağlı",
+        );
+        // Yalnız **sicille** bağlı tanım: onayı çözülemeyen çalıştırma
+        // (v45 eşitlik dalı boşta kalır) — silme kapısı onay değil sicil
+        // üzerinden de çalışmalı.
+        let seg_transform = "tu-seg".to_string();
+        insert(
+            &seg_transform,
+            "mask_terms",
+            &unique_hash(777),
+            1,
+            "[MASKED]",
+            &ts,
+        )
+        .expect("sicil tanımı");
+        db.conn()
+            .execute(
+                "INSERT INTO ai_runs
+                   (id,case_id,task_type,model_snapshot,input_manifest_hash,
+                    prompt_version,output_schema_version,consent_id,status,created_at)
+                 VALUES ('r-seg',?1,'summarize','m','h','p1','o1',NULL,'running',?2)",
+                rusqlite::params![case_id, ts],
+            )
+            .expect("onaysız çalıştırma");
+        db.conn()
+            .execute(
+                "INSERT INTO transfer_segments
+                   (id,ai_run_id,outbound_segment_id,outbound_text,outbound_hash,
+                    transform_manifest_id,source_range_map)
+                 VALUES ('s-seg','r-seg','s-seg','[MASKED] metin',?1,?2,'[]')",
+                rusqlite::params!["f".repeat(64), seg_transform],
+            )
+            .expect("sicil satırı");
+        expect_gate(
+            db.conn().execute(
+                "DELETE FROM outbound_transforms WHERE id=?1",
+                [&seg_transform],
+            ),
+            "D yalnız sicile bağlı",
+        );
+        let orphan = "tu-orphan".to_string();
+        insert(&orphan, "identity", &unique_hash(301), 0, "[MASKED]", &ts)
+            .expect("meşru kimlik satırı");
+        db.conn()
+            .execute("DELETE FROM outbound_transforms WHERE id=?1", [&orphan])
+            .expect("referanssız tanım silinebilir");
+
+        // --- çekirdek yolu kapıdan geçer ve **dürüst** doğar ---
+        let (kind, hash, count, placeholder): (String, String, i64, String) = db
+            .conn()
+            .query_row(
+                "SELECT kind,settings_hash,term_count,placeholder
+                   FROM outbound_transforms WHERE id=?1",
+                [&transform],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("tanım satırı");
+        assert_eq!(kind, "mask_terms");
+        assert_eq!(count, 1);
+        assert_eq!(placeholder, "[MASKED]");
+        assert_eq!(hash.len(), 64);
+        assert!(
+            hash.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "içerik adresi küçük hex olmalı: {hash}"
+        );
+        // İçerik adresi: aynı maske **aynı satırı** kullanır (yeni tanım yok).
+        let second = consent_with_mask(&db, &case_id, &document_id, &["Ahmet Yılmaz"]);
+        assert_eq!(
+            second.outbound_transform_id.as_deref(),
+            Some(transform.as_str()),
+            "aynı ayarlar aynı tanım satırını kullanmalı"
+        );
+        let rows: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM outbound_transforms WHERE settings_hash=?1",
+                [&hash],
+                |row| row.get(0),
+            )
+            .expect("sayım");
+        assert_eq!(rows, 1, "içerik adresi tek satır");
+
+        // Onayın tanımı **çözülemiyorsa** ham DB hatası değil anlamlı kod:
+        // kapı düşürülerek v67 öncesi bozulmuş kasa taklit edilir.
+        db.conn()
+            .execute_batch("DROP TRIGGER outbound_transform_definition_guard_bd;")
+            .expect("kapı düşürüldü");
+        db.conn()
+            .execute("DELETE FROM outbound_transforms WHERE id=?1", [&transform])
+            .expect("bozuk kasa");
+        assert_eq!(
+            db.start_ai_run(&case_id, &run_with_mask(&second.id, &["Ahmet Yılmaz"]))
+                .unwrap_err()
+                .code(),
+            "E_AI_CONSENT_UNBOUND",
+            "onayın maske tanımı yoksa fail-closed"
+        );
+    }
+
     /// Kullanılamayan maske **hiçbir satır yazmadan** reddedilir: kısa terim,
     /// yer tutucu çakışması, yanlış segment kimliği.
     #[test]
@@ -5985,8 +6369,8 @@ mod tests {
             .execute(
                 "INSERT INTO outbound_transforms
                    (id,kind,settings_hash,term_count,placeholder,created_at)
-                 VALUES ('t-ident','identity','h-id',0,'[MASKED]','2026-03-01T00:00:00Z')",
-                [],
+                 VALUES ('t-ident','identity',?1,0,'[MASKED]','2026-03-01T00:00:00Z')",
+                [&"0".repeat(64)],
             )
             .expect("dönüşüm satırı");
         match insert("sg-ident-kind", Some("t-ident")) {
@@ -6375,8 +6759,8 @@ mod tests {
             .execute(
                 "INSERT INTO outbound_transforms
                    (id,kind,settings_hash,term_count,placeholder,created_at)
-                 VALUES ('t-ident','identity','h-id',0,'[MASKED]','2026-03-01T00:00:00Z')",
-                [],
+                 VALUES ('t-ident','identity',?1,0,'[MASKED]','2026-03-01T00:00:00Z')",
+                [&"0".repeat(64)],
             )
             .expect("dönüşüm satırı");
         match insert_consent("con-ident", "t-ident") {
