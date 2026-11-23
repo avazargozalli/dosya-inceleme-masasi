@@ -54,16 +54,31 @@ pub struct PendingParse {
 impl Database {
     /// Blob üst kaydı. Fiziksel dosya çağıran tarafından yazılmıştır; burada
     /// yalnız referans ve bütünlük durumu tutulur.
+    ///
+    /// **0066:** doğuşta `integrity_status = 'unverified'` yazılır — bugüne dek
+    /// kanıtsız `'verified'` yazılıyordu (sütunun okuyucusu yok: yalan damga).
+    /// Dosya adı belirteci, şifreli boyut ve anahtar etiketi **çekirdekte de**
+    /// doğrulanır; şema kapısı (`DIM_INTEGRITY:blobs`) aynı kuralı ayrıca
+    /// uygular — güvenlik tek hatta bırakılmaz.
     pub fn create_blob_record(
         &self,
         storage_id: &str,
         encrypted_size: i64,
         aad_ref: &str,
     ) -> Result<String, StorageError> {
+        if !crate::blob_disk::is_safe_storage_token(storage_id)
+            || encrypted_size < 1
+            || aad_ref.trim().is_empty()
+            || aad_ref != aad_ref.trim()
+            || aad_ref.chars().count() > 128
+            || aad_ref.contains(['\n', '\r', '\t'])
+        {
+            return Err(StorageError::InvalidSetting);
+        }
         let id = uuid::Uuid::now_v7().to_string();
         self.conn().execute(
             "INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,reference_count,integrity_status,created_at)
-             VALUES (?1,?2,1,?3,?4,0,'verified',?5)",
+             VALUES (?1,?2,1,?3,?4,0,'unverified',?5)",
             rusqlite::params![id, storage_id, encrypted_size, aad_ref, now_iso()],
         )?;
         Ok(id)
@@ -981,5 +996,515 @@ mod tests {
             )
             .expect_err("büyük harf özet reddedilmeli");
         assert_eq!(err.code(), "E_DB_SETTING");
+    }
+
+    /// **F08-T04an (2026-11-23, şema v66):** `blobs` satırı «**şu baytlar** şu
+    /// dosyada, şu boyutta, şu anahtar etiketiyle duruyor» iddiasıdır.
+    /// Ölçülen kusur (v65): `gc.rs` yolu
+    /// `dir.join(format!("{}.blb", storage_id))` diye kurulduğu hâlde kimlik
+    /// **hiçbir yerde** biçim denetiminden geçmiyordu — `../../../../tmp/evil`
+    /// doğabiliyor, macOS'ta büyük harf aynı dosyaya düşüyordu; çekirdek
+    /// doğuşta **kanıtsız** `'verified'` yazıyordu; `encrypted_size = 0`, boş
+    /// `wrapped_key_ref`, doğuşta `reference_count = 5` serbestti; satır
+    /// sonradan her sütunuyla çevrilebiliyor ve **canlı** blob (sürümü,
+    /// türevi ya da önbelleği dururken) makbuzsuz silinebiliyordu.
+    #[test]
+    fn blob_bytes_identity_is_evidence_backed_and_frozen() {
+        const TS: &str = "2026-11-23T09:00:00.000000Z";
+        const TS2: &str = "2026-11-23T10:00:00.000000Z";
+        let (db, case_id) = db_with_case();
+        let doc = db
+            .create_document(&case_id, "Belge", "pdf", None, "unknown")
+            .expect("belge");
+
+        let insert = |id: &str,
+                      storage: &str,
+                      size: i64,
+                      key: &str,
+                      count: i64,
+                      status: &str,
+                      stamp: Option<&str>,
+                      at: &str|
+         -> Result<usize, rusqlite::Error> {
+            db.conn().execute(
+                "INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,\
+                 wrapped_key_ref,reference_count,integrity_status,integrity_checked_at,\
+                 created_at) VALUES (?1,?2,1,?3,?4,?5,?6,?7,?8)",
+                rusqlite::params![id, storage, size, key, count, status, stamp, at],
+            )
+        };
+        let row = |id: &str| -> (String, i64, String, Option<String>, i64) {
+            db.conn()
+                .query_row(
+                    "SELECT storage_id, encrypted_size, integrity_status,\
+                     integrity_checked_at, reference_count FROM blobs WHERE id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .expect("blob satırı")
+        };
+        let update = |sql: &str| -> Result<usize, rusqlite::Error> { db.conn().execute(sql, []) };
+        let expect_integrity = |result: Result<usize, rusqlite::Error>, name: &str| match result {
+            Err(err) => assert!(
+                err.to_string().contains("DIM_INTEGRITY:blobs"),
+                "{name}: beklenen kapı hatası, gelen {err}"
+            ),
+            Ok(_) => panic!("{name}: kabul edilmemeli"),
+        };
+
+        // Çekirdek yolu kapıdan geçer ve **dürüst** doğar: kanıtsız 'verified'
+        // yok, damga yok, sayaç 0.
+        let live = db
+            .create_blob_record("0123456789abcdef0123456789abcdef", 2048, "aad")
+            .expect("blob");
+        let (storage, size, status, stamp, count) = row(&live);
+        assert_eq!(storage, "0123456789abcdef0123456789abcdef");
+        assert_eq!(size, 2048);
+        assert_eq!(status, "unverified");
+        assert_eq!(stamp, None);
+        assert_eq!(count, 0);
+
+        // --- Doğum kapısı: 22 kusur RED ---
+        let attacks: Vec<(&str, Result<usize, rusqlite::Error>)> = vec![
+            (
+                "boş kimlik",
+                insert("", "aa11", 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "kırpılmamış kimlik",
+                insert(" b1 ", "aa11", 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "65 haneli kimlik",
+                insert(
+                    &"a".repeat(65),
+                    "aa11",
+                    10,
+                    "aad",
+                    0,
+                    "unverified",
+                    None,
+                    TS,
+                ),
+            ),
+            (
+                "boş storage_id",
+                insert("b1", "", 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "yol kaçışı",
+                insert(
+                    "b1",
+                    "../../../../tmp/evil",
+                    10,
+                    "aad",
+                    0,
+                    "unverified",
+                    None,
+                    TS,
+                ),
+            ),
+            (
+                "uzantılı ad",
+                insert("b1", "aa11.blb", 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "büyük harf ad",
+                insert("b1", "AA11", 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "TAB'lı ad",
+                insert("b1", "aa\t11", 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "65 haneli ad",
+                insert("b1", &"a".repeat(65), 10, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "sıfır şifreli boyut",
+                insert("b1", "aa11", 0, "aad", 0, "unverified", None, TS),
+            ),
+            (
+                "boş anahtar etiketi",
+                insert("b1", "aa11", 10, "", 0, "unverified", None, TS),
+            ),
+            (
+                "boşluk anahtar etiketi",
+                insert("b1", "aa11", 10, "   ", 0, "unverified", None, TS),
+            ),
+            (
+                "kırpılmamış anahtar etiketi",
+                insert("b1", "aa11", 10, " aad", 0, "unverified", None, TS),
+            ),
+            (
+                "CR/LF'li anahtar etiketi",
+                insert("b1", "aa11", 10, "a\nad", 0, "unverified", None, TS),
+            ),
+            (
+                "129 haneli anahtar etiketi",
+                insert(
+                    "b1",
+                    "aa11",
+                    10,
+                    &"k".repeat(129),
+                    0,
+                    "unverified",
+                    None,
+                    TS,
+                ),
+            ),
+            (
+                "doğuşta sayaç 5",
+                insert("b1", "aa11", 10, "aad", 5, "unverified", None, TS),
+            ),
+            (
+                "doğuşta kanıtsız verified",
+                insert("b1", "aa11", 10, "aad", 0, "verified", None, TS),
+            ),
+            (
+                "doğuşta kanıtsız corrupt",
+                insert("b1", "aa11", 10, "aad", 0, "corrupt", None, TS),
+            ),
+            (
+                "unverified + damga",
+                insert("b1", "aa11", 10, "aad", 0, "unverified", Some(TS), TS),
+            ),
+            (
+                "damga 'dün'",
+                insert("b1", "aa11", 10, "aad", 0, "unverified", None, "dün"),
+            ),
+            (
+                "takvim dışı gün",
+                insert(
+                    "b1",
+                    "aa11",
+                    10,
+                    "aad",
+                    0,
+                    "unverified",
+                    None,
+                    "2026-02-30T09:00:00.000000Z",
+                ),
+            ),
+            (
+                "olmayan saat",
+                insert(
+                    "b1",
+                    "aa11",
+                    10,
+                    "aad",
+                    0,
+                    "unverified",
+                    None,
+                    "2026-11-23T99:00:00.000000Z",
+                ),
+            ),
+            (
+                "ayırıcı boşluklu damga",
+                insert(
+                    "b1",
+                    "aa11",
+                    10,
+                    "aad",
+                    0,
+                    "unverified",
+                    None,
+                    "2026-11-23 09:00:00.000000Z",
+                ),
+            ),
+            (
+                "kırpılmamış damga",
+                insert(
+                    "b1",
+                    "aa11",
+                    10,
+                    "aad",
+                    0,
+                    "unverified",
+                    None,
+                    " 2026-11-23T09:00:00Z",
+                ),
+            ),
+        ];
+        for (name, result) in attacks {
+            expect_integrity(result, name);
+        }
+
+        // --- Bayt kimliği ve hüküm sütunları donar: 8 UPDATE saldırısı RED ---
+        let live_sql = format!("'{live}'");
+        let update_attacks: Vec<(&str, Result<usize, rusqlite::Error>)> = vec![
+            (
+                "storage_id çevrildi",
+                update(&format!(
+                    "UPDATE blobs SET storage_id='ffffffffffffffffffffffffffffffff' WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "şifreli boyut çevrildi",
+                update(&format!(
+                    "UPDATE blobs SET encrypted_size=0 WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "anahtar etiketi çevrildi",
+                update(&format!(
+                    "UPDATE blobs SET wrapped_key_ref='baska' WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "created_at 2030",
+                update(&format!(
+                    "UPDATE blobs SET created_at='2030-01-01T00:00:00.000000Z' WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "kimlik takası",
+                update(&format!(
+                    "UPDATE blobs SET id='baska-blob' WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "sayaç sıfırdan beşe",
+                update(&format!(
+                    "UPDATE blobs SET reference_count=5 WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "unverified satıra damga",
+                update(&format!(
+                    "UPDATE blobs SET integrity_checked_at='{TS2}' WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "kanıtsız verified",
+                update(&format!(
+                    "UPDATE blobs SET integrity_status='verified' WHERE id={live_sql}"
+                )),
+            ),
+            (
+                "damga 'dün'",
+                update(&format!(
+                    "UPDATE blobs SET integrity_status='verified', integrity_checked_at='dün' WHERE id={live_sql}"
+                )),
+            ),
+        ];
+        for (name, result) in update_attacks {
+            expect_integrity(result, name);
+        }
+        // Hiçbir saldırı satırı değiştirmedi.
+        let (storage, size, status, stamp, count) = row(&live);
+        assert_eq!(storage, "0123456789abcdef0123456789abcdef");
+        assert_eq!(size, 2048);
+        assert_eq!(status, "unverified");
+        assert_eq!(stamp, None);
+        assert_eq!(count, 0);
+
+        // --- Meşru yollar: sürüm ekleme +1, geri alma −1, no-op ---
+        let version = db
+            .add_version(
+                &doc.id,
+                &case_id,
+                &live,
+                &"a".repeat(64),
+                2048,
+                "application/pdf",
+            )
+            .expect("sürüm");
+        assert_eq!(row(&live).4, 1);
+        update(&format!(
+            "UPDATE blobs SET reference_count=reference_count-1 WHERE id={live_sql}"
+        ))
+        .expect("sayaç −1");
+        assert_eq!(row(&live).4, 0);
+        update(&format!(
+            "UPDATE blobs SET reference_count=reference_count+1 WHERE id={live_sql}"
+        ))
+        .expect("sayaç +1");
+        assert_eq!(row(&live).4, 1);
+        // Sayaç ±1'den fazla oynayamaz: 2'den 0'a atlama RED.
+        update(&format!(
+            "UPDATE blobs SET reference_count=reference_count+1 WHERE id={live_sql}"
+        ))
+        .expect("sayaç 1→2");
+        expect_integrity(
+            update(&format!(
+                "UPDATE blobs SET reference_count=0 WHERE id={live_sql}"
+            )),
+            "sayaç 2→0",
+        );
+        assert_eq!(row(&live).4, 2);
+        update(&format!(
+            "UPDATE blobs SET reference_count=reference_count-1 WHERE id={live_sql}"
+        ))
+        .expect("sayaç 2→1");
+        update(&format!(
+            "UPDATE blobs SET reference_count=reference_count WHERE id={live_sql}"
+        ))
+        .expect("no-op");
+
+        // Kanıtlı bütünlük geçişi: yeni ISO damga ile verified, sonra yine yeni
+        // damgayla corrupt (yeniden kontrol yolu) — kabul.
+        update(&format!(
+            "UPDATE blobs SET integrity_status='verified', integrity_checked_at='{TS2}' WHERE id={live_sql}"
+        ))
+        .expect("kanıtlı verified");
+        assert_eq!(row(&live).2, "verified");
+        update(&format!(
+            "UPDATE blobs SET integrity_status='corrupt', integrity_checked_at='2026-11-23T11:00:00.000000Z' WHERE id={live_sql}"
+        ))
+        .expect("tazelenen kanıtla corrupt");
+        assert_eq!(row(&live).2, "corrupt");
+
+        // Kanıt geri alınamaz: aynı damgayla hüküm değiştirme, damgayı silme,
+        // damgayı 'dün' ile tazeleme ve `unverified`a dönüş RED.
+        for (name, sql) in [
+            (
+                "aynı damgayla hüküm değiştirme",
+                format!("UPDATE blobs SET integrity_status='verified' WHERE id={live_sql}"),
+            ),
+            (
+                "damgayı silme",
+                format!("UPDATE blobs SET integrity_checked_at=NULL WHERE id={live_sql}"),
+            ),
+            (
+                "damgayı 'dün' ile tazeleme",
+                format!(
+                    "UPDATE blobs SET integrity_checked_at='dün' WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "kanıta geri dönüş",
+                format!("UPDATE blobs SET integrity_status='unverified' WHERE id={live_sql}"),
+            ),
+            (
+                "kanıtlı hükümde kırpılmamış damga",
+                format!(
+                    "UPDATE blobs SET integrity_status='verified', integrity_checked_at=' 2026-11-23T12:00:00Z' WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "kanıtlı hükümde takvim dışı gün",
+                format!(
+                    "UPDATE blobs SET integrity_status='verified', integrity_checked_at='2026-02-30T12:00:00Z' WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "kanıtlı hükümde olmayan saat",
+                format!(
+                    "UPDATE blobs SET integrity_status='verified', integrity_checked_at='2026-11-23T99:00:00Z' WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "kanıta geri dönüş (yeni damgayla)",
+                format!(
+                    "UPDATE blobs SET integrity_status='unverified', integrity_checked_at='2026-11-23T13:00:00Z' WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "kanıtlı satırda hükmü damgasız değiştirme",
+                format!(
+                    "UPDATE blobs SET integrity_status='verified', integrity_checked_at=NULL WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "hüküm damgası sondaki boşluk",
+                format!(
+                    "UPDATE blobs SET integrity_status='verified', integrity_checked_at='2026-11-23T12:00:00Z ' WHERE id={live_sql}"
+                ),
+            ),
+            (
+                "damga tazelemede sondaki boşluk",
+                format!(
+                    "UPDATE blobs SET integrity_checked_at='2026-11-23T14:00:00Z ' WHERE id={live_sql}"
+                ),
+            ),
+        ] {
+            expect_integrity(update(&sql), name);
+        }
+
+        // Kanıtlı satırda no-op takılmaz.
+        update(&format!(
+            "UPDATE blobs SET reference_count=reference_count WHERE id={live_sql}"
+        ))
+        .expect("kanıtlı satırda no-op");
+
+        // --- Canlı blob silinemez: dört gösterim sütununun dördü de kapılı ---
+        let delete = |id: &str| -> Result<usize, rusqlite::Error> {
+            db.conn().execute("DELETE FROM blobs WHERE id=?1", [id])
+        };
+        expect_integrity(delete(&live), "sürüm gösterirken silme");
+
+        // Dört sütun **ayrı ayrı** ölçülür: sürümü silmek `parse_runs`ı da
+        // götürür (CASCADE) ve sayfa bağı kaybolurdu — her sütun kendi bloğuyla.
+        let mk = |token: &str| {
+            db.create_blob_record(token, 64, "aad")
+                .expect("yardımcı blob")
+        };
+        let page_blob = mk("aaaa0000000000000000000000000001");
+        let (parse_run, page) = ("p-sayfa".to_string(), "pg-sayfa".to_string());
+        db.conn()
+            .execute(
+                "INSERT INTO parse_runs
+                   (id,document_version_id,case_id,engine,engine_version,settings_hash,status,created_at)
+                 VALUES (?1,?2,?3,'pymupdf','1.24','h','succeeded',?4)",
+                rusqlite::params![parse_run, version.id, case_id, TS],
+            )
+            .expect("koşu");
+        db.conn()
+            .execute(
+                "INSERT INTO pages (id,parse_run_id,page_index,text_origin,derivative_blob_id)
+                 VALUES (?1,?2,0,'none',?3)",
+                rusqlite::params![page, parse_run, page_blob],
+            )
+            .expect("sayfa");
+        expect_integrity(delete(&page_blob), "sayfa türevi gösterirken silme");
+        db.conn()
+            .execute("DELETE FROM pages WHERE id=?1", [&page])
+            .expect("sayfa silinir");
+        delete(&page_blob).expect("sayfa bağı kalmayınca silinebilir");
+
+        let render_blob = mk("bbbb0000000000000000000000000002");
+        db.conn()
+            .execute(
+                "INSERT INTO render_derivatives
+                   (id,document_version_id,blob_id,renderer_version,settings_hash,content_hash,created_at)
+                 VALUES ('rd-1',?1,?2,'r1','s1','c1',?3)",
+                rusqlite::params![version.id, render_blob, TS],
+            )
+            .expect("türev");
+        expect_integrity(delete(&render_blob), "render türevi gösterirken silme");
+        db.conn()
+            .execute("DELETE FROM render_derivatives WHERE id='rd-1'", [])
+            .expect("türev silinir");
+        delete(&render_blob).expect("türev bağı kalmayınca silinebilir");
+
+        let cache_blob = mk("cccc0000000000000000000000000003");
+        db.conn()
+            .execute(
+                "INSERT INTO ai_cache_entries
+                   (id,case_id,cache_key,output_blob_id,validation_version,created_at)
+                 VALUES ('ac-1',?1,'k1',?2,'v1',?3)",
+                rusqlite::params![case_id, cache_blob, TS],
+            )
+            .expect("önbellek");
+        expect_integrity(delete(&cache_blob), "AI önbelleği gösterirken silme");
+        db.conn()
+            .execute("DELETE FROM ai_cache_entries WHERE id='ac-1'", [])
+            .expect("önbellek silinir");
+        delete(&cache_blob).expect("önbellek bağı kalmayınca silinebilir");
+
+        // Çekirdek kapısı: aynı kural `E_DB_SETTING` ile de uygulanır.
+        for (storage, size, key) in [
+            ("ÜST", 10, "aad"),
+            ("a.a", 10, "aad"),
+            ("aa11", 0, "aad"),
+            ("aa11", 10, ""),
+            ("aa11", 10, " aad"),
+        ] {
+            let err = db
+                .create_blob_record(storage, size, key)
+                .expect_err("çekirdek kapısı reddetmeli");
+            assert_eq!(err.code(), "E_DB_SETTING", "{storage}/{size}/{key}");
+        }
     }
 }

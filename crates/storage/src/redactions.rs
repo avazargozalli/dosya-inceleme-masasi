@@ -1489,8 +1489,10 @@ mod tests {
         name: &str,
         sha: &str,
     ) -> crate::documents::DocumentVersion {
+        // v66: dosya adı belirteci ≤64 hane ve yalnız `[0-9a-z_-]` — 64 haneli
+        // özetin tamamı + önek sınırı aşardı; kısa ve benzersiz bir belirteç.
         let blob = db
-            .create_blob_record(&format!("st-out-{sha}"), 12, "aad")
+            .create_blob_record(&format!("st-out-{}", &sha[..12]), 12, "aad")
             .expect("blob");
         let doc = db
             .create_document(case_id, name, "pdf", None, "unknown")

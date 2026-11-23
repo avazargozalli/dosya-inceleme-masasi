@@ -4048,3 +4048,122 @@ fn upgrade_keeps_parties_written_before_the_evidence_gate() {
     );
     drop(added);
 }
+
+/// **F08-T04an (2026-11-23, şema v66):** v65'te yazılmış tutarsız blob
+/// satırları **silinmez ve onarılmaz** — dosya adı belirteci olmayan
+/// `storage_id` donar, kullanıcı onu düzenleyemez (onarım yolu yeni içe
+/// aktarma). Kapı yalnız **yeni** biçimsiz yazmayı durdurur; meşru yol
+/// (sürüm ekleme → sayaç +1, referanssız blob'un GC ile silinmesi) çalışmaya
+/// devam eder.
+#[test]
+fn upgrade_keeps_blobs_written_before_the_bytes_identity_gate() {
+    let dir = tempfile::tempdir().expect("dizin");
+    let path = dir.path().join("vault.db");
+    {
+        let conn = create_schema_at(&path, 65);
+        conn.execute_batch(
+            "INSERT INTO cases
+               (id,title,case_kind,status,sensitivity,default_ai_policy,created_at,updated_at)
+             VALUES ('c1','Dosya','review','active','normal','off',
+                     '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+             -- v66 öncesi: yol kaçışlı ad, sıfır boyut, kanıtsız 'verified',
+             -- doğuşta sayaç 5, damga 'dün'.
+             INSERT INTO blobs
+               (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,
+                reference_count,integrity_status,created_at)
+             VALUES ('b-eski','../kacis',1,0,' ','5','verified','dün');",
+        )
+        .expect("v65 satırları");
+        let _ =
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    }
+
+    let db = Database::open(&path, &key()).expect("güncelle");
+    assert_eq!(db.schema_version(), CURRENT_SCHEMA_VERSION);
+
+    // Eski satır **olduğu gibi** durur: silinmez, sessizce düzeltilmez.
+    let (storage, size, status, stamp, count): (String, i64, String, Option<String>, i64) = db
+        .conn()
+        .query_row(
+            "SELECT storage_id, encrypted_size, integrity_status,\
+             integrity_checked_at, reference_count FROM blobs WHERE id='b-eski'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("eski blob okunur");
+    assert_eq!(storage, "../kacis");
+    assert_eq!(size, 0);
+    assert_eq!(status, "verified");
+    assert_eq!(stamp, None);
+    assert_eq!(count, 5);
+
+    // Bayt kimliği eski satırda da donar (yol kaçışı onarılamaz — dürüst sınır).
+    match db
+        .conn()
+        .execute(
+            "UPDATE blobs SET storage_id='aabbccdd' WHERE id='b-eski'",
+            [],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("blobs")),
+        other => panic!("v66 eski blob kimliğini dondurmalı: {other:?}"),
+    }
+
+    // Eski satır kilitlenmez: meşru sayaç artışı (±1) hâlâ geçer.
+    db.conn()
+        .execute(
+            "UPDATE blobs SET reference_count=reference_count+1 WHERE id='b-eski'",
+            [],
+        )
+        .expect("sayaç +1 eski satırda da meşru");
+
+    // Kapı yeni biçimsiz yazmayı reddeder.
+    match db
+        .conn()
+        .execute(
+            "INSERT INTO blobs (id,storage_id,cipher_version,encrypted_size,wrapped_key_ref,
+                                reference_count,integrity_status,created_at)
+             VALUES ('b-yeni','../../tmp/evil',1,10,'aad',0,'unverified',?1)",
+            rusqlite::params![now_iso()],
+        )
+        .map_err(StorageError::from)
+    {
+        Err(StorageError::Integrity(message)) => assert!(message.contains("blobs")),
+        other => panic!("v66 biçimsiz blob'u reddetmeli: {other:?}"),
+    }
+
+    // Meşru ürün yolu güncellemeden sonra da çalışır.
+    let fresh = db
+        .create_blob_record("0123456789abcdef0123456789abcdef", 64, "aad")
+        .expect("yeni blob");
+    let (fresh_storage, fresh_status) = db
+        .conn()
+        .query_row(
+            "SELECT storage_id, integrity_status FROM blobs WHERE id=?1",
+            [&fresh],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("yeni blob okunur");
+    assert_eq!(fresh_storage, "0123456789abcdef0123456789abcdef");
+    assert_eq!(fresh_status, "unverified");
+
+    // Referanssız blob GC yolundan silinebilir (kapı silmeyi tümden kapatmadı).
+    db.delete_unreferenced_blobs(std::slice::from_ref(&fresh))
+        .expect("gc");
+    let remaining: i64 = db
+        .conn()
+        .query_row("SELECT count(*) FROM blobs WHERE id=?1", [&fresh], |r| {
+            r.get(0)
+        })
+        .expect("sayım");
+    assert_eq!(remaining, 0);
+}

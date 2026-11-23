@@ -147,6 +147,19 @@ fn is_storage_id(id: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// **DB kapısının** (`0066`) kabul ettiği dosya adı belirteci: 1..=64 hane ve
+/// yalnız `[0-9a-z_-]`. Disk taraması [`is_storage_id`] ile 32 hex arar; bu
+/// kural ondan **geniştir** ve şemadaki `CHECK`in Rust aynasıdır — yol
+/// ayırıcı, nokta/uzantı, boşluk, CR/LF/TAB ve **büyük harf** (macOS'ta
+/// varsayılan dosya sistemi büyük-küçük harf duyarsız: `AB` ≡ `ab`) imkânsız.
+/// `gc.rs` yolu bu belirteçten kurduğu için ürün yolu da aynı kuralı yazar.
+pub(crate) fn is_safe_storage_token(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase() || b == b'-' || b == b'_')
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
