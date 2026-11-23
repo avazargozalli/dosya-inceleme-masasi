@@ -36,6 +36,7 @@
 | F08-T04al | ✅ | **denetim defteri eklemelidir** (şema **v64**): `audit_events` üzerinde **4 tetikleyici** — doğuşta kimlik/kategori/işlem/aktör/`entity_id` kırpılmış-dolu ≤64, `metadata_allowlist` **JSON nesnesi**, damga `YYYY-MM-DDTHH:MM:SS.uuuuuuZ` **gerçek** gün/saat, `event_hash` 64 küçük harf hex, `prior_hash` **defterin son satırının özeti** (boş defterde NULL), satır defterin **sonuna** eklenir; dokuz sütun **donar** (no-op takılmaz); satır **silinemez**. Ölçülen: 39 kusur yazımının **39'u** kabul ediliyordu (2026-11-23) |
 | F08-T04am | ✅ | **dosya tarafı ve rolü kanıtlı doğar, sonra değişmez; birleştirme makbuzu silinemez** (şema **v65**): `actors` + `case_participants` + `actor_merges` üzerinde **9 tetikleyici** — ad/kimlik/`normalized_names` iyi biçimli doğar ve kimlik sütunları **donar**; `review_state` yalnız **makbuzlu** birleştirme geçişleriyle değişir; katılımcı `case_id`/rol/not/aralık donar, `actor_id` yalnız makbuzun taşıdığı satırda ve yalnız hedef/kaynak yönünde değişir; silinmiş satır geri getirilemez; üç tabloda da satır **silinemez**. Ölçülen: 92 yazımın **92'si** kabul ediliyordu (2026-11-23) |
 | F08-T04an | ✅ | **şifreli bayt kimliği kanıtlı doğar, sonra değişmez; canlı blob silinemez** (şema **v66**): `blobs` üzerinde **3 tetikleyici** + `integrity_checked_at` sütunu — `storage_id` **dosya adı belirteci** (1..=64, yalnız `[0-9a-z_-]`: yol kaçışı/uzantı/büyük harf/CR-LF-TAB imkânsız), `encrypted_size ≥ 1`, `wrapped_key_ref` iyi biçimli, doğuşta sayaç 0 ve **kanıtsız `verified` yok** (`integrity_status='unverified'`, damga NULL), damga ISO + gerçek gün/saat; **altı sütun donar**, sayaç yalnız ±1, hüküm yalnız **yeni damgayla**; **canlı blob silinemez** (dört gösterim sütunu). Ölçülen: 45 yazımın 40'ı kabul (34 kusur) → düzeltmeden sonra **47 RED · sapma 0**; **37/37 mutasyon** (2026-11-23) |
+| F08-T04ao | ✅ | **maske tanımı içerik adreslidir: kanıtlı doğar, değişmez, canlıyken silinemez** (şema **v67**): `outbound_transforms` üzerinde **3 tetikleyici** — `settings_hash` **64 küçük harf hex**, `term_count ≥ 0` ve **`identity` ⇒ `term_count = 0`**, `placeholder` iyi biçimli (≤64, CR/LF/TAB yok), damga ISO + gerçek gün/saat; **altı sütun donar**; **canlı tanım silinemez** (onay *ve* sicil bağı). 0045'in «bu satırlar içerik adreslidir ve hiçbir yol silmez» **varsayımı** ilk kez **zorlanıyor**. Ölçülen: 47 yazımın 44'ü kabul (36 kusur) → düzeltmeden sonra **39 RED · sapma 0**; **25/25 mutasyon** (2026-11-23) |
 
 ## Doğrulama
 
@@ -4374,3 +4375,96 @@ azalmadığı için bayat) blob'ların GC ile **hiç** temizlenememesine yol aç
 kapı «canlı referans»tır, sayaç ise doğuşta 0 + yazımda ±1 kuralıyla
 dürüst tutulur.
 (i) Arayüz değişmedi; gerçek pencere + görsel QA **insan bekliyor**.
+
+## F08-T04ao — maske tanımı içerik adreslidir: kanıtlı doğar, değişmez, canlıyken silinemez (şema v67, 2026-11-23)
+
+**Neden bu dilim:** `outbound_transforms` satırı «şu terim listesinin özeti
+`settings_hash`, maskede **şu kadar** terim var, yer tutucu **şu**» iddiasıdır.
+0027 tabloyu **içerik adresli** tanımladı (`settings_hash` UNIQUE) ve 0045
+kendi kapanış notunda «`outbound_transforms` satırları içerik adreslidir ve
+**hiçbir yol silmez**» diye yazdı; «var olmayan dönüşüm kimliği»ni *denetim
+izi* değil **kanıtlanabilir yalan** sayıp fail-closed kapıya taktı. Ama bu
+varsayımın **hiçbir zorlayıcısı yoktu**: tablonun 0027'den beri tek kapısı
+`kind` CHECK'i ve UNIQUE indeksidir; `settings_hash` biçimi, `term_count`
+işareti, `placeholder` biçimi ve `created_at` damgası denetlenmiyordu; satır
+**her sütunuyla** çevrilebiliyor, **silinebiliyordu**.
+
+Üç okuyucu bu satıra doğrudan yaslanır:
+- `start_ai_run` onayın maskesini bu satırın `settings_hash`iyle karşılaştırır
+  (0030/0045: «maske onayın parçasıdır»). `settings_hash` çevrilebilirse
+  onaylanan maske **A** iken **B** (ya da maskesiz) gönderim kapıyı geçer.
+- `list_transfer_segments`/`sent_segments` dönüşümü **sol birleştirir**; ekran
+  türü (`identity`/`mask_terms`) ve terim sayısını buradan basar (Ai.tsx:
+  «maskelendi · N terim» / «kimlik»). `kind` çevrilebilirse maskeli gönderim
+  **maskesiz** görünür; `term_count` çevrilebilirse onayın terim sayısı yalan
+  olur (0045'in eşitlik kuralı da bu sayıya bakar).
+- Silinirse onayın maske bağı **çözülemez** hâle gelir (start_ai_run ham
+  veritabanı hatası verir), sicil satırı «bilinmeyen tür»e düşer.
+
+**Ölçülen (düzeltme öncesi, gerçek SQLite v66; sonda
+`scratch/dim-v67-probe/measure_v67.py`, loglar `measure_before.log` /
+`measure_after.log`):** **47 yazımın 44'ü KABUL** — **36 kusur** (27 doğum +
+6 UPDATE + 3 DELETE) + 8 meşru yol; 3 RED yalnız mevcut kapılardan (`kind`
+CHECK, iki UNIQUE çakışması). Doğum: boş/boşluk/kırpılmamış/65 hane kimlik;
+boş/boşluk/kırpılmamış/63 hane/**büyük harf**/hex olmayan/LF/CR/TAB
+`settings_hash`; **negatif `term_count`**; **`identity` + 3 terim** çelişkisi;
+boş/boşluk/kırpılmamış/LF/CR/TAB/65 hane `placeholder`; `created_at`
+`dün`/boş/kırpılmamış/**olmayan gün** (`2026-02-30`)/**olmayan saat**
+(`99:00`)/TR biçimi/**boşluk ayırıcı** (`2026-01-01 00:00:00Z`). UPDATE: hash
+çevirme, `kind` çevirme, terim sayısı 1→0 ve 1→9, `placeholder`, `created_at`
+2030, `id`. DELETE: **onayla**, **sicille** ve **yalnız sicille** bağlı tanım
+silinebiliyordu.
+
+**Yazılan (`0067_outbound_transform_definition_guard.sql`, 3 tetikleyici):**
+- **BI** — `id` kırpılmış-dolu ≤64; `settings_hash` **64 küçük harf hex**
+  (içerik adresi); `term_count ≥ 0` ve **`identity` ⇒ `term_count = 0`**
+  (kimlik satırı «terim maskeledim» diyemez); `placeholder` kırpılmış-dolu
+  ≤64, CR/LF/TAB yok; `created_at` ISO-8601 + gerçek gün/saat (0066 deseni).
+- **BU** — **altı sütun donar** (`id`, `kind`, `settings_hash`, `term_count`,
+  `placeholder`, `created_at`): içerik adresli tanım yazıldıktan sonra
+  değişmez. No-op takılmaz (değer aynıysa yazma geçer).
+- **BD** — **canlı tanım silinemez**: `transfer_consents.outbound_transform_id`
+  ya da `transfer_segments.transform_manifest_id` hâlâ gösteriyorsa satır
+  silinemez (bağ başka sütunda donduğu için sessiz yetim kalamaz);
+  referanssız tanım silinebilir.
+
+Ret `DIM_INTEGRITY:outbound_transforms` → `E_DB_INTEGRITY`; tablo `case_id`
+taşımaz → `GUARDED_TABLES` **25 kalır**. **Çekirdek hizası:** `ensure_outbound_transform`
+özeti kendisi üretir (`sha256`, 64 küçük hex), `kind='mask_terms'`, yer tutucu
+sabiti ve `now_iso()` yazar — kural ürünün yazdığı biçimi **kapsar**. Ek olarak
+`start_ai_run`, onayın dönüşüm satırı **çözülemiyorsa** ham veritabanı hatası
+yerine `E_AI_CONSENT_UNBOUND` döner (fail-closed, tek anlamlı kod).
+
+**Düzeltmeden sonra ölçüm (46 yazım):** **39 RED · 8 KABUL · SAPMA 0**
+(`measure_after.log`: 27 doğum + 6 UPDATE + 3 DELETE kusurunun hepsi RED;
+sekiz kabulün hepsi meşru: iki no-op, referanssız silme, maskeli/boş/`identity`
+tanım doğumu, onay bağı, içerik adresi sorgusu).
+
+**Testler:** `outbound_transform_definition_is_content_addressed_and_frozen`
+(28 doğum saldırısı + 6 güncelleme + 2 silme; meşru yollar; içerik adresinin
+**tek satır** kaldığı; çekirdek yolun kapıdan geçtiği; tanımı silinmiş onayın
+`E_AI_CONSENT_UNBOUND` verdiği) ve
+`upgrade_keeps_outbound_transforms_written_before_the_definition_gate` (v66
+biçimsiz satırı silinmez/düzeltilmez, sütunları donar, onaya bağlısı
+silinemez, bağsızı silinebilir, yeni biçimsiz satır doğamaz, meşru tanım
+doğar) → **772 → 774**; tam paket **774/774 yeşil, 822,98 s**
+(`scratch/dim-libtest-v67.log`); fmt (iki manifest), `clippy -p dim-storage
+--all-targets -D warnings`, masaüstü `check --all-targets` temiz.
+
+**CI (ölçüldü):** kod `ae3eb27` → run `45191045812` **10/10 YEŞİL** — `dim-storage` **774** iki OS'ta (macos-15 **580,05 s** / ubuntu-latest **1.525,63 s**), `arayüz` 67 dosya / **1.482** test, paket `index-Ce2oEuEs.js` **731,38 kB** / gzip 194,04 kB (arayüz değişmedi). `HEAD == origin/main`.
+
+**Kapı (`gates_v67.py`, log `gates_v67_final.log`):** taban YEŞİL, **25/25
+mutant KIRMIZI**, YEŞİL 0, ÖLÇÜLEMEDİ 0; kaynak sha256 **birebir**
+(`39f520339e5c99f9fb629e9856d4ad9badb950623de0cb9d6511f767f693b5ae`).
+
+**Dürüst sınırlar:** (a) `settings_hash`in gerçekten o terim listesinin
+SHA-256'sı olduğu **yeniden hesaplanmaz** (SQLite'ta SHA-256 yok) — biçim ve
+değişmezlik ölçülür; (b) `placeholder`ın ürün sabitiyle (`[MASKED]`) aynı
+olduğu denetlenmez, yalnız biçimi; (c) `term_count`in gerçek terim sayısı
+olduğu doğrulanmaz (özetten türetilemez) — yalnız işaret + `identity`
+tutarlılığı; (d) v67 öncesi tutarsız satırlar silinmez/düzeltilmez, kimlik
+sütunları donduğu için **onarılamaz** — onarım yolu yeni maske + **yeni onay**;
+(e) tetikleyicileri anahtarı olan saldırgan düşürebilir; (f) onay satırının
+silinme yolu üründe yok — olsaydı transform BD kapısı yüzünden silinemezdi
+(içerik adresli satırlar küçüktür, bilinçli); (g) arayüz değişmedi; gerçek
+pencere + görsel QA **insan bekliyor**.
