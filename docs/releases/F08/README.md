@@ -37,6 +37,7 @@
 | F08-T04am | ✅ | **dosya tarafı ve rolü kanıtlı doğar, sonra değişmez; birleştirme makbuzu silinemez** (şema **v65**): `actors` + `case_participants` + `actor_merges` üzerinde **9 tetikleyici** — ad/kimlik/`normalized_names` iyi biçimli doğar ve kimlik sütunları **donar**; `review_state` yalnız **makbuzlu** birleştirme geçişleriyle değişir; katılımcı `case_id`/rol/not/aralık donar, `actor_id` yalnız makbuzun taşıdığı satırda ve yalnız hedef/kaynak yönünde değişir; silinmiş satır geri getirilemez; üç tabloda da satır **silinemez**. Ölçülen: 92 yazımın **92'si** kabul ediliyordu (2026-11-23) |
 | F08-T04an | ✅ | **şifreli bayt kimliği kanıtlı doğar, sonra değişmez; canlı blob silinemez** (şema **v66**): `blobs` üzerinde **3 tetikleyici** + `integrity_checked_at` sütunu — `storage_id` **dosya adı belirteci** (1..=64, yalnız `[0-9a-z_-]`: yol kaçışı/uzantı/büyük harf/CR-LF-TAB imkânsız), `encrypted_size ≥ 1`, `wrapped_key_ref` iyi biçimli, doğuşta sayaç 0 ve **kanıtsız `verified` yok** (`integrity_status='unverified'`, damga NULL), damga ISO + gerçek gün/saat; **altı sütun donar**, sayaç yalnız ±1, hüküm yalnız **yeni damgayla**; **canlı blob silinemez** (dört gösterim sütunu). Ölçülen: 45 yazımın 40'ı kabul (34 kusur) → düzeltmeden sonra **47 RED · sapma 0**; **37/37 mutasyon** (2026-11-23) |
 | F08-T04ao | ✅ | **maske tanımı içerik adreslidir: kanıtlı doğar, değişmez, canlıyken silinemez** (şema **v67**): `outbound_transforms` üzerinde **3 tetikleyici** — `settings_hash` **64 küçük harf hex**, `term_count ≥ 0` ve **`identity` ⇒ `term_count = 0`**, `placeholder` iyi biçimli (≤64, CR/LF/TAB yok), damga ISO + gerçek gün/saat; **altı sütun donar**; **canlı tanım silinemez** (onay *ve* sicil bağı). 0045'in «bu satırlar içerik adreslidir ve hiçbir yol silmez» **varsayımı** ilk kez **zorlanıyor**. Ölçülen: 47 yazımın 44'ü kabul (36 kusur) → düzeltmeden sonra **39 RED · sapma 0**; **25/25 mutasyon** (2026-11-23) |
+| F08-T04ap | ✅ | **türev ve önbellek satırları makbuzdur: kanıtlı doğar, künyesi donar** (şema **v68**): `render_derivatives` üzerinde **3 tetikleyici** — sürüm **var ve dosyası silinmemiş** (≤64), koşu NULL ya da **aynı sürümün** (≤64), blob **var olan**, `settings_hash`/`content_hash` **64 küçük hex**, font NULL ya da 64 hex, `page_manifest` **geçerli JSON dizi** (tek sıralı `CASE`: geçersizde ham SQL hatası değil kapı hatası), damga ISO + gerçek gün/saat; **on sütun donar**; **planın gösterdiği türev silinemez**. `ai_cache_entries` üzerinde **2 tetikleyici** — dosya var ve silinmemiş, `ai_run_id` **aynı dosyanın** çalıştırması (**çapraz dosya sızıntısı** kapanır), çıktı blob'u var olan, süre ISO + gerçek gün/saat; yedi künye sütunu donar, süre yalnız **ileri**; silme meşru. İki tablo da 0001'den beri tetikleyicisizdi (**üretimde yazıcısı yok** — dürüst sınır). Ölçülen: 89 yazımın 86'sı kabul (76 kusur) → düzeltmeden sonra **79 RED · sapma 0**; **33/33 mutasyon** (2026-11-24) |
 
 ## Doğrulama
 
@@ -4468,3 +4469,117 @@ sütunları donduğu için **onarılamaz** — onarım yolu yeni maske + **yeni 
 silinme yolu üründe yok — olsaydı transform BD kapısı yüzünden silinemezdi
 (içerik adresli satırlar küçüktür, bilinçli); (g) arayüz değişmedi; gerçek
 pencere + görsel QA **insan bekliyor**.
+## F08-T04ap — türev ve önbellek satırları makbuzdur: kanıtlı doğar, künyesi donar (şema v68, 2026-11-24)
+
+**Neden bu dilim:** `render_derivatives` satırı «şu belge sürümünün şu
+ayrıştırma koşusundan, şu blob'daki baytlarla, şu işleyici sürümüyle üretilmiş
+**sayfa kümesi**; içerik özeti şu» iddiasıdır; `ai_cache_entries` satırı «şu
+dosyada şu önbellek anahtarının çıktısı **şu çalıştırmadan** doğdu, şu blob'da
+duruyor, şu ana kadar geçerli» iddiasıdır. İki tablo da 0001'den beri
+**hiçbir** tetikleyici taşımıyordu; tek kapıları biçim CHECK'leri ve
+`ai_cache_entries`in `UNIQUE(case_id, cache_key)` indeksidir. Ölçülen kusur:
+`render_derivatives.document_version_id` **var olmayan** sürümü gösterebiliyor
+(FK yok), `parse_run_id` **başka sürümün** koşusunu, `blob_id` **var olmayan**
+blob'u gösterebiliyordu (v66 yalnız *silme*yi engelliyor, doğuşta kanıt
+istemiyor); `settings_hash`/`content_hash` serbest metin, `page_manifest`
+bozuk JSON, damga `dün` olabiliyor, satır her sütunuyla çevrilebiliyor ve maske
+planının gösterdiği türev silinebiliyordu. `ai_cache_entries` ise `ai_run_id`
+ile **başka dosyanın** çalıştırmasına bağlanabiliyor (dosya kapsamı sızıntısı),
+`output_blob_id` var olmayan blob'u gösterebiliyor, `expires_at` /
+`validation_version` serbest metindi; satır her sütunuyla çevrilebiliyordu.
+
+**Bugünkü sınır (dürüst):** iki tabloya da **ürün yolu yazmıyor/okumuyor**
+(yalnız GC referans kapısı ve testler). Kapı bugünkü akışları değil, gelecekte
+bağlanacak türev/önbellek yollarını ve doğrudan SQL yazan her yolu bağlar.
+`ai_cache_entries` kapsam kapısı listesine (`GUARDED_TABLES`) **eklenmedi**:
+tablo `document_version_id`/`parse_run_id` gibi kapsam sütunlarından hiçbirini
+taşımaz; çapraz dosya bağı BI kuralıyla (`ai_run_id`in çalıştırmasının
+`case_id`'si satırınkiyle aynı olmalı) tek noktada kapanır. Liste **25 kalır**.
+
+**Ölçülen (gerçek SQLite; sonda `scratch/dim-v68-probe/measure_v68.py`, loglar
+`measure_before.log` / `measure_after.log`):** düzeltme öncesi (v67)
+**89 yazımın 86'sı KABUL** — 79 saldırının **76'sı kabul** (üçü yalnız mevcut
+FK'dan RED: var olmayan dosya/çalıştırma) + 10 meşru; düzeltmeden sonra (v68)
+**79 RED · 10 KABUL · sapma 0**. Doğum kusurları: kimlik 4+4, sürüm
+boş/var olmayan/silinmiş dosya/**65 hane**, koşu var olmayan/başka sürümün/boş/
+**65 hane**, blob var
+olmayan/boşluk, işleyici boş/kırpılmamış/65, ayar özeti 63/büyük harf/hex
+değil, font özeti 63/büyük harf, sayfa kümesi bozuk JSON/nesne/sayı/metin,
+içerik özeti 63/hex değil, damga 7 biçim; önbellekte dosya var
+olmayan/silinmiş, anahtar boş/kırpılmamış/LF/513, çalıştırma var
+olmayan/**başka dosyanın**/boş, blob var olmayan, doğrulama sürümü
+boş/kırpılmamış, son kullanma 5 biçim, damga 3 biçim. UPDATE: türevde on
+sütunun onu da, önbellekte yedi künye sütunu + süre geri alma/temizleme;
+DELETE: planın gösterdiği türev. Meşru yollar (koşusuz/koşulu+fontlu türev,
+plan gösteren türevin **okunması**, referanssız silme, çalıştırma+blob'lu ve
+süresiz önbellek, süre ilerletme, no-op, önbellek silme) **10/10 KABUL**.
+
+**Yazılan (`0068_render_derivative_and_cache_receipt_guard.sql`, 5
+tetikleyici):** `render_derivatives` BI — `id` kırpılmış-dolu ≤64;
+`document_version_id` **var + dosyası silinmemiş** sürüm; `parse_run_id` NULL
+ya da **aynı sürümün** koşusu; `blob_id` **var olan** blob; `renderer_version`
+iyi biçimli; `settings_hash` **64 küçük harf hex**, `font_manifest_hash` NULL
+ya da 64 küçük harf hex; `page_manifest` **geçerli JSON dizi** (tek `CASE`
+cümlesi: geçersizde ham SQL hatası değil kapı hatası); `content_hash`
+64 küçük harf hex; `created_at` ISO + **gerçek gün/saat**. BU — **on sütun
+donar** (üretim anının makbuzu; no-op takılmaz). BD — **planın gösterdiği
+türev silinemez**. `ai_cache_entries` BI — `id` ≤64; `case_id` **var ve
+silinmemiş** dosya; `cache_key` ≤512 (CR/LF/TAB yok); `ai_run_id` NULL ya da
+**aynı dosyanın** çalıştırması; `output_blob_id` NULL ya da **var olan** blob;
+`validation_version` iyi biçimli; `expires_at` NULL ya da ISO + gerçek
+gün/saat; `created_at` ISO. BU — yedi künye sütunu donar, `expires_at` yalnız
+**ileri** gider (geri alınamaz, temizlenemez). BD **yok** — önbellek satırı
+silinebilir olmalı (süre dolumu/temizlik meşru; dürüst sınır). Ret
+`DIM_INTEGRITY:render_derivatives` / `DIM_INTEGRITY:ai_cache_entries` →
+`E_DB_INTEGRITY`; `GUARDED_TABLES` **25 kalır**. Çekirdek davranışı değişmedi
+(iki tabloya yazan ürün kodu yok); üç mevcut test fikstürü gerçek
+sürüm/koşu/blob ve 64 hex özet kuracak şekilde güncellendi (v66 blob testi,
+GC'nin iki testi) — **kapı gevşetilmedi**.
+
+**Testler/yerel:** `render_derivative_receipt_is_evidence_backed_and_frozen`
+(35 doğum + 10 UPDATE + plan bağlı silme saldırısı; meşru yollar; no-op;
+referanssız silme) + `ai_cache_entry_is_bound_to_its_case_and_frozen` (24
+doğum + 9 UPDATE saldırısı; çapraz dosya çalıştırması; süre ileri/geri;
+meşru yollar) + `upgrade_keeps_derivative_and_cache_rows_written_before_the_receipt_gate`
+(v67 biçimsiz satır silinmez/düzeltilmez, kimlik sütunları donar, yeni
+biçimsiz doğamaz, meşru satır doğar) → **774 → 777**; tam paket
+**777/777 yeşil, 831,15 s** (`dim-libtest-v68.log`). fmt (iki manifest),
+`clippy -p dim-storage --all-targets -D warnings`, masaüstü `check
+--all-targets` temiz. **Dürüst olay:** ilk yazımda `page_manifest` kuralı
+`NEW.page_manifest IS NOT json_valid(...)` diye kurulmuştu — metni 1'e
+eşitlediği için **her** meşru satırı reddetti (üç testin ikisi ilk koşuda
+kırmızı); `json_valid(...) IS NOT 1` olarak düzeltildi, testler yeniden
+koşuldu ve sonda iki tarafta **baştan** ölçüldü; ilk koşunun hükümleri kanıt
+sayılmadı.
+
+**Kapı (`gates_v68.py`, log `gates_v68_final.log`):** taban YEŞİL, **33/33
+KANIT · YEŞİL 0 · ÖLÇÜLEMEDİ 0** — her mutantta delik açıldı, 10 meşru yol
+KABUL kaldı ve Rust testi KIRMIZI; kaynak sha256 `058416ae…` **birebir**
+(her turdan sonra dosya geri yazıldı). Dürüst (iki koşu): ilk koşu **28/33** —
+beş mutant yeşil kaldı: (a) «sürüm boş/kırpılmamış» denetimi **eşdeğerdi**
+(varlık kapısı zaten reddediyor) ve `json_valid` cümlesi de tip kapısına
+takılıyordu → **eşdeğer cümleler koddan çıkarıldı** (kapı gevşetilmedi;
+`page_manifest` tek sıralı `CASE` cümlesiyle denetlenir, geçersiz JSON ham SQL
+hatası değil kapı hatası üretir); (b) önbellek «damga ISO» mutantının hedef
+saldırısı `dün` idi — onu takvim cümlesi de yakalıyordu → **boşluk ayırıcı**
+saldırısı eklendi; (c) «silinmiş dosyaya doğum» saldırısı **iki kusurluydu**
+(çalıştırma başka dosyadan) → tek kusura indirildi, cross-case kuralı ayrı
+saldırıda ölçülür; (d) bir mutantın **hedef etiketi** yanlıştı. 33/33
+**yeniden** ölçüldü, ilk koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `d7a7303` → run `45285327540` **10/10 YEŞİL (`dim-storage` **777** iki OS'ta: macos-15 **492,23 s** / ubuntu-latest **1.562,75 s**; `arayüz` **67 dosya**; paket `index-Ce2oEuEs.js` **731,38 kB** / gzip **194,04 kB** — değişmedi)**.
+
+**Dürüst sınırlar:** (a) özetlerin gerçekten o baytların/ayarların SHA-256'sı
+olduğu **yeniden hesaplanmaz** (SQLite'ta SHA-256 yok) — biçim +
+değişmezlik; (b) `page_manifest`in sayfa kümesini gerçekten tarif ettiği
+doğrulanmaz, yalnız JSON dizi biçimi; (c) `renderer_version` /
+`validation_version` içeriği denetlenmez (opak sürüm etiketi); (d) v68 öncesi
+tutarsız satırlar **silinmez/düzeltilmez** ve kimlik sütunları donduğu için
+**onarılamaz** — onarım yolu yeni türev/yeni önbellek satırı (upgrade testi
+`'dün'` damgasının donduğunu ölçer); (e) tetikleyicileri anahtarı olan
+saldırgan düşürebilir; (f) `ai_cache_entries.output_blob_id`in o dosyaya ait
+olduğu çapraz denetlenmez (blob'lar dosya taşımaz), yalnız varlığı; (g)
+`ai_cache_entries` kapsam kapısı listesinde değildir (gerekçe yukarıda); (h)
+iki tabloya ürün yolu yazmadığı için **gerçek akışta uçtan uca** denenmedi —
+değer, doğrudan SQL yazan yolu ve gelecekteki yazıcıyı bağlamasıdır; (i)
+arayüz değişmedi; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
