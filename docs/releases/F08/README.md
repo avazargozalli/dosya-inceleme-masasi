@@ -35,6 +35,7 @@
 | F08-T04ak | ✅ | **sayfa kanıtı (geometri, OCR kökeni, etiket) doğuşta iyi biçimli, sonra değişmez** (şema **v63**): `pages` üzerinde **2 tetikleyici** — kimlik kırpılmış-dolu ≤64, `page_index ≥ 0`, döndürme 0..359, etiket/koordinat uzayı kırpılmış-dolu, `width`/`height` NULL ya da **pozitif**, `quality_flags` **metin dizisi**; on bir kanıt sütunu **donar** (no-op takılmaz); ölçülen kusur: 47 yazımın **42'si** kabul ediliyordu (NULL/boş/boşluk kimlik, sıfır/negatif/metin geometri, `ocr`→`native` çevirisi, sayfanın **başka koşuya** taşınması, bozuk uyarı listesi) ve v54'ün sayfa sınırı hükmü **geriye dönük** bozulabiliyordu (maske sayfa dışına taşar); `GUARDED_TABLES` 25 kalır (2026-11-22) |
 | F08-T04al | ✅ | **denetim defteri eklemelidir** (şema **v64**): `audit_events` üzerinde **4 tetikleyici** — doğuşta kimlik/kategori/işlem/aktör/`entity_id` kırpılmış-dolu ≤64, `metadata_allowlist` **JSON nesnesi**, damga `YYYY-MM-DDTHH:MM:SS.uuuuuuZ` **gerçek** gün/saat, `event_hash` 64 küçük harf hex, `prior_hash` **defterin son satırının özeti** (boş defterde NULL), satır defterin **sonuna** eklenir; dokuz sütun **donar** (no-op takılmaz); satır **silinemez**. Ölçülen: 39 kusur yazımının **39'u** kabul ediliyordu (2026-11-23) |
 | F08-T04am | ✅ | **dosya tarafı ve rolü kanıtlı doğar, sonra değişmez; birleştirme makbuzu silinemez** (şema **v65**): `actors` + `case_participants` + `actor_merges` üzerinde **9 tetikleyici** — ad/kimlik/`normalized_names` iyi biçimli doğar ve kimlik sütunları **donar**; `review_state` yalnız **makbuzlu** birleştirme geçişleriyle değişir; katılımcı `case_id`/rol/not/aralık donar, `actor_id` yalnız makbuzun taşıdığı satırda ve yalnız hedef/kaynak yönünde değişir; silinmiş satır geri getirilemez; üç tabloda da satır **silinemez**. Ölçülen: 92 yazımın **92'si** kabul ediliyordu (2026-11-23) |
+| F08-T04an | ✅ | **şifreli bayt kimliği kanıtlı doğar, sonra değişmez; canlı blob silinemez** (şema **v66**): `blobs` üzerinde **3 tetikleyici** + `integrity_checked_at` sütunu — `storage_id` **dosya adı belirteci** (1..=64, yalnız `[0-9a-z_-]`: yol kaçışı/uzantı/büyük harf/CR-LF-TAB imkânsız), `encrypted_size ≥ 1`, `wrapped_key_ref` iyi biçimli, doğuşta sayaç 0 ve **kanıtsız `verified` yok** (`integrity_status='unverified'`, damga NULL), damga ISO + gerçek gün/saat; **altı sütun donar**, sayaç yalnız ±1, hüküm yalnız **yeni damgayla**; **canlı blob silinemez** (dört gösterim sütunu). Ölçülen: 45 yazımın 40'ı kabul (34 kusur) → düzeltmeden sonra **47 RED · sapma 0**; **37/37 mutasyon** (2026-11-23) |
 
 ## Doğrulama
 
@@ -4262,3 +4263,114 @@ ile de yazılabilir (makbuz `undone_at`ı ayrıca işaretlenmez) — çekirdek
 eşzamanlı yazarları sıraya sokmaz; (j) tetikleyicileri anahtarı olan
 saldırgan düşürebilir; (k) arayüz değişmedi; gerçek pencere + görsel QA
 **insan bekliyor**.
+
+## F08-T04an — şifreli bayt kimliği kanıtlı doğar, sonra değişmez; canlı blob silinemez (şema v66, 2026-11-23)
+
+**Neden bu dilim:** `blobs` satırı «**şu baytlar** şu dosyada, şu boyutta, şu
+anahtarla duruyor» iddiasıdır ve iki tüketici ona doğrudan yaslanır:
+`gc.rs` dosya yolunu **`dir.join(format!("{}.blb", blob.storage_id))`** diye
+kurar, `documents.add_version` sayacı bu satırdan artırır. Bugüne dek
+`storage_id` **hiçbir yerde** biçim denetiminden geçmiyordu: `blob_disk::is_storage_id`
+(32 küçük hex) yalnız **disk taramasında** çalışır, DB satırını korumaz.
+Şemadaki tek kapılar `UNIQUE`, `cipher_version = 1`, `encrypted_size >= 0`,
+`reference_count >= 0` CHECK'leriydi. Sonuç: `../../../../tmp/evil` gibi bir
+ad doğabiliyor (GC kasanın **dışında** yol arar), uzantılı ad
+(`aa11.blb` → `aa11.blb.blb`), 64 haneden uzun ad, CR/LF/TAB ve **büyük harf**
+(macOS'ta varsayılan dosya sistemi büyük-küçük harf **duyarsız**: `AB` ile
+`ab` aynı dosyadır) serbestti. Ayrıca `create_blob_record` doğuşta **kanıtsız
+`integrity_status = 'verified'`** yazıyordu (sütunu bugün hiçbir okuyucu
+okumuyor — yalan damga), `encrypted_size = 0`, boş `wrapped_key_ref` ve
+doğuşta `reference_count = 5` kabul ediliyordu; satır sonradan her sütunuyla
+çevrilebiliyor ve **canlı** blob makbuzsuz silinebiliyordu (`pages.derivative_blob_id`
+`ON DELETE SET NULL` → sessiz NULL; `render_derivatives.blob_id` ve
+`ai_cache_entries.output_blob_id` **FK'sız** → sessiz yetim).
+
+**Ölçülen (düzeltme öncesi, gerçek SQLite v65; sonda
+`scratch/dim-v66-probe/measure_v66.py`, log `measure_before.log`):**
+**45 yazımın 40'ı KABUL** — **34 kusur** (24 doğum + 8 UPDATE + 2 DELETE) +
+6 meşru yol; 5 RED yalnız mevcut CHECK/FK. Doğum: boş/boşluk/kırpılmamış
+kimlik; boş/boşluk/kırpılmamış `storage_id`, **`../../../../tmp/evil`**,
+uzantılı, 31 hane, **büyük harf**, TAB; `encrypted_size = 0`;
+`wrapped_key_ref` boş/boşluk/CR-LF-TAB/kırpılmamış; doğuşta
+`reference_count = 5`; doğuşta kanıtsız `verified` ve `corrupt`; damga
+`dün`/boş/kırpılmamış. UPDATE: `storage_id` çevirme ve **yol kaçışı**,
+`encrypted_size` 0/7, `wrapped_key_ref`, `integrity_status`, `created_at`
+2030, `id`. DELETE: referanssız ve **sayaçlı** blob makbuzsuz silinebiliyor.
+
+**Yazılan (`0066_blob_bytes_identity_guard.sql`, 1 sütun + 3 tetikleyici):**
+`integrity_checked_at` sütunu eklenir — `verified`/`corrupt` hükmü ancak
+**damgalı** olabilir.
+- **BI** — `id` kırpılmış-dolu ≤64; `storage_id` **dosya adı belirteci**:
+  1..=64 hane ve yalnız `[0-9a-z_-]` (yol ayırıcı, nokta/uzantı, boşluk,
+  CR/LF/TAB ve büyük harf imkânsız); `encrypted_size ≥ 1` (AEAD'in etiketi
+  her zaman vardır, sıfır bayt imkânsız); `wrapped_key_ref` kırpılmış-dolu
+  ≤128, CR/LF/TAB yok; doğuşta `reference_count = 0`; doğuşta
+  **`integrity_status = 'unverified'`** ve `integrity_checked_at` **NULL**;
+  `created_at` ISO-8601 + gerçek gün/saat.
+- **BU** — **altı sütun donar** (`id`, `storage_id`, `cipher_version`,
+  `encrypted_size`, `wrapped_key_ref`, `created_at`); `reference_count` yalnız
+  **±1** oynar (`add_version` +1, geri alma −1); `integrity_status` değişiyorsa
+  yeni hüküm `verified`/`corrupt` olmalı ve **yeni** ISO damga taşımalı
+  (`unverified`a geri dönüş yok), durum değişmeden damga yalnız
+  `verified`/`corrupt` satırda tazelenebilir. No-op takılmaz, eski tutarsız
+  satır kilitlenmez.
+- **BD** — **canlı blob silinemez**: `document_versions`, `pages`,
+  `render_derivatives` ya da `ai_cache_entries` hâlâ gösteriyorsa satır
+  silinemez; referanssız blob GC tarafından silinebilir.
+
+Ret `DIM_INTEGRITY:blobs` → `E_DB_INTEGRITY`; `blobs` `case_id` taşımaz →
+`GUARDED_TABLES` **25 kalır** (kapsam `document_versions` üzerinden).
+**Çekirdek hizası (davranış değişikliği):** `create_blob_record` doğuşta
+`'unverified'` yazar ve aynı kuralı **kendi de doğrular**
+(`blob_disk::is_safe_storage_token`, `E_DB_SETTING`) — güvenlik tek hatta
+bırakılmaz.
+
+**Düzeltmeden sonra ölçüm (57 yazım):** **47 RED · 10 KABUL · SAPMA 0**
+(`measure_after.log`: doğum/UPDATE kusurları + dört canlı-silme yolunun
+dördü de RED; meşru doğum, no-op, ±1, kanıtlı `verified`/`corrupt` geçişi ve
+referanssız silme KABUL).
+
+**Testler:** `blob_bytes_identity_is_evidence_backed_and_frozen` (22 doğum +
+11 UPDATE kusuru + 4 canlı-silme yolu; meşru yollar ve çekirdek kapısı) ve
+`upgrade_keeps_blobs_written_before_the_bytes_identity_gate` (v65 tutarsız
+satırı silinmez/onarılmaz, kimliği donar, sayaç ±1 hâlâ çalışır, yeni
+biçimsiz satır doğamaz, GC yolu açık) → **770 → 772**; tam paket
+**772/772 yeşil, 767,60 s** (`scratch/dim-libtest-v66-final.log`). Dürüst olay: ilk tam
+koşuda **5 kırmızı** — `redactions` test fikstürü `st-out-{64-hex}` (71 hane)
+üretiyordu ve yeni sınır haklı olarak reddetti; **kapı gevşetilmedi**, fikstür
+12 haneli benzersiz belirtece çevrildi, modül **33/33** yeşil, tam paket
+yeniden koşuldu.
+
+**Kapı:** taban YEŞİL (tam paket **772/772** + mutasyon öncesi/sonrası iki
+hedefli koşu), **37/37 mutant KIRMIZI**, YEŞİL 0, ÖLÇÜLEMEDİ 0 (`scratch/dim-v66-probe/gates_v66_final.log`); kaynak byte-birebir geri yazıldı (sha256 `d92cdea36fae7192…`). **Dürüst (iki koşu):** ilk koşu **32/37** — beş mutant YEŞİL kaldı çünkü testlerde o cümleleri tek başına gerektiren saldırı yoktu (ayırıcı boşluklu damga, kanıtlı satırda damgasız hüküm, sondaki boşluklu damga, yeni damgayla `unverified`a dönüş, damga tazelemede sondaki boşluk); beş saldırı eklendi, **37/37** yeniden ölçüldü; ilk koşunun hükümleri kanıt sayılmadı, kapı gevşetilmedi.
+
+**CI (ölçüldü):** kod `5865e16` (6 dosya, **+821/−3**: `0066`, `lib.rs`,
+`documents.rs`, `blob_disk.rs`, `upgrade_tests.rs`, `redactions.rs` fikstürü) →
+run `45167345756` **10/10 YEŞİL** (`dim-storage` **772** iki OS'ta: macos-15
+**600,81 s** / ubuntu-latest **587,59 s**; `arayüz` 67 dosya / **1.482** test,
+paket `index-Ce2oEuEs.js` **731,38 kB** / gzip 194,04 kB — değişmedi;
+`masaüstü kabuk` 205 s, `windows güvenli depo` 30 test, SBOM, sözleşmeler,
+belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) `storage_id`in diskte gerçekten o adda dosya olduğu
+doğrulanmaz; `encrypted_size`in dosya boyutu olduğu yeniden ölçülmez.
+(b) `wrapped_key_ref` **hedefinin** var olduğu denetlenmez (etiket).
+(c) `integrity_status` yalnız **iç tutarlılık** yönünden kapılıdır; bütünlük
+taramasının gerçekten koştuğu kanıtlanmaz ve sütunun bugün okuyucusu yoktur.
+(d) v66 öncesi tutarsız satırlar silinmez/düzeltilmez; kimlik sütunları
+donduğu için **onarılamaz** — onarım yolu yeni içe aktarmadır.
+(e) BD dört sütunu bilir; blob'a işaret eden yeni bir sütun eklenirse
+`gc.rs`teki `every_blob_column_is_covered_by_the_reference_gate` testi düşer.
+(f) Tetikleyicileri anahtarı olan saldırgan düşürebilir.
+(g) **Kural daraltması (bilinçli):** `storage_id` «tam 32 hex» **değil**
+«yol güvenli belirteç» olarak kapılandı; tam-32-hex 70+ meşru çağrı yerini
+(testler/bench'ler, UUID'ler) kırardı ve dosya adı güvenliğine ek bir şey
+katmazdı — ürün yolu (`random_storage_id()` → 32 hex) kuralın **alt kümesi**,
+31 haneli bir belirteç de kabul edilir (yol güvenliği ölçülür, üretici biçimi
+değil).
+(h) **Sayaç silme kapısı değil:** `reference_count > 0` iken silmeyi
+durdurmak, dosya CASCADE'i sonrası meşru olarak yetim kalan (sayaç hiç
+azalmadığı için bayat) blob'ların GC ile **hiç** temizlenememesine yol açardı;
+kapı «canlı referans»tır, sayaç ise doğuşta 0 + yazımda ±1 kuralıyla
+dürüst tutulur.
+(i) Arayüz değişmedi; gerçek pencere + görsel QA **insan bekliyor**.
