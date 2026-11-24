@@ -2066,14 +2066,15 @@ export const tr = {
     libraryTitle: "Alıntıları kütüphanede ara",
     librarySub:
       "Metindeki tırnaklı pasajlar bütün emsallerin **güncel** tam metinlerinde aranır; " +
-      "sonuç metin eşleşmesidir, anlam incelemesi ayrıdır.",
+      "güncel metinde bulunamayan alıntı için emsallerin eski sürümleri de taranır. " +
+      "Sonuç metin eşleşmesidir, anlam incelemesi ayrıdır.",
     libraryLabel: "Alıntıları içeren metin",
     libraryPlaceholder: "Örn. “itirazın reddine karar verdi” pasajı hangi kararlarda geçiyor?",
     libraryRun: "Kütüphanede ara",
     libraryBusy: "Aranıyor…",
     libraryHint:
-      "Eski sürümler bu aramada taranmaz; tek emsal denetimi onları da tarar. " +
-      "“Bulunamadı” uydurma hükmü değildir.",
+      "Önce güncel metinler; yalnız bulunamayan alıntı için emsal başına en çok 5 eski " +
+      "sürüm taranır. “Bulunamadı” uydurma hükmü değildir.",
     libraryEmpty: "Metinde çift tırnaklı alıntı bulunamadı.",
     librarySummary:
       "{libraryTotal} emsalin tam metni var · {scanned} tarandı · {found} alıntı bulundu · " +

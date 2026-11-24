@@ -331,3 +331,11 @@ export function libraryMatchCitation(match: LibraryQuoteMatch): string {
     .filter(Boolean)
     .join(" · ");
 }
+
+/**
+ * Eşleşme **yalnız eski sürümde** bulunduysa etiketi; güncel metinde bulunan
+ * eşleşme sessiz kalır (F12-T14l). Güncel metin değişmiş olabilir.
+ */
+export function libraryMatchVersionNote(match: LibraryQuoteMatch): string | null {
+  return match.foundInOldVersion ? t("precedentLib.intextOldVersion") : null;
+}

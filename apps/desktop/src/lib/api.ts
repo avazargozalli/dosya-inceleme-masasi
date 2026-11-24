@@ -1191,6 +1191,8 @@ export type LibraryQuoteMatch = {
   decisionDate: string | null;
   title: string | null;
   versionId: string;
+  /** `true`: eşleşme yalnız eski sürümde bulundu (güncel metin değişmiş olabilir). */
+  foundInOldVersion: boolean;
   method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated";
   occurrences: number;
   charStart: number;
@@ -1222,6 +1224,10 @@ export type LibraryInTextCheck = {
   libraryTotal: number;
   scanned: number;
   truncated: boolean;
+  /** Güncel metinde bulunamayan alıntılar için taranan eski sürüm metni sayısı. */
+  historyScanned: number;
+  /** Eski sürüm taraması sınıra takıldı: `not_found` kesin değil (partial_scan). */
+  historyTruncated: boolean;
   dehyphenated: number;
   ligature: number;
   notes: string[];

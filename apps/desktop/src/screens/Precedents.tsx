@@ -36,6 +36,7 @@ import {
   libraryCheckSkipped,
   libraryCheckSummary,
   libraryMatchCitation,
+  libraryMatchVersionNote,
   libraryQuoteFindingText,
   libraryQuoteFindingTone,
   precedentInTextSkipped,
@@ -1078,6 +1079,11 @@ export function Precedents() {
                 {t("precedentLib.libraryTruncated", { scanned: libraryCheck.scanned })}
               </div>
             ) : null}
+            {libraryCheck.historyTruncated ? (
+              <div className="hint" style={{ marginTop: 6 }}>
+                {t("precedentLib.intextTruncated")}
+              </div>
+            ) : null}
             {libraryCheck.quotes.length > 0 ? (
               <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
                 {libraryCheck.quotes.map((finding) => {
@@ -1101,6 +1107,9 @@ export function Precedents() {
                         <div key={match.precedentId} className="hint" style={{ marginTop: 2 }}>
                           {libraryMatchCitation(match)} ·{" "}
                           {t("precedentLib.librarySource")}: “{match.sourceText}”
+                          {libraryMatchVersionNote(match) ? (
+                            <> · {libraryMatchVersionNote(match)}</>
+                          ) : null}
                           {match.occurrences > 1 ? (
                             <> · {t("precedentLib.libraryOccurrences", { count: match.occurrences })}</>
                           ) : null}

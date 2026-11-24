@@ -20,6 +20,7 @@
 | F12-T14 | ✅ | metin içi alıntı denetimi: iddia/özet metnindeki tırnaklı pasajlar dosya belgelerinde aranır; birebir tek konum kaynağa bağlanır; sayfa sınırını aşan alıntı bulunur ama bağlanmaz; güncel sürümde bulunamayan alıntı belgenin **eski sürümlerinde** de aranır; **satır/sayfa sonunda tire ile bölünmüş kelime** birleştirilerek aranır (en zayıf katman, bağlanmaz); **font ligatürü** (`ﬂ`) açılarak aranır (kendi katmanı, bağlanmaz). Gerçek PDF + gerçek worker ile uçtan uca (2026-10-30) |
 | F12-T14j | ✅ | metindeki tüm tırnaklı alıntılar **seçili kararın** tam metninde tek turda doğrulanır — tek alıntı doğrulamasıyla **aynı** katman sırası ve sürüm kuralı (tek yol); alıntı başına yöntem/konum/kaynak, belirsizde adaylar, eski sürümde bulunan işaretlenir; tam metin yoksa düğme kapalı ve nedeni yazılı (2026-11-20) |
 | F12-T14k | ✅ | metindeki tırnaklı alıntılar **bütün kütüphanenin** güncel tam metinlerinde aranır — aynı çıkarım ve **aynı** katman sırası (tek yol); alıntı başına `found` / `not_found` / `partial_scan` / `no_library_text`, eşleşen emsalde künye + yöntem + konum + ham kaynak + kaç geçiş; 200 emsal sınırı → `truncated` («bulunamadı» kesin sayılmaz), 20 eşleşme sınırı → `hidden_matches`; kalıcı yazma yok (2026-11-22) |
+| F12-T14l | ✅ | kütüphane araması güncel metinde bulunamayan alıntı için emsallerin **eski sürümlerini** de tarar — aynı çıkarım ve **aynı** katman sırası (tek yol); eşleşme `foundInOldVersion` taşır, emsal başına **tek satır** (en yeni eşleşen eski sürüm), emsal başına **5** sürüm + toplam **4.000.000** karakter bütçesi → `historyTruncated` + `partial_scan` (kesin «bulunamadı» yok); güncel metinde bulunan emsal için geçmiş hiç taranmaz; kalıcı yazma yok (2026-11-24) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1639,6 +1640,84 @@ rapor `truncated`/`hidden_matches` yazar, kesinlik iddia edilmez. (d) Kütüphan
 büyüklüğü kadar metin **belleğe** alınır (tek tek sürüm metni okunur); çok
 büyük kütüphanede bellek/süre ölçülmedi. (e) `occurrences` sürüm metnindeki
 geçiş sayısıdır; birleştirilmiş kopya sürümler tek metin sayılır. (f) Rapor
+**kalıcı değildir**: atıf siciline yazmaz, «doğrulandı» damgası üretmez.
+(g) Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan
+bekliyor**.
+
+## F12-T14l — kütüphane araması eski sürümleri de tarar (2026-11-24)
+
+**Neden bu dilim:** T14k'nın kapsamı yalnız **güncel** tam metinlerdi; kapanış
+sınırı (a) tam bunu işaret ediyordu: dilekçedeki bir alıntı emsalin **eski**
+nüshasından alınmışsa kütüphane araması `bulunamadı` diyor, tek emsal denetimi
+aynı alıntıyı `exact` buluyordu — **aynı alıntı için iki hüküm**. Bu dilim iki
+yolu kapsamda buluşturur: önce güncel metin; orada yoksa emsallerin eski
+sürümleri. Yeni bir kural yazılmadı: çıkarım (`extract_quoted_spans`), katman
+sırası (`exact → whitespace → ligature → turkish_fold → dehyphenated`) ve
+`find_quote_in_scopes` **aynı**; parite testleri tek yolu ölçer.
+
+**Yazılan (çekirdek, `intext_quotes.rs`):**
+
+- `check_in_text_quotes_across_library` **iki turlu** çalışır. Birinci tur
+  (T14k aynen): her emsalin **güncel** metni. İkinci tur **yalnız hiç
+  eşleşmeyen alıntılar** için ve **yalnız henüz eşleşmemiş emsallerin**
+  geçmişi taranır; güncel metinde bulunan emsal iki kez eşleşmez (aynı emsal
+  için ikinci satır doğmaz).
+- Eski sürümler `acquired_at DESC, id DESC` sırasıyla, emsal başına en çok
+  `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT` (**5**) metin; toplam
+  `MAX_LIBRARY_HISTORY_CHARS` (**4.000.000** karakter) bütçesi. Sorgu `LIMIT 6`
+  ile bir fazla satır ister: altıncı satır «daha eskisi taranmadı»nın kanıtıdır
+  (sessiz kesme yok).
+- Eşleşme `LibraryQuoteMatch.found_in_old_version=true` ve **eşleşen sürümün**
+  `version_id`'si ile yazılır; aynı emsalde alıntı birden çok eski sürümde
+  geçse bile **tek satır** (en yeni eşleşen eski sürüm). Alıntı başına **20**
+  eşleşme sınırı ve `hidden_matches` sayımı iki turda **ortaktır**.
+- Sınır aşılırsa rapor `history_truncated=true` yazar ve eşleşmeyen alıntı
+  `partial_scan` olur — **kesin «bulunamadı» yok** (T14k'nın `truncated`
+  sözleşmesiyle aynı). `history_scanned` kaç eski sürüm metninin tarandığını
+  taşır; notlar «kaç eşleşme yalnız eski sürümde bulundu»yu yazar. **Kalıcı
+  yazma yok** — rapor her aramada yeniden türetilir, `citation_checks`e satır
+  yazmaz (şema değişmedi, v68).
+
+**Yazılan (Tauri + arayüz):** `LibraryInTextCheck.historyScanned` /
+`historyTruncated` ve `LibraryQuoteMatch.foundInOldVersion` alanları;
+`lib/precedents.ts`te saf etiket `libraryMatchVersionNote` («eski sürüm»,
+güncel eşleşmede sessiz); `Precedents.tsx` eşleşme satırında eski sürüm
+etiketi, sınırlı taramada kesinlik uyarısı. Kart alt metni ve ipucundaki
+«eski sürümler bu aramada taranmaz» **iddiası kaldırıldı** — artık yanlıştı.
+
+**Testler/yerel:** `dim-storage --lib` **777 → 781** (T14l: 5 test —
+düşüş + eski sürüm işareti, güncel tercihi + geçmiş taranmaz, emsal başına tek
+satır/en yeni eski sürüm, sürüm sınırı → `partial_scan`, karakter bütçesi →
+`partial_scan`; mevcut «yalnız güncel» testi **davranış değişikliğine** göre
+yeniden yazıldı, kapı gevşetilmedi) → tam paket **781/781 yeşil**
+(`dim-t14l-libtest-final.log`, **711,06 s**; 0 failed). Arayüz **67 dosya / 1485 test** yeşil
+(node 22.23.1, TZ=UTC; +3: `libraryMatchVersionNote` birim testi + iki ekran
+senaryosu), `tsc --noEmit` temiz. İki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings` ve masaüstü
+`check --all-targets` temiz.
+
+**Kapı (`scratch/dim-t14l-gates.py`, log `dim-t14l-gates.log`):** taban iki
+uçta YEŞİL; **14/14 mutant KIRMIZI** (11 çekirdek + 3 arayüz), dosyalar her
+mutasyondan sonra sha256 **birebir** geri yazıldı (`intext_quotes.rs
+2ce29601aab86404…`, `precedents.ts ba4ebaa6facd5ddf…`, `Precedents.tsx
+21d8c451e8633185…`). **Dürüst (iki koşu):** ilk koşu **13/14** — U3 (eşleşme
+satırındaki etiket gizlenir) YEŞİL kaldı çünkü testin aradığı «eski sürüm»
+metni, sınırlı tarama **uyarısının** içindeki «eski sürümler» tarafından da
+karşılanıyordu (eşdeğer cümle); senaryo ikiye ayrıldı (etiket senaryosunda
+`historyTruncated=false`, uyarı senaryosunda etiketsiz rapor), **14/14**
+yeniden ölçüldü; ilk koşunun hükümleri kanıt sayılmadı, kapı gevşetilmedi.
+
+**Dürüst sınırlar:** (a) Geçmiş taraması **sınırlıdır**: emsal başına 5 sürüm
+ve toplam 4.000.000 karakter; büyük kütüphanede eski metinlerin çoğu taranmaz
+ve rapor bunu `history_truncated`/`partial_scan` ile söyler — «bulunamadı»
+kesin değildir. (b) Sonuç **metin eşleşmesi**dir; alıntının anlamı ve kaynağın
+doğruluğu ayrıca incelenir; eski sürümde bulunmak **uydurma hükmü değildir**,
+güncel metnin değişmiş olabileceğini gösterir. (c) `occurrences` sürüm
+metnindeki geçiş sayısıdır; birleştirilmiş kopya sürümler tek metin sayılır.
+(d) Eski sürüm aynı `precedents` satırının sürümüdür (FK), ama sürümün o
+karara **ait** olduğu ayrıca kanıtlanmaz — künye denetimi T12'nin işidir.
+(e) Aynı emsalde birden çok eski sürümde geçen alıntı için yalnız **en yeni**
+eşleşen sürüm gösterilir; diğer sürümlerin konumları listelenmez. (f) Rapor
 **kalıcı değildir**: atıf siciline yazmaz, «doğrulandı» damgası üretmez.
 (g) Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.

@@ -516,6 +516,7 @@ const LIBRARY_REPORT: LibraryInTextCheck = {
           decisionDate: "2025-06-01",
           title: "Kira alacağı",
           versionId: "pv1",
+          foundInOldVersion: false,
           method: "exact",
           occurrences: 2,
           charStart: 119,
@@ -542,6 +543,8 @@ const LIBRARY_REPORT: LibraryInTextCheck = {
   libraryTotal: 3,
   scanned: 3,
   truncated: false,
+  historyScanned: 0,
+  historyTruncated: false,
   dehyphenated: 0,
   ligature: 0,
   notes: ["Kütüphane araması güncel tam metin sürümlerini tarar."],
@@ -2807,6 +2810,60 @@ describe("emsal ekranı: alıntılar kütüphane genelinde aranır (F12-T14k)", 
     // İkinci alıntı hiçbir kararda yok: «bulunamadı», «uydurma» değil.
     expect(status).toContain(libraryQuoteFindingText(LIBRARY_REPORT.quotes[1]!));
     expect(status).toContain(LIBRARY_REPORT.notes[0]!);
+  });
+
+  it("eski sürümde bulunan eşleşme «eski sürüm» etiketiyle yazılır (F12-T14l)", async () => {
+    const oldMatch = { ...LIBRARY_REPORT.quotes[0]!.matches[0]!, foundInOldVersion: true };
+    const report: LibraryInTextCheck = {
+      ...LIBRARY_REPORT,
+      historyScanned: 2,
+      historyTruncated: false,
+      quotes: [
+        { ...LIBRARY_REPORT.quotes[0]!, matches: [oldMatch] },
+        LIBRARY_REPORT.quotes[1]!,
+      ],
+      notes: ["Sonuç metin eşleşmesidir."],
+    };
+    mocks.precedentLibraryInTextCheck.mockResolvedValue(report);
+    setup();
+    fireEvent.change(byId<HTMLTextAreaElement>("p-library-text"), {
+      target: { value: "“kira bedeli ödenmedi”" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.libraryRun") }));
+
+    await waitFor(() =>
+      expect(
+        statusTexts().some((value) => value.includes(libraryCheckSummary(report))),
+      ).toBe(true),
+    );
+    const status = statusTexts().join(" ");
+    expect(status).toContain(t("precedentLib.intextOldVersion"));
+    expect(status).toContain(libraryMatchCitation(oldMatch));
+    // Sınırsız taramada kesinlik uyarısı yoktur.
+    expect(status).not.toContain(t("precedentLib.intextTruncated"));
+  });
+
+  it("sınırlı eski sürüm taraması kesinlik uyarısıyla yazılır (F12-T14l)", async () => {
+    const report: LibraryInTextCheck = {
+      ...LIBRARY_REPORT,
+      historyScanned: 5,
+      historyTruncated: true,
+      notes: ["Eski sürüm taraması sınıra takıldı."],
+    };
+    mocks.precedentLibraryInTextCheck.mockResolvedValue(report);
+    setup();
+    fireEvent.change(byId<HTMLTextAreaElement>("p-library-text"), {
+      target: { value: "“kira bedeli ödenmedi”" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: t("precedentLib.libraryRun") }));
+
+    await waitFor(() =>
+      expect(
+        statusTexts().some((value) => value.includes(libraryCheckSummary(report))),
+      ).toBe(true),
+    );
+    const status = statusTexts().join(" ");
+    expect(status).toContain(t("precedentLib.intextTruncated"));
   });
 
   it("uçuşta metin değişirse geç yanıt yeni metnin altına yazılmaz", async () => {

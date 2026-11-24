@@ -16,6 +16,7 @@ import {
   libraryCheckSkipped,
   libraryCheckSummary,
   libraryMatchCitation,
+  libraryMatchVersionNote,
   libraryQuoteFindingText,
   libraryQuoteFindingTone,
   precedentInTextSkipped,
@@ -407,6 +408,7 @@ function libraryMatch(overrides: Partial<LibraryQuoteMatch> = {}): LibraryQuoteM
     decisionDate: "2025-06-01",
     title: "Kira alacağı",
     versionId: "pv1",
+    foundInOldVersion: false,
     method: "exact",
     occurrences: 1,
     charStart: 10,
@@ -443,6 +445,8 @@ function libraryCheck(overrides: Partial<LibraryInTextCheck> = {}): LibraryInTex
     libraryTotal: 3,
     scanned: 3,
     truncated: false,
+    historyScanned: 0,
+    historyTruncated: false,
     dehyphenated: 0,
     ligature: 0,
     notes: [],
@@ -488,5 +492,10 @@ describe("kütüphane geneli alıntı araması (F12-T14k)", () => {
         libraryMatch({ chamber: null, decisionNo: null, decisionDate: null }),
       ),
     ).toBe("Yargıtay · 2024/100");
+  });
+
+  it("eski sürümde bulunan eşleşme «eski sürüm» etiketi taşır, güncel sessizdir (F12-T14l)", () => {
+    expect(libraryMatchVersionNote(libraryMatch())).toBeNull();
+    expect(libraryMatchVersionNote(libraryMatch({ foundInOldVersion: true }))).toBe("eski sürüm");
   });
 });
