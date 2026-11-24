@@ -23,6 +23,7 @@
 | F12-T14l | ✅ | kütüphane araması güncel metinde bulunamayan alıntı için emsallerin **eski sürümlerini** de tarar — aynı çıkarım ve **aynı** katman sırası (tek yol); eşleşme `foundInOldVersion` taşır, emsal başına **tek satır** (en yeni eşleşen eski sürüm), emsal başına **5** sürüm + toplam **4.000.000** karakter bütçesi → `historyTruncated` + `partial_scan` (kesin «bulunamadı» yok); güncel metinde bulunan emsal için geçmiş hiç taranmaz; kalıcı yazma yok (2026-11-24) |
 | F12-T14m | ✅ | metin içi alıntı çıkarımı **iç içe tırnakları** tanır: açılış **kendi ailesinin** kapanışıyla eşleşir (`“…”`, `„…“`, `«…»`, `"…"`), dış alıntı iç alıntıyla bölünmez ve tek satır kalır (`“A «B» C”` → `A «B» C`); kapanışı olmayan açılış **sonraki alıntıları gizlemez** (`unclosed` sayılır, tarama sürer); şema (v68) ve arayüz değişmedi, üç yol aynı çıkarımı kullanır (2026-11-24) |
 | F12-T14n | ✅ | metin içi alıntı çıkarımı **tek tırnak ailesini** de tanır (`‘…’` · `'…'`); Türkçe kesme işareti alıntı **açmaz/kapatmaz** (`İstanbul'da`, `‘İstanbul’da yaşanan olay’`), düz tek tırnak yalnız kelime başında açılır, iç içe tek tırnak dış çift tırnak alıntısını bölmez; kapsam notu üç yolda **tek sabitten** (`QUOTE_EXTRACTION_NOTE`); şema (v68) değişmedi, arayüzde beş dize gerçeğe uyarlandı (2026-11-24) |
+| F12-T14o | ✅ | metin içi alıntı **yalnız kelime/rakam sınırında** açılır: ölçü işareti (`15"`, `15“`) ve kelime ortası düz tırnak alıntı **başlatmaz** — `15" … 2"` arasındaki metin sahte alıntı olarak raporlanmaz (önceden `exact` bulunan bağlanabilir sahte aday üretiyordu); noktalama/boşluk sonrası gerçek açılışlar korunur; şema (v68) değişmedi (2026-11-24) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1884,3 +1885,62 @@ alıntı üretmemek için); aynı cümledeki sonraki sağlam alıntı yine çık
 kelime başında açılış sayılıp `unclosed` sayısını artırabilir; alıntı
 üretmez. (e) Sonuç **metin eşleşmesi**, anlam değil. (f) Rapor **kalıcı
 değil**. (g) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14o — ölçü işareti ve kelime ortası tırnak alıntı açmaz (2026-11-24)
+
+**Neden bu dilim:** T14m'in dürüst sınırı (d) "`"` ölçü işareti (`15"`)
+yanlış açılış sayılabilir — sezgisel" diyordu. Ölçüldü: bu yalnız gereksiz bir
+`unclosed` sayısı değil, **sahte alıntı** üretiyordu. `Ekran 15" ve disk 2"
+kapasiteli.` metninde iki ölçü işareti bir açılış/kapanış çifti gibi
+eşleşiyor ve aradaki `ve disk 2` (8 karakter) alıntı olarak rapora düşüyordu.
+Aynı cümle belgede geçtiği için bu sahte alıntı **`exact` (birebir)** hüküm
+alıyor, tek konumlu olduğu için **kaynağa bağlanabilir** görünüyordu.
+Tipografik ölçüde (`15“ … 2”`) de aynı sınıf vardı.
+
+**Kural:** Bir alıntı yalnız **kelime/rakam sınırında** açılır — metin başı,
+boşluk veya noktalama. Önceki karakter harf/rakam ise tırnak alıntı
+başlatmaz. Böylece Türkçe kesme işareti (`İstanbul'da`, T14n) ve ölçü işareti
+(`15"`, `15“`) aynı kurala girer; tek tırnakta zaten olan kelime başı koşulu
+**bütün ailelere** genişletildi. `(“alıntı”)`, `2020 "alıntı"`, `…“alıntı”`,
+`— «alıntı»` gibi gerçek açılışlar korunur.
+
+- `closer_after` önceden hesabı, iç içe yığın, `MIN_QUOTE_CHARS` /
+  `MAX_SPAN_CHARS` eşikleri, `unclosed` sayımı ve üç yolun (dosya, tek emsal,
+  kütüphane) ortak çıkarımı **değişmedi**. Şema değişmedi (v68); kalıcı yazma
+  yok.
+- Kapsam notu (`QUOTE_EXTRACTION_NOTE`) değişmedi; not zaten yalnız tırnak
+  ailelerini ve kesme işaretini anlatır. Arayüz davranışı/dizeleri değişmedi.
+
+**Testler/yerel:** Ölçüm **önce 3 KIRMIZI** — `["ve disk 2", "Gerçek alıntı
+metni burada geçer"]`, yani 2 bulgu (biri sahte `exact`); düzeltmeden sonra
+**5 YEŞİL**. Yeni testler: ölçü işareti çifti (düz + tipografik) sahte alıntı
+üretmez, kelime ortasında açılış yok, noktalama/boşluk sonrası açılışlar
+korunur, uçtan uca raporda yalnız gerçek alıntı `exact` bulunur ve sahte aday
+yok. `intext_quotes` modülü **75/75 yeşil**; tam paket **802/802 yeşil,
+880,90 s** (`dim-t14o-libtest.log`; fark: ağaçtaki başka ajanın 2 testi).
+İki manifest `cargo fmt --check`, `clippy -p dim-storage --all-targets
+-D warnings` temiz.
+
+**Kapı (`scratch/dim-t14o-gates.py`, log `dim-t14o-gates.log`):** taban iki
+uçta YEŞİL; **6/6 mutant KIRMIZI** ve her mutantta **hedef test adı logda**
+(kural tümden kapalı; harften sonra açılış serbest; rakamdan sonra açılış
+serbest; noktalamadan sonra açılış kapalı; tipografik ölçü rakamdan sonra
+özel açılış; düz çift tırnak harften sonra özel açılış). Her mutasyondan
+sonra dosya sha256 **birebir** geri yazıldı
+(`intext_quotes.rs 8a0789f29e1a5e4b…`).
+
+**CI (ölçüldü):** kod `6a34d18` (1 dosya, **+91/−10**) → run `45476531330`
+**10/10 YEŞİL** (`dim-storage` **800** iki OS'ta: macos-15 **570,96 s** /
+ubuntu-latest **1.562,80 s**; `arayüz` **67 dosya / 1485 test**, paket
+`index-CmSUYlRQ.js` **731,85 kB** / gzip **194,15 kB** — değişmedi;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, `sözleşmeler`, belge worker'ı,
+sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Ölçü işareti **rakamdan sonra** korunur; harften
+sonra gelen `"` de artık açılış değildir. (b) Boşlukla ayrılmış ölçü
+(`15 "`) hâlâ açılış sayılabilir — sezgisel. (c) Metin başında `"15"` gibi
+bir ölçü niyeti alıntı sanılabilir. (d) Açılış/kapanış stili karışıksa
+eşleşmez (T14m kuralı); `‘yeterli sebep’te` gibi eke bitişik kapanış yine
+`unclosed` sayılır (T14n). (e) `…` ile çıkarılmış pasaj bu dilimde ele
+alınmadı. (f) Sonuç **metin eşleşmesi**, anlam değil; rapor **kalıcı değil**.
+(g) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
