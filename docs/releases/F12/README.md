@@ -1707,6 +1707,13 @@ karşılanıyordu (eşdeğer cümle); senaryo ikiye ayrıldı (etiket senaryosun
 `historyTruncated=false`, uyarı senaryosunda etiketsiz rapor), **14/14**
 yeniden ölçüldü; ilk koşunun hükümleri kanıt sayılmadı, kapı gevşetilmedi.
 
+**CI (ölçüldü):** kod `ee25c91` (8 dosya, **+509/−42**) → run
+`45367500772` **10/10 YEŞİL** (`dim-storage` **781** iki OS'ta: `macos-15`
+**663,38 s** / `ubuntu-latest` **1.569,62 s**; `arayüz` **67 dosya / 1485
+test**, paket `index-BZUj_w_h.js` **731,76 kB** / gzip **194,12 kB**;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, `sözleşmeler`, belge worker'ı,
+sürüm paketi manifesti, kaynak arşivi yeşil).
+
 **Dürüst sınırlar:** (a) Geçmiş taraması **sınırlıdır**: emsal başına 5 sürüm
 ve toplam 4.000.000 karakter; büyük kütüphanede eski metinlerin çoğu taranmaz
 ve rapor bunu `history_truncated`/`partial_scan` ile söyler — «bulunamadı»
