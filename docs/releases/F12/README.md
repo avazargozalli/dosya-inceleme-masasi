@@ -21,6 +21,7 @@
 | F12-T14j | ✅ | metindeki tüm tırnaklı alıntılar **seçili kararın** tam metninde tek turda doğrulanır — tek alıntı doğrulamasıyla **aynı** katman sırası ve sürüm kuralı (tek yol); alıntı başına yöntem/konum/kaynak, belirsizde adaylar, eski sürümde bulunan işaretlenir; tam metin yoksa düğme kapalı ve nedeni yazılı (2026-11-20) |
 | F12-T14k | ✅ | metindeki tırnaklı alıntılar **bütün kütüphanenin** güncel tam metinlerinde aranır — aynı çıkarım ve **aynı** katman sırası (tek yol); alıntı başına `found` / `not_found` / `partial_scan` / `no_library_text`, eşleşen emsalde künye + yöntem + konum + ham kaynak + kaç geçiş; 200 emsal sınırı → `truncated` («bulunamadı» kesin sayılmaz), 20 eşleşme sınırı → `hidden_matches`; kalıcı yazma yok (2026-11-22) |
 | F12-T14l | ✅ | kütüphane araması güncel metinde bulunamayan alıntı için emsallerin **eski sürümlerini** de tarar — aynı çıkarım ve **aynı** katman sırası (tek yol); eşleşme `foundInOldVersion` taşır, emsal başına **tek satır** (en yeni eşleşen eski sürüm), emsal başına **5** sürüm + toplam **4.000.000** karakter bütçesi → `historyTruncated` + `partial_scan` (kesin «bulunamadı» yok); güncel metinde bulunan emsal için geçmiş hiç taranmaz; kalıcı yazma yok (2026-11-24) |
+| F12-T14m | ✅ | metin içi alıntı çıkarımı **iç içe tırnakları** tanır: açılış **kendi ailesinin** kapanışıyla eşleşir (`“…”`, `„…“`, `«…»`, `"…"`), dış alıntı iç alıntıyla bölünmez ve tek satır kalır (`“A «B» C”` → `A «B» C`); kapanışı olmayan açılış **sonraki alıntıları gizlemez** (`unclosed` sayılır, tarama sürer); şema (v68) ve arayüz değişmedi, üç yol aynı çıkarımı kullanır (2026-11-24) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1727,4 +1728,80 @@ karara **ait** olduğu ayrıca kanıtlanmaz — künye denetimi T12'nin işidir.
 eşleşen sürüm gösterilir; diğer sürümlerin konumları listelenmez. (f) Rapor
 **kalıcı değildir**: atıf siciline yazmaz, «doğrulandı» damgası üretmez.
 (g) Arayüz jsdom'da ölçüldü; gerçek Tauri penceresi + görsel QA **insan
+bekliyor**.
+
+## F12-T14m — iç içe tırnaklar dış alıntıyı bölmez, kapanmamış tırnak sonrakileri gizlemez (2026-11-24)
+
+**Neden bu dilim:** T14/T14j/T14k/T14l aynı çıkarımı (`extract_quoted_spans`)
+kullanır ve bu çıkarım bir açılışı **ilk rastgele kapanışla** eşliyordu. Hukuk
+metinlerinde yaygın olan iç içe tırnak (`“Mahkeme «iyi niyet» ilkesine atıf
+yaptı”`) dış alıntıyı `»`da kesiyor, dilekçedeki tam pasaj hiç aranmıyordu
+(yanlış negatif); düz tırnak içindeki tipografik alıntı (`"kararın “esas”
+bölümünü"`) ise hiç çıkarılamıyordu. Ayrıca kapanışı olmayan tek bir tırnak
+(`“...`) **metnin geri kalanının hiç taranmamasına** yol açıyordu — rapor
+yalnız `unclosed` sayısını yazıyor, sonraki sağlam alıntıları sessizce
+atlıyordu. Üç yol da aynı işlevi kullandığı için düzeltme tek yerde: çıkarım,
+katman sırası (`exact → whitespace → ligature → turkish_fold → dehyphenated`),
+sınırlar ve rapor biçimi **değişmedi**.
+
+**Yazılan (çekirdek, `intext_quotes.rs`):**
+
+- Açılış **kendi ailesinin** kapanışıyla eşleşir: `“…”` (typographic),
+  `„…“` (german), `«…»` (guillemet), `"…"` (straight). İç içe açılışlar
+  yığında tutulur; yığın boşalınca **dış** alıntı tek parça yayınlanır
+  (`“A «B» C”` → `A «B» C`, tek satır; iç alıntı ayrı satır olmaz).
+- Alman alıntısında `“` **kapanıştır**: `„A“` doğru kapanır, hemen ardından
+  gelen `“B”` ayrı alıntıdır (eski çıkarım ilk `“`yı yanlışlıkla dış kapanış
+  sayabiliyordu).
+- Kapanışı **hiç olmayan** açılış yığına girmez; `unclosed` sayılır ve tarama
+  durmaz — tek bozuk tırnak sonraki alıntıları gizlemez. Metin sonunda hâlâ
+  açık kalan çerçeveler de `unclosed`a eklenir (iç alıntısı kapanıp dışı açık
+  kalan alıntı sessizce yutulmaz).
+- Konum/kırpma (iç boşluklar konumdan düşülür), `MIN_QUOTE_CHARS` /
+  `MAX_SPAN_CHARS` ve "boş alıntı" kuralları **aynı**; `style` dış alıntının
+  ailesini taşır.
+- Şema değişmedi (v68), kalıcı yazma yok; Tauri/arayüz değişmedi — dosya, tek
+  emsal ve kütüphane yolları aynı çıkarımı kullandığı için düzeltmeyi olduğu
+  gibi alır.
+
+**Testler/yerel:** `dim-storage --lib` **781 → 787** (6 test: iç içe
+tipografik+guillemet dış sınırı ve konumu, düz tırnak içinde tipografik alıntı,
+kapanmış iç alıntıya rağmen açık kalan dış alıntı sayımı, kapanışsız açılışın
+sonraki alıntıyı gizlememesi, iç boşlukların konumdan düşülmesi, alman kapanışı
+ile ardışık ayrı alıntı) → tam paket **787/787 yeşil**
+(`dim-t14m-libtest-final.log`, **850,03 s**). İki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings`, masaüstü
+`check --all-targets` (2 dk 23 s) temiz. Arayüz kodu değişmedi.
+
+**Kapı (`scratch/dim-t14m-gates.py`, log `dim-t14m-gates.log`):** taban iki uçta
+YEŞİL; **8/8 mutant KIRMIZI** (aile eşleşmesi, iç alıntının ayrı satır
+yayınlanması, kapanışsız açılışın yığına girmesi, metin sonu `unclosed` sayımı,
+alman kapanışı, iç boşluk konumu, stil adı, kapanışsız açılışın hiç sayılmaması)
+ve her mutantta **hedef test adı logda**; dosya her mutasyondan sonra sha256
+**birebir** geri yazıldı (`intext_quotes.rs ac3c865b…`). **Dürüst (iki koşu):**
+ilk koşu **6/7** — M4 (metin sonu `unclosed` sayımı) YEŞİL kaldı çünkü o
+senaryoda açılış zaten "kapanışı yok" dalında sayılıyordu (ölü cümle değil,
+testin kapsamadığı yol); dış alıntısı iç alıntı kapanınca açık kalan senaryo
+(`an_outer_quote_left_open…`) ve "kapanışsız açılış hiç sayılmaz" mutantı
+eklendi, **8/8** yeniden ölçüldü; ilk koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `b4bfa60` (1 dosya, **+187/−48**) → run `45390794656`
+**10/10 YEŞİL** (`dim-storage` **787** iki OS'ta: `macos-15` **591,89 s** /
+`ubuntu-latest` **1.008,99 s**; `arayüz` **67 dosya / 1485 test**, paket
+`index-BZUj_w_h.js` **731,76 kB** / gzip **194,12 kB** — değişmedi;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, `sözleşmeler`, belge worker'ı,
+sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Yalnız **çift tırnak ailesi**; tek tırnak/apostrof
+sınır değil (Türkçe'de `İstanbul'da` alıntı değildir). (b) Açılış ile kapanışın
+**stili karışıksa** (ör. `“A"`) eşleşmez; açılış kapanmamış sayılır ve alıntı
+denetlenmez — eski çıkarım her kapanışı kabul ediyordu, bu bilinçli
+sıkılaşmadır ve raporda `unclosed` olarak görünür. (c) **Alman dış alıntı
+içinde tipografik iç alıntı** belirsizdir: `“` alman kapanışı sayılır (nadir
+kullanım; Türk hukuk metinlerinde alman tırnağı beklenmez). (d) `"` ölçü
+işareti olarak kullanılırsa (ör. `15"`) yanlış açılış sayılabilir — çıkarım
+sezgiseldir, dilbilgisi çözümlemesi değildir. (e) Sonuç **metin
+eşleşmesi**dir; alıntının anlamı ve kaynağın doğruluğu ayrıca incelenir.
+(f) Rapor **kalıcı değildir**: atıf siciline yazmaz, «doğrulandı» damgası
+üretmez. (g) Arayüz değişmedi; gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
