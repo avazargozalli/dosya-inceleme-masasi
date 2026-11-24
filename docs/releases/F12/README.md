@@ -22,6 +22,7 @@
 | F12-T14k | ✅ | metindeki tırnaklı alıntılar **bütün kütüphanenin** güncel tam metinlerinde aranır — aynı çıkarım ve **aynı** katman sırası (tek yol); alıntı başına `found` / `not_found` / `partial_scan` / `no_library_text`, eşleşen emsalde künye + yöntem + konum + ham kaynak + kaç geçiş; 200 emsal sınırı → `truncated` («bulunamadı» kesin sayılmaz), 20 eşleşme sınırı → `hidden_matches`; kalıcı yazma yok (2026-11-22) |
 | F12-T14l | ✅ | kütüphane araması güncel metinde bulunamayan alıntı için emsallerin **eski sürümlerini** de tarar — aynı çıkarım ve **aynı** katman sırası (tek yol); eşleşme `foundInOldVersion` taşır, emsal başına **tek satır** (en yeni eşleşen eski sürüm), emsal başına **5** sürüm + toplam **4.000.000** karakter bütçesi → `historyTruncated` + `partial_scan` (kesin «bulunamadı» yok); güncel metinde bulunan emsal için geçmiş hiç taranmaz; kalıcı yazma yok (2026-11-24) |
 | F12-T14m | ✅ | metin içi alıntı çıkarımı **iç içe tırnakları** tanır: açılış **kendi ailesinin** kapanışıyla eşleşir (`“…”`, `„…“`, `«…»`, `"…"`), dış alıntı iç alıntıyla bölünmez ve tek satır kalır (`“A «B» C”` → `A «B» C`); kapanışı olmayan açılış **sonraki alıntıları gizlemez** (`unclosed` sayılır, tarama sürer); şema (v68) ve arayüz değişmedi, üç yol aynı çıkarımı kullanır (2026-11-24) |
+| F12-T14n | ✅ | metin içi alıntı çıkarımı **tek tırnak ailesini** de tanır (`‘…’` · `'…'`); Türkçe kesme işareti alıntı **açmaz/kapatmaz** (`İstanbul'da`, `‘İstanbul’da yaşanan olay’`), düz tek tırnak yalnız kelime başında açılır, iç içe tek tırnak dış çift tırnak alıntısını bölmez; kapsam notu üç yolda **tek sabitten** (`QUOTE_EXTRACTION_NOTE`); şema (v68) değişmedi, arayüzde beş dize gerçeğe uyarlandı (2026-11-24) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1805,3 +1806,81 @@ eşleşmesi**dir; alıntının anlamı ve kaynağın doğruluğu ayrıca incelen
 (f) Rapor **kalıcı değildir**: atıf siciline yazmaz, «doğrulandı» damgası
 üretmez. (g) Arayüz değişmedi; gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
+
+## F12-T14n — tek tırnak ailesi de alıntı sınırıdır; Türkçe kesme işareti alıntıyı açmaz/kapatmaz (2026-11-24)
+
+**Neden bu dilim:** T14m'in dürüst sınırı (a) "yalnız **çift tırnak ailesi**;
+tek tırnak/apostrof sınır değil" idi. Word/PDF "akıllı tırnak" dönüşümü ve Türk
+hukuk metinlerinde `‘…’` yaygındır; düz metin alanlarında `'…'` kullanılır. Bu
+alıntılar bugüne dek **hiç denetlenmiyordu** (üç yol — dosya, tek emsal,
+kütüphane — aynı çıkarımı kullanır). Tek tırnağı körlemesine sınır yapmak ise
+Türkçe kesme işaretini (`İstanbul'da`, `Anayasa’nın`) alıntı sanmak olurdu;
+bu yüzden iki koruma eklendi.
+
+**Yazılan (çekirdek, `intext_quotes.rs`, tek dosya):**
+
+- İki yeni aile: `‘…’` (`single-typographic`) ve `'…'` (`single-straight`).
+  Açılış yine **kendi ailesinin** kapanışıyla eşleşir; yığın altı aileyi
+  birlikte taşır — `“kararında ‘iyi niyet’ ilkesine atıf yaptı”` **tek** dış
+  alıntıdır, iç alıntı ayrı satır olmaz.
+- **Kapanış koruması:** tek tırnakta bir `’`/`'` ancak **harf ya da rakamdan
+  önce gelmiyorsa** kapanıştır. `‘İstanbul’da yaşanan olay’` içindeki ilk `’`
+  eke bitişiktir — kesme işaretidir, alıntıyı kapatmaz; son `’` kapatır.
+- **Açılış koruması (yalnız düz tek tırnak):** `'` ancak **kelime başında**
+  (önceki karakter harf/rakam değil) açılış olabilir; `İstanbul'da` alıntı
+  açmaz. Tipografik `‘` Türkçe'de kesme işareti olarak kullanılmadığı için ek
+  koruma istemez.
+- **Önceden hesaplanan `closer_after`** aynı korumayı kullanır: kapanışı yalnız
+  eke bitişik bir `’` olan açılış alıntı **uydurmaz**; `unclosed` sayılır ve
+  sonraki sağlam alıntıları gizlemez (`‘yeterli sebep’te ve “sağlam alıntı
+  metni”` → yalnız ikincisi çıkarılır).
+- **Kapsam notu tek kaynak:** üç yolun kopyaladığı "yalnız çift tırnak ailesi"
+  notu `QUOTE_EXTRACTION_NOTE` sabitine alındı; not artık tek tırnağı da sayar
+  ve kesme işaretinin sınır olmadığını yazar. Üç yolda kopya kalmadı.
+- Konum/kırpma, `MIN_QUOTE_CHARS`/`MAX_SPAN_CHARS`, katman sırası
+  (`exact → whitespace → ligature → turkish_fold → dehyphenated`) ve rapor
+  biçimi **değişmedi**; `style` dış ailenin adını taşır. Şema değişmedi (v68),
+  kalıcı yazma yok.
+- **Arayüz:** yalnız yanlışa düşen beş dize gerçeğe uyarlandı — `intextHint`,
+  `quoteLead` ("yalnız çift tırnaklı" → "tırnaklı; tek tırnak dahil, kesme
+  işareti hariç") ve üç boş-metin dizesi ("çift tırnaklı alıntı bulunamadı" →
+  "tırnaklı alıntı bulunamadı"). Davranış/düzen değişmedi.
+
+**Testler/yerel:** `dim-storage --lib` **787 → 795** (8 test: tipografik tek
+tırnak + konum, kesme işaretli iç metin (`‘İstanbul’da …’`), düz tek tırnağın
+kelime başı kuralı + iç kesme işareti, çift tırnak içinde tek tırnak yuvalama,
+kapanışsız tek tırnağın sonrakini gizlememesi, yalnız eke bitişik kapanışlı
+alıntının uydurulmaması + sonraki sağlam alıntı, yalnız kesme işaretli metnin
+hiç alıntı üretmemesi, uçtan uca: `‘…’` alıntının belgede `exact` bulunması) →
+tam paket **795/795 yeşil, 872,56 s** (`dim-t14n-libtest.log`). İki manifest
+`cargo fmt --check`, `clippy -p dim-storage --all-targets -D warnings` (11,51 s)
+ve masaüstü `check --all-targets` (2 dk 21 s) temiz. Arayüz **davranışı**
+değişmedi (yalnız dize); vitest bu turda koşulmadı — CI ölçer.
+
+**Kapı (`scratch/dim-t14n-gates.py`, log `dim-t14n-gates.log`):** taban
+**YEŞİL**; **8/8 mutant KIRMIZI** ve her mutantta **hedef test adı logda**
+(kapanış koruması, düz tek tırnak kelime başı koruması, `closer_after`
+önceden hesabı, tipografik tek tırnak açılışı, düz tek tırnak açılışı, stil
+adı, iç alıntının ayrı satır yayınlanması, `is_single` tümden kapalı); her
+mutasyondan sonra dosya **sha256 birebir** geri yazıldı
+(`intext_quotes.rs 5324a311aba1d732…`). **Dürüst (iki koşu):** ilk koşu
+**7/8** — M8'in deseni `cargo fmt` sonrası satır bölünmesiyle eşleşmedi
+(`HEDEF YOK`, hüküm değil); desen güncel biçime çevrildi, **8/8** yeniden
+ölçüldü; ilk koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `4e7e3be` (2 dosya, **+200/−35**) → run `45416526181`
+**10/10 YEŞİL** (`dim-storage` **795** iki OS'ta: `macos-15` **599,59 s** /
+`ubuntu-latest` **1.577,23 s**; `arayüz` **67 dosya / 1485 test** — davranış
+değişmedi, yalnız dize, paket `index-CmSUYlRQ.js` **731,85 kB** / gzip
+**194,15 kB** — önceki 731,76 kB; `masaüstü kabuk`, `windows güvenli depo`,
+SBOM, `sözleşmeler`, belge worker'ı, sürüm paketi manifesti, kaynak arşivi
+yeşil).
+
+**Dürüst sınırlar:** (a) Kapanışı **eke bitişik** tek tırnak alıntı
+çıkarılmaz — `‘yeterli sebep’te` `unclosed` sayılır (muhafazakâr seçim: sahte
+alıntı üretmemek için); aynı cümledeki sonraki sağlam alıntı yine çıkarılır.
+(b) Ters tek tırnak (`’…’`) açılış olarak tanınmaz. (c) Açılış/kapanış stili
+**karışıksa** (`‘A"`) eşleşmez (T14m kuralı). (d) Yıl kısaltması (`'90'lar`)
+kelime başında açılış sayılıp `unclosed` sayısını artırabilir; alıntı
+üretmez. (e) Sonuç **metin eşleşmesi**, anlam değil. (f) Rapor **kalıcı
+değil**. (g) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
