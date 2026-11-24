@@ -206,15 +206,12 @@ fn closer_is_boundary(family: QuoteFamily, chars: &[char], index: usize) -> bool
     true
 }
 
-/// `chars[index]` bu ailenin **geçerli** açılışı mı? Düz tek tırnak yalnız
-/// kelime başında (önceki karakter harf/rakam değil) açılış olabilir:
-/// `İstanbul'da` içindeki kesme işareti alıntı açmaz. Tipografik `‘`
-/// Türkçe'de kesme işareti olarak kullanılmaz; ek koruma istemez.
-fn opens_here(family: QuoteFamily, chars: &[char], index: usize) -> bool {
-    if family == QuoteFamily::SingleStraight {
-        return index == 0 || !chars[index - 1].is_alphanumeric();
-    }
-    true
+/// `chars[index]` bu ailenin **geçerli** açılışı mı? Bir alıntı **kelime/rakam
+/// ortasında** açılamaz: `İstanbul'da` kesme işaretidir, `15"` / `15“` ölçü
+/// işaretidir; ikisi de alıntı başlatmaz (T14n, T14o). Önceki karakter
+/// harf/rakam değilse (boşluk, noktalama, metin başı) açılış geçerlidir.
+fn opens_here(chars: &[char], index: usize) -> bool {
+    index == 0 || !chars[index - 1].is_alphanumeric()
 }
 
 /// Serbest metindeki çift tırnak ailesini (`“…”`, `„…“`, `«…»`, `"…"`) ve
@@ -259,7 +256,7 @@ pub fn extract_quoted_spans(text: &str) -> ExtractedQuotes {
             }
         }
         if let Some(family) = QuoteFamily::opener(ch) {
-            if opens_here(family, &chars, index) {
+            if opens_here(&chars, index) {
                 if closer_after[index + 1][family.slot()] {
                     stack.push((family, index));
                 } else {
@@ -2626,6 +2623,90 @@ mod tests {
         assert_eq!(possessive.quotes.len(), 1);
         assert_eq!(possessive.quotes[0].text, "Anayasa'nın 2. maddesi");
         assert_eq!(possessive.unclosed, 0);
+    }
+
+    #[test]
+    fn measure_marks_do_not_open_a_quote() {
+        // Ölçü işareti (`15"`) bir alıntı açmaz; iki ölçü işareti arasındaki
+        // metin sahte bir alıntı olarak rapora düşmemeli.
+        let out = extract_quoted_spans(r#"Ekran 15" ve disk 2" kapasiteli."#);
+        assert!(
+            out.quotes.is_empty(),
+            "ölçü işareti alıntı üretmemeli: {:?}",
+            out.quotes
+                .iter()
+                .map(|q| q.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(out.unclosed, 0);
+    }
+
+    #[test]
+    fn typographic_measure_marks_do_not_pair_into_a_quote() {
+        // `15“ … 2”` da ölçüdür; açılış sayılırsa aradaki metin sahte alıntı olur.
+        let out = extract_quoted_spans("Ekran 15“ ve disk 2” kapasiteli.");
+        assert!(
+            out.quotes.is_empty(),
+            "tipografik ölçü işareti alıntı üretmemeli: {:?}",
+            out.quotes
+                .iter()
+                .map(|q| q.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(out.unclosed, 0);
+    }
+
+    #[test]
+    fn a_quote_never_opens_in_the_middle_of_a_word() {
+        let out = extract_quoted_spans(r#"karar"alıntı metni burada" dedi"#);
+        assert!(out.quotes.is_empty());
+        assert_eq!(out.unclosed, 0);
+    }
+
+    #[test]
+    fn quotes_still_open_after_punctuation_and_space() {
+        for text in [
+            r#"("alıntı metni burada")"#,
+            "2020 \"alıntı metni burada\"",
+            "…“alıntı metni burada”",
+            "— «alıntı metni burada»",
+        ] {
+            let out = extract_quoted_spans(text);
+            assert_eq!(out.quotes.len(), 1, "metin: {text}");
+            assert_eq!(out.quotes[0].text, "alıntı metni burada", "metin: {text}");
+            assert_eq!(out.unclosed, 0, "metin: {text}");
+        }
+    }
+
+    #[test]
+    fn a_measure_mark_does_not_make_a_report_finding() {
+        let db = db();
+        let case_id = new_case(&db, "Ölçü işareti");
+        let (_document, _version) = add_document(
+            &db,
+            &case_id,
+            "karar.pdf",
+            &[r#"Ekran 15" ve disk 2" kapasiteli. “Gerçek alıntı metni burada geçer.”"#],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            r#"Ekran 15" ve disk 2" kapasiteli. “Gerçek alıntı metni burada geçer”"#,
+            None,
+        );
+        assert_eq!(
+            report.spans_found,
+            1,
+            "yalnız gerçek alıntı sayılmalı: {:?}",
+            report
+                .quotes
+                .iter()
+                .map(|q| q.quote.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(report.quotes.len(), 1);
+        assert_eq!(report.quotes[0].quote, "Gerçek alıntı metni burada geçer");
+        assert_eq!(report.quotes[0].state, "exact");
     }
 
     #[test]
