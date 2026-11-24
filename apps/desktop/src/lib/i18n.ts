@@ -2040,11 +2040,11 @@ export const tr = {
     intextTitle: "Metindeki alıntıları kararda doğrula",
     intextLabel: "Alıntıları içeren metin",
     intextPlaceholder: "Örn. Dilekçede “itirazın reddine karar verdi” pasajına dayanılmıştır…",
-    intextHint: "Yalnız çift tırnaklı pasajlar (en az 8 karakter) seçili kararın tam metninde aranır; sonuç metin eşleşmesidir, anlam incelemesi ayrıdır. “Bulunamadı” uydurma hükmü değildir.",
+    intextHint: "Tırnaklı pasajlar (en az 8 karakter; çift tırnak ve tek tırnak — Türkçe kesme işareti hariç) seçili kararın tam metninde aranır; sonuç metin eşleşmesidir, anlam incelemesi ayrıdır. “Bulunamadı” uydurma hükmü değildir.",
     intextRun: "Alıntıları doğrula",
     intextBusy: "Doğrulanıyor…",
     intextNoText: "Kararın tam metni yok; alıntılar doğrulanamaz. Önce tam metin ekleyin.",
-    intextEmpty: "Metinde çift tırnaklı alıntı bulunamadı.",
+    intextEmpty: "Metinde tırnaklı alıntı bulunamadı.",
     intextSummary: "{found} alıntı · {exact} birebir · {normalized} normalize · {ambiguous} belirsiz · {notFound} bulunamadı · {unverifiable} doğrulanamadı",
     intextSkipped: "{short} alıntı 8 karakterden kısa, {long} alıntı 1000 karakterden uzun, {unclosed} tırnak kapanmamış — bunlar denetlenmedi.",
     intextStateExact: "birebir",
@@ -2075,7 +2075,7 @@ export const tr = {
     libraryHint:
       "Önce güncel metinler; yalnız bulunamayan alıntı için emsal başına en çok 5 eski " +
       "sürüm taranır. “Bulunamadı” uydurma hükmü değildir.",
-    libraryEmpty: "Metinde çift tırnaklı alıntı bulunamadı.",
+    libraryEmpty: "Metinde tırnaklı alıntı bulunamadı.",
     librarySummary:
       "{libraryTotal} emsalin tam metni var · {scanned} tarandı · {found} alıntı bulundu · " +
       "{notFound} bulunamadı · {partialScan} kesin değil · {noLibraryText} kütüphane metni yok",
@@ -2745,7 +2745,7 @@ export const tr = {
     decisionRequestEvidence: "Delil istendi",
     targetBadge: "kayıt: {id}",
     quoteTitle: "Metin içi alıntı denetimi",
-    quoteLead: "İddia, özet veya not metnindeki çift tırnaklı pasajlar dosya belgelerinin metin katmanında aranır; “bulunamadı” uydurma hükmü değildir.",
+    quoteLead: "İddia, özet veya not metnindeki tırnaklı pasajlar (çift tırnak ve tek tırnak — Türkçe kesme işareti hariç) dosya belgelerinin metin katmanında aranır; “bulunamadı” uydurma hükmü değildir.",
     useClaimLabel: "İddia metnini kullan",
     scopeLabel: "Kapsam",
     scopeAll: "Tüm dosya (güncel sürümler)",
@@ -2754,7 +2754,7 @@ export const tr = {
     quoteHint: "Yalnız güncel sürümlerin ayrıştırılmış metni taranır; OCR'sız taranmış sayfa bulunamaz. Alıntı en az 8 karakter olmalı.",
     quoteBusy: "Denetleniyor…",
     quoteRun: "Alıntıları denetle",
-    quoteEmpty: "Metinde çift tırnaklı alıntı bulunamadı.",
+    quoteEmpty: "Metinde tırnaklı alıntı bulunamadı.",
     noText: "Bu kapsamda taranacak ayrıştırılmış metin yok.",
     sourcePrefix: "kaynak: “{text}”",
     spanPagesHint: "Sayfa sınırını aşıyor: {start}. sayfa → {end}. sayfa. Tek sayfalık anchor'a bağlanmaz; kaynak metin yukarıda.",

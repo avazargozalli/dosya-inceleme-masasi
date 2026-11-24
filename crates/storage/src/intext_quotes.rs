@@ -1,6 +1,6 @@
 //! Metin içi alıntı denetimi (F12-T14).
 //!
-//! Serbest metindeki (iddia, özet, not) çift tırnaklı pasajları **çıkarır** ve
+//! Serbest metindeki (iddia, özet, not) tırnaklı pasajları **çıkarır** ve
 //! dosyadaki belgelerin güncel sürümlerinin metin katmanında doğrular.
 //!
 //! Üç eşleşme katmanı ayrı raporlanır: `exact` (birebir), `whitespace` (yalnız
@@ -62,6 +62,13 @@ const MAX_SCOPE_PAGES: i64 = 20_000;
 /// notlarda yazılır (sessiz kesme yok).
 const MAX_HISTORICAL_VERSIONS_PER_DOCUMENT: usize = 5;
 
+/// Alıntı çıkarımının kapsam notu: üç yol (dosya, tek emsal, kütüphane) da
+/// **aynı** metni yazar. Kopyalar ayrışırsa bir yol «tek tırnak tanınmaz»
+/// derken öteki tanır — tek kaynak (F12-T14n).
+const QUOTE_EXTRACTION_NOTE: &str =
+    "Alıntı çıkarımı çift tırnak ailesini (“…” · „…“ · «…» · \"…\") ve tek tırnak ailesini \
+     (‘…’ · '…') tanır; Türkçe kesme işareti (İstanbul'da, Anayasa’nın) alıntı sınırı değildir.";
+
 /// "Sayfada kullanılabilir metin var mı" tanımı **tek yerde**. Sayfa taraması
 /// ([`Database::scan_quote_tier`]) ve sayım ([`Database::page_counts`]) aynı
 /// ifadeyi kullanır; iki tanım ayrışırsa `pages_scanned` "tarandı" dediği
@@ -103,20 +110,30 @@ pub struct ExtractedQuotes {
 
 /// Tek tırnak ailesi: açılış ve **kendi** kapanışı. Karışık stiller birbirini
 /// kapatmaz — `«…»` içindeki `“…”` dış alıntıyı erken kapatmaz (T14m).
+///
+/// Tek tırnak aileleri (T14n) `is_single()` ile işaretlidir: Türkçe kesme
+/// işareti (`İstanbul'da`, `Anayasa’nın`) bu ailelerin sınırıyla karıştığı
+/// için iki koruma uygulanır — kapanış ancak **harf/rakamdan önce
+/// gelmiyorsa** kapanıştır ve düz tek tırnak yalnız **kelime başında**
+/// açılış olabilir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuoteFamily {
     Typographic,
     German,
     Guillemet,
     Straight,
+    SingleTypographic,
+    SingleStraight,
 }
 
 impl QuoteFamily {
-    const ALL: [QuoteFamily; 4] = [
+    const ALL: [QuoteFamily; 6] = [
         QuoteFamily::Typographic,
         QuoteFamily::German,
         QuoteFamily::Guillemet,
         QuoteFamily::Straight,
+        QuoteFamily::SingleTypographic,
+        QuoteFamily::SingleStraight,
     ];
 
     fn name(self) -> &'static str {
@@ -125,6 +142,8 @@ impl QuoteFamily {
             QuoteFamily::German => "german",
             QuoteFamily::Guillemet => "guillemet",
             QuoteFamily::Straight => "straight",
+            QuoteFamily::SingleTypographic => "single-typographic",
+            QuoteFamily::SingleStraight => "single-straight",
         }
     }
 
@@ -134,6 +153,8 @@ impl QuoteFamily {
             QuoteFamily::German => '\u{201C}',
             QuoteFamily::Guillemet => '\u{00BB}',
             QuoteFamily::Straight => '"',
+            QuoteFamily::SingleTypographic => '\u{2019}',
+            QuoteFamily::SingleStraight => '\'',
         }
     }
 
@@ -143,8 +164,19 @@ impl QuoteFamily {
             '\u{201E}' => Some(QuoteFamily::German),
             '\u{00AB}' => Some(QuoteFamily::Guillemet),
             '"' => Some(QuoteFamily::Straight),
+            '\u{2018}' => Some(QuoteFamily::SingleTypographic),
+            '\'' => Some(QuoteFamily::SingleStraight),
             _ => None,
         }
+    }
+
+    /// Tek tırnak ailesi mi? Kesme işareti korumaları yalnız bu ailelerde
+    /// uygulanır (Türkçe'de `’` ve `'` kesme işaretidir).
+    fn is_single(self) -> bool {
+        matches!(
+            self,
+            QuoteFamily::SingleTypographic | QuoteFamily::SingleStraight
+        )
     }
 
     fn slot(self) -> usize {
@@ -153,13 +185,42 @@ impl QuoteFamily {
             QuoteFamily::German => 1,
             QuoteFamily::Guillemet => 2,
             QuoteFamily::Straight => 3,
+            QuoteFamily::SingleTypographic => 4,
+            QuoteFamily::SingleStraight => 5,
         }
     }
 }
 
-/// Serbest metindeki çift tırnak ailesini çıkarır: `“…”`, `„…“`, `«…»`, `"…"`.
-/// Tek tırnak ve apostrof alıntı sayılmaz (Türkçe'de `İstanbul'da` alıntı
-/// değildir); bu yüzden `’`/`'` sınır kabul edilmez.
+/// `chars[index]` bu ailenin **gerçek** kapanışı mı? Tek tırnakta kapanış
+/// ancak harf/rakamdan **önce gelmiyorsa** kapanıştır: `‘İstanbul’da
+/// yaşanan olay’` içindeki ilk `’` Türkçe kesme işaretidir, alıntıyı
+/// kapatmaz; son `’` (ardından boşluk) kapatır. Aksi hâlde alıntı ilk
+/// kesme işaretinde kesilir ve metnin kalanı sahte alıntı/sessiz yutma olur.
+fn closer_is_boundary(family: QuoteFamily, chars: &[char], index: usize) -> bool {
+    if chars[index] != family.closer() {
+        return false;
+    }
+    if family.is_single() {
+        return !matches!(chars.get(index + 1), Some(next) if next.is_alphanumeric());
+    }
+    true
+}
+
+/// `chars[index]` bu ailenin **geçerli** açılışı mı? Düz tek tırnak yalnız
+/// kelime başında (önceki karakter harf/rakam değil) açılış olabilir:
+/// `İstanbul'da` içindeki kesme işareti alıntı açmaz. Tipografik `‘`
+/// Türkçe'de kesme işareti olarak kullanılmaz; ek koruma istemez.
+fn opens_here(family: QuoteFamily, chars: &[char], index: usize) -> bool {
+    if family == QuoteFamily::SingleStraight {
+        return index == 0 || !chars[index - 1].is_alphanumeric();
+    }
+    true
+}
+
+/// Serbest metindeki çift tırnak ailesini (`“…”`, `„…“`, `«…»`, `"…"`) ve
+/// tek tırnak ailesini (`‘…’`, `'…'`) çıkarır. Tek tırnakta Türkçe kesme
+/// işareti sınır sayılmaz: `İstanbul'da` alıntı açmaz, `‘İstanbul’da’`
+/// içindeki `’` alıntıyı kapatmaz (T14n).
 ///
 /// Açılış **kendi ailesinin** kapanışıyla eşleşir; iç içe tırnaklar yığında
 /// tutulur ve dış alıntının sınırı iç alıntıyla bölünmez (ör. `“A «B» C”` tek
@@ -168,15 +229,15 @@ impl QuoteFamily {
 #[must_use]
 pub fn extract_quoted_spans(text: &str) -> ExtractedQuotes {
     let chars: Vec<char> = text.chars().collect();
-    // `closer_after[i][aile]`: i. konumdan **sonra** o ailenin kapanış işareti
-    // var mı? Kapanışı hiç olmayan açılış yığına girmez (sessiz yutma yok:
-    // `unclosed` sayılır), böylece tek bir kapanmamış tırnak metnin geri
+    // `closer_after[i][aile]`: i. konumdan **sonra** o ailenin gerçek kapanış
+    // işareti var mı? Kapanışı hiç olmayan açılış yığına girmez (sessiz yutma
+    // yok: `unclosed` sayılır), böylece tek bir kapanmamış tırnak metnin geri
     // kalanındaki alıntıları gizlemez.
-    let mut closer_after = vec![[false; 4]; chars.len() + 1];
+    let mut closer_after = vec![[false; 6]; chars.len() + 1];
     for index in (0..chars.len()).rev() {
         closer_after[index] = closer_after[index + 1];
         for family in QuoteFamily::ALL {
-            if chars[index] == family.closer() {
+            if closer_is_boundary(family, &chars, index) {
                 closer_after[index][family.slot()] = true;
             }
         }
@@ -186,9 +247,10 @@ pub fn extract_quoted_spans(text: &str) -> ExtractedQuotes {
     let mut stack: Vec<(QuoteFamily, usize)> = Vec::new();
     for (index, &ch) in chars.iter().enumerate() {
         // Önce kapanış: `“` hem tipografik açılış hem alman kapanışıdır; açık
-        // alman alıntısının içinde kapanış olarak okunur.
+        // alman alıntısının içinde kapanış olarak okunur. Tek tırnakta kesme
+        // işareti kapanış sayılmaz (T14n).
         if let Some(&(family, open)) = stack.last() {
-            if ch == family.closer() {
+            if closer_is_boundary(family, &chars, index) {
                 stack.pop();
                 if stack.is_empty() {
                     emit_span(&chars, family, open, index, &mut out);
@@ -197,10 +259,12 @@ pub fn extract_quoted_spans(text: &str) -> ExtractedQuotes {
             }
         }
         if let Some(family) = QuoteFamily::opener(ch) {
-            if closer_after[index + 1][family.slot()] {
-                stack.push((family, index));
-            } else {
-                out.unclosed += 1;
+            if opens_here(family, &chars, index) {
+                if closer_after[index + 1][family.slot()] {
+                    stack.push((family, index));
+                } else {
+                    out.unclosed += 1;
+                }
             }
         }
     }
@@ -751,9 +815,7 @@ impl Database {
         let documents_without_text = documents_total - documents_with_text;
 
         let mut notes = vec![
-            "Alıntı çıkarımı yalnız çift tırnak ailesini tanır (“…” · „…“ · «…» · \"…\"); \
-             tek tırnak ve apostrof alıntı sayılmaz."
-                .to_string(),
+            QUOTE_EXTRACTION_NOTE.to_string(),
             "Bulunamadı sonucu “uydurma” hükmü değildir: yalnız taranan metin katmanında \
              bulunmadığını söyler."
                 .to_string(),
@@ -788,7 +850,7 @@ impl Database {
         let mut historical_truncated_documents = 0usize;
         let mut historical_skipped_for_pages = false;
         if extracted.quotes.is_empty() {
-            notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
+            notes.push("Metinde tırnaklı alıntı bulunamadı.".to_string());
         } else {
             let max_pages = usize::try_from(MAX_SCOPE_PAGES).unwrap_or(usize::MAX);
             let current_pages = self.count_scope_pages(&scopes)?;
@@ -1630,9 +1692,7 @@ impl Database {
         }
         let (scopes, historical_truncated) = self.quote_scopes(precedent_id)?;
         let mut notes = vec![
-            "Alıntı çıkarımı yalnız çift tırnak ailesini tanır (“…” · „…“ · «…» · \"…\"); \
-             tek tırnak ve apostrof alıntı sayılmaz."
-                .to_string(),
+            QUOTE_EXTRACTION_NOTE.to_string(),
             "Bulunamadı sonucu “uydurma” hükmü değildir: yalnız kararın taranan tam \
              metninde bulunmadığını söyler."
                 .to_string(),
@@ -1652,7 +1712,7 @@ impl Database {
             ));
         }
         if extracted.quotes.is_empty() {
-            notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
+            notes.push("Metinde tırnaklı alıntı bulunamadı.".to_string());
         }
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         let mut counts = [0usize; 5];
@@ -1874,9 +1934,7 @@ impl Database {
         let scanned = scopes.len();
 
         let mut notes = vec![
-            "Alıntı çıkarımı yalnız çift tırnak ailesini tanır (“…” · „…“ · «…» · \
-             \"…\"); tek tırnak ve apostrof alıntı sayılmaz."
-                .to_string(),
+            QUOTE_EXTRACTION_NOTE.to_string(),
             format!(
                 "Kütüphane araması önce **güncel** tam metinlerde arar; orada bulunamayan \
                  alıntı için emsallerin **eski sürümleri** de taranır (emsal başına en çok \
@@ -1898,7 +1956,7 @@ impl Database {
             ));
         }
         if extracted.quotes.is_empty() {
-            notes.push("Metinde çift tırnaklı alıntı bulunamadı.".to_string());
+            notes.push("Metinde tırnaklı alıntı bulunamadı.".to_string());
         }
 
         // Birinci tur: her emsalin **güncel** metni. Eşleşen emsallerin kimliği
@@ -2531,6 +2589,113 @@ mod tests {
     }
 
     #[test]
+    fn single_typographic_quotes_are_extracted_and_apostrophe_does_not_close() {
+        let text = "Mahkeme ‘iyi niyet’ ilkesine atıf yaptı.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 1);
+        let quote = &out.quotes[0];
+        assert_eq!(quote.text, "iyi niyet");
+        assert_eq!(quote.style, "single-typographic");
+        let chars: Vec<char> = text.chars().collect();
+        let sliced: String = chars[quote.start..quote.end].iter().collect();
+        assert_eq!(sliced, quote.text);
+        assert_eq!(out.unclosed, 0);
+    }
+
+    #[test]
+    fn turkish_apostrophe_inside_a_single_quote_does_not_close_it() {
+        // `‘İstanbul’da yaşanan olay’`: ilk `’` `da` ekiyle bitişiktir, kesme
+        // işaretidir; alıntıyı kapatmaz. Son `’` (ardından boşluk) kapatır.
+        let out = extract_quoted_spans("Metinde ‘İstanbul’da yaşanan olay’ anlatıldı.");
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(out.quotes[0].text, "İstanbul’da yaşanan olay");
+        assert_eq!(out.quotes[0].style, "single-typographic");
+        assert_eq!(out.unclosed, 0);
+    }
+
+    #[test]
+    fn straight_single_quotes_open_only_at_word_boundaries() {
+        let out = extract_quoted_spans("İstanbul'da 'kira bedeli' ödenmedi; avukat’ın notu.");
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(out.quotes[0].text, "kira bedeli");
+        assert_eq!(out.quotes[0].style, "single-straight");
+        assert_eq!(out.unclosed, 0);
+
+        // Alıntının içindeki kesme işareti alıntıyı bölmez.
+        let possessive = extract_quoted_spans("'Anayasa'nın 2. maddesi' açık hüküm getirir.");
+        assert_eq!(possessive.quotes.len(), 1);
+        assert_eq!(possessive.quotes[0].text, "Anayasa'nın 2. maddesi");
+        assert_eq!(possessive.unclosed, 0);
+    }
+
+    #[test]
+    fn single_quotes_nest_inside_double_quotes_without_breaking_the_outer_span() {
+        let text = "Mahkeme “kararında ‘iyi niyet’ ilkesine atıf yaptı” dedi.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(
+            out.quotes[0].text,
+            "kararında ‘iyi niyet’ ilkesine atıf yaptı"
+        );
+        assert_eq!(out.quotes[0].style, "typographic");
+        assert_eq!(out.unclosed, 0);
+    }
+
+    #[test]
+    fn unclosed_single_quote_does_not_hide_later_quotes() {
+        let text = "‘kapanmayan tek tırnak ve sonra “sağlam alıntı metni” gelir.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(out.quotes[0].text, "sağlam alıntı metni");
+        assert_eq!(out.unclosed, 1);
+    }
+
+    #[test]
+    fn a_single_quote_whose_only_closer_carries_a_suffix_is_not_extracted() {
+        // Tek `’` eke bitişik (`‘yeterli sebep’te`): kesme işareti sayılır,
+        // kapanış yoktur. Alıntı **uydurulmaz**; `unclosed` dürüstçe sayılır.
+        let out = extract_quoted_spans("Kararda ‘yeterli sebep’te ısrar edildi.");
+        assert!(out.quotes.is_empty());
+        assert_eq!(out.unclosed, 1);
+
+        // Aynı açılış, kapanışı olmadığı için yığına **girmez**: sonraki
+        // sağlam alıntı yine çıkarılır (sessiz yutma yok).
+        let mixed = extract_quoted_spans("‘yeterli sebep’te ve “sağlam alıntı metni” geçer.");
+        assert_eq!(mixed.quotes.len(), 1);
+        assert_eq!(mixed.quotes[0].text, "sağlam alıntı metni");
+        assert_eq!(mixed.unclosed, 1);
+    }
+
+    #[test]
+    fn apostrophes_alone_do_not_open_or_close_quotes() {
+        let out = extract_quoted_spans("İstanbul'da ve Anayasa’nın 2. maddesi; avukat’ın notu.");
+        assert!(out.quotes.is_empty());
+        assert_eq!(out.unclosed, 0);
+        assert_eq!(out.skipped_short, 0);
+    }
+
+    #[test]
+    fn single_typographic_quote_in_text_is_found_in_the_document() {
+        let db = db();
+        let case_id = new_case(&db, "İyi niyet");
+        add_document(
+            &db,
+            &case_id,
+            "Dilekçe",
+            &["Mahkeme iyi niyet ilkesine açıkça atıf yaptı."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "Davacı ‘iyi niyet ilkesine’ dayanmaktadır.",
+            None,
+        );
+        assert_eq!(report.quotes.len(), 1);
+        assert_eq!(report.quotes[0].state, "exact");
+        assert_eq!(report.exact, 1);
+    }
+
+    #[test]
     fn exact_quote_is_found_once_and_position_binds_an_anchor() {
         let db = db();
         let case_id = new_case(&db, "Kira");
@@ -2938,7 +3103,7 @@ mod tests {
         assert!(report
             .notes
             .iter()
-            .any(|n| n.contains("çift tırnaklı alıntı bulunamadı")));
+            .any(|n| n.contains("tırnaklı alıntı bulunamadı")));
     }
 
     #[test]
@@ -3874,7 +4039,7 @@ mod tests {
         assert!(short
             .notes
             .iter()
-            .any(|n| n.contains("çift tırnaklı alıntı bulunamadı")));
+            .any(|n| n.contains("tırnaklı alıntı bulunamadı")));
     }
 
     // ---- F12-T14k: metin içi alıntılar **kütüphane genelinde** ----
