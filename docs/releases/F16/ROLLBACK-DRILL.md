@@ -304,3 +304,35 @@ ortamda koşmamıştı (APFS'te bağlantı kuruluyor). Gerçek **exFAT** imajın
   ile başlar). Disk dolması ayağında dolu diskteki başarısız açma denemesi
   SQLite'ın kendi `vault.db-wal`/`-shm` dosyalarını bırakır; bunlar da ürünün
   geçici artığı değildir.
+
+### 2026-11-24 yeniden koşum (şema v68)
+
+v62'den bu yana **6 migrasyon** geçti (v63–v68). Tatbikat kodu, ürün geri dönüş
+yolu ve test fikstürleri **değişmedi**; üç ayak v68'de yeniden koşuldu. Bu bir
+**yeniden koşum**dur: yeni davranış kanıtı değil, v62'de ölçülen garantilerin
+yeni şemada hâlâ geçerli olduğunun kanıtı.
+
+- **Süreç öldürme** (hata ayıklama derlemesi, `drill_pause` kancası):
+  `cargo test -p dim-storage --test rollback_drill -- --test-threads=1` →
+  `2 passed · 0 failed · 2 ignored` (**0,70 s**). Öldürmeden sonra kasa yerinde
+  ve açılabilir; geri koyma adımı çalışmamış (güncelleme sonrası veri duruyor);
+  tekrar deneme artıkları süpürüp yedekteki veriye dönmüş (test assertion'ları).
+- **Gerçek disk dolması** (release,
+  `cargo test --release -p dim-storage --test rollback_drill -- --ignored
+  --test-threads=1`): kasa **1.089.536 bayt**, yedek **1.077.248 bayt**
+  (v62'de 1.044.480 / 1.032.192 — 6 migrasyonun farkı), imaj 48 KiB boşlukla
+  dolduruldu (**4.784.128 bayt**) → `rollback_vault` **`E_DISK_FULL`**; kasa
+  dosyası **bayt bayt değişmedi**; bizim geçici/güvenlik artığımız kalmadı;
+  dolu diskte `Database::open` **`E_DB_IO`**; yer açılınca kasa **301** kayıtla
+  açıldı, aynı çağrı **300** kayda döndü, güvenlik kopyası **1.089.536 bayt**;
+  iki ayak birlikte `2 passed · 0 failed` (**5,01 s**).
+- **`linked = false` (exFAT, 32 MB):** ön koşul yine ölçüldü — aynı birimde
+  `hard_link_or_copy` **`false`**. Kasa **884.736 bayt**, yedek **872.448
+  bayt**, güvenlik kopyası **884.736 bayt** ve kasanın **baytları birebir
+  aynı**; yedek tükenmedi; ürünün `.rollback-` artığı kalmadı; geri konan kasa
+  açıldığında yalnız `Eski dosya` var ve şema **güncel (v68)**. exFAT'in `._*`
+  AppleDouble yan dosyaları yine dosya sistemi üst verisidir.
+- **Dürüst sınır:** aynı sınırlar geçerli — öldürme ayağı yalnız macOS/APFS +
+  hata ayıklama derlemesinde; ağ birimi, uyku/uyanma, harici disk kopması ve
+  bulut eşleme klasörleri denenmedi; her iki disk-dolması ayağı da yerel imajda
+  (8 MB APFS / 32 MB exFAT) ölçüldü. Arayüz görsel QA'sı **insan bekliyor**.
