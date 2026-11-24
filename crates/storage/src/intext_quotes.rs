@@ -101,66 +101,142 @@ pub struct ExtractedQuotes {
     pub unclosed: usize,
 }
 
+/// Tek tırnak ailesi: açılış ve **kendi** kapanışı. Karışık stiller birbirini
+/// kapatmaz — `«…»` içindeki `“…”` dış alıntıyı erken kapatmaz (T14m).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuoteFamily {
+    Typographic,
+    German,
+    Guillemet,
+    Straight,
+}
+
+impl QuoteFamily {
+    const ALL: [QuoteFamily; 4] = [
+        QuoteFamily::Typographic,
+        QuoteFamily::German,
+        QuoteFamily::Guillemet,
+        QuoteFamily::Straight,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            QuoteFamily::Typographic => "typographic",
+            QuoteFamily::German => "german",
+            QuoteFamily::Guillemet => "guillemet",
+            QuoteFamily::Straight => "straight",
+        }
+    }
+
+    fn closer(self) -> char {
+        match self {
+            QuoteFamily::Typographic => '\u{201D}',
+            QuoteFamily::German => '\u{201C}',
+            QuoteFamily::Guillemet => '\u{00BB}',
+            QuoteFamily::Straight => '"',
+        }
+    }
+
+    fn opener(ch: char) -> Option<Self> {
+        match ch {
+            '\u{201C}' => Some(QuoteFamily::Typographic),
+            '\u{201E}' => Some(QuoteFamily::German),
+            '\u{00AB}' => Some(QuoteFamily::Guillemet),
+            '"' => Some(QuoteFamily::Straight),
+            _ => None,
+        }
+    }
+
+    fn slot(self) -> usize {
+        match self {
+            QuoteFamily::Typographic => 0,
+            QuoteFamily::German => 1,
+            QuoteFamily::Guillemet => 2,
+            QuoteFamily::Straight => 3,
+        }
+    }
+}
+
 /// Serbest metindeki çift tırnak ailesini çıkarır: `“…”`, `„…“`, `«…»`, `"…"`.
 /// Tek tırnak ve apostrof alıntı sayılmaz (Türkçe'de `İstanbul'da` alıntı
 /// değildir); bu yüzden `’`/`'` sınır kabul edilmez.
+///
+/// Açılış **kendi ailesinin** kapanışıyla eşleşir; iç içe tırnaklar yığında
+/// tutulur ve dış alıntının sınırı iç alıntıyla bölünmez (ör. `“A «B» C”` tek
+/// alıntıdır). Kapanışı hiç olmayan bir açılış alıntı başlatmaz, `unclosed`
+/// sayılır ama **ondan sonraki** sağlam alıntıların taranmasını durdurmaz.
 #[must_use]
 pub fn extract_quoted_spans(text: &str) -> ExtractedQuotes {
-    const OPENERS: [(char, &str); 4] = [
-        ('\u{201C}', "typographic"),
-        ('\u{201E}', "german"),
-        ('\u{00AB}', "guillemet"),
-        ('"', "straight"),
-    ];
-    const CLOSERS: [char; 4] = ['\u{201D}', '\u{201C}', '\u{00BB}', '"'];
-
     let chars: Vec<char> = text.chars().collect();
-    let mut out = ExtractedQuotes::default();
-    let mut index = 0usize;
-    while index < chars.len() {
-        let Some((_, style)) = OPENERS.iter().find(|(mark, _)| *mark == chars[index]) else {
-            index += 1;
-            continue;
-        };
-        let mut close = None;
-        let mut probe = index + 1;
-        while probe < chars.len() {
-            if CLOSERS.contains(&chars[probe]) {
-                close = Some(probe);
-                break;
+    // `closer_after[i][aile]`: i. konumdan **sonra** o ailenin kapanış işareti
+    // var mı? Kapanışı hiç olmayan açılış yığına girmez (sessiz yutma yok:
+    // `unclosed` sayılır), böylece tek bir kapanmamış tırnak metnin geri
+    // kalanındaki alıntıları gizlemez.
+    let mut closer_after = vec![[false; 4]; chars.len() + 1];
+    for index in (0..chars.len()).rev() {
+        closer_after[index] = closer_after[index + 1];
+        for family in QuoteFamily::ALL {
+            if chars[index] == family.closer() {
+                closer_after[index][family.slot()] = true;
             }
-            probe += 1;
         }
-        let Some(close) = close else {
-            // Kapanmayan tırnak: metnin geri kalanı alıntı sayılmaz.
-            out.unclosed += 1;
-            break;
-        };
-        let raw: String = chars[index + 1..close].iter().collect();
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            out.skipped_short += 1;
-            index = close + 1;
-            continue;
-        }
-        // Kırpılan boşlukları karakter konumundan düş.
-        let lead = raw.chars().take_while(|c| c.is_whitespace()).count();
-        let text_len = trimmed.chars().count();
-        if text_len < MIN_QUOTE_CHARS {
-            out.skipped_short += 1;
-        } else if text_len > MAX_SPAN_CHARS {
-            out.skipped_long += 1;
-        } else {
-            out.quotes.push(SpannedQuote {
-                start: index + 1 + lead,
-                end: index + 1 + lead + text_len,
-                text: trimmed.to_string(),
-                style,
-            });
-        }
-        index = close + 1;
     }
+
+    let mut out = ExtractedQuotes::default();
+    let mut stack: Vec<(QuoteFamily, usize)> = Vec::new();
+    for (index, &ch) in chars.iter().enumerate() {
+        // Önce kapanış: `“` hem tipografik açılış hem alman kapanışıdır; açık
+        // alman alıntısının içinde kapanış olarak okunur.
+        if let Some(&(family, open)) = stack.last() {
+            if ch == family.closer() {
+                stack.pop();
+                if stack.is_empty() {
+                    emit_span(&chars, family, open, index, &mut out);
+                }
+                continue;
+            }
+        }
+        if let Some(family) = QuoteFamily::opener(ch) {
+            if closer_after[index + 1][family.slot()] {
+                stack.push((family, index));
+            } else {
+                out.unclosed += 1;
+            }
+        }
+    }
+    out.unclosed += stack.len();
     out
+}
+
+/// Yığından çıkan dış alıntıyı kırpıp rapora ekler. Konumlar **içeriğin**
+/// (tırnaklar hariç) karakter aralığıdır; kısa/uzun alıntı sayılır, döndürülmez.
+fn emit_span(
+    chars: &[char],
+    family: QuoteFamily,
+    open: usize,
+    close: usize,
+    out: &mut ExtractedQuotes,
+) {
+    let raw: String = chars[open + 1..close].iter().collect();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        out.skipped_short += 1;
+        return;
+    }
+    let lead = raw.chars().take_while(|c| c.is_whitespace()).count();
+    let text_len = trimmed.chars().count();
+    if text_len < MIN_QUOTE_CHARS {
+        out.skipped_short += 1;
+    } else if text_len > MAX_SPAN_CHARS {
+        out.skipped_long += 1;
+    } else {
+        out.quotes.push(SpannedQuote {
+            start: open + 1 + lead,
+            end: open + 1 + lead + text_len,
+            text: trimmed.to_string(),
+            style: family.name(),
+        });
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2373,6 +2449,69 @@ mod tests {
         let out = extract_quoted_spans("İstanbul'da “kira ödenmedi” denildi; avukat’ın notu.");
         assert_eq!(out.quotes.len(), 1);
         assert_eq!(out.quotes[0].text, "kira ödenmedi");
+    }
+
+    #[test]
+    fn nested_quotes_keep_the_outer_span() {
+        let text = "Mahkeme “kararında «iyi niyet» ilkesine atıf yaptı” dedi.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 1);
+        let quote = &out.quotes[0];
+        assert_eq!(quote.text, "kararında «iyi niyet» ilkesine atıf yaptı");
+        assert_eq!(quote.style, "typographic");
+        let chars: Vec<char> = text.chars().collect();
+        let sliced: String = chars[quote.start..quote.end].iter().collect();
+        assert_eq!(sliced, quote.text);
+    }
+
+    #[test]
+    fn an_outer_quote_left_open_by_a_closed_inner_quote_is_counted() {
+        let text = "“dış alıntı “iç alıntı” kapanmadı";
+        let out = extract_quoted_spans(text);
+        assert!(out.quotes.is_empty());
+        assert_eq!(out.unclosed, 1);
+    }
+
+    #[test]
+    fn quote_content_positions_skip_the_whitespace_inside_the_marks() {
+        let text = "Mahkeme “   kira bedelini ödemedi   ” dedi.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 1);
+        let quote = &out.quotes[0];
+        assert_eq!(quote.text, "kira bedelini ödemedi");
+        let chars: Vec<char> = text.chars().collect();
+        let sliced: String = chars[quote.start..quote.end].iter().collect();
+        assert_eq!(sliced, "kira bedelini ödemedi");
+    }
+
+    #[test]
+    fn straight_quotes_may_wrap_typographic_quotes() {
+        let text = "Daire \"kararın “esas” bölümünü\" istedi.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(out.quotes[0].text, "kararın “esas” bölümünü");
+        assert_eq!(out.quotes[0].style, "straight");
+    }
+
+    #[test]
+    fn a_stray_opening_quote_does_not_hide_later_quotes() {
+        let text = "“kapanmayan bir söz ve sonra «bulunan alıntı» gelir.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.unclosed, 1);
+        assert_eq!(out.quotes.len(), 1);
+        assert_eq!(out.quotes[0].text, "bulunan alıntı");
+        assert_eq!(out.quotes[0].style, "guillemet");
+    }
+
+    #[test]
+    fn german_quote_closes_at_typographic_opener_and_next_quote_is_separate() {
+        let text = "„alman tipi alıntı“ ve “türk tipi alıntı” yan yana.";
+        let out = extract_quoted_spans(text);
+        assert_eq!(out.quotes.len(), 2);
+        assert_eq!(out.quotes[0].text, "alman tipi alıntı");
+        assert_eq!(out.quotes[0].style, "german");
+        assert_eq!(out.quotes[1].text, "türk tipi alıntı");
+        assert_eq!(out.quotes[1].style, "typographic");
     }
 
     #[test]
