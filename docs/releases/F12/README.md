@@ -24,6 +24,7 @@
 | F12-T14m | ✅ | metin içi alıntı çıkarımı **iç içe tırnakları** tanır: açılış **kendi ailesinin** kapanışıyla eşleşir (`“…”`, `„…“`, `«…»`, `"…"`), dış alıntı iç alıntıyla bölünmez ve tek satır kalır (`“A «B» C”` → `A «B» C`); kapanışı olmayan açılış **sonraki alıntıları gizlemez** (`unclosed` sayılır, tarama sürer); şema (v68) ve arayüz değişmedi, üç yol aynı çıkarımı kullanır (2026-11-24) |
 | F12-T14n | ✅ | metin içi alıntı çıkarımı **tek tırnak ailesini** de tanır (`‘…’` · `'…'`); Türkçe kesme işareti alıntı **açmaz/kapatmaz** (`İstanbul'da`, `‘İstanbul’da yaşanan olay’`), düz tek tırnak yalnız kelime başında açılır, iç içe tek tırnak dış çift tırnak alıntısını bölmez; kapsam notu üç yolda **tek sabitten** (`QUOTE_EXTRACTION_NOTE`); şema (v68) değişmedi, arayüzde beş dize gerçeğe uyarlandı (2026-11-24) |
 | F12-T14o | ✅ | metin içi alıntı **yalnız kelime/rakam sınırında** açılır: ölçü işareti (`15"`, `15“`) ve kelime ortası düz tırnak alıntı **başlatmaz** — `15" … 2"` arasındaki metin sahte alıntı olarak raporlanmaz (önceden `exact` bulunan bağlanabilir sahte aday üretiyordu); noktalama/boşluk sonrası gerçek açılışlar korunur; şema (v68) değişmedi (2026-11-24) |
+| F12-T14p | ✅ | metin içi alıntı `…`/`...`/`[…]`/`[...]` ile **kısaltılmışsa** parçalara ayrılır: her parça ≥ 8 karakter, parçalar kaynakta **aynı sırayla** (örtüşmeden) aranır; beş taban normalizasyonun her biri ayrı katmandır (tek yöntem etiketi `elided`), eşleşme `normalized` sayılır ve **bağlanmaz**, kaynak metin **atlanan kısmıyla** gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -1944,3 +1945,71 @@ eşleşmez (T14m kuralı); `‘yeterli sebep’te` gibi eke bitişik kapanış y
 `unclosed` sayılır (T14n). (e) `…` ile çıkarılmış pasaj bu dilimde ele
 alınmadı. (f) Sonuç **metin eşleşmesi**, anlam değil; rapor **kalıcı değil**.
 (g) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14p — `…` ile kısaltılmış alıntı: parçalar kaynakta sırayla aranır (2026-11-25)
+
+**Neden bu dilim:** T14o'nun dürüst sınırı (e) “`…` ile çıkarılmış pasaj bu dilimde
+ele alınmadı” diyordu. Ölçüldü: hukuk metinlerinde yaygın `“A … B”` biçimindeki bir
+alıntı, kaynakta A ile B arasında **atlanan metin** olduğu için hiçbir katmanda
+bulunamıyor ve rapor `not_found` veriyordu — doğru bir alıntı “bulunamadı” görünüyordu
+(yanlış negatif). Aynı cümle belgede birebir geçse bile `…` kaynakta olmadığı için
+eşleşme kurulamıyordu.
+
+**Kural:** Alıntı `…`, `...`, `[…]` veya `[...]` içeriyorsa **anlamlı parçalara**
+ayrılır; en az **iki dolu parça** gerekir ve her parça en az `MIN_QUOTE_CHARS` (8)
+karakter olmalıdır. Parçalar kaynakta **aynı sırayla** ve **birbirinin ardından**
+aranır (araya başka metin girebilir; parçaların kendisi atlanamaz veya örtüşemez).
+Beş taban normalizasyonun her biri ayrı katmandır: parçalar sırasıyla birebir →
+boşluk → ligatür → harf → tire birleştirme ile denenir; raporlanan yöntem etiketi
+tek: `elided`. Eşleşme `normalized` (birebir değil) sayılır ve **kaynağa bağlanmaz**;
+kaynak metin, atlanan kısmı **içeren** ham aralık olarak gösterilir. Atlanan kısım
+denetlenmez — not bunu açıkça yazar. `…` kaynakta gerçekten geçiyorsa tam alıntı
+katmanları önce denenir ve eşleşme `exact` kalır. Üç yol (dosya, tek emsal,
+kütüphane) aynı kısaltma çözümünü (`elided_segments` +
+`find_elided_sequences_in_text`) ve aynı katman sırasını kullanır; şema değişmedi
+(v68) ve kalıcı yazma yok.
+
+- Kısaltma işaretleri: `…` (U+2026), `...`, `[…]`, `[...]`; yan yana gelen boş
+  parçalar atılır, en çok 16 parça.
+- Arama yönü tek yönlüdür: ilk parçanın her konumu denenir, kalan parçalar
+  öncekinin bittiği yerden **sonra** aranır (sıra ve örtüşmeme böyle zorlanır).
+- Sayfa sınırı: parçalar tek sayfada ya da **ardışık sayfalar penceresinde** aranır;
+  sınırı aşan eşleşme `spansPages=true` taşır ve tek sayfalık anchor'a bağlanmaz.
+- Tekrar: aynı kısaltılmış pasaj birden çok yerde geçerse `ambiguous` ve adaylar
+  `elided` etiketiyle listelenir.
+- Kapsam notu (`QUOTE_EXTRACTION_NOTE`) üç yolda tek sabitten güncellendi; arayüzde
+  yöntem etiketi (“… ile kısaltılmış”), özet satırı ve bağlanamama nedeni eklendi.
+
+**Testler/yerel:** Yeni **11** test: parça kuralı (iki parça/eşik/üç nokta/köşeli),
+dosya yolunda sıralı eşleşme + atlanan kısmı içeren ham kaynak + anchor reddi, sıra
+ihlali (ve doğru sıra kontrolü), kısa parça, boşluk katmanı, sayfa sınırı, tekrar →
+`ambiguous`, kaynakta gerçek `…` → `exact`, emsal metni + tek alıntı paritesi, emsal
+sıra ihlali, kütüphane araması. `intext_quotes` modülü **75 → 86**; tam paket
+**813/813 yeşil, 860,77 s** (`dim-t14p-libtest.log`). Arayüz **67 dosya / 1490
+test** yeşil (`tsc --noEmit` temiz; bu dilimin +2'si, kalan fark ağaçtaki başka
+ajanın testleri). İki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings` temiz.
+
+**Kapı (`scratch/dim-t14p-gates.py`, log `dim-t14p-gates.log`):** taban YEŞİL;
+**10/10** mutant KIRMIZI ve her mutantta hedef test adı logda; her mutasyondan
+sonra iki dosya sha256 **birebir** geri yazıldı.
+
+**CI (ölçüldü):** kod `fe6a016` (11 dosya, **+796/−16**) → run `45500698994`
+**10/10 YEŞİL** (`dim-storage` **811** iki OS'ta: macos-15 **606,42 s** /
+ubuntu-latest **621,73 s**; `arayüz` **67 dosya / 1487 test** — yerel 1490
+farkı ağaçtaki başka ajanın commit'siz testleri —, paket
+`index-7QqQOak0.js` **732,70 kB** / gzip **194,37 kB**;
+`masaüstü kabuk`, `windows güvenli depo`, SBOM, `sözleşmeler`, belge worker'ı,
+sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Yalnız **orta** kısaltma: başta/sonda tek kalan `…`
+(kırpık alıntı) ve tek parçaya inen kısaltma eşleştirilmez. (b) Her parça ≥ 8
+karakter: kısa parçalı alıntı (ör. `“Mahkeme … fesih”`) eşleştirilmez ve
+`bulunamadı` der — “uydurma” değil. (c) Sıra zorlanır ama **anlam** doğrulanmaz;
+parçalar kaynakta ayrı bağlamlarda geçebilir, atlanan kısım hiç denetlenmez
+(kaynak metin gösterilir). (d) Eşleşme uzunluğu alıntının uzunluğu **değildir**:
+aralık ilk parçanın başından son parçanın sonuna kadardır; bu yüzden anchor bağı
+kapalıdır. (e) Parçalar **tek kapsam içinde** (aynı sayfa/ardışık sayfa penceresi)
+aranır; çok uzak sayfalara yayılan kısaltma eşleşmez. (f) Türkçe kesme işareti ve
+ölçü işareti kuralları (T14n/T14o) değişmedi. (g) Sonuç **metin eşleşmesi**, anlam
+değil; rapor kalıcı değil. (h) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
