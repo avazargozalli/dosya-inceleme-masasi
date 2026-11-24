@@ -486,6 +486,7 @@ const IN_TEXT_REPORT: PrecedentInTextCheck = {
   unverifiable: 0,
   dehyphenated: 0,
   ligature: 0,
+  elided: 0,
   foundInOldVersion: 0,
   versionsTotal: 1,
   versionsScanned: 1,
@@ -547,6 +548,7 @@ const LIBRARY_REPORT: LibraryInTextCheck = {
   historyTruncated: false,
   dehyphenated: 0,
   ligature: 0,
+  elided: 0,
   notes: ["Kütüphane araması güncel tam metin sürümlerini tarar."],
   checkedAt: ISO,
 };

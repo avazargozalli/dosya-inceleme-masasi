@@ -266,6 +266,7 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     foundInOldVersion: 0,
     dehyphenated: 0,
     ligature: 0,
+    elided: 0,
     notes: [],
     checkedAt: ISO,
     ...overrides,

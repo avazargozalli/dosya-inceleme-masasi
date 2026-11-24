@@ -16,6 +16,7 @@ export const MATCH_KIND_LABEL: Record<string, string> = {
   ligature: t("intext.matchLigature"),
   turkish_fold: t("intext.matchTurkishFold"),
   dehyphenated: t("intext.matchDehyphenated"),
+  elided: t("intext.matchElided"),
 };
 
 const TEXT_ORIGIN_LABEL: Record<string, string> = {
@@ -52,6 +53,9 @@ export function quoteCheckSummary(check: InTextQuoteCheck): string {
   }
   if (check.ligature > 0) {
     parts.push(t("intext.summaryLigature", { count: check.ligature }));
+  }
+  if (check.elided > 0) {
+    parts.push(t("intext.summaryElided", { count: check.elided }));
   }
   return parts.join(" · ");
 }
@@ -94,6 +98,12 @@ export function bindHint(finding: InTextQuoteFinding): string {
     finding.candidates.some((candidate) => candidate.matchKind === "dehyphenated")
   ) {
     return t("intext.bindDehyphenated");
+  }
+  if (
+    finding.position?.matchKind === "elided" ||
+    finding.candidates.some((candidate) => candidate.matchKind === "elided")
+  ) {
+    return t("intext.bindElided");
   }
   return t("intext.bindOnlyExact");
 }

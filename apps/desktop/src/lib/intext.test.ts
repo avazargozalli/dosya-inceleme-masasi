@@ -79,6 +79,7 @@ function check(overrides: Partial<InTextQuoteCheck> = {}): InTextQuoteCheck {
     foundInOldVersion: 0,
     dehyphenated: 0,
     ligature: 0,
+    elided: 0,
     notes: [],
     checkedAt: "2026-10-25T10:00:00Z",
     ...overrides,
@@ -296,6 +297,37 @@ describe("metin içi alıntı yardımcıları", () => {
       "1 alıntı · 0 birebir · 1 birebir değil · 0 belirsiz · 0 bulunamadı · 0 doğrulanamadı · 1 ligatür açma",
     );
     expect(quoteCheckSummary(check())).not.toContain("ligatür açma");
+  });
+
+  it("… ile kısaltılmış alıntıyı ayrı etiketler ve bağlanamama nedenini yazar", () => {
+    const elided = finding({
+      state: "normalized",
+      position: position({
+        matchKind: "elided",
+        charStart: 5,
+        charEnd: 95,
+        sourceText:
+          "sözleşmenin haklı nedenle feshedilebileceğine ve kiracının temerrüde düştüğüne",
+      }),
+    });
+    expect(positionLabel(elided)).toBe(
+      "Dilekçe · s. 1 · … ile kısaltılmış (parçalar sırayla) · metin katmanı",
+    );
+    expect(canBind(elided)).toBe(false);
+    expect(bindHint(elided)).toContain("atlanan kısım denetlenmedi");
+    expect(quoteCheckSummary(check({ exact: 0, normalized: 1, elided: 1 }))).toContain(
+      "1 kısaltılmış alıntı",
+    );
+    expect(quoteCheckSummary(check())).not.toContain("kısaltılmış alıntı");
+    // Aday listesinde de etiket görünür.
+    expect(
+      candidateLabel({
+        documentName: "Rapor",
+        pageIndex: 0,
+        charStart: 5,
+        matchKind: "elided",
+      }),
+    ).toBe("Rapor · s. 1 · karakter 5 · … ile kısaltılmış (parçalar sırayla)");
   });
 
   it("sürüm sayacı eski sürüm taramasını yazar", () => {

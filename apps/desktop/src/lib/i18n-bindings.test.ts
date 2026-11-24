@@ -1275,6 +1275,7 @@ describe("İnceleme ekranı ve alıntı yardımcıları sözlükten gelir", () =
     unverifiable: 0,
     dehyphenated: 2,
     ligature: 1,
+    elided: 0,
     skippedShort: 2,
     skippedLong: 1,
     unclosed: 3,
@@ -1308,6 +1309,7 @@ describe("İnceleme ekranı ve alıntı yardımcıları sözlükten gelir", () =
     expect(QUOTE_STATE_LABEL["not_found"]).toBe(t("intext.stateNotFound"));
     expect(MATCH_KIND_LABEL["dehyphenated"]).toBe(t("intext.matchDehyphenated"));
     expect(MATCH_KIND_LABEL["ligature"]).toBe(t("intext.matchLigature"));
+    expect(MATCH_KIND_LABEL["elided"]).toBe(t("intext.matchElided"));
   });
 
   it("sayfa aralığı ve özet satırı sözlükten kurulur", () => {

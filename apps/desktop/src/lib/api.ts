@@ -1117,7 +1117,7 @@ export type QuoteVerificationRow = {
   precedentId: string;
   versionId: string | null;
   state: "match" | "mismatch" | "not_checked";
-  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | null;
+  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | "elided" | null;
   matchedStart: number | null;
   matchedLength: number | null;
   occurrences: number;
@@ -1149,7 +1149,7 @@ export type PrecedentInTextFinding = {
   quote: string;
   state: "exact" | "normalized" | "ambiguous" | "not_found" | "unverifiable";
   reason: "not_found" | "no_full_text" | null;
-  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | null;
+  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | "elided" | null;
   occurrences: number;
   position: PrecedentQuotePosition | null;
   candidates: PrecedentQuotePosition[];
@@ -1172,6 +1172,8 @@ export type PrecedentInTextCheck = {
   unverifiable: number;
   dehyphenated: number;
   ligature: number;
+  /** Yalnız `…` ile kısaltılmış parçaların sırayla bulunmasıyla doğrulanan alıntı sayısı. */
+  elided: number;
   foundInOldVersion: number;
   versionsTotal: number;
   versionsScanned: number;
@@ -1193,7 +1195,7 @@ export type LibraryQuoteMatch = {
   versionId: string;
   /** `true`: eşleşme yalnız eski sürümde bulundu (güncel metin değişmiş olabilir). */
   foundInOldVersion: boolean;
-  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated";
+  method: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | "elided";
   occurrences: number;
   charStart: number;
   charEnd: number;
@@ -1230,6 +1232,8 @@ export type LibraryInTextCheck = {
   historyTruncated: boolean;
   dehyphenated: number;
   ligature: number;
+  /** Yalnız `…` ile kısaltılmış parçaların sırayla bulunmasıyla doğrulanan alıntı sayısı. */
+  elided: number;
   notes: string[];
   checkedAt: string;
 };
@@ -1690,7 +1694,7 @@ export type InTextQuotePosition = {
   isCurrentVersion: boolean;
   charStart: number;
   charEnd: number;
-  matchKind: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated";
+  matchKind: "exact" | "whitespace" | "ligature" | "turkish_fold" | "dehyphenated" | "elided";
   textOrigin: string;
   sourceText: string;
 };
@@ -1737,6 +1741,8 @@ export type InTextQuoteCheck = {
   dehyphenated: number;
   /** Yalnız bitişik yazı (ligatür) açılarak bulunan alıntı sayısı. */
   ligature: number;
+  /** Yalnız `…` ile kısaltılmış parçaların sırayla bulunmasıyla doğrulanan alıntı sayısı. */
+  elided: number;
   notes: string[];
   checkedAt: string;
 };

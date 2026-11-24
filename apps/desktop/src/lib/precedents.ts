@@ -49,6 +49,7 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
       if (verification.method === "dehyphenated")
         return t("precedentLib.quoteDehyphenated", parts);
       if (verification.method === "ligature") return t("precedentLib.quoteLigature", parts);
+      if (verification.method === "elided") return t("precedentLib.quoteElided", parts);
       return t("precedentLib.quoteTurkishFold", parts);
     }
     case "mismatch": {
@@ -211,6 +212,8 @@ export function precedentMethodLabel(method: string | null): string {
       return t("precedentLib.intextMethodFold");
     case "dehyphenated":
       return t("precedentLib.intextMethodDehyphenated");
+    case "elided":
+      return t("precedentLib.intextMethodElided");
     default:
       return method ?? "";
   }

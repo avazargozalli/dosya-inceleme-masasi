@@ -378,22 +378,36 @@ pub(crate) struct QuoteScopeHit {
 
 /// Eşleşme katmanı; sıra güçten zayıfa doğrudur (belge tarafıyla aynı).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum QuoteTier {
+pub(crate) enum QuoteTier {
     Exact,
     Whitespace,
     /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`) açılır; harfler korunur.
     Ligature,
     TurkishFold,
     Dehyphenated,
+    /// `…`/`...` ile **kısaltılmış** alıntı: parçalar araya metin girmeden,
+    /// kaynakta **aynı sırayla** aranır (F12-T14p). Beş taban
+    /// normalizasyonunun her biri ayrı katmandır (`ElidedExact` …
+    /// `ElidedDehyphenated`); raporlanan yöntem etiketi tek: `elided`.
+    ElidedExact,
+    ElidedWhitespace,
+    ElidedLigature,
+    ElidedTurkishFold,
+    ElidedDehyphenated,
 }
 
 impl QuoteTier {
-    const ORDER: [QuoteTier; 5] = [
+    const ORDER: [QuoteTier; 10] = [
         QuoteTier::Exact,
         QuoteTier::Whitespace,
         QuoteTier::Ligature,
         QuoteTier::TurkishFold,
         QuoteTier::Dehyphenated,
+        QuoteTier::ElidedExact,
+        QuoteTier::ElidedWhitespace,
+        QuoteTier::ElidedLigature,
+        QuoteTier::ElidedTurkishFold,
+        QuoteTier::ElidedDehyphenated,
     ];
 
     fn method(self) -> &'static str {
@@ -403,6 +417,24 @@ impl QuoteTier {
             QuoteTier::Ligature => "ligature",
             QuoteTier::TurkishFold => "turkish_fold",
             QuoteTier::Dehyphenated => "dehyphenated",
+            QuoteTier::ElidedExact
+            | QuoteTier::ElidedWhitespace
+            | QuoteTier::ElidedLigature
+            | QuoteTier::ElidedTurkishFold
+            | QuoteTier::ElidedDehyphenated => "elided",
+        }
+    }
+
+    /// `elided` katmanı hangi taban normalizasyonunu kullanır? `None` = bu
+    /// katman tam alıntı katmanıdır.
+    fn elided_base(self) -> Option<QuoteTier> {
+        match self {
+            QuoteTier::ElidedExact => Some(QuoteTier::Exact),
+            QuoteTier::ElidedWhitespace => Some(QuoteTier::Whitespace),
+            QuoteTier::ElidedLigature => Some(QuoteTier::Ligature),
+            QuoteTier::ElidedTurkishFold => Some(QuoteTier::TurkishFold),
+            QuoteTier::ElidedDehyphenated => Some(QuoteTier::Dehyphenated),
+            _ => None,
         }
     }
 }
@@ -414,8 +446,155 @@ fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
         QuoteTier::Ligature => ligature_with_map(text),
         QuoteTier::TurkishFold => normalize_with_map(text),
         // `exact` bu yolu kullanmaz; en zayıf katman tire birleştirmedir.
-        QuoteTier::Exact | QuoteTier::Dehyphenated => dehyphenate_with_map(text),
+        // `elided` katmanları tabanlarına çözülerek çağrılır (aşağıdaki
+        // `elided_base`); buraya doğrudan gelirse tire birleştirme uygulanır.
+        QuoteTier::Exact
+        | QuoteTier::Dehyphenated
+        | QuoteTier::ElidedExact
+        | QuoteTier::ElidedWhitespace
+        | QuoteTier::ElidedLigature
+        | QuoteTier::ElidedTurkishFold
+        | QuoteTier::ElidedDehyphenated => dehyphenate_with_map(text),
     }
+}
+
+/// `…`, `...`, `[…]` veya `[...]` ile kısaltılmış bir alıntıyı parçalara
+/// ayırır (F12-T14p).
+///
+/// Yalnız **en az iki** dolu parça ve her parçada en az [`MIN_QUOTE_CHARS`]
+/// karakter varsa `Some` döner. Kısa parça tek başına hemen her kararda
+/// geçebileceği için kısaltılmış sayılmaz; başta/sonda tek kalan `…` ile
+/// kırpılmış alıntı da bu dilimde eşleştirilmez (`unclosed` değil, yalnız
+/// `not_found`). Boş parçalar (yan yana iki işaret) atılır.
+pub(crate) fn elided_segments(quote: &str) -> Option<Vec<String>> {
+    // En uzun işaret önce denenmezse `[...]` içindeki `...` erken kesilir;
+    // `find` konumu işaretin başlangıcı olduğu için `[` her zaman kazanır,
+    // yine de liste uzundan kısaya tutulur.
+    const TOKENS: [&str; 4] = ["[...]", "[…]", "...", "…"];
+    /// Tek alıntıdaki parça sayısı üst sınırı: daha fazlası tarama maliyetini
+    /// ve yanlış eşleşme yüzeyini büyütür.
+    const MAX_SEGMENTS: usize = 16;
+    let mut parts: Vec<String> = Vec::new();
+    let mut rest = quote;
+    loop {
+        let mut found: Option<(usize, &'static str)> = None;
+        for token in TOKENS {
+            if let Some(at) = rest.find(token) {
+                if found.is_none_or(|(best, _)| at < best) {
+                    found = Some((at, token));
+                }
+            }
+        }
+        let Some((at, token)) = found else {
+            parts.push(rest.trim().to_string());
+            break;
+        };
+        parts.push(rest[..at].trim().to_string());
+        rest = &rest[at + token.len()..];
+        if parts.len() > MAX_SEGMENTS {
+            return None;
+        }
+    }
+    let parts: Vec<String> = parts.into_iter().filter(|part| !part.is_empty()).collect();
+    if parts.len() < 2
+        || parts
+            .iter()
+            .any(|part| part.chars().count() < MIN_QUOTE_CHARS)
+    {
+        return None;
+    }
+    Some(parts)
+}
+
+/// Sıralı parça dizisini `hay` içinde **araya başka eşleşme girmeden** arar.
+///
+/// Dönüş: her tam eşleşmenin `(başlangıç, bitiş)` **bayt** aralığı (en çok
+/// `limit` tanesi) ve **toplam** eşleşme sayısı. İlk parçanın her konumu
+/// denenir; kalan parçalar öncekinin bittiği yerden **sonra** aranır — sıra
+/// ve örtüşmeme böyle zorlanır.
+pub(crate) fn find_sequence_ranges(
+    hay: &str,
+    needles: &[String],
+    limit: usize,
+) -> (Vec<(usize, usize)>, i64) {
+    let Some((first, rest)) = needles.split_first() else {
+        return (Vec::new(), 0);
+    };
+    if first.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut count = 0i64;
+    let mut from = 0usize;
+    while let Some(offset) = hay[from..].find(first.as_str()) {
+        let start = from + offset;
+        let mut cursor = start + first.len();
+        let mut complete = true;
+        for needle in rest {
+            if needle.is_empty() {
+                continue;
+            }
+            match hay[cursor..].find(needle.as_str()) {
+                Some(next) => cursor += next + needle.len(),
+                None => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if complete {
+            count += 1;
+            if ranges.len() < limit {
+                ranges.push((start, cursor));
+            }
+        }
+        let advance = hay[start..].chars().next().map(char::len_utf8).unwrap_or(1);
+        from = start + advance;
+        if from >= hay.len() {
+            break;
+        }
+    }
+    (ranges, count)
+}
+
+/// `elided_segments` parçalarını verilen **taban** katmanda sırayla arar;
+/// sonuç kaynak metnin **karakter** (başlangıç, uzunluk) aralıklarıdır.
+///
+/// Eşleşmenin uzunluğu alıntının uzunluğu **değildir**: aralık, kaynakta ilk
+/// parçanın başından son parçanın sonuna kadardır ve atlanan kısmı **içerir**
+/// (arayüz bu ham kaynağı gösterir).
+pub(crate) fn find_elided_sequences_in_text(
+    text: &str,
+    segments: &[String],
+    base: QuoteTier,
+    limit: usize,
+) -> (Vec<(i64, i64)>, i64) {
+    if base == QuoteTier::Exact {
+        let (ranges, count) = find_sequence_ranges(text, segments, limit);
+        let positions = ranges
+            .into_iter()
+            .map(|(start, end)| {
+                let start_chars = i64::try_from(text[..start].chars().count()).unwrap_or(i64::MAX);
+                let length = i64::try_from(text[start..end].chars().count()).unwrap_or(i64::MAX);
+                (start_chars, length)
+            })
+            .collect();
+        return (positions, count);
+    }
+    let hay = tier_mapped(text, base);
+    let needles: Vec<String> = segments
+        .iter()
+        .map(|segment| tier_mapped(segment, base).text)
+        .collect();
+    if needles.iter().any(String::is_empty) {
+        return (Vec::new(), 0);
+    }
+    let (ranges, count) = find_sequence_ranges(&hay.text, &needles, limit);
+    let positions = ranges
+        .into_iter()
+        .filter_map(|(start, end)| mapped_span(&hay, start, end - start))
+        .collect();
+    (positions, count)
 }
 
 /// Tek bir sürümde, tek katmanda **bütün** eşleşmeleri arar. Konum ve uzunluk
@@ -480,10 +659,20 @@ pub(crate) fn find_quote_in_scopes(
     quote_chars: usize,
     position_limit: usize,
 ) -> Option<QuoteScopeHit> {
+    // Kısaltılmış alıntı parçaları **bir kez** çözülür; `…` yoksa elided
+    // katmanları hiç taranmaz (maliyet yalnız kısaltılmış alıntıda).
+    let elided = elided_segments(quote);
     for tier in QuoteTier::ORDER {
         for (index, scope) in scopes.iter().enumerate() {
-            let (positions, occurrences) =
-                find_all_in_scope(scope, quote, quote_chars, tier, position_limit);
+            let (positions, occurrences) = match tier.elided_base() {
+                None => find_all_in_scope(scope, quote, quote_chars, tier, position_limit),
+                Some(base) => match elided.as_deref() {
+                    Some(segments) => {
+                        find_elided_sequences_in_text(&scope.text, segments, base, position_limit)
+                    }
+                    None => (Vec::new(), 0),
+                },
+            };
             if occurrences == 0 {
                 continue;
             }

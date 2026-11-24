@@ -30,9 +30,9 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
-    char_offset, collapse_ws_with_map, dehyphenate_with_map, find_quote_in_scopes,
-    ligature_with_map, normalize_with_map, MappedText, TextScope,
-    MAX_HISTORICAL_VERSIONS_PER_PRECEDENT, MIN_QUOTE_CHARS,
+    char_offset, collapse_ws_with_map, dehyphenate_with_map, elided_segments,
+    find_elided_sequences_in_text, find_quote_in_scopes, ligature_with_map, normalize_with_map,
+    MappedText, QuoteTier, TextScope, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT, MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -67,7 +67,9 @@ const MAX_HISTORICAL_VERSIONS_PER_DOCUMENT: usize = 5;
 /// derken öteki tanır — tek kaynak (F12-T14n).
 const QUOTE_EXTRACTION_NOTE: &str =
     "Alıntı çıkarımı çift tırnak ailesini (“…” · „…“ · «…» · \"…\") ve tek tırnak ailesini \
-     (‘…’ · '…') tanır; Türkçe kesme işareti (İstanbul'da, Anayasa’nın) alıntı sınırı değildir.";
+     (‘…’ · '…') tanır; Türkçe kesme işareti (İstanbul'da, Anayasa’nın) alıntı sınırı değildir. \
+     Alıntı içindeki “…” / “...” kısaltma işareti parçaları ayırır: parçalar kaynakta aynı \
+     sırayla aranır, atlanan kısım denetlenmez.";
 
 /// "Sayfada kullanılabilir metin var mı" tanımı **tek yerde**. Sayfa taraması
 /// ([`Database::scan_quote_tier`]) ve sayım ([`Database::page_counts`]) aynı
@@ -401,6 +403,10 @@ pub struct InTextQuoteCheck {
     /// Yalnız **bitişik yazı (ligatür)** açılarak bulunan alıntı sayısı
     /// (kaynakta `taraﬂar`, alıntıda `taraflar`). Birebir sayılmaz.
     pub ligature: usize,
+    /// Yalnız **`…` ile kısaltılmış** parçaların sırayla bulunmasıyla
+    /// doğrulanan alıntı sayısı (F12-T14p). Atlanan kısım denetlenmediği
+    /// için birebir sayılmaz.
+    pub elided: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
 }
@@ -419,6 +425,15 @@ enum MatchTier {
     /// alıntı `bedellini` olarak bulunur; yalnız bu katmanda bulunan eşleşme
     /// "birebir değil" sayılır ve kaynağa bağlanmaz.
     Dehyphenated,
+    /// `…`/`...` ile **kısaltılmış** alıntı (F12-T14p): parçalar kaynakta
+    /// **aynı sırayla**, aralarına metin girmeden aranır. Beş taban
+    /// normalizasyonunun her biri ayrı katmandır; raporlanan `matchKind`
+    /// tek: `elided`.
+    ElidedExact,
+    ElidedWhitespace,
+    ElidedLigature,
+    ElidedFold,
+    ElidedDehyphenated,
 }
 
 impl MatchTier {
@@ -429,6 +444,24 @@ impl MatchTier {
             Self::Ligature => "ligature",
             Self::Fold => "turkish_fold",
             Self::Dehyphenated => "dehyphenated",
+            Self::ElidedExact
+            | Self::ElidedWhitespace
+            | Self::ElidedLigature
+            | Self::ElidedFold
+            | Self::ElidedDehyphenated => "elided",
+        }
+    }
+
+    /// Bu katman bir `elided` katmanı mı? `Some(base)`, parçaların hangi taban
+    /// normalizasyonda aranacağını söyler; `None` tam alıntı katmanıdır.
+    const fn elided_base(self) -> Option<QuoteTier> {
+        match self {
+            Self::ElidedExact => Some(QuoteTier::Exact),
+            Self::ElidedWhitespace => Some(QuoteTier::Whitespace),
+            Self::ElidedLigature => Some(QuoteTier::Ligature),
+            Self::ElidedFold => Some(QuoteTier::TurkishFold),
+            Self::ElidedDehyphenated => Some(QuoteTier::Dehyphenated),
+            _ => None,
         }
     }
 }
@@ -676,6 +709,9 @@ pub struct PrecedentInTextCheck {
     pub unverifiable: usize,
     pub dehyphenated: usize,
     pub ligature: usize,
+    /// Yalnız **`…` ile kısaltılmış** parçaların sırayla bulunmasıyla
+    /// doğrulanan alıntı sayısı (F12-T14p). Atlanan kısım denetlenmez.
+    pub elided: usize,
     pub found_in_old_version: usize,
     /// Kararın metinli sürüm sayısı (güncel + sınır içindeki eski sürümler).
     pub versions_total: usize,
@@ -766,6 +802,9 @@ pub struct LibraryInTextCheck {
     pub history_truncated: bool,
     pub dehyphenated: usize,
     pub ligature: usize,
+    /// Yalnız **`…` ile kısaltılmış** parçaların sırayla bulunmasıyla
+    /// doğrulanan alıntı sayısı (F12-T14p). Atlanan kısım denetlenmez.
+    pub elided: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
 }
@@ -875,6 +914,13 @@ impl Database {
                 MatchTier::Ligature,
                 MatchTier::Fold,
                 MatchTier::Dehyphenated,
+                // `…` ile kısaltılmış alıntı en zayıf ailedir: parçaların
+                // sırası ve örtüşmemesi bu katmanlarda zorlanır (T14p).
+                MatchTier::ElidedExact,
+                MatchTier::ElidedWhitespace,
+                MatchTier::ElidedLigature,
+                MatchTier::ElidedFold,
+                MatchTier::ElidedDehyphenated,
             ] {
                 if active.is_empty() {
                     break;
@@ -956,6 +1002,7 @@ impl Database {
         let mut found_in_old_version = 0usize;
         let mut dehyphenated = 0usize;
         let mut ligature = 0usize;
+        let mut elided = 0usize;
         let mut collapsed_version_copies = 0usize;
         let mut quotes = Vec::with_capacity(extracted.quotes.len());
         for (index, span) in extracted.quotes.iter().enumerate() {
@@ -1042,6 +1089,17 @@ impl Database {
             {
                 ligature += 1;
             }
+            if finding
+                .position
+                .as_ref()
+                .is_some_and(|position| position.match_kind == "elided")
+                || finding
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.match_kind == "elided")
+            {
+                elided += 1;
+            }
             quotes.push(finding);
         }
         if dehyphenated > 0 {
@@ -1056,6 +1114,13 @@ impl Database {
                 "{ligature} alıntı yalnız **bitişik yazı (ligatür)** açılarak bulundu \
                  (kaynakta `taraﬂar` gibi tek glif, alıntıda `taraflar`); birebir sayılmaz \
                  ve anchor'a bağlanmaz, kaynak metin gösterilir."
+            ));
+        }
+        if elided > 0 {
+            notes.push(format!(
+                "{elided} alıntı **`…` ile kısaltılmış** parçaların kaynakta **aynı sırayla** \
+                 bulunmasıyla doğrulandı; atlanan kısım denetlenmedi, birebir sayılmaz ve \
+                 anchor'a bağlanmaz — kaynak metin atlanan kısmıyla birlikte gösterilir."
             ));
         }
         if found_in_old_version > 0 {
@@ -1147,6 +1212,7 @@ impl Database {
             found_in_old_version,
             dehyphenated,
             ligature,
+            elided,
             notes,
             checked_at: now_iso(),
         })
@@ -1361,7 +1427,18 @@ impl Database {
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Fold => Some(normalize_with_map(&span.text)),
                 MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
+                // `elided` katmanları parçalarla çalışır; tam alıntı iğnesi yok.
+                MatchTier::ElidedExact
+                | MatchTier::ElidedWhitespace
+                | MatchTier::ElidedLigature
+                | MatchTier::ElidedFold
+                | MatchTier::ElidedDehyphenated => None,
             })
+            .collect();
+        // Kısaltılmış alıntı parçaları katman başına **bir kez** çözülür.
+        let elided: Vec<Option<Vec<String>>> = spans
+            .iter()
+            .map(|span| elided_segments(&span.text))
             .collect();
         let needle_chars: Vec<usize> = needles
             .iter()
@@ -1472,6 +1549,49 @@ impl Database {
                             }
                         }
                     }
+                    MatchTier::ElidedExact
+                    | MatchTier::ElidedWhitespace
+                    | MatchTier::ElidedLigature
+                    | MatchTier::ElidedFold
+                    | MatchTier::ElidedDehyphenated => {
+                        let Some(base) = tier.elided_base() else {
+                            continue;
+                        };
+                        for &quote_index in active {
+                            let Some(segments) = elided[quote_index].as_deref() else {
+                                continue;
+                            };
+                            // Tüm konumlar istenir: `occurrences` gerçek sayıyı
+                            // taşımalı (belirsizlik hükmü bu sayıya dayanır).
+                            let (positions, _) =
+                                find_elided_sequences_in_text(&text, segments, base, usize::MAX);
+                            for (start, length) in positions {
+                                let source_text: String = text
+                                    .chars()
+                                    .skip(usize::try_from(start).unwrap_or(usize::MAX))
+                                    .take(usize::try_from(length).unwrap_or(0))
+                                    .collect();
+                                accum[quote_index].record(RawHit {
+                                    document_id: scope.document_id.clone(),
+                                    document_name: scope.document_name.clone(),
+                                    version_id: scope.version_id.clone().unwrap_or_default(),
+                                    parse_run_id: run_id.to_string(),
+                                    page_id: Some(page_id.clone()),
+                                    segment_id: segment_id.clone(),
+                                    page_index,
+                                    char_start: start,
+                                    end_page_index: page_index,
+                                    char_end: start.saturating_add(length),
+                                    spans_pages: false,
+                                    version_no: scope.version_no,
+                                    is_current_version: scope.is_current,
+                                    match_kind: tier.kind(),
+                                    text_origin: text_origin.clone(),
+                                    source_text,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1504,7 +1624,18 @@ impl Database {
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Fold => Some(normalize_with_map(&span.text)),
                 MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
+                // `elided` katmanları parçalarla çalışır; tam alıntı iğnesi yok.
+                MatchTier::ElidedExact
+                | MatchTier::ElidedWhitespace
+                | MatchTier::ElidedLigature
+                | MatchTier::ElidedFold
+                | MatchTier::ElidedDehyphenated => None,
             })
+            .collect();
+        // Kısaltılmış alıntı parçaları katman başına **bir kez** çözülür.
+        let elided: Vec<Option<Vec<String>>> = spans
+            .iter()
+            .map(|span| elided_segments(&span.text))
             .collect();
         let needle_chars: Vec<usize> = needles
             .iter()
@@ -1647,6 +1778,39 @@ impl Database {
                             }
                         }
                     }
+                    MatchTier::ElidedExact
+                    | MatchTier::ElidedWhitespace
+                    | MatchTier::ElidedLigature
+                    | MatchTier::ElidedFold
+                    | MatchTier::ElidedDehyphenated => {
+                        let Some(base) = tier.elided_base() else {
+                            continue;
+                        };
+                        for &quote_index in active {
+                            let Some(segments) = elided[quote_index].as_deref() else {
+                                continue;
+                            };
+                            let (positions, _) =
+                                find_elided_sequences_in_text(&joined, segments, base, usize::MAX);
+                            for (start, length) in positions {
+                                let start = usize::try_from(start).unwrap_or(usize::MAX);
+                                let end = start
+                                    .saturating_add(usize::try_from(length).unwrap_or(usize::MAX));
+                                if let Some(hit) = page_break_hit(
+                                    scope,
+                                    run_id,
+                                    &metas,
+                                    &window,
+                                    boundary,
+                                    start,
+                                    end,
+                                    tier.kind(),
+                                ) {
+                                    accum[quote_index].record(hit);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Kuyruğu pencere sonundan sınırla taşı.
@@ -1662,7 +1826,7 @@ impl Database {
     ///
     /// Belge tarafındaki [`Database::check_in_text_quotes`] dosya belgelerini
     /// tarar; bu yol aynı çıkarımı ve **aynı katman sırasını** (`exact` →
-    /// `whitespace` → `ligature` → `turkish_fold` → `dehyphenated`) emsal
+    /// `whitespace` → `ligature` → `turkish_fold` → `dehyphenated` → `elided`) emsal
     /// tam metnine uygular: dilekçedeki birden çok alıntı tek turda, tek tek
     /// kopyalamadan denetlenir. Kapsam bilinçli olarak **tek emsaldir**;
     /// kütüphane geneli arama değildir (F12-T10 kapsam ayrımı).
@@ -1704,7 +1868,7 @@ impl Database {
             notes.push(format!(
                 "Kararın {} metinli sürümü tarandı (güncel + en çok \
                  {MAX_HISTORICAL_VERSIONS_PER_PRECEDENT} eski sürüm); katman sırası \
-                 birebir → boşluk → ligatür → harf → tire birleştirmedir.",
+                 birebir → boşluk → ligatür → harf → tire birleştirme → “…” parçalıdır.",
                 scopes.len()
             ));
         }
@@ -1715,6 +1879,7 @@ impl Database {
         let mut counts = [0usize; 5];
         let mut dehyphenated = 0usize;
         let mut ligature = 0usize;
+        let mut elided = 0usize;
         let mut found_in_old_version = 0usize;
         let mut versions_scanned = 0usize;
         let mut historical_versions_scanned = 0usize;
@@ -1786,6 +1951,9 @@ impl Database {
                     if hit.method == "ligature" {
                         ligature += 1;
                     }
+                    if hit.method == "elided" {
+                        elided += 1;
+                    }
                     match finding.state.as_str() {
                         "exact" => counts[0] += 1,
                         "normalized" => counts[1] += 1,
@@ -1807,6 +1975,13 @@ impl Database {
                 "{ligature} alıntı yalnız **bitişik yazı (ligatür)** açılarak bulundu \
                  (kaynakta `taraﬂar` gibi tek glif, alıntıda `taraflar`); birebir \
                  sayılmaz, kaynak metin gösterilir."
+            ));
+        }
+        if elided > 0 {
+            notes.push(format!(
+                "{elided} alıntı **`…` ile kısaltılmış** parçaların karar metninde **aynı \
+                 sırayla** bulunmasıyla doğrulandı; atlanan kısım denetlenmedi ve birebir \
+                 sayılmaz — kaynak metin atlanan kısmıyla birlikte gösterilir."
             ));
         }
         if found_in_old_version > 0 {
@@ -1837,6 +2012,7 @@ impl Database {
             unverifiable: counts[4],
             dehyphenated,
             ligature,
+            elided,
             found_in_old_version,
             versions_total: scopes.len(),
             versions_scanned,
@@ -1853,7 +2029,7 @@ impl Database {
     /// Tek emsal yolundan ([`Database::check_in_text_quotes_in_precedent`])
     /// farkı kapsamdır: “bu pasaj hangi kararlarımda geçiyor?” sorusunu
     /// yanıtlar; katman sırası **aynıdır** (`exact` → `whitespace` → `ligature`
-    /// → `turkish_fold` → `dehyphenated`) ve aynı `find_quote_in_scopes`
+    /// → `turkish_fold` → `dehyphenated` → `elided`) ve aynı `find_quote_in_scopes`
     /// işlevini kullanır. Önce her emsalin **güncel** metni taranır; güncel
     /// metinde bulunamayan alıntı için emsallerin **eski sürümleri** de
     /// taranır (emsal başına en çok `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT`,
@@ -1968,6 +2144,7 @@ impl Database {
             hidden_matches: i64,
             is_dehyphenated: bool,
             is_ligature: bool,
+            is_elided: bool,
         }
 
         let mut pending: Vec<PendingFinding> = Vec::with_capacity(extracted.quotes.len());
@@ -1982,6 +2159,7 @@ impl Database {
                 hidden_matches: 0,
                 is_dehyphenated: false,
                 is_ligature: false,
+                is_elided: false,
             };
             for (scope_index, scope) in scopes.iter().enumerate() {
                 let hit =
@@ -1996,6 +2174,9 @@ impl Database {
                 }
                 if hit.method == "ligature" {
                     finding.is_ligature = true;
+                }
+                if hit.method == "elided" {
+                    finding.is_elided = true;
                 }
                 if finding.matches.len() >= MAX_LIBRARY_MATCHES_PER_QUOTE {
                     finding.hidden_matches += 1;
@@ -2106,6 +2287,9 @@ impl Database {
                     if hit.method == "ligature" {
                         finding.is_ligature = true;
                     }
+                    if hit.method == "elided" {
+                        finding.is_elided = true;
+                    }
                     if finding.matches.len() >= MAX_LIBRARY_MATCHES_PER_QUOTE {
                         finding.hidden_matches += 1;
                         continue;
@@ -2150,6 +2334,7 @@ impl Database {
         let mut counts = [0usize; 4]; // found · not_found · partial_scan · no_library_text
         let mut dehyphenated = 0usize;
         let mut ligature = 0usize;
+        let mut elided = 0usize;
         for finding in pending {
             let state = if scopes.is_empty() {
                 "no_library_text"
@@ -2172,6 +2357,9 @@ impl Database {
             if finding.is_ligature {
                 ligature += 1;
             }
+            if finding.is_elided {
+                elided += 1;
+            }
             findings.push(LibraryQuoteFinding {
                 index: finding.index,
                 quote: finding.quote,
@@ -2193,6 +2381,13 @@ impl Database {
                  birebir sayılmaz, kaynak metin gösterilir."
             ));
         }
+        if elided > 0 {
+            notes.push(format!(
+                "{elided} alıntı **`…` ile kısaltılmış** parçaların emsal metninde **aynı \
+                 sırayla** bulunmasıyla doğrulandı; atlanan kısım denetlenmedi ve birebir \
+                 sayılmaz — kaynak metin atlanan kısmıyla birlikte gösterilir."
+            ));
+        }
         Ok(LibraryInTextCheck {
             text_chars: i64::try_from(text_chars).unwrap_or(i64::MAX),
             spans_found: extracted.quotes.len(),
@@ -2211,6 +2406,7 @@ impl Database {
             history_truncated,
             dehyphenated,
             ligature,
+            elided,
             notes,
             checked_at: now_iso(),
         })
@@ -2707,6 +2903,243 @@ mod tests {
         assert_eq!(report.quotes.len(), 1);
         assert_eq!(report.quotes[0].quote, "Gerçek alıntı metni burada geçer");
         assert_eq!(report.quotes[0].state, "exact");
+    }
+
+    // ---- F12-T14p: `…` ile kısaltılmış alıntı ----
+
+    #[test]
+    fn elided_segments_require_two_parts_over_the_minimum() {
+        assert_eq!(
+            elided_segments("sözleşmenin feshi … kiracının temerrüdü"),
+            Some(vec![
+                "sözleşmenin feshi".to_string(),
+                "kiracının temerrüdü".to_string()
+            ])
+        );
+        // Tek parça kalan kırpık alıntı (başta/sonda `…`) eşleştirilmez.
+        assert!(elided_segments("… kiracının temerrüdü").is_none());
+        assert!(elided_segments("sözleşmenin feshi …").is_none());
+        // Kısa parça tek başına güvenilir değildir.
+        assert!(elided_segments("Mahkeme … kiracının temerrüdü").is_none());
+        // Üç nokta ve köşeli biçim de kısaltma işaretidir.
+        assert_eq!(
+            elided_segments("sözleşmenin feshi ... kiracının temerrüdü").map(|parts| parts.len()),
+            Some(2)
+        );
+        assert_eq!(
+            elided_segments("sözleşmenin feshi […] kiracının temerrüdü").map(|parts| parts.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn elided_quote_parts_are_found_in_order_and_reported_as_elided() {
+        let db = db();
+        let case_id = new_case(&db, "Kısaltılmış alıntı");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "Mahkeme sözleşmenin haklı nedenle feshedilebileceğine ve kiracının kira \
+               bedelini ödemekle temerrüde düştüğüne karar verdi.",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“sözleşmenin haklı nedenle feshedilebileceğine … kiracının kira bedelini \
+             ödemekle temerrüde düştüğüne” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(finding.occurrences, 1);
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "elided");
+        // Kaynak metin **atlanan kısmıyla** gösterilir: birebir olmadığı görünür.
+        assert!(position
+            .source_text
+            .starts_with("sözleşmenin haklı nedenle feshedilebileceğine"));
+        assert!(position.source_text.contains("ve kiracının kira bedelini"));
+        assert!(position.source_text.ends_with("temerrüde düştüğüne"));
+        // Birebir olmayan eşleşme kaynağa bağlanmaz: çekirdek reddeder.
+        // (Arayüz `canBind` yalnız birebir tek konumda açılır.)
+        let error = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                end_offset: position.char_start
+                    + i64::try_from(finding.quote.chars().count()).unwrap_or(i64::MAX),
+                exact_quote: finding.quote.clone(),
+            })
+            .expect_err("elided alıntı bağlanmamalı");
+        assert_eq!(error.code(), "E_QUOTE_NOT_FOUND");
+        assert_eq!(report.elided, 1);
+        assert_eq!(report.normalized, 1);
+        assert!(report.notes.iter().any(|n| n.contains("kısaltılmış")));
+    }
+
+    #[test]
+    fn elided_parts_must_appear_in_the_source_in_order() {
+        let db = db();
+        let case_id = new_case(&db, "Sıra");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["ikinci parça burada geçiyor ve sonra birinci parça burada geçiyor."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“birinci parça burada … ikinci parça burada” ifadesi.",
+            None,
+        );
+        assert_eq!(report.quotes[0].state, "not_found");
+        assert_eq!(report.elided, 0);
+
+        // Aynı iki parça **doğru sırada** geçerse eşleşir (kontrol).
+        let case_ok = new_case(&db, "Sıra doğru");
+        add_document(
+            &db,
+            &case_ok,
+            "Karar",
+            &["birinci parça burada geçiyor ve sonra ikinci parça burada geçiyor."],
+        );
+        let report = check(
+            &db,
+            &case_ok,
+            "“birinci parça burada … ikinci parça burada” ifadesi.",
+            None,
+        );
+        assert_eq!(report.quotes[0].state, "normalized");
+        assert_eq!(report.elided, 1);
+    }
+
+    #[test]
+    fn elided_quote_with_a_short_part_is_not_matched() {
+        let db = db();
+        let case_id = new_case(&db, "Kısa parça");
+        add_document(&db, &case_id, "Karar", &["Mahkeme fesih kararını verdi."]);
+        // "Mahkeme" (7) eşik altı: parça tek başına her kararda geçebilir.
+        let report = check(&db, &case_id, "“Mahkeme … fesih kararını” ifadesi.", None);
+        assert_eq!(report.quotes[0].state, "not_found");
+        assert_eq!(report.elided, 0);
+    }
+
+    #[test]
+    fn elided_parts_use_the_whitespace_layer() {
+        let db = db();
+        let case_id = new_case(&db, "Boşluk");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "Mahkeme sözleşmenin\nhaklı nedenle feshedilebileceğine ve kiracının \
+               temerrüde düştüğüne karar verdi.",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“sözleşmenin haklı nedenle feshedilebileceğine … kiracının temerrüde düştüğüne” \
+             ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "elided");
+        assert!(
+            position.source_text.contains('\n'),
+            "kaynak ham hâli gösterilmeli: {:?}",
+            position.source_text
+        );
+    }
+
+    #[test]
+    fn elided_parts_across_a_page_break_are_marked_spanning() {
+        let db = db();
+        let case_id = new_case(&db, "Sayfa sınırı");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "Mahkeme sözleşmenin haklı nedenle feshedilebileceğine",
+                "ve kiracının temerrüde düştüğüne karar verdi.",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“sözleşmenin haklı nedenle feshedilebileceğine … kiracının temerrüde düştüğüne” \
+             ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "elided");
+        assert!(position.spans_pages);
+        assert_eq!(position.page_index, 0);
+        assert_eq!(position.end_page_index, 1);
+    }
+
+    #[test]
+    fn repeated_elided_passage_is_ambiguous_with_elided_candidates() {
+        let db = db();
+        let case_id = new_case(&db, "Tekrar");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "sözleşmenin haklı nedenle feshedilebileceğine ve kiracının temerrüde \
+               düştüğüne … sözleşmenin haklı nedenle feshedilebileceğine ve kiracının \
+               temerrüde düştüğüne",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“sözleşmenin haklı nedenle feshedilebileceğine … kiracının temerrüde düştüğüne” \
+             ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "ambiguous");
+        assert_eq!(finding.occurrences, 2);
+        assert!(finding
+            .candidates
+            .iter()
+            .all(|candidate| candidate.match_kind == "elided"));
+        assert_eq!(report.elided, 1);
+    }
+
+    #[test]
+    fn a_literal_ellipsis_in_the_source_stays_exact() {
+        let db = db();
+        let case_id = new_case(&db, "Gerçek üç nokta");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["Karar metni … burada aynen geçiyor."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“Karar metni … burada aynen geçiyor” ifadesi.",
+            None,
+        );
+        assert_eq!(report.quotes[0].state, "exact");
+        assert_eq!(report.elided, 0);
     }
 
     #[test]
@@ -4054,6 +4487,60 @@ mod tests {
     }
 
     #[test]
+    fn precedent_in_text_elided_quote_matches_the_single_quote_path() {
+        let db = db();
+        let p = new_precedent(&db, "2024/320");
+        add_precedent_text(
+            &db,
+            &p.id,
+            "Karar: sözleşmenin haklı nedenle feshedilebileceğine ve kiracının kira \
+             bedelini ödemekle temerrüde düştüğüne hükmedildi.",
+        );
+        let quote = "sözleşmenin haklı nedenle feshedilebileceğine … kiracının kira bedelini \
+                     ödemekle temerrüde düştüğüne";
+        let single = db.verify_precedent_quote(&p.id, quote).expect("tek alıntı");
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: format!("“{quote}” deniyor."),
+                },
+            )
+            .expect("metin içi");
+        let finding = &report.quotes[0];
+        assert_eq!(single.method.as_deref(), Some("elided"));
+        assert_eq!(finding.method.as_deref(), Some("elided"));
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(single.occurrences, finding.occurrences);
+        assert_eq!(report.elided, 1);
+        assert!(report.notes.iter().any(|n| n.contains("kısaltılmış")));
+        // Kaynak konumu, atlanan kısmı **içeren** ham metni gösterir.
+        let position = finding.position.as_ref().expect("position");
+        assert!(position.source_text.contains("ve kiracının kira"));
+    }
+
+    #[test]
+    fn precedent_in_text_elided_quote_requires_the_parts_in_order() {
+        let db = db();
+        let p = new_precedent(&db, "2024/323");
+        add_precedent_text(
+            &db,
+            &p.id,
+            "Karar: ikinci parça burada geçiyor ve sonra birinci parça burada geçiyor.",
+        );
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "“birinci parça burada … ikinci parça burada” deniyor.".into(),
+                },
+            )
+            .expect("metin içi");
+        assert_eq!(report.quotes[0].state, "not_found");
+        assert_eq!(report.elided, 0);
+    }
+
+    #[test]
     fn precedent_without_full_text_cannot_verify_in_text_quotes() {
         let db = db();
         let p = new_precedent(&db, "2024/306");
@@ -4429,5 +4916,33 @@ mod tests {
             .check_in_text_quotes_across_library(&PrecedentInTextInput { text: long })
             .expect_err("uzun metin");
         assert_eq!(error.code(), "E_QUOTE_TEXT");
+    }
+
+    #[test]
+    fn library_search_finds_elided_quotes_and_keeps_other_precedents_clean() {
+        let db = db();
+        let p1 = new_precedent(&db, "2024/321");
+        add_precedent_text(
+            &db,
+            &p1.id,
+            "Karar: sözleşmenin haklı nedenle feshedilebileceğine ve kiracının kira \
+             bedelini ödemekle temerrüde düştüğüne hükmedildi.",
+        );
+        let p2 = new_precedent(&db, "2024/322");
+        add_precedent_text(&db, &p2.id, "Başka karar: kira bedeli ödenmedi.");
+        let report = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: "“sözleşmenin haklı nedenle feshedilebileceğine … kiracının kira \
+                       bedelini ödemekle temerrüde düştüğüne” geçiyor."
+                    .into(),
+            })
+            .expect("kütüphane");
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "found");
+        assert_eq!(finding.matched_precedents, 1);
+        assert_eq!(finding.matches[0].precedent_id, p1.id);
+        assert_eq!(finding.matches[0].method, "elided");
+        assert_eq!(report.elided, 1);
+        assert!(report.notes.iter().any(|n| n.contains("kısaltılmış")));
     }
 }

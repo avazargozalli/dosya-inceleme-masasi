@@ -136,6 +136,17 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     expect(quoteStateTone(verification({ state: "match", method: "ligature" }))).toBe("warn");
   });
 
+  it("… ile kısaltılmış alıntıyı ayrı ve zayıf bir eşleşme olarak yazar", () => {
+    const elided = quoteStateText(
+      verification({ state: "match", method: "elided", matchedStart: 9, occurrences: 1 }),
+    );
+    expect(elided).toContain("kısaltılmış");
+    expect(elided.toLowerCase()).toContain("atlanan kısım");
+    expect(elided).not.toContain("tire ile bölünmüş");
+    expect(elided).not.toContain("harf farkıyla");
+    expect(quoteStateTone(verification({ state: "match", method: "elided" }))).toBe("warn");
+  });
+
   it("tekrarlanan alıntıda kaç kez geçtiğini yazar", () => {
     const text = quoteStateText(
       verification({ state: "match", method: "exact", matchedStart: 0, occurrences: 3 }),
@@ -303,6 +314,7 @@ describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
       unverifiable: 0,
       dehyphenated: 0,
       ligature: 0,
+      elided: 0,
       foundInOldVersion: 0,
       versionsTotal: 1,
       versionsScanned: 1,
@@ -320,6 +332,7 @@ describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
     expect(precedentMethodLabel("ligature")).toBe("ligatür");
     expect(precedentMethodLabel("turkish_fold")).toBe("harf farkı");
     expect(precedentMethodLabel("dehyphenated")).toBe("tire birleştirme");
+    expect(precedentMethodLabel("elided")).toBe("… ile kısaltılmış");
     expect(precedentMethodLabel(null)).toBe("");
   });
 
@@ -449,6 +462,7 @@ function libraryCheck(overrides: Partial<LibraryInTextCheck> = {}): LibraryInTex
     historyTruncated: false,
     dehyphenated: 0,
     ligature: 0,
+    elided: 0,
     notes: [],
     checkedAt: "2026-05-01T10:00:00Z",
     ...overrides,
