@@ -123,6 +123,10 @@ const SERVER_EMPTY: SearchFilters = {
 const SERVER_PDF: SearchFilters = { ...SERVER_EMPTY, documentTypes: ["pdf"] };
 
 function hit(overrides: Partial<SearchHit> & { segmentId: string }): SearchHit {
+  const raw = overrides.rawText ?? "kira bedeli ödenmedi";
+  // Çekirdeğin pencere kuralı (240 karakter / 60 öncül) testte taklit edilmez;
+  // kısa metinlerde pencere metnin kendisidir. Konum alanları varsayılan
+  // olarak **yok** — eski kart birebir `indexOf` ile işaretlemeye düşer.
   return {
     pageId: "p1",
     documentVersionId: "v1",
@@ -133,7 +137,11 @@ function hit(overrides: Partial<SearchHit> & { segmentId: string }): SearchHit {
     textOrigin: "native",
     caseId: "c1",
     tags: [],
-    rawText: "kira bedeli ödenmedi",
+    rawText: raw,
+    snippet: raw.length > 240 ? `${raw.slice(0, 240)}…` : raw,
+    snippetStart: 0,
+    matchStart: null,
+    matchLength: null,
     pageIndex: 0,
     rank: 1,
     ...overrides,
@@ -478,6 +486,107 @@ describe("arama ekranı davranışı", () => {
     fireEvent.change(byId<HTMLInputElement>("search-q"), { target: { value: "ödeme" } });
     expect(document.querySelector("mark")?.textContent).toBe("kira");
     expect(mocks.searchPage).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * F12-T14w — dosya sonucu da kütüphaneyle **aynı** vurguyu çizer: kart
+   * eskiden eşleşmeyi birebir `indexOf` ile arıyordu ve `İfade` köprüsüyle
+   * (`kredi kartı` ↔ `Kredi-kartı`) bulunan eşleşme vurgusuz kalıyordu.
+   */
+  it("dosya sonucu noktalama köprüsüyle bulunan eşleşmeyi konumdan işaretler", async () => {
+    setup({
+      pages: [
+        page({
+          query: "kredi kartı",
+          resolvedQuery: "kredi kartı",
+          mode: "phrase",
+          hits: [
+            hit({
+              segmentId: "aaaaaaaa-1",
+              rawText: "Giriş: Kredi-kartı borcu ödenmedi.",
+              snippet: "Giriş: Kredi-kartı borcu ödenmedi.",
+              snippetStart: 0,
+              matchStart: 7,
+              matchLength: 11,
+            }),
+          ],
+          returned: 1,
+        }),
+      ],
+      total: totalLine({ query: "kredi kartı", resolvedQuery: "kredi kartı", mode: "phrase" }),
+    });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("kredi kartı");
+
+    await screen.findByText(t("search.resultsTitle"));
+    await waitFor(() => expect(document.querySelector("mark")?.textContent).toBe("Kredi-kartı"));
+  });
+
+  /**
+   * Eşleşme metnin sonundaysa pencere onu **görünür** kılar: kart 600
+   * karakterden kesiyordu ve geç eşleşme hiç görünmüyordu. Vurgu, pencerenin
+   * `…` önekini sayar (kütüphaneyle tek kural).
+   */
+  it("dosya sonucu geç eşleşmeyi pencereye getirir; `…` öneki vurguya sayılmaz", async () => {
+    const prefix = "dolgu ".repeat(60);
+    setup({
+      pages: [
+        page({
+          query: "bedellini",
+          resolvedQuery: "bedellini",
+          mode: "phrase",
+          hits: [
+            hit({
+              segmentId: "aaaaaaaa-1",
+              rawText: `${prefix}bedel-\nlini ödendi.`,
+              snippet: `…${"dolgu ".repeat(10)}bedel-\nlini ödendi.`,
+              snippetStart: 300,
+              matchStart: 360,
+              matchLength: 11,
+            }),
+          ],
+          returned: 1,
+        }),
+      ],
+      total: totalLine({ query: "bedellini", resolvedQuery: "bedellini", mode: "phrase" }),
+    });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("bedellini");
+
+    await screen.findByText(t("search.resultsTitle"));
+    await waitFor(() => expect(document.querySelector("mark")?.textContent).toBe("bedel-\nlini"));
+    // Kart metnin başını değil pencereyi gösterir.
+    expect(document.querySelector("mark")?.parentElement?.textContent?.startsWith("…")).toBe(true);
+  });
+
+  /** Konum ölçülemediyse (künye eşleşmesi) vurgu **uydurulmaz**. */
+  it("konum yoksa dosya sonucunda uydurma vurgu çizilmez", async () => {
+    setup({
+      pages: [
+        page({
+          query: "2020/123",
+          resolvedQuery: "2020/123",
+          mode: "docket",
+          hits: [
+            hit({
+              segmentId: "aaaaaaaa-1",
+              rawText: "Esas 2020 / 123 sayılı dosya",
+              snippet: "Esas 2020 / 123 sayılı dosya",
+              snippetStart: 0,
+              matchStart: null,
+              matchLength: null,
+            }),
+          ],
+          returned: 1,
+        }),
+      ],
+      total: totalLine({ query: "2020/123", resolvedQuery: "2020/123", mode: "docket" }),
+    });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    await searchFor("2020/123");
+
+    await screen.findByText(t("search.resultsTitle"));
+    expect(document.querySelector("mark")).toBeNull();
   });
 
   it("başarısız arama önceki sorgunun sonuçlarını yeni sorgunun sonucu gibi göstermez", async () => {

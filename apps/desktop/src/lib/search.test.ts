@@ -40,6 +40,10 @@ function hit(segmentId: string): SearchHit {
     caseId: null,
     tags: [],
     rawText: "",
+    snippet: "",
+    snippetStart: 0,
+    matchStart: null,
+    matchLength: null,
     pageIndex: null,
     rank: 0,
   };

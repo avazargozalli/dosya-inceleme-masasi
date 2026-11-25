@@ -2036,19 +2036,30 @@ struct PrecedentSearchSeed {
 /// tek belirteç olarak arandığında birleştirilir). Bulunamazsa `None`;
 /// **konum uydurulmaz**. `Tam` kipi noktalamaya duyarlı kalır: köprü ve
 /// birleştirme katmanları yalnız belirteç kiplerinde çalışır (F15 #35/#36).
-fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i64)> {
+///
+/// F12-T14w: dosya araması da **aynı** konumlayıcıyı okur (ikinci uygulama
+/// yok). İlk üç katman **sözcük başı çapasına** uyar (`anchored_find`):
+/// doğrulayıcı `Tam` kipinde çapasız alt dizeyi kabul etmez, `İfade`/`Esnek`
+/// de belirteç sınırında eşleşir — konum aynı kuralı uygulamazsa başka bir
+/// geçişi (ör. `kiraathane` içindeki `kira`) işaretlerdi.
+pub(crate) fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i64)> {
     let needle = needle.trim();
     if needle.is_empty() {
         return None;
     }
     let length = i64::try_from(needle.chars().count()).unwrap_or(i64::MAX);
-    if let Some(byte) = text.find(needle) {
+    // `İfade` kipi tam belirteç ister: alt dize katmanı bir belirtecin yalnız
+    // başını bulursa (`kiraathane` içindeki `kira`) eşleşme değildir.
+    let whole_token = mode == SearchMode::Phrase;
+    if let Some(byte) = crate::parsing::anchored_find_with(text, needle, whole_token) {
         return Some((char_offset(text, byte), length));
     }
     let haystack = collapse_ws_with_map(text);
     let wanted = collapse_ws_with_map(needle);
     if !wanted.text.is_empty() {
-        if let Some(at) = haystack.text.find(&wanted.text) {
+        if let Some(at) =
+            crate::parsing::anchored_find_with(&haystack.text, &wanted.text, whole_token)
+        {
             if let Some(start) = mapped_start(&haystack, at) {
                 return Some((
                     start,
@@ -2060,7 +2071,9 @@ fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i6
     let haystack = turkish_fold_with_map(text);
     let wanted = turkish_fold_with_map(needle);
     if !wanted.text.is_empty() {
-        if let Some(at) = haystack.text.find(&wanted.text) {
+        if let Some(at) =
+            crate::parsing::anchored_find_with(&haystack.text, &wanted.text, whole_token)
+        {
             if let Some(start) = mapped_start(&haystack, at) {
                 return Some((
                     start,
@@ -2200,7 +2213,9 @@ fn locate_token_sequence(
 }
 
 /// Eşleşme çevresinden pencere. Metnin tamamı arayüze gönderilmez.
-fn snippet_window(text: &str, start: Option<i64>) -> (String, i64) {
+/// F12-T14w: dosya araması da **aynı** pencere kuralını okur (kütüphaneyle
+/// tek uygulama); eşleşme geç gelse bile pencere onu içerir.
+pub(crate) fn snippet_window(text: &str, start: Option<i64>) -> (String, i64) {
     let chars: Vec<char> = text.chars().collect();
     let total = chars.len();
     let position = start

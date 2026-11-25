@@ -695,6 +695,16 @@ impl Database {
         let mut hits: Vec<SearchHit> = Vec::with_capacity(accepted.len());
         for (segment_id, page_id, rank, raw_text) in accepted {
             let extra = metadata.get(&segment_id);
+            // F12-T14w: konum, kütüphaneyle **aynı** konumlayıcıdan ölçülür
+            // (ikinci uygulama yok). Bulunamazsa `None` — vurgu uydurulmaz.
+            // Pencere de aynı kural: eşleşme metnin sonundaysa görünür kalır.
+            let (match_start, match_length) =
+                match crate::precedents::locate_in_text(&raw_text, &resolved.text, resolved.mode) {
+                    Some((start, length)) => (Some(start), Some(length)),
+                    None => (None, None),
+                };
+            let (snippet, snippet_start) =
+                crate::precedents::snippet_window(&raw_text, match_start);
             hits.push(SearchHit {
                 document_version_id: extra.and_then(|meta| meta.document_version_id.clone()),
                 document_id: extra.and_then(|meta| meta.document_id.clone()),
@@ -708,6 +718,10 @@ impl Database {
                 page_id,
                 raw_text,
                 rank,
+                match_start,
+                match_length,
+                snippet,
+                snippet_start,
                 tags: Vec::new(),
             });
         }
@@ -1529,10 +1543,29 @@ fn fold_ws_into(text: &str, out: &mut String) {
 /// İğne noktalama ile başlıyorsa (`(reddine)`) sınır ilk alfanümerik karakterde
 /// aranır — böylece "X(reddine)" gibi bitişik yazım da eşleşir.
 fn anchored_contains(haystack: &str, needle: &str) -> bool {
-    let Some((anchor_offset, _)) = needle.char_indices().find(|(_, ch)| ch.is_alphanumeric())
-    else {
-        return false;
-    };
+    anchored_find(haystack, needle).is_some()
+}
+
+/// Çapalı aramanın **konumu**: iğnenin ilk harfine/rakamına denk gelen geçişin
+/// bayt indeksi, yalnız o karakterden **önce** harf/rakam yoksa kabul edilir
+/// (`kiraathane` içindeki `kira` eşleşme değildir). Kural tek yerde durur:
+/// doğrulayıcı `anchored_contains` ve konumlayıcı `locate_in_text` aynı
+/// fonksiyonu okur (F12-T14w) — ayrışırlarsa vurgu başka bir geçişi gösterirdi.
+pub(crate) fn anchored_find(haystack: &str, needle: &str) -> Option<usize> {
+    anchored_find_with(haystack, needle, false)
+}
+
+/// `whole_token` = `İfade` kipinin **tam belirteç** kuralı: iğnenin son
+/// harfinden/rakamından sonra da harf/rakam gelmemeli (`kiraathane` içindeki
+/// `kira` eşleşme değildir). `Esnek` kipinde son belirteç önek olabildiği için
+/// bu koşul istenmez; `Tam` kipinin doğrulayıcısı da yalnız **baş** sınırına
+/// bakar (`anchored_contains`). Konumlayıcı bu yüzden kipin kuralını açar.
+pub(crate) fn anchored_find_with(haystack: &str, needle: &str, whole_token: bool) -> Option<usize> {
+    let (anchor_offset, _) = needle.char_indices().find(|(_, ch)| ch.is_alphanumeric())?;
+    let (last_offset, last_len) = needle
+        .char_indices()
+        .rfind(|(_, ch)| ch.is_alphanumeric())
+        .map(|(index, ch)| (index, ch.len_utf8()))?;
     let mut from = 0;
     while let Some(found) = haystack[from..].find(needle) {
         let start = from + found;
@@ -1541,13 +1574,19 @@ fn anchored_contains(haystack: &str, needle: &str) -> bool {
             None => true,
             Some(before) => !before.is_alphanumeric(),
         };
-        if boundary {
-            return true;
+        let end = start + last_offset + last_len;
+        let end_boundary = !whole_token
+            || match haystack[end..].chars().next() {
+                None => true,
+                Some(after) => !after.is_alphanumeric(),
+            };
+        if boundary && end_boundary {
+            return Some(start);
         }
         let step = haystack[start..].chars().next().map_or(1, char::len_utf8);
         from = start + step;
     }
-    false
+    None
 }
 
 /// `anchored_contains` için katlama: `folded` yeniden kullanılan tampondur
@@ -2030,6 +2069,18 @@ pub struct SearchHit {
     #[serde(default)]
     pub tags: Vec<String>,
     pub raw_text: String,
+    /// Eşleşmenin **kaynak metindeki** başlangıcı ve uzunluğu, kod noktası
+    /// sayısı (F12-T14w). Kütüphane yolunun **aynı** konumlayıcısıyla
+    /// (`locate_in_text`) ve doğrulayıcının sözcük başı çapasıyla ölçülür;
+    /// künye kipinde ya da konum bulunamadığında `None` — **konum uydurulmaz**.
+    pub match_start: Option<i64>,
+    pub match_length: Option<i64>,
+    /// Arayüzün gösterdiği pencere (kütüphaneyle **aynı** kural:
+    /// `snippet_window`) ve pencerenin kaynaktaki kod noktası başlangıcı.
+    /// Metnin tamamı yerine eşleşmeyi içeren 240 karakter gönderilir;
+    /// eşleşme olmasa bile iddia edilmez (pencere metnin başından başlar).
+    pub snippet: String,
+    pub snippet_start: i64,
     pub page_index: Option<i64>,
     pub rank: f64,
 }
@@ -4354,6 +4405,101 @@ mod tests {
         let exact = search_with(&db, &case_id, "kira sözleşmesi", SearchMode::Exact);
         assert_eq!(exact.total, Some(1), "tam arama bitişik metin ister");
         assert_eq!(exact.hits[0].page_index, Some(1));
+    }
+
+    /// F12-T14w — dosya sonucu eşleşmenin **yerini** taşır: `İfade` köprüsüyle
+    /// (`kredi kartı` ↔ `Kredi-kartı`) bulunan eşleşme kütüphaneyle **aynı**
+    /// konumlayıcıdan ölçülür; arayüz artık birebir `indexOf` ile aramak
+    /// zorunda değil (T14v'in dosya sınırı c).
+    #[test]
+    fn search_hit_measures_bridged_match_position_and_snippet() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["Giriş: Kredi-kartı borcu ödenmedi."],
+        );
+
+        let page = search_with(&db, &case_id, "kredi kartı", SearchMode::Phrase);
+        assert_eq!(page.hits.len(), 1);
+        let hit = &page.hits[0];
+        assert_eq!(hit.match_start, Some(7), "eşleşme `Kredi-kartı` ile başlar");
+        assert_eq!(hit.match_length, Some(11), "tire dahil kaynak aralığı");
+        assert_eq!(hit.snippet_start, 0);
+        assert_eq!(hit.snippet, hit.raw_text, "kısa metinde pencere tamamdır");
+    }
+
+    /// Eşleşme metnin sonundaysa pencere **eşleşmeyi içerir**; metnin başından
+    /// kesmek eşleşmeyi görünmez bırakırdı (eski arayüz 600 karakterden
+    /// kesiyordu). Konum ve pencere kaynak kod noktası indeksidir.
+    #[test]
+    fn search_hit_windows_a_late_match() {
+        let (db, case_id, version_id) = setup();
+        let text = format!("{}kira bedeli ödenmedi.", "dolgu ".repeat(60));
+        store_texts(&db, &case_id, &version_id, &[text.as_str()]);
+
+        let page = search_with(&db, &case_id, "kira bedeli", SearchMode::Phrase);
+        assert_eq!(page.hits.len(), 1);
+        let hit = &page.hits[0];
+        assert_eq!(hit.match_start, Some(360));
+        assert_eq!(hit.match_length, Some(11));
+        assert_eq!(hit.snippet_start, 300, "60 kod noktası öncül");
+        assert!(hit.snippet.starts_with('…'), "pencere metnin ortasından");
+        assert!(hit.snippet.contains("kira bedeli ödenmedi"));
+    }
+
+    /// Konum, doğrulayıcının **sözcük başı çapasına** uyar: `kiraathane`
+    /// içindeki `kira` eşleşme değildir, işaretlenmez.
+    #[test]
+    fn search_hit_position_respects_word_start_anchor() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["kiraathane açıldı; kira ödenmedi."],
+        );
+
+        let page = search_with(&db, &case_id, "kira", SearchMode::Phrase);
+        assert_eq!(page.hits.len(), 1);
+        assert_eq!(page.hits[0].match_start, Some(19));
+        assert_eq!(page.hits[0].match_length, Some(4));
+    }
+
+    /// Konum **kod noktası** sayar (emoji tek karakterdir) ve `Tam` kipinde
+    /// kesme işareti eşitlemesiyle bulunan eşleşmeyi de ölçer.
+    #[test]
+    fn search_hit_position_counts_code_points_and_folds_apostrophes() {
+        let (db, case_id, version_id) = setup();
+        store_texts(&db, &case_id, &version_id, &["😀 Anayasa’nın 2. maddesi"]);
+
+        let page = search_with(&db, &case_id, "Anayasa'nın", SearchMode::Exact);
+        assert_eq!(page.hits.len(), 1, "kesme işareti eşitlenir");
+        let hit = &page.hits[0];
+        assert_eq!(hit.match_start, Some(2), "emoji tek kod noktasıdır");
+        assert_eq!(hit.match_length, Some(11));
+    }
+
+    /// Künye kipinde eşleşme **sayı biçimine** dayanır (`2020 / 123`), metinde
+    /// bitişik geçmez; konum uydurulmaz, pencere metnin başından başlar.
+    #[test]
+    fn search_hit_does_not_invent_a_docket_position() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["Esas 2020 / 123 sayılı dosya"],
+        );
+
+        let page = search_with(&db, &case_id, "2020/123", SearchMode::Docket);
+        assert_eq!(page.hits.len(), 1, "künye eşleşmesi sürer");
+        let hit = &page.hits[0];
+        assert_eq!(hit.match_start, None, "konum bulunamadı — uydurulmaz");
+        assert_eq!(hit.match_length, None);
+        assert_eq!(hit.snippet_start, 0);
+        assert_eq!(hit.snippet, hit.raw_text);
     }
 
     #[test]

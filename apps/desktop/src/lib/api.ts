@@ -2294,6 +2294,16 @@ export type SearchHit = {
   caseId: string | null;
   tags: string[];
   rawText: string;
+  /**
+   * Eşleşmenin kaynak metindeki yeri, **kod noktası** indeksi (F12-T14w).
+   * Çekirdek kütüphaneyle aynı konumlayıcıyı kullanır; künye kipinde ya da
+   * konum bulunamadığında `null` — arayüz **uydurma vurgu** çizmez.
+   */
+  matchStart: number | null;
+  matchLength: number | null;
+  /** Arayüzün gösterdiği pencere (kütüphaneyle aynı kural) ve kaynaktaki başı. */
+  snippet: string;
+  snippetStart: number;
   pageIndex: number | null;
   rank: number;
 };

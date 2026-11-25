@@ -73,6 +73,18 @@ export function precedentSnippetForCopy(hit: PrecedentSearchHit): string {
 export type SnippetSpan = { start: number; length: number };
 
 /**
+ * Vurgu girdisi: iki kapsamın da taşıdığı dört alan (F12-T14w). Kütüphane
+ * sonucu (`PrecedentSearchHit`) ve dosya sonucu (`SearchHit`) **aynı** span
+ * fonksiyonunu okur — vurgu kuralı ikinci kez yazılmaz.
+ */
+export type SnippetPositioned = {
+  snippet: string;
+  snippetStart: number;
+  matchStart: number | null;
+  matchLength: number | null;
+};
+
+/**
  * F12-T14v: kütüphane vurgusu artık birebir `indexOf` değil, eşleştiricinin
  * **ölçtüğü kaynak aralığıdır** (`matchStart`/`matchLength`/`snippetStart`).
  * Böylece `İfade`/`Esnek` köprüsüyle (noktalama: `kredi-kartı` ↔
@@ -84,8 +96,11 @@ export type SnippetSpan = { start: number; length: number };
  * başlar ve metnin ortasından alındıysa başına `…` eklenir (çekirdek kuralı:
  * `snippet_window`). Eşleşme pencereyle kesişmiyorsa `null` döner — uydurma
  * vurgu yok; pencere sonunu taşan aralık **görünen kısmıyla** işaretlenir.
+ *
+ * F12-T14w: aynı fonksiyon **dosya sonuçlarını** da çizer; iki kapsam tek
+ * vurgu kuralı okur (dosya kartı eskiden birebir `indexOf` yapıyordu).
  */
-export function snippetHighlightSpan(hit: PrecedentSearchHit): SnippetSpan | null {
+export function snippetHighlightSpan(hit: SnippetPositioned): SnippetSpan | null {
   const { matchStart, matchLength, snippetStart } = hit;
   if (matchStart === null || matchLength === null || matchLength <= 0) return null;
   const chars = Array.from(hit.snippet);

@@ -81,6 +81,10 @@ const hit: SearchHit = {
   caseId: "c1",
   tags: [],
   rawText: "İkinci sayfa: İTİRAZIN reddine karar verildi.",
+  snippet: "İkinci sayfa: İTİRAZIN reddine karar verildi.",
+  snippetStart: 0,
+  matchStart: null,
+  matchLength: null,
   pageIndex: 1,
   rank: 0.5,
 };

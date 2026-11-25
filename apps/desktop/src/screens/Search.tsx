@@ -58,7 +58,7 @@ const MARK_STYLE = { background: "var(--accent-soft)", color: "inherit", padding
  * (F12-T14v) — noktalama köprüsüyle (`kredi-kartı` ↔ `kredi kartı`) ya da
  * satır sonu tiresi birleştirmesiyle (`bedel-\nlini` ↔ `bedellini`) bulunan
  * eşleşme birebir `indexOf` ile görünmezdi. `span` yoksa eski davranış:
- * sorgu birebir aranır (dosya sonuçları; konum alanları taşımaz).
+ * sorgu birebir aranır (konum ölçülemeyen sonuçlar; ör. künye eşleşmesi).
  */
 function Highlight({
   text,
@@ -716,8 +716,9 @@ export function Search() {
                   </div>
                   <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
                     <Highlight
-                      text={hit.rawText.length > 600 ? `${hit.rawText.slice(0, 600)}…` : hit.rawText}
+                      text={hit.snippet}
                       query={page.resolvedQuery || searchedQuery}
+                      span={snippetHighlightSpan(hit)}
                     />
                   </p>
                   <span className="muted small" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
