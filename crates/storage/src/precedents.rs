@@ -10,7 +10,9 @@ use sha2::{Digest, Sha256};
 
 use dim_evidence::ligature_expansion;
 
-use crate::parsing::{docket_match, DocketNumber, MatchScratch, SearchMatcher, SearchQuery};
+use crate::parsing::{
+    docket_match, exact_tokens, fold_tokens, DocketNumber, MatchScratch, SearchMatcher, SearchQuery,
+};
 use crate::{now_iso, Database, SearchMode, StorageError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1957,7 +1959,7 @@ impl Database {
                 continue;
             }
             let position = if text_match {
-                locate_in_text(&full_text, &resolved.text)
+                locate_in_text(&full_text, &resolved.text, resolved.mode)
             } else {
                 None
             };
@@ -2044,9 +2046,12 @@ struct PrecedentSearchSeed {
 
 /// Eşleşmenin metindeki yerini bulur: birebir → boşluk sadeleştirmesi →
 /// Türkçe katlama + **kesme işareti eşitlemesi** (F12-T14s; `Anayasa'nın`
-/// sorgusu `Anayasa’nın` metninde konumuyla bulunur). Bulunamazsa `None`;
-/// **konum uydurulmaz**.
-fn locate_in_text(text: &str, needle: &str) -> Option<(i64, i64)> {
+/// sorgusu `Anayasa’nın` metninde konumuyla bulunur) → **belirteç köprüsü**
+/// (F12-T14t; `İfade`/`Esnek` eşleştiricisi belirteçleri bitişik sayar ve
+/// araya noktalama girebilir). Bulunamazsa `None`; **konum uydurulmaz**.
+/// `Tam` kipi noktalamaya duyarlı kalır: köprü katmanı yalnız belirteç
+/// kiplerinde çalışır (F15 #35/#36).
+fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i64)> {
     let needle = needle.trim();
     if needle.is_empty() {
         return None;
@@ -2078,6 +2083,111 @@ fn locate_in_text(text: &str, needle: &str) -> Option<(i64, i64)> {
                 ));
             }
         }
+    }
+    match mode {
+        // `İfade`: belirteçler aynı sırada ve bitişik; araya noktalama girebilir,
+        // son belirteç **tam** olmalı.
+        SearchMode::Phrase => {
+            locate_token_sequence(&turkish_lower_with_map(text), &exact_tokens(needle), false)
+        }
+        // `Esnek`: aynı belirteç kuralı + son belirteç önek olabilir
+        // (`itiraz` → `itirazın`); konum eşleşen tam belirteci kapsar.
+        SearchMode::Flexible => {
+            locate_token_sequence(&normalize_with_map(text), &fold_tokens(needle), true)
+        }
+        _ => None,
+    }
+}
+
+/// `parsing::turkish_lower`ın konum eşlemeli karşılığı (F12-T14t): `İ`→`i`,
+/// `I`→`ı`, diğerleri Unicode küçük harf. Çok karaktere açılan küçük harfte
+/// üretilen her karakter aynı kaynak indeksini taşır; konum eşlemesi korunur.
+fn turkish_lower_with_map(input: &str) -> MappedText {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    for (index, ch) in input.chars().enumerate() {
+        match ch {
+            'İ' => {
+                out.push('i');
+                map.push(index);
+            }
+            'I' => {
+                out.push('ı');
+                map.push(index);
+            }
+            _ => {
+                for letter in ch.to_lowercase() {
+                    out.push(letter);
+                    map.push(index);
+                }
+            }
+        }
+    }
+    MappedText { text: out, map }
+}
+
+/// Mapped metnin alfanümerik belirteç aralıkları (**karakter** indeksi) ve
+/// belirteç metinleri. Sınır kuralı eşleştiricinin `token_spans` kuralıyla
+/// aynıdır: alfanümerik olmayan her karakter ayırıcıdır.
+fn mapped_tokens(mapped: &MappedText) -> (Vec<(usize, usize)>, Vec<String>) {
+    let chars: Vec<char> = mapped.text.chars().collect();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut start: Option<usize> = None;
+    for (index, ch) in chars.iter().enumerate() {
+        if ch.is_alphanumeric() {
+            if start.is_none() {
+                start = Some(index);
+            }
+        } else if let Some(begin) = start.take() {
+            spans.push((begin, index));
+            tokens.push(chars[begin..index].iter().collect());
+        }
+    }
+    if let Some(begin) = start {
+        spans.push((begin, chars.len()));
+        tokens.push(chars[begin..].iter().collect());
+    }
+    (spans, tokens)
+}
+
+/// Belirteç dizisi metinde **bitişik** geçiyor mu? Aradaki karakterler
+/// serbesttir (tire, virgül, eğik çizgi, tırnak, satır sonu…). `prefix_last`
+/// ise son iğne belirteci samanlık belirtecinin öneki olabilir (`Esnek`
+/// kipinin kuralı). Konum, ilk belirtecin başından son belirtecin sonuna
+/// kadar **kaynak** aralığıdır — aradaki noktalama uzunluğa dahildir
+/// (`matched_length` = kaynak aralığı kuralı); uydurma yok.
+fn locate_token_sequence(
+    mapped: &MappedText,
+    needle_tokens: &[String],
+    prefix_last: bool,
+) -> Option<(i64, i64)> {
+    if needle_tokens.is_empty() {
+        return None;
+    }
+    let (spans, tokens) = mapped_tokens(mapped);
+    if needle_tokens.len() > spans.len() {
+        return None;
+    }
+    let last = needle_tokens.len() - 1;
+    for start in 0..=(spans.len() - needle_tokens.len()) {
+        let matched = needle_tokens.iter().enumerate().all(|(offset, want)| {
+            let token = &tokens[start + offset];
+            if prefix_last && offset == last {
+                token.starts_with(want.as_str())
+            } else {
+                token == want
+            }
+        });
+        if !matched {
+            continue;
+        }
+        let first = spans[start].0;
+        let end = spans[start + last].1;
+        let source_start = *mapped.map.get(first)?;
+        let source_end = mapped.map.get(end - 1).map(|index| index + 1)?;
+        let length = i64::try_from(source_end.saturating_sub(source_start)).ok()?;
+        return Some((i64::try_from(source_start).ok()?, length));
     }
     None
 }
@@ -4191,6 +4301,8 @@ mod tests {
             "Şişli'deki ğ harfi",
             "  ÖDEME   yapılmadı \n",
             "Âdet üzere îkâz",
+            "Kredi-kartı borcuna ilişkin itiraz reddedildi.",
+            "itirazın reddine, karar verildi",
         ] {
             assert_eq!(
                 normalize_with_map(sample).text,
@@ -4576,6 +4688,121 @@ mod tests {
             ))
             .expect("arama");
         assert_eq!(without.matched, 0, "eksik kesme işareti eşleşmemeli");
+    }
+
+    /// F12-T14t: `İfade`/`Esnek` eşleştiricisi belirteçleri **bitişik** sayar
+    /// ve araya noktalama girebilir; konum katmanı bu köprüyü kurmazsa
+    /// eşleşme bulunur ama `match_start`/`match_length` boş kalır, snippet
+    /// metnin başından gösterilir. `Tam` kipi noktalamaya duyarlı kalır.
+    #[test]
+    fn library_search_locates_matches_bridged_across_punctuation() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/91"), Some("2025/92")))
+            .expect("emsal");
+        let mut body = String::new();
+        for _ in 0..40 {
+            body.push_str("dolgu metni ");
+        }
+        body.push_str("Kredi-kartı borcuna ilişkin itiraz reddedildi.");
+        for _ in 0..40 {
+            body.push_str(" sonrası");
+        }
+        db.add_precedent_text(&p.id, &text_of(&body))
+            .expect("metin");
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query("kredi kartı", mode, None))
+                .expect("arama");
+            assert_eq!(
+                page.matched, 1,
+                "kip {mode:?} noktalama köprüsüyle eşleşmeli"
+            );
+            let hit = &page.hits[0];
+            assert!(
+                hit.snippet.contains("Kredi-kartı"),
+                "kip {mode:?} snippet eşleşmeyi göstermeli"
+            );
+            assert!(
+                hit.snippet.starts_with('…'),
+                "kip {mode:?} pencere metnin ortasından olmalı"
+            );
+            let start = hit.match_start.expect("eşleşme konumu") as usize;
+            assert!(start > 0);
+            let at: String = body.chars().skip(start).take(11).collect();
+            assert_eq!(
+                at, "Kredi-kartı",
+                "kip {mode:?} konum gerçek aralığı göstermeli"
+            );
+            assert_eq!(
+                hit.match_length,
+                Some(11),
+                "kip {mode:?} uzunluk kaynak aralığı (noktalama dahil)"
+            );
+        }
+
+        // `Esnek` son belirteçte öneği kabul eder; konum tam belirteci kapsar.
+        let prefix = db
+            .search_precedents(&library_query("kredi kart", SearchMode::Flexible, None))
+            .expect("arama");
+        assert_eq!(prefix.matched, 1);
+        assert_eq!(prefix.hits[0].match_length, Some(11));
+
+        // `Tam` kipi noktalamaya duyarlı kalır: boşluklu sorgu tireli metni bulmaz.
+        let exact = db
+            .search_precedents(&library_query("kredi kartı", SearchMode::Exact, None))
+            .expect("arama");
+        assert_eq!(exact.matched, 0, "Tam kipi noktalamaya duyarlı kalmalı");
+    }
+
+    /// F12-T14t (birim): konum katmanı belirteç köprüsünü **yalnız** belirteç
+    /// kiplerinde kurar; `Tam` kipi noktalamaya duyarlı kalır ve köprü yalnız
+    /// **bitişik** belirteçlerde çalışır (uydurma konum yok).
+    #[test]
+    fn punctuation_bridge_layer_is_mode_scoped_and_never_invents_positions() {
+        let text = "Mahkeme kredi-kartı borcuna ilişkin itirazı reddetti.";
+        // "Mahkeme " = 8 karakter; "kredi-kartı" = 11 karakter.
+        assert_eq!(
+            locate_in_text(text, "kredi kartı", SearchMode::Phrase),
+            Some((8, 11))
+        );
+        assert_eq!(
+            locate_in_text(text, "kredi kartı", SearchMode::Flexible),
+            Some((8, 11))
+        );
+        // `Tam` kipi noktalamaya duyarlı: tire ile boşluk eşitlenmez.
+        assert_eq!(locate_in_text(text, "kredi kartı", SearchMode::Exact), None);
+        // `İfade` son belirteçte önek kabul etmez; `Esnek` kabul eder ve konum
+        // eşleşen **tam** belirteci kapsar (eşleştiriciyle aynı kural).
+        assert_eq!(locate_in_text(text, "kredi kart", SearchMode::Phrase), None);
+        assert_eq!(
+            locate_in_text(text, "kredi kart", SearchMode::Flexible),
+            Some((8, 11))
+        );
+        // Virgülle ayrılmış belirteçler de köprülenir.
+        assert_eq!(
+            locate_in_text(
+                "itirazın reddine, karar verildi",
+                "reddine karar",
+                SearchMode::Phrase
+            ),
+            Some((9, 14))
+        );
+        // Belirteçler bitişik değilse konum **uydurulmaz**.
+        assert_eq!(
+            locate_in_text(
+                "itirazın reddine ve karar verildi",
+                "reddine karar",
+                SearchMode::Phrase
+            ),
+            None
+        );
+        // Künye (docket) kipi metin konumu üretmez.
+        assert_eq!(
+            locate_in_text(text, "kredi kartı", SearchMode::Docket),
+            None
+        );
     }
 
     /// Esas/karar numarası künyeden de bulunur; metinde numara geçmese bile

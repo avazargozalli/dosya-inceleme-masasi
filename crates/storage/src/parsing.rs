@@ -1292,11 +1292,15 @@ fn tokens_with(text: &str, fold: bool) -> Vec<String> {
         .collect()
 }
 
-fn exact_tokens(text: &str) -> Vec<String> {
+/// `İfade` kipinin iğne belirteçleri (kütüphane aramasında konum katmanı da
+/// aynı belirteçleri kullanır — F12-T14t; ikinci bir tokenizer drift kaynağı
+/// olmasın diye `pub(crate)`).
+pub(crate) fn exact_tokens(text: &str) -> Vec<String> {
     tokens_with(text, false)
 }
 
-fn fold_tokens(text: &str) -> Vec<String> {
+/// `Esnek` kipinin iğne belirteçleri (F12-T14t konum katmanı ortak kullanır).
+pub(crate) fn fold_tokens(text: &str) -> Vec<String> {
     tokens_with(text, true)
 }
 
