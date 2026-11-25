@@ -27,6 +27,7 @@
 | F12-T14p | ✅ | metin içi alıntı `…`/`...`/`[…]`/`[...]` ile **kısaltılmışsa** parçalara ayrılır: her parça ≥ 8 karakter, parçalar kaynakta **aynı sırayla** (örtüşmeden) aranır; beş taban normalizasyonun her biri ayrı katmandır (tek yöntem etiketi `elided`), eşleşme `normalized` sayılır ve **bağlanmaz**, kaynak metin **atlanan kısmıyla** gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 | F12-T14q | ✅ | metin içi alıntı **başı/sonu `…`/`...`/`[…]`/`[...]` ile kırpılmışsa** da doğrulanır: uçtaki boş parça atılır, kalan **tek parça** yeterlidir (yine ≥ 8 karakter); iç kısaltmanın iki parça + sıra kuralı (T14p) değişmedi; eşleşme `normalized`/`elided`, **bağlanmaz**, kaynak eşleşen aralık olarak gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 | F12-T14r | ✅ | metin içi alıntı **kesme işareti yazımı yüzünden düşmez**: yeni `apostrophe` katmanı harfleri koruyup `’` (U+2019) / `ʼ` (U+02BC) işaretlerini ASCII `'` sayar; kesme işareti **silinmez** (eksik/fazla eşleşmez); harf ve tire katmanları da kesme işaretini eşitler, böylece birleşik farklar eşleşir; eşleşme `normalized`, **bağlanmaz**; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
+| F12-T14s | ✅ | **arama** kesme işareti yazımını eşitler (T14r sınırı e kapandı): `Tam` kipinde `'` yazan sorgu `’` yazan metni ve tersi bulunur; kütüphane aramasında eşleşmenin **konumu** da bulunur (`match_start`/`match_length`); işaret **silinmez** (eksik/fazla eşleşmez), referans uygulama birebir aynı hükmü verir; `İfade`/`Esnek` belirteç kuralı ve şema (v68) değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2146,5 +2147,67 @@ varsa eşleşme `turkish_fold`/`dehyphenated` etiketiyle gelir. (d) Kesme işare
 eşleşmesi `normalized`dır, kaynağa **bağlanmaz**; arayüz “birebir değil” yazar.
 (e) Kütüphane **arama** eşleştiricisi (`dim_evidence::normalize` /
 `locate_in_text`) bu turda değişmedi — arama sorgusunda kesme işareti farkı
-eşleşmeyebilir; ayrı iş. (f) Sonuç **metin eşleşmesi**, anlam değil; rapor
-kalıcı değil. (g) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+eşleşmeyebilir; ayrı iş — **T14s'de kapatıldı** (aşağıda). (f) Sonuç **metin
+eşleşmesi**, anlam değil; rapor kalıcı değil. (g) Gerçek Tauri penceresi +
+görsel QA **insan bekliyor**.
+
+## F12-T14s — arama kesme işareti yazımını eşitler (Tam kip + kütüphane konumu) (2026-11-25)
+
+**Ölçülen kusur:** T14r alıntı doğrulamasında `’` ↔ `'` farkını kapattı; ama
+**arama** yolu (`SearchMatcher` / `search_match`) kesme işaretini
+eşitlemiyordu. İki görünür sonuç: (1) **Tam** kipinde `Anayasa'nın` yazan sorgu
+`Anayasa’nın` yazan belgeyi bulamıyordu — doğrulama bayt bayt
+`turkish_lower(collapse_ws())` karşılaştırıyor, `’` ile `'` farklı kod noktası;
+`İfade`/`Esnek` kipleri belirteçlere ayırdığı için zaten eşleşiyordu, yani kip
+ayrımı sessiz bir yanlış negatif üretiyordu. (2) Kütüphane aramasında eşleşme
+bulunsa bile `locate_in_text` konumu bulamıyor, `match_start`/`match_length`
+boş kalıyor, snippet metnin başından gösteriliyordu. Önce 4 test yazıldı:
+**2 KIRMIZI** (Tam kip iki yönü, kütüphane konumu), negatif kural testleri
+(işaret silinmez) yeşil.
+
+**Kural:** `fold_apostrophe` — `’` (U+2019) ve `ʼ` (U+02BC) ASCII `'` sayılır;
+harf ve boşluk korunur, işaret **silinmez** (T14r kuralının arama karşılığı).
+`Tam` kipinin samanlığı (`fold_ws_into`) ve iğnesi (`SearchMatcher::new`) aynı
+eşitlemeyi kullanır; referans uygulama (`search_match`) da eşitler, böylece
+hızlı doğrulayıcı ile referans birebir kalır (eşdeğerlik testi kesme işareti
+örnekleriyle genişletildi). Kütüphane konumu `locate_in_text` son katmanı
+`normalize_with_map` yerine `turkish_fold_with_map` kullanır (harf + kesme
+işareti birlikte; konum eşlemesi korunur). `İfade`/`Esnek` belirteç kuralı
+değişmedi (kesme işareti zaten ayırıcıdır). Şema değişmedi (v68), kalıcı yazma
+yok, arayüz kodu değişmedi.
+
+**Testler/yerel:** Yeni **4** test: Tam kip iki yön + üç kip paritesi;
+eşleştirici düzeyinde silinmezlik (üç kip + referans); dosya aramasında uçtan
+uca silinmezlik negatifi; kütüphanede üç kip + konum/uzunluk + silinmezlik.
+Eşdeğerlik testine 2 metin + 3 iğne kesme işareti örneği eklendi. Tam paket
+**831/831** yeşil, **736,07 s** (`dim-t14s-libtest-final.log`); iki manifest
+`cargo fmt --check`, `clippy -p dim-storage --all-targets -D warnings` temiz.
+Arayüz kodu değişmedi (yerel vitest koşulmadı; CI `arayüz` işi kapsar).
+
+**Kapı (`scratch/dim-t14s-gates.py`, log `dim-t14s-gates.log`):** taban YEŞİL
+(16 apostrophe testi + eşdeğerlik testi); **5/5 mutant KIRMIZI** (Tam samanlık,
+Tam iğne, referans, silme, kütüphane konumu), her mutantta hedef test adı
+logda; iki dosya sha256 **birebir** geri yazıldı (`parsing.rs 3ed33a0c…`,
+`precedents.rs 380f1c09…`). **Dürüst (iki koşu):** ilk koşu **4/5** — M4 (silme
+mutantı) YEŞİL kaldı çünkü FTS **aday daraltması** işaretsiz sorguya hiç aday
+üretmiyor, eşleştirici kuralı ölçülmüyordu → eşleştirici düzeyinde birim testi
+eklendi (`search_matcher_does_not_treat_missing_apostrophe_as_equal`), kapı
+**baştan** koşuldu; ilk koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `3724e93` (2 dosya, **+186/−8**) → run `45607307259`
+**10/10 YEŞİL** (`dim-storage` **829** iki OS'ta: macos-15 **612,41 s** /
+ubuntu-latest **1.234,68 s**; yerel 831 farkı ağaçtaki başka ajanın commit'siz
+**2** testi; `arayüz` 67 dosya / **1487** test, paket `index-FTO4acPO.js`
+**732,87 kB** / gzip **194,42 kB**; `masaüstü kabuk` 52 passed + 5 ignored,
+`windows güvenli depo` 30, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Kesme işareti yalnız **eşitlenir**, silinmez —
+eksik/fazla işaret eşleşmez; (b) `‘` (U+2018) ve `´` eşitlenmez; yalnız
+`'`/`’`/`ʼ` ailesi; (c) `Tam` kipi artık kesme işareti **yazımına** duyarsız,
+noktalamaya duyarlı kaldı (virgül/tire eşitlenmez — F15 kusur #35/#36
+davranışı korunur); (d) kütüphane konumu harf + kesme işaretini birlikte
+eşitler; satır sonu tire birleştirmesi (`dehyphenate`) konum katmanında yok,
+`kredi-kartı` ↔ `kredi kartı` gibi noktalama farklarında konum bulunmayabilir
+(ayrı iş); (e) sonuç **metin eşleşmesi**, anlam değil; (f) gerçek Tauri
+penceresi + görsel QA **insan bekliyor**.
