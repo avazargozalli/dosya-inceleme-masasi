@@ -26,6 +26,7 @@
 | F12-T14o | ✅ | metin içi alıntı **yalnız kelime/rakam sınırında** açılır: ölçü işareti (`15"`, `15“`) ve kelime ortası düz tırnak alıntı **başlatmaz** — `15" … 2"` arasındaki metin sahte alıntı olarak raporlanmaz (önceden `exact` bulunan bağlanabilir sahte aday üretiyordu); noktalama/boşluk sonrası gerçek açılışlar korunur; şema (v68) değişmedi (2026-11-24) |
 | F12-T14p | ✅ | metin içi alıntı `…`/`...`/`[…]`/`[...]` ile **kısaltılmışsa** parçalara ayrılır: her parça ≥ 8 karakter, parçalar kaynakta **aynı sırayla** (örtüşmeden) aranır; beş taban normalizasyonun her biri ayrı katmandır (tek yöntem etiketi `elided`), eşleşme `normalized` sayılır ve **bağlanmaz**, kaynak metin **atlanan kısmıyla** gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 | F12-T14q | ✅ | metin içi alıntı **başı/sonu `…`/`...`/`[…]`/`[...]` ile kırpılmışsa** da doğrulanır: uçtaki boş parça atılır, kalan **tek parça** yeterlidir (yine ≥ 8 karakter); iç kısaltmanın iki parça + sıra kuralı (T14p) değişmedi; eşleşme `normalized`/`elided`, **bağlanmaz**, kaynak eşleşen aralık olarak gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
+| F12-T14r | ✅ | metin içi alıntı **kesme işareti yazımı yüzünden düşmez**: yeni `apostrophe` katmanı harfleri koruyup `’` (U+2019) / `ʼ` (U+02BC) işaretlerini ASCII `'` sayar; kesme işareti **silinmez** (eksik/fazla eşleşmez); harf ve tire katmanları da kesme işaretini eşitler, böylece birleşik farklar eşleşir; eşleşme `normalized`, **bağlanmaz**; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2076,3 +2077,74 @@ Kırpık eşleşme **bağlanmaz** (kırpma iddiası doğrulanamaz); arayüz etik
 kuralları (T14p) ve çıkarım kuralları (T14n/T14o) değişmedi. (e) Sonuç
 **metin eşleşmesi**, anlam değil; rapor kalıcı değil. (f) Gerçek Tauri
 penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14r — kesme işareti yazımı (`’` ↔ `'`) alıntıyı düşürmez (2026-11-25)
+
+**Ölçülen kusur:** Türkçe hukuk metinleri kesme işaretini tipografik `’` ile
+yazar (`Anayasa’nın`, `6098 sayılı Kanun’un`, `İstanbul’da`); dilekçeye alıntı
+çoğu zaman ASCII `'` ile geçer. Eşleşme katmanları harf/boşluk/ligatür/tire
+farklarını eşitliyordu ama **kesme işaretini eşitlemiyordu**: doğru bir alıntı
+dosya yolunda `not_found`, emsal/kütüphane yolunda `bulunamadı` veriyordu —
+T14 serisinin kapattığı sınıftan bir yanlış negatif. Önce 5 test yazıldı:
+4'ü kırmızı (`not_found`), biri (kesme işaretinin **silinmediği** kuralı) yeşil.
+
+**Kural:** Yeni `apostrophe` katmanı (`ligature` ile `turkish_fold` arasında):
+boşluklar teklenir; `’` (U+2019) ve `ʼ` (U+02BC) ASCII `'` sayılır; **harfler
+korunur**. Kesme işareti **silinmez** — eksik/fazla kesme işareti eşleşmez.
+`turkish_fold` ve `dehyphenated` katmanları da kesme işaretini eşitler, böylece
+harf + kesme işareti (veya tire + kesme işareti) farkı birleştiğinde eşleşme
+düşmez; saf kesme işareti farkı yine `apostrophe` olarak raporlanır. Kısaltılmış
+alıntıda aynı eşitleme kısaltılmış harf/tire katmanlarında geçerlidir
+(`method` = `elided`). Üç yol (dosya, tek emsal, kütüphane) aynı `QuoteTier`
+çözümünü kullanır; dosya yolunun kendi katman listesi (`MatchTier`) aynı sırayla
+güncellendi. Şema değişmedi (v68), kalıcı yazma yok. Eşleşme `normalized`
+sayılır ve **bağlanmaz** (anchor birebir alıntı ister — T14q ile aynı kural).
+
+**Arayüz:** `matchKind`/`method` tiplerine `apostrophe`; yöntem etiketi
+(“kesme işareti”) hem `precedentMethodLabel` hem `MATCH_KIND_LABEL` üzerinden
+gösterilir; normalize hükmü “normalize · kesme işareti” yazar. İki sözlük
+anahtarı eklendi (`intextMethodApostrophe`, `matchApostrophe`); ekran kodu
+değişmedi.
+
+**Testler/yerel:** Yeni **8** test: saf kesme işareti farkı (dosya yolu, kaynak
+metin, anchor reddi), **ters yön** (alıntı `’` ↔ kaynak `'`), harf + kesme
+işareti, tire + kesme işareti, kırpık + kesme işareti (elided), **sayfa sınırını
+aşan** alıntı + kesme işareti, silinmezlik (negatif), emsal/tek alıntı/kütüphane
+paritesi. `intext_quotes` modülü **92 → 100**; tam paket **827/827**
+yeşil, **734,08 s** (`dim-t14r-libtest.log`). İki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings` temiz. Arayüz **67 dosya /
+1490 test** yeşil (3 assert), `tsc --noEmit` temiz.
+
+**Kapı (`scratch/dim-t14r-gates.py`, log `dim-t14r-gates.log`):** taban YEŞİL
+(Rust 12 apostrophe testi + iki arayüz dosyası); **12/12 mutant KIRMIZI**, her
+mutantta hedef test adı logda; dört dosya sha256 **birebir** geri yazıldı
+(`precedents.rs 7304e084…`, `intext_quotes.rs 73b1245b…`, `intext.ts
+93651134…`, `precedents.ts 7fabfc0c…`). **Dürüst (üç koşu):** ilk koşu
+**7/13 KIRMIZI · 5 YEŞİL · 1 ÖLÇÜLEMEDİ** — (i) M6 deseni iki kez eşleşti,
+(ii) sayfa-sınırı testi yoktu (M8 yeşil), (iii) arayüz mutantları yanlış dosyada
+koşuldu, (iv) **ElidedApostrophe katmanı gözlemlenebilir fark üretmiyordu**
+(kısaltılmış alıntıyı ElidedTurkishFold/ElidedDehyphenated zaten yakalıyor,
+raporlanan yöntem ikisinde de `elided`) → katman **kaldırıldı** (ölü karmaşıklık)
+ve yerine iki eşitleme yolunu birlikte kapatan M9 kondu. İkinci koşu **10/12** —
+M6 yeşil çünkü test yalnız bir yönü ölçüyordu (**ters yön testi eklendi**); M9
+yeşil çünkü kısaltılmış alıntı ikinci eşitleme yoluyla yakalanıyordu (**M9 iki
+yolu birlikte kapattı**). Üçüncü koşu **12/12**; ilk iki koşunun hükümleri kanıt
+sayılmadı, kapı gevşetilmedi.
+
+**CI (ölçüldü):** kod `149526e` (8 dosya, **+319/−22**) → run `45590044587`
+**10/10 YEŞİL** (`dim-storage` **825** iki OS'ta: macos-15 **631,28 s** /
+ubuntu-latest **1.626,00 s**; `arayüz` 67 dosya / **1487** test, paket
+`index-FTO4acPO.js` **732,87 kB** / gzip **194,42 kB**; `masaüstü kabuk` 52
+passed + 5 ignored, `windows güvenli depo` 30, SBOM, sözleşmeler, belge
+worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Kesme işareti yalnız **eşitlenir**, silinmez: kaynakta
+hiç kesme işareti yokken alıntıda varsa (ya da tersi) eşleşmez — Türkçe yazımda
+bu gerçek bir farktır. (b) `‘` (U+2018, açılış tek tırnak) ve `´` eşitlenmez;
+yalnız `'` / `’` / `ʼ` ailesi. (c) Katman **harf** sadeleştirmez; harf farkı
+varsa eşleşme `turkish_fold`/`dehyphenated` etiketiyle gelir. (d) Kesme işareti
+eşleşmesi `normalized`dır, kaynağa **bağlanmaz**; arayüz “birebir değil” yazar.
+(e) Kütüphane **arama** eşleştiricisi (`dim_evidence::normalize` /
+`locate_in_text`) bu turda değişmedi — arama sorgusunda kesme işareti farkı
+eşleşmeyebilir; ayrı iş. (f) Sonuç **metin eşleşmesi**, anlam değil; rapor
+kalıcı değil. (g) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
