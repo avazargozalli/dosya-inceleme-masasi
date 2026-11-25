@@ -25,6 +25,7 @@
 | F12-T14n | ✅ | metin içi alıntı çıkarımı **tek tırnak ailesini** de tanır (`‘…’` · `'…'`); Türkçe kesme işareti alıntı **açmaz/kapatmaz** (`İstanbul'da`, `‘İstanbul’da yaşanan olay’`), düz tek tırnak yalnız kelime başında açılır, iç içe tek tırnak dış çift tırnak alıntısını bölmez; kapsam notu üç yolda **tek sabitten** (`QUOTE_EXTRACTION_NOTE`); şema (v68) değişmedi, arayüzde beş dize gerçeğe uyarlandı (2026-11-24) |
 | F12-T14o | ✅ | metin içi alıntı **yalnız kelime/rakam sınırında** açılır: ölçü işareti (`15"`, `15“`) ve kelime ortası düz tırnak alıntı **başlatmaz** — `15" … 2"` arasındaki metin sahte alıntı olarak raporlanmaz (önceden `exact` bulunan bağlanabilir sahte aday üretiyordu); noktalama/boşluk sonrası gerçek açılışlar korunur; şema (v68) değişmedi (2026-11-24) |
 | F12-T14p | ✅ | metin içi alıntı `…`/`...`/`[…]`/`[...]` ile **kısaltılmışsa** parçalara ayrılır: her parça ≥ 8 karakter, parçalar kaynakta **aynı sırayla** (örtüşmeden) aranır; beş taban normalizasyonun her biri ayrı katmandır (tek yöntem etiketi `elided`), eşleşme `normalized` sayılır ve **bağlanmaz**, kaynak metin **atlanan kısmıyla** gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
+| F12-T14q | ✅ | metin içi alıntı **başı/sonu `…`/`...`/`[…]`/`[...]` ile kırpılmışsa** da doğrulanır: uçtaki boş parça atılır, kalan **tek parça** yeterlidir (yine ≥ 8 karakter); iç kısaltmanın iki parça + sıra kuralı (T14p) değişmedi; eşleşme `normalized`/`elided`, **bağlanmaz**, kaynak eşleşen aralık olarak gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2013,3 +2014,65 @@ kapalıdır. (e) Parçalar **tek kapsam içinde** (aynı sayfa/ardışık sayfa 
 aranır; çok uzak sayfalara yayılan kısaltma eşleşmez. (f) Türkçe kesme işareti ve
 ölçü işareti kuralları (T14n/T14o) değişmedi. (g) Sonuç **metin eşleşmesi**, anlam
 değil; rapor kalıcı değil. (h) Gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14q — başı/sonu `…` ile kırpılmış alıntı da doğrulanır (2026-11-25)
+
+**Ölçülen kusur (T14p'nin açık sınırı):** `…` yalnız alıntının **ortasında**
+kısaltma sayılıyordu; `“… B”`, `“A …”` gibi **kırpık** alıntılar (hukuk
+metinlerinde yaygın: cümlenin başı/sonu gösterilmeden yapılan alıntılar)
+hiçbir katmanda bulunamıyor ve `not_found` (yanlış negatif) veriyordu.
+`elided_segments` en az iki dolu parça istediği için tek parçalı kırpık alıntı
+`elided` katmanlarına hiç girmiyor, tam alıntı katmanları da `…` karakterini
+birebir aradığı için eşleşemiyordu (T14p dürüst sınır (a)).
+
+**Kural:** `elided_segments` artık **kenar kırpmasını** ayrı tanır: alıntının
+başında/sonunda kısaltma işareti varsa boş kalan uç parça atılır ve **tek
+parça** yeterlidir (yine en az `MIN_QUOTE_CHARS` = 8 karakter). İç kısaltma
+(`A … B`) değişmedi: en az iki dolu parça, her biri ≥ 8, kaynakta sırayla ve
+örtüşmeden. Yalnız işaretlerden oluşan alıntı (`…`) kısaltılmış sayılmaz.
+Eşleşme `normalized` + `elided` yöntemiyle raporlanır, **bağlanmaz** (alıntı
+metni `…` taşıdığı için çekirdek `create_anchor` reddeder); kaynak metin
+eşleşen aralık olarak gösterilir. Üç yol (dosya, tek emsal, kütüphane) aynı
+`elided_segments` çözümünü kullanır; şema değişmedi (v68), kalıcı yazma yok.
+
+- Kenar kırpması: `…` (U+2026), `...`, `[…]`, `[...]`; boş uç parça atılır.
+- Kısa parça kuralı kırpmada da geçerli: `“Mahkeme…”` (7 karakter) eşleşmez.
+- Tekrar: kırpık pasaj birden çok yerde geçerse `ambiguous`, adaylar `elided`.
+- Kapsam notu (`QUOTE_EXTRACTION_NOTE`) ve üç yolun özet notları kırpmayı yazar.
+
+**Testler/yerel:** Yeni **6** test: birim kuralı (kenar kabul / kısa ret /
+yalnız işaret ret), dosya yolunda iki uç kırpma + eşleşen aralık + anchor
+reddi, iki uç ayrı ayrı, kısa kalan parça → `not_found`, tekrar → `ambiguous`,
+emsal yolunda tek alıntı **paritesi**, kütüphane araması. `intext_quotes`
+modülü **86 → 92**; tam paket **819/819 yeşil, 928,67 s**
+(`dim-t14q-libtest.log`). İki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -D warnings` temiz. Arayüz kodu
+değişmedi (dize değişikliği yok).
+
+**Kapı (`scratch/dim-t14q-gates.py`, log `dim-t14q-gates.log`):** taban YEŞİL
+(8/8); **9/9 mutant KIRMIZI**, her mutantta hedef test adı logda; iki dosya
+sha256 **birebir** geri yazıldı (`precedents.rs fafe5677…`,
+`intext_quotes.rs 1e1b452e…`). **Dürüst (üç koşu):** ilk koşu araç `kill`'i
+M2 mutantı yazılmışken kesti — ağaçta `clipped_start = false` kaldı; betiğe
+SIGTERM'de geri yazma koruması eklendi, kaynak elle doğrulandı. İkinci koşu
+temiz tabanla 6/9: M2 hedefi iki-uçlu senaryoydu (yanlış hedef) ve M8/M9 not
+testleri kapsam notundaki `kırpılmıştır` sözcüğüne takılıyordu (eşdeğer
+cümle); hedefler ve üç not iddiası `başı/sonu kırpılmış` ile keskinleştirildi,
+**9/9** yeniden ölçüldü; ilk iki koşunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `696ab7e` (2 dosya, **+256/−33**) → run `45515712295`
+**10/10 YEŞİL** (`dim-storage` **817** iki OS'ta: macos-15 **575,05 s** /
+ubuntu-latest **975,53 s**; `arayüz` 67 dosya / **1487** test — yerel 1490 farkı
+ağaçtaki başka ajanın commit'siz 3 testi; paket `index-7QqQOak0.js`
+**732,70 kB** / gzip 194,37 kB; `masaüstü kabuk`, `windows güvenli depo`,
+SBOM, `sözleşmeler`, belge worker'ı, sürüm paketi manifesti, kaynak arşivi
+yeşil). Yerel tam paket **819/819** (ağaçta başka ajanın 2 testi dâhil).
+
+**Dürüst sınırlar:** (a) Kırpılan kısmın **ne olduğu denetlenmez** — kaynakta
+yok; yalnız gösterilen parça aranır. (b) Tek parça eşiği 8 karakter: daha kısa
+kırpık alıntı (`“Mahkeme…”`) eşleşmez — “uydurma” değil, `not_found`. (c)
+Kırpık eşleşme **bağlanmaz** (kırpma iddiası doğrulanamaz); arayüz etiketi
+“…” ile kısaltılmış kırpmayı da kapsar, dize değişmedi. (d) İç kısaltma
+kuralları (T14p) ve çıkarım kuralları (T14n/T14o) değişmedi. (e) Sonuç
+**metin eşleşmesi**, anlam değil; rapor kalıcı değil. (f) Gerçek Tauri
+penceresi + görsel QA **insan bekliyor**.
