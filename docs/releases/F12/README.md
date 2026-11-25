@@ -28,6 +28,7 @@
 | F12-T14q | ✅ | metin içi alıntı **başı/sonu `…`/`...`/`[…]`/`[...]` ile kırpılmışsa** da doğrulanır: uçtaki boş parça atılır, kalan **tek parça** yeterlidir (yine ≥ 8 karakter); iç kısaltmanın iki parça + sıra kuralı (T14p) değişmedi; eşleşme `normalized`/`elided`, **bağlanmaz**, kaynak eşleşen aralık olarak gösterilir; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 | F12-T14r | ✅ | metin içi alıntı **kesme işareti yazımı yüzünden düşmez**: yeni `apostrophe` katmanı harfleri koruyup `’` (U+2019) / `ʼ` (U+02BC) işaretlerini ASCII `'` sayar; kesme işareti **silinmez** (eksik/fazla eşleşmez); harf ve tire katmanları da kesme işaretini eşitler, böylece birleşik farklar eşleşir; eşleşme `normalized`, **bağlanmaz**; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 | F12-T14s | ✅ | **arama** kesme işareti yazımını eşitler (T14r sınırı e kapandı): `Tam` kipinde `'` yazan sorgu `’` yazan metni ve tersi bulunur; kütüphane aramasında eşleşmenin **konumu** da bulunur (`match_start`/`match_length`); işaret **silinmez** (eksik/fazla eşleşmez), referans uygulama birebir aynı hükmü verir; `İfade`/`Esnek` belirteç kuralı ve şema (v68) değişmedi (2026-11-25) |
+| F12-T14t | ✅ | **arama konumu noktalama köprüsünü kurar** (T14s sınırı d kapandı): `İfade`/`Esnek` kipinde `kredi kartı` sorgusu `kredi-kartı` metninde eşleşince `match_start`/`match_length` artık **kaynak aralığını** verir, snippet metnin başından değil eşleşmeden gösterilir; `İfade` son belirteçte tam, `Esnek` önek kabul eder (eşleştiriciyle aynı kural); `Tam` kipi **noktalamaya duyarlı kalır** (F15 #35/#36), künye kipi konum üretmez; eşleştirici doğrulaması ve şema (v68) değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2209,5 +2210,78 @@ noktalamaya duyarlı kaldı (virgül/tire eşitlenmez — F15 kusur #35/#36
 davranışı korunur); (d) kütüphane konumu harf + kesme işaretini birlikte
 eşitler; satır sonu tire birleştirmesi (`dehyphenate`) konum katmanında yok,
 `kredi-kartı` ↔ `kredi kartı` gibi noktalama farklarında konum bulunmayabilir
-(ayrı iş); (e) sonuç **metin eşleşmesi**, anlam değil; (f) gerçek Tauri
+— **noktalama köprüsü T14t'de kapatıldı** (aşağıda); tek belirteçteki satır
+sonu tiresi (`bedellini`) hâlâ ayrı iş; (e) sonuç **metin eşleşmesi**,
+anlam değil; (f) gerçek Tauri
 penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14t — arama konumu noktalama köprüsünü kurar (İfade/Esnek) (2026-11-25)
+
+**Ölçülen kusur:** `İfade`/`Esnek` eşleştiricisi sorguyu **belirteç dizisi**
+olarak doğrular ve belirteçlerin arasına noktalama girebilir (`kredi kartı`
+→ `kredi-kartı`, `reddine karar` → `reddine, karar`); ama `locate_in_text`
+katmanları (birebir → boşluk → harf + kesme işareti) yalnız **bitişik alt
+dize** arıyordu. Sonuç: kütüphane aramasında eşleşme bulunuyor (`matched=1`)
+ama `match_start`/`match_length` boş kalıyor, snippet metnin **başından**
+gösteriliyor ve arayüz «konum bulunamadı» yazıyordu (T14s dürüst sınır (d);
+T14s'in `kredi-kartı` ↔ `kredi kartı` örneği tam bu sınıftı). Önce uçtan uca
+test yazıldı: **KIRMIZI** (`kip Phrase snippet eşleşmeyi göstermeli`); testin
+`matched=1` assert'i geçtiği için kusurun eşleşmede değil **konum**
+katmanında olduğu ölçüldü.
+
+**Kural:** `locate_in_text` artık **kip farkındadır** ve son katman **belirteç
+köprüsüdür**:
+
+- `İfade`: iğne belirteçleri (eşleştiricinin kendi `exact_tokens`'ı) konum
+  eşlemeli `turkish_lower` metninde **bitişik** aranır (arada noktalama
+  serbest); son belirteç **tam** olmalı.
+- `Esnek`: aynı arama `normalize_with_map` (≡ `dim_evidence::normalize`)
+  üzerinde; son belirteç **önek** olabilir (`kredi kart` → `kredi-kartı`).
+- Konum, ilk belirtecin başından son belirtecin sonuna **kaynak aralığıdır**;
+  aradaki noktalama (tire, virgül, eğik çizgi, tırnak, satır sonu) uzunluğa
+  dahildir — «`match_length` = kaynak aralığı» kuralı; konum uydurulmaz.
+- `Tam` kipi **noktalamaya duyarlı kalır** (F15 #35/#36): köprü katmanı
+  yalnız belirteç kiplerinde çalışır; `Tam`'da `kredi kartı` sorgusu
+  `kredi-kartı` metnini bulmaz. Künye kipi metin konumu üretmez.
+- Eşleştirici doğrulaması **değişmedi** (aynı `SearchMatcher`/`search_match`);
+  köprü yalnız eşleşmenin **yerini** bulur. İğne tokenizer'ı ikinci kez
+  yazılmadı: `parsing::exact_tokens`/`fold_tokens` `pub(crate)` açıldı
+  (drift kaynağı yok).
+
+**Testler/yerel:** Yeni **2** test: (1) uçtan uca (`search_precedents`) —
+`Kredi-kartı` yazan kararda `kredi kartı` sorgusu `İfade` **ve** `Esnek`
+kipinde eşleşir, snippet `…Kredi-kartı…` penceresini gösterir (metnin
+başından değil), `match_start` 11 karakterlik kaynak aralığını verir;
+`Esnek` öneği (`kredi kart`) aynı aralığı verir; `Tam` kipi 0 eşleşme.
+(2) birim — kip sınırı (`Tam`/künye konum üretmez), `İfade` son belirteçte
+önek kabul etmez, `Esnek` eder, virgül köprüsü `(9,14)`, bitişik olmayan
+belirteçte konum **uydurulmaz**. Eşdeğerlik testine 2 metin eklendi.
+Tam paket **833/833 yeşil, 826,73 s** (`dim-t14t-libtest.log`; fark: ağaçta
+başka ajanın commit'siz testleri); iki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -- -D warnings` temiz. Arayüz kodu
+değişmedi.
+
+**Kapı (`scratch/dim-t14t-gates.py`, log `dim-t14t-gates.log`):** taban
+YEŞİL; **7/7 mutant KIRMIZI** (Tam kip sınırı, İfade önek sınırı, konum
+başlangıcı, uzunluk, bitişiklik kapısı, Esnek tokenizer kayması, ±1 kaynak
+aralığı), her satırda hedef test adı; kaynak sha256 `11570f21…`
+**birebir** geri yazıldı. Tek koşu (EŞLEŞMEDİ/etkisiz mutant yok).
+
+**CI (ölçüldü):** kod `d70a91f` (2 dosya, **+238/−7**) → run `45625674115`
+**10/10 YEŞİL** (`dim-storage` **831** iki OS'ta: macos-15 **604,58 s** /
+ubuntu-latest **1.019,37 s**; yerel 833 farkı ağaçtaki başka ajanın commit'siz
+2 testi; `arayüz` 67 dosya / **1487** test, paket `index-FTO4acPO.js`
+**732,87 kB** / gzip **194,42 kB**; `masaüstü kabuk` 52 passed + 5 ignored,
+`windows güvenli depo` 30, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Köprü **noktalama** farkını kapatır; tek belirtecin
+içindeki satır sonu tiresi (`bedel-\nlini` → `bedellini`) hâlâ eşleşmez —
+arama eşleştiricisi `dehyphenate` bilmez, ayrı iş; (b) `Tam` kipi
+noktalamaya duyarlı kaldı (F15 #35/#36 korunur) ve köprü orada hiç çalışmaz;
+(c) konum **kaynak aralığıdır** — sorgu dizesinden uzun olabilir (aradaki
+noktalama dahil), bu bilinçli; (d) snippet içindeki vurgu (`Highlight`) hâlâ
+**birebir** sorgu dizesini arar; köprülenmiş eşleşme vurgulanmaz, yalnız
+pencere ve konum satırı düzelir (ayrı arayüz işi); (e) sonuç **metin
+eşleşmesi**, anlam değil; (f) gerçek Tauri penceresi + görsel QA **insan
+bekliyor**.
