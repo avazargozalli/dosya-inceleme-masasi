@@ -877,59 +877,25 @@ fn map_chars_with_collapsed_ws(input: &str, map_char: impl Fn(char) -> char) -> 
 /// - **Tire + satır sonu + harf/rakam** → tire ve satır sonu atılır, kelime
 ///   birleşir (`bedel-\nlini` → `bedellini`). Yalnız **kanıtlı** bölünmede
 ///   uygulanır: tire ile kelime arasında satır sonu yoksa (`kredi-kartı`) tire
-///   korunur, çünkü o gerçek bir tiredir.
+///   korunur, çünkü o gerçek bir tiredir; iki ve daha çok satır sonu
+///   paragraf/sayfa ayrımıdır, birleştirilmez.
 /// - **Yumuşak tire** (`U+00AD`) her yerde atılır: görünmez, yazım farkı değildir.
 ///
-/// Konum eşlemesi korunur; birleşen harf kendi kaynak indeksini taşır, böylece
-/// raporlanan aralık kaynakta tireyi ve satır sonunu **içerir**.
+/// Kuralın **tek** uygulaması `parsing::dehyphenated_chars`tır; arama
+/// eşleştiricisi de aynı çekirdeği okur (F12-T14u). Konum eşlemesi korunur;
+/// birleşen harf kendi kaynak indeksini taşır, böylece raporlanan aralık
+/// kaynakta tireyi ve satır sonunu **içerir**.
 pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
-    let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
-    let mut index = 0usize;
-    while index < chars.len() {
-        let ch = chars[index];
-        if ch == '\u{00AD}' {
-            index += 1;
-            continue;
-        }
-        if ch == '-' {
-            // Tire + (boşluk*) + **tek** satır sonu + (boşluk*) + harf/rakam
-            let mut probe = index + 1;
-            while probe < chars.len() && matches!(chars[probe], ' ' | '\t') {
-                probe += 1;
-            }
-            if probe < chars.len() && matches!(chars[probe], '\n' | '\r') {
-                let mut after = probe;
-                let mut breaks = 0usize;
-                while after < chars.len() && chars[after].is_whitespace() {
-                    if matches!(chars[after], '\n' | '\r') {
-                        // `\r\n` tek satır sonu sayılır.
-                        let previous_is_cr =
-                            after > probe && chars[after] == '\n' && chars[after - 1] == '\r';
-                        if !previous_is_cr {
-                            breaks += 1;
-                        }
-                    }
-                    after += 1;
-                }
-                // İkiden çok satır sonu paragraf/sayfa ayrımıdır; kelime
-                // birleştirmesi orada yapılmaz (yanlış eşleşme üretmemek için).
-                if breaks == 1 && after < chars.len() && chars[after].is_alphanumeric() {
-                    index = after;
-                    last_space = false;
-                    continue;
-                }
-            }
-        }
+    for (ch, index) in crate::parsing::dehyphenated_chars(input) {
         if let Some(expansion) = ligature_expansion(ch) {
             for letter in expansion.chars() {
                 out.push(letter);
                 map.push(index);
             }
             last_space = false;
-            index += 1;
             continue;
         }
         // Kesme işareti de eşitlenir: en zayıf katman harf + tire + kesme
@@ -946,13 +912,31 @@ pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
             map.push(index);
             last_space = false;
         }
-        index += 1;
     }
     while out.ends_with(' ') {
         out.pop();
         map.pop();
     }
     MappedText { text: out, map }
+}
+
+/// `dehyphenate_with_map`in **harf sadeleştirmesi yapmayan** kipi (F12-T14u,
+/// `İfade` konum katmanı): harfler korunur, yalnız Türkçe küçük harf uygulanır;
+/// tire + satır sonu birleştirmesi aynı çekirdekten (`parsing::dehyphenated_chars`)
+/// gelir — kip yalnız **harf** kuralını değiştirir.
+fn dehyphenate_turkish_with_map(input: &str) -> MappedText {
+    let pairs = crate::parsing::dehyphenated_chars(input);
+    let raw: String = pairs.iter().map(|(ch, _)| *ch).collect();
+    let lowered = turkish_lower_with_map(&raw);
+    let map = lowered
+        .map
+        .iter()
+        .map(|index| pairs[*index].1)
+        .collect::<Vec<usize>>();
+    MappedText {
+        text: lowered.text,
+        map,
+    }
 }
 
 pub(crate) fn char_offset(text: &str, byte: usize) -> i64 {
@@ -2048,9 +2032,10 @@ struct PrecedentSearchSeed {
 /// Türkçe katlama + **kesme işareti eşitlemesi** (F12-T14s; `Anayasa'nın`
 /// sorgusu `Anayasa’nın` metninde konumuyla bulunur) → **belirteç köprüsü**
 /// (F12-T14t; `İfade`/`Esnek` eşleştiricisi belirteçleri bitişik sayar ve
-/// araya noktalama girebilir). Bulunamazsa `None`; **konum uydurulmaz**.
-/// `Tam` kipi noktalamaya duyarlı kalır: köprü katmanı yalnız belirteç
-/// kiplerinde çalışır (F15 #35/#36).
+/// araya noktalama girebilir) → **satır sonu tiresi** (F12-T14u; `bedel-\nlini`
+/// tek belirteç olarak arandığında birleştirilir). Bulunamazsa `None`;
+/// **konum uydurulmaz**. `Tam` kipi noktalamaya duyarlı kalır: köprü ve
+/// birleştirme katmanları yalnız belirteç kiplerinde çalışır (F15 #35/#36).
 fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i64)> {
     let needle = needle.trim();
     if needle.is_empty() {
@@ -2088,12 +2073,34 @@ fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i6
         // `İfade`: belirteçler aynı sırada ve bitişik; araya noktalama girebilir,
         // son belirteç **tam** olmalı.
         SearchMode::Phrase => {
-            locate_token_sequence(&turkish_lower_with_map(text), &exact_tokens(needle), false)
+            let lowered = turkish_lower_with_map(text);
+            if let Some(position) = locate_token_sequence(&lowered, &exact_tokens(needle), false) {
+                return Some(position);
+            }
+            // F12-T14u: tek belirteç içindeki satır sonu tiresi
+            // (`bedel-\nlini` ↔ `bedellini`); harfler korunur.
+            if !crate::parsing::may_dehyphenate(text) {
+                return None;
+            }
+            locate_token_sequence(
+                &dehyphenate_turkish_with_map(text),
+                &exact_tokens(needle),
+                false,
+            )
         }
         // `Esnek`: aynı belirteç kuralı + son belirteç önek olabilir
         // (`itiraz` → `itirazın`); konum eşleşen tam belirteci kapsar.
         SearchMode::Flexible => {
-            locate_token_sequence(&normalize_with_map(text), &fold_tokens(needle), true)
+            if let Some(position) =
+                locate_token_sequence(&normalize_with_map(text), &fold_tokens(needle), true)
+            {
+                return Some(position);
+            }
+            // F12-T14u: `Esnek` harf sadeleştirmesiyle birlikte.
+            if !crate::parsing::may_dehyphenate(text) {
+                return None;
+            }
+            locate_token_sequence(&dehyphenate_with_map(text), &fold_tokens(needle), true)
         }
         _ => None,
     }
@@ -4802,6 +4809,117 @@ mod tests {
         assert_eq!(
             locate_in_text(text, "kredi kartı", SearchMode::Docket),
             None
+        );
+    }
+
+    /// F12-T14u: satır sonunda tire ile bölünmüş kelime tek belirteç olarak
+    /// arandığında (`bedellini`) `İfade`/`Esnek` kipinde eşleşir ve konum
+    /// **kaynak aralığını** (tire + satır sonu dahil) verir; `Tam` kipi
+    /// noktalamaya duyarlı kalır. Gerçek tire ve paragraf ayrımı birleştirilmez.
+    #[test]
+    fn library_search_locates_words_broken_across_a_line() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/95"), Some("2025/96")))
+            .expect("emsal");
+        let mut body = String::new();
+        for _ in 0..40 {
+            body.push_str("dolgu metni ");
+        }
+        body.push_str(
+            "Sözleşmede öngörülen bedel-\nlini ödemesi yapılmadı. Kredi-kartı borcu da vardı.",
+        );
+        for _ in 0..40 {
+            body.push_str(" sonrası");
+        }
+        db.add_precedent_text(&p.id, &text_of(&body))
+            .expect("metin");
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query("bedellini", mode, None))
+                .expect("arama");
+            assert_eq!(
+                page.matched, 1,
+                "kip {mode:?} satır sonu tiresini birleştirmeli"
+            );
+            let hit = &page.hits[0];
+            assert!(
+                hit.snippet.contains("bedel-\nlini"),
+                "kip {mode:?} snippet kaynağı göstermeli"
+            );
+            assert!(
+                hit.snippet.starts_with('…'),
+                "kip {mode:?} pencere metnin ortasından olmalı"
+            );
+            let start = hit.match_start.expect("eşleşme konumu") as usize;
+            let at: String = body.chars().skip(start).take(11).collect();
+            assert_eq!(
+                at, "bedel-\nlini",
+                "kip {mode:?} konum kaynak aralığını göstermeli"
+            );
+            assert_eq!(
+                hit.match_length,
+                Some(11),
+                "kip {mode:?} uzunluk kaynak aralığı (tire ve satır sonu dahil)"
+            );
+        }
+
+        // `Tam` kipi noktalamaya duyarlı kalır.
+        let exact = db
+            .search_precedents(&library_query("bedellini", SearchMode::Exact, None))
+            .expect("arama");
+        assert_eq!(
+            exact.matched, 0,
+            "Tam kipi satır sonu tiresini birleştirmemeli"
+        );
+
+        // Satır sonu olmayan tire gerçektir; kelime birleştirilmez.
+        let real = db
+            .search_precedents(&library_query("kredikartı", SearchMode::Phrase, None))
+            .expect("arama");
+        assert_eq!(real.matched, 0, "gerçek tire birleştirilmemeli");
+    }
+
+    /// F12-T14u (birim): konum katmanı satır sonu tiresini **yalnız** belirteç
+    /// kiplerinde birleştirir; `Tam` noktalamaya duyarlı kalır, harf
+    /// sadeleştirmesi kipin kuralından gelir (`İfade` harfleri korur).
+    #[test]
+    fn line_break_hyphen_layer_is_mode_scoped_and_keeps_source_range() {
+        let text = "Sözleşmede bedel-\nlini ödenmedi.";
+        // "Sözleşmede " = 11 karakter; "bedel-\nlini" = 11 karakter.
+        assert_eq!(
+            locate_in_text(text, "bedellini", SearchMode::Phrase),
+            Some((11, 11))
+        );
+        assert_eq!(
+            locate_in_text(text, "bedellini", SearchMode::Flexible),
+            Some((11, 11))
+        );
+        assert_eq!(locate_in_text(text, "bedellini", SearchMode::Exact), None);
+        // Gerçek tire birleştirilmez.
+        assert_eq!(
+            locate_in_text("kredi-kartı borcu", "kredikartı", SearchMode::Phrase),
+            None
+        );
+        // İki satır sonu paragraf ayrımıdır.
+        assert_eq!(
+            locate_in_text("bedel-\n\nlini", "bedellini", SearchMode::Phrase),
+            None
+        );
+        // `İfade` harfleri sadeleştirmez; `Esnek` sadeleştirir.
+        assert_eq!(
+            locate_in_text("şir-\nket kaydı", "sirket", SearchMode::Phrase),
+            None
+        );
+        assert_eq!(
+            locate_in_text("şir-\nket kaydı", "sirket", SearchMode::Flexible),
+            Some((0, 8))
+        );
+        // Yumuşak tire görünmez: konum kaynak aralığını verir.
+        assert_eq!(
+            locate_in_text("bedel\u{00AD}lini ödendi", "bedellini", SearchMode::Phrase),
+            Some((0, 10))
         );
     }
 

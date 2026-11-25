@@ -1304,6 +1304,97 @@ pub(crate) fn fold_tokens(text: &str) -> Vec<String> {
     tokens_with(text, true)
 }
 
+/// Satır/sayfa sonunda tire ile bölünmüş kelimeyi birleştiren **tek** çekirdek:
+/// `bedel-\nlini` → `bedel` + `lini` (tire ve satır sonu atılır), yumuşak tire
+/// (`U+00AD`) her yerde atılır. Her çıktı karakteriyle birlikte **kaynak**
+/// karakter indeksini verir; konum eşlemesi ve dürüst `matched_length` için.
+///
+/// Yanlış birleştirme kapıları: tire ile kelime arasında satır sonu **yoksa**
+/// (`kredi-kartı`) o tire gerçektir, korunur; **iki ve daha çok** satır sonu
+/// paragraf/sayfa ayrımıdır, birleştirilmez. Alıntı doğrulamasının
+/// `dehyphenate_with_map` katmanı ile arama eşleştiricisi aynı kuralı buradan
+/// okur — ikinci bir uygulama drift kaynağıdır (F12-T14u).
+pub(crate) fn dehyphenated_chars(input: &str) -> Vec<(char, usize)> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = Vec::with_capacity(chars.len());
+    let mut index = 0usize;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\u{00AD}' {
+            index += 1;
+            continue;
+        }
+        if ch == '-' {
+            // Tire + (boşluk*) + **tek** satır sonu + (boşluk*) + harf/rakam
+            let mut probe = index + 1;
+            while probe < chars.len() && matches!(chars[probe], ' ' | '\t') {
+                probe += 1;
+            }
+            if probe < chars.len() && matches!(chars[probe], '\n' | '\r') {
+                let mut after = probe;
+                let mut breaks = 0usize;
+                while after < chars.len() && chars[after].is_whitespace() {
+                    if matches!(chars[after], '\n' | '\r') {
+                        // `\r\n` tek satır sonu sayılır.
+                        let previous_is_cr =
+                            after > probe && chars[after] == '\n' && chars[after - 1] == '\r';
+                        if !previous_is_cr {
+                            breaks += 1;
+                        }
+                    }
+                    after += 1;
+                }
+                if breaks == 1 && after < chars.len() && chars[after].is_alphanumeric() {
+                    index = after;
+                    continue;
+                }
+            }
+        }
+        out.push((ch, index));
+        index += 1;
+    }
+    out
+}
+
+/// Metin dehyphenate katmanının **adayı** olabilir mi? Ucuz ön kapı: yumuşak
+/// tire ya da tire + satır sonu. Yanlış pozitif yalnız gereksiz bir tarama
+/// yapar; hükmü `dehyphenated_chars` verir.
+pub(crate) fn may_dehyphenate(text: &str) -> bool {
+    let mut after_hyphen = false;
+    for ch in text.chars() {
+        if ch == '\u{00AD}' {
+            return true;
+        }
+        if after_hyphen && !matches!(ch, ' ' | '\t') {
+            if matches!(ch, '\n' | '\r') {
+                return true;
+            }
+            after_hyphen = false;
+        }
+        if ch == '-' {
+            after_hyphen = true;
+        }
+    }
+    false
+}
+
+/// Dehyphenate edilmiş haystack (F12-T14u). `fold` kipin harf kuralıdır:
+/// `false` harfleri korur (`İfade`), `true` `dim_evidence::normalize` uygular
+/// (`Esnek`). `false` dönerse metinde bu sınıf yok — katman çalışmaz.
+fn dehyphenated_text(text: &str, fold: bool, out: &mut String) -> bool {
+    if !may_dehyphenate(text) {
+        return false;
+    }
+    out.clear();
+    for (ch, _) in dehyphenated_chars(text) {
+        out.push(ch);
+    }
+    if fold {
+        *out = dim_evidence::normalize(out);
+    }
+    true
+}
+
 /// İğne kelimeleri samanlıkta **bitişik** geçiyor mu? `prefix_last` ise son
 /// iğne kelimesi samanlık kelimesinin öneki olabilir (Türkçe ekler).
 fn seq_matches(haystack: &[String], needle: &[String], prefix_last: bool) -> bool {
@@ -1622,6 +1713,8 @@ fn docket_match_bytes(text: &str, docket: &DocketNumber) -> bool {
 pub(crate) struct MatchScratch {
     folded: String,
     spans: Vec<(usize, usize)>,
+    /// F12-T14u: dehyphenate katmanı için yeniden kullanılan metin tamponu.
+    dehyphenated: String,
 }
 
 /// Sorgu başına **bir kez** hazırlanan doğrulayıcı (F15 ölçek düzeltmesi).
@@ -1674,14 +1767,42 @@ impl SearchMatcher {
             SearchMode::Phrase => {
                 let Some(raw) = raw else { return false };
                 token_spans(raw, &mut scratch.spans);
-                seq_matches_spans(raw, &scratch.spans, &self.phrase, false)
+                if seq_matches_spans(raw, &scratch.spans, &self.phrase, false) {
+                    return true;
+                }
+                // F12-T14u: tek belirteç içindeki satır sonu tiresi
+                // (`bedel-\nlini` ↔ `bedellini`); harfler korunur.
+                if dehyphenated_text(raw, false, &mut scratch.dehyphenated) {
+                    token_spans(&scratch.dehyphenated, &mut scratch.spans);
+                    return seq_matches_spans(
+                        &scratch.dehyphenated,
+                        &scratch.spans,
+                        &self.phrase,
+                        false,
+                    );
+                }
+                false
             }
             SearchMode::Flexible => {
                 let Some(normalized) = normalized else {
                     return false;
                 };
                 token_spans(normalized, &mut scratch.spans);
-                seq_matches_spans(normalized, &scratch.spans, &self.folded, true)
+                if seq_matches_spans(normalized, &scratch.spans, &self.folded, true) {
+                    return true;
+                }
+                // F12-T14u: `Esnek` kipinin harf sadeleştirmesiyle birlikte.
+                let Some(raw) = raw else { return false };
+                if dehyphenated_text(raw, true, &mut scratch.dehyphenated) {
+                    token_spans(&scratch.dehyphenated, &mut scratch.spans);
+                    return seq_matches_spans(
+                        &scratch.dehyphenated,
+                        &scratch.spans,
+                        &self.folded,
+                        true,
+                    );
+                }
+                false
             }
             SearchMode::Docket => self
                 .docket
@@ -1702,11 +1823,32 @@ fn search_match(text: &str, needle: &str, mode: &str) -> bool {
             let wanted = fold_apostrophes(&turkish_lower(&collapse_ws(needle)));
             !wanted.is_empty() && anchored_contains(&haystack, &wanted)
         }
-        "flexible" => seq_matches(&fold_tokens(text), &fold_tokens(needle), true),
-        "phrase" => seq_matches(&exact_tokens(text), &exact_tokens(needle), false),
+        "flexible" => {
+            seq_matches(&fold_tokens(text), &fold_tokens(needle), true)
+                || dehyphenated_seq_matches(text, needle, true, true)
+        }
+        "phrase" => {
+            seq_matches(&exact_tokens(text), &exact_tokens(needle), false)
+                || dehyphenated_seq_matches(text, needle, false, false)
+        }
         "docket" => parse_docket(needle).is_some_and(|docket| docket_match(text, &docket)),
         _ => false,
     }
+}
+
+/// `search_match` referansının dehyphenate katmanı (F12-T14u): eşleştiriciyle
+/// aynı kural — tek çekirdek `dehyphenated_text`; `fold` kipin harf kuralı,
+/// `prefix_last` kipin son-belirteç kuralıdır (ikisi ayrı tutulur).
+fn dehyphenated_seq_matches(text: &str, needle: &str, fold: bool, prefix_last: bool) -> bool {
+    let mut dehyphenated = String::new();
+    if !dehyphenated_text(text, fold, &mut dehyphenated) {
+        return false;
+    }
+    seq_matches(
+        &tokens_with(&dehyphenated, fold),
+        &tokens_with(needle, fold),
+        prefix_last,
+    )
 }
 
 /// `dim_search_match(text, needle, mode)` SQL fonksiyonunu bağlar.
@@ -4323,6 +4465,106 @@ mod tests {
         assert!(matcher.matches(Some(text), Some(&normalized), &mut scratch));
     }
 
+    /// F12-T14u: satır sonunda tire ile bölünmüş kelime (`bedel-\nlini`) tek
+    /// belirteç olarak arandığında (`bedellini`) `İfade`/`Esnek` kipinde
+    /// eşleşmeli; `Tam` kipi noktalamaya duyarlı kalır. Gerçek tire
+    /// (`kredi-kartı`) ve paragraf ayrımı (iki satır sonu) birleştirilmez.
+    #[test]
+    fn search_matcher_bridges_a_word_broken_across_a_line() {
+        let text = "Sözleşmede öngörülen bedel-\nlini ödemesi yapılmadı.";
+        let normalized = dim_evidence::normalize(text);
+        let mut scratch = MatchScratch::default();
+        for (mode, expected) in [
+            (SearchMode::Phrase, true),
+            (SearchMode::Flexible, true),
+            // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
+            (SearchMode::Exact, false),
+        ] {
+            let matcher = SearchMatcher::new("bedellini", mode, None);
+            assert_eq!(
+                matcher.matches(Some(text), Some(&normalized), &mut scratch),
+                expected,
+                "kip {mode:?}: satır sonu tiresi"
+            );
+            assert_eq!(
+                search_match(text, "bedellini", mode.tag()),
+                expected,
+                "referans kip {mode:?}: satır sonu tiresi"
+            );
+        }
+
+        // Türkçe küçük harf: `BEDEL-\nLİNİ` de eşleşir (`İfade` harf
+        // sadeleştirmez, `I`→`ı` kuralı korunur).
+        let upper = "BEDEL-\nLİNİ ödemesi";
+        let matcher = SearchMatcher::new("bedellini", SearchMode::Phrase, None);
+        assert!(matcher.matches(
+            Some(upper),
+            Some(&dim_evidence::normalize(upper)),
+            &mut scratch
+        ));
+
+        // Yumuşak tire görünmez bir yazım farkıdır: her yerde atılır.
+        let soft = "bedel\u{00AD}lini ödemesi";
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let matcher = SearchMatcher::new("bedellini", mode, None);
+            assert!(
+                matcher.matches(
+                    Some(soft),
+                    Some(&dim_evidence::normalize(soft)),
+                    &mut scratch
+                ),
+                "kip {mode:?}: yumuşak tire atılmalı"
+            );
+        }
+
+        // Satır sonu **yoksa** tire gerçektir; kelime birleştirilmez.
+        let real = "Kredi-kartı borcu ödenmedi";
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let matcher = SearchMatcher::new("kredikartı", mode, None);
+            assert!(
+                !matcher.matches(
+                    Some(real),
+                    Some(&dim_evidence::normalize(real)),
+                    &mut scratch
+                ),
+                "kip {mode:?}: gerçek tire birleştirilmemeli"
+            );
+            assert!(
+                !search_match(real, "kredikartı", mode.tag()),
+                "referans kip {mode:?}: gerçek tire birleştirilmemeli"
+            );
+        }
+
+        // İki satır sonu paragraf/sayfa ayrımıdır; birleştirme yapılmaz.
+        let paragraph = "bedel-\n\nlini ödemesi";
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let matcher = SearchMatcher::new("bedellini", mode, None);
+            assert!(
+                !matcher.matches(
+                    Some(paragraph),
+                    Some(&dim_evidence::normalize(paragraph)),
+                    &mut scratch
+                ),
+                "kip {mode:?}: paragraf ayrımı birleştirilmemeli"
+            );
+        }
+
+        // Kip kuralı dehyphenate katmanında da korunur: `İfade` harfleri
+        // sadeleştirmez, `Esnek` sadeleştirir.
+        let broken = "şir-\nket kaydı";
+        let normalized = dim_evidence::normalize(broken);
+        let phrase = SearchMatcher::new("sirket", SearchMode::Phrase, None);
+        assert!(
+            !phrase.matches(Some(broken), Some(&normalized), &mut scratch),
+            "İfade harf sadeleştirmemeli"
+        );
+        let flexible = SearchMatcher::new("sirket", SearchMode::Flexible, None);
+        assert!(
+            flexible.matches(Some(broken), Some(&normalized), &mut scratch),
+            "Esnek harf sadeleştirmeli"
+        );
+    }
+
     #[test]
     fn search_auto_treats_quoted_text_as_phrase() {
         let (db, case_id, version_id) = setup();
@@ -4444,6 +4686,11 @@ mod tests {
             "itirazın itiraz itiraz",
             "Anayasa’nın 2. maddesi iptal edildi",
             "Anayasa'nın 10. maddesine aykırılık",
+            // F12-T14u: satır sonu tiresi, paragraf ayrımı, yumuşak tire.
+            "Sözleşmede öngörülen bedel-\nlini ödemesi",
+            "bedel-\n\nlini ödemesi",
+            "bedel\u{00AD}lini ödemesi",
+            "şir-\nket kaydı",
         ];
         let needles = [
             "ıslah",
@@ -4459,6 +4706,10 @@ mod tests {
             "Anayasa'nın",
             "Anayasa’nın",
             "anayasa'nın 2",
+            "bedellini",
+            "bedel lini",
+            "sirket",
+            "kredikartı",
         ];
         let mut scratch = MatchScratch::default();
         for mode in [
