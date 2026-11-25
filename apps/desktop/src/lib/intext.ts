@@ -14,6 +14,7 @@ export const MATCH_KIND_LABEL: Record<string, string> = {
   exact: t("intext.matchExact"),
   whitespace: t("intext.matchWhitespace"),
   ligature: t("intext.matchLigature"),
+  apostrophe: t("intext.matchApostrophe"),
   turkish_fold: t("intext.matchTurkishFold"),
   dehyphenated: t("intext.matchDehyphenated"),
   elided: t("intext.matchElided"),

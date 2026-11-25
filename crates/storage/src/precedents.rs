@@ -383,6 +383,11 @@ pub(crate) enum QuoteTier {
     Whitespace,
     /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`) açılır; harfler korunur.
     Ligature,
+    /// **Kesme işareti** ailesi eşitlenir: `’` (U+2019) ve `ʼ` (U+02BC) ASCII
+    /// `'` sayılır; boşluklar teklenir. Harfler korunur (F12-T14r). Türkçe
+    /// hukuk metinlerinde kaynak `Anayasa’nın` yazarken dilekçe `Anayasa'nın`
+    /// yazar; bu bir alıntı hatası değildir.
+    Apostrophe,
     TurkishFold,
     Dehyphenated,
     /// `…`/`...` ile **kısaltılmış** alıntı: parçalar araya metin girmeden,
@@ -397,10 +402,11 @@ pub(crate) enum QuoteTier {
 }
 
 impl QuoteTier {
-    const ORDER: [QuoteTier; 10] = [
+    const ORDER: [QuoteTier; 11] = [
         QuoteTier::Exact,
         QuoteTier::Whitespace,
         QuoteTier::Ligature,
+        QuoteTier::Apostrophe,
         QuoteTier::TurkishFold,
         QuoteTier::Dehyphenated,
         QuoteTier::ElidedExact,
@@ -415,6 +421,7 @@ impl QuoteTier {
             QuoteTier::Exact => "exact",
             QuoteTier::Whitespace => "whitespace",
             QuoteTier::Ligature => "ligature",
+            QuoteTier::Apostrophe => "apostrophe",
             QuoteTier::TurkishFold => "turkish_fold",
             QuoteTier::Dehyphenated => "dehyphenated",
             QuoteTier::ElidedExact
@@ -444,7 +451,8 @@ fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
     match tier {
         QuoteTier::Whitespace => collapse_ws_with_map(text),
         QuoteTier::Ligature => ligature_with_map(text),
-        QuoteTier::TurkishFold => normalize_with_map(text),
+        QuoteTier::Apostrophe => apostrophe_with_map(text),
+        QuoteTier::TurkishFold => turkish_fold_with_map(text),
         // `exact` bu yolu kullanmaz; en zayıf katman tire birleştirmedir.
         // `elided` katmanları tabanlarına çözülerek çağrılır (aşağıdaki
         // `elided_base`); buraya doğrudan gelirse tire birleştirme uygulanır.
@@ -803,18 +811,52 @@ pub(crate) fn ligature_with_map(input: &str) -> MappedText {
 /// Yalnız boşluk sadeleştirmesi; harfler **korunur** (birebir olmayan ama
 /// yalnız satır/biçim farkından kaynaklanan eşleşme için).
 pub(crate) fn collapse_ws_with_map(input: &str) -> MappedText {
+    map_chars_with_collapsed_ws(input, |ch| ch)
+}
+
+/// **Kesme işareti** ailesi: `’` (U+2019) ve `ʼ` (U+02BC) ASCII `'` sayılır.
+/// Harfler, boşluklar ve diğer noktalama korunur; kesme işareti **silinmez** —
+/// eksik ya da fazla kesme işareti eşleşmez (F12-T14r).
+fn fold_apostrophe(ch: char) -> char {
+    match ch {
+        '\u{2019}' | '\u{02BC}' => '\'',
+        c => c,
+    }
+}
+
+/// Boşluk sadeleştirmesi + **kesme işareti** eşitlemesi (F12-T14r).
+///
+/// Türkçe hukuk metinlerinde kaynak `Anayasa’nın` yazarken dilekçe
+/// `Anayasa'nın` yazar; harf farkı olmadığı için bu katman ayrı raporlanır.
+pub(crate) fn apostrophe_with_map(input: &str) -> MappedText {
+    map_chars_with_collapsed_ws(input, fold_apostrophe)
+}
+
+/// `normalize_with_map` + kesme işareti eşitlemesi (F12-T14r): harf
+/// sadeleştirmesi kesme işareti farkıyla **birleştiğinde** de eşleşir
+/// (`anayasa’nın` ↔ `Anayasa'nın`). Konum eşlemesi korunur: kesme işareti
+/// 1 karakterden 1 karaktere eşlenir.
+pub(crate) fn turkish_fold_with_map(input: &str) -> MappedText {
+    let folded: String = input.chars().map(fold_apostrophe).collect();
+    normalize_with_map(&folded)
+}
+
+/// Boşlukları tekler ve her karakteri `map_char` ile eşler; konum eşlemesi
+/// kaynak metnin karakter indeksidir.
+fn map_chars_with_collapsed_ws(input: &str, map_char: impl Fn(char) -> char) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
     for (index, ch) in input.chars().enumerate() {
-        if ch.is_whitespace() {
+        let mapped = map_char(ch);
+        if mapped.is_whitespace() {
             if !last_space && !out.is_empty() {
                 out.push(' ');
                 map.push(index);
             }
             last_space = true;
         } else {
-            out.push(ch);
+            out.push(mapped);
             map.push(index);
             last_space = false;
         }
@@ -888,7 +930,9 @@ pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
             index += 1;
             continue;
         }
-        let mapped = fold_char(ch);
+        // Kesme işareti de eşitlenir: en zayıf katman harf + tire + kesme
+        // işareti farklarını birlikte taşıyabilir (F12-T14r).
+        let mapped = fold_apostrophe(fold_char(ch));
         if mapped.is_whitespace() {
             if !last_space && !out.is_empty() {
                 out.push(' ');

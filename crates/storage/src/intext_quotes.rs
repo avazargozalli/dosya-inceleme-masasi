@@ -5,9 +5,10 @@
 //!
 //! Üç eşleşme katmanı ayrı raporlanır: `exact` (birebir), `whitespace` (yalnız
 //! boşluk/satır farkı), `ligature` (font kaynaklı bitişik yazı: `ﬂ`→`fl`),
-//! `turkish_fold` (harf sadeleştirmesi) ve `dehyphenated` (satır/sayfa sonunda
-//! tire ile bölünmüş kelime). Katmanlar sırayla denenir; üst katman bulunduysa
-//! alt katman aranmaz.
+//! `apostrophe` (kesme işareti yazımı: `’` ↔ `'`), `turkish_fold` (harf
+//! sadeleştirmesi) ve `dehyphenated` (satır/sayfa sonunda tire ile bölünmüş
+//! kelime). Katmanlar sırayla denenir; üst katman bulunduysa alt katman
+//! aranmaz.
 //!
 //! `not_found` sonucu "uydurma" hükmü değildir: yalnız taranan metin
 //! katmanında bulunmadığını söyler. Taranmış (OCR'sız) sayfada görünen metin
@@ -30,8 +31,8 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
-    char_offset, collapse_ws_with_map, dehyphenate_with_map, elided_segments,
-    find_elided_sequences_in_text, find_quote_in_scopes, ligature_with_map, normalize_with_map,
+    apostrophe_with_map, char_offset, collapse_ws_with_map, dehyphenate_with_map, elided_segments,
+    find_elided_sequences_in_text, find_quote_in_scopes, ligature_with_map, turkish_fold_with_map,
     MappedText, QuoteTier, TextScope, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT, MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
@@ -421,6 +422,10 @@ enum MatchTier {
     /// boşluklar teklenir; harfler korunur. PDF'ten gelen metinde `taraﬂar`
     /// yazarken avukat `taraflar` yazar — bu bir yazım farkı değildir.
     Ligature,
+    /// **Kesme işareti** ailesi eşitlenir: `’` (U+2019) ve `ʼ` (U+02BC) ASCII
+    /// `'` sayılır; harfler korunur (F12-T14r). Kaynak `Anayasa’nın` yazarken
+    /// dilekçe `Anayasa'nın` yazabilir.
+    Apostrophe,
     Fold,
     /// En zayıf katman: harf sadeleştirmesi + **satır/sayfa sonunda tire ile
     /// bölünmüş** kelimenin birleştirilmesi. Kaynakta `bedel-\nlini` yazıyorsa
@@ -444,6 +449,7 @@ impl MatchTier {
             Self::Exact => "exact",
             Self::Whitespace => "whitespace",
             Self::Ligature => "ligature",
+            Self::Apostrophe => "apostrophe",
             Self::Fold => "turkish_fold",
             Self::Dehyphenated => "dehyphenated",
             Self::ElidedExact
@@ -681,7 +687,8 @@ pub struct PrecedentQuoteFinding {
     pub state: String,
     /// `not_found` | `no_full_text`
     pub reason: Option<String>,
-    /// `exact` | `whitespace` | `ligature` | `turkish_fold` | `dehyphenated`
+    /// `exact` | `whitespace` | `ligature` | `apostrophe` | `turkish_fold` |
+    /// `dehyphenated` | `elided`
     pub method: Option<String>,
     /// Eşleşen sürümün **içindeki** konum sayısı.
     pub occurrences: i64,
@@ -745,7 +752,8 @@ pub struct LibraryQuoteMatch {
     /// `true` ise eşleşme yalnız **eski** sürümde bulundu; güncel metin
     /// değişmiş olabilir (F12-T14l).
     pub found_in_old_version: bool,
-    /// `exact` | `whitespace` | `ligature` | `turkish_fold` | `dehyphenated`
+    /// `exact` | `whitespace` | `ligature` | `apostrophe` | `turkish_fold` |
+    /// `dehyphenated`
     pub method: String,
     /// Eşleşmenin o sürüm içindeki konum sayısı (1'den fazlaysa `ambiguous`).
     pub occurrences: i64,
@@ -916,6 +924,7 @@ impl Database {
                 MatchTier::Exact,
                 MatchTier::Whitespace,
                 MatchTier::Ligature,
+                MatchTier::Apostrophe,
                 MatchTier::Fold,
                 MatchTier::Dehyphenated,
                 // `…` ile kısaltılmış alıntı en zayıf ailedir: parçaların
@@ -1430,7 +1439,8 @@ impl Database {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
-                MatchTier::Fold => Some(normalize_with_map(&span.text)),
+                MatchTier::Apostrophe => Some(apostrophe_with_map(&span.text)),
+                MatchTier::Fold => Some(turkish_fold_with_map(&span.text)),
                 MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
                 // `elided` katmanları parçalarla çalışır; tam alıntı iğnesi yok.
                 MatchTier::ElidedExact
@@ -1505,12 +1515,14 @@ impl Database {
                     }
                     MatchTier::Whitespace
                     | MatchTier::Ligature
+                    | MatchTier::Apostrophe
                     | MatchTier::Fold
                     | MatchTier::Dehyphenated => {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&text),
                             MatchTier::Ligature => ligature_with_map(&text),
-                            MatchTier::Fold => normalize_with_map(&text),
+                            MatchTier::Apostrophe => apostrophe_with_map(&text),
+                            MatchTier::Fold => turkish_fold_with_map(&text),
                             _ => dehyphenate_with_map(&text),
                         };
                         for &quote_index in active {
@@ -1627,7 +1639,8 @@ impl Database {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
-                MatchTier::Fold => Some(normalize_with_map(&span.text)),
+                MatchTier::Apostrophe => Some(apostrophe_with_map(&span.text)),
+                MatchTier::Fold => Some(turkish_fold_with_map(&span.text)),
                 MatchTier::Dehyphenated => Some(dehyphenate_with_map(&span.text)),
                 // `elided` katmanları parçalarla çalışır; tam alıntı iğnesi yok.
                 MatchTier::ElidedExact
@@ -1745,12 +1758,14 @@ impl Database {
                     }
                     MatchTier::Whitespace
                     | MatchTier::Ligature
+                    | MatchTier::Apostrophe
                     | MatchTier::Fold
                     | MatchTier::Dehyphenated => {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&joined),
                             MatchTier::Ligature => ligature_with_map(&joined),
-                            MatchTier::Fold => normalize_with_map(&joined),
+                            MatchTier::Apostrophe => apostrophe_with_map(&joined),
+                            MatchTier::Fold => turkish_fold_with_map(&joined),
                             _ => dehyphenate_with_map(&joined),
                         };
                         for &quote_index in active {
@@ -1831,7 +1846,8 @@ impl Database {
     ///
     /// Belge tarafındaki [`Database::check_in_text_quotes`] dosya belgelerini
     /// tarar; bu yol aynı çıkarımı ve **aynı katman sırasını** (`exact` →
-    /// `whitespace` → `ligature` → `turkish_fold` → `dehyphenated` → `elided`) emsal
+    /// `whitespace` → `ligature` → `apostrophe` → `turkish_fold` → `dehyphenated` →
+    /// `elided`) emsal
     /// tam metnine uygular: dilekçedeki birden çok alıntı tek turda, tek tek
     /// kopyalamadan denetlenir. Kapsam bilinçli olarak **tek emsaldir**;
     /// kütüphane geneli arama değildir (F12-T10 kapsam ayrımı).
@@ -2539,7 +2555,7 @@ fn source_span(mapped: &MappedText, at_byte: usize, needle_chars: usize) -> Opti
 mod tests {
     use super::*;
     use crate::cases::{CaseKind, NewCase};
-    use crate::precedents::{NewPrecedent, NewPrecedentText};
+    use crate::precedents::{normalize_with_map, NewPrecedent, NewPrecedentText};
     use crate::{DatabaseKey, NewAnchor, NewPage};
 
     fn db() -> Database {
@@ -5154,5 +5170,232 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.contains("başı/sonu kırpılmış")));
+    }
+
+    // ---- F12-T14r: kesme işareti yazımı (’ ↔ ') alıntıyı düşürmez ----
+
+    const APOSTROPHE_SOURCE: &str =
+        "Anayasa’nın 2. maddesinde sözleşme özgürlüğü güvence altındadır.";
+
+    #[test]
+    fn apostrophe_variants_are_matched_without_letter_changes() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme işareti");
+        add_document(&db, &case_id, "Karar", &[APOSTROPHE_SOURCE]);
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasa'nın 2. maddesinde sözleşme özgürlüğü” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(finding.occurrences, 1);
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "apostrophe");
+        assert_eq!(
+            position.source_text,
+            "Anayasa’nın 2. maddesinde sözleşme özgürlüğü"
+        );
+        assert_eq!(report.normalized, 1);
+        assert_eq!(report.exact, 0);
+        // Kesme işareti eşleşmesi birebir değildir: anchor yolu kanıt ister.
+        let error = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                end_offset: position.char_start
+                    + i64::try_from(finding.quote.chars().count()).unwrap_or(i64::MAX),
+                exact_quote: finding.quote.clone(),
+            })
+            .expect_err("kesme işareti farkı bağlanmamalı");
+        assert_eq!(error.code(), "E_QUOTE_NOT_FOUND");
+    }
+
+    #[test]
+    fn apostrophe_variants_are_equated_in_both_directions() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme ters yön");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["Anayasa'nın 2. maddesinde sözleşme özgürlüğü güvence altındadır."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasa’nın 2. maddesinde sözleşme özgürlüğü” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(
+            finding.position.as_ref().expect("position").match_kind,
+            "apostrophe"
+        );
+    }
+
+    #[test]
+    fn apostrophe_folding_combines_with_soft_hyphen_join() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme + tire");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["Anayasa’nın sözleşme özgürlü-\ngü güvence altındadır."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasa'nın sözleşme özgürlüğü güvence altındadır” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(
+            finding.position.as_ref().expect("position").match_kind,
+            "dehyphenated"
+        );
+    }
+
+    #[test]
+    fn apostrophe_folding_combines_with_letter_folding() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme + harf");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["anayasa’nın 2. maddesinde sözleşme özgürlüğü güvence altındadır."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasa'nın 2. maddesinde sözleşme özgürlüğü” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(
+            finding.position.as_ref().expect("position").match_kind,
+            "turkish_fold"
+        );
+    }
+
+    #[test]
+    fn elided_quote_with_apostrophe_variants_is_found() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme + kırpık");
+        add_document(&db, &case_id, "Karar", &[APOSTROPHE_SOURCE]);
+        let report = check(
+            &db,
+            &case_id,
+            "“...Anayasa'nın 2. maddesinde sözleşme özgürlüğü güvence altındadır” deniyor.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "elided");
+        assert_eq!(
+            position.source_text,
+            APOSTROPHE_SOURCE.trim_end_matches('.')
+        );
+        assert_eq!(report.elided, 1);
+    }
+
+    #[test]
+    fn page_spanning_quote_with_apostrophe_variants_is_found() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme + sayfa sınırı");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "Anayasa’nın 2. maddesinde sözleşme",
+                "özgürlüğü güvence altındadır.",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasa'nın 2. maddesinde sözleşme özgürlüğü güvence altındadır” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "apostrophe");
+        assert!(position.spans_pages);
+    }
+
+    #[test]
+    fn apostrophes_are_not_deleted_only_equated() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme silinmez");
+        add_document(&db, &case_id, "Karar", &[APOSTROPHE_SOURCE]);
+        // Kesme işareti hiç yazılmamış alıntı, kaynaktaki `’` ile eşitlenmez.
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasanın 2. maddesinde sözleşme özgürlüğü” ifadesi.",
+            None,
+        );
+        assert_eq!(report.quotes[0].state, "not_found");
+        assert_eq!(report.normalized, 0);
+    }
+
+    #[test]
+    fn precedent_paths_report_the_apostrophe_method() {
+        let db = db();
+        let p = new_precedent(&db, "2024/327");
+        add_precedent_text(&db, &p.id, APOSTROPHE_SOURCE);
+        let quote = "Anayasa'nın 2. maddesinde sözleşme özgürlüğü";
+        let single = db.verify_precedent_quote(&p.id, quote).expect("tek alıntı");
+        assert_eq!(single.method.as_deref(), Some("apostrophe"));
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: format!("“{quote}” deniyor."),
+                },
+            )
+            .expect("metin içi");
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(finding.method.as_deref(), Some("apostrophe"));
+        assert_eq!(single.occurrences, finding.occurrences);
+        // Harf farkı kesme işaretiyle birleşirse katman `turkish_fold` olur —
+        // emsal yolu da aynı sonucu vermeli (tek kural, üç yol).
+        let lowered = "anayasa'nın 2. maddesinde sözleşme özgürlüğü";
+        let fold_single = db
+            .verify_precedent_quote(&p.id, lowered)
+            .expect("harf + kesme");
+        assert_eq!(fold_single.method.as_deref(), Some("turkish_fold"));
+        let fold_report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: format!("“{lowered}” deniyor."),
+                },
+            )
+            .expect("harf + kesme metin içi");
+        assert_eq!(
+            fold_report.quotes[0].method.as_deref(),
+            Some("turkish_fold")
+        );
+        let library = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: format!("“{quote}” deniyor."),
+            })
+            .expect("kütüphane");
+        assert_eq!(library.quotes[0].state, "found");
+        assert_eq!(library.quotes[0].matches[0].method.as_str(), "apostrophe");
     }
 }

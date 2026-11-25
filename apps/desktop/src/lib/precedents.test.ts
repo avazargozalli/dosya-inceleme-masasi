@@ -330,6 +330,7 @@ describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
     expect(precedentMethodLabel("exact")).toBe("birebir");
     expect(precedentMethodLabel("whitespace")).toBe("boşluk farkı");
     expect(precedentMethodLabel("ligature")).toBe("ligatür");
+    expect(precedentMethodLabel("apostrophe")).toBe("kesme işareti");
     expect(precedentMethodLabel("turkish_fold")).toBe("harf farkı");
     expect(precedentMethodLabel("dehyphenated")).toBe("tire birleştirme");
     expect(precedentMethodLabel("elided")).toBe("… ile kısaltılmış");
@@ -341,6 +342,9 @@ describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
     expect(
       precedentQuoteFindingText({ ...finding(), state: "normalized", method: "turkish_fold" }),
     ).toBe("normalize · harf farkı");
+    expect(
+      precedentQuoteFindingText({ ...finding(), state: "normalized", method: "apostrophe" }),
+    ).toBe("normalize · kesme işareti");
     expect(
       precedentQuoteFindingText({ ...finding(), state: "ambiguous", occurrences: 3 }),
     ).toBe("belirsiz · 3 konum");

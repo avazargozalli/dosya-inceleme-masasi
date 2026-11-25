@@ -1309,6 +1309,7 @@ describe("İnceleme ekranı ve alıntı yardımcıları sözlükten gelir", () =
     expect(QUOTE_STATE_LABEL["not_found"]).toBe(t("intext.stateNotFound"));
     expect(MATCH_KIND_LABEL["dehyphenated"]).toBe(t("intext.matchDehyphenated"));
     expect(MATCH_KIND_LABEL["ligature"]).toBe(t("intext.matchLigature"));
+    expect(MATCH_KIND_LABEL["apostrophe"]).toBe(t("intext.matchApostrophe"));
     expect(MATCH_KIND_LABEL["elided"]).toBe(t("intext.matchElided"));
   });
 

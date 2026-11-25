@@ -208,6 +208,8 @@ export function precedentMethodLabel(method: string | null): string {
       return t("precedentLib.intextMethodWhitespace");
     case "ligature":
       return t("precedentLib.intextMethodLigature");
+    case "apostrophe":
+      return t("precedentLib.intextMethodApostrophe");
     case "turkish_fold":
       return t("precedentLib.intextMethodFold");
     case "dehyphenated":
