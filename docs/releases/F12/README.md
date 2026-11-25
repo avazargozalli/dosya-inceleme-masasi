@@ -29,6 +29,7 @@
 | F12-T14r | ✅ | metin içi alıntı **kesme işareti yazımı yüzünden düşmez**: yeni `apostrophe` katmanı harfleri koruyup `’` (U+2019) / `ʼ` (U+02BC) işaretlerini ASCII `'` sayar; kesme işareti **silinmez** (eksik/fazla eşleşmez); harf ve tire katmanları da kesme işaretini eşitler, böylece birleşik farklar eşleşir; eşleşme `normalized`, **bağlanmaz**; üç yol aynı kuralı kullanır; şema (v68) değişmedi (2026-11-25) |
 | F12-T14s | ✅ | **arama** kesme işareti yazımını eşitler (T14r sınırı e kapandı): `Tam` kipinde `'` yazan sorgu `’` yazan metni ve tersi bulunur; kütüphane aramasında eşleşmenin **konumu** da bulunur (`match_start`/`match_length`); işaret **silinmez** (eksik/fazla eşleşmez), referans uygulama birebir aynı hükmü verir; `İfade`/`Esnek` belirteç kuralı ve şema (v68) değişmedi (2026-11-25) |
 | F12-T14t | ✅ | **arama konumu noktalama köprüsünü kurar** (T14s sınırı d kapandı): `İfade`/`Esnek` kipinde `kredi kartı` sorgusu `kredi-kartı` metninde eşleşince `match_start`/`match_length` artık **kaynak aralığını** verir, snippet metnin başından değil eşleşmeden gösterilir; `İfade` son belirteçte tam, `Esnek` önek kabul eder (eşleştiriciyle aynı kural); `Tam` kipi **noktalamaya duyarlı kalır** (F15 #35/#36), künye kipi konum üretmez; eşleştirici doğrulaması ve şema (v68) değişmedi (2026-11-25) |
+| F12-T14u | ✅ | **arama tek belirteçteki satır sonu tiresini birleştirir** (T14t sınırı a kapandı): iki yana yaslı PDF/OCR `bedel-\nlini` yazar, kullanıcı `bedellini` arar — `İfade`/`Esnek` kipinde eşleşme artık **bulunur** (`matched=0` yanlış negatifi kapandı) ve konum **kaynak aralığını** verir (tire + satır sonu dahil, 11 karakter), snippet kaynağı gösterir; birleştirme **tek çekirdekten** (`parsing::dehyphenated_chars`; alıntı doğrulamasının `dehyphenate_with_map`i de aynı çekirdeği kullanır), gerçek tire (`kredi-kartı`) ve paragraf ayrımı (iki satır sonu) birleştirilmez, yumuşak tire (`U+00AD`) atılır; `Tam` kipi **noktalamaya duyarlı kalır**, harf kuralı kipten gelir (`İfade` sadeleştirmez, `Esnek` sadeleştirir); şema (v68) ve arayüz kodu değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2211,7 +2212,7 @@ davranışı korunur); (d) kütüphane konumu harf + kesme işaretini birlikte
 eşitler; satır sonu tire birleştirmesi (`dehyphenate`) konum katmanında yok,
 `kredi-kartı` ↔ `kredi kartı` gibi noktalama farklarında konum bulunmayabilir
 — **noktalama köprüsü T14t'de kapatıldı** (aşağıda); tek belirteçteki satır
-sonu tiresi (`bedellini`) hâlâ ayrı iş; (e) sonuç **metin eşleşmesi**,
+sonu tiresi (`bedellini`) **T14u'da kapatıldı** (aşağıda); (e) sonuç **metin eşleşmesi**,
 anlam değil; (f) gerçek Tauri
 penceresi + görsel QA **insan bekliyor**.
 
@@ -2276,12 +2277,93 @@ ubuntu-latest **1.019,37 s**; yerel 833 farkı ağaçtaki başka ajanın commit'
 manifesti, kaynak arşivi yeşil).
 
 **Dürüst sınırlar:** (a) Köprü **noktalama** farkını kapatır; tek belirtecin
-içindeki satır sonu tiresi (`bedel-\nlini` → `bedellini`) hâlâ eşleşmez —
-arama eşleştiricisi `dehyphenate` bilmez, ayrı iş; (b) `Tam` kipi
+içindeki satır sonu tiresi (`bedel-\nlini` → `bedellini`) **T14u'da kapatıldı**
+(aşağıda) — arama eşleştiricisi artık `dehyphenate` çekirdeğini bilir; (b) `Tam` kipi
 noktalamaya duyarlı kaldı (F15 #35/#36 korunur) ve köprü orada hiç çalışmaz;
 (c) konum **kaynak aralığıdır** — sorgu dizesinden uzun olabilir (aradaki
 noktalama dahil), bu bilinçli; (d) snippet içindeki vurgu (`Highlight`) hâlâ
 **birebir** sorgu dizesini arar; köprülenmiş eşleşme vurgulanmaz, yalnız
 pencere ve konum satırı düzelir (ayrı arayüz işi); (e) sonuç **metin
+eşleşmesi**, anlam değil; (f) gerçek Tauri penceresi + görsel QA **insan
+bekliyor**.
+
+## F12-T14u — arama tek belirteçteki satır sonu tiresini birleştirir (2026-11-25)
+
+**Ölçülen kusur:** İki yana yaslı PDF/OCR metni kelimeyi satır sonunda böler
+(`bedel-\nlini`); kullanıcı bitişik yazar (`bedellini`). Alıntı doğrulaması
+`dehyphenate` katmanını **biliyordu** (T14r'den beri `dehyphenate_with_map`),
+ama **arama** eşleştiricisi (`SearchMatcher`/`search_match`) ve kütüphane
+konumu (`locate_in_text`) bilmiyordu: `İfade`/`Esnek` kipinde `matched=0` —
+sessiz yanlış negatif (T14t dürüst sınır (a)). Önce testler yazıldı:
+**KIRMIZI** (`kip Phrase: satır sonu tiresi`, `kip Phrase snippet eşleşmeyi
+göstermeli`).
+
+**Kural:**
+
+- **Tek çekirdek:** birleştirme kuralı `parsing::dehyphenated_chars`tır
+  (her çıktı karakteriyle **kaynak indeksini** verir). Alıntı doğrulamasının
+  `dehyphenate_with_map`i kendi kopyasını bırakıp bu çekirdeği okur — ikinci
+  uygulama drift kaynağıdır; artık yok.
+- **Eşleştirici:** `İfade`/`Esnek` kipinde önce mevcut doğrulama koşar
+  (değişmedi); bulunamazsa **dehyphenate edilmiş metinde** aynı belirteç
+  dizisi aranır. `İfade` harfleri korur, `Esnek` `dim_evidence::normalize`
+  uygular (kipin kendi kuralı). `Tam` kipi **noktalamaya duyarlı kalır**
+  (F15 #35/#36) — birleştirme orada çalışmaz; künye kipi konum üretmez.
+- **Referans uygulama:** `search_match` aynı katmanı bilir; eşleştirici ile
+  referans birebir aynı hükmü verir (eşdeğerlik testi dört yeni metin/iğne
+  çiftiyle genişletildi).
+- **Konum:** `locate_in_text` `İfade`de harf koruyan, `Esnek`te harf
+  sadeleştiren dehyphenate metni üzerinde belirteç dizisini arar; konum
+  **kaynak aralığıdır** — tire ve satır sonu uzunluğa dahildir
+  (`bedel-\nlini` → 11 karakter), snippet kaynağı gösterir.
+- **Yanlış birleştirme kapıları:** tire ile kelime arasında satır sonu
+  **yoksa** tire gerçektir, korunur (`kredi-kartı` → birleştirilmez);
+  **iki ve daha çok** satır sonu paragraf/sayfa ayrımıdır, birleştirilmez;
+  yumuşak tire (`U+00AD`) görünmez yazım farkıdır, her yerde atılır.
+
+**Testler/yerel:** Yeni **3** test: (1) `parsing` — eşleştirici + referans
+paritesi: `İfade`/`Esnek` eşleşir, `Tam` eşleşmez, `BEDEL-\nLİNİ` Türkçe
+küçültmeyle eşleşir, yumuşak tire atılır, gerçek tire ve paragraf ayrımı
+birleştirilmez, harf kuralı kipten gelir (`şir-\nket` ↔ `sirket` yalnız
+`Esnek`). (2) `precedents` uçtan uca (`search_precedents`) — `bedellini`
+sorgusu iki kipte `matched=1`, snippet `…bedel-\nlini…` penceresini gösterir,
+`match_start` + **11** karakter kaynak aralığı; `Tam` 0; `kredikartı` 0.
+(3) birim — konum kip sınırı (`Tam` None), `(11,11)` iki kipte, gerçek tire
+None, iki satır sonu None, `İfade` harf sadeleştirmez / `Esnek` sadeleştirir
+`(0,8)`, yumuşak tire `(0,10)`. Eşdeğerlik testine 4 metin + 4 iğne.
+Tam paket **836/836 yeşil, 761,69 s** (`dim-t14u-libtest.log`); iki manifest
+`cargo fmt --check`, `clippy -p dim-storage --all-targets -- -D warnings`
+temiz. Arayüz kodu değişmedi.
+
+**Kapı (`scratch/dim-t14u-gates.py`, log `dim-t14u-gates.log`):** taban
+YEŞİL; **14/14 mutant KIRMIZI** (İfade/Esnek katmanı kaldırma, kip sızıntısı
+iki yönde, `Tam` kipi bulaşması, yumuşak tire, iki satır sonu, satır sonu
+kapısı, ucuz ön kapı, konum katmanı iki kip, konum harf sızıntısı, kaynak
+indeksi eşlemesi, referans eşdeğerliği iki kip), her satırda hedef test adı;
+kaynak sha256 `69be5b47…` / `48c14bcb…` **birebir** geri yazıldı. İki dürüst
+yeniden koşu: (1) 19:16 koşusu cron turu kesintisiyle **SIGTERM** aldı —
+betik kaynakları geri yazdı (sha256 doğrulandı), o koşunun hükmü kanıt
+sayılmadı; (2) yeniden koşuda **13/14** — M7 (`breaks == 1` → `breaks <= 1`)
+**YEŞİL kaldı** çünkü bu dalda dış satır-sonu kapısı aynı kuralı zaten
+koruyor (iki savunma yedekli; mutasyon cebirsel olarak etkisiz). Mutant
+«satır sonu yoksa tire gerçektir» kuralını iki savunmayı **birlikte**
+kaldırarak kıracak biçimde düzeltildi → **14/14 KIRMIZI**; ilk 13/14
+koşusunun hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `72615b6` (2 dosya, **+420/−51**) → run
+`45663070421` **10/10 YEŞİL** (`dim-storage` **834** iki OS'ta: macos-15
+**589,29 s** / ubuntu-latest **1.259,61 s**; yerel 836 farkı ağaçtaki başka
+ajanın commit'siz 2 testi; `arayüz` 67 dosya / **1487** test, paket
+`index-FTO4acPO.js` **732,87 kB** / gzip **194,42 kB** — değişmedi;
+`masaüstü kabuk` 52 passed + 5 ignored, `windows güvenli depo` 30, SBOM,
+sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) Birleştirme yalnız **ASCII tire** (`-`) + tek satır
+sonu + harf/rakam içindir; en/em tire (`–`, `—`) ve `U+2011` kapsam dışı —
+PDF üreticisi onları yazarsa eşleşmez; (b) `Tam` kipi noktalamaya duyarlı
+kaldı, birleştirme orada çalışmaz; (c) konum **kaynak aralığıdır** (tire +
+satır sonu dahil), sorgu dizesinden uzundur — bilinçli; (d) snippet vurgusu
+(`Highlight`) hâlâ birebir sorguyu arar; birleştirilmiş eşleşme vurgulanmaz,
+yalnız pencere ve konum satırı düzelir (ayrı arayüz işi); (e) sonuç **metin
 eşleşmesi**, anlam değil; (f) gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
