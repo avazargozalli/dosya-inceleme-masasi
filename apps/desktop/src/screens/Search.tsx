@@ -41,14 +41,49 @@ import {
   precedentSearchSummary,
   precedentSnippetForCopy,
   scopeNotice,
+  snippetHighlightSpan,
   SEARCH_SCOPE_LABELS,
   type SearchScope,
+  type SnippetSpan,
 } from "../lib/search-scope";
 
 const PAGE_SIZE = 25;
 
-/** Alıntı içinde sorgu geçen kısmı işaretler; HTML üretmez (metin düğümü). */
-function Highlight({ text, query }: { text: string; query: string }) {
+const MARK_STYLE = { background: "var(--accent-soft)", color: "inherit", padding: "0 1px", borderRadius: 2 };
+
+/**
+ * Alıntı içinde eşleşen kısmı işaretler; HTML üretmez (metin düğümü).
+ *
+ * `span` verilirse eşleştiricinin **ölçtüğü kaynak aralığı** işaretlenir
+ * (F12-T14v) — noktalama köprüsüyle (`kredi-kartı` ↔ `kredi kartı`) ya da
+ * satır sonu tiresi birleştirmesiyle (`bedel-\nlini` ↔ `bedellini`) bulunan
+ * eşleşme birebir `indexOf` ile görünmezdi. `span` yoksa eski davranış:
+ * sorgu birebir aranır (dosya sonuçları; konum alanları taşımaz).
+ */
+function Highlight({
+  text,
+  query,
+  span,
+}: {
+  text: string;
+  query: string;
+  span?: SnippetSpan | null;
+}) {
+  if (span) {
+    // Konumlar **kod noktası** sayısıdır (çekirdek `chars()`); `Array.from`
+    // astral karakterlerde UTF-16 birim sayımına kaymaz.
+    const chars = Array.from(text);
+    const end = Math.min(chars.length, span.start + span.length);
+    if (span.start < end) {
+      return (
+        <>
+          {chars.slice(0, span.start).join("")}
+          <mark style={MARK_STYLE}>{chars.slice(span.start, end).join("")}</mark>
+          {chars.slice(end).join("")}
+        </>
+      );
+    }
+  }
   const q = query.trim();
   if (!q) return <>{text}</>;
   const lowered = text.toLocaleLowerCase("tr");
@@ -58,9 +93,7 @@ function Highlight({ text, query }: { text: string; query: string }) {
   return (
     <>
       {text.slice(0, index)}
-      <mark style={{ background: "var(--accent-soft)", color: "inherit", padding: "0 1px", borderRadius: 2 }}>
-        {text.slice(index, index + needle.length)}
-      </mark>
+      <mark style={MARK_STYLE}>{text.slice(index, index + needle.length)}</mark>
       {text.slice(index + needle.length)}
     </>
   );
@@ -764,7 +797,11 @@ export function Search() {
                     </button>
                   </div>
                   <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                    <Highlight text={hit.snippet} query={libraryPage.resolvedQuery} />
+                    <Highlight
+                      text={hit.snippet}
+                      query={libraryPage.resolvedQuery}
+                      span={snippetHighlightSpan(hit)}
+                    />
                   </p>
                   <span className="muted small" style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
                     {t("search.libraryMeta", {

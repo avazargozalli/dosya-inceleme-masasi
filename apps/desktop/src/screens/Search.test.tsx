@@ -31,6 +31,7 @@ import type {
   CaseRow,
   CaseTagRow,
   DocumentRow,
+  PrecedentSearchHit,
   PrecedentSearchPage,
   SearchFilters,
   SearchHit,
@@ -1079,6 +1080,92 @@ describe("emsal alıntısını kopyalama", () => {
     });
     const after = screen.getByRole("alert");
     expect(after.textContent).toContain("kütüphane hatası");
+  });
+});
+
+/**
+ * F12-T14v: kütüphane snippet vurgusu **kaynak aralığından** çizilir.
+ *
+ * T14t (noktalama köprüsü) ve T14u (satır sonu tiresi) eşleşmeyi bulur ama
+ * ekran birebir `indexOf` aradığı için vurgu görünmüyordu. Burada vurgunun
+ * eşleşen **kaynak** metni (tire + satır sonu dahil) işaretlediği, aralığın
+ * `snippetStart`e göre kaydığı ve konum yoksa uydurma vurgu üretmediği ölçülür.
+ */
+describe("kütüphane sonucu vurgusu (F12-T14v)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** Tek sonuçlu kütüphane sayfasıyla arar; sonuç kartının çizilmesini bekler. */
+  async function openLibraryWith(
+    overrides: Partial<PrecedentSearchHit>,
+    query: string,
+  ): Promise<void> {
+    const base = libraryPage();
+    setup({
+      library: {
+        ...base,
+        query,
+        resolvedQuery: query,
+        hits: [{ ...base.hits[0]!, ...overrides }],
+      },
+    });
+    await waitFor(() => expect(mocks.documentList).toHaveBeenCalledWith("c1"));
+    fireEvent.click(screen.getByRole("button", { name: SEARCH_SCOPE_LABELS.precedent_library }));
+    await searchFor(query);
+    await screen.findByText(t("search.libraryTitle"));
+  }
+
+  it("satır sonu tiresiyle birleşen eşleşmeyi kaynak aralığıyla işaretler", async () => {
+    // `bedellini` pencere metninde **birebir yok**: eski vurgu sessizce düşerdi.
+    await openLibraryWith(
+      {
+        snippet: "…ödenen bedel-\nlini tutarı…",
+        snippetStart: 200,
+        matchStart: 207,
+        matchLength: 11,
+      },
+      "bedellini",
+    );
+    expect(document.querySelector("mark")?.textContent).toBe("bedel-\nlini");
+  });
+
+  it("noktalama köprüsüyle eşleşen sorguyu kaynak metniyle işaretler", async () => {
+    await openLibraryWith(
+      {
+        snippet: "…Karar: Kredi-kartı ile ödeme…",
+        snippetStart: 40,
+        matchStart: 47,
+        matchLength: 11,
+      },
+      "kredi kartı",
+    );
+    expect(document.querySelector("mark")?.textContent).toBe("Kredi-kartı");
+  });
+
+  it("konum yoksa (künye eşleşmesi) uydurma vurgu çizmez", async () => {
+    // Konum alanları boş: eski davranışa düşer — metinde birebir geçmeyen
+    // sorgu için işaret **uydurulmaz**.
+    await openLibraryWith(
+      {
+        snippet: "…künye eşleşmesi…",
+        snippetStart: 10,
+        matchStart: null,
+        matchLength: null,
+        matchSource: "metadata",
+      },
+      "2024/123",
+    );
+    expect(document.querySelector("mark")).toBeNull();
   });
 });
 

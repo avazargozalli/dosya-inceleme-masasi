@@ -6,6 +6,7 @@ import {
   precedentSearchSummary,
   precedentSnippetForCopy,
   scopeNotice,
+  snippetHighlightSpan,
   SEARCH_SCOPE_LABELS,
 } from "./search-scope";
 
@@ -75,5 +76,68 @@ describe("arama kapsamı", () => {
     expect(text).toContain("emsal kütüphanesi");
     expect(text).toContain("version-");
     expect(text).toContain("itirazın reddine");
+  });
+});
+
+/**
+ * F12-T14v: kütüphane vurgusu eşleştiricinin **ölçtüğü kaynak aralığından**
+ * çizilir. Snippet penceresi metnin ortasından başlarsa başına `…` eklenir
+ * (`snippet_window`); konum çevrimi bu öneki ve **kod noktası** sayımını
+ * bilmeli. Aralık pencereyle kesişmiyorsa vurgu **uydurulmaz**.
+ */
+describe("snippet vurgu aralığı", () => {
+  /** Kaynak metnin `snippetStart`ten başlayan penceresi. */
+  function windowed(
+    snippet: string,
+    snippetStart: number,
+    matchStart: number | null,
+    matchLength: number | null,
+    matchSource: PrecedentSearchHit["matchSource"] = "full_text",
+  ): PrecedentSearchHit {
+    return { ...hit, snippet, snippetStart, matchStart, matchLength, matchSource };
+  }
+
+  it("kaynak konumunu snippet kod noktasına çevirir (baştaki … sayılır)", () => {
+    // Pencere 200'den başlar; `itirazın` kaynakta 205'te, snippet'te 6'da.
+    const snippet = "…dava itirazın reddine…";
+    const span = snippetHighlightSpan(windowed(snippet, 200, 205, 8));
+    expect(span).toEqual({ start: 6, length: 8 });
+    expect(Array.from(snippet).slice(6, 14).join("")).toBe("itirazın");
+  });
+
+  it("satır sonu tiresiyle birleşen eşleşmeyi kaynak aralığıyla verir", () => {
+    // `bedel-\nlini` 11 kod noktasıdır: tire ve satır sonu aralığa dahildir.
+    const snippet = "…ödenen bedel-\nlini tutarı…";
+    const span = snippetHighlightSpan(windowed(snippet, 200, 207, 11));
+    expect(span).toEqual({ start: 8, length: 11 });
+    expect(Array.from(snippet).slice(8, 19).join("")).toBe("bedel-\nlini");
+  });
+
+  it("pencere metnin başından başlıyorsa kaydırma yapmaz", () => {
+    const span = snippetHighlightSpan(windowed("kira bedeli", 0, 0, 4));
+    expect(span).toEqual({ start: 0, length: 4 });
+  });
+
+  it("pencere sonunu taşan aralığı görünen kısımla kırpar", () => {
+    // Sorgu pencereden uzun: işaret görünen sona kadar çizilir, taşmaz.
+    const span = snippetHighlightSpan(windowed("…kira", 10, 10, 40));
+    expect(span).toEqual({ start: 1, length: 4 });
+  });
+
+  it("konumları kod noktası sayar (astral karakter kaydırmaz)", () => {
+    // 😀 tek kod noktası, iki UTF-16 birimi: yanlış sayım vurguyu kaydırırdı.
+    const snippet = "…😀 kira";
+    const span = snippetHighlightSpan(windowed(snippet, 5, 7, 4));
+    expect(span).toEqual({ start: 3, length: 4 });
+    expect(Array.from(snippet).slice(3, 7).join("")).toBe("kira");
+  });
+
+  it("konum yoksa ya da pencereyle kesişmiyorsa vurgu üretmez", () => {
+    expect(snippetHighlightSpan({ ...hit, matchStart: null })).toBeNull();
+    expect(snippetHighlightSpan({ ...hit, matchLength: null })).toBeNull();
+    expect(snippetHighlightSpan({ ...hit, matchLength: 0 })).toBeNull();
+    // Eşleşme pencerenin solunda / sağında: uydurma vurgu yok.
+    expect(snippetHighlightSpan(windowed("…itiraz", 100, 90, 6))).toBeNull();
+    expect(snippetHighlightSpan(windowed("…itiraz", 100, 400, 6))).toBeNull();
   });
 });
