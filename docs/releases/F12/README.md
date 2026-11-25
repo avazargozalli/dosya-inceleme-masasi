@@ -30,6 +30,7 @@
 | F12-T14s | ✅ | **arama** kesme işareti yazımını eşitler (T14r sınırı e kapandı): `Tam` kipinde `'` yazan sorgu `’` yazan metni ve tersi bulunur; kütüphane aramasında eşleşmenin **konumu** da bulunur (`match_start`/`match_length`); işaret **silinmez** (eksik/fazla eşleşmez), referans uygulama birebir aynı hükmü verir; `İfade`/`Esnek` belirteç kuralı ve şema (v68) değişmedi (2026-11-25) |
 | F12-T14t | ✅ | **arama konumu noktalama köprüsünü kurar** (T14s sınırı d kapandı): `İfade`/`Esnek` kipinde `kredi kartı` sorgusu `kredi-kartı` metninde eşleşince `match_start`/`match_length` artık **kaynak aralığını** verir, snippet metnin başından değil eşleşmeden gösterilir; `İfade` son belirteçte tam, `Esnek` önek kabul eder (eşleştiriciyle aynı kural); `Tam` kipi **noktalamaya duyarlı kalır** (F15 #35/#36), künye kipi konum üretmez; eşleştirici doğrulaması ve şema (v68) değişmedi (2026-11-25) |
 | F12-T14u | ✅ | **arama tek belirteçteki satır sonu tiresini birleştirir** (T14t sınırı a kapandı): iki yana yaslı PDF/OCR `bedel-\nlini` yazar, kullanıcı `bedellini` arar — `İfade`/`Esnek` kipinde eşleşme artık **bulunur** (`matched=0` yanlış negatifi kapandı) ve konum **kaynak aralığını** verir (tire + satır sonu dahil, 11 karakter), snippet kaynağı gösterir; birleştirme **tek çekirdekten** (`parsing::dehyphenated_chars`; alıntı doğrulamasının `dehyphenate_with_map`i de aynı çekirdeği kullanır), gerçek tire (`kredi-kartı`) ve paragraf ayrımı (iki satır sonu) birleştirilmez, yumuşak tire (`U+00AD`) atılır; `Tam` kipi **noktalamaya duyarlı kalır**, harf kuralı kipten gelir (`İfade` sadeleştirmez, `Esnek` sadeleştirir); şema (v68) ve arayüz kodu değişmedi (2026-11-25) |
+| F12-T14v | ✅ | **kütüphane snippet vurgusu kaynak aralığından çizilir** (T14t/T14u ortak sınırı d kapandı, arayüz): ekran eşleşmeyi birebir `indexOf` ile arıyordu — noktalama köprüsü (`kredi kartı` ↔ `Kredi-kartı`) ve satır sonu tiresi (`bedellini` ↔ `bedel-\nlini`) eşleşmelerinde snippet vurgusuz kalıyordu. Vurgu artık çekirdeğin ölçtüğü `matchStart`/`matchLength`/`snippetStart` üçlüsünden **kod noktası** sayımıyla çizilir; `…` pencere öneki hesaba katılır, pencereyi taşan aralık görünen kısmıyla kırpılır, konum yoksa (künye eşleşmesi) vurgu **uydurulmaz**. Dosya sonuçları değişmedi (konum alanı taşımaz, birebir vurgu sürer). Şema (v68) ve çekirdek değişmedi (2026-11-25) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2283,7 +2284,9 @@ noktalamaya duyarlı kaldı (F15 #35/#36 korunur) ve köprü orada hiç çalış
 (c) konum **kaynak aralığıdır** — sorgu dizesinden uzun olabilir (aradaki
 noktalama dahil), bu bilinçli; (d) snippet içindeki vurgu (`Highlight`) hâlâ
 **birebir** sorgu dizesini arar; köprülenmiş eşleşme vurgulanmaz, yalnız
-pencere ve konum satırı düzelir (ayrı arayüz işi); (e) sonuç **metin
+pencere ve konum satırı düzelir — **T14v'de kütüphane yolu için kapatıldı**
+(aşağıda); dosya sonuçları konum alanı taşımadığı için orada birebir vurgu
+sürer; (e) sonuç **metin
 eşleşmesi**, anlam değil; (f) gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
 
@@ -2364,6 +2367,65 @@ PDF üreticisi onları yazarsa eşleşmez; (b) `Tam` kipi noktalamaya duyarlı
 kaldı, birleştirme orada çalışmaz; (c) konum **kaynak aralığıdır** (tire +
 satır sonu dahil), sorgu dizesinden uzundur — bilinçli; (d) snippet vurgusu
 (`Highlight`) hâlâ birebir sorguyu arar; birleştirilmiş eşleşme vurgulanmaz,
-yalnız pencere ve konum satırı düzelir (ayrı arayüz işi); (e) sonuç **metin
+yalnız pencere ve konum satırı düzelir (ayrı arayüz işi) — **T14v'de
+kütüphane yolu için kapatıldı** (aşağıda; dosya sonuçları konum taşımaz);
+(e) sonuç **metin
 eşleşmesi**, anlam değil; (f) gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
+
+## F12-T14v — kütüphane snippet vurgusu kaynak aralığından çizilir (2026-11-25)
+
+**Ölçülen kusur:** T14t (noktalama köprüsü) ve T14u (satır sonu tiresi)
+aramanın **eşleştiğini** ve `match_start`/`match_length`in **kaynak
+aralığını** verdiğini kanıtladı; ama sonuç kartı vurguyu hâlâ birebir
+`indexOf` ile arıyordu. `kredi kartı` sorgusu `Kredi-kartı` metninde,
+`bedellini` sorgusu `bedel-\nlini` penceresinde eşleşiyor; snippet görünüyor,
+**vurgu yok** — kullanıcının eşleşmenin *nerede* olduğunu göremediği sessiz
+arayüz kusuru (iki dilimin ortak dürüst sınırı (d)). Önce testler yazıldı:
+eski vurgu koduyla ekran testleri **2 KIRMIZI** (köprü ve tire senaryoları;
+üçüncü negatif test yeşil), yeni kodla **3/3 yeşil** ölçüldü.
+
+**Kural:**
+
+- **Tek kaynak konum:** vurgu çekirdeğin ölçtüğü üçlüden türetilir —
+  `snippetHighlightSpan(hit)` = `matchStart - snippetStart + (… öneki)` ve
+  `matchLength` (`lib/search-scope.ts`). Arayüz kendi eşleştirmesini
+  **yapmaz**; ikinci bir eşleştirme uygulaması drift kaynağıdır.
+- **Kod noktası sayımı:** çekirdek konumları Rust `char` sayısıdır; arayüz
+  `Array.from` ile kod noktası indeksleri kullanır (astral karakter UTF-16
+  birim sayımını kaydırmaz).
+- **Pencere kuralı:** snippet metnin ortasından başlarsa başına `…` eklenir
+  (`snippet_window`); önek yalnız `snippetStart > 0` **ve** ilk karakter `…`
+  iken sayılır. Pencereyi taşan aralık **görünen kısmıyla** kırpılır;
+  eşleşme pencereyle kesişmiyorsa `null` — **uydurma vurgu yok**.
+- **Kapsam:** yalnız emsal kütüphanesi sonuçları (konum alanlarını taşıyan
+  tek yol). Dosya sonuçları (`SearchHit`) konum alanı taşımaz; orada birebir
+  vurgu aynen sürer — ayrı dilim.
+
+**Testler/yerel:** Yeni **9** test. Lib (`search-scope.test.ts`, +6): kaynak
+konumunun snippet kod noktasına çevrimi `…` önekiyle; satır sonu tiresi 11
+kod noktası; pencere baştan başlarken kaydırma yok; pencere sonunu taşan
+aralık kırpılır; astral karakter (😀) kod noktası sayımı; `matchStart`/
+`matchLength` boş, 0 ya da pencere dışı → `null`. Ekran testleri
+(`Search.test.tsx`, +3): uçtan uca `bedellini` sorgusu `bedel-\nlini` işaretini
+çizer (birebir arama bu metinde bulamaz), `kredi kartı` sorgusu `Kredi-kartı`
+işaretini çizer, künye eşleşmesinde (`matchStart=null`) işaret **yok**.
+Arayüz tam paket **67 dosya / 1499 test yeşil** (`TZ=UTC`, node 22.23.1;
+fark: ağaçtaki başka ajanın commit'siz testleri), `tsc --noEmit` temiz. Rust
+kodu değişmedi.
+
+**CI (ölçüldü):** kod `56d8f0b` (4 dosya, **+222/−6**) → run
+`45689775795` **10/10 YEŞİL** (`dim-storage` **834** iki OS'ta: macos-15
+**597,19 s** / ubuntu-latest **1.633,01 s**; `arayüz` 67 dosya / **1496**
+test — 1487 + bu dilimin 9 testi, paket `index-DserMZ2E.js` **733,36 kB** /
+gzip **194,60 kB**, +0,49 kB; `masaüstü kabuk` 52 passed + 5 ignored,
+`windows güvenli depo` 30, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) vurgu **kaynak aralığını** gösterir; noktalama
+köprüsünde `Kredi-kartı` (aradaki tire dahil) boyanır, sorgu dizgesi değil —
+bilinçli; (b) pencereyi taşan uzun eşleşmede yalnız görünen kısım
+işaretlenir; (c) **dosya** sonuçlarında konum alanı yok — vurgu orada
+birebir sorguyla sınırlı (ayrı dilim); `Tam` kipinin noktalama duyarlılığı
+(F15 #35/#36) değişmedi; (d) sonuç **metin eşleşmesi**, anlam değil;
+(e) gerçek Tauri penceresi + görsel QA **insan bekliyor**.
