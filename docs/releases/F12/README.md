@@ -31,6 +31,7 @@
 | F12-T14t | ✅ | **arama konumu noktalama köprüsünü kurar** (T14s sınırı d kapandı): `İfade`/`Esnek` kipinde `kredi kartı` sorgusu `kredi-kartı` metninde eşleşince `match_start`/`match_length` artık **kaynak aralığını** verir, snippet metnin başından değil eşleşmeden gösterilir; `İfade` son belirteçte tam, `Esnek` önek kabul eder (eşleştiriciyle aynı kural); `Tam` kipi **noktalamaya duyarlı kalır** (F15 #35/#36), künye kipi konum üretmez; eşleştirici doğrulaması ve şema (v68) değişmedi (2026-11-25) |
 | F12-T14u | ✅ | **arama tek belirteçteki satır sonu tiresini birleştirir** (T14t sınırı a kapandı): iki yana yaslı PDF/OCR `bedel-\nlini` yazar, kullanıcı `bedellini` arar — `İfade`/`Esnek` kipinde eşleşme artık **bulunur** (`matched=0` yanlış negatifi kapandı) ve konum **kaynak aralığını** verir (tire + satır sonu dahil, 11 karakter), snippet kaynağı gösterir; birleştirme **tek çekirdekten** (`parsing::dehyphenated_chars`; alıntı doğrulamasının `dehyphenate_with_map`i de aynı çekirdeği kullanır), gerçek tire (`kredi-kartı`) ve paragraf ayrımı (iki satır sonu) birleştirilmez, yumuşak tire (`U+00AD`) atılır; `Tam` kipi **noktalamaya duyarlı kalır**, harf kuralı kipten gelir (`İfade` sadeleştirmez, `Esnek` sadeleştirir); şema (v68) ve arayüz kodu değişmedi (2026-11-25) |
 | F12-T14v | ✅ | **kütüphane snippet vurgusu kaynak aralığından çizilir** (T14t/T14u ortak sınırı d kapandı, arayüz): ekran eşleşmeyi birebir `indexOf` ile arıyordu — noktalama köprüsü (`kredi kartı` ↔ `Kredi-kartı`) ve satır sonu tiresi (`bedellini` ↔ `bedel-\nlini`) eşleşmelerinde snippet vurgusuz kalıyordu. Vurgu artık çekirdeğin ölçtüğü `matchStart`/`matchLength`/`snippetStart` üçlüsünden **kod noktası** sayımıyla çizilir; `…` pencere öneki hesaba katılır, pencereyi taşan aralık görünen kısmıyla kırpılır, konum yoksa (künye eşleşmesi) vurgu **uydurulmaz**. Dosya sonuçları değişmedi (konum alanı taşımaz, birebir vurgu sürer). Şema (v68) ve çekirdek değişmedi (2026-11-25) |
+| F12-T14w | ✅ | **dosya sonucu eşleşmenin konumunu ve penceresini taşır** (T14v sınırı c kapandı, arayüz + okuma yolu): `SearchHit` artık `matchStart`/`matchLength` + `snippet`/`snippetStart` taşır; konum kütüphanenin **aynı** `locate_in_text` konumlayıcısından, pencere **aynı** `snippet_window` kuralından (240/60) gelir — ikinci uygulama yok. Doğrulayıcının sözcük başı çapası `anchored_find`e ayrıldı; `İfade` **tam belirteç** ister (`kiraathane` içindeki `kira` işaretlenmez), `Esnek` son belirteç önekini kabul eder, `Tam` yalnız baş sınırına bakar, künyede konum **uydurulmaz**. Kart metni 600 karakterden kesmeyi bıraktı: eşleşme geç gelse bile pencereye gelir ve `snippetHighlightSpan` ile çizilir. Ayrıca dosya aramasında **ölçülen yeni kusur**: FTS aday üretimi satır sonu tiresiyle bölünmüş kelimeyi aday yapmıyor (`bedellini` → 0 sonuç; kütüphane bulur) — T14u eşleştirici katmanı bu yolda ulaşılamaz, ayrı dilim. Şema (v68) değişmedi (2026-11-26) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2368,7 +2369,9 @@ kaldı, birleştirme orada çalışmaz; (c) konum **kaynak aralığıdır** (tir
 satır sonu dahil), sorgu dizesinden uzundur — bilinçli; (d) snippet vurgusu
 (`Highlight`) hâlâ birebir sorguyu arar; birleştirilmiş eşleşme vurgulanmaz,
 yalnız pencere ve konum satırı düzelir (ayrı arayüz işi) — **T14v'de
-kütüphane yolu için kapatıldı** (aşağıda; dosya sonuçları konum taşımaz);
+kütüphane, T14w'de dosya yolu için kapatıldı** (aşağıda); ancak dosya
+**aday üretimi** satır sonu tiresini bilmez (`bedellini` → 0 sonuç, T14w'de
+ölçüldü — ayrı dilim);
 (e) sonuç **metin
 eşleşmesi**, anlam değil; (f) gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
@@ -2426,6 +2429,96 @@ manifesti, kaynak arşivi yeşil).
 köprüsünde `Kredi-kartı` (aradaki tire dahil) boyanır, sorgu dizgesi değil —
 bilinçli; (b) pencereyi taşan uzun eşleşmede yalnız görünen kısım
 işaretlenir; (c) **dosya** sonuçlarında konum alanı yok — vurgu orada
-birebir sorguyla sınırlı (ayrı dilim); `Tam` kipinin noktalama duyarlılığı
-(F15 #35/#36) değişmedi; (d) sonuç **metin eşleşmesi**, anlam değil;
-(e) gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+birebir sorguyla sınırlıydı — **T14w'de kapatıldı** (aşağıda); `Tam` kipinin
+noktalama duyarlılığı (F15 #35/#36) değişmedi; (d) sonuç **metin eşleşmesi**,
+anlam değil; (e) gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14w — dosya sonucu eşleşmenin konumunu ve penceresini taşır (2026-11-26)
+
+**Ölçülen kusur:** T14v kütüphane kartının vurgusunu çekirdeğin ölçtüğü
+kaynak aralığına bağladı, ama **dosya** sonuçları (`SearchHit`) konum alanı
+taşımıyordu: kart eşleşmeyi birebir `indexOf` ile arıyor, metni **baştan**
+600 karakterde kesiyordu. Sonuç: (1) `İfade` köprüsüyle bulunan eşleşme
+(`kredi kartı` ↔ `Kredi-kartı`) **vurgusuz** kalıyordu; (2) eşleşme 600.
+karakterden sonraysa **hiç görünmüyordu** — kullanıcı sonucu görüyor,
+eşleşmenin *yerini* göremiyordu (T14v dürüst sınırı c).
+
+**Kural:**
+
+- **Tek konumlayıcı:** `SearchHit` artık `matchStart`/`matchLength` taşır;
+  değer kütüphanenin **aynı** `locate_in_text` fonksiyonundan gelir
+  (`precedents::locate_in_text` `pub(crate)` — ikinci uygulama yok).
+- **Tek pencere:** `snippet`/`snippetStart` kütüphanenin **aynı**
+  `snippet_window` kuralıyla (240 karakter, 60 öncül) üretilir; `rawText`
+  tam metin olarak kalır (okuyucu/uyum). Eşleşme geç gelse bile pencere onu
+  içerir; metnin tamamı artık karta basılmaz.
+- **Çapa tek çekirdek:** doğrulayıcının sözcük başı çapası
+  (`anchored_contains`) `anchored_find`e ayrıldı; konumlayıcının alt dize
+  katmanları **aynı** fonksiyonu okur. `İfade` **tam belirteç** ister
+  (`kiraathane` içindeki `kira` işaretlenmez), `Esnek` son belirteç önekini
+  kabul eder (vurgu **eşleşen tam belirteci** kapsar), `Tam` doğrulayıcının
+  kendi kuralına (yalnız baş sınırı) uyar.
+- **Uydurma yok:** künye kipinde ya da konum bulunamadığında `matchStart`
+  `null`; arayüz `snippetHighlightSpan` ile **yalnız** ölçülmüş aralığı
+  çizer, yoksa birebir aramaya düşer.
+- **Arayüz:** dosya kartı `hit.snippet` gösterir ve
+  `snippetHighlightSpan(hit)` kullanır; span fonksiyonu iki kapsamın ortak
+  tipiyle (`SnippetPositioned`) genişletildi — kütüphane ve dosya **tek**
+  vurgu kuralı okur.
+
+**Testler/yerel:** Yeni **8** test. Rust (`parsing`, +5): köprü konumu
+(`Kredi-kartı` → 7/11), geç eşleşmede pencere (`matchStart` 360,
+`snippetStart` 300, `…` öneki), sözcük başı çapası (`kiraathane` atlanır →
+19/4), kod noktası + kesme işareti (😀 → 2/11), künyede konum **yok**
+(`match_start None`, snippet baştan). Arayüz (`Search.test.tsx`, +3): köprü
+eşleşmesi işaretlenir, geç eşleşme pencereye gelir ve `…` vurguya sayılmaz,
+konum yoksa işaret çizilmez. **Kırmızı-önce dürüst ölçüm:** Rust testleri
+alanlar yer tutucuyken **5/5 KIRMIZI** (`dim-t14w-red.log`); arayüz testleri
+eski `Search.tsx` ile **2 KIRMIZI · 1 yeşil** (negatif kontrol), yedek
+sha256 `19bc200d…` **birebir** geri yazıldı. Yerel: arayüz tam paket
+**67 dosya / 1502 test yeşil** (`TZ=UTC`, node 22.23.1), `tsc --noEmit`
+temiz; Rust tam paket **841/841 yeşil, 863,80 s** (`dim-t14w-libtest-full.log`;
+fark: ağaçtaki başka ajanın commit'siz 2 testi); iki manifest fmt,
+`clippy -p dim-storage --all-targets -- -D warnings` temiz (ilk koşu
+`filter_next` lint'iyle kırmızıydı — `rfind`e çevrildi, **tam paket
+düzeltmeden sonra** koşuldu), masaüstü `check --all-targets` temiz.
+Kütüphane regresyonu: `library_search*` **20/20** ve iki kip-sınırı testi
+yeşil — çapa kuralı kütüphane konumunu bozmadı.
+
+**Kapı (`scratch/dim-t14w-gates.py`, log `dim-t14w-gates.log`):** taban iki
+uçta YEŞİL; **7/7 KANIT** (tam-belirteç son sınırı, kip kuralı, konum
+ölçümü, pencere başı, snippet penceresi, arayüz span çevrimi, kartın span
+kullanımı), her satırda hedef test adı; dört dosya sha256 **birebir** geri
+yazıldı (`Search.tsx 403859a54e9b…`, `parsing.rs ef1b29ea0c40…`,
+`search-scope.ts 3d9572493b66…`, `precedents.rs 5075c2ed3069…`). Dürüst:
+ilk koşu **6/7** — U2 deseni `span={snippetHighlightSpan(hit)}` iki kartta
+da geçtiği için **HEDEF YOK**; desen dosya kartına daraltıldı, kapı
+**baştan** koşuldu; ilk koşunun hükümleri kanıt sayılmadı.
+
+**Ölçülen yeni kusur (bu dilimde kapatılmadı):** dosya aramasında **FTS
+aday üretimi** satır sonu tiresiyle bölünmüş kelimeyi hiç aday yapmıyor:
+`bedellini` sorgusu `bedel-\nlini` metninde `İfade` kipinde **0 sonuç**
+(ölçüldü; kütüphane yolu bulur). T14u'nun eşleştirici katmanı bu yolda
+**ulaşılamaz** — doğrulayıcıya aday gelmiyor; yanlış negatif sürüyor. Ayrı
+dilim (aday ifadesi + F15 maliyet ölçümü); bu dilimin konumu yalnız **dönen**
+sonuçlar içindir.
+
+**CI (ölçüldü):** kod `b4a0e47` (8 dosya, **+320/−16**) → run
+`45709097229` **10/10 YEŞİL** (`dim-storage` **839** iki OS'ta: macos-15
+**636,60 s** / ubuntu-latest **644,32 s**; `arayüz` 67 dosya / **1499** test
+— 1496 + bu dilimin 3 ekran testi, paket `index-BP1oZUhg.js`
+**733,32 kB** / gzip **194,60 kB**, −0,04 kB; `masaüstü kabuk` 52 passed +
+5 ignored, `windows güvenli depo` 30, SBOM, sözleşmeler, belge worker'ı,
+sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) konum, katmanlı konumlayıcının ilk **çapalı**
+geçişidir; eşleşmenin yeridir, anlamın kanıtı değil; (b) `Esnek` kipinde son
+belirteç önek olabildiği için vurgu **eşleşen tam belirteci** kapsar (sorgu
+dizesinden uzun olabilir); (c) `Tam` kipinin doğrulayıcısı yalnız **baş**
+sınırına bakar — `kiraathane`nin başındaki `kira` `Tam` kipinde eşleşme
+sayılır ve işaretlenir (doğrulayıcı davranışı değişmedi); (d) künye kipinde
+konum üretilmez — vurgu yok (uydurulmaz); (e) dosya aramasında satır sonu
+tiresiyle bölünmüş kelime **hâlâ aday olmuyor** (yukarıdaki ölçülen kusur);
+(f) `snippet` metnin tamamı değildir (240 karakter pencere) — `rawText` tam
+metin olarak yük taşımaya devam eder; (g) sonuç **metin eşleşmesi**, anlam
+değil; (h) gerçek Tauri penceresi + görsel QA **insan bekliyor**.
