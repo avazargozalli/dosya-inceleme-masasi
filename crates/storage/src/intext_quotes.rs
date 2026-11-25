@@ -69,7 +69,8 @@ const QUOTE_EXTRACTION_NOTE: &str =
     "Alıntı çıkarımı çift tırnak ailesini (“…” · „…“ · «…» · \"…\") ve tek tırnak ailesini \
      (‘…’ · '…') tanır; Türkçe kesme işareti (İstanbul'da, Anayasa’nın) alıntı sınırı değildir. \
      Alıntı içindeki “…” / “...” kısaltma işareti parçaları ayırır: parçalar kaynakta aynı \
-     sırayla aranır, atlanan kısım denetlenmez.";
+     sırayla aranır, atlanan kısım denetlenmez. İşaret alıntının başında/sonundaysa alıntı \
+     kırpılmıştır; kalan tek parça da aranır.";
 
 /// "Sayfada kullanılabilir metin var mı" tanımı **tek yerde**. Sayfa taraması
 /// ([`Database::scan_quote_tier`]) ve sayım ([`Database::page_counts`]) aynı
@@ -403,9 +404,10 @@ pub struct InTextQuoteCheck {
     /// Yalnız **bitişik yazı (ligatür)** açılarak bulunan alıntı sayısı
     /// (kaynakta `taraﬂar`, alıntıda `taraflar`). Birebir sayılmaz.
     pub ligature: usize,
-    /// Yalnız **`…` ile kısaltılmış** parçaların sırayla bulunmasıyla
-    /// doğrulanan alıntı sayısı (F12-T14p). Atlanan kısım denetlenmediği
-    /// için birebir sayılmaz.
+    /// Yalnız **`…` ile kısaltılmış ya da başı/sonu kırpılmış** alıntıların
+    /// gösterilen parçalarının sırayla bulunmasıyla doğrulanan alıntı sayısı
+    /// (F12-T14p/T14q). Atlanan/kırpılan kısım denetlenmediği için birebir
+    /// sayılmaz.
     pub elided: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
@@ -709,8 +711,9 @@ pub struct PrecedentInTextCheck {
     pub unverifiable: usize,
     pub dehyphenated: usize,
     pub ligature: usize,
-    /// Yalnız **`…` ile kısaltılmış** parçaların sırayla bulunmasıyla
-    /// doğrulanan alıntı sayısı (F12-T14p). Atlanan kısım denetlenmez.
+    /// Yalnız **`…` ile kısaltılmış ya da başı/sonu kırpılmış** alıntıların
+    /// gösterilen parçalarının sırayla bulunmasıyla doğrulanan alıntı sayısı
+    /// (F12-T14p/T14q). Atlanan/kırpılan kısım denetlenmez.
     pub elided: usize,
     pub found_in_old_version: usize,
     /// Kararın metinli sürüm sayısı (güncel + sınır içindeki eski sürümler).
@@ -802,8 +805,9 @@ pub struct LibraryInTextCheck {
     pub history_truncated: bool,
     pub dehyphenated: usize,
     pub ligature: usize,
-    /// Yalnız **`…` ile kısaltılmış** parçaların sırayla bulunmasıyla
-    /// doğrulanan alıntı sayısı (F12-T14p). Atlanan kısım denetlenmez.
+    /// Yalnız **`…` ile kısaltılmış ya da başı/sonu kırpılmış** alıntıların
+    /// gösterilen parçalarının sırayla bulunmasıyla doğrulanan alıntı sayısı
+    /// (F12-T14p/T14q). Atlanan/kırpılan kısım denetlenmez.
     pub elided: usize,
     pub notes: Vec<String>,
     pub checked_at: String,
@@ -1118,9 +1122,10 @@ impl Database {
         }
         if elided > 0 {
             notes.push(format!(
-                "{elided} alıntı **`…` ile kısaltılmış** parçaların kaynakta **aynı sırayla** \
-                 bulunmasıyla doğrulandı; atlanan kısım denetlenmedi, birebir sayılmaz ve \
-                 anchor'a bağlanmaz — kaynak metin atlanan kısmıyla birlikte gösterilir."
+                "{elided} alıntı **`…` ile kısaltılmış ya da başı/sonu kırpılmış**: gösterilen \
+                 parçalar kaynakta **sırasıyla** bulundu; atlanan/kırpılan kısım denetlenmedi, \
+                 birebir sayılmaz ve anchor'a bağlanmaz — kaynak metin eşleşen aralık olarak \
+                 gösterilir."
             ));
         }
         if found_in_old_version > 0 {
@@ -1979,9 +1984,10 @@ impl Database {
         }
         if elided > 0 {
             notes.push(format!(
-                "{elided} alıntı **`…` ile kısaltılmış** parçaların karar metninde **aynı \
-                 sırayla** bulunmasıyla doğrulandı; atlanan kısım denetlenmedi ve birebir \
-                 sayılmaz — kaynak metin atlanan kısmıyla birlikte gösterilir."
+                "{elided} alıntı **`…` ile kısaltılmış ya da başı/sonu kırpılmış**: gösterilen \
+                 parçalar karar metninde **sırasıyla** bulundu; atlanan/kırpılan kısım \
+                 denetlenmedi ve birebir sayılmaz — kaynak metin eşleşen aralık olarak \
+                 gösterilir."
             ));
         }
         if found_in_old_version > 0 {
@@ -2383,9 +2389,10 @@ impl Database {
         }
         if elided > 0 {
             notes.push(format!(
-                "{elided} alıntı **`…` ile kısaltılmış** parçaların emsal metninde **aynı \
-                 sırayla** bulunmasıyla doğrulandı; atlanan kısım denetlenmedi ve birebir \
-                 sayılmaz — kaynak metin atlanan kısmıyla birlikte gösterilir."
+                "{elided} alıntı **`…` ile kısaltılmış ya da başı/sonu kırpılmış**: gösterilen \
+                 parçalar emsal metninde **sırasıyla** bulundu; atlanan/kırpılan kısım \
+                 denetlenmedi ve birebir sayılmaz — kaynak metin eşleşen aralık olarak \
+                 gösterilir."
             ));
         }
         Ok(LibraryInTextCheck {
@@ -2908,7 +2915,7 @@ mod tests {
     // ---- F12-T14p: `…` ile kısaltılmış alıntı ----
 
     #[test]
-    fn elided_segments_require_two_parts_over_the_minimum() {
+    fn elided_segments_require_two_parts_but_allow_edge_clipping() {
         assert_eq!(
             elided_segments("sözleşmenin feshi … kiracının temerrüdü"),
             Some(vec![
@@ -2916,11 +2923,25 @@ mod tests {
                 "kiracının temerrüdü".to_string()
             ])
         );
-        // Tek parça kalan kırpık alıntı (başta/sonda `…`) eşleştirilmez.
-        assert!(elided_segments("… kiracının temerrüdü").is_none());
-        assert!(elided_segments("sözleşmenin feshi …").is_none());
-        // Kısa parça tek başına güvenilir değildir.
+        // Kenar kırpması (F12-T14q): gösterilen tek parça yeterli, eşik yine 8.
+        assert_eq!(
+            elided_segments("… kiracının temerrüdü"),
+            Some(vec!["kiracının temerrüdü".to_string()])
+        );
+        assert_eq!(
+            elided_segments("sözleşmenin feshi …"),
+            Some(vec!["sözleşmenin feshi".to_string()])
+        );
+        assert_eq!(
+            elided_segments("...kiracının temerrüdü…"),
+            Some(vec!["kiracının temerrüdü".to_string()])
+        );
+        // Kısa parça tek başına güvenilir değildir — iç kısaltmada da, kırpmada da.
         assert!(elided_segments("Mahkeme … kiracının temerrüdü").is_none());
+        assert!(elided_segments("Mahkeme …").is_none());
+        assert!(elided_segments("… Mahkeme").is_none());
+        // Yalnız işaretlerden oluşan alıntı kısaltılmış sayılmaz.
+        assert!(elided_segments("…").is_none());
         // Üç nokta ve köşeli biçim de kısaltma işaretidir.
         assert_eq!(
             elided_segments("sözleşmenin feshi ... kiracının temerrüdü").map(|parts| parts.len()),
@@ -3140,6 +3161,128 @@ mod tests {
         );
         assert_eq!(report.quotes[0].state, "exact");
         assert_eq!(report.elided, 0);
+    }
+
+    // ---- F12-T14q: başı/sonu `…` ile kırpılmış alıntı ----
+
+    #[test]
+    fn edge_clipped_quote_is_found_as_elided_and_never_bound() {
+        let db = db();
+        let case_id = new_case(&db, "Kırpık alıntı");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &["Mahkeme sözleşmenin haklı nedenle feshedilebileceğine karar verdi."],
+        );
+        // `...` başta, `…` sonda: alıntı iki uçtan kırpılmış, gösterilen kısım bitişik.
+        let report = check(
+            &db,
+            &case_id,
+            "“...sözleşmenin haklı nedenle feshedilebileceğine…” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(finding.occurrences, 1);
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(position.match_kind, "elided");
+        assert_eq!(
+            position.source_text,
+            "sözleşmenin haklı nedenle feshedilebileceğine"
+        );
+        assert!(!position.spans_pages);
+        assert_eq!(report.elided, 1);
+        assert_eq!(report.normalized, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("başı/sonu kırpılmış")));
+        // Kırpık alıntı da kaynağa bağlanmaz: `…` taşıyan alıntı birebir bulunamaz.
+        let error = db
+            .create_anchor(&NewAnchor {
+                case_id: case_id.clone(),
+                document_version_id: position.document_version_id.clone(),
+                parse_run_id: position.parse_run_id.clone(),
+                segment_id: position.segment_id.clone().expect("segment"),
+                start_offset: position.char_start,
+                end_offset: position.char_start
+                    + i64::try_from(finding.quote.chars().count()).unwrap_or(i64::MAX),
+                exact_quote: finding.quote.clone(),
+            })
+            .expect_err("kırpık alıntı bağlanmamalı");
+        assert_eq!(error.code(), "E_QUOTE_NOT_FOUND");
+    }
+
+    #[test]
+    fn edge_clipping_is_recognized_on_either_end() {
+        let db = db();
+        let case_id = new_case(&db, "Kırpık iki uç");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "Mahkeme sözleşmenin haklı nedenle feshedilebileceğine karar verdi. Ayrıca \
+                 kiracının temerrüde düştüğünü belirtti.",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“...sözleşmenin haklı nedenle feshedilebileceğine” ve “kiracının temerrüde \
+             düştüğünü…” deniyor.",
+            None,
+        );
+        assert_eq!(report.quotes.len(), 2);
+        for finding in &report.quotes {
+            assert_eq!(finding.state, "normalized");
+            assert_eq!(
+                finding.position.as_ref().expect("position").match_kind,
+                "elided"
+            );
+        }
+        assert_eq!(report.elided, 2);
+    }
+
+    #[test]
+    fn edge_clipped_quote_with_a_short_remainder_is_not_found() {
+        let db = db();
+        let case_id = new_case(&db, "Kırpık kısa");
+        add_document(&db, &case_id, "Karar", &["Mahkeme fesih kararını verdi."]);
+        // "Mahkeme" (7) eşik altı: kırpık alıntı da tek kısa parçayla eşleşmez.
+        let report = check(&db, &case_id, "“Mahkeme…” ifadesi.", None);
+        assert_eq!(report.quotes[0].state, "not_found");
+        assert_eq!(report.elided, 0);
+    }
+
+    #[test]
+    fn repeated_edge_clipped_passage_is_ambiguous() {
+        let db = db();
+        let case_id = new_case(&db, "Kırpık tekrar");
+        add_document(
+            &db,
+            &case_id,
+            "Karar",
+            &[
+                "sözleşmenin haklı nedenle feshedilebileceğine burada geçiyor ve \
+                 sözleşmenin haklı nedenle feshedilebileceğine tekrar geçiyor.",
+            ],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“…sözleşmenin haklı nedenle feshedilebileceğine…” ifadesi.",
+            None,
+        );
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "ambiguous");
+        assert_eq!(finding.occurrences, 2);
+        assert!(finding
+            .candidates
+            .iter()
+            .all(|candidate| candidate.match_kind == "elided"));
+        assert_eq!(report.elided, 1);
     }
 
     #[test]
@@ -4541,6 +4684,44 @@ mod tests {
     }
 
     #[test]
+    fn precedent_in_text_edge_clipped_quote_matches_the_single_quote_path() {
+        let db = db();
+        let p = new_precedent(&db, "2024/324");
+        add_precedent_text(
+            &db,
+            &p.id,
+            "Karar: sözleşmenin haklı nedenle feshedilebileceğine ve kiracının kira \
+             bedelini ödemekle temerrüde düştüğüne hükmedildi.",
+        );
+        let quote = "…kiracının kira bedelini ödemekle temerrüde düştüğüne";
+        let single = db.verify_precedent_quote(&p.id, quote).expect("tek alıntı");
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: format!("“{quote}” deniyor."),
+                },
+            )
+            .expect("metin içi");
+        let finding = &report.quotes[0];
+        assert_eq!(single.method.as_deref(), Some("elided"));
+        assert_eq!(finding.method.as_deref(), Some("elided"));
+        assert_eq!(finding.state, "normalized");
+        assert_eq!(single.occurrences, finding.occurrences);
+        assert_eq!(report.elided, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("başı/sonu kırpılmış")));
+        // Kırpılan uç kaynakta yok; eşleşen aralık yalnız gösterilen kısmı kapsar.
+        let position = finding.position.as_ref().expect("position");
+        assert_eq!(
+            position.source_text,
+            "kiracının kira bedelini ödemekle temerrüde düştüğüne"
+        );
+    }
+
+    #[test]
     fn precedent_without_full_text_cannot_verify_in_text_quotes() {
         let db = db();
         let p = new_precedent(&db, "2024/306");
@@ -4944,5 +5125,34 @@ mod tests {
         assert_eq!(finding.matches[0].method, "elided");
         assert_eq!(report.elided, 1);
         assert!(report.notes.iter().any(|n| n.contains("kısaltılmış")));
+    }
+
+    #[test]
+    fn library_search_finds_edge_clipped_quotes() {
+        let db = db();
+        let p1 = new_precedent(&db, "2024/325");
+        add_precedent_text(
+            &db,
+            &p1.id,
+            "Karar: sözleşmenin haklı nedenle feshedilebileceğine ve kiracının kira \
+             bedelini ödemekle temerrüde düştüğüne hükmedildi.",
+        );
+        let p2 = new_precedent(&db, "2024/326");
+        add_precedent_text(&db, &p2.id, "Başka karar: kira bedeli ödenmedi.");
+        let report = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: "“...kiracının kira bedelini ödemekle temerrüde düştüğüne” geçiyor.".into(),
+            })
+            .expect("kütüphane");
+        let finding = &report.quotes[0];
+        assert_eq!(finding.state, "found");
+        assert_eq!(finding.matched_precedents, 1);
+        assert_eq!(finding.matches[0].precedent_id, p1.id);
+        assert_eq!(finding.matches[0].method, "elided");
+        assert_eq!(report.elided, 1);
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("başı/sonu kırpılmış")));
     }
 }

@@ -458,14 +458,20 @@ fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
     }
 }
 
-/// `…`, `...`, `[…]` veya `[...]` ile kısaltılmış bir alıntıyı parçalara
-/// ayırır (F12-T14p).
+/// `…`, `...`, `[…]` veya `[...]` ile kısaltılmış **ya da** başı/sonu
+/// kısaltma işaretiyle kırpılmış bir alıntıyı parçalara ayırır
+/// (F12-T14p/T14q).
 ///
-/// Yalnız **en az iki** dolu parça ve her parçada en az [`MIN_QUOTE_CHARS`]
-/// karakter varsa `Some` döner. Kısa parça tek başına hemen her kararda
-/// geçebileceği için kısaltılmış sayılmaz; başta/sonda tek kalan `…` ile
-/// kırpılmış alıntı da bu dilimde eşleştirilmez (`unclosed` değil, yalnız
-/// `not_found`). Boş parçalar (yan yana iki işaret) atılır.
+/// Kurallar:
+/// - **İç** kısaltma (`A … B`) en az **iki** dolu parça ister; her parça en az
+///   [`MIN_QUOTE_CHARS`] karakter olmalıdır. Kısa parça tek başına hemen her
+///   kararda geçebileceği için kısaltılmış sayılmaz.
+/// - **Kenar** kırpması (`… B` / `A …` / `… B …`) tek parça bırakabilir; o tek
+///   parça da en az [`MIN_QUOTE_CHARS`] karakter olmalıdır. Gösterilen kısım
+///   bitişik metindir ama tam alıntı katmanları yine önce denenir (kaynakta
+///   gerçek `…` geçiyorsa eşleşme `exact` kalır).
+/// - Boş parçalar (yan yana iki işaret) atılır; yalnız işaretlerden oluşan
+///   alıntı kısaltılmış sayılmaz (`unclosed` değil, yalnız `not_found`).
 pub(crate) fn elided_segments(quote: &str) -> Option<Vec<String>> {
     // En uzun işaret önce denenmezse `[...]` içindeki `...` erken kesilir;
     // `find` konumu işaretin başlangıcı olduğu için `[` her zaman kazanır,
@@ -495,11 +501,18 @@ pub(crate) fn elided_segments(quote: &str) -> Option<Vec<String>> {
             return None;
         }
     }
+    // Kenar kırpması (T14q): ilk/son parçanın boş kalması, alıntının o uçtan
+    // kısaltma işaretiyle kırpıldığını gösterir. İç kısaltma iki parça ister;
+    // tek parça yalnız bu kenar durumunda geçerlidir.
+    let clipped_start = parts.first().is_some_and(String::is_empty);
+    let clipped_end = parts.last().is_some_and(String::is_empty);
     let parts: Vec<String> = parts.into_iter().filter(|part| !part.is_empty()).collect();
-    if parts.len() < 2
-        || parts
-            .iter()
-            .any(|part| part.chars().count() < MIN_QUOTE_CHARS)
+    if parts.is_empty() || (parts.len() == 1 && !(clipped_start || clipped_end)) {
+        return None;
+    }
+    if parts
+        .iter()
+        .any(|part| part.chars().count() < MIN_QUOTE_CHARS)
     {
         return None;
     }
