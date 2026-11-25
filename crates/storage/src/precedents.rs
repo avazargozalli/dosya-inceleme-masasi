@@ -2043,7 +2043,9 @@ struct PrecedentSearchSeed {
 }
 
 /// Eşleşmenin metindeki yerini bulur: birebir → boşluk sadeleştirmesi →
-/// Türkçe katlama. Bulunamazsa `None`; **konum uydurulmaz**.
+/// Türkçe katlama + **kesme işareti eşitlemesi** (F12-T14s; `Anayasa'nın`
+/// sorgusu `Anayasa’nın` metninde konumuyla bulunur). Bulunamazsa `None`;
+/// **konum uydurulmaz**.
 fn locate_in_text(text: &str, needle: &str) -> Option<(i64, i64)> {
     let needle = needle.trim();
     if needle.is_empty() {
@@ -2065,8 +2067,8 @@ fn locate_in_text(text: &str, needle: &str) -> Option<(i64, i64)> {
             }
         }
     }
-    let haystack = normalize_with_map(text);
-    let wanted = normalize_with_map(needle);
+    let haystack = turkish_fold_with_map(text);
+    let wanted = turkish_fold_with_map(needle);
     if !wanted.text.is_empty() {
         if let Some(at) = haystack.text.find(&wanted.text) {
             if let Some(start) = mapped_start(&haystack, at) {
@@ -4514,6 +4516,66 @@ mod tests {
             .search_precedents(&library_query("İtirazın reddine", SearchMode::Exact, None))
             .expect("birebir arama");
         assert_eq!(exact.hits.len(), 1);
+    }
+
+    /// F12-T14s: kütüphane araması kesme işareti yazımını eşitler ve **konumu**
+    /// bulur — `'` yazan sorgu `’` yazan kararda üç kipte de eşleşir,
+    /// `match_start` gerçek aralığı gösterir; işaret **silinmez** (eksik
+    /// kesme işaretli sorgu eşleşmez).
+    #[test]
+    fn library_search_matches_apostrophe_variants_and_locates_the_match() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent(
+                "Anayasa Mahkemesi",
+                Some("2024/77"),
+                Some("2025/78"),
+            ))
+            .expect("emsal");
+        let mut body = String::new();
+        for _ in 0..40 {
+            body.push_str("dolgu metni ");
+        }
+        body.push_str("Anayasa’nın 2. maddesi iptal edildi.");
+        for _ in 0..40 {
+            body.push_str(" sonrası");
+        }
+        db.add_precedent_text(&p.id, &text_of(&body))
+            .expect("metin");
+
+        let query = "Anayasa'nın 2. maddesi";
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query(query, mode, None))
+                .expect("arama");
+            assert_eq!(page.matched, 1, "kip {mode:?} kesme işaretini eşitlemeli");
+            let hit = &page.hits[0];
+            assert!(
+                hit.snippet.contains("Anayasa’nın 2. maddesi"),
+                "kip {mode:?} snippet eşleşmeyi göstermeli"
+            );
+            let start = hit.match_start.expect("eşleşme konumu") as usize;
+            let at: String = body.chars().skip(start).take(12).collect();
+            assert!(
+                at.starts_with("Anayasa’nın"),
+                "kip {mode:?} konum gerçek eşleşmeyi göstermeli: {at}"
+            );
+            assert_eq!(
+                hit.match_length,
+                Some(query.chars().count() as i64),
+                "kip {mode:?} uzunluk sorgu uzunluğu"
+            );
+        }
+
+        // Kesme işareti silinmez: işaretsiz sorgu işaretli metni bulmaz.
+        let without = db
+            .search_precedents(&library_query(
+                "Anayasanın 2. maddesi",
+                SearchMode::Exact,
+                None,
+            ))
+            .expect("arama");
+        assert_eq!(without.matched, 0, "eksik kesme işareti eşleşmemeli");
     }
 
     /// Esas/karar numarası künyeden de bulunur; metinde numara geçmese bile

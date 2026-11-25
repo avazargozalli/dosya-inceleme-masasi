@@ -1390,7 +1390,24 @@ fn fold_char(ch: char) -> char {
     }
 }
 
+/// Kesme işareti ailesi: `’` (U+2019) ve `ʼ` (U+02BC) ASCII `'` sayılır;
+/// harf ve boşluk korunur, işaret **silinmez** (F12-T14s; alıntı
+/// doğrulamasındaki T14r kuralının arama karşılığı).
+fn fold_apostrophe(ch: char) -> char {
+    match ch {
+        '\u{2019}' | '\u{02BC}' => '\'',
+        c => c,
+    }
+}
+
+/// Metnin tamamında kesme işareti eşitlemesi (`fold_apostrophe`).
+fn fold_apostrophes(text: &str) -> String {
+    text.chars().map(fold_apostrophe).collect()
+}
+
 /// `turkish_lower(collapse_ws(text))` çıktısını `out` içine yazar (ayırma yok).
+/// Kesme işareti ailesi de eşitlenir (F12-T14s): `Tam` kipinde kaynak `’`
+/// yazarken sorgu `'` yazsa da eşleşme düşmez; işaret silinmez.
 fn fold_ws_into(text: &str, out: &mut String) {
     out.clear();
     let mut last_space = false;
@@ -1403,7 +1420,7 @@ fn fold_ws_into(text: &str, out: &mut String) {
             out.push(' ');
         } else {
             last_space = false;
-            out.push(fold_char(ch));
+            out.push(fold_apostrophe(fold_char(ch)));
         }
     }
 }
@@ -1612,7 +1629,8 @@ pub(crate) struct MatchScratch {
 /// `dim_evidence::normalize` çıktısı olan `normalized_text` kullanılır.
 pub(crate) struct SearchMatcher {
     mode: SearchMode,
-    /// `exact`: `turkish_lower(collapse_ws(iğne))`.
+    /// `exact`: `turkish_lower(collapse_ws(iğne))` + kesme işareti eşitlemesi
+    /// (F12-T14s): kaynak `’` yazarken sorgu `'` yazsa da eşleşir.
     exact: String,
     /// `phrase`: Türkçe küçük harfli belirteçler.
     phrase: Vec<String>,
@@ -1626,7 +1644,7 @@ impl SearchMatcher {
     pub(crate) fn new(text: &str, mode: SearchMode, docket: Option<DocketNumber>) -> Self {
         Self {
             mode,
-            exact: turkish_lower(&collapse_ws(text)),
+            exact: fold_apostrophes(&turkish_lower(&collapse_ws(text))),
             phrase: exact_tokens(text),
             folded: fold_tokens(text),
             docket,
@@ -1676,8 +1694,8 @@ impl SearchMatcher {
 fn search_match(text: &str, needle: &str, mode: &str) -> bool {
     match mode {
         "exact" => {
-            let haystack = turkish_lower(&collapse_ws(text));
-            let wanted = turkish_lower(&collapse_ws(needle));
+            let haystack = fold_apostrophes(&turkish_lower(&collapse_ws(text)));
+            let wanted = fold_apostrophes(&turkish_lower(&collapse_ws(needle)));
             !wanted.is_empty() && anchored_contains(&haystack, &wanted)
         }
         "flexible" => seq_matches(&fold_tokens(text), &fold_tokens(needle), true),
@@ -4208,6 +4226,99 @@ mod tests {
         assert_eq!(wrong.total, Some(0));
     }
 
+    /// F12-T14s: kesme işareti yazımı aramayı düşürmez. Kaynak `’` yazarken
+    /// sorgu `'` yazsa da **Tam** kipte bulunur; ters yön de aynı. Üç kip aynı
+    /// kümeyi verir — kesme işareti farkı kip ayrımı yaratmaz.
+    #[test]
+    fn search_exact_matches_apostrophe_variants_both_directions() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                "Anayasa’nın 2. maddesi iptal edildi",
+                "Anayasa'nın 10. maddesine aykırılık",
+            ],
+        );
+
+        let ascii = search_with(&db, &case_id, "Anayasa'nın 2", SearchMode::Exact);
+        assert_eq!(
+            ascii.total,
+            Some(1),
+            "ASCII kesme işareti ’ yazan metni bulmalı"
+        );
+        assert_eq!(ascii.hits[0].page_index, Some(0));
+
+        let typographic = search_with(&db, &case_id, "Anayasa’nın 10", SearchMode::Exact);
+        assert_eq!(
+            typographic.total,
+            Some(1),
+            "ters yön: ’ yazan sorgu ' yazan metni bulmalı"
+        );
+        assert_eq!(typographic.hits[0].page_index, Some(1));
+
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "Anayasa'nın 2", mode);
+            assert_eq!(
+                page.total,
+                Some(1),
+                "kip {mode:?} kesme işaretini eşitlemeli"
+            );
+        }
+    }
+
+    /// Kesme işareti **silinmez**: eksik/fazla işaret eşleşmez (T14r kuralı
+    /// aramada da geçerli). Sessiz gevşeme üretilmediğinin negatif kanıtı.
+    #[test]
+    fn search_exact_does_not_remove_apostrophes() {
+        let (db, case_id, version_id) = setup();
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &["Anayasa’nın 2. maddesi", "Anayasanın yorumu"],
+        );
+
+        let without = search_with(&db, &case_id, "Anayasanın 2", SearchMode::Exact);
+        assert_eq!(
+            without.total,
+            Some(0),
+            "kaynak ’ taşırken işaretsiz sorgu eşleşmemeli"
+        );
+        let extra = search_with(&db, &case_id, "Anayasa'nın yorumu", SearchMode::Exact);
+        assert_eq!(
+            extra.total,
+            Some(0),
+            "kaynak işaretsizken işaretli sorgu eşleşmemeli"
+        );
+    }
+
+    /// Kesme işareti **silinmez**: işaret farkı kaldırılmaz (T14r kuralı).
+    /// Doğrudan eşleştirici düzeyinde ölçülür — FTS aday daraltması bu kuralı
+    /// maskeleyemesin; referans uygulama da aynı hükmü vermeli.
+    #[test]
+    fn search_matcher_does_not_treat_missing_apostrophe_as_equal() {
+        let text = "Anayasa’nın 2. maddesi iptal edildi";
+        let normalized = dim_evidence::normalize(text);
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let matcher = SearchMatcher::new("Anayasanın 2", mode, None);
+            let mut scratch = MatchScratch::default();
+            assert!(
+                !matcher.matches(Some(text), Some(&normalized), &mut scratch),
+                "kip {mode:?}: eksik kesme işareti eşleşmemeli"
+            );
+            assert!(
+                !search_match(text, "Anayasanın 2", mode.tag()),
+                "referans kip {mode:?}: eksik kesme işareti eşleşmemeli"
+            );
+        }
+        // Kontrol: işaretli iğne eşleşir — kural yalnız silmeyi yasaklar.
+        let matcher = SearchMatcher::new("Anayasa'nın 2", SearchMode::Exact, None);
+        let mut scratch = MatchScratch::default();
+        assert!(matcher.matches(Some(text), Some(&normalized), &mut scratch));
+    }
+
     #[test]
     fn search_auto_treats_quoted_text_as_phrase() {
         let (db, case_id, version_id) = setup();
@@ -4327,6 +4438,8 @@ mod tests {
             "   ",
             "",
             "itirazın itiraz itiraz",
+            "Anayasa’nın 2. maddesi iptal edildi",
+            "Anayasa'nın 10. maddesine aykırılık",
         ];
         let needles = [
             "ıslah",
@@ -4339,6 +4452,9 @@ mod tests {
             "ğüş",
             "Islah",
             "i",
+            "Anayasa'nın",
+            "Anayasa’nın",
+            "anayasa'nın 2",
         ];
         let mut scratch = MatchScratch::default();
         for mode in [
