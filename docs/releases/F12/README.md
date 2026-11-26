@@ -35,6 +35,7 @@
 | F12-T14x | ✅ | **dosya aramasının aday üretimi satır sonu tiresini bilir** (T14w'de ölçülen kusur kapandı, okuma yolu): FTS aday ifadesi `İfade`/`Esnek` kipinde her sorgu belirtecinin **her olası bölünmesini** `NEAR(ilk parça, son parça)` olarak da arar (`Esnek`te son parça önek; kararı yine doğrulayıcı verir) — `bedellini` sorgusu `bedel-\nlini` metninde artık **bulunur**, `matchStart`/`matchLength` kaynak aralığını (11) verir. Aynı dilimde ölçülen **ikinci kusur**: `Esnek` doğrulamasına yalnız `normalized_text` veriliyordu (satır sonu boşluğa dönüştüğü için dehyphenate katmanı dosya yolunda hiç çalışmıyordu) — sayfa taraması ve SQL sayımı artık `dim_search_verify(raw_text, normalized_text)` çağırır, "hangi sütun okunur" ayrımı kaldırıldı. Gerçek tire (`kredi-kartı`), paragraf ayrımı (iki satır sonu) ve boşluklu yazım **eşleşmez**; `Tam` dar kalır (F15 #35/#36); alternatif sınırı **64**, tek belirtecin iki kez bölünmesi aday ifadesinde yok (dürüst sınır). F15 (3.420 segment): ifade 47→749 B, FTS sayım p50 1,11→2,90 ms; sayfa p50 9,95 ms. Şema (v68) ve arayüz değişmedi (2026-11-26) |
 | F12-T14y | ✅ | **çok bölünmüş belirteç aday ifadesinde** (T14x dürüst sınırı (a) kapandı): bir kelime satır sonunda **iki kez** bölünürse (`be-\ndel-\nlini` → FTS'te üç ham belirteç) aday ifadesi satırı hiç seçmiyordu → `İfade` kipinde 0 sonuç. Artık her belirtecin her olası **iki bölünmesi** `NEAR(ilk parça, orta parça, son parça)` olarak da aranır; tek ve çift bölünmenin **ayrı 64'lük bütçesi** var (200 karakterlik belirteçte tek bütçe dolsa bile 64 çift aday; ifade < 40.000 B). Parça üretimi tek yardımcıda (`token_parts`), ifade biçimi tek üreticide (`near_expression`); dört+ parça bilinçli olarak aday değil. Kararı yine `SearchMatcher` verir — gerçek tire, paragraf ve boşluklu yazım eşleşmez, `Tam` dar kalır. F15 (3.420 segment): ifade `bedellini` 398→1.770 B, `itirazın reddine` 749→2.801 B; FTS sayım p50 0,87→3,15 / 2,90→7,25 ms; sayfa p50 4,19→17,83 / 9,95→31,25 ms. Şema (v68) ve arayüz değişmedi (2026-11-26) |
 | F12-T14z | ✅ | **satır sonundaki tipografik tire ailesi birleştirilir** (T14u dürüst sınırı (a) **kısmen** kapandı; en/em tire bilinçli dışarıda): çekirdek yalnız ASCII `-` biliyordu — `‐` (U+2010) ve `‑` (U+2011) ile bölünmüş kelime alıntıda `not_found`, dosya aramasında 0 sonuç veriyordu (sessiz yanlış negatif); satır sonundaki **yumuşak tire** (`U+00AD`) de birleştirilmiyordu (yalnız kendisi atılıyordu). Artık `is_line_hyphen` ailesi (ASCII + U+2010 + U+2011) ve yumuşak tire satır sonunda birleştirilir; **en/em tire (`–`,`—`) çizgi işaretidir, birleştirilmez** (negatif kontrol), gerçek tire ve paragraf ayrımı korunur, `Tam` dar kalır; üç yol (dosya araması, tek emsal, belge) aynı çekirdekten okur; aday ifadesi ve şema (v68) değişmedi (2026-11-26) |
+| F12-T14aa | ✅ | **sorgu tarafı satır sonu tiresi** (T14z dürüst sınırı (f) kapandı): PDF'ten kopyalanan alıntı sorguya tire + satır sonu taşır (`bedel‐\nlini`, `bedel-\nlini`); belge tarafı birleştiriyordu ama sorgu iki belirtece ayrıldığı için **düz yazılmış** belge (`bedellini`) `İfade`/`Esnek` kiplerinde bulunamıyordu (sessiz 0 sonuç; eski davranış paragraf ayrımlı belgeyi yanlış eşliyordu). Artık `SearchQuery::resolve` sorguyu belgeyle **aynı** çekirdekten (`dehyphenated_chars`) geçirir — tire ailesi (ASCII, `U+2010`, `U+2011`) birleşir, yumuşak tire (`U+00AD`) atılır; `Tam` noktalamaya duyarlı kalır, gerçek tire / en tire / paragraf ayrımı birleştirilmez. Tek nokta: sayfa, sayım ve kütüphane araması aynı birleşik sorguyu görür (`resolvedQuery` dönüşümü görünür); konum kaynak aralığıdır (11). Şema (v68) ve arayüz değişmedi (2026-11-27) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2806,3 +2807,91 @@ eşleşmesi**, anlam değil; (f) sorgu PDF'ten satır sonu tiresiyle kopyalanmı
 belirteç eşleşmesi), birleştirilmiş kelimeyle değil; bu durum bu dilimde
 ölçülmedi (açık kayıt); (g) gerçek Tauri penceresi + görsel QA **insan
 bekliyor**.
+
+**T14aa kapatma notu (2026-11-27):** sınır (f) ölçüldü ve **kapandı** —
+yukarıdaki «belge yine bulunur» ifadesi **eksikti**: düz yazılmış belge
+(`bedellini`) kopyalanmış sorguyla **bulunmuyordu** (sorgu iki belirtece
+ayrılıyordu); yalnız tireyi aynen taşıyan belge eşleşiyordu. Artık sorgu da
+birleştirilir (§F12-T14aa).
+
+## F12-T14aa — sorgu tarafı satır sonu tiresi (2026-11-27)
+
+**Ölçülen kusur:** Kullanıcı alıntıyı PDF'ten kopyaladığında kelime ortasında
+tire + satır sonu **sorguya** da girer (`bedel‐\nlini`, `bedel-\nlini`). Belge
+tarafı bu yazımı T14u/T14z'den beri birleştiriyordu; ama sorgu iki belirtece
+ayrıldığı için **düz yazılmış** belge (`bedellini`) hiç bulunamıyordu —
+`İfade` ve `Esnek` kiplerinde sessiz **0 sonuç** (T14z dürüst sınır (f)).
+Kırmızı-önce ölçüm bunu üç testte gösterdi; ayrıca eski davranışın **yanlış
+pozitifi** de görüldü: aynı sorgu paragraf ayrımı taşıyan belgeyi
+(`bedel-\n\nlini`) eşliyordu (iki belirteç iki belirtece).
+
+**Kural:** `SearchQuery::resolve` — kip çözümlendikten sonra `İfade`/`Esnek`
+sorgusu belgeyle **aynı çekirdekten** (`dehyphenated_chars`, tek uygulama)
+geçirilir: satır sonundaki tire ailesi (ASCII, `U+2010`, `U+2011`) birleşir,
+yumuşak tire (`U+00AD`) atılır. `Tam` noktalamaya duyarlı kalır (F15 #35/#36),
+`Esas/karar` sorgusu serbest metin değildir. Ön kapı `may_dehyphenate`: tire
+taşımayan normal sorguda tarama da, yeni dizge de yoktur — maliyet sorgu
+başına **bir kez**, aday satırı başına değil.
+
+**Neden tek nokta:** Üç tüketici de (sayfa, sayım, kütüphane araması) aynı
+`resolve()` yolundan geçer → aday ifadesi (`fts_expression`), doğrulayıcı
+(`SearchMatcher`) ve konum katmanı (`locate_in_text`) **aynı** birleşik
+sorguyu görür; ikinci bir birleştirme kuralı yazılmaz, drift yok. Dönüşüm
+gizli değil: `resolvedQuery` alanı birleşik biçimi taşır.
+
+**Testler (kırmızı-önce 3/3 KIRMIZI, `dim-t14aa-red.log`):** (1) dosya
+araması uçtan uca — düz + ASCII tireli + tipografik tireli belge kopyalanmış
+sorguyla birlikte bulunur, gerçek tire / en tire / paragraf eşleşmez, konum 9
+ve kaynak aralığı 11, tipografik ve yumuşak tire sorguda da birleşir, `Tam`
+sınırı; (2) kütüphane araması uçtan uca — iki emsal, kaynak aralığı
+`Kira bedel-\nlini ödemeyen`, snippet eşleşmeyi gösterir, `Tam` yalnız tireli
+emsal; (3) çözümleme birimi — kip sınırları, gerçek tire, en tire, paragraf,
+`Auto` → `Esnek`/`İfade`. Kırmızı koşuda eski davranışın yanlış pozitifi de
+kayda geçti (`bedel-\n\nlini` belgesi eşleşiyordu).
+
+**Yerel:** `dim-storage` tam paket **850 passed · 1 ignored · 0 failed,
+858,39 s** (`dim-t14aa-libtest.log`; önceki 847 + bu dilimin 3 testi —
+ağaçta başka ajanın commit'siz 2 testi dâhil, CI sayısı 848); `hyphen`
+filtresi **22 passed** (`1 ignored` = ölçüm testi); iki manifest `cargo fmt
+--check`, `clippy -p dim-storage --all-targets -- -D warnings` temiz; masaüstü
+`check --all-targets` **2 dk 25 s** temiz.
+
+**F15 maliyeti (aynı ölçüm testi):** aday ifadesine dokunulmadı — ifade boyu
+**birebir aynı** (`itirazın reddine` 2.801 B, `bedellini` 1.770 B), aday/dönen
+kümesi **21/20**, eşleşen 60; sayfa p50 (sayı hariç) `Esnek bedellini`
+**19,28 ms**, `İfade itirazın reddine` **33,57 ms** — T14z aralığında
+(18,46–19,78 / 33,38–35,56 ms). Yeni iş yalnız sorgu çözümlemesinde bir kez
+(`may_dehyphenate` + ≤300 karakterlik tarama); aday satırı yolunda ek maliyet
+yok.
+
+**Kapı (`scratch/dim-t14aa-gates.py`, log `dim-t14aa-gates.log`):** taban
+`hyphen` filtresi YEŞİL (**22 passed**); **8/8 KANIT · YEŞİL 0 · ÖLÇÜLEMEDİ/
+EŞLEŞMEDİ 0**, her satırda hedef test adı; kaynak sha256 `7207de98…` koşu
+öncesi/sonrası **birebir**. Mutantlar: sorgu birleştirmesi tümden kaldırılır,
+birleştirme `Tam`a da uygulanır (gevşetme), yalnız yumuşak tire atılır, yalnız
+`İfade` birleştirir (`Esnek` dışarıda), çekirdek yalnız ASCII tireyi tanır,
+yalnız tek belirteçli sorgu birleştirilir, sorgudaki **tüm** tireler atılır
+(gerçek tire de birleşir — gevşetme), çekirdek paragraf ayrımını da birleştirir
+(`breaks <= 2`).
+
+**CI (ölçüldü):** kod `a06ff09` (2 dosya, **+286/−0**) → run `45905743436`
+**10/10 YEŞİL** (`dim-storage` **848** iki OS'ta — T14z 845 + bu dilimin 3
+testi, `1 ignored` = ölçüm testi: macos-15 **638,67 s** / ubuntu-latest
+**1.639,52 s**; iş süresi macos-15 **13 dk 09 s** / ubuntu **29 dk 58 s**;
+`arayüz` 67 dosya / **1499** test, paket `index-BP1oZUhg.js` **733,32 kB** /
+gzip **194,60 kB** — değişmedi; masaüstü kabuk, windows güvenli depo, SBOM,
+sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) birleştirme yine **tek** satır sonuyla sınırlıdır;
+iki+ satır sonu paragraf ayrımıdır — ancak `Tam` kipi boşluğu sadeleştirdiği
+için paragraf ayrımını ayırt **edemez** (`bedel- lini`), bu birleştirmeden
+önce de böyleydi; (b) sorgu **bir kez** normalleşir: satır sonu tiresi taşıyan
+sorgu, o noktada **gerçek** tire yazan belgeyi artık eşlemez
+(`bedel-lini`) — düz yazılmış kelimeyi yazan sorguyla aynı davranış (bilinçli
+tutarlılık); (c) `Tam` noktalamaya duyarlı kalır, birleştirme oraya sızmaz
+(F15 #35/#36); (d) eşleşme **metin eşleşmesi**, anlam değil; (e) konum kaynak
+aralığıdır (tire + satır sonu dahil) — uzunluk sorgu uzunluğundan farklı
+olabilir; (f) vurgu: eşleşen sonuçlarda konum alanları kullanılır (bozulmadı);
+konum **yoksa** yedek vurgu birleşik sorguyu snippet'te birebir arar — sonuç
+değil, yalnız vurgu etkilenebilir; (g) 100k (F15) ve Windows/Linux donanımı bu
+dilimde ölçülmedi; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
