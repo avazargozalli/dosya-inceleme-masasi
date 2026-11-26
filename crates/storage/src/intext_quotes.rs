@@ -4124,6 +4124,53 @@ mod tests {
         );
     }
 
+    /// F12-T14z — tipografik tire ailesi: kaynak satır sonunda `‐` (U+2010)
+    /// ya da `‑` (U+2011) yazıyorsa alıntı `dehyphenated` katmanında bulunur;
+    /// en tire (`–`) çizgi işaretidir, birleştirilmez.
+    #[test]
+    fn quote_with_a_typographic_line_hyphen_is_found() {
+        let db = db();
+        let case_id = new_case(&db, "Tipografik tire");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Mahkeme, davacının kira bedel\u{2010}\nlini ödemediğini tespit etmiştir."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "Davacı “kira bedellini ödemediğini” söyledi.",
+            None,
+        );
+        assert_eq!(report.not_found, 0, "tipografik tire eşleşmeyi engelledi");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(report.dehyphenated, 1);
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "dehyphenated");
+        assert!(
+            position.source_text.contains("bedel\u{2010}\nlini"),
+            "kaynak metin tire ailesini göstermeli: {}",
+            position.source_text
+        );
+
+        // En tire (`–`) birleştirilmez: alıntı bulunamaz.
+        let case2 = new_case(&db, "En tire");
+        add_document(
+            &db,
+            &case2,
+            "Karar.pdf",
+            &["Mahkeme, davacının kira bedel\u{2013}\nlini ödemediğini tespit etmiştir."],
+        );
+        let missed = check(
+            &db,
+            &case2,
+            "Davacı “kira bedellini ödemediğini” söyledi.",
+            None,
+        );
+        assert_eq!(missed.not_found, 1, "en tire tire değildir");
+    }
+
     /// Font kaynaklı bitişik yazı (`ﬂ`) **kendi katmanında** bulunur: birebir
     /// sayılmaz, nedeni notta yazılır, kaynak metin ligatürü gösterir.
     #[test]

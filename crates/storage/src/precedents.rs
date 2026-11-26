@@ -3978,6 +3978,39 @@ mod tests {
         assert_eq!(sliced, "taraﬂar arasında kurulmuştur");
     }
 
+    /// F12-T14z — tipografik tire ailesi: satır sonunda `‐` (U+2010) ya da
+    /// `‑` (U+2011) varsa kelime birleştirilir; en tire (`–`) çizgi işaretidir,
+    /// birleştirilmez.
+    #[test]
+    fn quote_broken_with_a_typographic_hyphen_is_found_as_a_loose_match() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/11"), Some("2025/12")))
+            .expect("emsal");
+        let body = "Kira bedel\u{2010}\nlini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        let result = db
+            .verify_precedent_quote(&p.id, "kira bedellini ödemeyen kiracı")
+            .expect("doğrulama");
+        assert_eq!(result.state, "match");
+        assert_eq!(result.method.as_deref(), Some("dehyphenated"));
+        assert_eq!(result.matched_length, Some(32), "kaynak aralığı");
+        assert_eq!(result.occurrences, 1);
+
+        // En tire tire değildir: birleştirme yok, alıntı bulunamaz.
+        let p2 = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/12"), Some("2026/1")))
+            .expect("emsal");
+        let dashed = "Kira bedel\u{2013}\nlini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        db.add_precedent_text(&p2.id, &text_of(dashed))
+            .expect("metin");
+        let missed = db
+            .verify_precedent_quote(&p2.id, "kira bedellini ödemeyen kiracı")
+            .expect("doğrulama");
+        assert_eq!(missed.state, "mismatch");
+        assert_eq!(missed.reason.as_deref(), Some("not_found"));
+    }
+
     #[test]
     fn a_real_hyphen_is_not_joined_in_precedent_quotes() {
         let db = db();

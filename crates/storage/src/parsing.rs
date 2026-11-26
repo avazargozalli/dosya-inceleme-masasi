@@ -1437,10 +1437,52 @@ pub(crate) fn fold_tokens(text: &str) -> Vec<String> {
     tokens_with(text, true)
 }
 
+/// Satır sonundaki tire **ailesi**: ASCII tire, tipografik tire (`U+2010`) ve
+/// bölünmez tire (`U+2011`). En/em tire (`–`,`—`) **değildir** — onlar
+/// çizgi/aralık işaretidir, kelime bölünmesi sayılmaz (F12-T14z).
+fn is_line_hyphen(ch: char) -> bool {
+    matches!(ch, '-' | '\u{2010}' | '\u{2011}')
+}
+
+/// `index`teki tire karakterinden sonra **tek** satır sonu + harf/rakam geliyorsa
+/// birleşmenin biteceği indeksi (ilk harfin indeksi) verir; aksi hâlde `None`.
+///
+/// Kapılar: tire ile satır sonu arasında yalnız boşluk/sekme olabilir; iki ve
+/// daha çok satır sonu paragraf/sayfa ayrımıdır (birleştirilmez); satır sonundan
+/// sonra harf/rakam yoksa (ör. imza çizgisi) birleştirme yapılmaz.
+fn continuation_after_line_hyphen(chars: &[char], index: usize) -> Option<usize> {
+    let mut probe = index + 1;
+    while probe < chars.len() && matches!(chars[probe], ' ' | '\t') {
+        probe += 1;
+    }
+    if probe >= chars.len() || !matches!(chars[probe], '\n' | '\r') {
+        return None;
+    }
+    let mut after = probe;
+    let mut breaks = 0usize;
+    while after < chars.len() && chars[after].is_whitespace() {
+        if matches!(chars[after], '\n' | '\r') {
+            // `\r\n` tek satır sonu sayılır.
+            let previous_is_cr = after > probe && chars[after] == '\n' && chars[after - 1] == '\r';
+            if !previous_is_cr {
+                breaks += 1;
+            }
+        }
+        after += 1;
+    }
+    if breaks == 1 && after < chars.len() && chars[after].is_alphanumeric() {
+        Some(after)
+    } else {
+        None
+    }
+}
+
 /// Satır/sayfa sonunda tire ile bölünmüş kelimeyi birleştiren **tek** çekirdek:
 /// `bedel-\nlini` → `bedel` + `lini` (tire ve satır sonu atılır), yumuşak tire
-/// (`U+00AD`) her yerde atılır. Her çıktı karakteriyle birlikte **kaynak**
-/// karakter indeksini verir; konum eşlemesi ve dürüst `matched_length` için.
+/// (`U+00AD`) her yerde atılır. Tire **ailesi** ASCII tire, `U+2010` ve
+/// `U+2011`dir; en/em tire birleştirilmez (F12-T14z). Her çıktı karakteriyle
+/// birlikte **kaynak** karakter indeksini verir; konum eşlemesi ve dürüst
+/// `matched_length` için.
 ///
 /// Yanlış birleştirme kapıları: tire ile kelime arasında satır sonu **yoksa**
 /// (`kredi-kartı`) o tire gerçektir, korunur; **iki ve daha çok** satır sonu
@@ -1453,34 +1495,17 @@ pub(crate) fn dehyphenated_chars(input: &str) -> Vec<(char, usize)> {
     let mut index = 0usize;
     while index < chars.len() {
         let ch = chars[index];
-        if ch == '\u{00AD}' {
-            index += 1;
-            continue;
-        }
-        if ch == '-' {
-            // Tire + (boşluk*) + **tek** satır sonu + (boşluk*) + harf/rakam
-            let mut probe = index + 1;
-            while probe < chars.len() && matches!(chars[probe], ' ' | '\t') {
-                probe += 1;
+        if ch == '\u{00AD}' || is_line_hyphen(ch) {
+            // Yumuşak tire görünmezdir: birleşme yoksa yine de atılır.
+            // Satır sonunda kırılma noktasıysa tire ailesiyle birlikte
+            // satır sonu da atılır (`bedel‐\nlini` → `bedellini`).
+            if let Some(after) = continuation_after_line_hyphen(&chars, index) {
+                index = after;
+                continue;
             }
-            if probe < chars.len() && matches!(chars[probe], '\n' | '\r') {
-                let mut after = probe;
-                let mut breaks = 0usize;
-                while after < chars.len() && chars[after].is_whitespace() {
-                    if matches!(chars[after], '\n' | '\r') {
-                        // `\r\n` tek satır sonu sayılır.
-                        let previous_is_cr =
-                            after > probe && chars[after] == '\n' && chars[after - 1] == '\r';
-                        if !previous_is_cr {
-                            breaks += 1;
-                        }
-                    }
-                    after += 1;
-                }
-                if breaks == 1 && after < chars.len() && chars[after].is_alphanumeric() {
-                    index = after;
-                    continue;
-                }
+            if ch == '\u{00AD}' {
+                index += 1;
+                continue;
             }
         }
         out.push((ch, index));
@@ -1490,8 +1515,8 @@ pub(crate) fn dehyphenated_chars(input: &str) -> Vec<(char, usize)> {
 }
 
 /// Metin dehyphenate katmanının **adayı** olabilir mi? Ucuz ön kapı: yumuşak
-/// tire ya da tire + satır sonu. Yanlış pozitif yalnız gereksiz bir tarama
-/// yapar; hükmü `dehyphenated_chars` verir.
+/// tire ya da tire ailesinden biri + satır sonu. Yanlış pozitif yalnız gereksiz
+/// bir tarama yapar; hükmü `dehyphenated_chars` verir.
 pub(crate) fn may_dehyphenate(text: &str) -> bool {
     let mut after_hyphen = false;
     for ch in text.chars() {
@@ -1504,7 +1529,7 @@ pub(crate) fn may_dehyphenate(text: &str) -> bool {
             }
             after_hyphen = false;
         }
-        if ch == '-' {
+        if is_line_hyphen(ch) {
             after_hyphen = true;
         }
     }
@@ -5020,6 +5045,78 @@ mod tests {
         // (`bedelli` → `be`+`del`+`li`+`ni`).
         let prefix = search_with(&db, &case_id, "bedelli", SearchMode::Flexible);
         assert_eq!(prefix.hits.len(), 2, "Esnek: son belirteç öneki");
+
+        // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
+        let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
+        assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+    }
+
+    /// **F12-T14z — tipografik tire ailesi:** Word/InDesign kaynaklı PDF'ler
+    /// satır sonunda ASCII tire değil tipografik tire `‐` (U+2010) ya da
+    /// bölünmez tire `‑` (U+2011), kimi dosyalarda görünmez yumuşak tire
+    /// (U+00AD) yazar. Çekirdek yalnız `-` bildiği için `bedel‐\nlini` metni
+    /// `bedellini` sorgusuna **0 sonuç** veriyordu (sessiz yanlış negatif).
+    /// Kural: satır sonundaki tire **ailesi** birleştirilir; en/em tire
+    /// (`–`,`—`) tire değil çizgi/aralık işaretidir — birleştirilmez, gerçek
+    /// tire (satır sonu yok) ve paragraf ayrımı (iki satır sonu) da korunur.
+    #[test]
+    fn file_search_finds_a_word_broken_with_a_typographic_hyphen() {
+        let (db, case_id, version_id) = setup();
+        let single = "Sözleşmede öngörülen bedel\u{2010}\nlini ödemesi yapılmadı.";
+        let twice = "Ödemede be\u{2011}\ndel\u{2011}\nlini kalemi vardı.";
+        let soft = "Ödemede bedel\u{00AD}\nlini kalemi vardı.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                single,
+                twice,
+                soft,
+                // En tire (`–`) bir tire değildir: aralık/çizgi işaretidir.
+                "Kredi\u{2013}\nkartı borcu ayrı kalemdir.",
+                // Bölünmez tire satır sonunda **değilse** gerçek tiredir.
+                "Kredi\u{2011}kartı borcu ayrı kalemdir.",
+                // İki satır sonu paragraf ayrımıdır → birleştirme yok.
+                "bedel\u{2010}\n\nlini paragraf ayrımı",
+            ],
+        );
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "bedellini", mode);
+            let mut hits: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+            hits.sort();
+            let mut expected = vec![single, twice, soft];
+            expected.sort();
+            assert_eq!(
+                hits,
+                expected,
+                "{}: tipografik/yumuşak tire eşleşmeli; en tire, gerçek tire ve paragraf eşleşmemeli",
+                mode.tag()
+            );
+            assert_eq!(page.total, Some(3), "{}: sayı eşleşme sayısı", mode.tag());
+        }
+
+        // Konum **kaynak aralığıdır**: tire ailesi karakteri + satır sonu dahil.
+        let page = search_with(&db, &case_id, "bedellini", SearchMode::Phrase);
+        let hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == single)
+            .expect("tipografik tire eşleşmesi");
+        let start = single
+            .find("bedel\u{2010}")
+            .map(|byte| single[..byte].chars().count())
+            .expect("konum");
+        assert_eq!(hit.match_start, Some(start as i64));
+        assert_eq!(hit.match_length, Some(11), "`bedel‐\\nlini` = 11 karakter");
+        assert!(hit.snippet.contains("bedel\u{2010}\nlini"));
+        let twice_hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == twice)
+            .expect("iki bölünmüş eşleşme");
+        assert_eq!(twice_hit.match_length, Some(13), "`be‐\\ndel‐\\nlini` = 13");
 
         // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
         let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
