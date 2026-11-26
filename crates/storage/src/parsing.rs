@@ -1219,20 +1219,23 @@ fn fts_expression(query: &ResolvedQuery) -> String {
 }
 
 /// Aday ifadesinin satır sonu tiresi payı: bir sorgu belirteci metinde
-/// `bedel-\nlini` gibi **iki belirtece bölünmüş** olabilir. FTS bu metni
-/// `bedel`, `lini` diye indeksler; düz `"bedellini"` ifadesi satırı hiç aday
-/// yapmaz ve doğrulayıcının dehyphenate katmanı (F12-T14u) **ulaşılamaz**
-/// kalır (T14w'de ölçülen kusur: 0 sonuç).
+/// `bedel-\nlini` gibi **iki belirtece** ya da `be-\ndel-\nlini` gibi
+/// **üç belirtece** bölünmüş olabilir. FTS bu metni `bedel`, `lini` /
+/// `be`, `del`, `lini` diye indeksler; düz `"bedellini"` ifadesi satırı hiç
+/// aday yapmaz ve doğrulayıcının dehyphenate katmanı (F12-T14u) **ulaşılamaz**
+/// kalır (T14w'de ölçülen kusur: 0 sonuç). T14x tek bölünmeyi, T14y iki
+/// bölünmeyi kapattı.
 ///
-/// Kural: belirtecin her olası bölünmesi `NEAR(ilk parça, son parça)` olarak
+/// Kural: belirtecin her olası **tek** bölünmesi `NEAR(ilk parça, son parça)`,
+/// her olası **iki** bölünmesi `NEAR(ilk parça, orta parça, son parça)` olarak
 /// ayrıca aranır; `Esnek` kipinde son parça önek kalabilir (`prefix_last`),
 /// çünkü doğrulayıcı orada son belirtece önek kabul eder. Aday kümesi
 /// **genişler**, kesin eşleşmeyi yine `SearchMatcher` kurar — burada
 /// "olabilir" kümesi üretilir, hüküm verilmez.
 ///
-/// Sınır: tek belirtecin satır sonunda **iki kez** bölünmesi (`be-\ndel-\nlini`
-/// → üç ham belirteç) bu ifadeyle aday olmaz; söz dizimi üstel olurdu.
-/// `MAX_DEHYPHENATE_ALTERNATIVES` aşılırsa kalan bölünmeler aranmaz.
+/// Sınır: tek ve iki bölünmenin **ayrı** 64'lük bütçesi vardır — tek bölünme
+/// bütçesi uzun belirteçte dolsa bile iki bölünmeli aday üretilir. Daha fazla
+/// bölünme (dört+ parça) aday olmaz; söz dizimi üstel olurdu.
 fn dehyphenated_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
     let mut expression = narrow_expression(column, tokens, prefix_last);
     for alternative in dehyphenate_alternatives(column, tokens, prefix_last) {
@@ -1246,36 +1249,82 @@ fn dehyphenated_expression(column: &str, tokens: &[String], prefix_last: bool) -
     expression
 }
 
-/// Bir belirtecin bölünme sınırı: aday ifadesinin şişmemesi için toplam
-/// alternatif sayısı burada durur (sorgu en çok `MAX_SEARCH_QUERY_CHARS`
-/// karakter, en kötü durumda tek uzun belirteç yüzlerce bölünme üretirdi).
+/// Bir belirtecin bölünme sınırı: aday ifadesinin şişmemesi için **tek**
+/// bölünmeli alternatif sayısı burada durur (sorgu en çok
+/// `MAX_SEARCH_QUERY_CHARS` karakter, en kötü durumda tek uzun belirteç
+/// yüzlerce bölünme üretirdi).
 const MAX_DEHYPHENATE_ALTERNATIVES: usize = 64;
 
+/// İki bölünmeli (üç parçalı) adayların **ayrı** bütçesi: tek bölünme bütçesi
+/// uzun bir belirteçte dolsa bile çok bölünmüş kelime aday olur (F12-T14y).
+/// Sözleşme böylece "64 tek + 64 çift"tir.
+const MAX_DEHYPHENATE_MULTI_ALTERNATIVES: usize = 64;
+
 /// Bölünmüş yazım alternatifleri: her belirteç, her bölünme noktasında iki
-/// bitişik parçaya ayrılır ve **aynı** `narrow_expression` kuralıyla
-/// (aynı sütun, aynı `NEAR` payı, `Esnek`te son parça önek) ifade edilir.
+/// bitişik parçaya (T14x) ya da iki bölünme noktasında üç parçaya (T14y)
+/// ayrılır ve **aynı** `narrow_expression` kuralıyla (aynı sütun, aynı `NEAR`
+/// payı, `Esnek`te son parça önek) ifade edilir.
 fn dehyphenate_alternatives(column: &str, tokens: &[String], prefix_last: bool) -> Vec<String> {
     let mut alternatives = Vec::new();
     if tokens.is_empty() {
         return alternatives;
     }
+    // Tek bölünme (F12-T14x).
     for (index, token) in tokens.iter().enumerate() {
+        if alternatives.len() >= MAX_DEHYPHENATE_ALTERNATIVES {
+            break;
+        }
         let chars: Vec<char> = token.chars().collect();
         if chars.len() < 2 {
             continue;
         }
         for split in 1..chars.len() {
             if alternatives.len() >= MAX_DEHYPHENATE_ALTERNATIVES {
-                return alternatives;
+                break;
             }
-            let mut parts: Vec<String> = tokens[..index].to_vec();
-            parts.push(chars[..split].iter().collect());
-            parts.push(chars[split..].iter().collect());
-            parts.extend_from_slice(&tokens[index + 1..]);
-            alternatives.push(near_expression(column, &parts, prefix_last));
+            alternatives.push(near_expression(
+                column,
+                &token_parts(tokens, index, &chars, &[split]),
+                prefix_last,
+            ));
+        }
+    }
+    // İki bölünme (F12-T14y): ayrı bütçe, tek bütçe dolmuş olsa da üretilir.
+    let mut multi = 0usize;
+    'tokens: for (index, token) in tokens.iter().enumerate() {
+        let chars: Vec<char> = token.chars().collect();
+        if chars.len() < 3 {
+            continue;
+        }
+        for first in 1..chars.len() - 1 {
+            for second in (first + 1)..chars.len() {
+                if multi >= MAX_DEHYPHENATE_MULTI_ALTERNATIVES {
+                    break 'tokens;
+                }
+                alternatives.push(near_expression(
+                    column,
+                    &token_parts(tokens, index, &chars, &[first, second]),
+                    prefix_last,
+                ));
+                multi += 1;
+            }
         }
     }
     alternatives
+}
+
+/// Bir belirteci verilen noktalardan parçalara ayırıp sorgu belirteç dizisindeki
+/// yerine koyar — ifade biçimi tek üreticide (`near_expression`) kalır.
+fn token_parts(tokens: &[String], index: usize, chars: &[char], splits: &[usize]) -> Vec<String> {
+    let mut parts: Vec<String> = tokens[..index].to_vec();
+    let mut start = 0;
+    for &split in splits {
+        parts.push(chars[start..split].iter().collect());
+        start = split;
+    }
+    parts.push(chars[start..].iter().collect());
+    parts.extend_from_slice(&tokens[index + 1..]);
+    parts
 }
 
 /// `narrow_expression`in ifade üreticisi: verilen belirteç dizisini aynı
@@ -4102,6 +4151,11 @@ mod tests {
             // alternatifler her belirteç için üretilmeli.
             "itiraz-\nın reddine karar verdi",
             "itirazın red-\ndine karar verdi",
+            // F12-T14y: bir belirteç **iki kez** bölünürse (üç ham belirteç)
+            // doğrulayıcı birleştirir; aday ifadesi iki bölünmeyi de bilmeli
+            // (bölünme birinci ve ikinci belirteçte).
+            "itiraz-\nı-\nn reddine karar verdi",
+            "itirazın red-\ndi-\nne karar verdi",
             "kira sözleşmesi feshedildi",
             "kira\n\nsözleşmesi",
             "KİRA SÖZLEŞMESİ",
@@ -4894,6 +4948,84 @@ mod tests {
         assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
     }
 
+    /// **F12-T14y — çok bölünmeli belirteç (T14x'in dürüst sınırı):** bir kelime
+    /// satır sonunda **iki kez** bölünebilir (`be-\ndel-\nlini` → üç ham
+    /// belirteç). T14x aday ifadesi yalnız tek bölünmeyi biliyordu; bu metin
+    /// dosya aramasında **0 sonuç** veriyordu (eşleştirici birleştirir, aday
+    /// üretilmez). Kural: aday ifadesi her belirtecin **iki bölünmesini** de
+    /// `NEAR(üç parça, 3)` olarak arar; hükmü yine `SearchMatcher` verir —
+    /// gerçek tire, paragraf ayrımı ve boşluklu yazım **eşleşmez**.
+    #[test]
+    fn file_search_finds_a_word_broken_across_two_line_breaks() {
+        let (db, case_id, version_id) = setup();
+        let twice = "Sözleşmede öngörülen be-\ndel-\nlini ödemesi yapılmadı.";
+        let once = "Ödemede bedel-\nlini kalemi vardı.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                twice,
+                // Tek bölünme T14x'teki gibi bulunmaya devam eder.
+                once,
+                // Paragraf ayrımı içeren çok bölünme birleştirilmez.
+                "be-\n\ndel-\nlini paragraf ayrımı",
+                // Gerçek tireler: satır sonu yok → birleştirme yok.
+                "be-del-lini gerçek tireler",
+                // Boşlukla ayrı üç kelime → birleştirme yok.
+                "be del lini ayrı kelimeler",
+            ],
+        );
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "bedellini", mode);
+            let mut hits: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+            hits.sort();
+            let mut expected = vec![twice, once];
+            expected.sort();
+            assert_eq!(
+                hits,
+                expected,
+                "{}: iki kez bölünmüş kelime eşleşmeli; paragraf, gerçek tire ve boşluk eşleşmemeli",
+                mode.tag()
+            );
+            assert_eq!(
+                page.total,
+                Some(2),
+                "{}: sayı aday değil eşleşme sayısı",
+                mode.tag()
+            );
+        }
+
+        // Konum: eşleşme **kaynak aralığını** gösterir (`be-\ndel-\nlini` = 13
+        // karakter), snippet kaynak metni taşır.
+        let page = search_with(&db, &case_id, "bedellini", SearchMode::Phrase);
+        let hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == twice)
+            .expect("çok bölünmüş eşleşme");
+        let start = twice
+            .find("be-\ndel")
+            .map(|byte| twice[..byte].chars().count())
+            .expect("konum");
+        assert_eq!(hit.match_start, Some(start as i64));
+        assert_eq!(hit.match_length, Some(13));
+        assert!(
+            hit.snippet.contains("be-\ndel-\nlini"),
+            "snippet kaynağı gösterir"
+        );
+
+        // `Esnek`: son parça öneki çok bölünmüş kelimeyi de yakalar
+        // (`bedelli` → `be`+`del`+`li`+`ni`).
+        let prefix = search_with(&db, &case_id, "bedelli", SearchMode::Flexible);
+        assert_eq!(prefix.hits.len(), 2, "Esnek: son belirteç öneki");
+
+        // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
+        let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
+        assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+    }
+
     /// F12-T14x — aday ifadesinin biçimi: `İfade`/`Esnek` bölünme
     /// alternatifleri taşır, `Tam` taşımaz (doğrulayıcısı dehyphenate bilmez)
     /// ve alternatif sayısı sınırlıdır — ifade sorgu uzunluğuyla şişmez.
@@ -4914,6 +5046,13 @@ mod tests {
             "bölünme alternatifi: {phrase}"
         );
         assert!(phrase.contains("NEAR(\"bedel\" \"lini\", 2)"), "{phrase}");
+        // T14y: **iki** bölünme de aday olur (üç parça, `NEAR` payı 3).
+        assert!(
+            phrase.contains("NEAR(\"be\" \"del\" \"lini\", 3)"),
+            "iki bölünme alternatifi: {phrase}"
+        );
+        // Dört parçaya bölünme üretilmez (kapsam bilinçli: iki bölünme).
+        assert!(!phrase.contains(", 4)"), "dört parça aday değil: {phrase}");
 
         let flexible = fts_expression(&resolved("bedelli", SearchMode::Flexible));
         assert!(
@@ -4924,22 +5063,27 @@ mod tests {
             flexible.contains("NEAR(\"bedel\" \"li\"*, 2)"),
             "Esnek: son parça önek: {flexible}"
         );
+        // `Esnek` iki bölünmede de son parçayı önek arar.
+        assert!(
+            flexible.contains("NEAR(\"be\" \"del\" \"li\"*, 3)"),
+            "Esnek iki bölünme: {flexible}"
+        );
 
         let exact = fts_expression(&resolved("bedellini", SearchMode::Exact));
         assert!(!exact.contains("NEAR"), "Tam kipi dar kalır: {exact}");
 
-        // Sınır: tek uzun belirteç yüzlerce alternatif üretmez. Değer
-        // **sözleşmedir** (64) — sabitle değil sayıyla ölçülür ki sınır
-        // sessizce değişmesin.
+        // Sınır: tek uzun belirteç yüzlerce alternatif üretmez. Değerler
+        // **sözleşmedir** (64 tek + 64 çift) — sabitle değil sayıyla ölçülür
+        // ki sınır sessizce değişmesin.
         let long = "a".repeat(200);
         let capped = fts_expression(&resolved(&long, SearchMode::Flexible));
         assert_eq!(
             capped.matches(" OR ").count(),
-            64,
-            "alternatif sayısı sınırda durur"
+            128,
+            "alternatif sayısı sınırda durur (64 tek + 64 çift)"
         );
         assert!(
-            capped.len() < 20_000,
+            capped.len() < 40_000,
             "ifade sınırlı kalır: {} bayt",
             capped.len()
         );
