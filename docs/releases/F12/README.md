@@ -33,6 +33,7 @@
 | F12-T14v | ✅ | **kütüphane snippet vurgusu kaynak aralığından çizilir** (T14t/T14u ortak sınırı d kapandı, arayüz): ekran eşleşmeyi birebir `indexOf` ile arıyordu — noktalama köprüsü (`kredi kartı` ↔ `Kredi-kartı`) ve satır sonu tiresi (`bedellini` ↔ `bedel-\nlini`) eşleşmelerinde snippet vurgusuz kalıyordu. Vurgu artık çekirdeğin ölçtüğü `matchStart`/`matchLength`/`snippetStart` üçlüsünden **kod noktası** sayımıyla çizilir; `…` pencere öneki hesaba katılır, pencereyi taşan aralık görünen kısmıyla kırpılır, konum yoksa (künye eşleşmesi) vurgu **uydurulmaz**. Dosya sonuçları değişmedi (konum alanı taşımaz, birebir vurgu sürer). Şema (v68) ve çekirdek değişmedi (2026-11-25) |
 | F12-T14w | ✅ | **dosya sonucu eşleşmenin konumunu ve penceresini taşır** (T14v sınırı c kapandı, arayüz + okuma yolu): `SearchHit` artık `matchStart`/`matchLength` + `snippet`/`snippetStart` taşır; konum kütüphanenin **aynı** `locate_in_text` konumlayıcısından, pencere **aynı** `snippet_window` kuralından (240/60) gelir — ikinci uygulama yok. Doğrulayıcının sözcük başı çapası `anchored_find`e ayrıldı; `İfade` **tam belirteç** ister (`kiraathane` içindeki `kira` işaretlenmez), `Esnek` son belirteç önekini kabul eder, `Tam` yalnız baş sınırına bakar, künyede konum **uydurulmaz**. Kart metni 600 karakterden kesmeyi bıraktı: eşleşme geç gelse bile pencereye gelir ve `snippetHighlightSpan` ile çizilir. Ayrıca dosya aramasında **ölçülen yeni kusur**: FTS aday üretimi satır sonu tiresiyle bölünmüş kelimeyi aday yapmıyor (`bedellini` → 0 sonuç; kütüphane bulur) — T14u eşleştirici katmanı bu yolda ulaşılamaz, ayrı dilim. Şema (v68) değişmedi (2026-11-26) |
 | F12-T14x | ✅ | **dosya aramasının aday üretimi satır sonu tiresini bilir** (T14w'de ölçülen kusur kapandı, okuma yolu): FTS aday ifadesi `İfade`/`Esnek` kipinde her sorgu belirtecinin **her olası bölünmesini** `NEAR(ilk parça, son parça)` olarak da arar (`Esnek`te son parça önek; kararı yine doğrulayıcı verir) — `bedellini` sorgusu `bedel-\nlini` metninde artık **bulunur**, `matchStart`/`matchLength` kaynak aralığını (11) verir. Aynı dilimde ölçülen **ikinci kusur**: `Esnek` doğrulamasına yalnız `normalized_text` veriliyordu (satır sonu boşluğa dönüştüğü için dehyphenate katmanı dosya yolunda hiç çalışmıyordu) — sayfa taraması ve SQL sayımı artık `dim_search_verify(raw_text, normalized_text)` çağırır, "hangi sütun okunur" ayrımı kaldırıldı. Gerçek tire (`kredi-kartı`), paragraf ayrımı (iki satır sonu) ve boşluklu yazım **eşleşmez**; `Tam` dar kalır (F15 #35/#36); alternatif sınırı **64**, tek belirtecin iki kez bölünmesi aday ifadesinde yok (dürüst sınır). F15 (3.420 segment): ifade 47→749 B, FTS sayım p50 1,11→2,90 ms; sayfa p50 9,95 ms. Şema (v68) ve arayüz değişmedi (2026-11-26) |
+| F12-T14y | ✅ | **çok bölünmüş belirteç aday ifadesinde** (T14x dürüst sınırı (a) kapandı): bir kelime satır sonunda **iki kez** bölünürse (`be-\ndel-\nlini` → FTS'te üç ham belirteç) aday ifadesi satırı hiç seçmiyordu → `İfade` kipinde 0 sonuç. Artık her belirtecin her olası **iki bölünmesi** `NEAR(ilk parça, orta parça, son parça)` olarak da aranır; tek ve çift bölünmenin **ayrı 64'lük bütçesi** var (200 karakterlik belirteçte tek bütçe dolsa bile 64 çift aday; ifade < 40.000 B). Parça üretimi tek yardımcıda (`token_parts`), ifade biçimi tek üreticide (`near_expression`); dört+ parça bilinçli olarak aday değil. Kararı yine `SearchMatcher` verir — gerçek tire, paragraf ve boşluklu yazım eşleşmez, `Tam` dar kalır. F15 (3.420 segment): ifade `bedellini` 398→1.770 B, `itirazın reddine` 749→2.801 B; FTS sayım p50 0,87→3,15 / 2,90→7,25 ms; sayfa p50 4,19→17,83 / 9,95→31,25 ms. Şema (v68) ve arayüz değişmedi (2026-11-26) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2615,7 +2616,8 @@ yalnız-ilk-belirteç); her satırda hedef test adı, kaynak sha256
 
 **Dürüst sınırlar:** (a) aday genişlemesi **tek bölünmeyi** kapsar — bir
 belirteç satır sonunda **iki kez** bölünürse (`be-\ndel-\nlini`, üç ham
-belirteç) FTS adayı üretilmez; söz dizimi üstel olurdu; (b) alternatif sayısı
+belirteç) FTS adayı üretilmez; söz dizimi üstel olurdu — **T14y'de
+kapatıldı**; (b) alternatif sayısı
 **64** ile sınırlı — çok uzun sorgularda kalan bölünmeler aday olmaz (düz
 ifade korunur); (c) genişleme yalnız `normalized_text` indeksindedir; `Tam`
 kipi bilinçli olarak dar kalır (noktalama duyarlı, F15 #35/#36); (d) FTS hâlâ
@@ -2624,4 +2626,88 @@ katmanındadır; eşleşme **metin eşleşmesi**, anlam değil; (e) maliyet öl�
 3.420 segmentlik yerel korpusta ve bu makinede alındı; 100k belge ölçeği (F15)
 ve Windows/Linux donanımı ayrı; (f) `Esnek` sayımı artık ham metni de okur —
 sayfa/sayım uyumu için gerekli, ölçülen p50 farkı yukarıda; (g) gerçek Tauri
+penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14y — çok bölünmüş belirteç aday ifadesinde (2026-11-26)
+
+**Ölçülen kusur (T14x'in dürüst sınırı (a); bu turda kırmızı-önce ölçüldü):**
+T14x aday genişlemesi tek bölünmeyi kapsıyordu. Bir kelime satır sonunda **iki
+kez** bölünürse (`be-\ndel-\nlini` → FTS'te üç ham belirteç) aday ifadesi
+satırı hiç seçmiyordu; eşleştirici birleştirir ama satır doğrulayıcıya hiç
+gelmediği için dosya aramasında **0 sonuç** dönüyordu. Devralınan iki test eski
+aday ifadesiyle **2/2 KIRMIZI** (`dim-t14y-red.log`): uçtan uca test yalnız tek
+bölünmüş satırı buldu (`left: ["Ödemede bedel-\nlini kalemi vardı."]`), ifade
+testi iki bölünmeli alternatifi bulamadı.
+
+**Kural:**
+
+- **İki bölünme de aday olur:** `dehyphenate_alternatives` iki tur üretir:
+  (1) T14x tek bölünmesi `NEAR(ilk parça, son parça)`; (2) **iki bölünme**
+  `NEAR(ilk parça, orta parça, son parça)` — üç parça, aynı sütun, aynı `NEAR`
+  payı (3), `Esnek` kipinde son parça yine önek. Dört+ parça bilinçli olarak
+  aday değil; söz dizimi üstel olurdu.
+- **Ayrı bütçe:** tek ve çift bölünmenin **ayrı 64'lük** bütçesi vardır
+  (`MAX_DEHYPHENATE_ALTERNATIVES` / `MAX_DEHYPHENATE_MULTI_ALTERNATIVES`).
+  200 karakterlik tek belirteçte tek bütçe dolsa bile 64 çift aday üretilir;
+  sözleşme "64 tek + 64 çift", ifade **< 40.000 bayt** (test sayıyla pinler).
+- **Tek üretici iki yardımcı:** parça üretimi `token_parts`ta, ifade biçimi
+  `near_expression`da — ikinci bir biçim yok. Kararı yine `SearchMatcher`
+  verir: genişleme yalnız **aday** kümesidir; gerçek tire (`be-del-lini`),
+  paragraf ayrımı (iki satır sonu) ve boşluklu yazım (`be del lini`) aday olsa
+  bile **eşleşmez**; `Tam` dar kalır (F15 #35/#36).
+
+**Testler/yerel:** Yeni **1** test + iki mevcut test genişletildi (kırmızı
+iskelet devralındı, hükümleri bu turda yeniden üretildi):
+`file_search_finds_a_word_broken_across_two_line_breaks` — iki kez bölünmüş
+kelime `İfade`/`Esnek` iki kipte bulunur (tek bölünme de bulunmaya devam eder),
+paragraf/gerçek tire/boşluk eşleşmez, `matchStart`/`matchLength` kaynak
+aralığını (**13** karakter) verir, snippet kaynağı gösterir, `Esnek` öneki
+(`bedelli`) yakalar, sayı 2, `Tam` 0.
+`dehyphenate_candidates_are_bounded_and_mode_aware` — `NEAR("be" "del"
+"lini", 3)` biçimi, `Esnek`te `NEAR("be" "del" "li"*, 3)`, dört parça yok,
+alternatif sayısı **128** (64 tek + 64 çift, sayıyla), ifade < 40.000 B.
+`narrowing_matches_full_verification_set` korpusuna iki kez bölünmüş iki satır
+eklendi (bölünme **birinci** ve **ikinci** belirteçte) — daraltma
+doğrulayıcının kabul ettiği satırı kaçırmamalı. Yerel: `dim-storage` tam paket
+**844 passed · 1 ignored · 0 failed, 779,95 s** (`dim-t14y-libtest-v2.log`;
+`1 ignored` = ölçüm testi); `parsing` modülü **57/57**;
+`library_search*` **20/20**; iki manifest `cargo fmt --check`, `clippy -p
+dim-storage --all-targets -- -D warnings` temiz; masaüstü `check --all-targets`
+**1 dk 10 s, temiz**.
+
+**F15 maliyeti (aynı ölçüm testi: 3.000 tuzak + 30 bölünmüş + 30 düz, 21 tur;
+3.420 segment):** ifade boyu `itirazın reddine` **749 → 2.801 B**, `bedellini`
+**398 → 1.770 B**; FTS sayımı p50 **2,90 → 7,25 ms** / **0,87 → 3,15 ms**
+(eşleşen 60); sayfa p50 (sayı hariç) `Esnek bedellini` **4,19 → 17,83 ms**,
+`İfade itirazın reddine` **9,95 → 31,25 ms**; aynı sorgu sayı dahil **13,94 →
+39,10 ms**. Aday/dönen küme değişmedi (21/20): maliyet **aday ifadesinin**
+genişlemesidir (42 alternatif), doğrulama kümesinin değil. B-01 p95 hedefi 2 sn;
+bu ölçüm 3.420 segmentlik korpusta ifade ayrıştırma ağırlıklıdır — 100k
+belgede (F15) ayrıca ölçülmeli.
+
+**Kapı (`scratch/dim-t14y-gates.py`, log `dim-t14y-gates.log`):** taban üç
+test (uçtan uca, ifade biçimi, eşdeğerlik) YEŞİL; **11/11 KANIT · YEŞİL 0 ·
+ÖLÇÜLEMEDİ 0**, her satırda hedef test adı yazılı; kaynak sha256 `78d9a79a…`
+koşu öncesi ve sonrası **birebir** (bugün bu turda da doğrulandı). Mutantlar:
+iki bölünme hiç üretilmez, çift bütçe 64→8, tek karakterlik orta parça, yalnız
+ilk belirteç, yalnız `İfade` kipi, son parça öneki düşer, ilk bölünme atılır,
+son geçerli nokta dışlanır, bütçe paylaşımı, bütçesiz üretim, tek bütçe
+dolunca erken dönüş (T14x davranışı).
+
+**CI (ölçüldü):** kod `0b095f8` (1 dosya, **+169/−25**) → run `45828943984`
+**10/10 YEŞİL** (`dim-storage` **842** iki OS'ta — T14x 841 + 1 yeni, `1
+ignored` ölçüm: macos-15 **667,63 s** / ubuntu-latest **1.006,21 s**; iş
+süresi macos-15 13 dk 53 s / ubuntu 18 dk 22 s; `arayüz` 67 dosya / **1499**
+test, paket `index-BP1oZUhg.js` 733,32 kB / gzip 194,60 kB — değişmedi;
+masaüstü kabuk, windows güvenli depo 30, SBOM, sözleşmeler, belge worker'ı,
+sürüm paketi manifesti, kaynak arşivi yeşil).
+
+**Dürüst sınırlar:** (a) kapsam **iki bölünmedir** — üç+ bölünme (dört+ ham
+parça) aday olmaz, söz dizimi üstel olurdu; (b) tek ve çift bütçe ayrı **64** —
+çok uzun sorguda kalan bölünmeler aday olmaz (düz ifade korunur); (c) genişleme
+yalnız `normalized_text` indeksindedir, `Tam` kipi bilinçli olarak dar kalır
+(noktalama duyarlı, F15 #35/#36); (d) FTS yalnız **aday** üretir — kesin hüküm
+`SearchMatcher`ın dehyphenate katmanındadır; eşleşme **metin eşleşmesi**,
+anlam değil; (e) maliyet 3.420 segmentlik yerel korpusta ve bu makinede alındı;
+100k belge ölçeği (F15) ve Windows/Linux donanımı ayrı; (f) gerçek Tauri
 penceresi + görsel QA **insan bekliyor**.
