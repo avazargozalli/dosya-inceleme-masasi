@@ -582,7 +582,6 @@ impl Database {
             resolved.mode,
             resolved.docket.clone(),
         ));
-        let wants_normalized = matcher.wants_normalized();
 
         // Aday WHERE'i **doğrulama içermez**: doğrulama Rust'ta, sıralamadan
         // sonra ve yalnız sayfanın ihtiyaç duyduğu kadar aday üzerinde koşar.
@@ -659,11 +658,13 @@ impl Database {
                     examined += 1;
                     let raw: String = row.get(2)?;
                     let normalized: Option<String> = row.get(3)?;
-                    let matched = if wants_normalized {
-                        matcher.matches(None, normalized.as_deref(), &mut scratch)
-                    } else {
-                        matcher.matches(Some(&raw), None, &mut scratch)
-                    };
+                    // F12-T14x: doğrulayıcıya **iki metin** de verilir. Önceki
+                    // hâlde `Esnek` kipinde yalnız `normalized_text`
+                    // geçiliyordu; o sütun tireyi korur ama satır sonunu
+                    // boşluğa çevirdiği için dehyphenate katmanı (T14u) bu
+                    // yolda **hiç çalışmıyordu** (`bedel-\nlini` → 0 sonuç,
+                    // aday üretimi düzeltilse bile). `raw_text` zaten seçiliyor.
+                    let matched = matcher.matches(Some(&raw), normalized.as_deref(), &mut scratch);
                     if !matched {
                         continue;
                     }
@@ -753,11 +754,10 @@ impl Database {
                 // zorundadır — bu yüzden pahalıdır; arayüz onu `search_total`
                 // ile ayrı ve sonradan ister. Burada yalnız `include_total`
                 // açıkça istendiğinde çalışır.
-                let verify = if wants_normalized {
-                    "dim_search_verify(NULL, s.normalized_text)"
-                } else {
-                    "dim_search_verify(s.raw_text, NULL)"
-                };
+                // F12-T14x: doğrulayıcıya iki sütun da verilir — `Esnek`in
+                // dehyphenate katmanı ham metni ister (satır sonu yalnız
+                // `raw_text`te durur); `İfade`/`Tam` ikinci sütunu yok sayar.
+                let verify = "dim_search_verify(s.raw_text, s.normalized_text)";
                 self.register_search_verifier(std::sync::Arc::clone(&matcher))?;
                 let (count_sql, count_params) = count_where(case_id, &expression, &filters, verify);
                 self.conn().query_row(
@@ -828,11 +828,9 @@ impl Database {
 
         let started = std::time::Instant::now();
         let matcher = SearchMatcher::new(&resolved.text, resolved.mode, resolved.docket.clone());
-        let verify = if matcher.wants_normalized() {
-            "dim_search_verify(NULL, s.normalized_text)"
-        } else {
-            "dim_search_verify(s.raw_text, NULL)"
-        };
+        // F12-T14x: sayım da sayfayla **aynı** doğrulamayı kullanır; `Esnek`in
+        // dehyphenate katmanı ham metni ister, bu yüzden iki sütun birlikte.
+        let verify = "dim_search_verify(s.raw_text, s.normalized_text)";
         self.register_search_verifier(std::sync::Arc::new(matcher))?;
 
         let (count_sql, count_params) = count_where(case_id, &expression, &filters, verify);
@@ -1204,24 +1202,86 @@ fn fts_expression(query: &ResolvedQuery) -> String {
             Some(docket) => docket_expression(docket),
             None => String::new(),
         },
+        // `Tam` noktalamaya duyarlıdır: doğrulayıcısı dehyphenate katmanını
+        // **bilmez** (F15 #35/#36), bu yüzden aday ifadesi dar kalır —
+        // birleştirilmiş aday üretmek yalnız boşa doğrulama olurdu.
         SearchMode::Exact => narrow_expression("normalized_text", &fold_tokens(&query.text), true),
+        // F12-T14x: `İfade`/`Esnek` doğrulayıcısı satır sonu tiresini
+        // birleştirir (T14u); aday ifadesi de bölünmüş yazımı bilmeli.
         SearchMode::Phrase => {
-            narrow_expression("normalized_text", &fold_tokens(&query.text), false)
+            dehyphenated_expression("normalized_text", &fold_tokens(&query.text), false)
         }
         SearchMode::Flexible => {
-            narrow_expression("normalized_text", &fold_tokens(&query.text), true)
+            dehyphenated_expression("normalized_text", &fold_tokens(&query.text), true)
         }
         SearchMode::Auto => String::new(),
     }
 }
 
-/// Bitişik belirteç ifadesi (`raw_text`/`normalized_text` sütununda).
+/// Aday ifadesinin satır sonu tiresi payı: bir sorgu belirteci metinde
+/// `bedel-\nlini` gibi **iki belirtece bölünmüş** olabilir. FTS bu metni
+/// `bedel`, `lini` diye indeksler; düz `"bedellini"` ifadesi satırı hiç aday
+/// yapmaz ve doğrulayıcının dehyphenate katmanı (F12-T14u) **ulaşılamaz**
+/// kalır (T14w'de ölçülen kusur: 0 sonuç).
 ///
-/// `tokens` boşsa boş dizge (çağıran zaten boş sorguyu eler). Tek belirteçte
-/// düz ifade, çok belirteçte `NEAR`: FTS5'te `NEAR(…, n)` belirteç konumları
-/// arasındaki **en büyük farkı** sınırlar, bu yüzden `n = belirteç sayısı`
-/// "bitişik + araya en çok bir belirteç" demektir.
-fn narrow_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
+/// Kural: belirtecin her olası bölünmesi `NEAR(ilk parça, son parça)` olarak
+/// ayrıca aranır; `Esnek` kipinde son parça önek kalabilir (`prefix_last`),
+/// çünkü doğrulayıcı orada son belirtece önek kabul eder. Aday kümesi
+/// **genişler**, kesin eşleşmeyi yine `SearchMatcher` kurar — burada
+/// "olabilir" kümesi üretilir, hüküm verilmez.
+///
+/// Sınır: tek belirtecin satır sonunda **iki kez** bölünmesi (`be-\ndel-\nlini`
+/// → üç ham belirteç) bu ifadeyle aday olmaz; söz dizimi üstel olurdu.
+/// `MAX_DEHYPHENATE_ALTERNATIVES` aşılırsa kalan bölünmeler aranmaz.
+fn dehyphenated_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
+    let mut expression = narrow_expression(column, tokens, prefix_last);
+    for alternative in dehyphenate_alternatives(column, tokens, prefix_last) {
+        if expression.is_empty() {
+            expression = alternative;
+        } else {
+            expression.push_str(" OR ");
+            expression.push_str(&alternative);
+        }
+    }
+    expression
+}
+
+/// Bir belirtecin bölünme sınırı: aday ifadesinin şişmemesi için toplam
+/// alternatif sayısı burada durur (sorgu en çok `MAX_SEARCH_QUERY_CHARS`
+/// karakter, en kötü durumda tek uzun belirteç yüzlerce bölünme üretirdi).
+const MAX_DEHYPHENATE_ALTERNATIVES: usize = 64;
+
+/// Bölünmüş yazım alternatifleri: her belirteç, her bölünme noktasında iki
+/// bitişik parçaya ayrılır ve **aynı** `narrow_expression` kuralıyla
+/// (aynı sütun, aynı `NEAR` payı, `Esnek`te son parça önek) ifade edilir.
+fn dehyphenate_alternatives(column: &str, tokens: &[String], prefix_last: bool) -> Vec<String> {
+    let mut alternatives = Vec::new();
+    if tokens.is_empty() {
+        return alternatives;
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        let chars: Vec<char> = token.chars().collect();
+        if chars.len() < 2 {
+            continue;
+        }
+        for split in 1..chars.len() {
+            if alternatives.len() >= MAX_DEHYPHENATE_ALTERNATIVES {
+                return alternatives;
+            }
+            let mut parts: Vec<String> = tokens[..index].to_vec();
+            parts.push(chars[..split].iter().collect());
+            parts.push(chars[split..].iter().collect());
+            parts.extend_from_slice(&tokens[index + 1..]);
+            alternatives.push(near_expression(column, &parts, prefix_last));
+        }
+    }
+    alternatives
+}
+
+/// `narrow_expression`in ifade üreticisi: verilen belirteç dizisini aynı
+/// `NEAR` payıyla daraltır (alternatifler de aynı kuralı okur — ikinci bir
+/// biçim yazılmaz).
+fn near_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
     if tokens.is_empty() {
         return String::new();
     }
@@ -1243,6 +1303,16 @@ fn narrow_expression(column: &str, tokens: &[String], prefix_last: bool) -> Stri
     } else {
         format!("{column} : NEAR({}, {})", quoted.join(" "), quoted.len())
     }
+}
+
+/// Bitişik belirteç ifadesi (`raw_text`/`normalized_text` sütununda).
+///
+/// `tokens` boşsa boş dizge (çağıran zaten boş sorguyu eler). Tek belirteçte
+/// düz ifade, çok belirteçte `NEAR`: FTS5'te `NEAR(…, n)` belirteç konumları
+/// arasındaki **en büyük farkı** sınırlar, bu yüzden `n = belirteç sayısı`
+/// "bitişik + araya en çok bir belirteç" demektir.
+fn narrow_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
+    near_expression(column, tokens, prefix_last)
 }
 
 /// Esas/karar numarası adayları: **yıl ve numara** belirteçleri birlikte.
@@ -1787,12 +1857,9 @@ impl SearchMatcher {
         }
     }
 
-    /// Bu kipin doğrulaması ham metni mi yoksa `normalized_text` sütununu mu
-    /// istediğini söyler (SQL tarafında yalnız gereken sütun okunur).
-    fn wants_normalized(&self) -> bool {
-        self.mode == SearchMode::Flexible
-    }
-
+    /// **F12-T14x:** doğrulayıcı artık **iki metni** de alır — `Esnek`in
+    /// dehyphenate katmanı ham metni ister; bu yüzden "hangi sütun okunur"
+    /// ayrımı kaldırıldı (SQL doğrulaması da iki sütunu geçirir).
     pub(crate) fn matches(
         &self,
         raw: Option<&str>,
@@ -4029,6 +4096,12 @@ mod tests {
             "reddine itirazın",      // ters sıra → doğrulama reddeder
             "itirazın konusu ayrıca reddine",
             "itirazın 1. reddine", // araya sayı belirteci
+            // F12-T14x: aday üretimi satır sonu tiresini bilmeli — doğrulayıcı
+            // bu satırı kabul eder (T14u), aday ifadesi etmezse test düşer.
+            // İki ayrı satır: bölünme **birinci** ve **ikinci** belirteçte —
+            // alternatifler her belirteç için üretilmeli.
+            "itiraz-\nın reddine karar verdi",
+            "itirazın red-\ndine karar verdi",
             "kira sözleşmesi feshedildi",
             "kira\n\nsözleşmesi",
             "KİRA SÖZLEŞMESİ",
@@ -4070,15 +4143,16 @@ mod tests {
             let mut expected: Vec<String> = texts
                 .iter()
                 .filter(|candidate| {
-                    if resolved.mode == SearchMode::Flexible {
-                        matcher.matches(
-                            None,
-                            Some(&dim_evidence::normalize(candidate)),
-                            &mut scratch,
-                        )
-                    } else {
-                        matcher.matches(Some(candidate), None, &mut scratch)
-                    }
+                    // F12-T14x: beklenti **üretimin** doğrulamasıyla aynı
+                    // girdiyi kullanır — iki metin de verilir. `Esnek`in
+                    // dehyphenate katmanı ham metni ister; yalnız
+                    // `normalized_text` geçen eski kurgu bu katmanı
+                    // gizliyordu (test kusuru düzeltildi).
+                    matcher.matches(
+                        Some(candidate),
+                        Some(&dim_evidence::normalize(candidate)),
+                        &mut scratch,
+                    )
                 })
                 .map(|candidate| (*candidate).to_string())
                 .collect();
@@ -4708,6 +4782,302 @@ mod tests {
         assert!(
             flexible.matches(Some(broken), Some(&normalized), &mut scratch),
             "Esnek harf sadeleştirmeli"
+        );
+    }
+
+    /// **F12-T14x — dosya aramasının aday üretimi:** T14u eşleştiricisi
+    /// `bedel-\nlini` metnini `bedellini` sorgusuna eşitler, ama T14w'de
+    /// ölçüldüğü gibi FTS aday ifadesi yalnız düz belirteci aradığı için satır
+    /// doğrulayıcıya **hiç gelmiyordu** → dosya aramasında 0 sonuç.
+    /// Kural: `İfade`/`Esnek` aday ifadesi belirtecin her bölünmesini `NEAR`
+    /// ile de arar; genişleme yalnız **aday** kümesidir, hükmü doğrulayıcı
+    /// verir (gerçek tire, paragraf ayrımı ve boşluklu yazım eşleşmez).
+    #[test]
+    fn file_search_finds_a_word_broken_across_a_line() {
+        let (db, case_id, version_id) = setup();
+        let hyphenated = "Sözleşmede öngörülen bedel-\nlini ödemesi yapılmadı.";
+        let soft = "Ödemede bedel\u{00AD}lini kalemi vardı.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                hyphenated,
+                soft,
+                // Tire **gerçek**: satır sonu yok → birleştirme yok.
+                "Kredi-kartı borcu ayrı kalemdir.",
+                // İki satır sonu paragraf ayrımıdır → birleştirme yok.
+                "bedel-\n\nlini paragraf ayrımı",
+                // Boşlukla ayrı iki kelime → birleştirme yok.
+                "bedel lini ayrı kelimeler",
+            ],
+        );
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "bedellini", mode);
+            let mut hits: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+            hits.sort();
+            let mut expected = vec![hyphenated, soft];
+            expected.sort();
+            assert_eq!(
+                hits,
+                expected,
+                "{}: satır sonu tiresi ve yumuşak tire eşleşmeli; gerçek tire, paragraf ve boşluk eşleşmemeli",
+                mode.tag()
+            );
+            assert_eq!(
+                page.total,
+                Some(2),
+                "{}: sayı aday değil eşleşme sayısı",
+                mode.tag()
+            );
+        }
+
+        // Konum: eşleşme **kaynak aralığını** gösterir (`bedel-\nlini` = 11
+        // karakter), snippet kaynak metni taşır.
+        let page = search_with(&db, &case_id, "bedellini", SearchMode::Phrase);
+        let hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == hyphenated)
+            .expect("bölünmüş eşleşme");
+        let start = hyphenated
+            .find("bedel")
+            .map(|byte| hyphenated[..byte].chars().count())
+            .expect("konum");
+        assert_eq!(hit.match_start, Some(start as i64));
+        assert_eq!(hit.match_length, Some(11));
+        assert!(
+            hit.snippet.contains("bedel-\nlini"),
+            "snippet kaynağı gösterir"
+        );
+
+        // `Esnek`: son belirteç öneki bölünmüş kelimeyi de yakalar
+        // (`bedelli` → `bedelli`+`ni`).
+        let prefix = search_with(&db, &case_id, "bedelli", SearchMode::Flexible);
+        assert_eq!(prefix.hits.len(), 2, "Esnek: son belirteç öneki");
+
+        // Sayım yolu ayrı ölçülür: sayfa `limit`i dolmadığında toplam
+        // kısayoldan gelir, SQL doğrulaması hiç koşmaz. Kısayolu kır: `limit=1`
+        // ve ayrı `search_total` — ikisi de doğrulayıcıya **ham metni** de
+        // geçirmeli (`İfade` yalnız `normalized_text` ile 0 sayardı).
+        let paged = db
+            .search_page(
+                &case_id,
+                &SearchQuery {
+                    text: "bedellini".into(),
+                    mode: SearchMode::Phrase,
+                },
+                &SearchFilters::default(),
+                1,
+                None,
+                true,
+            )
+            .expect("dar sayfa");
+        assert_eq!(paged.returned, 1);
+        assert!(paged.has_more, "iki eşleşme var, sayfa doldu");
+        assert_eq!(paged.total, Some(2), "SQL sayımı ham metni de okur");
+        let total = db
+            .search_total(
+                &case_id,
+                &SearchQuery {
+                    text: "bedellini".into(),
+                    mode: SearchMode::Flexible,
+                },
+                &SearchFilters::default(),
+            )
+            .expect("sayım");
+        assert_eq!(total.total, 2, "ayrı sayım eşleşme sayısı");
+
+        // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
+        let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
+        assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+    }
+
+    /// F12-T14x — aday ifadesinin biçimi: `İfade`/`Esnek` bölünme
+    /// alternatifleri taşır, `Tam` taşımaz (doğrulayıcısı dehyphenate bilmez)
+    /// ve alternatif sayısı sınırlıdır — ifade sorgu uzunluğuyla şişmez.
+    #[test]
+    fn dehyphenate_candidates_are_bounded_and_mode_aware() {
+        let resolved = |text: &str, mode: SearchMode| ResolvedQuery {
+            mode,
+            text: text.to_string(),
+            docket: None,
+        };
+        let phrase = fts_expression(&resolved("bedellini", SearchMode::Phrase));
+        assert!(
+            phrase.starts_with("normalized_text : \"bedellini\""),
+            "düz ifade korunur: {phrase}"
+        );
+        assert!(
+            phrase.contains("OR normalized_text : NEAR(\"b\" \"edellini\", 2)"),
+            "bölünme alternatifi: {phrase}"
+        );
+        assert!(phrase.contains("NEAR(\"bedel\" \"lini\", 2)"), "{phrase}");
+
+        let flexible = fts_expression(&resolved("bedelli", SearchMode::Flexible));
+        assert!(
+            flexible.starts_with("normalized_text : \"bedelli\"*"),
+            "önek kuralı korunur: {flexible}"
+        );
+        assert!(
+            flexible.contains("NEAR(\"bedel\" \"li\"*, 2)"),
+            "Esnek: son parça önek: {flexible}"
+        );
+
+        let exact = fts_expression(&resolved("bedellini", SearchMode::Exact));
+        assert!(!exact.contains("NEAR"), "Tam kipi dar kalır: {exact}");
+
+        // Sınır: tek uzun belirteç yüzlerce alternatif üretmez. Değer
+        // **sözleşmedir** (64) — sabitle değil sayıyla ölçülür ki sınır
+        // sessizce değişmesin.
+        let long = "a".repeat(200);
+        let capped = fts_expression(&resolved(&long, SearchMode::Flexible));
+        assert_eq!(
+            capped.matches(" OR ").count(),
+            64,
+            "alternatif sayısı sınırda durur"
+        );
+        assert!(
+            capped.len() < 20_000,
+            "ifade sınırlı kalır: {} bayt",
+            capped.len()
+        );
+    }
+
+    /// **F12-T14x — F15 maliyeti (elle koşulur; CI'da atlanır):** genişletilmiş
+    /// aday ifadesinin FTS maliyeti aynı korpusta dar ifadeyle karşılaştırılır.
+    ///
+    /// `cargo test -p dim-storage --lib measure_dehyphenate_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "ölçüm: elle koşulur (--ignored --nocapture)"]
+    fn measure_dehyphenate_cost() {
+        fn summarize(times: &[f64]) -> (f64, f64) {
+            let mut sorted = times.to_vec();
+            sorted.sort_by(|a, b| a.partial_cmp(b).expect("sayı"));
+            let pick = |p: f64| {
+                let pos = (sorted.len() - 1) as f64 * p;
+                let lo = pos.floor() as usize;
+                let hi = pos.ceil() as usize;
+                sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo as f64)
+            };
+            (pick(0.5), pick(0.95))
+        }
+
+        let (db, case_id, version_id) = setup();
+        let mut texts: Vec<String> = (0..3_000)
+            .map(|i| format!("reddine dair gerekçe {i} dosyada itirazın konusu ayrıca ele alındı"))
+            .collect();
+        for i in 0..30 {
+            texts.push(format!(
+                "{i} numaralı kararda itiraz-\nın reddine hükmedildi"
+            ));
+            texts.push(format!("{i} numaralı kararda itirazın reddine hükmedildi"));
+            texts.push(format!(
+                "{i} numaralı kararda bedel-\nlini ödemesi yapılmadı"
+            ));
+            texts.push(format!("{i} numaralı kararda bedellini ödemesi yapılmadı"));
+        }
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        store_texts(&db, &case_id, &version_id, &refs);
+
+        let rounds = 21;
+        let fts_count = |expression: &str| -> (f64, f64, i64) {
+            let mut times = Vec::with_capacity(rounds);
+            let mut matched = 0;
+            for _ in 0..rounds {
+                let started = std::time::Instant::now();
+                matched = db
+                    .conn()
+                    .query_row(
+                        "SELECT count(*) FROM text_segments_fts WHERE text_segments_fts MATCH ?",
+                        [expression],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .expect("FTS sayımı");
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            let (p50, p95) = summarize(&times);
+            (p50, p95, matched)
+        };
+        let page = |query: &SearchQuery, include_total: bool| -> (f64, f64, i64, i64, i64) {
+            let mut times = Vec::with_capacity(rounds);
+            let mut examined = 0;
+            let mut returned = 0;
+            let mut total = 0;
+            for _ in 0..rounds {
+                let started = std::time::Instant::now();
+                let result = db
+                    .search_page(
+                        &case_id,
+                        query,
+                        &SearchFilters::default(),
+                        20,
+                        None,
+                        include_total,
+                    )
+                    .expect("arama");
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+                examined = result.verification.candidates_examined;
+                returned = result.returned;
+                total = result.total.unwrap_or(-1);
+            }
+            let (p50, p95) = summarize(&times);
+            (p50, p95, examined, returned, total)
+        };
+
+        let literal = narrow_expression("normalized_text", &fold_tokens("itirazın reddine"), false);
+        let widened = fts_expression(&ResolvedQuery {
+            mode: SearchMode::Phrase,
+            text: "itirazın reddine".into(),
+            docket: None,
+        });
+        let bedelli_literal = narrow_expression("normalized_text", &fold_tokens("bedellini"), true);
+        let bedelli_widened = fts_expression(&ResolvedQuery {
+            mode: SearchMode::Flexible,
+            text: "bedellini".into(),
+            docket: None,
+        });
+
+        let (lit_p50, lit_p95, lit_matched) = fts_count(&literal);
+        let (wide_p50, wide_p95, wide_matched) = fts_count(&widened);
+        let (bed_lit_p50, bed_lit_p95, bed_lit_matched) = fts_count(&bedelli_literal);
+        let (bed_wide_p50, bed_wide_p95, bed_wide_matched) = fts_count(&bedelli_widened);
+
+        let (page_p50, page_p95, examined, returned, _) = page(
+            &SearchQuery {
+                text: "bedellini".into(),
+                mode: SearchMode::Flexible,
+            },
+            false,
+        );
+        let (common_p50, common_p95, common_examined, common_returned, _) = page(
+            &SearchQuery {
+                text: "itirazın reddine".into(),
+                mode: SearchMode::Phrase,
+            },
+            false,
+        );
+        let (count_p50, count_p95, _, _, common_total) = page(
+            &SearchQuery {
+                text: "itirazın reddine".into(),
+                mode: SearchMode::Phrase,
+            },
+            true,
+        );
+
+        println!(
+            "F12-T14x ölçüm (3.000 tuzak + 30 bölünmüş + 30 düz, {rounds} tur):\n\
+             ifade: itirazın-reddine dar={} B / geniş={} B; bedellini dar={} B / geniş={} B\n\
+             fts sayım itirazın-reddine: dar p50={lit_p50:.2} p95={lit_p95:.2} ms (eşleşen {lit_matched}) · geniş p50={wide_p50:.2} p95={wide_p95:.2} ms (eşleşen {wide_matched})\n\
+             fts sayım bedellini: dar p50={bed_lit_p50:.2} p95={bed_lit_p95:.2} ms (eşleşen {bed_lit_matched}) · geniş p50={bed_wide_p50:.2} p95={bed_wide_p95:.2} ms (eşleşen {bed_wide_matched})\n\
+             sayfa Esnek bedellini (sayı hariç): p50={page_p50:.2} p95={page_p95:.2} ms · aday={examined} dönen={returned}\n\
+             sayfa İfade itirazın-reddine (sayı hariç): p50={common_p50:.2} p95={common_p95:.2} ms · aday={common_examined} dönen={common_returned}\n\
+             aynı sorgu sayı dahil: p50={count_p50:.2} p95={count_p95:.2} ms · toplam={common_total}",
+            literal.len(),
+            widened.len(),
+            bedelli_literal.len(),
+            bedelli_widened.len()
         );
     }
 
