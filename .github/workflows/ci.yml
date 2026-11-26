@@ -26,6 +26,8 @@ jobs:
         run: node packages/contracts/scripts/generate.mjs --check
       - name: Şema testleri
         run: node --test packages/contracts/test/*.test.mjs
+      - name: Benchmark koşucusu kapısı (pnpm bench:core öz testi)
+        run: python3 scripts/bench_core.py --self-test
 
   web:
     name: arayüz (tsc + vitest + build)

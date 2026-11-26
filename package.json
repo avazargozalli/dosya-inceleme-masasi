@@ -15,7 +15,8 @@
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
     "contracts:generate": "node packages/contracts/scripts/generate.mjs --check",
-    "contracts:write": "node packages/contracts/scripts/generate.mjs --write"
+    "contracts:write": "node packages/contracts/scripts/generate.mjs --write",
+    "bench:core": "python3 scripts/bench_core.py"
   },
   "devDependencies": {
     "typescript": "5.6.3"
