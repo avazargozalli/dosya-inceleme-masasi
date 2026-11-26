@@ -1071,6 +1071,18 @@ impl SearchQuery {
         } else {
             None
         };
+        // F12-T14aa: kullanıcı alıntıyı PDF'ten kopyalarsa sorgu kelime
+        // ortasında tire + satır sonu taşır (`bedel‐\nlini`). Belge tarafı bu
+        // yazımı birleştiriyordu (T14u/T14z) ama sorgu iki belirtece ayrıldığı
+        // için düz yazılmış belge (`bedellini`) hiç bulunamıyordu. Birleştirme
+        // yalnız `İfade`/`Esnek` kipinde, belgeyle **aynı** çekirdekten
+        // (`dehyphenated_chars`) yapılır; `Tam` noktalamaya duyarlı kalır
+        // (F15 #35/#36) ve `Esas/karar` sorgusu serbest metin değildir.
+        let text = if matches!(mode, SearchMode::Phrase | SearchMode::Flexible) {
+            dehyphenated_query(&text)
+        } else {
+            text
+        };
         Ok(ResolvedQuery { mode, text, docket })
     }
 }
@@ -1475,6 +1487,22 @@ fn continuation_after_line_hyphen(chars: &[char], index: usize) -> Option<usize>
     } else {
         None
     }
+}
+
+/// Sorgu metninin dehyphenate biçimi (F12-T14aa): PDF'ten kopyalanan alıntı
+/// kelime ortasında tire + satır sonu taşır (`bedel‐\nlini`). Belge tarafıyla
+/// **aynı** çekirdek (`dehyphenated_chars`) okunur — ikinci bir birleştirme
+/// kuralı yazılmaz. Yalnız `İfade`/`Esnek` sorgularına uygulanır (`Tam`
+/// noktalamaya duyarlıdır, F15 #35/#36). Ön kapı `may_dehyphenate`: tire
+/// taşımayan normal sorguda tarama da, yeni dizge de yoktur.
+fn dehyphenated_query(text: &str) -> String {
+    if !may_dehyphenate(text) {
+        return text.to_string();
+    }
+    dehyphenated_chars(text)
+        .into_iter()
+        .map(|(ch, _)| ch)
+        .collect()
 }
 
 /// Satır/sayfa sonunda tire ile bölünmüş kelimeyi birleştiren **tek** çekirdek:
@@ -5121,6 +5149,193 @@ mod tests {
         // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
         let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
         assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+    }
+
+    /// F12-T14aa — **sorgu tarafı** satır sonu tiresi: kullanıcı alıntıyı
+    /// PDF'ten kopyaladığında tire + satır sonu **sorguya** da girer
+    /// (`bedel‐\nlini`). Eşleştirici belgeyi birleştiriyordu (T14u/T14z) ama
+    /// sorguyu birleştirmiyordu: sorgu iki belirtece ayrılıyor, düz yazılmış
+    /// belgeyi (`bedellini`) hiç bulamıyordu — sessiz yanlış negatif (T14z
+    /// sınır f). Kural: `İfade`/`Esnek` sorgusu çekirdeğin **aynı**
+    /// `dehyphenated_chars` kuralıyla birleştirilir; `Tam` noktalamaya duyarlı
+    /// kalır (F15 #35/#36), gerçek tire / en tire / paragraf birleştirilmez.
+    #[test]
+    fn file_search_joins_a_query_copied_with_a_line_break_hyphen() {
+        let (db, case_id, version_id) = setup();
+        let flat = "Sözleşmede öngörülen bedellini ödemesi yapılmadı.";
+        let broken = "Sözleşmede öngörülen bedel-\nlini ödemesi yapılmadı.";
+        let typo = "Sözleşmede öngörülen bedel\u{2010}\nlini ödemesi yapılmadı.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                flat,
+                broken,
+                typo,
+                // Gerçek tire: satır sonu yok → birleştirilmez.
+                "Kredi-kartı borcu ayrı kalemdir.",
+                // En tire çizgi/aralık işaretidir → birleştirilmez.
+                "Kredi\u{2013}\nkartı borcu ayrı kalemdir.",
+                // İki satır sonu paragraf ayrımıdır → birleştirilmez.
+                "bedel-\n\nlini paragraf ayrımı",
+            ],
+        );
+        // PDF'ten kopyalanmış sorgu: kelime ortasında tire + satır sonu.
+        let copied = "bedel-\nlini";
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, copied, mode);
+            let mut hits: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+            hits.sort();
+            let mut expected = vec![flat, broken, typo];
+            expected.sort();
+            assert_eq!(
+                hits,
+                expected,
+                "{}: kopyalanmış sorgu düz ve tireli belgeyi birlikte bulmalı",
+                mode.tag()
+            );
+            assert_eq!(page.total, Some(3), "{}: sayı", mode.tag());
+            // Dönüşüm görünür: çözümlenen sorgu birleşik biçimdir (gizli değil).
+            assert_eq!(
+                page.resolved_query,
+                "bedellini",
+                "{}: çözümlenen sorgu",
+                mode.tag()
+            );
+        }
+
+        // Konum katmanı bozulmadı: düz belgede 9, tireli belgede kaynak aralığı 11.
+        let page = search_with(&db, &case_id, copied, SearchMode::Phrase);
+        let flat_hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == flat)
+            .expect("düz belge");
+        let start = flat
+            .find("bedellini")
+            .map(|byte| flat[..byte].chars().count())
+            .expect("konum");
+        assert_eq!(flat_hit.match_start, Some(start as i64));
+        assert_eq!(flat_hit.match_length, Some(9));
+        let broken_hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == broken)
+            .expect("tireli belge");
+        assert_eq!(
+            broken_hit.match_length,
+            Some(11),
+            "`bedel-\\nlini` = 11 kaynak karakteri"
+        );
+
+        // Tipografik tire ve yumuşak tire sorguda da birleşir.
+        for query in ["bedel\u{2010}\nlini", "bedel\u{2011}\nlini"] {
+            let page = search_with(&db, &case_id, query, SearchMode::Phrase);
+            assert_eq!(page.total, Some(3), "sorgu {query:?}: tipografik aile");
+        }
+        let soft = search_with(&db, &case_id, "bedel\u{00AD}lini", SearchMode::Phrase);
+        assert!(
+            soft.hits.iter().any(|hit| hit.raw_text == flat),
+            "sorgudaki görünmez yumuşak tire birleşmeyi engellememeli"
+        );
+
+        // `Tam` noktalamaya duyarlı kalır: sorgu birleştirilmez — düz yazılmış
+        // (`bedellini`) ve tipografik tireli belge eşleşmez (F15 #35/#36).
+        // Boşluk sadeleştiği için paragraf ayrımı `Tam`da ayırt edilemez
+        // (`bedel- lini`); bu, birleştirmeden önce de böyleydi — sınır dürüstçe
+        // pinlenir, birleştirme `Tam`a sızmaz.
+        let exact = search_with(&db, &case_id, copied, SearchMode::Exact);
+        let mut exact_hits: Vec<&str> =
+            exact.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+        exact_hits.sort();
+        let mut exact_expected = vec![broken, "bedel-\n\nlini paragraf ayrımı"];
+        exact_expected.sort();
+        assert_eq!(
+            exact_hits, exact_expected,
+            "Tam: birleştirme yok, boşluk sade"
+        );
+        assert!(
+            !exact.hits.iter().any(|hit| hit.raw_text == flat),
+            "Tam: düz belge eşleşmemeli"
+        );
+        assert!(
+            !exact.hits.iter().any(|hit| hit.raw_text == typo),
+            "Tam: tipografik tire eşleşmemeli"
+        );
+    }
+
+    /// F12-T14aa — çözümleme katmanı: satır sonu tiresi **yalnız** metin
+    /// kiplerinde (`İfade`/`Esnek`) birleştirilir; `Tam` ham metni korur,
+    /// gerçek tire / en tire / paragraf ayrımı birleştirilmez.
+    #[test]
+    fn resolve_joins_only_line_break_hyphens_in_text_modes() {
+        let resolve = |text: &str, mode: SearchMode| {
+            SearchQuery {
+                text: text.to_string(),
+                mode,
+            }
+            .resolve()
+            .expect("çözümle")
+            .text
+        };
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            assert_eq!(
+                resolve("bedel-\nlini", mode),
+                "bedellini",
+                "{mode:?}: ASCII"
+            );
+            assert_eq!(
+                resolve("bedel\u{2010}\nlini", mode),
+                "bedellini",
+                "{mode:?}: U+2010"
+            );
+            assert_eq!(
+                resolve("bedel\u{2011}\nlini", mode),
+                "bedellini",
+                "{mode:?}: U+2011"
+            );
+            assert_eq!(
+                resolve("bedel\u{00AD}lini", mode),
+                "bedellini",
+                "{mode:?}: yumuşak tire"
+            );
+            // Gerçek tire (satır sonu yok) korunur: kredi-kartı ≠ kredikartı.
+            assert_eq!(
+                resolve("kredi-kartı", mode),
+                "kredi-kartı",
+                "{mode:?}: gerçek tire"
+            );
+            // En tire çizgi işaretidir, birleştirilmez.
+            assert_eq!(
+                resolve("kredi\u{2013}\nkartı", mode),
+                "kredi\u{2013}\nkartı",
+                "{mode:?}: en tire"
+            );
+            // İki satır sonu paragraf/sayfa ayrımıdır, birleştirilmez.
+            assert_eq!(
+                resolve("bedel-\n\nlini", mode),
+                "bedel-\n\nlini",
+                "{mode:?}: paragraf"
+            );
+        }
+        // `Tam` noktalamaya duyarlıdır: sorgu birleştirilmez.
+        assert_eq!(
+            resolve("bedel-\nlini", SearchMode::Exact),
+            "bedel-\nlini",
+            "Tam birleştirmez"
+        );
+        // `Auto` tırnaksız düz metni `Esnek`e, tırnaklıyı `İfade`ye çözer.
+        assert_eq!(
+            resolve("bedel-\nlini", SearchMode::Auto),
+            "bedellini",
+            "Auto → Esnek"
+        );
+        assert_eq!(
+            resolve("\"bedel-\nlini\"", SearchMode::Auto),
+            "bedellini",
+            "Auto tırnaklı → İfade"
+        );
     }
 
     /// F12-T14x — aday ifadesinin biçimi: `İfade`/`Esnek` bölünme

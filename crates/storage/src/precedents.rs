@@ -4011,6 +4011,77 @@ mod tests {
         assert_eq!(missed.reason.as_deref(), Some("not_found"));
     }
 
+    /// F12-T14aa — **kütüphane** araması da PDF'ten kopyalanmış sorguyu
+    /// birleştirir: sorgu `kira bedel‐\nlini ödemeyen` iken düz yazılmış
+    /// (`bedellini`) ve tireli belge birlikte bulunur, konum **kaynak
+    /// aralığıdır** (tire + satır sonu dahil) ve snippet eşleşmeyi gösterir.
+    /// `Tam` kipi noktalamaya duyarlı kalır (yalnız tireyi aynen yazan belge).
+    #[test]
+    fn library_search_joins_a_query_copied_with_a_line_break_hyphen() {
+        let db = db();
+        let flat_body = "Kira bedellini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        let broken_body = "Kira bedel-\nlini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        let flat = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/31"), Some("2025/32")))
+            .expect("emsal");
+        db.add_precedent_text(&flat.id, &text_of(flat_body))
+            .expect("metin");
+        let broken = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/33"), Some("2025/34")))
+            .expect("emsal");
+        db.add_precedent_text(&broken.id, &text_of(broken_body))
+            .expect("metin");
+
+        let copied = "kira bedel-\nlini ödemeyen";
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query(copied, mode, None))
+                .expect("arama");
+            assert_eq!(
+                page.matched, 2,
+                "{mode:?}: kopyalanmış sorgu düz ve tireli emsali bulmalı"
+            );
+            // Düz emsal: konum doğrudan eşleşme, uzunluk kaynak aralığı.
+            let flat_hit = page
+                .hits
+                .iter()
+                .find(|hit| hit.precedent_id == flat.id)
+                .expect("düz emsal");
+            let start = usize::try_from(flat_hit.match_start.expect("konum")).expect("start");
+            let length = usize::try_from(flat_hit.match_length.expect("uzunluk")).expect("uzunluk");
+            let sliced: String = flat_body.chars().skip(start).take(length).collect();
+            assert_eq!(
+                sliced, "Kira bedellini ödemeyen",
+                "{mode:?}: düz kaynak aralığı"
+            );
+            // Tireli emsal: kaynak aralığı tireyi ve satır sonunu **içerir**.
+            let broken_hit = page
+                .hits
+                .iter()
+                .find(|hit| hit.precedent_id == broken.id)
+                .expect("tireli emsal");
+            let start = usize::try_from(broken_hit.match_start.expect("konum")).expect("start");
+            let length =
+                usize::try_from(broken_hit.match_length.expect("uzunluk")).expect("uzunluk");
+            let sliced: String = broken_body.chars().skip(start).take(length).collect();
+            assert_eq!(
+                sliced, "Kira bedel-\nlini ödemeyen",
+                "{mode:?}: kaynak aralığı tire + satır sonu dahil"
+            );
+            assert!(
+                broken_hit.snippet.contains("bedel-\nlini"),
+                "{mode:?}: snippet eşleşmeyi göstermeli"
+            );
+        }
+
+        // `Tam` noktalamaya duyarlı: sorgu birleştirilmez → yalnız tireli emsal.
+        let exact = db
+            .search_precedents(&library_query(copied, SearchMode::Exact, None))
+            .expect("arama");
+        assert_eq!(exact.matched, 1, "Tam: yalnız birebir tireli emsal");
+        assert_eq!(exact.hits[0].precedent_id, broken.id);
+    }
+
     #[test]
     fn a_real_hyphen_is_not_joined_in_precedent_quotes() {
         let db = db();
