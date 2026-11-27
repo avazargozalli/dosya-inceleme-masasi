@@ -39,6 +39,7 @@
 | F12-T14ab | ✅ | **aramada PDF ligatürü** (T14 dürüst sınırı kapandı): PDF fontu `fi`/`fl` çiftlerini tek glif yazar (`taraﬂar` `U+FB02`, `Tasﬁye` `U+FB01`); alıntı doğrulaması ligatürü açıyordu, **arama** açmıyordu — aday satır `normalized_text`ten (ligatür açık) seçiliyor, `Tam`/`İfade` doğrulayıcısı ham metni ligatür açmadan okuduğu için atıyordu: `taraflar` sorgusu ligatürlü sayfada **0 sonuç** (ters yön de aynı; kip ayrımı sessiz yanlış negatif). Artık üç kip de ligatürü açar (tek tablo `dim_evidence::ligature_expansion`); `Tam` noktalamaya duyarlı kalır, harfler korunur; `Tam` iğnesi ve samanlığı **tek üreticiden** geçer (`fold_ws`). Konum yeni `fold_ws_with_map` katmanından **kaynak aralığı** olarak gelir (`taraﬂar` = 7; `taraﬂar, arasında` = 17); tire + ligatür bileşimi (`tas-\nﬁye`) `İfade`te birleşir; `Esnek` değişmedi. Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ac | ✅ | **aramada görünmez biçim karakterleri** (T14z'in aramadaki karşılığı): PDF/DOCX metin katmanı ve pano kelimenin **içine** yumuşak tire (`U+00AD`), sıfır genişlikli boşluk (`U+200B`), `U+200C`/`U+200D`, kelime birleştirici (`U+2060`) ya da BOM (`U+FEFF`) sokabilir; FTS (`unicode61`) bunları ayırıcı saydığı için kelime indekste **iki belirtece** bölünüyordu — `bedellini` sorgusu görünmez karakterli sayfada **üç kipte 0 sonuç** (kütüphanede `Tam` 1/3). Artık üç kip yok sayar (`fold_ws`, `tokens_with`, `token_spans`/`token_equals`); `Tam` aday ifadesi bölünme alternatiflerini taşır (hükmü yine doğrulayıcı verir — tire birleştirme sızmaz); konum **kaynak aralığıdır** (görünmez karakter uzunluğa dahil); dilim öncesi satırlar yeniden ayrıştırma istemez. Alıntı doğrulaması değişmedi (ZWSP orada açık kayıt). Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ae | ✅ | **arama aday ifadesinde üç satır sonu bölünmesi** (T14y dürüst sınırı (a) kapandı): dar sütunlu tablo/dipnot metni bir kelimeyi **üç** satır sonuyla dörde bölebilir (`be-\ndel-\nli-\nni`); FTS dört ham belirteç indeksler, tek/çift bölünme alternatifleri satırı aday yapmadığı için `İfade`/`Esnek` kipinde sessiz **0 sonuç** vardı. Artık üç bölünme de adaydır (dört parça, `NEAR` payı 4): ayrı ve küçük bütçe (**8**), **dengeli** bölünmeler önce (sözlüksel sıra bütçeyi `b|e|d|ellini` gibi tek harfli parçalara harcıyordu — ölçüldü, gerçek bölünme hiç aday olmuyordu), yalnız **4–40** karakterlik belirteçlerde. Hükmü yine `SearchMatcher` verir: paragraf ayrımı, gerçek tire ve boşluk eşleşmez; `Tam` noktalamaya duyarlı kalır. Ölçülen maliyet (debug): aday ifadesi 2.851 → **3.761 B**, FTS sayım p50 7,33 → 9,16 ms, sayfa p50 +~%35. Şema (v68) ve arayüz değişmedi (2026-11-27) |
+| F12-T14ad | ✅ | **alıntı doğrulamasında görünmez biçim karakteri katmanı** (T14ac'ın alıntıdaki karşılığı): PDF/DOCX metin katmanı ve panodan kopyalama kelimenin **içine** yumuşak tire (`U+00AD`), ZWSP (`U+200B`), ZWNJ/ZWJ (`U+200C`/`U+200D`), kelime birleştirici (`U+2060`) ya da BOM (`U+FEFF`) sokar; kullanıcı göremez, kaynak `kira bedel<ZWSP>ini` yazarken dilekçe `kira bedelini` yazar → metin içi alıntı, emsal ve kütüphane doğrulaması üç yolda `not_found` düşüyordu. Yeni `invisible` katmanı (`exact → whitespace → invisible → ligature → apostrophe → turkish_fold → dehyphenated`) yalnız bu aileyi yok sayar, harfleri korur; harf/ligatür/kesme/tire katmanları da ayıklar, alıntı iğnesi de; konum **kaynak aralığıdır** (görünmez uzunluğa dahil: 26/25), eşleşme `exact` sayılmaz ve anchor'a **bağlanmaz**. Gerçek boşluk ve aile dışı Cf (`U+061C`) yok sayılmaz (negatif kontrol); aynı görünmez karakteri taşıyan alıntı yine `exact`. Arayüzde "görünmez biçim karakteri" etiketi. Şema (v68) ve kalıcı yazma değişmedi (2026-11-28) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -3168,3 +3169,72 @@ bölünme alternatifi taşır ama doğrulayıcısı satır sonu tiresini birleş
 konum kaynak aralığıdır; (e) maliyet debug derlemede ve 3.420 segmentlik
 yerel korpusta ölçüldü; 100k (F15) ve Windows/Linux donanımı ayrı; (f) gerçek
 Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14ad — alıntı doğrulamasında görünmez biçim karakteri katmanı (2026-11-28)
+
+**Dilim (şema değişmedi — v68; okuma yolu + arayüz; kalıcı yazma yok):** T14ac
+dürüst sınırı kapandı — görünmez biçim karakterleri **arama** eşleşmesinde yok
+sayılıyordu, **alıntı doğrulaması** hâlâ harf harf karşılaştırıyordu. PDF/DOCX
+metin katmanı ve panodan kopyalama kelimenin **içine** yumuşak tire (`U+00AD`),
+ZWSP (`U+200B`), ZWNJ/ZWJ (`U+200C`/`U+200D`), kelime birleştirici (`U+2060`) ya
+da BOM (`U+FEFF`) sokar; kullanıcı bu karakterleri göremez — kaynak
+`kira bedel<ZWSP>ini` yazarken dilekçe `kira bedelini` yazar ve doğru alıntı üç
+yolda da (metin içi alıntılar, emsal/karar alıntısı, kütüphane) `not_found`
+düşüyordu (sessiz yanlış negatif).
+
+Kural: görünmezler yazım değil **sunum** artefaktıdır. Katman sırası
+`exact` → `whitespace` → **`invisible`** → `ligature` → `apostrophe` →
+`turkish_fold` → `dehyphenated`; yeni katman yalnız bu aileyi ayıklar ve
+boşlukları tekler, **harfleri korur** (`invisible_with_map`, kaynak indeksi
+eşlemesi). Harf/ligatür/kesme işareti/tire katmanları da görünmezleri ayıklayarak
+bileşim farkını kaçırmaz (ör. `bedel<ZWSP>lini` ↔ `bedel-\nlini` tire katmanında
+bulunur). Alıntının kendisi de ayıklanır (`Tam` iğnesi). Konum **kaynak
+aralığıdır** — görünmez karakter uzunluğa dahildir (alıntı 25, kaynak 26
+karakter); `sourceText` görünmez karakteri gösterir. Eşleşme `exact` sayılmaz,
+tek sayfalık anchor'a **bağlanmaz**; arayüz üç yolda "görünmez biçim karakteri"
+etiketi ve bağlanamama nedenini gösterir. Negatif kontroller: gerçek boşluk
+(`bedel ini`) ve aile dışı Cf (`U+061C`) yok sayılmaz; kaynakla **birebir aynı**
+görünmez karakteri taşıyan alıntı yine `exact` (katman yalnız farkı kapatır).
+
+**Testler (kırmızı-önce dürüst):** `dim-t14ad-red.log` eski kodla **3/10 KIRMIZI**
+(`invisible_format_characters_inside_words_match_in_their_own_tier`,
+`elided_quote_with_an_invisible_character_is_found_as_elided`,
+`precedent_quote_paths_report_the_invisible_method`; 7 passed · 3 failed).
+Yeni 10 Rust testi: uçtan uca metin içi alıntı (ZWSP, kaynak aralığı 26, etiket
+`invisible`), negatif kontroller (gerçek boşluk + `U+061C`), birebir aynı
+görünmezle `exact`, alıntı iğnesinin ayıklanması, ligatür/kesme/tire katmanlarıyla
+bileşim, kısaltmalı (`…`) alıntı, emsal yolu etiketi, konumun kaynak indeksine
+eşlenmesi. Arayüz: `MATCH_KIND_LABEL`/`bindHint`/emsal yöntem etiketi + dört
+sözlük anahtarı (`intext.matchInvisible`, `precedentLib.quoteInvisible`,
+`precedentLib.intextMethodInvisible`, `intext.bindInvisible`); değişen üç test
+dosyası **102 passed** (`intext.test.ts` 15, `precedents.test.ts` 33,
+`i18n-bindings.test.ts` 54; node 22.23.1, TZ=UTC).
+
+**Yerel:** `rustfmt --check` iki dosyada temiz; `cargo clippy -p dim-storage
+--all-targets -- -D warnings` temiz; tam paket (ağaçta başka ajanın commit'siz
+v70 kodu dâhil) **868 passed · 1 ignored · 0 failed, 829,78 s**.
+
+**Kapı (`scratch/dim-t14ad-gates.py`, log `dim-t14ad-gates-r2.log`):** taban 10
+hedef test YEŞİL; **13/13 KANIT · YEŞİL 0 · ÖLÇÜLEMEDİ 0**, her satırda hedef test
+adı; kaynak sha256 `b7d5a18d…` / `5a8b92fd…` / `566614dc…` koşu öncesi/sonrası
+**birebir**. Mutantlar: aile `U+200B`'yi tanımaz; `Tam` iğnesi görünmezleri
+ayıklamaz; katman listesinden `Invisible` çıkarılır; etiket `whitespace` yazar;
+emsal katmanı ayıklamaz / emsal etiketi yanlış; harf katmanı görünmezleri korur;
+konum çıktı indeksine eşlenir; harf/ligatür/kesme/tire katmanları ayıklamaz;
+gerçek boşluk da görünmez sayılır (gevşetme) — hepsi KIRMIZI.
+
+**CI (ölçüldü):** `46070499374` **10/10 YEŞİL** — `dim-storage` **866** iki OS'ta
+(`1 ignored` ölçüm testi): macos-15 **687,13 s** / ubuntu-latest **679,43 s**
+(iş süresi 13 dk 26 s / 13 dk 18 s; 856 → 866 = bu dilimin 10 testi); `arayüz`
+67 dosya / **1501** test (1499 → +2), paket `index-7Bx5JZ3N.js` **734,06 kB** /
+gzip **194,76 kB** (+0,74 kB); masaüstü kabuk, windows güvenli depo, SBOM,
+sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil.
+
+**Dürüst sınırlar:** (a) ayıklanan aile `U+00AD`/`U+200B`/`U+200C`/`U+200D`/
+`U+2060`/`U+FEFF` ile sınırlıdır — diğer Cf'ler (`U+061C`) ve gerçek boşluk fark
+değildir (negatif kontrollerle pinli); (b) eşleşme `exact` sayılmaz ve anchor'a
+bağlanmaz — görünmez karakter kaynakta **silinmiş değildir**, kaynağa gözle
+bakılmalıdır; (c) konum kaynak aralığıdır, görünmez karakter uzunluğa dahildir;
+(d) görünmez karakter **alıntıda da** varsa `exact` kalır; (e) eşleşme **metin
+eşleşmesi**, anlam değil; rapor kalıcı değil; (f) gerçek Tauri penceresi + görsel
+QA **insan bekliyor**.
