@@ -2042,7 +2042,47 @@ struct PrecedentSearchSeed {
 /// doğrulayıcı `Tam` kipinde çapasız alt dizeyi kabul etmez, `İfade`/`Esnek`
 /// de belirteç sınırında eşleşir — konum aynı kuralı uygulamazsa başka bir
 /// geçişi (ör. `kiraathane` içindeki `kira`) işaretlerdi.
+/// F12-T14ac: metin ya da iğne **görünmez biçim karakteri** taşıyorsa
+/// (`U+00AD`, `U+200B`, `U+200C`, `U+200D`, `U+2060`, `U+FEFF` — PDF/DOCX
+/// metin katmanı ve pano artefaktı) ikisi de bir kez ayıklanır, konum katmanı
+/// temiz metinde çalışır ve sonuç **kaynak** karakter aralığına geri eşlenir;
+/// görünmez karakter eşleşmenin içinde kaldığı için uzunluk onu kapsar.
 pub(crate) fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i64)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let has_invisible = |value: &str| value.chars().any(crate::parsing::is_invisible_format);
+    if !has_invisible(text) && !has_invisible(needle) {
+        return locate_in_text_plain(text, needle, mode);
+    }
+    let (clean_text, map) = crate::parsing::strip_invisible_with_map(text);
+    let clean_needle: String = needle
+        .chars()
+        .filter(|ch| !crate::parsing::is_invisible_format(*ch))
+        .collect();
+    let clean_needle = clean_needle.trim();
+    if clean_needle.is_empty() || map.is_empty() {
+        return None;
+    }
+    let (start, length) = locate_in_text_plain(&clean_text, clean_needle, mode)?;
+    let start = usize::try_from(start).ok()?;
+    let length = usize::try_from(length).ok()?;
+    if length == 0 {
+        return None;
+    }
+    let source_start = *map.get(start)?;
+    let last = start.checked_add(length)?.checked_sub(1)?;
+    let source_end = map.get(last).map(|index| index + 1)?;
+    Some((
+        i64::try_from(source_start).ok()?,
+        i64::try_from(source_end.saturating_sub(source_start)).ok()?,
+    ))
+}
+
+/// `locate_in_text`in görünmez karakter ayıklaması **yapmayan** çekirdeği;
+/// katmanların tek uygulaması burada durur.
+fn locate_in_text_plain(text: &str, needle: &str, mode: SearchMode) -> Option<(i64, i64)> {
     let needle = needle.trim();
     if needle.is_empty() {
         return None;
@@ -5159,6 +5199,75 @@ mod tests {
             "köprü konumu kaynak aralığı"
         );
         assert_eq!(hit.match_length, Some(17), "köprü uzunluğu kaynak aralığı");
+    }
+
+    /// F12-T14ac — kütüphane araması **görünmez biçim karakterlerini** yok
+    /// sayar: emsal metni PDF/DOCX'ten geldiğinde kelimenin içine `U+200B`
+    /// (sıfır genişlikli boşluk) ya da `U+00AD` (yumuşak tire) girebilir;
+    /// görünmez oldukları için kullanıcı farkı göremez. Üç kip de bulmalı ve
+    /// konum **kaynak aralığı** olmalı (görünmez karakter dahil 9 karakter).
+    #[test]
+    fn library_search_ignores_invisible_format_characters_and_keeps_the_source_range() {
+        let db = db();
+        let zwsp_text = "Sözleşmenin tara\u{200B}flar arasında kurulmuştur.";
+        let zwsp = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/96"), Some("2025/97")))
+            .expect("emsal");
+        db.add_precedent_text(&zwsp.id, &text_of(zwsp_text))
+            .expect("metin");
+        let shy = db
+            .create_precedent(&precedent("Danıştay", Some("2024/97"), Some("2025/98")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &shy.id,
+            &text_of("Sözleşmenin tara\u{00AD}flar arasında kurulmuştur."),
+        )
+        .expect("metin");
+        let plain = db
+            .create_precedent(&precedent("Sayıştay", Some("2024/98"), Some("2025/99")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &plain.id,
+            &text_of("Sözleşmenin taraflar arasında kurulmuştur."),
+        )
+        .expect("metin");
+
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query("taraflar", mode, None))
+                .expect("arama");
+            assert_eq!(
+                page.matched, 3,
+                "kip {mode:?}: görünmez karakter eşleşmeyi bölmemeli"
+            );
+            let hit = page
+                .hits
+                .iter()
+                .find(|hit| hit.precedent_id == zwsp.id)
+                .expect("zwsp emsali");
+            assert_eq!(
+                hit.match_start,
+                Some(12),
+                "kip {mode:?}: konum kaynağı göstermeli"
+            );
+            assert_eq!(
+                hit.match_length,
+                Some(9),
+                "kip {mode:?}: uzunluk kaynak karakter sayısıdır"
+            );
+            assert!(
+                hit.snippet.contains("tara\u{200B}flar"),
+                "kip {mode:?}: snippet kaynağı gösterir"
+            );
+        }
+
+        // PDF'ten kopyalanan görünmez karakterli sorgu da üç kipte bulur.
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query("tara\u{200B}flar", mode, None))
+                .expect("arama");
+            assert_eq!(page.matched, 3, "kip {mode:?}: kopyalanmış sorgu");
+        }
     }
 
     /// F12-T14u (birim): konum katmanı satır sonu tiresini **yalnız** belirteç

@@ -1215,10 +1215,15 @@ fn fts_expression(query: &ResolvedQuery) -> String {
             Some(docket) => docket_expression(docket),
             None => String::new(),
         },
-        // `Tam` noktalamaya duyarlıdır: doğrulayıcısı dehyphenate katmanını
-        // **bilmez** (F15 #35/#36), bu yüzden aday ifadesi dar kalır —
-        // birleştirilmiş aday üretmek yalnız boşa doğrulama olurdu.
-        SearchMode::Exact => narrow_expression("normalized_text", &fold_tokens(&query.text), true),
+        // `Tam` noktalamaya duyarlıdır: doğrulayıcısı satır sonu tiresini
+        // **birleştirmez** (F15 #35/#36). Ama görünmez biçim karakteri
+        // (F12-T14ac: `U+00AD`/`U+200B`/…) FTS'te (`unicode61`) belirteci
+        // böler; düz ifade o satırı hiç aday yapmaz. Bu yüzden bölünme
+        // alternatifleri `Tam` için de üretilir — hükmü yine doğrulayıcı
+        // verir, tire birleştirme sonuçlara sızmaz.
+        SearchMode::Exact => {
+            dehyphenated_expression("normalized_text", &fold_tokens(&query.text), true)
+        }
         // F12-T14x: `İfade`/`Esnek` doğrulayıcısı satır sonu tiresini
         // birleştirir (T14u); aday ifadesi de bölünmüş yazımı bilmeli.
         SearchMode::Phrase => {
@@ -1416,6 +1421,52 @@ fn turkish_lower(text: &str) -> String {
     out
 }
 
+/// Görünmez **biçim** karakterleri (F12-T14ac): yumuşak tire (`U+00AD`),
+/// sıfır genişlikli boşluk (`U+200B`), sıfır genişlikli bitişmez/bitişir
+/// (`U+200C`/`U+200D`), kelime birleştirici (`U+2060`) ve BOM (`U+FEFF`).
+///
+/// PDF/DOCX metin katmanı ve panodan kopyalama bunları kelimenin **içine**
+/// sokabilir; görünmez oldukları için kullanıcı aradaki farkı göremez.
+/// Yazım değil **sunum** artefaktıdır: eşleşmede yok sayılırlar. FTS
+/// (`unicode61`) bunları ayırıcı saydığı için görünmez karakterli kelime
+/// indekste **iki belirtece** bölünür — aday üretimi de bunu bilmeli
+/// (`dehyphenated_expression`).
+pub(crate) fn is_invisible_format(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00AD}' | '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+    )
+}
+
+/// Görünmez biçim karakterlerini ayıklar; metinde yoksa **ödünç** verir
+/// (normal aramada ek dizge/tarama yok — `may_dehyphenate` deseni).
+fn strip_invisible(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(is_invisible_format) {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(
+        text.chars()
+            .filter(|ch| !is_invisible_format(*ch))
+            .collect(),
+    )
+}
+
+/// Ayıklanmış metin + her karakterin **kaynak** karakter indeksi; konum
+/// katmanı sonucu kaynak aralığına geri eşler (F12-T14ac). Görünmez karakter
+/// eşleşmenin içinde kaldığı için raporlanan uzunluk onu **kapsar**.
+pub(crate) fn strip_invisible_with_map(text: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(text.len());
+    let mut map = Vec::with_capacity(text.chars().count());
+    for (index, ch) in text.chars().enumerate() {
+        if is_invisible_format(ch) {
+            continue;
+        }
+        out.push(ch);
+        map.push(index);
+    }
+    (out, map)
+}
+
 /// Ligatür açmanın **tek** uygulaması (F12-T14ab): PDF fontları `fi`/`fl`
 /// çiftlerini tek glif yazar (`U+FB01`/`U+FB02`); bu bir yazım farkı değil
 /// **sunum** artefaktıdır. Kural `dim_evidence::ligature_expansion`da durur —
@@ -1460,6 +1511,10 @@ fn tokens_with(text: &str, fold: bool) -> Vec<String> {
         // sunum artefaktıdır, `taraﬂar` ile `taraflar` aynı belirteçtir.
         turkish_lower(&expand_ligatures(text))
     };
+    // F12-T14ac: görünmez biçim karakteri (`U+00AD`/`U+200B`/…) belirteci
+    // **bölmez** — `split` onları ayırıcı sayardı (`bedel\u{200B}lini` iki
+    // belirteç olurdu). Ayıklama tek yerde; iki kip aynı çekirdekten okur.
+    let prepared = strip_invisible(&prepared);
     prepared
         .split(|c: char| !c.is_alphanumeric())
         .filter(|part| !part.is_empty())
@@ -1723,6 +1778,11 @@ fn fold_ws_into(text: &str, out: &mut String) {
     out.clear();
     let mut last_space = false;
     for ch in text.chars() {
+        // F12-T14ac: görünmez biçim karakteri **yok sayılır** — boşluk
+        // durumunu değiştirmez, kelime ortasında iki parçayı birleştirir.
+        if is_invisible_format(ch) {
+            continue;
+        }
         // F12-T14ab: ligatür **sunum** artefaktıdır (`taraﬂar` → `taraflar`);
         // `Tam` doğrulaması bunu eşitler, noktalama duyarlılığı değişmez.
         if let Some(expansion) = dim_evidence::ligature_expansion(ch) {
@@ -1822,6 +1882,11 @@ fn token_spans(text: &str, out: &mut Vec<(usize, usize)>) {
     out.clear();
     let mut start: Option<usize> = None;
     for (index, ch) in text.char_indices() {
+        // F12-T14ac: görünmez biçim karakteri belirteci **bölmez**; span
+        // içinde kalır, karşılaştırma onu ayıklar (`token_equals`).
+        if is_invisible_format(ch) {
+            continue;
+        }
         if ch.is_alphanumeric() {
             if start.is_none() {
                 start = Some(index);
@@ -1838,7 +1903,11 @@ fn token_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 /// Bir belirteç iğne belirteciyle eşleşiyor mu? `prefix` ise samanlık belirteci
 /// iğne belirtecinden **uzun** olabilir (son kelime öneki).
 fn token_equals(text: &str, span: (usize, usize), needle: &str, prefix: bool) -> bool {
-    let mut hay = text[span.0..span.1].chars();
+    // F12-T14ac: belirteç span'ı görünmez biçim karakterini içerebilir
+    // (`bedel\u{200B}lini`); karşılaştırmada yok sayılır.
+    let mut hay = text[span.0..span.1]
+        .chars()
+        .filter(|ch| !is_invisible_format(*ch));
     let mut want = needle.chars();
     loop {
         match (hay.next(), want.next()) {
@@ -5053,9 +5122,17 @@ mod tests {
             .expect("sayım");
         assert_eq!(total.total, 2, "ayrı sayım eşleşme sayısı");
 
-        // `Tam` noktalamaya duyarlı kalır (F15 #35/#36).
+        // `Tam` noktalamaya duyarlı kalır (F15 #35/#36): **satır sonu tiresini**
+        // birleştirmez (bu yüzden `hyphenated` eşleşmez). Ama yumuşak tire
+        // (`U+00AD`) **görünmezdir** — F12-T14ac ile her kipte yok sayılır;
+        // `Tam` de onu bulur (yalnız `soft`).
         let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
-        assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+        let exact_hits: Vec<&str> = exact.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+        assert_eq!(
+            exact_hits,
+            vec![soft],
+            "Tam: yumuşak tire görünmez, satır sonu tiresi birleşmez"
+        );
     }
 
     /// **F12-T14y — çok bölünmeli belirteç (T14x'in dürüst sınırı):** bir kelime
@@ -5422,6 +5499,173 @@ mod tests {
         assert!(exact.hits.is_empty(), "Tam kipi noktalamaya duyarlı kalır");
     }
 
+    /// F12-T14ac — **görünmez biçim karakterleri** aramayı bölmez: PDF/DOCX
+    /// metin katmanı ve panodan kopyalama kelimenin **içine** yumuşak tire
+    /// (`U+00AD`), sıfır genişlikli boşluk (`U+200B`), sıfır genişlikli
+    /// bitişmez/bitişir (`U+200C`/`U+200D`), kelime birleştirici (`U+2060`) ya
+    /// da BOM (`U+FEFF`) sokabilir. Görünmez oldukları için kullanıcı farkı
+    /// göremez; üç kip de `bedellini` yazımını bulmalı, konum **kaynak
+    /// aralığı** olmalı (görünmez karakter dahil 10 karakter). Ligatür gibi
+    /// bunlar da **sunum** artefaktıdır; `Tam` noktalama duyarlılığı değişmez.
+    #[test]
+    fn file_search_ignores_invisible_format_characters_in_every_mode() {
+        let (db, case_id, version_id) = setup();
+        let zwsp = "Sözleşmede bedel\u{200B}lini ödemeyen taraf temerrüde düştü.";
+        let shy = "Sözleşmede bedel\u{00AD}lini ödemeyen taraf temerrüde düştü.";
+        let bom = "Sözleşmede bedel\u{FEFF}lini ödemeyen taraf temerrüde düştü.";
+        let joiner = "Sözleşmede bedel\u{2060}lini ödemeyen taraf temerrüde düştü.";
+        let plain = "Sözleşmede bedellini ödemeyen taraf temerrüde düştü.";
+        // Negatif kontroller: ayrı iki kelime ve gerçek tire birleşmemeli.
+        let two_words = "Sözleşmede bedel lini ayrı yazılmıştır.";
+        let real_hyphen = "Kredi-kartı borcu ayrı kalemdir.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[zwsp, shy, bom, joiner, plain, two_words, real_hyphen],
+        );
+
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "bedellini", mode);
+            assert_eq!(
+                page.total,
+                Some(5),
+                "{}: görünmez karakter eşleşmeyi bölmemeli",
+                mode.tag()
+            );
+            // Konum **kaynak aralığıdır**: 5 harf + görünmez + 4 harf = 10.
+            let hit = page
+                .hits
+                .iter()
+                .find(|hit| hit.raw_text == zwsp)
+                .expect("zwsp sayfası");
+            assert_eq!(hit.match_start, Some(11), "{}: konum", mode.tag());
+            assert_eq!(
+                hit.match_length,
+                Some(10),
+                "{}: uzunluk kaynak karakter sayısıdır",
+                mode.tag()
+            );
+            assert!(
+                hit.snippet.contains("bedel\u{200B}lini"),
+                "{}: snippet kaynağı gösterir",
+                mode.tag()
+            );
+            // Ayrı yazım birleşmez (görünmez karakter yoksa belirteçler ayrı).
+            assert!(
+                !page.hits.iter().any(|hit| hit.raw_text == two_words),
+                "{}: ayrı iki kelime birleşmemeli",
+                mode.tag()
+            );
+            // PDF'ten kopyalanan sorgu da görünmez karakter taşır; ayıklanır.
+            let copied = search_with(&db, &case_id, "bedel\u{200B}lini", mode);
+            assert_eq!(
+                copied.total,
+                Some(5),
+                "{}: görünmez karakterli sorgu da bulmalı",
+                mode.tag()
+            );
+        }
+
+        // `Tam` kipi noktalamaya duyarlı kalır: gerçek tire eşitlenmez.
+        let exact = search_with(&db, &case_id, "kredikartı", SearchMode::Exact);
+        assert!(exact.hits.is_empty(), "Tam kipi noktalamaya duyarlı kalır");
+    }
+
+    /// F12-T14ac (birim): görünmez biçim karakteri belirteci **bölmez**;
+    /// `Tam` katlaması ve iki kipin belirteçleri aynı kelimeyi görür. Ligatür
+    /// ile birlikte de çalışır (sunum artefaktları birleşir).
+    #[test]
+    fn invisible_format_characters_do_not_split_tokens_or_folding() {
+        for invisible in [
+            '\u{00AD}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}',
+        ] {
+            let broken = format!("bedel{invisible}lini");
+            assert_eq!(
+                fold_ws(&broken),
+                "bedellini",
+                "Tam katlaması: {invisible:?}"
+            );
+            assert_eq!(
+                exact_tokens(&broken),
+                vec!["bedellini".to_string()],
+                "İfade belirteçleri: {invisible:?}"
+            );
+            assert_eq!(
+                fold_tokens(&broken),
+                vec!["bedellini".to_string()],
+                "Esnek belirteçleri: {invisible:?}"
+            );
+            // Sorgu tarafı da aynı çekirdekten geçer (PDF'ten kopyalama).
+            assert_eq!(
+                fold_ws(&broken),
+                fold_ws("bedellini"),
+                "iki yön: {invisible:?}"
+            );
+        }
+        // Negatif: görünmez karakter **yoksa** ayrı iki kelime birleşmez.
+        assert_eq!(
+            exact_tokens("bedel lini"),
+            vec!["bedel".to_string(), "lini".to_string()]
+        );
+        // Ligatür + görünmez birlikte: ikisi de sunum artefaktıdır.
+        assert_eq!(fold_ws("tara\u{FB02}\u{200B}ar"), "taraflar");
+    }
+
+    /// F12-T14ac — `Tam` aday ifadesi: görünmez karakter FTS'te belirteci
+    /// böldüğü için (unicode61) düz ifade satırı hiç aday yapmaz. Bölünme
+    /// alternatifleri **`Tam` için de** üretilir; hükmü yine doğrulayıcı verir
+    /// (`Tam` tireyi birleştirmez — noktalama duyarlılığı sızmaz).
+    #[test]
+    fn exact_candidates_cover_invisible_character_splits() {
+        let exact = fts_expression(&ResolvedQuery {
+            mode: SearchMode::Exact,
+            text: "bedellini".into(),
+            docket: None,
+        });
+        assert!(
+            exact.starts_with("normalized_text : \"bedellini\"*"),
+            "düz ifade korunur: {exact}"
+        );
+        assert!(
+            exact.contains("NEAR(\"bedel\" \"lini\"*, 2)"),
+            "Tam da bölünme alternatifi taşır: {exact}"
+        );
+        assert!(!exact.contains(", 4)"), "dört parça aday değil: {exact}");
+    }
+
+    /// F12-T14ac — **yeniden ayrıştırma gerekmez:** `normalized_text` sütunu
+    /// sadeleştirmeyi yazıldığı anda dondurur; bu dilimden **önce**
+    /// ayrıştırılmış satırlarda görünmez karakter sütunda kalır ve FTS indeksi
+    /// kelimeyi iki belirtece böler. Aday ifadesi bölünmüş belirteci de
+    /// kapsadığı için arama yine bulur (üç kip) — belge yeniden ayrıştırılmak
+    /// zorunda değil.
+    #[test]
+    fn file_search_finds_invisible_split_rows_parsed_before_the_fix() {
+        let (db, case_id, version_id) = setup();
+        let text = "Sözleşmede bedel\u{200B}lini ödemeyen taraf temerrüde düştü.";
+        store_texts(&db, &case_id, &version_id, &[text]);
+        // Dilim öncesi hâli taklit et: saklanan sütun görünmez karakteri taşır.
+        db.conn()
+            .execute(
+                "UPDATE text_segments SET normalized_text=?1 WHERE case_id=?2",
+                rusqlite::params![
+                    "sozlesmede bedel\u{200B}lini odemeyen taraf temerrude dustu.",
+                    case_id
+                ],
+            )
+            .expect("eski satır");
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "bedellini", mode);
+            assert_eq!(
+                page.total,
+                Some(1),
+                "{}: dilim öncesi satır da bulunmalı (yeniden ayrıştırma yok)",
+                mode.tag()
+            );
+        }
+    }
+
     /// F12-T14aa — çözümleme katmanı: satır sonu tiresi **yalnız** metin
     /// kiplerinde (`İfade`/`Esnek`) birleştirilir; `Tam` ham metni korur,
     /// gerçek tire / en tire / paragraf ayrımı birleştirilmez.
@@ -5496,8 +5740,9 @@ mod tests {
     }
 
     /// F12-T14x — aday ifadesinin biçimi: `İfade`/`Esnek` bölünme
-    /// alternatifleri taşır, `Tam` taşımaz (doğrulayıcısı dehyphenate bilmez)
-    /// ve alternatif sayısı sınırlıdır — ifade sorgu uzunluğuyla şişmez.
+    /// alternatifleri taşır; `Tam` de taşır (F12-T14ac: görünmez biçim
+    /// karakteri FTS'te belirteci böler) ve alternatif sayısı sınırlıdır —
+    /// ifade sorgu uzunluğuyla şişmez.
     #[test]
     fn dehyphenate_candidates_are_bounded_and_mode_aware() {
         let resolved = |text: &str, mode: SearchMode| ResolvedQuery {
@@ -5539,7 +5784,10 @@ mod tests {
         );
 
         let exact = fts_expression(&resolved("bedellini", SearchMode::Exact));
-        assert!(!exact.contains("NEAR"), "Tam kipi dar kalır: {exact}");
+        assert!(
+            exact.contains("NEAR(\"bedel\" \"lini\"*, 2)"),
+            "Tam da bölünme alternatifi taşır: {exact}"
+        );
 
         // Sınır: tek uzun belirteç yüzlerce alternatif üretmez. Değerler
         // **sözleşmedir** (64 tek + 64 çift) — sabitle değil sayıyla ölçülür
@@ -5651,11 +5899,22 @@ mod tests {
             text: "bedellini".into(),
             docket: None,
         });
+        // F12-T14ac: `Tam` aday ifadesi görünmez biçim karakteri bölünmesini
+        // kapsamak için bölünme alternatifleri taşır — maliyeti ölçülür.
+        let exact_literal =
+            narrow_expression("normalized_text", &fold_tokens("itirazın reddine"), true);
+        let exact_widened = fts_expression(&ResolvedQuery {
+            mode: SearchMode::Exact,
+            text: "itirazın reddine".into(),
+            docket: None,
+        });
 
         let (lit_p50, lit_p95, lit_matched) = fts_count(&literal);
         let (wide_p50, wide_p95, wide_matched) = fts_count(&widened);
         let (bed_lit_p50, bed_lit_p95, bed_lit_matched) = fts_count(&bedelli_literal);
         let (bed_wide_p50, bed_wide_p95, bed_wide_matched) = fts_count(&bedelli_widened);
+        let (ex_lit_p50, ex_lit_p95, ex_lit_matched) = fts_count(&exact_literal);
+        let (ex_wide_p50, ex_wide_p95, ex_wide_matched) = fts_count(&exact_widened);
 
         let (page_p50, page_p95, examined, returned, _) = page(
             &SearchQuery {
@@ -5678,6 +5937,13 @@ mod tests {
             },
             true,
         );
+        let (exact_p50, exact_p95, exact_examined, exact_returned, _) = page(
+            &SearchQuery {
+                text: "itirazın reddine".into(),
+                mode: SearchMode::Exact,
+            },
+            false,
+        );
 
         println!(
             "F12-T14x ölçüm (3.000 tuzak + 30 bölünmüş + 30 düz, {rounds} tur):\n\
@@ -5686,11 +5952,16 @@ mod tests {
              fts sayım bedellini: dar p50={bed_lit_p50:.2} p95={bed_lit_p95:.2} ms (eşleşen {bed_lit_matched}) · geniş p50={bed_wide_p50:.2} p95={bed_wide_p95:.2} ms (eşleşen {bed_wide_matched})\n\
              sayfa Esnek bedellini (sayı hariç): p50={page_p50:.2} p95={page_p95:.2} ms · aday={examined} dönen={returned}\n\
              sayfa İfade itirazın-reddine (sayı hariç): p50={common_p50:.2} p95={common_p95:.2} ms · aday={common_examined} dönen={common_returned}\n\
+             sayfa Tam itirazın-reddine (sayı hariç): p50={exact_p50:.2} p95={exact_p95:.2} ms · aday={exact_examined} dönen={exact_returned}\n\
+             fts sayım Tam itirazın-reddine: dar p50={ex_lit_p50:.2} p95={ex_lit_p95:.2} ms (eşleşen {ex_lit_matched}) · geniş p50={ex_wide_p50:.2} p95={ex_wide_p95:.2} ms (eşleşen {ex_wide_matched})\n\
+             ifade boyu Tam: dar={} B / geniş={} B\n\
              aynı sorgu sayı dahil: p50={count_p50:.2} p95={count_p95:.2} ms · toplam={common_total}",
             literal.len(),
             widened.len(),
             bedelli_literal.len(),
-            bedelli_widened.len()
+            bedelli_widened.len(),
+            exact_literal.len(),
+            exact_widened.len()
         );
     }
 
