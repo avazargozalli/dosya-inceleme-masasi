@@ -1251,9 +1251,9 @@ fn fts_expression(query: &ResolvedQuery) -> String {
 /// **genişler**, kesin eşleşmeyi yine `SearchMatcher` kurar — burada
 /// "olabilir" kümesi üretilir, hüküm verilmez.
 ///
-/// Sınır: tek ve iki bölünmenin **ayrı** 64'lük bütçesi vardır — tek bölünme
-/// bütçesi uzun belirteçte dolsa bile iki bölünmeli aday üretilir. Daha fazla
-/// bölünme (dört+ parça) aday olmaz; söz dizimi üstel olurdu.
+/// Sınır: tek, iki ve üç bölünmenin **ayrı** bütçeleri vardır (64 + 64 + 16) —
+/// tek bölünme bütçesi uzun belirteçte dolsa bile iki/üç bölünmeli aday
+/// üretilir. Dört+ bölünme (beş+ parça) aday olmaz; söz dizimi üstel olurdu.
 fn dehyphenated_expression(column: &str, tokens: &[String], prefix_last: bool) -> String {
     let mut expression = narrow_expression(column, tokens, prefix_last);
     for alternative in dehyphenate_alternatives(column, tokens, prefix_last) {
@@ -1278,10 +1278,47 @@ const MAX_DEHYPHENATE_ALTERNATIVES: usize = 64;
 /// Sözleşme böylece "64 tek + 64 çift"tir.
 const MAX_DEHYPHENATE_MULTI_ALTERNATIVES: usize = 64;
 
+/// Üç bölünmeli (dört parçalı) adayların **ayrı ve küçük** bütçesi
+/// (F12-T14ae): dar sütunlu tablo/dipnot metni kelimeyi üç satır sonuyla
+/// dörde bölebilir, ama bu nadirdir ve her alternatif ifadeyi büyütür —
+/// 16 yeter, dört+ bölünme üretilmez. Sözleşme: "64 tek + 64 çift + 16 üçlü".
+const MAX_DEHYPHENATE_TRIPLE_ALTERNATIVES: usize = 16;
+
+/// Üç bölünme yalnız gerçekçi uzunluktaki belirteçlerde aranır: 40 karakteri
+/// aşan bir belirteç satır sonu bölünmesi değil, OCR/yanlış birleşme adayıdır
+/// ve bölünme uzayı (C(n-1,3)) hızla patlar.
+const MAX_DEHYPHENATE_TRIPLE_TOKEN_CHARS: usize = 40;
+
+/// Üç bölünme adayları, dört parçanın uzunlukları **dengeli** olanlar önce
+/// gelecek biçimde sıralanır: satır genişlikleri benzer olduğu için gerçek
+/// bölünme dengelidir (`be|del|li|ni` gibi); sözlüksel sıra ise bütçeyi
+/// `b|e|d|ellini` gibi tek harfli parçalara harcardı (ölçüldü: T14ae ilk
+/// yazımda gerçek bölünme bütçeye hiç girmiyordu).
+fn triple_split_candidates(len: usize) -> Vec<[usize; 3]> {
+    let mut combos = Vec::new();
+    for first in 1..len.saturating_sub(2) {
+        for second in (first + 1)..len.saturating_sub(1) {
+            for third in (second + 1)..len {
+                combos.push([first, second, third]);
+            }
+        }
+    }
+    combos.sort_by_key(|splits| {
+        let [first, second, third] = *splits;
+        let lengths = [first, second - first, third - second, len - third];
+        let spread =
+            lengths.iter().max().copied().unwrap_or(0) - lengths.iter().min().copied().unwrap_or(0);
+        (spread, first, second, third)
+    });
+    combos.truncate(MAX_DEHYPHENATE_TRIPLE_ALTERNATIVES);
+    combos
+}
+
 /// Bölünmüş yazım alternatifleri: her belirteç, her bölünme noktasında iki
-/// bitişik parçaya (T14x) ya da iki bölünme noktasında üç parçaya (T14y)
-/// ayrılır ve **aynı** `narrow_expression` kuralıyla (aynı sütun, aynı `NEAR`
-/// payı, `Esnek`te son parça önek) ifade edilir.
+/// bitişik parçaya (T14x), iki bölünme noktasında üç parçaya (T14y) ya da üç
+/// bölünme noktasında dört parçaya (T14ae) ayrılır ve **aynı**
+/// `narrow_expression` kuralıyla (aynı sütun, aynı `NEAR` payı, `Esnek`te son
+/// parça önek) ifade edilir.
 fn dehyphenate_alternatives(column: &str, tokens: &[String], prefix_last: bool) -> Vec<String> {
     let mut alternatives = Vec::new();
     if tokens.is_empty() {
@@ -1326,6 +1363,21 @@ fn dehyphenate_alternatives(column: &str, tokens: &[String], prefix_last: bool) 
                 ));
                 multi += 1;
             }
+        }
+    }
+    // Üç bölünme (F12-T14ae): dört parça, ayrı ve küçük bütçe; yalnız
+    // gerçekçi uzunluktaki belirteçlerde ve dengeli bölünmeler önce.
+    for (index, token) in tokens.iter().enumerate() {
+        let chars: Vec<char> = token.chars().collect();
+        if chars.len() < 4 || chars.len() > MAX_DEHYPHENATE_TRIPLE_TOKEN_CHARS {
+            continue;
+        }
+        for splits in triple_split_candidates(chars.len()) {
+            alternatives.push(near_expression(
+                column,
+                &token_parts(tokens, index, &chars, &splits),
+                prefix_last,
+            ));
         }
     }
     alternatives
@@ -5213,6 +5265,70 @@ mod tests {
         assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
     }
 
+    /// **F12-T14ae — üç satır sonu bölünmesi:** dar sütunlu PDF tablo/dipnot
+    /// metni bir kelimeyi **üç** satır sonuyla dörde bölebilir
+    /// (`be-\ndel-\nli-\nni`). FTS dört ham belirteç indeksler; T14y'ye kadar
+    /// yalnız tek ve iki bölünme aday üretiyordu → `İfade`/`Esnek` kipinde
+    /// sessiz **0 sonuç** (T14y dürüst sınır a: "üç+ bölünme aday olmaz").
+    /// Kural: üç bölünme de adaydır (dört parça, `NEAR` payı 4) — küçük ayrı
+    /// bütçeyle; hükmü yine `SearchMatcher` verir.
+    #[test]
+    fn file_search_finds_a_word_broken_across_three_line_breaks() {
+        let (db, case_id, version_id) = setup();
+        let thrice = "Sözleşmede öngörülen be-\ndel-\nli-\nni ödemesi yapılmadı.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                thrice,
+                // Paragraf ayrımı içeren çok bölünme birleştirilmez.
+                "be-\n\ndel-\nli-\nni paragraf ayrımı",
+                // Gerçek tireler: satır sonu yok → birleştirme yok.
+                "be-del-li-ni gerçek tireler",
+                // Boşlukla ayrı dört kelime → birleştirme yok.
+                "be del li ni ayrı kelimeler",
+            ],
+        );
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "bedellini", mode);
+            let hits: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+            assert_eq!(
+                hits,
+                vec![thrice],
+                "{}: üç kez bölünmüş kelime eşleşmeli; paragraf, gerçek tire ve boşluk eşleşmemeli",
+                mode.tag()
+            );
+            assert_eq!(
+                page.total,
+                Some(1),
+                "{}: sayı aday değil eşleşme sayısı",
+                mode.tag()
+            );
+        }
+
+        // Konum: eşleşme **kaynak aralığını** gösterir (`be-\ndel-\nli-\nni` =
+        // 15 karakter), snippet kaynak metni taşır.
+        let page = search_with(&db, &case_id, "bedellini", SearchMode::Phrase);
+        let hit = page.hits.first().expect("üç bölünmüş eşleşme");
+        let start = thrice
+            .find("be-\ndel")
+            .map(|byte| thrice[..byte].chars().count())
+            .expect("konum");
+        assert_eq!(hit.match_start, Some(start as i64));
+        assert_eq!(hit.match_length, Some(15));
+        assert!(
+            hit.snippet.contains("be-\ndel-\nli-\nni"),
+            "snippet kaynağı gösterir"
+        );
+
+        // `Tam` noktalamaya duyarlı kalır (F15 #35/#36): aday üretilse de
+        // doğrulayıcı satır sonu tiresini birleştirmez.
+        let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
+        assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+    }
+
     /// **F12-T14z — tipografik tire ailesi:** Word/InDesign kaynaklı PDF'ler
     /// satır sonunda ASCII tire değil tipografik tire `‐` (U+2010) ya da
     /// bölünmez tire `‑` (U+2011), kimi dosyalarda görünmez yumuşak tire
@@ -5765,8 +5881,13 @@ mod tests {
             phrase.contains("NEAR(\"be\" \"del\" \"lini\", 3)"),
             "iki bölünme alternatifi: {phrase}"
         );
-        // Dört parçaya bölünme üretilmez (kapsam bilinçli: iki bölünme).
-        assert!(!phrase.contains(", 4)"), "dört parça aday değil: {phrase}");
+        // T14ae: **üç** bölünme de aday olur (dört parça, `NEAR` payı 4).
+        assert!(
+            phrase.contains("NEAR(\"be\" \"del\" \"li\" \"ni\", 4)"),
+            "üç bölünme alternatifi: {phrase}"
+        );
+        // Beş parçaya bölünme üretilmez (kapsam bilinçli: üç bölünme).
+        assert!(!phrase.contains(", 5)"), "beş parça aday değil: {phrase}");
 
         let flexible = fts_expression(&resolved("bedelli", SearchMode::Flexible));
         assert!(
@@ -5790,14 +5911,22 @@ mod tests {
         );
 
         // Sınır: tek uzun belirteç yüzlerce alternatif üretmez. Değerler
-        // **sözleşmedir** (64 tek + 64 çift) — sabitle değil sayıyla ölçülür
-        // ki sınır sessizce değişmesin.
+        // **sözleşmedir** — sabitle değil sayıyla ölçülür ki sınır sessizce
+        // değişmesin. 200 karakterlik belirteçte üç bölünme aranmaz
+        // (`MAX_DEHYPHENATE_TRIPLE_TOKEN_CHARS`): 64 tek + 64 çift.
         let long = "a".repeat(200);
         let capped = fts_expression(&resolved(&long, SearchMode::Flexible));
         assert_eq!(
             capped.matches(" OR ").count(),
             128,
-            "alternatif sayısı sınırda durur (64 tek + 64 çift)"
+            "uzun belirteçte alternatif sayısı sınırda durur (64 tek + 64 çift)"
+        );
+        // Kısa belirteçte üçlü bütçe de sayılır: 8 tek + 28 çift + 16 üçlü
+        // ("bedellini" 9 karakter).
+        assert_eq!(
+            phrase.matches(" OR ").count(),
+            52,
+            "kısa belirteçte 8 tek + 28 çift + 16 üçlü alternatif"
         );
         assert!(
             capped.len() < 40_000,
