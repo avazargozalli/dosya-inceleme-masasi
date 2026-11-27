@@ -7,6 +7,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 
 use crate::{now_iso, Database, StorageError};
 
@@ -1402,11 +1403,6 @@ fn docket_expression(docket: &DocketNumber) -> String {
         .join(" OR ")
 }
 
-/// Boşlukları tek boşluğa indirir (karşılaştırma için).
-fn collapse_ws(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// Türkçe küçük harf: `İ`→`i`, `I`→`ı`. Tam arama `ı` ile `i`yi ayırır.
 fn turkish_lower(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -1420,6 +1416,38 @@ fn turkish_lower(text: &str) -> String {
     out
 }
 
+/// Ligatür açmanın **tek** uygulaması (F12-T14ab): PDF fontları `fi`/`fl`
+/// çiftlerini tek glif yazar (`U+FB01`/`U+FB02`); bu bir yazım farkı değil
+/// **sunum** artefaktıdır. Kural `dim_evidence::ligature_expansion`da durur —
+/// alıntı doğrulaması (`normalize`/`ligature_with_map`) ile arama aynı tabloyu
+/// okur, ikinci bir eşleme yazılmaz.
+fn expand_ligatures_into(text: &str, out: &mut String) {
+    out.clear();
+    for ch in text.chars() {
+        match dim_evidence::ligature_expansion(ch) {
+            Some(expansion) => out.push_str(expansion),
+            None => out.push(ch),
+        }
+    }
+}
+
+/// Ligatür yoksa metni **ödünç** verir; tarama yalnız ligatür varsa yapılır.
+fn expand_ligatures(text: &str) -> Cow<'_, str> {
+    if !may_expand_ligature(text) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 4);
+    expand_ligatures_into(text, &mut out);
+    Cow::Owned(out)
+}
+
+/// Ön kapı: metinde ligatür var mı? Yoksa ligatür katmanı hiç çalışmaz
+/// (`may_dehyphenate` ile aynı desen — normal sorguda ek dizge/tarama yok).
+fn may_expand_ligature(text: &str) -> bool {
+    text.chars()
+        .any(|ch| dim_evidence::ligature_expansion(ch).is_some())
+}
+
 /// Kelime dizisi: Türkçe tam (`fold=false`) ya da sadeleşmiş (`fold=true`).
 /// Noktalama ayırıcıdır; `normalized_text` sütunuyla aynı sadeleştirme
 /// (`dim_evidence::normalize`) kullanılır ki aday üretimi ile doğrulama
@@ -1428,7 +1456,9 @@ fn tokens_with(text: &str, fold: bool) -> Vec<String> {
     let prepared = if fold {
         dim_evidence::normalize(text)
     } else {
-        turkish_lower(text)
+        // F12-T14ab: `Tam`/`İfade` belirteçleri de ligatürü açar — ligatür
+        // sunum artefaktıdır, `taraﬂar` ile `taraflar` aynı belirteçtir.
+        turkish_lower(&expand_ligatures(text))
     };
     prepared
         .split(|c: char| !c.is_alphanumeric())
@@ -1577,6 +1607,10 @@ fn dehyphenated_text(text: &str, fold: bool, out: &mut String) -> bool {
     }
     if fold {
         *out = dim_evidence::normalize(out);
+    } else if may_expand_ligature(out) {
+        // F12-T14ab: `İfade` katmanı ligatürü de açar — konum katmanı
+        // (`dehyphenate_turkish_with_map`) aynı kuralı okur, drift yok.
+        *out = expand_ligatures(out).into_owned();
     }
     true
 }
@@ -1681,18 +1715,21 @@ fn fold_apostrophe(ch: char) -> char {
     }
 }
 
-/// Metnin tamamında kesme işareti eşitlemesi (`fold_apostrophe`).
-fn fold_apostrophes(text: &str) -> String {
-    text.chars().map(fold_apostrophe).collect()
-}
-
-/// `turkish_lower(collapse_ws(text))` çıktısını `out` içine yazar (ayırma yok).
-/// Kesme işareti ailesi de eşitlenir (F12-T14s): `Tam` kipinde kaynak `’`
-/// yazarken sorgu `'` yazsa da eşleşme düşmez; işaret silinmez.
+/// `fold_ws_into` çıktısı `out` içine yazılır (ayırma yok): Türkçe küçük harf,
+/// boşluk teklenmesi, **kesme işareti eşitlemesi** (F12-T14s: kaynak `’`
+/// yazarken sorgu `'` yazsa da eşleşme düşmez; işaret silinmez) ve **ligatür
+/// açma** (F12-T14ab).
 fn fold_ws_into(text: &str, out: &mut String) {
     out.clear();
     let mut last_space = false;
     for ch in text.chars() {
+        // F12-T14ab: ligatür **sunum** artefaktıdır (`taraﬂar` → `taraflar`);
+        // `Tam` doğrulaması bunu eşitler, noktalama duyarlılığı değişmez.
+        if let Some(expansion) = dim_evidence::ligature_expansion(ch) {
+            out.push_str(expansion);
+            last_space = false;
+            continue;
+        }
         if ch.is_whitespace() {
             if out.is_empty() || last_space {
                 continue;
@@ -1704,6 +1741,14 @@ fn fold_ws_into(text: &str, out: &mut String) {
             out.push(fold_apostrophe(fold_char(ch)));
         }
     }
+}
+
+/// `fold_ws_into`nun sahiplenen biçimi (tek üretici: `Tam` iğnesi ve samanlığı
+/// aynı fonksiyondan geçer — iki uygulama drift kaynağıdır).
+fn fold_ws(text: &str) -> String {
+    let mut out = String::new();
+    fold_ws_into(text, &mut out);
+    out
 }
 
 /// `needle`, katlanmış metinde **belirteç başında** başlıyor mu?
@@ -1926,6 +1971,8 @@ pub(crate) struct MatchScratch {
     spans: Vec<(usize, usize)>,
     /// F12-T14u: dehyphenate katmanı için yeniden kullanılan metin tamponu.
     dehyphenated: String,
+    /// F12-T14ab: ligatür açılmış samanlık (yalnız ligatür varsa dolar).
+    expanded: String,
 }
 
 /// Sorgu başına **bir kez** hazırlanan doğrulayıcı (F15 ölçek düzeltmesi).
@@ -1937,7 +1984,8 @@ pub(crate) struct MatchScratch {
 /// `dim_evidence::normalize` çıktısı olan `normalized_text` kullanılır.
 pub(crate) struct SearchMatcher {
     mode: SearchMode,
-    /// `exact`: `turkish_lower(collapse_ws(iğne))` + kesme işareti eşitlemesi
+    /// `exact`: `fold_ws` (Türkçe küçük harf + boşluk tek + kesme işareti +
+    /// ligatür) — samanlık ve iğne **aynı** üreticiden geçer (F12-T14ab).
     /// (F12-T14s): kaynak `’` yazarken sorgu `'` yazsa da eşleşir.
     exact: String,
     /// `phrase`: Türkçe küçük harfli belirteçler.
@@ -1952,7 +2000,7 @@ impl SearchMatcher {
     pub(crate) fn new(text: &str, mode: SearchMode, docket: Option<DocketNumber>) -> Self {
         Self {
             mode,
-            exact: fold_apostrophes(&turkish_lower(&collapse_ws(text))),
+            exact: fold_ws(text),
             phrase: exact_tokens(text),
             folded: fold_tokens(text),
             docket,
@@ -1977,6 +2025,15 @@ impl SearchMatcher {
                 token_spans(raw, &mut scratch.spans);
                 if seq_matches_spans(raw, &scratch.spans, &self.phrase, false) {
                     return true;
+                }
+                // F12-T14ab: PDF ligatürü (`taraﬂar`) — belirteçler ligatür
+                // açılmış ham metinde de aranır; kararı yine belirteç kuralı verir.
+                if may_expand_ligature(raw) {
+                    expand_ligatures_into(raw, &mut scratch.expanded);
+                    token_spans(&scratch.expanded, &mut scratch.spans);
+                    if seq_matches_spans(&scratch.expanded, &scratch.spans, &self.phrase, false) {
+                        return true;
+                    }
                 }
                 // F12-T14u: tek belirteç içindeki satır sonu tiresi
                 // (`bedel-\nlini` ↔ `bedellini`); harfler korunur.
@@ -2027,8 +2084,8 @@ impl SearchMatcher {
 fn search_match(text: &str, needle: &str, mode: &str) -> bool {
     match mode {
         "exact" => {
-            let haystack = fold_apostrophes(&turkish_lower(&collapse_ws(text)));
-            let wanted = fold_apostrophes(&turkish_lower(&collapse_ws(needle)));
+            let haystack = fold_ws(text);
+            let wanted = fold_ws(needle);
             !wanted.is_empty() && anchored_contains(&haystack, &wanted)
         }
         "flexible" => {
@@ -5263,6 +5320,106 @@ mod tests {
             !exact.hits.iter().any(|hit| hit.raw_text == typo),
             "Tam: tipografik tire eşleşmemeli"
         );
+    }
+
+    /// F12-T14ab — **PDF ligatürü aramada açılır:** PDF fontları `fi`/`fl`
+    /// çiftlerini tek glif yazar; metin katmanından `taraﬂar` (`U+FB02`),
+    /// `Tasﬁye` (`U+FB01`) döner. Arama **aday** ifadesi `normalized_text`ten
+    /// gelir ve ligatürü açar (`dim_evidence::normalize`); ama `Tam`/`İfade`
+    /// **doğrulayıcısı** ham metni ligatür açmadan okuyordu → aday satır
+    /// seçiliyor, doğrulayıcı atıyordu: `taraflar` sorgusu ligatürlü sayfada
+    /// **0 sonuç** veriyordu (sessiz yanlış negatif). Ligatür bir **sunum**
+    /// artefaktıdır, aynı harflerdir: üç kip de açar; `Tam` noktalamaya
+    /// duyarlı kalır, harfler korunur.
+    #[test]
+    fn file_search_opens_pdf_ligatures_in_every_mode() {
+        let (db, case_id, version_id) = setup();
+        let ligature = "Sözleşme tara\u{FB02}ar arasında kurulmuştur.";
+        let plain = "Sözleşme taraflar arasında kurulmuştur.";
+        let finance = "Tas\u{FB01}ye kararı verildi.";
+        // Tire + ligatür **birlikte**: kelime satır sonunda bölünmüş ve ikinci
+        // parça ligatürle başlıyor (`tas-\nﬁye`); `İfade` katmanı hem
+        // birleştirir hem ligatürü açar.
+        let broken = "Sözleşmede tas-\n\u{FB01}ye kararı verildi.";
+        store_texts(
+            &db,
+            &case_id,
+            &version_id,
+            &[
+                ligature,
+                plain,
+                finance,
+                broken,
+                // Gerçek tire: ligatür açma noktalamayı eşitlemez.
+                "Kredi-kartı borcu ayrı kalemdir.",
+                // Ligatür tek gliftir; ayrı yazılmış `taraﬂ ar` birleşmez.
+                "tara\u{FB02} ar ayrı yazılmış",
+            ],
+        );
+
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = search_with(&db, &case_id, "taraflar", mode);
+            assert_eq!(
+                page.total,
+                Some(2),
+                "{}: düz sorgu ligatürlü ve düz yazımı bulmalı",
+                mode.tag()
+            );
+            // PDF'ten kopyalanan ligatürlü sorgu düz metni de bulur.
+            let copied = search_with(&db, &case_id, "tara\u{FB02}ar", mode);
+            assert_eq!(
+                copied.total,
+                Some(2),
+                "{}: ligatürlü sorgu iki yönlü eşleşmeli",
+                mode.tag()
+            );
+            // `ﬁ` ailesi; `Tam` satır sonu tiresini birleştirmez (yalnız düz sayfa).
+            let finance_page = search_with(&db, &case_id, "tasfiye", mode);
+            let expected = if mode == SearchMode::Exact { 1 } else { 2 };
+            assert_eq!(
+                finance_page.total,
+                Some(expected),
+                "{}: `ﬁ` ligatürü (tire + ligatür bileşimi)",
+                mode.tag()
+            );
+        }
+
+        // Konum **kaynak aralığıdır**: ligatür tek glif → `taraﬂar` 7 karakter.
+        for mode in [SearchMode::Exact, SearchMode::Phrase] {
+            let page = search_with(&db, &case_id, "taraflar", mode);
+            let hit = page
+                .hits
+                .iter()
+                .find(|hit| hit.raw_text == ligature)
+                .expect("ligatürlü sayfa");
+            assert_eq!(hit.match_start, Some(9), "{}: konum", mode.tag());
+            assert_eq!(
+                hit.match_length,
+                Some(7),
+                "{}: uzunluk kaynak karakter sayısıdır",
+                mode.tag()
+            );
+            assert!(
+                hit.snippet.contains("tara\u{FB02}ar"),
+                "{}: snippet kaynağı gösterir",
+                mode.tag()
+            );
+        }
+
+        // Tire + ligatür bileşimi: `İfade`/`Esnek` eşleşir, konum kaynak
+        // aralığıdır (`tas-\nﬁye` = 8 karakter); `Tam` birleştirmez.
+        let page = search_with(&db, &case_id, "tasfiye", SearchMode::Phrase);
+        let hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.raw_text == broken)
+            .expect("tire + ligatür");
+        assert_eq!(hit.match_start, Some(11), "konum");
+        assert_eq!(hit.match_length, Some(8), "kaynak uzunluğu");
+
+        // `Tam` noktalamaya duyarlı kalır: tire eşitlenmez (F15 #35/#36).
+        let exact = search_with(&db, &case_id, "kredikartı", SearchMode::Exact);
+        assert!(exact.hits.is_empty(), "Tam kipi noktalamaya duyarlı kalır");
     }
 
     /// F12-T14aa — çözümleme katmanı: satır sonu tiresi **yalnız** metin

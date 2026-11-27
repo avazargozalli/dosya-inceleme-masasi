@@ -2068,6 +2068,20 @@ pub(crate) fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Opti
             }
         }
     }
+    // F12-T14ab: `Tam`/`İfade` doğrulayıcısı ligatürü açar (`taraﬂar` ↔
+    // `taraflar`) — konum da açar; uzunluk **kaynak** aralığından gelir
+    // (ligatür tek glif, 7 karakter). Harf sadeleştirmesi yok.
+    let haystack = fold_ws_with_map(text);
+    let wanted = fold_ws_with_map(needle);
+    if !wanted.text.is_empty() {
+        if let Some(at) =
+            crate::parsing::anchored_find_with(&haystack.text, &wanted.text, whole_token)
+        {
+            if let Some(span) = mapped_span(&haystack, at, wanted.text.len()) {
+                return Some(span);
+            }
+        }
+    }
     let haystack = turkish_fold_with_map(text);
     let wanted = turkish_fold_with_map(needle);
     if !wanted.text.is_empty() {
@@ -2119,29 +2133,73 @@ pub(crate) fn locate_in_text(text: &str, needle: &str, mode: SearchMode) -> Opti
     }
 }
 
+/// Türkçe küçük harf (tek karakter): `İ`→`i`, `I`→`ı`; diğerleri Unicode
+/// küçük harf. Ligatür açma ve harf sadeleştirmesi **burada değildir** —
+/// `Tam`/`İfade` harfleri korur (`fold_char` sadeleştirir, o `normalize` yolu).
+fn turkish_lower_char(ch: char) -> char {
+    match ch {
+        'İ' => 'i',
+        'I' => 'ı',
+        _ => ch.to_lowercase().next().unwrap_or(ch),
+    }
+}
+
 /// `parsing::turkish_lower`ın konum eşlemeli karşılığı (F12-T14t): `İ`→`i`,
 /// `I`→`ı`, diğerleri Unicode küçük harf. Çok karaktere açılan küçük harfte
 /// üretilen her karakter aynı kaynak indeksini taşır; konum eşlemesi korunur.
+/// F12-T14ab: ligatür (`ﬁ`/`ﬂ`) **iki harfe** açılır, ikisi de aynı kaynak
+/// indeksini taşır — `taraﬂar` eşleşmesinin kaynak aralığı 7 karakterdir.
 fn turkish_lower_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     for (index, ch) in input.chars().enumerate() {
-        match ch {
-            'İ' => {
-                out.push('i');
+        if let Some(expansion) = ligature_expansion(ch) {
+            for letter in expansion.chars() {
+                out.push(letter);
                 map.push(index);
             }
-            'I' => {
-                out.push('ı');
-                map.push(index);
-            }
-            _ => {
-                for letter in ch.to_lowercase() {
-                    out.push(letter);
-                    map.push(index);
-                }
-            }
+            continue;
         }
+        out.push(turkish_lower_char(ch));
+        map.push(index);
+    }
+    MappedText { text: out, map }
+}
+
+/// `parsing::fold_ws`in konum eşlemeli karşılığı (F12-T14ab): Türkçe küçük
+/// harf + **kesme işareti eşitlemesi** + **ligatür açma**, boşluklar teklenir;
+/// harfler **sadeleştirilmez**. `Tam`/`İfade` doğrulayıcısının kuralıdır; bu
+/// yüzden harf sadeleştiren `turkish_fold_with_map` katmanından **önce**
+/// denenir ve uzunluk kaynak aralığından (`mapped_span`) gelir.
+fn fold_ws_with_map(input: &str) -> MappedText {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    let mut last_space = false;
+    for (index, ch) in input.chars().enumerate() {
+        if let Some(expansion) = ligature_expansion(ch) {
+            for letter in expansion.chars() {
+                out.push(letter);
+                map.push(index);
+            }
+            last_space = false;
+            continue;
+        }
+        let mapped = fold_apostrophe(turkish_lower_char(ch));
+        if mapped.is_whitespace() {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+                map.push(index);
+            }
+            last_space = true;
+        } else {
+            out.push(mapped);
+            map.push(index);
+            last_space = false;
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+        map.pop();
     }
     MappedText { text: out, map }
 }
@@ -4998,6 +5056,109 @@ mod tests {
             .search_precedents(&library_query("kredikartı", SearchMode::Phrase, None))
             .expect("arama");
         assert_eq!(real.matched, 0, "gerçek tire birleştirilmemeli");
+    }
+
+    /// F12-T14ab — **kütüphane araması ligatürü açar ve konumu kaynak
+    /// aralığından verir:** emsal tam metni PDF'ten geldiği için `taraﬂar`
+    /// (`U+FB02`) yazar; avukat `taraflar` arar. Arama doğrulaması ve konum
+    /// yolu dosya aramasıyla ortaktır (`SearchMatcher` + `locate_in_text`) —
+    /// ligatür açılmadan eşleşme **0** dönüyordu (sessiz yanlış negatif).
+    #[test]
+    fn library_search_opens_pdf_ligatures_and_keeps_the_source_range() {
+        let db = db();
+        let ligatured = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/96"), Some("2025/97")))
+            .expect("emsal");
+        let mut body = String::new();
+        for _ in 0..40 {
+            body.push_str("dolgu metni ");
+        }
+        body.push_str("Sözleşmenin tara\u{FB02}ar arasında kurulmuştur.");
+        db.add_precedent_text(&ligatured.id, &text_of(&body))
+            .expect("metin");
+        let plain = db
+            .create_precedent(&precedent("Danıştay", Some("2024/97"), Some("2025/98")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &plain.id,
+            &text_of("Sözleşmenin taraflar arasında kurulduğu kabul edilmiştir."),
+        )
+        .expect("metin");
+
+        for mode in [SearchMode::Exact, SearchMode::Phrase, SearchMode::Flexible] {
+            let page = db
+                .search_precedents(&library_query("taraflar", mode, None))
+                .expect("arama");
+            assert_eq!(
+                page.matched, 2,
+                "kip {mode:?}: ligatürlü ve düz emsal birlikte bulunmalı"
+            );
+            let hit = page
+                .hits
+                .iter()
+                .find(|hit| hit.precedent_id == ligatured.id)
+                .expect("ligatürlü emsal");
+            let start = hit.match_start.expect("eşleşme konumu");
+            let at: String = body
+                .chars()
+                .skip(usize::try_from(start).expect("start"))
+                .take(7)
+                .collect();
+            assert_eq!(
+                at, "tara\u{FB02}ar",
+                "kip {mode:?}: konum kaynak aralığını göstermeli"
+            );
+            assert_eq!(
+                hit.match_length,
+                Some(7),
+                "kip {mode:?}: uzunluk kaynak karakter sayısıdır"
+            );
+            assert!(
+                hit.snippet.contains("tara\u{FB02}ar"),
+                "kip {mode:?}: snippet kaynağı gösterir"
+            );
+        }
+
+        // Ligatürlü sorgu düz metni de bulur (PDF'ten kopyalama yönü).
+        let copied = db
+            .search_precedents(&library_query("tara\u{FB02}ar", SearchMode::Phrase, None))
+            .expect("arama");
+        assert_eq!(copied.matched, 2, "ligatürlü sorgu iki yönlü eşleşmeli");
+
+        // Noktalama köprüsü + ligatür birlikte: `taraflar arasında` sorgusu
+        // `taraﬂar, arasında` metninde bulunur ve konum **kaynak aralığıdır**
+        // (ligatür tek glif; virgül ve boşluk dahil 17 karakter).
+        let bridged = db
+            .create_precedent(&precedent("Sayıştay", Some("2024/98"), Some("2025/99")))
+            .expect("emsal");
+        db.add_precedent_text(
+            &bridged.id,
+            &text_of("Sözleşmenin tara\u{FB02}ar, arasında kurulduğu kabul edilmiştir."),
+        )
+        .expect("metin");
+        let page = db
+            .search_precedents(&library_query(
+                "taraflar arasında",
+                SearchMode::Phrase,
+                None,
+            ))
+            .expect("arama");
+        let hit = page
+            .hits
+            .iter()
+            .find(|hit| hit.precedent_id == bridged.id)
+            .expect("köprü + ligatür");
+        let start = usize::try_from(hit.match_start.expect("eşleşme konumu")).expect("start");
+        let at: String = "Sözleşmenin tara\u{FB02}ar, arasında kurulduğu kabul edilmiştir."
+            .chars()
+            .skip(start)
+            .take(17)
+            .collect();
+        assert_eq!(
+            at, "tara\u{FB02}ar, arasında",
+            "köprü konumu kaynak aralığı"
+        );
+        assert_eq!(hit.match_length, Some(17), "köprü uzunluğu kaynak aralığı");
     }
 
     /// F12-T14u (birim): konum katmanı satır sonu tiresini **yalnız** belirteç
