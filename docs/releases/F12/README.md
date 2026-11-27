@@ -3145,7 +3145,19 @@ dengeli sıralama kaldırılır (iki test KIRMIZI), bütçe 8→64 (sınır test
 KIRMIZI, uçtan uca yeşil — beklenen), belirteç uzunluk tavanı kaldırılır
 (sınır testi KIRMIZI).
 
-**CI (ölçüldü):** {CI}
+**CI (ölçüldü):** ilk koşu `46053755666` **KIRMIZI** — iki Rust işi de
+**tek** testte düştü: `parsing::tests::exact_candidates_cover_invisible_character_splits`
+(855 passed · 1 failed; `arayüz` ve kalan altı iş yeşildi). Test T14ac'ın
+T14y'den kalan «dört parça aday değil» beklentisini pinliyordu; T14ae o sınırı
+bilinçli kaldırdı. Beklenti güncellendi (`a993132`): dengeli dört parça adayı
+(`be|del|li|ni`) ifadede **bulunur**, 40 karakteri aşan belirteçte üçlü aday
+**yok** (negatif kontrol korunur); üretim kodu değişmedi. Yeni koşu
+**`46059520088` 10/10 YEŞİL** (ağaç: `a67441d` + `50328ee` + `a993132` kod,
+`1113d3e` belge): `dim-storage` **856** iki OS'ta (`1 ignored` ölçüm testi):
+macos-15 **725,16 s** / ubuntu-latest **1.099,19 s** (iş süresi 14 dk 33 s /
+20 dk 39 s); `arayüz` 67 dosya / **1499** test, paket `index-BP1oZUhg.js`
+733,32 kB / gzip 194,60 kB (değişmedi); masaüstü kabuk, windows güvenli depo,
+SBOM, sözleşmeler, belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil.
 
 **Dürüst sınırlar:** (a) üç bölünme bütçesi **8**'dir — bütçe dolunca
 dengeli olmayan bölünmeler aday olmaz (düz ifade korunur); dört+ bölünme
