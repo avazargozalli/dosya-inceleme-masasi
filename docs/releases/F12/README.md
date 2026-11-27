@@ -38,6 +38,7 @@
 | F12-T14aa | ✅ | **sorgu tarafı satır sonu tiresi** (T14z dürüst sınırı (f) kapandı): PDF'ten kopyalanan alıntı sorguya tire + satır sonu taşır (`bedel‐\nlini`, `bedel-\nlini`); belge tarafı birleştiriyordu ama sorgu iki belirtece ayrıldığı için **düz yazılmış** belge (`bedellini`) `İfade`/`Esnek` kiplerinde bulunamıyordu (sessiz 0 sonuç; eski davranış paragraf ayrımlı belgeyi yanlış eşliyordu). Artık `SearchQuery::resolve` sorguyu belgeyle **aynı** çekirdekten (`dehyphenated_chars`) geçirir — tire ailesi (ASCII, `U+2010`, `U+2011`) birleşir, yumuşak tire (`U+00AD`) atılır; `Tam` noktalamaya duyarlı kalır, gerçek tire / en tire / paragraf ayrımı birleştirilmez. Tek nokta: sayfa, sayım ve kütüphane araması aynı birleşik sorguyu görür (`resolvedQuery` dönüşümü görünür); konum kaynak aralığıdır (11). Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ab | ✅ | **aramada PDF ligatürü** (T14 dürüst sınırı kapandı): PDF fontu `fi`/`fl` çiftlerini tek glif yazar (`taraﬂar` `U+FB02`, `Tasﬁye` `U+FB01`); alıntı doğrulaması ligatürü açıyordu, **arama** açmıyordu — aday satır `normalized_text`ten (ligatür açık) seçiliyor, `Tam`/`İfade` doğrulayıcısı ham metni ligatür açmadan okuduğu için atıyordu: `taraflar` sorgusu ligatürlü sayfada **0 sonuç** (ters yön de aynı; kip ayrımı sessiz yanlış negatif). Artık üç kip de ligatürü açar (tek tablo `dim_evidence::ligature_expansion`); `Tam` noktalamaya duyarlı kalır, harfler korunur; `Tam` iğnesi ve samanlığı **tek üreticiden** geçer (`fold_ws`). Konum yeni `fold_ws_with_map` katmanından **kaynak aralığı** olarak gelir (`taraﬂar` = 7; `taraﬂar, arasında` = 17); tire + ligatür bileşimi (`tas-\nﬁye`) `İfade`te birleşir; `Esnek` değişmedi. Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ac | ✅ | **aramada görünmez biçim karakterleri** (T14z'in aramadaki karşılığı): PDF/DOCX metin katmanı ve pano kelimenin **içine** yumuşak tire (`U+00AD`), sıfır genişlikli boşluk (`U+200B`), `U+200C`/`U+200D`, kelime birleştirici (`U+2060`) ya da BOM (`U+FEFF`) sokabilir; FTS (`unicode61`) bunları ayırıcı saydığı için kelime indekste **iki belirtece** bölünüyordu — `bedellini` sorgusu görünmez karakterli sayfada **üç kipte 0 sonuç** (kütüphanede `Tam` 1/3). Artık üç kip yok sayar (`fold_ws`, `tokens_with`, `token_spans`/`token_equals`); `Tam` aday ifadesi bölünme alternatiflerini taşır (hükmü yine doğrulayıcı verir — tire birleştirme sızmaz); konum **kaynak aralığıdır** (görünmez karakter uzunluğa dahil); dilim öncesi satırlar yeniden ayrıştırma istemez. Alıntı doğrulaması değişmedi (ZWSP orada açık kayıt). Şema (v68) ve arayüz değişmedi (2026-11-27) |
+| F12-T14ae | ✅ | **arama aday ifadesinde üç satır sonu bölünmesi** (T14y dürüst sınırı (a) kapandı): dar sütunlu tablo/dipnot metni bir kelimeyi **üç** satır sonuyla dörde bölebilir (`be-\ndel-\nli-\nni`); FTS dört ham belirteç indeksler, tek/çift bölünme alternatifleri satırı aday yapmadığı için `İfade`/`Esnek` kipinde sessiz **0 sonuç** vardı. Artık üç bölünme de adaydır (dört parça, `NEAR` payı 4): ayrı ve küçük bütçe (**8**), **dengeli** bölünmeler önce (sözlüksel sıra bütçeyi `b|e|d|ellini` gibi tek harfli parçalara harcıyordu — ölçüldü, gerçek bölünme hiç aday olmuyordu), yalnız **4–40** karakterlik belirteçlerde. Hükmü yine `SearchMatcher` verir: paragraf ayrımı, gerçek tire ve boşluk eşleşmez; `Tam` noktalamaya duyarlı kalır. Ölçülen maliyet (debug): aday ifadesi 2.851 → **3.761 B**, FTS sayım p50 7,33 → 9,16 ms, sayfa p50 +~%35. Şema (v68) ve arayüz değişmedi (2026-11-27) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -3090,3 +3091,68 @@ sızmaz; (e) alıntı doğrulaması değişmedi — ZWSP'li alıntı **açık ka
 (f) eşleşme **metin eşleşmesi**, anlam değil; konum kaynak aralığıdır;
 (g) 100k (F15) ve Windows/Linux donanımı bu dilimde ölçülmedi; gerçek Tauri
 penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14ae — aramada üç satır sonu bölünmesi (2026-11-27)
+
+**Dilim (şema değişmedi — v68; okuma yolu, arayüz değişmedi):** T14y dürüst
+sınırı (a) "üç+ bölünme aday olmaz" kapandı. Dar sütunlu PDF tablo/dipnot
+metni bir kelimeyi **üç** satır sonuyla dörde böler (`be-\ndel-\nli-\nni`);
+FTS (`unicode61`) dört ham belirteç indeksler, T14x/T14y yalnız tek ve iki
+bölünme alternatifi üretiyordu → `İfade`/`Esnek` kipinde **sessiz 0 sonuç**
+(aday satırı hiç doğmuyor, doğrulayıcının dehyphenate katmanı ulaşılamaz).
+
+Kural: belirtecin **üç** bölünmesi de adaydır (dört parça, `NEAR` payı 4) —
+ayrı ve küçük bütçeyle (**8**; tek ve çift bölünmenin 64'lük bütçeleri
+aynen durur). Üç bölünme yalnız **4–40** karakterlik belirteçlerde aranır:
+40'ı aşan belirteç satır sonu bölünmesi değil, OCR/yanlış birleşme adayıdır
+ve bölünme uzayı (C(n−1,3)) hızla patlar. Aday sırası **dengeli bölünmeler
+önce** gelecek biçimde sıralanır: satır genişlikleri benzer olduğu için
+gerçek bölünme dengelidir; ilk yazımda sözlüksel sıra bütçeyi
+`b|e|d|ellini` gibi tek harfli parçalara harcıyor, `be|del|li|ni` bütçeye
+**hiç girmiyordu** (kapı M2'de ölçüldü). Hükmü yine `SearchMatcher` verir —
+aday kümesi genişler, paragraf ayrımı/gerçek tire/boşluk eşleşmez, `Tam`
+noktalamaya duyarlı kalır (F15 #35/#36). Karar `parsing.rs` çekirdeğinde
+tek yerde; ikinci bir bölünme üreticisi yok.
+
+**Testler (kırmızı-önce dürüst):** yeni uçtan uca test
+`file_search_finds_a_word_broken_across_three_line_breaks` eski kodla
+**KIRMIZI** (0 sonuç, `left: []`); sınır testi bütçe/sıra sözleşmesini
+sayıyla pinler (44 alternatif = 8 tek + 28 çift + 8 üçlü; 200 karakterlik
+belirteçte 128 = 64+64, üçlü aranmaz) ve `NEAR("be" "del" "li" "ni", 4)`
+biçimini doğrular. Uçtan uca senaryo: üç kez bölünmüş metin iki kipte
+bulunur; paragraf ayrımı, gerçek tire ve boşluk eşleşmez; konum **kaynak
+aralığı 15** karakter, snippet kaynağı gösterir; `Tam` 0 (noktalama duyarlı).
+
+**Yerel:** `hyphen` filtresi **23 passed · 1 ignored** (22 → 23);
+`broken_across` **5 passed**; `dehyphenate_candidates` **1 passed**;
+`cargo clippy -p dim-storage --all-targets -- -D warnings` ve `rustfmt`
+temiz. Tam paket bu turda koşulmadı (CI kapsar).
+
+**F15 maliyeti (aynı ölçüm testi, 3.000 tuzak + 30 bölünmüş + 30 düz, 21 tur;
+debug):** bütçe 16 ilk denemede ifadeyi +1,9 KB büyütüp sayfa p50'sini ~%60
+artırdı → bütçe **8**'e indirildi. Son ölçüm: aday ifadesi `itirazın reddine`
+2.851 → **3.761 B**, `bedellini` 1.770 → **2.186 B**; FTS sayım p50
+**7,33 → 9,16 ms** (eşleşen 60; `bedellini` 3,90 ms); sayfa p50 (sayı hariç)
+`Esnek bedellini` **21,80 ms**, `İfade itirazın reddine` **41,68 ms**,
+`Tam itirazın reddine` **52,04 ms** (T14ac: 17,86 / 31,20 / 38,44; aday/dönen
+21/20). Maliyet **aday ifadesinin** büyümesidir; aday satırı başına iş yok.
+
+**Kapı (`scratch/dim-t14ae-gates.py`, log `dim-t14ae-gates.log`):** taban iki
+hedef test YEŞİL; **4/4 KANIT · YEŞİL 0 · ÖLÇÜLEMEDİ/EŞLEŞMEDİ 0**, her
+satırda hedef test adı; kaynak sha256 `f01a0ffe…` koşu öncesi/sonrası
+**birebir**. Mutantlar: üç bölünme bloğu kaldırılır (iki test KIRMIZI),
+dengeli sıralama kaldırılır (iki test KIRMIZI), bütçe 8→64 (sınır testi
+KIRMIZI, uçtan uca yeşil — beklenen), belirteç uzunluk tavanı kaldırılır
+(sınır testi KIRMIZI).
+
+**CI (ölçüldü):** {CI}
+
+**Dürüst sınırlar:** (a) üç bölünme bütçesi **8**'dir — bütçe dolunca
+dengeli olmayan bölünmeler aday olmaz (düz ifade korunur); dört+ bölünme
+(beş+ parça) **aday değildir**, söz dizimi üstel olurdu; (b) üç bölünme
+yalnız 4–40 karakterlik belirteçlerde aranır; (c) `Tam` da aday ifadesinde
+bölünme alternatifi taşır ama doğrulayıcısı satır sonu tiresini birleştirmez
+(noktalama duyarlılığı sızmaz); (d) eşleşme **metin eşleşmesi**, anlam değil;
+konum kaynak aralığıdır; (e) maliyet debug derlemede ve 3.420 segmentlik
+yerel korpusta ölçüldü; 100k (F15) ve Windows/Linux donanımı ayrı; (f) gerçek
+Tauri penceresi + görsel QA **insan bekliyor**.
