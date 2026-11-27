@@ -36,6 +36,7 @@
 | F12-T14y | ✅ | **çok bölünmüş belirteç aday ifadesinde** (T14x dürüst sınırı (a) kapandı): bir kelime satır sonunda **iki kez** bölünürse (`be-\ndel-\nlini` → FTS'te üç ham belirteç) aday ifadesi satırı hiç seçmiyordu → `İfade` kipinde 0 sonuç. Artık her belirtecin her olası **iki bölünmesi** `NEAR(ilk parça, orta parça, son parça)` olarak da aranır; tek ve çift bölünmenin **ayrı 64'lük bütçesi** var (200 karakterlik belirteçte tek bütçe dolsa bile 64 çift aday; ifade < 40.000 B). Parça üretimi tek yardımcıda (`token_parts`), ifade biçimi tek üreticide (`near_expression`); dört+ parça bilinçli olarak aday değil. Kararı yine `SearchMatcher` verir — gerçek tire, paragraf ve boşluklu yazım eşleşmez, `Tam` dar kalır. F15 (3.420 segment): ifade `bedellini` 398→1.770 B, `itirazın reddine` 749→2.801 B; FTS sayım p50 0,87→3,15 / 2,90→7,25 ms; sayfa p50 4,19→17,83 / 9,95→31,25 ms. Şema (v68) ve arayüz değişmedi (2026-11-26) |
 | F12-T14z | ✅ | **satır sonundaki tipografik tire ailesi birleştirilir** (T14u dürüst sınırı (a) **kısmen** kapandı; en/em tire bilinçli dışarıda): çekirdek yalnız ASCII `-` biliyordu — `‐` (U+2010) ve `‑` (U+2011) ile bölünmüş kelime alıntıda `not_found`, dosya aramasında 0 sonuç veriyordu (sessiz yanlış negatif); satır sonundaki **yumuşak tire** (`U+00AD`) de birleştirilmiyordu (yalnız kendisi atılıyordu). Artık `is_line_hyphen` ailesi (ASCII + U+2010 + U+2011) ve yumuşak tire satır sonunda birleştirilir; **en/em tire (`–`,`—`) çizgi işaretidir, birleştirilmez** (negatif kontrol), gerçek tire ve paragraf ayrımı korunur, `Tam` dar kalır; üç yol (dosya araması, tek emsal, belge) aynı çekirdekten okur; aday ifadesi ve şema (v68) değişmedi (2026-11-26) |
 | F12-T14aa | ✅ | **sorgu tarafı satır sonu tiresi** (T14z dürüst sınırı (f) kapandı): PDF'ten kopyalanan alıntı sorguya tire + satır sonu taşır (`bedel‐\nlini`, `bedel-\nlini`); belge tarafı birleştiriyordu ama sorgu iki belirtece ayrıldığı için **düz yazılmış** belge (`bedellini`) `İfade`/`Esnek` kiplerinde bulunamıyordu (sessiz 0 sonuç; eski davranış paragraf ayrımlı belgeyi yanlış eşliyordu). Artık `SearchQuery::resolve` sorguyu belgeyle **aynı** çekirdekten (`dehyphenated_chars`) geçirir — tire ailesi (ASCII, `U+2010`, `U+2011`) birleşir, yumuşak tire (`U+00AD`) atılır; `Tam` noktalamaya duyarlı kalır, gerçek tire / en tire / paragraf ayrımı birleştirilmez. Tek nokta: sayfa, sayım ve kütüphane araması aynı birleşik sorguyu görür (`resolvedQuery` dönüşümü görünür); konum kaynak aralığıdır (11). Şema (v68) ve arayüz değişmedi (2026-11-27) |
+| F12-T14ab | ✅ | **aramada PDF ligatürü** (T14 dürüst sınırı kapandı): PDF fontu `fi`/`fl` çiftlerini tek glif yazar (`taraﬂar` `U+FB02`, `Tasﬁye` `U+FB01`); alıntı doğrulaması ligatürü açıyordu, **arama** açmıyordu — aday satır `normalized_text`ten (ligatür açık) seçiliyor, `Tam`/`İfade` doğrulayıcısı ham metni ligatür açmadan okuduğu için atıyordu: `taraflar` sorgusu ligatürlü sayfada **0 sonuç** (ters yön de aynı; kip ayrımı sessiz yanlış negatif). Artık üç kip de ligatürü açar (tek tablo `dim_evidence::ligature_expansion`); `Tam` noktalamaya duyarlı kalır, harfler korunur; `Tam` iğnesi ve samanlığı **tek üreticiden** geçer (`fold_ws`). Konum yeni `fold_ws_with_map` katmanından **kaynak aralığı** olarak gelir (`taraﬂar` = 7; `taraﬂar, arasında` = 17); tire + ligatür bileşimi (`tas-\nﬁye`) `İfade`te birleşir; `Esnek` değişmedi. Şema (v68) ve arayüz değişmedi (2026-11-27) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2895,3 +2896,96 @@ olabilir; (f) vurgu: eşleşen sonuçlarda konum alanları kullanılır (bozulma
 konum **yoksa** yedek vurgu birleşik sorguyu snippet'te birebir arar — sonuç
 değil, yalnız vurgu etkilenebilir; (g) 100k (F15) ve Windows/Linux donanımı bu
 dilimde ölçülmedi; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14ab — aramada PDF ligatürü (2026-11-27)
+
+**Ölçülen kusur:** PDF fontları `fi`/`fl` çiftlerini **tek glif** yazar; metin
+katmanından `taraﬂar` (`U+FB02`), `Tasﬁye` (`U+FB01`) döner. Alıntı
+doğrulaması ligatürü F12-T14'ten beri açıyordu (`ligature` katmanı), **arama**
+açmıyordu. Arama **aday** ifadesi `normalized_text` sütunundan gelir ve o sütun
+ligatürü açar (`dim_evidence::normalize`) — yani FTS aday satırını **seçiyor**,
+`Tam`/`İfade` **doğrulayıcısı** ham metni ligatür açmadan okuduğu için
+**atıyordu**: `taraflar` sorgusu `taraﬂar` yazan sayfada sessiz **0 sonuç**
+(kırmızı-önce: iki uçtan uca test KIRMIZI, `dim-t14ab-red.log`). Kusur **iki
+yönlüydü**: PDF'ten kopyalanan ligatürlü sorgu (`taraﬂar`) düz yazılmış metni de
+bulamıyordu. `Esnek` etkilenmiyordu (doğrulaması `normalized_text` okur) — kip
+ayrımı sessiz yanlış negatif üretiyordu (T14x'te ölçülen "aday var, doğrulayıcı
+atıyor" sınıfının aynısı).
+
+**Kural:** ligatür bir **sunum** artefaktıdır — aynı harflerdir; bu yüzden
+eşitlenmesi `Tam`ın noktalama duyarlılığını bozmaz (tire, virgül, boşluk
+eşitlenmez; F15 #35/#36). Eşleme tablosu **tek yerde**: `dim_evidence::
+ligature_expansion` (alıntı doğrulamasıyla aynı; ikinci eşleme yazılmadı).
+
+- `Tam`: iğne ve samanlık **tek üreticiden** geçer (`fold_ws` / `fold_ws_into`:
+  Türkçe küçük harf + boşluk tek + kesme işareti + ligatür). Önceden iğne
+  `turkish_lower(collapse_ws())` ile, samanlık ayrı bir döngüyle katlanıyordu;
+  bu dilim ikisini tek üreticiye indirdi (drift kaynağı kapandı).
+- `İfade`: belirteçler ligatür açılmış ham metinde de aranır; **tire birleştirme
+  katmanı** da ligatürü açar (bileşim: `tas-\nﬁye` → `tasfiye`).
+- `Esnek`: değişmedi (`normalize` ligatürü zaten açıyordu) — üç kip artık aynı
+  hükmü verir.
+- Konum (`locate_in_text`, dosya + kütüphane aynı yol): yeni `fold_ws_with_map`
+  katmanı harf sadeleştirmeden (Türkçe küçük harf + kesme işareti + ligatür)
+  eşleşir; uzunluk **kaynak aralığından** gelir (`mapped_span`) — ligatür tek
+  glif olduğu için `taraﬂar` aralığı **7** karakterdir (harf sadeleştiren eski
+  katman 8 verirdi). `İfade` belirteç köprüsü (`turkish_lower_with_map`) de
+  ligatürü açar: `taraflar arasında` sorgusu `taraﬂar, arasında` metninde
+  köprüyle bulunur, konum virgül dahil **17** karakter.
+- Ön kapı `may_expand_ligature`: ligatür taşımayan metinde ek dizge/tarama yok;
+  `Tam` samanlığında açma zaten var olan katlama döngüsünün içinde (ek geçiş
+  yok) — maliyet sorgu başına bir kez.
+
+**Testler (kırmızı-önce 2/2 KIRMIZI):** (1) dosya araması uçtan uca — üç kipte
+düz sorgu ligatürlü + düz sayfayı birlikte bulur (2), ligatürlü sorgu iki yönlü
+eşleşir, ikinci aile (`ﬁ`), tire + ligatür bileşimi (`tas-\nﬁye`: `İfade`/
+`Esnek` 2, `Tam` 1 — birleştirme `Tam`a sızmaz), ayrı yazılmış `taraﬂ ar`
+birleşmez, `Tam` tireyi eşitlemez; konum `taraﬂar` için **9/7**, `tas-\nﬁye`
+için **11/8**; snippet kaynağı gösterir. (2) kütüphane araması uçtan uca — üç
+kipte ligatürlü ve düz emsal bulunur, ligatürlü emsalde konum kaynak aralığı
+**7**; ters yön (ligatürlü sorgu) ve noktalama köprüsü + ligatür
+(`taraflar arasında` → `taraﬂar, arasında`, **17**) doğrulanır.
+
+**Yerel:** `dim-storage` tam paket **852 passed · 1 ignored · 0 failed,
+752,72 s**; `ligature` filtresi **4 passed**; iki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -- -D warnings` temiz; masaüstü
+`check --all-targets` **1 dk 13 s** temiz.
+
+**F15 maliyeti (aynı ölçüm testi):** aday ifadesine dokunulmadı — ifade boyu
+**birebir aynı** (2.801 / 1.770 B), aday/dönen 21/20, eşleşen 60; FTS sayım p50
+1,05→7,16 ms / 0,12→3,11 ms; sayfa p50 `Esnek bedellini` **17,88 ms**, `İfade
+itirazın reddine` **31,39 ms**, sayı dahil 39,28 ms — T14aa aralığında (19,28 /
+33,57). Ligatür açma yalnız ligatür taşıyan metinde ve **doğrulayıcıda**
+(ön kapı `may_expand_ligature`); ligatürsüz metinde ek dizge/tarama yok, FTS
+ifadesi değişmedi.
+
+**Kapı (`scratch/dim-t14ab-gates.py`, log `dim-t14ab-gates.log`):** taban
+`ligature` filtresi YEŞİL (4 passed); **8/8 KANIT · YEŞİL 0 · ÖLÇÜLEMEDİ/
+EŞLEŞMEDİ 0**, her satırda hedef test adı; iki kaynak sha256 koşu öncesi/
+sonrası **birebir** (`parsing 4ae25170…`, `precedents 1325064b…`). Mutantlar:
+`Tam` katmanı ligatürü açmaz, `Tam`/`İfade` belirteçleri açmaz, `İfade`
+samanlığı ligatür açılmış metinde aranmaz, tire birleştirme katmanı ligatürü
+açmaz, konum katmanı (`fold_ws_with_map`) yok, `İfade` konum belirteçleri
+açmaz, ön kapı hep kapalı, ve **gevşetme negatif kontrolü**: `Tam` harfleri de
+sadeleştirir (mevcut `search_exact_preserves_turkish_letters…` testi kırmızı).
+
+**CI (ölçüldü):** kod `ddfdc18` (2 dosya, **+346/−28**) → run `45968402905`
+**10/10 YEŞİL**: `dim-storage` **850** iki OS'ta (`1 ignored` ölçüm) — macos-15
+**620,72 s** / ubuntu-latest **1.626,35 s**; iş süresi macos-15 12 dk 45 s /
+ubuntu 29 dk 40 s; `arayüz` 67 dosya / **1499** test, paket
+`index-BP1oZUhg.js` 733,32 kB / gzip 194,60 kB — değişmedi; masaüstü kabuk,
+windows güvenli depo, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil.
+
+**Dürüst sınırlar:** (a) ligatür tablosu `dim_evidence`deki yedi glifi kapsar
+(`ff`, `fi`, `fl`, `ffi`, `ffl`, `ft`, `st`); diğer bitişik glifler (`U+0132`
+IJ, `U+0133` ij, `U+0149` ŉ) kapsam dışı; (b) `Tam` ligatürü **eşitler** —
+bu harf eşitlemesidir, noktalama duyarlılığı değişmez (tire/virgül/boşluk
+eşitlenmez, F15 #35/#36); (c) ligatür açma **karakter** düzeyindedir: OCR'ın
+`fi` yerine `fl` yazması gibi gerçek harf hatalarını düzeltmez; (d) tire
+birleştirmenin üç+ bölünme sınırı (T14y) ve `Tam`ın boşluk sadeleştirmesi
+(T14aa sınır b) aynen sürer; (e) eşleşme **metin eşleşmesi**, anlam değil;
+konum kaynak aralığıdır, `matched_length` ligatürlü kelimede sorgudan **kısa**
+olabilir (7 < 8) — arayüz `snippetHighlightSpan` kaynak aralığını beklediği
+için vurgu doğrudur; (f) 100k (F15) ve Windows/Linux donanımı bu dilimde
+ölçülmedi; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
