@@ -37,6 +37,7 @@
 | F12-T14z | ✅ | **satır sonundaki tipografik tire ailesi birleştirilir** (T14u dürüst sınırı (a) **kısmen** kapandı; en/em tire bilinçli dışarıda): çekirdek yalnız ASCII `-` biliyordu — `‐` (U+2010) ve `‑` (U+2011) ile bölünmüş kelime alıntıda `not_found`, dosya aramasında 0 sonuç veriyordu (sessiz yanlış negatif); satır sonundaki **yumuşak tire** (`U+00AD`) de birleştirilmiyordu (yalnız kendisi atılıyordu). Artık `is_line_hyphen` ailesi (ASCII + U+2010 + U+2011) ve yumuşak tire satır sonunda birleştirilir; **en/em tire (`–`,`—`) çizgi işaretidir, birleştirilmez** (negatif kontrol), gerçek tire ve paragraf ayrımı korunur, `Tam` dar kalır; üç yol (dosya araması, tek emsal, belge) aynı çekirdekten okur; aday ifadesi ve şema (v68) değişmedi (2026-11-26) |
 | F12-T14aa | ✅ | **sorgu tarafı satır sonu tiresi** (T14z dürüst sınırı (f) kapandı): PDF'ten kopyalanan alıntı sorguya tire + satır sonu taşır (`bedel‐\nlini`, `bedel-\nlini`); belge tarafı birleştiriyordu ama sorgu iki belirtece ayrıldığı için **düz yazılmış** belge (`bedellini`) `İfade`/`Esnek` kiplerinde bulunamıyordu (sessiz 0 sonuç; eski davranış paragraf ayrımlı belgeyi yanlış eşliyordu). Artık `SearchQuery::resolve` sorguyu belgeyle **aynı** çekirdekten (`dehyphenated_chars`) geçirir — tire ailesi (ASCII, `U+2010`, `U+2011`) birleşir, yumuşak tire (`U+00AD`) atılır; `Tam` noktalamaya duyarlı kalır, gerçek tire / en tire / paragraf ayrımı birleştirilmez. Tek nokta: sayfa, sayım ve kütüphane araması aynı birleşik sorguyu görür (`resolvedQuery` dönüşümü görünür); konum kaynak aralığıdır (11). Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ab | ✅ | **aramada PDF ligatürü** (T14 dürüst sınırı kapandı): PDF fontu `fi`/`fl` çiftlerini tek glif yazar (`taraﬂar` `U+FB02`, `Tasﬁye` `U+FB01`); alıntı doğrulaması ligatürü açıyordu, **arama** açmıyordu — aday satır `normalized_text`ten (ligatür açık) seçiliyor, `Tam`/`İfade` doğrulayıcısı ham metni ligatür açmadan okuduğu için atıyordu: `taraflar` sorgusu ligatürlü sayfada **0 sonuç** (ters yön de aynı; kip ayrımı sessiz yanlış negatif). Artık üç kip de ligatürü açar (tek tablo `dim_evidence::ligature_expansion`); `Tam` noktalamaya duyarlı kalır, harfler korunur; `Tam` iğnesi ve samanlığı **tek üreticiden** geçer (`fold_ws`). Konum yeni `fold_ws_with_map` katmanından **kaynak aralığı** olarak gelir (`taraﬂar` = 7; `taraﬂar, arasında` = 17); tire + ligatür bileşimi (`tas-\nﬁye`) `İfade`te birleşir; `Esnek` değişmedi. Şema (v68) ve arayüz değişmedi (2026-11-27) |
+| F12-T14ac | ✅ | **aramada görünmez biçim karakterleri** (T14z'in aramadaki karşılığı): PDF/DOCX metin katmanı ve pano kelimenin **içine** yumuşak tire (`U+00AD`), sıfır genişlikli boşluk (`U+200B`), `U+200C`/`U+200D`, kelime birleştirici (`U+2060`) ya da BOM (`U+FEFF`) sokabilir; FTS (`unicode61`) bunları ayırıcı saydığı için kelime indekste **iki belirtece** bölünüyordu — `bedellini` sorgusu görünmez karakterli sayfada **üç kipte 0 sonuç** (kütüphanede `Tam` 1/3). Artık üç kip yok sayar (`fold_ws`, `tokens_with`, `token_spans`/`token_equals`); `Tam` aday ifadesi bölünme alternatiflerini taşır (hükmü yine doğrulayıcı verir — tire birleştirme sızmaz); konum **kaynak aralığıdır** (görünmez karakter uzunluğa dahil); dilim öncesi satırlar yeniden ayrıştırma istemez. Alıntı doğrulaması değişmedi (ZWSP orada açık kayıt). Şema (v68) ve arayüz değişmedi (2026-11-27) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -2989,3 +2990,103 @@ konum kaynak aralığıdır, `matched_length` ligatürlü kelimede sorgudan **k�
 olabilir (7 < 8) — arayüz `snippetHighlightSpan` kaynak aralığını beklediği
 için vurgu doğrudur; (f) 100k (F15) ve Windows/Linux donanımı bu dilimde
 ölçülmedi; gerçek Tauri penceresi + görsel QA **insan bekliyor**.
+
+## F12-T14ac — aramada görünmez biçim karakterleri (2026-11-27)
+
+**Ölçülen kusur:** PDF/DOCX metin katmanı ve panodan kopyalama, görünmez
+**biçim** karakterlerini kelimenin **içine** sokar: yumuşak tire (`U+00AD`),
+sıfır genişlikli boşluk (`U+200B`), sıfır genişlikli bitişmez/bitişir
+(`U+200C`/`U+200D`), kelime birleştirici (`U+2060`), BOM (`U+FEFF`). Görünmez
+oldukları için kullanıcı aradaki farkı göremez. FTS5 `unicode61` bu karakterleri
+**ayırıcı** sayar: `bedel\u{200B}lini` indekste `bedel` + `lini` olur; düz
+`"bedellini"` ifadesi satırı hiç aday yapmaz, doğrulayıcı da ham metni
+katlamadığı için atardı → `bedellini` sorgusu görünmez karakterli sayfada
+**üç kipte 0 sonuç** (kırmızı-önce **4/4 KIRMIZI**, `dim-t14ac-red.log`: dosya
+`Tam` 1/5, kütüphane `Tam` 1/3). Sınıf T14ab'yle aynıdır: **sunum** artefaktı,
+yazım farkı değil.
+
+**Kural — görünmezler eşleşmede yok sayılır:**
+
+- `fold_ws` (`Tam` iğnesi + samanlığı), `tokens_with` (`İfade`/`Esnek` iğne
+  belirteçleri), `token_spans`/`token_equals` (`İfade`/`Esnek` samanlığı) tek
+  yüklemi (`is_invisible_format`) okur; karakter belirteci **bölmez**, iki
+  parça birleşir. Ayıklama **ön kapılıdır** (`strip_invisible`): görünmez
+  taşımayan metinde ek dizge/tarama yok.
+- `Tam` **aday** ifadesi artık bölünme alternatiflerini taşır
+  (`dehyphenated_expression`): FTS belirteci böldüğü için düz ifade aday
+  üretmez. Genişleme yalnız aday kümesidir; hükmü `SearchMatcher` verir —
+  `Tam` tireyi birleştirmez (F15 #35/#36), noktalama duyarlılığı sızmaz.
+  (T14x'in "`Tam` adayı dar kalır" kararı bu gerekçeyle gevşetildi;
+  maliyeti aşağıda ölçülü.)
+- Konum (`locate_in_text`, dosya + kütüphane aynı yol) metni bir kez ayıklayıp
+  katmanları temiz metinde koşturur, sonucu **kaynak** karakter indekslerine
+  geri eşler; görünmez karakter eşleşmenin içinde kaldığı için uzunluk onu
+  **kapsar** (`bedel<ZWSP>lini` = 10; `tara<ZWSP>flar` = 9).
+- **Dilim öncesi satırlar:** `normalized_text` sütunu yazıldığı anda donar;
+  eski satırlarda görünmez karakter sütunda kalır ve FTS böler. Aday
+  alternatifleri bölünmüş belirteci kapsadığı için arama yine bulur —
+  **yeniden ayrıştırma gerekmez** (test:
+  `file_search_finds_invisible_split_rows_parsed_before_the_fix`).
+- Alıntı doğrulaması **değişmedi** (`dim_evidence::normalize` bu karakterleri
+  korur); yumuşak tire T14z'den beri `dehyphenated` katmanında eşleşir,
+  ZWSP'li alıntı hâlâ `not_found` — **açık kayıt** (sıradaki dilim adayı:
+  alıntı katmanlarına ayrı `invisible` katmanı).
+- Davranış değişikliği (dürüst): `Tam` artık **yumuşak tireli** kelimeyi bulur
+  (`bedel\u{00AD}lini` → `bedellini`); T14u testinin "`Tam` birleştirmez"
+  beklentisi bu tek durum için güncellendi — satır sonu tiresi hâlâ
+  birleşmez.
+
+**Testler (kırmızı-önce 4/4 KIRMIZI):** (1) dosya uçtan uca — dört görünmez
+aile + düz yazım üç kipte bulunur (5), ayrı yazım/gerçek tire eşleşmez, konum
+**11/10** + snippet kaynağı, görünmez karakterli sorgu iki yönlü; (2) birim —
+altı karakterin hepsi `fold_ws`/`exact_tokens`/`fold_tokens`ta birleşir,
+ligatürle bileşim (`taraﬂ<ZWSP>ar`), negatif `bedel lini`; (3) `Tam` aday
+ifadesi bölünme alternatifi taşır; (4) kütüphane uçtan uca — ZWSP + SHY + düz
+(3), konum **12/9**, snippet, kopyalanmış sorgu; (5) dilim öncesi satır
+(yukarıda). `invisible` filtresi **5 passed**.
+
+**F15 maliyeti (aynı ölçüm testi, 3.000 tuzak + 30 bölünmüş + 30 düz, 21 tur):**
+`Tam` aday ifadesi **48 → 2.851 B** (`İfade` 2.801 B ile aynı bütçe); FTS sayım
+p50 `Tam itirazın reddine` **1,20 → 7,33 ms**; sayfa p50 `Tam` **38,44 ms**
+(aday 51 / dönen 20), `İfade` 31,20 ms (21/20), `Esnek bedellini` 17,86 ms —
+T14ab aralığında; görünmez taşımayan metinde doğrulayıcıda ek tarama yok
+(ön kapı).
+
+**Yerel:** `dim-storage` tam paket **857 passed · 0 failed · 1 ignored,
+769,35 s** (`dim-t14ac-libtest-v2.log`; fark: ağaçta başka ajanın commit'siz
+2 testi → CI 855); `invisible` **5 passed**,
+`hyphen` **22 passed · 1 ignored**; iki manifest `cargo fmt --check`,
+`clippy -p dim-storage --all-targets -- -D warnings`, masaüstü
+`check --all-targets` temiz.
+
+**Kapı (`scratch/dim-t14ac-gates.py`, log `dim-t14ac-gates.log`):** taban
+`invisible` filtresi YEŞİL (5 passed); **10/10 KANIT · YEŞİL 0 · ÖLÇÜLEMEDİ/
+EŞLEŞMEDİ 0**, her satırda hedef test adı; iki kaynak sha256 koşu öncesi/
+sonrası **birebir** (`parsing 141baa52…`, `precedents 9de27367…`). Mutantlar:
+`Tam` katlaması yok saymaz, belirteçler bölünür (`tokens_with`), `İfade`
+samanlık belirteçleri bölünür (`token_spans`), karşılaştırma ayıklamaz
+(`token_equals`), `Tam` adayı dar, konum katmanı erken döner, `U+200B`
+aileden çıkarılır (daraltma), **boşluk da görünmez sayılır (gevşetme —
+negatif kontrol)**, konum haritası ±1 kayar, `Esnek` belirteçleri ayıklamaz.
+Dürüst: ilk koşu **9/10** — M10 mutantı tip anotasyonu eksikliğinden
+derlenmedi (INVALID); anotasyon eklendi, kapı **baştan** koşuldu; ilk koşunun
+hükümleri kanıt sayılmadı.
+
+**CI (ölçüldü):** kod `71cd563` (2 dosya, **+391/−11**) → run `45999604988`
+**10/10 YEŞİL**: `dim-storage` **855** iki OS'ta (`1 ignored` ölçüm) — macos-15
+**826,69 s** / ubuntu-latest **1.653,02 s**; iş süresi macos-15 16 dk 45 s /
+ubuntu 30 dk 14 s; `arayüz` 67 dosya / **1499** test, paket
+`index-BP1oZUhg.js` 733,32 kB / gzip 194,60 kB — değişmedi; masaüstü kabuk
+(52 + yoksayılan 5, ikinci adım 5), windows güvenli depo, SBOM, sözleşmeler,
+belge worker'ı, sürüm paketi manifesti, kaynak arşivi yeşil.
+
+**Dürüst sınırlar:** (a) aile **altı** karakterdir (yukarıdaki liste); diğer
+görünmez `Cf` işaretleri (ör. `U+061C`, `U+180E`) kapsam dışı; (b) görünmez
+karakter **gerçek boşluğu** kapatmaz — `bedel lini` iki kelime kalır;
+(c) görünmez karakter sayı/sözcük ayrımını da birleştirir (`2024<ZWSP>/123`
+gibi) — biçim artefaktı olduğu için bilinçli; (d) `Tam` aday ifadesi `İfade`
+ile aynı bütçeyi öder (ölçüldü); hüküm değişmez, noktalama duyarlılığı
+sızmaz; (e) alıntı doğrulaması değişmedi — ZWSP'li alıntı **açık kayıt**;
+(f) eşleşme **metin eşleşmesi**, anlam değil; konum kaynak aralığıdır;
+(g) 100k (F15) ve Windows/Linux donanımı bu dilimde ölçülmedi; gerçek Tauri
+penceresi + görsel QA **insan bekliyor**.
