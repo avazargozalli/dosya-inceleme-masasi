@@ -1492,6 +1492,71 @@ pub(crate) fn is_invisible_format(ch: char) -> bool {
     )
 }
 
+/// Birleşen (combining) işaretler ve birleşik karşılıkları **tek** yerde
+/// (`dim_evidence`) durur; arama, alıntı katmanları ve `normalize` aynı tabloyu
+/// okur (F12-T14af).
+pub(crate) use dim_evidence::{compose_turkish, is_composable_mark};
+
+/// Metinde birleştirilebilir işaret var mı? Ön kapı: yoksa ek dizge/tarama
+/// yapılmaz (`may_dehyphenate`/`may_expand_ligature` ile aynı desen).
+pub(crate) fn may_compose(text: &str) -> bool {
+    text.chars().any(is_composable_mark)
+}
+
+/// `(karakter, kaynak indeksi)` akışında **taban + birleşen işaret** çiftini
+/// tek harfe indirir; kaynak indeksi **tabanın** indeksidir (F12-T14af).
+///
+/// Konum eşlemesi korunur: birleşik harf tabanın indeksini taşır, sonraki
+/// karakterin indeksi işaretten sonra geldiği için raporlanan kaynak aralığı
+/// işareti **kapsar**. Ayırma yoktur (adaptör peekable'dır).
+pub(crate) struct ComposedChars<I: Iterator<Item = (char, usize)>> {
+    inner: std::iter::Peekable<I>,
+}
+
+impl<I: Iterator<Item = (char, usize)>> ComposedChars<I> {
+    pub(crate) fn new(iter: I) -> Self {
+        Self {
+            inner: iter.peekable(),
+        }
+    }
+}
+
+impl<I: Iterator<Item = (char, usize)>> Iterator for ComposedChars<I> {
+    type Item = (char, usize);
+
+    fn next(&mut self) -> Option<(char, usize)> {
+        let (ch, index) = self.inner.next()?;
+        if let Some(&(next, _)) = self.inner.peek() {
+            if let Some(joined) = compose_turkish(ch, next) {
+                self.inner.next();
+                return Some((joined, index));
+            }
+        }
+        Some((ch, index))
+    }
+}
+
+/// `text`i birleşik (NFC) Türkçe harflere çevirir; işaret yoksa **ödünç**
+/// verir (normal aramada ek dizge yok).
+fn compose_turkish_owned(text: &str) -> Cow<'_, str> {
+    if !may_compose(text) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if let Some(&next) = chars.peek() {
+            if let Some(joined) = compose_turkish(ch, next) {
+                out.push(joined);
+                chars.next();
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    Cow::Owned(out)
+}
+
 /// Görünmez biçim karakterlerini ayıklar; metinde yoksa **ödünç** verir
 /// (normal aramada ek dizge/tarama yok — `may_dehyphenate` deseni).
 fn strip_invisible(text: &str) -> Cow<'_, str> {
@@ -1569,6 +1634,9 @@ fn tokens_with(text: &str, fold: bool) -> Vec<String> {
     // **bölmez** — `split` onları ayırıcı sayardı (`bedel\u{200B}lini` iki
     // belirteç olurdu). Ayıklama tek yerde; iki kip aynı çekirdekten okur.
     let prepared = strip_invisible(&prepared);
+    // F12-T14af: birleşen işaret (`s` + `U+0327`) belirteci bölmesin ve
+    // Türkçe harfin ayrışmış yazımı birleşik yazımla aynı belirteç olsun.
+    let prepared = compose_turkish_owned(&prepared);
     prepared
         .split(|c: char| !c.is_alphanumeric())
         .filter(|part| !part.is_empty())
@@ -1831,7 +1899,9 @@ fn fold_apostrophe(ch: char) -> char {
 fn fold_ws_into(text: &str, out: &mut String) {
     out.clear();
     let mut last_space = false;
-    for ch in text.chars() {
+    // F12-T14af: ayrışmış (NFD) Türkçe harf (ör. `s` + `U+0327`) tek harfe
+    // birleştirilir — `Tam` iğnesi ve samanlığı aynı üreticiden geçer.
+    for (ch, _index) in ComposedChars::new(text.chars().enumerate().map(|(i, c)| (c, i))) {
         // F12-T14ac: görünmez biçim karakteri **yok sayılır** — boşluk
         // durumunu değiştirmez, kelime ortasında iki parçayı birleştirir.
         if is_invisible_format(ch) {
@@ -1941,6 +2011,11 @@ fn token_spans(text: &str, out: &mut Vec<(usize, usize)>) {
         if is_invisible_format(ch) {
             continue;
         }
+        // F12-T14af: birleşen işaret de belirteci bölmez — `s` + `U+0327` +
+        // `art` tek belirteçtir; karşılaştırma birleşik harfe çevirir.
+        if is_composable_mark(ch) {
+            continue;
+        }
         if ch.is_alphanumeric() {
             if start.is_none() {
                 start = Some(index);
@@ -1959,12 +2034,24 @@ fn token_spans(text: &str, out: &mut Vec<(usize, usize)>) {
 fn token_equals(text: &str, span: (usize, usize), needle: &str, prefix: bool) -> bool {
     // F12-T14ac: belirteç span'ı görünmez biçim karakterini içerebilir
     // (`bedel\u{200B}lini`); karşılaştırmada yok sayılır.
+    // F12-T14af: `s` + `U+0327` gibi ayrışmış Türkçe harf tek harfe çevrilir;
+    // iğne belirteçleri `tokens_with`ta zaten birleşiktir.
     let mut hay = text[span.0..span.1]
         .chars()
-        .filter(|ch| !is_invisible_format(*ch));
+        .filter(|ch| !is_invisible_format(*ch))
+        .peekable();
     let mut want = needle.chars();
     loop {
-        match (hay.next(), want.next()) {
+        let h = hay.next().map(|ch| {
+            if let Some(&next) = hay.peek() {
+                if let Some(joined) = compose_turkish(ch, next) {
+                    hay.next();
+                    return joined;
+                }
+            }
+            ch
+        });
+        match (h, want.next()) {
             (None, None) => return true,
             (Some(h), Some(w)) => {
                 if fold_char(h) != w {
@@ -5329,6 +5416,92 @@ mod tests {
         // doğrulayıcı satır sonu tiresini birleştirmez.
         let exact = search_with(&db, &case_id, "bedellini", SearchMode::Exact);
         assert!(exact.hits.is_empty(), "Tam kipi birleştirmez");
+    }
+
+    /// **F12-T14af — ayrışmış (NFD) Türkçe harf yazımı.**
+    ///
+    /// LaTeX/Word kaynaklı PDF'ler ve bazı panolar `ş`yi `s` + `U+0327`
+    /// (birleşen sedil), `ğ`yi `g` + `U+0306` (breve), `ü`yü `u` + `U+0308`
+    /// (iki nokta) olarak **iki kod noktasıyla** yazar; `İ` de `I` + `U+0307`
+    /// olur. Kullanıcı farkı göremez. FTS (`remove_diacritics 2`) iki yazımı
+    /// aynı belirteç saydığı için **aday üretilir**, ama doğrulayıcı harf harf
+    /// karşılaştırdığı ve belirteç ayırıcısı birleşen işareti gördüğü için üç
+    /// kipte de sessiz **0 sonuç** veriyordu.
+    #[test]
+    fn file_search_matches_decomposed_turkish_letters_against_composed_queries() {
+        let (db, case_id, version_id) = setup();
+        // ş = s+U+0327, ğ = g+U+0306, ü = u+U+0308
+        let nfd =
+            "Mahkeme s\u{327}artların yerine getirilmedig\u{306}ine ve hu\u{308}kme karar verdi.";
+        store_texts(&db, &case_id, &version_id, &[nfd]);
+
+        for mode in [SearchMode::Phrase, SearchMode::Flexible, SearchMode::Exact] {
+            let page = search_with(&db, &case_id, "şartların", mode);
+            let hits: Vec<&str> = page.hits.iter().map(|hit| hit.raw_text.as_str()).collect();
+            assert_eq!(hits, vec![nfd], "{}: ayrışmış harf eşleşmeli", mode.tag());
+        }
+        // Konum **kaynak aralığıdır**: `şartların` kaynakta 10 karakterdir
+        // (ş = 2 kod noktası), alıntıda 9.
+        let page = search_with(&db, &case_id, "şartların", SearchMode::Phrase);
+        let hit = page.hits.first().expect("ayrışmış eşleşme");
+        assert_eq!(hit.match_start, Some(8));
+        assert_eq!(hit.match_length, Some(10));
+        // `Tam` kipinin konumu da aynı kaynak aralığıdır (ligatür/tire
+        // katmanları devreye girmeden `fold_ws` birleştirir).
+        let exact = search_with(&db, &case_id, "şartların", SearchMode::Exact);
+        let hit = exact.hits.first().expect("Tam eşleşme");
+        assert_eq!(hit.match_start, Some(8));
+        assert_eq!(hit.match_length, Some(10));
+        // `ü` ve `ğ` de ayrışmış yazımla eşleşir.
+        assert_eq!(
+            search_with(&db, &case_id, "hükme", SearchMode::Phrase)
+                .hits
+                .len(),
+            1
+        );
+        assert_eq!(
+            search_with(&db, &case_id, "getirilmediğine", SearchMode::Exact)
+                .hits
+                .len(),
+            1
+        );
+        // Negatif kontrol: ASCII `s` **farklı harftir**; `Tam`/`İfade`
+        // birleştirme yalnız aynı harfin ayrışmış yazımını kapatır.
+        assert!(
+            search_with(&db, &case_id, "sartların", SearchMode::Phrase)
+                .hits
+                .is_empty(),
+            "ASCII s, ş'yi kapatmamalı"
+        );
+        assert!(
+            search_with(&db, &case_id, "sartların", SearchMode::Exact)
+                .hits
+                .is_empty(),
+            "Tam kipinde de harf farkı eşleşmemeli"
+        );
+        // `Esnek` kipinin sözleşmesi harf sadeleştirmesidir: ASCII sorgu
+        // Türkçe harfi **bilerek** bulur (mevcut davranış pinlenir).
+        assert_eq!(
+            search_with(&db, &case_id, "sartların", SearchMode::Flexible)
+                .hits
+                .len(),
+            1
+        );
+
+        // **Simetri:** pano/PDF kaynaklı ayrışmış **sorgu**, birleşik (NFC)
+        // yazımlı belgeyi de bulur — kural iki yönlüdür.
+        let (db, case_id, version_id) = setup();
+        let nfc = "Mahkeme şartların yerine getirilmediğine ve hükme karar verdi.";
+        store_texts(&db, &case_id, &version_id, &[nfc]);
+        for mode in [SearchMode::Phrase, SearchMode::Flexible, SearchMode::Exact] {
+            let page = search_with(&db, &case_id, "s\u{327}artların", mode);
+            assert_eq!(
+                page.hits.len(),
+                1,
+                "{}: ayrışmış sorgu birleşik metni bulmalı",
+                mode.tag()
+            );
+        }
     }
 
     /// **F12-T14z — tipografik tire ailesi:** Word/InDesign kaynaklı PDF'ler

@@ -14,6 +14,7 @@ export const MATCH_KIND_LABEL: Record<string, string> = {
   exact: t("intext.matchExact"),
   whitespace: t("intext.matchWhitespace"),
   invisible: t("intext.matchInvisible"),
+  decomposed: t("intext.matchDecomposed"),
   ligature: t("intext.matchLigature"),
   apostrophe: t("intext.matchApostrophe"),
   turkish_fold: t("intext.matchTurkishFold"),
@@ -94,6 +95,12 @@ export function bindHint(finding: InTextQuoteFinding): string {
     finding.candidates.some((candidate) => candidate.matchKind === "invisible")
   ) {
     return t("intext.bindInvisible");
+  }
+  if (
+    finding.position?.matchKind === "decomposed" ||
+    finding.candidates.some((candidate) => candidate.matchKind === "decomposed")
+  ) {
+    return t("intext.bindDecomposed");
   }
   if (
     finding.position?.matchKind === "ligature" ||

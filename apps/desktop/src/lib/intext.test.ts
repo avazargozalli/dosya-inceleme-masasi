@@ -304,6 +304,33 @@ describe("metin içi alıntı yardımcıları", () => {
     ).toBe("Rapor · s. 1 · karakter 5 · görünmez biçim karakteri");
   });
 
+  it("ayrışmış (NFD) Türkçe harf eşleşmesini etiketler ve bağlanamama nedenini yazar", () => {
+    const decomposed = finding({
+      state: "normalized",
+      position: position({
+        matchKind: "decomposed",
+        charStart: 8,
+        charEnd: 42,
+        sourceText: "s\u{327}artların yerine getirilmedi\u{287}ine",
+      }),
+    });
+    expect(positionLabel(decomposed)).toBe(
+      "Dilekçe · s. 1 · ayrışmış harf (Unicode) · metin katmanı",
+    );
+    expect(canBind(decomposed)).toBe(false);
+    expect(bindHint(decomposed)).toBe(
+      "Alıntı ancak ayrışmış (NFD) Türkçe harf birleştirilerek bulundu — kaynak `ş`yi `s`+sedil gibi iki kod noktasıyla yazmış; birebir sayılmaz, kaynağa bağlanmaz.",
+    );
+    expect(
+      candidateLabel({
+        documentName: "Rapor",
+        pageIndex: 0,
+        charStart: 5,
+        matchKind: "decomposed",
+      }),
+    ).toBe("Rapor · s. 1 · karakter 5 · ayrışmış harf (Unicode)");
+  });
+
   it("ligatür açılarak bulunan alıntıyı ayrı etiketler ve bağlanamama nedenini yazar", () => {
     const ligature = finding({
       state: "normalized",

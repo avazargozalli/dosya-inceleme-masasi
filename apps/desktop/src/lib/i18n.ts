@@ -2029,6 +2029,7 @@ export const tr = {
     quoteExact: "Alıntı {where} birebir bulundu{at}{repeated}.{old}",
     quoteWhitespace: "Alıntı yalnız satır/boşluk farkıyla {where} bulundu{at}{repeated}. Birebir değil.{old}",
     quoteInvisible: "Alıntı yalnız görünmez biçim karakteri (yumuşak tire, sıfır genişlikli boşluk…) yok sayılarak {where} bulundu{at}{repeated}. Birebir değil, gözle doğrulayın.{old}",
+    quoteDecomposed: "Alıntı yalnız ayrışmış (NFD) Türkçe harf birleştirilerek {where} bulundu{at}{repeated}. Kaynak harfi iki kod noktasıyla yazmış (`s`+sedil); Birebir değil, gözle doğrulayın.{old}",
     quoteDehyphenated: "Alıntı yalnız satır sonunda tire ile bölünmüş kelime birleştirilerek {where} bulundu{at}{repeated}. Birebir değil, gözle doğrulayın.{old}",
     quoteLigature: "Alıntı yalnız bitişik yazı (ligatür) açılarak {where} bulundu{at}{repeated}. PDF fontu “fl”/“fi” çiftini tek glif yazmış; birebir değil, gözle doğrulayın.{old}",
     quoteElided: "Alıntı “…” ile kısaltılmış parçaların {where} **aynı sırayla** bulunmasıyla doğrulandı{at}{repeated}. Atlanan kısım denetlenmedi; birebir değil, kaynağı gözle doğrulayın.{old}",
@@ -2057,6 +2058,7 @@ export const tr = {
     intextMethodExact: "birebir",
     intextMethodWhitespace: "boşluk farkı",
     intextMethodInvisible: "görünmez biçim karakteri",
+    intextMethodDecomposed: "ayrışmış harf (Unicode)",
     intextMethodLigature: "ligatür",
     intextMethodFold: "harf farkı",
     intextMethodApostrophe: "kesme işareti",
@@ -2566,6 +2568,7 @@ export const tr = {
     matchExact: "birebir",
     matchWhitespace: "boşluk farkı",
     matchInvisible: "görünmez biçim karakteri",
+    matchDecomposed: "ayrışmış harf (Unicode)",
     matchLigature: "bitişik yazı (ligatür)",
     matchTurkishFold: "harf farkı",
     matchApostrophe: "kesme işareti",
@@ -2590,6 +2593,8 @@ export const tr = {
     oldVersionUnknown: "eski sürüm (v?)",
     charAt: "karakter {char}",
     bindSpansPages: "Alıntı sayfa sınırını aşıyor; tek sayfalık anchor'a bağlanmaz.",
+    bindDecomposed:
+      "Alıntı ancak ayrışmış (NFD) Türkçe harf birleştirilerek bulundu — kaynak `ş`yi `s`+sedil gibi iki kod noktasıyla yazmış; birebir sayılmaz, kaynağa bağlanmaz.",
     bindInvisible:
       "Alıntı ancak görünmez biçim karakteri (yumuşak tire, sıfır genişlikli boşluk…) yok sayılarak bulundu; birebir sayılmaz, kaynağa bağlanmaz.",
     bindLigature:

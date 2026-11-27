@@ -103,15 +103,80 @@ pub fn ligature_expansion(ch: char) -> Option<&'static str> {
     }
 }
 
+/// Birleşen (combining) işaretler: bir **taban** harfin üstüne/altına gelen ve
+/// tek başına harf olmayan işaretler (F12-T14af).
+///
+/// Ayrışmış (NFD) yazımda Türkçe harf iki kod noktasıdır: `ş` = `s` + `U+0327`
+/// (sedil), `ğ` = `g` + `U+0306` (breve), `ö`/`ü` = taban + `U+0308` (iki nokta),
+/// `İ` = `I` + `U+0307` (üst nokta), `â`/`î`/`û` = taban + `U+0302` (şapka).
+/// Kullanıcı tek harf görür; Unicode'da iki kod noktası vardır.
+#[must_use]
+pub fn is_composable_mark(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0327}' | '\u{0306}' | '\u{0308}' | '\u{0307}' | '\u{0302}'
+    )
+}
+
+/// **(taban, birleşen işaret) → birleşik (NFC) Türkçe harf** (F12-T14af).
+///
+/// Yalnız yukarıdaki beş işaret ve Türkçe harf tabanları eşlenir; tablo
+/// **kapalıdır** — başka bir işaret/harf birleştirilmez (`s` + `U+0301` gibi
+/// aksanlar Türkçe harf değildir). Tek uygulama burada durur: arama
+/// doğrulayıcısı, alıntı katmanları ve `normalize` aynı tabloyu okur.
+#[must_use]
+pub fn compose_turkish(base: char, mark: char) -> Option<char> {
+    Some(match (base, mark) {
+        ('c', '\u{327}') => 'ç',
+        ('C', '\u{327}') => 'Ç',
+        ('s', '\u{327}') => 'ş',
+        ('S', '\u{327}') => 'Ş',
+        ('g', '\u{0306}') => 'ğ',
+        ('G', '\u{0306}') => 'Ğ',
+        ('o', '\u{0308}') => 'ö',
+        ('O', '\u{0308}') => 'Ö',
+        ('u', '\u{0308}') => 'ü',
+        ('U', '\u{0308}') => 'Ü',
+        ('a', '\u{0302}') => 'â',
+        ('A', '\u{0302}') => 'Â',
+        ('i', '\u{0302}') => 'î',
+        ('I', '\u{0302}') => 'Î',
+        ('u', '\u{0302}') => 'û',
+        ('U', '\u{0302}') => 'Û',
+        // Türkçe `İ` ayrışmış yazımda `I` + üst noktadır; `i` + üst nokta ve
+        // `ı` + üst nokta görsel olarak `i`'dir.
+        ('I', '\u{0307}') => 'İ',
+        ('i', '\u{0307}') => 'i',
+        ('ı', '\u{0307}') => 'i',
+        _ => return None,
+    })
+}
+
 /// Metni karşılaştırma için sadeleştirir: Türkçe harfleri ASCII'ye indirger,
 /// şapkalı harfleri sadeleştirir, boşlukları tekler ve **ligatürleri açar**.
 /// Kaynak alıntı gösterimi ham metinden yapılır; bu fonksiyon yalnız
 /// eşleştirme içindir.
+///
+/// **F12-T14af:** ayrışmış (NFD) Türkçe harf önce birleşik (NFC) karşılığına
+/// çevrilir (`s` + `U+0327` → `ş`); aksi hâlde birleşen işaret sadeleştirmeden
+/// geçmeden kalır ve `ş` yazan sorguyla eşleşmez.
 #[must_use]
 pub fn normalize(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut last_space = false;
-    for ch in input.chars() {
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        // Ayrışmış Türkçe harf: taban + birleşen işaret tek harftir.
+        let ch = match chars.peek() {
+            Some(&next) => match compose_turkish(ch, next) {
+                Some(joined) => {
+                    chars.next();
+                    joined
+                }
+                None => ch,
+            },
+            None => ch,
+        };
         if let Some(expansion) = ligature_expansion(ch) {
             for letter in expansion.chars() {
                 out.push(letter);

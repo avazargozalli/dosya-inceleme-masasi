@@ -136,6 +136,16 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     expect(quoteStateTone(verification({ state: "match", method: "invisible" }))).toBe("warn");
   });
 
+  it("ayrışmış Türkçe harfle bulunan alıntıyı ayrı ve zayıf bir eşleşme olarak yazar", () => {
+    const decomposed = quoteStateText(
+      verification({ state: "match", method: "decomposed", matchedStart: 8, occurrences: 1 }),
+    );
+    expect(decomposed).toContain("ayrışmış (NFD) Türkçe harf");
+    expect(decomposed).toContain("Birebir değil");
+    expect(decomposed).not.toContain("görünmez biçim karakteri");
+    expect(quoteStateTone(verification({ state: "match", method: "decomposed" }))).toBe("warn");
+  });
+
   it("ligatür açılarak bulunan alıntıyı ayrı ve zayıf bir eşleşme olarak yazar", () => {
     const ligature = quoteStateText(
       verification({ state: "match", method: "ligature", matchedStart: 9, occurrences: 1 }),
@@ -340,6 +350,7 @@ describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
     expect(precedentMethodLabel("exact")).toBe("birebir");
     expect(precedentMethodLabel("whitespace")).toBe("boşluk farkı");
     expect(precedentMethodLabel("invisible")).toBe("görünmez biçim karakteri");
+    expect(precedentMethodLabel("decomposed")).toBe("ayrışmış harf (Unicode)");
     expect(precedentMethodLabel("ligature")).toBe("ligatür");
     expect(precedentMethodLabel("apostrophe")).toBe("kesme işareti");
     expect(precedentMethodLabel("turkish_fold")).toBe("harf farkı");

@@ -391,6 +391,12 @@ pub(crate) enum QuoteTier {
     /// kullanıcı farkı göremez. Yazım değil **sunum** artefaktıdır — arama
     /// tarafındaki T14ac kararının alıntı karşılığı.
     Invisible,
+    /// Yalnız **ayrışmış (NFD) Türkçe harf** birleştirilir (`s` + `U+0327` →
+    /// `ş`, `g` + `U+0306` → `ğ`, `I` + `U+0307` → `İ`); harfler korunur
+    /// (F12-T14af). LaTeX/Word kaynaklı PDF'ler ve bazı panolar Türkçe harfi
+    /// iki kod noktasıyla yazar; kullanıcı tek harf görür. Harf sadeleştiren
+    /// `turkish_fold`dan **güçlüdür**: yalnız yazım biçimi farkıdır.
+    Decomposed,
     /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`) açılır; harfler korunur.
     Ligature,
     /// **Kesme işareti** ailesi eşitlenir: `’` (U+2019) ve `ʼ` (U+02BC) ASCII
@@ -412,10 +418,11 @@ pub(crate) enum QuoteTier {
 }
 
 impl QuoteTier {
-    const ORDER: [QuoteTier; 12] = [
+    const ORDER: [QuoteTier; 13] = [
         QuoteTier::Exact,
         QuoteTier::Whitespace,
         QuoteTier::Invisible,
+        QuoteTier::Decomposed,
         QuoteTier::Ligature,
         QuoteTier::Apostrophe,
         QuoteTier::TurkishFold,
@@ -432,6 +439,7 @@ impl QuoteTier {
             QuoteTier::Exact => "exact",
             QuoteTier::Whitespace => "whitespace",
             QuoteTier::Invisible => "invisible",
+            QuoteTier::Decomposed => "decomposed",
             QuoteTier::Ligature => "ligature",
             QuoteTier::Apostrophe => "apostrophe",
             QuoteTier::TurkishFold => "turkish_fold",
@@ -463,6 +471,7 @@ fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
     match tier {
         QuoteTier::Whitespace => collapse_ws_with_map(text),
         QuoteTier::Invisible => invisible_with_map(text),
+        QuoteTier::Decomposed => decomposed_with_map(text),
         QuoteTier::Ligature => ligature_with_map(text),
         QuoteTier::Apostrophe => apostrophe_with_map(text),
         QuoteTier::TurkishFold => turkish_fold_with_map(text),
@@ -731,6 +740,14 @@ pub(crate) struct MappedText {
     pub(crate) map: Vec<usize>,
 }
 
+/// `(karakter, kaynak indeksi)` akışı; ayrışmış (NFD) Türkçe harf **tek**
+/// harfe birleştirilir (F12-T14af). Kaynak indeksi tabanın indeksidir; sonraki
+/// karakterin indeksi işaretten sonra geldiği için raporlanan aralık işareti
+/// kapsar.
+fn composed_pairs(input: &str) -> impl Iterator<Item = (char, usize)> + '_ {
+    crate::parsing::ComposedChars::new(input.chars().enumerate().map(|(index, ch)| (ch, index)))
+}
+
 fn fold_char(ch: char) -> char {
     match ch {
         'İ' | 'I' => 'i',
@@ -761,7 +778,7 @@ fn normalize_with_map_impl(input: &str, skip_invisible: bool) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
-    for (index, ch) in input.chars().enumerate() {
+    for (ch, index) in composed_pairs(input) {
         if skip_invisible && crate::parsing::is_invisible_format(ch) {
             continue;
         }
@@ -804,7 +821,7 @@ pub(crate) fn ligature_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
-    for (index, ch) in input.chars().enumerate() {
+    for (ch, index) in composed_pairs(input) {
         // F12-T14ad: görünmez biçim karakteri **sunum** artefaktıdır; harfler
         // aynı olduğu sürece eşleşmeyi engellemez (ligatürle bileşince de).
         if crate::parsing::is_invisible_format(ch) {
@@ -859,17 +876,36 @@ fn fold_apostrophe(ch: char) -> char {
 /// `Anayasa'nın` yazar; harf farkı olmadığı için bu katman ayrı raporlanır.
 /// F12-T14ad: görünmez biçim karakterleri de yok sayılır (sunum artefaktı).
 pub(crate) fn apostrophe_with_map(input: &str) -> MappedText {
-    map_chars_skipping_invisible(input, fold_apostrophe)
+    // F12-T14af: kesme işareti katmanı da ayrışmış harfi birleştirir (daha
+    // güçlü katmanların kapsadığı farkı zayıf katman da kapsar).
+    map_pairs_skipping_invisible(composed_pairs(input), input.len(), fold_apostrophe)
 }
 
 /// Yalnız **görünmez biçim karakterleri** yok sayılır + boşluklar teklenir;
-/// harfler, noktalama ve kesme işareti **korunur** (F12-T14ad).
+/// harfler, noktalama ve kesme işareti **korunur** (F12-T14ad). Ayrışmış
+/// harf **birleştirilmez** — o fark kendi katmanının işidir (T14af).
 ///
 /// Kaynak `bedel<ZWSP>lini` yazarken alıntı `bedellini` yazar; karakter
 /// görünmez olduğu için kullanıcı farkı göremez. Konum eşlemesi kaynak
 /// karakter indeksidir: raporlanan aralık görünmez karakteri **kapsar**.
 pub(crate) fn invisible_with_map(input: &str) -> MappedText {
-    map_chars_skipping_invisible(input, |ch| ch)
+    map_pairs_skipping_invisible(
+        input.chars().enumerate().map(|(index, ch)| (ch, index)),
+        input.len(),
+        |ch| ch,
+    )
+}
+
+/// Yalnız **ayrışmış (NFD) Türkçe harf** birleştirilir (`s` + `U+0327` → `ş`);
+/// görünmez biçim karakterleri yok sayılır, boşluklar teklenir, harfler
+/// korunur (F12-T14af).
+///
+/// Bu katman `invisible`dan **sonra** denenir: görünmez farkı yoksa yalnız
+/// yazım biçimi (NFD/NFC) farkı burada kapanır ve `decomposed` etiketiyle
+/// raporlanır — harf sadeleştiren `turkish_fold`dan **güçlüdür** (harf
+/// kimliği korunur).
+pub(crate) fn decomposed_with_map(input: &str) -> MappedText {
+    map_pairs_skipping_invisible(composed_pairs(input), input.len(), |ch| ch)
 }
 
 /// `normalize_with_map` + kesme işareti eşitlemesi (F12-T14r): harf
@@ -909,16 +945,20 @@ fn map_chars_with_collapsed_ws(input: &str, map_char: impl Fn(char) -> char) -> 
     MappedText { text: out, map }
 }
 
-/// Boşlukları tekler, **görünmez biçim karakterlerini yok sayar** ve her
-/// karakteri `map_char` ile eşler (F12-T14ad). Konum eşlemesi kaynak metnin
-/// karakter indeksidir; yok sayılan karakter çıktıya girmediği için harfler
-/// arasındaki indeks boşluğu raporlanan aralıkta **kapanır** (kaynak
-/// aralığı görünmez karakteri kapsar).
-fn map_chars_skipping_invisible(input: &str, map_char: impl Fn(char) -> char) -> MappedText {
-    let mut out = String::with_capacity(input.len());
-    let mut map = Vec::with_capacity(input.len());
+/// `map_pairs_skipping_invisible`in gövdesi: **görünmez** biçim karakterleri
+/// atılır (F12-T14ad), boşluklar teklenir, `map_char` uygulanır; her çıktı
+/// karakteri **kaynak** karakter indeksini taşır — yok sayılan karakter
+/// çıktıya girmediği için harfler arasındaki indeks boşluğu raporlanan
+/// aralıkta kapanır (kaynak aralığı görünmez karakteri kapsar).
+fn map_pairs_skipping_invisible(
+    pairs: impl Iterator<Item = (char, usize)>,
+    capacity: usize,
+    map_char: impl Fn(char) -> char,
+) -> MappedText {
+    let mut out = String::with_capacity(capacity);
+    let mut map = Vec::with_capacity(capacity);
     let mut last_space = false;
-    for (index, ch) in input.chars().enumerate() {
+    for (ch, index) in pairs {
         if crate::parsing::is_invisible_format(ch) {
             continue;
         }
@@ -961,7 +1001,9 @@ pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
-    for (ch, index) in crate::parsing::dehyphenated_chars(input) {
+    for (ch, index) in
+        crate::parsing::ComposedChars::new(crate::parsing::dehyphenated_chars(input).into_iter())
+    {
         // F12-T14ad: görünmez biçim karakteri (yumuşak tire dışındakiler de)
         // eşleşmede yok sayılır; boşluk durumunu değiştirmez.
         if crate::parsing::is_invisible_format(ch) {
@@ -2269,7 +2311,7 @@ fn turkish_lower_char(ch: char) -> char {
 fn turkish_lower_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
-    for (index, ch) in input.chars().enumerate() {
+    for (ch, index) in composed_pairs(input) {
         if let Some(expansion) = ligature_expansion(ch) {
             for letter in expansion.chars() {
                 out.push(letter);
@@ -2292,7 +2334,7 @@ fn fold_ws_with_map(input: &str) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
-    for (index, ch) in input.chars().enumerate() {
+    for (ch, index) in composed_pairs(input) {
         if let Some(expansion) = ligature_expansion(ch) {
             for letter in expansion.chars() {
                 out.push(letter);
@@ -2330,6 +2372,11 @@ fn mapped_tokens(mapped: &MappedText) -> (Vec<(usize, usize)>, Vec<String>) {
     let mut tokens: Vec<String> = Vec::new();
     let mut start: Option<usize> = None;
     for (index, ch) in chars.iter().enumerate() {
+        // F12-T14af: birleşen işaret belirteci bölmez (savunma katmanı;
+        // katman çıktıları zaten birleşiktir).
+        if crate::parsing::is_composable_mark(*ch) {
+            continue;
+        }
         if ch.is_alphanumeric() {
             if start.is_none() {
                 start = Some(index);
@@ -4211,7 +4258,41 @@ mod tests {
         let order = QuoteTier::ORDER;
         assert_eq!(order[1].method(), "whitespace");
         assert_eq!(order[2].method(), "invisible");
-        assert_eq!(order[3].method(), "ligature");
+        assert_eq!(
+            order[3].method(),
+            "decomposed",
+            "F12-T14af: ayrışmış harf, görünmezden sonra ve ligatürden önce"
+        );
+        assert_eq!(order[4].method(), "ligature");
+    }
+
+    /// F12-T14af (birim): ayrışmış katman `s` + `U+0327` çiftini **tek** harfe
+    /// birleştirir, konumu tabanın kaynak indeksine eşler; tablo **kapalıdır**
+    /// (`s` + `U+0301` birleşmez) ve görünmez katman bu işi yapmaz.
+    #[test]
+    fn decomposed_tier_composes_turkish_letters_and_maps_to_source_indices() {
+        let mapped = decomposed_with_map("a s\u{327}  b");
+        assert_eq!(mapped.text, "a ş b");
+        assert_eq!(mapped.map, vec![0, 1, 2, 4, 6]);
+        assert_eq!(
+            tier_mapped("bedel\u{200B}s\u{327}art", QuoteTier::Invisible).text,
+            "bedels\u{327}art",
+            "görünmez katman ayrışmış harfi birleştirmez (kendi işi değil)"
+        );
+        assert_eq!(
+            tier_mapped("bedel\u{200B}s\u{327}art", QuoteTier::Decomposed).text,
+            "bedelşart",
+            "ayrışmış katman görünmez karakteri de yok sayar"
+        );
+        // Tablo kapalı: akut aksan (`U+0301`) Türkçe harf değildir.
+        assert_eq!(decomposed_with_map("s\u{301}art").text, "s\u{301}art");
+        // Aynı taban, farklı işaret → farklı harf (u+diaeresis = ü).
+        assert_eq!(decomposed_with_map("hu\u{308}kme").text, "hükme");
+        assert_eq!(decomposed_with_map("ho\u{308}kme").text, "hökme");
+        assert_ne!(
+            decomposed_with_map("hu\u{308}kme").text,
+            decomposed_with_map("ho\u{308}kme").text
+        );
     }
 
     /// Üç yol (tek alıntı, metin içi, kütüphane) aynı etiketi verir; bulunan

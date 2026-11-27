@@ -32,10 +32,10 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
-    apostrophe_with_map, char_offset, collapse_ws_with_map, dehyphenate_with_map, elided_segments,
-    find_elided_sequences_in_text, find_quote_in_scopes, invisible_with_map, ligature_with_map,
-    turkish_fold_with_map, MappedText, QuoteTier, TextScope, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT,
-    MIN_QUOTE_CHARS,
+    apostrophe_with_map, char_offset, collapse_ws_with_map, decomposed_with_map,
+    dehyphenate_with_map, elided_segments, find_elided_sequences_in_text, find_quote_in_scopes,
+    invisible_with_map, ligature_with_map, turkish_fold_with_map, MappedText, QuoteTier, TextScope,
+    MAX_HISTORICAL_VERSIONS_PER_PRECEDENT, MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -427,6 +427,11 @@ enum MatchTier {
     /// oldukları için kullanıcı farkı göremez. Yazım değil **sunum**
     /// artefaktıdır — arama tarafındaki T14ac kararının alıntı karşılığı.
     Invisible,
+    /// Yalnız **ayrışmış (NFD) Türkçe harf** birleştirilir (`s` + `U+0327` →
+    /// `ş`); harfler korunur (F12-T14af). LaTeX/Word kaynaklı PDF'ler ve bazı
+    /// panolar Türkçe harfi iki kod noktasıyla yazar, kullanıcı tek harf görür.
+    /// Harf sadeleştiren `turkish_fold`dan **güçlüdür**.
+    Decomposed,
     /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`, `ﬁ`→`fi`) açılır ve
     /// boşluklar teklenir; harfler korunur. PDF'ten gelen metinde `taraﬂar`
     /// yazarken avukat `taraflar` yazar — bu bir yazım farkı değildir.
@@ -458,6 +463,7 @@ impl MatchTier {
             Self::Exact => "exact",
             Self::Whitespace => "whitespace",
             Self::Invisible => "invisible",
+            Self::Decomposed => "decomposed",
             Self::Ligature => "ligature",
             Self::Apostrophe => "apostrophe",
             Self::Fold => "turkish_fold",
@@ -934,6 +940,7 @@ impl Database {
                 MatchTier::Exact,
                 MatchTier::Whitespace,
                 MatchTier::Invisible,
+                MatchTier::Decomposed,
                 MatchTier::Ligature,
                 MatchTier::Apostrophe,
                 MatchTier::Fold,
@@ -1450,6 +1457,7 @@ impl Database {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
                 MatchTier::Invisible => Some(invisible_with_map(&span.text)),
+                MatchTier::Decomposed => Some(decomposed_with_map(&span.text)),
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Apostrophe => Some(apostrophe_with_map(&span.text)),
                 MatchTier::Fold => Some(turkish_fold_with_map(&span.text)),
@@ -1527,6 +1535,7 @@ impl Database {
                     }
                     MatchTier::Whitespace
                     | MatchTier::Invisible
+                    | MatchTier::Decomposed
                     | MatchTier::Ligature
                     | MatchTier::Apostrophe
                     | MatchTier::Fold
@@ -1534,6 +1543,7 @@ impl Database {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&text),
                             MatchTier::Invisible => invisible_with_map(&text),
+                            MatchTier::Decomposed => decomposed_with_map(&text),
                             MatchTier::Ligature => ligature_with_map(&text),
                             MatchTier::Apostrophe => apostrophe_with_map(&text),
                             MatchTier::Fold => turkish_fold_with_map(&text),
@@ -1653,6 +1663,7 @@ impl Database {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
                 MatchTier::Invisible => Some(invisible_with_map(&span.text)),
+                MatchTier::Decomposed => Some(decomposed_with_map(&span.text)),
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Apostrophe => Some(apostrophe_with_map(&span.text)),
                 MatchTier::Fold => Some(turkish_fold_with_map(&span.text)),
@@ -1773,6 +1784,7 @@ impl Database {
                     }
                     MatchTier::Whitespace
                     | MatchTier::Invisible
+                    | MatchTier::Decomposed
                     | MatchTier::Ligature
                     | MatchTier::Apostrophe
                     | MatchTier::Fold
@@ -1780,6 +1792,7 @@ impl Database {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&joined),
                             MatchTier::Invisible => invisible_with_map(&joined),
+                            MatchTier::Decomposed => decomposed_with_map(&joined),
                             MatchTier::Ligature => ligature_with_map(&joined),
                             MatchTier::Apostrophe => apostrophe_with_map(&joined),
                             MatchTier::Fold => turkish_fold_with_map(&joined),
@@ -4508,6 +4521,207 @@ mod tests {
                 .match_kind,
             "elided"
         );
+    }
+
+    /// **F12-T14af — alıntı doğrulamasında ayrışmış (NFD) Türkçe harf.**
+    ///
+    /// T14ad'ın görünmez karakter sınıfıyla aynı mantık: `ş`yi `s` + `U+0327`
+    /// olarak **iki kod noktasıyla** yazan kaynak (LaTeX/Word kaynaklı PDF,
+    /// bazı panolar), `ş` yazan alıntıyı üç yolda da `not_found` düşürüyordu.
+    /// Yazım değil **sunum** artefaktıdır; birebir sayılmaz, anchor'a bağlanmaz.
+    #[test]
+    fn decomposed_turkish_letters_match_in_their_own_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Ayrışmış harf");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Mahkeme s\u{327}artların yerine getirilmedig\u{306}ine karar verdi."],
+        );
+
+        let report = check(&db, &case_id, "“şartların yerine getirilmediğine”", None);
+
+        assert_eq!(report.not_found, 0, "ayrışmış harf eşleşmeyi engelledi");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(report.exact, 0, "ayrışmış harf birebir sayılmaz");
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "decomposed");
+        assert_eq!(position.char_start, 8);
+        // Kaynak aralığı **iki** birleşen işareti kapsar: alıntı 32, kaynak 34.
+        assert_eq!(position.char_end - position.char_start, 34);
+        assert!(
+            position.source_text.contains('\u{327}'),
+            "kaynak metin sedili göstermeli: {}",
+            position.source_text
+        );
+
+        // **Simetri:** ayrışmış **alıntı**, birleşik (NFC) yazımlı kaynakta da
+        // bulunur — kural iki yönlüdür (pano/PDF kaynaklı alıntı).
+        let case_id = new_case(&db, "Ayrışmış alıntı");
+        add_document(
+            &db,
+            &case_id,
+            "NFC.pdf",
+            &["Mahkeme şartların yerine getirilmediğine karar verdi."],
+        );
+        let report = check(
+            &db,
+            &case_id,
+            "“s\u{327}artların yerine getirilmedig\u{306}ine”",
+            None,
+        );
+        assert_eq!(
+            report.not_found, 0,
+            "ayrışmış alıntı birleşik kaynakta bulunmalı"
+        );
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "decomposed");
+        // Alıntı 34 kod noktası, kaynak 32 karakter: konum kaynak aralığıdır.
+        assert_eq!(position.char_end - position.char_start, 32);
+    }
+
+    /// Negatif kontroller: katman **farklı harfi kapatmaz** — ASCII `s` ile `ş`
+    /// `decomposed` katmanında eşleşmez; eşleşirse bu ancak zayıf
+    /// `turkish_fold` katmanındadır (harf sadeleştirmesi onun sözleşmesidir).
+    /// Gerçek bir Türkçe harf farkı (`ü` ↔ `ö`) hiçbir güçlü katmanda kapanmaz.
+    #[test]
+    fn decomposed_tier_does_not_close_distinct_letters() {
+        let db = db();
+        let case_id = new_case(&db, "Ayrışmış negatif");
+        add_document(
+            &db,
+            &case_id,
+            "A.pdf",
+            &["Mahkeme s\u{327}artların yerine getirilmediğine karar verdi."],
+        );
+        // Kaynak ayrışmış `ş`, alıntı ASCII `s`: güçlü katmanlar kapatmaz;
+        // harf sadeleştiren zayıf katman **bilerek** eşitler ve bunu söyler.
+        let report = check(&db, &case_id, "“sartların yerine getirilmediğine”", None);
+        let kind = report.quotes[0]
+            .position
+            .as_ref()
+            .map_or("", |position| position.match_kind.as_str());
+        assert_ne!(kind, "decomposed", "ASCII s, ş'nin ayrışmışı sayılmamalı");
+        assert_ne!(kind, "exact", "harf farkı birebir olamaz");
+        assert_eq!(kind, "turkish_fold", "harf farkı yalnız zayıf katmanda");
+        assert_eq!(report.exact, 0);
+
+        // Ters yön: kaynak düz `s`, alıntı `ş` — aynı kural.
+        let case_id = new_case(&db, "Ayrışmış ters");
+        add_document(
+            &db,
+            &case_id,
+            "B.pdf",
+            &["Mahkeme sartların yerine getirilmediğine karar verdi."],
+        );
+        let report = check(&db, &case_id, "“şartların yerine getirilmediğine”", None);
+        let kind = report.quotes[0]
+            .position
+            .as_ref()
+            .map_or("", |position| position.match_kind.as_str());
+        assert_eq!(kind, "turkish_fold", "ters yönde de güçlü katman kapatmaz");
+        assert_eq!(report.exact, 0);
+
+        // Farklı bir Türkçe harf (ü ↔ ö) hiçbir katmanda kapanmaz.
+        let case_id = new_case(&db, "Ayrışmış harf farkı");
+        add_document(
+            &db,
+            &case_id,
+            "C.pdf",
+            &["Sözleşme hu\u{308}kme göre kurulmuştur."],
+        );
+        let report = check(&db, &case_id, "“hükme göre kurulmuştur”", None);
+        assert_eq!(report.not_found, 0, "aynı harfin ayrışmışı bulunmalı");
+        let report = check(&db, &case_id, "“hökme göre kurulmuştur”", None);
+        assert_eq!(report.not_found, 1, "ü ile ö farklı harftir: {report:?}");
+    }
+
+    /// Birebir katman değişmedi: iki tarafta da aynı ayrışmış yazım varsa alıntı
+    /// bayt bayt eşleşir ve `exact` kalır.
+    #[test]
+    fn exact_tier_stays_literal_for_equal_decomposed_quotes() {
+        let db = db();
+        let case_id = new_case(&db, "Birebir ayrışmış");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Mahkeme s\u{327}artların yerine getirilmedig\u{306}ine karar verdi."],
+        );
+
+        let report = check(
+            &db,
+            &case_id,
+            "“s\u{327}artların yerine getirilmedig\u{306}ine”",
+            None,
+        );
+
+        assert_eq!(report.exact, 1, "aynı yazım birebir kalmalı");
+        assert_eq!(report.normalized, 0);
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "exact"
+        );
+    }
+
+    /// Kısaltılmış (`…`) alıntıda ayrışmış harf: parçalar zayıf katmanlarda
+    /// arandığı için bulunur; yöntem etiketi tek (`elided`).
+    #[test]
+    fn elided_quote_with_decomposed_letters_is_found_as_elided() {
+        let db = db();
+        let case_id = new_case(&db, "Kısaltılmış ayrışmış");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Sözleşme s\u{327}artları arasında kurulmuştur ve hüküm kesindir."],
+        );
+
+        let report = check(&db, &case_id, "“şartları arasında … hüküm kesindir”", None);
+
+        assert_eq!(report.not_found, 0, "kısaltılmış alıntı bulunmalı");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "elided"
+        );
+    }
+
+    /// Emsal tam metni yolu: ayrışmış harf **kendi** yöntem etiketiyle raporlanır
+    /// (`decomposed`) — üç yol aynı çözümü kullanır.
+    #[test]
+    fn precedent_in_text_check_reports_the_decomposed_tier() {
+        let db = db();
+        let p = new_precedent(&db, "2024/351");
+        add_precedent_text(
+            &db,
+            &p.id,
+            "Mahkeme s\u{327}artların yerine getirilmediğine karar verdi.",
+        );
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: "Metinde “şartların yerine getirilmediğine” geçiyor.".into(),
+                },
+            )
+            .expect("denetim");
+        assert_eq!(report.quotes[0].state, "normalized");
+        assert_eq!(
+            report.quotes[0].method.as_deref(),
+            Some("decomposed"),
+            "emsal yolu kendi katmanını yazmalı"
+        );
+        assert_eq!(report.quotes[0].occurrences, 1);
     }
 
     #[test]
