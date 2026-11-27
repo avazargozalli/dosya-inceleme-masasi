@@ -1281,8 +1281,10 @@ const MAX_DEHYPHENATE_MULTI_ALTERNATIVES: usize = 64;
 /// Üç bölünmeli (dört parçalı) adayların **ayrı ve küçük** bütçesi
 /// (F12-T14ae): dar sütunlu tablo/dipnot metni kelimeyi üç satır sonuyla
 /// dörde bölebilir, ama bu nadirdir ve her alternatif ifadeyi büyütür —
-/// 16 yeter, dört+ bölünme üretilmez. Sözleşme: "64 tek + 64 çift + 16 üçlü".
-const MAX_DEHYPHENATE_TRIPLE_ALTERNATIVES: usize = 16;
+/// ölçüldü: bütçe 16, aday ifadesini +1,9 KB büyütüp sayfa p50'sini ~%60
+/// artırıyordu; 8 dengeli bölünmeyi kapsar ve maliyeti yarıya indirir.
+/// Sözleşme: "64 tek + 64 çift + 8 üçlü".
+const MAX_DEHYPHENATE_TRIPLE_ALTERNATIVES: usize = 8;
 
 /// Üç bölünme yalnız gerçekçi uzunluktaki belirteçlerde aranır: 40 karakteri
 /// aşan bir belirteç satır sonu bölünmesi değil, OCR/yanlış birleşme adayıdır
@@ -5921,12 +5923,12 @@ mod tests {
             128,
             "uzun belirteçte alternatif sayısı sınırda durur (64 tek + 64 çift)"
         );
-        // Kısa belirteçte üçlü bütçe de sayılır: 8 tek + 28 çift + 16 üçlü
+        // Kısa belirteçte üçlü bütçe de sayılır: 8 tek + 28 çift + 8 üçlü
         // ("bedellini" 9 karakter).
         assert_eq!(
             phrase.matches(" OR ").count(),
-            52,
-            "kısa belirteçte 8 tek + 28 çift + 16 üçlü alternatif"
+            44,
+            "kısa belirteçte 8 tek + 28 çift + 8 üçlü alternatif"
         );
         assert!(
             capped.len() < 40_000,
