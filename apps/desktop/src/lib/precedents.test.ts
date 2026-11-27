@@ -126,6 +126,16 @@ describe("alıntı doğrulama metni (F12-T05)", () => {
     expect(quoteStateTone(verification({ state: "match", method: "dehyphenated" }))).toBe("warn");
   });
 
+  it("görünmez biçim karakteriyle bulunan alıntıyı ayrı ve zayıf bir eşleşme olarak yazar", () => {
+    const invisible = quoteStateText(
+      verification({ state: "match", method: "invisible", matchedStart: 9, occurrences: 1 }),
+    );
+    expect(invisible).toContain("görünmez biçim karakteri");
+    expect(invisible).toContain("Birebir değil");
+    expect(invisible).not.toContain("bitişik yazı");
+    expect(quoteStateTone(verification({ state: "match", method: "invisible" }))).toBe("warn");
+  });
+
   it("ligatür açılarak bulunan alıntıyı ayrı ve zayıf bir eşleşme olarak yazar", () => {
     const ligature = quoteStateText(
       verification({ state: "match", method: "ligature", matchedStart: 9, occurrences: 1 }),
@@ -329,6 +339,7 @@ describe("metindeki alıntıların karar metninde denetimi (F12-T14j)", () => {
   it("eşleşme katmanını Türkçe etiketler", () => {
     expect(precedentMethodLabel("exact")).toBe("birebir");
     expect(precedentMethodLabel("whitespace")).toBe("boşluk farkı");
+    expect(precedentMethodLabel("invisible")).toBe("görünmez biçim karakteri");
     expect(precedentMethodLabel("ligature")).toBe("ligatür");
     expect(precedentMethodLabel("apostrophe")).toBe("kesme işareti");
     expect(precedentMethodLabel("turkish_fold")).toBe("harf farkı");

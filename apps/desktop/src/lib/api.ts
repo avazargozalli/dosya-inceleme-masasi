@@ -1117,7 +1117,7 @@ export type QuoteVerificationRow = {
   precedentId: string;
   versionId: string | null;
   state: "match" | "mismatch" | "not_checked";
-  method: "exact" | "whitespace" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided" | null;
+  method: "exact" | "whitespace" | "invisible" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided" | null;
   matchedStart: number | null;
   matchedLength: number | null;
   occurrences: number;
@@ -1149,7 +1149,7 @@ export type PrecedentInTextFinding = {
   quote: string;
   state: "exact" | "normalized" | "ambiguous" | "not_found" | "unverifiable";
   reason: "not_found" | "no_full_text" | null;
-  method: "exact" | "whitespace" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided" | null;
+  method: "exact" | "whitespace" | "invisible" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided" | null;
   occurrences: number;
   position: PrecedentQuotePosition | null;
   candidates: PrecedentQuotePosition[];
@@ -1195,7 +1195,7 @@ export type LibraryQuoteMatch = {
   versionId: string;
   /** `true`: eşleşme yalnız eski sürümde bulundu (güncel metin değişmiş olabilir). */
   foundInOldVersion: boolean;
-  method: "exact" | "whitespace" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided";
+  method: "exact" | "whitespace" | "invisible" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided";
   occurrences: number;
   charStart: number;
   charEnd: number;
@@ -1694,7 +1694,7 @@ export type InTextQuotePosition = {
   isCurrentVersion: boolean;
   charStart: number;
   charEnd: number;
-  matchKind: "exact" | "whitespace" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided";
+  matchKind: "exact" | "whitespace" | "invisible" | "ligature" | "apostrophe" | "turkish_fold" | "dehyphenated" | "elided";
   textOrigin: string;
   sourceText: string;
 };

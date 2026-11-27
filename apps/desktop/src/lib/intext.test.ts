@@ -276,6 +276,34 @@ describe("metin içi alıntı yardımcıları", () => {
     ).toBe("Rapor · s. 1 · karakter 5 · tire birleştirme");
   });
 
+  it("görünmez biçim karakteri eşleşmesini etiketler ve bağlanamama nedenini yazar", () => {
+    const invisible = finding({
+      state: "normalized",
+      position: position({
+        matchKind: "invisible",
+        charStart: 19,
+        charEnd: 44,
+        sourceText: "kira bedel\u{200B}ini ödemediğini",
+      }),
+    });
+    expect(positionLabel(invisible)).toBe(
+      "Dilekçe · s. 1 · görünmez biçim karakteri · metin katmanı",
+    );
+    expect(canBind(invisible)).toBe(false);
+    expect(bindHint(invisible)).toBe(
+      "Alıntı ancak görünmez biçim karakteri (yumuşak tire, sıfır genişlikli boşluk…) yok sayılarak bulundu; birebir sayılmaz, kaynağa bağlanmaz.",
+    );
+    // Aday listesinde de etiket görünür.
+    expect(
+      candidateLabel({
+        documentName: "Rapor",
+        pageIndex: 0,
+        charStart: 5,
+        matchKind: "invisible",
+      }),
+    ).toBe("Rapor · s. 1 · karakter 5 · görünmez biçim karakteri");
+  });
+
   it("ligatür açılarak bulunan alıntıyı ayrı etiketler ve bağlanamama nedenini yazar", () => {
     const ligature = finding({
       state: "normalized",

@@ -13,6 +13,7 @@ export const QUOTE_STATE_LABEL: Record<string, string> = {
 export const MATCH_KIND_LABEL: Record<string, string> = {
   exact: t("intext.matchExact"),
   whitespace: t("intext.matchWhitespace"),
+  invisible: t("intext.matchInvisible"),
   ligature: t("intext.matchLigature"),
   apostrophe: t("intext.matchApostrophe"),
   turkish_fold: t("intext.matchTurkishFold"),
@@ -87,6 +88,12 @@ export function bindHint(finding: InTextQuoteFinding): string {
   if (canBind(finding)) return "";
   if (finding.state === "exact" && finding.position?.spansPages) {
     return t("intext.bindSpansPages");
+  }
+  if (
+    finding.position?.matchKind === "invisible" ||
+    finding.candidates.some((candidate) => candidate.matchKind === "invisible")
+  ) {
+    return t("intext.bindInvisible");
   }
   if (
     finding.position?.matchKind === "ligature" ||

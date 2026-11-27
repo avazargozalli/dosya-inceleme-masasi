@@ -383,6 +383,14 @@ pub(crate) struct QuoteScopeHit {
 pub(crate) enum QuoteTier {
     Exact,
     Whitespace,
+    /// Yalnız **görünmez biçim karakterleri** yok sayılır (yumuşak tire
+    /// `U+00AD`, ZWSP `U+200B`, ZWNJ/ZWJ `U+200C`/`U+200D`, kelime
+    /// birleştirici `U+2060`, BOM `U+FEFF`) + boşluklar teklenir; harfler
+    /// korunur (F12-T14ad). PDF/DOCX metin katmanı ve panodan kopyalama bu
+    /// karakterleri kelimenin **içine** sokar; görünmez oldukları için
+    /// kullanıcı farkı göremez. Yazım değil **sunum** artefaktıdır — arama
+    /// tarafındaki T14ac kararının alıntı karşılığı.
+    Invisible,
     /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`) açılır; harfler korunur.
     Ligature,
     /// **Kesme işareti** ailesi eşitlenir: `’` (U+2019) ve `ʼ` (U+02BC) ASCII
@@ -404,9 +412,10 @@ pub(crate) enum QuoteTier {
 }
 
 impl QuoteTier {
-    const ORDER: [QuoteTier; 11] = [
+    const ORDER: [QuoteTier; 12] = [
         QuoteTier::Exact,
         QuoteTier::Whitespace,
+        QuoteTier::Invisible,
         QuoteTier::Ligature,
         QuoteTier::Apostrophe,
         QuoteTier::TurkishFold,
@@ -422,6 +431,7 @@ impl QuoteTier {
         match self {
             QuoteTier::Exact => "exact",
             QuoteTier::Whitespace => "whitespace",
+            QuoteTier::Invisible => "invisible",
             QuoteTier::Ligature => "ligature",
             QuoteTier::Apostrophe => "apostrophe",
             QuoteTier::TurkishFold => "turkish_fold",
@@ -452,6 +462,7 @@ impl QuoteTier {
 fn tier_mapped(text: &str, tier: QuoteTier) -> MappedText {
     match tier {
         QuoteTier::Whitespace => collapse_ws_with_map(text),
+        QuoteTier::Invisible => invisible_with_map(text),
         QuoteTier::Ligature => ligature_with_map(text),
         QuoteTier::Apostrophe => apostrophe_with_map(text),
         QuoteTier::TurkishFold => turkish_fold_with_map(text),
@@ -739,10 +750,21 @@ fn fold_char(ch: char) -> char {
 /// `dim_evidence::normalize` ile **aynı** sadeleştirme, ama konum eşlemesiyle.
 /// İkisi ayrışırsa `fold_matches_evidence_normalize` testi kırılır.
 pub(crate) fn normalize_with_map(input: &str) -> MappedText {
+    normalize_with_map_impl(input, false)
+}
+
+/// `normalize_with_map`in **görünmezleri yok sayan** kipi (F12-T14ad): harf
+/// kuralı aynı, yalnız `U+00AD`/`U+200B`/`U+200C`/`U+200D`/`U+2060`/`U+FEFF`
+/// eşleşmede yok sayılır. Kamu `normalize_with_map` `dim_evidence::normalize`
+/// ile birebir kalır (eşdeğerlik testi); alıntı katmanı bu kipi okur.
+fn normalize_with_map_impl(input: &str, skip_invisible: bool) -> MappedText {
     let mut out = String::with_capacity(input.len());
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
     for (index, ch) in input.chars().enumerate() {
+        if skip_invisible && crate::parsing::is_invisible_format(ch) {
+            continue;
+        }
         // Ligatür (`ﬂ`/`ﬁ`) bir yazım farkı değil **sunum** artefaktıdır: iki
         // harfe açılır, ikisi de aynı kaynak indeksini taşır.
         if let Some(expansion) = ligature_expansion(ch) {
@@ -783,6 +805,11 @@ pub(crate) fn ligature_with_map(input: &str) -> MappedText {
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
     for (index, ch) in input.chars().enumerate() {
+        // F12-T14ad: görünmez biçim karakteri **sunum** artefaktıdır; harfler
+        // aynı olduğu sürece eşleşmeyi engellemez (ligatürle bileşince de).
+        if crate::parsing::is_invisible_format(ch) {
+            continue;
+        }
         if let Some(expansion) = ligature_expansion(ch) {
             for letter in expansion.chars() {
                 out.push(letter);
@@ -830,17 +857,29 @@ fn fold_apostrophe(ch: char) -> char {
 ///
 /// Türkçe hukuk metinlerinde kaynak `Anayasa’nın` yazarken dilekçe
 /// `Anayasa'nın` yazar; harf farkı olmadığı için bu katman ayrı raporlanır.
+/// F12-T14ad: görünmez biçim karakterleri de yok sayılır (sunum artefaktı).
 pub(crate) fn apostrophe_with_map(input: &str) -> MappedText {
-    map_chars_with_collapsed_ws(input, fold_apostrophe)
+    map_chars_skipping_invisible(input, fold_apostrophe)
+}
+
+/// Yalnız **görünmez biçim karakterleri** yok sayılır + boşluklar teklenir;
+/// harfler, noktalama ve kesme işareti **korunur** (F12-T14ad).
+///
+/// Kaynak `bedel<ZWSP>lini` yazarken alıntı `bedellini` yazar; karakter
+/// görünmez olduğu için kullanıcı farkı göremez. Konum eşlemesi kaynak
+/// karakter indeksidir: raporlanan aralık görünmez karakteri **kapsar**.
+pub(crate) fn invisible_with_map(input: &str) -> MappedText {
+    map_chars_skipping_invisible(input, |ch| ch)
 }
 
 /// `normalize_with_map` + kesme işareti eşitlemesi (F12-T14r): harf
 /// sadeleştirmesi kesme işareti farkıyla **birleştiğinde** de eşleşir
 /// (`anayasa’nın` ↔ `Anayasa'nın`). Konum eşlemesi korunur: kesme işareti
-/// 1 karakterden 1 karaktere eşlenir.
+/// 1 karakterden 1 karaktere eşlenir. F12-T14ad: görünmez biçim karakterleri
+/// yok sayılır (sunum artefaktı) — harf kuralı `normalize_with_map` ile aynı.
 pub(crate) fn turkish_fold_with_map(input: &str) -> MappedText {
     let folded: String = input.chars().map(fold_apostrophe).collect();
-    normalize_with_map(&folded)
+    normalize_with_map_impl(&folded, true)
 }
 
 /// Boşlukları tekler ve her karakteri `map_char` ile eşler; konum eşlemesi
@@ -850,6 +889,39 @@ fn map_chars_with_collapsed_ws(input: &str, map_char: impl Fn(char) -> char) -> 
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
     for (index, ch) in input.chars().enumerate() {
+        let mapped = map_char(ch);
+        if mapped.is_whitespace() {
+            if !last_space && !out.is_empty() {
+                out.push(' ');
+                map.push(index);
+            }
+            last_space = true;
+        } else {
+            out.push(mapped);
+            map.push(index);
+            last_space = false;
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+        map.pop();
+    }
+    MappedText { text: out, map }
+}
+
+/// Boşlukları tekler, **görünmez biçim karakterlerini yok sayar** ve her
+/// karakteri `map_char` ile eşler (F12-T14ad). Konum eşlemesi kaynak metnin
+/// karakter indeksidir; yok sayılan karakter çıktıya girmediği için harfler
+/// arasındaki indeks boşluğu raporlanan aralıkta **kapanır** (kaynak
+/// aralığı görünmez karakteri kapsar).
+fn map_chars_skipping_invisible(input: &str, map_char: impl Fn(char) -> char) -> MappedText {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::with_capacity(input.len());
+    let mut last_space = false;
+    for (index, ch) in input.chars().enumerate() {
+        if crate::parsing::is_invisible_format(ch) {
+            continue;
+        }
         let mapped = map_char(ch);
         if mapped.is_whitespace() {
             if !last_space && !out.is_empty() {
@@ -890,6 +962,11 @@ pub(crate) fn dehyphenate_with_map(input: &str) -> MappedText {
     let mut map = Vec::with_capacity(input.len());
     let mut last_space = false;
     for (ch, index) in crate::parsing::dehyphenated_chars(input) {
+        // F12-T14ad: görünmez biçim karakteri (yumuşak tire dışındakiler de)
+        // eşleşmede yok sayılır; boşluk durumunu değiştirmez.
+        if crate::parsing::is_invisible_format(ch) {
+            continue;
+        }
         if let Some(expansion) = ligature_expansion(ch) {
             for letter in expansion.chars() {
                 out.push(letter);
@@ -2455,7 +2532,7 @@ fn map_version(row: &Row<'_>) -> rusqlite::Result<PrecedentVersionRow> {
 mod tests {
     use super::*;
     use crate::cases::{CaseKind, NewCase};
-    use crate::{DatabaseKey, SearchFilters};
+    use crate::{DatabaseKey, PrecedentInTextInput, SearchFilters};
 
     fn db() -> Database {
         Database::open_in_memory(&DatabaseKey::new([37u8; 32])).expect("db")
@@ -4109,6 +4186,87 @@ mod tests {
         assert_eq!(missed.reason.as_deref(), Some("not_found"));
     }
 
+    /// F12-T14ad (birim): görünmez katman harfleri **korur**, karakteri atar,
+    /// boşlukları tekler ve konumu **kaynak** indeksine eşler. Boşluk katmanı
+    /// karakteri korur — sıra bu yüzden `whitespace` → `invisible` → `ligature`.
+    #[test]
+    fn invisible_tier_keeps_letters_and_maps_to_source_indices() {
+        let mapped = invisible_with_map("a\u{200B}b  \u{00AD}c");
+        assert_eq!(mapped.text, "ab c");
+        assert_eq!(mapped.map, vec![0, 2, 3, 6]);
+        assert_eq!(
+            tier_mapped("bedel\u{200B}lini", QuoteTier::Whitespace).text,
+            "bedel\u{200B}lini",
+            "boşluk katmanı görünmez karakteri korur"
+        );
+        assert_eq!(
+            tier_mapped("bedel\u{200B}lini", QuoteTier::Invisible).text,
+            "bedellini"
+        );
+        assert_eq!(
+            tier_mapped("bedel\u{200B}lini", QuoteTier::Ligature).text,
+            "bedellini",
+            "ligatür katmanı da görünmez karakteri yok sayar (bileşim)"
+        );
+        let order = QuoteTier::ORDER;
+        assert_eq!(order[1].method(), "whitespace");
+        assert_eq!(order[2].method(), "invisible");
+        assert_eq!(order[3].method(), "ligature");
+    }
+
+    /// Üç yol (tek alıntı, metin içi, kütüphane) aynı etiketi verir; bulunan
+    /// aralık **kaynak** karakterleridir (görünmez karakter uzunluğa dahil).
+    #[test]
+    fn precedent_quote_paths_report_the_invisible_method() {
+        let db = db();
+        let p = db
+            .create_precedent(&precedent("Yargıtay", Some("2024/13"), Some("2026/2")))
+            .expect("emsal");
+        let body = "Kira bedel\u{200B}ini ödemeyen kiracı hakkında tahliye kararı verildi.";
+        db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        // Alıntı **harfçe aynı** yazılır: görünmez katman harfleri korur, harf
+        // farkı olsaydı katman `turkish_fold` olurdu (aşağıda pinleniyor).
+        let quote = "Kira bedelini ödemeyen kiracı";
+
+        let single = db.verify_precedent_quote(&p.id, quote).expect("tek alıntı");
+        assert_eq!(single.state, "match");
+        assert_eq!(single.method.as_deref(), Some("invisible"));
+        let start = usize::try_from(single.matched_start.expect("başlangıç")).expect("start");
+        let length = usize::try_from(single.matched_length.expect("uzunluk")).expect("uzunluk");
+        let sliced: String = body.chars().skip(start).take(length).collect();
+        assert_eq!(
+            sliced, "Kira bedel\u{200B}ini ödemeyen kiracı",
+            "kaynak aralığı görünmez karakteri kapsar"
+        );
+        assert_eq!(single.occurrences, 1);
+
+        // Sıra pini: harf farkı varsa görünmez katman devreye girmez —
+        // katman `turkish_fold` olur (görünmez katman harfleri **korur**).
+        let lowered = db
+            .verify_precedent_quote(&p.id, "kira bedelini ödemeyen kiracı")
+            .expect("harf farkı");
+        assert_eq!(lowered.method.as_deref(), Some("turkish_fold"));
+
+        let report = db
+            .check_in_text_quotes_in_precedent(
+                &p.id,
+                &PrecedentInTextInput {
+                    text: format!("“{quote}” deniyor."),
+                },
+            )
+            .expect("metin içi");
+        assert_eq!(report.quotes[0].state, "normalized");
+        assert_eq!(report.quotes[0].method.as_deref(), Some("invisible"));
+
+        let library = db
+            .check_in_text_quotes_across_library(&PrecedentInTextInput {
+                text: format!("“{quote}” deniyor."),
+            })
+            .expect("kütüphane");
+        assert_eq!(library.quotes[0].state, "found");
+        assert_eq!(library.quotes[0].matches[0].method.as_str(), "invisible");
+    }
+
     /// F12-T14aa — **kütüphane** araması da PDF'ten kopyalanmış sorguyu
     /// birleştirir: sorgu `kira bedel‐\nlini ödemeyen` iken düz yazılmış
     /// (`bedellini`) ve tireli belge birlikte bulunur, konum **kaynak
@@ -4208,11 +4366,14 @@ mod tests {
             .expect("emsal");
         let body = "Kira bedel\u{00AD}lini ödemeyen kiracı hakkında tahliye kararı verildi.";
         db.add_precedent_text(&p.id, &text_of(body)).expect("metin");
+        // Alıntı harfçe aynı yazılır (K ↔ k farkı olsaydı katman
+        // `turkish_fold` olurdu); yumuşak tire **görünmez biçim karakteridir**
+        // ve F12-T14ad'den beri kendi katmanında raporlanır.
         let result = db
-            .verify_precedent_quote(&p.id, "kira bedellini ödemeyen kiracı")
+            .verify_precedent_quote(&p.id, "Kira bedellini ödemeyen kiracı")
             .expect("doğrulama");
         assert_eq!(result.state, "match");
-        assert_eq!(result.method.as_deref(), Some("dehyphenated"));
+        assert_eq!(result.method.as_deref(), Some("invisible"));
         // Görünmez tire de kaynak aralığına dahildir (31 karakter).
         assert_eq!(result.matched_length, Some(31));
     }

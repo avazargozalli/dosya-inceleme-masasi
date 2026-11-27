@@ -3,12 +3,13 @@
 //! Serbest metindeki (iddia, özet, not) tırnaklı pasajları **çıkarır** ve
 //! dosyadaki belgelerin güncel sürümlerinin metin katmanında doğrular.
 //!
-//! Üç eşleşme katmanı ayrı raporlanır: `exact` (birebir), `whitespace` (yalnız
-//! boşluk/satır farkı), `ligature` (font kaynaklı bitişik yazı: `ﬂ`→`fl`),
-//! `apostrophe` (kesme işareti yazımı: `’` ↔ `'`), `turkish_fold` (harf
-//! sadeleştirmesi) ve `dehyphenated` (satır/sayfa sonunda tire ile bölünmüş
-//! kelime). Katmanlar sırayla denenir; üst katman bulunduysa alt katman
-//! aranmaz.
+//! Eşleşme katmanları ayrı raporlanır: `exact` (birebir), `whitespace` (yalnız
+//! boşluk/satır farkı), `invisible` (yalnız görünmez biçim karakteri farkı:
+//! `bedel<ZWSP>lini` ↔ `bedellini`), `ligature` (font kaynaklı bitişik yazı:
+//! `ﬂ`→`fl`), `apostrophe` (kesme işareti yazımı: `’` ↔ `'`), `turkish_fold`
+//! (harf sadeleştirmesi) ve `dehyphenated` (satır/sayfa sonunda tire ile
+//! bölünmüş kelime). Katmanlar sırayla denenir; üst katman bulunduysa alt
+//! katman aranmaz.
 //!
 //! `not_found` sonucu "uydurma" hükmü değildir: yalnız taranan metin
 //! katmanında bulunmadığını söyler. Taranmış (OCR'sız) sayfada görünen metin
@@ -32,8 +33,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::precedents::{
     apostrophe_with_map, char_offset, collapse_ws_with_map, dehyphenate_with_map, elided_segments,
-    find_elided_sequences_in_text, find_quote_in_scopes, ligature_with_map, turkish_fold_with_map,
-    MappedText, QuoteTier, TextScope, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT, MIN_QUOTE_CHARS,
+    find_elided_sequences_in_text, find_quote_in_scopes, invisible_with_map, ligature_with_map,
+    turkish_fold_with_map, MappedText, QuoteTier, TextScope, MAX_HISTORICAL_VERSIONS_PER_PRECEDENT,
+    MIN_QUOTE_CHARS,
 };
 use crate::{now_iso, Database, StorageError};
 
@@ -418,6 +420,13 @@ pub struct InTextQuoteCheck {
 enum MatchTier {
     Exact,
     Whitespace,
+    /// Yalnız **görünmez biçim karakterleri** yok sayılır (yumuşak tire,
+    /// ZWSP, ZWNJ/ZWJ, kelime birleştirici, BOM) + boşluklar teklenir;
+    /// harfler korunur (F12-T14ad). PDF/DOCX metin katmanı ve panodan
+    /// kopyalama bu karakterleri kelimenin **içine** sokar; görünmez
+    /// oldukları için kullanıcı farkı göremez. Yazım değil **sunum**
+    /// artefaktıdır — arama tarafındaki T14ac kararının alıntı karşılığı.
+    Invisible,
     /// Yalnız font kaynaklı **bitişik yazı** (`ﬂ`→`fl`, `ﬁ`→`fi`) açılır ve
     /// boşluklar teklenir; harfler korunur. PDF'ten gelen metinde `taraﬂar`
     /// yazarken avukat `taraflar` yazar — bu bir yazım farkı değildir.
@@ -448,6 +457,7 @@ impl MatchTier {
         match self {
             Self::Exact => "exact",
             Self::Whitespace => "whitespace",
+            Self::Invisible => "invisible",
             Self::Ligature => "ligature",
             Self::Apostrophe => "apostrophe",
             Self::Fold => "turkish_fold",
@@ -923,6 +933,7 @@ impl Database {
             for tier in [
                 MatchTier::Exact,
                 MatchTier::Whitespace,
+                MatchTier::Invisible,
                 MatchTier::Ligature,
                 MatchTier::Apostrophe,
                 MatchTier::Fold,
@@ -1438,6 +1449,7 @@ impl Database {
             .map(|span| match tier {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
+                MatchTier::Invisible => Some(invisible_with_map(&span.text)),
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Apostrophe => Some(apostrophe_with_map(&span.text)),
                 MatchTier::Fold => Some(turkish_fold_with_map(&span.text)),
@@ -1514,12 +1526,14 @@ impl Database {
                         }
                     }
                     MatchTier::Whitespace
+                    | MatchTier::Invisible
                     | MatchTier::Ligature
                     | MatchTier::Apostrophe
                     | MatchTier::Fold
                     | MatchTier::Dehyphenated => {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&text),
+                            MatchTier::Invisible => invisible_with_map(&text),
                             MatchTier::Ligature => ligature_with_map(&text),
                             MatchTier::Apostrophe => apostrophe_with_map(&text),
                             MatchTier::Fold => turkish_fold_with_map(&text),
@@ -1638,6 +1652,7 @@ impl Database {
             .map(|span| match tier {
                 MatchTier::Exact => None,
                 MatchTier::Whitespace => Some(collapse_ws_with_map(&span.text)),
+                MatchTier::Invisible => Some(invisible_with_map(&span.text)),
                 MatchTier::Ligature => Some(ligature_with_map(&span.text)),
                 MatchTier::Apostrophe => Some(apostrophe_with_map(&span.text)),
                 MatchTier::Fold => Some(turkish_fold_with_map(&span.text)),
@@ -1757,12 +1772,14 @@ impl Database {
                         }
                     }
                     MatchTier::Whitespace
+                    | MatchTier::Invisible
                     | MatchTier::Ligature
                     | MatchTier::Apostrophe
                     | MatchTier::Fold
                     | MatchTier::Dehyphenated => {
                         let mapped = match tier {
                             MatchTier::Whitespace => collapse_ws_with_map(&joined),
+                            MatchTier::Invisible => invisible_with_map(&joined),
                             MatchTier::Ligature => ligature_with_map(&joined),
                             MatchTier::Apostrophe => apostrophe_with_map(&joined),
                             MatchTier::Fold => turkish_fold_with_map(&joined),
@@ -1846,8 +1863,8 @@ impl Database {
     ///
     /// Belge tarafındaki [`Database::check_in_text_quotes`] dosya belgelerini
     /// tarar; bu yol aynı çıkarımı ve **aynı katman sırasını** (`exact` →
-    /// `whitespace` → `ligature` → `apostrophe` → `turkish_fold` → `dehyphenated` →
-    /// `elided`) emsal
+    /// `whitespace` → `invisible` → `ligature` → `apostrophe` → `turkish_fold` →
+    /// `dehyphenated` → `elided`) emsal
     /// tam metnine uygular: dilekçedeki birden çok alıntı tek turda, tek tek
     /// kopyalamadan denetlenir. Kapsam bilinçli olarak **tek emsaldir**;
     /// kütüphane geneli arama değildir (F12-T10 kapsam ayrımı).
@@ -1889,7 +1906,7 @@ impl Database {
             notes.push(format!(
                 "Kararın {} metinli sürümü tarandı (güncel + en çok \
                  {MAX_HISTORICAL_VERSIONS_PER_PRECEDENT} eski sürüm); katman sırası \
-                 birebir → boşluk → ligatür → harf → tire birleştirme → “…” parçalıdır.",
+                 birebir → boşluk → görünmez → ligatür → harf → tire birleştirme → “…” parçalıdır.",
                 scopes.len()
             ));
         }
@@ -2050,8 +2067,8 @@ impl Database {
     ///
     /// Tek emsal yolundan ([`Database::check_in_text_quotes_in_precedent`])
     /// farkı kapsamdır: “bu pasaj hangi kararlarımda geçiyor?” sorusunu
-    /// yanıtlar; katman sırası **aynıdır** (`exact` → `whitespace` → `ligature`
-    /// → `turkish_fold` → `dehyphenated` → `elided`) ve aynı `find_quote_in_scopes`
+    /// yanıtlar; katman sırası **aynıdır** (`exact` → `whitespace` → `invisible`
+    /// → `ligature` → `turkish_fold` → `dehyphenated` → `elided`) ve aynı `find_quote_in_scopes`
     /// işlevini kullanır. Önce her emsalin **güncel** metni taranır; güncel
     /// metinde bulunamayan alıntı için emsallerin **eski sürümleri** de
     /// taranır (emsal başına en çok `MAX_HISTORICAL_VERSIONS_PER_PRECEDENT`,
@@ -4254,6 +4271,208 @@ mod tests {
 
         assert_eq!(report.not_found, 0, "yumuşak tire eşleşmeyi engelledi");
         assert_eq!(report.normalized, 1);
+        // F12-T14ad: yumuşak tire **görünmez biçim karakteridir**; kelimenin
+        // içinde satır sonu yoksa artık kendi katmanında (`invisible`)
+        // raporlanır — eskiden en zayıf katman `dehyphenated` etiketiydi.
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "invisible"
+        );
+    }
+
+    /// F12-T14ad — görünmez biçim karakterleri **sunum** artefaktıdır:
+    /// alıntı doğrulaması bunları yok sayar ve ayrı `invisible` katmanında
+    /// raporlar. Birebir sayılmaz (kaynak metin karakteri taşır), anchor'a
+    /// bağlanmaz.
+    #[test]
+    fn invisible_format_characters_inside_words_match_in_their_own_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Görünmez biçim");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Davacı kira bedel\u{200B}ini ödemediğini söyledi."],
+        );
+
+        let report = check(&db, &case_id, "“kira bedelini ödemediğini”", None);
+
+        assert_eq!(report.not_found, 0, "ZWSP eşleşmeyi engelledi");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(report.exact, 0, "görünmez karakter birebir sayılmaz");
+        let position = report.quotes[0].position.as_ref().expect("konum");
+        assert_eq!(position.match_kind, "invisible");
+        assert_eq!(position.char_start, 7);
+        // Kaynak aralığı görünmez karakteri **kapsar**: alıntı 25, kaynak 26.
+        assert_eq!(position.char_end - position.char_start, 26);
+        assert!(
+            position.source_text.contains('\u{200B}'),
+            "kaynak metin görünmez karakteri göstermeli: {}",
+            position.source_text
+        );
+    }
+
+    /// Negatif kontroller: görünmez katman **gerçek boşluğu** kapatmaz ve
+    /// aile dışındaki `Cf` işaretlerini yok saymaz (aile `parsing`te tek
+    /// yüklemin dediğidir).
+    #[test]
+    fn invisible_tier_does_not_close_real_spaces_or_foreign_format_characters() {
+        let db = db();
+        let case_id = new_case(&db, "Görünmez negatif");
+        add_document(
+            &db,
+            &case_id,
+            "A.pdf",
+            &["Davacı kira bedel ini ödemediğini söyledi."],
+        );
+        add_document(
+            &db,
+            &case_id,
+            "B.pdf",
+            &["Davacı kira bedel\u{061C}ini ödemediğini söyledi."],
+        );
+
+        let report = check(&db, &case_id, "“kira bedelini ödemediğini”", None);
+
+        assert_eq!(
+            report.not_found, 1,
+            "gerçek boşluk ya da aile dışı Cf eşleşmemeli: {report:?}"
+        );
+    }
+
+    /// Birebir katman **değişmedi**: iki tarafta da aynı görünmez karakter
+    /// varsa alıntı bayt bayt eşleşir ve `exact` kalır — ayıklama yalnız
+    /// zayıf katmanların işidir.
+    #[test]
+    fn exact_tier_stays_literal_for_equal_invisible_characters() {
+        let db = db();
+        let case_id = new_case(&db, "Birebir görünmez");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Davacı kira bedel\u{200B}ini ödemediğini söyledi."],
+        );
+
+        let report = check(&db, &case_id, "“kira bedel\u{200B}ini ödemediğini”", None);
+
+        assert_eq!(report.exact, 1);
+        assert_eq!(report.normalized, 0);
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "exact"
+        );
+    }
+
+    /// Görünmez karakter **alıntının kendisinde** de olabilir (PDF'ten
+    /// kopyalanan pasaj): iğne de ayıklanır, düz yazılmış kaynakta bulunur.
+    #[test]
+    fn invisible_format_characters_in_the_quote_itself_are_ignored() {
+        let db = db();
+        let case_id = new_case(&db, "Alıntıda görünmez");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Davacı kira bedelini ödemediğini söyledi."],
+        );
+
+        let report = check(&db, &case_id, "“kira bedel\u{200B}ini ödemediğini”", None);
+
+        assert_eq!(report.not_found, 0, "alıntıdaki ZWSP eşleşmeyi engelledi");
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "invisible"
+        );
+    }
+
+    /// Görünmez karakter **başka bir sunum artefaktıyla birleşince** katman
+    /// sırası korunur: ligatür açma + görünmez ayıklama birlikte çalışır ve
+    /// rapor `ligature` der (en zayıf katman `turkish_fold` değil).
+    #[test]
+    fn ligature_and_invisible_together_report_the_ligature_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Ligatür + görünmez");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Sözleşme tara\u{200B}ﬂar arasında kurulmuştur."],
+        );
+
+        let report = check(&db, &case_id, "“taraflar arasında kurulmuştur”", None);
+
+        assert_eq!(report.not_found, 0);
+        assert_eq!(report.ligature, 1, "ligatür sayacı artmalı");
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "ligature"
+        );
+    }
+
+    /// Kesme işareti + görünmez karakter birlikte: rapor `apostrophe` der;
+    /// görünmez ayıklama kesme işareti katmanını da kapsar.
+    #[test]
+    fn apostrophe_and_invisible_together_report_the_apostrophe_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Kesme + görünmez");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Anayasa’\u{200B}nın 2. maddesinde sözleşme özgürlüğü düzenlenmiştir."],
+        );
+
+        let report = check(
+            &db,
+            &case_id,
+            "“Anayasa'nın 2. maddesinde sözleşme özgürlüğü”",
+            None,
+        );
+
+        assert_eq!(report.not_found, 0);
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "apostrophe"
+        );
+    }
+
+    /// Satır sonu tiresi + görünmez karakter birlikte: görünmez ayıklama en
+    /// zayıf katmanda da çalışır, rapor `dehyphenated` der.
+    #[test]
+    fn hyphen_join_and_invisible_together_report_the_dehyphenated_tier() {
+        let db = db();
+        let case_id = new_case(&db, "Tire + görünmez");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Kira bedel\u{200B}-\nlini ödemeyen kiracı hakkında tahliye kararı verildi."],
+        );
+
+        let report = check(&db, &case_id, "“Kira bedellini ödemeyen”", None);
+
+        assert_eq!(report.not_found, 0);
         assert_eq!(
             report.quotes[0]
                 .position
@@ -4261,6 +4480,33 @@ mod tests {
                 .expect("konum")
                 .match_kind,
             "dehyphenated"
+        );
+    }
+
+    /// Kısaltılmış alıntı ailesi de görünmez karakteri yok sayar; raporlanan
+    /// yöntem yine tek etikettir (`elided`), katman ayrımı gizlenmez.
+    #[test]
+    fn elided_quote_with_an_invisible_character_is_found_as_elided() {
+        let db = db();
+        let case_id = new_case(&db, "Kısaltılmış görünmez");
+        add_document(
+            &db,
+            &case_id,
+            "Karar.pdf",
+            &["Sözleşme tara\u{200B}flar arasında kurulmuştur ve hüküm kesindir."],
+        );
+
+        let report = check(&db, &case_id, "“taraflar arasında … hüküm kesindir”", None);
+
+        assert_eq!(report.not_found, 0, "kısaltılmış alıntı bulunmalı");
+        assert_eq!(report.normalized, 1);
+        assert_eq!(
+            report.quotes[0]
+                .position
+                .as_ref()
+                .expect("konum")
+                .match_kind,
+            "elided"
         );
     }
 

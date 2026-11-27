@@ -46,6 +46,8 @@ export function quoteStateText(verification: QuoteVerificationRow): string {
       if (verification.method === "exact") return t("precedentLib.quoteExact", parts);
       if (verification.method === "whitespace")
         return t("precedentLib.quoteWhitespace", parts);
+      if (verification.method === "invisible")
+        return t("precedentLib.quoteInvisible", parts);
       if (verification.method === "dehyphenated")
         return t("precedentLib.quoteDehyphenated", parts);
       if (verification.method === "ligature") return t("precedentLib.quoteLigature", parts);
@@ -206,6 +208,8 @@ export function precedentMethodLabel(method: string | null): string {
       return t("precedentLib.intextMethodExact");
     case "whitespace":
       return t("precedentLib.intextMethodWhitespace");
+    case "invisible":
+      return t("precedentLib.intextMethodInvisible");
     case "ligature":
       return t("precedentLib.intextMethodLigature");
     case "apostrophe":
