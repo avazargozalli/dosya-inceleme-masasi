@@ -5749,7 +5749,23 @@ mod tests {
             exact.contains("NEAR(\"bedel\" \"lini\"*, 2)"),
             "Tam da bölünme alternatifi taşır: {exact}"
         );
-        assert!(!exact.contains(", 4)"), "dört parça aday değil: {exact}");
+        // F12-T14ae bu testin eski «dört parça aday değil» beklentisini
+        // değiştirdi: üç satır sonu bölünmesi artık adaydır (ayrı bütçe 8,
+        // dengeli bölünmeler önce). Kalan sınır belirteç uzunluğudur —
+        // gerçekçi olmayan uzun belirteçte üçlü aday üretilmez.
+        assert!(
+            exact.contains("NEAR(\"be\" \"del\" \"li\" \"ni\"*, 4)"),
+            "üç bölünme adayı (dengeli) taşınır: {exact}"
+        );
+        let long = fts_expression(&ResolvedQuery {
+            mode: SearchMode::Exact,
+            text: "a".repeat(200),
+            docket: None,
+        });
+        assert!(
+            !long.contains(", 4)"),
+            "40 karakteri aşan belirteçte üçlü aday yok: {long}"
+        );
     }
 
     /// F12-T14ac — **yeniden ayrıştırma gerekmez:** `normalized_text` sütunu
