@@ -40,6 +40,7 @@
 | F12-T14ac | ✅ | **aramada görünmez biçim karakterleri** (T14z'in aramadaki karşılığı): PDF/DOCX metin katmanı ve pano kelimenin **içine** yumuşak tire (`U+00AD`), sıfır genişlikli boşluk (`U+200B`), `U+200C`/`U+200D`, kelime birleştirici (`U+2060`) ya da BOM (`U+FEFF`) sokabilir; FTS (`unicode61`) bunları ayırıcı saydığı için kelime indekste **iki belirtece** bölünüyordu — `bedellini` sorgusu görünmez karakterli sayfada **üç kipte 0 sonuç** (kütüphanede `Tam` 1/3). Artık üç kip yok sayar (`fold_ws`, `tokens_with`, `token_spans`/`token_equals`); `Tam` aday ifadesi bölünme alternatiflerini taşır (hükmü yine doğrulayıcı verir — tire birleştirme sızmaz); konum **kaynak aralığıdır** (görünmez karakter uzunluğa dahil); dilim öncesi satırlar yeniden ayrıştırma istemez. Alıntı doğrulaması değişmedi (ZWSP orada açık kayıt). Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ae | ✅ | **arama aday ifadesinde üç satır sonu bölünmesi** (T14y dürüst sınırı (a) kapandı): dar sütunlu tablo/dipnot metni bir kelimeyi **üç** satır sonuyla dörde bölebilir (`be-\ndel-\nli-\nni`); FTS dört ham belirteç indeksler, tek/çift bölünme alternatifleri satırı aday yapmadığı için `İfade`/`Esnek` kipinde sessiz **0 sonuç** vardı. Artık üç bölünme de adaydır (dört parça, `NEAR` payı 4): ayrı ve küçük bütçe (**8**), **dengeli** bölünmeler önce (sözlüksel sıra bütçeyi `b|e|d|ellini` gibi tek harfli parçalara harcıyordu — ölçüldü, gerçek bölünme hiç aday olmuyordu), yalnız **4–40** karakterlik belirteçlerde. Hükmü yine `SearchMatcher` verir: paragraf ayrımı, gerçek tire ve boşluk eşleşmez; `Tam` noktalamaya duyarlı kalır. Ölçülen maliyet (debug): aday ifadesi 2.851 → **3.761 B**, FTS sayım p50 7,33 → 9,16 ms, sayfa p50 +~%35. Şema (v68) ve arayüz değişmedi (2026-11-27) |
 | F12-T14ad | ✅ | **alıntı doğrulamasında görünmez biçim karakteri katmanı** (T14ac'ın alıntıdaki karşılığı): PDF/DOCX metin katmanı ve panodan kopyalama kelimenin **içine** yumuşak tire (`U+00AD`), ZWSP (`U+200B`), ZWNJ/ZWJ (`U+200C`/`U+200D`), kelime birleştirici (`U+2060`) ya da BOM (`U+FEFF`) sokar; kullanıcı göremez, kaynak `kira bedel<ZWSP>ini` yazarken dilekçe `kira bedelini` yazar → metin içi alıntı, emsal ve kütüphane doğrulaması üç yolda `not_found` düşüyordu. Yeni `invisible` katmanı (`exact → whitespace → invisible → ligature → apostrophe → turkish_fold → dehyphenated`) yalnız bu aileyi yok sayar, harfleri korur; harf/ligatür/kesme/tire katmanları da ayıklar, alıntı iğnesi de; konum **kaynak aralığıdır** (görünmez uzunluğa dahil: 26/25), eşleşme `exact` sayılmaz ve anchor'a **bağlanmaz**. Gerçek boşluk ve aile dışı Cf (`U+061C`) yok sayılmaz (negatif kontrol); aynı görünmez karakteri taşıyan alıntı yine `exact`. Arayüzde "görünmez biçim karakteri" etiketi. Şema (v68) ve kalıcı yazma değişmedi (2026-11-28) |
+| F12-T14af | ✅ | **ayrışmış (NFD) Türkçe harf hem aramada hem alıntı doğrulamasında** (T14ac/T14ad'ın Unicode yazım karşılığı): LaTeX/Word kaynaklı PDF'ler `ş`yi `s`+`U+0327` (sedil), `ğ`yi `g`+`U+0306` (breve), `ö`/`ü`yü taban+`U+0308`, `İ`yi `I`+`U+0307` olarak **iki kod noktasıyla** yazar; FTS aday üretiyordu ama doğrulayıcı harf harf karşılaştırdığı ve belirteç ayırıcısı birleşen işareti gördüğü için `Tam`/`İfade` kipinde sessiz **0 sonuç**, alıntı doğrulamasında üç yolda `not_found` vardı. Tek tablo `dim_evidence::compose_turkish` (kapalı: yalnız beş işaret + Türkçe tabanlar); yeni `decomposed` katmanı (`exact → whitespace → invisible → decomposed → ligature → apostrophe → turkish_fold → dehyphenated`) görünmezleri de yok sayar, harf kimliğini korur (`ü` ≠ `ö`), `turkish_fold`dan güçlüdür. Arama tarafında `fold_ws`, belirteç üretimi/sınırı ve `dim_evidence::normalize` aynı tabloyu okur — ikinci eşleme yok; konum **kaynak aralığıdır** (ş = 2 kod noktası: 8/10), iki yön simetrik; dilim öncesi satırlar yeniden ayrıştırma istemez. Eşleşme `exact` sayılmaz ve anchor'a **bağlanmaz**; arayüzde "ayrışmış harf (Unicode)" etiketi ve bağlanamama nedeni. Şema (v68) ve kalıcı yazma değişmedi (2026-11-28) |
 
 ## F12-T11 — kaynak kullanım koşulu ve korpus dağıtım kapısı
 
@@ -3238,3 +3239,102 @@ bakılmalıdır; (c) konum kaynak aralığıdır, görünmez karakter uzunluğa 
 (d) görünmez karakter **alıntıda da** varsa `exact` kalır; (e) eşleşme **metin
 eşleşmesi**, anlam değil; rapor kalıcı değil; (f) gerçek Tauri penceresi + görsel
 QA **insan bekliyor**.
+
+## F12-T14af — aramada ve alıntıda ayrışmış (NFD) Türkçe harf (2026-11-28)
+
+**Dilim (şema değişmedi — v68; okuma yolu + arayüz; kalıcı yazma yok):**
+LaTeX/Word kaynaklı PDF'ler ve bazı panolar Türkçe harfi **iki kod noktasıyla**
+yazar: `ş` = `s` + `U+0327` (birleşen sedil), `ğ` = `g` + `U+0306` (breve),
+`ö`/`ü` = taban + `U+0308` (iki nokta), `İ` = `I` + `U+0307` (üst nokta),
+`â`/`î`/`û` = taban + `U+0302` (şapka). Kullanıcı tek harf görür — bu bir
+**sunum** artefaktıdır, yazım farkı değil. Ölçülen kusur iki yolu birlikte
+vuruyordu:
+
+- **Arama:** FTS (`unicode61 remove_diacritics 2`) iki yazımı aynı belirteç
+  saydığı için **aday üretiliyordu**, ama doğrulayıcı harf harf karşılaştırdığı
+  ve belirteç ayırıcısı birleşen işareti gördüğü için `Tam`/`İfade` kiplerinde
+  sessiz **0 sonuç** vardı; `Esnek` harf sadeleştirmesiyle kısmen kurtarıyordu.
+- **Alıntı:** ayrışmış harf katmanı yoktu; kaynak `s`+sedil yazarken alıntı `ş`
+  yazınca metin içi alıntı, emsal ve kütüphane yolları `not_found` düşüyordu.
+  Zayıf `turkish_fold` bile kurtarmıyordu: birleşen işaret sadeleştirmeden
+  geçmeden kaldığı için normalize metinde `s`+işaret olarak duruyordu.
+
+Kural: **tek tablo** `dim_evidence::compose_turkish` (+ `is_composable_mark`);
+kapalıdır — yalnız bu beş işaret ve Türkçe tabanlar birleşir (`s` + `U+0301`
+gibi aksanlar Türkçe harf değildir). Katman sırası `exact → whitespace →
+invisible → **decomposed** → ligature → apostrophe → turkish_fold →
+dehyphenated`; `decomposed` görünmezleri de yok sayar, harfleri korur ve harf
+sadeleştiren `turkish_fold`dan **güçlüdür** (harf kimliği korunur — `ü` ile `ö`
+eşleşmez). Daha zayıf katmanlar da birleştirir (bileşim farkı kaçmaz:
+`bedel<ZWSP>s` + sedil + `art` → `bedelşart`). Konum **kaynak aralığıdır** —
+birleşen işaret uzunluğa dahildir (alıntı 9 / kaynak 10; metin içi alıntıda
+32/34). Eşleşme `exact` sayılmaz ve anchor'a **bağlanmaz**; arayüzde “ayrışmış
+harf (Unicode)” etiketi ve bağlanamama nedeni görünür. Arama tarafında `fold_ws`
+(`Tam` iğnesi + samanlığı), belirteç üretimi (`İfade`/`Esnek`), belirteç sınırı
+(`token_spans` — işaret belirteci bölmez) ve `dim_evidence::normalize` aynı
+tabloyu okur; konumlayıcı (`locate_in_text`) ve kütüphane katmanları da
+birleştirir — ikinci bir eşleme yok. Ön kapı `may_compose`: metinde birleşen
+işaret yoksa ek dizge/tarama yapılmaz. Dilim öncesi satırlar **yeniden
+ayrıştırma istemez** (ham metin okunur).
+
+**Testler (kırmızı-önce dürüst):** yeni testler eski kodla **5/6 KIRMIZI**
+(`file_search_matches_decomposed_turkish_letters_against_composed_queries`,
+`decomposed_turkish_letters_match_in_their_own_tier`,
+`decomposed_tier_does_not_close_distinct_letters`,
+`elided_quote_with_decomposed_letters_is_found_as_elided`,
+`precedent_in_text_check_reports_the_decomposed_tier`); yalnız «aynı ayrışmış
+yazım birebir kalır» kontrolü önce de yeşildi (negatif kontrol). Yeni **7**
+Rust testi: dosya araması (üç kip + konum 8/10 + `ü`/`ğ` + ASCII negatifi +
+`Esnek` harf sadeleştirmesi pinlenir), uçtan uca metin içi alıntı (etiket,
+kaynak aralığı 32/34, kaynak metin sedili gösterir), negatifler (ASCII `s` yalnız
+zayıf `turkish_fold`da; ters yön; `ü` ↔ `ö` hiçbir katmanda), birebir kontrol,
+kısaltılmış (`…`) alıntı, emsal yolu, birim (tablo kapalı + kaynak indeksi).
+Arayüz: `MATCH_KIND_LABEL`/`bindHint`/emsal yöntem etiketi + dört sözlük
+anahtarı; `intext.test.ts` + `precedents.test.ts` + `i18n-bindings.test.ts`
+**104 passed**, `tsc --noEmit` temiz.
+
+**Yerel:** `rustfmt` (yalnız `dim-storage` + `dim-evidence`) ve
+`cargo clippy -p dim-storage -p dim-evidence --all-targets -- -D warnings`
+temiz; tam paket **875 passed · 1 ignored · 0 failed, 856,44 s**
+(`dim-t14af-libtest.log`; ağaçta başka ajanın commit'siz v70/F15 dosyaları
+dâhil — CI 873 = 866 + 7 ölçüldü).
+
+**Kapı (`scratch/dim-t14af-gates.py`, log `dim-t14af-gates.log`):** taban üç
+komut YEŞİL (hedef Rust filtresi 7 passed; iki arayüz dosyası); **15/15 KANIT ·
+KIRMIZI 0 · ÖLÇÜLEMEDİ 0**, her satırda geri yazım **birebir**. Mutantlar:
+tablodan `ş` çıkarılır; `u`+`U+0308` yanlış harfe (`o`) eşlenir; `ComposedChars`
+işareti tüketmez (çift harf kalır); belirteçler birleştirilmez (`tokens_with`);
+birleşen işaret belirteci böler (`token_spans`); belirteç karşılaştırması
+birleştirmez (`token_equals`); `Tam` katlaması birleştirmez (`fold_ws_into`);
+`decomposed` katmanı birleştirmez; katman sırasından `decomposed` çıkarılır
+(yerine yinelenen `invisible`); konum katmanı birleştirmez (`fold_ws_with_map`);
+harf katmanı birleştirmez (`normalize_with_map_impl`);
+`dim_evidence::normalize` birleştirmez; arayüz etiketi / bağlanamama nedeni /
+emsal yöntem etiketi `decomposed` için yok. Dürüst iki düzeltme: M4 ilk koşuda
+**KIRMIZI** kaldı (mutant yalnız NFC girdiyle eşdeğerdi) → simetri testleri
+eklendi; M9 derleme hatası veriyordu → anlamsal mutantla değiştirildi (yinelenen
+`invisible`); ikisi de yeniden ölçüldü.
+
+**CI (ölçüldü):** kod `a55342b` (10 dosya, **+618/−31**) → run **`46082633551`
+10/10 YEŞİL** — `dim-storage` **873** iki OS'ta (`1 ignored` ölçüm testi):
+macos-15 **770,76 s** / ubuntu-latest **1.312,67 s** (866 → 873 = bu dilimin 7
+testi); `arayüz` 67 dosya / **1503** test (1501 → +2), paket
+`index-DIpL4GfO.js` **734,84 kB** / gzip **194,93 kB** (+0,78 kB); masaüstü
+kabuk, windows güvenli depo, SBOM, sözleşmeler, belge worker'ı, sürüm paketi
+manifesti, kaynak arşivi yeşil.
+
+**F15 maliyeti (üç koşu):** aday ifadesi **değişmedi** (`itirazın reddine`
+3.761 B, `bedellini` 2.186 B — T14ae ile birebir; ayrışmış harf aday ifadesine
+girmez, katman doğrulama tarafındadır). Sayfa p50 `Esnek` **23,25–24,94 ms**,
+`İfade` **45,47–47,18 ms**, `Tam` **58,62–58,81 ms** (T14ae: 21,80 / 41,68 /
+52,04). Fark koşular arası salınım ile sabit birleştirme maliyeti olarak
+**ayrıştırılmadı** — iddia değil, ölçüm.
+
+**Dürüst sınırlar:** (a) tablo kapalıdır — `s` + `U+0301` gibi Türkçe olmayan
+aksanlar birleşmez; (b) `i`/`ı` + `U+0307` → `i` (görsel özdeşlik); `İ` yalnız
+`I` + üst noktadır; (c) eşleşme `exact` sayılmaz ve anchor'a **bağlanmaz** —
+kaynak harfi iki kod noktasıyla yazmıştır, gözle doğrulanmalıdır; (d) konum
+**kaynak aralığıdır**; alıntının son harfi metnin en sonundaysa aralık son
+işareti kaçırabilir (±1); (e) kısaltılmış (`…`) alıntıda ayrışmış fark `elided`
+etiketiyle raporlanır; (f) eşleşme **metin eşleşmesi**, anlam değil; rapor
+kalıcı değil; (g) gerçek Tauri penceresi + görsel QA **insan bekliyor**.
